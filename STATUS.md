@@ -208,6 +208,75 @@ its own `pyproject.toml`.
 
 ---
 
+## ✅ First real-target Bosch-A route — 2026-09-15
+
+`[CONFIRMED, one 60 s segment replayed through the real parser]` **The sentinel-only era is
+over.** Segment `00000231--5782493b00` (device `11c8fa231c0499ed`, car **`HONDA_CIVIC_BOSCH`**,
+`radarUnavailable=False`) is the first Bosch-A capture in this project with real tracked
+objects. This supersedes the standing caveat that every clean replay had contained only
+firmware no-target sentinels.
+
+| | |
+|---|---|
+| Bosch-A frames | 144,380 — **all 80 addresses**, buses 1 / 2 / 128 |
+| Sweep triggers (`0x2FF`) | 1,786 |
+| Parser output | **2,878 points across 892 sweeps, 33 distinct track IDs** |
+| Range / velocity | dRel 10.9–111.2 m, vRel −13.50 … +4.52 m/s |
+| Device-side | `liveTracks` 893, `radarState` 1200 (a lead on **all** 1200) |
+
+Reproduce: `python tools/bosch_a_route_report.py <rlog.zst> --fingerprint HONDA_CIVIC_BOSCH`
+
+### D-041 confirmed on the road, not just in replay
+
+`[CONFIRMED]` The U11 saturation rail is **not** an edge case: **77 samples across 12
+distinct tracks hit exactly −13.50 m/s in this single 60-second segment**, and every one of
+them was published as a radar point rather than coasted.
+
+The clearest instance is track 58 at t=5.79–6.73 s (y ≈ +10.2…+11.5 m, d 66.9 → 49.3 m):
+U11 read the rail on all 14 samples while the **range itself closed 17.6 m in 0.94 s =
+−18.69 m/s**, with ego at 16.40 m/s. So the rail understated true closing by ~5.2 m/s —
+exactly the documented trade in D-041 — and the point survived. Under the pre-`6126e51`
+behaviour those 77 samples would have fed the coast path.
+
+This is the first road evidence that publishing the bound is the correct call, and it
+strengthens rather than revisits D-041. It is **not** a licence to re-tune the rail or u10
+from one route (D-042).
+
+### Vision and radar disagreed on lead range by ~11 m
+
+`[CONFIRMED]` Around t=37.7 s the model put its lead at `x` 54–57 m (`prob` 1.00,
+`y` ≈ −0.1 m) while radar track 6 had it at dRel ≈ 44 m. Allowing for `RADAR_TO_CAMERA`
+(1.52 m) that is an ~11 m disagreement. `radard` published the radar range (43.5 m,
+`leadOne.radar=1`), which is the right choice — but the match only survives because
+`track_matches_vision` uses `dist_scale=0.25`, i.e. a ~13.75 m tolerance at that range. The
+margin here is thinner than it looks; worth watching before anyone tightens that scale.
+
+### Bosch-A track IDs are reused within a segment
+
+`[CONFIRMED]` Track ID 58 covers **two unrelated objects 27 s apart**: y ≈ +10.2…+11.5 m
+(t 5.8–6.7) and then y ≈ −3.5…−2.5 m (t 33.8–60.0). Bosch-A IDs are 6-bit
+(`BOSCH_A_TRACK_ID_MIN=1`, `MAX=0x3F`), so reuse is expected. The second life opens at
+vRel +3.03 then reads −2.16 within 0.55 s, which is consistent with a **fresh** Kalman
+filter converging rather than stale state carrying over — but that has not been proven, and
+a stale filter across an ID reuse would be a real defect. **Open item.**
+
+### Adjacent-lane closer was never a lead candidate
+
+`[CONFIRMED mechanism, significance not established]` At the user's bookmark (t=37.69 s,
+`userBookmark`, 62.8% through the segment) track 58 sat at y ≈ −2.6 m closing at −2.6 to
+−3.9 m/s while the lead (id6, y ≈ +0.3 m) closed at only −0.5 m/s. At t=37.8 s track 58 was
+**nearer than the lead** (42.6 m vs 44.1 m) and closing roughly 8× faster. It was tracked
+continuously and promoted to neither `leadOne` nor `leadTwo`.
+
+The mechanism is not a Bosch-A bug: `match_vision_to_track` only promotes a radar track that
+matches a **model** lead, and the model reported one lead at y ≈ −0.1 m. A radar-only target
+in an adjacent lane therefore cannot become a lead however fast it closes. Whether that is
+the right policy for a cut-in is a longitudinal-planner question, not a parser one, and
+nothing here shows the car behaved wrongly — `laneChangeState` stayed `off` and the vehicle
+never crossed into own-lane (|y| < 1.8 m).
+
+---
+
 ## Tooling added 2026-09-15
 
 **`tools/konik_preflight.py`** — verifies a Konik (or comma) server end to end from a machine
@@ -344,9 +413,9 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 
 ## NOT verified — do not treat as safe
 
-- **No road validation with real radar targets on this branch.** Every Bosch-A replay to date
-  that completed cleanly did so against **no-target sentinels**. Parsing a sweep correctly is
-  not the same as tracking a car.
+- **Still no closed-loop road validation.** One segment now proves the parser tracks real
+  objects (see the section above), but that is offline replay of a recorded drive: it says
+  nothing about how the car behaves when this radar drives the planner.
 - **The P061B correction is unproven.** Route 4's active duration is shorter than the
   original time-to-fault. Replay cannot predict the changed closed loop or PCM acceptance.
 - **Fusion timing is untested here.** `radard` runs at the ~20 Hz model rate while Bosch-A
@@ -383,6 +452,10 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    suite still unexercised.
 3. Re-run the `radard`/planner suites against the Alpha Long PR branches now that the
    architecture blocker is understood — both PR records list them as skipped for that reason.
-4. Capture a Bosch-A route with **real targets**. Every parser claim above is still resting
-   on no-target sentinels, and the shadow `vRelRange` channel (D-044) exists precisely to be
-   confirmed or refuted on such a drive before anything is wired into control.
+4. **Done 2026-09-15** — a real-target route exists; see the section above. The follow-on
+   is the shadow `vRelRange` channel (D-044): this segment carries 77 railed samples and an
+   ~11 m vision/radar range disagreement, which is exactly the material that channel was
+   published to be judged against. Compare `vRelRange` with U11 on this route before anything
+   is wired into control.
+5. Settle whether a Bosch-A track-ID reuse resets the lead Kalman filter (see the open item
+   above). Track 58 is a ready-made case.
