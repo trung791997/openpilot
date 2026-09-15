@@ -507,3 +507,36 @@ parser/`radard` contract, so it is a design, not a patch.
    segments containing no incarnation break.
 
 Until then this is a characterisation, and the repo carries it as one.
+
+---
+
+## D-050 — The standalone laptop tools target Python 3.9, and lint must not be allowed to break that
+
+**Status:** settled, 2026-09-15. **Evidence:** a user's own run of `tools/konik_preflight.py`.
+
+`tools/konik_login.py`, `tools/plain_http.py` and `tools/konik_preflight.py` exist so that a
+route can be checked from a machine where the network works and the tree cannot be built. The
+Python they will actually meet there is the macOS Command Line Tools build, which is **3.9** —
+older than the 3.11 the rest of this repo targets.
+
+This is not hypothetical. `pyproject.toml` sets ruff `target-version = "py311"`, so `UP017`
+rewrote `datetime.now(timezone.utc)` to `datetime.now(datetime.UTC)` in the preflight. It
+passed lint and every test in the container, and then died on the user's laptop before the
+first check ran:
+
+    from datetime import UTC, datetime
+    ImportError: cannot import name 'UTC' from 'datetime'
+
+The rule this settles: **the repo's Python target does not apply to these three files.**
+
+1. `UP017` is disabled for them in `pyproject.toml`, with the reason written at the ignore.
+2. `tools/lib/tests/test_py39_compat.py` enforces the constraint from two sides — it AST-parses
+   each file at `feature_version=(3, 9)` (catching syntax) and greps for a list of runtime names
+   that parse fine but do not exist until 3.10/3.11/3.12 (catching imports and attributes).
+3. That name list is a **ratchet, not a specification**. It cannot be exhaustive. When a
+   too-new name gets through and bites someone, the fix includes adding it to the list.
+4. Anything new added to `STANDALONE` in that test takes on the same constraint.
+
+**Known limit, stated per AGENTS.md §4:** there is no 3.9 interpreter in the agent container,
+so this is a *static* check. It would not catch a 3.10+ behaviour change in a function that
+exists in both versions. The only real verification is a user running the tool on 3.9.

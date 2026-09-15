@@ -48,7 +48,9 @@ import os
 import socket
 import sys
 import time
-from datetime import UTC, datetime
+# timezone.utc, not datetime.UTC: the latter is 3.11+, and this script has to run on the
+# macOS Command Line Tools Python, which is 3.9.
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -178,7 +180,7 @@ def _jwt_expiry(token: str) -> datetime | None:
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
     exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
-    return datetime.fromtimestamp(exp, UTC) if exp else None
+    return datetime.fromtimestamp(exp, timezone.utc) if exp else None
   except Exception:
     return None
 
@@ -197,7 +199,7 @@ def main() -> int:
   host = args.host.rstrip("/")
   netloc = urlparse(host).netloc or host
   c = Check()
-  summary: dict = {"host": host, "checked_at": datetime.now(UTC).isoformat()}
+  summary: dict = {"host": host, "checked_at": datetime.now(timezone.utc).isoformat()}
 
   print(f"Konik preflight against {host}\n" + "=" * 72)
 
@@ -221,7 +223,7 @@ def main() -> int:
   if not token:
     c.bail("auth: token", f"no token for {host}. " + MSG_NO_TOKEN)
   exp = _jwt_expiry(token)
-  if exp and exp < datetime.now(UTC):
+  if exp and exp < datetime.now(timezone.utc):
     c.bail("auth: token", f"token expired at {exp.isoformat()}. Re-authenticate.")
   c.add(PASS, "auth: token", f"present, {len(token)} chars" + (f", expires {exp.isoformat()}" if exp else ""))
 
@@ -269,7 +271,7 @@ def main() -> int:
   route_name = args.route
   if not route_name:
     try:
-      end = int(datetime.now(UTC).timestamp() * 1000)
+      end = int(datetime.now(timezone.utc).timestamp() * 1000)
       start = end - 90 * 24 * 3600 * 1000
       routes = api(f"v1/devices/{dongle_id}/routes_segments?start={start}&end={end}") or []
     except Exception as e:
@@ -279,7 +281,7 @@ def main() -> int:
     routes.sort(key=lambda r: r.get("start_time_utc_millis", 0), reverse=True)
     route_name = routes[0].get("fullname") or routes[0].get("canonical_name")
     when = routes[0].get("start_time_utc_millis")
-    when_s = datetime.fromtimestamp(when / 1000, UTC).isoformat() if when else "unknown"
+    when_s = datetime.fromtimestamp(when / 1000, timezone.utc).isoformat() if when else "unknown"
     c.add(PASS, "routes", f"{len(routes)} route(s); newest {route_name} at {when_s}")
   else:
     c.add(SKIP, "routes", f"using --route {route_name}")

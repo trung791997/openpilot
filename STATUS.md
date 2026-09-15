@@ -582,6 +582,15 @@ behaviour has changed.
   handshake with `api.konik.ai`. `plain_http.py` falls back to the system `curl`; the tools
   report which transport they used. If you see the curl note, that is expected, not a fault.
 - **`python`/`pip` do not exist on macOS** — `python3`/`pip3` only.
+- **The standalone tools must stay Python 3.9-compatible.** That macOS CLT Python is 3.9;
+  `pyproject.toml` sets ruff's `target-version = "py311"`, so lint here will happily push a
+  3.11-only construct into a file a user runs on 3.9. That already happened once:
+  `from datetime import UTC` (3.11+) was written by ruff's `UP017` autofix and the preflight
+  died at import on the user's machine. `tools/lib/tests/test_py39_compat.py` now AST-parses
+  the three standalone tools at `feature_version=(3, 9)` and greps for a ratchet list of
+  too-new runtime names; `UP017` is disabled for those three files in `pyproject.toml`.
+  Note the limit: no 3.9 interpreter exists in the agent container, so this is a static check,
+  not a real 3.9 run.
 
 ### Still open, in priority order
 

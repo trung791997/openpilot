@@ -268,6 +268,16 @@ exclude = [
 ]
 lint.flake8-implicit-str-concat.allow-multiline = false
 
+[tool.ruff.lint.per-file-ignores]
+# ruff targets py311 for the repo, but these three scripts are run by a user on a laptop with
+# no openpilot build, and the Python they actually meet there is the macOS Command Line Tools
+# build -- 3.9. UP017 rewrites `timezone.utc` to `datetime.UTC`, which is 3.11+ and dies at
+# import on 3.9. That exact rewrite already shipped once and broke the preflight for a user.
+# tools/lib/tests/test_py39_compat.py is the ratchet: if another too-new name gets in, it fails.
+"tools/konik_preflight.py" = ["UP017"]
+"tools/konik_login.py" = ["UP017"]
+"tools/plain_http.py" = ["UP017"]
+
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "selfdrive".msg = "Use openpilot.selfdrive"
 "common".msg = "Use openpilot.common"
