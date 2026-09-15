@@ -86,6 +86,55 @@ class TestRedirectUrls:
            auth.auth_redirect_api_host("https://api.commadotai.com")
 
 
+class TestPortSelection:
+  """3000 is commonly taken. The port travels in `state`, so it must reach the URL."""
+
+  @pytest.mark.parametrize("port", [3000, 8976, 49152])
+  def test_port_appears_in_the_oauth_state(self, port):
+    url = login.auth_redirect_link("github", "https://api.konik.ai", port)
+    assert f"localhost%3A{port}" in url or f"localhost:{port}" in url
+
+  def test_default_port_still_matches_auth(self):
+    """The default must stay byte-identical to auth.py; only an explicit port may differ."""
+    from openpilot.tools.lib import auth
+    assert login.auth_redirect_link("github", "https://api.konik.ai") == \
+           auth.auth_redirect_link("github", "https://api.konik.ai")
+
+  def test_non_default_port_changes_only_the_state(self):
+    from urllib.parse import parse_qs, urlparse
+    a = parse_qs(urlparse(login.auth_redirect_link("github", "https://api.konik.ai", 3000)).query)
+    b = parse_qs(urlparse(login.auth_redirect_link("github", "https://api.konik.ai", 8976)).query)
+    assert a["state"] != b["state"]
+    for k in a:
+      if k != "state":
+        assert a[k] == b[k], f"changing the port must not disturb {k}"
+
+  def test_busy_port_reports_the_alternative_rather_than_traceback(self, capsys):
+    """A taken port is the expected case here, so it must fail with advice, not a stack."""
+    import socket
+    s = socket.socket()
+    s.bind(("localhost", 0))
+    s.listen(1)
+    taken = s.getsockname()[1]
+    try:
+      assert login.login("github", "https://api.konik.ai", 0.1, taken) is None
+      err = capsys.readouterr().err
+      assert "--port" in err and str(taken) in err
+    finally:
+      s.close()
+
+  def test_port_zero_binds_a_real_ephemeral_port(self):
+    """With --port 0 the kernel picks it, and the REAL port must go into state."""
+    import socket
+    probe = socket.socket()
+    probe.bind(("localhost", 0))
+    free = probe.getsockname()[1]
+    probe.close()
+    url = login.auth_redirect_link("github", "https://api.konik.ai", free)
+    assert "localhost%3A0" not in url and "localhost:0" not in url
+    assert str(free) in url
+
+
 class TestTokenFile:
   """The file this writes is the file konik_preflight.py and auth_config.get_token read."""
 

@@ -24,6 +24,8 @@ Usage
     python3 tools/konik_login.py --host comma       # comma servers
     python3 tools/konik_login.py --method google
     python3 tools/konik_login.py --print-token      # print instead of writing auth.json
+    python3 tools/konik_login.py --port 8976        # if 3000 is already in use
+    python3 tools/konik_login.py --port 0           # let the OS pick a free port
 
 Then run the preflight, which reads the file this writes:
 
@@ -85,10 +87,13 @@ def auth_redirect_api_host(api_host: str) -> str:
   return "https://api.comma.ai" if normalize_api_host(api_host) == DEFAULT_API_HOST else normalize_api_host(api_host)
 
 
-def auth_redirect_link(method: str, api_host: str) -> str:
+def auth_redirect_link(method: str, api_host: str, port: int = PORT) -> str:
+  # The listener port travels in `state`, not in redirect_uri: the provider redirects to the
+  # API host, which then bounces to localhost:<port> using this value. So changing the port
+  # here is sufficient and needs no OAuth app re-registration.
   params = {
     "redirect_uri": f"{auth_redirect_api_host(api_host)}/v2/auth/{PROVIDER_ID[method]}/redirect/",
-    "state": f"service,localhost:{PORT}",
+    "state": f"service,localhost:{port}",
   }
   if method == "google":
     params.update({"type": "web_server", "client_id": GOOGLE_CLIENT_ID,
@@ -154,17 +159,26 @@ def write_token(token: str, api_host: str) -> str:
   return path
 
 
-def login(method: str, api_host: str, timeout: float) -> str | None:
-  url = auth_redirect_link(method, api_host)
+def login(method: str, api_host: str, timeout: float, port: int = PORT) -> str | None:
+  # Bind first, THEN build the URL: with --port 0 the kernel picks the port and it has to be
+  # the real one that goes into `state`, or the redirect lands nowhere.
+  try:
+    server = _Redirect(("localhost", port), _Handler)
+  except OSError as e:
+    print(f"Could not listen on localhost:{port}: {e}", file=sys.stderr)
+    print("Pick another with --port N, or --port 0 to let the OS choose a free one.",
+          file=sys.stderr)
+    return None
+  port = server.server_address[1]
+  url = auth_redirect_link(method, api_host, port)
   print(f"Opening your browser to sign in with {method}.")
   print(f"If it does not open, paste this into a browser:\n\n{url}\n")
-  server = _Redirect(("localhost", PORT), _Handler)
   server.timeout = timeout
   try:
     webbrowser.open(url, new=2)
   except Exception:
     pass
-  print(f"Waiting for the redirect on localhost:{PORT} ...")
+  print(f"Waiting for the redirect on localhost:{port} ...")
   while True:
     server.handle_request()
     q = server.query_params
@@ -189,6 +203,8 @@ def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("--host", default="konik", help="konik, comma, or an API URL")
   ap.add_argument("--method", default="github", choices=sorted(PROVIDER_ID))
+  ap.add_argument("--port", type=int, default=PORT,
+                  help=f"local port for the OAuth redirect (default {PORT}; 0 picks a free one)")
   ap.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for the redirect")
   ap.add_argument("--print-token", action="store_true",
                   help="print the token instead of writing auth.json (for $KONIK_TOKEN)")
@@ -199,7 +215,7 @@ def main() -> int:
     print(f"note: '{args.method}' uses comma's OAuth client on Konik and may be rejected; "
           + "github is the provider Konik has its own client ID for.", file=sys.stderr)
 
-  token = login(args.method, api_host, args.timeout)
+  token = login(args.method, api_host, args.timeout, args.port)
   if not token:
     return 1
 
