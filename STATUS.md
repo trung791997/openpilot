@@ -545,6 +545,53 @@ never crossed into own-lane (|y| < 1.8 m).
 
 ---
 
+## Handoff — what is live, what is untested, what bites
+
+**The four contract files are the handoff.** `AGENTS.md` → `STATUS.md` → `DECISIONS.md` →
+`CLAUDE.md`, in that order. `.claude/hooks/session-start.sh` prints them at the top of every
+session; on a non-remote machine it prints the contract and then skips the dependency install
+and build, which is correct — do not "fix" that by making it build on a laptop.
+
+**More than one agent writes this branch.** As of 2026-09-15 there are three: two Claude Code
+sessions on separate accounts and a local one. `git pull` before you start and before you
+push; a rejected push means someone else moved, so read their commits before merging (a real
+example is `7344dc4`, where the other session had landed `D-049` and the corpus harness).
+
+### Awaiting a road test
+
+**`FarLeadBrakeLimit` (`ebf4c20`) is a TEST feature, default OFF.** It bounds braking demanded
+for a lead far away in both time and distance, and it is the only behavioural change in this
+work. Corpus replay: 15,082 frames, 2,350 in regime, **8 frames altered — all 8 in the
+flagged segment**, max reduction 0.89 m/s²; zero frames altered across the other 15 segments.
+Its evidence base is **one positive example**, which is why it is off by default and labelled
+TEST. Enabling it is a deliberate act: `Params().put_bool("FarLeadBrakeLimit", True)`.
+
+Everything else committed in this work is tooling, tests or documentation. No default
+behaviour has changed.
+
+### Known traps on a laptop
+
+- **You cannot build this tree on macOS.** The checked-in `.so` files are aarch64 and the
+  build needs capnp/zmq/eigen/OpenCL. Anything importing `cereal`, `opendbc.can` or
+  `params_pyx` will not run there. The pure-Python tools are written to degrade instead:
+  `konik_login.py`, `plain_http.py` and `konik_preflight.py` need only `requests`.
+- **The skip-worktree protection is remote-only.** The hook that marks the 53 tracked device
+  binaries runs under `CLAUDE_CODE_REMOTE`. On a laptop those flags are not set — which is
+  harmless while you cannot build, but never `git commit -a` regardless.
+- **macOS CLT Python 3.9 is linked against LibreSSL 2.8.3** and cannot complete a TLS
+  handshake with `api.konik.ai`. `plain_http.py` falls back to the system `curl`; the tools
+  report which transport they used. If you see the curl note, that is expected, not a fault.
+- **`python`/`pip` do not exist on macOS** — `python3`/`pip3` only.
+
+### Still open, in priority order
+
+See **Next** at the end of this file. The short version: the Konik path has never been run
+against a live server from anywhere, so no route has reached an agent session by any route
+other than a manual file upload; `test_leads.py` has never been run; and D-048's validation
+gate is unmet, which is why the far-lead limit ships off.
+
+---
+
 ## Tooling added 2026-09-15
 
 **`tools/konik_preflight.py`** — verifies a Konik (or comma) server end to end from a machine
