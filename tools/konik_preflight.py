@@ -89,8 +89,9 @@ MSG_QLOGS_ONLY = (
   + " Bosch-A radar analysis requires rlogs."
 )
 MSG_DOWNLOAD_FAIL = (
-  "Metadata worked but the data path did not -- often an expired signed URL"
-  + " or a blocked storage host."
+  "Metadata worked but the data path did not -- often an expired signed URL,"
+  + " or a storage host the network policy does not allow. The host is named above;"
+  + " allow it alongside the API host and re-run."
 )
 MSG_NO_DECODE = (
   "run from a built checkout to decode. Transport is verified regardless."
@@ -296,6 +297,14 @@ def main() -> int:
     c.finish()
     return 1 if c.failed else 0
   target = (rlogs or qlogs)[0]
+  # Name the storage host BEFORE trying it. Log files are served from signed URLs that
+  # usually point at object storage or a CDN, NOT at the API host -- so an environment that
+  # allows only api.konik.ai gets metadata working and the data path blocked. Printing the
+  # host means a network policy that needs widening is fixed in one round trip, not two.
+  dl_host = urlparse(target).netloc or "(unknown)"
+  c.add(PASS, "download: host", f"segments are served from {dl_host}"
+        + ("" if dl_host == netloc else f" -- NOT the API host ({netloc}). Both must be reachable."))
+  summary["download_host"] = dl_host
   try:
     t0 = time.monotonic()
     r = requests.get(target, timeout=args.timeout, stream=True)
@@ -307,7 +316,7 @@ def main() -> int:
         break
     dt = time.monotonic() - t0
   except Exception as e:
-    c.bail("download", f"could not fetch the first segment: {e}\n         " + MSG_DOWNLOAD_FAIL)
+    c.bail("download", f"could not fetch from {dl_host}: {e}\n         " + MSG_DOWNLOAD_FAIL)
   c.add(PASS, "download", f"{len(blob)/1e6:.1f} MB in {dt:.1f}s ({len(blob)/1e6/max(dt,1e-3):.1f} MB/s)")
   summary["downloaded_bytes"] = len(blob)
 
