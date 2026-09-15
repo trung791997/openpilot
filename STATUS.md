@@ -563,6 +563,42 @@ The script mirrors the 80 Bosch-A CAN IDs so it runs on an unbuilt checkout;
 `tools/lib/tests/test_konik_preflight.py` asserts that mirror against opendbc exactly, because
 a drifted copy would report "0 Bosch-A frames" on a route full of them.
 
+**`tools/bosch_a_corpus_report.py`** — the missing corpus harness. Pools **device-side**
+behaviour across the segments of a drive: per-segment and pooled radar/vision range-gap
+distributions, `|d(gap)/dt|`, range and lateral residuals against the vision lead, radar- and
+vision-lead occupancy, `experimentalMode` occupancy and its correlation with radar-lead use,
+U11 versus a centred range derivative with the lag of the cross-correlation peak, and
+hard-brake events with headway, TTC, `longitudinalPlanSource` and override.
+
+It is the offline twin of `bosch_a_route_report.py` in the same sense `konik_preflight` is:
+the route report replays CAN through the real `RadarInterface` and answers *what the parser
+would publish*; this one reads `radarState`, `modelV2`, `carControl` and `longitudinalPlan`
+and answers *what the device actually did*. Segment collection is imported from the route
+report rather than copied, so the two cannot drift.
+
+```bash
+python tools/bosch_a_corpus_report.py <route.zip|dir|rlog> --json corpus.json
+```
+
+Two things it gets right that are easy to get wrong, and both are pinned by tests:
+
+- **The lateral residual is a SUM** (`yRel + lead.y[0]`), because radar `yRel` is car-frame
+  left-positive and model `y` is device-frame. `track_matches_vision` adds them; differencing
+  would report ~2× the residual on any off-centre track and ~0 on a genuinely mismatched one.
+  The tests locate the real matcher's accept/reject boundary and assert the report reads the
+  tolerance exactly there, so a drift in `radard` breaks them.
+- **Hard brakes are grouped into runs**, reported at each run's peak. STATUS.md's counts are
+  runs ("only **four** runs with commanded accel < −1.5"); a 1.5 s brake is ~30 frames, so a
+  per-frame table would inflate the event count by an order of magnitude — exactly the
+  false sample size D-042 warns about.
+
+`[NOT VALIDATED AGAINST A ROUTE]` Its geometry, arithmetic and extraction are tested — the
+last against a synthetic segment of real capnp Events with hand-computed answers — but it has
+**never been run on a real drive**, so message rates, dropouts and clock skew are unexercised.
+Until it re-derives the recorded figures on `00000231--5782493b00`, its output is a fresh
+measurement, and a disagreement with the numbers above is **unresolved in both directions**,
+not a correction to either.
+
 **`tools/bosch_a_scenarios.py` + `tools/bosch_a_viewer.html`** — drives synthetic Bosch-A CAN
 frames through the **real** `RadarInterface` and records what the parser decided on every sweep,
 then renders it. Not a simulation: every published number came out of the parser. Frame builders
@@ -696,8 +732,11 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 - The checked-in `.so` files remain **aarch64**, and a local build still overwrites 53 of
   them. The SessionStart hook rebuilds and masks them, but a session that skips the hook
   will hit both.
-- 🔴 **The corpus analysis is not reproducible — the code that produced it was never
-  committed.** The 6- and 16-segment results above (pooled radar/vision gap percentiles, the
+- 🔴 **The recorded corpus numbers are still not reproduced.** The harness that can
+  reproduce them now exists (`tools/bosch_a_corpus_report.py`, added below), but it has never
+  been run against a route, so every figure in the 6- and 16-segment sections remains a
+  number no one can currently re-derive. The original defect: the 6- and 16-segment results
+  above (pooled radar/vision gap percentiles, the
   `|d(gap)/dt|` distribution, `corr(experimental%, radarLead%)`, the U11-vs-range-derivative
   cross-correlation, the hard-brake tables, the per-segment lateral residuals) were recorded
   in commits `5edbd59`, `69e1683` and `bdf98de`, **all three of which touch only `STATUS.md`
@@ -705,9 +744,9 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
   it computes none of those quantities — it counts frames, replays the parser, and reports
   points/tracks. So the numbers cannot be re-derived, re-checked, or re-run on a new route,
   and they are unbound to a commit in the sense AGENTS.md §3 requires. They are recorded
-  above as prior evidence and should not be treated as reproducible until the harness exists.
-  Rebuilding it is also **D-048's validation-gate item 2** and D-049's item 3, so it blocks
-  both designs.
+  above as prior evidence and not as reproducible until the new harness has actually re-derived
+  them. That run is also **D-048's validation-gate item 2** and D-049's item 3, so it still
+  blocks both designs — writing the harness did not clear them, running it will.
 
 *Resolved 2026-09-15, previously listed here:* the two `radar_interface.py` ruff findings
 (`edef432`) and the dangling `.venv` symlink (`edef432`).
@@ -749,13 +788,12 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    of radar-versus-vision range disagreement across routes where the radar is right, so a
    tightened `HONDA_BOSCH_A_GROSS_DISTANCE_M` can be justified rather than guessed (D-042).
    More real-target routes are the blocker.
-7. **Rebuild the corpus analysis harness — it is the one blocker that is not waiting on a
-   route.** See the entry under *NOT verified*: every number in the 6- and 16-segment sections
-   was produced by code that was never committed, so none of it can be re-derived or re-run.
-   It is also D-048's validation-gate item 2 and D-049's item 3, so both designs are stuck
-   behind it. It needs to pool across segments and emit, per segment and pooled: the
-   radar/vision range-gap distribution, `|d(gap)/dt|`, hard-brake events with headway/TTC/
-   `longitudinalPlanSource`/override, per-segment lateral residuals against the vision lead,
-   `experimentalMode` and lead-source occupancy, and U11 versus the range derivative with lag.
-   Writing it does not need a route; **validating its numbers does**, and until it has
-   reproduced the figures above on `00000231--5782493b00` its output is unverified.
+7. **Run `tools/bosch_a_corpus_report.py` against `00000231--5782493b00` and compare it with
+   the figures recorded above.** The harness was written 2026-09-15 and covers every quantity
+   the 6- and 16-segment sections quote, but it has never seen a route, so the recorded numbers
+   are still unreproduced. This is D-048's validation-gate item 2 and D-049's item 3; both
+   designs stay blocked until it runs. Three outcomes, and the third is the valuable one:
+   it reproduces them (the corpus becomes evidence again), it disagrees (**neither side wins
+   automatically** — the recorded numbers came from code that no longer exists, and the harness
+   has never been validated, so the disagreement is the finding), or it will not run on real
+   data at all, which is itself worth knowing before anyone depends on it.
