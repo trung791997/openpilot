@@ -46,8 +46,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import plain_http  # sibling module, loaded by path so this stays standalone
+
 try:
-  import requests
+  import requests  # noqa: F401  -- plain_http uses it when the local TLS stack allows
 except ImportError:
   print("FAIL  requests is not installed.  python3 -m pip install requests", file=sys.stderr)
   sys.exit(2)
@@ -190,13 +193,22 @@ def login(method: str, api_host: str, timeout: float, port: int = PORT) -> str |
     if not q:
       print("Timed out waiting for the browser redirect.", file=sys.stderr)
       return None
-  resp = requests.post(f"{normalize_api_host(api_host)}/v2/auth/",
-                       data={"code": q["code"][0], "provider": q.get("provider", [PROVIDER_ID[method]])[0]},
-                       timeout=30)
-  if resp.status_code >= 400:
-    print(f"Token exchange failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+  try:
+    code, text, transport = plain_http.request(
+      "POST", f"{normalize_api_host(api_host)}/v2/auth/",
+      data={"code": q["code"][0], "provider": q.get("provider", [PROVIDER_ID[method]])[0]},
+      timeout=30)
+  except plain_http.HttpError as e:
+    print(f"Token exchange failed: {e}", file=sys.stderr)
     return None
-  return resp.json().get("access_token")
+  if code >= 400:
+    print(f"Token exchange failed: {code} {text[:300]}", file=sys.stderr)
+    return None
+  try:
+    return json.loads(text).get("access_token")
+  except ValueError:
+    print(f"Token exchange returned non-JSON via {transport}: {text[:200]!r}", file=sys.stderr)
+    return None
 
 
 def main() -> int:
@@ -219,16 +231,10 @@ def main() -> int:
   if not token:
     return 1
 
-  sess = requests.Session()
-  sess.headers.update({"Authorization": f"JWT {token}", "User-Agent": "konik-login"})
   try:
-    r = sess.get(f"{normalize_api_host(api_host)}/v1/me", timeout=30)
-    if r.status_code in (401, 403):
-      print(f"The server rejected the new token ({r.status_code}).", file=sys.stderr)
-      return 1
-    r.raise_for_status()
-    me = r.json()
-  except Exception as e:
+    me = plain_http.get_json(f"{normalize_api_host(api_host)}/v1/me",
+                             headers={"Authorization": f"JWT {token}", "User-Agent": "konik-login"})
+  except plain_http.HttpError as e:
     print(f"Could not verify the token against /v1/me: {e}", file=sys.stderr)
     return 1
 

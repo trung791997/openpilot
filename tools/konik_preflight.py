@@ -51,10 +51,13 @@ import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import plain_http  # gives us a curl fallback on an obsolete local TLS stack
+
 try:
   import requests
 except ImportError:
-  print("FAIL  requests is not installed.  pip install requests", file=sys.stderr)
+  print("FAIL  requests is not installed.  python3 -m pip install requests", file=sys.stderr)
   sys.exit(2)
 
 KONIK_API_HOST = "https://api.konik.ai"
@@ -205,8 +208,9 @@ def main() -> int:
     c.bail("reachability: DNS", f"cannot resolve {netloc}: {e}")
   try:
     t0 = time.monotonic()
-    r = requests.get(f"{host}/", timeout=args.timeout)
-    c.add(PASS, "reachability", f"{netloc} answered HTTP {r.status_code} in {1000*(time.monotonic()-t0):.0f} ms")
+    code, _, transport = plain_http.request("GET", f"{host}/", timeout=args.timeout)
+    c.add(PASS, "reachability",
+          f"{netloc} answered HTTP {code} in {1000*(time.monotonic()-t0):.0f} ms via {transport}")
   except requests.exceptions.SSLError as e:
     c.bail("reachability: TLS", f"TLS failed for {netloc}: {e}")
   except requests.exceptions.RequestException as e:
@@ -224,12 +228,16 @@ def main() -> int:
   sess = requests.Session()
   sess.headers.update({"Authorization": f"JWT {token}", "User-Agent": "konik-preflight"})
 
+  auth_headers = {"Authorization": f"JWT {token}", "User-Agent": "konik-preflight"}
+
   def api(path: str):
-    r = sess.get(f"{host}/{path.lstrip('/')}", timeout=args.timeout)
-    if r.status_code in (401, 403):
-      raise PermissionError(f"{r.status_code} on /{path.lstrip('/')} -- token rejected for this host")
-    r.raise_for_status()
-    return r.json()
+    code, text, _ = plain_http.request("GET", f"{host}/{path.lstrip('/')}",
+                                       headers=auth_headers, timeout=args.timeout)
+    if code in (401, 403):
+      raise PermissionError(f"{code} on /{path.lstrip('/')} -- token rejected for this host")
+    if code >= 400:
+      raise plain_http.HttpError(f"{code} on /{path.lstrip('/')}: {text.strip()[:200]}")
+    return json.loads(text)
 
   # 3. identity -------------------------------------------------------------
   try:
@@ -307,17 +315,12 @@ def main() -> int:
   summary["download_host"] = dl_host
   try:
     t0 = time.monotonic()
-    r = requests.get(target, timeout=args.timeout, stream=True)
-    r.raise_for_status()
-    blob = b""
-    for chunk in r.iter_content(1 << 20):
-      blob += chunk
-      if len(blob) >= args.max_bytes:
-        break
+    blob, dl_transport = plain_http.download(target, args.max_bytes, args.timeout)
     dt = time.monotonic() - t0
   except Exception as e:
     c.bail("download", f"could not fetch from {dl_host}: {e}\n         " + MSG_DOWNLOAD_FAIL)
-  c.add(PASS, "download", f"{len(blob)/1e6:.1f} MB in {dt:.1f}s ({len(blob)/1e6/max(dt,1e-3):.1f} MB/s)")
+  c.add(PASS, "download",
+        f"{len(blob)/1e6:.1f} MB in {dt:.1f}s ({len(blob)/1e6/max(dt,1e-3):.1f} MB/s) via {dl_transport}")
   summary["downloaded_bytes"] = len(blob)
 
   # 8. radar ----------------------------------------------------------------
