@@ -157,7 +157,8 @@ def _token(host: str) -> str | None:
   except Exception:
     pass
   # Fall back to reading auth.json directly, so this runs on a machine with no build.
-  for path in (os.path.expanduser("~/.comma/auth.json"), "/data/params/d/auth.json"):
+  # Paths.config_root() is ~/.comma on a PC and /tmp/.comma on the device (system/hardware/hw.py).
+  for path in (os.path.expanduser("~/.comma/auth.json"), "/tmp/.comma/auth.json"):
     try:
       with open(path) as f:
         auth = json.load(f)
