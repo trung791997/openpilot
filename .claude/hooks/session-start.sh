@@ -94,7 +94,7 @@ fi
 echo "[session-start] Installing Python dependencies (idempotent)..."
 UV_HTTP_TIMEOUT=300 "$UV_BIN" pip install --quiet --python "$VENV/bin/python" \
   numpy pycapnp cython scons setuptools \
-  pytest pytest-xdist pytest-asyncio pytest-cpp parameterized hypothesis ruff \
+  pytest pytest-xdist pytest-asyncio pytest-cpp pytest-mock parameterized hypothesis ruff \
   pyzmq smbus2 sentry-sdk requests psutil pyserial tqdm zstandard crcmod \
   setproctitle pyjwt libusb1 python-dateutil pycryptodome cffi sympy casadi \
   future-fstrings
