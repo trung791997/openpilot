@@ -530,7 +530,6 @@ class RadarInterface(RadarInterfaceBase):
                             direct_vrel_uncertainty_raw is not None and
                             direct_vrel_uncertainty_raw > BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW)
 
-
       # Validate against the previous accepted range. Qualified U11 and the range-ratio field are
       # independent corroboration paths; high-U10 U11 is deliberately excluded from this decision.
       previous_sample = track.samples[-1] if track.samples else None
@@ -598,7 +597,9 @@ class RadarInterface(RadarInterfaceBase):
           d_mean = sum(ds) / n
           denom = sum((t - t_mean) ** 2 for t in ts)
           if denom > 1e-9:
-            rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds)) / denom
+            # strict=True: ts and ds are same-length by construction. A silent truncation here
+            # would bias the fitted rate and weaken the one-sided gate rather than erroring.
+            rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
             # One-sided: only U11 claiming MORE closing than the range supports is a fault.
             vrel_inconsistent = vrel_candidate < rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
 
