@@ -31,8 +31,11 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), ".."
 
 from openpilot.selfdrive.controls import radard
 from openpilot.tools.bosch_a_corpus_report import (
+  attach_override,
   centred_derivative,
+  contiguous_runs,
   cross_correlation_lag,
+  u11_range_rate_pairs,
   headway_s,
   lateral_residual_m,
   pearson,
@@ -201,17 +204,21 @@ def _event(which, t_ns, fill):
 
 
 def write_segment(path, n=5, *, vision_x=64.0, vision_prob=1.0, d_rel=60.0, v_rel=-5.0,
-                  y_rel=0.3, accel=-2.0, enabled=True, radar_lead=True, v_ego=20.0):
+                  y_rel=0.3, accel=-2.0, enabled=True, radar_lead=True, v_ego=20.0,
+                  measured=True, experimental=None, gas=True):
   """A segment where every statistic is hand-computable. Returns the path written."""
+  exps = list(experimental) if experimental is not None else [False] * n
+  assert len(exps) == n, "one experimentalMode value per frame"
+
   def cs(m):
     m.vEgo = v_ego
-    m.gasPressed = True
+    m.gasPressed = gas
   def model(m):
     lead = m.init('leadsV3', 1)[0]
     lead.prob = vision_prob
     lead.x, lead.y, lead.v, lead.yStd = [vision_x], [0.0], [15.0], [0.2]
   def sds(m):
-    m.experimentalMode = False
+    m.experimentalMode = exps[frame["i"]]
     m.enabled = enabled
   def plan(m):
     m.longitudinalPlanSource = 'lead0'
@@ -224,7 +231,7 @@ def write_segment(path, n=5, *, vision_x=64.0, vision_prob=1.0, d_rel=60.0, v_re
     m.actuators.accel = accels[frame["i"]]
   def lt(m):
     p = m.init('points', 1)[0]
-    p.trackId, p.dRel, p.yRel, p.vRel, p.measured = 7, d_rel, y_rel, v_rel, True
+    p.trackId, p.dRel, p.yRel, p.vRel, p.measured = 7, d_rel, y_rel, v_rel, measured
   def rs(m):
     lead = m.leadOne
     lead.status, lead.radar, lead.radarTrackId = True, radar_lead, 7
@@ -317,6 +324,75 @@ def test_hard_brakes_are_grouped_into_runs_and_reported_at_their_peak(tmp_path):
   assert runs[1]["accel"] == pytest.approx(-3.4)
   # the row carries the peak frame's own timestamp, not the run's start
   assert runs[1]["t"] == pytest.approx(6 * 0.05, abs=1e-6)
+
+
+# --- fixes made when the harness first met a real drive (00000231--5782493b00) ---------------------
+
+def test_contiguous_runs_split_at_a_gap():
+  samples = [(0.0,), (0.07,), (0.14,), (0.40,), (0.47,)]
+  assert contiguous_runs(samples, 0.1) == [[(0.0,), (0.07,), (0.14,)], [(0.40,), (0.47,)]]
+  assert contiguous_runs([], 0.1) == []
+
+
+def test_u11_pairs_stay_aligned_past_a_skipped_zero_dt_sample():
+  """Regression: the old pairing enumerated centred_derivative() against vs[i + 1], so a skipped
+  zero-dt sample shifted every later U11 onto the wrong range rate."""
+  run = [(0.0, 10.0, -1.0), (0.0, 10.0, -2.0), (0.0, 10.0, -3.0), (0.1, 9.0, -4.0), (0.2, 8.0, -5.0)]
+  u11, rates = u11_range_rate_pairs(run)
+  # i=1 skipped (dt 0); i=2 -> (9-10)/0.1; i=3 -> (8-10)/0.2
+  assert u11 == [-3.0, -4.0]
+  assert rates == [pytest.approx(-10.0), pytest.approx(-10.0)]
+
+
+def test_override_counts_a_press_after_the_peak_but_not_one_before_the_run():
+  runs = [{"tStart": 1.0, "tEnd": 1.5}]
+  assert attach_override([dict(runs[0])], [2.3])[0]["overrideInRun"]        # within 1 s of the end
+  assert not attach_override([dict(runs[0])], [2.6])[0]["overrideInRun"]    # too late
+  assert not attach_override([dict(runs[0])], [0.9])[0]["overrideInRun"]    # before the brake
+
+
+def test_analyse_segment_clock_ignores_initdata(tmp_path):
+  """initData is stamped at logger start. As the origin it put segment 10's false brake at
+  t=612.76 instead of ~11.3."""
+  from openpilot.tools.bosch_a_corpus_report import analyse_segment
+  path = write_segment(tmp_path / "rlog")
+  with open(path, "rb") as f:
+    body = f.read()
+  with open(path, "wb") as f:
+    f.write(_event("initData", 0, lambda m: None) + body)   # 1 s before the first real sample
+  report = analyse_segment(path)
+  assert report["hardBrakes"][0]["t"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_vision_occupancy_is_reported_at_both_probability_cuts(tmp_path):
+  from openpilot.tools.bosch_a_corpus_report import analyse_segment
+  report = analyse_segment(write_segment(tmp_path / "rlog", vision_prob=0.6))
+  assert report["visionLeadPct"] == pytest.approx(0.0)
+  assert report["visionLeadPct50"] == pytest.approx(100.0)
+
+
+def test_unmeasured_points_never_enter_the_u11_series(tmp_path):
+  from openpilot.tools.bosch_a_corpus_report import analyse_segment
+  measured = analyse_segment(write_segment(tmp_path / "a", measured=True))
+  coasted = analyse_segment(write_segment(tmp_path / "b", measured=False))
+  assert len(measured["_u11"]) == 3          # 5 samples -> 3 interior centred pairs
+  assert coasted["_u11"] == []
+
+
+def test_experimental_switches_and_short_dwells(tmp_path):
+  from openpilot.tools.bosch_a_corpus_report import analyse_segment
+  report = analyse_segment(write_segment(tmp_path / "rlog", experimental=[False, True, False, False, False]))
+  assert report["experimentalSwitches"] == 2
+  assert len(report["experimentalShortDwells"]) == 1
+  assert report["experimentalShortDwells"][0]["dwell"] == pytest.approx(0.05, abs=1e-6)
+  steady = analyse_segment(write_segment(tmp_path / "steady"))
+  assert steady["experimentalSwitches"] == 0 and steady["experimentalShortDwells"] == []
+
+
+def test_override_in_run_negative_control(tmp_path):
+  from openpilot.tools.bosch_a_corpus_report import analyse_segment
+  assert analyse_segment(write_segment(tmp_path / "a", gas=True))["hardBrakes"][0]["overrideInRun"]
+  assert not analyse_segment(write_segment(tmp_path / "b", gas=False))["hardBrakes"][0]["overrideInRun"]
 
 
 def test_segment_label_uses_the_directory_not_the_rlog_filename(tmp_path):

@@ -277,6 +277,7 @@ lint.flake8-implicit-str-concat.allow-multiline = false
 "tools/konik_preflight.py" = ["UP017"]
 "tools/konik_login.py" = ["UP017"]
 "tools/plain_http.py" = ["UP017"]
+"tools/konik_fetch.py" = ["UP017"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "selfdrive".msg = "Use openpilot.selfdrive"

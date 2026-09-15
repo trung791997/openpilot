@@ -43,7 +43,12 @@ import tempfile
 import zipfile
 from collections import Counter
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# realpath, not abspath: imported as `openpilot.tools.bosch_a_route_report`, __file__ runs through the
+# repo's `openpilot/tools` symlink, and abspath would put `.../openpilot/tools/..` first on sys.path.
+# Python resolves that `..` physically but capnp's kj filesystem resolves it lexically, so a later
+# `import cereal` from there aborts looking for `openpilot/cereal/log.capnp` -- which is exactly how
+# bosch_a_lifecycle_report.py crashed on its first real route.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from openpilot.common.params import Params
 from openpilot.tools.lib.logreader import _LogFileReader
