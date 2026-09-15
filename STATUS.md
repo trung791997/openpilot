@@ -183,13 +183,13 @@ rather than a missing plugin.
 | `opendbc_repo/opendbc/car/honda/tests/test_bosch_a_radar.py` | **91 passed** |
 | `opendbc_repo/opendbc/car/honda/tests/test_honda.py` | **116 passed** |
 | `opendbc_repo/opendbc/car/honda/tests/test_carcontroller_learners.py` | **31 passed** |
-| `selfdrive/controls/tests/test_radard_bosch.py` | **24 passed** |
+| `selfdrive/controls/tests/test_radard_bosch.py` | **26 passed** |
 | `selfdrive/controls/tests/test_lead_behavior.py` | **38 passed** |
 | `selfdrive/controls/tests/test_lead_follow_policy.py` | **14 passed** |
 | `selfdrive/controls/tests/test_following_distance.py` | **18 passed** |
 | `selfdrive/controls/tests/test_turn_lead.py` | **34 passed** |
 
-**366 passed, 0 failed.** `test_lead_follow_policy` and `test_following_distance` require
+**368 passed, 0 failed.** `test_lead_follow_policy` and `test_following_distance` require
 the acados MPC solvers, so `scons selfdrive/` must have completed — collecting them against
 an unbuilt tree raises `acados_ocp_solver_pyx.so: cannot open shared object file`, which is
 the same architecture trap wearing a different hat.
@@ -256,9 +256,75 @@ margin here is thinner than it looks; worth watching before anyone tightens that
 `[CONFIRMED]` Track ID 58 covers **two unrelated objects 27 s apart**: y ≈ +10.2…+11.5 m
 (t 5.8–6.7) and then y ≈ −3.5…−2.5 m (t 33.8–60.0). Bosch-A IDs are 6-bit
 (`BOSCH_A_TRACK_ID_MIN=1`, `MAX=0x3F`), so reuse is expected. The second life opens at
-vRel +3.03 then reads −2.16 within 0.55 s, which is consistent with a **fresh** Kalman
-filter converging rather than stale state carrying over — but that has not been proven, and
-a stale filter across an ID reuse would be a real defect. **Open item.**
+vRel +3.03 then reads −2.16 within 0.55 s, which reads like a **fresh** Kalman filter
+converging rather than stale state carrying over.
+
+**Settled 2026-09-15 — the filter does reset, but on a one-message margin.** See the section
+below; the open item is closed and replaced by a narrower one.
+
+### Track-ID reuse and the lead Kalman filter — settled, with a fragility
+
+`[CONFIRMED static]` Synthetic input driven through the real `RadarInterface` and the real
+`RadarD`, against commit `bdf98de`. The question left open above was whether a Bosch-A
+track-ID reuse resets `radard`'s lead Kalman filter. **It does — but by object absence, never
+by the incarnation boundary the parser actually computes.**
+
+The chain, end to end:
+
+1. **The parser signals the identity change but does not publish it.** A lifecycle
+   discontinuity (`life_delta != 2 × frame_delta`) clears the incarnation's range history and
+   pops the point. The replacement cannot be republished until a second coherent sample gives
+   it a finite derivative (`matured`), so the CAN identity is **absent from `RadarData` for
+   exactly one sweep** and then returns *under the same `trackId`*. Pinned by the existing
+   `test_in_place_replacement_no_invalid_gap_resets_history_but_keeps_can_id`.
+2. **That one-sweep absence is the entire reset signal `radard` receives.** `RadarD.update`
+   pops a `Track` — and with it the `KF1D` — only when an ID is missing from the `liveTracks`
+   it is looking at. There is no incarnation field on `RadarPoint`: the parser knows the
+   identity changed and `radard` cannot.
+3. **Observing the gap resets the filter cleanly** (new
+   `test_civic_bosch_incarnation_gap_resets_lead_kalman`): the `Track` is reconstructed and the
+   new filter is seeded from the new object's own `vLead`, reporting it with **zero** phantom
+   acceleration.
+
+So track 58 is reset — though by staleness retirement, not by the lifecycle path, since a 27 s
+absence expires `BOSCH_A_STALE_S` many times over. **The lifecycle path is the interesting one,
+because it is one message wide.**
+
+**The fragility.** `card.py` publishes `liveTracks` once per sweep (`RadarInterface.update`
+returns `None` without a `0x2FF` trigger), i.e. at ~14.35 Hz. `radard` polls `modelV2` at
+`DT_MDL` (20 Hz) and reads the **latest** `liveTracks` through `SubMaster`, which keeps no
+queue. The gap survives only while the sweep interval stays longer than the model period —
+nominally true (median 14.35 Hz, p95 16.9 Hz on `000001df`), but carried by a **single message
+with nothing behind it**. Coalesce or drop that one message and the settled filter absorbs the
+identity change as a step.
+
+`[CONFIRMED static]` What that costs, measured through the real `RadarD` (new
+`test_civic_bosch_coalesced_incarnation_gap_injects_phantom_lead_accel`), with both objects at
+constant velocity so the **true lead acceleration is 0 throughout**:
+
+| identity step | peak phantom `aLeadK` | at | back under 0.5 m/s² |
+|---|---|---|---|
+| −12 → +3 m/s (15 m/s) | **+13.73 m/s²** | 0.49 s | 2.16 s |
+| +3 → −12 m/s (15 m/s) | **−13.73 m/s²** | 0.49 s | 2.16 s |
+| −0.5 → −6 m/s (5.5 m/s) | **−5.03 m/s²** | 0.49 s | 1.88 s |
+
+≈ **0.92 m/s² of fabricated lead acceleration per m/s of identity step**, in whichever
+direction the step runs. For scale, D-042 records a vision fallback injecting a 6 m/s step that
+drove a measured **−3.51 m/s²** brake on `000001f3`. The sign matters both ways: a closing→
+opening reuse fabricates a *departing* lead and suppresses braking; opening→closing fabricates
+an *approaching* one and brakes for nothing.
+
+**This is a characterisation, not a demonstrated on-road defect.** No route evidence shows a
+`liveTracks` message being coalesced at an incarnation boundary, and under nominal timing the
+reset works. What is established is that the margin is one message and the consequence of
+losing it is a multi-m/s² phantom acceleration lasting ~2 s.
+
+**The narrower open item that replaces the old one.** All of the above assumes the radar
+*signals* the reuse. Whether Bosch-A can hand an ID to a new object **without** a lifecycle
+discontinuity — `life` continuing to advance by exactly `2 × frame_delta` across the change —
+is **not established**, and if it can, nothing resets: not the parser's range history, not the
+lead filter. That is D-048's “track migrates onto the wrong scatterer” seen from the identity
+side, and it needs route evidence to answer. See D-049.
 
 ### 🔴 FALSE BRAKE at t≈11 s — radar range drift, and it defeats all three gates
 
@@ -630,6 +696,18 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 - The checked-in `.so` files remain **aarch64**, and a local build still overwrites 53 of
   them. The SessionStart hook rebuilds and masks them, but a session that skips the hook
   will hit both.
+- 🔴 **The corpus analysis is not reproducible — the code that produced it was never
+  committed.** The 6- and 16-segment results above (pooled radar/vision gap percentiles, the
+  `|d(gap)/dt|` distribution, `corr(experimental%, radarLead%)`, the U11-vs-range-derivative
+  cross-correlation, the hard-brake tables, the per-segment lateral residuals) were recorded
+  in commits `5edbd59`, `69e1683` and `bdf98de`, **all three of which touch only `STATUS.md`
+  and `DECISIONS.md`**. `tools/bosch_a_route_report.py` is the only committed route tool and
+  it computes none of those quantities — it counts frames, replays the parser, and reports
+  points/tracks. So the numbers cannot be re-derived, re-checked, or re-run on a new route,
+  and they are unbound to a commit in the sense AGENTS.md §3 requires. They are recorded
+  above as prior evidence and should not be treated as reproducible until the harness exists.
+  Rebuilding it is also **D-048's validation-gate item 2** and D-049's item 3, so it blocks
+  both designs.
 
 *Resolved 2026-09-15, previously listed here:* the two `radar_interface.py` ruff findings
 (`edef432`) and the dangling `.venv` symlink (`edef432`).
@@ -659,11 +737,25 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    ~11 m vision/radar range disagreement, which is exactly the material that channel was
    published to be judged against. Compare `vRelRange` with U11 on this route before anything
    is wired into control.
-5. Settle whether a Bosch-A track-ID reuse resets the lead Kalman filter (see the open item
-   above). Track 58 is a ready-made case.
+5. **Done 2026-09-15** — a track-ID reuse does reset the lead Kalman filter, by object
+   absence rather than by the incarnation boundary the parser computes, and the reset is
+   carried by a single `liveTracks` message. See *Track-ID reuse and the lead Kalman filter*
+   above and D-049. Two follow-ons, both needing route data: how often lifecycle breaks
+   actually occur, and whether a **seamless** ID reuse (no lifecycle break at all) is possible
+   — if it is, nothing resets anywhere.
 6. **Highest priority: characterise the t≈11 s range-drift false brake.** It produced a
    −2.89 m/s² command and a driver override, and it passed the innovation gate, the
    one-sided rate check and the gross-distance gate. Needed before any fix: the distribution
    of radar-versus-vision range disagreement across routes where the radar is right, so a
    tightened `HONDA_BOSCH_A_GROSS_DISTANCE_M` can be justified rather than guessed (D-042).
    More real-target routes are the blocker.
+7. **Rebuild the corpus analysis harness — it is the one blocker that is not waiting on a
+   route.** See the entry under *NOT verified*: every number in the 6- and 16-segment sections
+   was produced by code that was never committed, so none of it can be re-derived or re-run.
+   It is also D-048's validation-gate item 2 and D-049's item 3, so both designs are stuck
+   behind it. It needs to pool across segments and emit, per segment and pooled: the
+   radar/vision range-gap distribution, `|d(gap)/dt|`, hard-brake events with headway/TTC/
+   `longitudinalPlanSource`/override, per-segment lateral residuals against the vision lead,
+   `experimentalMode` and lead-source occupancy, and U11 versus the range derivative with lag.
+   Writing it does not need a route; **validating its numbers does**, and until it has
+   reproduced the figures above on `00000231--5782493b00` its output is unverified.
