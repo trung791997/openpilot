@@ -260,10 +260,58 @@ vRel +3.03 then reads −2.16 within 0.55 s, which is consistent with a **fresh*
 filter converging rather than stale state carrying over — but that has not been proven, and
 a stale filter across an ID reuse would be a real defect. **Open item.**
 
-### Adjacent-lane closer was never a lead candidate
+### 🔴 FALSE BRAKE at t≈11 s — radar range drift, and it defeats all three gates
 
-`[CONFIRMED mechanism, significance not established]` At the user's bookmark (t=37.69 s,
-`userBookmark`, 62.8% through the segment) track 58 sat at y ≈ −2.6 m closing at −2.6 to
+`[CONFIRMED, one segment]` **This is what the driver flagged** (they bookmarked ~26 s after
+the event, reporting "a sharp slowdown as if locking on to a much closer target, even though
+the lead in front still has plenty of room"). It is a genuine radar fault with a real
+actuation consequence, and it is the most important finding in this segment.
+
+**What happened.** Between t=9.1 and 11.35 s, radar track 6 — the selected lead, own lane,
+y ≈ 0.0 m — reported its range falling 71.8 → 61.6 m and its `vRel` ramping
+−0.59 → **−6.02 m/s**. Over the same window the **vision lead held x ≈ 75–78 m**, `prob`
+0.93–1.00, implying `vRel` of only −0.16 to −2.00 m/s. The radar-versus-vision range gap grew
+**monotonically: +7.4 → +10.4 → +15.8 → +15.3 → +14.5 m**.
+
+`radard` published the radar lead (`leadOne.radar=1`). The planner commanded **−2.89 m/s²**
+and measured **aEgo −4.28 m/s²**. The driver overrode with the accelerator at t≈11.5
+(`gasPressedOverride`, `gasPressed`). Track 6's final sample was `measured=0` — coasting,
+`vRel` frozen at −4.36 for three samples — and the track then **disappeared for 11.02 s**
+(11.35 → 22.36 s), the only dropout over 0.3 s anywhere in the segment. It returned at
+53.1 m with a vision gap back down to +7.1 m.
+
+`[INFERRED, high confidence]` The radar **range** on track 6 drifted ~6 m toward the car
+while the lead vehicle did not approach. Supporting: vision was stable and confident
+throughout; the gap grew monotonically rather than jittering; the track coasted and then died
+immediately after; and the driver reports the gap was never closing.
+
+**Why every existing gate passed it — this is the part that matters:**
+
+| gate | why it did not fire |
+|---|---|
+| Per-sweep range innovation (`..._INNOVATION_MAX_M = 2.0`, hard 5.0) | drift was ~6 m over 1.7 s ≈ **0.25 m per sweep**, far inside 2.0 m |
+| One-sided multi-sweep vRel/range check (D-043) | U11 (−6.0) and the fitted range rate (≈ −4.5 to −6.4 m/s) **agreed with each other**. The check only fires when U11 claims *more* closing than the geometry supports, so it **structurally cannot** catch this |
+| Gross-distance staleness (`HONDA_BOSCH_A_GROSS_DISTANCE_M = 25.0`) | peak disagreement 15.8 m, **under** the 25 m threshold |
+
+`[CONFIRMED by construction]` The shadow `vRelRange` channel (D-044) is **also blind to
+this**: it is an LSQ fit of the same range that drifted, so it would have agreed with U11.
+The diagnostic published specifically to cross-check U11 cannot catch a *range* error, and
+this event is a range error. That is a real limit on D-044's usefulness and should be
+recorded against it.
+
+**The signal that would have caught it is radar-versus-vision range disagreement** — 15.8 m
+at a 78 m vision range is ~20%. `HONDA_BOSCH_A_GROSS_DISTANCE_M = 25.0` is too loose to see
+it. **This is a candidate, not a change.** Per D-042, one route is not grounds for moving a
+threshold, and the two constants previously re-tuned on partial evidence both caused measured
+regressions. What is needed first: how often a 10–20 m radar/vision gap occurs on routes
+where the radar is *right* (vision range at 70–80 m is itself weak), which cannot be answered
+from one segment. **Do not tighten this constant until that distribution is known.**
+
+### Adjacent-lane closer was never a lead candidate — NOT the flagged event
+
+`[CONFIRMED mechanism, significance not established]` Recorded because it was found while
+locating the flag, but the driver's delay means the bookmark points at the t≈11 s false brake
+above, not here. At the bookmark instant (t=37.69 s, `userBookmark`) track 58 sat at y ≈ −2.6 m closing at −2.6 to
 −3.9 m/s while the lead (id6, y ≈ +0.3 m) closed at only −0.5 m/s. At t=37.8 s track 58 was
 **nearer than the lead** (42.6 m vs 44.1 m) and closing roughly 8× faster. It was tracked
 continuously and promoted to neither `leadOne` nor `leadTwo`.
@@ -459,3 +507,9 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    is wired into control.
 5. Settle whether a Bosch-A track-ID reuse resets the lead Kalman filter (see the open item
    above). Track 58 is a ready-made case.
+6. **Highest priority: characterise the t≈11 s range-drift false brake.** It produced a
+   −2.89 m/s² command and a driver override, and it passed the innovation gate, the
+   one-sided rate check and the gross-distance gate. Needed before any fix: the distribution
+   of radar-versus-vision range disagreement across routes where the radar is right, so a
+   tightened `HONDA_BOSCH_A_GROSS_DISTANCE_M` can be justified rather than guessed (D-042).
+   More real-target routes are the blocker.
