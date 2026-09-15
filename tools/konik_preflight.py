@@ -93,6 +93,12 @@ MSG_QLOGS_ONLY = (
   "qlogs only. qlogs are decimated and DROP the CAN data this repo needs --"
   + " Bosch-A radar analysis requires rlogs."
 )
+MSG_NO_RLOGS_ANYWHERE = (
+  "no rlogs on any route scanned. rlogs are NOT uploaded automatically on a metered or"
+  + " cellular connection -- the device keeps them until it sees WiFi, or until they are"
+  + " requested. Put the comma on WiFi and give it time, or request the segments you want"
+  + " from the Konik UI, then re-run with --route to check that specific one."
+)
 MSG_DOWNLOAD_FAIL = (
   "Metadata worked but the data path did not -- often an expired signed URL,"
   + " or a storage host the network policy does not allow. The host is named above;"
@@ -191,6 +197,9 @@ def main() -> int:
   ap.add_argument("--route", help="route name, e.g. <dongle_id>|00000001--abcdef1234")
   ap.add_argument("--dongle-id", help="skip device discovery and use this device")
   ap.add_argument("--no-download", action="store_true", help="metadata only; do not fetch rlog bytes")
+  ap.add_argument("--scan-routes", type=int, default=10, metavar="N",
+                  help="when the newest route has no rlogs, check up to N older routes for one"
+                       + " that does (default 10). Ignored when --route is given.")
   ap.add_argument("--max-bytes", type=int, default=8 << 20, help="cap on rlog bytes fetched (default 8 MiB)")
   ap.add_argument("--timeout", type=float, default=30.0)
   ap.add_argument("--json", action="store_true", help="emit a machine-readable summary at the end")
@@ -269,6 +278,7 @@ def main() -> int:
 
   # 5. routes ---------------------------------------------------------------
   route_name = args.route
+  routes: list = []
   if not route_name:
     try:
       end = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -288,8 +298,11 @@ def main() -> int:
   summary["route"] = route_name
 
   # 6. files ----------------------------------------------------------------
+  def _files(name):
+    return api(f"v1/route/{name.replace('/', '|')}/files")
+
   try:
-    files = api(f"v1/route/{route_name.replace('/', '|')}/files")
+    files = _files(route_name)
   except Exception as e:
     c.bail("files", f"file listing failed for {route_name}: {e}")
   rlogs = files.get("logs") or []
@@ -298,8 +311,42 @@ def main() -> int:
     c.bail("files", f"{route_name} has no logs or qlogs. Upload may be incomplete.")
   c.add(PASS, "files", f"{len(rlogs)} rlog segment(s), {len(qlogs)} qlog segment(s)")
   summary["n_rlogs"], summary["n_qlogs"] = len(rlogs), len(qlogs)
+
+  # The newest route is usually the one that has NOT finished uploading -- the device sends
+  # qlogs eagerly and holds rlogs for WiFi. Reporting "qlogs only" on it and stopping would be
+  # technically true and useless: the account may well have rlogs a few routes back, and rlogs
+  # are the whole point. So walk back, name a route that actually has them, and prove the data
+  # path on an rlog rather than on a qlog. Metadata only, so --no-download does not skip it.
   if not rlogs:
-    c.add(WARN, "files: rlogs", MSG_QLOGS_ONLY)
+    if not routes or args.scan_routes <= 0:
+      c.add(WARN, "files: rlogs", MSG_QLOGS_ONLY)
+    else:
+      scanned, found = 0, None
+      for r in routes[1:]:
+        name = r.get("fullname") or r.get("canonical_name")
+        if not name:
+          continue
+        scanned += 1
+        try:
+          cand = _files(name)
+        except Exception:
+          continue  # one unreadable route is not a reason to abandon the scan
+        if cand.get("logs"):
+          found = (name, cand)
+          break
+        if scanned >= args.scan_routes:
+          break
+      if found:
+        route_name, files = found
+        rlogs = files.get("logs") or []
+        qlogs = files.get("qlogs") or []
+        c.add(PASS, "files: rlogs",
+              f"newest route is qlog-only (still uploading); {route_name} has {len(rlogs)}"
+              + f" rlog segment(s), {scanned} route(s) back. Using it below; --route pins it.")
+        summary["route"] = route_name
+        summary["n_rlogs"], summary["n_qlogs"] = len(rlogs), len(qlogs)
+      else:
+        c.add(WARN, "files: rlogs", f"scanned {scanned} route(s) back. " + MSG_NO_RLOGS_ANYWHERE)
 
   # 7. download -------------------------------------------------------------
   if args.no_download:

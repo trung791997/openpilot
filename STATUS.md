@@ -594,10 +594,11 @@ behaviour has changed.
 
 ### Still open, in priority order
 
-See **Next** at the end of this file. The short version: the Konik path has never been run
-against a live server from anywhere, so no route has reached an agent session by any route
-other than a manual file upload; `test_leads.py` has never been run; and D-048's validation
-gate is unmet, which is why the far-lead limit ships off.
+See **Next** at the end of this file. The short version: the Konik transport is verified
+from the user's laptop (7 passed / 1 warning, 2026-09-15) but nothing has yet decoded a
+Konik-fetched rlog, and no route has reached an agent session by any path other than a manual
+file upload; `test_leads.py` has never been run; and D-048's validation gate is unmet, which
+is why the far-lead limit ships off.
 
 ---
 
@@ -618,6 +619,17 @@ will not advance the radar work, and finding that out locally costs seconds.
 The script mirrors the 80 Bosch-A CAN IDs so it runs on an unbuilt checkout;
 `tools/lib/tests/test_konik_preflight.py` asserts that mirror against opendbc exactly, because
 a drifted copy would report "0 Bosch-A frames" on a route full of them.
+
+**It does not trust the newest route.** A comma uploads qlogs eagerly and holds rlogs for
+WiFi, so the route you just drove is routinely qlog-only — which is what the first live run
+hit. Reporting "qlogs only" there and stopping is true and useless, because it reads as *this
+path cannot deliver radar data* when the account may hold rlogs a few routes back. So when the
+newest route has no rlogs the script walks back up to `--scan-routes` (default 10) older
+routes, names the first one that does, and **downloads from that route**, proving the data
+path on an rlog rather than on a qlog. `--route` disables the walk-back entirely: an explicit
+route is the user's choice and is never second-guessed. When nothing in range has rlogs it
+warns and says why (WiFi, or request the segments), rather than failing — the transport is
+still proven at that point, and hiding that would be the worse error.
 
 **`tools/bosch_a_corpus_report.py`** — the missing corpus harness. Pools **device-side**
 behaviour across the segments of a drive: per-segment and pooled radar/vision range-gap
@@ -782,9 +794,27 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
   measures at ~14.35 Hz; the duplicate-payload path (`measurement_update=False`) is covered
   by unit tests only, never on a live bus.
 - **`test_leads.py` has not been run** in this environment (process-replay harness).
-- **No Konik route has been fetched or analysed from an agent session.** The network policy
-  denied `konik.ai` for the whole of 2026-09-15; `tools/konik_preflight.py` has been
-  exercised against its failure paths only, never against a live server.
+- **The Konik transport is verified from the user's laptop; no route has reached an agent
+  session over it.** On 2026-09-15 the user ran `tools/konik_preflight.py --dongle-id
+  11c8fa231c0499ed` on macOS and it returned **7 passed, 0 failed, 1 warning**: DNS,
+  HTTP 401 on `/`, a valid token (expires 2026-12-14), `GET /v1/me`, **551 routes**,
+  a file listing, and a ranged download of 0.5 MB at 0.3 MB/s. Every HTTPS call fell back to
+  the system `curl` (LibreSSL 2.8.3), as designed. Two limits stand:
+  * **Segments are served from `api.konik.ai` itself**, not a separate CDN — so one host
+    covers both the metadata and the data path. Good for a network policy, but it means the
+    storage host has *not* been exercised as a distinct allow-list entry.
+  * **Step 8 was SKIPped** — `cereal` is not importable on that laptop, so nothing has
+    decoded a Konik-fetched rlog and confirmed Bosch-A content end to end. The transport is
+    proven; the payload is not.
+  The agent container's own policy still answers **403 to CONNECT** for `konik.ai`, so the
+  fetch must happen on the laptop or the comma either way.
+- **Fresh routes are qlog-only, and qlogs are useless here.** The newest route on the account
+  (`11c8fa231c0499ed|00000233--e03fb98cc3`, 2026-09-15T21:06Z) listed **0 rlog segments and
+  4 qlog segments**. The device sends qlogs eagerly and holds rlogs for WiFi. qlogs are
+  decimated and drop the CAN data, so a qlog-only route cannot support any radar claim.
+  `konik_preflight.py` now walks back up to `--scan-routes` (default 10) older routes to find
+  one that has rlogs, names it, and downloads from *that* route. **Whether any route on this
+  account has rlogs at all is still unknown** — it has not been re-run since that change.
 - The checked-in `.so` files remain **aarch64**, and a local build still overwrites 53 of
   them. The SessionStart hook rebuilds and masks them, but a session that skips the hook
   will hit both.
