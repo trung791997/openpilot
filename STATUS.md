@@ -353,6 +353,87 @@ low-speed row (4.5 m/s, stop-and-go) has a larger headway still, so headway alon
 separate them either. **Four events cannot validate a threshold** — this is exactly the
 situation D-042 was written about.
 
+### Corpus grown to 16 segments — experimental mode ruled out, and a second failure mode
+
+`[CONFIRMED, 16 segments, ~16 min from one drive]`
+
+**Experimental mode is not implicated in the flagged brake, and does not govern radar-lead
+use.** The driver asked, and the data answers cleanly:
+
+- At the flagged brake, `experimentalMode` was **False**. That segment is the only one with a
+  sustained False block (False from segment start until t=17.31 s; the brake is at
+  t=10.6–11.5 s, and the switch to True comes 5.8 s *after* it ends). So the e2e model was not
+  driving longitudinal — the chill/ACC path was, which is what makes the lead attribution
+  meaningful.
+- Across the corpus, `corr(experimental%, radarLead%) = **−0.084**` — no relationship.
+  `corr(visionLead%, radarLead%) = **+0.817**`. Two segments are 100% experimental mode with
+  100% and 98.4% radar-lead use.
+
+**The brake began on the radar lead.** `longitudinalPlanSource` runs `lead0` from t=10.2 to
+10.8 s as the command ramps −0.52 → −2.70, then hands to `cruise`, which carries the peak to
+−2.94. StarPilot's own speed controllers were **flat through the entire window** and are not
+involved. The onset is therefore attributable to the radar lead; *why `cruise` binds at the
+peak is not explained by these fields* and is left open rather than guessed at.
+
+**A second override event is a CORRECT brake — so override is not a fault label.** On
+`3053f5a6` at t=12.57 the command reaches **−3.50 m/s²** (harder than the flagged event) with
+`lead0`, a real vehicle at 61 m closing at −12.14 m/s, **vision agreeing at prob 1.00 with a
+5.2 m gap**, TTC 5.0 s. The driver overrode anyway. Any future classifier must not treat this
+as a false positive.
+
+All six hard-brake events across 16 segments:
+
+| segment | accel | dRel | vRel | headway | TTC | gap | vprob | source | override |
+|---|---|---|---|---|---|---|---|---|---|
+| `3053f5a6` | −3.50 | 61.3 | −12.14 | 3.20 | **5.0** | 5.2 | 1.00 | lead0 | yes — correct |
+| `4b66cbf6` | −3.25 | 72.4 | −13.28 | 6.28 | **5.4** | 21.9 | 0.79 | cruise | no |
+| `3a4e0842` **(false)** | −2.89 | 62.4 | −4.36 | 3.56 | **14.3** | 14.8 | 0.98 | lead0→cruise | yes |
+| `f66399a5` | −2.40 | 18.5 | −3.53 | 4.09 | 5.3 | 0.5 | 1.00 | lead0 | no |
+| `f66399a5` | −2.17 | 33.9 | −0.62 | 2.46 | 54.2 | 6.0 | 1.00 | lead0 | no |
+| `97566dde` | −2.00 | 40.0 | −2.20 | 2.04 | 18.1 | 10.5 | 1.00 | lead0 | no |
+
+Note `4b66cbf6`: gap **21.9 m**, larger than the false event's 14.8 — and the brake was
+correct (TTC 5.4 s, a near-stationary object at 72 m). **Gap magnitude is decisively not the
+discriminator.** The false event is the only one combining hard braking with *both* a long
+TTC and a long headway, but with one positive example that is an observation, not a rule.
+
+### The second failure mode: good radar tracks rejected on lateral
+
+`[CONFIRMED]` Radar-lead use tracks vision-lead availability closely (r = +0.82) — four
+segments with ~0% radar lead simply have **no lead at all** (`visLead%` of 0.0, 0.0, 0.6,
+25.0 on empty road). That is benign, and an earlier framing of it here as a concern was
+wrong.
+
+**One segment is a genuine outlier.** `ed6257ef` has a confident vision lead **94.2%** of the
+time and **1.84 radar tracks per frame**, yet uses a radar lead **0.8%** of the time. Taking
+the nearest-in-range track to the vision lead on every such frame:
+
+| | range residual (radar+1.52 − vision x) | lateral residual |
+|---|---|---|
+| `ed6257ef` | median **−1.1 m** (p25 −1.6, p75 +0.5) | median **4.30 m** |
+| `7b76edd7` | median **−1.2 m** (p25 −1.6, p75 −0.6) | median **4.33 m** |
+
+The tracks agree with vision on **range to about a metre** and are rejected on **lateral**,
+where `track_matches_vision` uses `y_std_scale=1.0, y_floor=1.0` — roughly a 1 m tolerance.
+
+**This is the same root cause as the false brake, seen from the other side.** The matcher's
+tolerances are inverted relative to the sensors' actual error characteristics: range is gated
+loosely (`dist_scale=0.25` → ~15–19 m at 60–78 m) and lateral tightly (~1 m), whereas
+Bosch-A is *accurate in range* and *poor in azimuth at distance* (4.3 m lateral at ~70 m is
+about 3.5°), and monocular vision is the reverse. So a track whose **range** drifted 15 m kept
+matching, while tracks whose range is right to a metre are thrown away on **lateral**.
+
+`[INFERRED]` A lateral tolerance expressed as an **angle** rather than a fixed metric
+distance, paired with a tighter range gate, would address both directions. **Not implemented
+— see D-048's validation gate.** The tension is real and unresolved: tightening range would
+also reject `9e21cac9`, which sustains a median 13.8 m gap while behaving correctly.
+
+### CEM mode chattering — unrelated observation, worth not losing
+
+`[CONFIRMED]` `78270494` shows `experimentalMode` flipping at t=25.17 → 25.25 → 25.36 s —
+**80 ms and 110 ms dwell times** — and again at 26.05 → 26.62. Nothing in this corpus ties it
+to a control fault, but sub-100 ms longitudinal mode switching is worth a look on its own.
+
 ### U11 is a real, independent velocity measurement — not a range derivative
 
 `[CONFIRMED, 9,390 measured track samples across 6 segments]` Worth settling, because the
