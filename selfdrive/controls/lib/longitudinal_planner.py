@@ -155,6 +155,54 @@ LEAD_GEOMETRY_MAX_REQUIRED_ACCEL = 12.0
 
 CLOSE_LEAD_BRAKE_CAP_RAMP_MIN = 0.2
 CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
+
+# --- Far-lead brake limit (TEST, default OFF, param FarLeadBrakeLimit) ---------------------
+#
+# EXPERIMENTAL. This bounds braking demanded for a lead that is far away in BOTH time and
+# distance. It exists because of one observed fault and it is NOT validated -- read the whole
+# of this block before enabling it or changing a number in it.
+#
+# The fault: 00000231--5782493b00 t=9.1-11.35 s. Radar track 6, the selected lead in our own
+# lane, walked its range 71.8 -> 61.6 m with vRel ramping to -6.02 m/s while vision held the
+# lead at 75-78 m (prob >= 0.93). longitudinalPlanSource ran lead0 as the command ramped to
+# -2.70, cruise carried the peak to -2.94, measured aEgo reached -4.28, and the driver
+# overrode with the accelerator. The track then coasted and vanished for 11.02 s.
+#
+# Why this is an OUTPUT bound and not a sensor check. Three sensor-agreement rules were
+# tested against a 16-segment corpus and ALL THREE were refuted:
+#   * gap magnitude       -- 4b66cbf6 brakes correctly with a 21.9 m radar/vision gap, larger
+#                            than this fault's 14.8; 9e21cac9 sustains a 13.8 m median gap
+#                            while behaving perfectly.
+#   * gap rate / growth   -- 97566dde grows 13.4 m/s and is correct; this fault grows 9.8.
+#   * match-tolerance reshaping (angular lateral + tighter range) -- a replay harness over the
+#                            corpus showed tightening dist_scale to 0.12 destroys 946 matches
+#                            and STILL matches the faulty track on 15 of 24 frames.
+# The radar's range and its velocity agreed with each other throughout the fault, so no
+# radar-internal cross-check can see it (this also bounds what D-044's vRelRange can ever do).
+# What remains is a statement about vehicle dynamics that holds whatever the sensor says: a
+# lead more than ~3 s of headway away AND more than ~10 s from collision does not justify
+# heavy braking, because there is time to brake later.
+#
+# EVIDENCE BASE IS ONE POSITIVE EXAMPLE. Across all 16 segments there are six commanded-accel
+# runs below -1.5 m/s2. This regime contains exactly one of them -- the fault -- and none of
+# the five correct ones (3053f5a6 -3.50 at TTC 5.0; 4b66cbf6 -3.25 at TTC 5.4; f66399a5 -2.40
+# at TTC 5.3; f66399a5 -2.17 at headway 2.46; 97566dde -2.00 at headway 2.04). That is a clean
+# separation on the data that exists, and it is still n=1. D-042 records two constants in this
+# repo that were tuned on partial evidence and caused measured on-road regressions.
+#
+# Safety shape, deliberately chosen:
+#   * It is a LIMIT, never an authorisation -- it can only make braking gentler, and only in a
+#     regime where the geometry says there is time.
+#   * It stands down entirely whenever the existing close-lead geometry (get_close_lead_brake_cap
+#     and friends) has authorised braking, so it can never fight a cap that ran its own check.
+#   * It ramps with TTC rather than switching, matching this file's stated preference for a
+#     control law over a step (see CLOSE_LEAD_BRAKE_CAP_RAMP above).
+#   * -2.0 m/s2 is still substantial braking, not a release.
+FAR_LEAD_BRAKE_LIMIT_MIN_SPEED = 8.0        # m/s -- not a stop-and-go behaviour
+FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY = 3.0      # s  -- dRel / v_ego
+FAR_LEAD_BRAKE_LIMIT_MIN_TTC = 10.0         # s  -- below this the limit is inert
+FAR_LEAD_BRAKE_LIMIT_FULL_TTC = 14.0        # s  -- at/above this the limit is fully applied
+FAR_LEAD_BRAKE_LIMIT_ACCEL = -2.0           # m/s2 -- the gentlest this may make the command
 INSIDE_GAP_CLOSING_MIN_EGO_SPEED = 8.0
 INSIDE_GAP_CLOSING_MIN_LEAD_SPEED = 5.0
 INSIDE_GAP_CLOSING_MIN_SPEED = 0.5
@@ -599,6 +647,11 @@ class LongitudinalPlanner:
     self.longitudinal_actuator_delay = max(DT_MDL, float(CP.longitudinalActuatorDelay))
     self.close_lead_brake_cap_value = 0.0
     self.lead_geometry_required_accel = 0.0
+    # Far-lead brake limit: TEST feature, default OFF. See the constant block above.
+    self._far_lead_limit_params = None
+    self._far_lead_limit_frame = 0
+    self._far_lead_limit_enabled = False
+    self.far_lead_brake_limit_value = 0.0
     self.mpc = LongitudinalMpc(dt=dt)
     self.fcw = False
     self.dt = dt
@@ -839,6 +892,55 @@ class LongitudinalPlanner:
       return None
 
     return max(accel_min, -required_decel * ramp)
+
+  def far_lead_brake_limit_enabled(self):
+    """Param read on the BlotV2 cadence -- off unless explicitly enabled. Default OFF."""
+    self._far_lead_limit_frame += 1
+    if self._far_lead_limit_params is None or self._far_lead_limit_frame % 100 == 0:
+      try:
+        from openpilot.common.params import Params
+        if self._far_lead_limit_params is None:
+          self._far_lead_limit_params = Params()
+        self._far_lead_limit_enabled = self._far_lead_limit_params.get_bool("FarLeadBrakeLimit")
+      except Exception:
+        self._far_lead_limit_enabled = False
+    return self._far_lead_limit_enabled
+
+  def get_far_lead_brake_limit(self, lead, v_ego, accel_min):
+    """Gentlest allowed accel for a lead far away in BOTH time and distance, or None.
+
+    Returns a FLOOR that braking may not go below -- the opposite direction to the close-lead
+    caps in this file, which authorise harder braking. Caller must skip this whenever any of
+    those caps fired. See the FAR_LEAD_BRAKE_LIMIT_* block for why this is an output bound and
+    not a sensor check, and for the fact that its evidence base is a single positive example.
+    """
+    if lead is None or not lead.status:
+      return None
+    # Radar-sourced leads only. A vision lead is already governed by the vision approach caps
+    # above, and the fault this addresses is a radar track that drifted in range.
+    if not bool(getattr(lead, "radar", False)):
+      return None
+    if v_ego < FAR_LEAD_BRAKE_LIMIT_MIN_SPEED:
+      return None
+
+    d_rel = float(lead.dRel)
+    if d_rel / max(v_ego, 1e-3) < FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY:
+      return None
+
+    # Closing speed from the lead's own reported vRel. A lead that is opening or steady has no
+    # collision time at all, which is the far end of this ramp, not an exemption from it.
+    closing = -float(getattr(lead, "vRel", 0.0))
+    ttc = d_rel / closing if closing > 0.1 else float('inf')
+    if ttc < FAR_LEAD_BRAKE_LIMIT_MIN_TTC:
+      return None
+
+    ramp = float(np.clip((ttc - FAR_LEAD_BRAKE_LIMIT_MIN_TTC) /
+                         (FAR_LEAD_BRAKE_LIMIT_FULL_TTC - FAR_LEAD_BRAKE_LIMIT_MIN_TTC), 0.0, 1.0))
+    if ramp <= 0.0:
+      return None
+    # Interpolate from "no restriction" at MIN_TTC to the full limit at FULL_TTC, so crossing
+    # the threshold is continuous rather than a step.
+    return float(accel_min + ramp * (FAR_LEAD_BRAKE_LIMIT_ACCEL - accel_min))
 
   @staticmethod
   def get_inside_gap_closing_lead_accel_cap(lead, v_ego, accel_min, t_follow):
@@ -2742,6 +2844,27 @@ class LongitudinalPlanner:
       close_lead_brake_cap = min(close_lead_caps)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
       output_a_target = min(output_a_target, close_lead_brake_cap)
+
+    # Far-lead brake limit (TEST, default OFF). Stands down whenever any close-lead cap fired:
+    # those caps ran their own geometry check and authorised the braking, and this must never
+    # override a mechanism that decided braking was warranted.
+    self.far_lead_brake_limit_value = 0.0
+    if lead_control_active and not close_lead_caps and self.far_lead_brake_limit_enabled():
+      far_limits = [lim for lim in
+                    (self.get_far_lead_brake_limit(lead, v_ego, output_accel_min)
+                     for lead in (self.lead_one, self.lead_two))
+                    if lim is not None]
+      # Both leads must agree the geometry is relaxed; the nearer/more urgent one governs.
+      if len(far_limits) == sum(1 for lead in (self.lead_one, self.lead_two) if lead.status):
+        far_limit = min(far_limits) if far_limits else None
+        if far_limit is not None and output_a_target < far_limit:
+          self.far_lead_brake_limit_value = far_limit
+          cloudlog.warning(
+            f"far_lead_brake_limit: capping {output_a_target:.2f} -> {far_limit:.2f} "
+            + f"(dRel={float(self.lead_one.dRel):.1f} vRel={float(self.lead_one.vRel):.2f} "
+            + f"vEgo={float(v_ego):.1f})")
+          self.a_desired = max(self.a_desired, far_limit)
+          output_a_target = far_limit
 
     standstill_nudge_gap = STOP_DISTANCE - 0.5
     moving_leads = [lead for lead in (self.lead_one, self.lead_two)
