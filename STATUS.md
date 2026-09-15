@@ -353,14 +353,32 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
   measures at ~14.35 Hz; the duplicate-payload path (`measurement_update=False`) is covered
   by unit tests only, never on a live bus.
 - **`test_leads.py` has not been run** in this environment (process-replay harness).
-- **The two ruff findings in `radar_interface.py` are unfixed.**
-- **`.venv` remains a broken tracked symlink**, and the checked-in `.so` files remain
-  aarch64. Both will bite the next person on a non-comma host.
+- **No Konik route has been fetched or analysed from an agent session.** The network policy
+  denied `konik.ai` for the whole of 2026-09-15; `tools/konik_preflight.py` has been
+  exercised against its failure paths only, never against a live server.
+- The checked-in `.so` files remain **aarch64**, and a local build still overwrites 53 of
+  them. The SessionStart hook rebuilds and masks them, but a session that skips the hook
+  will hit both.
+
+*Resolved 2026-09-15, previously listed here:* the two `radar_interface.py` ruff findings
+(`edef432`) and the dangling `.venv` symlink (`edef432`).
 
 ## Next
 
-1. Fix the two `radar_interface.py` ruff findings and retire the `.venv` symlink — both
-   small, both isolated, neither touching a gate.
+1. **First route queued for Bosch-A analysis, not yet fetched or analysed.**
+   Device `11c8fa231c0499ed`, route `11c8fa231c0499ed|00000231--5782493b00` (supplied
+   2026-09-15). Nothing is known about its contents yet — whether it carries Bosch-A object
+   frames at all, and whether any of them are real targets rather than the no-target
+   sentinels every prior clean replay contained, is exactly what
+   `tools/konik_preflight.py` is for. Do **not** cite this route as evidence of anything
+   until that has run.
+   ```bash
+   python tools/konik_preflight.py \
+     --dongle-id 11c8fa231c0499ed \
+     --route '11c8fa231c0499ed|00000231--5782493b00'
+   ```
+   Requires a Konik token (`$KONIK_TOKEN`) and an environment whose network policy permits
+   `api.konik.ai` **and** the storage host the signed segment URLs point at.
 2. Get `test_leads.py` running in a real process-replay environment; it is the only radar
    suite still unexercised.
 3. Re-run the `radard`/planner suites against the Alpha Long PR branches now that the
