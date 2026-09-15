@@ -209,15 +209,32 @@ rather than deleting the tracked link as a side effect of unrelated work.
 build `git status` shows them all modified, and `git commit -a` would push **x86_64 binaries
 onto a branch that boots on an aarch64 comma.**
 
-Always stage explicitly, never `-a` or `git add .`:
+The SessionStart hook (below) defuses this by marking those 53 tracked artifacts
+**`skip-worktree`**, so the build no longer shows up in `git status` at all. Two things
+follow, and you need both:
+
+- **Staging is still explicit.** `git add <the files you changed>`, never `-a` or
+  `git add .`. skip-worktree is a safety net, not a licence.
+- **To rebuild a device artifact on purpose**, clear the flag first:
+  ```bash
+  git update-index --no-skip-worktree <path>   # then build, stage, commit
+  git ls-files -v | grep '^S'                  # what is currently masked
+  ```
+  Rebuilding device artifacts is a deliberate, separate commit that says so —
+  `a972d15` ("Build larch64 parameter artifacts") is the pattern. It is never a side effect.
+
+### The SessionStart hook does this for you
+
+`.claude/hooks/session-start.sh` (registered in `.claude/settings.json`, both tracked)
+installs the native libraries and Python deps, builds the tree, sets the skip-worktree
+flags, and prints this contract at the top of every session. On a remote container it runs
+automatically. Locally it is a no-op unless you run it yourself:
 
 ```bash
-git add <the source files you actually changed>
-git restore -- $(git diff --name-only | grep -E '\.(so|a|os)$|pandad|bridge|gitversion')
-git status --short          # confirm nothing binary is staged or left modified
+CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh
 ```
 
-Rebuilding a device artifact **on purpose** is a deliberate, separate commit that says so —
-`a972d15` ("Build larch64 parameter artifacts") is the pattern. It is never a side effect.
+It is idempotent and safe to re-run. If you add a Python dependency, add it to the install
+list in that script **and** to `STATUS.md`, or the next session will not have it.
 
 Do not report a test as unrunnable until you have tried the recipe in `STATUS.md`.

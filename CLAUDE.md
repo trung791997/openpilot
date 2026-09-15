@@ -21,5 +21,12 @@ Short version, in priority order:
    Vendored subtrees (`opendbc_repo/`, `panda/`, …) are edited here, in place. Route data is
    cited by route ID and never committed.
 7. The checked-in `.so` files are **aarch64**. If a test "cannot run on this machine," it is
-   almost certainly that — see AGENTS.md §10 and the build recipe in `STATUS.md`.
+   almost certainly that — see AGENTS.md §10 and the build recipe in `STATUS.md`. The
+   SessionStart hook (`.claude/hooks/session-start.sh`) builds the tree for you on remote
+   containers and masks the build-dirtied binaries.
 8. Commit before handing off: `YYYY-MM-DD <what changed>`.
+
+> **More than one agent works this repo, on separate accounts.** Everything above applies to
+> all of them equally. Before you start, run `git log --oneline -10` and `git status` — if
+> another agent has pushed since your branch point, read their commits before editing the
+> same files, and diff rather than assuming which version is newer (AGENTS.md §7).
