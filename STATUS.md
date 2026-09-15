@@ -307,6 +307,79 @@ regressions. What is needed first: how often a 10–20 m radar/vision gap occurs
 where the radar is *right* (vision range at 70–80 m is itself weak), which cannot be answered
 from one segment. **Do not tighten this constant until that distribution is known.**
 
+### Six-segment corpus — two candidate fixes refuted, and a correction
+
+`[CONFIRMED, 6 segments from one drive, ~6 min]` Five further segments
+(`f66399a5`, `1be0aa43`, `97566dde`, `9e21cac9`, `bf574f16`) were analysed alongside the
+flagged one. **The corpus refutes the threshold candidate this file proposed above**, which is
+recorded rather than quietly dropped.
+
+**Radar-versus-vision range gap, pooled** (radar lead selected, vision `prob` ≥ 0.9,
+n = 4,868):
+
+| p5 | p25 | p50 | p75 | p90 | p95 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| −0.2 | +1.4 | **+4.0** | +7.2 | +11.0 | **+14.9** | +21.7 | +27.7 m |
+
+Vision reads **systematically longer** than radar — expected for monocular depth. The
+false-brake event's 15.8 m gap is therefore only ~p95, **not an outlier**. Worse, segment
+`9e21cac9` runs at a **median gap of 13.8 m with a maximum of 27.7 m and commands no hard
+braking at all**. Tightening `HONDA_BOSCH_A_GROSS_DISTANCE_M` toward ~12 m, as suggested
+above, would fire continuously on a segment where nothing is wrong. **Candidate dead.**
+
+**Gap *rate* was tested as an alternative and is also refuted.** |d(gap)/dt| pooled: p50 4.7,
+p90 22.3, p95 31.1, max 130.2 m/s — vision's frame-to-frame `x` jitter dominates. `9e21cac9`
+reaches p95 = 53.7 m/s while braking normally. **Candidate dead.**
+
+`[CORRECTION]` The entry above states the vision evidence showed the radar was wrong. Given
+this distribution that was **over-claimed**: a 15.8 m gap at 78 m is within normal vision
+spread and proves nothing on its own. The genuine evidence that track 6 was spurious is
+(a) it **vanished for 11.02 s** immediately afterwards — the only dropout over 0.3 s in that
+segment — and (b) the driver overrode and reports the gap never closed. Treat the gap as
+corroborating, not as proof.
+
+**Hard-brake events are too few to tune anything.** Across all six segments there are only
+**four** runs with commanded accel < −1.5 m/s² while engaged:
+
+| segment | t | accel | dRel | vRel | vEgo | headway | gap |
+|---|---|---|---|---|---|---|---|
+| `3a4e0842` **(false)** | 11.21 | −2.89 | 62.4 | −4.36 | 17.6 | **3.56 s** | 14.8 |
+| `97566dde` | 43.28 | −2.00 | 40.0 | −2.20 | 19.6 | 2.04 s | 10.5 |
+| `f66399a5` | 5.21 | −2.17 | 33.9 | −0.62 | 13.8 | 2.46 s | 6.0 |
+| `f66399a5` | 15.15 | −2.40 | 18.5 | −3.53 | 4.5 | 4.09 s | 0.5 |
+
+At highway speed the false event has both the largest headway and the largest gap, but the
+low-speed row (4.5 m/s, stop-and-go) has a larger headway still, so headway alone does not
+separate them either. **Four events cannot validate a threshold** — this is exactly the
+situation D-042 was written about.
+
+### U11 is a real, independent velocity measurement — not a range derivative
+
+`[CONFIRMED, 9,390 measured track samples across 6 segments]` Worth settling, because the
+project has been asked whether Bosch-A has a native vRel at all. It does: U11 in the AUX
+frame, and it is **not** simply a differentiated range.
+
+- Correlation with a centred range derivative at zero lag: **0.807** — not ~1.0.
+- Cross-correlation peaks at **lag −4 samples (−0.28 s), r = 0.847**: U11 **lags** the range
+  channel by roughly 0.28 s on average, consistent with the 0.88–1.28 s onset lag recorded
+  earlier for deceleration onsets.
+- `|U11 − range_rate|`: median 0.78, p90 2.77, p99 7.12, **max 12.22 m/s**.
+- **2.26%** of samples disagree by more than 5 m/s, overwhelmingly with U11 **under-reporting
+  opening** (e.g. U11 +0.8 while the range opened at +9.1).
+
+A range-derived field would show r ≈ 1.0 at zero lag with no gross disagreements. So U11 and
+the range are two genuinely independent channels — which is what makes D-043's cross-check
+meaningful. The honest summary is **not** "there is no native vRel" but "there are two
+imperfect vRel sources: U11 (independent, railed at ±13.5, lagged) and the range derivative
+(prompt, but only as good as the range)."
+
+**And in the false brake, vRel was not the failure.** U11 (−6.0 m/s) and the fitted range
+rate (−4.5 to −6.4 m/s) agreed with each other throughout. Both channels consistently
+described an object that was genuinely approaching — the object simply **was not the lead
+vehicle**. The defect is in **track-to-object association**, not velocity derivation, and no
+amount of vRel cross-checking can catch it because both sources come from the same radar
+track. See the proposed direction in `DECISIONS.md` D-048.
+
 ### Adjacent-lane closer was never a lead candidate — NOT the flagged event
 
 `[CONFIRMED mechanism, significance not established]` Recorded because it was found while

@@ -360,3 +360,86 @@ directory** (`/Users/jameslichtenstiger/nrdr/openpilot/.venv`, mode `120000`, fr
 and breaks `uv sync`. Work around it with `UV_PROJECT_ENVIRONMENT`. Rejected: deleting the
 tracked link as a side effect of unrelated work — it is a one-line commit of its own, and it
 belongs in a change that is about the build environment and nothing else.
+
+## D-048 — Corroboration bounds a radar lead's braking authority; it never deletes the point
+**Proposed 2026-09-15 from a six-segment corpus. NOT IMPLEMENTED — see the validation gate
+at the end before writing any code.**
+
+### The failure this addresses
+
+On `00000231--5782493b00` t=9.1–11.35 s, radar track 6 (the selected lead, own lane) walked
+its range from 71.8 to 61.6 m with U11 ramping to −6.02 m/s while the vision lead held
+75–78 m at `prob` ≥ 0.93. The planner commanded −2.89 m/s², the driver felt −4.28 and
+overrode with the accelerator. Track 6 then coasted, froze, and disappeared for 11.02 s.
+
+**Every existing gate passed it, and two of them structurally cannot ever catch it:**
+
+- The per-sweep range innovation gate saw ~0.25 m per sweep against a 2.0 m limit.
+- D-043's one-sided U11-vs-range check compares two channels that **both come from the same
+  radar track**. Here they agreed with each other (−6.0 vs −4.5…−6.4). When a track migrates
+  onto the wrong scatterer, its range and its velocity stay mutually consistent while both
+  describe the wrong object. No radar-internal cross-check can see this.
+- D-044's shadow `vRelRange` is an LSQ fit of that same range, so it agrees too. **Record
+  this against D-044: it can cross-check U11, but it can never cross-check the range.**
+- `HONDA_BOSCH_A_GROSS_DISTANCE_M = 25.0` saw a 15.8 m peak disagreement.
+
+### What was rejected first, on evidence
+
+**Tightening `HONDA_BOSCH_A_GROSS_DISTANCE_M`.** Refuted by the corpus: pooled radar/vision
+gap is median +4.0, p95 +14.9, max +27.7 m, and segment `9e21cac9` sustains a **median 13.8 m
+gap with no hard braking at all**. A ~12 m threshold fires continuously where nothing is
+wrong.
+
+**Gating on d(gap)/dt.** Refuted: |d(gap)/dt| is p95 31 m/s, max 130 m/s, dominated by the
+vision model's frame-to-frame `x` jitter; `9e21cac9` reaches p95 53.7 m/s while braking
+normally.
+
+**Switching to the vision lead when radar looks wrong.** Rejected on existing evidence, not
+new work: D-042 records that exactly this hard switch injected a 5 m / 6 m/s step and drove a
+−3.51 m/s² brake. A fix that hard-switches recreates a regression already paid for.
+
+**Deleting or coasting the suspect point.** Rejected outright — that is D-041, and doing it
+cost a driver intervention on stopped traffic.
+
+### The decision
+
+Give each radar track a **corroboration score**: a slow EMA of how well its range has agreed
+with the vision lead while the two were matched, plus how much of its recent history was
+`measured` rather than coasted. The score bounds **how much deceleration authority that track
+may command** — it never gates publication.
+
+Three properties are load-bearing:
+
+1. **The point is always published.** Corroboration changes authority, not existence
+   (D-041). A poorly-corroborated lead still brakes; it brakes *less hard*.
+2. **Authority is blended, never switched.** Low corroboration moves the commanded
+   deceleration toward what the vision-implied kinematics support, continuously. No
+   discontinuity, so the D-042 step-injection cannot recur.
+3. **Corroboration is slow; urgency overrides it.** The score must not react to
+   frame-to-frame vision jitter (see the refuted gap-rate candidate), so it is an EMA over
+   seconds. Any genuinely urgent geometry — small range, short TTC — **bypasses the bound
+   entirely**. A fix that softens real emergency braking is worse than the fault it fixes.
+
+### Where it lives
+
+**`selfdrive/controls/radard.py`, not the parser.** `opendbc`'s `radar_interface.py` has no
+access to `modelV2` and never should; the corroborating signal is vision, so this must sit
+above the parser, after `match_vision_to_track` and before the lead is published. It is a new
+layer on top of the existing chain (sentinels → innovation → u10 → D-043 rate check → rail
+publish → staleness → Kalman → vision match → preferred-track staleness), and it changes none
+of them.
+
+### Validation gate — do not implement before this is satisfied
+
+The corpus has **four** hard-brake events, one of them the fault. That cannot validate a
+threshold, and D-042 is explicit about what happens when a constant is tuned on partial
+evidence. Before any code:
+
+1. Enough routes to see the radar/vision residual distribution **separately for tracks that
+   later prove good versus tracks that later die** — track 6's 11 s disappearance suggests
+   mortality is the label to train against.
+2. A replay harness that re-runs the corpus and asserts **zero reduction in authority on the
+   five benign segments** — the negative control D-009 requires.
+3. The parameters chosen from that distribution, not from the single fault.
+
+Until then this is a design, and the repo carries it as one.
