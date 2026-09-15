@@ -208,6 +208,57 @@ its own `pyproject.toml`.
 
 ---
 
+## Tooling added 2026-09-15
+
+**`tools/konik_preflight.py`** — verifies a Konik (or comma) server end to end from a machine
+where the network actually works. Agent containers cannot: this environment's policy answers
+**403 to CONNECT** for `konik.ai`, `api.konik.ai` and `api.commadotai.com`, so no agent session
+can reach a route. Run it on your laptop or the comma and paste the output back.
+
+It walks reachability → token → `/v1/me` → devices → routes → files → an actual ranged rlog
+fetch → **Bosch-A content**. That last step is the one specific to this repo: it counts Bosch-A
+object frames by CAN ID and bus, `liveTracks`, and `radarState` leads, and warns explicitly when
+frames are present but no lead was ever reported — which per this file is what every clean
+replay so far has actually contained. A route that uploads cleanly but carries no Bosch-A frames
+will not advance the radar work, and finding that out locally costs seconds.
+
+The script mirrors the 80 Bosch-A CAN IDs so it runs on an unbuilt checkout;
+`tools/lib/tests/test_konik_preflight.py` asserts that mirror against opendbc exactly, because
+a drifted copy would report "0 Bosch-A frames" on a route full of them.
+
+**`tools/bosch_a_scenarios.py` + `tools/bosch_a_viewer.html`** — drives synthetic Bosch-A CAN
+frames through the **real** `RadarInterface` and records what the parser decided on every sweep,
+then renders it. Not a simulation: every published number came out of the parser. Frame builders
+are imported from the Bosch-A test module rather than copied, so they cannot drift.
+
+Five scenarios, each tied to a decision: `closing_lead` (baseline), `saturation_rail` (D-041),
+`high_u10_decel` (D-042), `vrel_contradiction` (D-043), `no_targets` (the honest baseline —
+renders empty, because that is what the data we have actually contains).
+
+```bash
+python tools/bosch_a_scenarios.py --html viewer.html   # rebuild the page
+python tools/bosch_a_scenarios.py --scenario saturation_rail   # JSON for one scenario
+```
+
+Published viewer: <https://claude.ai/artifact/PAWLymcsRvobb9waW87KuT>
+
+### What the scenarios show
+
+`[CONFIRMED, synthetic input through the real parser]` **D-041 holds.** A stopped car approached
+at 19.4 m/s rails U11 on all 60 sweeps, and the parser publishes a point on 59 of them, pinned at
+the −13.5 m/s bound. Longest coast 0.07 s, well inside `BOSCH_A_STALE_S`.
+
+`[INFERRED, needs a real route]` **Two scenarios coast far past the stale limit.**
+`high_u10_decel` publishes nothing for 14 consecutive sweeps (0.98 s) and `vrel_contradiction`
+for 34 (2.37 s), against `BOSCH_A_STALE_S = 0.20 s`. That is the shape of the failure D-041 and
+D-042 describe — a coast that outlives the stale limit, after which the point is deleted and
+`radard` falls back to vision. **These inputs are synthetic and may not be representative**: the
+`high_u10_decel` gap begins where the scenario's own range clamps, so part of it is likely an
+artifact of the construction rather than parser behaviour. This is a question to put to a real
+route, **not a demonstrated defect**, and it must not be treated as one.
+
+---
+
 ## Alpha Long P061B — exact onset captured; carried over, not re-verified here
 
 > The material in this section was established in the EPS knowledge-base repo against

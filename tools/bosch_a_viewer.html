@@ -1,0 +1,545 @@
+<title>Bosch-A Sweep Inspector</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --ground: #f2f4f4;
+    --panel: #ffffff;
+    --panel-2: #e9edee;
+    --ink: #10191c;
+    --ink-2: #47585d;
+    --ink-3: #7d9096;
+    --rule: #d3dadc;
+    --rule-2: #b9c4c7;
+    --accent: #0b7a80;
+    --accent-soft: #d3ebec;
+    --on-accent: #ffffff;
+    --ok: #1c7a45;
+    --ok-soft: #d6ecdf;
+    --warn: #a8560c;
+    --warn-soft: #f7e6d3;
+    --crit: #a92318;
+    --crit-soft: #f7dcd9;
+    --rail: #6d3bc4;
+    --rail-soft: #e6dcf8;
+    --grid: #dfe5e7;
+    --shadow: 0 1px 2px rgba(16,25,28,.06), 0 4px 14px rgba(16,25,28,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0c1214;
+      --panel: #141d20;
+      --panel-2: #1b262a;
+      --ink: #e8eff0;
+      --ink-2: #a6b8bd;
+      --ink-3: #74898f;
+      --rule: #263438;
+      --rule-2: #35474c;
+      --accent: #3fc1c6;
+      --accent-soft: #10353a;
+      --on-accent: #07201f;
+      --ok: #4cc47e;
+      --ok-soft: #122e1f;
+      --warn: #e0954a;
+      --warn-soft: #33220f;
+      --crit: #f0776a;
+      --crit-soft: #351815;
+      --rail: #ab8af0;
+      --rail-soft: #221838;
+      --grid: #1e2b2f;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0c1214;
+    --panel: #141d20;
+    --panel-2: #1b262a;
+    --ink: #e8eff0;
+    --ink-2: #a6b8bd;
+    --ink-3: #74898f;
+    --rule: #263438;
+    --rule-2: #35474c;
+    --accent: #3fc1c6;
+    --accent-soft: #10353a;
+    --on-accent: #07201f;
+    --ok: #4cc47e;
+    --ok-soft: #122e1f;
+    --warn: #e0954a;
+    --warn-soft: #33220f;
+    --crit: #f0776a;
+    --crit-soft: #351815;
+    --rail: #ab8af0;
+    --rail-soft: #221838;
+    --grid: #1e2b2f;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    line-height: 1.5;
+    margin: 0;
+    padding-inline: 16px;
+    padding-block: 28px 56px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 6px;
+  }
+  h1 { font-size: clamp(25px, 4.2vw, 35px); line-height: 1.12; margin: 0 0 10px; letter-spacing: -.02em; text-wrap: balance; }
+  .lede { color: var(--ink-2); margin: 0; max-width: 68ch; font-size: 15px; }
+
+  .provenance {
+    margin-top: 14px; padding: 11px 14px; border-radius: 6px;
+    background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+    font-size: 13px; color: var(--ink-2); box-shadow: var(--shadow);
+  }
+  .provenance strong { color: var(--ink); font-weight: 600; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  code { font-size: .92em; background: var(--panel-2); padding: .1em .34em; border-radius: 3px; }
+
+  .scenarios { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font: 500 13px/1 "IBM Plex Sans", sans-serif;
+    padding: 9px 13px; border-radius: 999px; cursor: pointer;
+    background: var(--panel); color: var(--ink-2);
+    border: 1px solid var(--rule); transition: background .13s, color .13s, border-color .13s;
+  }
+  .chip:hover { border-color: var(--rule-2); color: var(--ink); }
+  /* --on-accent is a token like any other so the pressed chip reads correctly in all three
+     theme states, including the un-stamped "system" one. */
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 8px; box-shadow: var(--shadow);
+  }
+  .panel-head {
+    padding: 13px 16px; border-bottom: 1px solid var(--rule);
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .panel-head h2 { font-size: 14px; margin: 0; letter-spacing: -.01em; }
+  .panel-head .sub { font-size: 12px; color: var(--ink-3); }
+  .panel-body { padding: 16px; }
+
+  .desc { font-size: 13.5px; color: var(--ink-2); margin: 0 0 4px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 1px; background: var(--rule); border-radius: 8px; overflow: hidden; border: 1px solid var(--rule); }
+  .tile { background: var(--panel); padding: 13px 15px; }
+  .tile .k { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+  .tile .v { font-family: "IBM Plex Mono", monospace; font-size: 21px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .tile .n { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+  .v.ok { color: var(--ok); } .v.warn { color: var(--warn); } .v.crit { color: var(--crit); }
+
+  .chart-scroll { overflow-x: auto; }
+  svg { display: block; max-width: 100%; }
+  svg text { font-family: "IBM Plex Mono", monospace; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin-top: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 11px; height: 11px; border-radius: 2px; display: inline-block; flex: none; }
+
+  .strip { display: flex; gap: 2px; flex-wrap: wrap; margin-top: 4px; }
+  .cell {
+    flex: none;                      /* without this the row shrinks 60 cells into slivers */
+    width: 15px; height: 26px; border-radius: 2px; cursor: pointer; border: 1px solid transparent;
+    background: var(--panel-2); position: relative;
+  }
+  .cell.pub { background: var(--ok-soft); }
+  .cell.gap { background: var(--crit-soft); }
+  .cell.rail::after, .cell.hiu::after {
+    content: ""; position: absolute; left: 2px; right: 2px; bottom: 2px; height: 3px; border-radius: 2px;
+  }
+  .cell.rail::after { background: var(--rail); }
+  .cell.hiu::after { background: var(--warn); }
+  .cell[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .scrubrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+  input[type="range"] { flex: 1 1 220px; accent-color: var(--accent); min-width: 160px; }
+  .btn {
+    font: 500 13px "IBM Plex Sans", sans-serif; padding: 7px 14px; border-radius: 5px; cursor: pointer;
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--rule-2);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .theme-btn {
+    flex: none; display: inline-flex; align-items: center; gap: 7px;
+    font: 500 12.5px "IBM Plex Sans", sans-serif; padding: 7px 12px; border-radius: 999px;
+    background: var(--panel); color: var(--ink-2); border: 1px solid var(--rule); cursor: pointer;
+  }
+  .theme-btn:hover { border-color: var(--accent); color: var(--ink); }
+  .theme-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .theme-btn svg { width: 14px; height: 14px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 7px 11px; text-align: left; border-bottom: 1px solid var(--rule); }
+  th { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; white-space: nowrap; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr.sel { background: var(--accent-soft); }
+  .pill { display: inline-block; font: 500 11px "IBM Plex Mono", monospace; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.gap { background: var(--crit-soft); color: var(--crit); }
+  .pill.rail { background: var(--rail-soft); color: var(--rail); }
+  .pill.hiu { background: var(--warn-soft); color: var(--warn); }
+
+  .finding { border-left: 3px solid var(--warn); }
+  .finding .panel-head h2 { color: var(--warn); }
+  .finding ul { margin: 0; padding-left: 19px; font-size: 13.5px; color: var(--ink-2); }
+  .finding li { margin-bottom: 8px; }
+  .finding li:last-child { margin-bottom: 0; }
+  .finding strong { color: var(--ink); font-weight: 600; }
+
+  footer { font-size: 12px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 14px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="topbar">
+      <p class="eyebrow">Honda Bosch-A · 16-slot object bank</p>
+      <button class="theme-btn" id="themeBtn" type="button" aria-pressed="false">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+        <span id="themeLabel">Dark</span>
+      </button>
+    </div>
+    <h1>Bosch-A Sweep Inspector</h1>
+    <p class="lede">
+      What the radar parser actually decided, sweep by sweep. Each scenario feeds synthesized
+      Bosch-A CAN frames through the real <code>RadarInterface</code> and records every point it
+      published — and every sweep where it published nothing.
+    </p>
+    <div class="provenance" id="prov"></div>
+  </header>
+
+  <nav class="scenarios" id="chips" aria-label="Scenario"></nav>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2 id="scName">—</h2>
+      <span class="sub" id="scMeta"></span>
+    </div>
+    <div class="panel-body">
+      <p class="desc" id="scDesc"></p>
+    </div>
+  </section>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Range and published velocity</h2>
+      <span class="sub">shaded bands are sweeps that published no point</span>
+    </div>
+    <div class="panel-body">
+      <div class="chart-scroll"><svg id="chart" viewBox="0 0 900 340" width="900" height="340" role="img" aria-label="Range over time with coast gaps"></svg></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--accent)"></i>true range (m)</span>
+        <span><i class="sw" style="background:var(--ok)"></i>published vRel (m/s)</span>
+        <span><i class="sw" style="background:var(--ink-3)"></i>true vRel (m/s)</span>
+        <span><i class="sw" style="background:var(--crit-soft);border:1px solid var(--crit)"></i>no point published</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Sweep timeline</h2>
+      <span class="sub">one cell per sweep · click to inspect</span>
+    </div>
+    <div class="panel-body">
+      <div class="strip" id="strip"></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--ok-soft);border:1px solid var(--ok)"></i>point published</span>
+        <span><i class="sw" style="background:var(--crit-soft);border:1px solid var(--crit)"></i>nothing published</span>
+        <span><i class="sw" style="background:var(--rail)"></i>U11 on saturation rail</span>
+        <span><i class="sw" style="background:var(--warn)"></i>u10 above threshold</span>
+      </div>
+      <div class="scrubrow">
+        <button class="btn" id="play" type="button">Play</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="Sweep">
+        <span class="mono" id="scrubLabel" style="font-size:12.5px;color:var(--ink-2)"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Selected sweep</h2>
+      <span class="sub">raw wire values and what the parser did with them</span>
+    </div>
+    <div class="panel-body">
+      <div class="chart-scroll"><table id="detail"></table></div>
+    </div>
+  </section>
+
+  <section class="panel finding">
+    <div class="panel-head"><h2>Two things worth a second look</h2></div>
+    <div class="panel-body">
+      <ul>
+        <li><strong>The rail scenario behaves exactly as D-041 requires.</strong> A stopped car
+          approached at 19.4 m/s rails U11 on every sweep, and the parser publishes a point on
+          every sweep but the first, pinned at the <code>−13.5 m/s</code> bound. The value
+          understates the closing rate, which is the accepted cost — understating closing still
+          brakes, deleting the object does not.</li>
+        <li><strong>Two scenarios coast for far longer than the stale limit.</strong>
+          <code>high_u10_decel</code> publishes nothing for 14 consecutive sweeps (0.98 s) and
+          <code>vrel_contradiction</code> for 34 (2.37 s), against a
+          <code>BOSCH_A_STALE_S</code> of 0.20 s. That is the shape of the failure D-041 and
+          D-042 describe: a coast that outlives the stale limit, after which the point is
+          deleted and radard falls back to vision. <strong>These inputs are synthetic and may
+          not be representative</strong> — this is a question to put to a real route, not a
+          demonstrated defect.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+  // Theme. The page already follows the viewer's theme through tokens; this only lets a
+  // reader override it. An explicit choice stamps data-theme on <html>, which both the
+  // [data-theme] blocks and the prefers-color-scheme guard are written to respect.
+  const MOON = '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>';
+  const SUN  = '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>';
+
+  function systemPrefersDark() {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  function isDark() {
+    const t = document.documentElement.getAttribute("data-theme");
+    return t ? t === "dark" : systemPrefersDark();
+  }
+  function paintThemeBtn() {
+    const dark = isDark();
+    document.getElementById("themeIcon").innerHTML = dark ? SUN : MOON;
+    document.getElementById("themeLabel").textContent = dark ? "Light" : "Dark";
+    const b = document.getElementById("themeBtn");
+    b.setAttribute("aria-pressed", String(dark));
+    b.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  }
+  try {
+    const saved = localStorage.getItem("bosch-a-theme");
+    if (saved === "dark" || saved === "light") document.documentElement.setAttribute("data-theme", saved);
+  } catch (e) { /* private window or blocked storage: fall back to the viewer's theme */ }
+  document.getElementById("themeBtn").onclick = () => {
+    const next = isDark() ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("bosch-a-theme", next); } catch (e) { /* not fatal */ }
+    paintThemeBtn();
+    if (typeof paint === "function") paint();   // redraw the SVG against the new tokens
+  };
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if (!document.documentElement.getAttribute("data-theme")) { paintThemeBtn(); }
+    });
+  }
+  paintThemeBtn();
+
+  const DATA = __SCENARIO_DATA__;
+  const STALE_S = 0.20;
+  const HZ = DATA.sweep_hz;
+
+  const $ = (id) => document.getElementById(id);
+  const names = Object.keys(DATA.scenarios);
+  let current = names.includes("saturation_rail") ? "saturation_rail" : names[0];
+  let idx = 0, timer = null;
+  idx = (() => { const w = DATA.scenarios[current].sweeps.findIndex(x => x.published.length); return w === -1 ? 0 : w; })();
+
+  $("prov").innerHTML =
+    "<strong>Provenance.</strong> Real <code>opendbc</code> RadarInterface, synthetic Bosch-A CAN frames — "
+    + "not a simulation and not a recorded drive. Sweep rate <code>" + HZ + " Hz</code> (D-046), "
+    + "u10 threshold <code>" + DATA.u10_threshold + "</code> (D-042), saturation rail "
+    + "<code>±" + DATA.rail_mps + " m/s</code> (D-041). "
+    + "Regenerate with <code>python tools/bosch_a_scenarios.py</code>.";
+
+  $("foot").innerHTML =
+    "Generated by <code>" + DATA.generator + "</code>. Every published value came out of the parser; "
+    + "the &ldquo;true&rdquo; series are the inputs that were encoded onto the wire. "
+    + "No part of this page is road-validated — see STATUS.md.";
+
+  // --- derived stats ---------------------------------------------------------
+  function stats(sc) {
+    const s = sc.sweeps;
+    let longest = 0, run = 0, runStart = -1, worst = null;
+    s.forEach((x, i) => {
+      if (x.published.length === 0) {
+        if (run === 0) runStart = i;
+        run++;
+        if (run > longest) { longest = run; worst = runStart; }
+      } else run = 0;
+    });
+    const vs = s.filter(x => x.published.length).map(x => x.published[0].vRel);
+    return {
+      n: s.length,
+      pub: s.filter(x => x.published.length).length,
+      longest, worst,
+      gapS: longest / HZ,
+      vMin: vs.length ? Math.min(...vs) : null,
+      vMax: vs.length ? Math.max(...vs) : null,
+      railed: s.filter(x => x.railed).length,
+      hiu: s.filter(x => x.u10 !== null && x.u10 > DATA.u10_threshold).length,
+    };
+  }
+
+  // --- chips -----------------------------------------------------------------
+  const chips = $("chips");
+  names.forEach(n => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.textContent = n;
+    b.setAttribute("aria-pressed", String(n === current));
+    b.onclick = () => { current = n; idx = firstWithPoint(DATA.scenarios[n].sweeps); stop(); render(); };
+    chips.appendChild(b);
+  });
+
+  // --- chart -----------------------------------------------------------------
+  function drawChart(sc, st) {
+    const s = sc.sweeps, W = 900, H = 340;
+    const m = { t: 34, r: 58, b: 40, l: 56 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const ds = s.map(x => x.true_dRel).filter(v => v !== null);
+    const dMax = ds.length ? Math.max(...ds) * 1.1 : 1;
+    const tMax = s.length ? s[s.length - 1].t : 1;
+    const vAll = s.flatMap(x => [x.true_vRel, x.published.length ? x.published[0].vRel : null]).filter(v => v !== null && v !== undefined);
+    const vMin = vAll.length ? Math.min(...vAll, 0) : -1, vMax = vAll.length ? Math.max(...vAll, 0) : 1;
+    const vSpan = (vMax - vMin) || 1;
+
+    const X = t => m.l + (tMax ? t / tMax : 0) * iw;
+    const Yd = d => m.t + ih - (d / dMax) * ih;
+    const Yv = v => m.t + ih - ((v - vMin) / vSpan) * ih;
+
+    let g = "";
+    // coast bands
+    let run = null;
+    s.forEach((x, i) => {
+      const empty = x.published.length === 0;
+      if (empty && run === null) run = i;
+      if ((!empty || i === s.length - 1) && run !== null) {
+        const a = X(s[run].t), b = X(s[Math.max(run, i - (empty ? 0 : 1))].t) + 3;
+        g += `<rect x="${a.toFixed(1)}" y="${m.t}" width="${Math.max(2, b - a).toFixed(1)}" height="${ih}" fill="var(--crit-soft)"/>`;
+        run = null;
+      }
+    });
+    // grid + axes
+    for (let i = 0; i <= 4; i++) {
+      const y = m.t + (ih * i) / 4;
+      g += `<line x1="${m.l}" y1="${y.toFixed(1)}" x2="${m.l + iw}" y2="${y.toFixed(1)}" stroke="var(--grid)" stroke-width="1"/>`;
+      g += `<text x="${m.l - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-3)">${(dMax * (1 - i / 4)).toFixed(0)}</text>`;
+      g += `<text x="${m.l + iw + 8}" y="${(y + 4).toFixed(1)}" font-size="10" fill="var(--ink-3)">${(vMax - vSpan * i / 4).toFixed(1)}</text>`;
+    }
+    for (let i = 0; i <= 5; i++) {
+      const t = (tMax * i) / 5;
+      g += `<text x="${X(t).toFixed(1)}" y="${H - 14}" text-anchor="middle" font-size="10" fill="var(--ink-3)">${t.toFixed(1)}s</text>`;
+    }
+    g += `<text x="${m.l - 8}" y="${m.t - 14}" text-anchor="end" font-size="10" fill="var(--accent)">range m</text>`;
+    g += `<text x="${m.l + iw + 8}" y="${m.t - 14}" font-size="10" fill="var(--ok)">m/s</text>`;
+
+    const path = (pts) => pts.length ? "M" + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("L") : "";
+    const dPts = s.filter(x => x.true_dRel !== null).map(x => [X(x.t), Yd(x.true_dRel)]);
+    g += `<path d="${path(dPts)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+    const tvPts = s.filter(x => x.true_vRel !== null).map(x => [X(x.t), Yv(x.true_vRel)]);
+    g += `<path d="${path(tvPts)}" fill="none" stroke="var(--ink-3)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+    // published vRel as dots (discontinuous by nature)
+    s.forEach(x => {
+      if (!x.published.length) return;
+      g += `<circle cx="${X(x.t).toFixed(1)}" cy="${Yv(x.published[0].vRel).toFixed(1)}" r="2.6" fill="var(--ok)"/>`;
+    });
+    // cursor
+    const cur = s[Math.min(idx, s.length - 1)];
+    if (cur) {
+      g += `<line x1="${X(cur.t).toFixed(1)}" y1="${m.t}" x2="${X(cur.t).toFixed(1)}" y2="${m.t + ih}" stroke="var(--ink)" stroke-width="1.5" opacity=".55"/>`;
+    }
+    $("chart").innerHTML = g;
+  }
+
+  // --- render ----------------------------------------------------------------
+  function firstWithPoint(sweeps) {
+    const i = sweeps.findIndex(x => x.published.length);
+    return i === -1 ? 0 : i;
+  }
+
+  function render() {
+    const sc = DATA.scenarios[current], st = stats(sc), s = sc.sweeps;
+    [...chips.children].forEach(c => c.setAttribute("aria-pressed", String(c.textContent === current)));
+    $("scName").textContent = current;
+    $("scDesc").textContent = sc.description;
+    $("scMeta").textContent = `${st.n} sweeps @ ${HZ} Hz`;
+
+    const gapCls = st.gapS > STALE_S ? "crit" : "ok";
+    $("tiles").innerHTML = [
+      ["sweeps", st.n, "at " + HZ + " Hz"],
+      ["published a point", `${st.pub}/${st.n}`, st.pub === st.n - 1 ? "all but the first" : ""],
+      ["longest coast", st.gapS.toFixed(2) + "s", `${st.longest} sweeps · stale limit ${STALE_S.toFixed(2)}s`, gapCls],
+      ["published vRel", st.vMin === null ? "—" : (st.vMin === st.vMax ? st.vMin.toFixed(2) : `${st.vMin.toFixed(1)}…${st.vMax.toFixed(1)}`), "m/s"],
+      ["sweeps on rail", st.railed, st.railed ? "U11 saturated" : "none", st.railed ? "rail" : ""],
+      ["u10 over threshold", st.hiu, "limit " + DATA.u10_threshold, st.hiu ? "warn" : ""],
+    ].map(([k, v, n, cls]) =>
+      `<div class="tile"><div class="k">${k}</div><div class="v ${cls === "rail" ? "" : (cls || "")}">${v}</div><div class="n">${n || ""}</div></div>`
+    ).join("");
+
+    $("strip").innerHTML = s.map((x, i) => {
+      const cls = ["cell", x.published.length ? "pub" : "gap"];
+      if (x.railed) cls.push("rail");
+      if (x.u10 !== null && x.u10 > DATA.u10_threshold) cls.push("hiu");
+      return `<button type="button" class="${cls.join(" ")}" data-i="${i}" aria-current="${i === idx}" aria-label="sweep ${i}" title="sweep ${i} · t=${x.t}s"></button>`;
+    }).join("");
+    [...$("strip").children].forEach(c => c.onclick = () => { idx = +c.dataset.i; stop(); paint(); });
+
+    $("scrub").max = String(s.length - 1);
+    paint();
+  }
+
+  function paint() {
+    const sc = DATA.scenarios[current], s = sc.sweeps, x = s[idx];
+    $("scrub").value = String(idx);
+    $("scrubLabel").textContent = `sweep ${idx} · t = ${x.t.toFixed(2)} s`;
+    [...$("strip").children].forEach((c, i) => c.setAttribute("aria-current", String(i === idx)));
+    drawChart(sc, stats(sc));
+
+    const p = x.published[0];
+    const hiu = x.u10 !== null && x.u10 > DATA.u10_threshold;
+    const rows = [
+      ["sweep", `${idx} of ${s.length - 1}`, ""],
+      ["t", x.t.toFixed(4) + " s", ""],
+      ["true range (encoded)", x.true_dRel === null ? "—" : x.true_dRel.toFixed(2) + " m", ""],
+      ["true vRel (encoded)", x.true_vRel === null ? "—" : x.true_vRel.toFixed(2) + " m/s", ""],
+      ["U11 raw", x.u11_raw === null ? "— (invalid sentinel)" : x.u11_raw,
+        x.railed ? '<span class="pill rail">on rail</span>' : ""],
+      ["u10 raw", x.u10 === null ? "— (invalid)" : x.u10,
+        hiu ? `<span class="pill hiu">&gt; ${DATA.u10_threshold}</span>` : ""],
+      ["published point", p ? "yes" : "no",
+        p ? '<span class="pill ok">published</span>' : '<span class="pill gap">nothing</span>'],
+      ["published dRel", p ? p.dRel.toFixed(2) + " m" : "—", ""],
+      ["published vRel", p ? p.vRel.toFixed(3) + " m/s" : "—", ""],
+      ["published yRel", p ? p.yRel.toFixed(2) + " m" : "—", ""],
+      ["trackId", p ? p.trackId : "—", ""],
+      ["measured", p ? String(p.measured) : "—", ""],
+      ["note", x.note || "—", ""],
+    ];
+    $("detail").innerHTML = "<tbody>" + rows.map(([k, v, tag]) =>
+      `<tr><th scope="row">${k}</th><td class="num">${v}</td><td>${tag}</td></tr>`).join("") + "</tbody>";
+  }
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; $("play").textContent = "Play"; } }
+  $("play").onclick = () => {
+    if (timer) return stop();
+    $("play").textContent = "Pause";
+    timer = setInterval(() => {
+      const n = DATA.scenarios[current].sweeps.length;
+      idx = (idx + 1) % n;
+      paint();
+    }, 90);
+  };
+  $("scrub").oninput = (e) => { idx = +e.target.value; stop(); paint(); };
+
+  render();
+</script>
