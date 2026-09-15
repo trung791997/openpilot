@@ -443,3 +443,67 @@ evidence. Before any code:
 3. The parameters chosen from that distribution, not from the single fault.
 
 Until then this is a design, and the repo carries it as one.
+
+## D-049 — The incarnation boundary is not published; the lead KF reset rides on one message
+**Recorded 2026-09-15 from static analysis and tests against `bdf98de`. NOT IMPLEMENTED — the
+fix is not the obvious one; see below.**
+
+### What is settled
+
+`radard`'s lead Kalman filter **is** reset across a Bosch-A track-ID reuse, but only because
+the object goes absent, never because the identity changed:
+
+- `radar_interface.py` detects the identity change (`life_delta != 2 × frame_delta`), clears
+  the incarnation's range history and pops the point. The replacement needs a second coherent
+  sample to mature, so the CAN identity is missing from `RadarData` for **exactly one sweep**
+  and returns under the **same `trackId`**.
+- `RadarD.update` pops a `Track` — and with it the `KF1D` — only when an ID is absent from the
+  `liveTracks` it is looking at. **`RadarPoint` carries no incarnation field**, so the parser
+  knows the identity changed and `radard` cannot.
+- `card.py` publishes `liveTracks` once per sweep (~14.35 Hz); `radard` polls `modelV2` at
+  `DT_MDL` (20 Hz) and reads the latest message through `SubMaster`, which keeps no queue.
+
+So the reset is carried by **one message with nothing behind it**. Measured through the real
+`RadarD` with both objects at constant velocity (true lead acceleration 0 throughout), losing
+that message fabricates ≈ **0.92 m/s² of lead acceleration per m/s of identity step**, peaking
+at 0.49 s and taking ~2.2 s to fall under 0.5 m/s²: a 15 m/s step yields ±13.73 m/s². D-042's
+comparable 6 m/s step drove a measured −3.51 m/s² brake on `000001f3`.
+
+Both signs are harmful: closing→opening fabricates a departing lead and **suppresses** braking;
+opening→closing fabricates an approaching one and **brakes for nothing**.
+
+Tests: `test_civic_bosch_incarnation_gap_resets_lead_kalman` and
+`test_civic_bosch_coalesced_incarnation_gap_injects_phantom_lead_accel`. The first fails when
+the `Track` pop is removed (D-009 negative control, checked).
+
+### What is NOT settled, and it is the part that matters
+
+All of the above assumes the radar **signals** the reuse. Whether Bosch-A can hand a track ID
+to a new object with `life` still advancing by exactly `2 × frame_delta` — a seamless reuse —
+is **not established**. If it can, nothing resets: not the parser's range history, not the lead
+filter, and there is no absence for anything downstream to notice. That is D-048's "track
+migrates onto the wrong scatterer" seen from the identity side, and it needs route evidence.
+
+### Rejected: widening the gap for redundancy
+
+The reflex fix — withhold the replacement for two sweeps instead of one so the absence cannot
+be coalesced away — is **rejected outright**. It buys redundancy by deleting a radar point for
+longer, which is precisely D-041 and D-042: on `000001f9` a deleted point left the planner
+commanding 0.00 while closing on stopped traffic. **Never buy a reset by deleting geometry.**
+
+The direction that does not fight D-041 is to publish the boundary as *information* — an
+incarnation counter on `RadarPoint`, so `radard` can reseed the filter on an identity change
+while the point keeps being published continuously. That changes a published struct and the
+parser/`radard` contract, so it is a design, not a patch.
+
+### Validation gate — do not implement before this is satisfied
+
+1. **How often lifecycle breaks actually occur on real routes**, and whether any of them
+   coincide with a hard brake. Zero observed breaks would make this a latent hazard, not a
+   live one, and would change the priority.
+2. **Whether seamless ID reuse exists at all** (the open question above). It decides whether an
+   incarnation counter is sufficient or merely necessary.
+3. A negative control per D-009: the corpus replays with **no** change in published leads on
+   segments containing no incarnation break.
+
+Until then this is a characterisation, and the repo carries it as one.
