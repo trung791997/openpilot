@@ -237,4 +237,26 @@ CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh
 It is idempotent and safe to re-run. If you add a Python dependency, add it to the install
 list in that script **and** to `STATUS.md`, or the next session will not have it.
 
+### When scons refuses to rebuild
+
+After a `git restore` of the device binaries, scons thinks they are current and the link
+fails with `Relocations in generic ELF (EM: 183)` or `file in wrong format`. Clear them:
+
+```bash
+./tools/clean_build_artifacts.sh --dry-run   # always look first
+./tools/clean_build_artifacts.sh             # wrong-architecture artifacts only
+./tools/clean_build_artifacts.sh --all       # every tracked build artifact
+./tools/clean_build_artifacts.sh --sconsign  # also drop scons's own cache
+```
+
+Everything it removes is tracked, so `git restore <path>` brings it back. It is scoped to
+the trees scons builds and **never touches `third_party/`** — that holds vendored *device*
+libraries (`third_party/acados/larch64/`, the aarch64 h3 wheels) which are legitimately
+aarch64 and are not outputs of this build. An earlier version keyed purely on "wrong
+architecture" and would have deleted twelve of them; the path scope is the fix, so do not
+loosen it back to a bare extension match.
+
+`.claude/settings.json` pre-approves this script, `scons --clean`, and `rm` inside the build
+trees, with `third_party/`, `.git`, `$HOME` and `sudo rm` explicitly denied.
+
 Do not report a test as unrunnable until you have tried the recipe in `STATUS.md`.

@@ -1,4 +1,29 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(scons --clean *)",
+      "Bash(.venv/bin/scons --clean *)",
+      "Bash(./tools/clean_build_artifacts.sh*)",
+      "Bash(tools/clean_build_artifacts.sh*)",
+      "Bash(rm -f .sconsign.dblite)",
+      "Bash(rm .sconsign.dblite)",
+      "Bash(rm -f cereal/*)",
+      "Bash(rm -f common/*)",
+      "Bash(rm -f msgq_repo/*)",
+      "Bash(rm -f opendbc_repo/*)",
+      "Bash(rm -f rednose_repo/*)",
+      "Bash(rm -f selfdrive/*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(sudo rm *)",
+      "Bash(rm -rf .git*)",
+      "Bash(rm -f third_party/*)",
+      "Bash(rm -rf third_party/*)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
