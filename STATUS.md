@@ -592,8 +592,24 @@ unexercised. `test_radar_fault` drives `replay_process_with_name("card", …)` a
 
 **The one failure is real, and it is not a test bug.** `test_far_lead_brake_limit.py::TestDefaultOff`
 fails with `UnknownKeyName: FarLeadBrakeLimit`, because the key exists in `common/params_keys.h`
-(`ebf4c20`) but **not** in the checked-in aarch64 `common/params_pyx.so` / `libcommon.a`, last
-rebuilt at `a972d15` — before that commit. Consequences, in order of importance:
+(`ebf4c20`) but **not** in the checked-in aarch64 `common/params_pyx.so`, last rebuilt at `a972d15`
+— **16 commits earlier**.
+
+**Say this precisely: the artifacts are not "stale", they are exactly one key behind.** Loading the
+committed `.so` and calling `all_keys()` returns **821 keys**; the header now declares **822**. The
+only missing one is `FarLeadBrakeLimit`. `BoschARadar`, `BlotV2` and `HondaBoschARadar` are all
+present and work.
+
+⚠️ **Do not diagnose these artifacts with `strings`** — that is how this was first (wrongly) argued
+here. The `.so` is linked with tail-merged string literals, so a key that is the suffix of a longer
+key has no standalone copy: `strings` "proves" `BoschARadar` missing because it only appears inside
+`HondaBoschARadar`. Load the `.so` and call `all_keys()`:
+
+```bash
+docker run --rm --platform linux/arm64 -v "$PWD":/openpilot -e PYTHONPATH=/:/openpilot \
+  oprad-test:py312 python -c \
+  "from openpilot.common.params_pyx import Params; print(len(Params(memory=True).all_keys()))"
+``` Consequences, in order of importance:
 
 1. The repo ships a `prebuilt` marker and `launch_chffrplus.sh` only builds when it is absent, so
    **the device runs those same stale artifacts**.
@@ -1117,8 +1133,22 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    commit `10e4705` is an ancestor of this branch, so the §8 run (492 passed / 1 failed /
    2 skipped) *is* that re-run. `firestar5683/StarPilot` PR #124 is **closed unmerged** and was
    not re-run.
-4. **🔴 Rebuild the aarch64 params artifacts, or `FarLeadBrakeLimit` stays unreachable on the
-   car.** The key is in `common/params_keys.h` (`ebf4c20`) but **not** in the checked-in
+4. **🔴 Rebuild `common/params_pyx.so` (one key behind), or `FarLeadBrakeLimit` stays unreachable
+   on the car.** Verified by `all_keys()`: the `.so` exposes 821 keys, the header declares 822, and
+   the missing one is `FarLeadBrakeLimit`. Nothing else has drifted — do **not** treat this as a
+   general "the artifacts are stale" problem, and do **not** diagnose it with `strings` (see the
+   test-results section). The rebuild needs the toolchain that produced the committed artifacts:
+   Ubuntu 24.04, clang 18.1.3, Python 3.12 and **Cython pinned to 3.1.4** (3.3.0 regenerates
+   `params_pyx.cpp` with ~8k lines of churn and a different `.so`), with `SP_FORCE_TICI=1` to
+   select `arch=larch64` and `SP_SCONS_CACHE_DIR` set because the larch64 path hardcodes
+   `/data/scons_cache`:
+   ```bash
+   docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src \
+     -e SP_FORCE_TICI=1 -e SP_SCONS_CACHE_DIR=/tmp/sconscache <image with clang+cython 3.1.4> \
+     bash -lc 'scons --cache-disable -j$(nproc) common/libcommon.a common/params_pyx.so'
+   ```
+   Shipping rebuilt device binaries is a deliberate, separate commit (AGENTS.md §10, pattern
+   `a972d15`) and is **not** done here. The key is in `common/params_keys.h` (`ebf4c20`) but **not** in the checked-in
    `common/params_pyx.so` / `libcommon.a`, last built at `a972d15`. The repo ships a `prebuilt`
    marker and `launch_chffrplus.sh` only builds when it is absent, so the device runs those
    stale artifacts: `Params().put_bool("FarLeadBrakeLimit", True)` raises `UnknownKeyName`
