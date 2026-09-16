@@ -16,6 +16,7 @@ import pytest
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   FAR_LEAD_BRAKE_LIMIT_ACCEL,
   FAR_LEAD_BRAKE_LIMIT_FULL_TTC,
+  FAR_LEAD_BRAKE_LIMIT_MIN_DIST,
   FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY,
   FAR_LEAD_BRAKE_LIMIT_MIN_SPEED,
   FAR_LEAD_BRAKE_LIMIT_MIN_TTC,
@@ -79,6 +80,34 @@ class TestNegativeControls:
     close = (FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY - 0.5) * ve
     assert planner.get_far_lead_brake_limit(lead(close, -0.5), ve, ACCEL_MIN) is None
 
+  def test_inert_inside_the_distance_floor(self, planner):
+    """Headway alone is not enough: dRel / v_ego RISES as the car slows, so an ordinary
+    deceleration satisfies it on its way down. Geometry from 0000022e--2c6875ff90 seg 8, a
+    correct stop-and-go brake this limit fired on before the distance gate existed."""
+    limit = planner.get_far_lead_brake_limit(lead(27.2, -2.17), 8.0, ACCEL_MIN)
+    assert 27.2 / 8.0 >= FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY, "the headway gate does NOT catch this"
+    assert 27.2 < FAR_LEAD_BRAKE_LIMIT_MIN_DIST, "this geometry no longer exercises the distance gate"
+    assert limit is None, "a 27 m lead is not a far lead, whatever the headway says"
+
+  def test_the_distance_gate_is_where_the_constant_says(self, planner):
+    """Pins the gate to FAR_LEAD_BRAKE_LIMIT_MIN_DIST rather than to the 27 m sample above, so
+    that lowering the constant toward the correct-brake geometry fails here first. Everything
+    except dRel is held far enough out to be inert on its own."""
+    ve, ttc = 12.0, FAR_LEAD_BRAKE_LIMIT_FULL_TTC + 2.0
+    below = FAR_LEAD_BRAKE_LIMIT_MIN_DIST - 0.5
+    above = FAR_LEAD_BRAKE_LIMIT_MIN_DIST + 0.5
+    assert below / ve >= FAR_LEAD_BRAKE_LIMIT_MIN_HEADWAY, "headway must not be the gate under test"
+    assert planner.get_far_lead_brake_limit(lead(below, -(below / ttc)), ve, ACCEL_MIN) is None
+    assert planner.get_far_lead_brake_limit(lead(above, -(above / ttc)), ve, ACCEL_MIN) is not None
+
+  def test_real_stop_and_go_approach_is_untouched(self, planner):
+    """The same event sampled across its approach: radar and vision agreed throughout and the
+    lead was genuinely decelerating. None of it may be limited."""
+    for d, v, ve in [(27.2, -2.17, 8.0), (26.9, -1.92, 8.0), (26.7, -1.95, 8.0),
+                     (25.5, -1.84, 7.5), (21.7, -3.50, 5.4)]:
+      assert planner.get_far_lead_brake_limit(lead(d, v), ve, ACCEL_MIN) is None, \
+        f"dRel={d} vRel={v} vEgo={ve} is a close lead, not a far one"
+
   def test_inert_inside_the_ttc_floor(self, planner):
     """A lead 4 s away in headway but closing fast is urgent; the limit must stand aside."""
     ve = 20.0
@@ -104,6 +133,36 @@ class TestTheFault:
       limit = planner.get_far_lead_brake_limit(lead(d, v), ve, ACCEL_MIN)
       if limit is not None:
         assert limit >= ACCEL_MIN
+
+
+class TestKnownRampAnchorDefect:
+  """PINNED, NOT ENDORSED. Read the ramp-anchor note in the FAR_LEAD_BRAKE_LIMIT_* block before
+  touching this. The ramp interpolates from the caller's accel_min toward the limit, so when the
+  caller passes something gentler than FAR_LEAD_BRAKE_LIMIT_ACCEL -- the call site passes
+  output_accel_min, which is -0.5 on most frames of the fault -- intermediate ramp values land
+  TIGHTER than the constant that is documented as the gentlest this may command.
+
+  These tests exist so the inversion is visible rather than latent. Re-anchoring to ACCEL_MIN
+  was measured and makes the feature nearly inert on its only positive example, because ttc is
+  derived from the same vRel the fault corrupts. Do not change this without first replacing ttc
+  with a confidence signal the fault does not corrupt."""
+
+  def test_partial_ramp_is_tighter_than_the_documented_floor(self, planner):
+    ve, d = 20.0, 80.0
+    ttc = 12.0  # halfway between MIN_TTC and FULL_TTC, so ramp == 0.5
+    limit = planner.get_far_lead_brake_limit(lead(d, -(d / ttc)), ve, -0.5)
+    assert limit is not None
+    assert limit > FAR_LEAD_BRAKE_LIMIT_ACCEL, (
+      "known defect: with a gentle accel_min the partial ramp clamps harder than the full one"
+    )
+
+  def test_the_unit_test_anchor_and_the_call_site_disagree(self, planner):
+    """Same geometry, two accel_min values, two different answers. This is why the original
+    tests never caught the inversion: they only ever passed ACCEL_MIN."""
+    ve, d, ttc = 20.0, 80.0, 12.0
+    as_tested = planner.get_far_lead_brake_limit(lead(d, -(d / ttc)), ve, ACCEL_MIN)
+    as_called = planner.get_far_lead_brake_limit(lead(d, -(d / ttc)), ve, -0.5)
+    assert as_tested < FAR_LEAD_BRAKE_LIMIT_ACCEL < as_called
 
 
 class TestRamp:

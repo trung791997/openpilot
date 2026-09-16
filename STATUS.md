@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-15**
+**As of: 2026-09-16**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -829,6 +829,111 @@ Distinguishing the two needs the raw per-slot data at that instant, which has no
 
 ---
 
+## 🟠 The far-lead limit was inert on the fault it exists for — fixed and re-replayed 2026-09-16
+
+`[CONFIRMED in replay, 39 segments]` `FarLeadBrakeLimit` as shipped in `ebf4c20` did essentially
+nothing on the **t≈11 s false brake** (seg 10 of `00000231--5782493b00`) it was written for.
+Replayed at its own toggle: **2 frames fired, 6 altered, peak `aTarget` −2.9075 → −2.9012 m/s²**.
+It clipped 0.25 s of tail *after* the peak had already been commanded. The earlier "8 frames
+altered, max reduction 0.89 m/s²" figure recorded above was measured the same way and is not in
+conflict with this — what was missing was the observation that **none of it lands on the event**.
+
+**Root cause.** The call site stood down entirely whenever `get_close_lead_brake_cap` had returned
+a cap. Instrumenting the planner shows frames 203–224 — the fault window — **never reached the
+function**, because that cap was non-empty across exactly those frames. `get_close_lead_brake_cap`
+has **no distance gate**, fires out to ~68 m, and on this segment it is itself the mechanism
+issuing the false brake. The feature deferred to the thing it was meant to bound.
+
+**Why removing the stand-down alone is not enough.** Dropping the deference fixes seg 10 — peak
+−2.901 → −1.950 m/s², 21 frames — but produces a **false positive on a correct stop-and-go**:
+`0000022e--2c6875ff90` seg 8, t 37.6–41.9 s, 88 altered frames, up to 0.631 m/s² of relief on a
+brake where radar (27.1 m) and vision (29.9 m) **agree**, `modelProb` 0.99–1.00, `aLeadK`
+−0.45 → −2.47, ego 13.4 → 2.7 m/s, ending in `brakePressed` at 41.94 and a disengage at 42.24.
+That is a real deceleration and the limit must not touch it.
+
+The headway gate does not separate the two, because **`dRel / v_ego` rises as the car slows**: an
+ordinary brake satisfies a 3.0 s headway on its way down. What separates them is absolute distance
+— the fault sits at 61–64 m, the correct brake at 27 m.
+
+**The change: drop the blanket stand-down, add `FAR_LEAD_BRAKE_LIMIT_MIN_DIST = 40.0` m.** Measured
+across the variants tried:
+
+| variant | seg 10 peak | seg 10 fires | 15 corpus controls | 23 road segments |
+|---|---|---|---|---|
+| as shipped (`ebf4c20`) | −2.901 | 2 | 0 | 0 |
+| drop the stand-down only | −1.950 | 21 | 0 | **6 fires — false positive** |
+| `MIN_TTC` 10.0 → 8.0 | −1.950 | 21 | 0 | bit-identical to the row above |
+| fix the ramp anchor (below) | −2.818 | 18 | 0 | — |
+| **shipped: stand-down dropped + `dRel ≥ 40 m`** | **−1.950** | **21** | **0** | **0** |
+
+**Acceptance evidence.** Frame-by-frame diff of replayed `longitudinalPlan.aTarget`, toggle OFF vs
+ON, against the patched tree through the **stock** `plannerd` process config, over **39 segments** —
+`00000231--5782493b00` segs 10–25, all 10 of `0000022e--2c6875ff90`, all 13 of
+`0000022f--8acb9d34ac`:
+
+```
+segments compared: 39
+  CHANGED  231 seg10: 21 altered frames, maxD 1.4807 m/s2, 21 fires
+segments with any altered frame: 1
+```
+
+Exactly one segment in the set changes, and it is the fault. `test_far_lead_brake_limit.py`:
+**21 passed**.
+
+**Margin on the 40 m threshold — it is not wide everywhere.** Counting frames that pass every gate
+*except* distance: on `0000022e--2c6875ff90` 3,351 pass and **none** sit in the 30–40 m band; on
+`00000231--5782493b00` 8,010 pass and 294 sit in that band; on `0000022f--8acb9d34ac` 1,736 pass
+and **376** sit in it. The threshold is doing real work on `0000022f`, and a route carrying a
+genuine far-lead range-drift fault at 35 m would land on the wrong side of it.
+
+**This is replay evidence only, on one fault. There is no road evidence for the amended logic.**
+The feature stays TEST and default OFF. Its positive evidence base is still **n=1**; what the
+39-segment diff buys is a bound on the false-positive side, not a second fault.
+
+**More routes would move this, and these specific shapes are what is missing:** highway cut-ins and
+merges settling at 40–70 m (the regime the limit now owns, with no example of a *correct* hard brake
+in it); downhill or trailing-throttle following at 45–60 m; and any second instance of long-range
+radar range walk, which is the only thing that can take the positive evidence past n=1.
+
+### KNOWN DEFECT, pinned and deliberately not fixed: the ramp anchor
+
+`[CONFIRMED]` `get_far_lead_brake_limit` computes
+`floor = accel_min + ramp * (FAR_LEAD_BRAKE_LIMIT_ACCEL - accel_min)`. The unit tests pass
+`ACCEL_MIN` (−3.5) as `accel_min`, for which ramp 0 means "no restriction" and ramp 1 means −2.0 —
+correct. **The call site passes `output_accel_min`**, which is −0.5 on most of the fault frames, so
+intermediate ramp values land between −0.5 and −2.0: the limit **clamps hardest when it is least
+confident**. Observed floors on the fault: −1.20 to −1.37.
+
+This is worse than a sign error, because the confidence signal is self-defeating: `ttc = dRel /
+-vRel` is derived from the **same corrupted `vRel`** that causes the fault, so TTC collapses
+1153 → 10.14 s and the ramp collapses 1.00 → 0.04 exactly when braking is hardest.
+
+Fixing the anchor makes the feature **less** effective on the fault (−2.818 vs −1.950), because the
+inversion is accidentally compensating for the collapsing ramp. It is left in place, pinned by
+`TestKnownRampAnchorDefect` in `test_far_lead_brake_limit.py` (marked *PINNED, NOT ENDORSED*), so
+the behaviour cannot drift silently. **Do not "tidy" this anchor without re-running the 39-segment
+diff** — the number it produces today is load-bearing and is not the number the docstring implies.
+
+### `process_replay` could not build `CarParams` at all
+
+`[CONFIRMED]` Separately, and the reason none of the above could be measured at first:
+`selfdrive/test/process_replay/process_replay.py:357` called `get_car()` with the pre-StarPilot
+signature and died with `TypeError: get_car() missing 1 required positional argument: 'params'` on
+any replay that fingerprints. `params` is now passed positionally and
+`starpilot_toggles=get_starpilot_toggles()` explicitly — that argument's `None` default is a lie,
+`opendbc_repo/opendbc/car/car_helpers.py:321` reads `starpilot_toggles.force_fingerprint`
+unconditionally. The import is done inside the function on purpose: `get_starpilot_toggles()` has a
+`SubMaster` as a default argument and would open a socket at import time in every process that
+merely imports this module. Verified by a stock-config replay that now fingerprints for real:
+`HONDA_CIVIC_BOSCH`, source 1, fuzzy True, cached True, fw_count 22.
+
+⚠️ **The same break still exists at `opendbc_repo/opendbc/car/panda_runner.py:17`**, which calls
+`get_car(self._can_recv, self.p.can_send_many, self.p.set_obd, True, False)`. It is in a vendored
+subtree and is a standalone runner, so it was left alone deliberately rather than fixed in passing.
+Anyone using that runner will hit the same `TypeError`.
+
+---
+
 ## Handoff — what is live, what is untested, what bites
 
 **The four contract files are the handoff.** `AGENTS.md` → `STATUS.md` → `DECISIONS.md` →
@@ -843,12 +948,16 @@ example is `7344dc4`, where the other session had landed `D-049` and the corpus 
 
 ### Awaiting a road test
 
-**`FarLeadBrakeLimit` (`ebf4c20`) is a TEST feature, default OFF.** It bounds braking demanded
-for a lead far away in both time and distance, and it is the only behavioural change in this
-work. Corpus replay: 15,082 frames, 2,350 in regime, **8 frames altered — all 8 in the
-flagged segment**, max reduction 0.89 m/s²; zero frames altered across the other 15 segments.
-Its evidence base is **one positive example**, which is why it is off by default and labelled
-TEST. Enabling it is a deliberate act: `Params().put_bool("FarLeadBrakeLimit", True)`.
+**`FarLeadBrakeLimit` (`ebf4c20`, amended 2026-09-16) is a TEST feature, default OFF.** It bounds
+braking demanded for a lead far away in both time and distance, and it is the only behavioural
+change in this work. **As originally shipped it was inert on the fault it was written for** — see
+*The far-lead limit was inert on the fault it exists for* above for why, and for the fix. Current
+replay evidence: 39 segments, toggle OFF vs ON, **exactly one segment changes** — seg 10 of
+`00000231--5782493b00`, the flagged false brake: 21 altered frames, peak `aTarget`
+−2.901 → −1.950 m/s². Zero altered frames across the other 38 segments. Its positive evidence base
+is still **one example**, which is why it is off by default and labelled TEST. Enabling it is a
+deliberate act: `Params().put_bool("FarLeadBrakeLimit", True)`. It carries a **known, pinned defect
+in its ramp anchor** — read that subsection before touching the function.
 
 Everything else committed in this work is tooling, tests or documentation. No default
 behaviour has changed.
@@ -1197,7 +1306,13 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    above and D-049. Two follow-ons, both needing route data: how often lifecycle breaks
    actually occur, and whether a **seamless** ID reuse (no lifecycle break at all) is possible
    — if it is, nothing resets anywhere.
-7. **Still open: characterise the t≈11 s range-drift false brake.** (A second candidate was
+7. **Partly done 2026-09-16 — the event is now characterised and a mitigation is replayed;
+   the constant it argues for is still not justified.** See *The far-lead limit was inert on the
+   fault it exists for* above: the amended `FarLeadBrakeLimit` reduces the commanded peak from
+   −2.901 to −1.950 m/s² on this event and alters nothing across the other 38 segments replayed.
+   That bounds the *output*; it does not fix the *sensor* error, and it does not supply the
+   distribution below. Original wording:
+   **Still open: characterise the t≈11 s range-drift false brake.** (A second candidate was
    examined this session on `0000020a` at 9:53 and **refuted** — that one is vision jitter plus
    braking authority, not range drift. So the original event stands alone, still n=1.) It produced a
    −2.89 m/s² command and a driver override, and it passed the innovation gate, the
@@ -1216,3 +1331,24 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
    automatically** — the recorded numbers came from code that no longer exists, and the harness
    has never been validated, so the disagreement is the finding), or it will not run on real
    data at all, which is itself worth knowing before anyone depends on it.
+
+9. **Open: the far-lead limit's ramp anchor is inverted at the call site.** `[CONFIRMED]` The unit
+   tests anchor the ramp at `ACCEL_MIN` (−3.5); the call site passes `output_accel_min` (−0.5 on
+   most fault frames), so partial confidence produces a *tighter* floor than full confidence. It is
+   pinned by `TestKnownRampAnchorDefect`, not endorsed. Fixing it in isolation makes the feature
+   worse on the only fault we have (−2.818 vs −1.950), because it is compensating for a ramp that
+   collapses on the same corrupted `vRel` that causes the fault. What is needed before changing it:
+   a second fault example, so the ramp's behaviour can be judged on more than n=1. Re-run the
+   39-segment OFF-vs-ON diff on any change here.
+
+10. **Open: more routes, in three specific shapes.** The 40 m distance floor separating the fault
+    (61–64 m) from a correct stop-and-go brake (27 m) has **376 frames sitting in the 30–40 m band
+    on `0000022f--8acb9d34ac`** that pass every other gate, so the margin is not wide. Wanted:
+    highway cut-ins/merges settling at 40–70 m; downhill or trailing-throttle following at 45–60 m;
+    and a second long-range radar range-walk fault. The third is the one that takes the positive
+    evidence past n=1.
+
+11. **Open: `opendbc_repo/opendbc/car/panda_runner.py:17` calls `get_car()` with the old
+    signature** and will raise `TypeError: get_car() missing 1 required positional argument:
+    'params'`. This is the same break fixed in `process_replay.py` on 2026-09-16, but it is in a
+    vendored subtree and a standalone runner, so it was left alone rather than fixed in passing.
