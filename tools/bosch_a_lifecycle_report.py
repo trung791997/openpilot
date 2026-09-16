@@ -58,6 +58,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))  # realpath: see bosch_a_route_report
 
+from opendbc.car.honda.radar_interface import BOSCH_A_LIFE_SATURATED
 from openpilot.tools.bosch_a_route_report import _parse_segments, _segment_number, build_radar_interface, collect_inputs
 from openpilot.tools.lib.logreader import _LogFileReader
 
@@ -86,13 +87,19 @@ PERCENTILES = (50, 90, 95, 99)
 def is_same_incarnation(prev_frame_idx: int, prev_life: int, frame_idx: int, life: int) -> bool:
   """The parser's lifecycle-continuity rule (radar_interface._update_bosch_a).
 
-  Mirrored rather than imported because the parser computes it inline. The tests drive the real
-  parser across a continuity step and a break and assert this agrees with what it did, so a
-  change there breaks them instead of silently changing the census.
+  Mirrored rather than imported because the parser computes it inline -- but the SATURATION value
+  is imported, not copied, so the two cannot drift apart on the number that matters. The tests drive
+  the real parser across a continuity step, a break and a saturated hold, and assert this agrees
+  with what it did, so a change there breaks them instead of silently changing the census.
   """
   frame_delta = (frame_idx - prev_frame_idx) & 0xF
   life_delta = (life - prev_life) & 0xFFF
-  return life_delta == 2 * frame_delta
+  if life_delta == 2 * frame_delta:
+    return True
+  # A counter pinned at its maximum cannot advance and so cannot testify to identity either way;
+  # the parser treats saturated -> saturated as a continuation. Counting those as breaks reported
+  # 1,991 "breaks" on 00000232--fc8dad0d18 for an object the parser was publishing normally.
+  return life == BOSCH_A_LIFE_SATURATED and prev_life == BOSCH_A_LIFE_SATURATED
 
 
 def percentiles(values: list[float]) -> dict:

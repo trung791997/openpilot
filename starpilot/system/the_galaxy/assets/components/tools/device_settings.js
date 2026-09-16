@@ -118,6 +118,9 @@ function isSettingVisible(section, param) {
   if (RADAR_REQUIRED_KEYS.has(param.key) && !state.values.HasRadar) return false
   if (param.key === "AlphaLongitudinalEnabled" && !state.values.AlphaLongitudinalAvailable) return false
   if (param.key === "BoschARadar" && !state.values.BoschARadarAvailable) return false
+  // The far-lead brake limit only ever bounds braking for a radar lead, so it rides the same
+  // car-family gate as the radar toggle itself rather than introducing another one.
+  if (param.key === "FarLeadBrakeLimit" && !state.values.BoschARadarAvailable) return false
   if (state.values[GALAXY_DEVELOPER_MODE_KEY]) return true
   return section.name === "Favorites" || param.settings_tier === "simple"
 }

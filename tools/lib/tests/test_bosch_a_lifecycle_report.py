@@ -44,6 +44,10 @@ def _feed(census, i, life, angle_raw=1024):
 def test_same_incarnation_rule_wraps_like_the_parser():
   assert report.is_same_incarnation(3, 100, 4, 102)
   assert not report.is_same_incarnation(3, 100, 4, 180)
+  # A saturated counter cannot advance, and the parser treats that as a continuation.
+  assert report.is_same_incarnation(3, 0xFFE, 4, 0xFFE)
+  # Frozen anywhere else is still a break.
+  assert not report.is_same_incarnation(3, 4000, 4, 4000)
   # Both counters wrap: frame index is 4 bits, lifecycle 12 bits.
   assert report.is_same_incarnation(15, 4094, 0, 0)
   assert report.is_same_incarnation(14, 4094, 0, 2)
@@ -114,14 +118,32 @@ def test_mark_isolated_separates_single_steps_from_sweeps():
   assert other_track_nearby["isolated"]
 
 
-def test_chronic_break_is_one_run_not_n_permanent_losses():
-  """Frozen lifecycle counter: the identity is observed every sweep and breaks every sweep."""
+def test_saturated_counter_is_not_a_break_and_keeps_publishing():
+  """The parser's saturation carve-out: LIFECYCLE_RAW pins at 0xFFE after ~137 s of tracking.
+
+  Counting those sweeps as breaks is what made 00000232--fc8dad0d18 read as 1,991 lost identities
+  for an object the parser was publishing normally.
+  """
   ri = make_radar_interface()
   census = report.LifecycleCensus(ri)
   for i in range(6):
-    _feed(census, i, life=4082 + 2 * i)      # counts up to 4092
+    _feed(census, i, life=0xFFE - 10 + 2 * i)   # counts up into saturation
   for i in range(6, 20):
-    _feed(census, i, life=4094)              # then freezes
+    _feed(census, i, life=0xFFE)                # and pins there
+  census.finish()
+  assert census.breaks == []
+  assert census.continuations == 19
+  assert ri.pts[TRACK_ID].measured                # still published on the last sweep
+
+
+def test_chronic_break_is_one_run_not_n_permanent_losses():
+  """Frozen but UNSATURATED counter: a real discontinuity on every sweep."""
+  ri = make_radar_interface()
+  census = report.LifecycleCensus(ri)
+  for i in range(6):
+    _feed(census, i, life=3990 + 2 * i)      # counts up to 4000
+  for i in range(6, 20):
+    _feed(census, i, life=4000)              # then freezes below saturation
   census.finish()
   assert len(census.breaks) >= 13
   # Every break but the last was superseded by the next -- none is a "never reappeared" loss.
@@ -129,7 +151,7 @@ def test_chronic_break_is_one_run_not_n_permanent_losses():
   runs = report.chronic_runs(census.breaks)
   assert len(runs) == 1
   assert runs[0]["breaks"] == len(census.breaks)
-  assert runs[0]["lives"] == [4094]
+  assert runs[0]["lives"] == [4000]
   # The parser never republished it once frozen -- the failure this run exposes.
   assert not any(b["reappeared"] for b in census.breaks)
 

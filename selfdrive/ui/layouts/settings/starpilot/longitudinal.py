@@ -619,6 +619,18 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
+      # Shares this section's gating (advanced + Bosch-A car) rather than adding its own: the limit
+      # only ever applies to a radar lead, so it belongs with the radar rows.
+      SettingRow("FarLeadBrakeLimit", "toggle", tr_noop("Far-Lead Brake Limit"),
+                 subtitle=tr_noop("TEST, default off. Bounds how hard openpilot may brake for a lead "
+                                  "that is far away in BOTH time and distance -- more than 3 s of "
+                                  "headway and more than 10 s from collision -- where there is still "
+                                  "time to brake later. It can only make braking gentler, never "
+                                  "stronger, and it stands down whenever the close-lead geometry has "
+                                  "already authorised braking. Its evidence base is a single observed "
+                                  "false brake, which is why it ships off."),
+                 get_state=lambda: self._params.get_bool("FarLeadBrakeLimit"),
+                 set_state=lambda v: self._params.put_bool("FarLeadBrakeLimit", v)),
     ]
 
     self._slc_rows = [

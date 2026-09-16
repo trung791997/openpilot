@@ -540,3 +540,86 @@ The rule this settles: **the repo's Python target does not apply to these three 
 **Known limit, stated per AGENTS.md §4:** there is no 3.9 interpreter in the agent container,
 so this is a *static* check. It would not catch a 3.10+ behaviour change in a function that
 exists in both versions. The only real verification is a user running the tool on 3.9.
+
+## D-051 — Where the corpus harness and the recorded analysis disagree on a definition, the harness's definition is canonical and both are stated
+
+**Settled 2026-09-15**, when `tools/bosch_a_corpus_report.py` first ran on
+`00000231--5782493b00` and was compared against the 6- and 16-segment figures recorded in
+`STATUS.md`. Those figures came from code that was never committed, so a disagreement had no
+tie-breaker; three of them turned out to be **definitions**, not measurements.
+
+1. **The radar/vision range gap carries `RADAR_TO_CAMERA`.** The harness computes
+   `dRel - (lead.x - 1.52)`; the recorded figures computed `lead.x - dRel`. Every recorded gap
+   percentile is reproduced to within 0.9–1.7 m by that 1.52 m offset (6 segments, n=4,872 here
+   against 4,868 recorded). **The harness's definition wins** because it is the one
+   `radard.track_matches_vision` actually applies when deciding whether a track matches a lead —
+   a gap statistic that does not match the matcher cannot inform a matcher threshold.
+2. **Vision-lead occupancy and residuals are cut at `prob >= 0.5`; the gap distribution at
+   `>= 0.9`.** At 0.9, `ed6257ef` (segment 25) reads 1.4% vision-lead occupancy against the
+   recorded 94.2%; at 0.5 it reads 94.2% exactly, its lateral residual reproduces at +4.40 m
+   (recorded 4.30) and `7b76edd7` (segment 24) at +4.36 (recorded 4.33). Both cuts are now
+   reported side by side rather than one being silently chosen.
+3. **U11-versus-range-rate pairs use MEASURED points only, inside contiguous runs.** Coasted
+   points carry a held velocity, not U11, and differentiating across a dropout or an ID reuse
+   manufactures range rates — 55.8 m/s at the extreme. This one does **not** reconcile: the
+   harness reports 9.16% of samples disagreeing by more than 5 m/s against a recorded 2.26%, and
+   no lag at the cross-correlation peak against a recorded −4 samples. **Neither side wins**; see
+   `STATUS.md`.
+
+Rejected: quietly adopting the recorded definition to make the numbers match. The offset and the
+probability cut are each a *decision about what the statistic means*, and the recorded analysis
+cannot be re-run to defend its choice.
+
+**Consequence for anyone reading older figures:** a gap quoted before this date is ~1.5 m larger
+than the same gap quoted after it, and an occupancy quoted before this date is the 0.5 cut.
+
+---
+
+## D-052 — A saturated lifecycle counter is not an identity change; keep publishing the object
+
+**Settled 2026-09-15 from two real drives.** `LIFECYCLE_RAW` is 12 bits and advances by 2 per frame
+index, so it pins at **0xFFE (4094) after 2,047 frames — ~137 s of continuous tracking** at the
+~14.9 Hz sweep rate, and never advances again. It is **not** the invalid sentinel (0xFFF): STATUS,
+range, azimuth and track id all stay valid and the object is still there.
+
+`life_delta == 2 * frame_delta` therefore failed on every subsequent sweep, clearing the range
+history and popping the point each time, so no point could ever mature again.
+
+### What that cost, measured
+
+* `00000232--fc8dad0d18`: track 37 saturated at an age of **137.4 s** and was then observed on every
+  sweep for **121.8 s (1,815 sweeps) and published on none of them**. Its last published geometry
+  was dRel 38.9 m, yRel −0.1 m — the followed lead. Track 34 did the same at 137.5 s.
+* `0000020a--1fd2b58eda`: track 38 was suppressed across segments 5→8 (~3.7 min, starting at route
+  time 5:05.17) and track 51 across segments 11→12.
+* **Corroborated by the device, not only by replay.** On the same CAN, the car (running `0083ffa`,
+  without this fix) published id 38 on **0/893, 0/894, 0/893** sweeps of segments 6, 7 and 8, while
+  this tree's parser publishes 93.1%, 100.0% and 82.3%. On `00000232` the recorded `liveTracks` drop
+  id 37 entirely across segments 10–12 and the radar lead goes 1200/1200 → 0/1200 frames.
+* The driver felt it: the 5:05 brake on `0000020a` handed from radar to vision mid-manoeuvre, and
+  the 7:43 stop-and-creep ran with no radar lead at all.
+
+### The decision
+
+A counter pinned at its maximum **cannot testify to identity either way**, so it must not be read as
+evidence of a new incarnation. `BOSCH_A_LIFE_SATURATED` makes a saturated→saturated step a
+continuation. This follows D-041 and D-042: publishing a bounded/uncertain point is safer than
+deleting a real object, and the range-innovation gate still judges every sweep while
+`_bosch_a_retire_stale_tracks` still retires a genuine disappearance.
+
+Verified after the change: id 37 publishes **1,788/1,815 (98.5%)** over the same window, id 34
+180/184, and the five-route lifecycle census reports **zero chronic runs**.
+
+**Rejected:** treating saturation as a death and letting the track re-birth. That is the same
+"delete the geometry to buy a reset" move D-049 already rejected, and here it deletes a lead that is
+still in front of the car.
+
+### The cost, stated plainly
+
+An ID reuse that happens **while the counter is saturated** is now undetectable at the parser: there
+is no counter movement left to break. That narrows D-049's gate item 2 rather than closing it, and
+it is the price of not deleting a live lead. A tracked object old enough to saturate has been held
+for over two minutes, which makes a reuse at that moment less likely but not impossible.
+
+**Negative control (D-009):** a counter frozen at any non-saturated value is still a lifecycle break
+— `test_a_stuck_but_unsaturated_counter_is_still_a_lifecycle_break`.

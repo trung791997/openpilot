@@ -545,6 +545,258 @@ never crossed into own-lane (|y| < 1.8 m).
 
 ---
 
+## ✅ Routes now reach an agent session, and the recorded corpus is partly reproduced — 2026-09-15
+
+`[CONFIRMED]` Two routes were fetched from Konik **inside an agent session** and analysed:
+`00000231--5782493b00` (32 of 32 rlog segments) and `00000232--fc8dad0d18` (27 rlog segments,
+32 qlogs). Both were recorded by device `11c8fa231c0499ed` on **`0083ffa`**
+(`ns-bosch-radar-testing`, v0.11.2), car `HONDA_CIVIC_BOSCH`. The standing entry "no Konik route
+has been fetched or analysed from an agent session" is retired.
+
+### The laptop can run the whole suite — in an arm64 container, without building
+
+`[CONFIRMED]` The checked-in `.so` files are aarch64 **built against Python 3.12**, and this Mac
+runs Colima with an **aarch64** Linux VM. So they load as-is: no `scons`, no rebuild, no
+architecture trap. The recipe is `ubuntu:24.04` + `python3-venv` + `libzmq5` (the only missing
+shared library) + the pip list from the x86_64 recipe above:
+
+```bash
+docker run --rm --platform linux/arm64 -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PWD":/src/openpilot:ro -v oprad-routes:/routes:ro oprad-test:py312 \
+  python -m pytest -p no:cacheprovider -o addopts="" -q selfdrive/controls/tests/test_leads.py
+```
+
+Four things bite, all of them recorded because each cost time here:
+
+- **Colima shares only `$HOME` with its VM.** A bind mount of anything under `/tmp` or
+  `/private/tmp` silently mounts an **empty** directory inside the container — the report reads
+  "Not found", not "permission denied". Route data goes in a **docker volume** (`docker cp`), or
+  under `$HOME`.
+- **Mount the repo read-only** (`:ro`) and pass `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`
+  and `ruff --no-cache`. A read-write mount let a crashed replay drop a 32 MB `core` file into the
+  working tree.
+- **`/usr/bin/time` does not exist** in `ubuntu:24.04`; wrapping a run in it exits 127.
+- **Do not point pytest at `tools/lib/tests/` as a directory.** It collects upstream openpilot
+  tests that fork and download into `/tmp/comma_download_cache…`; name this branch's test files.
+
+### Test results on this tree, in that container
+
+| suite | result |
+|---|---|
+| AGENTS.md §8 suites + this branch's tool tests | **492 passed, 2 skipped, 1 failed** (510 s) |
+| `selfdrive/controls/tests/test_leads.py` | **6 passed** (5.2 s) — including `test_radar_fault` |
+| tool tests after this session's changes | **147 passed, 2 skipped** (452 s) |
+
+**`test_leads.py` has now run** — the process-replay suite that every prior writeup listed as
+unexercised. `test_radar_fault` drives `replay_process_with_name("card", …)` and passes.
+
+**The one failure is real, and it is not a test bug.** `test_far_lead_brake_limit.py::TestDefaultOff`
+fails with `UnknownKeyName: FarLeadBrakeLimit`, because the key exists in `common/params_keys.h`
+(`ebf4c20`) but **not** in the checked-in aarch64 `common/params_pyx.so` / `libcommon.a`, last
+rebuilt at `a972d15` — before that commit. Consequences, in order of importance:
+
+1. The repo ships a `prebuilt` marker and `launch_chffrplus.sh` only builds when it is absent, so
+   **the device runs those same stale artifacts**.
+2. `Params().put_bool("FarLeadBrakeLimit", True)` — the documented way to enable the TEST feature —
+   **raises `UnknownKeyName` on the device**. The feature is currently unreachable on the car.
+3. Nothing crashes: `longitudinal_planner.far_lead_brake_limit_enabled()` wraps the read in
+   `try/except → False` and re-reads every 100 frames, so the exception is caught ~every 5 s.
+
+Rebuilding the device params artifacts is a deliberate, separate commit (AGENTS.md §10) and is
+**not** done here.
+
+### Upstream PR state, re-checked
+
+`JamesL787/openpilot` **PR #9 is MERGED** (2026-09-05) and its merge commit `10e4705` is an
+ancestor of this branch, so the §8 run above *is* the re-run those records asked for.
+`firestar5683/StarPilot` **PR #124 is CLOSED, unmerged** — it was not re-run.
+
+### The recorded corpus: what reproduced, what did not
+
+`[CONFIRMED]` `tools/bosch_a_corpus_report.py` ran on all 32 segments in 38 s. The recorded
+hash-labelled segments are identified beyond reasonable doubt, and **the 6-segment corpus is
+segments 10–15 and the 16-segment corpus is segments 10–25** of `00000231--5782493b00`:
+
+| recorded label | segment | matched on |
+|---|---|---|
+| `3a4e0842` (the false brake) | **10** | −2.89 m/s² at dRel 62.4, vRel −4.36, headway 3.57, TTC 14.3; `experimentalMode` False until t=17.3 s (71.1%) |
+| `f66399a5` | **11** | both its brakes: −2.40 at 18.5 m and −2.17 at 33.9 m |
+| `97566dde` | **13** | −2.00 at 40.0 m, headway 2.04, TTC 18.1 |
+| `9e21cac9` | **14** | gap p50 +12.33, max +26.76 (recorded 13.8 / 27.7 before the 1.52 m offset) |
+| `4b66cbf6` | **17** | −3.25 at 71.7 m, vRel −13.28, TTC 5.40, `cruise` |
+| `3053f5a6` | **19** | −3.50 at 61.3 m, vRel −12.14, TTC 5.05, vprob 1.00, override |
+| `7b76edd7` | **24** | lateral residual p50 +4.36, range −1.22 (p25 −1.62, p75 −0.80) |
+| `ed6257ef` | **25** | vision lead 94.2% at prob ≥ 0.5, 1.84 tracks/frame, radar lead 0.8%, lateral +4.40 |
+| `78270494` | **26** | `experimentalMode` dwells of 78 ms and 112 ms at t=25.25 and 25.37 |
+
+`1be0aa43` and `bf574f16` are segments 12 and 15 in some order; nothing recorded separates them.
+
+**Reproduced** (see D-051 for the two definition differences):
+
+- Pooled radar/vision gap, segments 10–15: **n=4,872** against a recorded 4,868, every percentile
+  within 0.9–1.7 m of the recorded value — the `RADAR_TO_CAMERA` offset.
+- `corr(visionLead%@0.5, radarLead%)` over segments 10–25: **+0.818** against a recorded +0.817.
+- The four "≈0% radar lead" segments: 15, 16, 20, 24 at vision occupancy **0.0 / 0.0 / 0.6 / 25.0**
+  — the recorded list exactly.
+- The two "100% experimental mode" segments with ~100% radar-lead use: 11 and 12.
+- Every hard-brake row's accel, dRel, vRel, headway, TTC and vision probability.
+- `tools/bosch_a_route_report.py` on segment 10 reproduces the first-route census **exactly**:
+  144,380 Bosch-A frames, 1,786 sweep triggers, 2,878 points over 892 sweeps, 33 track ids,
+  dRel 10.9–111.2 m, vRel −13.50…+4.52, liveTracks 893, radarState 1200.
+
+**NOT reproduced, and unresolved in both directions:**
+
+- **U11 versus the range derivative.** Harness (measured points only, runs split at 0.1 s):
+  n=10,444, r=0.882 at zero lag, peak at **lag 0**, **9.16%** of samples disagreeing by >5 m/s,
+  max 55.05 m/s. Recorded: n=9,390, r=0.807, peak at **lag −4** (r=0.847), **2.26%**, max 12.22.
+  The recorded numbers came from code that no longer exists; the harness's own filtering is
+  documented but unvalidated. **Do not cite either as settled.**
+- **`|d(gap)/dt|`**: harness p50 6.0 / p90 30.5 / p95 43.3 / max 214.6 against recorded
+  4.7 / 22.3 / 31.1 / 130.2. Both refute the gap-rate gate; they disagree on how badly.
+- **`corr(experimental%, radarLead%)`** over 10–25: **−0.197** against a recorded −0.084. Sign
+  agrees, magnitude does not; both are far from explaining anything.
+
+**Two corrections to the recorded hard-brake table**, from the same run:
+
+- The flagged false brake **was** overridden by the driver, and `3053f5a6` too. The earlier harness
+  read the override flag at the peak frame only, where the gas press lands ~0.3 s later.
+- `3053f5a6` contains **two** runs over −1.5 m/s² (−3.50 at t=12.56, then −3.09 at t=13.41), not
+  one. The recorded table lists one.
+
+Whole-drive, three hard brakes fall outside the recorded 16-segment window, including
+**segment 7 at −3.50 m/s² with vRel at the −13.50 rail and vision prob 0.58**, driver override.
+
+### `experimentalMode` chattering is real, and not confined to one segment
+
+`[CONFIRMED]` The recorded `78270494` observation reproduces (78 ms, 112 ms) and is not unique.
+`00000231` segment 9 switches **10 times**, four of them with dwells of **151, 89, 59 and 54 ms**
+within 0.2 s at t≈46.2–46.4. On `00000232`, segment 12 shows 38–196 ms dwells and segment 22 shows
+115 ms and 138 ms. Still nothing ties it to a control fault; it is now measured rather than
+anecdotal.
+
+### D-044's shadow channel, measured on both drives
+
+`[CONFIRMED, device-side telemetry]` `tools/bosch_a_vrel_shadow_report.py` compares
+`radarState.leadOne.vRel` (U11) with `vRelRangeDerived` on the selected radar lead:
+
+| route | frames | r (measured) | `|diff|`>2 m/s | rail samples | rail understatement p50 / max |
+|---|---|---|---|---|---|
+| `00000231` | 14,446 finite (203 NaN) | **+0.877** | 13.2% | 150 | **+2.19** / +7.37 m/s |
+| `00000232` | 15,091 finite (170 NaN) | **+0.854** | 8.9% | 60 | **+2.12** / +9.95 m/s |
+
+So on the rail the range channel says the object is closing **~2 m/s faster** than the published
+bound, with a worst case near 10 m/s — the direction D-041 predicted, now quantified on real
+drives. **Onset lag is not established**: requiring a crossing to hold 5 samples and pairing it
+within 3 s leaves **2 events** (0.19 s and 1.16 s, U11 late) on `00000232` and none on
+`00000231`. D-044's recorded 0.88–1.28 s claim is neither confirmed nor refuted by n=2. Note also
+that `radarState` repeats at 20 Hz over a 14.35 Hz radar, so these n are inflated by duplicates.
+
+### D-049 gate item 1, answered on one drive and refuted on the other
+
+`[CONFIRMED]` `tools/bosch_a_lifecycle_report.py` replays CAN through the real `RadarInterface`
+and counts what the parser itself decided. On **`00000231`: zero lifecycle breaks** in 27,899
+sweeps (41,238 continuations, 740 fresh identities, 0 parser errors). An independent check of
+segment 10 agrees: 0 range-history clears on a same track object, and the recorded "track 58
+reuse" is a **retirement then rebirth** (new objects at t=5.56 s and t=33.34 s), not a lifecycle
+break. So the one-message reset D-049 characterises never fired on that drive — a latent hazard,
+not a live one.
+
+`00000232` is the opposite, and it exposed a parser defect rather than a reset: see the section
+below.
+
+**Seamless reuse (gate item 2) remains open.** Of 18 lateral steps >1.5 m with no break on
+`00000231`, 14 are consecutive-sweep runs — a smooth sweep of a real target across the car frame
+(track 32 walked y +10.3 → −1.4 m over seven sweeps at a steady ~51 m), not an identity swap.
+Four isolated steps on `00000231` and three on `00000232` remain as candidates; none is confirmed.
+
+---
+
+## 🔴 The lifecycle counter saturates after ~137 s and the parser deleted the lead — fixed 2026-09-15
+
+`[CONFIRMED on two drives, offline replay + the device's own recording]` **This is the most
+consequential finding in this session, and it explains symptoms the driver reported in chat.**
+
+`LIFECYCLE_RAW` is a 12-bit counter that advances by 2 per frame index, so it reaches its highest
+even value **0xFFE = 4094 after 2,047 frames — about 137 s of continuous tracking** at the ~14.9 Hz
+sweep rate — and then stops advancing. It is *not* the invalid sentinel (0xFFF): STATUS, range,
+azimuth and track id all stay valid and the object is still physically there.
+
+The parser's continuity rule `life_delta == 2 × frame_delta` therefore fails on **every** sweep once
+the counter pins. Each failure cleared the range history and popped the point, so no point ever
+matured again: **the object was observed every sweep and published on none of them**, for as long as
+it stayed visible.
+
+| route | track | age at saturation | suppressed for | published during |
+|---|---|---|---|---|
+| `00000232--fc8dad0d18` | id 37 | **137.4 s** | **121.8 s** (1,815 sweeps) | **0** |
+| `00000232--fc8dad0d18` | id 34 | 137.5 s | 12.3 s (184 sweeps) | 0 |
+| `0000020a--1fd2b58eda` | id 38 | — | segments 5→8, ~3.7 min | 0 after t=5:05 |
+| `0000020a--1fd2b58eda` | id 51 | — | segments 11→12, ~95 s | 0 |
+
+Track 37's last published geometry before it vanished was **dRel 38.9 m, yRel −0.1 m** — the lead we
+were following.
+
+**The device's own recording corroborates it independently of any replay.** On `00000232`, recorded
+`liveTracks` carry id 37 in 894/894 frames of segment 8 and 569/893 of segment 9, then **0** in
+segments 10, 11 and 12, while the radar lead goes from 1200/1200 frames to **0/1200**. On
+`0000020a`, same CAN, device (pre-fix `0083ffa`) versus this tree's parser:
+
+| segment | device published id 38 | with the fix |
+|---|---|---|
+| 5 | 76/894 (8.5%) | 890/894 (99.6%) |
+| 6 | **0/893 (0.0%)** | 831/893 (93.1%) |
+| 7 | **0/894 (0.0%)** | 894/894 (100.0%) |
+| 8 | **0/893 (0.0%)** | 735/893 (82.3%) |
+
+**The fix** (`BOSCH_A_LIFE_SATURATED`, in `radar_interface.py` with its evidence block): a
+saturated→saturated step is treated as a continuation, because a counter pinned at its maximum
+cannot testify to identity either way. Per D-041/D-042 the safe direction is to keep publishing
+geometry — the range-innovation gate still judges every sweep and staleness still retires a genuine
+disappearance. **Cost, recorded against D-049: an ID reuse that happens *while* the counter is
+saturated cannot be detected at all.**
+
+Verified after the fix: id 37 publishes **1,788/1,815 sweeps (98.5%)** across the same window, id 34
+180/184 (97.8%). The five-route census now reports **0 chronic runs everywhere** (`0000020a` 2 single
+one-sweep breaks, `0000020b` 2, `00000213` 1, `00000231` 0, `00000232` 2 — all of them the ordinary
+D-049 one-sweep case). Negative control per D-009: a counter
+frozen at any *non*-saturated value is still a lifecycle break, pinned by
+`test_a_stuck_but_unsaturated_counter_is_still_a_lifecycle_break`.
+
+`[NOT VERIFIED]` Offline replay only. Nothing here shows how the car behaves with the lead restored.
+
+---
+
+## The five flagged drives — what each event actually was, 2026-09-15
+
+`[CONFIRMED, device-side telemetry + offline replay]` Three further routes were fetched and analysed
+against timestamps the driver flagged in chat: `0000020a--1fd2b58eda` (17 rlog segments),
+`0000020b--60b34177d9` (38) and `00000213--0b61770c26` (23). The driver's own `userBookmark` presses
+land 5–25 s *after* each quoted time, confirming the chat timestamps are the events themselves.
+
+| flagged | what the data shows |
+|---|---|
+| **5:05** semi-hard stop | **Correct brake** — lead genuinely decelerating (vLeadK 18.7 → 5.7, aLeadK −5.7), vision agreeing at prob 1.00, command −3.45. But the radar lead **vanished mid-manoeuvre at t=5:05.17** — the saturation defect above — and the lead handed to vision for the next ~3.7 min. |
+| **7:43** stop then creep | Stop at only **−1.2 m/s²** on a **vision** lead (radar still suppressed), ending with the driver on the brake. During the creep the radar briefly offered tracks *further away* than vision (id 26 at 16.8 m vs vision 14.0; id 24 at 7.4 vs 6.6) with negative `vLeadK`. |
+| **9:53** "random brake" | **Not a range-drift false brake.** At full rate the radar range moves smoothly (50.8 → 45.9 m over 2.3 s), per-sweep innovation 0.00–0.32 m, `measured` throughout; the apparent radar/vision divergence is **vision x jitter of ±3 m** sweep-to-sweep. The lead really did decelerate mildly (vLeadK 23.5 → 21.4) and the planner commanded **−1.67 m/s² for a lead 48 m away closing at <1 m/s** (TTC ≈ 56 s). That is braking authority, not a sensor fault. **`FarLeadBrakeLimit` would not have caught it**: its regime needs headway ≥ 3.0 s and this was **2.07 s**. |
+| **6:06** | Braking −1.1…−1.41 with **no lead at all** (vision prob 0.15–0.50 at ~130 m), then −2.60 against radar id 16 at **94.4 m, y +2.3 m, vLeadK 2.3** — a near-stationary, off-lane object at 94 m, vision prob 0.52. |
+| **12:18**, **28:44** | Ordinary lead-deceleration braking on an in-lane radar lead; −1.6 and −1.9 peak. Nothing anomalous. |
+| **29:52** | **Not openpilot.** From t=47.1 the car is **disengaged with the brake pedal pressed** (`en0`, `brk1`, commanded accel 0.00) while the driver slows 22.0 → 10.4 m/s. |
+| **15:12** curve braking | Lead id 56 at 21–28 m through a curve (steering to +12°, curvature −0.0045). `aLeadK` swings **−1.7 to −3.0 while `vRel` is positive and the range is opening**; commands −1.4…−1.73. The lead filter is manufacturing deceleration out of curve geometry. |
+| **16:04** cut-out | The real event is at **t=16:15**. Radar id 44 **keeps its track id** while its motion steps discontinuously in one 0.28 s sweep: dRel 61.6 → 59.3 but `vRel` **+0.45 → −3.62**, `aLeadK` −0.74 → −3.39 → −5.11. Command ramps to −3.45, measured **aEgo −4.81 m/s²**, driver overrides with the gas. The parser recorded **no lifecycle break** on that route at that time. |
+
+**On "FCW".** There are **no FCW or collision `onroadEvents` anywhere** in the sampled segments — the
+instrument works (311 event messages, 10 distinct names: `cruiseMismatch`, `gasPressedOverride`,
+`pedalPressed`, `laneChange`, …). The `radarState.leadOne.fcw` bit is set on **70.4%** of frames on
+`0000020b` and **100%** on `0000020a` segment 9, so that bit is not an alert indicator. The four
+"FCW" timestamps are brake events, listed above.
+
+`[OPEN]` **16:04 is the best seamless-reuse candidate yet found** (D-049 gate item 2): an identity
+that keeps its id while its motion changes discontinuously, with no lifecycle break for the parser
+to see. It is equally consistent with the radar genuinely re-measuring onto the revealed slower car.
+Distinguishing the two needs the raw per-slot data at that instant, which has not been done.
+
+---
+
 ## Handoff — what is live, what is untested, what bites
 
 **The four contract files are the handoff.** `AGENTS.md` → `STATUS.md` → `DECISIONS.md` →
@@ -793,7 +1045,15 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 - **Fusion timing is untested here.** `radard` runs at the ~20 Hz model rate while Bosch-A
   measures at ~14.35 Hz; the duplicate-payload path (`measurement_update=False`) is covered
   by unit tests only, never on a live bus.
-- **`test_leads.py` has not been run** in this environment (process-replay harness).
+- *Resolved 2026-09-15 (evening).* **`test_leads.py` has now run** — 6 passed, including
+  `test_radar_fault`, which drives `replay_process_with_name("card", …)`. It runs in the arm64
+  container described above; it still cannot run on macOS directly (`SocketEventHandle` needs
+  eventfd, and that test is skipped on Darwin by its own marker).
+- *Resolved 2026-09-15 (evening): routes now reach an agent session end to end. The walk-back
+  preflight passed **8/8** live, `tools/konik_fetch.py` pulled **five routes in full**, and all
+  five were decoded and analysed in the arm64 container — so step 8's payload check is done, on
+  a different machine than the fetch. What remains true is only the last line below: a remote/
+  cloud agent container still cannot reach `konik.ai`. Original entry kept for the record.*
 - **The Konik transport is verified from the user's laptop; no route has reached an agent
   session over it.** On 2026-09-15 the user ran `tools/konik_preflight.py --dongle-id
   11c8fa231c0499ed` on macOS and it returned **7 passed, 0 failed, 1 warning**: DNS,
@@ -813,15 +1073,22 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
   4 qlog segments**. The device sends qlogs eagerly and holds rlogs for WiFi. qlogs are
   decimated and drop the CAN data, so a qlog-only route cannot support any radar claim.
   `konik_preflight.py` now walks back up to `--scan-routes` (default 10) older routes to find
-  one that has rlogs, names it, and downloads from *that* route. **Whether any route on this
-  account has rlogs at all is still unknown** — it has not been re-run since that change.
+  one that has rlogs, names it, and downloads from *that* route. **Resolved 2026-09-15
+  (evening):** the walk-back was run and found `11c8fa231c0499ed|00000232--fc8dad0d18` with
+  **27 rlog segments**, one route back from the qlog-only newest. Five routes have since been
+  fetched in full — `0000020a` (17 segments), `0000020b` (38), `00000213` (23), `00000231` (32),
+  `00000232` (27).
 - The checked-in `.so` files remain **aarch64**, and a local build still overwrites 53 of
   them. The SessionStart hook rebuilds and masks them, but a session that skips the hook
   will hit both.
-- 🔴 **The recorded corpus numbers are still not reproduced.** The harness that can
-  reproduce them now exists (`tools/bosch_a_corpus_report.py`, added below), but it has never
-  been run against a route, so every figure in the 6- and 16-segment sections remains a
-  number no one can currently re-derive. The original defect: the 6- and 16-segment results
+- 🟡 **The recorded corpus numbers are PARTLY reproduced — see the reproduction section above
+  and D-051.** Reproduced: the pooled gap distribution (n=4,872 against a recorded 4,868, every
+  percentile within the 1.52 m `RADAR_TO_CAMERA` offset), `corr(visionLead%@0.5, radarLead%)`
+  (+0.818 against +0.817), the per-segment identities, and every hard-brake row's kinematics.
+  **Still NOT reproduced, and unresolved in both directions:** the U11-vs-range-derivative
+  statistics (9.16% gross disagreement against a recorded 2.26%; peak at lag 0 against −4),
+  `|d(gap)/dt|`, and `corr(experimental%, radarLead%)` (−0.197 against −0.084). The original
+  defect that caused this is unchanged and is why it cost a session to sort out: The original defect: the 6- and 16-segment results
   above (pooled radar/vision gap percentiles, the
   `|d(gap)/dt|` distribution, `corr(experimental%, radarLead%)`, the U11-vs-range-derivative
   cross-correlation, the hard-brake tables, the per-segment lateral residuals) were recorded
@@ -839,42 +1106,49 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 
 ## Next
 
-1. **First route queued for Bosch-A analysis, not yet fetched or analysed.**
-   Device `11c8fa231c0499ed`, route `11c8fa231c0499ed|00000231--5782493b00` (supplied
-   2026-09-15). Nothing is known about its contents yet — whether it carries Bosch-A object
-   frames at all, and whether any of them are real targets rather than the no-target
-   sentinels every prior clean replay contained, is exactly what
-   `tools/konik_preflight.py` is for. Do **not** cite this route as evidence of anything
-   until that has run.
+1. **Done 2026-09-15 (evening)** — five routes fetched and analysed in-session. Fetch any
+   further route with:
    ```bash
-   python tools/konik_preflight.py \
-     --dongle-id 11c8fa231c0499ed \
-     --route '11c8fa231c0499ed|00000231--5782493b00'
+   python3 tools/konik_fetch.py --route '11c8fa231c0499ed|<route>' --out <dir outside the repo>
    ```
-   Requires a Konik token (`$KONIK_TOKEN`) and an environment whose network policy permits
-   `api.konik.ai` **and** the storage host the signed segment URLs point at.
-2. Get `test_leads.py` running in a real process-replay environment; it is the only radar
-   suite still unexercised.
-3. Re-run the `radard`/planner suites against the Alpha Long PR branches now that the
-   architecture blocker is understood — both PR records list them as skipped for that reason.
-4. **Done 2026-09-15** — a real-target route exists; see the section above. The follow-on
+2. **Done 2026-09-15 (evening)** — `test_leads.py` runs: 6 passed, including the
+   process-replay `test_radar_fault`.
+3. **Done 2026-09-15 (evening)** — `JamesL787/openpilot` PR #9 is **merged** and its merge
+   commit `10e4705` is an ancestor of this branch, so the §8 run (492 passed / 1 failed /
+   2 skipped) *is* that re-run. `firestar5683/StarPilot` PR #124 is **closed unmerged** and was
+   not re-run.
+4. **🔴 Rebuild the aarch64 params artifacts, or `FarLeadBrakeLimit` stays unreachable on the
+   car.** The key is in `common/params_keys.h` (`ebf4c20`) but **not** in the checked-in
+   `common/params_pyx.so` / `libcommon.a`, last built at `a972d15`. The repo ships a `prebuilt`
+   marker and `launch_chffrplus.sh` only builds when it is absent, so the device runs those
+   stale artifacts: `Params().put_bool("FarLeadBrakeLimit", True)` raises `UnknownKeyName`
+   there, and the new UI toggle (added this session, Advanced Longitudinal Tuning → Bosch A
+   Radar section) cannot write it. Nothing crashes — the planner's read is wrapped in
+   `try/except → False` on a 100-frame cadence — the feature is simply inert. Rebuilding device
+   artifacts is a deliberate, separate commit (AGENTS.md §10, pattern `a972d15`) and is **not**
+   done here.
+5. **Done 2026-09-15** — a real-target route exists; see the section above. The follow-on
    is the shadow `vRelRange` channel (D-044): this segment carries 77 railed samples and an
    ~11 m vision/radar range disagreement, which is exactly the material that channel was
    published to be judged against. Compare `vRelRange` with U11 on this route before anything
    is wired into control.
-5. **Done 2026-09-15** — a track-ID reuse does reset the lead Kalman filter, by object
+6. **Done 2026-09-15** — a track-ID reuse does reset the lead Kalman filter, by object
    absence rather than by the incarnation boundary the parser computes, and the reset is
    carried by a single `liveTracks` message. See *Track-ID reuse and the lead Kalman filter*
    above and D-049. Two follow-ons, both needing route data: how often lifecycle breaks
    actually occur, and whether a **seamless** ID reuse (no lifecycle break at all) is possible
    — if it is, nothing resets anywhere.
-6. **Highest priority: characterise the t≈11 s range-drift false brake.** It produced a
+7. **Still open: characterise the t≈11 s range-drift false brake.** (A second candidate was
+   examined this session on `0000020a` at 9:53 and **refuted** — that one is vision jitter plus
+   braking authority, not range drift. So the original event stands alone, still n=1.) It produced a
    −2.89 m/s² command and a driver override, and it passed the innovation gate, the
    one-sided rate check and the gross-distance gate. Needed before any fix: the distribution
    of radar-versus-vision range disagreement across routes where the radar is right, so a
    tightened `HONDA_BOSCH_A_GROSS_DISTANCE_M` can be justified rather than guessed (D-042).
    More real-target routes are the blocker.
-7. **Run `tools/bosch_a_corpus_report.py` against `00000231--5782493b00` and compare it with
+8. **Done 2026-09-15 (evening)** — the harness ran; see the reproduction section and D-051 for
+   what matched and what did not. Original wording:
+   **Run `tools/bosch_a_corpus_report.py` against `00000231--5782493b00` and compare it with
    the figures recorded above.** The harness was written 2026-09-15 and covers every quantity
    the 6- and 16-segment sections quote, but it has never seen a route, so the recorded numbers
    are still unreproduced. This is D-048's validation-gate item 2 and D-049's item 3; both
