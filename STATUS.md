@@ -934,6 +934,130 @@ Anyone using that runner will hit the same `TypeError`.
 
 ---
 
+## 🟡 The shadow `vRelRange` channel is now wired into control behind a toggle — 2026-09-16
+
+**TEST feature, default OFF, param `RangeDerivedVrel`, Bosch-A only. Never run on a car.**
+Decision and rejected alternatives: **D-053**. Constants and their evidence: the
+`RANGE_VREL_ASSIST_*` block in `selfdrive/controls/radard.py`.
+
+D-044 published `vRelRange` — a 5-sample LSQ of d(dRel)/dt — as telemetry and said nothing consumed
+it. That is no longer true. With the toggle on, for the lead track only, the range rate may push
+the published closing speed **more closing, never less**.
+
+### What it does, precisely
+
+| | |
+|---|---|
+| Scope | Bosch-A cars only; `RadarD.prev_lead_track_ids` only (leadOne/leadTwo) |
+| Direction | one-sided — `disagreement = vRel - vRelRange`, acted on only when **positive** |
+| Arming | 2.0 m/s sustained across 5 consecutive **measured** updates (0.35 s) |
+| Cap | 8.0 m/s of extra closing |
+| Geometry | dRel ≥ 8.0 m and \|yRel\| ≤ 1.5 m → azimuth ≤ 10.8°, cos 0.982 |
+| Touches | `radarState.leadOne/leadTwo` `vRel` and `vLead`, and the lead KF (so `aLeadK`) |
+| Does **not** touch | `Track.vRel` / `Track.vLead` — so `track_matches_vision`, `vision_track_probability` and the adjacent-lane detectors are unchanged |
+| Disarms | on a coast, a range dropout, leaving the geometry gate, the flag going off, or the disagreement reaching zero |
+| Holds | on a **duplicate** radard cycle — no new `liveTracks`, so nothing to re-decide. Not the same thing as a coast; see below |
+
+Because it never edits the track's own velocity, this changes what is reported **about** the chosen
+lead and never **which** track is chosen. That separation is deliberate — see D-053 rejected
+alternative 2.
+
+### Why it exists
+
+* **The rail.** D-041, `000001f9` at 29:52: U11 pinned at −13.5 m/s on 88/88 active frames with
+  healthy u10 while the range closed at −19.4 m/s. D-041 published the rail as a bound and left
+  recovering the true value "to a separate, validated change". This is that change, unvalidated.
+* **The lag.** D-043/D-044, `000001fe/fb/fd`: U11 is **0.88–1.28 s late** to a closing onset where
+  a 4-sample range LSQ lands within **0.07–0.14 s**. `000001f3` at 19:27: fitted −6.7 vs U11 −2.08.
+
+### 🔴 The hazard — read this before touching a constant
+
+**This is a velocity check that reads the range channel, so a range error is invisible to it.** The
+t≈11 s false brake above is a range error: track 6 walked 71.8 → 61.6 m while vision held 75–78 m
+at prob 0.93–1.00 and the real gap grew. U11 (−6.02) and the range fit (−4.5 to −6.4) **agreed**.
+This file already records that the shadow channel is blind to that fault; the assist inherits the
+blindness exactly.
+
+`[INFERRED from the recorded figures — driven through the real Track object in a unit test,
+NOT replayed]` on those numbers the worst disagreement is **+0.38 m/s against the 2.0 m/s
+threshold**, so the assist stays inert there. The margin is **1.62 m/s**. That is the only thing between this
+feature and amplifying the one false brake this branch has recorded.
+`TestTheRangeWalkFault` pins it. **Do not "fix" that test** — if it starts failing, the feature has
+become the amplifier, not the test.
+
+### What was verified, and by what method
+
+* `[CONFIRMED — static unit test]` `selfdrive/controls/tests/test_range_vrel_assist.py`, **47
+  passed**: default-OFF, one-sidedness across the whole disagreement axis, the arming count,
+  single- and double-gross-outlier rejection, the correction cap, both geometry gates, coast and
+  dropout disarm, continuous decay as U11 catches up, the KF path, and the `000001f9` rail and
+  `000001f3` onset cases recovering toward the range rate.
+* `[CONFIRMED — static unit test]` `TestRadardLoopCadence` drives the **real** radard interleave —
+  a 20 Hz loop over the 14.35 Hz radar, so ~1 cycle in 4 carries no new `liveTracks` message — and
+  pins that the assist arms there, that a duplicate cycle changes nothing, and that a coast still
+  clears. See the subsection below; this is where the first implementation was wrong.
+* `[CONFIRMED — static]` D-009 negative controls: `TestNegativeControlOfTheTestsThemselves` breaks
+  the arm count, the disagreement threshold, the lateral gate and the duplicate-cycle hold in turn
+  and asserts each guarded property actually fails.
+* `[CONFIRMED — static]` No regression in the §8 suites: honda **240 passed**; radard / lead
+  behaviour / lead follow policy / following distance / turn lead / far-lead brake limit
+  **152 passed**; `test_leads.py` (process replay, including `test_radar_fault`) **6 passed**.
+  `ruff check` clean on `radard.py` and the new test file.
+* `[CONFIRMED — static]` The x86_64 `common/params_pyx.so` was rebuilt in this container and
+  `Params().get_bool("RangeDerivedVrel")` returns `False` by default.
+
+### A duplicate radard cycle is not a coast — the defect this nearly shipped with
+
+`[CONFIRMED — static]` `RadarD` runs at the 20 Hz model rate over a 14.35 Hz radar and collapses
+two conditions into one bit (`measured = pt.measured and radar_fresh`), so `Track.update` sees
+`measurement_update = False` both when **no new message arrived** (a duplicate, ~1 cycle in 4,
+`t_now` unchanged, point data unchanged, lead KF not stepped) and when a **coast** arrived (new
+message, `t_now` advanced, parser's measured bit clear).
+
+The first implementation cleared on both. That resets the arm count roughly every fourth cycle,
+so five consecutive qualifying fits are unreachable and **the feature would have been permanently
+inert on the car** — while all 41 unit tests passed, because every one of them fed exactly one
+update per radar sweep. It was caught by re-reading the call site before committing, not by the
+tests. The two are now separated by whether `t_now` advanced, which needs no new constant.
+
+The general lesson is worth more than the fix: **a Bosch-A unit test that feeds one
+`Track.update` per sweep is not testing what radard does.** Anything downstream of
+`measurement_update` needs `TestRadardLoopCadence`'s interleave, or it is testing a cadence the
+car never runs at.
+
+### What is NOT verified
+
+* **No replay and no road evidence for the feature ON.** The `test_leads.py` process replay
+  above ran with the param at its default, so it shows the **OFF** path is unchanged and nothing
+  more. Unlike `FarLeadBrakeLimit`, there is no OFF-vs-ON segment diff for this. The next agent
+  should run one before anything else — the 39-segment harness used for the far-lead limit is the
+  right tool, and the expected result is **zero altered frames on all 39**, because no segment in
+  the corpus contains a sustained 2 m/s U11-vs-range disagreement on a lead track.
+* The `000001f9` rail and `000001f3` onset cases are driven here as **synthetic constant-rate range
+  series with the recorded velocities**, not as log replays. They show the arithmetic works; they
+  do not show the feature would have helped on those drives.
+* The 8.0 m/s cap is sized from **n = 2** recorded events (5.9 and 4.6 m/s). It is a bound on
+  damage, not a fitted value.
+
+### ⚠️ The toggle is NOT reachable on the car yet
+
+`common/params_keys.h` gained `RangeDerivedVrel`, but the **checked-in `common/params_pyx.so` is
+aarch64 and still has the old key list**, so `get_bool` raises `UnknownKeyName` on the device and
+`_range_vrel_assist_enabled()` swallows it and returns `False` — the feature is unreachable no
+matter what the UI shows. This is the exact trap open item 4 records for `FarLeadBrakeLimit`.
+The larch64 rebuild is a **deliberate, separate commit** (AGENTS.md §10); follow the recipe and the
+scons-lies warning in open item 4 verbatim, and expect the key count to go 822 → **823**.
+
+### Where the native value went
+
+Nothing was removed and the capnp schema is unchanged. When the assist is active, `radarState`'s
+`vRel`/`vLead` carry the correction and `leadOne.vRelRangeDerived` still carries the raw fit; the
+**native U11 `vRel` for the same track is recoverable from `liveTracks`** by matching
+`rr.points[].trackId` against `radarTrackId`. So a log still contains all three numbers and the
+comparison the D-044 channel exists for stays auditable.
+
+---
+
 ## Handoff — what is live, what is untested, what bites
 
 **The four contract files are the handoff.** `AGENTS.md` → `STATUS.md` → `DECISIONS.md` →
@@ -958,6 +1082,14 @@ replay evidence: 39 segments, toggle OFF vs ON, **exactly one segment changes** 
 is still **one example**, which is why it is off by default and labelled TEST. Enabling it is a
 deliberate act: `Params().put_bool("FarLeadBrakeLimit", True)`. It carries a **known, pinned defect
 in its ramp anchor** — read that subsection before touching the function.
+
+**`RangeDerivedVrel` (2026-09-16) is a TEST feature, default OFF.** It lets the range-derived
+closing rate correct the Bosch-A native U11 velocity for the lead, one-sided and bounded — see
+*The shadow `vRelRange` channel is now wired into control behind a toggle* above and **D-053**. It
+has **no replay evidence and no road evidence at all**, which is a weaker position than the
+far-lead limit was in, and it is **not reachable on the car** until the larch64 `params_pyx.so` is
+rebuilt (open item 12). Enabling it is a deliberate act:
+`Params().put_bool("RangeDerivedVrel", True)`.
 
 Everything else committed in this work is tooling, tests or documentation. No default
 behaviour has changed.
@@ -1352,3 +1484,54 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     signature** and will raise `TypeError: get_car() missing 1 required positional argument:
     'params'`. This is the same break fixed in `process_replay.py` on 2026-09-16, but it is in a
     vendored subtree and a standalone runner, so it was left alone rather than fixed in passing.
+
+12. **Open: `RangeDerivedVrel` is unreachable on the car until `common/params_pyx.so` is rebuilt
+    for larch64.** `[CONFIRMED — static]` The key is in `common/params_keys.h`, but the checked-in
+    `.so` is aarch64 and carries the **old 822-key list**, so `get_bool("RangeDerivedVrel")` raises
+    `UnknownKeyName` on the device, `_range_vrel_assist_enabled()` swallows it, and the feature
+    stays off no matter what the Galaxy toggle shows. This is open item 4 repeating itself with a
+    different key. Use item 4's recipe **verbatim** — the `oprad-build:cy314` image, Cython pinned
+    to 3.1.4, mounted at `/work`, `SP_FORCE_TICI=1` — and heed its warning that **scons will report
+    success without rebuilding**: delete `.sconsign.dblite` and the archive
+    (`./tools/clean_build_artifacts.sh --sconsign`) and confirm the hash actually changed. Expected
+    key count **822 → 823**, with `RangeDerivedVrel` the sole difference and nothing dropped, proved
+    by diffing `all_keys()` between the old and new `.so` — **not** with `strings`. Ship it as a
+    deliberate, separate commit containing only the binaries (AGENTS.md §10, pattern `b9612b2a`).
+    Until then, `test_param_default_is_off` passes here only because this container's **x86_64**
+    `.so` was rebuilt in-session; that proves nothing about the device.
+
+13. **Open: the OFF-vs-ON replay diff for `RangeDerivedVrel` has never been run.** This is the
+    single most valuable next step and it needs no new route data — the 39-segment corpus and the
+    harness that produced the `FarLeadBrakeLimit` diff (39 segments, one changed) already exist.
+    Run it with the param OFF and then ON and diff `aTarget` frame by frame. **The expected result
+    is zero altered frames on all 39**, because nothing in the corpus should hold a 2.0 m/s
+    U11-versus-range disagreement on a lead track for 5 consecutive measured updates. Both outcomes
+    are informative and the second is the important one:
+    * Zero altered frames → the arming gate is doing what it was designed to do on ordinary
+      driving, and the feature is inert until the conditions it targets actually occur.
+    * **Any** altered frames → do **not** treat that as the feature working. Read those frames
+      directly: it means the corpus contains a sustained disagreement that nobody has
+      characterised, and until it is known whether U11 or the range channel was right there, an
+      altered frame is as likely to be the hazard subsection above as a fix.
+
+14. **Open: two of the `RANGE_VREL_ASSIST_*` constants rest on almost nothing.** Both are bounds
+    chosen to limit damage, not values fitted to data, and the comment blocks say so — read them
+    before changing a number (CLAUDE.md §5).
+    * `RANGE_VREL_ASSIST_MAX_CORRECTION_MPS = 8.0` is sized from **n = 2** recorded events
+      (the `000001f9` rail, ~5.9 m/s, and the `000001f3` onset, ~4.6 m/s). A third event is what
+      would turn it into a justified number.
+    * `RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS = 2.0` currently clears the one recorded false brake
+      by **1.62 m/s** (worst disagreement there is +0.38). That margin is the whole safety
+      argument and it is measured against a **single** fault. Lowering it without a second
+      range-walk fault to test against is how this feature becomes an amplifier — the same
+      blocker as open items 7 and 10.
+
+15. **Open: the correction is inconsistent across a Bosch-A coast, in a bounded way.** `[CONFIRMED
+    — static]` On a coast the assist clears (D-052: a coast refreshes `last_seen_nanos`, so it is
+    **not** bounded by `BOSCH_A_STALE_S`, and 121.8 s of continuous suppression has been measured —
+    holding a correction across one would be unbounded staleness). But the lead KF is not stepped
+    on a coast either, so published `vRel`/`vLead` revert to native U11 immediately while `aLeadK`
+    stays frozen at its last corrected value until the next measured update. Both sides are
+    bounded and both sit on the conservative side, but for the length of the coast the two
+    disagree. It is documented in D-053 rather than papered over. Whether it matters at all is a
+    replay question, and open item 13 is the run that would show it.

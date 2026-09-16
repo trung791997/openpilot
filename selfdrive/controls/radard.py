@@ -21,14 +21,71 @@ from opendbc.car.honda.values import HONDA_BOSCH_A
 # Default lead acceleration decay set to 50% at 1s
 _LEAD_ACCEL_TAU = 0.6
 
-# Shadow range-derived vRel, TELEMETRY ONLY, and computed for whichever radar lead is selected --
-# not only Bosch-A. Timestamps come from the message clock so replay is faithful; wall-clock time
-# made every accelerated replay of this field meaningless. The fit is plain LSQ with no outlier
-# rejection, so it inherits the range channel's ~1% gross outliers: read it as a diagnostic, not as
-# a validated velocity.
+# Shadow range-derived vRel, computed for whichever radar lead is selected -- not only Bosch-A.
+# Timestamps come from the message clock so replay is faithful; wall-clock time made every
+# accelerated replay of this field meaningless. The fit is plain LSQ with no outlier rejection, so
+# it inherits the range channel's ~1% gross outliers: read it as a diagnostic, not as a validated
+# velocity.
+#
+# Telemetry only (D-044) EXCEPT on Bosch-A with the RangeDerivedVrel toggle on, where D-053 lets it
+# correct the published lead velocity in one direction. The outlier caveat above is precisely why
+# that assist needs RANGE_VREL_ASSIST_ARM_UPDATES; see the block below.
 RANGE_VREL_SAMPLES = 5   # deque length AND the minimum fit length; do not diverge these
 RANGE_VREL_MIN_SPAN_S = 0.12
 RANGE_VREL_MAX_SPAN_S = 0.60
+
+# --- Range-derived vRel assist (TEST, default OFF, param RangeDerivedVrel) --------------------
+# D-053 amends D-044's "nothing consumes it" for Bosch-A only, behind a toggle. ONE-SIDED: the
+# range LSQ above may only make the published closing speed MORE closing, never less. It exists
+# because U11 -- the Bosch-A native relative velocity -- is both late and rail-bounded, and both
+# failures understate closing:
+#
+#   * D-041, route 000001f9 at 29:52. U11 railed at -13.5 m/s on 88 of 88 active frames with
+#     healthy u10 while the range closed smoothly at -19.4 m/s. D-041 publishes the rail as a
+#     BOUND and says recovering the true value past it "needs the range channel and is
+#     deliberately left to a separate, validated change". This is that change, still unvalidated.
+#   * D-043 / D-044, routes 000001fe/fb/fd. U11 detects a closing onset 0.88-1.28 s late while a
+#     4-sample range LSQ lands within 0.07-0.14 s. At 000001f3 19:27 the fitted range rate was
+#     -6.7 m/s while U11 still read -2.08.
+#
+# WHAT THIS CANNOT DO, and it is the hazard, not a caveat: the LSQ is fitted to the same range
+# channel U11 is being checked against, so a RANGE error is invisible to it. STATUS.md's t~=11 s
+# false brake is exactly that -- U11 (-6.0) and the fitted rate (-4.5 to -6.4) agreed with each
+# other while the range itself walked ~6 m inward. On those recorded figures the disagreement
+# never reaches MIN_DISAGREEMENT and this assist stays inert, but a range walk that outran U11
+# would be amplified by it, bounded only by MAX_CORRECTION.
+
+# Minimum disagreement, m/s, before arming. D-043 deliberately does not chase "the milder
+# 0.6-2.5 m/s overshoots at deceleration onset"; this is the mirror of that, and 2.0 m/s is also
+# the band tools/bosch_a_vrel_shadow_report.py already reports against. It is NOT a noise floor on
+# its own: with 5 evenly spaced samples the LSQ slope moves 0.2/h per metre of error on the newest
+# sample, h = 1/14.35 s, so a single 1 m range outlier shifts the fit ~2.9 m/s and clears this on
+# its own. ARM_UPDATES is what rejects that, not this threshold.
+RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS = 2.0
+
+# Consecutive measured updates above that threshold before any correction is applied. One gross
+# range outlier cannot arm this: as it walks the 5-sample window its leverage on the fit runs
+# +2h, +h, 0, -h, -2h (normalised by sum (t - tbar)^2 = 10h^2), so it can only push the fit the
+# SAME way for two consecutive fits. Three would therefore be sufficient; five is taken instead to
+# match ONSET_SUSTAIN_SAMPLES in tools/bosch_a_vrel_shadow_report.py, so the offline onset report
+# the driver runs to judge this feature uses the same rule the car does. Cost 5/14.35 = 0.35 s
+# against a recorded 0.88-1.28 s U11 lag.
+RANGE_VREL_ASSIST_ARM_UPDATES = 5
+
+# Hard cap on the extra closing, m/s. Sized by the only two recorded events that need it:
+# 000001f9 29:52 wants 5.9 (rail -13.5 vs range -19.4) and 000001f3 19:27 wants 4.6 (U11 -2.08 vs
+# range -6.7). This is n = 2 and NOT a distribution -- it is a bound on the damage a bad fit can
+# do, not a fitted value. Lowering it below ~6.0 makes the feature unable to do the one thing
+# D-041 left for it.
+RANGE_VREL_ASSIST_MAX_CORRECTION_MPS = 8.0
+
+# Geometry. A range derivative is a RADIAL rate, not a longitudinal one. Together these bound the
+# azimuth at asin(1.5 / 8.0) = 10.8 deg, where cos = 0.982: reading the radial rate as
+# longitudinal understates the longitudinal component by at most 1.8% and admits at most 0.19 of
+# any lateral rate. Adjacent-lane tracks sit at 17-23 deg (see Track.get_RadarState) and are
+# excluded outright.
+RANGE_VREL_ASSIST_MIN_D_REL_M = 8.0
+RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M = 1.5
 
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
@@ -97,14 +154,32 @@ class Track:
 
     self.leadTrackID = 0
 
-    # Shadow telemetry only: a range-derived vRel, published alongside the radar's own vRel so the
-    # two can be compared on real drives. Nothing consumes it. Measured on 000001fe/fb/fd, U11
-    # (the Bosch-A native velocity) detects a closing onset 0.88-1.28 s late while a 4-sample range
-    # LSQ lands within 0.07-0.14 s; and on 00000141 R141-8 U11 diverged from the range by 13.7 m/s
-    # while the range moved 1.9 m. This exists to confirm or refute that on Peter's next drive
-    # before any of it is wired into control.
+    # A range-derived vRel, published alongside the radar's own vRel so the two can be compared on
+    # real drives. Measured on 000001fe/fb/fd, U11 (the Bosch-A native velocity) detects a closing
+    # onset 0.88-1.28 s late while a 4-sample range LSQ lands within 0.07-0.14 s; and on 00000141
+    # R141-8 U11 diverged from the range by 13.7 m/s while the range moved 1.9 m.
+    #
+    # Shadow telemetry under D-044; since D-053 it ALSO drives range_assist_correction below, but
+    # only on Bosch-A, only for the lead track, and only with the RangeDerivedVrel toggle on.
     self.range_hist: deque = deque(maxlen=RANGE_VREL_SAMPLES)
     self.vRelRange = float('nan')
+    # Freshness bit for the fit above. vRelRange is only ASSIGNED once the deque is full, so after
+    # a dropout clears it the field holds the pre-gap value for up to four updates. That is
+    # harmless for telemetry and unacceptable for control, so D-053 reads this rather than
+    # isfinite(vRelRange).
+    self.vRelRangeFresh = False
+
+    # D-053 range-derived vRel assist. Inert unless RadarD passes range_assist=True, which needs
+    # the RangeDerivedVrel param, a Bosch-A car, and this track having been leadOne/leadTwo last
+    # cycle. range_assist_correction is m/s of EXTRA closing and is never negative.
+    self.range_assist_active = False
+    self.range_assist_arm_count = 0
+    self.range_assist_correction = 0.0
+    # Last liveTracks timestamp this track was updated with, used to tell a DUPLICATE radard
+    # cycle (no new message; t_now unchanged) from a COAST (new message, measured False).
+    # measurement_update is False for both and they need opposite handling -- see
+    # _update_range_assist.
+    self._range_assist_last_t = float('nan')
 
     # deceleration history for the adjacent-lane stopped-vehicle detector
     self.moving_frames = 0
@@ -112,7 +187,8 @@ class Track:
     self.seen_moving = False
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
-             measurement_update: bool | None = None, t_now: float = 0.0):
+             measurement_update: bool | None = None, t_now: float = 0.0,
+             range_assist: bool = False):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -131,6 +207,7 @@ class Track:
     # computed velocity and accelerations
     # Shadow estimator: real measurements only -- a duplicate payload would forge a zero-dt sample.
     if measurement_update:
+      self.vRelRangeFresh = False
       self.range_hist.append((float(t_now), float(d_rel)))
       if len(self.range_hist) >= RANGE_VREL_SAMPLES:
         ts = np.array([p[0] for p in self.range_hist])
@@ -139,14 +216,19 @@ class Track:
         # Reject a stale or gappy history: an LSQ across a dropout is meaningless.
         if RANGE_VREL_MIN_SPAN_S <= span <= RANGE_VREL_MAX_SPAN_S:
           self.vRelRange = float(np.polyfit(ts - ts[-1], ds, 1)[0])
+          self.vRelRangeFresh = True
         else:
           self.vRelRange = float('nan')
           if span > RANGE_VREL_MAX_SPAN_S:
             self.range_hist.clear()
             self.range_hist.append((float(t_now), float(d_rel)))
 
+    # D-053. Must run after the fit above and before the KF, so vLeadK and aLeadK inherit the
+    # correction; get_RadarState republishes vRel and vLead to match.
+    self._update_range_assist(range_assist, measurement_update, t_now)
+
     if measurement_update and self.cnt > 0:
-      self.kf.update(self.vLead)
+      self.kf.update(self.vLead - self.range_assist_correction)
 
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
@@ -175,6 +257,85 @@ class Track:
 
       self.cnt += 1
 
+  def _clear_range_assist(self) -> None:
+    self.range_assist_active = False
+    self.range_assist_arm_count = 0
+    self.range_assist_correction = 0.0
+
+  def _update_range_assist(self, enabled: bool, measurement_update: bool, t_now: float) -> None:
+    """One-sided correction of the native vRel toward the range-derived rate. D-053, TEST.
+
+    Sets self.range_assist_correction to m/s of EXTRA closing, always >= 0: this may only make the
+    lead look slower than U11 says, never faster. Every rejection path clears it outright, so the
+    fallback is the shipped U11 behaviour and never a half-applied correction. Understating
+    closing still brakes (D-041); that is why failing back to native is the safe direction here.
+
+    Deliberately NOT in scope: which track is selected. track_matches_vision and
+    vision_track_probability keep scoring the native self.vRel, so this can change what is
+    reported about the chosen lead but never change the choice.
+    """
+    last_t = self._range_assist_last_t
+    self._range_assist_last_t = float(t_now)
+
+    if not enabled:
+      self._clear_range_assist()
+      return
+
+    if not measurement_update:
+      # TWO different things land here and they need OPPOSITE handling. Both arrive as
+      # measurement_update False because RadarD collapses them into one bit on Bosch-A
+      # (measured = pt.measured and radar_fresh), so they are separated here by the clock.
+      #
+      #   * A DUPLICATE radard cycle. radard runs at the 20 Hz model rate over a 14.35 Hz radar,
+      #     so ~1 cycle in 4 carries no new liveTracks message: t_now has not advanced, dRel/yRel/
+      #     vRel are the same values as last cycle, the range history is not appended to and the
+      #     lead KF is not stepped. Nothing was re-measured, so there is nothing to re-decide --
+      #     HOLD. Clearing instead would reset the arm count roughly every fourth cycle, so the
+      #     assist could never reach RANGE_VREL_ASSIST_ARM_UPDATES on a car at all, and once
+      #     armed the published vRel would flicker between corrected and native at ~5 Hz.
+      #   * A COAST. The parser keeps publishing the object with measured False, so a new message
+      #     DOES arrive and t_now advances. A coast also refreshes last_seen_nanos, so it is not
+      #     bounded by BOSCH_A_STALE_S and 121.8 s of continuous coasting has been measured
+      #     (D-052). Holding a correction across that is unbounded staleness -- CLEAR.
+      #
+      # If the two are ever given separate bits at the call site, split this on those bits rather
+      # than on the clock; the clock comparison is standing in for information RadarD discarded.
+      if last_t == float(t_now):
+        return
+      self._clear_range_assist()
+      return
+
+    if not (self.measured and self.vRelRangeFresh):
+      self._clear_range_assist()
+      return
+
+    if self.dRel < RANGE_VREL_ASSIST_MIN_D_REL_M or abs(self.yRel) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M:
+      self._clear_range_assist()
+      return
+
+    # Positive means the range says MORE closing than U11 -- the only direction acted on, and the
+    # same sign convention as "understatement" in tools/bosch_a_vrel_shadow_report.py.
+    disagreement = self.vRel - self.vRelRange
+
+    if self.range_assist_active:
+      # Hysteresis: hold while ANY closing disagreement remains, so the correction decays
+      # continuously to zero as U11 catches up rather than stepping off at the arming threshold.
+      if disagreement <= 0.0:
+        self._clear_range_assist()
+        return
+    else:
+      if disagreement < RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
+        self.range_assist_arm_count = 0
+        self.range_assist_correction = 0.0
+        return
+      self.range_assist_arm_count += 1
+      if self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES:
+        self.range_assist_correction = 0.0
+        return
+      self.range_assist_active = True
+
+    self.range_assist_correction = float(min(disagreement, RANGE_VREL_ASSIST_MAX_CORRECTION_MPS))
+
   def get_RadarState(self, model_prob: float = 0.0, shadow_telemetry: bool = False):
     """`shadow_telemetry` is opt-in because this dict is assigned to TWO different capnp structs:
     log.capnp LeadData (radarState.leadOne/leadTwo) and custom.capnp LeadData
@@ -182,11 +343,16 @@ class Track:
     the followed lead should: adjacent tracks sit at up to 17-23 deg azimuth, where a range
     derivative is radial rate and NOT longitudinal velocity, so publishing it there would be
     misleading as well as a schema error."""
+    # D-053. vLeadK and aLeadK already carry this from the KF in update(); subtracting it here
+    # too is what keeps the published lead self-consistent. It is zero unless RadarD armed the
+    # assist for this track, so every other caller is unchanged. Note self.vRel and self.vLead
+    # themselves stay NATIVE -- the adjacent-lane detectors and the vision association read those.
+    correction = float(self.range_assist_correction)
     state = {
       "dRel": float(self.dRel),
       "yRel": float(self.yRel),
-      "vRel": float(self.vRel),
-      "vLead": float(self.vLead),
+      "vRel": float(self.vRel) - correction,
+      "vLead": float(self.vLead) - correction,
       "vLeadK": float(self.vLeadK),
       "aLeadK": float(self.aLeadK),
       "aLeadTau": float(self.aLeadTau.x),
@@ -520,6 +686,36 @@ class RadarD:
     self.starpilot_radar_state = custom.StarPilotRadarState.new_message()
     self.starpilot_toggles = get_starpilot_toggles()
 
+    # D-053 range-derived vRel assist (TEST, default OFF). Read off the param on a cadence
+    # rather than every frame; see _range_vrel_assist_enabled.
+    self._range_assist_params = None
+    self._range_assist_frame = 0
+    self._range_assist_enabled = False
+
+  def _range_vrel_assist_enabled(self) -> bool:
+    """Param read for the D-053 assist. Off unless explicitly enabled. Default OFF.
+
+    Same shape as LongitudinalPlanner.far_lead_brake_limit_enabled: Params() is constructed
+    lazily and re-read every 100 frames, because radard runs in a hot loop and a params read
+    is a file read. Any exception -- including the missing-key case on a device whose
+    params_pyx.so predates this key -- falls back to False, i.e. the shipped U11 behaviour.
+
+    NOTE for the next agent: until `common/params_pyx.so` is rebuilt for larch64 with the
+    RangeDerivedVrel key present, this returns False on the car no matter what the UI shows.
+    That is the same trap STATUS.md open item 4 records for FarLeadBrakeLimit; the rebuild is
+    a separate deliberate commit (pattern: b9612b2a).
+    """
+    self._range_assist_frame += 1
+    if self._range_assist_params is None or self._range_assist_frame % 100 == 0:
+      try:
+        from openpilot.common.params import Params
+        if self._range_assist_params is None:
+          self._range_assist_params = Params()
+        self._range_assist_enabled = self._range_assist_params.get_bool("RangeDerivedVrel")
+      except Exception:
+        self._range_assist_enabled = False
+    return self._range_assist_enabled
+
   def _reset_preferred_stale_evidence(self, lead_index: int, track_id: int = -1) -> None:
     self.preferred_stale_track_ids[lead_index] = track_id
     self.preferred_challenger_stale_counts[lead_index] = 0
@@ -593,6 +789,15 @@ class RadarD:
 
     ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
 
+    # D-053. Bosch-A only, and only for the tracks that were the lead on the previous cycle.
+    # prev_lead_track_ids is the authoritative "which track is the lead" state; Track.leadTrackID
+    # is NOT -- get_lead stamps it on every track and is called twice, so it ends up holding
+    # leadTwo's id for all of them. Restricting the assist to the two lead tracks keeps the
+    # correction out of track_matches_vision / vision_track_probability scoring for everything
+    # else, which is what makes this a reporting change rather than an association change.
+    range_assist_enabled = self.honda_bosch_a_radar and self._range_vrel_assist_enabled()
+    lead_track_ids = {i for i in self.prev_lead_track_ids if i >= 0} if range_assist_enabled else set()
+
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
       if ids not in ar_pts:
@@ -610,7 +815,9 @@ class RadarD:
       # Non-Bosch sources retain the historical per-model-cycle update semantics. Only Civic Bosch
       # suppresses duplicate measurement updates when liveTracks has not advanced.
       measurement_update = True if not self.honda_bosch_a_radar else measured
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update, t_now=sm.logMonoTime['liveTracks'] * 1e-9)
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
+                              t_now=sm.logMonoTime['liveTracks'] * 1e-9,
+                              range_assist=ids in lead_track_ids)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()

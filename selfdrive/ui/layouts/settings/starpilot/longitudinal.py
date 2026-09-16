@@ -631,6 +631,20 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "false brake, which is why it ships off."),
                  get_state=lambda: self._params.get_bool("FarLeadBrakeLimit"),
                  set_state=lambda v: self._params.put_bool("FarLeadBrakeLimit", v)),
+      SettingRow("RangeDerivedVrel", "toggle", tr_noop("Range-Derived Closing Speed"),
+                 subtitle=tr_noop("TEST, default off. Bosch-A radar only. The radar reports closing "
+                                  "speed directly, but that channel lags a lead that starts braking "
+                                  "by around a second and pins at 13.5 m/s. This lets the closing "
+                                  "speed measured from how the DISTANCE is changing correct it, in "
+                                  "one direction only: it may report MORE closing, never less, so it "
+                                  "can only ever brake earlier, not later. It applies to the lead "
+                                  "only, is capped at 8 m/s of correction, needs 5 radar updates of "
+                                  "sustained disagreement to engage, and drops out instantly when the "
+                                  "two agree again. It does not change which object is picked as the "
+                                  "lead. Not validated on the road with real targets, which is why it "
+                                  "ships off."),
+                 get_state=lambda: self._params.get_bool("RangeDerivedVrel"),
+                 set_state=lambda v: self._params.put_bool("RangeDerivedVrel", v)),
     ]
 
     self._slc_rows = [

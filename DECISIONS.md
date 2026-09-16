@@ -623,3 +623,116 @@ for over two minutes, which makes a reuse at that moment less likely but not imp
 
 **Negative control (D-009):** a counter frozen at any non-saturated value is still a lifecycle break
 — `test_a_stuck_but_unsaturated_counter_is_still_a_lifecycle_break`.
+
+---
+
+## D-053 — The range-derived vRel may correct U11, in ONE direction, behind a toggle
+
+**Decided 2026-09-16. TEST feature, default OFF, param `RangeDerivedVrel`, Bosch-A only.
+Nothing here is road evidence — this has never run on a car.**
+
+D-044 published `vRelRange` — a 5-sample LSQ of d(dRel)/dt — as shadow telemetry and said nothing
+consumes it. This amends that, narrowly: on Bosch-A, with the toggle on, for the lead track only,
+the range rate may make the published closing speed **more closing, never less**.
+
+### Why the one direction
+
+Both recorded U11 failure modes understate closing, so correcting in only that direction is the
+whole safety argument:
+
+* **The rail.** D-041, route `000001f9` at 29:52: U11 pinned at −13.5 m/s on 88 of 88 active frames
+  with healthy u10 while the range closed at −19.4 m/s. D-041 publishes the rail as a **bound** and
+  states that recovering the true value past it "needs the range channel and is deliberately left
+  to a separate, validated change." This is that change. It is still unvalidated.
+* **The lag.** D-043/D-044, routes `000001fe/fb/fd`: U11 detects a closing onset **0.88–1.28 s
+  late** while a 4-sample range LSQ lands within **0.07–0.14 s**. On `000001f3` at 19:27 the fitted
+  range rate was −6.7 m/s while U11 still read −2.08.
+
+The mirror direction — letting the range say a lead is closing **less** than U11 claims — is
+refused outright. That would release braking on a range channel that the branch has already
+recorded being wrong, and it is the same asymmetry D-043 settled for the parser's consistency
+check. An understated closing rate still brakes; an overstated one does not.
+
+### What bounds it
+
+Constants and their evidence live in the `RANGE_VREL_ASSIST_*` block in
+`selfdrive/controls/radard.py`. In short: 2.0 m/s of sustained disagreement, held for 5 consecutive
+**measured** updates (0.35 s, against a 0.88–1.28 s lag), correction capped at 8.0 m/s, and geometry
+gated to dRel ≥ 8 m with |yRel| ≤ 1.5 m — an azimuth bound of 10.8°, where reading a radial rate as
+a longitudinal one costs at most 1.8%.
+
+Every rejection path clears the correction outright, so the fallback is always the shipped U11
+behaviour and never a half-applied correction.
+
+### A duplicate radard cycle is not a coast, and must hold rather than clear
+
+`RadarD` runs at the 20 Hz model rate over a 14.35 Hz radar and collapses two different conditions
+into one bit — `measured = pt.measured and radar_fresh` — so `Track.update` sees
+`measurement_update = False` for both of these:
+
+* **A duplicate cycle.** No new `liveTracks` message arrived, so `t_now` has not advanced,
+  `dRel`/`yRel`/`vRel` are last cycle's values, the range history is not appended to and the lead
+  KF is not stepped. Roughly one cycle in four. Nothing was re-measured, so there is nothing to
+  re-decide: **hold**.
+* **A coast.** A new message *did* arrive, with the parser's measured bit clear. `t_now` advances.
+  **Clear** — see rejected alternative 6.
+
+Clearing on both — which is what the first implementation did — resets the arm count roughly every
+fourth cycle, so `RANGE_VREL_ASSIST_ARM_UPDATES` consecutive qualifying fits are unreachable and
+the feature is **permanently inert on a car**, while every unit test that feeds one update per
+radar sweep still passes. It was caught by reading the call site, not by the tests. The two are
+now separated by whether `t_now` advanced, which needs no tuned constant;
+`TestRadardLoopCadence` drives the real 20-Hz-over-14.35-Hz interleave and
+`test_clearing_on_a_duplicate_cycle_makes_the_assist_permanently_inert` is the D-009 control that
+reproduces the defect. If the call site is ever given separate bits for the two conditions, split
+on those bits — the clock comparison is standing in for information `RadarD` discarded.
+
+### The hazard, stated plainly
+
+**This is a velocity check that reads the range channel, so a RANGE error is invisible to it.**
+STATUS.md's t≈11 s false brake on `00000231--5782493b00` is exactly a range error: track 6 walked
+71.8 → 61.6 m while vision held 75–78 m at prob 0.93–1.00 and the real gap grew. U11 (−6.02) and
+the range fit (−4.5 to −6.4) **agreed with each other** throughout. STATUS.md already records that
+the shadow channel is blind to this, and so is this assist.
+
+`[INFERRED from the recorded figures, not replayed]` on those numbers the worst disagreement is
+**+0.38 m/s against a 2.0 m/s threshold**, so the assist stays inert there — a 1.62 m/s margin.
+That margin is the only thing standing between this feature and amplifying the one false brake
+this branch has recorded. `TestTheRangeWalkFault` in
+`selfdrive/controls/tests/test_range_vrel_assist.py` pins it. Do not "fix" that test.
+
+### Rejected alternatives
+
+1. **A symmetric correction.** See above: it releases braking on an unverified channel.
+2. **Feeding it into track selection.** `track_matches_vision` and `vision_track_probability` keep
+   scoring the **native** `self.vRel`/`self.vLead`; only `get_RadarState` and the lead KF see the
+   correction. This changes what is reported *about* the chosen lead, never *which* track is
+   chosen. Association is a separate problem with its own recorded failures (D-048, D-049) and
+   folding an unvalidated velocity into it would make both harder to diagnose.
+3. **Applying it to every track.** Restricted to `RadarD.prev_lead_track_ids`. Adjacent-lane tracks
+   sit at 17–23° azimuth where a range derivative is not a longitudinal velocity at all, and the
+   adjacent-lane stopped-vehicle detector reads `self.vRel` directly.
+4. **Changing the capnp schema** to publish the native U11 alongside the corrected value. Not
+   needed: the native `vRel` for the same track is already recoverable from `liveTracks` by
+   matching `rr.points[].trackId` against `radarTrackId`, so the comparison stays fully auditable
+   in a log. A schema change would mean regenerating `libcereal.a` and `cereal/gen/cpp` for a
+   field that is derivable.
+5. **Non-Bosch-A radars.** The evidence base is entirely Bosch-A U11. Nidec and Bosch-B have
+   neither the rail nor the measured lag, and `RadarD` does not read the param at all on them.
+6. **Holding the correction across a coast.** A Bosch-A coast holds `last_trusted_vrel` and is
+   **not** bounded by `BOSCH_A_STALE_S` — every coast path refreshes `last_seen_nanos`, and D-052
+   measured 121.8 s of continuous suppression of a followed lead. Holding a correction across that
+   is unbounded staleness, so a coast clears it.
+7. **Enabling by default.** It has never run on a car.
+
+### Known asymmetry during a coast
+
+The lead KF is only stepped on a measurement update, so across a coast `aLeadK` stays frozen at its
+corrected value while the published `vLead` reverts to native. Both are bounded, and both sit on
+the conservative side (`aLeadK` more negative, `vLead` back to shipped behaviour), but they are
+briefly inconsistent with each other. Recorded here rather than papered over.
+
+**Negative control (D-009):** `TestNegativeControlOfTheTestsThemselves` breaks the arm count, the
+disagreement threshold, the lateral gate and the duplicate-cycle hold in turn and asserts each
+guarded property actually fails — including that lowering `MIN_DISAGREEMENT` makes the t≈11 s
+fault fire, and that clearing on a duplicate cycle makes the assist unable to arm at all.
