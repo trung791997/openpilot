@@ -1,12 +1,27 @@
 import json
 import re
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 LAYOUT_PATH = REPO_ROOT / "starpilot/common/assets/device_settings_layout.json"
 PARAM_KEYS_PATH = REPO_ROOT / "common/params_keys.h"
 RAYLIB_NRDR_TUNING_PATH = REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/nrdr_tuning.py"
+
+
+def _all_declared_keys():
+  source = PARAM_KEYS_PATH.read_text(encoding="utf-8")
+  return set(re.findall(r'\{"([A-Za-z0-9_]+)",\s*\{', source))
+
+
+def _galaxy_toggle_keys():
+  # Restricted to the Bosch-A TEST pair this work introduced. Widening it to every layout key
+  # would be a much larger claim about the whole settings surface and is deliberately not made
+  # here -- several keys legitimately live outside the device binary.
+  return ("FarLeadBrakeLimit", "RangeDerivedVrel")
 
 
 def _layout():
@@ -460,3 +475,49 @@ def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
   ).read_text(encoding="utf-8")
   bosch_rows = raylib.split("_bosch_a_radar_rows")[1]
   assert all(f'SettingRow("{key}"' in bosch_rows for key in siblings)
+
+
+@pytest.mark.xfail(
+  strict=True,
+  reason=(
+    "STATUS open item 12: the committed aarch64 params_pyx.so still carries the 822-key list " +
+    "and lacks RangeDerivedVrel, so Galaxy rejects the write with 403 'not editable'. This is " +
+    "CONFIRMED on a real device, not inferred. When the larch64 rebuild lands, this test starts " +
+    "passing, strict=True turns that XPASS into a failure, and whoever sees it should delete " +
+    "this marker and close open item 12."
+  ),
+)
+def test_every_galaxy_toggle_key_exists_in_the_committed_device_params_binary():
+  # Galaxy's PUT /api/params rejects any key missing from the COMPILED registry:
+  # _build_default_params() enumerates _params_raw.all_keys() off common/params_pyx.so, and
+  # a key declared only in params_keys.h is 403 'not editable'. Declaring a key and shipping
+  # a stale binary therefore produces a row that renders and cannot be switched on.
+  #
+  # This reads the COMMITTED blob, not the working tree: the working copy is whatever the local
+  # scons produced (x86_64 in CI containers) and is skip-worktree, so it proves nothing about
+  # what the device runs. That mismatch is exactly why this went undetected until a real car.
+  blob = subprocess.run(
+    ["git", "show", "HEAD:common/params_pyx.so"],
+    cwd=REPO_ROOT, capture_output=True, check=True,
+  ).stdout
+  assert blob[:4] == b"\x7fELF", "expected an ELF shared object"
+
+  literals = set(re.findall(rb"[\x20-\x7e]{4,}", blob))
+
+  def declared_keys_ending_with(key):
+    # Tail-merged string literals mean a key that is the SUFFIX of a longer key has no
+    # standalone copy, so scanning literals would report it missing when it is present.
+    # Those keys are unprovable this way and are skipped rather than asserted on.
+    return [k for k in _all_declared_keys() if k != key and k.endswith(key)]
+
+  missing = []
+  for key in _galaxy_toggle_keys():
+    if declared_keys_ending_with(key):
+      continue
+    if key.encode() not in literals:
+      missing.append(key)
+
+  assert not missing, (
+    "keys have a Galaxy row but are absent from the committed device params binary, so the " +
+    f"row renders and the toggle 403s: {sorted(missing)}"
+  )

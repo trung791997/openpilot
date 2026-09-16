@@ -1039,14 +1039,56 @@ car never runs at.
 * The 8.0 m/s cap is sized from **n = 2** recorded events (5.9 and 4.6 m/s). It is a bound on
   damage, not a fitted value.
 
-### ⚠️ The toggle is NOT reachable on the car yet
+### 🔴 CONFIRMED ON THE CAR: the toggle renders but cannot be switched on — 2026-09-16
 
-`common/params_keys.h` gained `RangeDerivedVrel`, but the **checked-in `common/params_pyx.so` is
-aarch64 and still has the old key list**, so `get_bool` raises `UnknownKeyName` on the device and
-`_range_vrel_assist_enabled()` swallows it and returns `False` — the feature is unreachable no
-matter what the UI shows. This is the exact trap open item 4 records for `FarLeadBrakeLimit`.
-The larch64 rebuild is a **deliberate, separate commit** (AGENTS.md §10); follow the recipe and the
-scons-lies warning in open item 4 verbatim, and expect the key count to go 822 → **823**.
+**Observed on a real device** (Galaxy at `/device_settings`): the row renders in the right place,
+directly under Far-Lead Brake Limit, and toggling it returns a red banner —
+
+> Parameter 'RangeDerivedVrel' is not editable.
+
+**This is open item 12 firing, not a UI bug.** The row placement and gating are correct; the key
+does not exist in the registry the device is running.
+
+The chain, end to end:
+
+1. `common/params_keys.h` declares `RangeDerivedVrel` — but that header is **compiled into**
+   `common/params_pyx.so`, and the checked-in `.so` is the aarch64 one built by `b9612b2a`,
+   which predates this key.
+2. `the_galaxy.py:601` `_build_default_params()` enumerates **`_params_raw.all_keys()`** — the
+   `.so` registry. The key is not in it.
+3. `_get_param_type_info()` builds `allowed_keys` from that list, so the key is absent.
+4. `PUT /api/params` hits `if key not in allowed_keys` and returns **403** with the banner above,
+   before any `put` is attempted.
+
+**Verified [CONFIRMED, static]** against the committed blob, not the working tree — the working
+copy is this container's x86-64 scons rebuild and is `skip-worktree`, so it proves nothing about
+the device:
+
+```bash
+git show HEAD:common/params_pyx.so > /tmp/committed.so
+file /tmp/committed.so                                  # ELF aarch64
+strings -a /tmp/committed.so | grep -x FarLeadBrakeLimit   # PRESENT -> its toggle works
+strings -a /tmp/committed.so | grep -x RangeDerivedVrel    # ABSENT  -> 403
+```
+
+`strings` is trustworthy **for these two keys specifically**: the tail-merging caveat in open
+item 4 only bites keys that are a suffix of a longer key, and no declared key ends with either of
+these. It does still lie about `BoschARadar` (a suffix of `HondaBoschARadar`).
+
+**Do not work around this in Galaxy.** Adding the key to an allowlist by hand would let the PUT
+through to `params.put`, which raises `UnknownKeyName` on the same missing registry entry; and
+even if it stored, `_range_vrel_assist_enabled()` reads through the same `.so` and returns
+`False`. The result would be a toggle that looks like it saved and does nothing — strictly worse
+than the honest 403. The 403 is the gate working correctly.
+
+**The fix is the larch64 rebuild, and it is the only fix.** It is a **deliberate, separate
+commit** (AGENTS.md §10); follow the recipe and the scons-lies warning in open item 4 verbatim,
+and expect the key count to go 822 → **823**.
+
+**It cannot be done in this container** — checked 2026-09-16: no docker daemon, no `qemu-user`,
+no aarch64 cross-compiler, and the local toolchain is Python 3.11.15 / Cython 3.3.0 against the
+pinned Python 3.12.3 / **Cython 3.1.4** that `b9612b2a` reproduced byte-identically. It needs a
+machine that can run `--platform linux/arm64`.
 
 ### The Galaxy row: same location as the far-lead brake limit — 2026-09-16
 
@@ -1066,9 +1108,12 @@ check and nothing for `RangeDerivedVrel`, so on the web UI the new row would hav
 single-key check is now a two-key set, `BOSCH_A_REQUIRED_KEYS`, so adding a third Bosch-A TEST row
 means adding a string rather than another branch.
 
-Galaxy's write path (`the_galaxy.py`, `_params.put`) is generic — there is no per-key
-allowlist, so nothing else was needed there. The reachability blocker below is unaffected
-by any of this.
+**Correction — Galaxy's write path is NOT generic.** An earlier revision of this section said
+it was. `PUT /api/params` checks `key in allowed_keys` from `_get_param_type_info()`, and that
+set is built by `_build_default_params()` from **`_params_raw.all_keys()`** — the compiled
+`params_pyx.so` registry, not `params_keys.h`. A key absent from the `.so` is rejected with
+**403 `Parameter '<key>' is not editable.`** before any `put` runs. See the blocker below: this
+is the path that actually fires on the car.
 
 **Verified [CONFIRMED, static]:** `node --check` on the frontend, `json.loads` on the layout, and a
 new test — `test_bosch_a_test_toggles_share_one_galaxy_location_and_gate` in
@@ -1522,10 +1567,17 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     vendored subtree and a standalone runner, so it was left alone rather than fixed in passing.
 
 12. **Open: `RangeDerivedVrel` is unreachable on the car until `common/params_pyx.so` is rebuilt
-    for larch64.** `[CONFIRMED — static]` The key is in `common/params_keys.h`, but the checked-in
-    `.so` is aarch64 and carries the **old 822-key list**, so `get_bool("RangeDerivedVrel")` raises
-    `UnknownKeyName` on the device, `_range_vrel_assist_enabled()` swallows it, and the feature
-    stays off no matter what the Galaxy toggle shows. This is open item 4 repeating itself with a
+    for larch64. THIS IS NOW CONFIRMED ON A REAL DEVICE, not just inferred — 2026-09-16.**
+    `[CONFIRMED — observed on the car]` Toggling the row in Galaxy returns
+    **403 `Parameter 'RangeDerivedVrel' is not editable.`** The key is in `common/params_keys.h`,
+    but the checked-in `.so` is aarch64 and carries the **old 822-key list**. Two separate paths
+    fail on it: Galaxy's `PUT /api/params` rejects the write up front, because `allowed_keys`
+    comes from `_build_default_params()` → `_params_raw.all_keys()` → the `.so`; and
+    `get_bool("RangeDerivedVrel")` raises `UnknownKeyName` in `_range_vrel_assist_enabled()`,
+    which swallows it. The feature stays off no matter what the UI shows. **Do not patch the
+    Galaxy allowlist to get past the 403** — see the section above for why that makes it worse.
+    **This container cannot do the rebuild** (no docker daemon, no qemu, no aarch64
+    cross-compiler, Python 3.11.15 / Cython 3.3.0 vs the pinned 3.12.3 / 3.1.4). This is open item 4 repeating itself with a
     different key. Use item 4's recipe **verbatim** — the `oprad-build:cy314` image, Cython pinned
     to 3.1.4, mounted at `/work`, `SP_FORCE_TICI=1` — and heed its warning that **scons will report
     success without rebuilding**: delete `.sconsign.dblite` and the archive
