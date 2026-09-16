@@ -46,6 +46,11 @@ const VEHICLE_SETTING_MAKES = {
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
+// Bosch-A-only TEST rows. Both only ever act on a Bosch-A radar lead, so they ride the same
+// car-family gate as the BoschARadar toggle itself rather than each introducing another one.
+// Keep this in step with the rows in selfdrive/ui/layouts/settings/starpilot/longitudinal.py,
+// which gates the same keys through the Bosch-A radar section.
+const BOSCH_A_REQUIRED_KEYS = new Set(["FarLeadBrakeLimit", "RangeDerivedVrel"])
 
 // Plain variables — scheduling/routing flags that must NOT be reactive
 let syncScheduled = false
@@ -118,9 +123,7 @@ function isSettingVisible(section, param) {
   if (RADAR_REQUIRED_KEYS.has(param.key) && !state.values.HasRadar) return false
   if (param.key === "AlphaLongitudinalEnabled" && !state.values.AlphaLongitudinalAvailable) return false
   if (param.key === "BoschARadar" && !state.values.BoschARadarAvailable) return false
-  // The far-lead brake limit only ever bounds braking for a radar lead, so it rides the same
-  // car-family gate as the radar toggle itself rather than introducing another one.
-  if (param.key === "FarLeadBrakeLimit" && !state.values.BoschARadarAvailable) return false
+  if (BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable) return false
   if (state.values[GALAXY_DEVELOPER_MODE_KEY]) return true
   return section.name === "Favorites" || param.settings_tier === "simple"
 }

@@ -725,6 +725,27 @@ this branch has recorded. `TestTheRangeWalkFault` in
    is unbounded staleness, so a coast clears it.
 7. **Enabling by default.** It has never run on a car.
 
+### The toggle rides the far-lead brake limit's gate, on all three surfaces
+
+`RangeDerivedVrel` is exposed exactly where `FarLeadBrakeLimit` is: adjacent to it in
+`device_settings_layout.json` under `parent_key: AdvancedLongitudinalTune` with
+`settings_tier: advanced` and `requires_offroad: true`, adjacent to it in the raylib
+`_bosch_a_radar_rows`, and behind the same `BoschARadarAvailable` check in Galaxy.
+
+Galaxy's check was a hand-written `param.key === "FarLeadBrakeLimit"` branch. It is now a set,
+`BOSCH_A_REQUIRED_KEYS`. **Rejected: leaving the new row ungated in Galaxy.** A row that renders on
+a car whose radar cannot feed the feature is an invitation to switch on something inert and then
+report that it "did nothing" — the same class of confusion open item 4 cost a day to unpick. Both
+rows are Bosch-A-only TEST features acting on the same radar lead; they get one gate, not two.
+
+**Rejected: a per-key `requires_capability` field in the layout JSON instead.** That mechanism
+already exists and would be more general, but `FarLeadBrakeLimit` does not use it, and the point
+of this change is that the two rows behave identically. Converting both is a separate change with
+its own blast radius across every other consumer of the layout.
+
+Pinned by `test_bosch_a_test_toggles_share_one_galaxy_location_and_gate`, which asserts the two
+keys agree on all three surfaces at once, and is negative-controlled both ways (D-009).
+
 ### Known asymmetry during a coast
 
 The lead KF is only stepped on a measurement update, so across a coast `aLeadK` stays frozen at its

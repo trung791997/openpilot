@@ -1048,6 +1048,42 @@ matter what the UI shows. This is the exact trap open item 4 records for `FarLea
 The larch64 rebuild is a **deliberate, separate commit** (AGENTS.md §10); follow the recipe and the
 scons-lies warning in open item 4 verbatim, and expect the key count to go 822 → **823**.
 
+### The Galaxy row: same location as the far-lead brake limit — 2026-09-16
+
+Both surfaces now carry the row, and **both gate it the same way the far-lead brake limit is
+gated**. The two rows are deliberately siblings: same section, same parent, adjacent, same gate.
+
+| Surface | File | State |
+|---|---|---|
+| On-device (raylib) | `selfdrive/ui/layouts/settings/starpilot/longitudinal.py` | In `_bosch_a_radar_rows`, immediately after `FarLeadBrakeLimit`; inherits that section's advanced + Bosch-A gating |
+| Layout metadata | `starpilot/common/assets/device_settings_layout.json` | Immediately after `FarLeadBrakeLimit`; `parent_key: AdvancedLongitudinalTune`, `settings_tier: advanced`, `requires_offroad: true` |
+| Galaxy (web) | `starpilot/system/the_galaxy/assets/components/tools/device_settings.js` | `BOSCH_A_REQUIRED_KEYS`, hidden unless `BoschARadarAvailable` |
+
+**The Galaxy gate was the one real gap.** The layout entry and the raylib row were already in
+place, but Galaxy's `isSettingVisible` carried a hand-written `param.key === "FarLeadBrakeLimit"`
+check and nothing for `RangeDerivedVrel`, so on the web UI the new row would have rendered on
+**every** car — including cars with no Bosch-A radar, where the feature cannot do anything. That
+single-key check is now a two-key set, `BOSCH_A_REQUIRED_KEYS`, so adding a third Bosch-A TEST row
+means adding a string rather than another branch.
+
+Galaxy's write path (`the_galaxy.py`, `_params.put`) is generic — there is no per-key
+allowlist, so nothing else was needed there. The reachability blocker below is unaffected
+by any of this.
+
+**Verified [CONFIRMED, static]:** `node --check` on the frontend, `json.loads` on the layout, and a
+new test — `test_bosch_a_test_toggles_share_one_galaxy_location_and_gate` in
+`starpilot/system/the_galaxy/tests/test_device_settings_layout.py` — pinning section, parent,
+tier, offroad flag, default, adjacency and the Galaxy gate across all three surfaces at once.
+Negative-controlled per D-009: dropping the key from `BOSCH_A_REQUIRED_KEYS` fails it, and moving
+the row away from its sibling fails it. 21 passed in that file, 116 passed across it plus
+`test_range_vrel_assist.py`, `test_radard_bosch.py` and `test_far_lead_brake_limit.py`; ruff clean.
+
+**Not covered:** nothing here renders the page. These are source-level assertions that the two
+rows agree; they do not prove Galaxy draws the toggle, and no car has been looked at. Note also
+that `starpilot/system/the_galaxy/tests/test_device_settings_frontend.py` has **5 failures at
+HEAD**, unrelated to this work (a developer-mode notice missing from the JS and CSS) — confirmed
+pre-existing by re-running them against a stashed tree.
+
 ### Where the native value went
 
 Nothing was removed and the capnp schema is unchanged. When the assist is active, `radarState`'s

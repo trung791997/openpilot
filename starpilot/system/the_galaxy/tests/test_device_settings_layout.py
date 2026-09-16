@@ -421,3 +421,42 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/appearance.py",
   )
   assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
+  # The far-lead brake limit and the range-derived closing speed are both Bosch-A-only TEST
+  # rows that act on the same radar lead. They must render side by side, under the same parent,
+  # behind the same car-family gate -- a row that is reachable on a car its feature cannot run
+  # on is a row that invites someone to switch on something inert.
+  siblings = ("FarLeadBrakeLimit", "RangeDerivedVrel")
+
+  longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
+  for key in siblings:
+    assert longitudinal[key]["parent_key"] == "AdvancedLongitudinalTune"
+    assert longitudinal[key]["settings_tier"] == "advanced"
+    assert longitudinal[key]["requires_offroad"] is True
+    assert longitudinal[key]["ui_type"] == "toggle"
+    # TEST features ship OFF. See D-053 and the far-lead brake limit's own evidence note.
+    assert _declared_default(key) == "0"
+
+  # Adjacent, and in this order, so the pair reads as a group in Galaxy.
+  ordered = list(longitudinal)
+  assert ordered[ordered.index(siblings[0]) + 1] == siblings[1]
+
+  # Galaxy hides both behind BoschARadarAvailable. This is the check that was missing when
+  # RangeDerivedVrel was first added: the layout entry alone would have rendered the row on
+  # every car, including ones with no Bosch-A radar to derive a closing rate from.
+  frontend = (
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings.js"
+  ).read_text(encoding="utf-8")
+  gate = re.search(r"const BOSCH_A_REQUIRED_KEYS = new Set\(\[([^\]]*)\]\)", frontend)
+  assert gate is not None, "Galaxy lost the Bosch-A key set"
+  assert set(re.findall(r'"([^"]+)"', gate.group(1))) == set(siblings)
+  assert "BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable" in frontend
+
+  # The on-device raylib settings gate the same pair through the Bosch-A radar section.
+  raylib = (
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py"
+  ).read_text(encoding="utf-8")
+  bosch_rows = raylib.split("_bosch_a_radar_rows")[1]
+  assert all(f'SettingRow("{key}"' in bosch_rows for key in siblings)
