@@ -1090,6 +1090,45 @@ no aarch64 cross-compiler, and the local toolchain is Python 3.11.15 / Cython 3.
 pinned Python 3.12.3 / **Cython 3.1.4** that `b9612b2a` reproduced byte-identically. It needs a
 machine that can run `--platform linux/arm64`.
 
+**A native on-device build unblocks the toggle but does NOT close open item 12.**
+`[CONFIRMED — run on the car, 2026-09-16]` Building on the comma itself produces a working
+larch64 `params_pyx.so` with the key present, which is enough to make the Galaxy row editable and
+`_range_vrel_assist_enabled()` return the stored value. It is **not** the reproducible
+pinned-toolchain artifact, so it must never be staged or pushed, and the committed `.so` stays at
+822 keys until item 12's docker recipe is run properly.
+
+Two traps found doing this, both worth knowing before anyone repeats it:
+
+- **`scons common/` fails on the device**, at `common/transformations/coordinates.cc`:
+  `fatal error: 'eigen3/Eigen/Dense' file not found`. AGNOS ships no eigen headers. This is a
+  sibling SConscript (`common/SConscript:31`) and is unrelated to the params binary, but with
+  `-j4` scons aborts **before linking `common/params_pyx.so`**, so the build looks like it ran
+  and the key is still missing. Build the single target instead:
+  `scons -j4 common/params_pyx.so`. Do not install eigen or touch `common/transformations/` —
+  its committed aarch64 `.so` is correct and unchanged by this branch.
+- **Do not remove the `prebuilt` marker** to force a rebuild. `launch_chffrplus.sh:153` runs
+  `./build.py` when it is absent, and **this branch has no `build.py` at the repo root**, so
+  removing it breaks the launch.
+
+Verify the result with `all_keys()`, never `strings` (open item 4's tail-merging caveat).
+`PYTHONPATH` must be the **parent** of the openpilot dir, i.e. `/data` on the device:
+
+```bash
+PYTHONPATH=/data python3 -c "from openpilot.common.params import Params; \
+k=Params(memory=True).all_keys(); print(len(k), b'RangeDerivedVrel' in k)"   # expect: 823 True
+```
+
+`RangeDerivedVrel` alone is not sufficient to make the assist act. `is_bosch_a_radar_car(CP)`
+(`selfdrive/controls/radard.py:107`) requires `CP.radarUnavailable == False`, which
+`opendbc_repo/opendbc/car/honda/interface.py:56-59` sets from the **`BoschARadar`** param when
+CarParams is built. So `BoschARadar` must be on too, and it only takes effect after an
+offroad→onroad transition; `RangeDerivedVrel` is re-read every 100 radard frames and can be
+flipped onroad.
+
+An openpilot update that resets the working tree drops the device back to the committed 822-key
+binary, at which point the key silently reads `False` while the UI still shows it on. Re-run the
+`all_keys()` check before trusting the toggle after any update.
+
 ### The Galaxy row: same location as the far-lead brake limit — 2026-09-16
 
 Both surfaces now carry the row, and **both gate it the same way the far-lead brake limit is
@@ -1578,7 +1617,11 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     Galaxy allowlist to get past the 403** — see the section above for why that makes it worse.
     **This container cannot do the rebuild** (no docker daemon, no qemu, no aarch64
     cross-compiler, Python 3.11.15 / Cython 3.3.0 vs the pinned 3.12.3 / 3.1.4). This is open item 4 repeating itself with a
-    different key. Use item 4's recipe **verbatim** — the `oprad-build:cy314` image, Cython pinned
+    different key. A **native on-device build** makes the toggle usable in the field (see the
+    section above for the two traps: `scons common/` dies on missing eigen headers, so build
+    `common/params_pyx.so` as a single target; and never remove the `prebuilt` marker), but it
+    does **not** close this item — that binary is not the reproducible pinned-toolchain artifact
+    and must not be staged. Use item 4's recipe **verbatim** — the `oprad-build:cy314` image, Cython pinned
     to 3.1.4, mounted at `/work`, `SP_FORCE_TICI=1` — and heed its warning that **scons will report
     success without rebuilding**: delete `.sconsign.dblite` and the archive
     (`./tools/clean_build_artifacts.sh --sconsign`) and confirm the hash actually changed. Expected
