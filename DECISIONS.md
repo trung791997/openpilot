@@ -889,9 +889,16 @@ ranges instead.
   to flag. The fresh fit follows the range and lets the U11 claim through.
 - **Next step:** any retry must be judged by that future-slope metric, not by lost/gained counts.
 
-## D-057 — PROPOSED (prototype): a lasting, clean, U11-consistent rejected step re-anchors the gate
+## D-057 — a lasting, clean, U11-consistent rejected step re-anchors the gate
 
-**Status: prototype, replay and static only. Stacked on D-056, so not shippable as-is.**
+**Status: on the car branch 2026-09-17, re-based onto D-055 alone (no `gated_ranges`; `samples` and the anchor re-root on the run's last 3 sweeps). Replay and static only; no road evidence yet.**
+- **Replay vs D-055 (`ab5.py`, 2026-09-17), all seven routes 232/236/237/239/23a/23b/23e:** lost 0 and
+  0 measured/unmeasured flips everywhere. Gained point-sweeps: 232 9, 236 607 (198 lead), 237 1,027
+  (181 lead), 239 0, 23a 266, 23b 0, 23e 13. 236 track 38 restored 17.1 s, 237 track 31 16.2 s,
+  237 track 63 51.4 s (item 22.4, non-lead, 23→20 m at ≈0 m/s). Re-admitted measured vRel vs the
+  next-1 s slope: p90 2.2 / 1.1 / 2.4 m/s and >3 m/s over-close 2.2 / 2.2 / 0 % (236 / 237 / 23a)
+  against reference 5.4 / 5.9 / 2.6 %. Unlike D-055 this DOES put new measured vRel into control.
+- Earlier prototype record (stacked on D-056) follows.
 - **Change:** a rejection run re-roots samples and anchor on its last 3 sweeps when all of these
   hold:
   - it has ≥8 sweeps and spans ≥1.5 s;
@@ -914,7 +921,7 @@ ranges instead.
 - **Limits:**
   - 236 track 21 (20.4 s) is fully degraded, and D-057 does not touch it by design.
   - Onset-to-re-anchor was about 10 s on 236_38, so its tail was degraded for a while.
-- **Next step:** re-base onto D-055 without D-056 and replay again.
+- **Next step (done 2026-09-17):** re-based onto D-055 without D-056 and replayed; see status above.
 
 
 ---

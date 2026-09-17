@@ -1754,19 +1754,19 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
 20. **Rejected in replay: D-056 rate check fit over gated ranges.** Its re-admitted vRel over-closes
     by >3 m/s about 4× as often as reference, and it loses 14 lead point-sweeps on 0000023a. See D-056.
 
-21. **Prototype: D-057 re-anchor on a lasting clean step.** On top of D-056 the replay is clean:
+21. **D-057 re-anchor on a lasting clean step — ON THE CAR BRANCH 2026-09-17 (replay and static
+    only; see item 28).** Earlier prototype record: on top of D-056 the replay is clean:
     0 lost, and newly measured vRel is at or better than reference. It restores 236 track 38
     (17.1 s) and 237 track 31 (16.2 s). It is stacked on D-056, so it is not shippable as-is.
 
 22. **Next-session tasks (radar residuals).**
     1. **Done 2026-09-17 (item 26).** Lock census run on 0000023b / 0000023e (both on 0756f810).
-    2. Re-base D-057 onto D-055 alone (drop `gated_ranges`; re-root `samples` and anchor only).
-       Rerun the 4 D-057 tests, then `ab4.py`-style replay of D-055 vs D-055+D-057, including the
-       future-slope metric.
+    2. **Done 2026-09-17 (item 28).** D-057 re-based onto D-055 alone, 4 tests rerun, `ab5.py`
+       replay D-055 vs D-055+D-057 on all seven routes with the future-slope metric.
     3. **D-055 part done 2026-09-17 (item 26):** lost = 0 on both fresh routes, no new measured
        vRel; committed to the car branch on its own. D-057 still needs the re-base and replay.
-    4. Check 237 track 63 (52.9 s unresolved, non-degraded, non-lead, d 36→20.5 m, slope 0) under
-       D-057.
+    4. **Done 2026-09-17 (item 28):** 237 track 63 is absent 51.4 s under D-055 and published
+       measured under D-057 (23.4→20.5 m, vRel −1.1→0, non-lead).
     5. Decide whether a join should be allowed to publish measured when the joined range contradicts
        U11 (see the D-054 census). That needs its own test, like the D-057 contradiction control
        with an 8.5 m step.
@@ -1913,3 +1913,15 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
       (−7.7), so the assist direction is the wrong one. What separates this from a real closer is
       vision (13–18 m further, vRel ≈ 0) and the park-and-decay after the walk — the same
       discriminator item 25 lacked for 237 5:22. Proposal work should start from that pair.
+
+28. **D-057 promoted to the car branch (replay and static only, 2026-09-17).** Re-based onto D-055
+    without D-056 (`rejected_run` on the track state, `_bosch_a_lasting_clean_step`, constants
+    `BOSCH_A_REANCHOR_*`). Static: 108 passed (4 D-057 tests: positive publishes at 1.5–1.65 s, the
+    degraded and U11-contradicting controls never re-anchor). Replay D-055 vs D-055+D-057 (`ab5.py`,
+    agy-flash dispatch for the mechanical run, Claude-audited): lost 0 on every route; restores 236
+    track 38 (17.1 s, lead), 237 track 31 (16.2 s, lead), 237 track 63 (51.4 s, non-lead, item 22.4);
+    23b/23e unchanged apart from 13 sweeps. Newly measured vRel over-closes the next-1 s range slope
+    by >3 m/s on 2.2 / 2.2 / 0 % (236 / 237 / 23a) vs reference 5.4 / 5.9 / 2.6 %. **Unlike D-055,
+    this admits new measured points into control** on a re-anchored identity. Not road-validated:
+    the next drive is the first road evidence; check lead lockouts (lock census) and any brake event
+    on a re-anchored identity. Still open from item 22: 22.5 (join vs U11), 22.6 (236 track 21).
