@@ -3,8 +3,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 LAYOUT_PATH = REPO_ROOT / "starpilot/common/assets/device_settings_layout.json"
@@ -477,21 +475,14 @@ def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
   assert all(f'SettingRow("{key}"' in bosch_rows for key in siblings)
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason=(
-    "STATUS open item 12: the committed aarch64 params_pyx.so still carries the 822-key list " +
-    "and lacks RangeDerivedVrel, so Galaxy rejects the write with 403 'not editable'. This is " +
-    "CONFIRMED on a real device, not inferred. When the larch64 rebuild lands, this test starts " +
-    "passing, strict=True turns that XPASS into a failure, and whoever sees it should delete " +
-    "this marker and close open item 12."
-  ),
-)
 def test_every_galaxy_toggle_key_exists_in_the_committed_device_params_binary():
   # Galaxy's PUT /api/params rejects any key missing from the COMPILED registry:
   # _build_default_params() enumerates _params_raw.all_keys() off common/params_pyx.so, and
   # a key declared only in params_keys.h is 403 'not editable'. Declaring a key and shipping
   # a stale binary therefore produces a row that renders and cannot be switched on.
+  #
+  # Regression guard for STATUS open item 12 (closed by b2baba87): this was a strict xfail while
+  # the committed binary lacked RangeDerivedVrel and a real car returned that 403.
   #
   # This reads the COMMITTED blob, not the working tree: the working copy is whatever the local
   # scons produced (x86_64 in CI containers) and is skip-worktree, so it proves nothing about
