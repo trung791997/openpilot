@@ -14,7 +14,8 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.desire_helper import LaneChangeDirection, LaneChangeState
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
-from opendbc.car.honda.radar_interface import BOSCH_A_FREQ_HZ
+from opendbc.car.honda.radar_interface import (BOSCH_A_DIRECT_VREL_CENTER_RAW, BOSCH_A_DIRECT_VREL_MIN_RAW,
+                                               BOSCH_A_DIRECT_VREL_SCALE_MPS, BOSCH_A_FREQ_HZ)
 from opendbc.car.honda.values import HONDA_BOSCH_A
 
 
@@ -53,7 +54,27 @@ RANGE_VREL_MAX_SPAN_S = 0.60
 # false brake is exactly that -- U11 (-6.0) and the fitted rate (-4.5 to -6.4) agreed with each
 # other while the range itself walked ~6 m inward. On those recorded figures the disagreement
 # never reaches MIN_DISAGREEMENT and this assist stays inert, but a range walk that outran U11
-# would be amplified by it, bounded only by MAX_CORRECTION.
+# would be amplified by it, bounded only by MAX_CORRECTION and the guards in the rework block below.
+#
+# 2026-09-16 REWORK. The first version was replayed open-loop, with the real Track, over every
+# liveTracks sweep of three routes: 00000232, 00000236 and 00000237. It did recover what it was
+# built for (236 12:51, a nearly stopped car behind a -13.5 rail), but it also corrected three
+# times with no closing to recover, and its KF step did harm in a fourth case:
+#   * 232 3:02.8, a range WALK. Range 59.0 -> 56.1 -> 59.1 m over ~2.6 s while U11 read +2.1 ->
+#     +0.1 -> +1.1; the 5-sample fit followed the walk and armed at 4.3-4.6 m/s.
+#   * 236 22:13.6, a NEW TRACK settling. Range 77.2 -> 59.5 m in 1.8 s then flat: a +10 m/s^2
+#     relative acceleration no car does. Correction hit the 8.0 cap.
+#   * 236 14:45, EGO STOPPED. vEgo 0.0, U11 +1.5..+2.3, 5-sample fit -9 to -12.7. Cap again.
+#   * Feeding the corrected speed to the lead KF made aLeadK absorb every arming step as an
+#     acceleration: worst extra aLeadK dip -3.8 / -7.2 / -6.0 m/s^2 on the three routes, and
+#     long_mpc and conditional_chill_mode read aLeadK directly. At 236 18:55 the vRel correction
+#     itself matched the range; that dip was the harm.
+# The rework keeps the short fit (and the vRelRangeDerived telemetry) byte-identical, adds a
+# second, longer fit that must AGREE before anything is published, and adds guards that each
+# CLEAR the correction outright. The only clamps are MAX_CORRECTION and the zero-speed cap, and
+# both are physical bounds rather than tuned values. The lead KF is fed the NATIVE speed again;
+# the correction is applied at publish time only, so aLeadK never sees it. Still replay-only:
+# nothing here has been driven.
 
 # Minimum disagreement, m/s, before arming. D-043 deliberately does not chase "the milder
 # 0.6-2.5 m/s overshoots at deceleration onset"; this is the mirror of that, and 2.0 m/s is also
@@ -86,6 +107,75 @@ RANGE_VREL_ASSIST_MAX_CORRECTION_MPS = 8.0
 # excluded outright.
 RANGE_VREL_ASSIST_MIN_D_REL_M = 8.0
 RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M = 1.5
+
+# --- Rework guards (2026-09-16). Chosen on the three-route replay above, which is OPEN-LOOP: a
+# corrected lead changes what the car does next, and none of that is in these numbers. Every value
+# below keeps all three recorded false corrections at exactly zero -- n = 3 known hurts, not a
+# distribution. Replay figures are m/s*s (the correction integrated over the case). "Help" is the
+# five recorded under-reads the rework still corrects -- 236 12:51 and 18:55, 237 5:21, 14:25 and
+# 19:49 -- which total 42.7 m/s*s with every constant at the value below.
+#
+# The LONG fit. The same plain LSQ over the last 15 measured range samples (~1.0 s at 14.35 Hz), in
+# its own deque that every measured update appends to, lead or not, and that is never cleared: a
+# history that spans a gap is rejected by span instead. The disagreement acted on is the SMALLER of
+# the short and long ones, so both fits must see the extra closing. With h = 1/14.35 s:
+#   * a persistent range STEP of s metres moves four consecutive 5-sample fits by 2.87s, 4.30s,
+#     4.30s and 2.87s m/s, so a 0.7 m step alone holds MIN_DISAGREEMENT for four fits, one short of
+#     ARM_UPDATES. The 15-sample fit moves at most 1.43s, so there the step has to be 1.4 m.
+#   * the price is lag: the long slope is the rate ~0.49 s ago. It under-reads a growing closing
+#     rate (the one-sided rule turns that into a later, smaller correction, never a wrong-way one)
+#     and over-reads a shrinking one, which the min() with the short fit bounds.
+#   * a single gross outlier of e metres moves it by at most e/(40h) = 0.36e m/s and leaves an RMS
+#     residual of 0.22-0.25e, so an outlier big enough to push it 2 m/s (5.6 m) fails the residual.
+#   * a track cannot correct until it has 15 measured samples. On the replay that requirement,
+#     not the speed floor, is what zeroed 236 14:45: it was a new track, and it stayed at zero with
+#     the speed floor, the residual and the plausibility guards all removed.
+# Replayed alternatives: 10 samples (span floor 0.4 s) let the walk (1.8 m/s*s) and the settle (1.3)
+# back through; 20 kept every hurt at zero but corrected 29% less (30.4 m/s*s of help, not 42.7).
+RANGE_VREL_LONG_SAMPLES = 15
+RANGE_VREL_LONG_MIN_SPAN_S = 0.6
+RANGE_VREL_LONG_MAX_SPAN_S = 1.5
+
+# RMS residual of the long fit, metres. A constant relative acceleration a leaves only ~a*W^2/26.8
+# of residual over the W = 0.98 s window (0.36 m at 10 m/s^2), so this does not reject a physical
+# braking event; it rejects range behaviour no car produces. The 236 22:13.6 settle ran 1.17 ->
+# 0.89 -> 0.63 m; a 0.7 limit let 0.4 m/s*s of it through and no limit let 0.7 through.
+# It is NOT free, and it is the one guard here that is a judgement call: removing it also recovered
+# more of the real closing at 236 18:55 (11.0 m/s*s, not 7.0) and 237 5:21 (10.9, not 9.8), where
+# a far lead's range is noisier. 0.6 trades that help for zero phantom correction on a settle.
+# It does NOT catch the 232 3:02.8 walk (0.20-0.37 m): the short/long agreement does, with ONE
+# sample of margin at ARM_UPDATES = 5 (at 4, 1.0 m/s*s of the walk got through), so do not lower
+# that. The 236 22:13.6 settle is ALSO held off by exactly one arm update (at 4, 0.4 m/s*s got
+# through on replay): both recorded phantoms rest on that one-update margin.
+RANGE_VREL_ASSIST_MAX_LONG_RESIDUAL_M = 0.6
+
+# Ego speed floor, m/s (the aligned ego speed, vLead - vRel). This is conservatism, not evidence:
+# 236 14:45 was a standstill, but the long-history requirement above already zeroed it, and floors
+# of 0 and 3.0 kept every replayed hurt at zero too (both added 2.0 s of correction). Below 13.5 m/s
+# a lead that is not reversing cannot put U11 on its rail, so the D-041 case cannot occur there.
+RANGE_VREL_ASSIST_MIN_V_EGO_MPS = 5.0
+
+# Plausibility: the lead speed the long fit implies (aligned ego speed plus the long slope) must not
+# be more than this far below zero. Defence in depth only: it changed no replayed output at 5.0, at
+# 3.0 or removed, including with the speed floor at 0. It is loose on purpose, because the lagging
+# long fit makes a STOPPED lead read backwards while ego brakes -- a 1.0 margin halved the help at
+# 236 12:51 (3.2 -> 1.6 m/s*s) -- so it rejects only a fit that describes no lead at all.
+RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS = 5.0
+
+# U11's low saturation rail (radar_interface.py). ON the rail U11 is a bound, not a reading, so the
+# short disagreement there falling back under MIN_DISAGREEMENT says nothing about whether the
+# closing has ended. There ARMING and HOLDING use the long disagreement alone, while the correction
+# is still sized by the smaller of the two. Without the rule, 236 12:51 (U11 exactly -13.50 on every
+# sample while the range closed near -16) kept disarming on short-fit noise: 2.4 m/s*s, not 3.2.
+# Sizing by the long fit alone recovered more at 12:51 (4.9) but over-corrected the tail of both
+# replayed rail approaches as the closing rate shrank, leaving the published vRel up to 1.8 m/s
+# (236 12:54) and 1.6 m/s (237 10:00) further from a centred 2 s range difference than the native
+# rail was.
+BOSCH_A_U11_LOW_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+
+# Last, the correction is capped at the native lead speed, so a corrected vLead is never published
+# below zero. A physical bound like MAX_CORRECTION, not a tuned value: on the replay it bound only
+# at 236 12:51, where it trimmed 0.2 m/s*s.
 
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
@@ -168,6 +258,14 @@ class Track:
     # harmless for telemetry and unacceptable for control, so D-053 reads this rather than
     # isfinite(vRelRange).
     self.vRelRangeFresh = False
+    # D-053 rework: the LONG range history (see RANGE_VREL_LONG_SAMPLES). Appended on every measured
+    # update whether or not this track is a lead, so a track that becomes one already has it; never
+    # cleared. The fit over it is only computed while the assist is evaluating this track, and the
+    # three fields below hold that last fit (NaN before one) for tests and debugging.
+    self.range_hist_long: deque = deque(maxlen=RANGE_VREL_LONG_SAMPLES)
+    self.vRelRangeLong = float('nan')
+    self.vRelRangeLongResidual = float('nan')
+    self.vRelRangeLongSpan = float('nan')
 
     # D-053 range-derived vRel assist. Inert unless RadarD passes range_assist=True, which needs
     # the RangeDerivedVrel param, a Bosch-A car, and this track having been leadOne/leadTwo last
@@ -222,13 +320,16 @@ class Track:
           if span > RANGE_VREL_MAX_SPAN_S:
             self.range_hist.clear()
             self.range_hist.append((float(t_now), float(d_rel)))
+      self.range_hist_long.append((float(t_now), float(d_rel)))
 
-    # D-053. Must run after the fit above and before the KF, so vLeadK and aLeadK inherit the
-    # correction; get_RadarState republishes vRel and vLead to match.
+    # D-053. Must run after the fits above. It only sets range_assist_correction: the KF below is
+    # fed the NATIVE speed, and get_RadarState applies the correction to vRel, vLead and vLeadK at
+    # publish time. The first version fed the corrected speed here, and aLeadK absorbed every
+    # arming step as a hard acceleration (see the rework note at the top of this file).
     self._update_range_assist(range_assist, measurement_update, t_now)
 
     if measurement_update and self.cnt > 0:
-      self.kf.update(self.vLead - self.range_assist_correction)
+      self.kf.update(self.vLead)
 
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
@@ -313,18 +414,42 @@ class Track:
       self._clear_range_assist()
       return
 
+    # Inside Track, vLead is vRel plus the delay-aligned ego speed, so this recovers that ego speed.
+    v_ego_aligned = self.vLead - self.vRel
+    if v_ego_aligned < RANGE_VREL_ASSIST_MIN_V_EGO_MPS:
+      self._clear_range_assist()
+      return
+
+    if not self._fit_long_range():
+      self._clear_range_assist()
+      return
+    if not (RANGE_VREL_LONG_MIN_SPAN_S <= self.vRelRangeLongSpan <= RANGE_VREL_LONG_MAX_SPAN_S):
+      self._clear_range_assist()
+      return
+    if self.vRelRangeLongResidual > RANGE_VREL_ASSIST_MAX_LONG_RESIDUAL_M:
+      self._clear_range_assist()
+      return
+    if v_ego_aligned + self.vRelRangeLong < -RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS:
+      self._clear_range_assist()
+      return
+
     # Positive means the range says MORE closing than U11 -- the only direction acted on, and the
-    # same sign convention as "understatement" in tools/bosch_a_vrel_shadow_report.py.
-    disagreement = self.vRel - self.vRelRange
+    # same sign convention as "understatement" in tools/bosch_a_vrel_shadow_report.py. Both fits
+    # must agree, so the smaller disagreement is the one that counts.
+    disagreement = min(self.vRel - self.vRelRange, self.vRel - self.vRelRangeLong)
+    # On the U11 rail only the long fit decides arming and holding; the size below stays the smaller.
+    # Quantized U11 sits exactly on the rail value, so half a step of tolerance is exact.
+    on_rail = self.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_DIRECT_VREL_SCALE_MPS / 2
+    decision = self.vRel - self.vRelRangeLong if on_rail else disagreement
 
     if self.range_assist_active:
       # Hysteresis: hold while ANY closing disagreement remains, so the correction decays
       # continuously to zero as U11 catches up rather than stepping off at the arming threshold.
-      if disagreement <= 0.0:
+      if decision <= 0.0:
         self._clear_range_assist()
         return
     else:
-      if disagreement < RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
+      if decision < RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
         self.range_assist_arm_count = 0
         self.range_assist_correction = 0.0
         return
@@ -334,7 +459,32 @@ class Track:
         return
       self.range_assist_active = True
 
-    self.range_assist_correction = float(min(disagreement, RANGE_VREL_ASSIST_MAX_CORRECTION_MPS))
+    # Active with a negative smaller disagreement (only possible on the rail) publishes zero while
+    # staying armed. The last bound keeps a corrected vLead from being published below zero.
+    self.range_assist_correction = float(min(max(disagreement, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS,
+                                             max(self.vLead, 0.0)))
+
+  def _fit_long_range(self) -> bool:
+    """Plain LSQ over range_hist_long. Sets vRelRangeLong (slope, m/s), vRelRangeLongResidual (RMS,
+    m) and vRelRangeLongSpan (s) and returns True, or sets all three to NaN and returns False when
+    the history is not full or its timestamps are degenerate."""
+    self.vRelRangeLong = self.vRelRangeLongResidual = self.vRelRangeLongSpan = float('nan')
+    if len(self.range_hist_long) < RANGE_VREL_LONG_SAMPLES:
+      return False
+    hist = np.array(self.range_hist_long, dtype=np.float64)
+    ts = hist[:, 0] - hist[-1, 0]
+    ds = hist[:, 1]
+    t_bar = ts.mean()
+    d_bar = ds.mean()
+    sxx = float(((ts - t_bar) ** 2).sum())
+    if not sxx > 0.0:
+      return False
+    slope = float(((ts - t_bar) * (ds - d_bar)).sum() / sxx)
+    residual = ds - (d_bar + slope * (ts - t_bar))
+    self.vRelRangeLong = slope
+    self.vRelRangeLongResidual = float(np.sqrt((residual ** 2).mean()))
+    self.vRelRangeLongSpan = float(ts[-1] - ts[0])
+    return True
 
   def get_RadarState(self, model_prob: float = 0.0, shadow_telemetry: bool = False):
     """`shadow_telemetry` is opt-in because this dict is assigned to TWO different capnp structs:
@@ -343,17 +493,20 @@ class Track:
     the followed lead should: adjacent tracks sit at up to 17-23 deg azimuth, where a range
     derivative is radial rate and NOT longitudinal velocity, so publishing it there would be
     misleading as well as a schema error."""
-    # D-053. vLeadK and aLeadK already carry this from the KF in update(); subtracting it here
-    # too is what keeps the published lead self-consistent. It is zero unless RadarD armed the
-    # assist for this track, so every other caller is unchanged. Note self.vRel and self.vLead
-    # themselves stay NATIVE -- the adjacent-lane detectors and the vision association read those.
+    # D-053. The KF runs on the native speed, so the correction is applied here, once, to all three
+    # published speeds: vRel and vLead (long_mpc) and vLeadK (longitudinal_lead.py, which feeds
+    # blotv2 and the planner), keeping the published lead self-consistent. aLeadK and aLeadTau stay
+    # native on purpose -- see the rework note at the top of this file. The correction is zero
+    # unless RadarD armed the assist for this track, so every other caller is unchanged. Note
+    # self.vRel and self.vLead themselves stay NATIVE -- the adjacent-lane detectors and the vision
+    # association read those -- and so does self.vLeadK, so nothing applies the correction twice.
     correction = float(self.range_assist_correction)
     state = {
       "dRel": float(self.dRel),
       "yRel": float(self.yRel),
       "vRel": float(self.vRel) - correction,
       "vLead": float(self.vLead) - correction,
-      "vLeadK": float(self.vLeadK),
+      "vLeadK": float(self.vLeadK) - correction,
       "aLeadK": float(self.aLeadK),
       "aLeadTau": float(self.aLeadTau.x),
       "status": True,
@@ -700,10 +853,11 @@ class RadarD:
     is a file read. Any exception -- including the missing-key case on a device whose
     params_pyx.so predates this key -- falls back to False, i.e. the shipped U11 behaviour.
 
-    NOTE for the next agent: until `common/params_pyx.so` is rebuilt for larch64 with the
-    RangeDerivedVrel key present, this returns False on the car no matter what the UI shows.
-    That is the same trap STATUS.md open item 4 records for FarLeadBrakeLimit; the rebuild is
-    a separate deliberate commit (pattern: b9612b2a).
+    NOTE for the next agent: a device whose `common/params_pyx.so` lacks the RangeDerivedVrel key
+    returns False here no matter what the UI shows -- the Galaxy write itself 403s. That shipped
+    once (STATUS.md open item 12, the same trap as item 4 for FarLeadBrakeLimit) and b2baba87
+    rebuilt the committed larch64 artifacts with the key. A device on an older build, or one
+    running a natively rebuilt .so, can still hit it; check the key is in initData.params.
     """
     self._range_assist_frame += 1
     if self._range_assist_params is None or self._range_assist_frame % 100 == 0:
