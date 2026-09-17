@@ -1744,7 +1744,8 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
     Neither the rework nor D-054 touches it. Needs a raw-track look at 625–635 s.
 
-19. **Proposed, not on the car: D-055 invalid-slot hide guard.**
+19. **ON THE CAR BRANCH 2026-09-17 (replay and static only): D-055 invalid-slot hide guard.**
+    See item 26 for the fresh-route evidence that promoted it.
     - Replay vs D-054: 0 lost point-sweeps, 2,252 restored as coasts (504 lead), including
       237 track 9 (21.2 s).
     - Static: 4 tests.
@@ -1758,13 +1759,12 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     (17.1 s) and 237 track 31 (16.2 s). It is stacked on D-056, so it is not shippable as-is.
 
 22. **Next-session tasks (radar residuals).**
-    1. Pull the user's fresh routes on 0756f810. Run the lock census (`lockcensus.py`,
-       `locksumm.py`) and confirm D-054 on the road before any parser change.
+    1. **Done 2026-09-17 (item 26).** Lock census run on 0000023b / 0000023e (both on 0756f810).
     2. Re-base D-057 onto D-055 alone (drop `gated_ranges`; re-root `samples` and anchor only).
        Rerun the 4 D-057 tests, then `ab4.py`-style replay of D-055 vs D-055+D-057, including the
        future-slope metric.
-    3. Replay D-055 (+ re-based D-057) on the fresh routes. If lost = 0 and the future-slope metric is
-       no worse than reference, propose D-055 for the car first, as its own commit.
+    3. **D-055 part done 2026-09-17 (item 26):** lost = 0 on both fresh routes, no new measured
+       vRel; committed to the car branch on its own. D-057 still needs the re-base and replay.
     4. Check 237 track 63 (52.9 s unresolved, non-degraded, non-lead, d 36→20.5 m, slope 0) under
        D-057.
     5. Decide whether a join should be allowed to publish measured when the joined range contradicts
@@ -1846,3 +1846,25 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
       - Verdict: two helpful, two cut real braking, and the capping logic trusts the same vRel it is meant
         to distrust. **Not merged; the toggle stays.** Recommend OFF until the 5:22 / 34:12 shape is
         excluded.
+
+26. **D-055 promoted to the car branch — 2026-09-17 (replay and static only; awaiting road
+    evidence).** Item 22.1 and the D-055 half of 22.3, done on the two fresh routes driven on
+    D-054 (`gitCommit 0756f810` in `initData`, both routes):
+    - **Lock census (`lockcensus.py` / `locksumm.py`, the parser the car ran):** 0000023b (5 seg)
+      76 locked sweeps of 5,828 (1.3 %, 5 s), 10 episodes, 0 ≥1 s in path, 0 ≥1 s while the
+      device lead was vision-matched to the locked object. 0000023e (42 seg) 2,933 of 77,560
+      (3.8 %, 204 s), 231 episodes, 62 ≥1 s, 1 ≥1 s in path, **0 lead-matched**. The longest
+      is id5 at 37:22.4 for 6.9 s. Compare 232/236/237 before D-054: 2, 3 and 4 lead-matched
+      episodes (5, 26, 42 s). Limited road evidence, not a road test of the fix in isolation.
+    - **D-055 vs main (`ab3.py`, pair MG):** 23b lost 0 / lost_lead 0, gained 9 (0 lead), 0 runs
+      ≥1 s. 23e lost 0 / lost_lead 0, gained 331 (33 lead), 4 runs ≥1 s, none lead. Every
+      restored sweep is a coast (`gained_measured` 0), so no new measured vRel enters control and
+      `new_measured_vrel_vs_future_slope` is n = 0. That is the item 22.3 gate, met.
+    - **Static:** `test_bosch_a_radar.py` 104 passed, `test_far_lead_brake_limit.py` 22 passed
+      (arm64 container). The change is the one-line hide-set exclusion from `4ab261ac` plus its
+      4 tests; the comment now records the fresh-route numbers.
+    - **What this is not:** D-055 has never run on the car. It only ever re-publishes coasts the
+      old parser hid, so its failure mode is a stale coasted point living up to the coast limit,
+      not a missing one (D-041/D-042). Watch the next route's `ab3`-style diff for lead runs.
+    - Still open from item 22: re-base D-057 onto D-055 (22.2), 237 track 63 (22.4), the
+      join-vs-U11 decision (22.5), 236 track 21 (22.6), item 18.

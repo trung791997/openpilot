@@ -855,9 +855,14 @@ Prototypes are on `proposal/d054-residuals` (not for the car). Replay covered 00
   - A join publishes whether or not the range agrees with U11. That is existing behaviour, and it
     is how a stale anchor ends a lockout today.
 
-## D-055 — PROPOSED: an invalid slot must not hide an identity that is valid in another slot this sweep
+## D-055 — an invalid slot must not hide an identity that is valid in another slot this sweep
 
-**Status: proposed, replay and static only. Not on the car branch.**
+**Status: on the car branch 2026-09-17 (replay and static only; no road evidence yet).** Promoted
+after the two fresh routes driven on D-054 (`0756f810`) were replayed: 0000023b / 0000023e show
+**0 lost point-sweeps (0 lead)**, 9 + 331 restored (33 lead on 23e), every one a coast
+(measured=False), so no new measured vRel reaches control and the future-slope metric is unchanged.
+The lock census on those routes (same parser the car ran): 23b 76 locked sweeps (1.3 %), 23e 2,933
+(3.8 %), and **0 episodes ≥1 s with the device lead vision-matched to the locked object** on either.
 The collapse loop hid the previous occupant id of any slot that turned invalid, even when that id
 had just migrated to another valid slot. A coasted point then vanished while its object was still
 reported.
