@@ -1972,3 +1972,43 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     * Route 231 segments 9–11 are cached now too, so the fault episode can be re-derived against the
       current tree (the other agent's point 4: the 0.25 m/sweep vs 2.0 m gate arithmetic predates
       D-054 and has **not** been re-run yet).
+
+31. **Route `00000241--7948e97423` (2026-09-17): the user reports phantom brakes and one stopped-lead
+    miss they had to intervene on. Both are road evidence, and the lateral estimate is implicated in
+    both directions.** 12 segments, 11:41, 5.1 min engaged, 4.5 km. Same device build as 23f
+    (`FarLeadBrakeLimit = 1`, `BoschARadar = 1`, `RangeDerivedVrel = 1`, `BlotV3 = 0`). 5 brake
+    presses and 12 `longActive` drops while enabled; route `aEgo` min −4.85.
+
+    **The stopped-lead misses — three separate shapes, and our parser caused none of them.**
+    * **9:36–9:40, the radar itself went blank.** `an2/rawslots.py` on segment 9: at 9:36.1 the
+      sweep contains **no valid objects at all** (16 invalid slots) and the near lead (track 20,
+      d 25.6 m, existence 68) is simply gone; it does not come back for ~3.7 s. The model lead's
+      probability decays 0.93 → 0.62 → 0.38 → 0.06 with `xStd` 8 m, so `radarState` has no lead
+      either. The car, just out of a near-stop, was commanding **+1.67 m/s²** into a lead that had
+      stopped ~20 m ahead when the driver braked at 9:37.7. Nothing in the Bosch-A gate is involved:
+      the radar published nothing to gate.
+    * **6:50–6:52, lead selection walked away from a good in-lane point.** The raw sweeps keep
+      track 8 at d ≈ 21 m, y ≈ 0.2, existence **126**, published every sweep. `leadOne` nonetheless
+      drops it at 6:50.5 (`rad=0 tid=-1 d=27.2`), follows the model lead out to 32 m, then binds to
+      track 33 at **43 m, y 4.2**. The genuinely stopping car (track 33) had been visible since 6:49
+      at d 48 m with U11 −6.6 m/s, but its `y` read 5–6 m — out of lane — until 1.5 s before the
+      intervention. Driver braked at 6:52.1.
+    * **3:37–3:47, enough braking, then released.** Lead track 38, probability 1.00, both sensors
+      agreeing, a slow roller (`vLead` 1.6–3.4 m/s) approached from 105 m. `FarLeadBrakeLimit` fired
+      6 times at 3:37 (planner −2.61 → commanded −1.34), the car then braked to −3.32 at 3:39 and
+      **released to −0.80 … −1.24 m/s² for the next 7 s** while still closing 5–8 m/s inside 60 m
+      (`aLeadK` had gone positive). Driver braked at 3:47 with 13.9 m left.
+
+    **The phantom brakes are the same coin.** `an2/phantom.py` lists all 8 engaged episodes at
+    `aTarget <= -1.5`: **4:55.9** (−2.32, lead **y −8.1 m**), **4:59.4** (−3.24, aEgo −4.15, y −5.3),
+    **9:09.5** (−3.20, aEgo −4.25, y +3.7, closing only 2.0 m/s with a −1.27 m/s future slope) and
+    **1:51.9** (−2.86, aEgo −3.51, **no radar lead published at all** — cause not yet identified).
+    So the car brakes hard for targets 4–8 m off centre while ignoring an in-path stopped car whose
+    `y` reads 5 m. The Bosch-A lateral estimate is being trusted symmetrically in both directions,
+    and `leadOne` accepted a lead at y −8.1 m.
+
+    **Not yet done:** the 1:51.9 no-lead brake, why `radard` bound `leadOne` to y −8.1 m, and whether
+    a stationary-target dropout like 9:36 is visible in the other 9 routes. `FarLeadBrakeLimit`'s
+    road record is now 2 routes: 1 phantom cap and **6 caps on genuinely closing leads**, two of them
+    (23f 23:15, 241 3:37) followed by a driver brake. That argues for tightening its gate before it
+    ever leaves TEST, not for widening it.
