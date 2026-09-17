@@ -2007,8 +2007,58 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     `y` reads 5 m. The Bosch-A lateral estimate is being trusted symmetrically in both directions,
     and `leadOne` accepted a lead at y −8.1 m.
 
-    **Not yet done:** the 1:51.9 no-lead brake, why `radard` bound `leadOne` to y −8.1 m, and whether
-    a stationary-target dropout like 9:36 is visible in the other 9 routes. `FarLeadBrakeLimit`'s
+    **Not yet done:** whether a stationary-target dropout like 9:36 is visible in the other 9 routes.
+    The 1:51.9 no-lead brake and the y −8.1 m lead acceptance are both answered in item 32. `FarLeadBrakeLimit`'s
     road record is now 2 routes: 1 phantom cap and **6 caps on genuinely closing leads**, two of them
     (23f 23:15, 241 3:37) followed by a driver brake. That argues for tightening its gate before it
     ever leaves TEST, not for widening it.
+
+## 32. Route 241 follow-up: the 1:51.9 brake is not a radar event, and there is no absolute lateral bound on a Bosch-A lead — 2026-09-17
+
+Two of the three items left open by item 31 are now answered. Replay and log analysis only; nothing
+changed in the tree.
+
+**1:51.9 was the end-to-end longitudinal plan, with no lead of any kind.** Route `00000241--7948e97423`,
+seg 1. The raw sweeps carry no object anywhere near the path (`rawslots.py … 1 106 118 1.0`: the only
+valid slots are track 23 at d 6–20 m, y −2.5 to −3.2, and from 1:52.0 to 1:55.0 *no valid objects at
+all*), the model lead probability is **0.00–0.03** for the whole episode, and `hasLead = 0`,
+`shouldStop = 0`, `src = cruise` in `scan_00000241--7948e97423.csv` throughout. `expMode = 1`
+(Experimental Mode) the entire time, so longitudinal came from the model's own plan.
+
+What moved was the plan, not a target. Between 1:49.8 and 1:52.6 the last point of `modelV2.position.x`
+collapsed from **210 m to 99 m**, then to 69 m at 1:54 and 41 m at 1:57, while `steeringAngleDeg` held
+−1.1° and yaw rate 0.007 rad/s — i.e. a straight, clear road. `spVCruise` stepped from 22.36 m/s to
+14.77 at 1:45.4 and decayed to 5.15 m/s by 1:54.4, then snapped back to 22.1 m/s at 1:54.6 when the
+driver pressed the gas (`longActive` 1 → 0 at 1:54.6 and again at 1:59.2). So the model planned a stop
+on an empty straight, the planner followed it down from 22.1 to 5.5 m/s, and the driver overrode.
+
+**This one is outside the Bosch-A path entirely.** No change to `radar_interface.py` could have caused
+or prevented it, and it should not be counted against the radar work. It is the clearest phantom the
+driver felt on this route, and its cause is the e2e longitudinal plan in Experimental Mode.
+
+**Why `radard` accepted a lead at y −8.1 m: there is no absolute lateral bound on this car.**
+`selfdrive/controls/radard.py`:
+
+* The only absolute |`yRel`| gate in the lead path is `g90_radar_lead_lateral_sane` (line 588),
+  `abs(yRel) <= min(6.0, 1.5 + 0.08 * dRel)`. At d 45 m that is 5.1 m, which **would** have rejected
+  the 4:55.9 track. But it is applied only when `g90_radar_filter` is set, and line 1066 sets that to
+  `CP.brand == "hyundai" and CP.carFingerprint == "GENESIS_G90"`. On this Honda it is off.
+* The only lateral test that does run is `lat_sane` inside `track_matches_vision` (line 621):
+  `abs(track.yRel + lead.y[0]) < max(y_floor, y_std_scale * max(lead.yStd[0], 0.2))`. That is a
+  *relative* check — the radar's `y` only has to agree with **vision's** `y`. With `y_std_scale = 1.0,
+  y_floor = 1.0` on the strict path and `2.0 / 1.5` on the preferred-track fallback (line 657), and
+  vision `yStd` running 1.8–4.8 m at 40–100 m on this route, the tolerance reaches ~10 m. A radar
+  track at y −8.1 passes whenever vision's own lead `y` is also off-centre and uncertain, which is
+  exactly the case on a bend.
+
+**Do not turn this into a threshold yet.** The same route contains the symmetric failure: at 6:49 the
+car that really was stopping read `y` 5–6 m for 3 s (item 31), so an absolute |`yRel`| bound tight
+enough to reject the 4:55.9 phantom would also have rejected that real lead and delayed the brake
+further. The Bosch-A lateral estimate is too coarse to gate on in *either* direction on one route's
+evidence, and D-048's rejected list is already full of thresholds that looked good on one route. The
+next step is a measurement, not a constant: a census of published `yRel` against the vision `y` and
+against the outcome, over all 10 cached routes, before any bound is proposed.
+
+**Still open from items 31 and 32:** the stationary-target dropout census (does a 9:36-style
+all-slots-invalid gap occur on the other 9 routes?), the `yRel` census above, and item 22.6
+(236 track 21).
