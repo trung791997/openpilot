@@ -781,23 +781,67 @@ Cost: onset latency 0.77 s from a closing kink to first correction (0.42 s befor
 onset lag of 0.88–1.28 s. Replay gain and activity per route are in STATUS.md. The t≈11 s blind
 spot (range error that U11 agrees with) is unchanged.
 
-## D-054 — PROPOSED: a rejected sweep must not freeze the innovation baseline forever
+## D-054 — A range is range-rejected only if it contradicts BOTH the last accepted sample and the last gated range
 
-**Proposed 2026-09-16. Not implemented. Needs a replay and a D-009 negative control before code.**
+**Decided 2026-09-17. Implemented in `radar_interface.py` (`_BoschATrackState.range_anchor`,
+`_bosch_a_range_innovation_rejected`). Replay and static evidence only; never run on a car.**
 
-In `radar_interface.py`, a sweep whose range innovation exceeds `BOSCH_A_RANGE_INNOVATION_HARD_MAX_M`
-(5.0 m) is rejected and, by design, "never becomes the baseline for a later derivative". The
-baseline therefore stays at the last accepted sample. If the range really did move (or the last
-accepted point was the bad one), every later sweep is measured against that frozen point with a
-growing `dt`, is rejected again, and after `BOSCH_A_STALE_S` (0.20 s) the point is popped. The
-object is then **never re-admitted** while its track id lives: a lockout, and it deletes a radar
-point, which D-041/D-042 rank as the worse failure.
+**The lockout.** Before this, the range-innovation gate measured every sweep against the last
+ACCEPTED sample. A velocity coast (D-043 rate check, high u10, U11 and ratio unavailable) publishes
+the range but appends no sample, so that baseline froze while the range kept moving. Every later
+sweep was predicted across the growing gap with the U11 the coast had just distrusted. The error grew
+until the gate rejected, and after `BOSCH_A_STALE_S` the point was deleted. 00000232 track 43 is the
+followed lead pulling away 78.5 → 84.5 m. Four coasts grew the error 0.86 / 1.12 / 1.53 / 1.87 / 2.11 m,
+and the degraded 2.0 m limit rejected it. Radar then lost the lead for 14.7 s while it closed from
+84 m to 27 m. Drift from a coast, not a range step, started 57–78 % of unpublished held sweeps on four
+of the five routes, and 656 of 671 held sweeps on the lead. No ≥ 5 m step ever involved the lead.
+The earlier wording "never re-admitted" was overstated: about 30 % of lock episodes ended published.
 
-Census `[REPLAY]`: locked object-time 6.5 / 7.3 / 14.1 / 6.7 / 9.6 % on 232 / 236 / 237 / 239 /
-23a, with 8 / 8 / 9 / 1 / 2 episodes of the followed lead lost for ≥1 s.
+**The rule.** `range_anchor` is the (time, range) of the last observation that passed the gate,
+accepted or coasted. A sweep is rejected only if it fails the unchanged residual test (U11
+extrapolation or the 00CA ratio, `HARD_MAX` 5.0 m, 2.0 m when degraded) against **both** the anchor
+and the last accepted sample. `samples`, the velocity history, stay accepted-only. A rejected range
+moves neither baseline. A coast advances the anchor only when an anchor already exists, and the first
+accepted sample roots it. A lifecycle break clears it. The rejection hold's freshness is timed from
+the anchor.
 
-**Proposed shape:** when K consecutive rejected sweeps agree with each other (range steps consistent
-with their own U11 within the existing innovation limit), re-seed the baseline from them and publish
-the point as unmeasured/degraded for a short hold instead of popping it. K and the agreement
-tolerance are to be set by replay on the lock episodes above, with the recorded single-sweep range
-resets (the reason the gate exists) as the negative control: they must still be rejected.
+**Why both baselines.** Replay found two drafts wrong before this one:
+1. *The anchor advanced on every coast.* A high-u10 BIRTH coast rooted the gate on a range that was
+   never checked or published. On 00000239 this withheld 2,236 sweeps the old parser published.
+2. *The anchor alone was the baseline.* 00000237 track 12 is a new object whose range walked out
+   25.4 → 28.06 m while U11 said −2 m/s. The rate check rightly coasted the walk and the walk became
+   the anchor. The real ranges (25.3 m closing to 17 m) were then rejected for 52.8 s, while the old
+   parser, measuring against the accepted sample, tracked them. This is the mirror of 232 track 43:
+   there U11 lagged and the range was right; here the range walked and U11 was right. Each baseline
+   alone locks one of them out.
+
+**Replay `[REPLAY]`** through one continuous real `RadarInterface` per route, old parser → this one,
+on 232 / 236 / 237 / 239 / 23a:
+
+| | 232 | 236 | 237 | 239 | 23a |
+|---|---|---|---|---|---|
+| published % of valid object sweeps | 85.3 → 89.8 | 83.0 → 87.2 | 73.6 → 80.2 | 83.3 → 86.5 | 75.2 → 77.1 |
+| locked object-time % | 6.5 → 1.9 | 7.3 → 3.2 | 14.1 → 7.4 | 6.7 → 3.6 | 9.6 → 7.8 |
+| followed lead lost ≥ 1 s (episodes / s) | 8 / 41 → 2 / 5 | 8 / 77 → 3 / 26 | 9 / 105 → 4 / 42 | 1 / 4 → 0 | 2 / 2 → 0 |
+| sweeps published only by old / only by new | 0 / 1,931 | 16 / 4,024 | 88 / 3,227 | 54 / 1,173 | 10 / 422 |
+
+Every remaining lead-lost episode also exists in the old parser, at the same length or shorter
+(232 track 43: 14.7 → 4.0 s; 237 track 9: 39.9 → 21.2 s). No run of sweeps that only the old parser
+published is a lead-lost episode in the census. The longest run is 237 track 36: 5.2 s at 110 m, |y| 3.1 m.
+Its range walked 109.6 → 117.1 m over ~3 s against a closing U11, one walked range was accepted, and
+the snap back to 111.7 m then contradicted both baselines.
+
+**Negative controls (static, `test_bosch_a_radar.py::TestCoastAdvancesTheRangeGate`).** The recorded
+reset shape after a coast never publishes and never enters either baseline. A persistent +8 m step
+is still rejected.
+- Against the old parser: the 232 lockout, hold and anchor tests fail, and the 237 walk test passes.
+- Against the anchor-only draft: only the 237 walk test fails.
+- Against the first draft: the walk and the birth-coast tests fail.
+
+**Not solved; open.**
+- A lasting real range step, or a walk that snaps back after a walked range was accepted, is still
+  rejected against both baselines until the identity's lifecycle breaks. Returning excursions are as
+  self-consistent as lasting ones, so re-anchoring on consistency alone was not adopted.
+- After a coast, `ratio_vrel = d·(1−ratio)/dt` is still timed from the last accepted sample, so the
+  ratio velocity understates the rate across a multi-sweep gap. Changing a published vRel is a
+  separate decision.

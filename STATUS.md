@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-16**
+**As of: 2026-09-17**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -1222,8 +1222,11 @@ fault**; the rework's |y| ≤ 1.5 m gate keeps it inert there and it cannot fix 
 look. `0000023a` 6:23.3, stop-and-go hard brake closing to 17.8 m after a ~1 s radar lead dropout at
 6:20.5; disagreement 1.7 < 2.0, rework inert. Neither is a parser lockout.
 
-**Lockout census** (proposed fix D-054): locked object-time 6.5 / 7.3 / 14.1 / 6.7 / 9.6 % and
-followed-lead-lost ≥1 s episodes 8 / 8 / 9 / 1 / 2 on 232 / 236 / 237 / 239 / 23a.
+**Lockout census, D-054 implemented `[REPLAY]`:** on 232 / 236 / 237 / 239 / 23a, old parser → D-054:
+- Locked object-time: 6.5 / 7.3 / 14.1 / 6.7 / 9.6 % → 1.9 / 3.2 / 7.4 / 3.6 / 7.8 %.
+- Followed-lead-lost ≥1 s episodes: 8 / 8 / 9 / 1 / 2 → 2 / 3 / 4 / 0 / 0.
+- Published sweeps went up on every route.
+- No new lead-lost episode appeared. Full table and the per-sweep A/B are in D-054.
 
 ## Handoff — what is live, what is untested, what bites
 
@@ -1728,9 +1731,15 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     revision): a road event that arms in 4 updates would pass. Onset lead over U11 is only ~0.1 s.
     Item 14's `MIN_DISAGREEMENT` argument now also has the two recorded phantoms behind it.
 
-17. **Open: D-054, the innovation-baseline lockout.** Proposed only. Replay K/tolerance on the lock
-    episodes (census in the D-053 rework section), with the single-sweep range resets as the negative
-    control.
+17. **D-054 lockout fix: implemented 2026-09-17, replay and static only.** The gate now rejects a
+    range only if it contradicts both the last accepted sample and the last gated range (the
+    `range_anchor` that coasts advance). Evidence is in D-054.
+    - **Open, road:** needs the device on this commit. Watch for a lead that pulls away or closes
+      while the rate check coasts: it should stay published, with measured=False.
+    - **Open, residual:** a lasting range step, or a walked range that snaps back, is still rejected
+      until the lifecycle breaks. For example, 237 track 36, 5.2 s at 110 m, not the lead.
+    - **Open, residual:** after a coast, `ratio_vrel` is still timed from the last accepted sample and
+      understates the rate.
 
 18. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
     track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
