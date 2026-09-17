@@ -1178,6 +1178,53 @@ comparison the D-044 channel exists for stays auditable.
 
 ---
 
+## 🟡 D-053 reworked after replay — 2026-09-16
+
+`[REPLAY, open loop — not road evidence]` The original D-053 was replayed through the real
+`radard.Track` on every Bosch-A sweep of `00000232`, `00000236`, `00000237`, `00000239` and
+`0000023a` (script `d053dump.py`; instrument check against logged `vRelRangeDerived`/`aLeadK`
+matched: median |diff| 0.000, ≥93% of frames under 0.01 m/s). It **helped** on real rail/onset
+closings (236 12:51, 18:55) but **hurt** on two recorded range faults: the `00000232` 3:02.8 range
+walk (59.0 → 56.1 → 59.1 m while U11 read +2.1 → +0.1 → +1.1) and the `00000236` 22:13.6
+new-track settle (77.2 → 59.5 m in 1.8 s, hit the 8.0 cap). Because it fed the corrected vLead
+into the lead KF, `aLeadK` — which the MPC brakes on — dipped to −3.8 / −7.2 / −6.0 / −4.5 / −5.9
+m/s² on replay.
+
+**The rework (in `radard.py`, same toggle):** a 15-sample (~1 s) long range fit must agree with
+the 5-sample fit for 5 consecutive updates; clear-only guards on long-fit residual (0.6 m), span
+(0.6–1.5 s), ego speed (≥5 m/s), a lead that would read as driving backwards (>5 m/s), and a rail
+rule (on the U11 −13.5 rail the long fit alone decides); the correction never takes the lead
+below 0 m/s; and **the KF stays on native U11**, so `aLeadK` is unchanged by construction. Every
+number carries its evidence in the comment block. 74 unit test functions in
+`test_range_vrel_assist.py` (was 43), each guard with a negative control.
+
+Open-loop gain = reduction in |published vRel − centered ±0.7 s range fit|, integrated (m/s·s):
+
+| Route | Original: active / gain+ / gain− / min aLeadK shift | Rework: active / gain+ / gain− / aLeadK |
+|---|---|---|
+| 232 | 21.8 s, hurt at 3:02.8 / min aLeadK shift −3.8 | 1.1 s / +0.4 / −0.2 / native |
+| 236 | 27.5 s, hurt at 22:13.6 / −7.2 | 7.4 s / +12.7 / −0.5 / native |
+| 237 | 33.5 s / −6.0 | 18.8 s / +35.0 / −0.0 / native |
+| 239 | 16.4 s / +15.9 / −1.3 / −4.5 | 5.9 s / +7.1 / −0.0 / native |
+| 23a | 9.3 s / +6.6 / −0.1 / −5.9 | 0.7 s / +0.5 / −0.0 / native |
+
+**What bites:**
+- **Both recorded phantoms are held off by ONE arm update.** At `ARM_UPDATES = 4` the 232 walk lets
+  1.0 m/s·s through and the 236 settle 0.4. Do not lower it.
+- **Onset latency is 0.77 s** from a closing kink to the first correction (original: 0.42 s),
+  against a measured U11 onset lag of 0.88–1.28 s. The margin is ~0.1 s.
+- **It is blind to a range error that U11 agrees with** (the t≈11 s false brake) — unchanged.
+
+**Bookmarks on 239/23a (feature not running on either):** `00000239` 10:33.7, phantom hard brake
+then driver gas: lead track's yRel went −0.9 → −3.7 while range fell 74 → 61.5 m and U11 went
++1.5 → −7.5, radar lead dropped at 10:31.5, vision held 69–75 m. Looks like an **association
+fault**; the rework's |y| ≤ 1.5 m gate keeps it inert there and it cannot fix it — needs a raw-track
+look. `0000023a` 6:23.3, stop-and-go hard brake closing to 17.8 m after a ~1 s radar lead dropout at
+6:20.5; disagreement 1.7 < 2.0, rework inert. Neither is a parser lockout.
+
+**Lockout census** (proposed fix D-054): locked object-time 6.5 / 7.3 / 14.1 / 6.7 / 9.6 % and
+followed-lead-lost ≥1 s episodes 8 / 8 / 9 / 1 / 2 on 232 / 236 / 237 / 239 / 23a.
+
 ## Handoff — what is live, what is untested, what bites
 
 **The four contract files are the handoff.** `AGENTS.md` → `STATUS.md` → `DECISIONS.md` →
@@ -1203,13 +1250,14 @@ is still **one example**, which is why it is off by default and labelled TEST. E
 deliberate act: `Params().put_bool("FarLeadBrakeLimit", True)`. It carries a **known, pinned defect
 in its ramp anchor** — read that subsection before touching the function.
 
-**`RangeDerivedVrel` (2026-09-16) is a TEST feature, default OFF.** It lets the range-derived
-closing rate correct the Bosch-A native U11 velocity for the lead, one-sided and bounded — see
-*The shadow `vRelRange` channel is now wired into control behind a toggle* above and **D-053**. It
-has **no replay evidence and no road evidence at all**, which is a weaker position than the
-far-lead limit was in, and it is **not reachable on the car** until the larch64 `params_pyx.so` is
-rebuilt (open item 12). Enabling it is a deliberate act:
-`Params().put_bool("RangeDerivedVrel", True)`.
+**`RangeDerivedVrel` (2026-09-16, REWORKED the same day) is a TEST feature, default OFF.** It lets
+the range-derived closing rate correct the Bosch-A native U11 velocity for the lead, one-sided and
+bounded — see *D-053 reworked after replay* below and **D-053**. It has **open-loop replay evidence
+on five routes and no road evidence**: the reworked version never ran on a car. It **is now
+reachable on the car** once the device is on `b2baba87` or later (open item 12 closed). Routes
+`00000239` and `0000023a` were driven on `fa262e0c`, before that fix, and `RangeDerivedVrel` is
+absent from their `initData`: **the feature did not run on either**. Enabling it is a deliberate act:
+`Params().put_bool("RangeDerivedVrel", True)`, offroad, then cycle offroad→onroad.
 
 Everything else committed in this work is tooling, tests or documentation. No default
 behaviour has changed.
@@ -1605,7 +1653,12 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     'params'`. This is the same break fixed in `process_replay.py` on 2026-09-16, but it is in a
     vendored subtree and a standalone runner, so it was left alone rather than fixed in passing.
 
-12. **Open: `RangeDerivedVrel` is unreachable on the car until `common/params_pyx.so` is rebuilt
+12. **CLOSED 2026-09-16 by `b2baba87`:** the larch64 `common/params_pyx.so` and `libcommon.a` were
+    rebuilt with item 4's pinned recipe, 822 → 823 keys, `RangeDerivedVrel` the only addition. The
+    Galaxy layout test's strict xfail on this is removed, so it now guards the regression. Device
+    check: `PYTHONPATH=/data python3 -c "from openpilot.common.params import Params; k=Params(memory=True).all_keys(); print(len(k), b'RangeDerivedVrel' in k)"`
+    must print `823 True`. The original entry is kept below for the record.
+    **Was: `RangeDerivedVrel` is unreachable on the car until `common/params_pyx.so` is rebuilt
     for larch64. THIS IS NOW CONFIRMED ON A REAL DEVICE, not just inferred — 2026-09-16.**
     `[CONFIRMED — observed on the car]` Toggling the row in Galaxy returns
     **403 `Parameter 'RangeDerivedVrel' is not editable.`** The key is in `common/params_keys.h`,
@@ -1657,7 +1710,9 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
       range-walk fault to test against is how this feature becomes an amplifier — the same
       blocker as open items 7 and 10.
 
-15. **Open: the correction is inconsistent across a Bosch-A coast, in a bounded way.** `[CONFIRMED
+15. **CLOSED 2026-09-16 by the D-053 rework:** the lead KF now stays on native U11, so `aLeadK` is
+    never corrected and cannot be left frozen at a corrected value across a coast. Kept for the record:
+    **Was: the correction is inconsistent across a Bosch-A coast, in a bounded way.** `[CONFIRMED
     — static]` On a coast the assist clears (D-052: a coast refreshes `last_seen_nanos`, so it is
     **not** bounded by `BOSCH_A_STALE_S`, and 121.8 s of continuous suppression has been measured —
     holding a correction across one would be unbounded staleness). But the lead KF is not stepped
@@ -1666,3 +1721,17 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     bounded and both sit on the conservative side, but for the length of the coast the two
     disagree. It is documented in D-053 rather than papered over. Whether it matters at all is a
     replay question, and open item 13 is the run that would show it.
+
+16. **Open: road-test the reworked `RangeDerivedVrel`.** Needs the device on this commit, the
+    `823 True` check from item 12, and the toggle stored (confirm it in `initData`, not the UI). The
+    replay evidence rests on two one-update margins (the 232 walk and the 236 settle, D-053
+    revision): a road event that arms in 4 updates would pass. Onset lead over U11 is only ~0.1 s.
+    Item 14's `MIN_DISAGREEMENT` argument now also has the two recorded phantoms behind it.
+
+17. **Open: D-054, the innovation-baseline lockout.** Proposed only. Replay K/tolerance on the lock
+    episodes (census in the D-053 rework section), with the single-sweep range resets as the negative
+    control.
+
+18. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
+    track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
+    Neither the rework nor D-054 touches it. Needs a raw-track look at 625–635 s.

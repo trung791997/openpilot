@@ -757,3 +757,47 @@ briefly inconsistent with each other. Recorded here rather than papered over.
 disagreement threshold, the lateral gate and the duplicate-cycle hold in turn and asserts each
 guarded property actually fails — including that lowering `MIN_DISAGREEMENT` makes the t≈11 s
 fault fire, and that clearing on a duplicate cycle makes the assist unable to arm at all.
+
+### Revision 2026-09-16 — reworked after replay; the KF no longer sees the correction
+
+`[REPLAY, open loop — not road evidence]` The version above was replayed through the real
+`radard.Track` on 232/236/237/239/23a. It helped on real rail and onset closings but fired on two
+recorded range faults (the `00000232` 3:02.8 range walk and the `00000236` 22:13.6 new-track
+settle, which hit the 8.0 cap), and because the corrected vLead fed the lead KF, `aLeadK` dipped by
+as much as −7.2 m/s² on replay. Same toggle, same one-sided contract, now also:
+
+- **Two fits must agree.** A 15-sample (~1 s) long range fit and the 5-sample fit must both show
+  ≥2.0 m/s more closing for `ARM_UPDATES = 5` consecutive updates. At 4, the 232 walk leaks
+  1.0 m/s·s and the 236 settle 0.4 — **both recorded phantoms are refused by ONE update**.
+- **Clear-only guards** (they can drop a correction, never create one): long-fit residual ≤0.6 m,
+  long-fit span 0.6–1.5 s, ego ≥5 m/s, and no correction that would read the lead as driving
+  backwards by >5 m/s. The correction never takes the lead below 0 m/s.
+- **Rail rule:** on the U11 −13.5 m/s low rail the short fit is not needed; the long fit decides.
+- **The lead KF stays on native U11.** Only the published `vLead`/`vRel` is corrected, so `aLeadK`
+  is unchanged by construction (100% equal on 239/23a replay). This removes the known asymmetry
+  recorded above.
+
+Cost: onset latency 0.77 s from a closing kink to first correction (0.42 s before), against a U11
+onset lag of 0.88–1.28 s. Replay gain and activity per route are in STATUS.md. The t≈11 s blind
+spot (range error that U11 agrees with) is unchanged.
+
+## D-054 — PROPOSED: a rejected sweep must not freeze the innovation baseline forever
+
+**Proposed 2026-09-16. Not implemented. Needs a replay and a D-009 negative control before code.**
+
+In `radar_interface.py`, a sweep whose range innovation exceeds `BOSCH_A_RANGE_INNOVATION_HARD_MAX_M`
+(5.0 m) is rejected and, by design, "never becomes the baseline for a later derivative". The
+baseline therefore stays at the last accepted sample. If the range really did move (or the last
+accepted point was the bad one), every later sweep is measured against that frozen point with a
+growing `dt`, is rejected again, and after `BOSCH_A_STALE_S` (0.20 s) the point is popped. The
+object is then **never re-admitted** while its track id lives: a lockout, and it deletes a radar
+point, which D-041/D-042 rank as the worse failure.
+
+Census `[REPLAY]`: locked object-time 6.5 / 7.3 / 14.1 / 6.7 / 9.6 % on 232 / 236 / 237 / 239 /
+23a, with 8 / 8 / 9 / 1 / 2 episodes of the followed lead lost for ≥1 s.
+
+**Proposed shape:** when K consecutive rejected sweeps agree with each other (range steps consistent
+with their own U11 within the existing innovation limit), re-seed the baseline from them and publish
+the point as unmeasured/degraded for a short hold instead of popping it. K and the agreement
+tolerance are to be set by replay on the lock episodes above, with the recorded single-sweep range
+resets (the reason the gate exists) as the negative control: they must still be rejected.
