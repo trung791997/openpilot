@@ -1736,11 +1736,40 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     `range_anchor` that coasts advance). Evidence is in D-054.
     - **Open, road:** needs the device on this commit. Watch for a lead that pulls away or closes
       while the rate check coasts: it should stay published, with measured=False.
-    - **Open, residual:** a lasting range step, or a walked range that snaps back, is still rejected
-      until the lifecycle breaks. For example, 237 track 36, 5.2 s at 110 m, not the lead.
-    - **Open, residual:** after a coast, `ratio_vrel` is still timed from the last accepted sample and
-      understates the rate.
+    - **Residuals, investigated 2026-09-17 (replay and static only):** the `ratio_vrel` timing has no
+      effect in replay. Lasting steps and stale rate history are real causes. The proposals are in
+      D-055 / D-056 / D-057, on branch `proposal/d054-residuals`, which is not for the car.
 
 18. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
     track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
     Neither the rework nor D-054 touches it. Needs a raw-track look at 625–635 s.
+
+19. **Proposed, not on the car: D-055 invalid-slot hide guard.**
+    - Replay vs D-054: 0 lost point-sweeps, 2,252 restored as coasts (504 lead), including
+      237 track 9 (21.2 s).
+    - Static: 4 tests.
+    - Candidate for the car once fresh routes on 0756f810 confirm D-054 on the road.
+
+20. **Rejected in replay: D-056 rate check fit over gated ranges.** Its re-admitted vRel over-closes
+    by >3 m/s about 4× as often as reference, and it loses 14 lead point-sweeps on 0000023a. See D-056.
+
+21. **Prototype: D-057 re-anchor on a lasting clean step.** On top of D-056 the replay is clean:
+    0 lost, and newly measured vRel is at or better than reference. It restores 236 track 38
+    (17.1 s) and 237 track 31 (16.2 s). It is stacked on D-056, so it is not shippable as-is.
+
+22. **Next-session tasks (radar residuals).**
+    1. Pull the user's fresh routes on 0756f810. Run the lock census (`lockcensus.py`,
+       `locksumm.py`) and confirm D-054 on the road before any parser change.
+    2. Re-base D-057 onto D-055 alone (drop `gated_ranges`; re-root `samples` and anchor only).
+       Rerun the 4 D-057 tests, then `ab4.py`-style replay of D-055 vs D-055+D-057, including the
+       future-slope metric.
+    3. Replay D-055 (+ re-based D-057) on the fresh routes. If lost = 0 and the future-slope metric is
+       no worse than reference, propose D-055 for the car first, as its own commit.
+    4. Check 237 track 63 (52.9 s unresolved, non-degraded, non-lead, d 36→20.5 m, slope 0) under
+       D-057.
+    5. Decide whether a join should be allowed to publish measured when the joined range contradicts
+       U11 (see the D-054 census). That needs its own test, like the D-057 contradiction control
+       with an 8.5 m step.
+    6. 236 track 21 (20.4 s, fully degraded lead lockout) is not addressed by any proposal.
+    7. Item 18 (239 phantom brake) is still open.
+    Tooling: `/routes/an2` and `/routes/an2/parsers` in the `oprad-routes` volume.

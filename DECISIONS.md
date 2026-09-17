@@ -838,10 +838,75 @@ is still rejected.
 - Against the anchor-only draft: only the 237 walk test fails.
 - Against the first draft: the walk and the birth-coast tests fail.
 
-**Not solved; open.**
-- A lasting real range step, or a walk that snaps back after a walked range was accepted, is still
-  rejected against both baselines until the identity's lifecycle breaks. Returning excursions are as
-  self-consistent as lasting ones, so re-anchoring on consistency alone was not adopted.
-- After a coast, `ratio_vrel = d·(1−ratio)/dt` is still timed from the last accepted sample, so the
-  ratio velocity understates the rate across a multi-sweep gap. Changing a published vRel is a
-  separate decision.
+**Residuals, investigated 2026-09-17. Replay and static only; nothing below is on this branch.**
+Prototypes are on `proposal/d054-residuals` (not for the car). Replay covered 00000232, 00000236,
+00000237, 00000239 and 0000023a on the D-054 parser.
+- *Ratio vRel timed from the last accepted sample:* no effect in replay. 0 published vRel values
+  were ratio-sourced. No change proposed.
+- *Lead-lost time with D-054:* 9 episodes. The D-043 rate check dominated 32.3 s of them and range
+  rejection dominated 50.3 s. That led to three causes: D-055, D-056 and D-057.
+- *Rejection-run census* (558 runs, D-054+D-055+D-056 parser):
+  - **Returned** runs (the range came back to the old track), 13 of ≥3 sweeps: all ≤1.2 s and all
+    degraded (existence 0 on 62–83% of sweeps, U11 railed at −13.5 m/s). Rejecting these is correct.
+  - **Joined** runs (the anchor's U11 extrapolation eventually meets the real range), 79: 7 lead
+    runs totalling 74.4 s (236 track 38, 27.4 s; 236 track 21, 20.4 s, fully degraded; 237 track 31,
+    20.4 s; 237 track 36, 12.9 s).
+  - **Unresolved** (the track ends still rejected), 341: 3 lead runs totalling 21.3 s.
+  - A join publishes whether or not the range agrees with U11. That is existing behaviour, and it
+    is how a stale anchor ends a lockout today.
+
+## D-055 — PROPOSED: an invalid slot must not hide an identity that is valid in another slot this sweep
+
+**Status: proposed, replay and static only. Not on the car branch.**
+The collapse loop hid the previous occupant id of any slot that turned invalid, even when that id
+had just migrated to another valid slot. A coasted point then vanished while its object was still
+reported.
+- **Change:** the ids valid in this sweep are excluded from the hide set.
+- **Static:** 4 tests. The 2 coasted-migration tests fail on D-054; the negative control (an id
+  seen nowhere else is still hidden) passes on both.
+- **Replay vs D-054:** 0 lost point-sweeps on all 5 routes. 2,252 point-sweeps restored, 504 of
+  them lead, and every one is measured=False (a coast, carrying stale vRel). It fully restores 232
+  track 43 (4.0 s), 237 track 47 (4.6 s) and 237 track 9 (21.2 s).
+- **Recommendation:** the strongest candidate for the car after the fresh routes on 0756f810.
+
+## D-056 — REJECTED IN REPLAY: fit the D-043 rate check over gated ranges
+
+**Status: prototype only. Do not ship.**
+The idea: the rate check fits `samples` (accepted only), which go stale during coasts; fit gated
+ranges instead.
+- **Static:** 2 tests pass.
+- **Replay vs D-055:**
+  - The re-admitted measured vRel disagrees with the next-1 s range slope far more than reference
+    points do. >3 m/s over-close is 18–21% of new points, against 3–6% for reference.
+  - p90 error is 4.9–6.4 m/s, against a reference of 3.0–5.7 m/s.
+  - 0000023a loses 73 point-sweeps, 14 of them lead.
+- **Why it fails:** D-043 was catching real U11 over-closing that the stale-history fit happened
+  to flag. The fresh fit follows the range and lets the U11 claim through.
+- **Next step:** any retry must be judged by that future-slope metric, not by lost/gained counts.
+
+## D-057 — PROPOSED (prototype): a lasting, clean, U11-consistent rejected step re-anchors the gate
+
+**Status: prototype, replay and static only. Stacked on D-056, so not shippable as-is.**
+- **Change:** a rejection run re-roots samples and anchor on its last 3 sweeps when all of these
+  hold:
+  - it has ≥8 sweeps and spans ≥1.5 s;
+  - its last 8 sweeps are non-degraded with U11;
+  - a line fit has rms ≤1 m;
+  - its slope is within 3 m/s of median U11.
+  Constants: `BOSCH_A_REANCHOR_MIN_SPAN_S`, `_WINDOW`, `_MAX_RMS_M`.
+- **Why 1.5 s:** every returned run in the census was ≤1.2 s and degraded.
+- **Static:** 4 tests.
+  - The positive test publishes within 1.5–1.65 s, and fails without D-057.
+  - The degraded (sigma 7; existence 0) and U11-contradicting controls never re-anchor.
+  - The contradiction control needs a 25 m step: with 8.5 m the existing join publishes first.
+- **Replay vs D-056:**
+  - 0 lost and 0 measured/unmeasured flips on all 5 routes.
+  - New measured point-sweeps: 236 602 (198 lead), 237 1,015 (181 lead), 23a 266.
+  - 232 gained 9 point-sweeps; 239 is unchanged.
+  - 236 track 38 is restored for 17.1 s and 237 track 31 for 16.2 s.
+  - Newly measured vRel vs the next-1 s slope is as good as or better than reference: p90 2.2 / 1.0
+    / 2.4 m/s, and >3 m/s over-close is 2.2% / 2.2% / 0%.
+- **Limits:**
+  - 236 track 21 (20.4 s) is fully degraded, and D-057 does not touch it by design.
+  - Onset-to-re-anchor was about 10 s on 236_38, so its tail was degraded for a while.
+- **Next step:** re-base onto D-055 without D-056 and replay again.
