@@ -1822,3 +1822,27 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     `conditional_experimental_mode.py`, the model-lead anchor) is **not** ported — see D-058.
     - **Open, replay:** no rlog A/B was run. The pad change is visible in a replay as `tFollow`
       no longer stepping to base when `required_decel` crosses 1.5 m/s².
+
+25. **Release-side aLeadK rule and FarLeadBrakeLimit review. Neither shipped (replay and limited
+    road evidence, 2026-09-17).**
+    - *Release-side aLeadK* (`alk5.py`). For a deceleration at least 1 s old, fit
+      d = d0 + v·t + ½a·t² over the last 1.0–1.5 s of range. If the fit says the lead is decelerating
+      less, raise the published aLeadK (optionally capped at half, optionally only when the short range
+      fit shows closing is not growing). Scored like item 23 (1130+ rows, 7 routes). Every setting
+      improves the bias (changed rows at 2 s: p50 -2.6 → -1.7 m), but none meets the gate "zero new
+      close-range under-predictions". The strictest setting still adds 4 cases at 2 s (> 3 m, d < 50 m)
+      and 10 at 3 s (> 5 m). They sit on steady -1 to -1.5 m/s² braking where the 1.5 s quadratic fit is
+      too noisy (237 6:20 at 34 m, 237 20:02 at 25 m, 23a 5:35). Not implemented.
+    - *FarLeadBrakeLimit* was ON on every route 232–23e (initData). `farev.py`: 12 fire clusters. Truth
+      is the 1 s future range slope.
+      - Not engaged, so no effect on the car: 23a 16:36 and 23e 17:18 / 34:12. In the last two the driver
+        was already braking. 23e 34:12 would have cut -5.9 → -0.7 m/s² on a lead truly closing at
+        20.5 m/s.
+      - Engaged, and helped (lead not really closing, relief > 2 m/s²): 237 15:37 and 15:42.
+      - Engaged, negligible relief (< 0.35): 232 19:08, 237 14:24, 14:30 and 19:53, 23e 1:40.
+      - Engaged, real closing, relief given: 236 14:18 (closing 5.3 m/s at 60 m, -3.2 → -2.0, no
+        intervention), and **237 5:22** (slow car, mlV ~7 at 104 m, truly closing 13.5 m/s, capped
+        -3.8 → -1.9; driver braked 4 s later at ~47 m).
+      - Verdict: two helpful, two cut real braking, and the capping logic trusts the same vRel it is meant
+        to distrust. **Not merged; the toggle stays.** Recommend OFF until the 5:22 / 34:12 shape is
+        excluded.
