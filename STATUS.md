@@ -1935,3 +1935,40 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     unmeasured flips (30 lead); withdrawn vRel over-closed 29.2 % but also under-closed 18 % (ref
     8.6 %). J1 (clear `samples`) rejected: 16 % over-close on 106 new measured sweeps, 65 lost. Next
     drive: lead lock census, brake events near joins, lead rejoin-hold duration.
+
+30. **Route `0000023f--66ddbb900a` analysed (2026-09-17): first road evidence for
+    `FarLeadBrakeLimit`, and the radar/vision gap discriminator is refuted on 8 routes.** 32
+    segments, 31:41, 21.3 min engaged, fetched with `konik_fetch.py` and cached in `oprad-routes`.
+    The device ran commit `7106fdf4` with `FarLeadBrakeLimit = 1`, `BoschARadar = 1`,
+    `RangeDerivedVrel = 1`, `BlotV3 = 0` (from initData — the toggles were actually stored).
+
+    * **`FarLeadBrakeLimit` fired on the road for the first time: 43 caps in 5 clusters**
+      (`an2/farev.py`). One cluster is the phantom the feature exists for (12:25, d 46 m, U11
+      −2.31 m/s while the next-1 s range slope is **+0.75**, relief 1.11 m/s²). **The other four
+      capped leads that were genuinely closing** (future slope −4.0 to −10.0 m/s): 18:10 (relief
+      0.05), 20:41 (relief **2.82** at d 83 m, min gap 78.5 m, min TTC 10.7 s), 23:15 (relief 1.28
+      at d 57 m, closing −9.97 m/s, min gap 39.1 m, min TTC 4.6 s), 25:51 (relief 0.38). No driver
+      brake followed any cluster, min gap over the route stayed 10.4 m and min TTC 2.7 s, and route
+      `aEgo` min is −5.90 m/s² with 4 brake presses while enabled, none within 6 s of a cap. So on
+      one drive the cap was 1-for-5 on phantoms and never left the car short — but it is bounding
+      real closing leads, and 23:15 is the shape to watch. Still default OFF, still a TEST label,
+      ramp-anchor defect still pinned, D-048 validation gate still unmet.
+    * **D-048 gate item 2 / D-049 item 3, the measurement that was blocking them, is done for the
+      absolute-gap candidate** (`an2/visgap.py`, 8 routes, 121 min, 140k radar-lead frames with a
+      confident model lead). At d >= 60 m the radar/vision range gap is >= 10 m on 31.5 % and
+      >= 15 m on 13.1 % of frames, and those frames are *not* followed by harder braking than
+      baseline (lower on 6 of 7 routes). The 15.8 m gap in the 231 fault is therefore ordinary. A
+      range-*slope* disagreement variant is refuted too: p90 of normal driving at 60–80 m is
+      5.1–9.5 m/s and the fault's worst frame is 7.9 m/s. Written into D-048's rejected list. This
+      does **not** clear the gates: it answers the distribution question in the negative, and the
+      unreproduced statistics still need the harness re-run.
+    * **D-059 out-of-sample on this unseen route** (`an2/ab7.py`): lost 0, lost_lead 0, new measured
+      0, 108 unmeasured flips (16 lead); withdrawn measured vRel over-closed the next-1 s slope on
+      19/67 (28 %) vs reference 33/702 (4.7 %), and under-closed on 21/67 vs 83/702 — the same
+      shape, including the same caveat, as the 7 routes it was built on.
+    * **Join census now 8 routes** (`an2/joinsum.py`): 249 joins, 13 on the lead, post-join measured
+      vRel over-closes on 20.4 % (1,084 scored) vs reference 4.6 % (5,442). 39 joins and 2 D-057
+      re-anchors on 23f alone.
+    * Route 231 segments 9–11 are cached now too, so the fault episode can be re-derived against the
+      current tree (the other agent's point 4: the 0.25 m/sweep vs 2.0 m gate arithmetic predates
+      D-054 and has **not** been re-run yet).

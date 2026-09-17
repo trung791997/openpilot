@@ -390,6 +390,24 @@ gap is median +4.0, p95 +14.9, max +27.7 m, and segment `9e21cac9` sustains a **
 gap with no hard braking at all**. A ~12 m threshold fires continuously where nothing is
 wrong.
 
+**Re-confirmed on 8 whole routes, 2026-09-17** (`an2/visgap.py`, 121 min, 140k radar-lead frames
+with a confident model lead). The radar/vision range gap is banded by range: |gap| p50 is 1.4–2.5 m
+below 40 m but 4.8–14.9 m at 60–80 m, and at d >= 60 m it reaches >= 10 m on **31.5 %** and >= 15 m
+on **13.1 %** of radar-lead frames (5,921 / 2,463 of 18,782). Those frames are **not** where the
+braking is: `aTarget <= -2 m/s^2` within the next 3 s is equal to or *lower* than the same-route
+baseline on 6 of 7 routes with far-lead frames (e.g. 239 3.5 % vs 6.4 %, 23f 2.0 % vs 4.3 %; only
+237 is higher, 11.3 % vs 7.9 %), and driver braking within 6 s is not elevated. So the 15.8 m gap in
+the 231 fault sits inside the ordinary distribution, and no absolute-gap threshold separates it.
+Caveats: the model lead is assumed to be the same object (not verified laterally), and "the radar is
+right" is proxied by "nothing bad followed", not by ground truth.
+
+**Gating on the radar/vision range-*slope* disagreement** (each sensor rating its own range over a
+2 s window, so it is not range-relative in the D-044 sense). Refuted by the same run: at 60–80 m
+|radar slope − vision slope| is p50 1.7–3.0 m/s and p90 5.1–9.5 m/s, because the vision range is too
+jittery at that distance. The 231 fault's worst frame is 7.9 m/s, around p90 of normal driving, and
+its earlier, still-faulty frames are ~2.5 m/s, at the median. No threshold both catches the fault and
+stays quiet.
+
 **Gating on d(gap)/dt.** Refuted: |d(gap)/dt| is p95 31 m/s, max 130 m/s, dominated by the
 vision model's frame-to-frame `x` jitter; `9e21cac9` reaches p95 53.7 m/s while braking
 normally.
