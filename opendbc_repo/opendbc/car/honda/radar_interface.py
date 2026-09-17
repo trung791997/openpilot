@@ -203,6 +203,15 @@ BOSCH_A_USE_TAN_LATERAL_PROJECTION = True
 # range resets never enter it, and it is not used for a multi-sample OLS velocity fit.
 BOSCH_A_VREL_MAX_SAMPLES = 8
 
+# D-057 (PROPOSED, replay only): re-anchor a range-rejected identity on a LASTING, clean step. Replay of
+# every range-rejection run on 00000232 / 236 / 237 / 239 / 23a (D-054 + D-055 + D-056 parser): the 13
+# runs of >= 3 sweeps that RETURNED to the baseline all lasted <= 1.2 s and every one was degraded
+# (existence 0 on 62-83% of sweeps, U11 railed at -13.5). The lead lockouts were not: 236 track 38
+# (27.4 s) and 237 track 31 (20.4 s) had non-degraded tails whose range moved at the U11 rate.
+BOSCH_A_REANCHOR_MIN_SPAN_S = 1.5
+BOSCH_A_REANCHOR_WINDOW = 8
+BOSCH_A_REANCHOR_MAX_RMS_M = 1.0
+
 # Staleness gate -- TUNING constant, reused plumbing pattern (not a firmware fact). At the observed
 # ~15 Hz cadence, 0.20 s is approximately three missed sweeps.
 BOSCH_A_STALE_S = 0.20
@@ -244,6 +253,8 @@ class _BoschATrackState:
   # D-056 (PROPOSED, replay only): every range that passed the gate, accepted or coasted, for the D-043
   # rate fit. Fitting over `samples` alone froze the fit for as long as the fit itself coasted.
   gated_ranges: deque = field(default_factory=lambda: deque(maxlen=BOSCH_A_VREL_MAX_SAMPLES))
+  # D-057 (PROPOSED): the current run of range-REJECTED sweeps, (time, range, U11 or None, degraded).
+  rejected_run: list = field(default_factory=list)
   last_trusted_vrel: float | None = None
   last_trusted_vrel_nanos: int | None = None
 
@@ -312,6 +323,26 @@ def _bosch_a_measurement_degraded(range_sigma_raw: int, existence_raw: int,
   velocity_quality_bad = (direct_vrel_uncertainty_raw is not None and
                           direct_vrel_uncertainty_raw > BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW)
   return range_quality_bad or velocity_quality_bad
+
+
+def _bosch_a_lasting_clean_step(run: list) -> bool:
+  if len(run) < BOSCH_A_REANCHOR_WINDOW or run[-1][0] - run[0][0] < BOSCH_A_REANCHOR_MIN_SPAN_S:
+    return False
+  window = run[-BOSCH_A_REANCHOR_WINDOW:]
+  if any(degraded or u11 is None for _, _, u11, degraded in window):
+    return False
+  ts = [w[0] for w in window]
+  ds = [w[1] for w in window]
+  n = len(window)
+  t_mean = sum(ts) / n
+  d_mean = sum(ds) / n
+  denom = sum((t - t_mean) ** 2 for t in ts)
+  if denom <= 1e-9:
+    return False
+  rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
+  rms = (sum((d - (d_mean + rate * (t - t_mean))) ** 2 for t, d in zip(ts, ds, strict=True)) / n) ** 0.5
+  u11 = sorted(w[2] for w in window)[n // 2]
+  return rms <= BOSCH_A_REANCHOR_MAX_RMS_M and abs(rate - u11) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
 
 
 def _create_bosch_a_can_parser(CP):
@@ -551,6 +582,7 @@ class RadarInterface(RadarInterfaceBase):
         track.samples.clear()
         track.range_anchor = None
         track.gated_ranges.clear()
+        track.rejected_run.clear()
         track.last_trusted_vrel = None
         track.last_trusted_vrel_nanos = None
         self.pts.pop(track_id, None)
@@ -625,6 +657,24 @@ class RadarInterface(RadarInterfaceBase):
         baselines = [range_anchor] if previous_sample in (None, range_anchor) else [range_anchor, previous_sample]
         range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded)
                              for baseline in baselines)
+
+      if range_rejected:
+        track.rejected_run.append((now_s, dRel, direct_vrel, degraded))
+        if _bosch_a_lasting_clean_step(track.rejected_run):
+          # D-057: the step has outlasted every returning excursion measured, cleanly and at the U11
+          # rate. Re-root both baselines and the rate history on it and gate this sweep as passed.
+          recent = track.rejected_run[-BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES:]
+          track.samples.clear()
+          track.samples.extend((t, d) for t, d, _, _ in recent[:-1])
+          track.gated_ranges.clear()
+          track.gated_ranges.extend((t, d) for t, d, _, _ in recent[:-1])
+          track.range_anchor = recent[-2][:2]
+          previous_sample = track.samples[-1]
+          range_anchor = track.range_anchor
+          range_rejected = False
+          track.rejected_run.clear()
+      else:
+        track.rejected_run.clear()
 
       if range_rejected:
         # Keep the last trusted point briefly as an unmeasured coast. The rejected geometry is not
