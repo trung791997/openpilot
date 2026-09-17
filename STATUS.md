@@ -1740,7 +1740,7 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
       effect in replay. Lasting steps and stale rate history are real causes. The proposals are in
       D-055 / D-056 / D-057, on branch `proposal/d054-residuals`, which is not for the car.
 
-18. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
+18. **CHARACTERISED 2026-09-17 (see item 27): `00000239` 10:33.7 phantom hard brake is a same-identity range walk at 10:30.3, not an association fault.** Original note: Looks like a lead association fault (lead
     track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
     Neither the rework nor D-054 touches it. Needs a raw-track look at 625–635 s.
 
@@ -1868,3 +1868,31 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
       not a missing one (D-041/D-042). Watch the next route's `ab3`-style diff for lead runs.
     - Still open from item 22: re-base D-057 onto D-055 (22.2), 237 track 63 (22.4), the
       join-vs-U11 decision (22.5), 236 track 21 (22.6), item 18.
+
+27. **Item 18 characterised — the 239 phantom brake is a same-identity radar range walk, and the
+    far-lead limit was live but gated out (replay of recorded data, 2026-09-17).** Raw-slot
+    replay (`rawslots.py`, `tracks.py`, `tl2.py`, seg 10, 622–640 s; first pass by an agy-pro
+    worker, audited against the raw output, deliverables in the job scratch dir, worktree
+    aborted for a `scratch/` path breach):
+    - Track 21 is the in-lane lead at 10:22 (59 m, y 0.1, vision 66 m). Through a bend (vision
+      y +1.4 → +5.2, radar y −1.9 → −3.8, opposite sign conventions) its range walks
+      **72.6 → 61.9 m in 1.0 s (−10.7 m/s)** while wire U11 ramps 0 → **−7.7**, `u10` climbs
+      93 → 329, then the range **parks at 61.5 m** for 2 s while U11 decays to 0 and later turns
+      +2 as the range grows back to 67 m. Vision holds 73–81 m at vRel ≈ 0 throughout. No other
+      valid slot within |y| < 4 m, 50–90 m; the identity never changed and slot migrations
+      (s0 ↔ s1) were tracked. The worker's verdict "(b) genuine wire step, same identity" is
+      correct as far as it goes; the shape is the 000001f9 range-walk class, which makes this
+      the **second recorded range-walk fault** item 10 asked for (n = 2, not yet 3).
+    - Command: aTarget −3.5 from 10:30.7 to 10:31.4 (0.8 s), then the lead flip-flopped between
+      radar (62 m) and vision-only (76–80 m) sweep to sweep until 10:32.2. The driver's bookmark
+      is 3 s after onset.
+    - **FarLeadBrakeLimit was ON (`initData` seg 10) and the 2026-09-16 fix `9984de88` is in the
+      route's commit `fa262e0c`, yet it fired nowhere on 239.** Both gates excluded it: headway
+      68.5 / 24.5 = 2.8 s < `MIN_HEADWAY` 3.0, and TTC 63.5 / 6.6 = 9.6 s < `MIN_TTC` 10. This
+      event sits just under both constants of D-042. Not re-tuned: item 25 already shows the
+      limit cutting real braking inside its current envelope (236 14:18 at TTC ≈ 11), so
+      widening it is a safety-tuning decision that needs the third event, not a replay of one.
+    - RangeDerivedVrel would not help here: the range slope (−10.7) closes *faster* than U11
+      (−7.7), so the assist direction is the wrong one. What separates this from a real closer is
+      vision (13–18 m further, vRel ≈ 0) and the park-and-decay after the walk — the same
+      discriminator item 25 lacked for 237 5:22. Proposal work should start from that pair.
