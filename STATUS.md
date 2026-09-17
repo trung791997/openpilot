@@ -1774,7 +1774,43 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     7. Item 18 (239 phantom brake) is still open.
     Tooling: `/routes/an2` and `/routes/an2/parsers` in the `oprad-routes` volume.
 
-23. **BLoTv3 supervisor (experimental): two BLoTv3 behavior fixes ported and the supervisor renamed
+23. **Hard brakes on 0000023b / 0000023e are not RangeDerivedVrel; an aLeadK limiter was tried and
+    NOT proposed (replay only, 2026-09-17).**
+    - Toggle read from initData: 23b RangeDerivedVrel=0, 23e =1 (all 42 rlog segments), both on
+      0756f810. On 23e the assist was active (correction > 1 m/s) for 21 s of 42 min. At 0 of 11 engaged
+      hard-brake onsets (aTarget < -2.5) was it active. The hard-brake rate was 22/h, against 23/h and
+      19/h on toggle-off 237 and 239.
+    - Mechanism. A short closing transient drives the lead KF's aLeadK to -3..-7 with aLeadTau ~0 in
+      about 0.5 s. Past aLeadK < -`MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE`, `build_model_lead_trajectory`
+      falls back to `extrapolate_lead`. Above 35 mph that holds aLeadK **constant for the whole
+      horizon**, so a -3 dip reads as "lead stops in ~4 s". Over-reactions: 23e 4:55 (future 1 s
+      range slope +1.3, driver took over) and 30:20 (U11 -9.1, future -2.8). The real closings at
+      9:41, 11:10, 12:51, 16:09, 25:02 and 39:04 look the same at onset.
+    - Tried, and why each fails (`alk.py`, `alk3.py`, `alk4.py` in `/routes/an2`):
+      1. *Clamp when the short range fit says U11 over-closes*: 0 of 22 onsets touched on 23e, 237 and
+         239. At the onset the range fit is MORE closing than U11 (4:55: range -4.4, U11 -2.8). The
+         transient is real for about 0.3 s; it just does not last.
+      2. *Clamp when vision disagrees* (mlV − vLeadK > 2, mlA > -0.6, TTC > 4): catches 4:55 and
+         30:20, and is right on median (the future slope is 2.4–3.9 m/s less closing than U11). But
+         it clamps 239 10:30.5 (U11 -3.4, **future -12.7** at 68 m; vision said 25 m/s, mlA 0).
+         Rejected: vision is not closing-speed truth.
+      3. *Decay young decelerations* (exp decay with tau ≥ 0.6 at all speeds while aLeadK < -0.5
+         for < 1 s). Scored against the true lead position 2–3 s later over 1130 engaged
+         aLeadK < -2 rows on 7 routes. Current projection error at 3 s for young decels: p50
+         -12.6 m (predicts the lead too close). Limited: p50 -10.0 m. Under-predictions > 3 m go
+         31 → 44, and the new ones under 50 m are the **real** brakes 23e 11:10 (25 m, up to +5.8 m)
+         and 12:51, plus 239 7:41. With tau ≥ 1.5 it is worse (31 → 55). It softens the brakes that
+         were right.
+    - What the data does say: projection error is biased toward over-braking even for old
+      decelerations (all rows p50 -3.0 m at 2 s, -6.4 m at 3 s). aLeadK stays negative after the lead
+      stops decelerating, which is KF lag on the release side and not only onset gain.
+    - Next candidate, not built: **release-side only**. When aLeadK < -1 but the range slope over the
+      last ~0.5 s shows closing has stopped growing, pull aLeadK toward 0 faster. Never soften onset.
+      Score it with `alk4.py` (a projection-vs-truth metric, zero new close-range under-predictions
+      as the gate) before any code. It needs a radard/long_mpc change, so it gets a DECISIONS entry
+      and user OK first.
+
+24. **BLoTv3 supervisor (experimental): two BLoTv3 behavior fixes ported and the supervisor renamed
     from BLoTv2, 2026-09-17, unit evidence (D-058).**
     Upstream `SpysyWeeb/Spysypilot` restructured BLoTv2 into BLoTv3 (`combo-blotv3`, `7aed876`,
     `docs/BLoTv3.md`). Two of those changes are supervisor behavior and are now in
