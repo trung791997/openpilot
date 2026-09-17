@@ -990,3 +990,35 @@ jerk scale identical on every engaged lead frame of seven routes; the pad differ
 hard-braking runs, and also for 1.1 s during the 239 phantom brake), on an experimental supervisor
 gated behind the `BlotV3` toggle. Both changes widen following distance or keep the jerk
 cost softer for longer; neither deletes a radar point or commands acceleration.
+
+## D-059 — a join publishes measured vRel only after a fresh post-join rate fit agrees
+
+**Status:** on the car branch 2026-09-17, replay and static only. Closes STATUS item 22.5.
+
+**Problem.** A *join* is when the D-054 range gate passes again after a rejection run, because the
+stale anchor's U11 extrapolation happens to meet the range. The D-043 rate check then fits `samples`
+that straddle the gap (pre-gap ranges plus the joined range), so the gap sets the rate and a U11
+that contradicts the joined range is not caught. Join census over 232/236/237/239/23a/23b/23e
+(`an2/joinscan.py`): 210 joins, 9 on the lead. Measured vRel within 1 s after a join over-closes the
+next-1 s range slope by >3 m/s on 21.0 % of sweeps (33.1 % when the run slope contradicts U11,
+n=59) vs 4.6 % for all measured points (n=4,740). Static probe on a8370b3b: an 8.5 m step held still
+with U11 −4 joins at 0.84 s and publishes measured −4.0 m/s, then coasts holding −4.0 as trusted.
+
+**Decision.** At a join the track starts `rejoin_samples`. Until a one-sided D-043-style fit over
+the last `BOSCH_A_REANCHOR_WINDOW` post-join ranges (same min-samples, min-span and 3 m/s
+constants) agrees with vRel, the point is published unmeasured on its last trusted vRel, and a point
+the rejection had popped is re-created (D-041/D-042: publish degraded, do not delete). `samples` is
+left untouched, so the change can only withdraw measured vRel, never admit it.
+
+**Rejected: J1, clearing `samples` at a join.** Replay (`an2/ab6.py`): 106 newly measured sweeps
+over-closing on 16.0 % (236: 12/14) and 65 non-lead point-sweeps lost — the D-056 failure mode.
+
+**Replay, J2 (shipped) vs the car branch** (`an2/ab7.py`): lost 0 and new measured 0 on every route;
+gained 1 (236); 612 point-sweeps flip to unmeasured, 30 on the lead (236 12, 237 8, 23e 10). The
+withdrawn measured vRel over-closed on 29.2 % (105/359 scored) vs reference 4.6 %. **Caveat:** it
+also under-closed by >3 m/s on 18 % (65/359) vs reference 8.6 % — some withdrawn values were
+lagging rather than over-closing, and now coast on the last trusted vRel instead.
+
+**Road check.** Not road-validated. On the next drive: the lead lock census, any brake event within
+1 s of a join, and how long lead points sit in the unmeasured rejoin hold.
+

@@ -1924,4 +1924,14 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     by >3 m/s on 2.2 / 2.2 / 0 % (236 / 237 / 23a) vs reference 5.4 / 5.9 / 2.6 %. **Unlike D-055,
     this admits new measured points into control** on a re-anchored identity. Not road-validated:
     the next drive is the first road evidence; check lead lockouts (lock census) and any brake event
-    on a re-anchored identity. Still open from item 22: 22.5 (join vs U11), 22.6 (236 track 21).
+    on a re-anchored identity. Still open from item 22: 22.6 (236 track 21); 22.5 closed by item 29.
+
+29. **D-059: a join holds measured vRel until a post-join rate fit agrees (replay and static only,
+    2026-09-17).** Closes item 22.5. After the range gate passes again following a rejection run, the
+    point publishes unmeasured on its last trusted vRel until a D-043-style fit over post-join ranges
+    only agrees with U11; `samples` is untouched. Census: 210 joins (9 lead); post-join measured vRel
+    over-closed >3 m/s on 21.0 % vs reference 4.6 %. Static: 110 passed (negative control, 8.5 m step
+    with U11 −4, fails on a8370b3b). Replay vs car branch (`ab7.py`): lost 0, new measured 0, 612
+    unmeasured flips (30 lead); withdrawn vRel over-closed 29.2 % but also under-closed 18 % (ref
+    8.6 %). J1 (clear `samples`) rejected: 16 % over-close on 106 new measured sweeps, 65 lost. Next
+    drive: lead lock census, brake events near joins, lead rejoin-hold duration.
