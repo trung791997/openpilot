@@ -910,3 +910,69 @@ ranges instead.
   - 236 track 21 (20.4 s) is fully degraded, and D-057 does not touch it by design.
   - Onset-to-re-anchor was about 10 s on 236_38, so its tail was degraded for a while.
 - **Next step:** re-base onto D-055 without D-056 and replay again.
+
+
+---
+
+## D-058 — BLoTv3: the t_follow pads saturate rather than vanish, and the crawl hold latches on necessity, not on the exact floor
+
+**Decided 2026-09-17. Experimental. Implemented in `selfdrive/controls/lib/blotv3.py`. Ported from
+upstream BLoTv3 (`SpysyWeeb/Spysypilot`, branch `combo-blotv3`, `necessity_supervisor.py` at
+`7aed876`, design note `docs/BLoTv3.md` §3). With these fixes in, the supervisor, its module, its
+class and its toggle were renamed from BLoTv2 to BLoTv3 (`BlotV2` → `BlotV3`; the stored toggle
+does not carry over and starts off). Unit evidence.** (Numbered D-058 because D-055 was taken by the
+radar residual proposal that landed in parallel.)
+
+Our supervisor was a port of upstream BLoTv2 (b38e933 closed five gaps against it). Upstream has
+since restructured BLoTv2 into BLoTv3, which is mostly a module split we do not want: BLoTv3 moves
+stop handling into `force_stops.py`, mode selection into `conditional_experimental_mode.py`, and
+model-lead anchoring into `longitudinal_lead.py`, none of which we have or consume. Two items in
+that restructure are **behavioral fixes to the supervisor itself**, and those are what this entry
+adopts. The rest is deliberately not ported; see the closing list.
+
+**1. The pads no longer vanish above `ONSET_MAX_A_REQ`.** Both following-time pads were gated on
+`required_decel < ONSET_MAX_A_REQ` (1.5 m/s²). That constant's real job is the emergency bypass,
+which additionally needs `TTC < MIN_TTC` **and** a real braking shortfall. So whenever need rose
+past 1.5 m/s² without those two also holding — a hard-braking lead still 4 s away, or a stopped
+lead the MPC is already braking adequately for — the pad collapsed from its ceiling to zero in one
+frame, i.e. the obstacle cost tightened exactly where need was highest. The ratio terms
+(`-onset_lead_accel / ONSET_FULL_DECEL`, `required_decel / 1.2`) are already `min(..., 1.0)`, so
+dropping the upper gate makes the pads saturate at 0.45 s and 0.75 s instead. Nothing here
+publishes acceleration; the widest outcome is following further back.
+
+**2. The crawl hold latches on "was necessity-braking", not on `jerk_scale == JERK_SCALE_MIN`.**
+The hold that carries softening through the `v_ego <= MIN_SPEED` transition only fired when
+`jerk_scale` sat *exactly* at its floor. A partially softened approach — a pad with no trigger
+armed, or a slew still in flight when `v_ego` crossed `MIN_SPEED` — was not held, so the jerk cost
+stiffened back toward 1.0 in the last metres of the stop, which is the ratchet the hold exists to
+prevent. The hold now keys off a `_responsive` latch (set by any in-motion frame that softened the
+scale or raised a pad) and clamps with `min(scale_target, self.jerk_scale)`.
+
+**Both release paths are explicit, because a latch that cannot clear is the dangerous shape here.**
+The emergency bypass clears `_responsive` in the same frame it fires, so the one case that wants the
+stock jerk cost gets it. Lead loss clears it, so a re-acquired lead inherits no softening from a
+vehicle that is gone. Each clearing path has a test that fails when that line is removed (D-009).
+
+**Rejected alternative: port BLoTv3 wholesale.** BLoTv3's value is its module boundaries, and those
+boundaries assume BLoTv3's own stop machinery, CEM, and model-lead anchor. Adopting them here would
+replace StarPilot's lead selection and stop handling with an unvalidated upstream design in one
+commit. The two fixes above are separable and stand on their own.
+
+**Not ported, and why:**
+- `force_stops.py`, `stop_helpers.py`, `conditional_experimental_mode.py` (D13–D21 upstream) — a
+  stop/commitment architecture we have no equivalent of. Separate decision if ever wanted.
+- `LeadDeparturePreRelease` and `model_predicted_speed()` — upstream Smooth Stops, still nothing to
+  wire them into (unchanged from b38e933).
+- `MODEL_LEAD_STATIONARY_NOISE` (0.2 m/s) — fixes upstream's `anchor_model_lead`, whose strict
+  `vLead >= 0` gate dropped the anchor through lead launches. Our `model_predicted_acceleration`
+  has no such gate, so there is no equivalent defect to fix here.
+- The `emergency` → `stand_down` rename and BLoTv3's `LongitudinalPolicy` shape (pad instead of
+  absolute `t_follow`). Naming, not behavior; renaming would churn the planner's call site without
+  changing a frame. Our `emergency` field already reaches no alert, which is upstream's D7.
+- BLoTv3's MPC/planner ownership rules (single `set_weights`, `a_prev` refill on obstacle handoff,
+  removal of the third model lead, no turn budget). These are `long_mpc.py`/`longitudinal_planner.py`
+  decisions in a file StarPilot has diverged from heavily; they are not supervisor behavior.
+
+**What this is not.** Unit tests only, on an experimental supervisor gated behind the `BlotV3`
+toggle. Both changes widen following distance or keep the jerk
+cost softer for longer; neither deletes a radar point or commands acceleration.

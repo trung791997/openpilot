@@ -1773,3 +1773,16 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     6. 236 track 21 (20.4 s, fully degraded lead lockout) is not addressed by any proposal.
     7. Item 18 (239 phantom brake) is still open.
     Tooling: `/routes/an2` and `/routes/an2/parsers` in the `oprad-routes` volume.
+
+23. **BLoTv3 supervisor (experimental): two BLoTv3 behavior fixes ported and the supervisor renamed
+    from BLoTv2, 2026-09-17, unit evidence (D-058).**
+    Upstream `SpysyWeeb/Spysypilot` restructured BLoTv2 into BLoTv3 (`combo-blotv3`, `7aed876`,
+    `docs/BLoTv3.md`). Two of those changes are supervisor behavior and are now in
+    `selfdrive/controls/lib/blotv3.py`: the `t_follow` pads saturate at their ceilings instead of
+    vanishing above `ONSET_MAX_A_REQ`, and the crawl hold latches on "was necessity-braking"
+    instead of on the exact `JERK_SCALE_MIN` floor (released by the emergency bypass and by lead
+    loss). The module, class, tests and toggle are renamed (`BlotV2` → `BlotV3`, toggle starts off).
+    The BLoTv3 module split (`force_stops.py`, `stop_helpers.py`,
+    `conditional_experimental_mode.py`, the model-lead anchor) is **not** ported — see D-058.
+    - **Open, replay:** no rlog A/B was run. The pad change is visible in a replay as `tFollow`
+      no longer stepping to base when `required_decel` crosses 1.5 m/s².
