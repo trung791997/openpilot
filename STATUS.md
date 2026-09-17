@@ -1741,6 +1741,21 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     - **Open, residual:** after a coast, `ratio_vrel` is still timed from the last accepted sample and
       understates the rate.
 
-18. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
+18. **BLoTv2 supervisor: two BLoTv3 behavior fixes ported 2026-09-17, unit evidence only (D-055).**
+    Upstream `SpysyWeeb/Spysypilot` restructured BLoTv2 into BLoTv3 (`combo-blotv3`, `7aed876`,
+    `docs/BLoTv3.md`). Two of those changes are supervisor behavior and are now in
+    `selfdrive/controls/lib/blotv2.py`: the `t_follow` pads saturate at their ceilings instead of
+    vanishing above `ONSET_MAX_A_REQ`, and the crawl hold latches on "was necessity-braking"
+    instead of on the exact `JERK_SCALE_MIN` floor (released by the emergency bypass and by lead
+    loss). The BLoTv3 module split (`force_stops.py`, `stop_helpers.py`,
+    `conditional_experimental_mode.py`, the model-lead anchor) is **not** ported — see D-055 for
+    the full not-ported list and why.
+    - **Open, road:** nothing here has been replayed or driven, and BLoTv3 is not field validated
+      upstream either. Both changes widen following distance or hold the jerk cost softer for
+      longer; neither commands acceleration. Behind the `BlotV2` toggle.
+    - **Open, replay:** no rlog A/B was run. The pad change is visible in a replay as `tFollow`
+      no longer stepping to base when `required_decel` crosses 1.5 m/s².
+
+19. **Open: `00000239` 10:33.7 phantom hard brake.** Looks like a lead association fault (lead
     track yRel −0.9 → −3.7 m while range fell 74 → 61.5 m, U11 +1.5 → −7.5, vision held 69–75 m).
     Neither the rework nor D-054 touches it. Needs a raw-track look at 625–635 s.

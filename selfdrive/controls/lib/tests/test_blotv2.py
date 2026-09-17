@@ -5,6 +5,7 @@ from cereal import log
 from openpilot.selfdrive.controls.lib.blotv2 import (
   JERK_SCALE_MIN,
   MIN_SPEED,
+  ONSET_MAX_A_REQ,
   ONSET_PAD_MAX,
   STOPPED_LEAD_PAD_MAX,
   BLoTv2Supervisor,
@@ -169,3 +170,91 @@ def test_jerk_scale_holds_floor_through_standstill_with_lead_present():
   for _ in range(10):
     policy = supervisor.update(stopped_lead, v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
     assert policy.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6)
+
+
+def test_onset_pad_saturates_above_onset_max_a_req():
+  # Hard-braking lead at 40 m: required_decel is ~3.8 m/s2, well above ONSET_MAX_A_REQ,
+  # but ttc (4 s) clears MIN_TTC so this is not an emergency. The onset pad used to be
+  # gated off entirely by required_decel >= ONSET_MAX_A_REQ; it must saturate instead.
+  supervisor = BLoTv2Supervisor(dt=0.05)
+  lead = LeadObservation(present=True, distance=40.0, speed=10.0, acceleration=-3.0, model_prob=1.0)
+  policy = None
+  for _ in range(40):
+    policy = supervisor.update(lead, v_ego=20.0, a_mpc=0.0, t_follow_base=1.45)
+  assert not policy.emergency
+  assert policy.required_decel > ONSET_MAX_A_REQ
+  assert (policy.t_follow - 1.45) == pytest.approx(ONSET_PAD_MAX, abs=1e-6)
+
+
+def test_stopped_lead_pad_saturates_above_onset_max_a_req():
+  # Stopped lead at 20 m from 15 m/s: required_decel ~7.0 m/s2 and the MPC is already
+  # matching it, so the emergency bypass stays clear (see test_matched_mpc_braking_is_not_emergency).
+  # The near-stopped-lead pad must saturate at STOPPED_LEAD_PAD_MAX rather than vanish.
+  supervisor = BLoTv2Supervisor(dt=0.05)
+  lead = LeadObservation(present=True, distance=20.0, speed=0.0, acceleration=0.0, model_prob=1.0)
+  policy = None
+  for _ in range(40):
+    policy = supervisor.update(lead, v_ego=15.0, a_mpc=-7.03, t_follow_base=1.45)
+  assert not policy.emergency
+  assert policy.required_decel > ONSET_MAX_A_REQ
+  assert (policy.t_follow - 1.45) == pytest.approx(STOPPED_LEAD_PAD_MAX, abs=1e-6)
+
+
+def test_partial_softening_is_held_through_the_crawl():
+  # Arm recovery just long enough that jerk_scale is mid-slew -- strictly between
+  # JERK_SCALE_MIN and 1.0 -- then cross below MIN_SPEED with the lead still there.
+  # The old exact-floor hold did nothing here and the scale stiffened back toward 1.0
+  # in the last metres of the stop; the latch must hold it instead.
+  supervisor = BLoTv2Supervisor(dt=0.05)
+  moving_lead = LeadObservation(present=True, distance=30.0, speed=5.0, acceleration=0.0, model_prob=1.0)
+  for _ in range(11):
+    supervisor.update(moving_lead, v_ego=10.0, a_mpc=-1.0, t_follow_base=1.45)
+  partial = supervisor.jerk_scale
+  assert JERK_SCALE_MIN < partial < 1.0
+
+  stopped_lead = LeadObservation(present=True, distance=2.0, speed=0.0, acceleration=0.0, model_prob=1.0)
+  for _ in range(10):
+    policy = supervisor.update(stopped_lead, v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
+    assert policy.jerk_scale == pytest.approx(partial, abs=1e-6)
+
+
+def test_lead_loss_clears_the_crawl_hold_for_a_re_acquired_lead():
+  # Soften on one lead, lose it for a couple of frames, then pick a different lead up
+  # while still crawling. The latch must not survive the gap: a freshly acquired lead
+  # inherits no softening from the vehicle that is gone, and the scale keeps slewing
+  # back to 1.0 until this lead earns softening of its own.
+  supervisor = BLoTv2Supervisor(dt=0.05)
+  moving_lead = LeadObservation(present=True, distance=30.0, speed=5.0, acceleration=0.0, model_prob=1.0)
+  for _ in range(40):
+    supervisor.update(moving_lead, v_ego=10.0, a_mpc=-1.0, t_follow_base=1.45)
+  assert supervisor.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6)
+
+  for _ in range(2):
+    supervisor.update(LeadObservation(), v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
+  after_gap = supervisor.jerk_scale
+  assert JERK_SCALE_MIN < after_gap < 1.0
+
+  new_lead = LeadObservation(present=True, distance=6.0, speed=0.0, acceleration=0.0, model_prob=1.0)
+  policy = None
+  for _ in range(40):
+    policy = supervisor.update(new_lead, v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
+  assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
+
+
+def test_crawl_hold_releases_after_the_emergency_bypass():
+  # The emergency bypass wants the stock jerk cost. Once it fires in motion it must drop
+  # the latch, so a following crawl no longer holds the softened scale.
+  supervisor = BLoTv2Supervisor(dt=0.05)
+  moving_lead = LeadObservation(present=True, distance=30.0, speed=5.0, acceleration=0.0, model_prob=1.0)
+  for _ in range(40):
+    supervisor.update(moving_lead, v_ego=10.0, a_mpc=-1.0, t_follow_base=1.45)
+  assert supervisor.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6)
+
+  emergency_lead = LeadObservation(present=True, distance=20.0, speed=0.0, acceleration=0.0, model_prob=1.0)
+  emergency_policy = supervisor.update(emergency_lead, v_ego=15.0, a_mpc=0.0, t_follow_base=1.45)
+  assert emergency_policy.emergency
+
+  policy = None
+  for _ in range(40):
+    policy = supervisor.update(emergency_lead, v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
+  assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
