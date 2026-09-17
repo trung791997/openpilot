@@ -978,6 +978,8 @@ commit. The two fixes above are separable and stand on their own.
   removal of the third model lead, no turn budget). These are `long_mpc.py`/`longitudinal_planner.py`
   decisions in a file StarPilot has diverged from heavily; they are not supervisor behavior.
 
-**What this is not.** Unit tests only, on an experimental supervisor gated behind the `BlotV3`
-toggle. Both changes widen following distance or keep the jerk
+**What this is not.** Unit tests plus a supervisor-only rlog replay (2026-09-17, STATUS item 24:
+jerk scale identical on every engaged lead frame of seven routes; the pad differs for 90 s in 68
+hard-braking runs, and also for 1.1 s during the 239 phantom brake), on an experimental supervisor
+gated behind the `BlotV3` toggle. Both changes widen following distance or keep the jerk
 cost softer for longer; neither deletes a radar point or commands acceleration.

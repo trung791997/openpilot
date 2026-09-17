@@ -1820,8 +1820,25 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     loss). The module, class, tests and toggle are renamed (`BlotV2` → `BlotV3`, toggle starts off).
     The BLoTv3 module split (`force_stops.py`, `stop_helpers.py`,
     `conditional_experimental_mode.py`, the model-lead anchor) is **not** ported — see D-058.
-    - **Open, replay:** no rlog A/B was run. The pad change is visible in a replay as `tFollow`
-      no longer stepping to base when `required_decel` crosses 1.5 m/s².
+    - **Replay A/B done 2026-09-17 (rlog replay of the supervisor only, not the MPC; agy-pro
+      dispatch, Claude-audited).** BLoTv2 (b38e933e) and BLoTv3 (current) were stepped side by side
+      on every `modelV2` frame of 00000232 / 236 / 237 / 239 / 23a / 23b / 23e from the logged
+      radar lead, `vEgo`, `aTarget` and `tFollow` (script `blotab.py` in the `oprad-routes` volume,
+      `/routes/an2`). Over 115,536 engaged lead frames: `jerk_scale` differed on **0** frames and the
+      crawl hold differed in **0** runs, so on these drives the two versions differ only through
+      the `t_follow` pad. V3 pad exceeded V2 by > 0.2 s in 68 runs totalling 90.4 s (2.1 % of engaged
+      lead frames; longest run 2.9 s, pad saturating at 0.45–0.75 s, closest lead 7.7 m on 23e),
+      every one a hard-braking approach where V2 had collapsed its pad to zero.
+      **It does not help the radar fault classes and slightly works against them:** during the 239
+      10:30 phantom (item 27) V3 raised the pad to 0.45 s for 1.1 s (630.46–631.56 s) while V2 held
+      0, i.e. V3 asks for a wider gap from a lead that is not braking; both versions softened
+      `jerk_scale` identically (0.70 at 631.6 s). BLoTv3 reads `aLeadK` from the radar lead, the
+      signal item 23 shows over-reacting on a range walk, so a phantom reaches it unfiltered.
+      Braking *force* is unchanged by V3 on these routes (no jerk-scale difference); braking
+      *onset* on a real decelerating lead moves earlier by up to the pad. Verdict: a conservative
+      comfort change relative to V2, reasonable to enable for road evaluation, not a radar fix.
+      Every route so far was driven with `BlotV2` ON; the renamed `BlotV3` key starts OFF, so it
+      must be switched on explicitly for the next drive. Not road-validated.
 
 25. **Release-side aLeadK rule and FarLeadBrakeLimit review. Neither shipped (replay and limited
     road evidence, 2026-09-17).**
