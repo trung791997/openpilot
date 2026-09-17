@@ -241,6 +241,9 @@ class _BoschATrackState:
   # (D-054). The gate measures the next sweep against it. It is never a velocity-derivative baseline:
   # `samples` above stays accepted-only, and a range-rejected sweep never moves either of them.
   range_anchor: tuple[float, float] | None = None
+  # D-056 (PROPOSED, replay only): every range that passed the gate, accepted or coasted, for the D-043
+  # rate fit. Fitting over `samples` alone froze the fit for as long as the fit itself coasted.
+  gated_ranges: deque = field(default_factory=lambda: deque(maxlen=BOSCH_A_VREL_MAX_SAMPLES))
   last_trusted_vrel: float | None = None
   last_trusted_vrel_nanos: int | None = None
 
@@ -547,6 +550,7 @@ class RadarInterface(RadarInterfaceBase):
         # new incarnation and must not inherit the previous object's range-rate history.
         track.samples.clear()
         track.range_anchor = None
+        track.gated_ranges.clear()
         track.last_trusted_vrel = None
         track.last_trusted_vrel_nanos = None
         self.pts.pop(track_id, None)
@@ -653,9 +657,13 @@ class RadarInterface(RadarInterfaceBase):
       # Fitted over the accepted range history, so it is immune to the single-sweep blindness above.
       vrel_candidate = direct_vrel if direct_vrel is not None else ratio_vrel
       vrel_inconsistent = False
-      if vrel_candidate is not None and len(track.samples) >= BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES - 1:
-        ts = [sample[0] for sample in track.samples] + [now_s]
-        ds = [sample[1] for sample in track.samples] + [dRel]
+      # D-056 (PROPOSED): fitted over gated ranges, not accepted ones only. 00000232 track 43, the lead:
+      # the accepted history was 3-7 s old while the range closed 71.8 -> 60.2 m at U11 -4.9 m/s, so the
+      # fit stayed flat and coasted the lead for 60 sweeps. Rejected ranges still never enter the fit.
+      fit_history = track.gated_ranges
+      if vrel_candidate is not None and len(fit_history) >= BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES - 1:
+        ts = [sample[0] for sample in fit_history] + [now_s]
+        ds = [sample[1] for sample in fit_history] + [dRel]
         span = ts[-1] - ts[0]
         if span >= BOSCH_A_VREL_RATE_CHECK_MIN_SPAN_S:
           n = len(ts)
@@ -668,6 +676,9 @@ class RadarInterface(RadarInterfaceBase):
             rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
             # One-sided: only U11 claiming MORE closing than the range supports is a fault.
             vrel_inconsistent = vrel_candidate < rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+
+      if range_anchor is not None or not (high_u10_live_vrel or vrel_inconsistent):
+        track.gated_ranges.append((now_s, dRel))
 
       if high_u10_live_vrel or vrel_inconsistent:
         # The range cleared innovation checking above, so geometry here is trustworthy; only vRel is

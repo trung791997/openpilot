@@ -1123,6 +1123,59 @@ class TestInvalidSlotDoesNotHideAMigratedIdentity:
     assert 1 in ri._tracks  # hidden, not retired: the history survives to its stale deadline
 
 
+# --- 7a''. D-056 (PROPOSED): the D-043 rate fit must not freeze while it coasts ------------------------
+
+class TestRateCheckFitsGatedRanges:
+  """Modelled on 00000232--3a01619ce5 track 43 at t=1263.7 s. The rate check coasted a lead whose range
+  was opening while U11 claimed closing, then the lead turned and closed at the rate U11 reported. The
+  fit still ran over the accepted samples from before the coast, so it stayed near flat and kept coasting
+  the correct U11 (60 sweeps on the route)."""
+  DT_NANOS = 70_000_000
+
+  def _drive(self, ri, i, raw, u11_mps):
+    rr = ri.update(sweep(0, i & 0xF, 0x7, raw, 1024, (1 + 2 * i) & 0xFFF, i * self.DT_NANOS, with_aux=True,
+                         direct_vrel_raw=864 + round(u11_mps * 64), direct_vrel_uncertainty_raw=0))
+    return rr
+
+  def _opening_coast_then_closing(self, ri):
+    raw = 1200
+    self.setup_measured = []
+    for i in range(4):
+      rr = self._drive(ri, i, raw, 0.0)
+    assert rr.points[0].measured is True
+    # 3 s opening at +2 m/s (2.24 raw per sweep) while U11 claims -2 m/s: a legitimate coast.
+    for i in range(4, 47):
+      raw += 2.24
+      rr = self._drive(ri, i, round(raw), -2.0)
+      self.setup_measured.append(int(rr.points[0].measured) if rr.points else -1)
+    # The fit needs a few sweeps of the opening to see it; after that every sweep coasts.
+    assert not any(self.setup_measured[4:]), self.setup_measured
+    return raw, 47
+
+  def test_a_lead_that_turns_to_close_at_the_u11_rate_is_accepted_again(self):
+    ri = make_radar_interface()
+    raw, i0 = self._opening_coast_then_closing(ri)
+    measured = []
+    for i in range(i0, i0 + 20):
+      raw -= 5.6  # closing at 5 m/s
+      rr = self._drive(ri, i, round(raw), -5.0)
+      assert len(rr.points) == 1
+      measured.append(rr.points[0].measured)
+    # Once the gated fit spans the turn (8 sweeps), U11 agrees with the range again.
+    assert all(measured[10:]), measured
+
+  def test_gross_disagreement_still_coasts_with_the_gated_fit(self):
+    # Negative control: after the same coast, U11 claiming 12 m/s closing on a range that keeps
+    # opening must still coast every sweep.
+    ri = make_radar_interface()
+    raw, i0 = self._opening_coast_then_closing(ri)
+    for i in range(i0, i0 + 20):
+      raw += 2.24
+      rr = self._drive(ri, i, round(raw), -12.0)
+      assert len(rr.points) == 1 and rr.points[0].measured is False
+    assert len(ri._tracks[1].samples) == 7  # accepted history is unchanged: rejected/coasted never enter it
+
+
 # --- 7b. residual vRel-authority fix: raw one-sweep fallback never becomes a published measurement ----
 # (U11 genuinely unavailable -- sentinel/out-of-range -- is a different path than the high-u10-but-live
 # case above; see radar_interface.py's u11_and_ratio_unavailable branch.)
