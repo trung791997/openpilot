@@ -2872,3 +2872,103 @@ as a BLoT effect.**
 `selfdrive/controls/tests/test_longitudinal_planner.py` + `selfdrive/controls/lib/tests/test_blotv3.py`:
 **519 passed** (`-W ignore::DeprecationWarning`, required or the planner file fails collection under
 NumPy 2.5). Static and unit-test evidence only. No replay and no road validation of the BLoT path.
+
+## 41. Two changes carried in from the upstream review: the pursuit tail, and a renamed-toggle migration
+
+Both land on `ns-bosch-radar-testing`. Both are **unit-test evidence only — no replay, no road
+validation.** Neither is a fix for anything observed on our own routes.
+
+### Half A — the pursuit tail (`f7a85a35a`)
+
+Ported from upstream `SpysyWeeb/Spysypilot` `cdf8e54c9` (2026-09-02), `necessity_supervisor.py`.
+Our port baseline was `7aed8763c`, so this was the **one real behavioural gap** in the upstream
+supervisor. The other two supervisor commits since that baseline are not gaps: `7dfe70610` removes
+dead `stand_down` code we never carried, and `7f0a9ad37` is naming only
+(`STOPPED_LEAD_FULL_DECEL = 1.2`, already the literal `1.2` in `blotv3.py`).
+
+**The problem.** The recovery trigger disarms at the plan's zero crossing — which is exactly the
+frame where the MPC has to swing from braking to acceleration. So the pickup behind a lead that has
+driven off is made with the **stock stiff jerk cost**, the one the supervisor had just spent the
+whole braking episode softening.
+
+**The mechanism.** `PURSUIT_TAIL_S = 3.0` in `selfdrive/controls/lib/blotv3.py`:
+
+- arms `self._pursuit_s = PURSUIT_TAIL_S` while `recovery_active and lead.acceleration > LAUNCH_ALEAD_ON`;
+- clears outright on `lead.acceleration <= 0.0` (the lead stopped pulling — not a pursuit any more);
+- otherwise decays by `self.dt`;
+- feeds one disjunct:
+  `if recovery_active or model_active or launch_active or self._pursuit_s > 0.0: scale_target = JERK_SCALE_MIN`.
+
+Cleared in `reset()`, on the emergency bypass, and on the not-present/crawl branch. A pull-away that
+ends in a crawl is not a pursuit, so the tail is deliberately **not** held through the low-speed latch.
+
+**It touches `jerk_scale` ONLY — never `t_follow`.** Following distance is unchanged by this commit,
+and there is a test that asserts exactly that.
+
+**One deliberate divergence from upstream.** `_pursuit_s` is initialised in `__init__` as well as in
+`reset()`. Upstream carries it only in `reset()` because upstream's `__init__` calls `reset()`; ours
+does not. Without the extra initialiser the first frame that reaches the decay branch raises
+`AttributeError`. Pinned by `test_pursuit_tail_state_exists_before_the_first_update` so a future
+re-sync cannot quietly drop it.
+
+**Evidence discipline.** The figure in the code comment — `+0.26 m/s²` early in the pickup, `0.15 s`
+over the ramp, upstream route `0x3b` t=390–405, a truck that drove off — is **upstream's replay
+measurement on upstream's tree.** It is not ours. We have no route in the cache that reproduces it.
+On this tree the tail is supported by unit tests and by the mechanism argument above, nothing more.
+
+**Do NOT read this as a fix for the 24d padding complaint.** Item 39.4 found those padding samples
+are `src == cruise`, not a lead-departure recovery. The two are adjacent in subject matter and
+unconnected in evidence. Recorded as a lead only.
+
+### Half B — migrating a renamed PERSISTENT BOOL (`38d5635a9`)
+
+Item 40 found that renaming the Params key `BlotV2` → `BlotV3` silently dropped the stored value,
+and route `0000023f` therefore drove with the supervisor **off**. This commit adds the migration that
+should have shipped with the rename.
+
+`migrate_starpilot_bool_param_renames(params, params_cache)` in `system/manager/manager.py`, table
+`LEGACY_STARPILOT_BOOL_RENAMES = {"BlotV2": "BlotV3"}`, guarded by its own one-shot flag
+`/data/starpilot_bool_rename_v1`, called from `manager_init` **ahead of the `clear_all()` calls**.
+
+Three design points worth keeping:
+
+1. **It needs its own flag.** The existing `migrate_starpilot_param_renames` looks like the right
+   home, but its flag (`starpilot_param_rename_v1`) is already written on every device that went
+   through the FrogPilot→StarPilot rename. An entry added to that table would **never run**. Any
+   future rename migration needs a fresh flag for the same reason.
+2. **It reads the old key as raw bytes off disk** (`_read_raw_param_bytes` → `get_param_path`), not
+   through the schema. So **no `common/params_keys.h` change, and therefore no aarch64 artifact
+   rebuild.** The orphaned key is unreadable through the normal API precisely because the schema no
+   longer knows it.
+3. **An explicit value on the new key wins**, in either store. For a toggle that gates longitudinal
+   control, turning something **on** unasked is the worse error.
+
+**The key finding, and why this is a guard rather than a repair.** `clear_all()` **deletes params
+keys the schema does not know** (see the comment near `manager.py:1132`). `BlotV2` was therefore
+already gone from disk after the *first* boot of the renamed build. **This migration cannot repair
+route `0000023f`.** A rename has exactly **one** boot in which the old value is still recoverable,
+which means the migration entry has to ship in the **same release** as the rename — added afterwards
+it is always too late. That constraint is written into the comment above the table so the next
+person renaming a toggle hits it before repeating the mistake.
+
+### Verification
+
+| | |
+|---|---|
+| `test_blotv3.py` (8 new tests) | 26 passed |
+| negative control, pursuit tail | **2 failed / 24 passed** on revert |
+| `test_manager.py` (7 new tests) | 42 passed, 1 skipped |
+| negative control, migration | **2 failed / 40 passed** on revert |
+| planner + blotv3 | 527 passed |
+| manager + planner + blotv3 | **569 passed, 1 skipped** |
+
+The negative controls are partial by design: of the 8 pursuit-tail tests only two assert the tail
+*holds*; the rest assert it **ends** (on its own, when the lead stops pulling, on lead loss, on
+reset) and so pass under revert. A test that passes with the feature removed is not evidence for the
+feature — recorded here so the count is not mistaken for a weak control.
+
+`-W ignore::DeprecationWarning` is required or `test_longitudinal_planner.py` fails **collection**
+under NumPy 2.5 and the run silently shrinks. `manager.py` carries 5 pre-existing ruff findings
+(ISC002, E501, PIE810); none are on these lines and none were touched.
+
+Static and unit-test evidence only. **No replay and no road validation of either change.**
