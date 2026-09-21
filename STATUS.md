@@ -2007,7 +2007,11 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     `y` reads 5 m. The Bosch-A lateral estimate is being trusted symmetrically in both directions,
     and `leadOne` accepted a lead at y −8.1 m.
 
-    **Not yet done:** whether a stationary-target dropout like 9:36 is visible in the other 9 routes.
+    **Answered in item 38 (2026-09-21):** the census ran on all 13 routes and found 5 near in-lane
+    dropouts on 4 routes — but four of the five lose the target at the lateral edge of the in-lane
+    box, so the evidence points at the target leaving the beam rather than at a failing sensor. The
+    "16 invalid slots for 3.7 s" premise is also corrected there: the blank condition lasted 0.14 s.
+    Original note: whether a stationary-target dropout like 9:36 is visible in the other 9 routes.
     The 1:51.9 no-lead brake and the y −8.1 m lead acceptance are both answered in item 32. `FarLeadBrakeLimit`'s
     road record is now 2 routes: 1 phantom cap and **6 caps on genuinely closing leads**, two of them
     (23f 23:15, 241 3:37) followed by a driver brake. That argues for tightening its gate before it
@@ -2466,5 +2470,99 @@ Replay/static evidence only; nothing in this item was driven.
 **Still open:** a bounded (non-deleting) replacement for the `dyPath` gate on both slots — now
 designed as **D-061 (proposed, not implemented)**, which bounds the obstacle in the planner instead
 of gating selection, and whose first prerequisite is that **`dyPath` does not exist online at all**;
-a window that actually exercises `084a9d56`; the stationary-target dropout census; item 22.6 (236
-track 21).
+a window that actually exercises `084a9d56`; item 22.6 (236 track 21). **The stationary-target
+dropout census is done — see item 38**, which also retracts three intermediate claims made while it
+was being built.
+
+## 38. The near in-lane target-dropout census: 5 events on 4 routes, and the evidence points at geometry, not a failing sensor — 2026-09-21
+
+Closes the "stationary-target dropout census" left open in items 31 and 37. Replay evidence only,
+decoded at the CAN/wire level (pre-parser). Nothing here was driven.
+
+### The premise was wrong, and correcting it changed the metric
+
+The starting report was that on 241 at 9:36 *"the radar returned 16 invalid slots — completely
+blank — for 3.7 seconds"*. Measured over all 894 sweeps of 241 segment 9, the longest all-16-invalid
+run is **0.14 s** (2 sweeps). Only 8 of 894 sweeps have zero valid objects; the `n_valid` histogram
+is `{0:8, 1:42, 2:480, 3:308, 4:47, 5:9}`. What lasted ~3.7 s was **track 20, the near in-lane lead,
+being absent** while the radar kept reporting other objects — which is what item 31 always said.
+
+**"All 16 slots invalid" is therefore the wrong metric.** On 241 the longest such run is 44.98 s, at
+`longActive=False` and `vEgo` ~0 — a parked car. On an empty road the Bosch-A legitimately reports
+nothing. The right metric is a **near in-lane target dropout**: an object with `d < 40 m`,
+`|y| < 2.0 m`, existence `>= 32`, held `>= 0.5 s`, that then leaves the box, where the track id does
+not reappear anywhere in the object list.
+
+Every other number in the original report checks out: commanded `accel` 0.76 -> **1.67** -> 1.80 m/s²
+with `longActive=True`, `leadOne` degrading to vision-only then `None`, model lead probability
+0.95 -> 0.24, and driver intervention at 9:37.74. The slot was invalid at the wire level, so the
+radar genuinely stopped reporting it — **our parser caused none of it.**
+
+### Result: 13 routes, 264 segments, 5 events on 4 routes
+
+```
+route  route-time  dur     tid  d      y     exFade   drate  accel@loss  vEgo         mlprobMin
+241     9:35.73   71.36s   20   26.0  -1.9   67/126   +1.6    +0.72      3.0 -> 14.2   0.00
+241     4:06.92   13.77s   22   28.3  -1.4   68/68    +2.2    +0.78     13.0 -> 17.5   0.66
+236    28:16.84   29.49s   37   11.8  -2.0  126/126   -1.4    +0.86     24.1 -> 30.3   0.84
+23f     3:57.19    2.67s   24   15.4  -1.4   74/109   -5.3    +0.49      8.1 ->  9.5   0.21
+248    10:33.39    3.50s    2   39.2  +0.5   78/126   -0.5    +0.17     12.0 -> 13.4   1.00
+```
+Zero on 231, 232, 237, 239, 23a, 23b, 23e, 245, 246.
+
+### The finding: four of the five died at the edge of the box
+
+`y` at loss is **−1.9, −1.4, −2.0, −1.4** against a box half-width of 2.0 m. On 241's track 20 the
+azimuth is *still drifting outward* as the existence decays 126 -> 94 -> 68 -> 67. That is as
+consistent with the target leaving the radar's beam as with the radar failing to hold it, and
+nothing measured here separates the two.
+
+The fifth, 248 10:33, is the only one lost near boresight (`y +0.5`) — and there the **camera still
+held the lead at probability 1.00**, so no lead was lost at all.
+
+**This census does not establish a radar dropout fault.** It establishes that near in-lane tracks
+are lost at the lateral edge of the in-lane box while the sensor keeps reporting. The discriminating
+observation — not yet found in any route — would be a **fade-then-die with the target centred**,
+`|y|` small throughout while existence halves. Until that exists there is no signal to gate on, and
+**D-041 forbids a gate that deletes a point on a suspicion this weak.** No code change is proposed.
+
+### Four detector defects, each of which produced a confidently wrong answer first
+
+Recorded because each one passed quietly and the census looked clean while wrong.
+
+1. **Closing gaps at segment boundaries missed the event that prompted the census.** 241's 9:36
+   dropout runs to the end of segment 9. `logMonoTime` is continuous across segments, so a real
+   dropout may span one. Exclude recording holes with a sweep-to-sweep `MAX_DT = 2.0 s` check
+   instead. *Any census that cannot find the event you already know about is not measuring it.*
+2. **Geometry cannot classify an exit.** A `|y| >= 1.6 m` test labelled 241 track 20 a clean lateral
+   exit, because its azimuth wandered to the edge as its return weakened. Use **track survival**.
+   A "seen at all within 1.5 s" survival test *also* mislabelled it — it was in the object list for
+   0.07 s more. Require the re-sighting at **0.75 s or later**. Ground truth from a sweep-by-sweep
+   trace: track 20 held 235 consecutive sweeps, rt 560.09..575.80, no gap > 0.5 s, never returned.
+3. **Engagement and acceleration were read from different moments.** `longActive` was an OR over the
+   whole gap and peak accel a max over its first 5 s, so a row could report "engaged and
+   accelerating" when the car was engaged at one instant and accelerating at another. On **23e
+   23:46.08** it did: the driver disengaged at 23:43.68, the track died 2.5 s later with the car
+   under manual control, and the +1.14 m/s² came from after a re-engagement at 23:48.03. That row
+   was reported as a worse instance of 241 before this was caught; **it is not an openpilot event at
+   all.** Record engagement and accel **at the moment of loss** and gate on that. Two rows demote
+   (23e 23:46.08, 236 32:04.95, both `accel@loss = 0.00`).
+4. **Oncoming traffic is not a dropout.** An oncoming car crosses the boresight, sweeps the in-lane
+   box for ~1 s and leaves the near field at ~10 m, **dying at full existence with no fade** — the
+   exact "no warning" signature. Two such crossings (232 10:05 track 1, 23e 13:38 track 9) were
+   reported as a distinct fault population that a degradation-based gate would miss. Both are
+   oncoming: range collapsing at ~29 m/s while `vEgo` was 14–16 m/s, `y` sweeping −4.6 -> +2.8.
+   Nothing ahead can close faster than ego speed. Classify `d_rate < -(vEgo + 3)` as **oncoming**
+   (15 such gaps fleet-wide), and compute `d_rate` over **one track id**, never over "nearest
+   in-lane object", which switches tracks and yields rates no object had (−29.7, −30.9 m/s).
+
+### Caveats on these numbers
+
+- **The 248 row is from a partial route.** Only 8 of 23 segments were cached, and not contiguous
+  (0,1,2,4,6,9,10,11). The full route arrived 2026-09-21 and has not been re-censused.
+- Routes `00000249--d481c5de77`, `0000024b--02cabe206c` and `0000024d--f80e13b850` arrived the same
+  day and are **not** in this census.
+- `seg_t0` in `/routes/an2/scan_<route>.json` **cannot be used to locate a segment**: every entry
+  reads the same value because each segment's first `logMonoTime` is `initData` (all 42 entries of
+  23e read offset 0.0). The global `T0 = min(seg_t0)` is correct; segment index comes from
+  `route_time // 60`.
