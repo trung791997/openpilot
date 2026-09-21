@@ -2689,3 +2689,52 @@ it. The common thread is only `src == cruise` at low speed after a deceleration.
 headroom. That is a `longitudinal_mpc_lib` / cruise-cost question. 4.7 s on one route is too
 little to tune against -- the next step is to run this same signature across all 17 routes before
 anyone touches a cost weight.
+
+### 39.4 The padding signature run fleet-wide: 24d is unremarkable, and there is nothing to tune
+
+39.3's closing step is done. The same signature (tracking a lead, gap > 2.5x desired,
+`|aTarget| < 0.25`, `maxAcceleration > 0.8`, set speed at least 5 m/s above `vEgo`, throttle not
+disabled, not stopping) was scored over all **16 cached routes, 11,221 s of engaged time**, from
+the `scan_<route>.csv` whole-route dumps. Script: `$CLAUDE_JOB_DIR/tmp/padfleet.py` (job-local).
+
+**Fleet: 673 samples = 58.7 s of 11,221 s engaged (0.52%).** Per route, as a share of that route's
+engaged time: 23f 1.14%, 236 1.01%, **24d 0.63%**, 232 0.55%, 237 0.51%, 245 0.35%, 248 0.22%,
+23e 0.14%, 241 0.13%, 24b 0.05%, 23a 0.00%; and **zero samples on 231, 239, 23b, 246**.
+
+- **24d is not an outlier.** At 0.63% it sits mid-pack, below 23f and 236. Whatever the drive felt
+  like, the route is not measurably more padded than the rest of the fleet.
+- **`longitudinalPlanSource` is `cruise` on 669 of 673 samples** (the other 4 are `lead0`/`lead1`
+  on 236). This is the one property that holds fleet-wide and it confirms 39.3's read.
+- **`expMode` does not track it,** again: 232 splits 0/70, 237 splits 78/11, 23f 135/44. The
+  behaviour appears on both sides of the toggle on different routes, so it is not e2e longitudinal.
+
+**The signature does not describe a sustained behaviour, which is the finding that matters.**
+The longest contiguous episode anywhere in 11,221 s is **3.51 s** (23f 23:00.60); 24d's 5:21.60
+window is **2.39 s**, the second longest. Sweeping the `aTarget` cap to see whether a slow-approach
+mode was being excluded by the tight threshold:
+
+```
+ cap   samples   secs  % eng  eps>=1s  longest
+0.25       550   51.5  0.41%        6    3.51s
+0.40       887   75.0  0.60%       10    6.15s
+0.60      1263  105.2  0.85%       17    6.15s
+0.80      1761  142.7  1.15%       29    6.15s
+1.00      2408  185.9  1.50%       46    6.15s
+```
+
+The sample count and the engaged share grow roughly linearly with the cap while the longest episode
+**stops moving at 6.15 s**. That is the shape of ordinary distribution mass being swept up by a
+widening threshold, not of a distinct behaviour mode with its own duration scale. A real
+"insists on keeping a certain distance" fault would show sustained episodes that appear once the cap
+clears their operating point; none do.
+
+**Conclusion: no cruise-cost change is justified on this evidence, and 39.3's open question is
+closed as not actionable.** The brief near-zero-`aTarget` samples are real and they are concentrated
+in `src == cruise` at low-to-mid speed after a deceleration, but they are transient (median episode
+well under a second, maximum 6.15 s across the whole corpus) and no worse on the route that
+prompted the complaint. Touching a `longitudinal_mpc_lib` cost weight to chase 0.5% of engaged time
+would be tuning against noise. **What would reopen this is a drive where the driver marks the
+timestamp of the padding as it happens** -- the complaint may be about a window this signature does
+not capture at all, and 4.7 s buried in 1102 s cannot be matched to a memory of a drive.
+
+Replay/offline evidence only. Nothing here is road-validated.
