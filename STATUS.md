@@ -2028,9 +2028,16 @@ all*), the model lead probability is **0.00–0.03** for the whole episode, and 
 What moved was the plan, not a target. Between 1:49.8 and 1:52.6 the last point of `modelV2.position.x`
 collapsed from **210 m to 99 m**, then to 69 m at 1:54 and 41 m at 1:57, while `steeringAngleDeg` held
 −1.1° and yaw rate 0.007 rad/s — i.e. a straight, clear road. `spVCruise` stepped from 22.36 m/s to
-14.77 at 1:45.4 and decayed to 5.15 m/s by 1:54.4, then snapped back to 22.1 m/s at 1:54.6 when the
-driver pressed the gas (`longActive` 1 → 0 at 1:54.6 and again at 1:59.2). So the model planned a stop
-on an empty straight, the planner followed it down from 22.1 to 5.5 m/s, and the driver overrode.
+14.06 at 1:50.4 and decayed to 5.09 m/s by 1:59.6, where `longActive` went 1 → 0 as the driver pressed
+the gas. So the model planned a stop on an empty straight, the planner followed it down from 22.1 to
+5.6 m/s, and the driver overrode.
+
+> **Time-base note.** `scan_<route>.csv`'s `t` is raw `logMonoTime`; route time is
+> `(t - min(seg_t0))/1e9` from the JSON, which is what `load.py`, `tl2.py`, `rawslots.py`, `phantom.py`
+> and `curv.py` all use. An earlier revision of this item quoted the `spVCruise` times from a hand
+> dump that normalised against the CSV's own first row instead, which on this route runs **5.13 s
+> late**. The figures above are corrected; the plan-collapse, no-lead and no-object findings came from
+> the correctly-based tools and are unaffected.
 
 **This one is outside the Bosch-A path entirely.** No change to `radar_interface.py` could have caused
 or prevented it, and it should not be counted against the radar work. It is the clearest phantom the
