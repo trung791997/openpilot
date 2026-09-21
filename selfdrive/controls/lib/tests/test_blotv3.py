@@ -7,6 +7,7 @@ from openpilot.selfdrive.controls.lib.blotv3 import (
   MIN_SPEED,
   ONSET_MAX_A_REQ,
   ONSET_PAD_MAX,
+  PURSUIT_TAIL_S,
   STOPPED_LEAD_PAD_MAX,
   BLoTv3Supervisor,
 )
@@ -258,3 +259,110 @@ def test_crawl_hold_releases_after_the_emergency_bypass():
   for _ in range(40):
     policy = supervisor.update(emergency_lead, v_ego=0.5, a_mpc=0.0, t_follow_base=1.45)
   assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
+
+
+# --- The pursuit tail (ported from upstream cdf8e54c9; see STATUS item 41) -------------------
+#
+# Excess braking behind a lead that is ALREADY pulling away keeps the low jerk cost for a
+# bounded PURSUIT_TAIL_S after the braking eases, because the recovery trigger disarms at the
+# plan's zero crossing -- exactly where the MPC has to swing to acceleration. Unit-test evidence
+# only: no replay and no road validation of this path on our tree.
+
+
+def _run(supervisor, lead, *, v_ego, a_mpc, seconds, t_follow_base=1.45):
+  """Step the supervisor for `seconds` of 0.05 s frames and return the last policy."""
+  policy = None
+  for _ in range(max(1, round(seconds / 0.05))):
+    policy = supervisor.update(lead, v_ego=v_ego, a_mpc=a_mpc, t_follow_base=t_follow_base)
+  return policy
+
+
+def _pulling_away_brake_phase(supervisor):
+  """Excess braking while the lead is already leaving: arms recovery, so the tail is armed."""
+  lead = LeadObservation(present=True, distance=30.0, speed=5.0, acceleration=1.0, model_prob=1.0)
+  policy = _run(supervisor, lead, v_ego=10.0, a_mpc=-1.0, seconds=1.0)
+  assert policy.recovery_active, "precondition: the recovery trigger must arm to arm the tail"
+  assert not policy.emergency, "precondition: this must exercise recovery, not the emergency bypass"
+  assert supervisor.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6)
+  return policy
+
+
+def test_the_low_jerk_cost_outlasts_the_braking_behind_a_lead_pulling_away():
+  # THE negative control for this port: with the tail reverted, `recovery_active` goes False as
+  # soon as the braking eases and jerk_scale slews straight back toward 1.0, so the second
+  # assertion fails.
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+
+  eased = LeadObservation(present=True, distance=32.0, speed=8.0, acceleration=2.0, model_prob=1.0)
+  policy = _run(supervisor, eased, v_ego=10.0, a_mpc=-0.2, seconds=1.0)
+  assert not policy.recovery_active, "the braking has eased, so recovery must be off"
+  assert not policy.launch_active, "this must isolate the tail, not the launch trigger"
+  assert policy.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6), "the tail holds the low cost"
+
+
+def test_the_pursuit_tail_ends_on_its_own():
+  # Bounded, not a latch. PURSUIT_TAIL_S of a still-accelerating lead must expire.
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+
+  eased = LeadObservation(present=True, distance=32.0, speed=8.0, acceleration=2.0, model_prob=1.0)
+  policy = _run(supervisor, eased, v_ego=10.0, a_mpc=-0.2, seconds=PURSUIT_TAIL_S + 1.0)
+  assert not policy.recovery_active
+  assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_pursuit_tail_ends_when_the_lead_stops_pulling_away():
+  # `lead.acceleration <= 0.0` clears the tail outright rather than letting it run down.
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+
+  coasting = LeadObservation(present=True, distance=32.0, speed=8.0, acceleration=0.0, model_prob=1.0)
+  policy = _run(supervisor, coasting, v_ego=10.0, a_mpc=-0.2, seconds=1.0)
+  assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
+
+
+def test_easing_behind_a_lead_that_never_pulled_away_returns_to_stock():
+  # The tail must not arm on braking alone. Same braking phase, lead acceleration 0.0.
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  flat = LeadObservation(present=True, distance=30.0, speed=5.0, acceleration=0.0, model_prob=1.0)
+  assert _run(supervisor, flat, v_ego=10.0, a_mpc=-1.0, seconds=1.0).recovery_active
+  policy = _run(supervisor, flat, v_ego=10.0, a_mpc=-0.2, seconds=1.0)
+  assert policy.jerk_scale == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_pursuit_tail_never_touches_following_time():
+  # The safety-relevant property: the tail changes the jerk cost only. t_follow is the gap the
+  # driver feels, and a tail that padded it would silently change following distance.
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+
+  eased = LeadObservation(present=True, distance=32.0, speed=8.0, acceleration=2.0, model_prob=1.0)
+  policy = _run(supervisor, eased, v_ego=10.0, a_mpc=-0.2, seconds=1.0, t_follow_base=1.45)
+  assert policy.jerk_scale == pytest.approx(JERK_SCALE_MIN, abs=1e-6), "precondition: tail is holding"
+  assert policy.t_follow == pytest.approx(1.45, abs=1e-9)
+  assert supervisor.t_follow_pad == pytest.approx(0.0, abs=1e-9)
+
+
+def test_lead_loss_clears_the_pursuit_tail():
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+  assert supervisor._pursuit_s > 0.0
+
+  supervisor.update(LeadObservation(), v_ego=10.0, a_mpc=0.0, t_follow_base=1.45)
+  assert supervisor._pursuit_s == 0.0
+
+
+def test_reset_clears_the_pursuit_tail():
+  supervisor = BLoTv3Supervisor(dt=0.05)
+  _pulling_away_brake_phase(supervisor)
+  assert supervisor._pursuit_s > 0.0
+
+  supervisor.reset()
+  assert supervisor._pursuit_s == 0.0
+
+
+def test_pursuit_tail_state_exists_before_the_first_update():
+  # This __init__ does not call reset(); upstream's does. Without the explicit initialiser the
+  # first frame that reaches the decay branch raises AttributeError.
+  assert BLoTv3Supervisor(dt=0.05)._pursuit_s == 0.0

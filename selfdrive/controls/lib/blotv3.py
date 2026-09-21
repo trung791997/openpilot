@@ -44,6 +44,13 @@ LAUNCH_SHORTFALL_ON = 0.6
 LAUNCH_SHORTFALL_OFF = 0.2
 LAUNCH_DEBOUNCE = 0.4
 RATCHET_LEAD_BRAKE = 0.2
+# After excess braking eases behind a lead that is pulling away, the low jerk cost stays this
+# long. The recovery trigger disarms at the plan's zero crossing -- exactly where the MPC has to
+# swing to acceleration as fast as it braked -- so without a tail the pickup is made with the
+# stock stiff cost. Upstream evidence (SpysyWeeb/Spysypilot cdf8e54c9, necessity_supervisor.py):
+# route 0x3b t=392, a truck that drove off, +0.26 m/s2 early in the pickup and 0.15 s over the
+# ramp. That is upstream's replay measurement on upstream's tree, NOT ours -- see STATUS item 41.
+PURSUIT_TAIL_S = 3.0
 
 # MPC policy bounds and continuity.
 JERK_SCALE_MIN = 0.3
@@ -122,11 +129,16 @@ class BLoTv3Supervisor:
     # True while the supervisor is actually softening for a lead. Latches the low-speed
     # hold below; see update().
     self._responsive = False
+    # Seconds of pursuit tail left. Initialised here as well as in reset() because this
+    # __init__ does not call reset() -- upstream's does, so upstream carries it only in
+    # reset(). Without this the first update() frame reads an undefined attribute.
+    self._pursuit_s = 0.0
 
   def reset(self) -> None:
     self.jerk_scale = 1.0
     self.t_follow_pad = 0.0
     self._responsive = False
+    self._pursuit_s = 0.0
     for trigger in self._triggers:
       trigger.reset()
 
@@ -189,7 +201,17 @@ class BLoTv3Supervisor:
           ),
         )
 
-        if recovery_active or model_active or launch_active:
+        # The pursuit tail: excess braking behind a lead that is already pulling away keeps the
+        # low jerk cost for a bounded time after the braking eases, so the swing to acceleration
+        # is not made with the stiff cost. It touches jerk_scale ONLY -- never t_follow.
+        if recovery_active and lead.acceleration > LAUNCH_ALEAD_ON:
+          self._pursuit_s = PURSUIT_TAIL_S
+        elif lead.acceleration <= 0.0:
+          self._pursuit_s = 0.0
+        else:
+          self._pursuit_s = max(self._pursuit_s - self.dt, 0.0)
+
+        if recovery_active or model_active or launch_active or self._pursuit_s > 0.0:
           scale_target = JERK_SCALE_MIN
 
         # Do not stiffen a previously responsive solution in the middle of a
@@ -231,13 +253,16 @@ class BLoTv3Supervisor:
         # also drop the low-speed hold -- otherwise the hold would carry a softened
         # jerk cost into the one situation that wants the stock cost.
         self._responsive = False
+        self._pursuit_s = 0.0
         for trigger in self._triggers:
           trigger.reset()
     else:
       # A crawl (v_ego <= MIN_SPEED) with the lead still present keeps the latch; only
-      # losing the lead clears it.
+      # losing the lead clears it. The pursuit tail is NOT held through the crawl -- a
+      # pull-away that ends in a crawl is not a pursuit.
       if not lead.present:
         self._responsive = False
+      self._pursuit_s = 0.0
       for trigger in self._triggers:
         trigger.reset()
 
