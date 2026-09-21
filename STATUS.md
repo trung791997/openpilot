@@ -2738,3 +2738,70 @@ timestamp of the padding as it happens** -- the complaint may be about a window 
 not capture at all, and 4.7 s buried in 1102 s cannot be matched to a memory of a drive.
 
 Replay/offline evidence only. Nothing here is road-validated.
+
+## 40. James's `3a257065d` reconciled against our `longitudinal_planner.py` — DO NOT MERGE IT
+
+The long-carried open item. James's commit `3a257065d` ("long: feed the BLoT supervisor the MPC
+target, not the arbitrated output") was never merged here because we already carry the same fix
+twice: `552798ab0` and `084a9d56e`, de-duplicated by `95ce224f2`. This is the deliberate diff that
+was owed, done as a diff and not a merge.
+
+### The fix is carried in full, exactly once
+
+Every line James's commit adds, normalised for the BLoTv2 -> BLoTv3 rename, appears **exactly once**
+in our tree; both lines it removes appear **zero** times:
+
+| element | ours |
+|---|---|
+| `JERK_SCALE_MIN` added to the supervisor import | `longitudinal_planner.py:23` |
+| `self.last_mpc_a_target = 0.0` in `__init__` | `:635` |
+| `self.last_mpc_a_target = float(self.a_desired)` on reset, after the aEgo clip | `:2150` |
+| supervisor fed `float(self.last_mpc_a_target)` instead of `output_a_target` | `:2246` |
+| `blotv3_jerk_scale` clipped to `[JERK_SCALE_MIN, 1.0]` at `set_weights` | `:2433` |
+| `output_a_target_mpc = None` before the model-path branch | `:2555` |
+| write-back after arbitration, before the caps | `:2603` |
+
+`output_a_target_mpc` is assigned on the tinygrad path at `:2561` and stays `None` on the classic and
+default paths, so the write-back's `is not None` fallback is what carries those two. The write-back
+sits after the experimental speed handoff (`:2591`) and before `comfort_output_accel_min` (`:2605`),
+which is the point the fix requires: the MPC solution is captured before the vision caps, the curve
+limiter, the force-decel floor and the stop-go target can touch it. `blotv3.py` exports
+`JERK_SCALE_MIN = 0.3`, and `a_mpc` is the same third positional parameter of
+`BLoTv3Supervisor.update()`.
+
+### The entire remaining divergence in this file is the rename plus one blank line
+
+`git diff 3a257065d HEAD -- selfdrive/controls/lib/longitudinal_planner.py` is **27 insertions,
+26 deletions**, and every one of them is either a `blotv2`/`BLoTv2`/`BlotV2` -> v3 identifier,
+comment or param-key rename, or a single added blank line at `:158`. **There is nothing in James's
+version of this file that we lack**, and nothing of ours that his fix would improve. A merge or
+cherry-pick would apply the fix a third time; `git apply -3` reports conflicts on it. **Do not merge
+`3a257065d`. The item is closed.**
+
+### What the reconciliation did turn up: the rename silently dropped the toggle for one drive
+
+The rename changed the Params key from `BlotV2` to `BlotV3`. `common/params_keys.h:373` registers
+`{"BlotV3", {PERSISTENT, BOOL, "0", ...}}` — default **off** — and nothing migrates the old key. No
+`BlotV2`/`blotv2`/`BLoTv2` reference survives anywhere in the tree, so the rename itself is clean,
+but the stored value did not carry. Read from `initData` on all 16 cached routes:
+
+```
+231 232 236 237 239 23a 23b 23e    BlotV2=1   BlotV3 absent   (pre-rename builds)
+23f                                BlotV2 absent   BlotV3=0    <-- BLoT ran DISABLED
+241 245 246 248 249 24b 24d        BlotV2 absent   BlotV3=1
+```
+
+**23f is a drive with the supervisor off**, between the rename and the toggle being re-set. This is
+the same failure mode as D-053 (believed on, never stored) and it argues for checking `initData`
+before crediting any toggle, which the project memory already says.
+
+**Tempting but not supported:** 23f is also the highest row in the 39.4 padding table (1.14% of
+engaged time) and the one route where BLoT was off. But 236 sits at 1.01% with `BlotV2=1`, so the
+supervisor being off does not separate the populations. n=1 either way. **Do not read 23f's 39.4 row
+as a BLoT effect.**
+
+### Verification
+
+`selfdrive/controls/tests/test_longitudinal_planner.py` + `selfdrive/controls/lib/tests/test_blotv3.py`:
+**519 passed** (`-W ignore::DeprecationWarning`, required or the planner file fails collection under
+NumPy 2.5). Static and unit-test evidence only. No replay and no road validation of the BLoT path.
