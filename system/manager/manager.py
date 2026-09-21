@@ -65,6 +65,7 @@ STARPILOT_TRAFFIC_SMOOTH_MIGRATION_FLAG = Path("/data") / "starpilot_traffic_smo
 STARPILOT_TRAFFIC_FOLLOW_MIGRATION_FLAG = Path("/data") / "starpilot_traffic_follow_v1"
 STARPILOT_PARAM_RENAME_MIGRATION_FLAG = Path("/data") / "starpilot_param_rename_v1"
 STARPILOT_PARAM_CANONICALIZATION_MIGRATION_FLAG = Path("/data") / "starpilot_param_canonicalization_v1"
+STARPILOT_BOOL_RENAME_MIGRATION_FLAG = Path("/data") / "starpilot_bool_rename_v1"
 STARPILOT_PC_ROOT_MIGRATION_FLAG = Path("/data") / "starpilot_pc_root_v1"
 STARPILOT_PARAMS_CACHE_MIGRATION_FLAG = Path("/data") / "starpilot_params_cache_v1"
 STARPILOT_DEFAULT_MODEL_MIGRATION_FLAG = Path("/data") / "starpilot_default_model_rdf_v4"
@@ -434,6 +435,64 @@ def migrate_starpilot_param_renames(params: Params, params_cache: Params) -> Non
     STARPILOT_PARAM_RENAME_MIGRATION_FLAG.write_text(f"{datetime.datetime.now(datetime.UTC).isoformat()}\n")
   except Exception:
     cloudlog.exception(f"Failed to write migration flag: {STARPILOT_PARAM_RENAME_MIGRATION_FLAG}")
+
+
+# Renames of PERSISTENT BOOL toggles whose new key defaults to OFF.
+#
+# A rename with no migration silently reverts the toggle. The old key is no longer in the schema,
+# so nothing reads it; the new key reads its default; and the driver believes a feature is on that
+# never runs. This is the D-053 failure mode -- believed on, never stored -- and it cost a drive:
+# route 0000023f was recorded with BLoTv3 disabled after BlotV2 became BlotV3 (STATUS item 41).
+#
+# READ THIS BEFORE RENAMING A CONTROL TOGGLE. There is exactly ONE boot in which the old value is
+# still recoverable. manager_init calls clear_all() a few lines after this migration, and clear_all
+# DELETES keys the schema does not know (see the comment above migrate_starpilot_param_renames).
+# So the entry has to land in the same release as the rename. Added later it is a no-op, because
+# the old key is already gone -- which is why this table cannot repair 0000023f retroactively.
+LEGACY_STARPILOT_BOOL_RENAMES = {
+  "BlotV2": "BlotV3",
+}
+
+
+def migrate_starpilot_bool_param_renames(params: Params, params_cache: Params) -> None:
+  """Carry a renamed PERSISTENT BOOL toggle's stored value onto its new key, once.
+
+  Separately flagged from migrate_starpilot_param_renames on purpose: that migration's flag is
+  already written on every device that went through the FrogPilot->StarPilot rename, so an entry
+  added to LEGACY_STARPILOT_PARAM_RENAMES would never run again.
+
+  An explicit value on the new key always wins. For a toggle that gates longitudinal control,
+  silently turning something ON is the worse error, so anything already stored is left alone.
+  """
+  if STARPILOT_BOOL_RENAME_MIGRATION_FLAG.exists():
+    return
+
+  migrated: list[str] = []
+
+  for old_key, new_key in LEGACY_STARPILOT_BOOL_RENAMES.items():
+    if _has_persisted_param_file(params, new_key) or _has_persisted_param_file(params_cache, new_key):
+      continue
+
+    raw = _read_raw_param_bytes(params, old_key) or _read_raw_param_bytes(params_cache, old_key)
+    if not raw:
+      continue
+
+    value = raw.decode("utf-8", errors="ignore").strip().lower() in ("1", "true", "yes", "on")
+    try:
+      params.put_bool(new_key, value)
+      params_cache.put_bool(new_key, value)
+      migrated.append(f"{old_key}->{new_key}={int(value)}")
+    except Exception:
+      cloudlog.exception(f"Failed to migrate renamed bool param {old_key} to {new_key}")
+
+  if migrated:
+    cloudlog.warning(f"Applied renamed-bool param migration for {migrated}")
+
+  try:
+    STARPILOT_BOOL_RENAME_MIGRATION_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    STARPILOT_BOOL_RENAME_MIGRATION_FLAG.write_text(f"{datetime.datetime.now(datetime.UTC).isoformat()}\n")
+  except Exception:
+    cloudlog.exception(f"Failed to write migration flag: {STARPILOT_BOOL_RENAME_MIGRATION_FLAG}")
 
 
 def _merge_tree_without_overwrite(source: Path, destination: Path) -> int:
@@ -1133,6 +1192,11 @@ def manager_init() -> None:
   # deleted by clear_all() if we do not migrate them first.
   migrate_starpilot_param_renames(params, params_cache)
   last_timing = _log_boot_timing("manager_init", "param_renames", manager_init_start, last_timing)
+
+  # Must stay ahead of the clear_all() calls below: they delete keys the schema does not know,
+  # which is how a renamed toggle's old value is lost forever.
+  migrate_starpilot_bool_param_renames(params, params_cache)
+  last_timing = _log_boot_timing("manager_init", "bool_param_renames", manager_init_start, last_timing)
 
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
