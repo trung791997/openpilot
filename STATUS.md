@@ -2476,6 +2476,8 @@ was being built.
 
 ## 38. The near in-lane target-dropout census: 5 events on 4 routes, and the evidence points at geometry, not a failing sensor — 2026-09-21
 
+> Extended to 17 routes by **item 39**, which adds 248 (full), 249, 24b and 24d. The conclusion is unchanged.
+
 Closes the "stationary-target dropout census" left open in items 31 and 37. Replay evidence only,
 decoded at the CAN/wire level (pre-parser). Nothing here was driven.
 
@@ -2566,3 +2568,72 @@ Recorded because each one passed quietly and the census looked clean while wrong
   reads the same value because each segment's first `logMonoTime` is `initData` (all 42 entries of
   23e read offset 0.0). The global `T0 = min(seg_t0)` is correct; segment index comes from
   `route_time // 60`.
+
+## 39. Four more routes censused (248 full, 249, 24b, 24d): the geometry finding holds, and a separate range-rate latency shows up on 24d — 2026-09-21
+
+Extends item 38 from 13 routes to **17 routes / 343 segments**. Routes added, all fetched complete
+into the `oprad-routes` volume and rescanned with `/routes/an2/scan.py`:
+
+| route | segs | in-lane gaps | >=1.0s | dangerous |
+|---|---|---|---|---|
+| `00000248--4f275f0bb6` | 23 (was 8, non-contiguous) | 10 | 5 | **1** |
+| `00000249--d481c5de77` | 6 | 19 | 9 | 0 (1 demoted, not engaged at loss) |
+| `0000024b--02cabe206c` | 18 | 83 | 19 | **0** — all 19 classified `exited` |
+| `0000024d--f80e13b850` | 32 | 57 | 33 | **1** |
+
+**248's row is confirmed, not corrected.** Item 38 scored 248 on 8 of 23 segments. The full route
+returns the *same single event* at 10:33.39 (tid 2, d=39.2, y=+0.5, exFade 78/126, camera held the
+lead at mlprob 1.00). The partial-route row was right by luck, but it was right.
+
+**The one new event, 24d 18:47.38**, fits the item 38 pattern and does not challenge it:
+`tid=21 d=37.4 y=-2.0 ex=126 held=2.5s drate=+6.1 exFade=126/126 blank=0.0% mlprobMin=0.00`.
+`y = -2.0` is exactly the edge of the +/-2.0 m box, and `drate = +6.1` means the target was
+**receding at 6 m/s** while ego accelerated 14.5 -> 21.9 m/s. A receding target drifting off the
+lane edge is a vehicle being left behind, not a sensor failure. Existence never faded (126/126).
+
+**Fleet total: 6 events on 5 routes out of 17 routes. Five of the six died at |y| >= 1.4 m against
+a 2.0 m box.** The discriminating observation named in item 38 -- a fade-then-die with the target
+**centred** -- still does not occur anywhere in the fleet. Item 38's conclusion stands: no deletion
+gate is justified on this evidence, and D-041 forbids one on evidence this weak.
+
+### 39.1 A separate finding on 24d: the lead range rate lags the true range slope by ~1 s
+
+This is NOT a dropout and is NOT part of the census. It came from investigating the reported
+"strange early braking / it insists on keeping a certain distance with lead" on 24d.
+
+24d has **23 braking episodes** with `longActive` and `aTarget < -1.0`; **ten of them pin at
+aTarget ~ -3.5**, which is a rail, not a computed demand. Tracing the 5:18 episode against the
+route CSV:
+
+| route-time | d1 (m) | measured range slope | `leadOne.vRel` | `liveTracks` vRel (U11) |
+|---|---|---|---|---|
+| 5:17.14 | 54.2 | **-4.0** | +0.09 | +0.09 |
+| 5:17.35 | 53.5 | **-6.1** | +0.02 | +0.02 |
+| 5:17.55 | 52.5 | -6.4 | -3.42 | -0.20 |
+| 5:18.15 | 49.0 | -6.6 | -5.44 | -1.36 |
+| 5:18.35 | 47.8 | -5.7 | **-5.77** | -2.09 |
+| 5:19.14 | 43.7 | -5.3 | -3.48 | -3.48 |
+
+Two things, in order of confidence:
+
+1. **Both estimators read ~0.0 m/s while the range was already closing at 4-6 m/s**, for roughly
+   one second (5:17.1 -> 5:17.5). The radar did not report the lead's deceleration until the gap
+   had already closed ~8 m. When `vRel` finally catches up, the planner has to make up the deficit
+   at once -- which is why the demand goes straight to the -3.5 rail and holds it 1.5 s. The brake
+   is **late in detection and therefore hard**, not early. From the seat it reads as "early"
+   because there is still 47 m of gap.
+2. **`leadOne.vRel` converges much faster than the raw U11 track vRel** (error ~1.1-1.5 m/s vs
+   ~4.7-6.2 m/s through the transient). An earlier reading of this table had it backwards -- that
+   our estimate was overshooting and driving the brake. It is not: checked against the measured
+   range slope, ours is the closer of the two and the native U11 lags ~1.5 s. Recorded because the
+   wrong version is the intuitive one.
+
+**Caveat on the instrument:** the "measured range slope" column is a 0.5 s *forward* difference, so
+it leads the instantaneous truth by ~0.25 s by construction. That accounts for part of the gap in
+row 1-2, not 4-6 m/s of it. A centred difference should be run before this is quoted as a number.
+
+**Not yet explained, and the actual subject of the complaint:** after the brake releases at 5:20 the
+car sits at 39 m from the lead doing 6.3 m/s (a ~6 s headway) and crawls in over 16 s. At 5:25.24
+`tFollow`, `desiredFollowDistance` and `minAcceleration` all go to **0.00** together and stay there
+-- real zeros, not the empty-string "no message" path. That is a longitudinalPlanSP question, not a
+`radar_interface.py` question, and it is the next thing to look at for the padding complaint.
