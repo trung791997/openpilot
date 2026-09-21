@@ -2141,4 +2141,84 @@ anything: replay a candidate bound over all 13 routes and count leads *lost*, no
 
 **Still open:** the longitudinal over-reaction from item 32 (−3 m/s² for a 2.0–2.3 m/s closure at
 42–45 m) is unexplained and is a separate defect from lead selection; the stationary-target dropout
-census; item 22.6 (236 track 21).
+census; item 22.6 (236 track 21). *(Item 34 resolves the first of those: it is not a defect.)*
+
+## 34. There is no longitudinal over-reaction: the −3.50 floor is correct arithmetic on a railed off-path lead — 2026-09-21
+
+Item 33 left two things open and called them separate: an unexplained `vRel` constant, and an
+unexplained longitudinal over-reaction. They are the same thing, and neither is a longitudinal
+defect. **The MPC's response is arithmetically correct for the input it was handed. The input is
+wrong twice over, and both errors push the same way.**
+
+**The `−13.50 m/s` constant is the Bosch-A saturation rail, already documented in this repo.**
+`opendbc_repo/opendbc/car/honda/radar_interface.py:133` states it outright: the U11 domain endpoints
+are saturation rails, "at raw 0 or 1728 the true |vRel| is >= 13.5 m/s", and line 145 names the
+consequence — "a stopped car reads as vLead = vEgo − 13.5". Four distinct track ids reading exactly
+the same value is the rail, not a coincidence and not a clamp bug. Item 33's `vRel` observation is
+resolved; nothing new needs measuring. Cross-checking `rawslots.py` is no longer required.
+
+**Why that is expensive: the rail makes any off-path radar return look like a near-stopped car.**
+`long_mpc.py` builds the obstacle as `dRel + get_stopped_equivalence_factor(vLead)` =
+`dRel + vLead²/(2·2.5)`, and compares it against
+`get_safe_obstacle_distance(vEgo, t_follow)` = `vEgo²/5 + 1.45·vEgo + 6`. At the moment the rail
+holds, `vLead` reads `vEgo − 13.5` whatever the object is actually doing, so its stopped-equivalence
+contribution nearly vanishes. Worked from the 245 CSV rows, with `ACCEL_MIN = −3.5`:
+
+| frame (route time) | tid | vEgo | dRel | vLead published | obstacle | safe distance | deficit |
+|---|---|---|---|---|---|---|---|
+| 353.6 s | 26 | 20.72 | 89.79 | 7.22 (rail) | 100.2 | 121.9 | **−21.7 m** |
+| 356.5 s | 35 | 19.55 | 77.92 | 6.05 (rail) | 85.2 | 110.8 | **−25.5 m** |
+| 357.4 s | 29 | 19.35 | 77.92 | 5.85 (rail) | 84.8 | 108.9 | **−24.2 m** |
+| 354.4 s | vision lead, same scene | 20.18 | 74.04 | 16.68 | 129.7 | 116.7 | **+13.0 m** |
+
+The last row is the finding. At the same instant, on the same road, the vision lead carries **+13 m
+of margin** — the planner wants no brake at all — while the railed radar track 4 m off the predicted
+path reads **−25 m** and the solver goes to the floor. −3.50 m/s² is not an over-reaction to that
+input; it is the only answer to "a near-stopped car 78 m ahead at 19.5 m/s". A deficit of −20 to −26 m
+is not marginal, which is why these events hit `ACCEL_MIN` exactly rather than something in between.
+
+**The reach of the mechanism, from the same two formulas.** A railed radar lead triggers braking
+below `safe(vEgo) − (vEgo−13.5)²/5`:
+
+| vEgo (m/s) | 13.5 | 16.0 | 19.5 | 22.0 | 25.0 | 30.0 |
+|---|---|---|---|---|---|---|
+| brake-triggering range | 62 m | 79 m | 103 m | 120 m | 141 m | 175 m |
+
+So at highway speed *any* accepted radar lead inside ~120–175 m with U11 on its rail commands heavy
+braking. This is what makes lateral mis-binding so costly: the rail guarantees the bogus lead looks
+nearly stopped, and the range band where that matters is exactly the 30–115 m band item 33 measured.
+
+**The rail correction cannot help here, by design.** `radard.py`'s range-derived `vRel` assist
+(D-053, default OFF) is **one-sided** — it may only make the published closing speed *more* closing,
+never less — and `RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M = 1.5` excludes adjacent-lane tracks outright.
+Both properties are correct for what it was built for (D-041, recovering closing the rail hides) and
+both mean it is irrelevant to a false brake. Nothing in the longitudinal stack is mistuned here.
+
+**What the track geometry says about these objects.** Per-track range slope over the contiguous run,
+against ego speed (radar frames only, duplicate ranges dropped):
+
+- tid 26, 352.8–353.9 s: 108.3 → 79.3 m, slope **−26.3** vs vEgo 20.8 → ratio **1.26**. Closing
+  *faster* than ego travels, so not a stationary object: either an oncoming vehicle (`dyPath` +3.9…
+  +5.2, i.e. one to one-and-a-half lanes left) or a track whose range is drifting across objects.
+- tid 35, 355.7–356.9 s: 93.0 → 72.9 m, slope **−16.8** vs 19.6 → ratio **0.86**. Apparent object
+  speed +2.7 m/s: near-stationary, `dyPath` +2.9…+3.8 — adjacent lane or roadside.
+- tid 29, 356.9–358.9 s: 86.3 → 57.8 m, slope **−14.2** vs 19.4 → ratio **0.73**. Apparent speed
+  +5.1 m/s, and `dyPath` ≈ **0** — this one is *in* the path. Its brake is defensible, and its true
+  closing (−14.2) slightly exceeds the rail, so here the rail under-reads rather than invents.
+
+tid 29 matters as a negative control: not every railed track in the window is a lane lock, and the
+one that is on-path is one the car should brake for. Only tids 26/32/35 are the complaint.
+
+**Consequence for the roadmap.** Item 33's "still open: the longitudinal over-reaction" is
+**withdrawn** — there is no such defect to chase, on either of its two cases. Item 32's 241 case
+(−2.3…−3.2 m/s² for a 2.0–2.3 m/s closure at 42–45 m) computes to a deficit of −8.3 m at vEgo 20 and
+is likewise the tune answering honestly: the comfort-brake asymmetry alone demands ~50 m behind a
+same-speed lead at 20 m/s, so 43 m is genuinely short by the MPC's own model. Disagreeing with that
+is a `COMFORT_BRAKE`/`T_FOLLOW` argument, not a bug report.
+
+All of the remaining leverage on the user's reported symptom is therefore **in lead selection**, which
+is where item 33 already pointed. Static/replay evidence only; nothing here was driven.
+
+**Still open:** replay a candidate `dyPath` bound over all 13 routes and score leads *lost*, not
+leads rejected (D-041) — 241's 6:49 real stopper at `dyPath` −0.50…+0.62 must survive, and so must
+245 tid 29; the stationary-target dropout census; item 22.6 (236 track 21).
