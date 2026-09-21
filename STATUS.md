@@ -2069,3 +2069,76 @@ against the outcome, over all 10 cached routes, before any bound is proposed.
 **Still open from items 31 and 32:** the stationary-target dropout census (does a 9:36-style
 all-slots-invalid gap occur on the other 9 routes?), the `yRel` census above, and item 22.6
 (236 track 21).
+
+## 33. The 13-route lateral census: adjacent-lane locks are real, rare, and they brake — 2026-09-21
+
+**Tool:** `an2/ycen.py` writes one row per `radarState` frame; `an2/ysum.py` buckets it. The measured
+quantity is **`dyPath` = the lead's lateral offset against `modelV2.position` interpolated at the
+lead's own range**, not against the car's centreline:
+
+    y1 = -leadOne.yRel            # world frame, left-positive
+    dyPath = y1 - pathY(d1)       # blank, never extrapolated, beyond position.x[-1]
+
+`dyPath` is ~0 for an in-lane lead at *any* curvature and ~±3.7 for a genuine next-lane lock. Raw
+`|yRel|` cannot separate those on a bend, which is why item 32 declined to bound it.
+
+> **Retraction.** An earlier hand analysis in this session claimed `dyPath` was ~0 for all seven of
+> 241's known episodes, and concluded a lateral gate was therefore not the fix. **That was wrong**,
+> and wrong for the same reason item 32 was: the hand dump was read at the CSV's own time base, so it
+> sampled windows several seconds off the episodes. Re-read at the correct base, 241 at 4:55.9–5:02.7
+> shows `dyPath` growing smoothly 0 → **−4.2 m** while vision's own lead stays on path
+> (`dyPath_ml` +0.08). The census below replaces that claim.
+
+**Coverage:** 13 routes, 231/232/236/237/239/23a/23b/23e/23f/241/245/246/248. 248 is 8 of 12
+segments — **3, 5, 7 and 8 never uploaded**, so its 2170 accepted frames are a partial sample.
+
+**Distribution — lead selection is overwhelmingly in-path, as it should be:** `|dyPath| < 1 m` covers
+**88.5–99.0%** of accepted-lead frames on every route. The measure is well behaved.
+
+**Braking rises with off-path offset.** Share of accepted-lead frames whose next 3 s contains an
+`aTarget < -1.5 m/s²`, by `|dyPath|` band:
+
+| route | <1 | 1–2.5 | 2.5–5 | >5 |
+|---|---|---|---|---|
+| 232 | 4.9% | 21.5% | **33.8%** | 25.0% |
+| 237 | 7.6% | 26.3% | **29.0%** | 23.5% |
+| 245 | 7.9% | 33.7% | **27.7%** | 70.0% |
+| 239 | 5.1% | 20.0% | 25.3% | 2.8% |
+| 236 | 6.5% | 14.1% | 13.2% | 58.3% |
+| 23f | 9.0% | 18.9% | 5.0% | 45.5% |
+| 241 | 12.4% | 11.8% | 8.1% | 32.6% |
+| 23b | 9.1% | 25.6% | 1.3% | 0.0% |
+
+Nine of thirteen routes show a monotone rise from the `<1` band into `1–2.5`; a 3–5× jump is typical.
+241 and 23b do not, so this is an association across the fleet, not a law. **`>5 m` is contaminated**
+by junction geometry (ego turning across its own plan, `|curv|` 0.02–0.14, ranges under 20 m) and is
+not the interesting band. The band that matters is **2.5–5 m at 30–115 m on a gentle bend.**
+
+**The sharpest case, 245 at 5:52.8–5:58.5** (`ycen_00000245--1356bb0355.csv`), v≈20 m/s, gentle right
+bend `curv ≈ -0.0027` (R≈370 m). Radar tracks 26, 32 and 35 are bound as `leadOne` at d = 75–108 m
+with `dyPath` **+2.9 to +5.2** — left of the ego's own plan — while vision's lead sits on the plan at
+d≈75 m (`dyPath_ml` −0.5…−1.3, `mlProb` 0.35–0.77). `aTarget` reaches the **−3.50 m/s² floor** with
+`src = lead0`/`lead1` twice, at 5:53.5 and 5:56.5. 245's `1–2.5` band brakes in 33.7% of frames
+against a 7.9% baseline.
+
+Comparable radar-backed, vision-on-path episodes: 237 at 6837–6843 s (d 82–95 m, `dyPath` +2.5…+3.7,
+`aTarget` −2.00) and 6888.5 s (d 74 m, −3.50); 236 at 3461–3466 s (d 86–112 m, −1.58); 23e at
+23110.5 s and 23376.1 s (both −3.50); 241 at 4:55.9–5:02.7 (d 45–49 m).
+
+**Observation to verify, not yet a finding:** across those 245 frames `leadOne.vRel` reads exactly
+**−13.50 m/s** on four different track ids for dozens of consecutive frames. On track 29 the range
+slope confirms it (86.3 → 65.5 m in 1.4 s ≈ −14.8 m/s), so it is not simply a clamp — but an
+identical constant across distinct tracks needs explaining before anyone reasons from it. Check it
+against `rawslots.py` before using `vRel` in any gate.
+
+**What this does and does not license.** It is replay evidence that a lateral disagreement measure
+would fire on the frames the driver complains about, and item 32's counter-example is answered:
+241's 6:49 real missed stopper reads `dyPath` −0.50…+0.62, so a `dyPath` bound keeps it where a raw
+`|yRel|` bound would have dropped it — safe in the D-041 direction. It is **not** a validated gate.
+Nothing here has been replayed through `radard` with a candidate threshold, and the 2.5–5 m band
+still holds 0.6–3.4% of accepted frames on routes where the association is weak. Before proposing
+anything: replay a candidate bound over all 13 routes and count leads *lost*, not leads rejected.
+
+**Still open:** the longitudinal over-reaction from item 32 (−3 m/s² for a 2.0–2.3 m/s closure at
+42–45 m) is unexplained and is a separate defect from lead selection; the stationary-target dropout
+census; item 22.6 (236 track 21).
