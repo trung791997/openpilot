@@ -2463,5 +2463,8 @@ limited road evidence consistent with the cap being inert, not with the cap havi
 
 Replay/static evidence only; nothing in this item was driven.
 
-**Still open:** a bounded (non-deleting) replacement for the `dyPath` gate on both slots; a window
-that actually exercises `084a9d56`; the stationary-target dropout census; item 22.6 (236 track 21).
+**Still open:** a bounded (non-deleting) replacement for the `dyPath` gate on both slots — now
+designed as **D-061 (proposed, not implemented)**, which bounds the obstacle in the planner instead
+of gating selection, and whose first prerequisite is that **`dyPath` does not exist online at all**;
+a window that actually exercises `084a9d56`; the stationary-target dropout census; item 22.6 (236
+track 21).

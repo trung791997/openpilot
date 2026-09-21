@@ -1078,3 +1078,158 @@ there. See STATUS item 37 for why the `dyPath` deletion gate is not that replace
 turned a −1.55 brake into −3.50 by dropping a valid 36 m radar lead and falling through to a nearer,
 faster-closing vision lead. Per D-041, the replacement must publish a **bound**, not delete a point,
 and it must cover **both** published lead slots, because `LongitudinalMpc` takes `min()` over both.
+That replacement is designed as **D-061**, which is proposed and not implemented.
+
+## D-061 — PROPOSED: the dyPath replacement bounds the obstacle in the planner, and never touches selection
+**Proposed 2026-09-21 from replay through the real `LongitudinalPlanner` (STATUS item 37). NOT
+IMPLEMENTED — the prerequisite in "What does not exist yet" and the acceptance gates at the end both
+come before any tune is written.**
+
+### The failure this addresses
+
+D-060 removed `FarLeadBrakeLimit` and recorded that the false brake is a lead *selection* fault: a
+railed off-path radar track published as a lead. The obvious fix — reject the radar lead when
+`|dyPath| >= 2.5` while vision holds an on-path lead — was scored through the real planner and
+**made things worse where it mattered**. On 23e 1783–1792 s it turned a −1.55 m/s² brake into −3.50,
+2.32 m/s² worse, with time below −2.5 rising 2.35 → 2.90 s.
+
+The mechanism is recorded in item 37 and is the whole reason for this decision: the gate dropped
+radar tid 25 at `dRel` 36.0 / `vRel` −2.30, which cleared `prev_lead_track_ids[i]`, which handed the
+slot to a **vision** lead at `dRel` 33.4 / `vRel` −4.51 — nearer and closing twice as fast. It fired
+on **1 cycle** and produced **11** divergent cycles, because the handoff outlived the condition that
+caused it. This is D-041 measured rather than argued: deleting a radar point bought a harder brake.
+
+### The decision
+
+Keep the `dyPath` signal and throw away the gate. The replacement **bounds the obstacle in the
+planner** and leaves `radarState` untouched:
+
+> The lead is published exactly as measured, keeps its slot, and stays in `prev_lead_track_ids`.
+> Attenuation happens downstream, on the per-slot obstacle. **No selection change means no handoff,
+> and no handoff means the 23e mechanism cannot occur.**
+
+Four clauses, all load-bearing:
+
+1. **Ramp, not a step.** `offpath` is a scalar in [0,1]: zero below `|dyPath| = 2.5`, one at 3.5,
+   linear between. The 2.5 floor is unchanged and is **empirical, not round** — 245 tid 29 peaks at
+   2.22 and is a correct brake (item 35). Do not set it lower. The ramp also removes the cliff where
+   one cycle's classification dictates the next second of behaviour, which is what turned 1 gated
+   cycle into 11 on 23e. This is D-048's "blended, never switched" applied to path geometry.
+
+2. **Vision corroboration, unchanged from item 35.** Attenuate only where vision holds its own
+   on-path lead: `|dyPath_ml| < 1.5` and `mlProb >= 0.5`. Where vision disagrees, nothing happens.
+   This clause is why roughly half of all off-path radar leads — the ones with no fallback at all —
+   are left completely alone, and it is why the census scored *leads lost* rather than leads
+   rejected. It is not decoration.
+
+3. **Non-escalation clamp. This is the new clause and the one 23e demands.** Build `x_obstacles`
+   twice, unattenuated and attenuated, and require
+
+       min(x_obstacles_bounded[0]) >= min(x_obstacles_raw[0])
+
+   Attenuation may only move the binding obstacle *farther*. If softening a slot would let a nearer
+   column win — the other lead, cruise, or a vision lead already holding the other slot — the clamp
+   yields exactly zero effect for that cycle. On 23e the fall-through is nearer, so the clamp zeroes
+   it **by construction**: that episode becomes structurally untouched rather than luckily untouched,
+   and the property is assertable in a unit test instead of re-measured on every tune change.
+
+4. **A floor on the attenuation — the bound is itself bounded.** Without this, clause 3 still permits
+   softening all the way out to cruise, which is deletion wearing a different hat. The off-path lead
+   keeps authority down to `OFFPATH_ACCEL_FLOOR` (start at **−1.5 m/s²**) and loses only the span
+   between that and `ACCEL_MIN`. Express the floor as a distance through the MPC's own algebra
+   (`get_safe_obstacle_distance`, `get_stopped_equivalence_factor`) and apply it as a `max` against
+   the obstacle, so the solver stays in charge and the result is a bound rather than an offset.
+
+**What this buys, stated honestly.** Variant C (gate on both slots) cut time below −2.5 on 245
+234–243 s from 2.30 s to 1.00 s while still reaching −3.50. A bound should land in that
+neighbourhood. **It shortens the false brake; it does not prevent it**, and it must not be described
+as prevention. The residual — 245 tid 29 at `|dyPath|` 2.22 — sits below the floor by design.
+
+### Amendment to D-048, on new evidence
+
+D-048 clause 3 requires that "any genuinely urgent geometry — small range, short TTC — **bypasses the
+bound entirely**." **The TTC half of that is withdrawn for Bosch-A, and must not be written into this
+or any Bosch-A bound.** It is the D-060 trap exactly: on the U11 saturation rail `closing` is pinned
+at 13.5 m/s, so a railed off-path return at 80 m reads TTC ~6 s — "urgent" — and a TTC bypass would
+therefore disable the bound on precisely the railed off-path leads it exists for, the same way
+`FAR_LEAD_BRAKE_LIMIT_MIN_TTC = 10.0` disabled the cap on the far-lead brakes it was written for.
+**On this platform, a TTC threshold reads the rail and not the road.**
+
+Two replacements, and this decision takes both:
+
+- **Gate on range and lateral geometry, not TTC.** Neither channel is corrupted by the rail.
+- **Where `vRelRangeDerived` is finite, use it for closing** rather than the railed `vRel`.
+  `RangeDerivedVrel` is the surviving Bosch-A toggle after `1434176b` and the only channel that sees
+  past the rail (D-044, D-053). Where it is NaN, fall back to clause 3, which needs no closing
+  estimate at all.
+
+**Standing rule from this:** any TTC or closing-speed term added anywhere on this platform must state
+in its comment block which channel it reads and what it does when that channel is railed. Two
+features have now been lost to the unstated version of that question.
+
+The rest of D-048 stands and is not relitigated. The two decisions bound different axes at different
+layers: D-048 bounds a track's authority on **corroboration** inside `radard`, D-061 bounds a slot's
+obstacle on **path geometry** inside the planner. They compose; neither subsumes the other.
+
+### Where it lives, and why not in radard
+
+| Piece | Location |
+|---|---|
+| `dyPath` / `dyPath_ml` per slot | `longitudinal_planner.py`, near the existing `scene_v_ego` block |
+| `offpath` ramp, corroboration, floor → per-slot bias | new `get_offpath_lead_obstacle_bound()` in `longitudinal_vehicle_tunes.py`, shaped like `get_honda_crv_5g_stopped_lead_obstacle_bias` |
+| Combining with the existing tune biases | `longitudinal_planner.py`, the `stopped_lead_obstacle_bias` block |
+| Non-escalation clamp | `long_mpc.py`, immediately after the `lead_*_obstacle` construction |
+
+D-048 argued its layer belongs in `radard` because the corroborating signal is vision and the parser
+cannot see `modelV2`. That argument is satisfied by the planner too, and two things force this one
+higher: the clamp of clause 3 needs `cruise_obstacle` and **both** slots' obstacle columns, which
+exist only in `LongitudinalMpc.update`; and 23e is a direct demonstration that anything acting on
+selection inside `radard` can trigger a handoff whose cost exceeds the fault.
+
+Existing plumbing carries it: `LongitudinalMpc.update` already takes `lead_obstacle_bias=(0.0, 0.0)`
+per slot. **Note the sign** — the MPC computes `lead_i_obstacle -= bias`, so pushing an obstacle out
+requires a **negative** bias, and every existing caller passes positive values only. The clause 3
+clamp is what keeps a negative one honest.
+
+New telemetry is not optional: per-slot `dyPathBound` (metres applied) and `dyPathBoundActive`, so
+the `ympc` harness can score it and on-road logs show engagement without another replay.
+
+### What does not exist yet
+
+**`dyPath` is not computed anywhere online.** It exists only in the host-Python analysis scripts in
+the `oprad-routes` volume at `/routes/an2/`; every number in items 35–37 is an offline quantity read
+out of `ycen_*.csv`. Before any tune is written:
+
+- compute `dyPath` per slot in the planner from `sm['modelV2'].position` interpolated at the lead's
+  own `dRel`, and `dyPath_ml` from the matching `leadsV3` entry;
+- define the degenerate cases — `dRel` past the model horizon, short or invalid `position` — as
+  returning **`nan`, where `nan` means no attenuation**, so every failure falls toward braking;
+- **prove the online value reproduces the offline `ycen` value on stored frames.** Without this the
+  entire census is measuring a different quantity than the one that would ship.
+
+### Acceptance gates — do not merge before all of these
+
+Scored as variant `D` in the existing `$T/an2/ympc.py` matrix (`A` baseline, `B`/`C` the rejected
+gate on one/both slots).
+
+| Window | Required |
+|---|---|
+| 23e 1783–1792 s | **0 differing cycles.** Hard gate — anything else means the clause 3 clamp is wrong. |
+| 241, all 8 hard-brake episodes | 0 differing cycles |
+| `000001f9` 29:52 — D-041's own regression, two stopped cars, 88/88 frames railed | untouched; proves the bound cannot engage on a railed on-path stopped car |
+| 245 234–243 s | time below −2.5 m/s² at or below variant C's 1.00 s |
+| Fleet, all 113 hard-brake episodes | no episode whose baseline min `aTarget` < −2.5 with an on-path lead finishes softer than −1.5 |
+
+Plus a unit test asserting clause 3 directly against synthetic obstacle columns, so the
+non-escalation property belongs to the code and not to the routes that happen to be on hand.
+
+### Honest cost
+
+Three interacting scalar clauses, a new online geometric quantity, and a sign-sensitive edit to the
+MPC's obstacle columns, on the longitudinal path of a car that gets driven. That is materially more
+machinery than the gate it replaces. The reason to accept it is that the simpler thing was measured
+and it was worse.
+
+**Replay and static evidence only. Nothing in this decision has been driven, and clause 3's
+structural claim is an argument until a test asserts it.** Until then the repo carries this as a
+design, exactly as it carries D-048.
