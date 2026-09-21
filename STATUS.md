@@ -2292,3 +2292,100 @@ settle the magnitude. Static/replay evidence only; nothing here was driven.
 
 **Still open:** the closed-loop `radard` replay to get the trajectory effect rather than the frame
 counts; the stationary-target dropout census; item 22.6 (236 track 21).
+
+## 36. The closed-loop `radard` replay: the gate never deletes a lead, and the times in items 33–35 were wrong — 2026-09-21
+
+Item 35 scored the 2.5 m `dyPath` gate at **frame level** — which published `radarState.leadOne`
+frames a gate *would* reject, and whether vision offered an on-path replacement at that instant. It
+could not say what lead would actually be published instead, so two of its three gated hard-brake
+episodes came out only *partially* gated (8 of 12 frames, 11 of 33) and "the brake is delayed" was
+indistinguishable from "the brake is prevented". This item runs the selection.
+
+**Tool:** `/routes/an2/yrep.py` + `yrepsum.py`. Two `RadarD` instances are driven off the same rlog
+stream, cycle for cycle, from the logged `liveTracks` / `carState` / `modelV2` / `starpilotPlan`. A is
+untouched. B applies the frozen gate and then **re-runs `get_lead` with the offending radar track
+removed from the candidate set**, repeating while the winner keeps tripping the gate;
+`prev_lead_track_ids` is then set from B's *own* choice, so the Bosch-A preferred-track hysteresis
+follows the replacement on every later cycle instead of re-preferring the track it just rejected.
+Track Kalman states do not depend on selection, so they stay shared by construction.
+
+**Validity first.** Restricted to cycles where the log and the baseline replay both published a
+radar-backed lead, the baseline picks the **same `trackId` on 99.86–100.00% of cycles on all 13
+routes** (100.00% on six of them). Status agreement is 99.35–100.00%. The harness reproduces the
+drive; without that nothing below would mean anything.
+
+**Fleet result, 310,403 cycles.** The gate fires on **163** cycles. The published lead differs on
+**559** cycles — **0.180%** — across **49 divergence episodes**. The fire count is much smaller than
+the divergence count because the gate fires *once* to break a lock and the hysteresis then holds the
+replacement; frame-level scoring could not see that, and it is why item 35's partial-gating worry was
+the wrong worry.
+
+**The D-041 question is now answered by observation, not by argument.** At the start of the 49
+episodes the replacement lead is:
+
+| replacement | episodes |
+|---|---|
+| the **vision** lead | 48 |
+| another radar track | 1 |
+| **no lead at all** | **0** |
+
+The gate never once deleted a lead. It is a change of *which* object is followed, in every episode
+the fleet contains. That also locates the residual risk exactly: the gate's safety rests entirely on
+vision's own lead being right, because vision is what it always falls back to.
+
+**Three episodes contain a hard brake** (`aTarget < −2.5`), independently reproducing item 35's
+"3 of 113" by a completely different method:
+
+- **245 @236.6 s** — A follows tid 26 at **101.7 m, `vRel` −13.50** (the U11 saturation rail),
+  `dyPath` +4.17. B follows vision at **74.3 m, `vRel` −7.34**, `dyPath` −0.98.
+- **245 @239.3 s** — A follows tid 35 at **93.0 m, `vRel` −13.50**, `dyPath` +3.53. B follows vision
+  at **84.8 m, `vRel` −3.64**, `dyPath` −0.52.
+- **23e @1787.0 s** — A follows tid 25 at 36.0 m, `vRel` −2.30, `dyPath` +2.77. B follows vision at
+  **33.4 m, `vRel` −4.51** — *closer, and closing faster.* The gate would make this brake **harder,
+  not softer**. Item 35 called this outlier a single frame of 48 and said the brake proceeds
+  regardless; closed-loop it is 11 cycles, and the brake does not merely proceed, it strengthens.
+
+On the two 245 episodes B swaps a **railed** lead (`vRel` pinned at the rail, so `long_mpc` loses its
+stopped-equivalence term — item 34) for an unrailed one with a real closing rate. That is the
+mechanism by which the reported symptom would go away. **The magnitude is still not measured:** that
+needs the two lead streams pushed through the MPC, which is the next step and is now unblocked
+(`LongitudinalMpc` instantiates in the analysis image).
+
+### A correction that affects every time cited in items 33, 34 and 35
+
+**`ycen.py` writes raw `logMonoTime`, not route-relative ns.** The checkpoint invariant that said
+otherwise was wrong, and `ysum.py` / `ybound.py` divide that column by 1e9 with no `T0` subtraction,
+so **every time printed by items 33–35 is high by that route's `min(seg_t0)`**:
+
+| route | `T0` (s) | route | `T0` (s) | route | `T0` (s) |
+|---|---|---|---|---|---|
+| 231 | 77919.70 | 237 | 5901.74 | 23f | 10567.81 |
+| 232 | 17367.82 | 239 | 11865.87 | 241 | **38.63** |
+| 236 | 3119.15 | 23a | 15469.67 | 245 | **116.46** |
+| 23b | 20796.82 | 23e | 21323.47 | 246 | 1641.77 |
+| 248 | 31.76 | | | | |
+
+So item 35's "245 @353.5 s / @356.3 s" are route **236.6 s / 239.3 s**, its "23e @23109.7 s" is route
+**1787.0 s**, its "245 tid 29 @358.59 s" is route **242.1 s**, and item 33's "245 at 352.8–358.5 s" is
+route **236.3–242.0 s**. This replay, which subtracts `T0`, lands on exactly those corrected times —
+the two harnesses agree and only the labels were wrong. **No physics, count or conclusion in items
+33–35 changes**, because each was computed in one internally consistent base. This is the third time
+the time base has cost a correction.
+
+**One control was genuinely measured in the wrong place.** `ybound.py` pinned the driver-reported 241
+6:49 window at `t` 409.0–410.5, which on that route is route **370.4–371.9 s — about 6:10, 39 s
+early**. Re-examined at the correct route 400–420 s: `vEgo` 1.1–8.5 m/s in slow traffic, min `aTarget`
+−0.84, **max `|dyPath|` 0.86, and zero frames the gate could even consider**. The 241 control passes
+at the right window, and now passes *where the driver actually reported the event* — a stronger
+result than item 35 had. Item 35's claim that the 6:49 window is not itself a hard brake also
+survives, but it had been measured at the wrong window.
+
+Two further cautions from the corrected read: from route 411.7 s that window has `aTarget` exactly
+`0.0000`, and **56% of route 241's frames carry `longActive == 0`** — openpilot longitudinal is not
+engaged, so `aTarget` there is not evidence about what openpilot would have done. Any `aTarget`-based
+scoring on 241 must be read with that in mind.
+
+Replay/static evidence only; nothing here was driven.
+
+**Still open:** the MPC pass for the braking magnitude on the two 245 episodes; the stationary-target
+dropout census; item 22.6 (236 track 21).
