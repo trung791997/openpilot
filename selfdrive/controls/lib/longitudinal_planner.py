@@ -2705,6 +2705,7 @@ class LongitudinalPlanner:
     experimental_mlsim = bool(tinygrad_model and self.mlsim and self.mode != 'acc')
     action_t = self.longitudinal_actuator_delay + DT_MDL
     prev_output_a_target = float(self.output_a_target)
+    output_a_target_mpc = None
     model_launch_accel = None
     if self.model_launch_armed and not bool(sm['modelV2'].action.shouldStop):
       model_launch_accel = self.get_model_launch_accel(model_launch_v, model_launch_a, action_t, scene_v_ego)
