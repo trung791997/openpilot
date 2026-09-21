@@ -2571,7 +2571,9 @@ Recorded because each one passed quietly and the census looked clean while wrong
 
 ## 39. Four more routes censused (248 full, 249, 24b, 24d): the geometry finding holds, and a separate range-rate latency shows up on 24d — 2026-09-21
 
-Extends item 38 from 13 routes to **17 routes / 343 segments**. Routes added, all fetched complete
+Extends item 38 from 13 routes to **17 routes / 343 segments**.
+> **Corrected by 39.5:** that is 17 route-*entries* over **16 routes / 335 segments** — 248 is
+> counted twice, partial then full. The events and the conclusion are unaffected. Routes added, all fetched complete
 into the `oprad-routes` volume and rescanned with `/routes/an2/scan.py`:
 
 | route | segs | in-lane gaps | >=1.0s | dangerous |
@@ -2738,6 +2740,71 @@ timestamp of the padding as it happens** -- the complaint may be about a window 
 not capture at all, and 4.7 s buried in 1102 s cannot be matched to a memory of a drive.
 
 Replay/offline evidence only. Nothing here is road-validated.
+
+### 39.5 The census re-run as one uniform pass over all 16 routes: every event reproduces, and the route/segment count was double-counted
+
+Items 38 and 39 spliced **two different runs** — 13 routes, then 4 more — and 248 was scored twice
+(8 non-contiguous segments in item 38, the full 23 in item 39). That splice is the reason to re-run,
+not a doubt about the events. This is one consistent pass: the durable
+`tools/bosch_a_dropout_census.py` with `DUMPALL=1` and `min_gap 1.0` over every route that has a
+`scan_*.json`, run route-by-route from a single detached driver.
+
+**The six events reproduce exactly — same routes, same route-times, same track ids, same `y`,
+`exFade`, `drate`, `accel@loss` and `mlprobMin`.** So do all three demotions
+(23e 23:46.08, 236 32:04.95, 249 2:13.91 — each `accelAt0 = 0.00`, the defect-3 gate from item 38).
+Nothing in items 38, 39 or their conclusion changes.
+
+#### The one correction: 16 routes / 335 segments, not 17 / 343
+
+Item 39's header says "17 routes / 343 segments". There are **16 distinct routes and 335 segments**.
+The extra route-entry and the extra 8 segments are 248 counted twice — item 38's partial 8-segment
+copy plus item 39's full 23. The arithmetic closes: 264 − 8 = 256 over 12 routes, plus item 39's
+79 (23 + 6 + 18 + 32) = **335**. Read item 38's "17 routes" as *17 route-entries over 16 routes*.
+
+#### The full pre-filter picture, which items 38 and 39 only ever reported as zeros
+
+| route | segs | in-lane gaps | ≥1.0s | `exited` | `oncoming` | `DROPOUT` | strict |
+|---|---|---|---|---|---|---|---|
+| `00000231--5782493b00` | 3 | 22 | 3 | 3 | 0 | 0 | 0 |
+| `00000232--3a01619ce5` | 29 | 43 | 30 | 26 | 1 | 3 | 0 |
+| `00000236--60bfb34cb1` | 42 | 78 | 53 | 39 | 3 | 11 | **1** |
+| `00000237--77313c5a66` | 30 | 69 | 26 | 21 | 4 | 1 | 0 |
+| `00000239--d1cf55daa7` | 16 | 35 | 14 | 12 | 0 | 2 | 0 |
+| `0000023a--5c3a439dfc` | 18 | 34 | 10 | 5 | 0 | 5 | 0 |
+| `0000023b--7f6d4c1ba9` | 5 | 11 | 6 | 4 | 0 | 2 | 0 |
+| `0000023e--9a40b07f55` | 42 | 111 | 37 | 28 | 3 | 6 | 0 (1 demoted) |
+| `0000023f--66ddbb900a` | 32 | 70 | 27 | 22 | 1 | 4 | **1** |
+| `00000241--7948e97423` | 12 | 37 | 11 | 5 | 1 | 5 | **2** |
+| `00000245--1356bb0355` | 19 | 63 | 17 | 12 | 1 | 4 | 0 |
+| `00000246--52b04ed170` | 8 | 17 | 9 | 5 | 2 | 2 | 0 |
+| `00000248--4f275f0bb6` | 23 | 10 | 5 | 3 | 0 | 2 | **1** |
+| `00000249--d481c5de77` | 6 | 19 | 9 | 4 | 0 | 5 | 0 (1 demoted) |
+| `0000024b--02cabe206c` | 18 | 83 | 19 | 19 | 0 | 0 | 0 |
+| `0000024d--f80e13b850` | 32 | 57 | 33 | 29 | 0 | 4 | **1** |
+| **TOTAL** | **335** | **759** | **309** | 237 | **16** | 56 | **6** |
+
+Two things this table says that the earlier write-ups did not:
+
+1. **56 gaps carry `kind=DROPOUT` at the pre-filter stage; 6 survive the strict gate, 3 more are
+   demoted at the engagement check.** The other 47 fail on engagement, acceleration, hold time or
+   the box — i.e. the strict gate is doing almost all of the work, and **`kind=DROPOUT` on its own
+   is not a fault count.** Anyone reading a raw census log should not quote the 56.
+2. **16 oncoming crossings, not 15** as item 38's defect-4 note says. The extra one is bookkeeping
+   from the same splice; the classifier (`d_rate < -(vEgo + 3)`) is unchanged and correct.
+
+`0000024b--02cabe206c` remains the clean control: **19 gaps ≥ 1 s, all 19 `exited`, no `DROPOUT`
+kind at all.** A route with that many long in-lane gaps and zero dropout-shaped ones is the strongest
+single argument that the shape is geometric.
+
+#### Still absent, and it is the thing that would change the answer
+
+**No fade-then-die with the target centred, anywhere in 335 segments.** Of the six strict events the
+`y` at loss is −1.9, −1.4, −2.0, −1.4, −2.0 and +0.5, and the one near boresight (248 10:33) kept the
+camera lead at probability 1.00. Item 38's conclusion is unchanged and now rests on a single
+uniform pass: **no deletion gate is justified, and D-041 forbids one on evidence this weak.**
+
+Replay evidence only. Nothing here was driven. Benign stderr on every route: the `CANParser ...
+not valid (timeout or missing)` lines are the parser's cold start before the first radar frame.
 
 ## 40. James's `3a257065d` reconciled against our `longitudinal_planner.py` — DO NOT MERGE IT
 
