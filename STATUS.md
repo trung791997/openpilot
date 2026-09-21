@@ -2222,3 +2222,73 @@ is where item 33 already pointed. Static/replay evidence only; nothing here was 
 **Still open:** replay a candidate `dyPath` bound over all 13 routes and score leads *lost*, not
 leads rejected (D-041) — 241's 6:49 real stopper at `dyPath` −0.50…+0.62 must survive, and so must
 245 tid 29; the stationary-target dropout census; item 22.6 (236 track 21).
+*(Item 35 does the bound scoring: 3 of 113 hard brakes touched, and 245 tid 29 sets a 2.5 m floor.)*
+
+## 35. A `dyPath` bound scored by leads *lost*: 3 of 113 hard brakes touched, and 2 of them are the reported symptom — 2026-09-21
+
+Item 34 concluded that all remaining leverage on the reported adjacent-lane lock-on is in lead
+selection. This scores the candidate gate the census pointed at, on the metric D-041 demands: not
+how many leads it rejects, but **how many frames it would leave with no lead at all.**
+
+**The gate, stated exactly as measured.** Reject the radar-backed lead when `|dyPath| >= 2.5` **and**
+vision has its own lead that is *on* the predicted path (`|dyPath_ml| < 1.5` and `mlProb >= 0.5`).
+The second clause is the whole safety argument and is not decoration: the gate is only permitted to
+fire when a replacement lead demonstrably already exists, so it degrades which object is followed
+rather than deleting a point. Where vision disagrees, nothing is rejected.
+
+**Cost, measured over all 13 routes** (`ybound.py`, host Python over the `ycen_*.csv` frames):
+
+| `|dyPath|` bound | frames fired (fallback exists) | frames left alone (no fallback) |
+|---|---|---|
+| 2.0 | 773 | 617 |
+| **2.5** | **449** | **398** |
+| 3.0 | 252 | 246 |
+| 3.5 | 125 | 180 |
+
+Roughly **half of all off-path radar leads have no on-path vision lead to fall back to**, and at every
+bound the gate leaves those untouched. That is the D-041 half of the result, and it is the reason to
+require the vision clause rather than gate on `dyPath` alone.
+
+**The number that matters: hard-brake episodes touched.** Classifying every episode with
+`aTarget < −2.5` fleet-wide against the 2.5 m bound:
+
+| route | episodes | kept | gated |
+|---|---|---|---|
+| all 13 routes | **113** | **110** | **3** |
+
+Only **2.7% of hard-brake episodes** are touched at all, and the three are:
+
+- **245 @ 353.5 s** — 8 of 12 frames, `|dyPath|` up to 5.21 at 81 m, floor −3.50.
+- **245 @ 356.3 s** — 11 of 33 frames, `|dyPath|` up to 3.44 at 73 m, floor −3.50.
+- **23e @ 23109.7 s** — **1 of 48 frames** (`dyPath` +6.09). Not a lane lock. Direct inspection shows
+  the ego yawing hard (`curv` → −0.005) during a radar→vision lead handoff: track 25's `dyPath` walks
+  +0.2 → +7.75 over 1.5 s while `dyPath_ml` stays under 0.8, then `radar1` goes to 0 and vision holds
+  the lead at 15–25 m with a real −3.5 m/s closing rate. **The brake proceeds regardless**; the gate
+  would only bring forward a handoff that happened on its own one frame later. This also confirms
+  item 33's reading of the `>5 m` band as ego-yaw/junction contamination, now by inspection and not
+  just by bucket share.
+
+So the two episodes the gate actually suppresses are **exactly the event the driver reported** — the
+adjacent-lane lock on the curve at 352.8–358.5 s on 245, which item 34 showed reaches the `ACCEL_MIN`
+floor honestly because the Bosch-A rail makes an off-path return look nearly stopped.
+
+**Both negative controls survive, and one of them sets the bound.**
+
+- **241, every hard brake.** All 8 episodes (128 frames) sit at `|dyPath| < 1.1` except one at
+  502.7 s, which is `radar1 == 0` — vision-sourced, so a radar-only gate cannot reach it. Every real
+  241 deceleration survives any bound ≥ 2.5. (Correction to item 34's framing: the 6:49 frames carry
+  `aTarget` ≈ +0.09, so that window is not itself a hard brake; the route's real stoppers are at
+  257.4, 338.1, 356.0, 588.4 and 606.2 s. The conclusion is unchanged and now rests on all of them.)
+- **245 tid 29** (near-stationary, in the path, brake correct — item 34's control) peaks at
+  `|dyPath| = 2.22` at 358.59 s. **It is gated at a 2.0 m bound and survives at 2.5 m.** This is an
+  empirical floor, not a round number: **do not set the bound below 2.5 m.**
+
+**Method limits, stated plainly.** This is a frame-level scoring of `radarState` output, not a
+`radard` replay — it measures which frames a gate would reject and what fallback existed at that
+instant, not the closed-loop trajectory that would result. Two of the three gated episodes are
+*partially* gated (8/12 and 11/33 frames), so the honest claim is that the brake would be reduced or
+delayed, not that it would be cleanly prevented. A closed-loop replay is still the thing that would
+settle the magnitude. Static/replay evidence only; nothing here was driven.
+
+**Still open:** the closed-loop `radard` replay to get the trajectory effect rather than the frame
+counts; the stationary-target dropout census; item 22.6 (236 track 21).
