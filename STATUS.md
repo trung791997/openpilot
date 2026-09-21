@@ -2389,3 +2389,79 @@ Replay/static evidence only; nothing here was driven.
 
 **Still open:** the MPC pass for the braking magnitude on the two 245 episodes; the stationary-target
 dropout census; item 22.6 (236 track 21).
+
+## 37. The planner-level pass: the gate belongs on both lead slots, it is not mergeable, and `FarLeadBrakeLimit` is structurally inert — 2026-09-21
+
+This scores the `dyPath` gate one level higher than item 36: **through the real
+`LongitudinalPlanner`**, not at `radarState`. `$T/an2/ympc.py` (in the `oprad-routes` volume at
+`/routes/an2/`) builds N planner instances off one rlog stream and swaps only `radarState` between
+them, so every variant sees identical frames, identical `carState`, identical `modelV2`. Nothing
+longitudinal is reimplemented — it is the shipped planner, including arbitration, `t_follow`,
+`jerk_scale` and the BLoTv3 supervisor. Variants: `A` baseline, `B` gate on `leadOne`, `C` gate on
+both slots, `Apre`/`Bpre` the pre-`084a9d56` BLoTv3 feedback read, `Aoff` BLoTv3 off, `Aflbl`
+`FarLeadBrakeLimit` forced on.
+
+**This corrects item 36's expectation.** Item 36 predicted the two 245 hard brakes would "soften a
+lot" once the gate ran closed-loop. Measured, they do not: every variant still reaches min `aTarget`
+−3.50, and the `leadOne` gate only cuts time below −2.5 from 2.30 s to 2.00 s.
+
+**Why: `radarState` has two published lead slots and items 35–36 scored only one.**
+`LongitudinalMpc.update` takes `min()` over `lead_0_obstacle` and `lead_1_obstacle`, and
+`longitudinalPlanSource` at the 245 237.2 s peak reads **`lead1`** — the brake was sourced from
+`radarState.leadTwo`, which the frozen gate never touches. The railed off-path track simply
+reappears in the second slot. Gating both slots (variant C) on 245 234–243 s:
+
+| variant | min `aTarget` | s below −2.5 | s below −1.5 |
+|---|---|---|---|
+| A baseline | −3.50 | 2.30 | 2.50 |
+| B gate on `leadOne` | −3.50 | 2.00 | 2.45 |
+| C gate on both slots | −3.50 | **1.00** | **1.10** |
+
+57% less time in hard braking against 13%. It shortens the brake; it does not prevent it. The
+residual is 245 tid 29 at `|dyPath|` 2.22, below the frozen 2.5 floor by design (item 35).
+
+**And the gate is NOT mergeable, because the cost is now quantified.** On 23e 1783–1792 s the gate
+makes the brake *worse*, and variant C is identical to B there (11 differing cycles, same numbers):
+
+| variant | min `aTarget` | s below −2.5 |
+|---|---|---|
+| A baseline | −1.55 in the divergence run | 2.35 |
+| B / C | **−3.50** | **2.90** |
+
+Mechanism, from the run's own lead columns: the gate drops radar tid 25 at `dRel` 36.0,
+`vRel` −2.30, and selection falls through to the **vision** lead at `dRel` 33.4, `vRel` −4.51 —
+nearer and closing twice as fast. The gate fired on **1 cycle** and produced 11 divergent cycles,
+because dropping the track also reset `prev_lead_track_ids` and handed the slot to vision for the
+rest of the episode. This is D-041 measured rather than argued: deleting a radar point cost 2.32
+m/s² of extra braking on an episode where the radar lead was the gentler answer. **Do not ship the
+`dyPath` gate in this form.** What it needs is a replacement that is *bounded*, not a deletion — the
+gate may only stand a lead down when the object taking its place is not more urgent.
+
+**`FarLeadBrakeLimit` is structurally inert, and this is why it is removed in this commit.** Variant
+`Aflbl` (cap forced ON) differs from `A` on **0 cycles in every window measured** — 245 234–243 s,
+245 180–270 s (1800 cycles), 23e 1783–1792 s, 241 380–470 s (1798 cycles) — including both of the
+worst far-lead hard brakes in the fleet, 90 m leads at −3.50. The cap never engaged once.
+`get_far_lead_brake_limit` stands itself down when `ttc = dRel / closing < FAR_LEAD_BRAKE_LIMIT_MIN_TTC
+= 10.0`; on the U11 saturation rail (item 34) `closing` is pinned at 13.5 m/s, so a 90 m lead reads
+TTC 6.7 s. **The rail that causes the false brake is what makes the cap blind to it.** It can only
+fire on leads whose `vRel` is not railed — genuine closers — which is the whole of its 1-good-vs-6-bad
+record, and it cannot be tuned out: raising `MIN_TTC` past the rail's own TTC parks the cap directly
+on top of real emergency braking. See D-060.
+
+**James's `084a9d56` (BLoTv3 supervisor reads the MPC target, not the arbitrated output) is correct
+but not exercised by any window measured.** `Apre` vs `A` = **0 differing cycles** on all four
+windows above, 241 included. The fix only bites where the arbitrated output is much more negative
+than the MPC's own lead solve (curve limiter, red light, force-decel), and none of these windows
+contains that divergence. Report it as unexercised, **not** as ineffective. `Aoff` (BLoTv3 off)
+differs on 97 cycles over 245's 90 s span, with BLoTv3 slightly *lengthening* hard braking
+(2.70 s on vs 2.55 s off) and on 23e shortening it (2.15 s off vs 2.35 s on) — small, and not
+the subject of this item.
+
+**Toggle census from `initData`:** routes 245, 246 and 248 all ran `FarLeadBrakeLimit=0` and
+`BlotV3=1`. The driver reports the last two drives did not over-react with the cap off. That is
+limited road evidence consistent with the cap being inert, not with the cap having helped.
+
+Replay/static evidence only; nothing in this item was driven.
+
+**Still open:** a bounded (non-deleting) replacement for the `dyPath` gate on both slots; a window
+that actually exercises `084a9d56`; the stationary-target dropout census; item 22.6 (236 track 21).

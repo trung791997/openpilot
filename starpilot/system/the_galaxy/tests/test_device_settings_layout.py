@@ -16,10 +16,10 @@ def _all_declared_keys():
 
 
 def _galaxy_toggle_keys():
-  # Restricted to the Bosch-A TEST pair this work introduced. Widening it to every layout key
+  # Restricted to the Bosch-A TEST rows this work introduced. Widening it to every layout key
   # would be a much larger claim about the whole settings surface and is deliberately not made
   # here -- several keys legitimately live outside the device binary.
-  return ("FarLeadBrakeLimit", "RangeDerivedVrel")
+  return ("RangeDerivedVrel",)
 
 
 def _layout():
@@ -437,11 +437,13 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
 
 
 def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
-  # The far-lead brake limit and the range-derived closing speed are both Bosch-A-only TEST
-  # rows that act on the same radar lead. They must render side by side, under the same parent,
+  # Bosch-A-only TEST rows that act on the radar lead must all render under the same parent and
   # behind the same car-family gate -- a row that is reachable on a car its feature cannot run
-  # on is a row that invites someone to switch on something inert.
-  siblings = ("FarLeadBrakeLimit", "RangeDerivedVrel")
+  # on is a row that invites someone to switch on something inert. This was a pair until the
+  # far-lead brake limit was removed (STATUS item 37, D-060); it is now RangeDerivedVrel alone,
+  # and the set-equality checks below are what keep a removed key from being left behind in one
+  # surface while it is gone from the others.
+  siblings = ("RangeDerivedVrel",)
 
   longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
   for key in siblings:
@@ -449,14 +451,10 @@ def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
     assert longitudinal[key]["settings_tier"] == "advanced"
     assert longitudinal[key]["requires_offroad"] is True
     assert longitudinal[key]["ui_type"] == "toggle"
-    # TEST features ship OFF. See D-053 and the far-lead brake limit's own evidence note.
+    # TEST features ship OFF. See D-053.
     assert _declared_default(key) == "0"
 
-  # Adjacent, and in this order, so the pair reads as a group in Galaxy.
-  ordered = list(longitudinal)
-  assert ordered[ordered.index(siblings[0]) + 1] == siblings[1]
-
-  # Galaxy hides both behind BoschARadarAvailable. This is the check that was missing when
+  # Galaxy hides these behind BoschARadarAvailable. This is the check that was missing when
   # RangeDerivedVrel was first added: the layout entry alone would have rendered the row on
   # every car, including ones with no Bosch-A radar to derive a closing rate from.
   frontend = (
@@ -467,7 +465,7 @@ def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
   assert set(re.findall(r'"([^"]+)"', gate.group(1))) == set(siblings)
   assert "BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable" in frontend
 
-  # The on-device raylib settings gate the same pair through the Bosch-A radar section.
+  # The on-device raylib settings gate the same rows through the Bosch-A radar section.
   raylib = (
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py"
   ).read_text(encoding="utf-8")

@@ -848,14 +848,13 @@ class RadarD:
   def _range_vrel_assist_enabled(self) -> bool:
     """Param read for the D-053 assist. Off unless explicitly enabled. Default OFF.
 
-    Same shape as LongitudinalPlanner.far_lead_brake_limit_enabled: Params() is constructed
-    lazily and re-read every 100 frames, because radard runs in a hot loop and a params read
-    is a file read. Any exception -- including the missing-key case on a device whose
+    Params() is constructed lazily and re-read every 100 frames, because radard runs in a hot
+    loop and a params read is a file read. Any exception -- including the missing-key case on a device whose
     params_pyx.so predates this key -- falls back to False, i.e. the shipped U11 behaviour.
 
     NOTE for the next agent: a device whose `common/params_pyx.so` lacks the RangeDerivedVrel key
     returns False here no matter what the UI shows -- the Galaxy write itself 403s. That shipped
-    once (STATUS.md open item 12, the same trap as item 4 for FarLeadBrakeLimit) and b2baba87
+    once (STATUS.md open item 12, the same trap as open item 4) and b2baba87
     rebuilt the committed larch64 artifacts with the key. A device on an older build, or one
     running a natively rebuilt .so, can still hit it; check the key is in initData.params.
     """

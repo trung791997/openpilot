@@ -374,9 +374,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Tester rollout: parse the Bosch-A harness's own 16-slot radar object bank into real
     // leadOne/leadTwo tracks instead of treating the car as radarless. RX-only, no CAN authority taken.
     {"BoschARadar", {PERSISTENT, BOOL, "1", "1", 3}},
-    // TEST, default OFF. Bounds braking demanded for a lead far away in both time and
-    // distance. One positive example; see FAR_LEAD_BRAKE_LIMIT_* in longitudinal_planner.py.
-    {"FarLeadBrakeLimit", {PERSISTENT, BOOL, "0", "0", 3}},
     // TEST, default OFF. Bosch-A only. Lets the range-derived closing rate (D-044 shadow
     // channel) correct the native U11 vRel for the lead track, in one direction only: toward
     // MORE closing, never less. See RANGE_VREL_ASSIST_* in radard.py and D-053.

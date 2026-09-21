@@ -1040,3 +1040,41 @@ lagging rather than over-closing, and now coast on the last trusted vRel instead
 **Road check.** Not road-validated. On the next drive: the lead lock census, any brake event within
 1 s of a join, and how long lead points sit in the unmeasured rejoin hold.
 
+
+## D-060 — REMOVED: the far-lead brake limit is inert on the fault it was written for
+
+**Decision.** `FarLeadBrakeLimit` and every `FAR_LEAD_BRAKE_LIMIT_*` constant are removed from the
+tree: the planner method pair, the call site, the param key, the raylib row, the Galaxy layout entry
+and its Bosch-A key set, and the feature's own test file. The driver's decision that it ships default
+OFF (D-053-era) is superseded — there is nothing left to switch on. This is not a re-tune and it must
+not be reintroduced as one.
+
+**Why.** Measured through the real `LongitudinalPlanner` on rlog-fed replay (STATUS item 37), the cap
+forced ON differs from the cap OFF on **0 cycles in every window measured** — four windows, ~3900
+planner cycles, including both of the worst far-lead hard brakes in the fleet (90 m leads reaching
+`ACCEL_MIN` −3.50). It never engaged once.
+
+The mechanism is structural, not a threshold that was set badly. `get_far_lead_brake_limit` computed
+`ttc = dRel / closing` and returned `None` when `ttc < FAR_LEAD_BRAKE_LIMIT_MIN_TTC = 10.0`. The
+false brakes this feature exists for are caused by the Bosch-A U11 saturation rail (item 34,
+`b73dc693`), where `vRel` publishes exactly −13.50 m/s; at 90 m that reads TTC 6.7 s, so the cap
+stood itself down on precisely the frames it was meant to bound. **The rail that causes the fault is
+what makes the cap blind to it.** The only leads it could ever fire on are leads whose `vRel` is not
+railed, i.e. genuine closers — which is why its record was one good cap against six bad ones.
+
+**Why not raise `MIN_TTC`.** To see a railed lead the threshold would have to sit below the rail's
+own TTC, which at realistic ranges is 3–7 s. A floor of −2.0 m/s² applied to every lead inside 7 s of
+collision is a cap on real emergency braking. That is a worse failure than the one being fixed, and
+it is the reason this is a removal and not a constant change. The known ramp-anchor defect documented
+in the old evidence block is moot and is not carried forward.
+
+**Limited road evidence, consistent but not confirming.** Routes 245, 246 and 248 ran with the cap
+off (`initData`), and the driver reports the last two drives did not over-react. That is consistent
+with the cap being inert; it is not evidence the cap ever helped.
+
+**What this does not settle.** Removing the cap does not address the false brake itself. The fault is
+lead *selection* — a railed off-path radar track published as a lead — and the replacement must act
+there. See STATUS item 37 for why the `dyPath` deletion gate is not that replacement: on 23e it
+turned a −1.55 brake into −3.50 by dropping a valid 36 m radar lead and falling through to a nearer,
+faster-closing vision lead. Per D-041, the replacement must publish a **bound**, not delete a point,
+and it must cover **both** published lead slots, because `LongitudinalMpc` takes `min()` over both.
