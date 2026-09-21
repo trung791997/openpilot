@@ -2628,12 +2628,64 @@ Two things, in order of confidence:
    range slope, ours is the closer of the two and the native U11 lags ~1.5 s. Recorded because the
    wrong version is the intuitive one.
 
-**Caveat on the instrument:** the "measured range slope" column is a 0.5 s *forward* difference, so
-it leads the instantaneous truth by ~0.25 s by construction. That accounts for part of the gap in
-row 1-2, not 4-6 m/s of it. A centred difference should be run before this is quoted as a number.
+**Instrument corrected (centred difference).** 39.1's table above used a 0.5 s *forward*
+difference, which leads the truth by ~0.25 s and inflated the slope. Re-run with a centred
++/-0.5 s difference, the finding holds but is smaller:
 
-**Not yet explained, and the actual subject of the complaint:** after the brake releases at 5:20 the
-car sits at 39 m from the lead doing 6.3 m/s (a ~6 s headway) and crawls in over 16 s. At 5:25.24
-`tFollow`, `desiredFollowDistance` and `minAcceleration` all go to **0.00** together and stay there
--- real zeros, not the empty-string "no message" path. That is a longitudinalPlanSP question, not a
-`radar_interface.py` question, and it is the next thing to look at for the padding complaint.
+| route-time | d1 (m) | centred slope | fwd slope (old) | `leadOne.vRel` | U11 vRel |
+|---|---|---|---|---|---|
+| 5:17.10 | 54.5 | -3.45 | -4.30 | +0.16 | +0.09 |
+| 5:17.26 | 53.7 | -4.21 | -4.85 | +0.05 | +0.05 |
+| 5:17.40 | 53.2 | -4.61 | -5.49 | **-2.96** | -0.08 |
+| 5:18.15 | 49.0 | -6.27 | -6.62 | -5.44 | -1.36 |
+| 5:19.05 | 44.5 | -5.14 | -6.62 | -3.20 | -3.20 |
+
+Corrected magnitudes: the blind window is **~0.8 s** (5:16.6 -> 5:17.40), not ~1 s, and the peak
+under-read is **~4.3 m/s**, not 6. `leadOne.vRel` breaks away at 5:17.40 and tracks within
+0.6-2.0 m/s; the raw U11 track vRel does not converge until ~5:19.0, so it lags by **~1.6 s**.
+Both conclusions in 39.1 survive the correction; only the numbers move.
+
+### 39.2 RETRACTED: the tFollow/desiredFollowDistance zeros are a disengagement, not a defect
+
+39.1 closed by calling the simultaneous zeroing of `tFollow`, `desiredFollowDistance` and
+`minAcceleration` at 5:25.24 "not yet explained" and pointing at longitudinalPlanSP. **That was
+wrong.** At that same sample `longActive`, `enabled` and `active` all go 1 -> 0 together: the
+driver disengaged. `StarPilotFollowing.update()` sets `t_follow = 0` in its `else`
+(`not long_control_active`) branch and `desired_follow_distance = 0` alongside it, so the zeros
+are the documented behaviour of a disengaged system.
+
+Confirmed fleet-style on the route itself: **0 of 22,038 `longActive` samples on 24d have
+`tFollow == 0`.** The zeros never occur while engaged.
+
+Consequence for the complaint: the slow crawl from 5:25 to 5:36 (6.3 -> 0 m/s, gap 39 -> 10 m)
+was **the driver**, not openpilot. Only the ~5 engaged seconds before the disengagement belong to
+the car.
+
+One real oddity noted but NOT established: `carState.cruiseState.speed` reads 0.0 through this
+window while the planner's own `vCruise` reads 22.22 m/s. I did not determine whether that is
+normal for this Honda or a reporting gap, and nothing here rests on it.
+
+### 39.3 The padding behaviour is real, rare, and still without a mechanism
+
+The engaged window 5:21 -> 5:25 is genuine and matches the reported complaint: `vEgo` 6.3 m/s flat,
+gap 38-40 m, `desiredFollowDistance` 13-14 m, set speed 22.2 m/s, `maxAcceleration` 1.77,
+`disableThrottle` 0, `shouldStop` 0 -- and `aTarget` sitting at **+0.05**. The car wants a 13 m gap,
+has 39 m, has 16 m/s of speed deficit and full throttle headroom, and commands nothing.
+
+Scored across the route with a deliberate signature (tracking a lead, gap > 2.5x desired,
+|aTarget| < 0.25, `maxAcceleration` > 0.8, set speed at least 5 m/s above `vEgo`, throttle not
+disabled, not stopping):
+
+- **93 samples = 4.7 s out of 1102 s engaged (0.4%).**
+- `longitudinalPlanSource` is `cruise` on **all 93**.
+- median `vEgo` 6.3 m/s (range 4.2-16.5) -- it is a low-speed, post-deceleration behaviour.
+
+**Two hypotheses tested and both rejected.** (a) A `t_follow` defect: rejected by 39.2. (b)
+Experimental mode / e2e longitudinal: rejected -- the 93 samples split 49/44 between `expMode` 1
+and 0, while the route runs 5081/16922 in favour of `expMode` 0, so the behaviour is not tied to
+it. The common thread is only `src == cruise` at low speed after a deceleration.
+
+**Open:** why the cruise cost yields ~0 m/s^2 with a 16 m/s speed deficit and 1.77 m/s^2 of
+headroom. That is a `longitudinal_mpc_lib` / cruise-cost question. 4.7 s on one route is too
+little to tune against -- the next step is to run this same signature across all 17 routes before
+anyone touches a cost weight.
