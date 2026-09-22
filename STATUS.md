@@ -3805,3 +3805,38 @@ The next test the harness can now support: replay a 251/24f brake entry with the
 by the vision lead, keeping the planner fixed, and check whether the entry rate falls to 242's
 level. If it does, the cause is in the input; if not, it is in the planner.
 Replay evidence only; nothing here is road-validated.
+
+## 54. Swapping the radar lead for the vision lead moves the 251 brake entry by about one frame, not its shape
+
+**Method (replay only, no code changed).** Harness env `VISLEAD` rewrites every `radarState` fed to
+the planner:
+- `VISLEAD=1` replaces leadOne and leadTwo with radard's own vision-only lead, as
+  `get_RadarState_from_vision` builds it (radard.py:663): prob > 0.35, dRel = x − 1.52, the
+  model-relative vRel, the 0.8/0.2 aLeadK blend, and radar=False.
+- `VISLEAD=2` keeps the radar flags, to separate the planner's radar-only branches from the value
+  change.
+
+The planner is unchanged. The run uses 251 segments 5+6 with `BLOT=1 LPCUT=1` and the one-step x0
+anchor, so every frame starts from the car's real state. This is the per-frame command the
+planner would have issued, not a free-running trajectory.
+
+| t | logged | radar (base) | vision (1) |
+|---|---|---|---|
+| 364.50 | −0.233 | −0.236 | −0.062 |
+| 365.00 | −1.006 | −1.006 | −0.746 |
+| 365.20 | −2.314 | −2.314 | −1.852 |
+| 365.50 | −3.198 | −3.198 | −3.078 |
+| 366.00 | −1.393 | −1.393 | −1.710 |
+| 366.30 | −0.458 | −0.409 | −0.714 |
+
+- **Onset:** the radar lead starts braking about 0.1 s earlier. It crosses −1.0 and −2.0 about
+  0.06 s (one frame) before the vision lead does.
+- **Peak and slope:** the peak is the same (−3.20 against −3.14), and so is the slope. On the release
+  the vision lead brakes harder, not softer.
+- **Radar-only planner branches:** `VISLEAD=2` matches `VISLEAD=1` to within 0.003 except at one frame
+  (366.30), so the radar-only branches play almost no part here.
+
+**Reading.** In this entry the radar input advances the braking by about one frame; it does not make
+it harsher. That does not explain a "too reactive" feel. The limits are that this is one entry, a
+per-frame test rather than a free run, and replay only. The 11 entries on route 24f are the next
+place to test.
