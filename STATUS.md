@@ -3073,3 +3073,99 @@ argues for touching one.
   matched-configuration comparison, and the supervisor only touches `jerk_scale` and `t_follow`.
 
 Route data cited by ID only. Offline log analysis; no replay and no road validation of any change.
+
+## 43. The −0.50 clamp ahead of the rail: `DecelerationProfile` is ECO on both bookmarked routes
+
+Item 42 ended with "why `aTarget` lags its own `vRel` input is not explained" and told the next
+pass to find which term moves. It is not a jerk weight. The jerk columns are **constant** across
+every rail episode on both routes: `accJerk = 250.00`, `spdJerk = 5.50`, `dngJerk = 100.00`,
+`danger = 0.75`, `tFollow = 1.45`. Nothing in the jerk/danger family moves as `aTarget` ramps.
+
+What moves is nothing — because `aTarget` is **clamped**, and the clamp is a setting.
+
+### The measurement
+
+`minAcc` in the scan CSV is `starpilotPlan.minAcceleration`. On both routes, on every sampled
+frame, it reads exactly **−0.50**. `starpilotPlan.minAcceleration` is
+`starpilot_acceleration.min_accel`, which for a plain deceleration profile is
+`get_profile_min_accel_floor(deceleration_profile)`
+(`starpilot/controls/lib/starpilot_acceleration.py:122`). That returns:
+
+- `A_CRUISE_MIN_ECO` = `A_CRUISE_MIN / 2` = **−0.5**   (`starpilot_acceleration.py:61`)
+- `A_CRUISE_MIN` = **−1.0**                            (`longitudinal_planner.py:429`)
+- `A_CRUISE_MIN_SPORT` = `A_CRUISE_MIN * 2` = −2.0
+
+`DECELERATION_PROFILES` is `{"STANDARD": 0, "ECO": 1, "SPORT": 2}`
+(`starpilot/common/accel_profile.py:15`). The stored param on **both** routes is
+**`DecelerationProfile = 1`, i.e. ECO** — read from `init_by_seg[<first seg>]['params']`, not
+guessed. So the observed −0.50 is `A_CRUISE_MIN_ECO` and matches the code exactly.
+
+That value is fed straight in as the lower accel limit:
+
+```
+longitudinal_planner.py:2137-2141
+    if self.mpc.mode == 'acc':
+      accel_limits = [sm['starpilotPlan'].minAcceleration, sm['starpilotPlan'].maxAcceleration]
+      ...
+      accel_limits_turns[0] = max(get_vehicle_min_accel(self.CP, v_ego), accel_limits_turns[0])
+    else:
+      accel_limits = [ACCEL_MIN, ACCEL_MAX]
+```
+
+### `aTarget` sits on that number, including with a closing lead tracked
+
+24f 6:01.88, sampled at 5 Hz, `dt` relative to onset. `d1` is lead range, `vRel1` closing rate:
+
+| dt | vEgo | aTarget | src | d1 | vRel1 | minAcc |
+|---|---|---|---|---|---|---|
+| −1.35 | 24.17 | **−0.50** | lead1 | 78.6 | −4.50 | −0.50 |
+| −1.15 | 24.19 | **−0.50** | lead1 | 75.9 | −3.97 | −0.50 |
+| −0.95 | 24.19 | **−0.50** | lead1 | 61.7 | −5.41 | −0.50 |
+| −0.75 | 24.20 | **−0.50** | lead1 | 60.5 | −5.58 | −0.50 |
+| −0.55 | 24.15 | **−0.50** | lead1 | 58.2 | −6.20 | −0.50 |
+| −0.35 | 24.09 | −0.55 | lead1 | 56.8 | −6.30 | −0.50 |
+| +0.05 | 23.91 | −1.24 | lead1 | 54.3 | −6.33 | −0.50 |
+| +0.65 | 23.14 | −2.09 | lead1 | 52.2 | −5.11 | −0.50 |
+
+**`aTarget` holds at exactly −0.50 for 1.2 s while a tracked lead closes at 6.3 m/s.** That is not
+a solver choosing to be gentle; −0.50 to two decimals, held flat, equal to the configured floor,
+is a clamp. 24f 4:31.57 shows the same pin for 1.6 s (`src = cruise`, `aTarget` −0.50 for eight
+consecutive sampled frames) before ramping to −3.45.
+
+The other side is unchanged from item 42: once released, `planAmin` and `planA1s` go to **−3.50**
+exactly and `aTarget` reaches −3.47 in 0.6 s.
+
+### What this does and does not establish
+
+**Established.** ECO is set on both routes. The floor it selects is −0.5 rather than STANDARD's
+−1.0. `aTarget` measurably rests on that value for over a second at a time, in at least one case
+with a continuously tracked lead closing at 6.3 m/s at 55–78 m. No jerk or danger term varies
+across any rail episode on either route.
+
+**NOT established — and one code comment argues against it.**
+`starpilot_acceleration.py:63` says of the traffic floor: *"cruise-decel floor only; MPC lead
+braking keeps full ACCEL_MIN authority."* If lead braking really keeps full authority, the ECO
+floor should not bind while `src = lead1` — yet the table above is `src = lead1` at −0.50. Either
+the comment does not hold for the ECO/STANDARD floors, or something else produces exactly −0.50.
+**That is not resolved here, and it is the next thing to settle.** `aTarget` does later exceed
+−0.50, so the clamp is not unconditional; the release path has not been traced.
+
+**No causal claim that ECO produces the −3.5 slam.** The sequence (pinned at −0.50, then −3.47 in
+0.6 s) is consistent with a suppressed early response forcing a late large one, but consistency is
+not evidence. There is no matched-configuration comparison: every route in the set was driven on
+ECO, so the profile is a constant across all 16 and cannot be attributed against itself.
+
+### Why this matters for the settings question
+
+Item 42 answered "should I change driving personality or safety gap bias?" with no, because both
+scale `t_follow` and the complaint is brake *shape*. That answer stands — and `tFollow = 1.45`
+constant through every episode confirms the gap was never the moving part.
+
+`DecelerationProfile` is a different lever and was not considered: it does not touch `t_follow`,
+it sets the braking authority floor directly. ECO → STANDARD doubles it (−0.5 → −1.0). **This is
+the first setting on this branch with a measured mechanism behind it.** It is still not a
+recommendation: the release path is untraced, the causal link is unproven, and changing it breaks
+the one-configuration assumption that makes 24f/251 comparable with the other 14 routes. If it is
+changed, it must be changed as a deliberate A/B with the profile recorded, not quietly.
+
+Offline log analysis of two routes. No replay, no road validation, no change made.
