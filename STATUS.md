@@ -4239,3 +4239,70 @@ Tests: `test_model_lead_trajectory_used_for_braking_lead_with_long_ttc` is added
 case now uses a closing lead at a 2 s TTC. The `selfdrive/controls/tests` run gives 1264 passed and 3
 failed, and all 3 failures were already failing before this change (latcontrol bolt, latcontrol
 palisade, `test_force_stop_jerk_scale_is_platform_specific`).
+
+## 64. Guard trim batch 1: three inert highway caps deleted; batch 2 not exercised; 254 vs 257 drive A/B; replay + limited road evidence
+
+Goal: trim longitudinal guards that do not measurably buy gap or TTC, so the MPC and model decide more
+(closer to FrogPilot). Scope is the longitudinal planner only. Method: each guard was given a temporary
+env kill switch, and the five bookmarked brake events of route `0000024f--8c147bae2e` (B 140 s, C 262 s,
+D 357 s, E 440 s, F 585 s) were replayed closed-loop (CL_TAU 0.35, lead non-reactive) with each guard
+off, one at a time, against the same tree. A guard is kept only if removing it loses gap or TTC.
+
+### Batch 1 (highway braking caps) — closed-loop replay, minGap m / minTTC s
+
+| Event | base | no close_lead_brake_cap | no inside_gap cap | no raw_close_lead_needs_control | no matched floor | no transition limiter |
+|---|---|---|---|---|---|---|
+| B | 13.70 / 4.36 | 13.71 / 4.35 | 13.75 / 4.37 | = | = | = |
+| C | 17.20 / 6.03 | 17.09 / 6.03 | 17.19 / 6.03 | = | = | 17.19 / 6.03 |
+| D | 27.68 / 4.31 | **24.37 / 3.98** | = | 27.83 / 4.32 | = | = |
+| E | 8.69 / 4.25 | **7.47 / 3.72** | = | **5.08 / 1.28** | = | = |
+| F | 37.81 / 8.93 | 35.20 / 8.21 | 37.72 / 8.89 | = | 38.82 / 8.93 | 37.35 / 8.92 |
+
+KEPT: `get_close_lead_brake_cap` (D loses 3.3 m, E loses 1.2 m, and the brake starts later and ends
+harder: D peak −2.28 → −2.39, 0.5 s rate −1.40 → −1.70) and `raw_close_lead_needs_control` (E TTC
+4.25 → 1.28). DELETED, all inert (peak command moved ≤ 0.03 m/s² on every event):
+`get_inside_gap_closing_lead_accel_cap` and its `INSIDE_GAP_CLOSING_*` constants,
+`lead_follow_policy._matched_brake_floor`, `lead_follow_policy._transition_target` and the
+`FOLLOW_TRANSITION_*` / `FOLLOW_SIGN_CROSS_STEP` / `FOLLOW_MAX_CLOSING` constants, and
+`MATCHED_FOLLOW_TRANSITION_MIN_SPEED`. `FollowResult` is now `(lead, accel_cap, target)`; nothing
+outside the policy consumed `brake_floor`. `get_lead_geometry_required_accel` is telemetry only and
+was left alone. Batch 1 does not explain the abrupt-braking complaint; the replay harness at
+`$T/vcl.sh` / `vclcmp.py` now mounts the branch planner, policy and `long_mpc.py` together.
+
+### Batch 2 (vision-lead caps) — not exercised by the corpus
+
+`get_vision_lead_approach_cap`, `get_vision_untracked_slow_lead_cap`,
+`get_vision_untracked_approach_lift_cap`, `get_vision_slow_stopped_lead_cap`,
+`get_tracked_vision_model_brake_floor` / `_cap` and `tracked_vision_lead_approach_needs_immediate_brake`
+were swept the same way. Every tag produced byte-identical numbers on all five events in every column.
+All five events are radar-tracked leads and every batch-2 guard is a vision-lead path, so replay cannot
+distinguish harmless from untested here. Decision: keep batch 2 and defer until a vision-only brake
+event is replayed (route `00000257--50424c1a3a` at 348.7 s, `radar=0`, peak −2.55, is a candidate).
+Batch 3 (standstill and depart holds) is not started and rests on road testing; replay covers stop-go poorly.
+
+### Drive A/B on the STATUS 63 change: `00000254--8afa97025c` (5d7e1512f) vs `00000257--50424c1a3a` (8c9f5dc66)
+
+Both builds are confirmed from initData; the only planner difference is STATUS 63 (model lead path keeps
+only the 3 s TTC guard). Per-frame scan (`/routes/an2/scan_<r>.csv`, summary `$T/smooth.py`),
+longActive frames only:
+
+| | 254 before | 257 after |
+|---|---|---|
+| longActive frames | 4843 | 7795 |
+| aTarget p1 / p5 | −3.45 / −1.97 | −2.13 / −1.00 |
+| measured aEgo p1 | −3.87 | −2.42 |
+| worst 0.5 s drop of aTarget | −3.86 | −1.72 |
+| 0.5 s drops steeper than −1.5 m/s² | 37 | 8 |
+| braking episodes (aTarget < −1.0), peak | 5, all at −3.45 (the clamp) | 6, −1.28 … −2.82 |
+| driver brake while enabled / disengagements | 0 / 9 | 1 / 9 |
+
+Every "before" episode pinned at the −3.45 floor and four of the five had command drops of −1.9 to
+−3.9 m/s² inside half a second. After the change the hardest event (415.8 s, lead 75 m closing at
+16.7 m/s) peaked at −2.82 with a −0.80 drop. This is one drive each on different roads: limited road
+evidence, not a controlled comparison. The one driver brake press in 257 (127 s, lead 72 m closing
+7 m/s, planner asked −1.57) is a candidate "too soft" case to look at.
+
+Tests: `selfdrive/controls/tests` gives 1256 passed, 4 skipped, 3 failed; the 3 failures are the same
+pre-existing ones (latcontrol bolt, latcontrol palisade, `test_force_stop_jerk_scale_is_platform_specific`).
+Five tests for the deleted guards were removed. The 9 `ruff` findings on the planner and its test file
+all lie outside the diff hunks and are pre-existing. Not road-validated.
