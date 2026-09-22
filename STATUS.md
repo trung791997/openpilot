@@ -4048,3 +4048,35 @@ ruled out for the bookmarked 24f brakes. The late-then-rail shape is the MPC's o
 lead input it is given. What remains: the MPC's lead cost / `t_follow` / jerk weights against a
 fast-closing lead, and whether the lead state fed to it (dRel, vLead, aLeadK) at the onset
 understates the closing rate that the range slope shows.
+
+## 59. The harness pins planner state to the log, so items 55, 57 and 58 measured one-frame effects only
+
+Replay only; no repo code changed.
+
+**Harness caveat (supersedes the conclusions of 55, 57 and 58).** Mode `x0+src+pa+oat`
+(`replay.py`) re-anchors the MPC initial state (`x0`), the previous accel (`pa`) and the previous
+published output (`oat`) to the LOGGED values every frame. That is right for reproducing the log
+(the p99 gate), but in a counterfactual nothing the change does can accumulate. The planner's state
+is reset to what the car actually did on every frame. Items 55 (vision lead), 57 (ECO floor) and
+58 (follow policy, BLoTv3) therefore measured only the instantaneous one-frame response. Their
+"no effect" results are not evidence that those layers don't shape the brake. They have to be
+re-run with the anchors removed (mode `src` or `free`). Ego speed and accel still come from the
+log, so even that is planner-open-loop, not vehicle closed-loop.
+
+**What is still valid from this item (the instantaneous response under the logged state).**
+- Line trace at 24f 272.7 (`w271.4:272.4`): the target before the final clip (`L2568`, MPC at
+  action_t) goes -1.0 -> -4.17 in 0.7 s. The published output (`L3115`) is held above it by
+  `output_accel_min = min(ECO -0.5, a_desired + 0.05)` (`:2202`, item 45). So in ECO the output
+  tracks the one-step `a_desired`, not the MPC's lookahead demand: 272.07 raw -4.04 vs out -2.03.
+- With the lead's vRel/vLead/aLeadK taken from 1.0 s later (`LEAD_ADV=1.0`, non-causal), the
+  pre-clip target reaches -5.1 at 271.12, 1 s earlier than baseline. Earlier lead information does
+  make the MPC ask earlier. Under the anchors the output can't show it.
+- Q1, lead lag: over the five events the fed `vRel1` lags the range derivative by about 0.3, 1.35,
+  1.45 (rms 3.4, unreliable), 0.65 and 0.30 s. Route-wide 5 s windows give a median of 0.25 s
+  (p75 0.70). The fits are noisy. It suggests, but does not show, extra lag at brake onsets.
+- In all five events the lead itself braked hard (aLeadK -3.7 to -4.4, range slope -3.5 to -5.2)
+  on a single track (no handover). The rail brakes answer real hard lead braking.
+- Q2 (`TF_ADD=0.3`): no instantaneous effect. It has to be re-run un-anchored.
+
+New harness envs: `LEAD_ADV=<s>`, `TF_ADD=<s>` (backup `replay.py.bak-pre-leadadv`); scripts
+`vq2.sh`, `q1lead.py`, `q1lag.py`; traces `trC.txt`, `trCadv.txt`.
