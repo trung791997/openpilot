@@ -3721,3 +3721,41 @@ most the single 251 t 365.86 event and not the "too reactive with radar" feel.
 choosing `cruise` where the car chose `lead1`). It points at solver-side terms — `set_weights()`,
 slack penalties, constraints — as item 50 concluded. Replay evidence only; nothing here is
 road-validated.
+
+## 52. The replay control failure is mostly a harness gap: BLoTv3 was on in the car, off in the replay
+
+**Finding (replay, 251 segs 5+6, mode `x0+src+pa+oat`).** `LongitudinalPlanner._blotv3_active()`
+(`longitudinal_planner.py:583`) reads `Params().get_bool("BlotV3")`. The docker replay has an empty
+param store, so it returned False and `_blotv3_policy` was None, meaning jerk_scale 1.0 and no BLoTv3
+t_follow. `initData` shows `BlotV3 = 1` on **all three** comparison routes (242, 24f, 251), so the
+car ran BLoTv3 every time. Forcing it on in the harness (`BLOT=1`, which sets
+`planner._blotv3_active = lambda: True`) gives:
+
+| mode | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| before (BLoTv3 off) | 0.00094 | 0.0308 | 0.1587 | 0.1725 |
+| BLOT=1 | 0.00024 | 0.0136 | 0.1063 | 0.1557 |
+
+During 365.0–365.9 the replay's jerk_scale runs 0.900 down to 0.825, which lowers acceleration_jerk.
+The gate (p99 < 0.05) **still FAILS**. The new worst frame is 364.50 (replay −0.077, logged −0.233),
+in a different place from before. The 0.10629 p99 is also the floor that several weight sweeps below
+hit, so it is probably a separate residual.
+
+**Sensitivity tests that led here** (all replay-only, harness env overrides on `set_weights`):
+- `uncertainty` is unlogged, from `uncert_slow`, and runs 0.484–0.514 in the window. It is **not the cause**. In-band
+  values 0.50/0.52 give p99 0.159/0.157, and forcing it out of the rescale band (0.44 or 0.60) makes
+  p99 **worse**, at 0.177.
+- `lead_dist` = 20 gives p99 0.160, and `panic_bypass` forced False gives 0.1587. Neither is the cause.
+- `speed_jerk` ×2/×3/×5 gives p99 0.135/0.106/0.106. `acceleration_jerk` ×0.5/×0.33 gives 0.106, and ×3 gives 0.180,
+  but every one of these raises p50 by 2–6×. The car behaved as if acceleration_jerk were lower
+  than logged, and BLoTv3's jerk_scale is exactly that term.
+- An earlier batch of these runs was a silent no-op. zsh does not word-split an unquoted `$1`, so
+  `-e UNC_FORCE=0.44` reached docker as one argument and set an env var named ` UNC_FORCE`. Only
+  the `${=1}` reruns are counted above.
+
+**Consequence.** Every replay-based measurement in items 46–51 ran with BLoTv3 off. The
+live-log and CSV corpus statistics are unaffected, including the matched-flip corpus count in 51.
+Replay-derived claims should be re-checked under `BLOT=1`, especially STATUS 51's +0.76 m/s² replay-only step at 365.89.
+This does **not** confound the 242 vs radar comparison, because BLoTv3 was on for all three.
+
+Replay evidence only; nothing here is road-validated. No planner code was changed.
