@@ -3840,3 +3840,69 @@ planner would have issued, not a free-running trajectory.
 it harsher. That does not explain a "too reactive" feel. The limits are that this is one entry, a
 per-frame test rather than a free run, and replay only. The 11 entries on route 24f are the next
 place to test.
+
+## 55. On route 24f, the vision lead brakes as deep as the radar lead and often more steeply
+
+This repeats the item 54 test on all 11 of 24f's brake entries. The harness and settings are
+unchanged: `BLOT=1 LPCUT=1`, mode `x0+src+pa+oat`, and a vision run with `VISLEAD=1`. The route
+was split into seven groups of 2–3 segments, and each group was warmed about 10 s before its
+first entry.
+
+**The harness reproduces the car on 24f.** Six of the seven groups pass the negative-control gate
+(p99 below 0.05):
+
+| group | A | B | C | D | E | F | G |
+|---|---|---|---|---|---|---|---|
+| p99 | 0.016 | 0.002 | 0.006 | 0.005 | 0.001 | 0.032 | 0.001 |
+
+Group A has a single frame at 0.59, during warm-up. On every entry, the radar (base) metrics match
+the logged ones to 0.03.
+
+The table covers the window [peak − 4 s, peak + 1 s]:
+
+- **min:** the lowest aTarget in the window.
+- **t−1, t−2:** the first times aTarget reaches −1 and −2.
+- **slope:** the steepest aTarget change over 0.25 s, in m/s³.
+
+| peak | radar min | vision min | radar t−1 / t−2 | vision t−1 / t−2 | radar slope | vision slope |
+|---|---|---|---|---|---|---|
+| 99.0 | −1.57 | −1.57 | 97.96 / – | 97.96 / – | −0.65 | −0.65 |
+| 100.0 | −1.59 | −1.59 | 97.96 / – | 97.96 / – | −0.65 | −0.65 |
+| 151.2 | −0.91 | −0.91 | – | – | −4.70 | −4.59 |
+| 170.2 | −3.47 | −3.45 | 169.31 / 169.56 | 168.16 / 169.36 | −4.54 | −5.13 |
+| 174.6 | −2.47 | −2.50 | 170.62 / 170.62 | 170.62 / 170.62 | −1.66 | −3.53 |
+| 272.7 | −3.45 | −3.50 | 271.52 / 272.07 | 270.72 / 272.02 | −6.53 | −7.47 |
+| 367.4 | −3.47 | −3.45 | 363.42 / 363.42 | 363.42 / 363.42 | −3.89 | −4.12 |
+| 449.1 | −2.09 | −2.58 | 448.33 / 448.78 | 448.13 / 448.33 | −2.86 | −5.12 |
+| 595.7 | −2.47 | −2.42 | 594.48 / 595.03 | 594.43 / 594.83 | −2.09 | −5.72 |
+| 699.4 | −1.25 | −1.20 | 698.74 / – | 698.64 / – | −0.67 | −3.62 |
+| 731.9 | −3.46 | −3.50 | 731.24 / 731.64 | 730.44 / 731.39 | −6.89 | −5.94 |
+
+- **Depth:** the depth is the same (median difference 0.00). Four entries bottom out near −3.5
+  either way, which is the brake limit, so the lead source does not set how deep they go.
+- **Timing:** the vision lead reaches −1 and −2 at the same time or earlier. For −2 its median
+  lead is 0.20 s, and at 170.2 it reaches −1 1.15 s earlier. On 251 the radar lead was about
+  one frame earlier.
+- **Steepness:** the vision lead is steeper in 7 of the 11 entries, gentler in 1 (731.9), and
+  equal in 3. The median radar − vision slope is +0.60 m/s³.
+
+**Reading (replay only).** Across 12 entries on two radar routes, 251 and 24f, the radar lead
+never makes the planner brake harder, earlier or more steeply than the vision lead would have on
+the same drive. That rules out one explanation: the lead measurement that radar supplies is not what
+makes these entries abrupt. On 24f the vision lead is the more reactive of the two.
+
+This matters for the "too reactive" symptom when compared with 242 (no radar; aTarget entry-rate
+p50 −0.41, against −1.04 on 24f). That gap is not caused by the planner reacting to a radar
+lead in place of a vision one. The likely difference is the situations each route contains:
+closing speed, cut-ins and headway at onset. It could also come from something that differs
+between the drives but not the lead source, such as personality, the BLoTv3 pad or matched-follow
+exits.
+
+Limits:
+- The test is per-frame, anchored to x0, so the car's actual response is not simulated.
+- The vision lead uses radard's vision-only estimate, not a real no-radar drive.
+- The evidence is replay only.
+
+**Next.** Match entries between 242 and the radar routes by their situation at onset (vEgo,
+closing speed, headway, whether a lead was newly acquired), then compare the entry rates within
+matched pairs. Do not propose a planner fix until a matched comparison shows a gap that remains.
