@@ -4306,3 +4306,48 @@ Tests: `selfdrive/controls/tests` gives 1256 passed, 4 skipped, 3 failed; the 3 
 pre-existing ones (latcontrol bolt, latcontrol palisade, `test_force_stop_jerk_scale_is_platform_specific`).
 Five tests for the deleted guards were removed. The 9 `ruff` findings on the planner and its test file
 all lie outside the diff hunks and are pre-existing. Not road-validated.
+
+## 65. Guard trim batch 2 (vision-lead caps) replayed on three vision-only brake events; only the untracked slow-lead cap buys gap; replay only
+
+Batch 2 was deferred in STATUS 64 because route 24f has radar leads everywhere. Three vision-only
+events were replayed closed-loop (CL_TAU 0.35, lead non-reactive, branch planner at 820c58ca3
+mounted over the built tree), with each guard turned off one at a time through a replay-harness
+monkeypatch (the branch has no kill switches):
+
+| Event | Route | Build | What happens |
+|---|---|---|---|
+| V 348.7 s | `00000257--50424c1a3a` | 8c9f5dc66 | vision lead 44 m closing 7.2 m/s at 12.5 m/s, radar 0; logged peak aTarget −2.55 |
+| W 787.7 s | `0000020c--4712c9cce5` | d8604bd20 | untracked vision lead 70–90 m closing 6–9 m/s at 13.5 m/s, `src=cruise` throughout |
+| X 221.0 s | `0000020c--4712c9cce5` | d8604bd20 | vision lead 78 → 45 m at 21.6 m/s, tracked as `lead1`/`lead0` |
+
+Route 20c has no radar lead in any of its 5792 longActive lead frames. Closed loop, minGap m / minTTC s / peak cmd:
+
+| Guard off | V | W | X |
+|---|---|---|---|
+| base | 12.24 / 4.13 / −2.41 | 41.28 / 6.56 / −0.85 | 22.07 / 3.71 / −3.50 |
+| `get_vision_lead_approach_cap` | 12.06 / 4.09 / −2.42 | = | = |
+| `get_vision_untracked_slow_lead_cap` | = | **17.22 / 5.55 / −1.06** | 21.99 / 3.68 / −3.50 |
+| `get_vision_untracked_approach_lift_cap` | = | = | = |
+| `get_vision_slow_stopped_lead_cap` | = | = | = |
+| `get_tracked_vision_model_brake_floor` + `_cap` | = | = | = |
+| `tracked_vision_lead_approach_needs_immediate_brake` | 12.06 / 4.09 / −2.42 | = | = |
+| all six off | 12.06 / 4.09 / −2.42 | 17.21 / 5.55 / −0.71 | 21.99 / 3.68 / −3.50 |
+
+"=" means the closed-loop trace is byte-identical to base.
+
+KEEP `get_vision_untracked_slow_lead_cap`: on W it is the only thing that brakes. With it off the
+planner holds 11.5–12.3 m/s while the untracked lead closes from 70 m to 34 m, minimum gap 41 → 17 m
+and TTC 6.6 → 5.6 s. MPC never took that lead (`src=cruise` for the whole event), so nothing else
+would have.
+
+Near-inert: `get_vision_lead_approach_cap` and `tracked_vision_lead_approach_needs_immediate_brake`
+(same mechanism) advance the brake onset by one frame on V (cmd −1.30 instead of −1.00 for 0.1 s at
+348.7 s); 0.18 m of gap, 0.04 s of TTC, then identical. Not exercised on W or X.
+
+Not exercised on any of the three events: `get_vision_untracked_approach_lift_cap`,
+`get_vision_slow_stopped_lead_cap`, `get_tracked_vision_model_brake_floor` / `_cap`. None of the
+events had a stopped vision lead, so the slow-stopped cap in particular has still not been tested.
+
+No code changed in this section. Deletion of the near-inert or unexercised guards waits for the
+user's decision. Harness: `~/.claude/jobs/3c03581d/tmp/{vcl257.sh,vcl20c.sh,replay.py}` with
+`GT_VLA/VUS/VUL/VSS/TVM/TVI=0` env hooks; `EVG="V:347.5:353.5" python3 vclcmp.py ...`.
