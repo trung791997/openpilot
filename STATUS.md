@@ -4124,3 +4124,48 @@ would not change these brakes.
 harshness follows the radar-measured lead braking. The -0.5 hold is ECO, and a -1.0 floor removes
 the hold without deepening the peak. The pre-brake is a two-sided trade-off, not a clean trim.
 The harness also cannot show the closed-loop cost of braking later.
+
+## 61. ECO soft floor drops to -1.0 while a lead is closing (branch `claude/eco-lead-floor`); closed loop keeps more gap
+
+*Replay evidence only (open and closed loop), route 24f, groups B-F. Not road-driven.*
+
+**Change** (`longitudinal_planner.py`, acc mode): when `radarState.leadOne` has status and
+(vRel < -0.3 or aLeadK < -0.25), `accel_limits[0] = min(minAcceleration, A_CRUISE_MIN)`. The ECO (-0.5)
+and traffic (-0.35) profiles are unchanged with no lead, or with a steady lead.
+
+**Open loop** (mode `src`, ego speed from the log): the -0.5 hold goes from 0.60 to 0.05 s at 170.2,
+0.20 to 0.00 at 449.1, and 0.20 to 0.00 at 595.7. 367.4 had no hold. 272.7 goes 1.05 -> 0.85 s: the
+remaining 268.9-269.7 is steady-follow ECO (vRel ~0, aLeadK -0.1..-0.2), 3 s before the brake, and is
+left alone on purpose. Peaks are unchanged.
+
+**Closed loop** (new harness env `CL_T`). From CL_T = pk-6 the ego acceleration follows
+`output_a_target` through a first-order lag (tau 0.35 s), and vEgo/aEgo are overridden. The lead
+position and speed come from the log, so the lead does not react to us, and radarState dRel/vRel are
+recomputed against the simulated ego. modelV2 and aLeadK stay as logged. Metrics cover pk-6 .. pk+8.
+The first 3 s of every run match between variants, which is the sanity check.
+
+| brake | variant | min gap m | min TTC s | peak cmd | steepest 0.5 s rate of a | t(a<-1.5) s |
+|---|---|---|---|---|---|---|
+| 170.2 | base / **(a)** / PB_OFF | 18.0 / **19.2** / 17.8 | 5.16 / **5.73** / 5.05 | -3.45 / -3.44 / -3.30 | -3.14 / **-2.84** / -2.88 | 3.30 / 3.10 / 3.35 |
+| 272.7 | base / **(a)** / PB_OFF | 18.9 / **20.6** / 18.4 | 5.99 / **6.31** / 5.78 | -3.48 / -3.48 / -3.45 | -3.28 / -3.26 / -3.56 | 2.40 / 2.36 / 2.39 |
+| 367.4 | base / **(a)** / PB_OFF | 28.8 / **29.5** / 27.4 | 4.84 / 4.87 / 4.54 | -3.48 / -3.47 / -3.45 | -1.62 / -1.64 / -1.78 | 6.10 / 5.80 / 6.10 |
+| 449.1 | base / **(a)** / PB_OFF | 6.5 / **9.2** / 6.5 | 3.07 / **4.36** / 3.07 | -1.74 / -1.72 / -1.74 | -1.36 / **-1.18** / -1.36 | 0.39 / 0.45 / 0.39 |
+| 595.7 | base / **(a)** / PB_OFF | 42.1 / 42.5 / 41.0 | 8.86 / 9.32 / 8.62 | -2.29 / -2.10 / -2.11 | -1.58 / -1.62 / -1.26 | 1.25 / 1.26 / 1.00 |
+
+(a) + PB_OFF sits between the two in every event (vcl.sh `uapb`).
+
+**Reading (replay).** (a) keeps more gap and TTC in all five brakes, with the same peak, and the jerk
+is equal or softer (170.2 and 449.1 soften by about 0.2-0.3). It starts braking 0.2-0.6 s earlier at
+about -0.6..-1.0 instead of waiting at -0.5. PB_OFF gives less gap in every event and a softer rate
+in only 2 of 5. It is **not** a trim candidate: the pre-brake is buying distance. Harness limits:
+- the lag model is not the car's actuator;
+- the lead is replayed, not reactive;
+- the model and aLeadK inputs are not re-simulated.
+
+**Tests:** `selfdrive/controls/tests` gives "3 failed, 1263 passed" both with and without the change,
+the same three pre-existing failures:
+- `test_latcontrol`: bolt low-speed center output;
+- `test_latcontrol`: palisade center taper;
+- `test_starpilot_planner::test_force_stop_jerk_scale_is_platform_specific`.
+
+No unit test is added yet. Nothing is pushed to `ns-bosch-radar-testing`.
