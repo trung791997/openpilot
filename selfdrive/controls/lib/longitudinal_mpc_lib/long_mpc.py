@@ -138,8 +138,11 @@ LEAD_ACCEL_TAU = 1.5
 FCW_MIN_MODEL_PROB = 0.9
 FCW_MIN_CLOSING_SPEED = 0.5
 FCW_MAX_TTC = 4.0
-MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE = 0.5
-MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC = 7.0
+# Closer to FrogPilot HumanFollowing: the model lead path falls back to the raw aLeadK
+# extrapolation only on a short closing TTC. The former raw lead-brake guard (aLeadK < -0.5) and
+# 7 s TTC guard tripped in every bookmarked 24f brake and produced the felt -3.5 peaks. Closed-loop
+# replay (STATUS 62/63): peaks -3.45 -> -1.9..-2.3, min TTC >= 4.25 s. Replay only, not road-validated.
+MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC = 3.0
 
 
 # Fewer timestamps don't hurt performance and lead to
@@ -181,15 +184,12 @@ def build_model_lead_trajectory(model_lead, radar_lead, v_ego):
     return None
 
   # The model path is a comfort prediction, not the raw safety measurement.
-  # When the measured lead is already braking or the gap is closing quickly,
-  # keep the legacy raw-lead path so an optimistic model horizon cannot delay
-  # the first braking response.
-  raw_lead_brake = max(0.0, -float(getattr(radar_lead, "aLeadK", 0.0)))
+  # When the gap is closing with a short TTC, keep the legacy raw-lead path so
+  # an optimistic model horizon cannot delay braking that is already urgent.
   closing_speed = max(0.0, float(v_ego) - raw_v_lead)
   ttc = raw_d_rel / max(closing_speed, 1e-3) if closing_speed > 0.1 else float("inf")
 
-  if (raw_lead_brake > MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE or
-      (closing_speed > 0.75 and ttc < MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC)):
+  if closing_speed > 0.75 and ttc < MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC:
     return None
 
   # The model contributes future deltas only. This preserves raw lead source

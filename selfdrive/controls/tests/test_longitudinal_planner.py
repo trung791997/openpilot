@@ -631,8 +631,15 @@ def test_model_lead_trajectory_falls_back_without_raw_lead_or_valid_shape():
   assert build_model_lead_trajectory(short_model_lead, raw_lead, 20.0) is None
 
 
+def test_model_lead_trajectory_used_for_braking_lead_with_long_ttc():
+  # STATUS 62/63: a braking lead alone no longer forces the raw aLeadK extrapolation.
+  raw_lead = make_lead(status=True, d_rel=42.0, v_lead=18.0, a_lead=-4.0, model_prob=0.99)
+  _, model_lead = make_model_lead()
+  assert build_model_lead_trajectory(model_lead, raw_lead, 20.0) is not None
+
+
 @pytest.mark.parametrize("d_rel,v_lead,a_lead", [
-  (42.0, 18.0, -0.6),
+  (10.0, 15.0, 0.0),
   (8.0, 0.0, 0.0),
 ])
 def test_model_lead_trajectory_falls_back_for_urgent_raw_lead(d_rel, v_lead, a_lead):

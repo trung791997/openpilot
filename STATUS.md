@@ -4210,3 +4210,32 @@ falls by about a third and the jerk by about half. The cost is 1-7 m of gap and 
 - the lead is not reactive.
 
 This is a safety-margin trade and it is not decided here. No code change is made.
+
+## 63. Model lead path keeps only a 3 s closing-TTC guard (closer to FrogPilot HumanFollowing); replay only
+
+Following 62, and at the user's request (goal: FrogPilot-like following, fewer guards that cause abrupt
+braking), `build_model_lead_trajectory` (`long_mpc.py`) no longer falls back to the raw aLeadK
+extrapolation because the lead is braking (`MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE` 0.5 is removed). The
+closing-TTC fallback is reduced from 7 s to 3 s (`MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC`); it still needs
+closing > 0.75 m/s.
+
+Closed-loop sweep on the five bookmarked 24f brakes, with the 61 ECO floor in place (CL_TAU 0.35):
+
+| guard (lead-brake / TTC)  | peak cmd (m/s^2)                      | min TTC (s)                  |
+|---------------------------|----------------------------------------|------------------------------|
+| 0.5 / 7 (old)             | -3.44 / -3.48 / -3.47 / -1.72 / -2.10  | 5.73 / 6.31 / 4.87 / 4.36 / 9.32 |
+| 1.5 or 2.5 / 7            | about the same as old                  | -                            |
+| 4 / 3                     | partial improvement                    | -                            |
+| none / 3 (this change)    | -1.93 / -2.26 / -2.28 / -1.15 / -1.00  | 4.36 / 6.03 / 4.31 / 4.25 / 8.93 |
+
+Limits:
+- **The 3 s TTC guard never trips in these five events, so its effect is not tested by replay.**
+- The model lead deltas and the lead are replayed from the log and do not react to the simulated ego.
+- Min TTC is lower than with the old guards on three of the five brakes. This trades margin for comfort.
+- Replay evidence only. Nothing is road-validated. On the next drive, watch hard lead brakes, cut-ins
+  and late stopped-car approaches. The concern is braking that starts later than before.
+
+Tests: `test_model_lead_trajectory_used_for_braking_lead_with_long_ttc` is added. The urgent-fallback
+case now uses a closing lead at a 2 s TTC. The `selfdrive/controls/tests` run gives 1264 passed and 3
+failed, and all 3 failures were already failing before this change (latcontrol bolt, latcontrol
+palisade, `test_force_stop_jerk_scale_is_platform_specific`).
