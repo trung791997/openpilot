@@ -3396,3 +3396,50 @@ the peak, not in the first three frames. Do not quote the 0.3 s figure as the re
 - **No road evidence of any kind for a change.** Nothing here has been replayed and no code has
   been touched. The next step is a replay that reproduces the entry-rate difference on 251 with
   the radar path instrumented, not an edit.
+
+## 47. The abrupt radar brake entry is generated in the PLANNER, not downstream, and it is not track handover
+
+Item 46 established that radar brake episodes reach their peak roughly twice as fast as no-radar
+ones, but measured only the published `aEgo` — an output-side statistic that cannot tell a planner
+cause from an actuator/brake-response one. This item measures the plan itself.
+
+**Method.** `entry_dump.py` (job-local, not committed). Same episode definition as item 46
+(`aEgo < -1.5` held > 0.15 s, engaged, `vEgo > 5`). For each episode, the entry rate is computed
+independently for `aEgo` and for `aTarget` (the planner's published target), each with its own
+onset: peak = the signal's own minimum in the episode, onset = walking back from that peak while
+the signal stays below -0.5, at most 4.0 s. **Note the definitional refinement:** item 46 walked
+back from the episode start, this walks back from the peak. That shifts the no-radar `aEgo` p50
+from -0.74 to -0.65 and the pooled radar p50 from -1.54 to -1.55; the separation is unchanged.
+
+| | n | `aEgo` entry p50 | `aTarget` entry p50 | ratio |
+|---|---|---|---|---|
+| 242 NO RADAR | 25 | -0.65 | -0.41 | 0.63 |
+| 251 RADAR | 3 | -1.66 | -1.79 | 1.08 |
+| 24f RADAR | 11 | -1.40 | -1.04 | 0.75 |
+| pooled RADAR | 14 | **-1.55** | **-1.25** | 0.81 |
+
+Mann-Whitney U (tie-corrected normal approximation), pooled radar vs no-radar:
+- `aEgo`: U=106.0, z=-2.02, **p=0.043**
+- `aTarget`: U=85.0, z=-2.64, **p=0.008**
+
+**The plan separates more strongly than the output.** `aTarget` already carries the full entry
+asymmetry — about 0.8 of the `aEgo` rate on radar routes and 0.63 on the no-radar route, so the
+ratio is if anything *lower* where the entry is slow. There is no configuration-dependent
+downstream amplification: whatever makes a radar brake abrupt is present in the planner's own
+commanded target before the actuator sees it. The planner investigation is pointed the right way.
+
+**Track handover is ruled out as the driver.** Over each entry ramp the dump counted distinct
+`tid1` values and the largest frame-to-frame step in `d1`, `vRel1`, `nat_d1`, `nat_vRel1`. Of the
+14 radar episodes, 11 ran on a single track id with steps under 2 m and 2 m/s. The three that did
+show handover are the three with the *slowest* entries: 24f t=99.01 and t=100.01 (4 ids, 28.50 m
+`d1` step, entry -0.80 and -0.62) and 24f t=367.38 (5 ids, 8.62 m and 7.44 m/s steps, entry
+-0.37). Every fast entry (-1.40 or steeper) occurred with `nTid=1`. A discontinuity at handover
+does exist in the data and is worth its own item, but it is anti-correlated with abrupt entry.
+
+**What this does NOT establish.** No mechanism inside the planner is identified — this narrows the
+search to the planner and eliminates one of item 46's four candidates, nothing more. Two candidates
+remain untested: radar `vRel` driving a larger `x_obstacle` step (`long_mpc.py:1087`) and the
+BLoTv3 jerk-cost softening firing more often. The item-45 ECO clamp remains a phase-lag-only
+effect and cannot attenuate, so it cannot be the cause of a *faster* entry. n is still 14 radar
+episodes over two routes with 251 contributing three, the speed/traffic/duration/`src` confounds
+of item 45 are unchanged, and there is no road evidence and no replay of any kind.
