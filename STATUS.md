@@ -3443,3 +3443,59 @@ BLoTv3 jerk-cost softening firing more often. The item-45 ECO clamp remains a ph
 effect and cannot attenuate, so it cannot be the cause of a *faster* entry. n is still 14 radar
 episodes over two routes with 251 contributing three, the speed/traffic/duration/`src` confounds
 of item 45 are unchanged, and there is no road evidence and no replay of any kind.
+
+## 48. BLoTv3 is exonerated: neither supervisor dial is active on a fast brake entry. Only the x_obstacle path remains.
+
+Item 47 narrowed the abrupt radar brake entry to the planner. Item 46 named two surviving
+candidate causes inside it: the BLoTv3 supervisor softening its jerk cost more often, or radar
+`vRel` driving a larger `x_obstacle` step. This item tests the supervisor and clears it.
+
+**First, a correction to the method I had planned.** The checkpointed plan was to read the
+supervisor's `t_follow_pad` as `desFollow - tFollow`. **That is wrong: `desFollow` is a distance in
+metres, not a following time.** Across all three routes `desFollow - vEgo*tFollow` has p50 +3.1 to
++7.4 m and p10/p90 of roughly -9/+19 m, and `desFollow` is exactly 0.00 on every `src=cruise`
+frame — it is the desired follow *gap*. Any figure of the form `desFollow - tFollow` is
+meaningless; the first run of `pad_entry.py` produced such figures (pad "p50 41.55", U tests at
+p=0.965 and p=0.176) and they are **withdrawn, not evidence of anything.**
+
+**The pad is directly observable as `tFollow` itself**, whose base is 1.45 s on these routes.
+
+| | engaged frames | `tFollow` = 1.45 | other values | entry ramps with `tFollow` > 1.45 |
+|---|---|---|---|---|
+| 242 NO RADAR | 17834 | 98.55% | 26 distinct values, 0.79–1.42, 1–5 frames each | **0 / 25** |
+| 251 RADAR | 2721 | 100.00% | none | **0 / 3** |
+| 24f RADAR | 9660 | 84.93% | 1.75 (14.93%), 1.25 (9 fr), 1.65 (1 fr), 0.00 (4 fr) | **1 / 11** |
+
+The one hit is 24f t=449.08 (entry -2.69, pad +0.30). It is almost certainly **not** a supervisor
+pad: 24f's 1.75 s frames form a single 1442-frame block with one intermediate frame at 1.65 in the
+whole route, which is a step change in the gap setting, not a pad slewed at `ONSET_RATE_UP` = 0.8/s
+(that would leave roughly six intermediate frames per transition). The scatter of sub-1.45 values
+on 242 is below the base and so cannot be a pad at all. **On no route does the t_follow pad
+participate in a brake entry.**
+
+**The jerk cost is observable too, and it clears the supervisor on the other dial.** `accJerk` is
+250 and `spdJerk` 5.50 for 98–99% of engaged frames; the softened values are `accJerk` 50 (0.2x) on
+235 frames of 242 and 148 of 24f, 125 (0.5x) on 9 frames of 24f, and `spdJerk` 2.75 on those same 9.
+**251 — the route with the fastest entries in the corpus — never softens at all.** Counting
+softened frames inside each entry ramp:
+
+- 242: 4 ramps, at t=137.72 / 138.22 / 138.82 / 139.71, entry rates **-0.33 / -0.28 / -0.24 / -0.20**
+- 24f: 2 ramps, at t=99.01 / 100.01, entry rates **-0.80 / -0.62**
+- 251: **none**
+
+Those six are the six slowest entries in the whole 39-episode corpus. As with track handover in
+item 47, softening is not merely absent from the fast entries — it is **anti-correlated** with
+abruptness, and it fires slightly more often on the no-radar route (1.34% of frames vs 1.56% on 24f
+and 0% on 251). BLoTv3 does not cause the fast entry on either of its dials.
+
+**What this leaves.** One candidate from item 46 survives: radar `vRel1` driving a larger or
+steppier `x_obstacle` (`long_mpc.py:1087`) than vision `vRel1` does. That is now the whole
+remaining hypothesis and it has not been tested.
+
+**What this does NOT establish.** The softened-frame counts are an association over 39 episodes,
+not a causal test, and `jerk_scale` itself is not logged — this reads it through `accJerk`, which
+also carries whatever else scales the MPC cost. `0.2x` does not correspond to any bound in
+`blotv3.py` (`JERK_SCALE_MIN` is 0.3, which would give 75), so the mapping from `jerk_scale` to
+`accJerk` is assumed, not verified. n is still 14 radar episodes over two routes with 251
+contributing three; the speed/traffic/duration/`src` confounds of item 45 are unchanged; and there
+is no road evidence and no replay of any kind.
