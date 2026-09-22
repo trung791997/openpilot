@@ -2972,3 +2972,104 @@ under NumPy 2.5 and the run silently shrinks. `manager.py` carries 5 pre-existin
 (ISC002, E501, PIE810); none are on these lines and none were touched.
 
 Static and unit-test evidence only. **No replay and no road validation of either change.**
+
+## 42. Two bookmarked drives (24f, 251): the semi-hard brake is the −3.5 rail, and the driver's marks land on it — 2026-09-21
+
+Routes `0000024f--8c147bae2e` (19 segments, 1082 s) and `00000251--0f743e380e` (15 segments, 888 s),
+both fetched on 2026-09-21. **First drives in this project with usable driver bookmarks.**
+
+### Configuration (read from `initData`, per the D-053 lesson)
+
+Both routes: `gitBranch = ns-bosch-radar-testing`, commit `350570847`, `dirty = False`,
+**`BlotV3 = 1`** (supervisor ON, unlike 23f), `LongitudinalPersonality = 1` (Standard),
+`StandardFollow = 1.6`, `StandardFollowHigh = 1.2`, `CustomPersonalities = 0`.
+**Neither route contains the pursuit tail** (`f7a85a35a`, committed after these drives).
+
+### The bookmarks are good instruments
+
+`userBookmark` presses: 24f at 2:53.24, 4:37.36, 6:09.52, 7:34.11, 9:57.02, 10:25.57; 251 at
+3:57.13, 6:07.46, 8:27.71. **Every mark follows its braking episode by 1–8 s**, against ~26 s on 24d.
+Search a window *backwards* from the mark, not at it, but the lag is now small enough that
+attribution is unambiguous.
+
+### The marks land on rail-pinned episodes
+
+Hard-brake episodes = `longActive`, `aTarget < −1.0`, held ≥ 0.2 s. "Rail" = `aTarget <= −3.40`.
+
+| route | episodes | rail-pinned | rail rate |
+|---|---|---|---|
+| `0000024f` | 14 | 3 | 21% |
+| `00000251` | 4 | 1 | 25% |
+| `0000024d` (item 39.1) | 23 | 10 | 43% |
+
+Mapping marks to episodes:
+
+| mark | episode | duration | `aTarget` min | time at rail |
+|---|---|---|---|---|
+| 24f 2:53.24 | 2:49.37 | 2.3 s | **−3.47** | 0.30 s |
+| 24f 4:37.36 | 4:31.57 | 3.1 s | **−3.45** | 0.90 s |
+| 24f 6:09.52 | 6:01.88 | 6.5 s | **−3.47** | 0.45 s |
+| 24f 7:34.11 | 7:28.33 | 1.6 s | −2.09 | — |
+| 24f 9:57.02 | 9:54.54 | 1.9 s | −2.46 | — |
+| 24f 10:25.57 | 10:25.35 | 0.4 s | −1.08 | — |
+| 251 3:57.13 | 3:55.50 | 3.3 s | **−3.47** | 0.85 s |
+| 251 6:07.46 | 6:05.01 | 1.0 s | −3.20 | — |
+| 251 8:27.71 | 8:22.51 | 0.4 s | −1.29 | — |
+
+**All four rail-pinned episodes across both routes are bookmarked**, and 24f's three rail events are
+its only three. The unbookmarked 24f 12:11.29 touched the rail for one frame (0.05 s). So the
+sensation the driver reports **is the rail**, and the driver's discrimination is sharper than the
+statistics: the four worst episodes by this metric are exactly the four they marked.
+
+### The mechanism is NOT 24d's estimator divergence
+
+Traced 24f 2:49.37 frame by frame (centred ±0.5 s difference on `d1`):
+
+| t−onset | `vEgo` | `d1` | `y1` | centred slope | `leadOne.vRel` | U11 `vRel` | `aTarget` |
+|---|---|---|---|---|---|---|---|
+| −2.78 | 17.57 | 47.3 | −0.68 | −0.49 | −0.06 | −0.06 | +0.46 |
+| −2.33 | 17.85 | 46.8 | −0.62 | **−2.32** | −0.64 | −0.64 | +0.26 |
+| −2.03 | 18.03 | 46.0 | −0.57 | −2.51 | −1.23 | −1.23 | −0.41 |
+| −1.43 | 17.92 | 44.0 | −0.43 | −2.29 | −2.12 | −2.12 | −0.50 |
+| −0.68 | 17.14 | 42.8 | −0.23 | **−3.04** | −1.69 | −1.69 | −0.64 |
+| −0.23 | 16.63 | 40.8 | −0.14 | **−4.68** | −2.95 | −2.95 | −0.81 |
+| −0.08 | 16.46 | 39.4 | −0.14 | −5.22 | −4.00 | −4.00 | −0.94 |
+| +0.52 | 15.21 | 37.3 | −0.11 | −2.90 | −3.59 | −3.59 | **−3.47** |
+
+Three things, in order of confidence:
+
+1. **`leadOne.vRel` and the raw U11 `vRel` are identical to two decimals through the whole episode.**
+   There is **no estimator divergence on this route.** 39.1's finding — ours converging ~1.6 s ahead
+   of raw U11 — does **not** reproduce here, so it is not a general property of the Bosch-A path. Do
+   not cite 39.1's convergence advantage as a fleet-wide claim; on 24f the two are the same signal.
+2. **The radar under-read still happens, but it is half the size of 24d's.** Blind window ≈ **1.3 s**
+   (−2.8 to −1.5) with a peak under-read of ≈ **1.7 m/s**, and a second divergence at −0.7 to −0.2
+   reaching ≈ 2.4 m/s. 24d's corrected figures were ~0.8 s and ~4.3 m/s. So latency is present and
+   smaller, yet the outcome (rail) is the same — **latency alone does not explain the rail.**
+3. **The planner under-reacts to data it already has, then catches up all at once.** At t = −2.03 the
+   measured slope is −2.51 and `vRel` is already −1.23, and `aTarget` is only −0.41. It then moves
+   −0.94 → **−3.47 in 0.6 s**. The lead is a clean, continuously-tracked, dead-centre target the
+   whole time (`tid1 = 48` unbroken, `mProb1 = 0.999`, `y1` −0.8 → 0.0, `d1` 47 → 36 m). This is not
+   a dropout, not a cut-in, and not a track change.
+
+**Consequence: the tuning target moves.** 24d pointed at sensor latency. 24f points at the planner's
+*response shape* — it sits on a developing closure, then demands everything in one ramp and clips the
+limit. That is a jerk-cost / ramp-rate question, and it is the first evidence on this branch that
+argues for touching one.
+
+### Not established, and deliberately not acted on
+
+- **No cut-in has been isolated yet.** The driver reports the brake sometimes fires when being cut
+  off, inconsistently. All four rail episodes examined here are continuous-track cases, so the
+  cut-in population is still unsampled. It is a different code path (track initialisation, not
+  `vRel` convergence) and needs its own pass.
+- **Why `aTarget` lags its own `vRel` input is not explained.** Item 39.1 assumed late detection was
+  sufficient; on 24f it is not. Candidates not yet separated: the jerk cost, `danger`/`accJerk`
+  weighting, or a `t_follow` interaction. **Do not tune until the term is identified.**
+- **Driving personality and safety-gap bias were deliberately left unchanged** for these drives, so
+  24f/251 remain comparable with the other 16 routes. Both act on base `t_follow` and would confound
+  the BLoTv3 pads. Changing either would mask this finding rather than fix it.
+- **No claim that BLoTv3 caused or worsened this.** `BlotV3 = 1` on both routes, but there is no
+  matched-configuration comparison, and the supervisor only touches `jerk_scale` and `t_follow`.
+
+Route data cited by ID only. Offline log analysis; no replay and no road validation of any change.
