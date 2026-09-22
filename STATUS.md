@@ -3986,3 +3986,46 @@ without also blunting correct braking.
 drive and a no-radar drive over the same road and in similar traffic. Alternatively, the driver
 could timestamp the moments that felt too reactive (bookmarks), so the analysis starts from the
 felt events rather than from every brake entry.
+
+**Correction to "Next" (2026-09-22).** That paragraph is wrong. 24f and 251 already carry driver
+bookmarks, analysed in item 42: every rail-pinned (-3.5) brake on both routes is bookmarked and
+nothing else is. The felt events are known; item 57 starts from them.
+
+## 57. Removing the ECO output floor does not soften the bookmarked 24f brakes; it makes them earlier and sometimes harder
+
+Replay only (harness `replay.py`, `BLOT=1 LPCUT=1`, new env `MINACC_FORCE` overriding the fed
+`starpilotPlan.minAcceleration`), route 24f, the five bookmarked brakes that fall inside the
+replayed groups (170.2, 272.7, 367.4, 449.1, 595.7; the ~625 mark is past the end of group F).
+Baseline replays pass the gate (p99 0.0008-0.032). No repo code changed.
+
+Times are seconds relative to the bookmarked peak; rate is the steepest 0.5 s drop of aTarget.
+
+| event | floor | first < -0.3 | first < -1.5 | peak | rate |
+|---|---|---|---|---|---|
+| 170.2 | ECO -0.5 (as driven) | -2.89 | -0.74 | -3.47 | -4.17 |
+| | -1.0 (STANDARD) | -2.89 | -0.74 | -3.47 | -4.17 |
+| | -3.5 (none) | -2.89 | -0.99 | -3.50 | -4.92 |
+| 272.7 | ECO | -4.38 | -0.78 | -3.45 | -4.25 |
+| | STANDARD | -4.38 | -0.78 | -3.45 | -4.25 |
+| | none | -4.38 | -0.93 | -3.50 | -4.59 |
+| 367.4 | ECO | -4.98 | -4.98 | -3.47 | -2.46 |
+| | none | -4.98 | -4.98 | -3.50 | -2.70 |
+| 449.1 | ECO | -3.92 | -0.62 | -2.09 | -2.55 |
+| | STANDARD | -3.92 | -0.62 | -2.09 | -1.93 |
+| | none | -3.92 | -1.17 | **-3.50** | **-6.10** |
+| 595.7 | ECO | -1.72 | -0.97 | -2.47 | -1.94 |
+| | none | -1.72 | -1.17 | -2.52 | -2.50 |
+
+**Reading.** Braking onset (< -0.3) is identical in every case: the ECO floor does not delay the
+start of braking. Removing it moves the hard part 0.15-0.55 s earlier but leaves peak and slope
+the same or steeper, and on 449.1 it turns a -2.09 brake into a -3.50 rail brake at -6.1 m/s3.
+The STANDARD floor (-1.0) is indistinguishable from ECO except for 449.1, where it is gentler.
+So the hold-then-rail shape of items 43/45 is the MPC's own solution arriving late and hard; the
+output floor only trims its first ~0.2 s. **Relaxing or removing the ECO floor is not a fix** and
+would make at least one bookmarked brake harsher (replay evidence).
+
+**Next.** The lateness is upstream of the output clip. The candidate already on record is the
+follow policy (`lead_follow_policy.apply()`, via `longitudinal_planner.py:3094`): while `_matched`
+is true it replaces the MPC's braking with `prev + up_step` and a brake floor, then releases in one
+frame (251 t=365.89: -2.58 -> -1.82). Next replay counterfactual: disable the matched floor and
+transition target on the same five events, and see whether braking starts earlier and gentler.
