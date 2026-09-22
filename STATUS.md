@@ -3499,3 +3499,78 @@ also carries whatever else scales the MPC cost. `0.2x` does not correspond to an
 `accJerk` is assumed, not verified. n is still 14 radar episodes over two routes with 251
 contributing three; the speed/traffic/duration/`src` confounds of item 45 are unchanged; and there
 is no road evidence and no replay of any kind.
+
+## 49. The x_obstacle path is exonerated too: the radar obstacle is SMOOTHER, not steppier. All four candidates from item 46 are dead.
+
+Item 48 left one candidate standing: radar `vRel1` driving a larger or steppier `x_obstacle`
+(`long_mpc.py:1087`) than vision `vRel1` does. It does not. The radar obstacle is measurably
+*less* jagged than the vision obstacle, in the opposite direction to the hypothesis.
+
+**What the solver actually sees.** Traced from the source, not assumed. At horizon index 0 the
+lead cost residual (`long_mpc.py:374`) reduces to
+
+    e = (x_obstacle - x_ego) - desired_dist_comfort
+      = dRel + v_lead^2/(2*CB) - ( v_ego^2/(2*CB) + t_follow*v_ego + STOP_DISTANCE )
+      = dRel - desired_follow_distance(v_ego, v_lead, t_follow)
+      = d1 - desFollow          <- both already logged, both in metres
+
+with `COMFORT_BRAKE = 2.5` and `STOP_DISTANCE = 6.0` (`:155-156`), the obstacle built at `:951`
+as `lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])`, and `process_lead` feeding
+it `lead.dRel` and `lead.vLead`. So `d(x_obstacle)/d(v_lead) = v_lead/2.5` metres per m/s -- **10 m
+of obstacle motion per 1 m/s of lead-speed error at 25 m/s.** That gain is real and is why the
+hypothesis was worth testing: radar `vRel` is a Doppler measurement, vision `vRel` a regression.
+
+The reconstruction was validated before use, the check item 48's premise did not get:
+`desFollow - recon` p50 -0.74 m (242) / -0.50 (251) / -0.45 (24f), p10/p90 within about +-2 m of
+gaps of 40-100 m. The small systematic offset is the `lead_v_filter` that `process_lead` applies
+to `v_lead` and the logged `desFollow` does not see.
+
+**Measurement** (`obst_entry.py`), over the same `aEgo` entry ramp `[k0,ka]` as items 47-48, per
+episode: the slope of `e`, of its geometric part `d1`, and of its lead-speed part `v_lead^2/5`;
+the slope of `vRel1` itself; and `jag`, the mean absolute second difference per frame, which
+measures steppiness independently of slope.
+
+|  | n | entry p50 | de/dt | d(d1)/dt | dV/dt | d(vRel)/dt | jag V | jag e |
+|---|---|---|---|---|---|---|---|---|
+| 242 NO RADAR | 25 | -0.65 | -1.51 | -2.44 | -7.75 | -0.38 | 1.743 | 2.400 |
+| 251 RADAR | 3 | -1.66 | +0.79 | -3.07 | -12.84 | -0.31 | 1.387 | 1.548 |
+| 24f RADAR | 11 | -1.40 | +0.33 | -2.91 | -1.24 | +0.57 | 0.582 | 1.195 |
+| pooled RADAR | 14 | -1.55 | **+0.33** | -3.07 | -5.33 | +0.35 | **0.867** | 1.244 |
+
+Mann-Whitney, pooled radar vs no-radar:
+
+- `de/dt`  U=230.0 z=+1.61 **p=0.107** -- not significant, and the sign is backwards: the residual
+  *grows* on radar entries while it shrinks on no-radar ones.
+- `d(d1)/dt` U=203.0 z=+0.82 p=0.412. `dV/dt` U=212.0 z=+1.08 p=0.279. `d(vRel)/dt` U=230.0
+  z=+1.61 p=0.107. None significant.
+- `jag V` U=100.0 z=-2.20 **p=0.028** -- significant, **radar SMOOTHER** (0.867 vs 1.743).
+- `jag e` U=124.0 z=-1.49 p=0.135, same direction.
+
+**The horizon, not just frame 0.** The residual above is only the first horizon point; the solver
+sees the whole trajectory that `extrapolate_lead` builds from `aLeadK` and `aLeadTau`. So the
+extrapolation input was checked the same way: `jag aLeadK1` p50 0.0871 radar vs 0.1116 no-radar,
+U=172.0 z=-0.09 **p=0.930**; `jag mProb1` p=0.128; `d(aLeadK)/dt` p=0.380. Nothing steppier on the
+radar side there either.
+
+**This is the third consecutive anti-correlation.** Track handover (item 47), jerk-cost softening
+(item 48) and now obstacle steppiness all appear *less* on the fast radar entries than on the slow
+no-radar ones. Three independent mechanisms have now been eliminated by the same shape of evidence.
+All four candidates enumerated in item 46 are dead: the ECO clamp (45: phase-lag only, cannot
+attenuate, so cannot produce a faster entry), track handover, the BLoTv3 dials, and the obstacle path.
+
+**What this does NOT establish.**
+- It does not explain the abruptness. Item 47's result stands -- the entry asymmetry is in
+  `aTarget`, so it is generated inside the planner -- but no mechanism inside the planner has been
+  found, and CSV-level inference has now exhausted its candidate list.
+- `de/dt` at n=14 vs 25 is underpowered; p=0.107 on a backwards sign is "no evidence", not
+  "evidence of no effect". The `jag` result is the one that carries a direction.
+- The reconstruction is horizon index 0 only. A mechanism that reshapes the *interior* of the
+  extrapolated trajectory without changing `aLeadK`, `aLeadTau`, `dRel` or `vLead` would be
+  invisible to this measurement. Reading the MPC's own solved trajectory requires replay.
+- Confounds unchanged from 43-48: different drives, traffic, and 251 contributing only 3 episodes.
+- No road evidence and no replay. Nothing here was validated against a driven car with real radar
+  targets, and no code has been changed.
+
+**Next move is therefore replay instrumentation, not further CSV work.** The quantities that would
+settle it -- `self.params[:,2]` per horizon point, the solved `a` trajectory, `lead_xv_0` -- are not
+in the log and must be captured by re-running the planner over the route.
