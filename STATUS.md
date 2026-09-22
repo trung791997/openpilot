@@ -3686,3 +3686,38 @@ widening it: if the inputs, the residual, the danger factor and the trajectory p
 smoother on radar while `aTarget` separates, the difference is in how the **solver** responds -- the
 runtime cost weights set in `set_weights()`, the slack penalties, or conditioning -- not in any
 quantity the log contains. Nothing short of running acados over both routes will separate those.
+
+## 51. The follow policy's matched-regime exit is real in one replay window but absent from the corpus. Fifth null.
+
+**Method (replay + offline, no code changed).** A whole-planner replay of 251 segments 5+6 (mode
+`x0+src+pa+oat`) traced every line after which `update()`'s local `output_a_target` changed inside
+t 365.5–366.3. While `lead_follow_policy._matched` is True, `_matched_brake_floor` lifts the MPC's
+≈ −2.8 request to ≈ −0.10. `_transition_target` is then allowed, because −0.10 > −0.25 =
+`FOLLOW_TRANSITION_MAX_BRAKE`, and it emits `prev + up_step` (0.07–0.13 per frame), replacing the MPC's
+braking. At t 365.89 `_matched` flips False, and the replayed output steps −2.582 → −1.820. The
+replay reproduces the matched-phase follow-policy output to 0.000. `action_t` was also checked:
+it is a constant 0.550 on the tinygrad `acc` branch with no e2e blend, so it is exonerated.
+
+The replay's negative control still fails: p99 0.159 against a gate of 0.05, and the residual is
+100% trajectory (dtraj). So the +0.76 step at the flip is **replay-only**. In the log, the largest
+`aTarget` step at that flip is 0.13.
+
+**Corpus test** (`flip_entry.py`, calling the real `lfp._matched` on the logged lead1 fields and
+`tFollow`). It counts True→False flips in [onset − 0.5 s, peak] of every aEgo entry ramp:
+
+| route | engaged frames matched | entries | entries with a flip | any matched on ramp |
+|---|---|---|---|---|
+| 242 no radar | 7.1% | 25 | 0 | 1 |
+| 251 radar | 34.4% | 3 | 1 (t 365.86) | 1 |
+| 24f radar | 14.3% | 11 | 0 | 0 |
+
+The premise holds: matched is 2–5× more frequent on radar. The mechanism does not follow from it.
+Only 1 of 14 radar entries has a flip; incidence is 0/25 vs 1/14, MWU p=0.71. With that episode
+removed, radar entry rate is p50 −1.44 against 242's −0.65, so the steepness difference survives
+without any flip. The matched regime belongs to steady follow, not to brake entries. It explains at
+most the single 251 t 365.86 event and not the "too reactive with radar" feel.
+
+**Still open:** the dtraj control failure (the replay brakes harder than the car in 365.70–365.80,
+choosing `cruise` where the car chose `lead1`). It points at solver-side terms — `set_weights()`,
+slack penalties, constraints — as item 50 concluded. Replay evidence only; nothing here is
+road-validated.
