@@ -3670,3 +3670,19 @@ mapping is what differs -- the lead cost at `long_mpc.py:374` and the danger ter
 `1/(v_ego + 10.)` normalisation and `danger_factor` weighting are the only remaining unexamined
 transforms between the obstacle and the solved acceleration. That requires acados and a replay
 harness; it cannot be read from a log. A fifth CSV probe would be the confirmation trap.
+
+**Addendum to 50: the danger factor is a constant and is ruled out.** Before escalating to a replay
+harness, the last logged input to the cost function was checked, because the danger slack constraint at
+`long_mpc.py:389` scales the whole of `desired_dist_comfort` by `lead_danger_factor` and that product
+is tens of metres at highway speed. The CSV's `danger` column is **identically 0.75 on all 30,156
+engaged frames of all three routes** -- one distinct value, zero range on every entry ramp, radar and
+no-radar Mann-Whitney U=175.0 z=+0.00 p=1.000 at onset, at peak and on range. It never moves, so it
+cannot differentiate anything. `LEAD_DANGER_FACTOR` is doing no work here.
+
+That leaves the lead cost at `:374`, `((x_obstacle - x_ego) - desired_dist_comfort) / (v_ego + 10.)`,
+whose numerator is item 49's residual `e` (measured, radar not steeper) and whose denominator depends
+only on `v_ego`. Both terms are therefore accounted for, which sharpens the open question rather than
+widening it: if the inputs, the residual, the danger factor and the trajectory path are all equal or
+smoother on radar while `aTarget` separates, the difference is in how the **solver** responds -- the
+runtime cost weights set in `set_weights()`, the slack penalties, or conditioning -- not in any
+quantity the log contains. Nothing short of running acados over both routes will separate those.
