@@ -4080,3 +4080,47 @@ log, so even that is planner-open-loop, not vehicle closed-loop.
 
 New harness envs: `LEAD_ADV=<s>`, `TF_ADD=<s>` (backup `replay.py.bak-pre-leadadv`); scripts
 `vq2.sh`, `q1lead.py`, `q1lag.py`; traces `trC.txt`, `trCadv.txt`.
+
+## 60. Un-anchored re-run: the vision lead is much softer, the ECO floor and pre-brake are not a fix, and no car-specific cap fires
+
+*Replay evidence only, route 24f, groups B-F, harness mode `src`.* In this mode the planner runs
+on its own state, and only the source label is pinned. Ego speed still comes from the log, so the
+gap does not respond to a change in braking. That understates how much braking a delayed
+response would need later.
+
+**Control:** the un-anchored base reproduces the logged aTarget (group C p99 0.004 m/s2, PASS).
+The metrics in the table match the log to 0.01. Counterfactual runs "FAIL" the gate by design,
+because they diverge from the log.
+
+| variant | effect on the 5 bookmarked brakes (peak / steepest 0.5 s rate, base -1.9 to -4.25) |
+|---|---|
+| ECO floor at -1.0 (`MINACC_FORCE=-1.0`) | removes the -0.5 hold (0.6-1.05 s -> 0-0.1 s); same peak; rate about the same |
+| ECO floor off (-3.5) | hard part 0.15-0.6 s earlier; 449.1 -2.09 -> **-3.50**, rate -2.55 -> -6.10. Harsher |
+| follow policy off (`FP_OFF`) | no change (max rate diff 0.11) |
+| tFollow +0.3 s (`TF_ADD`) | small, mixed (170.2 rate -4.17 -> -3.40, others within 0.2) |
+| lead 0.5 s earlier (`LEAD_ADV`) | t<-1.5 0.45-0.65 s earlier; same peak and rate |
+| vision lead (`VISLEAD=1`) | **peak -0.9 to -2.9, rate -0.9 to -1.9**. About half the radar response in every event |
+| anticipatory pre-brake off (`PB_OFF`, L2529-2540) | peak 0.25-0.6 s later; rate softer at 170.2/595.7, **steeper** at 272.7/367.4 |
+
+**Item 55 is reversed.** Its "vision is as deep" result was an anchoring artefact. Free-running, the
+vision lead gives about half the braking. This matches 242 feeling smoother. It does not show
+that radar is wrong, though: the lead braked at -3.7 to -4.4 in all five events (item 59), and
+vision is known to understate fast closing.
+
+**Cap census:** a line trace of `self.a_desired` and `output_a_target` over pk-4.5 .. pk+0.5 for
+all five events. Only these lines change the value:
+- L2526, the MPC interpolation;
+- L2540, the anticipatory pre-brake, 22-58 frames per event, up to -0.06 per frame, fed back as the
+  next x0;
+- L2544, the deadzone;
+- L3091/3093, the follow policy, almost always lifting (softening);
+- L2758, `close_lead_brake_cap`, 2 frames at 449.1 and 595.7;
+- L3115, the output clip (the ECO floor, lifting).
+
+**None of the RAV4, Sienna, Accord, CR-V, vision-only or pretracking caps fire.** Trimming them
+would not change these brakes.
+
+**Conclusion (replay):** the planner's extra layers are not what makes these brakes harsh. The
+harshness follows the radar-measured lead braking. The -0.5 hold is ECO, and a -1.0 floor removes
+the hold without deepening the peak. The pre-brake is a two-sided trade-off, not a clean trim.
+The harness also cannot show the closed-loop cost of braking later.
