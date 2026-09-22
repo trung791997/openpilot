@@ -3759,3 +3759,49 @@ Replay-derived claims should be re-checked under `BLOT=1`, especially STATUS 51'
 This does **not** confound the 242 vs radar comparison, because BLoTv3 was on for all three.
 
 Replay evidence only; nothing here is road-validated. No planner code was changed.
+
+## 53. The replay now nearly reproduces the car: the 364.50 miss was stale radar input, not BLoTv3
+
+**Method (replay only, no code changed).** Same harness and window as item 52 (251 segments 5+6,
+mode `x0+src+pa+oat`, `BLOT=1`).
+
+1. **`desFollow` cannot check the BLoTv3 pad.** It is `int(desired_follow_distance(v_ego, vLead,
+   self.t_follow))` from `starpilot_following.py:123`, in metres, built from StarPilot's own
+   `t_follow` before BLoTv3 adds its pad. Neither `tFollow` nor `desFollow` records the pad.
+2. **BLoTv3 timing is not the 364.50 cause.** Harness overrides changed each BLoTv3 output on its own:
+   jerk_scale lag of 1 and 3 frames, offsets of ±0.1, pad ×0 and ×2, and jerk_scale forced to 1.
+   None moved 364.50: the replay stayed at −0.076 to −0.082 against −0.233 logged.
+3. **The cause is input alignment.** At 364.50 the car's `leadTrajectoryX0[0]` is 42.67 m. That is
+   the replay's value one frame later, at 364.55. The replay itself had 43.23 m. The frames either
+   side match to 0.00, so the car's planner had already drained the next `radarState`.
+   - The harness now accepts `LPCUT=1`, which gives each modelV2 frame every message logged before
+     the car's own `longitudinalPlan` for that frame. This emulates the SubMaster drain at the
+     observed cut-off.
+
+| run | p50 | p90 | p99 | max | worst frame |
+|---|---|---|---|---|---|
+| BLoTv3 off (item 51) | 0.00094 | – | 0.159 | – | – |
+| `BLOT=1` (item 52) | 0.00024 | 0.0136 | 0.106 | 0.156 | 364.50 |
+| `BLOT=1 LPCUT=1` | 0.00028 | 0.0038 | **0.059** | **0.060** | 366.45 |
+| `LPCUT=1`, BLoTv3 off | 0.00097 | 0.0302 | 0.159 | 0.173 | 366.00 |
+
+- The MPC source mismatch is now 0 of 141 frames. The item 51 open point ("the replay chose
+  `cruise` where the car chose `lead1`, 365.70–365.80") is closed: it was the same stale input.
+- **Still failing:** the gate is p99 < 0.05, and the remaining error is 366.20–366.60. The replay
+  recovers too fast, by up to +0.060, during cruise, while BLoTv3's pursuit tail holds jerk_scale at 0.30.
+  - The error depends on the unlogged BLoTv3 state. JS_OFF=+0.1 gives p99 0.0502, max 0.061, and moves
+    the worst frame to 366.05. JS_OFF=+0.3 makes it worse (0.113).
+  - Without BLoTv3 state in cereal, this is as close as the replay gets.
+4. **The 365.89 step from item 51 re-checked.** With inputs aligned it reproduces to −0.003. It is
+   the follow policy's output diverging from the planner's internal `a_desired`, which drops
+   −2.86 → −1.82. The logged `aTarget` moved only 0.13, so item 51's corpus conclusion stands.
+
+**Consequence.** Items 46–51 used a replay with BLoTv3 off and stale inputs. Their log-only and corpus
+conclusions are unaffected. Replay-derived numbers from those items should be re-derived with
+`BLOT=1 LPCUT=1` before anyone relies on them.
+
+**No mechanism that separates radar from no-radar has been found.** No code change is proposed.
+The next test the harness can now support: replay a 251/24f brake entry with the radar lead replaced
+by the vision lead, keeping the planner fixed, and check whether the entry rate falls to 242's
+level. If it does, the cause is in the input; if not, it is in the planner.
+Replay evidence only; nothing here is road-validated.
