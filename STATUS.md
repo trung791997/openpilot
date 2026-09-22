@@ -4029,3 +4029,22 @@ follow policy (`lead_follow_policy.apply()`, via `longitudinal_planner.py:3094`)
 is true it replaces the MPC's braking with `prev + up_step` and a brake floor, then releases in one
 frame (251 t=365.89: -2.58 -> -1.82). Next replay counterfactual: disable the matched floor and
 transition target on the same five events, and see whether braking starts earlier and gentler.
+
+## 58. The follow policy and BLoTv3 are not active in the bookmarked 24f brakes
+
+Replay only, same five bookmarked 24f events and metrics as item 57. Two harness counterfactuals,
+no repo code changed:
+
+- `FP_OFF=1` disables `lead_follow_policy._matched_brake_floor`, `_transition_target` and
+  `_steady_follow_deadband`. It does change the replay elsewhere: 12/24/4/0/82 frames in groups
+  B-F, max 1.16 m/s2, all at t = 120-138, 226-245 and 509-591. So the switch works. **Inside every
+  bookmarked window the output is bit-identical to baseline.** The policy is not engaged in these
+  brakes. The 251 t=365.89 release step (item 3/LEAD f) is real but is not what the driver marked
+  on 24f.
+- BLoTv3 off (no `BLOT=1`): identical to baseline to within one 50 ms frame on all five events.
+
+**Conclusion (replay).** The ECO floor (item 57), the matched-follow policy and BLoTv3 are all
+ruled out for the bookmarked 24f brakes. The late-then-rail shape is the MPC's own solution to the
+lead input it is given. What remains: the MPC's lead cost / `t_follow` / jerk weights against a
+fast-closing lead, and whether the lead state fed to it (dRel, vLead, aLeadK) at the onset
+understates the closing rate that the range slope shows.
