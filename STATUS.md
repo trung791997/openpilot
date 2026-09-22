@@ -3574,3 +3574,99 @@ attenuate, so cannot produce a faster entry), track handover, the BLoTv3 dials, 
 **Next move is therefore replay instrumentation, not further CSV work.** The quantities that would
 settle it -- `self.params[:,2]` per horizon point, the solved `a` trajectory, `lead_xv_0` -- are not
 in the log and must be captured by re-running the planner over the route.
+
+## 50. The lead-trajectory path switches mid-entry, but not differently on radar. Fourth consecutive null; CSV inference is closed.
+
+Item 49 closed with a stated limitation: the obstacle residual was reconstructed at horizon index 0
+only, so a mechanism reshaping the *interior* of the extrapolated trajectory would be invisible.
+Reconstructing all 13 points is pure numpy -- everything from `radarState` to `params[:,2]`
+(`process_lead` -> `extrapolate_lead` -> stopped equivalence -> cruise obstacle -> `np.min`) runs
+without acados; only `run()` needs the solver. So the interior looked answerable from the existing
+CSVs. It is not, and the reason is worth recording.
+
+**`extrapolate_lead` is not always what builds the trajectory.** `build_model_lead_trajectory`
+(`long_mpc.py:169`) replaces it with the model's `leadsV3` horizon, anchored to the raw h=0
+measurement (`x_lead_traj = raw_d_rel + (model_x - model_x[0])`). It declines, returning `None`, when
+
+```python
+raw_lead_brake = max(0.0, -aLeadK)
+closing_speed  = max(0.0, v_ego - raw_v_lead)
+ttc            = raw_d_rel / max(closing_speed, 1e-3) if closing_speed > 0.1 else inf
+if (raw_lead_brake > MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE or        # 0.5
+    (closing_speed > 0.75 and ttc < MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC)):   # 7.0
+  return None
+```
+
+with the comment "keep the legacy raw-lead path so an optimistic model horizon cannot delay the first
+braking response." That guard reads like it must fire on every brake entry. It does not.
+
+**Measured: 14 of 39 entry ramps contain at least one model-path frame** -- 242 8/25, 251 1/3,
+24f 5/11 -- and the per-ramp live fraction ranges 0.067 to 1.000, so on those ramps the obstacle
+*switches definition mid-entry*. Whole-route model-path occupancy is 77-82% of engaged frames on all
+three routes; the guard is a brake-entry exception, not the normal case.
+
+**This figure is an upper bound, not a measurement.** The checks the CSV cannot model -- `model_x` /
+`model_v` shape against `LEAD_T_IDXS_MODEL`, and the `isfinite` guards -- can only make the function
+return `None` *more* often. A frame counted as legacy is therefore definitely legacy; a frame counted
+as model-path is only *possibly* live. Tightening 14/39 requires `modelV2.leadsV3` from the rlog and
+cannot be done from the dumped CSV. (Field note: `model_lead.prob` is the CSV's `mlProb`, not
+`mProb1` -- the latter is the radar track's own modelProb.)
+
+**But the switching does not separate radar from no-radar.** Per entry ramp, over the `aEgo` ramp
+`[onset, peak]` as item 46's `rate()` defines it, pooled radar (251 + 24f, n=14) vs no-radar
+(242, n=25), Mann-Whitney with radar first:
+
+| metric | radar p50 | no-radar p50 | U | z | p |
+|---|---|---|---|---|---|
+| model-path live fraction | 0.0000 | 0.0000 | 190.0 | +0.51 | 0.609 |
+| path flips per frame | 0.0000 | 0.0000 | 189.5 | +0.51 | 0.613 |
+
+Flips-per-frame p50 is 0.0000 on all three routes (max 0.2143 on 242, 0.0909 on 251, 0.0769 on 24f).
+
+**The tail is more decisive than the average.** Of the five fastest entries in the corpus, four are
+100% legacy with zero flips:
+
+| route | t | entry rate | live fraction | flips | onset -> peak |
+|---|---|---|---|---|---|
+| 251 | 365.86 | **-5.39** | 0.583 | 1/11 | legacy -> MODEL |
+| 242 | 1405.25 | -2.71 | 0.000 | 0/26 | legacy -> legacy |
+| 24f | 449.08 | -2.69 | 0.000 | 0/15 | legacy -> legacy |
+| 24f | 595.74 | -2.51 | 0.000 | 0/21 | legacy -> legacy |
+| 242 | 816.42 | -2.45 | 0.000 | 0/30 | legacy -> legacy |
+
+The one fast entry that touches the model path, 251 t=365.86, **starts on the legacy path and flips to
+MODEL at the peak**. The flip is downstream of the brake onset, not upstream of it, so it cannot have
+caused an entry that was already underway.
+
+**This is the fourth consecutive null, and the interior measurement was abandoned rather than run.**
+Item 47 ruled out track handover (the three handover episodes are the three slowest). Item 48 ruled
+out the BLoTv3 dials (jerk softening appears only in the six slowest ramps). Item 49 ruled out the
+obstacle inputs, with `jag V` significant in the *opposite* direction (p=0.028, radar smoother). This
+item rules out the path switch. The 13-point interior comparison was *not* run: 25 of the 39 ramps are
+fully legacy and reconstructible, but that subset excludes 251 t=365.86 -- the exemplar the whole
+investigation rests on -- and drops n to 8 vs 17, below the already-underpowered 14 vs 25. Measuring a
+weaker question on a sample chosen to exclude the phenomenon is not evidence; it is the confirmation
+trap in a new shape. The plan that specified this work
+(`docs/superpowers/plans/2026-09-22-obstacle-trajectory-interior.md`, commit `1206eacbe`)
+pre-registered that fork and it was taken as written.
+
+**What this does NOT establish.**
+- It does not explain the abruptness. Item 47's finding stands -- the asymmetry is in `aTarget`, so it
+  is generated inside the planner -- and no mechanism has been found.
+- 14/39 is an upper bound on model-path involvement, so "the path switches mid-entry" is established
+  but its true frequency is not. Two of the four unmodelled guards could in principle void every
+  model-path frame counted here.
+- p=0.609 and p=0.613 at n=14 vs 25 are "no evidence of a difference", not "evidence of no
+  difference". The tail argument above carries more weight than either p-value.
+- The interior of the extrapolated trajectory is still unmeasured. This item declines to measure it
+  on a biased subset; it does not show it would be null.
+- Confounds unchanged from 43-49: different drives, traffic, and 251 contributing only 3 episodes.
+- No road evidence, no replay, no code changed.
+
+**The remaining suspect is the cost function, not the inputs.** Every input to the MPC lead cost has
+now been checked at frame 0 and found equal or smoother on radar, while the *output* (`aTarget`)
+separates more strongly than `aEgo` does (item 47). If clean inputs produce a steeper plan, the
+mapping is what differs -- the lead cost at `long_mpc.py:374` and the danger term at `:389`, whose
+`1/(v_ego + 10.)` normalisation and `danger_factor` weighting are the only remaining unexamined
+transforms between the obstacle and the solved acceleration. That requires acados and a replay
+harness; it cannot be read from a log. A fifth CSV probe would be the confirmation trap.
