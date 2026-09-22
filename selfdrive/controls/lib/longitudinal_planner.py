@@ -427,6 +427,13 @@ def get_vehicle_min_accel(CP, v_ego):
 
 # Restored planner constants retained by CEM, stop, and departure paths.
 A_CRUISE_MIN = -1.0
+# A soft decel profile (ECO -0.5, traffic -0.35) is a cruise-decel preference. With a closing lead
+# it held aTarget at the floor for 0.6-1.05 s and then released to the rail (STATUS 42/43, 60):
+# the felt two-stage brake. While a lead is closing, the floor is at least A_CRUISE_MIN.
+# Replay, 24f bookmarked brakes: hold removed, peak unchanged (STATUS 61).
+LEAD_CLOSING_FLOOR_VREL = -0.3
+# 24f 272.7: the hold began while vRel was ~0 and the lead was already braking at -0.3..-0.5.
+LEAD_CLOSING_FLOOR_ALEAD = -0.25
 # The stop distance runs ~9 m long through the mid-approach, which leaves the obstacle slack
 # so it stays silent and deceleration sags. Multiplicative so the trim scales with what is
 # left. Note the car parks where the obstacle sits, so this is also a placement bias — 0.85
@@ -2136,6 +2143,10 @@ class LongitudinalPlanner:
 
     if self.mpc.mode == 'acc':
       accel_limits = [sm['starpilotPlan'].minAcceleration, sm['starpilotPlan'].maxAcceleration]
+      closing_lead = sm['radarState'].leadOne
+      if closing_lead.status and (closing_lead.vRel < LEAD_CLOSING_FLOOR_VREL or
+                                  closing_lead.aLeadK < LEAD_CLOSING_FLOOR_ALEAD):
+        accel_limits[0] = min(accel_limits[0], A_CRUISE_MIN)
       steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
       accel_limits_turns = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_limits, self.CP)
       accel_limits_turns[0] = max(get_vehicle_min_accel(self.CP, v_ego), accel_limits_turns[0])
