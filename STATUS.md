@@ -4169,3 +4169,44 @@ the same three pre-existing failures:
 - `test_starpilot_planner::test_force_stop_jerk_scale_is_platform_specific`.
 
 No unit test is added yet. Nothing is pushed to `ns-bosch-radar-testing`.
+
+## 62. FrogPilot "human following" = model lead path with no guard; softer brakes, less gap (closed-loop replay)
+
+*Replay evidence only (closed loop as in item 61), route 24f, groups B-F. FrogPilot-Testing 728f65472
+(2026-09-14), fetched as `refs/remotes/frog/testing`.*
+
+**What FrogPilot has now.**
+- `HumanFollowing` (`long_mpc.py process_lead`): when the model lead prob exceeds the threshold and the
+  radar lead is valid, the MPC lead path is radar dRel/vLead plus the model's future x/v deltas, instead
+  of the constant-aLeadK exponential extrapolation. There is **no** braking or TTC bail-out.
+- `HumanAcceleration` only shapes max accel (low-speed and ramp-off) and launch. It does not touch
+  braking. StarPilot already removed it (`test_human_acceleration_param_is_removed`).
+- The FrogPilot ECO floor goes to ACCEL_MIN whenever `tracking_lead` (a stronger form of item 61).
+
+**StarPilot** already has the same path (`build_model_lead_trajectory`, long_mpc.py:159). It
+falls back to the raw extrapolation when aLeadK < -0.5 or (closing > 0.75 m/s and TTC < 7 s): see
+`MODEL_LEAD_TRAJECTORY_MAX_LEAD_BRAKE/MAX_CLOSING_TTC`, commits 24f482966 and 7f2bab7be. There is no
+evidence entry, only the comment "optimistic model horizon cannot delay the first braking response".
+Every bookmarked brake trips that guard, so the harsh path is the raw aLeadK extrapolation. The item-60
+"vision lead is half as hard" result is the same effect.
+
+Harness env `MLT_FROG=1` sets both guard constants to never trip.
+
+| brake | min gap m: base / (a) / MLT / (a)+MLT | min TTC s: same order | peak cmd: same order | steepest 0.5 s rate: same order |
+|---|---|---|---|---|
+| 170.2 | 18.0 / 19.2 / 13.4 / 13.7 | 5.16 / 5.73 / 4.19 / 4.36 | -3.45 / -3.44 / -2.05 / -1.93 | -3.14 / -2.84 / -1.26 / -1.04 |
+| 272.7 | 18.9 / 20.6 / 16.5 / 17.2 | 5.99 / 6.31 / 5.65 / 6.03 | -3.48 / -3.48 / -2.36 / -2.26 | -3.28 / -3.26 / -1.26 / -1.18 |
+| 367.4 | 28.8 / 29.5 / 23.6 / 27.7 | 4.84 / 4.87 / 3.70 / 4.31 | -3.48 / -3.47 / -2.34 / -2.28 | -1.62 / -1.64 / -1.72 / -1.40 |
+| 449.1 | 6.5 / 9.2 / 6.3 / 8.7 | 3.07 / 4.36 / 3.21 / 4.25 | -1.74 / -1.72 / -1.10 / -1.15 | -1.36 / -1.18 / -0.50 / -0.84 |
+| 595.7 | 42.1 / 42.5 / 34.9 / 37.8 | 8.86 / 9.32 / 8.24 / 8.93 | -2.29 / -2.10 / -0.92 / -1.00 | -1.58 / -1.62 / -0.96 / -1.68 |
+
+Full FrogPilot braking (MLT + ECO floor to ACCEL_MIN, tag `frog`) keeps the most gap but restores
+the peak (-2.9 to -3.5) and hits a rate of -4.0 at 449.1.
+
+**Reading (replay).** The guard is what makes these brakes feel "reactive". With it off, the peak
+falls by about a third and the jerk by about half. The cost is 1-7 m of gap and up to 1.1 s of TTC
+(367.4: 4.84 -> 3.70), and (a) wins back part of that. Limits:
+- the model lead deltas are replayed from the log, so they do not react to the simulated ego;
+- the lead is not reactive.
+
+This is a safety-margin trade and it is not decided here. No code change is made.
