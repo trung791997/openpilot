@@ -3169,3 +3169,95 @@ the one-configuration assumption that makes 24f/251 comparable with the other 14
 changed, it must be changed as a deliberate A/B with the profile recorded, not quietly.
 
 Offline log analysis of two routes. No replay, no road validation, no change made.
+
+## 44. The 251 6:06 semi-hard brake: a real but small lead brake-tap, answered 1 s late at full authority
+
+User-identified event (not the cut-in earlier assumed): route `11c8fa231c0499ed/00000251--0f743e380e`,
+route time 364.4-366.2 s (~6:04-6:06). Peak measured `aEgo` **-3.58 m/s2 at t=365.86**. Traced frame by
+frame from the device's own log (`radarState` 20 Hz, `liveTracks` ~15 Hz, segment 6 rlog).
+
+### The stimulus is real. It is not a phantom and not a tracker fabrication.
+
+`liveTracks` carries exactly one point in the ego lane through the whole event (y = -0.3 to -0.4 m), and
+that point's own range and Doppler agree with each other:
+
+```
+  t        dRel   yRel   vRel      (raw liveTracks, ego-lane point only)
+  363.90   45.6   -0.4   +2.5   <- lead receding
+  364.44   43.7   -0.4   -0.9   <- closing begins
+  364.77   41.0   -0.4   -4.2   <- peak apparent closing
+  365.11   40.0   -0.4   -3.4   <- minimum range 39.5 m (radarState)
+  365.18   40.6   -0.4   -1.1   <- +0.6 m / +2.3 m/s step in one 66 ms frame (the one discontinuity)
+  365.58   40.6   -0.3   -0.2   <- closing over
+  366.59   43.4   +0.1   +3.5   <- receding again
+```
+
+Range fell 45.6 -> 40.0 m in 1.0 s with `vEgo` flat at 26.45 m/s, so the lead really lost about 5 m/s
+and regained most of it: a brake tap. `tid1 = 57` throughout, `mProb1 = 1.00`, `radar1 = 1`, no track
+change. **Minimum range was 39.5 m at 26.3 m/s = 1.50 s headway, against `tFollow = 1.45`.** The gap
+closed to roughly the configured following distance and no further. There was no collision threat at
+any point in this event.
+
+Two caveats recorded, not resolved: the +0.6 m / +2.3 m/s step at 365.18 is not physical for a rigid
+object, and the recovery limb implies about +4.8 m/s2 of lead acceleration, which is also not physical
+for a car. Some of the recovery limb is filter, not vehicle. The descending limb is smooth and
+coherent in both range and Doppler and is taken as real.
+
+### Vision saw nothing.
+
+`mlV` stayed 26.3-27.2 m/s and `mlA` stayed about +0.03 m/s2 for the entire event; `mlX` stayed 47-51 m
+and never dipped. The model contributed nothing to this brake and, read literally, argued against it.
+Consistent with the standing finding that vision is not closing-speed truth - but note the direction:
+here vision's silence was the *correct* magnitude call and the radar's was the alarming one.
+
+### The control response is late and then unlimited. That is the defect shape.
+
+```
+  t        aTarget  minAcc  planAmin  src      vRel1   d1
+  364.41    -0.04   -0.50    -0.51    lead1    -0.28   43.67
+  364.65    -0.50   -0.50    -1.72    lead1    -3.38   41.48   <- aTarget == minAcc exactly
+  364.75    -0.50   -0.50    -2.25    lead1    -3.80   40.98   <- still exactly -0.50
+  364.85    -0.50   -0.50    -3.35    lead1    -4.14   40.23   <- still exactly -0.50
+  364.91    -0.65   -0.50    -3.50    lead1    -4.14   40.23   <- clamp released; minAcc unchanged
+  365.15    -1.55   -0.50    -3.50    lead1    -3.41   39.54   <- minimum range
+  365.50    -3.20   -0.50    -3.43    lead1    -0.38   40.23   <- aTarget minimum; closing already over
+  365.60    -3.14   -0.50    -3.32    lead1    -0.17   40.17
+  365.86    -2.58   -0.50    -2.95    cruise   +0.98   40.67   <- aEgo minimum -3.58; lead pulling away
+```
+
+Three facts, each read directly off the log:
+
+1. **The ECO floor binds again, with `src = lead1`.** Five CSV rows (about 0.2 s, 2-3 distinct plan
+   frames) sit at exactly -0.50 = `minAcc` = `A_CRUISE_MIN_ECO` while `planAmin` is already diving
+   through -3.35. This is the second independent instance of the STATUS 43 signature, and the second
+   one that contradicts the `starpilot_acceleration.py:63` comment ("MPC lead braking keeps full
+   ACCEL_MIN authority"). The 24f 6:01 instance held 1.2 s; this one holds 0.2 s. Weaker, same shape.
+2. **The clamp delays the onset without capping the peak.** `minAcc` never changes value, yet `aTarget`
+   passes through it at 364.91 and continues to -3.20. So the floor is not an authority limit on this
+   path - it is a 0.2 s dead band at the *start* of the response, i.e. exactly the interval in which a
+   small early correction would have been sufficient. Late and then full-authority is the worst of the
+   two behaviours.
+3. **The hardest braking is applied after the stimulus has gone.** Closing is over by 365.58 and the
+   lead is pulling away at +1.0 m/s by 365.86, which is where measured `aEgo` bottoms out at -3.58.
+   The peak of the response trails the peak of the stimulus by about 1.0 s and trails the end of the
+   stimulus by about 0.3-0.7 s. The range was already growing when the car braked hardest.
+
+### What this changes and what it does not
+
+Established: a real 5 m/s lead brake-tap that never took the gap below the configured following
+distance produced a -3.58 m/s2 brake whose peak landed after the gap had reopened, with the ECO floor
+holding the first 0.2 s of the response at exactly -0.50 while `planAmin` was already on the -3.50 rail.
+
+NOT established, and specifically not to be tuned on: that removing or raising the ECO floor would
+reduce the peak. It is plausible - an earlier, gentler response to a stimulus this small should not
+need -3.5 - but the counterfactual has not been run. **That is a replay experiment, not an edit.**
+`ACCEL_MIN = -3.5` as the rail source is still unverified, and the release path at 364.91 is still
+untraced (`longitudinal_planner.py:2137-2141` versus `get_mpc_mode()` at :2448-2450).
+
+Also noted for later, not part of this event: at 365.65-365.98 a third `liveTracks` point appears at
+y = +9.2 to +10.4 m with a constant reported `vRel = -13.5 m/s` while its own `dRel` walks 40.6 -> 29.2 m
+in 0.33 s, a range rate of about -34 m/s. Its Doppler contradicts its own range rate by roughly 20 m/s.
+It is well outside the ego lane and did not drive this brake, but it is a parser-side inconsistency
+worth a census pass.
+
+Offline log analysis of one route, one event. No replay, no road validation, no change made.
