@@ -4351,3 +4351,30 @@ events had a stopped vision lead, so the slow-stopped cap in particular has stil
 No code changed in this section. Deletion of the near-inert or unexercised guards waits for the
 user's decision. Harness: `~/.claude/jobs/3c03581d/tmp/{vcl257.sh,vcl20c.sh,replay.py}` with
 `GT_VLA/VUS/VUL/VSS/TVM/TVI=0` env hooks; `EVG="V:347.5:353.5" python3 vclcmp.py ...`.
+
+## 66. Guard trim batch 2: vision lead approach cap and immediate-brake confirm bypass deleted (near-inert per STATUS 65); replay only
+
+Per the user's decision on STATUS 65, the near-inert pair is gone from
+`selfdrive/controls/lib/longitudinal_planner.py`: `get_vision_lead_approach_cap`,
+`tracked_vision_lead_approach_needs_immediate_brake`, their call site in `update()`, the
+`vision_lead_approach_confirm_t` state and the `VISION_LEAD_APPROACH_*` constants they alone used
+(−112 lines). `VISION_LEAD_APPROACH_MIN_MODEL_PROB` / `_FULL_MODEL_PROB` stay because the untracked
+approach-lift cap and `get_dynamic_t_follow` still read them.
+
+Seven tests removed from `test_longitudinal_planner.py` (−133 lines): the four unit tests of the
+cap, the two acc-mode/persistence tests that drove it, and
+`test_acc_mode_tracked_vision_close_or_braking_lead_bypasses_persistence`, which asserted the
+one-frame-earlier onset (first-frame command below −1.3) that STATUS 65 measured as the pair's
+whole effect. Controls suite in docker: 1237 passed, 4 skipped, 3 failed, all three pre-existing
+and unrelated (two latcontrol, `test_force_stop_jerk_scale_is_platform_specific`).
+
+Closed-loop replay of event V (`00000257--50424c1a3a` 348.7 s, CL_TAU 0.35) with the deleted-pair
+planner is byte-identical to the STATUS 65 "cap off" row: minGap 12.06 m, minTTC 4.09 s, peak
+command −2.42 m/s², versus 12.24 / 4.13 / −2.41 with the pair. Events W and X were already
+unaffected by these two guards.
+
+Kept from batch 2: `get_vision_untracked_slow_lead_cap` (buys 24 m on 20c W),
+`get_vision_untracked_approach_lift_cap`, `get_vision_slow_stopped_lead_cap`,
+`get_tracked_vision_model_brake_floor` / `_cap` (unexercised on any replayed event, no stopped
+vision-lead event exists yet). Replay evidence only; no road data on this build. Pushed to
+`ns-bosch-radar-testing` for road testing; new routes to be analysed against this build.

@@ -156,29 +156,9 @@ LEAD_GEOMETRY_MAX_REQUIRED_ACCEL = 12.0
 CLOSE_LEAD_BRAKE_CAP_RAMP_MIN = 0.2
 CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
 
-VISION_LEAD_APPROACH_MIN_CLOSING_SPEED = 2.0
-VISION_LEAD_APPROACH_TRIGGER_TIME = 4.5
-VISION_LEAD_APPROACH_FULL_TIME = 1.0
-VISION_LEAD_APPROACH_TIGHT_BUFFER = 2.0
-VISION_LEAD_APPROACH_MAX_DECEL = 0.80
-VISION_LEAD_APPROACH_MIN_DECEL = 0.15
 VISION_LEAD_APPROACH_MIN_MODEL_PROB = 0.85
 VISION_LEAD_APPROACH_FULL_MODEL_PROB = 0.98
-VISION_LEAD_APPROACH_DEFICIT_MAX_DECEL = 1.30
-VISION_LEAD_APPROACH_DEFICIT_BUFFER_MIN = 3.0
-VISION_LEAD_APPROACH_DEFICIT_BUFFER_GAIN = 0.20
-VISION_LEAD_APPROACH_BRAKING_DEFICIT_MIN = 0.75
-VISION_LEAD_APPROACH_BRAKING_MIN_LEAD_BRAKE = 0.45
-VISION_LEAD_APPROACH_BRAKING_FULL_LEAD_BRAKE = 1.20
 PLANNER_SAFETY_WARNING_INTERVAL = 5.0
-VISION_LEAD_APPROACH_BRAKING_FLOOR_MIN_DECEL = 1.30
-VISION_LEAD_APPROACH_BRAKING_FLOOR_MAX_DECEL = 1.75
-VISION_LEAD_APPROACH_CONFIRM_TIME = 0.25
-VISION_LEAD_APPROACH_CONFIRM_BYPASS_DECEL = 1.0
-VISION_LEAD_APPROACH_CONFIRM_BYPASS_CLOSING_SPEED = 4.0
-VISION_LEAD_APPROACH_CONFIRM_BYPASS_LEAD_BRAKE = 0.20
-VISION_LEAD_APPROACH_CONFIRM_BYPASS_DISTANCE_MIN = 28.0
-VISION_LEAD_APPROACH_CONFIRM_BYPASS_DISTANCE_TIME = 0.85
 VISION_UNTRACKED_SLOW_LEAD_MIN_MODEL_PROB = 0.9
 VISION_UNTRACKED_SLOW_LEAD_FULL_MODEL_PROB = 0.97
 VISION_UNTRACKED_SLOW_LEAD_MIN_CLOSING_SPEED = 3.0
@@ -672,7 +652,6 @@ class LongitudinalPlanner:
     self._safety_warning_log_t = 0.0
     self.effective_t_follow = None
     self.vision_low_speed_stop_hold_until = 0.0
-    self.vision_lead_approach_confirm_t = 0.0
     self.untracked_slow_lead_confirm_t = 0.0
     self.untracked_vision_approach_lift_confirm_t = 0.0
     self.untracked_vision_approach_lift_cap = None
@@ -838,63 +817,6 @@ class LongitudinalPlanner:
       return None
 
     return max(accel_min, -required_decel * ramp)
-
-  def get_vision_lead_approach_cap(self, lead, v_ego, accel_min, t_follow):
-    if lead is None or not lead.status or bool(getattr(lead, "radar", False)):
-      return None
-
-    lead_prob = float(getattr(lead, "modelProb", 0.0))
-    if lead_prob < VISION_LEAD_APPROACH_MIN_MODEL_PROB:
-      return None
-
-    lead_brake = max(0.0, -float(lead.aLeadK))
-    reaction_t = max(self.longitudinal_actuator_delay, self.dt)
-    closing_speed = max(0.0, v_ego - lead.vLead)
-    projected_closing_speed = closing_speed + lead_brake * reaction_t
-    if projected_closing_speed < VISION_LEAD_APPROACH_MIN_CLOSING_SPEED:
-      return None
-
-    tight_follow_gap = float(t_follow * v_ego + VISION_LEAD_APPROACH_TIGHT_BUFFER)
-    gap_to_tight_follow = float(lead.dRel) - tight_follow_gap
-    time_to_tight_follow = gap_to_tight_follow / max(projected_closing_speed, 0.1)
-    if time_to_tight_follow > VISION_LEAD_APPROACH_TRIGGER_TIME:
-      return None
-
-    desired_gap = float(desired_follow_distance(v_ego, lead.vLead, t_follow))
-    if float(lead.dRel) > desired_gap + VISION_LEAD_APPROACH_TIGHT_BUFFER:
-      return None
-
-    time_factor = float(np.clip((VISION_LEAD_APPROACH_TRIGGER_TIME - time_to_tight_follow) /
-                                (VISION_LEAD_APPROACH_TRIGGER_TIME - VISION_LEAD_APPROACH_FULL_TIME), 0.0, 1.0))
-    prob_factor = float(np.clip((lead_prob - VISION_LEAD_APPROACH_MIN_MODEL_PROB) /
-                                (VISION_LEAD_APPROACH_FULL_MODEL_PROB - VISION_LEAD_APPROACH_MIN_MODEL_PROB), 0.0, 1.0))
-    closing_factor = float(np.clip(projected_closing_speed / (VISION_LEAD_APPROACH_MIN_CLOSING_SPEED + 2.5), 0.0, 1.0))
-    tight_follow_deficit = max(tight_follow_gap - float(lead.dRel), 0.0)
-    tight_follow_buffer = max(VISION_LEAD_APPROACH_DEFICIT_BUFFER_MIN,
-                              VISION_LEAD_APPROACH_DEFICIT_BUFFER_GAIN * float(v_ego) + 1.0)
-    deficit_factor = float(np.clip(tight_follow_deficit / tight_follow_buffer, 0.0, 1.0))
-
-    approach_decel = VISION_LEAD_APPROACH_MAX_DECEL * time_factor * (0.45 + 0.55 * prob_factor)
-    approach_decel *= 0.6 + 0.4 * closing_factor
-    deficit_decel = VISION_LEAD_APPROACH_DEFICIT_MAX_DECEL * deficit_factor * prob_factor
-    deficit_decel *= 0.5 + 0.5 * closing_factor
-    approach_decel = max(approach_decel, deficit_decel)
-
-    # If a tracked vision lead is already far inside the tight-follow window and
-    # it is actively braking, don't stay stuck at the softer comfort cap.
-    if deficit_factor >= VISION_LEAD_APPROACH_BRAKING_DEFICIT_MIN and lead_brake >= VISION_LEAD_APPROACH_BRAKING_MIN_LEAD_BRAKE:
-      braking_floor = float(np.interp(
-        lead_brake,
-        [VISION_LEAD_APPROACH_BRAKING_MIN_LEAD_BRAKE, VISION_LEAD_APPROACH_BRAKING_FULL_LEAD_BRAKE],
-        [VISION_LEAD_APPROACH_BRAKING_FLOOR_MIN_DECEL, VISION_LEAD_APPROACH_BRAKING_FLOOR_MAX_DECEL],
-      ))
-      braking_floor *= 0.85 + 0.15 * max(closing_factor, prob_factor)
-      approach_decel = max(approach_decel, braking_floor)
-
-    if approach_decel < VISION_LEAD_APPROACH_MIN_DECEL:
-      return None
-
-    return max(accel_min, -approach_decel)
 
   def get_vision_untracked_slow_lead_cap(self, lead, v_ego, accel_min):
     if lead is None or not lead.status or bool(getattr(lead, "radar", False)):
@@ -1099,19 +1021,6 @@ class LongitudinalPlanner:
       return None
 
     return max(accel_min, -approach_decel)
-
-  def tracked_vision_lead_approach_needs_immediate_brake(self, lead, v_ego, approach_cap):
-    lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
-    reaction_t = max(self.longitudinal_actuator_delay, self.dt)
-    projected_closing_speed = max(0.0, v_ego - float(lead.vLead)) + lead_brake * reaction_t
-    bypass_distance = max(VISION_LEAD_APPROACH_CONFIRM_BYPASS_DISTANCE_MIN,
-                          VISION_LEAD_APPROACH_CONFIRM_BYPASS_DISTANCE_TIME * float(v_ego))
-    return (
-      approach_cap <= -VISION_LEAD_APPROACH_CONFIRM_BYPASS_DECEL or
-      projected_closing_speed >= VISION_LEAD_APPROACH_CONFIRM_BYPASS_CLOSING_SPEED or
-      lead_brake >= VISION_LEAD_APPROACH_CONFIRM_BYPASS_LEAD_BRAKE or
-      float(lead.dRel) <= bypass_distance
-    )
 
   def get_dynamic_t_follow(self, base_t_follow, lead, v_ego):
     base_t_follow = float(base_t_follow)
@@ -2654,7 +2563,6 @@ class LongitudinalPlanner:
 
     close_lead_caps = []
     rav4_early_lead_caps = []
-    tracked_vision_approach_caps = []
     vision_low_speed_stop_active = False
     vision_brake_cap_active = False
     self.close_lead_brake_cap_value = 0.0
@@ -2684,31 +2592,11 @@ class LongitudinalPlanner:
         if slow_stop_cap is not None:
           close_lead_caps.append(slow_stop_cap)
           vision_brake_cap_active = True
-        approach_cap = self.get_vision_lead_approach_cap(lead, v_ego, vision_cap_accel_min, effective_t_follow)
-        if approach_cap is not None:
-          tracked_vision_approach_caps.append((
-            approach_cap,
-            self.tracked_vision_lead_approach_needs_immediate_brake(lead, v_ego, approach_cap),
-          ))
         low_speed_stop_cap, low_speed_stop_active = self.get_vision_low_speed_stop_buffer_cap(lead, v_ego, vision_cap_accel_min)
         if low_speed_stop_cap is not None:
           close_lead_caps.append(low_speed_stop_cap)
           vision_brake_cap_active = True
         vision_low_speed_stop_active |= low_speed_stop_active
-    if tracked_vision_approach_caps:
-      if any(immediate for _, immediate in tracked_vision_approach_caps):
-        self.vision_lead_approach_confirm_t = VISION_LEAD_APPROACH_CONFIRM_TIME
-      else:
-        self.vision_lead_approach_confirm_t = min(
-          self.vision_lead_approach_confirm_t + self.dt,
-          VISION_LEAD_APPROACH_CONFIRM_TIME,
-        )
-
-      if self.vision_lead_approach_confirm_t >= VISION_LEAD_APPROACH_CONFIRM_TIME:
-        close_lead_caps.append(min(cap for cap, _ in tracked_vision_approach_caps))
-        vision_brake_cap_active = True
-    else:
-      self.vision_lead_approach_confirm_t = 0.0
     if close_lead_caps:
       close_lead_brake_cap = min(close_lead_caps)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
