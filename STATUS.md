@@ -3261,3 +3261,68 @@ It is well outside the ego lane and did not drive this brake, but it is a parser
 worth a census pass.
 
 Offline log analysis of one route, one event. No replay, no road validation, no change made.
+
+## 45. The ECO decel floor is a one-sided leaky clamp on the planner OUTPUT, not on the MPC
+
+Static code read of `selfdrive/controls/lib/longitudinal_planner.py` and
+`selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py` on this tree. No replay, no road
+validation, no change made. This resolves the release path left untraced in items 43 and 44.
+
+**`ACCEL_MIN == -3.5` is confirmed** at `opendbc_repo/opendbc/car/interfaces.py:40`
+(`ACCEL_MAX = 2.0` at :39). It is the rail `planAmin` sits on in both the 24f 6:01 and the
+251 6:06 episodes.
+
+**The ECO floor never reaches the solver.** `long_mpc.py:956` sets
+
+    self.params[:,0] = ACCEL_MIN
+
+unconditionally, before and outside the `if self.mode == 'acc'` branch. `set_accel_limits()`
+(:919-923) stores its `min_a` in `self.cruise_min_a`, and `cruise_min_a` is read in exactly one
+place, `:965`:
+
+    v_lower = v_ego + (T_IDXS * self.cruise_min_a * 1.05)
+
+which clips `v_cruise` to build the *cruise* obstacle. Upstream's own comment on `set_accel_limits`
+says so: "TODO this sets a max accel limit, but the minimum limit is only for cruise decel /
+needs refactor." So the MPC really does keep full `ACCEL_MIN` authority for lead braking, and
+the claim in `starpilot/controls/lib/starpilot_acceleration.py:63` is **correct about the MPC**.
+Items 43 and 44 called that comment contradicted. That was wrong, and this supersedes it.
+
+**The clamp is on the published output instead.** The path is:
+
+  1. `longitudinal_planner.py:2137-2139` - in `acc` mode, `accel_limits[0] = starpilotPlan.minAcceleration`
+     (the ECO floor, -0.50), carried into `accel_limits_turns[0]` by `limit_accel_in_turns()`.
+  2. `:2141` - `accel_limits_turns[0] = max(get_vehicle_min_accel(self.CP, v_ego), accel_limits_turns[0])`.
+     For this car `get_vehicle_min_accel` falls through to `float(ACCEL_MIN)` at `:425`, so
+     `max(-3.5, -0.50) = -0.50`. The floor survives.
+  3. `:2605-2607` - `comfort_output_accel_min = accel_limits_turns[0]`, then `output_accel_min = comfort_output_accel_min`.
+  4. `:3115` - `output_a_target = float(np.clip(output_a_target, output_accel_min, output_accel_max))`.
+
+That `np.clip` is what emits exactly -0.50. It explains the exact equality `aTarget == minAcc` with
+`src = lead1` while `planAmin` was already through -3.35: the MPC had solved for the harder number
+and the planner truncated it on the way out.
+
+**What releases it is `:2202`:**
+
+    # clip limits, cannot init MPC outside of bounds
+    accel_limits_turns[0] = min(accel_limits_turns[0], self.a_desired + 0.05)
+
+`self.a_desired` is the planner's own trajectory state, interpolated from the MPC solution at
+`:2526`, and it is **not** subject to the `:3115` clip. So `a_desired` follows the MPC down
+freely while the published `aTarget` is pinned at -0.50; as soon as `a_desired + 0.05` falls
+below -0.50 the bound follows `a_desired` down, and from then on the clip is inactive.
+
+**So the ECO deceleration profile is a pure phase lag on lead braking, with no attenuation
+afterwards.** The hold lasts however long `a_desired` needs to fall through the floor - about
+0.2 s on 251 (2-3 plan frames), about 1.2 s on 24f - and once released the output tracks the
+unclamped MPC solution all the way to the rail. It is late-then-unlimited by construction, not
+by accident. This is the mechanism behind the shape measured in item 44: the -3.58 m/s2 peak
+landed about 1.0 s after peak closing.
+
+**What this does NOT establish.** That the clamp is the dominant cause of the late peak - the
+MPC's own solution was already through -3.35 before the clamp released, so the solver was
+asking for a hard number on its own and part of the phase error is upstream of `:3115`.
+Whether removing the clamp reduces or merely re-times the peak is still a replay counterfactual,
+not an edit, and it has not been run. `:2202`'s comment says its purpose is MPC initialisation,
+so it is not obviously the right place to govern output authority either; that is a design
+question for DECISIONS.md, not a tuning change.
