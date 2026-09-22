@@ -3906,3 +3906,83 @@ Limits:
 **Next.** Match entries between 242 and the radar routes by their situation at onset (vEgo,
 closing speed, headway, whether a lead was newly acquired), then compare the entry rates within
 matched pairs. Do not propose a planner fix until a matched comparison shows a gap that remains.
+
+## 56. 242 and the radar routes were driven with the same settings; the current code reproduces 242 exactly, and the gap comes from the situations
+
+Three tests followed item 55. All are replay or offline.
+
+**1. Matching entries by their situation at onset.** Script: `match_entries.py` in the harness
+directory.
+
+Each aTarget brake entry is described at onset by:
+- vEgo;
+- closing speed from the 1 s range slope;
+- headway (d1 / vEgo);
+- whether the lead is new (hasLead false, or a d1 jump of more than 4 m, within the previous 2 s).
+
+Nearest-neighbour matching found only 4 pairs within distance 1 going from 242 to radar, and 6 of
+14 going from radar to 242. In both directions the radar entry is steeper: a median difference of
+−0.29 (4 of 4 pairs) and −0.80.
+
+Before matching, the two sets differ a lot:
+- 242 has 8 new-lead entries out of 25; its far vision acquisitions at headway above 4 s are
+  gentle, with rates from −0.14 to −0.27. The radar routes have 1 out of 14.
+- Among existing-lead entries, the closing speed at onset has a median of 1.29 m/s on 242 and
+  2.89 m/s on the radar routes.
+
+The existing-lead entry-rate p50 is −0.49 on 242 and −1.25 on the radar routes. The overall
+−0.41 that STATUS used to quote mixes in the gentle new-lead entries.
+
+**2. Software and settings.** The routes differ only in software:
+
+| | 242 | 251 and 24f |
+|---|---|---|
+| commit | 4d5ba0b | 3505708 |
+| BoschARadar | 0 | 1 |
+
+`BlotV3`, `LongitudinalPersonality`, `ExperimentalMode` and the personality profiles are the same.
+Two planner changes landed between those commits:
+- the far-lead brake limit was removed (1434176b3). It only acted on leads with `radar=True`, so
+  it was inert on 242;
+- BLoTv3 now reads the MPC target instead of the arbitrated output (552798ab / 084a9d56).
+
+The route 242 entries were replayed on the current code (which includes 3505708) with
+`BLOT=1 LPCUT=1`, in seven groups H–N. Six of the seven pass p99 < 0.05. Group M has an excursion
+of about 1.0 and group K a p99 of 0.064. Across 11 existing-lead entries, the median difference
+between logged and replayed min, slope, rate, t−1 and t−2 is 0.00. Only 1200.5 differs, by −0.24
+on min, and it lies inside the group M excursion. **The code change between the drives does not
+explain why 242 is gentler.**
+
+**3. Jitter during steady following.** Frames with hasLead, vEgo > 8, |vRel| < 1 and
+|aTarget| < 0.8:
+
+| | 242 | 251 | 24f |
+|---|---|---|---|
+| minutes | 6.8 | 1.3 | 4.0 |
+| aTarget jerk p50 / p90 / p99 | 0.07 / 0.24 / 1.01 | 0.03 / 0.19 / 0.61 | 0.04 / 0.31 / 1.81 |
+| slope reversals per minute | 43.8 | 26.7 | 41.8 |
+| \|ΔvRel\| per frame, p50 | 0.126 | 0.016 | 0.016 |
+
+The radar vRel is about eight times cleaner, and steady following is no jumpier with radar. The
+exception is the p99 tail on 24f.
+
+**Reading (replay only).** Put together:
+- identical settings;
+- the current code reproducing 242 (this item);
+- the vision-lead counterfactual not softening the radar entries (items 54 and 55);
+- steady following no noisier.
+
+These rule out a planner or radar-input mechanism as the cause of the gap in entry rates. The
+radar drives contain harder situations at onset: higher closing speeds and fewer gentle far
+acquisitions. When the situations are matched, the pairs that remain still lean steeper on
+radar. But n is 4 to 6, and 242's closing speeds come from vision range, which understates
+closing at distance (see memory "vision isn't closing-speed truth"). So that residual cannot yet
+be separated from measurement bias.
+
+**No fix is proposed.** No change here has evidence that it would reduce a real over-reaction
+without also blunting correct braking.
+
+**Next.** What would settle it is road data with situations the analysis can compare: a radar
+drive and a no-radar drive over the same road and in similar traffic. Alternatively, the driver
+could timestamp the moments that felt too reactive (bookmarks), so the analysis starts from the
+felt events rather than from every brake entry.
