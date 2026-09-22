@@ -3326,3 +3326,73 @@ Whether removing the clamp reduces or merely re-times the peak is still a replay
 not an edit, and it has not been run. `:2202`'s comment says its purpose is MPC initialisation,
 so it is not obviously the right place to govern output authority either; that is a design
 question for DECISIONS.md, not a tuning change.
+
+## 46. The phase hypothesis is dead. The radar-vs-no-radar difference is brake ENTRY RATE, not lag and not peak magnitude
+
+Item 44 proposed that the 251 6:06 brake felt wrong because it arrived ~1.0 s after peak
+closing with the gap already reopening, and that radar brakes are systematically later than
+vision-lead brakes. **Measured across the corpus, that is false.** The lag distributions are
+indistinguishable.
+
+Method: `$CLAUDE_JOB_DIR/tmp/phase.py`. Episode = `aEgo < -1.5` held > 0.15 s on engaged
+frames with `vEgo > 5`. For each episode `t_a = argmin(aEgo)`; the closing signal is searched
+over `[episode_start - 4.0, t_a]` using two independent measures, the published `vRel1` and the
+geometric range rate `d(d1)/dt` differenced over 0.5 s. `lag = t_a - t_closing_peak`.
+
+| | 242 NO RADAR | 251 RADAR | 24f RADAR |
+|---|---|---|---|
+| episodes / span | 25 / 1385 s | 3 / 448 s | 11 / 831 s |
+| lag `vRel1` p50 | +0.70 s | +0.95 s | +0.70 s |
+| lag range-rate p50 | +2.60 s | +1.05 s | +1.10 s |
+| gap already opening at peak brake | 20% (5/25) | 33% (1/3) | 36% (4/11) |
+
+The `vRel1` medians are the same to within one plan frame. On the range-rate measure the
+**no-radar** route is the later one (+2.60 s vs +1.05/+1.10), the opposite of the hypothesis.
+The opening-at-peak fractions do differ in the predicted direction (20% vs 33/36%), but with
+n=5 and n=14 that is not a result. **Item 44's phase reading is withdrawn as a general claim.**
+It still stands as a description of the single 251 6:06 episode, which item 46 does not revisit.
+
+### What does separate: how fast the brake is applied
+
+`$CLAUDE_JOB_DIR/tmp/onset.py`. Onset = walking back from the episode to the last frame with
+`aEgo >= -0.5` (max 4 s). `entry_rate = (a_min - a_onset) / (t_a - t_onset)`.
+
+| | n | entry rate p50 | mean | p25 | entry duration p50 |
+|---|---|---|---|---|---|
+| 242 NO RADAR | 25 | **-0.74** | -1.01 | -1.48 | **2.40 s** |
+| 251 RADAR | 3 | -1.95 | -2.86 | -5.10 | 0.61 s |
+| 24f RADAR | 11 | -1.45 | -1.44 | -2.33 | 1.30 s |
+| pooled RADAR | 14 | **-1.54** | -1.74 | | |
+
+Mann-Whitney U (normal approximation, tie-corrected) on pooled radar vs no-radar entry rate:
+**U=99.0, z=-2.23, p=0.026.** The radar routes reach their peak deceleration about twice as
+fast. The no-radar route spends a median 2.40 s getting from -0.5 to its peak; 24f takes
+1.30 s and 251 takes 0.61 s.
+
+This **reconciles** the contradiction in the checkpoint. Item 45's comparison established that
+no-radar 242 is harsher on every magnitude and jerk metric (worst -4.57 vs -3.92, 1.08
+episodes/min vs 0.40, 4.42% of frames below -1.5 vs 2.68%, |j| p99 7.72 vs 6.29). Both are
+true at once: the no-radar brakes are **deeper but entered gradually**, the radar brakes are
+**shallower but entered abruptly**. "Too reactive" is a statement about the entry, not the
+peak, and the entry is where the two configurations actually differ.
+
+The narrower 0.3 s onset-jerk window does NOT reach significance (no-radar p50 -0.63, radar
+p50 -1.86, U=132.0, z=-1.26, **p=0.208**) — the difference lives in the whole ramp from -0.5 to
+the peak, not in the first three frames. Do not quote the 0.3 s figure as the result.
+
+### What this does NOT establish
+
+- **No mechanism.** This is an output-side statistic on published `aEgo`. It does not say
+  whether the fast entry comes from the radar lead's `vRel` driving a larger `x_obstacle` step,
+  from `d1` discontinuities at track handover, from the ECO clamp release traced in item 45, or
+  from BLoTv3's jerk-cost softening firing more often with a radar lead. Each is a separate
+  measurement.
+- **n=14 radar episodes, two routes, one of them contributing three.** 251's 0.61 s median is
+  three episodes. The pooled p=0.026 rests mostly on 24f.
+- **Confounds carried from item 45 are unchanged:** mean `vEgo` 18.0 (242) vs 21.1 (251) vs
+  18.2 (24f), different traffic, 1385 s vs 448 s vs 831 s, and 242's `src` histogram is
+  lead1-heavy where the radar routes are lead0-heavy. A no-radar drive on the same road at the
+  same speed does not exist in the corpus.
+- **No road evidence of any kind for a change.** Nothing here has been replayed and no code has
+  been touched. The next step is a replay that reproduces the entry-rate difference on 251 with
+  the radar path instrumented, not an edit.
