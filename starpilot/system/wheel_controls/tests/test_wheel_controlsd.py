@@ -68,11 +68,11 @@ def test_controller_action_slots_are_separate_and_fixed_at_ten():
   params = FakeParams()
 
   slots = wheel_controlsd.set_controller_action_slot(
-    9, "RedneckCruise", "Redneck Cruise", params, eligible_keys={"RedneckCruise"},
+    9, "RedneckCruise", "ICBM", params, eligible_keys={"RedneckCruise"},
   )
 
   assert len(slots) == 10
-  assert slots[9] == {"enabled": True, "key": "RedneckCruise", "label": "Redneck Cruise", "value": None}
+  assert slots[9] == {"enabled": True, "key": "RedneckCruise", "label": "ICBM", "value": None}
   assert wheel_controlsd.load_controller_action_slots(params, {"RedneckCruise"}) == slots
   assert wheel_controlsd.CONTROLLER_ACTIONS_PARAM != "StarPilotFavoriteSlots"
 

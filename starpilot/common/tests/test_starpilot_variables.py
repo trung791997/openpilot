@@ -329,3 +329,17 @@ def test_speed_limit_controller_available_on_openpilot_longitudinal_or_redneck()
   assert spv.speed_limit_controller_available(openpilot_longitudinal=True, redneck_cruise=False) is True
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=True) is True
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=False) is False
+
+
+def test_curve_speed_controller_available_on_openpilot_longitudinal_or_icbm():
+  assert spv.curve_speed_controller_available(openpilot_longitudinal=True, redneck_cruise=False) is True
+  assert spv.curve_speed_controller_available(openpilot_longitudinal=False, redneck_cruise=True) is True
+  assert spv.curve_speed_controller_available(openpilot_longitudinal=False, redneck_cruise=False) is False
+
+
+def test_honda_icbm_active_only_on_stock_long_with_the_toggle_on():
+  # pcmCruiseSpeed False is how interfaces.py records RedneckCruise on under stock long.
+  assert spv.honda_icbm_active(True, pcm_cruise_speed=False, openpilot_longitudinal=False) is True
+  assert spv.honda_icbm_active(True, pcm_cruise_speed=True, openpilot_longitudinal=False) is False
+  assert spv.honda_icbm_active(True, pcm_cruise_speed=False, openpilot_longitudinal=True) is False
+  assert spv.honda_icbm_active(False, pcm_cruise_speed=False, openpilot_longitudinal=False) is False

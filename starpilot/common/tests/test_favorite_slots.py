@@ -104,7 +104,7 @@ def test_load_favorite_slots_filters_non_bool_keys():
   params = FakeParams()
   params.put(FAVORITE_SLOTS_PARAM, [
     {"enabled": True, "show_onroad": True, "key": "NotBool", "label": "Bad"},
-    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   slots = load_favorite_slots(params)
@@ -119,7 +119,7 @@ def test_save_and_toggle_favorite_slot_respect_available_catalog_keys():
   params = FakeParams()
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
     {"enabled": True, "show_onroad": True, "key": "ForceOffroad", "label": "Force Offroad"},
   ])
 
@@ -136,7 +136,7 @@ def test_toggle_favorite_slot_ignores_disabled_slot():
   params = FakeParams()
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": False, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": False, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   assert toggle_favorite_slot(0, params, FakeParams()) is False
@@ -148,7 +148,7 @@ def test_toggle_favorite_slot_flips_bool_and_requests_refresh():
   memory = FakeParams()
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   assert toggle_favorite_slot(0, params, memory) is True
@@ -259,7 +259,7 @@ def test_unassign_favorite_slot_resets_slot_and_notifies_memory():
   params = FakeParams()
   memory = FakeParams()
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
     {"enabled": True, "show_onroad": True, "key": "ForceOffroad", "label": "Force Offroad"},
   ])
 
@@ -322,7 +322,7 @@ def test_toggle_favorite_slot_polymorphic_dispatch():
   params.put(FAVORITE_SLOTS_PARAM, [
     {"enabled": True, "show_onroad": True, "key": "AccelerationProfile", "label": "Acceleration Profile"},
     {"enabled": True, "show_onroad": True, "key": FAVORITE_ACTION_DISTANCE_DECREASE, "label": "Distance -"},
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   # Slot 0: Dropdown cycle

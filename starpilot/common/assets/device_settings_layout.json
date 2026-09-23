@@ -5297,9 +5297,9 @@
       },
       {
         "key": "RedneckCruise",
-        "label": "Redneck Cruise",
-        "description": "On supported Hyundai stock-cruise cars, use RES/SET button presses to match the cluster set speed to StarPilot's target.",
-        "picker_description": "Matches StarPilot's target speed with Hyundai RES/SET.",
+        "label": "ICBM",
+        "description": "Intelligent Cruise Button Management. On supported Hyundai and Honda Bosch stock-cruise cars, use RES/SET button presses to match the cluster set speed to StarPilot's target, including Curve Speed Control slowdowns. Stock ACC still does the following and braking.",
+        "picker_description": "Matches StarPilot's target speed with Hyundai or Honda Bosch RES/SET.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "GalaxyDeveloperMode",
@@ -5307,7 +5307,7 @@
       },
       {
         "key": "SubaruRedneckCruise",
-        "label": "Subaru Redneck Cruise",
+        "label": "Subaru ICBM",
         "description": "On supported Subaru Impreza-family cars, use stock Resume/Set button presses to match the cluster set speed to StarPilot's target.",
         "picker_description": "Matches StarPilot's target speed with Subaru Resume/Set.",
         "data_type": "bool",

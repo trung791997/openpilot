@@ -7,6 +7,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.common.starpilot_variables import PLANNER_TIME
 from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_MAX_DECEL_RATE, PARAM_REFRESH_FRAMES, CurveSpeedController
 from openpilot.starpilot.controls.lib.starpilot_vcruise import (
+  csc_long_control_active,
   FORCE_STOP_CAP_SLACK_M,
   FORCE_STOP_TURN_VETO_STOP_SEEN_HOLD_TIME,
   STANDSTILL_FORCE_STOP_LIGHT_HOLD_TIME,
@@ -1128,3 +1129,18 @@ def test_nav_turn_speed_control_does_not_floor_steer_to_zero_cars():
 
   assert result == pytest.approx(vcruise.nav_turn_target)
   assert vcruise.nav_turn_target == pytest.approx(5.0 * CV.MPH_TO_MS)
+
+
+def test_csc_long_control_active_treats_engaged_icbm_as_active():
+  icbm = SimpleNamespace(redneck_cruise=True, openpilot_longitudinal=False)
+  alpha = SimpleNamespace(redneck_cruise=False, openpilot_longitudinal=True)
+  stock = SimpleNamespace(redneck_cruise=False, openpilot_longitudinal=False)
+
+  # Stock long with ICBM: longActive is always False, the engaged state decides.
+  assert csc_long_control_active(False, True, icbm) is True
+  assert csc_long_control_active(False, False, icbm) is False
+  # Alpha long is unchanged: longActive alone decides.
+  assert csc_long_control_active(True, True, alpha) is True
+  assert csc_long_control_active(False, True, alpha) is False
+  # Plain stock long without ICBM never runs CSC.
+  assert csc_long_control_active(False, True, stock) is False

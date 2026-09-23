@@ -122,7 +122,7 @@ def test_mici_boolean_toggle_and_feedback(setup_ui_state):
   params, memory = setup_ui_state
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   overlay = FavoriteSlotsOverlay()
@@ -193,7 +193,7 @@ def test_mici_tap_travel_cancellation(setup_ui_state):
   params, memory = setup_ui_state
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   overlay = FavoriteSlotsOverlay()

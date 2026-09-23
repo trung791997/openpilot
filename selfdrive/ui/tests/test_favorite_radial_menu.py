@@ -884,7 +884,7 @@ def test_radial_blade_render_uses_pixel_aligned_chassis_and_border(monkeypatch):
 def test_render_boolean_toggle_switch_and_picker_badges(monkeypatch):
   clock = [0.0]
   options = [
-    {"key": "RedneckCruise", "label": "Redneck Cruise", "ui_type": "toggle", "data_type": "bool", "section": "Speed"},
+    {"key": "RedneckCruise", "label": "ICBM", "ui_type": "toggle", "data_type": "bool", "section": "Speed"},
     {"key": "AccelerationProfile", "label": "Accel Profile", "ui_type": "dropdown", "data_type": "int", "options": [{"value": 0, "label": "Eco"}, {"value": 1, "label": "Sport"}], "section": "Longitudinal"},
     {"key": "__starpilot_favorite_action__:distance_decrease", "label": "Distance -", "section": "Actions"},
   ]
@@ -892,7 +892,7 @@ def test_render_boolean_toggle_switch_and_picker_badges(monkeypatch):
   params.types["RedneckCruise"] = ParamKeyType.BOOL
   params.put("RedneckCruise", False)
   params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": True, "key": "RedneckCruise", "label": "ICBM"},
     {"enabled": False, "show_onroad": False, "key": None, "label": ""},
     {"enabled": False, "show_onroad": False, "key": None, "label": ""},
   ])

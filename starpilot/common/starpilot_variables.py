@@ -403,6 +403,16 @@ def speed_limit_controller_available(openpilot_longitudinal: bool, redneck_cruis
   return openpilot_longitudinal or redneck_cruise
 
 
+def curve_speed_controller_available(openpilot_longitudinal: bool, redneck_cruise: bool) -> bool:
+  # ICBM (RedneckCruise) walks the stock set speed toward StarPilot's target, so curves can use it too.
+  return openpilot_longitudinal or redneck_cruise
+
+
+def honda_icbm_active(redneck_cruise_available: bool, pcm_cruise_speed: bool, openpilot_longitudinal: bool) -> bool:
+  # interfaces.py clears pcmCruiseSpeed only when RedneckCruise is on under stock long.
+  return bool(redneck_cruise_available and not pcm_cruise_speed and not openpilot_longitudinal)
+
+
 def migrate_cancel_button_controls(params: Params | None = None) -> bool:
   params = params or Params(return_defaults=True)
   if params.get_bool(CANCEL_BUTTON_MIGRATION_KEY) or not params.get_bool("RemapCancelToDistance"):
@@ -695,6 +705,9 @@ class StarPilotVariables:
       toggle.subaru_redneck_cruise = True
     if toggle.car_make == "subaru":
       toggle.redneck_cruise = bool(toggle.subaru_redneck_cruise and not FPCP.pcmCruiseSpeed)
+    if toggle.car_make == "honda":
+      toggle.redneck_cruise = honda_icbm_active(toggle.redneck_cruise_available, FPCP.pcmCruiseSpeed,
+                                                toggle.openpilot_longitudinal)
     pcm_cruise = CP.pcmCruise
     prohibited_main_aol = not toggle.openpilot_longitudinal and hyundai_can_use_lkas_for_aol
     startAccel = CP.startAccel
@@ -891,7 +904,9 @@ class StarPilotVariables:
       toggle.debug_mode
     )
 
-    toggle.curve_speed_controller = toggle.openpilot_longitudinal and self.get_value("CurveSpeedController")
+    toggle.curve_speed_controller = curve_speed_controller_available(toggle.openpilot_longitudinal,
+                                                                     toggle.redneck_cruise) and \
+                                    self.get_value("CurveSpeedController")
     toggle.csc_no_lead = self.get_value("CurveSpeedControllerNoLead", condition=toggle.curve_speed_controller)
     toggle.csc_status = self.get_value("ShowCSCStatus", condition=toggle.curve_speed_controller) or toggle.debug_mode
 

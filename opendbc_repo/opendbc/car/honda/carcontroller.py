@@ -825,7 +825,7 @@ class CarController(CarControllerBase):
       elif CC.cruiseControl.resume:
         can_sends.append(hondacan.spam_buttons_command(self.packer, self.CAN, CruiseButtons.RES_ACCEL, self.CP.carFingerprint))
       else:
-        # Redneck cruise: stock ACC keeps the radar and does the actual following,
+        # ICBM (RedneckCruise): stock ACC keeps the radar and does the actual following,
         # openpilot only walks its set speed with button presses. card.py decides
         # the direction; 0 means hold. Rate limited to 20 Hz like the stock stalk.
         redneck_button = {

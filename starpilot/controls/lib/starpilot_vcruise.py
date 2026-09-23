@@ -17,6 +17,16 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
 
 CSC_MIN_SPEED = CITY_SPEED_LIMIT * CV.MPH_TO_MS
 CSC_CURVE_RELEASE_HOLD_TIME = 0.75
+
+
+def csc_long_control_active(long_active, controls_enabled, starpilot_toggles) -> bool:
+  # Under ICBM (RedneckCruise) stock ACC does the control, so longActive is always False;
+  # the set-speed target still drives the car, so treat an engaged ICBM as active.
+  icbm_active = (controls_enabled and getattr(starpilot_toggles, "redneck_cruise", False) and
+                 not getattr(starpilot_toggles, "openpilot_longitudinal", False))
+  return bool(long_active or icbm_active)
+
+
 OVERRIDE_FORCE_STOP_TIMER = 10
 STANDSTILL_FORCE_STOP_CLEAR_TIME = 0.75
 # Open-loop — green is undetectable at standstill, so this only needs to cover the
@@ -337,7 +347,7 @@ class StarPilotVCruise:
     if not controls_enabled or not getattr(starpilot_toggles, "speed_limit_controller", False):
       self._applied_slc_control_target = 0.0
 
-    long_control_active = sm["carControl"].longActive
+    long_control_active = csc_long_control_active(sm["carControl"].longActive, controls_enabled, starpilot_toggles)
     force_stop_handoff_m = get_force_stop_handoff_distance(
       getattr(starpilot_toggles, "car_model", "")
     )

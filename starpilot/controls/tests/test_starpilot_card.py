@@ -1283,7 +1283,7 @@ def test_favorite_wheel_action_toggles_hidden_onroad_slot(monkeypatch, tmp_path)
   card = spc.StarPilotCard(SimpleNamespace(brand="gm"), SimpleNamespace(alternativeExperience=0))
   card.params.put("RedneckCruise", False)
   card.params.put(FAVORITE_SLOTS_PARAM, [
-    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "Redneck Cruise"},
+    {"enabled": True, "show_onroad": False, "key": "RedneckCruise", "label": "ICBM"},
   ])
 
   card.handle_button_event("lkas", make_sm(), make_toggles(favorite_1_via_lkas=True))
