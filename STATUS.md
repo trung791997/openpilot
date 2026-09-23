@@ -4889,8 +4889,9 @@ and ~20 other sites read aLeadK. Don't repeat it.
   are not in any log. Only its behaviour can be fitted: its commands and aEgo against radar tracks,
   vision leads and TTC. The car's ACC commands (CAN) are only in rlogs; qlogs carry aEgo, radarState
   and modelV2 at reduced rate, enough for a rough timing/strength fit only.
-- The 179 qlog-only routes (≥ 3 segments) were being checked for stock-long use when this was written;
-  see the census line below.
+- The 179 qlog-only routes (≥ 3 segments) were checked the same way: 178 are openpilot long. The one
+  stock route, **0000025a** (4 qlog segments, minutes before 25b), was never engaged in segs 0–1. So the
+  account has no other stock-ACC driving on Konik at all, with or without rlogs.
 - Next step for the study: a handful of stock-ACC drives, which upload with rlogs, covering: a lead
   in-lane on a curve, cut-ins/cut-outs, a hard-braking lead, a stopped car ahead, stop-and-go, and
   adjacent-lane passes on curves. Then fit stock onset and strength against closing speed, gap and TTC,
