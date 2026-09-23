@@ -210,7 +210,11 @@ class RedneckCruise:
   def _update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
     update_manual_button_timers(CS, self.cruise_button_timers)
     button_pressed = any(0 < timer <= int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL) for timer in self.cruise_button_timers.values())
-    self.is_ready = CC.enabled and not CC.cruiseControl.override and not CC.cruiseControl.cancel and not CC.cruiseControl.resume and not button_pressed
+    # cruiseControl.override is only set under openpilot long, so the stock-ACC gas override is
+    # checked directly. Honda DECEL/SET under gas snaps the set speed to vEgo (route 260 seg 6/9:
+    # 39 -> 25 mph at 14 mph, 29 -> 32 mph while ICBM was decreasing).
+    self.is_ready = CC.enabled and not CC.cruiseControl.override and not CC.cruiseControl.cancel and not CC.cruiseControl.resume and \
+      not button_pressed and not getattr(CS, "gasPressed", False)
 
   def _desired_state(self) -> str:
     if self.v_target > self.v_cruise_cluster:

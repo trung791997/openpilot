@@ -5031,3 +5031,24 @@ above CRUISING_SPEED, no tracked lead, in a curve, no blinker. Switching to manu
 It never cleared learned data anyway; `reset()` only resets the speed target. The calibrated lat-accel readout, the progress
 readout and Reset now show in both modes on device (the Galaxy already did). Tests:
 `test_learner_keeps_recording_while_manual_scaling_is_on`.
+
+## 79. Route 260 (ICBMCounterSync + CSC learner drive): sync works; ICBM now holds while the driver is on the gas. Limited road evidence for sync and CSC; the gas hold is static and unit evidence only.
+
+Route `11c8fa231c0499ed/00000260--a95a0c44ab`, commit f3952d84c4. `ICBMCounterSync` was off at boot. The live toggle JSON
+in `starpilotPlan` (≈1 Hz; the qlogs had dropped it) shows it **off in seg 5 and on from t≈360 s (seg 6)**. initData params are captured once at boot, so they
+cannot show a toggle that changed mid-drive. Read the rlog toggle JSON instead.
+- **Counter sync (rlog replay, segs 5/6/9/10):** synced TX frames carry car counter + 1 and land 40 ms apart, one pair per car
+  frame slot, every 160 ms (decel) / 200 ms (accel). 173/188, 330/563 (the rest are 100 Hz CANCEL spam, btn=2), and 153/161
+  in-sequence, against 144/520 by chance unsynced in seg 5. The set speed moves one step per pair. Clean bursts ran at
+  4–6 steps/s (seg 9 42→25 in 2.9 s; seg 10 25→51 in 5.2 s), against ~2–3.7 mph/s unsynced in seg 5.
+- **Overshoot:** it is 1 step. Under a CSC target that wobbles ±1 mph (seg 6 407–419 s, cscSpeed 38.1–40.9), ICBM walked the
+  set speed 38↔40 every ~0.5 s while vEgo stayed 39.0–39.6. That is cosmetic, but it can be fixed with a ±1 deadband if it bothers the driver.
+- **Bug found and fixed:** ICBM kept pressing while the driver held the gas. That was 105 of 636 synced presses in segs 6/9/10.
+  `CC.cruiseControl.override` is only set under openpilot long (`controlsd.py`), so it is always False on stock ACC. On a Honda,
+  DECEL/SET under gas snaps the set speed to vEgo: 39→25 mph at 14 mph (seg 6 371.3 s), and 29→32 while ICBM was decreasing
+  (seg 9 541.9 s). `RedneckCruise._update_readiness` now also requires `not CS.gasPressed`. Presses resume after the
+  pre-active delay once the gas is released. Tests: `selfdrive/car/tests/test_redneck_gas_override.py`.
+- **CSC (limited road):** it controlled the speed in seg 6 (407–419 s, target 38–41 mph at curvature 0.005, learned lat accel
+  1.62–1.67 m/s²). The driver cancelled it with RES+ at 419 s (`cscOverridden`). The learner trained in seg 11 during manual driving in
+  curves (`cscTraining`, cruise off, curvature up to 0.021, lat accel 1.7–1.96). Manual Curve Scaling was off for the whole drive,
+  so this route does not exercise item 78's manual-mode learning.
