@@ -5104,3 +5104,26 @@ Source: Dom commits 50a8d1abdb (rejected limit not auto-applied), 7222b29a88 (ac
 Tests (docker, one file per process): SLC 52 passed (Dom's file plus our 73a ICBM-accept and 74a denied tests), vcruise 94
 (Dom's under-25 mph SLC and two nav-turn tests added), acceleration 27, cruise_speed 38, redneck_gas_override 2,
 longitudinal_planner 486. Redneck: only the pre-existing coast test fails. `test_speed_limit_pulse` needs pyray (environment).
+
+## 82. D-063 variant D (U11 rail bound up to 20 m/s, plus a D-059-style hold) is parked as a patch, not applied. Replay evidence only; not driven.
+
+Patch: `tools/bosch_a_variants/d063_variant_d.patch` (applies to `radar_interface.py` at this commit; the parser in the tree is unchanged).
+Variant D treats a U11 vRel at the -13.5 m/s rail as an interval reaching down to -20 m/s. The interval is used in the D-054 range
+gate and the D-057 re-anchor. A sweep admitted only through that interval starts the D-059 hold, so vRel stays unmeasured until a fresh fit agrees.
+- **Replay A/B against HEAD** (routes 25d, 25e, 25f, 260). Over-closing means a newly measured vRel that shows more than 3 m/s more closing than the next 1 s range slope. The reference rate is ~5%.
+
+  | Route | Over-closing / new measured | Lost | Lead points lost | Notes |
+  |---|---|---|---|---|
+  | 25e | 12/55 | 7 | 0 | Track 59 lead restored from 79.5 m (34/38 measured) |
+  | 25f | 19/47 | 1 | 0 | No lead points gained |
+  | 25d | 0/0 | 0 | 0 | |
+  | 260 | 0/0 | 5 | 0 | Losses are non-lead points at the rail, 25-31 m off-axis |
+
+- **Over-closing sweeps.** Almost all come from three non-lead tracks at 60-81 m. In two of them U11 sat on the rail while the range
+  closed at only about 10 m/s, so the rail is not always a lower bound on closing speed. The third (25f track 33) was a genuine unrailed U11 of -12.5
+  against -9. There was also one lead sweep: 25e track 48 at 404.9 s, 36.5 m, vRel -1.7 while the range was opening at +2.8.
+- **Variant E** added a two-sided fresh-fit hold for rail-admitted tracks. It changed none of the over-closers and cut track 59 to 29/38 measured,
+  so it was dropped.
+- **Decision (Peter, 2026-09-23):** not applied. The plan is to collect more stock-ACC routes with far, fast-closing leads (above 60 m and 13.5 m/s) and
+  pull-aways, and replay D on each. D can go behind a default-off toggle for alpha-long testing only once replay shows 0 lost lead points
+  and no lead sweep that over-closes.
