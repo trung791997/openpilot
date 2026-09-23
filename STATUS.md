@@ -6,8 +6,12 @@ Update the date above whenever this file changes. If it is stale, trust `git log
 file.
 
 Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
-`ns-bosch-radar-testing`, tip `0083ffa` ("fix: define raw lead safety distance",
-2026-09-11, JamesL787). `claude/radar-testing-state-88vt2t` is identical to it.
+`ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
+is pushed to both). For the current tip, trust `git log`, not this line.
+
+**Latest work (2026-09-23), start here:** item 74 (route 0000025b) and its sub-items 74a–74f.
+74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
+census and the open follow-ups.
 
 **Scope note.** This file covers the **radar and longitudinal** work in this repo. The EPS
 firmware programme (RWD tunes, the `0x6A0..0x6A8` telemetry stub, the gain bench, UART/UDS
@@ -16,6 +20,9 @@ here. Where the two touch — the CR-V lateral profile, the steering-ratio curve
 `extract_drives.py` lineage — that is recorded below as a cross-reference only.
 
 **Open topics to revisit** (parked by decision, not closed):
+- **Off-axis lead follow-ups: item 74f.** A −3.5 false brake remains at 237 942.6. Two real closings
+  now brake later (25b 665.2 +1.5 s, 245 40.7 +0.9 s). Needs a road drive on curves with the fix.
+- **Stock-ACC behaviour study: item 74f.** Blocked on data: 25b is the only stock-ACC route with rlogs.
 - **Brake over-delivery and the low-speed stop-and-go jolt: item 72.** Parked 2026-09-23. Reopen
   when there are about 10 or more low-speed gas-to-brake onsets (below 10 m/s) in rlogs. Today there
   are 3. Also reopen if a drive reports the jolt again.
@@ -4845,3 +4852,63 @@ Replay, before vs after, hard-brake episodes (output aTarget < −2.5):
 | 00000241, 23e, 236, 239, 232, 23b, 23a | 14 | 0 | 241's 257.4/338.1/356.0/588.4/606.2 unchanged. |
 
 Total: 24 episodes, 5 changed, every one off-axis with vision a ≥ −0.56. Open items: 665.2 (25b) and 40.7 (245) are real closings that now start later, and stock ACC did not brake hard at 665.2 either. 237 942.6 is still a −3.5 false brake. The Bosch-A limit was re-checked on 25b: every frame is identical to the run without it (8,391/8,391). Tests: `test_longitudinal_planner.py` has 485 passing (477 before, plus 8 new covering the 25b 11:29 geometry, a straight lead, vision-corroborated −4/−6, low vision confidence, a centred 000001e8-like stop, vision-only and mild leads, and the Bosch-A limit).
+
+**74f. Handoff: what 74e leaves open, and the stock-ACC data census (2026-09-23).**
+
+*Where the 74e change lives.* `selfdrive/controls/lib/longitudinal_planner.py`: constants
+`OFF_AXIS_LEAD_MIN_BEARING` (0.12), `OFF_AXIS_LEAD_MAX_BRAKE` (1.5), `OFF_AXIS_LEAD_VISION_MIN_PROB` (0.5);
+functions `off_axis_lead_a_lead`, `bound_off_axis_leads`, `uses_off_axis_lead_bound`; view classes
+`_BoundedLead`, `_BoundedRadarState`, `_BoundedSubMaster`. `LongitudinalPlanner.__init__` sets
+`self.bound_off_axis_radar_leads`, and `update()` swaps `sm` for the bounded view on its first line when it
+is set. Because the MPC gets `sm['radarState']` from inside `update()`, the MPC sees the bound too.
+`publish()` still reads the raw radarState (the stop-release guard); this is deliberate and not bounded.
+Tests: the `test_off_axis_lead_*` tests at the end of `selfdrive/controls/tests/test_longitudinal_planner.py`.
+The 74d attempt that bounded only `get_close_lead_brake_cap` changed no output frame, because later
+stages (`get_honda_accord_stop_go_accel_target`, `get_vehicle_far_follow_slew_target`) pass −3.45 through
+and ~20 other sites read aLeadK. Don't repeat it.
+
+*Open items from 74e (replay evidence):*
+1. 00000237 942.6: still a −3.5 false brake (bearing 0.12, aLeadK −6.6, vision a +0.03, d 87.7). The
+   bound applies, but another layer still commands −3.5. Next step: run `who.py`-style instrumentation
+   (monkeypatch every `get_*`, print the ones returning < −1) on that frame.
+2. 0000025b 665.2 and 00000245 40.7 are real closings that now start braking 1.5 s and 0.9 s later. Stock
+   ACC did not brake hard at 665.2 (aEgo −0.26), so it isn't clearly a regression, but a curve drive with
+   the fix should confirm it.
+3. The bound's evidence is one car (HONDA_CIVIC_BOSCH, dongle 11c8fa231c0499ed). Treat it as limited
+   until a road drive on curves with a lead confirms no late brakes.
+
+*Stock-ACC census (Konik).* The user asked for how stock ACC picks its lead and sizes braking. Findings:
+- Konik lists 400 routes for the account; 101 have rlogs. Konik's `platform` field is unreliable: 44 of
+  the 101 are labelled `mock`, 25b among them. Don't filter on it; read `carParams` from the qlog instead.
+- Reading the last `carParams` in segments 0–1 of all 101: 99 have `openpilotLongitudinalControl` true.
+  Only **0000025b** (radar on) and **0000016e** (radarUnavailable, not engaged in segs 0–1) are stock long.
+- So there is no stock-ACC rlog corpus beyond 25b. What 25b shows is in 74b–74d. Stock ignored the curve
+  false alarms (≈0 to −0.5), braked −4.4 on the real 22:19 lead about 0.7 s earlier than alpha would, and
+  braked −3.4 at 15:34 for a vision-only lead.
+- Stock's internals (which object it follows, how it sizes braking) are inside the Bosch radar unit and
+  are not in any log. Only its behaviour can be fitted: its commands and aEgo against radar tracks,
+  vision leads and TTC. The car's ACC commands (CAN) are only in rlogs; qlogs carry aEgo, radarState
+  and modelV2 at reduced rate, enough for a rough timing/strength fit only.
+- The 179 qlog-only routes (≥ 3 segments) were being checked for stock-long use when this was written;
+  see the census line below.
+- Next step for the study: a handful of stock-ACC drives, which upload with rlogs, covering: a lead
+  in-lane on a curve, cut-ins/cut-outs, a hard-braking lead, a stopped car ahead, stop-and-go, and
+  adjacent-lane passes on curves. Then fit stock onset and strength against closing speed, gap and TTC,
+  and whether it ignores off-axis leads.
+
+*How to reproduce the census.*
+- List routes via `tools/konik_preflight.py`'s `plain_http` plus `_token`: `GET /v1/me/devices/`, then
+  `GET /v1/devices/<dongle>/routes_segments?limit=400`. The Mac's system Python TLS (LibreSSL) fails the
+  handshake with `requests`; `plain_http` falls back to curl.
+- Fetch qlogs with `tools/konik_fetch.py --route 'DONGLE|ROUTE' --segments 0,1 --qlogs --out DIR`.
+- Read `carParams.openpilotLongitudinalControl` in the `oprad-test:py312` container with
+  `_LogFileReader`. The script is `/routes/stk/cpmode.py` in the `oprad-routes` volume.
+
+*Replay tooling used for 74c–74e* (volume `oprad-routes`, `/routes/an2/r25b/`; not in the repo):
+- `caprp.py <route>`: open-loop planner replay; env `TAG=before` sets `LP.OFF_AXIS_LEAD_MIN_BEARING=1e9`.
+- `fleetcmp.py <routes>`: hard-brake episodes (aTarget < −2.5), before vs after.
+- `who.py`: which `get_*` stage sets the output.
+- Run with the repo mounted:
+  `docker run --rm -e PYTHONPATH=/src/openpilot:/src -v $PWD:/src/openpilot:ro -v oprad-routes:/routes oprad-test:py312 python /routes/an2/r25b/<script>`.
+- The fleet routes (25b, 245, 241, 23b, 23e, 237, 236, 239, 23a, 232) are archived to Drive
+  (`~/.local/bin/oprad-routes retrieve <route>` before replaying).
