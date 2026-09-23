@@ -5127,3 +5127,23 @@ gate and the D-057 re-anchor. A sweep admitted only through that interval starts
 - **Decision (Peter, 2026-09-23):** not applied. The plan is to collect more stock-ACC routes with far, fast-closing leads (above 60 m and 13.5 m/s) and
   pull-aways, and replay D on each. D can go behind a default-off toggle for alpha-long testing only once replay shows 0 lost lead points
   and no lead sweep that over-closes.
+
+## 83. Planner review of StarPilot Dom 79c61f479a: three small pieces ported. Static and unit evidence only; not driven.
+
+- **Conditional mode reset.** When Conditional Experimental or Conditional Chill is not the active mode, the planner now calls `deactivate()`. That clears
+  its hold timers and cached status. Before, it only flipped `experimental_mode`, so an old hold could briefly force the wrong mode when the mode was re-enabled.
+  The published-mode hunk from Dom's `starpilot_planner.py` was not taken; it belongs to Dom's unified long mode, which was skipped in item 80.
+- **Personality profiles now reach the planner.** When `CustomPersonalities` is on and the active personality's profile is enabled, `starpilot_following.py` takes
+  its follow time from the profile and `starpilot_acceleration.py` takes max accel and the braking floor from it. The UI editor and toggles were already in the tree
+  but had no effect. With `CustomPersonalities` off, both files behave as before. `CustomPersonalities` requires openpilot longitudinal.
+  The SLC-shaped floor was moved into `_shape_min_accel_for_slc` (Dom's refactor, no behaviour change); our explanatory comments were kept.
+- **AOL alerts** go through `update_aol_alerts` (Dom refactor, adds a Tesla pre-AP case).
+- **Not ported:** the far-lead coast cap in `longitudinal_planner.py`. It caps braking at -0.2 m/s² for leads beyond 45 m with more than 8 s TTC.
+  It acts directly on the radar lead's dRel and vLead, so it would confound radar testing. It trusts a closing-speed estimate that can be understated at range,
+  and it depends on `inside_gap_closing_cap`, which our planner removed. The set-aside Dom tests in `.claude/dom_backup/` were dropped: they cover
+  unported features (unified long mode, resume keeping software cruise speed, Tesla pre-AP).
+- **Tests (docker, per file):** Dom's new `test_conditional_reentry` 13, `test_personality_following_profiles` 29, `test_personality_longitudinal_profiles` 15,
+  `test_personality_transient_contract` 21, `test_preap_aol_alerts` 2 and `test_longitudinal_personality_profiles` 71 all pass. Existing suites also pass:
+  acceleration 27 (fixture now supplies `selfdriveState`; Dom's copy has the same gap), conditional chill 19 and experimental 51, longitudinal_planner 486,
+  vcruise 94, SLC 52. These failures are identical at HEAD: test_starpilot_planner 1, test_starpilot_card 1, Galaxy test_longitudinal_mode 59,
+  and test_mode_consumer_interleavings 37 (unified long mode not ported).
