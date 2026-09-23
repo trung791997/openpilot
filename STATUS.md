@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-17**
+**As of: 2026-09-23**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -14,6 +14,11 @@ firmware programme (RWD tunes, the `0x6A0..0x6A8` telemetry stub, the gain bench
 flashing, D-001..D-026) lives in the separate EPS knowledge-base repo and is **not** tracked
 here. Where the two touch — the CR-V lateral profile, the steering-ratio curves, the
 `extract_drives.py` lineage — that is recorded below as a cross-reference only.
+
+**Open topics to revisit** (parked by decision, not closed):
+- **Brake over-delivery and the low-speed stop-and-go jolt: item 72.** Parked 2026-09-23. Reopen
+  when there are about 10 or more low-speed gas-to-brake onsets (below 10 m/s) in rlogs. Today there
+  are 3. Also reopen if a drive reports the jolt again.
 
 ---
 
@@ -4571,7 +4576,163 @@ brake.
 
 **Next.**
 1. Drive it. Watch for brakes that are early or harder than the gap needs behind slow-closing leads.
-2. The qlog sweep of all 254 radar-era routes is still running. Its flagged segments get their rlogs
-   fetched and replayed with `ab9.py`, and the results will be added here.
+2. Done: the qlog sweep follow-up is below. Still open: replay route 252 (`00000252--69505eb434`),
+   segments 15 and 16, once its rlogs reach Konik.
 3. STATUS 69 next items 2 (D-053 range assist on gated coasts) and 3 (a lead dropped on a
    model-probability collapse) are still open.
+
+**Follow-up (2026-09-23): qlog sweep and 24d.**
+
+*Correction.* The table in point 3 covers 23 routes, not 24. `ab9.py` crashed on `0000024d` on a
+point that only R publishes (M has no value to pair against). With that guard added, 24d gives:
+R loses 0 points and 0 lead points, 69 coasted sweeps become measured (none on the lead), and R
+publishes 31 point-sweeps that M did not (none on the lead). The paired score goes 2 to 21 against R
+(median error 1.69 vs 0.79 m/s, none on the lead, neither side over-closes). With 24d the all-sweeps
+row becomes 461 sweeps, 237 R nearer, 100 M nearer, summed error 878 / 1,659. The lead row is
+unchanged.
+
+*qlog sweep.* 254 radar-era routes, 198 with engagement, 43.7 engaged hours, 0 segment errors.
+Flags: FCW 64, hard brake 765, sign reversal 446, and `frozen_lead` 13 on 7 routes (lead vRel and
+aLeadK bit-identical for at least 2 s while its range moves at least 1 m). qlogs only found the
+candidates. Every check below is an rlog replay.
+
+| route, t (s) | frozen | M rate-check run in rlog? | lead / engaged | D-062 re-roots it? |
+|---|---|---|---|---|
+| 252 262.7, 992.3 | 12.2 s, 9.5 s (992: closing 68→36 m) | **rlogs not on Konik yet** | — | not replayed |
+| 24d 660.2 | 11.8 s | yes, tid 23, 12.5 s, agrees with U11 | 0.94 / 0.94 | no |
+| 24d 828.5 | 4.7 s | yes, tid 47, 7.6 s, 104→56 m, U11 over-closes | 1.0 / 0.26 | no |
+| 24d 1506.3 | 4.0 s | yes, tid 47, 5.2 s, agrees | 1.0 / 1.0 | no |
+| 23f 1240.6 | 6.0 s | **no run of 2 s or more** | — | — |
+| 23f 1640.4 | — | yes, tid 37, 3.9 s, agrees | 0.61 / 1.0 | no |
+| 24f 367.4 | 5.5 s, closing 53→37 m | yes, tid 18, 5.8 s, U11 over-closes | 1.0 / 0.45 | **yes**, 1.2 s from 372.8 (point 4) |
+| 24f 799.2 | — | yes, tid 23/33, about 2.6 s | 0 and 1.0 / 0 | no |
+| 23e 875.7 | 2.5 s | yes, tid 28, 9.4 s, agrees | 0.31 / 1.0 | no |
+| 251 490.9 | — | yes, tid 39, 3.8 s, opening | 0.76 / 1.0 | no |
+| 251 499.7 | — | yes, tid 30, 2.3 s, U11 over-closes | 0.97 / 0.57 | no |
+| 257 169.2 | — | yes, tid 61, 2.2 s, opening | 1.0 / 1.0 | no |
+
+Replay findings:
+- The qlog `frozen_lead` signature finds the M rate-check coast in 10 of 11 events that could be
+  replayed.
+- 23f 1240.6 has no rate-check run behind it. That freeze is unexplained, and the qlog decimation
+  may be the cause.
+- D-062 re-roots only one flagged lead, 24f `tid 18`. That is the loss already listed in point 4.
+- On the others, R has no lead run of 1 s or more that differs from M.
+- Those runs are also `degraded` for their whole length (24f `tid 18` only half of it). This is an
+  observation, not a tested cause.
+- The 258-style lockout (a clean, lasting run of rate-check coasts on the lead while closing) does
+  not show up in any other replayable route.
+- 252 at 992 s is the one open candidate, and it is closing. Its rlogs upload only on WiFi. When
+  they do, fetch segments 15 and 16 and replay them with `ab9.py`.
+
+## 71. The car over-brakes its own command, and the cause is not in our code: the Honda Bosch brake ECU overshoots fast brake onsets. It happens on all 7 routes checked. Replay (log decode) evidence only.
+
+Follows STATUS 67 item 1. Scripts `ob1.py` (per-route bins and episodes) and `ob2.py` (timelines) are in
+the `oprad-routes` volume at `/routes/an2` and are not committed. They were run on the rlogs of 258,
+257, 254, 251, 24f, 241 and 237.
+
+**1. We send exactly what the planner asks for.** On every route, `ACC_CONTROL.ACCEL_COMMAND` (0x1DF,
+decoded from `sendcan`) equals `carControl.actuators.accel`: median difference 0.000, p1/p99 within
+±0.03 m/s². On Bosch, `carcontroller.py` only clips to [−3.5, 2.0], and the hill term reaches only
+the gas path. Honda Bosch has no longitudinal PID (`kiV` is set only for non-Bosch), so the car's
+own ECU closes the loop on `ACCEL_COMMAND`.
+
+**2. Grade is not the cause.** Median pitch is 0.1-1.4° per bin. Correcting `aEgo` by g·sin(pitch)
+moves the bin medians by at most about 0.25 and does not remove the saturated-bin offset.
+
+**3. Steady tracking is good; only the saturated bin over-brakes.** Median `aEgo(t+0.35) − cmd` is
+within ±0.35 on routes with enough samples for every bin from −0.5 to −3.0 m/s². The −3.0 to −3.6 bin is
+−0.25 to −0.65 on every route that reaches it (258 −0.34, 237 −0.33, 241 −0.65, 24f −0.25, 251 −0.29,
+254 −0.26).
+
+**4. The large overshoots are short transients at fast brake onsets.** There are 28 episodes across
+7 routes where `aEgo` stays more than 0.8 below the command for at least 0.3 s. All have
+`BRAKE_REQUEST` set, most last 0.3-0.7 s, and in every one the minimum `aEgo` is more than 0.8
+below the minimum command, so reaction lag does not explain them.
+- About half peak at a saturated command: 237 cmd −3.42 → `aEgo` −5.98; 254 −3.46 → −5.21;
+  258 51:30 −3.39 → −4.04 (`dv/dt` agrees), then the brake releases about 0.3 s behind the command.
+- Low speed after a gas-to-brake flip, the STATUS 67 stop-and-go jolt: 258 63:50 at 7.7 m/s went
+  from +0.8 to −1.5 in 1 s and `aEgo` reached −2.8. 3 of the 28 episodes are below 10 m/s.
+- The routes predate and postdate the guard trims (237/241 against 258), so this is car behaviour,
+  not a regression.
+
+**Superseded by item 72:** over-brake scales with brake depth, not onset rate, so the "fast brake
+onsets" wording in this heading and in point 4 is wrong.
+
+**What this does not establish.** Whether ECU overshoot depends on the command's rate (jerk) rather
+than its level. The data suggests rate, but no replay has varied it. On the road, a brake onset
+overshoot is conservative for collision but is felt as a jolt.
+
+**Options (none implemented; any change that lowers a brake command needs a decision first):**
+1. Leave it. It errs toward more braking, and a mid-range command is tracked within about 0.2.
+2. Limit command jerk at brake onset, below 10 m/s and on gas-to-brake flips only. This targets the
+   stop-and-go jolt and does not change the peak deceleration available.
+3. Do not scale down saturated commands to cancel the overshoot. It would cut peak braking in exactly
+   the emergencies where it is needed.
+
+## 72. Brake over-delivery scales with how hard openpilot asks, not how fast the brake builds; the close-lead cap is not the jolt's cause. Parked, open to revisit. Replay (log decode and closed-loop planner) evidence only.
+
+Follows item 71. Peter asked (1) whether a StarPilot planner guard causes the fast brake onset and
+could simply be deleted, as with the item 64-66 trims, and (2) for option 2 of item 71, an onset
+jerk limit. Result: no guard to delete, and option 2 is not supported. **Nothing changed in code.**
+
+**1. The 258 63:50 stop-and-go jolt runs through `get_close_lead_brake_cap`, but the cap is not
+the problem.** From 49.72 to 51.8 s `longitudinalPlan.aTarget` equals `closeLeadBrakeCap` on every
+frame. The first frame replaces the MPC's +0.45 with −0.81, because the cap arrives at full strength
+when projected TTC crosses `CLOSE_LEAD_BRAKE_CAP_MAX_TTC` (10 s). Its value is mostly
+`0.7 * aLeadK`, and here the lead really was braking (aLeadK to −2.7). A closed-loop replay from
+49.0 s (CL_TAU 0.35, lead not reactive) compares three runs:
+
+| Run | reaches −1.0 | peak cmd | min gap |
+|---|---|---|---|
+| cap on (as driven) | 49.81 s | −1.57 | 9.83 m |
+| cap off | 49.96 s | −1.75 | 9.89 m |
+| cap off below 10 m/s | same as off | −1.75 | 9.89 m |
+
+Without the cap, the MPC reaches −1.0 only 0.15 s later and then brakes harder. The cap was also kept
+by item 64 on highway gap evidence. It stays. The MPC's own swing is +0.45 to −1.0 in about 0.65 s.
+The car's `aEgo` of −3.0 against a −1.5 command came about 0.8 s later, while the command was steady.
+
+**2. All 79 brake onsets on the 7 item-71 routes.** An onset is the command crossing −1.0 from above
+−0.2, with none in the previous 4 s, followed by 3 s with long control engaged and no pedal.
+Over-brake is min `aEgo(t+0.35)` minus min command over those 3 s, pitch-corrected; negative means
+the car braked harder than asked.
+
+| onset rate (m/s³) | n | median over-brake | share worse than −0.8 |
+|---|---|---|---|
+| < 1 | 49 | −0.42 | 14% |
+| 1-2 | 8 | −0.37 | 0% |
+| 2-4 | 3 | −1.31 | 67% |
+| ≥ 4 | 19 | −0.11 | 5% |
+
+- Faster onsets over-brake **less**: the correlation of rate with over-brake is +0.46, where positive
+  means less over-brake.
+- The least-squares fit is `over = −0.13 + 0.019·rate + 0.268·cmd_min + 0.004·v`. Over-brake is about
+  27% of the requested depth, and rate and speed add nothing.
+- The worst case is 237 at 762 s: −3.5 requested, −5.98 delivered, at an onset of only 0.7 m/s³.
+- Gas-to-brake onsets (previous command ≥ +0.3), n = 16, have the same median as the rest (−0.40
+  against −0.38).
+
+**3. The one group that looks different is too small to act on.** The 2-4 m/s³ band has 3 onsets,
+2 of them 258's low-speed stop-and-go jolts:
+- 63:50 at 7.7 m/s: −1.6 requested, −3.04 delivered;
+- 2882 s at 2.4 m/s: −1.0 requested, −2.58 delivered.
+
+There are 6 onsets below 10 m/s in total. Rule 5 applies: do not tune on a handful of points.
+
+**Decision (Peter, 2026-09-23): leave it for now; it is a topic to revisit.** Onset-jerk limiting
+(item 71 option 2) is not supported by this data. Compensating for the ECU's depth-proportional
+over-delivery would lower brake commands and needs Peter's decision. If it is ever tried, it should
+be behind a toggle that defaults off, after replay, and never applied to saturated or emergency
+commands (item 71 option 3).
+
+**To revisit:** collect low-speed stop-and-go rlogs until there are about 10 or more onsets below
+10 m/s, then rerun `ob5.py` and `ob5sum.py` (in the `oprad-routes` volume at `/routes/an2`, not
+committed). The question is whether low-speed gas-to-brake flips over-brake beyond the 27% depth
+trend. If they do, retry option 2 there only.
+
+Scripts (not committed, in the `/routes/an2` volume):
+- `ob4.py`: plan, guard, lead and command trace.
+- `ob5.py`, `ob5sum.py`: the onset census.
+- The closed-loop replay is the item-64 `replay.py` plus a `CLC` env switch (`0` = cap off,
+  `v<thr>` = off below thr m/s).
