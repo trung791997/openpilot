@@ -4106,3 +4106,13 @@ def test_near_duplicate_lead_source_hysteresis_skips_distinct_leads():
 
   assert lead_0_bias == 0.0
   assert lead_1_bias == 0.0
+
+
+def test_human_following_gates_the_model_lead_path():
+  from types import SimpleNamespace
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import human_following_model
+  model = object()
+  assert human_following_model(model, SimpleNamespace(human_following=True)) is model
+  assert human_following_model(model, SimpleNamespace(human_following=False)) is None
+  # A toggle set without the attribute keeps the pre-toggle behaviour (model path on).
+  assert human_following_model(model, SimpleNamespace()) is model

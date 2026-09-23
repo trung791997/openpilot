@@ -1,6 +1,6 @@
 export const GALAXY_DEVELOPER_MODE_KEY = "GalaxyDeveloperMode"
 
-const HIDDEN_SETTING_KEYS = new Set(["HumanAcceleration"])
+const HIDDEN_SETTING_KEYS = new Set([])
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
 const VEHICLE_SETTING_MAKES = {
   RivianAngleControl: ["Rivian"],

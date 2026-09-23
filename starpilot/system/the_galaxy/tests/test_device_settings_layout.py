@@ -60,7 +60,7 @@ def test_galaxy_layout_removes_obsolete_and_duplicate_controls():
   all_keys = {key for params in sections.values() for key in params}
 
   assert "Model & Customization" not in sections
-  assert "HumanAcceleration" not in all_keys
+  assert {"HumanAcceleration", "HumanFollowing"} <= all_keys
   assert "DisableWideRoad" in sections["Visual (Display & UI)"]
   assert sum(
     param.get("key") == "DisableWideRoad"
@@ -348,9 +348,14 @@ def test_toyota_auto_hold_is_galaxy_only():
   assert setting["data_type"] == "bool"
 
 
-def test_human_acceleration_param_is_removed():
+def test_human_acceleration_param_is_registered_default_off():
   params_source = PARAM_KEYS_PATH.read_text(encoding="utf-8")
-  assert '{"HumanAcceleration",' not in params_source
+  assert '{"HumanAcceleration", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},' in params_source
+  assert '{"HumanFollowing", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},' in params_source
+  longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
+  for key in ("HumanAcceleration", "HumanFollowing"):
+    assert longitudinal[key]["ui_type"] == "toggle"
+    assert longitudinal[key]["parent_key"] == "LongitudinalTune"
 
 
 def test_rivian_angle_control_is_harness_gated():

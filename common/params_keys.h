@@ -467,6 +467,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HondaSteerDeltaUp", {PERSISTENT, FLOAT, "3.0", "3.0", 2}},
     {"HondaStoppingDecelRate", {PERSISTENT, INT, "30", "30", 2}},
     {"HondaTorqueLowPassFilter", {PERSISTENT, BOOL, "0", "0", 2}},
+    {"HumanAcceleration", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
+    {"HumanFollowing", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
     {"HumanLaneChanges", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"IconPack", {PERSISTENT, STRING, "stock", "stock", 0}},
     {"IconToDownload", {CLEAR_ON_MANAGER_START, STRING, "", ""}},

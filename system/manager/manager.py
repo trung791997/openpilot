@@ -76,7 +76,7 @@ NRDR_HONDA_OVERRIDE_SEMANTICS_MIGRATION_FLAG = Path("/data") / "nrdr_honda_overr
 NRDR_KONIK_DEFAULT_MIGRATION_FLAG = Path("/data") / "nrdr_konik_default_v1"
 NRDR_DM_DEFAULTS_MIGRATION_FLAG = Path("/data") / "nrdr_dm_defaults_v1"
 STARPILOT_REMOVED_PARAM_KEYS = (
-  "CoastUpToLeads", "HumanAcceleration", "HumanFollowing", "PrioritizeSmoothFollowing", "ReverseCruise",
+  "CoastUpToLeads", "PrioritizeSmoothFollowing", "ReverseCruise",
   "NrdrTuneLearner", "NrdrTuneLearnerMap", "NrdrTuneLearnerRate", "NrdrTuneLearnerReset", "NrdrTuneLearnerStrength",
 )
 LEGACY_CARMODEL_MIGRATIONS = {

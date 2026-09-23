@@ -468,12 +468,9 @@ class TestManager:
   def test_cleanup_removed_starpilot_params(self, tmp_path):
     params = FileBackedFakeParams(tmp_path / "params", {
       "CoastUpToLeads": True,
-      "HumanAcceleration": True,
-      "HumanFollowing": True,
       "ReverseCruise": True,
     })
     params_cache = FileBackedFakeParams(tmp_path / "cache", {
-      "HumanFollowing": False,
       "PrioritizeSmoothFollowing": True,
       "ReverseCruise": True,
     })
@@ -481,10 +478,7 @@ class TestManager:
     manager.cleanup_removed_starpilot_params(params, params_cache)
 
     assert not Path(params.get_param_path("CoastUpToLeads")).exists()
-    assert not Path(params.get_param_path("HumanAcceleration")).exists()
-    assert not Path(params.get_param_path("HumanFollowing")).exists()
     assert not Path(params.get_param_path("ReverseCruise")).exists()
-    assert not Path(params_cache.get_param_path("HumanFollowing")).exists()
     assert not Path(params_cache.get_param_path("PrioritizeSmoothFollowing")).exists()
     assert not Path(params_cache.get_param_path("ReverseCruise")).exists()
 

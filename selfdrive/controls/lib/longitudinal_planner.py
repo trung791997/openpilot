@@ -555,6 +555,15 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
   return a_target, should_stop
 
 
+def human_following_model(model_v2, starpilot_toggles):
+  """HumanFollowing gate: the MPC gets the model lead path only while the toggle is on.
+
+  Off hands the MPC no modelV2, so every lead falls back to the aLeadK extrapolation.
+  Defaults on when a toggle set predates the param, which keeps the behaviour of STATUS 62/63.
+  """
+  return model_v2 if getattr(starpilot_toggles, "human_following", True) else None
+
+
 class LongitudinalPlanner:
   def _blotv3_active(self) -> bool:
     """Gated only on BlotV3, matching MLT's own unconditional scope -- BLoTv3 works off
@@ -2357,7 +2366,7 @@ class LongitudinalPlanner:
                     smooth_duplicate_vision=nonurgent_duplicate_vision_follow and not panic_bypass,
                     stop_x=force_stop_x,
                     silverado_early_follow=early_truck_follow,
-                    modelV2=sm['modelV2'],
+                    modelV2=human_following_model(sm['modelV2'], starpilot_toggles),
                     lead_obstacle_bias=stopped_lead_obstacle_bias,
                     tracked_lead_catchup_headway_margins=self.tracked_lead_catchup_headway_margins,
                     tracked_lead_catchup_bias_gain=self.tracked_lead_catchup_bias_gain,

@@ -4430,3 +4430,38 @@ settle it.
 **What this does NOT establish.** One route, 22.9 min, CSV only, no replay, no `liveTracks`. The
 over-brake could be Honda Bosch brake tracking or unlogged grade; it is outside the planner either
 way, but its cause is not identified. Item 3's mechanism is inferred from the lead fields.
+
+## 68. HumanAcceleration ported from FrogPilot (default off); HumanFollowing becomes a toggle (default on). Static and unit evidence only.
+
+**HumanAcceleration** (`HumanAcceleration`, default **off**; FrogPilot defaults it on). Ported from
+FrogPilot-Testing `728f65472` (`frogpilot_acceleration.py`, same math as the Nov 2025 snapshot
+`202543c86`). Only `max_accel` changes, in `StarPilotAcceleration.update`: after the profile is chosen
+and before the weather reduction. Braking and `min_accel` are not touched.
+- The set speed scales max accel: 1/4 of it at a 0 set speed, 1/2 at 12.5 m/s, full from 25 m/s.
+- Ramp-off near the set speed: 0 at the set speed, 0.5 m/s² at 1 m/s below it, full at 5 m/s below.
+- FrogPilot's other half (in the starting state, longcontrol outputs `a_target` instead of
+  `startAccel`) is **not ported**. StarPilot's starting state already clips `a_target` to
+  `[0, startAccel]`.
+
+**HumanFollowing** (`HumanFollowing`, default **on**). The model lead path with the 3 s closing-TTC
+guard from STATUS 62/63 used to be unconditional. It is now gated in `human_following_model()`
+(`longitudinal_planner.py`): with the toggle off, the MPC gets no `modelV2` and every lead
+falls back to the `aLeadK` extrapolation. On by default, so driving is unchanged unless the
+driver switches it off. The Nov 2025 FrogPilot follow-gap HumanFollowing is **not** ported.
+
+**Where the settings live.** Both toggles follow FrogPilot's gating: they sit under
+Longitudinal Tuning (`parent_key LongitudinalTune`, on-device panel rows between Deceleration
+Profile and Human-Like Lane Changes) and read as off when `LongitudinalTune` is off
+(`get_value(..., condition=longitudinal_tuning)`). Both keys came out of
+`STARPILOT_REMOVED_PARAM_KEYS`; they were in that list, which deleted them on every boot.
+Both are also in the safe-mode key list. Galaxy's `HIDDEN_SETTING_KEYS` is now empty.
+
+**Artifacts.** `common/libcommon.a` and `common/params_pyx.so` were rebuilt using the larch64 Docker
+recipe (Cython 3.1.4, `SP_FORCE_TICI=1`, sconsign cleared first). The key count went from 822 to
+824, and `Params(memory=True)` returns defaults HumanAcceleration=False, HumanFollowing=True.
+
+**Tests.** New unit tests (`test_starpilot_acceleration.py`, `test_longitudinal_planner.py`,
+galaxy layout) pass. 5 tests fail: 4 fail identically on a clean HEAD export (`test_latcontrol`
+×2, `test_force_stop_jerk_scale_is_platform_specific`, one `test_starpilot_card` case). The 5th,
+`test_every_galaxy_toggle_key_exists_in_the_committed_device_params_binary`, reads the committed
+`.so` and needs the commit. Not replayed, not driven.
