@@ -4116,3 +4116,88 @@ def test_human_following_gates_the_model_lead_path():
   assert human_following_model(model, SimpleNamespace(human_following=False)) is None
   # A toggle set without the attribute keeps the pre-toggle behaviour (model path on).
   assert human_following_model(model, SimpleNamespace()) is model
+
+
+# STATUS 74e: off-axis radar leads get aLeadK bounded once, at planner input.
+def _off_axis_sm(*, y_rel, vision_a, a_lead=-7.8, v_ego=18.6, d_rel=52.2, v_rel=-1.5, vision_prob=0.72):
+  sm = make_sm(v_ego, 0.0, -3.5, experimental_mode=False, tracking_lead=True,
+               lead_one=make_lead(status=True, d_rel=d_rel, v_lead=v_ego + v_rel, a_lead=a_lead,
+                                  radar=True, model_prob=vision_prob, y_rel=y_rel))
+  model = sm["modelV2"]
+  model.init('leadsV3', 3)
+  model.leadsV3[0].prob = vision_prob
+  model.leadsV3[0].x = [d_rel] * 6
+  model.leadsV3[0].v = [v_ego + v_rel] * 6
+  model.leadsV3[0].a = [vision_a] * 6
+  return sm
+
+
+def _run_off_axis_planner(sm, frames=15):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.longitudinalActuatorDelay = 0.5
+  planner = LongitudinalPlanner(CP, init_v=float(sm["carState"].vEgo))
+  out = []
+  for _ in range(frames):
+    planner.update(sm, make_toggles())
+    out.append(planner.output_a_target)
+  return min(out)
+
+
+def test_off_axis_lead_bound_matches_route_25b_1129_geometry():
+  # 0000025b 11:29: in-lane lead on a curve, bearing 0.22, aLeadK -7.8, vision a -0.08 at p 0.72.
+  sm = _off_axis_sm(y_rel=-11.7, vision_a=-0.08)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
+  assert bounded is not sm
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-longitudinal_planner_module.OFF_AXIS_LEAD_MAX_BRAKE)
+  assert bounded['radarState'].leadOne.dRel == pytest.approx(52.2)
+  assert bounded['radarState'].leadOne.yRel == pytest.approx(-11.7)
+  assert sm['radarState'].leadOne.aLeadK == pytest.approx(-7.8)  # radarState itself is untouched (D-041)
+  assert _run_off_axis_planner(sm) > -2.5
+
+
+def test_off_axis_lead_bound_leaves_straight_lead_unchanged():
+  sm = _off_axis_sm(y_rel=0.0, vision_a=-0.08)
+  assert longitudinal_planner_module.bound_off_axis_leads(sm) is sm
+  assert _run_off_axis_planner(sm) < -3.0
+
+
+def test_off_axis_lead_keeps_vision_corroborated_brake():
+  sm = _off_axis_sm(y_rel=-11.7, vision_a=-4.0)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-4.0)
+  assert _run_off_axis_planner(_off_axis_sm(y_rel=-11.7, vision_a=-6.0)) < -3.0
+
+
+def test_off_axis_lead_ignores_low_confidence_vision():
+  sm = _off_axis_sm(y_rel=-11.7, vision_a=-6.0, vision_prob=0.3)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-longitudinal_planner_module.OFF_AXIS_LEAD_MAX_BRAKE)
+
+
+def test_off_axis_lead_bound_leaves_centered_genuine_stop_unchanged():
+  # 000001e8 9:00-like genuine stop: centered lead, TTC 5.5 s, aLeadK most of the demand.
+  sm = _off_axis_sm(y_rel=0.3, vision_a=-0.5, a_lead=-3.6, v_ego=22.0, d_rel=38.0, v_rel=-6.9)
+  assert longitudinal_planner_module.bound_off_axis_leads(sm) is sm
+
+
+def test_off_axis_lead_bound_ignores_vision_only_and_mild_leads():
+  vision_only = _off_axis_sm(y_rel=-11.7, vision_a=-0.08)
+  vision_only['radarState'].leadOne.radar = False
+  assert longitudinal_planner_module.bound_off_axis_leads(vision_only) is vision_only
+  mild = _off_axis_sm(y_rel=-11.7, vision_a=-0.08, a_lead=-1.2)
+  assert longitudinal_planner_module.bound_off_axis_leads(mild) is mild
+
+
+def test_off_axis_lead_bound_is_limited_to_bosch_a_hondas():
+  assert longitudinal_planner_module.uses_off_axis_lead_bound(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH))
+  assert not longitudinal_planner_module.uses_off_axis_lead_bound(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  assert not longitudinal_planner_module.uses_off_axis_lead_bound(
+    ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_PRIUS))
+
+
+def test_off_axis_lead_bound_is_not_applied_off_bosch_a(monkeypatch):
+  def fail(sm):
+    raise AssertionError("off-axis bound applied to a non-Bosch-A car")
+  monkeypatch.setattr(longitudinal_planner_module, "bound_off_axis_leads", fail)
+  planner = LongitudinalPlanner(ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_PRIUS), init_v=18.6)
+  planner.update(_off_axis_sm(y_rel=-11.7, vision_a=-0.08), make_toggles())

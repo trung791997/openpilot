@@ -3,6 +3,7 @@ import math
 import numpy as np
 import time
 import cereal.messaging as messaging
+from opendbc.car.honda.values import HONDA_BOSCH_A
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -155,6 +156,19 @@ LEAD_GEOMETRY_MAX_REQUIRED_ACCEL = 12.0
 
 CLOSE_LEAD_BRAKE_CAP_RAMP_MIN = 0.2
 CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
+
+# Off-axis radar leads (STATUS 74e): at bearing |yRel|/dRel above this the lead is on a curve relative
+# to the ego x axis, where Bosch-A radial range-rate is not the lead's longitudinal speed and aLeadK
+# (its derivative) picks up the bearing change. Route 0000025b: 11:05, 11:29, 11:32 were in-lane leads
+# at bearing 0.19-0.27 with aLeadK -5.1/-7.8/-8.5 while vision saw a >= -0.08; alpha commanded -3.45
+# each time, stock ACC did not brake. The genuine brakes on the same route (13:19, 22:20, 22:34) sit at
+# bearing 0.00 with vision a -0.7..-1.35. A cap-only gate changed no output frame (STATUS 74d): ~20
+# planner sites and the MPC read aLeadK, so the bound is applied once, at planner input. radarState and
+# radard are untouched (D-041/D-042); only aLeadK is bounded, to what vision corroborates, with a floor.
+# Bosch-A Hondas only: the radial range-rate is the measured Bosch-A behaviour; other radars are unmeasured.
+OFF_AXIS_LEAD_MIN_BEARING = 0.12
+OFF_AXIS_LEAD_MAX_BRAKE = 1.5
+OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 
 VISION_LEAD_APPROACH_MIN_MODEL_PROB = 0.85
 VISION_LEAD_APPROACH_FULL_MODEL_PROB = 0.98
@@ -564,6 +578,84 @@ def human_following_model(model_v2, starpilot_toggles):
   return model_v2 if getattr(starpilot_toggles, "human_following", True) else None
 
 
+def off_axis_lead_a_lead(lead, model_msg):
+  """aLeadK bounded for an off-axis radar lead (STATUS 74e); None when the lead is left as is."""
+  if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
+    return None
+  d_rel = float(lead.dRel)
+  a_lead = float(lead.aLeadK)
+  if d_rel <= 1.0 or a_lead >= -OFF_AXIS_LEAD_MAX_BRAKE:
+    return None
+  if abs(float(lead.yRel)) / d_rel < OFF_AXIS_LEAD_MIN_BEARING:
+    return None
+  vision_brake = 0.0
+  leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
+  if leads is not None and len(leads) and float(leads[0].prob) >= OFF_AXIS_LEAD_VISION_MIN_PROB and len(leads[0].a):
+    vision_brake = max(0.0, -float(leads[0].a[0]))
+  bounded = max(a_lead, -max(OFF_AXIS_LEAD_MAX_BRAKE, vision_brake))
+  return bounded if bounded > a_lead else None
+
+
+class _BoundedLead:
+  """Read-only view of a radarState lead with aLeadK replaced; every other field is the original."""
+  def __init__(self, lead, a_lead):
+    self._lead = lead
+    self.aLeadK = a_lead
+
+  def __getattr__(self, name):
+    return getattr(self._lead, name)
+
+
+class _BoundedRadarState:
+  def __init__(self, radar_state, lead_one, lead_two):
+    self._radar_state = radar_state
+    self.leadOne = lead_one
+    self.leadTwo = lead_two
+
+  def __getattr__(self, name):
+    return getattr(self._radar_state, name)
+
+
+class _BoundedSubMaster:
+  """SubMaster view whose radarState carries the bounded leads; everything else delegates."""
+  def __init__(self, sm, radar_state):
+    self._sm = sm
+    self._radar_state = radar_state
+
+  def __getitem__(self, key):
+    return self._radar_state if key == 'radarState' else self._sm[key]
+
+  def __contains__(self, key):
+    return key in self._sm
+
+  def __getattr__(self, name):
+    return getattr(self._sm, name)
+
+
+def uses_off_axis_lead_bound(CP):
+  return getattr(CP, "brand", "") == "honda" and CP.carFingerprint in HONDA_BOSCH_A
+
+
+def bound_off_axis_leads(sm):
+  try:
+    radar_state = sm['radarState']
+    model_msg = sm['modelV2']
+  except (KeyError, AttributeError):
+    return sm
+  leads = []
+  changed = False
+  for lead in (radar_state.leadOne, radar_state.leadTwo):
+    a_lead = off_axis_lead_a_lead(lead, model_msg)
+    if a_lead is None:
+      leads.append(lead)
+    else:
+      leads.append(_BoundedLead(lead, a_lead))
+      changed = True
+  if not changed:
+    return sm
+  return _BoundedSubMaster(sm, _BoundedRadarState(radar_state, leads[0], leads[1]))
+
+
 class LongitudinalPlanner:
   def _blotv3_active(self) -> bool:
     """Gated only on BlotV3, matching MLT's own unconditional scope -- BLoTv3 works off
@@ -582,6 +674,7 @@ class LongitudinalPlanner:
 
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
+    self.bound_off_axis_radar_leads = uses_off_axis_lead_bound(CP)
     self.longitudinal_actuator_delay = max(DT_MDL, float(CP.longitudinalActuatorDelay))
     self.close_lead_brake_cap_value = 0.0
     self.lead_geometry_required_accel = 0.0
@@ -1967,6 +2060,8 @@ class LongitudinalPlanner:
     return floor
 
   def update(self, sm, starpilot_toggles):
+    if self.bound_off_axis_radar_leads:
+      sm = bound_off_axis_leads(sm)
     if self.is_preap:
       self._preap_param_frame += 1
       if self._preap_params is not None and (self._preap_param_frame % 20) == 0:
