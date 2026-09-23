@@ -4378,3 +4378,55 @@ Kept from batch 2: `get_vision_untracked_slow_lead_cap` (buys 24 m on 20c W),
 `get_tracked_vision_model_brake_floor` / `_cap` (unexercised on any replayed event, no stopped
 vision-lead event exists yet). Replay evidence only; no road data on this build. Pushed to
 `ns-bosch-radar-testing` for road testing; new routes to be analysed against this build.
+
+## 67. First road route on `41abc1f36`: route 258. The hard brakes are real leads; the one worst brake followed a lead dropout; the car over-brakes its own command. Limited road evidence, no replay.
+
+Route `11c8fa231c0499ed/00000258--626242f48b`, segments 39-67 (0-38 idle). `initData`: `gitCommit
+41abc1f36`, `ns-bosch-radar-testing`, not dirty -- the STATUS 66 build. ECO decel
+(`DecelerationProfile 1`), conditional experimental (experimental on 22.6% of engaged frames),
+aggressive personality (tFollow 1.25-1.45). 22.9 engaged minutes, 5 user bookmarks. Analysis is
+CSV-only (`scan_00000258--626242f48b.csv` in the `oprad-routes` volume, 20 Hz); the rlogs were
+already cleaned from the fetch dir, so there is no `liveTracks` and no replay here.
+
+**1. The planner is passed through unchanged; the extra braking past about −3 happens in the car.** `outAccel == aTarget` within 0.05
+on 99% of engaged frames. Car response 0.35 s later, by commanded bin, median `aEgo - outAccel`:
+−0.08 (−1..−0.5), −0.11, −0.16, −0.13, −0.04, **−0.34 (−3.6..−3.0)**, p10 down to −1.12. The
+wheel-speed derivative (`dv/dt` over 0.2 s) agrees (−0.30 in the last bin), so this is not `aEgo`
+noise. Worst cases: `aEgo` −4.76 against a −3.50 command (66:36), and −2.79 against −1.60 at 7 m/s
+in stop-and-go (63:53.8). Every one of the 9 episodes reaching `aEgo` ≤ −3 had the command
+saturated at or near `ACCEL_MIN` −3.5 and the ECO floor `minAcc` −0.50 overridden (the
+`a2ed92d29` lead-closing floor). Road grade is not logged in the CSV and is not excluded.
+
+**2. The hard brakes are real lead decelerations, not phantoms.** 42:59 (lead 24.4→6.4 m/s,
+`aLeadK` −7.6, model agrees 17→2 m/s), 44:41 (radar 14.9→6.1, model 15→4.3), 51:33 (radar and range
+slope agree at −7 to −8 m/s; the model lags by ~3 m/s), 43:49, 53:31, 55:27. Onset is driven by
+`leadGeometryRequiredAccel` (2.7-5.9) with `closeLeadBrakeCap` equal to `aTarget`. On 51:33 and
+55:27 the radar `aLeadK` spikes (−6, and +8.2 / +13.8 elsewhere) are implausible as accelerations but
+the ranges confirm the closing.
+
+**3. 66:36, the hardest brake on the route, followed a 2.5 s lead dropout.** Radar track `tid 20`
+was the lead at 63 m, 11 m/s, `y` −3.2→−5.4 (curve), with `modelProb` 0.90→0.65. From 66:32.8 to
+66:35.3 **no lead at all** was published (`nat_d1` NaN too) while the model's own lead probability
+fell to 0.01-0.05 and its `mlX` walked 69→35 m. The lead came back at 66:35.3 as vision (27 m),
+then **the same `tid 20`** at 29.4 m with `vLead` −1.4 (range slope confirms ~1 m/s), TTC ~2.4 s:
+`aTarget` −3.50 within 0.5 s, `aEgo` −4.76. The same track id on both sides suggests the radar
+kept the object and the *lead selection* dropped it when model probability collapsed -- the D-041/D-042
+failure shape (a withheld point, not a degraded one). **Not proven:** without `liveTracks` it
+cannot be shown that `tid 20` was continuously present during the gap. Re-fetch segment 66 to
+settle it.
+
+**4. Bookmarks.**
+- 55:43 -- radar `tid 46` `vRel` frozen at −5.7 (and `aLeadK` 2.07) for ~4 s while its own range
+  closed at only ~1.2 m/s; the planner braked to −1.0 twice and the driver overrode with gas twice.
+  A stuck or over-closing radar velocity, the same class as the census "U11 over-closes future
+  slope" (3 onsets on this route, 8/h).
+- 63:10 -- a steady stop behind a decelerating lead, command −1.35, `aEgo` −1.5..−1.8. Looks
+  proportionate; the only oddity is the car over-braking its command by 0.2-0.4.
+- 63:57 / 64:07 -- stop-and-go. Command −1.0→−1.6 inside the desired gap (13.6 m at 7.8 m/s);
+  `aEgo` −2.79. The jolt is the car over-braking its command by 1.2 at low speed. Driver gas at 64:04.
+- 66:24 -- cut-in: new radar track `tid 18` at `y` +3.8, 23 m, `aLeadK` −6.4 → command −2.22 at
+  engagement. Plausibly correct.
+
+**What this does NOT establish.** One route, 22.9 min, CSV only, no replay, no `liveTracks`. The
+over-brake could be Honda Bosch brake tracking or unlogged grade; it is outside the planner either
+way, but its cause is not identified. Item 3's mechanism is inferred from the lead fields.
