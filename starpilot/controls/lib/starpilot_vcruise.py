@@ -261,7 +261,6 @@ class StarPilotVCruise:
     if not manual_scaling:
       self.csc_static.target_set = False
     else:
-      self.csc_learned.flush_data()
       self.csc_learned.reset(v_cruise)
 
     self.csc_manual_scaling = manual_scaling
@@ -689,6 +688,9 @@ class StarPilotVCruise:
     self._select_csc_mode(bool(getattr(starpilot_toggles, "csc_manual_scaling", False)), v_cruise)
     if self.csc_manual_scaling:
       self._update_static_csc(csc_available, now, v_cruise, v_ego, sm)
+      # The slider sets the speed, but the learner keeps recording manual driving (cruise off),
+      # so the calibration is ready if Manual Curve Scaling is turned off later.
+      self.csc_learned.log_data(v_ego, sm, manual_speed_control=self.csc_manual_speed_control)
     else:
       self._update_learned_csc(csc_available, long_control_active, v_cruise, v_ego, sm, starpilot_toggles)
 

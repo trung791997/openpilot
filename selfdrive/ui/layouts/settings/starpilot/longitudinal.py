@@ -737,7 +737,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
 
     # ── 5. Adaptive Speed Controls Rows (CES + CSC + CCM) ──
     csc_manual = lambda: csc_on() and self._params.get_bool("CurveSpeedManualScaling")
-    csc_learned = lambda: csc_on() and not self._params.get_bool("CurveSpeedManualScaling")
     self._curve_speed_controller_rows = [
       SettingRow("CurveSpeedManualScaling", "toggle", tr_noop("Manual Curve Scaling"),
                  subtitle=tr_noop("Off: StarPilot's default calibration learns your cornering comfort from how you drive. "
@@ -757,18 +756,18 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  subtitle=tr_noop("The learned lateral acceleration from collected driving data. Higher values allow faster cornering."),
                  get_value=lambda: f"{self._params.get_float('CalibratedLateralAcceleration'):.2f} m/s²",
                  on_click=None,
-                 visible=csc_learned),
+                 visible=csc_on),
       SettingRow("CalibrationProgress", "value", tr_noop("Calibration Progress"),
                  subtitle=tr_noop("How much curve data has been collected. Normal for the value to stay low."),
                  get_value=lambda: f"{self._params.get_float('CalibrationProgress'):.2f}%",
                  on_click=None,
-                 visible=csc_learned),
+                 visible=csc_on),
       SettingRow("ResetCurve", "action", tr_noop("Reset Curve Data"),
                  subtitle=tr_noop("Reset collected user data for Curve Speed Controller."),
                  action_text=tr_noop("Reset"),
                  action_danger=True,
                  on_click=self._reset_curve_data,
-                 visible=csc_learned),
+                 visible=csc_on),
     ]
 
     # ── 6. Driving Personalities Rows ──

@@ -1673,3 +1673,20 @@ def test_learner_does_not_train_while_icbm_holds_speed():
   update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
 
   assert seen == [False]
+
+
+@pytest.mark.parametrize("long_active, expected", [(False, True), (True, False)])
+def test_learner_keeps_recording_while_manual_scaling_is_on(long_active, expected):
+  planner, vcruise = make_vcruise(manual_scaling=True)
+  sm = make_sm(standstill=False)
+  sm["carControl"] = SimpleNamespace(longActive=long_active)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
+  seen = []
+  vcruise.csc_learned.log_data = lambda _v_ego, _sm, manual_speed_control=None: seen.append(manual_speed_control)
+
+  update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
+
+  assert vcruise.csc is vcruise.csc_static
+  assert seen == [expected]

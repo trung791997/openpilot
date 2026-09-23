@@ -5020,3 +5020,14 @@ Tests: `opendbc_repo/opendbc/car/honda/tests/test_icbm_counter_sync.py`.
 
 **Drive test.** On a straight road, let ICBM lower the set speed with the toggle off, then on. Compare mph/s and
 overshoot, and check the car raised no fault and ignored no frames.
+
+## 78. The CSC learner keeps recording while Manual Curve Scaling is on. Static and unit evidence only; not driven.
+
+Before this, turning Manual Curve Scaling on (item 75) stopped the learner entirely. Only the slider controller ran, and
+`csc_learned.log_data` was never called, so driving with LKAS only (cruise off) taught it nothing. Now, in manual mode,
+`StarPilotVCruise.update` also calls `csc_learned.log_data` with the ICBM-aware manual-speed state. The slider still
+sets the speed. The learner records only its usual training frames: cruise not engaged (or the driver overriding),
+above CRUISING_SPEED, no tracked lead, in a curve, no blinker. Switching to manual no longer flushes the learner on the switch.
+It never cleared learned data anyway; `reset()` only resets the speed target. The calibrated lat-accel readout, the progress
+readout and Reset now show in both modes on device (the Galaxy already did). Tests:
+`test_learner_keeps_recording_while_manual_scaling_is_on`.
