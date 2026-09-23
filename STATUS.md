@@ -4736,3 +4736,31 @@ Scripts (not committed, in the `/routes/an2` volume):
 - `ob5.py`, `ob5sum.py`: the onset census.
 - The closed-loop replay is the item-64 `replay.py` plus a `CLC` env switch (`0` = cap off,
   `v<thr>` = off below thr m/s).
+
+## 73. ICBM (formerly Redneck Cruise) on Honda Bosch stock long: Curve Speed Control now lowers the set speed, and the feature is renamed. Static and unit evidence only; not driven.
+
+**What changed (d9b0aa313).** Ported the intent of sunnypilot's ICBM: under stock long with the
+`RedneckCruise` param on, openpilot sends SCM_BUTTONS RES_ACCEL / DECEL_SET (0x296, ≤20 Hz) so
+the car's own ACC set speed follows openpilot's target. Stock ACC still does all following and braking.
+
+- `starpilot/common/starpilot_variables.py`: `honda_icbm_active()` (available ∧ not pcmCruiseSpeed ∧
+  not openpilot long) and `curve_speed_controller_available()` (openpilot long **or** ICBM). CSC was
+  previously hidden under stock long.
+- `starpilot/controls/lib/starpilot_vcruise.py`: `csc_long_control_active()`. controlsd only sets
+  `longActive` under openpilot long, so CSC used `controls_enabled ∧ ICBM` instead. This feeds only `csc_available`.
+- UI label "Redneck Cruise" became "ICBM" and the description names Honda Bosch as well as Hyundai.
+  **The param key `RedneckCruise` is unchanged**, which avoids a migration.
+
+**Lead-aware target (existing behaviour, documented here).** `select_redneck_target_speed` in
+`selfdrive/car/redneck_cruise.py` runs on Honda with no separate toggle. With a lead it holds the set speed while following,
+coasts early when closing within 4 s headway (1 mph plus up to 3 mph, scaled by headway), and
+steps up 1.25–3 mph when the lead departs. It is capped at the set speed, with a floor of 25 mph on Honda. It needs
+`longitudinalPlan.hasLead` plus `radarState.leadOne`. Without radar dRel/vRel it only holds.
+
+**Tests.** The new unit tests pass (`-n0`). 4 pre-existing failures (test_starpilot_card
+`test_very_long_press…` and three in test_wheel_controlsd) fail identically on the pre-change tree.
+The UI tests need pyray and were not run. ruff count unchanged at 63.
+
+**Open, needs a stock-long drive.** (1) Confirm lead dRel/vRel reach radarState under stock long.
+(2) Measure SCM_BUTTONS during a real driver long-press on +/− (5 mph steps) before any
+hold-mode emulation is written. Injected frames interleave with the car's own frames, so they may register as taps.
