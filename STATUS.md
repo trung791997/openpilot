@@ -4576,10 +4576,54 @@ brake.
 
 **Next.**
 1. Drive it. Watch for brakes that are early or harder than the gap needs behind slow-closing leads.
-2. The qlog sweep of all 254 radar-era routes is still running. Its flagged segments get their rlogs
-   fetched and replayed with `ab9.py`, and the results will be added here.
+2. Done: the qlog sweep follow-up is below. Still open: replay route 252 (`00000252--69505eb434`),
+   segments 15 and 16, once its rlogs reach Konik.
 3. STATUS 69 next items 2 (D-053 range assist on gated coasts) and 3 (a lead dropped on a
    model-probability collapse) are still open.
+
+**Follow-up (2026-09-23): qlog sweep and 24d.**
+
+*Correction.* The table in point 3 covers 23 routes, not 24. `ab9.py` crashed on `0000024d` on a
+point that only R publishes (M has no value to pair against). With that guard added, 24d gives:
+R loses 0 points and 0 lead points, 69 coasted sweeps become measured (none on the lead), and R
+publishes 31 point-sweeps that M did not (none on the lead). The paired score goes 2 to 21 against R
+(median error 1.69 vs 0.79 m/s, none on the lead, neither side over-closes). With 24d the all-sweeps
+row becomes 461 sweeps, 237 R nearer, 100 M nearer, summed error 878 / 1,659. The lead row is
+unchanged.
+
+*qlog sweep.* 254 radar-era routes, 198 with engagement, 43.7 engaged hours, 0 segment errors.
+Flags: FCW 64, hard brake 765, sign reversal 446, and `frozen_lead` 13 on 7 routes (lead vRel and
+aLeadK bit-identical for at least 2 s while its range moves at least 1 m). qlogs only found the
+candidates. Every check below is an rlog replay.
+
+| route, t (s) | frozen | M rate-check run in rlog? | lead / engaged | D-062 re-roots it? |
+|---|---|---|---|---|
+| 252 262.7, 992.3 | 12.2 s, 9.5 s (992: closing 68→36 m) | **rlogs not on Konik yet** | — | not replayed |
+| 24d 660.2 | 11.8 s | yes, tid 23, 12.5 s, agrees with U11 | 0.94 / 0.94 | no |
+| 24d 828.5 | 4.7 s | yes, tid 47, 7.6 s, 104→56 m, U11 over-closes | 1.0 / 0.26 | no |
+| 24d 1506.3 | 4.0 s | yes, tid 47, 5.2 s, agrees | 1.0 / 1.0 | no |
+| 23f 1240.6 | 6.0 s | **no run of 2 s or more** | — | — |
+| 23f 1640.4 | — | yes, tid 37, 3.9 s, agrees | 0.61 / 1.0 | no |
+| 24f 367.4 | 5.5 s, closing 53→37 m | yes, tid 18, 5.8 s, U11 over-closes | 1.0 / 0.45 | **yes**, 1.2 s from 372.8 (point 4) |
+| 24f 799.2 | — | yes, tid 23/33, about 2.6 s | 0 and 1.0 / 0 | no |
+| 23e 875.7 | 2.5 s | yes, tid 28, 9.4 s, agrees | 0.31 / 1.0 | no |
+| 251 490.9 | — | yes, tid 39, 3.8 s, opening | 0.76 / 1.0 | no |
+| 251 499.7 | — | yes, tid 30, 2.3 s, U11 over-closes | 0.97 / 0.57 | no |
+| 257 169.2 | — | yes, tid 61, 2.2 s, opening | 1.0 / 1.0 | no |
+
+Replay findings:
+- The qlog `frozen_lead` signature finds the M rate-check coast in 10 of 11 events that could be
+  replayed.
+- 23f 1240.6 has no rate-check run behind it. That freeze is unexplained, and the qlog decimation
+  may be the cause.
+- D-062 re-roots only one flagged lead, 24f `tid 18`. That is the loss already listed in point 4.
+- On the others, R has no lead run of 1 s or more that differs from M.
+- Those runs are also `degraded` for their whole length (24f `tid 18` only half of it). This is an
+  observation, not a tested cause.
+- The 258-style lockout (a clean, lasting run of rate-check coasts on the lead while closing) does
+  not show up in any other replayable route.
+- 252 at 992 s is the one open candidate, and it is closing. Its rlogs upload only on WiFi. When
+  they do, fetch segments 15 and 16 and replay them with `ab9.py`.
 
 ## 71. The car over-brakes its own command, and the cause is not in our code: the Honda Bosch brake ECU overshoots fast brake onsets. It happens on all 7 routes checked. Replay (log decode) evidence only.
 
