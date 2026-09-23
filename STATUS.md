@@ -4465,3 +4465,59 @@ galaxy layout) pass. 5 tests fail: 4 fail identically on a clean HEAD export (`t
 ×2, `test_force_stop_jerk_scale_is_platform_specific`, one `test_starpilot_card` case). The 5th,
 `test_every_galaxy_toggle_key_exists_in_the_committed_device_params_binary`, reads the committed
 `.so` and needs the commit. Not replayed, not driven.
+
+## 69. Route 258 re-examined with rlogs: the 43:49 FCW was a real lead hidden for 12.7 s by a self-latching Bosch-A vRel rate check; the trim batches are not implicated. Replay (parser) plus limited road evidence.
+
+Route `11c8fa231c0499ed/00000258--626242f48b` is still the newest on Konik (68 segments). Segments
+42-44 and 66 were re-fetched; `initData` on 43: `gitCommit 41abc1f36`, `RangeDerivedVrel 1`,
+`HondaBoschARadar 1`.
+
+**1. The FCW (first frame route t 2628.88 = 43:48.9; Peter noted it as 43:41) is the planner FCW, not stock.**
+`longitudinalPlan.fcw` (MPC crash count > 2), `carState.stockFcw` never set, driver never braked.
+The lead is real: radar `tid 13`, model prob 1.00, braking 24 → 3 m/s; min gap ~7 m at 3 m/s,
+`aEgo` −3.9. STATUS 67 item 2 already listed 43:49 as a real lead; what it missed is below.
+
+**2. For 12.7 s before the FCW the published closing speed was wrong by up to 8 m/s.** From 43:29.2
+to 43:46.0 `tid 13` was published `measured=False` with `vRel` held at −0.45 (the last trusted
+value) while its range fell 124 → 31 m. The radar was right: raw U11 went −3.3 → −8.7 m/s and
+matches the range slope. With `vLead` ≈ `vEgo` the planner stayed in `cruise` until d = 42 m and
+reached −1 m/s² only at d = 31 m, when U11 was re-admitted (−2.9 s). `aLeadK` sat frozen at +13.75
+and `vLeadK` at 17.1 throughout, because the lead KF is not stepped on coasts.
+
+**3. Mechanism: replay of the real `RadarInterface` with an instrumented copy (not committed).**
+Every sweep in that window hit `vrel_inconsistent` (the one-sided multi-sweep rate check, D-054):
+U11 < fitted range rate − 3.0. The fit uses `track.samples`, and **`samples` is only appended on
+accepted or rejoin-held sweeps, never on a `vrel_inconsistent` coast** — even though the range
+itself had passed the innovation gate (the comment above the check says the accepted range "is the
+gate's baseline from here on, whatever happens to vRel"). The 8 samples froze at 43:12.2-43:18.7,
+while the lead was pulling away (+2.8 m/s), so the fit kept a stale opening rate and rejected
+every correct closing U11 that followed. The gate latches itself until the single fresh point drags
+the frozen fit far enough — here 12.7 s and 90 m of closing. This is a lockout of the kind
+`lockcensus.py` looks for, triggered by a real opening → closing reversal of the lead.
+
+**4. Neither safety net saw it.** RadarD's D-053 range assist clears on a coast and appends to
+`range_hist` only on measured updates, so `vRelRangeDerived` was NaN for the whole window. The
+model lead read 19-21 m/s (closer to truth), but the HumanFollowing path anchors on the radar
+`vLead` and takes only the model's future deltas.
+
+**5. Segment 66 (STATUS 67 item 3) is settled: a withheld point, not a missing one.** `tid 20` was
+in `liveTracks`, `measured=True`, on every sweep of the 66:32.75-66:35.25 gap (range 60 → 35 m,
+`y` −6.7 → −8.6 on a curve, `vRel` −2.5 → −13.5, range slope ~12 m/s confirms). Lead selection
+dropped it when the model lead probability collapsed to 0.02-0.24. D-041/D-042 failure shape.
+
+**6. Trim batches (STATUS 64, 66): neutral, not measurable.** Neither route-258 event involves a
+deleted guard: the vision-lead approach cap returned early for any `lead.radar` lead (43:49 was
+radar throughout) and there was no lead at all during the 66:33 gap. Census (`hb.py`, aTarget < −1.5
+onsets per engaged hour): 254 (pre-trim) 74/h over 4 min, 257 (pre-trim) 18/h over 6 min, 258
+(post-trim) 21/h over 23 min. The baselines are 4 and 6 engaged minutes; no rate difference is
+resolvable. No evidence the trim hurt; none that it helped.
+
+**Next, in priority order (none implemented):**
+1. Rate-check lockout: append the innovation-gated range to `track.samples` on a
+   `vrel_inconsistent` coast too, so the fit tracks the object. Must be A/B'd with the `ab3.py`
+   harness (lost / gained / newly-measured vRel over-close vs the next-1 s range slope against ref)
+   on 258 and the cached routes before promotion — D-056 shows a gate relaxation can re-admit
+   over-closing U11. Add a `lockcensus.py` count of inconsistent runs > 2 s per route.
+2. Let D-053 range assist use coasted-but-gated ranges, so a long coast gets a range-derived vRel.
+3. Lead selection must not drop a measured, continuously tracked lead on a model-probability
+   collapse alone (segment 66).
