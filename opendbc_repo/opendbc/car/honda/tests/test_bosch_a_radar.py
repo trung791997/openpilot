@@ -1238,6 +1238,62 @@ class TestAJoinWaitsForAFreshRateFit:
     assert (measured_at - 20) * self.DT_NANOS * 1e-9 <= 0.5
 
 
+class TestRateCheckCoastReRoots:
+  """D-062 (STATUS 69/70). Modelled on 00000258--626242f48b track 13 at 43:29-43:46: the lead was opening, then
+  braked hard. The D-043 rate check fits `samples`, which only accepted sweeps extend. Coasts had left that
+  history stale, so the fit read the old opening rate, the first rejection froze it there, and from then on
+  U11 minus the stale average rate grows with the lead's deceleration: every later U11 was rejected while
+  the gated range closed from 124 m to 31 m at the U11 rate. The point coasted vRel -0.45 for 12.7 s and
+  the planner FCW fired. A lasting, clean run of rate-check coasts whose ranges move at the U11 rate now
+  re-roots `samples` on the run, as D-057 does for range rejection."""
+  DT = 0.07
+  RANGE_M_PER_RAW = 0.0625
+  HOLD = 36  # ~2.5 s of high-u10 coast while the lead starts braking: `samples` stay on the opening ranges
+
+  def _drive(self, ri, i, d, u11_mps, uncertainty=0, sigma=1):
+    return ri.update(sweep(0, i & 0xF, 0x7, round(d / self.RANGE_M_PER_RAW), 1024, (1 + 2 * i) & 0xFFF,
+                           round(i * self.DT * 1e9), with_aux=True, direct_vrel_raw=864 + round(u11_mps * 64),
+                           direct_vrel_uncertainty_raw=uncertainty, range_sigma_raw=sigma, existence_raw=126))
+
+  def _run(self, ri, vrel, *, sigma=1, u11=None):
+    """Opening at +2.8 m/s for 12 sweeps, then vRel(t) from `vrel`; yields (sweep, true vRel, result)."""
+    d = 87.0
+    for i in range(12):
+      d += 2.8 * self.DT
+      rr = self._drive(ri, i, d, 2.8)
+    assert rr.points[0].measured is True
+    for i in range(12, 12 + self.HOLD + 60):
+      v = vrel((i - 11) * self.DT)
+      d += v * self.DT
+      u = v if u11 is None else u11
+      rr = self._drive(ri, i, d, u, uncertainty=600 if i < 12 + self.HOLD else 0, sigma=sigma)
+      yield i, v, rr
+
+  def test_a_lead_braking_after_a_coast_is_measured_again(self):
+    ri = make_radar_interface()
+    first = 12 + self.HOLD
+    measured_at = None
+    for i, v, rr in self._run(ri, lambda t: 2.8 - 3.0 * t):
+      assert len(rr.points) == 1, f"point deleted at sweep {i}"  # D-041: coast, never delete
+      if i >= first and rr.points[0].measured and measured_at is None:
+        measured_at = i
+        assert rr.points[0].vRel == pytest.approx(v, abs=0.1)
+    assert measured_at is not None
+    assert (measured_at - first) * self.DT <= BOSCH_A_REANCHOR_MIN_SPAN_S + 0.15
+
+  def test_negative_control_u11_over_closing_an_opening_range_stays_coasted(self):
+    ri = make_radar_interface()
+    for i, _, rr in self._run(ri, lambda t: 2.8, u11=-6.0):
+      assert len(rr.points) == 1, f"point deleted at sweep {i}"
+      assert rr.points[0].measured is False, f"over-closing U11 admitted at sweep {i}"
+
+  def test_negative_control_a_degraded_run_never_re_roots(self):
+    ri = make_radar_interface()
+    for i, _, rr in self._run(ri, lambda t: 2.8 - 3.0 * t, sigma=7):
+      if i >= 12:
+        assert not any(p.measured for p in rr.points), f"measured at sweep {i}"
+
+
 # --- 7b. residual vRel-authority fix: raw one-sweep fallback never becomes a published measurement ----
 # (U11 genuinely unavailable -- sentinel/out-of-range -- is a different path than the high-u10-but-live
 # case above; see radar_interface.py's u11_and_ratio_unavailable branch.)

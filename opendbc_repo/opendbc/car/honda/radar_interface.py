@@ -260,6 +260,9 @@ class _BoschATrackState:
   # D-057: the current run of range-REJECTED sweeps, (time, range, U11 or None, degraded).
   # Cleared by any accepted sweep and by a lifecycle discontinuity.
   rejected_run: list = field(default_factory=list)
+  # D-062: the current run of range-PASSED sweeps whose vRel failed the rate check, same tuple shape.
+  # Cleared by any rate-consistent sweep, any range rejection and a lifecycle discontinuity.
+  inconsistent_run: list = field(default_factory=list)
   rejoin_samples: list | None = None  # D-059: gated ranges since a join, until a fresh rate fit agrees with vRel
   last_trusted_vrel: float | None = None
   last_trusted_vrel_nanos: int | None = None
@@ -591,6 +594,7 @@ class RadarInterface(RadarInterfaceBase):
         track.samples.clear()
         track.range_anchor = None
         track.rejected_run.clear()
+        track.inconsistent_run.clear()
         track.rejoin_samples = None
         track.last_trusted_vrel = None
         track.last_trusted_vrel_nanos = None
@@ -668,6 +672,7 @@ class RadarInterface(RadarInterfaceBase):
                              for baseline in baselines)
 
       if range_rejected:
+        track.inconsistent_run.clear()
         track.rejected_run.append((now_s, dRel, direct_vrel, degraded))
         if _bosch_a_lasting_clean_step(track.rejected_run):
           # D-057: the step has outlasted every returning excursion measured, cleanly and at the U11
@@ -732,6 +737,28 @@ class RadarInterface(RadarInterfaceBase):
             rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
             # One-sided: only U11 claiming MORE closing than the range supports is a fault.
             vrel_inconsistent = vrel_candidate < rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+
+      # D-062: `samples` only grow on accepted sweeps, so during a coast the fit above is frozen. If the
+      # lead turns from opening to closing, U11 pulls away from that stale rate and the check latches: route
+      # 00000258 43:29-43:46, track 13 held vRel -0.45 for 12.7 s (fit frozen while it opened at +2.8 m/s)
+      # as its range fell 124 -> 31 m, then FCW. Appending coasted ranges to `samples` instead (F1)
+      # re-admits over-closing U11: replayed on 00000231, newly measured vRel over-closed the next-1 s
+      # range slope by >3 m/s on 17.0% of sweeps (reference 6.8%), the D-056 failure. So only a coast run
+      # that passes the D-057 lasting-clean-step test (>=1.5 s, non-degraded, ranges fit a line within
+      # 1 m and at the U11 rate) re-roots the fit. Replayed on 24 routes against the coast it replaces,
+      # re-rooted vRel was nearer the next-1 s range slope on 235 sweeps, the coast on 79 (lead 73/35),
+      # and total error halved; 00000241 and 0000024f leads went the other way, by over-closing (STATUS 70).
+      if vrel_inconsistent:
+        track.inconsistent_run.append((now_s, dRel, direct_vrel, degraded))
+        if _bosch_a_lasting_clean_step(track.inconsistent_run):
+          recent = track.inconsistent_run[-BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES:]
+          track.samples.clear()
+          track.samples.extend((t, d) for t, d, _, _ in recent[:-1])
+          previous_sample = track.samples[-1]
+          track.inconsistent_run.clear()
+          vrel_inconsistent = False
+      else:
+        track.inconsistent_run.clear()
 
       # D-059: after a join, `samples` hold pre-gap ranges plus the joined one, so the fit above is set by
       # the gap rather than by the object and cannot see a contradicting U11. Replayed on 00000232 / 236 /

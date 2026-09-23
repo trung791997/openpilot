@@ -1233,3 +1233,40 @@ and it was worse.
 **Replay and static evidence only. Nothing in this decision has been driven, and clause 3's
 structural claim is an argument until a test asserts it.** Until then the repo carries this as a
 design, exactly as it carries D-048.
+
+## D-062 — IMPLEMENTED: a lasting, clean run of rate-check coasts re-roots the Bosch-A vRel rate fit
+**Decided 2026-09-23 on parser replay (STATUS 70). Static and replay evidence only; not road-validated.**
+
+### The failure
+
+The one-sided multi-sweep rate check (D-054) fits `track.samples`, and `samples` grow only on
+accepted sweeps. A `vrel_inconsistent` sweep coasts vRel without appending, even though its range has
+passed the innovation gate. When a lead turns from opening to closing, the frozen fit keeps the old
+opening rate and rejects every correct closing U11 that follows, so the check latches itself. Route
+`00000258--626242f48b` 43:29-43:46: `tid 13` held vRel −0.45 for 12.7 s while its range fell
+124 → 31 m and U11 read −3.3 → −8.7 m/s, then planner FCW (STATUS 69).
+
+### The decision
+
+Collect consecutive range-passed, rate-inconsistent sweeps in `track.inconsistent_run` (cleared by
+any rate-consistent sweep, any range rejection and any lifecycle discontinuity). When that run passes
+the D-057 `_bosch_a_lasting_clean_step` test — at least 8 sweeps over at least 1.5 s, none degraded,
+ranges on a line within 1.0 m RMS, and that line's slope within 3.0 m/s of the median U11 — re-root
+`samples` on the run's most recent points and publish the sweep's vRel as measured. No constants are
+new; all are reused from D-054 and D-057.
+
+### Rejected alternative: F1, append every coasted range to `samples`
+
+It unfreezes the fit immediately, but it re-admits over-closing U11 (the D-056 failure). On
+`00000231--5782493b00`, newly measured vRel over-closed the next-1 s range slope by more than
+3 m/s on 17.0% of sweeps against 6.8% for the reference parser.
+
+### Evidence and known cost
+
+Paired replay over 24 cached rlog routes (STATUS 70): on each sweep where D-062 publishes a measured
+vRel that the current parser coasts, the re-rooted value was nearer the next-1 s range slope on 235
+sweeps and the coast on 79; lead 73 vs 35; summed absolute error 815 vs 1,627 m/s. No radar point
+and no lead point is lost. **The lead result is not uniform:** route 258 is 71 to 0 for D-062, but
+`00000241` is 0 to 16 and `0000024f` 2 to 19 against it, and both lose by over-closing (earlier or
+harder braking, not missed braking). Three lead routes are too few to tune on (AGENTS.md rule on
+constants); revisit with road evidence rather than by tightening the D-057 thresholds offline.

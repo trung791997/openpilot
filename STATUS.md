@@ -4521,3 +4521,57 @@ resolvable. No evidence the trim hurt; none that it helped.
 2. Let D-053 range assist use coasted-but-gated ranges, so a long coast gets a range-derived vRel.
 3. Lead selection must not drop a measured, continuously tracked lead on a model-probability
    collapse alone (segment 66).
+
+## 70. D-062 implemented: a lasting clean run of rate-check coasts re-roots the Bosch-A vRel fit. Static and replay evidence; not driven.
+
+Fixes the STATUS 69 lockout (route 258 43:29-43:46). Mechanism and rule in D-062;
+`radar_interface.py` `inconsistent_run`, tests `TestRateCheckCoastReRoots` in
+`test_bosch_a_radar.py`.
+
+**Replay harness.** `ab9.py` (not committed, in the `oprad-routes` volume) runs the current parser
+(M) and D-062 (R) side by side over each route's rlogs. The routes are the 24 cached rlog routes
+(`0000020c`, `231`-`258`).
+
+**1. Coverage.** R loses 0 radar points and 0 lead points against M. It turns 711 coasted sweeps into
+measured ones (113 on the lead) and 16 measured sweeps into coasts (3 on the lead).
+
+**2. The one-sided score overstates the cost.** Counting only R's newly measured vRel, 15.4%
+over-close the next-1 s range slope by more than 3 m/s, against 4.7% for M's own measured vRel. The
+score never looks at the coasted value M published on the same sweep, and that value is often far
+worse. On 251 `tid 60`, M held −13.50 for 3 s while the range closed at about −4 to −6. R re-rooted
+0.9 s earlier at −8.0 and converged to −6.3; it scores as over-closing but is about 5 m/s nearer.
+
+**3. Paired score.** For every sweep that R measures and M coasts, compare each value with the
+next-1 s range slope (at least 10 range points over at least 0.7 s). A side wins when it is nearer
+by more than 0.5 m/s.
+
+| | sweeps | R nearer | M coast nearer | summed abs error R / M (m/s) |
+|---|---|---|---|---|
+| all | 421 | 235 | 79 | 815 / 1,627 |
+| lead | 113 | 73 | 35 | — |
+
+By route: 258 is 94 to 4 (lead 71 to 0; M error 709, R 269). 251 is 51 to 17, 24b 20 to 7 and 232
+30 to 1. **Against R:** 241 is 0 to 20 (lead 0 to 16) and 24f is 7 to 19 (lead 2 to 19); 237 is
+0 to 9, a near tie (median error 1.55 vs 1.48). R over-closes (by more than 3 m/s) where M does not
+on 43 sweeps, 31 of them on 258.
+
+**4. The lead losses, by hand.**
+- 241 `tid 33`: M coasts −6.67 until 414.7 s; R re-roots at 413.1 with −9.27 and eases to −7.59;
+  they agree from 414.73. R is nearer at first and farther later. It errs by 1-2.6 m/s toward
+  closing, and neither value is unsafe.
+- 24f `tid 18`: both parsers are stale for about 2.5 s, and R is about 1.4 m/s more closing.
+- The one hand-checked real R over-close is 239 `tid 13`, not a lead.
+
+**5. Not tightened.** At 3 m/s, the trailing range slope does not separate the good re-roots from
+the bad. Three lead routes are too few to re-tune the D-057 thresholds (rule 5). On the lead, the
+expected road symptom is earlier or harder braking behind a car that is closing slowly, not a late
+brake.
+
+**Tests (static).** All 260 Honda radar tests pass in docker. Controls suite in docker: 1246 passed, 4 skipped, 3 failed. These are the same three failures as STATUS 66 (two in latcontrol, `test_force_stop_jerk_scale_is_platform_specific`); none is new.
+
+**Next.**
+1. Drive it. Watch for brakes that are early or harder than the gap needs behind slow-closing leads.
+2. The qlog sweep of all 254 radar-era routes is still running. Its flagged segments get their rlogs
+   fetched and replayed with `ab9.py`, and the results will be added here.
+3. STATUS 69 next items 2 (D-053 range assist on gated coasts) and 3 (a lead dropped on a
+   model-probability collapse) are still open.
