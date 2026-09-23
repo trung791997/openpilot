@@ -166,7 +166,10 @@ CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
 # planner sites and the MPC read aLeadK, so the bound is applied once, at planner input. radarState and
 # radard are untouched (D-041/D-042); only aLeadK is bounded, to what vision corroborates, with a floor.
 # Bosch-A Hondas only: the radial range-rate is the measured Bosch-A behaviour; other radars are unmeasured.
-OFF_AXIS_LEAD_MIN_BEARING = 0.12
+# 0.12 -> 0.10 (STATUS 74g): 00000237 15:42.5 was the same failure at bearing 0.116-0.119, an in-lane lead at
+# 89 m with aLeadK -6.0 vs vision a +0.06; live alpha commanded -2.0 and reached aEgo -2.7. Genuine brakes on
+# the fleet sit at bearing <= 0.004; a 10-route replay changed no protected episode at 0.10.
+OFF_AXIS_LEAD_MIN_BEARING = 0.10
 OFF_AXIS_LEAD_MAX_BRAKE = 1.5
 OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 

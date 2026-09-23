@@ -4155,6 +4155,15 @@ def test_off_axis_lead_bound_matches_route_25b_1129_geometry():
   assert _run_off_axis_planner(sm) > -2.5
 
 
+def test_off_axis_lead_bound_covers_route_237_942_geometry():
+  # 00000237 15:42.5: in-lane lead at 89 m on a curve, bearing 0.119 (below the old 0.12 threshold),
+  # aLeadK -6.0 while vision saw a +0.06 at p 0.65. Live alpha commanded -2.0 and reached aEgo -2.7.
+  sm = _off_axis_sm(y_rel=10.6, vision_a=0.06, a_lead=-6.0, v_ego=18.1, d_rel=89.2, v_rel=-1.3, vision_prob=0.65)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
+  assert bounded is not sm
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-longitudinal_planner_module.OFF_AXIS_LEAD_MAX_BRAKE)
+
+
 def test_off_axis_lead_bound_leaves_straight_lead_unchanged():
   sm = _off_axis_sm(y_rel=0.0, vision_a=-0.08)
   assert longitudinal_planner_module.bound_off_axis_leads(sm) is sm

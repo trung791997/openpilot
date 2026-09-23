@@ -9,9 +9,9 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-23), start here:** item 74 (route 0000025b) and its sub-items 74a–74f.
+**Latest work (2026-09-23), start here:** item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
-census and the open follow-ups.
+census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
 **Scope note.** This file covers the **radar and longitudinal** work in this repo. The EPS
 firmware programme (RWD tunes, the `0x6A0..0x6A8` telemetry stub, the gain bench, UART/UDS
@@ -20,8 +20,9 @@ here. Where the two touch — the CR-V lateral profile, the steering-ratio curve
 `extract_drives.py` lineage — that is recorded below as a cross-reference only.
 
 **Open topics to revisit** (parked by decision, not closed):
-- **Off-axis lead follow-ups: item 74f.** A −3.5 false brake remains at 237 942.6. Two real closings
-  now brake later (25b 665.2 +1.5 s, 245 40.7 +0.9 s). Needs a road drive on curves with the fix.
+- **Off-axis lead follow-ups: items 74f/74g.** The 237 942.6 false brake (a real on-road phantom
+  brake to aEgo −2.7) is removed in replay by 74g. Two real closings now brake later (25b 665.2 +1.5 s,
+  245 40.7 +0.9 s). Needs a road drive on curves with the fix.
 - **Stock-ACC behaviour study: item 74f.** Blocked on data: 25b is the only stock-ACC route with rlogs.
 - **Brake over-delivery and the low-speed stop-and-go jolt: item 72.** Parked 2026-09-23. Reopen
   when there are about 10 or more low-speed gas-to-brake onsets (below 10 m/s) in rlogs. Today there
@@ -4848,7 +4849,7 @@ Replay, before vs after, hard-brake episodes (output aTarget < −2.5):
 |---|---|---|---|
 | 0000025b | 7 | 3 | 689.3 (11:29) −3.45 → −0.72; 692.2 −3.45 → −1.79 (both bearing 0.22–0.27, vision a ≥ −0.08, stock did not brake). 665.2: still −3.45, onset 1.5 s later (bearing 0.19, d 37.8, vRel −5.4, vision a −0.03; stock aEgo −0.26). 799.7, 1340.0, 1354.2 unchanged. |
 | 00000245 | 3 | 1 | 40.7: −3.50 → −2.92, onset 0.9 s later (bearing 0.20, d 32.7, vRel −2.7, vision a −0.56; live alpha aEgo −1.78). 353–358 s unchanged. |
-| 00000237 | 7 | 1 | 942.6: min −3.50 unchanged, onset 0.05 s earlier (bearing 0.12, aLeadK −6.6, vision a +0.03), so a false brake that another layer still carries. |
+| 00000237 | 7 | 1 | 942.6: min −3.50 unchanged, onset 0.05 s earlier (bearing 0.116–0.119, printed rounded; the bound never applied, see 74g; aLeadK −6.6, vision a +0.03), so a false brake that another layer still carries. |
 | 00000241, 23e, 236, 239, 232, 23b, 23a | 14 | 0 | 241's 257.4/338.1/356.0/588.4/606.2 unchanged. |
 
 Total: 24 episodes, 5 changed, every one off-axis with vision a ≥ −0.56. Open items: 665.2 (25b) and 40.7 (245) are real closings that now start later, and stock ACC did not brake hard at 665.2 either. 237 942.6 is still a −3.5 false brake. The Bosch-A limit was re-checked on 25b: every frame is identical to the run without it (8,391/8,391). Tests: `test_longitudinal_planner.py` has 485 passing (477 before, plus 8 new covering the 25b 11:29 geometry, a straight lead, vision-corroborated −4/−6, low vision confidence, a centred 000001e8-like stop, vision-only and mild leads, and the Bosch-A limit).
@@ -4856,7 +4857,7 @@ Total: 24 episodes, 5 changed, every one off-axis with vision a ≥ −0.56. Ope
 **74f. Handoff: what 74e leaves open, and the stock-ACC data census (2026-09-23).**
 
 *Where the 74e change lives.* `selfdrive/controls/lib/longitudinal_planner.py`: constants
-`OFF_AXIS_LEAD_MIN_BEARING` (0.12), `OFF_AXIS_LEAD_MAX_BRAKE` (1.5), `OFF_AXIS_LEAD_VISION_MIN_PROB` (0.5);
+`OFF_AXIS_LEAD_MIN_BEARING` (0.12 in 74e, 0.10 since 74g), `OFF_AXIS_LEAD_MAX_BRAKE` (1.5), `OFF_AXIS_LEAD_VISION_MIN_PROB` (0.5);
 functions `off_axis_lead_a_lead`, `bound_off_axis_leads`, `uses_off_axis_lead_bound`; view classes
 `_BoundedLead`, `_BoundedRadarState`, `_BoundedSubMaster`. `LongitudinalPlanner.__init__` sets
 `self.bound_off_axis_radar_leads`, and `update()` swaps `sm` for the bounded view on its first line when it
@@ -4868,9 +4869,8 @@ stages (`get_honda_accord_stop_go_accel_target`, `get_vehicle_far_follow_slew_ta
 and ~20 other sites read aLeadK. Don't repeat it.
 
 *Open items from 74e (replay evidence):*
-1. 00000237 942.6: still a −3.5 false brake (bearing 0.12, aLeadK −6.6, vision a +0.03, d 87.7). The
-   bound applies, but another layer still commands −3.5. Next step: run `who.py`-style instrumentation
-   (monkeypatch every `get_*`, print the ones returning < −1) on that frame.
+1. 00000237 942.6: **resolved in 74g.** The note here was wrong: the bearing was 0.116–0.119, so the
+   bound never applied; no other layer was involved.
 2. 0000025b 665.2 and 00000245 40.7 are real closings that now start braking 1.5 s and 0.9 s later. Stock
    ACC did not brake hard at 665.2 (aEgo −0.26), so it isn't clearly a regression, but a curve drive with
    the fix should confirm it.
@@ -4913,3 +4913,44 @@ and ~20 other sites read aLeadK. Don't repeat it.
   `docker run --rm -e PYTHONPATH=/src/openpilot:/src -v $PWD:/src/openpilot:ro -v oprad-routes:/routes oprad-test:py312 python /routes/an2/r25b/<script>`.
 - The fleet routes (25b, 245, 241, 23b, 23e, 237, 236, 239, 23a, 232) are archived to Drive
   (`~/.local/bin/oprad-routes retrieve <route>` before replaying).
+
+**74g. 237 942.6 root cause and fix: the bearing threshold drops to 0.10. Replay evidence plus limited road evidence of the failure; the fix is not road-validated.**
+
+*Root cause (replay; `who2.py` on seg 15).* The MPC originates the brake: `a_solution[3]` reaches −3.2 with
+source `cruise`; the close-lead cap is 0, and `get_honda_accord_stop_go_accel_target` and
+`get_vehicle_far_follow_slew_target` only pass it through. The radar lead's aLeadK falls −0.9 → −7.1 in
+0.8 s while vRel swings +8 → −3 and vision a stays +0.03..+0.12. Its bearing |yRel|/dRel is 0.116–0.119,
+just under 74e's 0.12, so the bound never applied. 74e/74f printed it rounded as "0.12".
+
+*The lead is real and in-lane (replay; `off237.py`).* The lead sits 0–3 m from the model path
+(`modelV2.position` at dRel) on a curve (steer 8.3–10°, v 18 m/s). The model sees the same car at x ≈ 85 m,
+y ≈ −10 m, prob 0.6–0.8. This is the 74e failure (radial range-rate on a curve), not a ghost target. leadTwo
+duplicates leadOne on and off.
+
+*Correction: live alpha did brake (limited road evidence).* 74f/`fleetcmp.py` quoted aEgo −0.02 at 942.6.
+That sample is before the actuator lag. The log (build fa262e0c7) shows accel −1.21 at 942.5, −2.00 at
+942.75–943.0, aEgo −2.74 at 943.75, and 18.1 → 15.4 m/s, with no brake or gas pedal. This is an on-road
+phantom brake, not only a replay artefact.
+
+*Candidates, 10-route replay* (25b, 245, 241, 23b, 23e, 237, 236, 239, 23a, 232; 31 hard-brake episodes):
+| variant | 237 942.6 | other hard-brake episodes changed | notable frame changes (> 0.3 m/s²) |
+|---|---|---|---|
+| (a) bearing 0.10 | −3.50 → +0.15 | none | 236 843.6: −1.57 → −1.16 (bearing 0.119, aLeadK −2.1, vision a −0.02 at p 1.0: same false pattern) |
+| (b) far lead (d ≥ 70 m, vision p ≥ 0.5 and within 15 m) bounded regardless of bearing | −3.50 → +0.15 | none | 237 322.6: −1.00 → −0.53 on a straight-ahead far lead that vision confirms is braking (a −1.14, p 0.93) |
+
+(b) softens a genuine brake, so (a) shipped. Protected episodes are identical under both (25b 799.7 / 1340 /
+1354.2 at bearing ≤ 0.004; 245 352–358; 241 257.4 / 338.1 / 356.0 / 588.4 / 606.2). Other diffs are at
+no-lead frames (236 1117, 2097) and follow from planner state diverging after an earlier change, not from
+the bound firing there. The margin is thin: 237 at 943.5 reaches bearing 0.099 with aLeadK −2.8, which
+0.10 misses, but the replay minimum there stays +0.08.
+
+*Change.* `OFF_AXIS_LEAD_MIN_BEARING` 0.12 → 0.10, with the evidence in its comment. New test
+`test_off_axis_lead_bound_covers_route_237_942_geometry`. 486 pass.
+
+*Tooling added* (volume `/routes/an2/r25b/`; host copies in `/tmp/rp/`): `off237.py` (lead vs model path),
+`act237.py` (logged carControl/aEgo), `protchk.py` (protected episodes per variant), `diffv.py` (frame
+diffs per variant vs `after`). `caprp.py` takes `TAG=b10` and `TAG=far` (env `FAR`, default 70);
+`fleetcmp.py` compares `before` against env `CMP` (default `after`). `/tmp/rp/fleet2.sh` runs tags in
+parallel and skips existing outputs; run it with `TAGS="..."` from bash, because zsh doesn't word-split
+an unquoted `$R`. Colima was resized to 4 CPU / 4 GiB (2026-09-23). At 2 GiB, 6 parallel replays were
+OOM-killed; at 4 GiB, 3 run cleanly.
