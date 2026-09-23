@@ -1,15 +1,21 @@
 import { reactive } from "vue"
 
 const THEME_KEY = "galaxy-theme"
+const NAV_PINNED_KEY = "galaxy-nav-pinned"
 
 function initialTheme() {
   return localStorage.getItem(THEME_KEY) || "dark"
+}
+
+function initialNavPinned() {
+  try { return localStorage.getItem(NAV_PINNED_KEY) === "true" } catch (e) { return false }
 }
 
 export const store = reactive({
   route: "/",
   params: {},
   drawerOpen: false,
+  navPinned: initialNavPinned(),
   search: "",
   snackbar: null,
   online: false,
@@ -27,6 +33,16 @@ export function setTheme(theme) {
 
 export function toggleTheme() {
   setTheme(store.theme === "dark" ? "light" : "dark")
+}
+
+export function setNavPinned(pinned) {
+  store.navPinned = Boolean(pinned)
+  try { localStorage.setItem(NAV_PINNED_KEY, String(store.navPinned)) } catch (e) {}
+}
+
+export function toggleNavPinned() {
+  setNavPinned(!store.navPinned)
+  if (store.navPinned) store.drawerOpen = true
 }
 
 export function parseHash(hash) {
@@ -91,7 +107,7 @@ export function goBack() {
   window.location.hash = prev
 }
 
-const NATIVE_ROOTS = new Set(["/", "/settings", "/tools", "/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/system", "/embed", "/manage_doors", "/galaxy", "/manage_tsk", "/sentry", "/manage_models", "/plots", "/testing_ground", "/theme_maker", "/model_laboratory", "/cameras"])
+const NATIVE_ROOTS = new Set(["/", "/settings", "/tools", "/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/bluetooth", "/system", "/embed", "/manage_doors", "/galaxy", "/manage_tsk", "/sentry", "/manage_models", "/plots", "/testing_ground", "/theme_maker", "/model_laboratory", "/cameras"])
 
 export function toolHref(link) {
   const path = link.split("?")[0]

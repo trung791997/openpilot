@@ -5052,3 +5052,30 @@ cannot show a toggle that changed mid-drive. Read the rlog toggle JSON instead.
   1.62–1.67 m/s²). The driver cancelled it with RES+ at 419 s (`cscOverridden`). The learner trained in seg 11 during manual driving in
   curves (`cscTraining`, cruise off, curvature up to 0.021, lat accel 1.7–1.96). Manual Curve Scaling was off for the whole drive,
   so this route does not exercise item 78's manual-mode learning.
+
+## 80. Auxiliary features ported from StarPilot `Dom` 79c61f479a (merge base 249b03a3f5). Static and unit evidence only; nothing here touches radar, radard, the planner or control code.
+
+Ported the Galaxy web UI (tools, sentry push, dashboard, longitudinal-mode API), wheel controls and Bluetooth personality
+actions, screen settings, favorites/radial menu, the SLC sources bubble and speed-limit pulse UI, the fleet-safety runner, the model
+release scripts, `cereal/custom.capnp` (adds only `SteeringLimitInfo`, with the matching `libcereal.a`), and 849 params keys
+(`libcommon.a` and `params_pyx.so` rebuilt; `AlwaysOnLateral` and `LeadInfo` keep our default "1").
+- **Not ported (planner/SLC review later):** `selfdrived.py` (Dom's unified long mode relies on its planner setting
+  `experimentalMode`), `selfdrive/car/card.py`/`cruise.py` changes, `pandad.py`, the Tesla preAP/coop tests, and the
+  `fleet_safety` workflow. The Dom tests for those files were left out or reverted to ours: `test_coherent_mode_handoff.py` and
+  `test_mode_review_regressions.py` (they read Dom's `selfdrived.update_events` through the AST), the Bluetooth test that
+  runs `selfdrived.params_thread`, `test_cruise_speed.py` (resume keeps the previous software cruise speed; it needs Dom's `cruise.py`)
+  and `test_redneck_cruise.py` (`openpilot_longitudinal_adjustment_active`; it needs Dom's `card.py`).
+- **Galaxy personality profiles are gated off** (`PERSONALITY_PROFILES_ENABLED=false`). Our planner still reads the legacy
+  CustomPersonalities sliders, not `LongitudinalPersonalityProfiles`.
+- **Toggle derivation:** CE and Conditional Chill now come from `longitudinal_mode.read_mode_values` (a locked read of the
+  same three params) and are forced off in safe mode. `toggle.experimental_mode` is new but has no consumer in our tree.
+- **Tests (per file, each in its own process):** several Galaxy/UI tests stub `accel_profile`/`favorite_slots` in
+  `sys.modules`, so a single-process run shows ~160 false import errors. Run the files one at a time, with `-p no:unraisableexception`
+  (teardown ResourceWarnings from TemporaryDirectory). The remaining failures are one of three kinds:
+  - **Test-image env:** pyray, node, flask, pywebpush, evdev and no GPU.
+  - **Not in our opendbc:** Tesla HW1.
+  - **Fails on Dom too:** `test_model_release` refresh-manifest ×2, whose mock returns a str from `find_hf`.
+  - **Pre-existing at HEAD:** dashboard_stats ×2, wheel_controlsd ×3 (evdev), model_release sha ×1, and
+    redneck `test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed`.
+
+  `test_longitudinal_planner.py` passes (486).

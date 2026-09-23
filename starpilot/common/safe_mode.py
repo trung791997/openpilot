@@ -8,6 +8,11 @@ from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS,
 )
+from openpilot.starpilot.common.longitudinal_personality_profiles import (
+  PERSONALITY_PROFILES_PARAM,
+  default_personality_profiles,
+  profile_document,
+)
 
 SAFE_MODE_PARAM = "SafeMode"
 SAFE_MODE_BACKUP_PARAM = "SafeModeBackup"
@@ -171,6 +176,7 @@ SAFE_MODE_MANAGED_KEYS = (
   "VisionSpeedLimitLowLimitThreshold",
   "VASMEnabled",
   "CustomPersonalities",
+  PERSONALITY_PROFILES_PARAM,
   "TrafficPersonalityProfile",
   "AggressivePersonalityProfile",
   "StandardPersonalityProfile",
@@ -207,6 +213,7 @@ SAFE_MODE_MANAGED_KEYS = (
   "SubaruSNG",
   "SubaruSNGManualParkingBrake",
   "SubaruStopStartOff",
+  "SubaruAvhStartup",
   "SubaruRedneckCruise",
   "VoltSNG",
   "JeepBrakeHold",
@@ -226,7 +233,9 @@ SAFE_MODE_FIXED_VALUES = {
   "LongitudinalPersonality": int(log.LongitudinalPersonality.relaxed),
   "UseAutoSteerDelay": True,
   "SubaruStopStartOff": False,
+  "SubaruAvhStartup": False,
   "SubaruRedneckCruise": False,
+  PERSONALITY_PROFILES_PARAM: profile_document(default_personality_profiles(False), enabled=False),
 }
 
 SAFE_MODE_STOCK_PARAM_MAP = {
@@ -338,6 +347,14 @@ def apply_safe_mode(params: Params, params_raw: Params, params_memory: Params | 
 
 def restore_safe_mode(params_raw: Params, params_memory: Params | None = None) -> bool:
   changed = False
+  if params_raw.get(SAFE_MODE_BACKUP_PARAM) is not None:
+    try:
+      confirmed_offroad = not params_raw.get_bool("IsOnroad") and params_raw.get_bool("IsOffroad")
+    except Exception:
+      return False
+    if not confirmed_offroad:
+      return False
+
   backup = _load_backup(params_raw)
 
   if not backup:

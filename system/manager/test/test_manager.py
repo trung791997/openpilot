@@ -74,6 +74,42 @@ class FileBackedFakeParams:
     Path(self.get_param_path(key)).unlink(missing_ok=True)
 
 
+class TransitionParams:
+  def __init__(self):
+    self.removals = []
+    self.clears = []
+
+  def remove(self, key):
+    self.removals.append(key)
+
+  def clear_all(self, flags):
+    self.clears.append(flags)
+
+
+def test_force_onroad_resets_card_readiness_flags():
+  params = TransitionParams()
+  params_memory = TransitionParams()
+
+  manager.reset_onroad_transition_params(params, params_memory, force_onroad=True)
+
+  assert params.removals == ["ControlsReady", "FirmwareQueryDone"]
+  assert params.clears == []
+  assert params_memory.removals == []
+  assert params_memory.clears == []
+
+
+def test_normal_onroad_transition_clears_transition_flags():
+  params = TransitionParams()
+  params_memory = TransitionParams()
+
+  manager.reset_onroad_transition_params(params, params_memory, force_onroad=False)
+
+  assert params.removals == []
+  assert params.clears == [manager.ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION]
+  assert params_memory.removals == []
+  assert params_memory.clears == [manager.ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION]
+
+
 def test_navigation_selected_while_already_offroad_is_not_tracked_for_cleanup(tmp_path):
   params = FileBackedFakeParams(tmp_path / "params", {
     "ClearNavOnOffroad": True,
@@ -472,15 +508,13 @@ class TestManager:
     })
     params_cache = FileBackedFakeParams(tmp_path / "cache", {
       "PrioritizeSmoothFollowing": True,
-      "ReverseCruise": True,
     })
 
     manager.cleanup_removed_starpilot_params(params, params_cache)
 
     assert not Path(params.get_param_path("CoastUpToLeads")).exists()
-    assert not Path(params.get_param_path("ReverseCruise")).exists()
+    assert params.get_bool("ReverseCruise")
     assert not Path(params_cache.get_param_path("PrioritizeSmoothFollowing")).exists()
-    assert not Path(params_cache.get_param_path("ReverseCruise")).exists()
 
   def test_migrate_legacy_starpilot_params_cache_copies_marker_sources(self, tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "STARPILOT_PARAMS_CACHE_MIGRATION_FLAG", tmp_path / "starpilot_params_cache_v1")

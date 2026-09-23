@@ -565,6 +565,8 @@ class StandstillTimerOverlay:
 
 
 class AugmentedRoadView(CameraView):
+  _use_roi_upload = True
+
   def __init__(self, bookmark_callback=None, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_ROAD):
     super().__init__("camerad", stream_type)
     self._bookmark_callback = bookmark_callback
@@ -652,6 +654,7 @@ class AugmentedRoadView(CameraView):
   def _sidebar_personality_touch_enabled(self) -> bool:
     return (
       ui_state.started and
+      ui_state.has_longitudinal_control and
       self._sidebar_widgets_visible() and
       not ui_state.ui_params.get_bool("SafeMode")
     )

@@ -20,6 +20,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.constants import CV
 from openpilot.starpilot.common.favorite_slots import FAVORITE_SLOT_COUNT
+from openpilot.starpilot.common.screen_settings import STANDBY_BUTTON_PRESS_PARAM
 
 
 MAPPINGS_PARAM = "WheelControlMappings"
@@ -31,75 +32,21 @@ ENABLED_PARAM = "WheelControlsEnabled"
 JOYSTICK_DEVICE_PARAM = "JoystickControlDevice"
 CONTROLLER_ACTION_SLOT_COUNT = 10
 MAPPING_SLOT_COUNT = FAVORITE_SLOT_COUNT + CONTROLLER_ACTION_SLOT_COUNT
-CONTROLLER_ACTION_SET_SPEED = "__starpilot_controller_action__:set_speed"
-CONTROLLER_ACTION_SELFIE = "__starpilot_controller_action__:selfie"
-CONTROLLER_ACTION_BOOKMARK = "__starpilot_controller_action__:bookmark"
-CONTROLLER_ACTION_PULSE_AND_GLIDE = "__starpilot_controller_action__:pulse_and_glide"
-CONTROLLER_ACTION_FORCE_COAST = "__starpilot_controller_action__:force_coast"
-CONTROLLER_ACTION_TOGGLE_AOL = "__starpilot_controller_action__:toggle_aol"
-CONTROLLER_ACTION_ENGAGE = "__starpilot_controller_action__:engage_openpilot"
-CONTROLLER_ACTION_DISENGAGE = "__starpilot_controller_action__:disengage_openpilot"
-CONTROLLER_ACTION_COUNTERS = {
-  CONTROLLER_ACTION_BOOKMARK: "WheelButtonBookmarkCounter",
-  CONTROLLER_ACTION_PULSE_AND_GLIDE: "WheelControlPulseGlideCounter",
-  CONTROLLER_ACTION_FORCE_COAST: "WheelControlForceCoastCounter",
-  CONTROLLER_ACTION_TOGGLE_AOL: "WheelControlAOLCounter",
-  CONTROLLER_ACTION_ENGAGE: "WheelControlEngageCounter",
-  CONTROLLER_ACTION_DISENGAGE: "WheelControlDisengageCounter",
-}
-CONTROLLER_ACTION_OPTIONS = (
-  {
-    "key": CONTROLLER_ACTION_SET_SPEED,
-    "label": "Set Speed To",
-    "description": "Immediately changes the software-controlled cruise set speed while engaged.",
-    "section": "Controller Actions",
-    "value_type": "speed",
-    "default_value": 30,
-  },
-  {
-    "key": CONTROLLER_ACTION_SELFIE,
-    "label": "Take Comma Selfie",
-    "description": "Captures the driver camera and saves it in Sentry history.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_BOOKMARK,
-    "label": "Bookmark",
-    "description": "Creates a driving bookmark without changing the on-screen Favorites.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_PULSE_AND_GLIDE,
-    "label": "Pulse and Glide",
-    "description": "Toggles Pulse and Glide using the same transient control as a mapped vehicle button.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_FORCE_COAST,
-    "label": "Force Coasting",
-    "description": "Toggles forced coasting using the same transient control as a mapped vehicle button.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_TOGGLE_AOL,
-    "label": "Toggle AOL",
-    "description": "Toggles Always On Lateral like the vehicle LKAS button; it does not change the AOL setting.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_ENGAGE,
-    "label": "Engage Openpilot",
-    "description": "Requests engagement through the normal openpilot readiness and safety checks.",
-    "section": "Controller Actions",
-  },
-  {
-    "key": CONTROLLER_ACTION_DISENGAGE,
-    "label": "Disengage Openpilot",
-    "description": "Immediately disengages openpilot like the vehicle cancel button.",
-    "section": "Controller Actions",
-  },
+from openpilot.starpilot.common.controller_actions import (
+  CONTROLLER_ACTION_CYCLE_PERSONALITY,
+  CONTROLLER_ACTION_SET_SPEED,
+  CONTROLLER_ACTION_SELFIE,
+  CONTROLLER_ACTION_BOOKMARK,
+  CONTROLLER_ACTION_PULSE_AND_GLIDE,
+  CONTROLLER_ACTION_FORCE_COAST,
+  CONTROLLER_ACTION_TOGGLE_AOL,
+  CONTROLLER_ACTION_ENGAGE,
+  CONTROLLER_ACTION_DISENGAGE,
+  CONTROLLER_ACTION_COUNTERS,
+  CONTROLLER_ACTION_OPTIONS,
+  CONTROLLER_ACTION_KEYS,
+  controller_speed_bounds,
 )
-CONTROLLER_ACTION_KEYS = {option["key"] for option in CONTROLLER_ACTION_OPTIONS}
 LEARN_TIMEOUT_SECONDS = 20.0
 DEVICE_SCAN_INTERVAL_SECONDS = 1.0
 STATUS_INTERVAL_SECONDS = 0.5
@@ -283,10 +230,6 @@ def set_controller_action_slot(index: int, key: str | None, label: str, params: 
   return save_controller_action_slots(slots, params, eligible_keys=eligible_keys)
 
 
-def controller_speed_bounds(is_metric: bool) -> tuple[int, int]:
-  return (8, 145) if is_metric else (5, 90)
-
-
 def set_controller_cruise_speed(value: Any, params: Params, params_memory: Params) -> bool:
   if not params.get_bool("IsOnroad") or not params.get_bool("IsEngaged"):
     return False
@@ -428,7 +371,7 @@ def start_learning(slot: int, params_memory: Params | None = None, params: Param
 
 def cancel_learning(params_memory: Params | None = None, params: Params | None = None) -> None:
   (params_memory or Params(memory=True)).remove(LEARN_SLOT_PARAM)
-  if params is not None and not load_mappings(params):
+  if params is not None and params.get_bool(ENABLED_PARAM) and not load_mappings(params):
     params.put_bool(ENABLED_PARAM, False)
 
 
@@ -489,23 +432,63 @@ def execute_favorite_slot(slot: int, params: Params, params_memory: Params) -> b
   return toggle_favorite_slot(slot, params, params_memory)
 
 
+def cycle_driving_personality(params: Params) -> bool:
+  """Select the next native personality, without synthesizing cruise/Traffic inputs."""
+  from cereal import car, log
+
+  if params.get_bool("SafeMode"):
+    return False
+  try:
+    cp_bytes = params.get("CarParams" if params.get_bool("IsOnroad") else "CarParamsPersistent")
+    if not cp_bytes:
+      return False
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+      available = params.get_bool("AlphaLongitudinalEnabled") if cp.alphaLongitudinalAvailable else cp.openpilotLongitudinalControl
+    if not available:
+      return False
+
+    current = Path(params.get_param_path("LongitudinalPersonality")).read_bytes()
+    profiles = tuple(int(profile) for profile in (
+      log.LongitudinalPersonality.aggressive,
+      log.LongitudinalPersonality.standard,
+      log.LongitudinalPersonality.relaxed,
+    ))
+    tokens = tuple(str(profile).encode("ascii") for profile in profiles)
+    if current not in tokens:
+      return False
+    next_personality = profiles[(tokens.index(current) + 1) % len(profiles)]
+  except Exception:
+    return False
+
+  if params.get_bool("SafeMode"):
+    return False
+  params.put_int("LongitudinalPersonality", next_personality)
+  return True
+
+
 def execute_controller_action(index: int, params: Params, params_memory: Params) -> bool:
-  from openpilot.starpilot.common.favorite_slots import execute_favorite_key
   slots = load_controller_action_slots(params)
   if not 0 <= index < len(slots):
     return False
   slot = slots[index]
   if not slot.get("enabled"):
     return False
-  if slot.get("key") == CONTROLLER_ACTION_SET_SPEED:
-    return set_controller_cruise_speed(slot.get("value"), params, params_memory)
-  if slot.get("key") == CONTROLLER_ACTION_SELFIE:
+  return execute_controller_key(slot.get("key"), params, params_memory, value=slot.get("value"))
+
+
+def execute_controller_key(key, params: Params, params_memory: Params, *, value=None) -> bool:
+  from openpilot.starpilot.common.favorite_slots import execute_favorite_key
+  if key == CONTROLLER_ACTION_CYCLE_PERSONALITY:
+    return cycle_driving_personality(params)
+  if key == CONTROLLER_ACTION_SET_SPEED:
+    return set_controller_cruise_speed(value, params, params_memory)
+  if key == CONTROLLER_ACTION_SELFIE:
     return request_comma_selfie()
-  if slot.get("key") in (CONTROLLER_ACTION_ENGAGE, CONTROLLER_ACTION_DISENGAGE) and not params.get_bool("IsOnroad"):
+  if key in (CONTROLLER_ACTION_ENGAGE, CONTROLLER_ACTION_DISENGAGE) and not params.get_bool("IsOnroad"):
     return False
-  if slot.get("key") in CONTROLLER_ACTION_COUNTERS:
-    return trigger_controller_action(slot["key"], params_memory)
-  return execute_favorite_key(slot.get("key"), params, params_memory)
+  if key in CONTROLLER_ACTION_COUNTERS:
+    return trigger_controller_action(key, params_memory)
+  return execute_favorite_key(key, params, params_memory)
 
 
 def execute_mapping_slot(slot: int, params: Params, params_memory: Params) -> bool:
@@ -522,6 +505,7 @@ class WheelControlsDaemon:
     self.sources: dict[int, InputSource] = {}
     self.buffers: dict[int, bytearray] = {}
     self.hat_values: dict[tuple[int, int], int] = {}
+    self.pressed_keys: set[tuple[int, int]] = set()
     self.learning_slot: int | None = None
     self.learning_deadline = 0.0
     self.last_learned: dict[str, Any] | None = None
@@ -549,6 +533,7 @@ class WheelControlsDaemon:
     self.sources.pop(fd, None)
     self.buffers.pop(fd, None)
     self.hat_values = {key: value for key, value in self.hat_values.items() if key[0] != fd}
+    self.pressed_keys = {key for key in self.pressed_keys if key[0] != fd}
 
   def _scan_devices(self) -> None:
     current_paths = {source.path for source in self.sources.values()}
@@ -625,6 +610,9 @@ class WheelControlsDaemon:
       }
       return
 
+    # The daemon may also run only to wake the screen, with mapped actions disabled.
+    if not self.params.get_bool(ENABLED_PARAM):
+      return
     for mapping in mappings:
       if mapping["device_id"] == source.device_id and mapping["event_code"] == code:
         try:
@@ -654,13 +642,30 @@ class WheelControlsDaemon:
       raw = bytes(buffer[:INPUT_EVENT.size])
       del buffer[:INPUT_EVENT.size]
       _seconds, _microseconds, event_type, code, value = INPUT_EVENT.unpack(raw)
-      if event_type == EV_KEY and value == KEY_DOWN:
-        self._handle_key(source, code)
+      if event_type == EV_KEY:
+        key = (fd, code)
+        if value == 0:
+          self.pressed_keys.discard(key)
+        elif value == KEY_DOWN:
+          if key not in self.pressed_keys:
+            self.pressed_keys.add(key)
+            self._publish_button_press(time.monotonic_ns())
+          self._handle_key(source, code)
       elif event_type == EV_ABS and ABS_HAT0X <= code <= ABS_HAT3Y:
         previous = self.hat_values.get((fd, code), 0)
         self.hat_values[(fd, code)] = value
         if value and value != previous:
+          self._publish_button_press(time.monotonic_ns())
           self._handle_key(source, hat_event_code(code, value))
+
+  def _publish_button_press(self, timestamp: int) -> None:
+    try:
+      if not all(self.params.get_bool(key) for key in ("ScreenManagement", "StandbyMode", "StandbyWakeButton")):
+        return
+      self.params_memory.put_int(STANDBY_BUTTON_PRESS_PARAM, timestamp)
+    except Exception:
+      # A display notification must not interrupt existing controller actions.
+      cloudlog.exception("wheel controls: screen wake notification failed")
 
   def _publish_status(self, now: float) -> None:
     remaining = max(0, round(self.learning_deadline - now, 1)) if self.learning_slot is not None else 0

@@ -17,20 +17,20 @@
   <link rel="stylesheet" href="/assets/vendor/fonts/fonts.css">
 
   <link rel="stylesheet" href="/assets/components/home/home.css">
-  <link rel="stylesheet" href="/assets/components/main.css">
+  <link rel="stylesheet" href="/assets/components/main.css?v=sidebar-pin-2">
   <link rel="stylesheet" href="/assets/components/modal.css">
-  <link rel="stylesheet" href="/assets/components/navigation/navigation_destination.css?v=nav-search-context-2">
+  <link rel="stylesheet" href="/assets/components/navigation/navigation_destination.css?v=sidebar-pin-2">
   <link rel="stylesheet" href="/assets/components/navigation/navigation_keys.css?v=app-keys-session-1">
   <link rel="stylesheet" href="/assets/components/recordings/dashcam_routes.css">
   <link rel="stylesheet" href="/assets/components/recordings/screen_recordings.css">
   <link rel="stylesheet" href="/assets/components/settings.css">
-  <link rel="stylesheet" href="/assets/components/sidebar.css">
+  <link rel="stylesheet" href="/assets/components/sidebar.css?v=sidebar-pin-2">
   <link rel="stylesheet" href="/assets/components/tailscale/tailscale.css">
   <link rel="stylesheet" href="/assets/components/tools/doors.css">
   <link rel="stylesheet" href="/assets/components/tools/error_logs.css">
   <link rel="stylesheet" href="/assets/components/tools/maps.css">
   <link rel="stylesheet" href="/assets/components/tools/model_manager.css">
-  <link rel="stylesheet" href="/assets/components/tools/model_laboratory.css?v=model-lab-4">
+  <link rel="stylesheet" href="/assets/components/tools/model_laboratory.css?v=model-lab-5">
   <link rel="stylesheet" href="/assets/components/tools/plots.css">
   <link rel="stylesheet" href="/assets/components/tools/speed_limits.css">
   <link rel="stylesheet" href="/assets/components/tools/theme_maker.css">
@@ -42,7 +42,7 @@
   <link rel="stylesheet" href="/assets/components/tools/update_manager.css">
   <link rel="stylesheet" href="/assets/components/tools/device_settings.css?v=favorite-actions-1">
   <link rel="stylesheet" href="/assets/components/tools/bluetooth.css?v=bluetooth-6">
-  <link rel="stylesheet" href="/assets/components/tools/wheel_controls.css?v=controllers-2">
+  <link rel="stylesheet" href="/assets/components/tools/wheel_controls.css?v=controllers-3">
   <link rel="stylesheet" href="/assets/components/tools/galaxy.css">
   <link rel="stylesheet" href="/assets/components/tools/sentry.css">
   <link rel="stylesheet" href="/assets/components/tools/longitudinal_maneuvers.css">
@@ -51,7 +51,7 @@
   <link rel="stylesheet" href="/assets/components/tools/tsk_manager.css">
 
   <script type="module">
-    import("/assets/components/router.js?v=router-cycle-fix-7").catch((err) => {
+    import("/assets/components/router.js?v=router-cycle-fix-8").catch((err) => {
       console.error("[the_galaxy] bootstrap failed", err);
       const target = document.getElementById("app") || document.body;
       const pre = document.createElement("pre");
@@ -81,9 +81,9 @@
 <body>
   <div id="app"></div>
   <!-- Menu button for phone -->
-  <div id="menu_button">
+  <button id="menu_button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
     <i class="bi bi-list"></i>
-  </div>
+  </button>
   <!-- Snackbar for messages -->
   <div id="snackbar_wrapper"></div>
 </body>

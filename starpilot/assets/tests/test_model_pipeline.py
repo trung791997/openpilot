@@ -211,6 +211,61 @@ def test_disabled_big_profile_does_not_migrate_from_legacy_selection(tmp_path, m
   assert "ActiveBigModelVersion" not in params.values
 
 
+def test_selected_chestnut_artifacts_ready_ignores_cleared_runtime_flag(tmp_path, monkeypatch):
+  monkeypatch.setattr(model_manager, "MODELS_PATH", tmp_path)
+  (tmp_path / model_manager.ARTIFACT_METADATA_CACHE).write_text(json.dumps({
+    "big-one": {"uses_external_gpu": True},
+  }))
+  (tmp_path / "big-one_driving_tinygrad.pkl").write_bytes(b"compiled")
+
+  class FakeParams:
+    def __init__(self):
+      self.values = {
+        "ActiveBigModel": "big-one",
+        "ActiveBigModelName": "Big One",
+        "ActiveBigModelVersion": "v16",
+        "UsbGpuCompiled": False,
+      }
+
+    def get(self, key):
+      return self.values.get(key)
+
+  params = FakeParams()
+  assert not params.get("UsbGpuCompiled")
+  assert model_manager.selected_chestnut_artifacts_ready(params)
+
+  (tmp_path / "big-one_driving_tinygrad.pkl").unlink()
+  assert not model_manager.selected_chestnut_artifacts_ready(params)
+
+
+def test_selected_chestnut_artifacts_ready_accepts_model_lab_pair(tmp_path, monkeypatch):
+  monkeypatch.setattr(model_manager, "MODELS_PATH", tmp_path)
+  (tmp_path / model_manager.ARTIFACT_METADATA_CACHE).write_text(json.dumps({
+    model_id: {
+      "uses_external_gpu": False,
+      "accelerator_artifacts": {"chestnut": {"execution_device": "AMD"}},
+    }
+    for model_id in ("lateral", "longitudinal")
+  }))
+  for model_id in ("lateral", "longitudinal"):
+    (tmp_path / f"{model_id}_driving_chestnut_tinygrad.pkl").write_bytes(b"compiled")
+
+  class FakeParams:
+    def get(self, key):
+      return {
+        "ActiveBigModel": "none",
+        "ModelLabConfig": {
+          "enabled": True,
+          "lateralModel": "lateral",
+          "longitudinalModel": "longitudinal",
+        },
+      }.get(key)
+
+  assert model_manager.selected_chestnut_artifacts_ready(FakeParams())
+  (tmp_path / "longitudinal_driving_chestnut_tinygrad.pkl").unlink()
+  assert not model_manager.selected_chestnut_artifacts_ready(FakeParams())
+
+
 def test_runtime_model_metadata_does_not_overwrite_model_profiles(tmp_path, monkeypatch):
   monkeypatch.setattr(model_manager, "MODELS_PATH", tmp_path)
   (tmp_path / model_manager.ARTIFACT_METADATA_CACHE).write_text(json.dumps({
@@ -326,7 +381,8 @@ def test_model_manager_downloads_precompiled_accelerator_variant_without_compili
     },
   }])
   (tmp_path / model_manager.ARTIFACT_METADATA_CACHE).write_text(json.dumps(metadata))
-  monkeypatch.setattr(model_manager, "external_gpu_available", lambda: True)
+  # These are precompiled files, so downloading must not require a connected eGPU.
+  monkeypatch.setattr(model_manager, "external_gpu_available", lambda: False)
   monkeypatch.setattr(model_manager, "get_resource_urls", lambda: ["https://models.example"])
   monkeypatch.setattr(manager, "_load_artifact_url_map", lambda: {})
   calls = []
@@ -346,7 +402,7 @@ def test_model_manager_downloads_precompiled_accelerator_variant_without_compili
   )
   assert calls[0][3]["execution_device"] == "AMD"
   assert calls[0][5] == ["https://models.example"]
-  assert manager.params_memory.values[model_manager.DOWNLOAD_PROGRESS_PARAM] == "Chestnut artifact downloaded!"
+  assert manager.params_memory.values[model_manager.DOWNLOAD_PROGRESS_PARAM] == "eGPU variant downloaded!"
   assert model_manager.MODEL_LAB_DOWNLOAD_PARAM not in manager.params_memory.values
 
 
@@ -408,8 +464,18 @@ def test_external_gpu_compile_uses_agnos_isolated_cpu(monkeypatch):
   command = ["python3", "compile_modeld.py"]
   monkeypatch.setattr(model_compiler.sys, "platform", "linux")
   monkeypatch.setattr(model_compiler.platform, "machine", lambda: "aarch64")
+  monkeypatch.setattr(model_compiler.os, "sched_getaffinity", lambda _: {7}, raising=False)
 
   assert model_compiler.external_gpu_compile_command(command) == ["taskset", "-c", "7", *command]
+
+
+def test_external_gpu_compile_skips_unavailable_agnos_cpu(monkeypatch):
+  command = ["python3", "compile_modeld.py"]
+  monkeypatch.setattr(model_compiler.sys, "platform", "linux")
+  monkeypatch.setattr(model_compiler.platform, "machine", lambda: "aarch64")
+  monkeypatch.setattr(model_compiler.os, "sched_getaffinity", lambda _: {0, 1, 2, 3}, raising=False)
+
+  assert model_compiler.external_gpu_compile_command(command) is command
 
 
 def test_external_gpu_compile_does_not_pin_other_platforms(monkeypatch):

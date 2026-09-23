@@ -14,7 +14,6 @@ def test_device_settings_surfaces_hidden_advanced_settings_count():
   source = _device_settings()
 
   assert "countAdvancedHiddenByDeveloperMode" in source
-  assert "isAdvancedHiddenByDeveloperMode" in source
   assert "hiddenAdvancedCount" in source
 
 
@@ -35,7 +34,8 @@ def test_developer_mode_notice_navigates_to_developer_section():
 def test_advanced_settings_hidden_count_shown_in_status_bar():
   source = _device_settings()
 
-  assert "advanced hidden" in source
+  assert "advanced setting" in source
+  assert "hidden" in source
 
 
 def test_device_settings_uses_the_params_api_and_layout_json():
@@ -44,6 +44,23 @@ def test_device_settings_uses_the_params_api_and_layout_json():
   assert 'fetch("/api/params/all")' in source
   assert 'fetch("/api/params/defaults")' in source
   assert 'fetch("/assets/components/tools/device_settings_layout.json?v=settings-tier-1"' in source
+
+
+def test_device_settings_speed_units_follow_the_vehicle():
+  source = _device_settings()
+
+  assert 'from "/assets/mobile/js/params.js"' in source
+  assert "resolveVehicleUnitParam" in source
+  assert "formatNumericParamValue" in source
+  assert "unit_search_terms" in source
+  assert "per click" in source
+  assert "ds-unit-note" not in source
+
+
+def test_device_settings_supports_vehicle_make_exclusions():
+  source = _device_settings()
+
+  assert "excluded_vehicle_makes" in source
 
 
 def test_lane_center_offset_can_step_below_zero():

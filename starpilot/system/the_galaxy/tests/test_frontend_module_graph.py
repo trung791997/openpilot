@@ -7,6 +7,7 @@ ROUTER_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/router.
 INDEX_PATH = REPO_ROOT / "starpilot/system/the_galaxy/templates/index.html"
 BLUETOOTH_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/bluetooth.js"
 CONTROLLERS_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/wheel_controls.js"
+MOBILE_CONTROLLERS_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/mobile/js/components/WheelControls.js"
 SIDEBAR_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/sidebar.js"
 MODEL_LAB_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/model_laboratory.js"
 
@@ -23,7 +24,10 @@ def test_router_and_settings_cache_bust_is_consistent():
   index = INDEX_PATH.read_text(encoding="utf-8")
 
   assert "/assets/components/settings.js?v=router-cycle-fix-5" in router
-  assert "/assets/components/router.js?v=router-cycle-fix-7" in index
+  assert "/assets/components/router.js?v=router-cycle-fix-8" in index
+  assert "/assets/components/sidebar.js?v=sidebar-pin-2" in router
+  assert "/assets/components/main.css?v=sidebar-pin-2" in index
+  assert "/assets/components/sidebar.css?v=sidebar-pin-2" in index
 
 
 def test_bluetooth_actions_use_reactive_disabled_bindings():
@@ -76,6 +80,16 @@ def test_controller_joystick_mode_requires_explicit_device_selection():
   assert 'request("joystick", { device_id: device.device_id, enabled: !selected() })' in source
 
 
+def test_controller_offroad_disconnect_is_opt_in():
+  source = CONTROLLERS_PATH.read_text(encoding="utf-8")
+  mobile_source = MOBILE_CONTROLLERS_PATH.read_text(encoding="utf-8")
+
+  for frontend in (source, mobile_source):
+    assert "Disconnect controllers when offroad" in frontend
+    assert "After two minutes offroad" in frontend
+    assert "offroad-disconnect" in frontend
+
+
 def test_controller_page_has_ten_controller_only_action_slots():
   source = CONTROLLERS_PATH.read_text(encoding="utf-8")
 
@@ -97,6 +111,27 @@ def test_bluetooth_and_controllers_sidebar_order():
   controllers = source.index('{ name: "Controllers"')
   assert toggles < bluetooth < sentry < controllers
 
+
+def test_sidebar_pin_state_and_responsive_drawer_are_wired():
+  sidebar = SIDEBAR_PATH.read_text(encoding="utf-8")
+  template = INDEX_PATH.read_text(encoding="utf-8")
+  sidebar_css = (REPO_ROOT / "starpilot/system/the_galaxy/assets/components/sidebar.css").read_text(encoding="utf-8")
+  main_css = (REPO_ROOT / "starpilot/system/the_galaxy/assets/components/main.css").read_text(encoding="utf-8")
+  navigation_css = (REPO_ROOT / "starpilot/system/the_galaxy/assets/components/navigation/navigation_destination.css").read_text(encoding="utf-8")
+
+  assert 'window.localStorage?.getItem(SIDEBAR_PINNED_KEY)' in sidebar
+  assert 'stored === "true"' in sidebar and 'defaultSidebarPinned' in sidebar
+  assert "try {" in sidebar
+  assert 'menuButton.dataset.boundClick !== "1"' in sidebar
+  assert 'class="sidebar-pin-button"' in sidebar
+  assert '<button id="menu_button"' in template
+  assert 'aria-controls="sidebar"' in template
+  assert "@media only screen and (max-width: 767px)" in sidebar_css
+  assert "@media only screen and (min-width: 768px)" in sidebar_css
+  assert "@media only screen and (min-width: var(--breakpoint-md))" not in sidebar_css
+  assert "html.galaxy-sidebar-pinned .content" in main_css
+  assert "html.galaxy-sidebar-pinned .map-wrapper" in navigation_css
+
 def test_model_laboratory_is_wired_into_classic_and_mobile_navigation():
   router = ROUTER_PATH.read_text(encoding="utf-8")
   sidebar = SIDEBAR_PATH.read_text(encoding="utf-8")
@@ -117,8 +152,13 @@ def test_model_laboratory_frontend_exposes_guards_and_role_copy():
   assert 'if (!state.chestnutReady)' in source
   assert 'if (state.isOnroad)' in source
   assert "model.modelLabArtifactInstalled" in source
-  assert "Nothing is compiled on the comma" in source
-  assert "run every camera frame on Chestnut's AMD GPU" in source
+  assert "Download eGPU-compatible small models" in source
+  assert "Choose from downloaded eGPU variant combinations below" in source
+  assert "Download eGPU variant" in source
+  assert "Delete eGPU variant" in source
+  assert "Nothing is compiled on the comma" not in source
+  assert "availableModels().filter(model => model.modelLabArtifactInstalled)" in source
+  assert source.index("<h3>Available models</h3>") < source.index("<h3>Compose a pair</h3>")
   assert 'lateral.value === longitudinal.value' in source
   assert 'lateral.version !== longitudinal.version' not in source
   assert 'class="ml-chip ${' not in source
@@ -135,5 +175,5 @@ def test_model_laboratory_frontend_exposes_guards_and_role_copy():
   assert "longitudinalModel: selectionDirty" in source
   assert source.count("selectionDirty = true") == 2
   assert "selectionDirty = false\n    applyPayload(payload)" in source
-  assert 'model_laboratory.js?v=model-lab-5' in ROUTER_PATH.read_text(encoding="utf-8")
-  assert 'model_laboratory.css?v=model-lab-4' in INDEX_PATH.read_text(encoding="utf-8")
+  assert 'model_laboratory.js?v=model-lab-6' in ROUTER_PATH.read_text(encoding="utf-8")
+  assert 'model_laboratory.css?v=model-lab-5' in INDEX_PATH.read_text(encoding="utf-8")

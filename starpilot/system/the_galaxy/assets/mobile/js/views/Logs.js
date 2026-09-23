@@ -4,10 +4,14 @@ import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { TroubleshootPanel } from "../components/TroubleshootPanel.js"
 import { GalaxyTabs } from "../components/GalaxyTabs.js"
 
+import { SystemMonitor } from "../components/SystemMonitor.js"
+
 const TABS = {
+  troubleshoot: "Troubleshoot",
   errors: "Error Logs",
   tmux: "Tmux Live Log",
-  troubleshoot: "Troubleshoot",
+  monitor: "System Monitor",
+  discord: "Get Help via Discord",
 }
 
 function parseLogDate(filename) {
@@ -19,7 +23,7 @@ function parseLogDate(filename) {
 
 export const Logs = {
   name: "Logs",
-  components: { TroubleshootPanel, GalaxyTabs },
+  components: { TroubleshootPanel, GalaxyTabs, SystemMonitor },
   data() {
     return {
       TABS,
@@ -35,7 +39,7 @@ export const Logs = {
     }
   },
   setup() {
-    return useTabRouting("/logs", { errors: "errors", tmux: "tmux", troubleshoot: "troubleshoot" })
+    return useTabRouting("/logs", { troubleshoot: "troubleshoot", errors: "errors", tmux: "tmux", monitor: "monitor", discord: "discord" })
   },
   created() {
     this.stream = useLogStream({ endpoint: "/api/tmux_log/live", snapshotFn: () => api.tmuxSnapshot(), interval: 2000 })
@@ -217,6 +221,25 @@ export const Logs = {
               <a class="gx-btn gx-btn--tonal" :href="'/api/tmux_log/download/' + encodeURIComponent(f.filename)" download><i class="bi bi-download"></i></a>
               <button type="button" class="gx-btn gx-btn--danger" @click="deleteTmux(f)"><i class="bi bi-trash"></i></button>
             </div>
+          </div>
+        </section>
+      </template>
+
+      <template v-else-if="tab === 'monitor'">
+        <SystemMonitor />
+      </template>
+
+      <template v-else-if="tab === 'discord'">
+        <section class="gx-card">
+          <div class="gx-section__header">
+            <i class="bi bi-discord"></i>
+            <span class="gx-section__title">{{ TABS.discord }}</span>
+          </div>
+          <div style="padding: var(--sp-4); display:grid; gap:12px;">
+            <p class="gx-note" style="margin:0;">StarPilot has a vibrant, welcoming community discord. Stop by to chat or ask questions!</p>
+            <a class="gx-btn" href="https://firestar.link/discord" target="_blank" rel="noopener" style="justify-self:start;">
+              <i class="bi bi-box-arrow-up-right"></i> Get Help via Discord
+            </a>
           </div>
         </section>
       </template>

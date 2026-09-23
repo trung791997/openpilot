@@ -1,4 +1,5 @@
 import { api } from "../api.js"
+import { openControllerActionPicker } from "../../../components/tools/controller_action_picker.js"
 import { usePolling } from "../composables.js"
 import { GxNotice } from "./GxNotice.js"
 
@@ -12,11 +13,12 @@ export const WheelControls = {
       loading: true, busy: "", available: false, offroad: false, learning: false,
       devices: [], mappings: [], slots: [], controllerSlots: [], controllerOptions: [],
       joystickDevice: "", learningSlot: null, remainingSeconds: 0, testing: false,
+      disconnectControllersOffroad: false,
       lastTested: null, speedUnit: "mph", speedMinimum: 0, speedMaximum: 0, error: "",
     }
   },
   created() { this.poll = usePolling(() => this.refresh(), { interval: 750 }); this.poll.start() },
-  beforeUnmount() { this.poll?.destroy() },
+  beforeUnmount() { this.closeActionPicker?.(); this.poll?.destroy() },
   methods: {
     async refresh() {
       try {
@@ -29,6 +31,7 @@ export const WheelControls = {
         this.slots = Array.isArray(p.slots) ? p.slots : []
         this.controllerSlots = Array.isArray(p.controller_slots) ? p.controller_slots : []
         this.controllerOptions = Array.isArray(p.controller_options) ? p.controller_options : []
+        this.disconnectControllersOffroad = !!p.disconnect_controllers_offroad
         this.joystickDevice = typeof p.joystick_device === "string" ? p.joystick_device : ""
         this.learningSlot = Number.isInteger(p.learning_slot) ? p.learning_slot : null
         this.remainingSeconds = Number.isFinite(Number(p.remaining_seconds)) ? Number(p.remaining_seconds) : 0
@@ -66,6 +69,15 @@ export const WheelControls = {
     configured(slot) { return !!slot?.enabled && !!slot?.key },
     optionByKey(key) { return this.controllerOptions.find((o) => o.key === key) || null },
     isSpeedSlot(slot) { return this.optionByKey(slot?.key)?.value_type === "speed" },
+    chooseAction(i, event) {
+      this.closeActionPicker = openControllerActionPicker({
+        theme: "dipper", index: i, trigger: event.currentTarget,
+        getOptions: () => this.controllerOptions,
+        getSlot: () => this.controllerSlots[i],
+        isDisabled: () => this.disabled(),
+        onSelect: key => this.onActionSelect(i, { target: { value: key } }),
+      })
+    },
     onActionSelect(i, e) {
       if (this.disabled()) return
       const key = String(e.target.value || "")
@@ -98,6 +110,18 @@ export const WheelControls = {
         <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
           <button type="button" class="gx-btn" :disabled="disabled() || !mappings.length" @click="request(testing ? 'test-stop' : 'test')">{{ testing ? 'Stop Testing' : 'Test Buttons' }}</button>
           <button type="button" class="gx-btn gx-btn--danger" :disabled="disabled() || !mappings.length" @click="request('clear')">Clear All</button>
+        </div>
+        <div class="gx-row" style="margin-bottom:12px;">
+          <div class="gx-row__info">
+            <span class="gx-row__label">Disconnect controllers when offroad</span>
+            <span class="gx-row__desc">After two minutes offroad, paired controllers disconnect to save battery and reconnect when the car starts. Bluetooth and audio-only devices stay connected.</span>
+          </div>
+          <label class="gx-switch">
+            <input type="checkbox" :checked="disconnectControllersOffroad" :disabled="disabled()"
+              @change="request('offroad-disconnect', { enabled: $event.target.checked })" />
+            <span class="gx-switch__track"></span>
+            <span class="gx-switch__thumb"></span>
+          </label>
         </div>
         <div v-if="testing && lastTested" style="margin-bottom:12px;">
           <span class="gx-chip" :style="lastTested.mapped ? 'background:var(--success);' : 'background:var(--error);'">{{ lastTested.mapped ? 'Successful' : 'Not mapped' }}</span>
@@ -144,10 +168,10 @@ export const WheelControls = {
               </div>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="!slot.enabled || disabled() || testing" @click="learn(actionSlotIndex(i))">{{ listenLabel(actionSlotIndex(i)) }}</button>
             </div>
-            <select class="gx-field gx-field--full" :value="String(slot.key || '')" :disabled="disabled()" @change="onActionSelect(i, $event)">
-              <option value="">Not configured</option>
-              <option v-for="opt in controllerOptions" :key="opt.key" :value="opt.key">{{ opt.label }}</option>
-            </select>
+            <button type="button" class="gx-btn gx-btn--tonal" style="white-space:normal; height:auto; min-height:44px;"
+              :data-controller-action-slot="i" aria-haspopup="dialog" :disabled="disabled()" @click="chooseAction(i, $event)">
+              {{ optionByKey(slot.key)?.label || slot.label || slot.key || 'Not configured' }} · Choose action
+            </button>
             <div v-if="isSpeedSlot(slot)" class="gx-row" style="border:none; padding:0;">
               <div class="gx-row__info">
                 <span class="gx-row__label">Set speed ({{ speedUnit }})</span>

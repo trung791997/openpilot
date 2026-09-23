@@ -76,7 +76,7 @@ NRDR_HONDA_OVERRIDE_SEMANTICS_MIGRATION_FLAG = Path("/data") / "nrdr_honda_overr
 NRDR_KONIK_DEFAULT_MIGRATION_FLAG = Path("/data") / "nrdr_konik_default_v1"
 NRDR_DM_DEFAULTS_MIGRATION_FLAG = Path("/data") / "nrdr_dm_defaults_v1"
 STARPILOT_REMOVED_PARAM_KEYS = (
-  "CoastUpToLeads", "PrioritizeSmoothFollowing", "ReverseCruise",
+  "CoastUpToLeads", "PrioritizeSmoothFollowing",
   "NrdrTuneLearner", "NrdrTuneLearnerMap", "NrdrTuneLearnerRate", "NrdrTuneLearnerReset", "NrdrTuneLearnerStrength",
 )
 LEGACY_CARMODEL_MIGRATIONS = {
@@ -1321,6 +1321,16 @@ def manager_cleanup() -> None:
   cloudlog.info("everything is dead")
 
 
+def reset_onroad_transition_params(params, params_memory, force_onroad: bool) -> None:
+  """Clear stale card-readiness state before a forced onroad restart."""
+  if force_onroad:
+    params.remove("ControlsReady")
+    params.remove("FirmwareQueryDone")
+  else:
+    params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
+    params_memory.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
+
+
 def manager_thread() -> None:
   manager_thread_start = time.monotonic()
   last_timing = _log_boot_timing("manager_thread", "start", manager_thread_start, manager_thread_start)
@@ -1369,11 +1379,8 @@ def manager_thread() -> None:
 
     started = sm['deviceState'].started
 
-    if started and not started_prev and not starpilot_toggles.force_onroad:
-      params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
-
-      # StarPilot variables
-      params_memory.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
+    if started and not started_prev:
+      reset_onroad_transition_params(params, params_memory, starpilot_toggles.force_onroad)
     elif not started and started_prev:
       params.clear_all(ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION)
 

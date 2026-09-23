@@ -1,11 +1,12 @@
+import math
 import pyray as rl
 import numpy as np
 from collections.abc import Callable
 
 from openpilot.common.filter_simple import FirstOrderFilter, BounceFilter
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2, ScrollState
+from openpilot.system.ui.lib.application import gui_app, MouseEvent
+from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2, ScrollState, MIN_DRAG_PIXELS
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.nav_widget import NavWidget
 
@@ -23,6 +24,63 @@ EDGE_SHADOW_WIDTH = 20
 MIN_ZOOM_ANIMATION_TIME = 0.075  # seconds
 DO_ZOOM = False
 DO_JELLO = False
+
+
+class _MiciScrollPanel(GuiScrollPanel2):
+  """Mici gesture ownership, using the shared scrolling physics unchanged."""
+  def __init__(self, horizontal: bool = True, handle_out_of_bounds: bool = True):
+    super().__init__(horizontal, handle_out_of_bounds)
+    self._event_touch_valid: dict[MouseEvent, bool] = {}
+    self.reset()
+
+  def reset(self) -> None:
+    """Forget touch history without changing the scroll position."""
+    self._state = ScrollState.STEADY
+    self._velocity = 0.0
+    self._velocity_buffer.clear()
+    self._initial_click_event = None
+    self._previous_mouse_event = None
+    self._snap_target = None
+    self._touch_active = False
+    self.touch_started = False
+    self._event_touch_valid.clear()
+
+  def is_event_touch_valid(self, event: MouseEvent) -> bool:
+    return self._event_touch_valid.get(event, False)
+
+  def _process_mouse_events(self, bounds: rl.Rectangle, bounds_size: float, content_size: float) -> None:
+    self._event_touch_valid.clear()
+    self.touch_started = False
+    if not self.enabled:
+      self.reset()
+      # Disabling scrolling alone must not disable the controls inside it.
+      self._event_touch_valid.update((event, True) for event in gui_app.mouse_events if event.slot == 0)
+      return
+
+    for event in gui_app.mouse_events:
+      if event.slot != 0:
+        continue
+      if event.left_pressed:
+        if not rl.check_collision_point_rec(event.pos, bounds):
+          continue
+        self._touch_active = True
+        self.touch_started = True
+      if not self._touch_active:
+        continue
+
+      was_dragging = self._state == ScrollState.MANUAL_SCROLL
+      if self._state == ScrollState.PRESSED and self._initial_click_event is not None:
+        was_dragging |= abs(self._get_mouse_pos(event) - self._get_mouse_pos(self._initial_click_event)) > MIN_DRAG_PIXELS
+      super()._handle_mouse_event(event, bounds, bounds_size, content_size)
+      # Preserve drag cancellation through release, even if another tap follows
+      # in this batch. Children consume these events after the panel updates.
+      self._event_touch_valid[event] = not (was_dragging or self._state == ScrollState.MANUAL_SCROLL)
+      self._previous_mouse_event = event
+      if event.left_released:
+        self._touch_active = False
+        if self._state == ScrollState.MANUAL_SCROLL:
+          # A release can itself cross the drag threshold. Finish that drag now.
+          super()._handle_mouse_event(event, bounds, bounds_size, content_size)
 
 
 class ScrollIndicator(Widget):
@@ -82,6 +140,7 @@ class _Scroller(Widget):
 
     self._scrolling_to: tuple[float | None, bool] = (None, False)  # target offset, block_interaction
     self._scrolling_to_filter = FirstOrderFilter(0.0, SCROLL_RC, 1 / gui_app.target_fps)
+    self._animation_dt = self._scrolling_to_filter.dt
     self._zoom_filter = FirstOrderFilter(1.0, 0.2, 1 / gui_app.target_fps)
     self._zoom_out_t: float = 0.0
 
@@ -95,7 +154,7 @@ class _Scroller(Widget):
     # when not pressed, snap to closest item to be center
     self._scroll_snap_filter = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
 
-    self.scroll_panel = GuiScrollPanel2(self._horizontal, handle_out_of_bounds=not self._snap_items)
+    self.scroll_panel = _MiciScrollPanel(self._horizontal, handle_out_of_bounds=not self._snap_items)
     self._scroll_enabled: bool | Callable[[], bool] = True
 
     self._show_scroll_indicator = scroll_indicator and self._horizontal
@@ -148,9 +207,12 @@ class _Scroller(Widget):
 
     # preserve original touch valid callback
     original_touch_valid_callback = item._touch_valid_callback
-    item.set_touch_valid_callback(lambda: self.scroll_panel.is_touch_valid() and self.enabled and self._scrolling_to[0] is None
+    item.set_touch_valid_callback(lambda: self.enabled and not self._scrolling_to[1]
                                           and not self.moving_items and (original_touch_valid_callback() if
                                                                          original_touch_valid_callback else True))
+    original_event_callback = item._touch_event_valid_callback
+    item.set_touch_event_valid_callback(lambda event: self.scroll_panel.is_event_touch_valid(event) and
+                                       (original_event_callback(event) if original_event_callback else True))
 
   def add_widgets(self, items: list[Widget]) -> None:
     for item in items:
@@ -161,6 +223,7 @@ class _Scroller(Widget):
     self._scroll_enabled = enabled
 
   def _update_state(self):
+    self._animation_dt = min(rl.get_frame_time() or self._scrolling_to_filter.dt, 0.1)
     if DO_ZOOM:
       if self._scrolling_to[0] is not None or self.scroll_panel.state != ScrollState.STEADY:
         self._zoom_out_t = rl.get_time() + MIN_ZOOM_ANIMATION_TIME
@@ -178,7 +241,8 @@ class _Scroller(Widget):
       self._scrolling_to = None, False
 
     if self._scrolling_to[0] is not None and len(self._pending_lift) == 0:
-      self._scrolling_to_filter.update(self._scrolling_to[0])
+      alpha = 1 - (1 - self._scrolling_to_filter.alpha) ** (self._animation_dt / self._scrolling_to_filter.dt)
+      self._scrolling_to_filter.x += alpha * (self._scrolling_to[0] - self._scrolling_to_filter.x)
       self.scroll_panel.set_offset(self._scrolling_to_filter.x)
 
       if abs(self._scrolling_to_filter.x - self._scrolling_to[0]) < 1:
@@ -189,40 +253,47 @@ class _Scroller(Widget):
     scroll_enabled = self._scroll_enabled() if callable(self._scroll_enabled) else self._scroll_enabled
     self.scroll_panel.set_enabled(scroll_enabled and self.enabled and not self._scrolling_to[1])
     self.scroll_panel.update(self._rect, content_size)
+    if self.scroll_panel.touch_started and not self._scrolling_to[1]:
+      self._scrolling_to = None, False
     if not self._snap_items:
+      return self.scroll_panel.get_offset()
+    if self._scrolling_to[0] is not None:
+      self._scroll_snap_filter.x = 0
       return self.scroll_panel.get_offset()
 
     # Snap closest item to center
-    center_pos = self._rect.x + self._rect.width / 2 if self._horizontal else self._rect.y + self._rect.height / 2
+    bounds_size = self._rect.width if self._horizontal else self._rect.height
+    offset = self.scroll_panel.get_offset()
+    center_pos = bounds_size / 2
     closest_delta_pos = float('inf')
-    scroll_snap_idx: int | None = None
-    for idx, item in enumerate(visible_items):
-      if self._horizontal:
-        delta_pos = (item.rect.x + item.rect.width / 2) - center_pos
-      else:
-        delta_pos = (item.rect.y + item.rect.height / 2) - center_pos
+    snap_target: float | None = None
+    item_pos = self._pad
+    for item in visible_items:
+      size = item.rect.width if self._horizontal else item.rect.height
+      item_center = item_pos + size / 2
+      delta_pos = item_center + offset - center_pos
       if abs(delta_pos) < abs(closest_delta_pos):
         closest_delta_pos = delta_pos
-        scroll_snap_idx = idx
+        snap_target = center_pos - item_center
+      item_pos += size + self._spacing
 
-    if scroll_snap_idx is not None:
-      snap_item = visible_items[scroll_snap_idx]
-      if self.is_pressed:
+    if snap_target is not None:
+      if self.scroll_panel.state in (ScrollState.PRESSED, ScrollState.MANUAL_SCROLL):
         # no snapping until released
         self._scroll_snap_filter.x = 0
       else:
-        # TODO: this doesn't handle two small buttons at the edges well
-        if self._horizontal:
-          snap_delta_pos = (center_pos - (snap_item.rect.x + snap_item.rect.width / 2)) / 10
-          snap_delta_pos = min(snap_delta_pos, -self.scroll_panel.get_offset() / 10)
-          snap_delta_pos = max(snap_delta_pos, (self._rect.width - self.scroll_panel.get_offset() - content_size) / 10)
-        else:
-          snap_delta_pos = (center_pos - (snap_item.rect.y + snap_item.rect.height / 2)) / 10
-          snap_delta_pos = min(snap_delta_pos, -self.scroll_panel.get_offset() / 10)
-          snap_delta_pos = max(snap_delta_pos, (self._rect.height - self.scroll_panel.get_offset() - content_size) / 10)
-        self._scroll_snap_filter.update(snap_delta_pos)
-
-      self.scroll_panel.set_offset(self.scroll_panel.get_offset() + self._scroll_snap_filter.x)
+        snap_target = max(min(0.0, bounds_size - content_size), min(0.0, snap_target))
+        steps = max(1, math.ceil(self._animation_dt / self._scroll_snap_filter.dt))
+        scale = self._animation_dt / (steps * self._scroll_snap_filter.dt)
+        alpha = 1 - (1 - self._scroll_snap_filter.alpha) ** scale
+        for _ in range(steps):
+          snap_delta_pos = (snap_target - offset) / 10
+          self._scroll_snap_filter.x += alpha * (snap_delta_pos - self._scroll_snap_filter.x)
+          offset += self._scroll_snap_filter.x * scale
+        if abs(snap_target - offset) < 1 and abs(self._scroll_snap_filter.x) < 0.5:
+          offset = snap_target
+          self._scroll_snap_filter.x = 0
+        self.scroll_panel.set_offset(offset)
 
     return self.scroll_panel.get_offset()
 
@@ -398,6 +469,7 @@ class _Scroller(Widget):
 
   def show_event(self):
     super().show_event()
+    self.scroll_panel.reset()
     for item in self._items:
       item.show_event()
 
@@ -414,6 +486,7 @@ class _Scroller(Widget):
 
   def hide_event(self):
     super().hide_event()
+    self.scroll_panel.reset()
     for item in self._items:
       item.hide_event()
 
@@ -450,12 +523,17 @@ class NavRawScrollPanel(NavWidget):
 
   def __init__(self):
     super().__init__()
-    self._scroll_panel = GuiScrollPanel2(horizontal=False)
+    self._scroll_panel = _MiciScrollPanel(horizontal=False)
     self._scroll_panel.set_enabled(lambda: self.enabled and not self.is_dismissing)
 
   def show_event(self):
     super().show_event()
+    self._scroll_panel.reset()
     self._scroll_panel.set_offset(0)
+
+  def hide_event(self):
+    super().hide_event()
+    self._scroll_panel.reset()
 
   def _back_enabled(self) -> bool:
     return self._scroll_panel.get_offset() >= -20

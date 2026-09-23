@@ -308,12 +308,12 @@ sync_host_generated_headers() {
 
     cd "${WORK_DIR}"
     mkdir -p cereal/gen/cpp
-    capnpc --src-prefix=cereal \
+    "${capnpc}" --src-prefix=cereal \
       cereal/log.capnp \
       cereal/car.capnp \
       cereal/legacy.capnp \
       cereal/custom.capnp \
-      -o c++:cereal/gen/cpp/
+      -o "${capnpc_cpp}:cereal/gen/cpp/"
   )
 }
 

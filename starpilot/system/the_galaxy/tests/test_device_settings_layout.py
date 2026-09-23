@@ -69,6 +69,20 @@ def test_galaxy_layout_removes_obsolete_and_duplicate_controls():
   ) == 1
 
 
+def test_slc_override_method_is_not_exposed_in_either_settings_ui():
+  layout = _layout()
+  galaxy_keys = {
+    param["key"]
+    for section in layout
+    for param in section.get("params", [])
+  }
+  device_ui = (REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text(encoding="utf-8")
+
+  assert "SLCOverride" not in galaxy_keys
+  assert 'SettingRow("SLCOverride"' not in device_ui
+  assert "SLC_OVERRIDE_OPTIONS" not in device_ui
+
+
 def test_galaxy_layout_contains_basic_mode_controls():
   sections = _params_by_section(_layout())
 
@@ -114,6 +128,46 @@ def test_galaxy_exposes_every_raylib_nrdr_control_and_omits_pruned_helpers():
   }.isdisjoint(galaxy_keys)
 
 
+def test_galaxy_new_ui_is_the_visible_default_choice():
+  galaxy_default = _params_by_section(_layout())["Developer"]["GalaxyMobileDefault"]
+
+  assert _declared_default("GalaxyMobileDefault") == "1"
+  assert galaxy_default["settings_tier"] == "simple"
+  assert galaxy_default["label"] == "Use Galaxy (new) by Default"
+  assert "Galaxy (old)" in galaxy_default["description"]
+
+
+def test_driving_personality_controls_are_not_parked_only():
+  params = {
+    param["key"]: param
+    for section in _layout()
+    for param in section.get("params", [])
+  }
+  personality_keys = {
+    "CustomPersonalities",
+    "TrafficFollow", "AggressiveFollow", "AggressiveFollowHigh", "StandardFollow", "StandardFollowHigh",
+    "RelaxedFollow", "RelaxedFollowHigh",
+    *{
+      f"{profile}{suffix}"
+      for profile in ("Traffic", "Aggressive", "Standard", "Relaxed")
+      for suffix in ("JerkAcceleration", "JerkDeceleration", "JerkDanger", "JerkSpeedDecrease", "JerkSpeed")
+    },
+  }
+
+  assert personality_keys <= params.keys()
+  assert all(params[key].get("requires_offroad") is not True for key in personality_keys)
+
+
+def test_pedal_feedback_wheel_uses_existing_pedal_toggle():
+  setting = _params_by_section(_layout())["Visual (Display & UI)"]["PedalsOnUI"]
+
+  assert _declared_default("PedalsOnUI") == "0"
+  assert setting["label"] == "Pedal-Responsive Wheel"
+  assert setting["settings_tier"] == "simple"
+  assert setting["ui_type"] == "toggle"
+  assert "ShowBrakeStatus" not in _params_by_section(_layout())["Visual (Display & UI)"]
+
+
 def test_ford_lateral_controls_are_ford_only_and_galaxy_only():
   lateral = _params_by_section(_layout())["Lateral (Steering)"]
   ford_keys = {
@@ -153,6 +207,50 @@ def test_device_shutdown_uses_literal_hours():
   assert device_shutdown["min"] == 1
   assert device_shutdown["max"] == 30
   assert device_shutdown["step"] == 1
+
+
+def test_speed_settings_follow_vehicle_units_with_one_unit_steps():
+  sections = _params_by_section(_layout())
+  speed_keys = {
+    "MinimumLaneChangeSpeed", "PauseLateralSpeed",
+    "CESpeed", "CESpeedLead", "CESignalSpeed",
+    "CustomCruise", "CustomCruiseLong", "SetSpeedOffset", "PulseGlideSpeedDelta",
+    "Offset1", "Offset2", "Offset3", "Offset4", "Offset5", "Offset6", "Offset7",
+    "CCMSpeed", "CCMSpeedLead", "CCMSetSpeedMargin",
+    "VisionSpeedLimitLowLimitThreshold", "TurnSteeringLimitMuteSpeed",
+  }
+  params = {
+    param["key"]: param
+    for section in sections.values()
+    for param in section.values()
+    if param["key"] in speed_keys
+  }
+
+  assert params.keys() == speed_keys
+  assert all(param["unit_type"] == "vehicle_speed" for param in params.values())
+
+  one_unit_keys = speed_keys - {"PulseGlideSpeedDelta", "VisionSpeedLimitLowLimitThreshold"}
+  assert all(params[key]["step"] == 1 for key in one_unit_keys)
+  assert params["PulseGlideSpeedDelta"]["step"] == 0.5
+  assert params["VisionSpeedLimitLowLimitThreshold"]["step"] == 5
+
+  for index in range(7):
+    offset = params[f"Offset{index + 1}"]
+    assert offset["unit_range_index"] == index
+    assert (offset["metric_min"], offset["metric_max"]) == (-150, 150)
+
+  assert params["CustomCruise"]["metric_max"] == 150
+  assert params["CCMSetSpeedMargin"]["metric_max"] == 30
+  assert params["PulseGlideSpeedDelta"]["imperial_max"] == 15
+
+
+def test_cruise_controls_are_split_between_toyota_and_software_cruise():
+  longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
+
+  assert longitudinal["CustomCruise"]["excluded_vehicle_makes"] == ["Lexus", "Toyota"]
+  assert longitudinal["CustomCruiseLong"]["excluded_vehicle_makes"] == ["Lexus", "Toyota"]
+  assert longitudinal["ReverseCruise"]["vehicle_makes"] == ["Lexus", "Toyota"]
+  assert _declared_default("ReverseCruise") == "0"
 
 
 def test_curve_speed_controller_no_lead_toggle_is_nested_under_csc():
@@ -259,6 +357,15 @@ def test_requested_simple_and_advanced_settings_tiers():
         and param["key"] != "DisableWideRoad"
         and param["key"] != "HomeScreenName"
       ]
+    if section_name == "Device & Data":
+      params = [
+        param for param in params
+        if param["key"] not in {
+          "ScreenBrightness", "ScreenBrightnessOnroad", "StandbyWakeEngage",
+          "StandbyWakeDisengage", "StandbyWakeInfoAlert", "StandbyWakeWarningAlert",
+          "StandbyWakeCriticalAlert", "StandbyWakeTurnSignal", "StandbyWakeButton",
+        }
+      ]
     assert {param["settings_tier"] for param in params} == {"simple"}
 
   for key in ("AlwaysOnLateral", "LaneChanges", "QOLLateral"):
@@ -305,6 +412,16 @@ def test_requested_simple_and_advanced_settings_tiers():
   assert sections["Visual (Display & UI)"]["DisableWideRoad"]["settings_tier"] == "advanced"
   assert sections["Visual (Display & UI)"]["HomeScreenName"]["settings_tier"] == "advanced"
   assert sections["Visual (Display & UI)"]["HomeScreenName"]["max_length"] == 12
+
+  device = sections["Device & Data"]
+  assert device["ScreenBrightness"]["settings_tier"] == "advanced"
+  assert device["ScreenBrightnessOnroad"]["settings_tier"] == "advanced"
+  for key in (
+    "StandbyWakeEngage", "StandbyWakeDisengage", "StandbyWakeInfoAlert",
+    "StandbyWakeWarningAlert", "StandbyWakeCriticalAlert", "StandbyWakeTurnSignal",
+    "StandbyWakeButton",
+  ):
+    assert device[key]["settings_tier"] == "advanced"
 
 
 def test_turn_steering_limit_mute_speed_is_galaxy_developer_only():
@@ -357,6 +474,31 @@ def test_toyota_auto_hold_is_galaxy_only():
   assert setting["ui_type"] == "toggle"
   assert setting["data_type"] == "bool"
 
+
+def test_cluster_offset_is_in_galaxy_developer_section_only():
+  sections = _params_by_section(_layout())
+  assert "ClusterOffset" not in sections["Vehicle"]
+  setting = sections["Developer"]["ClusterOffset"]
+
+  assert setting["parent_key"] == "GalaxyDeveloperMode"
+  assert setting["settings_tier"] == "advanced"
+  assert setting["data_type"] == "float"
+  assert "1x = no offset" in setting["description"]
+  assert setting["unit"] == "x"
+  assert setting["min"] == 1.0
+  assert setting["max"] == 1.05
+  assert setting["step"] == 0.001
+
+  native_vehicle_settings = REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/vehicle.py"
+  native_source = native_vehicle_settings.read_text(encoding="utf-8")
+  assert 'SettingRow("ClusterOffset"' not in native_source
+  assert "def _show_offset_selector" not in native_source
+
+  for galaxy_source in (
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings.js",
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/mobile/js/params.js",
+  ):
+    assert "ClusterOffset:" not in galaxy_source.read_text(encoding="utf-8")
 
 def test_human_acceleration_param_is_registered_default_off():
   params_source = PARAM_KEYS_PATH.read_text(encoding="utf-8")

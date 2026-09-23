@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +29,7 @@ from pathlib import Path
 
 
 OPENPILOT_REPO = "commaai/openpilot"
+OPENPILOT_LFS_BATCH_URL = "https://huggingface.co/commaai/openpilot-lfs.git/info/lfs/objects/batch"
 RESOURCES_REPO = os.environ.get("STARPILOT_RESOURCES_REPO", "firestar5683/StarPilot-Resources")
 HF_BUCKET = os.environ.get("STARPILOT_HF_BUCKET", "StarPilot-Driving/StarPilot-Resources")
 RESOURCE_BRANCH = "Models"
@@ -79,7 +81,8 @@ def default_workspace() -> Path:
   return Path.home() / "Desktop" / "StarPilot-Model-Releases"
 
 
-def run(command: list[str], *, cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
+def run(command: list[str], *, cwd: Path | None = None, capture: bool = False,
+       env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
   print("$ " + " ".join(shlex.quote(part) for part in command))
   return subprocess.run(
     command,
@@ -87,6 +90,7 @@ def run(command: list[str], *, cwd: Path | None = None, capture: bool = False) -
     check=True,
     text=capture,
     capture_output=capture,
+    env=env,
   )
 
 
@@ -159,7 +163,6 @@ def stream_response(response, destination: Path, prefix: bytes = b"") -> tuple[i
 
 
 def download_lfs_object(oid: str, expected_size: int, ref: str, destination: Path) -> tuple[int, str]:
-  batch_url = f"https://github.com/{OPENPILOT_REPO}.git/info/lfs/objects/batch"
   payload = json.dumps({
     "operation": "download",
     "transfers": ["basic"],
@@ -167,7 +170,7 @@ def download_lfs_object(oid: str, expected_size: int, ref: str, destination: Pat
     "ref": {"name": ref},
   }).encode("utf-8")
   with http_request(
-    batch_url,
+    OPENPILOT_LFS_BATCH_URL,
     method="POST",
     payload=payload,
     headers={"Accept": "application/vnd.git-lfs+json", "Content-Type": "application/vnd.git-lfs+json"},
@@ -394,6 +397,32 @@ def parse_pasted_release(text: str, model_id_override: str | None, behavior_vers
   )
 
 
+def release_from_source_file(source_file: Path, model_id_override: str | None, display_name_override: str | None,
+                             behavior_version: str) -> ReleaseInfo:
+  if not source_file.is_file():
+    raise ReleaseError(f"--source-file not found: {source_file}")
+  if source_file.suffix.lower() != ".onnx":
+    raise ReleaseError(f"--source-file must be a .onnx file: {source_file}")
+  display_name = display_name_override or source_name_from_path(source_file.name)
+  model_id = model_id_override or slug_model_id(display_name)
+  if not MODEL_ID_RE.fullmatch(model_id):
+    raise ReleaseError(f"Invalid model ID {model_id!r}; use lowercase letters, digits, '-' or '_' (pass --model-id)")
+  iteration_match = re.search(r"\b(v\d+)\b", display_name, flags=re.IGNORECASE)
+  return ReleaseInfo(
+    model_id=model_id,
+    display_name=display_name,
+    release_date=dt.date.today().isoformat(),
+    branch="",
+    source_ref="",
+    source_path=str(source_file),
+    input_format="supercombo" if "supercombo" in source_file.name.lower() else "split",
+    behavior_version=behavior_version,
+    uses_external_gpu=source_file.name.lower().startswith("big_"),
+    commits=[],
+    model_iteration=iteration_match.group(1).lower() if iteration_match else "",
+  )
+
+
 def resolve_branch_commit(branch: str) -> str:
   url = f"https://api.github.com/repos/{OPENPILOT_REPO}/commits/{urllib.parse.quote(branch, safe='')}"
   payload = get_json(url)
@@ -507,11 +536,16 @@ def remote_compile(info: ReleaseInfo, source: Path, ip: str, workspace: Path, ke
       stdout=subprocess.PIPE,
       stderr=subprocess.STDOUT,
       text=True,
+      encoding="utf-8",
+      errors="replace",
       bufsize=1,
     )
     assert process.stdout is not None
     for line in process.stdout:
-      print(f"[device] {line}", end="")
+      try:
+        print(f"[device] {line}", end="")
+      except UnicodeEncodeError:
+        print(f"[device] {line}".encode(sys.stdout.encoding or 'utf-8', errors='replace').decode(sys.stdout.encoding or 'utf-8'), end="")
       log.write(line)
     return_code = process.wait()
   if return_code != 0:
@@ -619,29 +653,146 @@ def update_manifest(repo: Path, info: ReleaseInfo, result: dict, manifest_versio
   return path
 
 
-def find_hf() -> str:
-  candidates = [shutil.which("hf"), str(Path.home() / ".local/bin/hf")]
-  for candidate in candidates:
+def manifest_models(payload: object) -> list[dict]:
+  models = payload.get("models") if isinstance(payload, dict) else payload
+  if not isinstance(models, list) or not models:
+    raise ReleaseError("Unsupported or empty Hugging Face manifest")
+  if any(not isinstance(model, dict) or not str(model.get("id") or "").strip() for model in models):
+    raise ReleaseError("Hugging Face manifest contains an invalid model entry")
+  model_ids = [str(model["id"]).strip() for model in models]
+  if len(model_ids) != len(set(model_ids)):
+    raise ReleaseError("Hugging Face manifest contains duplicate model IDs")
+  return models
+
+
+def accelerator_artifact_map(payload: object) -> dict[tuple[str, str], dict]:
+  artifacts: dict[tuple[str, str], dict] = {}
+  for model in manifest_models(payload):
+    model_id = str(model.get("id") or "").strip()
+    model_artifacts = model.get("accelerator_artifacts")
+    if not model_id or not isinstance(model_artifacts, dict):
+      continue
+    for accelerator, metadata in model_artifacts.items():
+      if isinstance(metadata, dict):
+        artifacts[(model_id, str(accelerator))] = metadata
+  return artifacts
+
+
+def validate_manifest_update(before: object, after: object, replacing_model_id: str) -> None:
+  before_by_id = {str(model["id"]).strip(): model for model in manifest_models(before)}
+  after_by_id = {str(model["id"]).strip(): model for model in manifest_models(after)}
+  before_ids = set(before_by_id)
+  after_ids = set(after_by_id)
+  expected_ids = before_ids | {replacing_model_id}
+  if after_ids != expected_ids:
+    missing = sorted(expected_ids - after_ids)
+    unexpected = sorted(after_ids - expected_ids)
+    raise ReleaseError(
+      "Refusing to publish a manifest with an unexpected model set"
+      + (f"; missing: {', '.join(missing)}" if missing else "")
+      + (f"; unexpected: {', '.join(unexpected)}" if unexpected else "")
+    )
+
+  before_artifacts = accelerator_artifact_map(before)
+  after_artifacts = accelerator_artifact_map(after)
+  regressions = [
+    f"{model_id}:{accelerator}"
+    for (model_id, accelerator), metadata in before_artifacts.items()
+    if model_id != replacing_model_id and after_artifacts.get((model_id, accelerator)) != metadata
+  ]
+  if regressions:
+    raise ReleaseError(
+      "Refusing to publish a manifest that removes or changes existing accelerator metadata for: "
+      + ", ".join(sorted(regressions))
+    )
+
+  unrelated_changes = sorted(
+    model_id for model_id, model in before_by_id.items()
+    if model_id != replacing_model_id and after_by_id[model_id] != model
+  )
+  if unrelated_changes:
+    raise ReleaseError(
+      "Refusing to publish a manifest that changes unrelated model entries: "
+      + ", ".join(unrelated_changes)
+    )
+
+
+def windows_user_site_candidates(python: str) -> list[str]:
+  appdata = os.environ.get("APPDATA")
+  if not appdata:
+    return []
+  version = subprocess.run(
+    [python, "-c", "import sys; print(f'{sys.version_info[0]}{sys.version_info[1]}')"],
+    capture_output=True, text=True,
+  )
+  if version.returncode != 0 or not version.stdout.strip().isdigit():
+    return []
+  return [os.path.join(appdata, "Python", f"Python{version.stdout.strip()}", "site-packages")]
+
+
+def find_hf() -> tuple[list[str], dict[str, str] | None]:
+  for python in (sys.executable, shutil.which("python3"), shutil.which("python")):
+    if not python:
+      continue
+    probe = subprocess.run([python, "-c", "import huggingface_hub"], capture_output=True)
+    if probe.returncode == 0:
+      return [python, "-m", "huggingface_hub.cli.hf"], None
+    for site_packages in windows_user_site_candidates(python):
+      if not os.path.isdir(os.path.join(site_packages, "huggingface_hub")):
+        continue
+      env = {**os.environ, "PYTHONPATH": os.pathsep.join([site_packages, os.environ.get("PYTHONPATH", "")])}
+      probe = subprocess.run([python, "-c", "import huggingface_hub"], capture_output=True, env=env)
+      if probe.returncode == 0:
+        return [python, "-m", "huggingface_hub.cli.hf"], env
+  for candidate in (shutil.which("hf"), str(Path.home() / ".local/bin/hf")):
     if candidate and Path(candidate).is_file():
-      return candidate
+      return [candidate], None
   raise ReleaseError("Hugging Face CLI not found; install/authenticate `hf` first")
 
 
 def hf_copy(source: Path, bucket: str, remote_path: str) -> None:
-  hf = find_hf()
+  command, env = find_hf()
   destination = f"hf://buckets/{bucket}/{remote_path}"
-  run([hf, "buckets", "cp", str(source), destination, "--format", "quiet"])
+  run([*command, "buckets", "cp", str(source), destination, "--format", "quiet"], env=env)
+
+
+def refresh_huggingface_manifest(manifest: Path, bucket: str) -> dict:
+  remote_path = f"manifests/{manifest.name}"
+  source = f"hf://buckets/{bucket}/{remote_path}"
+  manifest.parent.mkdir(parents=True, exist_ok=True)
+  with tempfile.TemporaryDirectory(prefix=".model-release-", dir=manifest.parent) as temporary_dir:
+    candidate = Path(temporary_dir) / manifest.name
+    hf_command, hf_env = find_hf()
+    run([*hf_command, "buckets", "cp", source, str(candidate), "--format", "quiet"], env=hf_env)
+    try:
+      payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+      raise ReleaseError(f"Invalid live Hugging Face manifest: {error}") from error
+    accelerator_artifact_map(payload)
+    candidate.replace(manifest)
+  return payload
+
+
+def prepare_huggingface_manifest(manifest: Path, info: ReleaseInfo, result: dict,
+                                 bucket: str, manifest_version: str) -> Path:
+  live_payload = refresh_huggingface_manifest(manifest, bucket)
+  updated_manifest = update_manifest(manifest.parent, info, result, manifest_version)
+  updated_payload = json.loads(updated_manifest.read_text(encoding="utf-8"))
+  validate_manifest_update(live_payload, updated_payload, info.model_id)
+  return updated_manifest
 
 
 def upload_huggingface(info: ReleaseInfo, result: dict, workspace: Path, bucket: str, manifest_version: str,
-                       manifest: Path, upload_onnx: bool, source: Path) -> None:
+                       manifest: Path, upload_onnx: bool, source: Path) -> Path:
   artifact_dir = Path(result["path"])
   for filename in result["files"]:
     hf_copy(artifact_dir / filename, bucket, f"models/{manifest_version}/{info.model_id}/{filename}")
   if upload_onnx:
     hf_copy(source, bucket, f"onnx/{info.model_id}/{source.name}")
+  manifest = prepare_huggingface_manifest(manifest, info, result, bucket, manifest_version)
   hf_copy(manifest, bucket, f"manifests/{manifest.name}")
   print(f"Hugging Face upload complete: {bucket}/models/{manifest_version}/{info.model_id}/")
+  return manifest
 
 
 def git_output(repo: Path, args: list[str]) -> str:
@@ -720,6 +871,13 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("commit", nargs="?", help="A single openpilot commit SHA; metadata is resolved from GitHub.")
   parser.add_argument("--text", help="Release text, otherwise paste it into stdin.")
   parser.add_argument("--text-file", type=Path, help="Read the pasted release text from a file.")
+  parser.add_argument("--source-file", type=Path,
+                      help="Use this local .onnx instead of downloading one from an openpilot commit/branch. "
+                           "For releases whose commit only ships a precompiled artifact (e.g. an eGPU pkl) "
+                           "and the real ONNX must be fetched by hand from elsewhere. Skips the runtime-change "
+                           "scan since there is no commit history to scan; review the source yourself first. "
+                           "Requires --model-id or a v-numbered name in --display-name.")
+  parser.add_argument("--display-name", help="Display name to record in the manifest when using --source-file.")
   parser.add_argument("--model-id", help="Override the ID parsed from the model name.")
   parser.add_argument("--behavior-version", default=DEFAULT_BEHAVIOR_VERSION, help="Runtime behavior version (default: v16).")
   parser.add_argument("--ip", help="Comma IP; prompted interactively when omitted.")
@@ -745,21 +903,32 @@ def main() -> int:
   try:
     if not re.fullmatch(r"v\d+", args.behavior_version.strip(), flags=re.IGNORECASE):
       raise ReleaseError("--behavior-version must look like v16")
-    text = read_release_text(args)
-    if not text.strip():
-      raise ReleaseError("No release text was supplied")
-    info = parse_pasted_release(text, args.model_id, args.behavior_version.strip().lower())
+
+    using_source_file = args.source_file is not None
+    text = ""
+    if using_source_file:
+      info = release_from_source_file(args.source_file.expanduser().resolve(), args.model_id,
+                                      args.display_name, args.behavior_version.strip().lower())
+    else:
+      text = read_release_text(args)
+      if not text.strip():
+        raise ReleaseError("No release text was supplied")
+      info = parse_pasted_release(text, args.model_id, args.behavior_version.strip().lower())
     if args.gpu is not None:
       info.uses_external_gpu = args.gpu
     print_summary(info)
 
-    findings = scan_runtime_changes(info)
-    if findings:
-      print_runtime_warning(findings)
-      if not args.allow_runtime_changes:
-        return 2
+    if using_source_file:
+      print("\nRuntime scan skipped: --source-file has no commit history to scan.")
+      print("Confirm yourself that no tinygrad/modeld/Chestnut runtime changes are needed before proceeding.")
     else:
-      print("Runtime scan: no tinygrad/modeld runtime files changed in the supplied commits.")
+      findings = scan_runtime_changes(info)
+      if findings:
+        print_runtime_warning(findings)
+        if not args.allow_runtime_changes:
+          return 2
+      else:
+        print("Runtime scan: no tinygrad/modeld runtime files changed in the supplied commits.")
 
     if args.dry_run:
       print("Dry run complete; no device or repository changes made.")
@@ -770,16 +939,24 @@ def main() -> int:
     for relative in ("onnx", "compiled", "logs", "results"):
       (workspace / relative).mkdir(parents=True, exist_ok=True)
     source = workspace / "onnx" / f"{info.model_id}_driving_supercombo.onnx"
-    source_result = download_source(info.source_ref, info.source_path, source, args.force)
+    if using_source_file:
+      local_source = Path(info.source_path)
+      if source.exists() and not args.force:
+        raise ReleaseError(f"Source already exists: {source}; use --force to replace it")
+      shutil.copy2(local_source, source)
+      source_result = {"path": str(source), "size": source.stat().st_size, "sha256": sha256_file(source),
+                       "url": str(local_source), "ref": "", "git_path": ""}
+    else:
+      source_result = download_source(info.source_ref, info.source_path, source, args.force)
     (workspace / "release.txt").write_text(text, encoding="utf-8")
     (workspace / "source.json").write_text(json.dumps({**source_result, "model": info.__dict__}, indent=2) + "\n", encoding="utf-8")
 
     result = remote_compile(info, source, ip, workspace, args.keep_device_files)
     resources_repo = args.resources_repo.expanduser().resolve()
     check_resources_repo(resources_repo, args.resources_branch)
-    manifest = update_manifest(resources_repo, info, result, args.manifest_version)
-    upload_huggingface(info, result, workspace, args.hf_bucket, args.manifest_version,
-                       manifest, not args.no_onnx_upload, source)
+    manifest = resources_repo / f"model_names_{args.manifest_version}.json"
+    manifest = upload_huggingface(info, result, workspace, args.hf_bucket, args.manifest_version,
+                                  manifest, not args.no_onnx_upload, source)
     push_github(info, result, resources_repo, args.manifest_version, manifest, args.resources_branch, args.force)
     print("\nRelease complete.")
     print(f"  local artifact: {result['path']}")

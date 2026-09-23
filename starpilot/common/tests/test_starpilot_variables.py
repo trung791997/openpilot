@@ -30,6 +30,11 @@ def test_volvo_aol_is_held_off_until_pscm_sequence_is_validated():
   assert spv.always_on_lateral_available(SimpleNamespace(brand="honda")) is True
 
 
+def test_tesla_aol_capability_includes_preap():
+  for fingerprint in ("TESLA_MODEL_S_PREAP", "TESLA_MODEL_S_HW1", "TESLA_MODEL_X_HW1", "TESLA_MODEL_3", "TESLA_MODEL_Y"):
+    assert spv.always_on_lateral_available(SimpleNamespace(brand="tesla", carFingerprint=fingerprint))
+
+
 def test_explicit_main_cruise_aol_mapping_is_not_disabled_by_longitudinal_gate():
   aol_button = spv.BUTTON_FUNCTIONS["AOL_TOGGLE"]
 
@@ -293,6 +298,22 @@ def test_disabled_conditional_experimental_toggles_are_off(monkeypatch, tmp_path
   assert toggles.conditional_signal_lane_detection is False
 
 
+def test_big_ui_exposes_developer_toggles_without_persisting_developer_ui(monkeypatch, tmp_path):
+  params_cls = spv.Params
+
+  def isolated_params(_path=None, memory=False, return_defaults=False):
+    return params_cls(str(tmp_path / ("memory" if memory else "params")), return_defaults=return_defaults)
+
+  monkeypatch.setattr(spv, "Params", isolated_params)
+  monkeypatch.setattr(spv.HARDWARE, "get_device_type", lambda: "tici")
+  monkeypatch.delenv("BIG", raising=False)
+
+  variables = spv.StarPilotVariables()
+
+  assert variables.starpilot_toggles.developer_ui is True
+  assert variables.params_raw.get_bool("DeveloperUI") is False
+
+
 def test_device_shutdown_hours_convert_directly_to_seconds():
   assert spv.device_shutdown_seconds(6) == 6 * 60 * 60
   assert spv.device_shutdown_seconds(0) == 60 * 60
@@ -328,6 +349,16 @@ def test_set_speed_limit_unavailable_on_stock_pcm_without_helper():
 def test_speed_limit_controller_available_on_openpilot_longitudinal_or_redneck():
   assert spv.speed_limit_controller_available(openpilot_longitudinal=True, redneck_cruise=False) is True
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=True) is True
+
+
+def test_toyota_pcm_cruise_uses_hardware_reverse_instead_of_software_intervals():
+  assert spv.software_cruise_intervals_available(True, "toyota", True, True, True) is False
+  assert spv.reverse_cruise_available(True, "toyota", True) is True
+
+
+def test_non_toyota_software_cruise_keeps_custom_intervals():
+  assert spv.software_cruise_intervals_available(True, "hyundai", False, True, True) is True
+  assert spv.reverse_cruise_available(True, "hyundai", False) is False
   assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=False) is False
 
 

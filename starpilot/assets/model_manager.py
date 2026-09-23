@@ -265,6 +265,25 @@ def model_accelerator_artifact_installed(model_key: str, accelerator: str = MODE
   )
 
 
+def selected_chestnut_artifacts_ready(params) -> bool:
+  """Return whether the selected Chestnut workload is installed for offroad diagnostics."""
+  big_model_id, _, _ = get_model_profile(params, "big")
+  if big_model_id and file_chunked_exists(MODELS_PATH / driving_artifact_filename(big_model_id)):
+    return True
+
+  config = load_model_lab_config(params)
+  lateral_model_id = canonical_model_key(config["lateralModel"])
+  longitudinal_model_id = canonical_model_key(config["longitudinalModel"])
+  return bool(
+    config["enabled"] and
+    lateral_model_id and
+    longitudinal_model_id and
+    lateral_model_id != longitudinal_model_id and
+    model_accelerator_artifact_installed(lateral_model_id) and
+    model_accelerator_artifact_installed(longitudinal_model_id)
+  )
+
+
 def external_gpu_available() -> bool:
   """Return whether the supported external GPU link is ready for modeld."""
   try:
@@ -937,6 +956,7 @@ class ModelManager:
     try:
       self._download_model(model_to_download, allow_gpu_without_gpu)
     finally:
+      self.downloading_model = False
       self.params_memory.remove(ALLOW_GPU_DOWNLOAD_WITHOUT_GPU_PARAM)
 
   def _download_artifact_to_path(self, model_key: str, file_path: Path, remote_filename: str,
@@ -1022,11 +1042,6 @@ class ModelManager:
     model_key = self._canonical_model_key(model_key)
     accelerator = str(accelerator or "").strip().lower()
     try:
-      if accelerator == MODEL_LAB_ACCELERATOR and not external_gpu_available():
-        handle_error(None, "External GPU required...", "Chestnut is not connected and firmware-ready.",
-                     MODEL_LAB_DOWNLOAD_PARAM, DOWNLOAD_PROGRESS_PARAM, self.params_memory)
-        return False
-
       artifact_metadata = model_accelerator_artifact_metadata(model_key, accelerator)
       if not model_accelerator_artifact_available(model_key, accelerator):
         handle_error(None, "Accelerator artifact unavailable...",
@@ -1059,11 +1074,11 @@ class ModelManager:
                        MODEL_LAB_DOWNLOAD_PARAM, DOWNLOAD_PROGRESS_PARAM, self.params_memory)
         return False
 
-      self.params_memory.put(DOWNLOAD_PROGRESS_PARAM, "Chestnut artifact downloaded!")
+      self.params_memory.put(DOWNLOAD_PROGRESS_PARAM, "eGPU variant downloaded!")
       return True
     finally:
-      self.params_memory.remove(MODEL_LAB_DOWNLOAD_PARAM)
       self.downloading_model = False
+      self.params_memory.remove(MODEL_LAB_DOWNLOAD_PARAM)
 
   def _download_model(self, model_to_download: str, allow_gpu_without_gpu: bool):
     self.downloading_model = True
@@ -1134,6 +1149,7 @@ class ModelManager:
     try:
       self._download_all_models(allow_gpu_without_gpu)
     finally:
+      self.downloading_model = False
       self.params_memory.remove(ALLOW_GPU_DOWNLOAD_WITHOUT_GPU_PARAM)
 
   def _download_all_models(self, allow_gpu_without_gpu: bool):
