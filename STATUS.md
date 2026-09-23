@@ -4575,3 +4575,45 @@ brake.
    fetched and replayed with `ab9.py`, and the results will be added here.
 3. STATUS 69 next items 2 (D-053 range assist on gated coasts) and 3 (a lead dropped on a
    model-probability collapse) are still open.
+
+## 71. The car over-brakes its own command, and the cause is not in our code: the Honda Bosch brake ECU overshoots fast brake onsets. It happens on all 7 routes checked. Replay (log decode) evidence only.
+
+Follows STATUS 67 item 1. Scripts `ob1.py` (per-route bins and episodes) and `ob2.py` (timelines) are in
+the `oprad-routes` volume at `/routes/an2` and are not committed. They were run on the rlogs of 258,
+257, 254, 251, 24f, 241 and 237.
+
+**1. We send exactly what the planner asks for.** On every route, `ACC_CONTROL.ACCEL_COMMAND` (0x1DF,
+decoded from `sendcan`) equals `carControl.actuators.accel`: median difference 0.000, p1/p99 within
+±0.03 m/s². On Bosch, `carcontroller.py` only clips to [−3.5, 2.0], and the hill term reaches only
+the gas path. Honda Bosch has no longitudinal PID (`kiV` is set only for non-Bosch), so the car's
+own ECU closes the loop on `ACCEL_COMMAND`.
+
+**2. Grade is not the cause.** Median pitch is 0.1-1.4° per bin. Correcting `aEgo` by g·sin(pitch)
+moves the bin medians by at most about 0.25 and does not remove the saturated-bin offset.
+
+**3. Steady tracking is good; only the saturated bin over-brakes.** Median `aEgo(t+0.35) − cmd` is
+within ±0.35 on routes with enough samples for every bin from −0.5 to −3.0 m/s². The −3.0 to −3.6 bin is
+−0.25 to −0.65 on every route that reaches it (258 −0.34, 237 −0.33, 241 −0.65, 24f −0.25, 251 −0.29,
+254 −0.26).
+
+**4. The large overshoots are short transients at fast brake onsets.** There are 28 episodes across
+7 routes where `aEgo` stays more than 0.8 below the command for at least 0.3 s. All have
+`BRAKE_REQUEST` set, most last 0.3-0.7 s, and in every one the minimum `aEgo` is more than 0.8
+below the minimum command, so reaction lag does not explain them.
+- About half peak at a saturated command: 237 cmd −3.42 → `aEgo` −5.98; 254 −3.46 → −5.21;
+  258 51:30 −3.39 → −4.04 (`dv/dt` agrees), then the brake releases about 0.3 s behind the command.
+- Low speed after a gas-to-brake flip, the STATUS 67 stop-and-go jolt: 258 63:50 at 7.7 m/s went
+  from +0.8 to −1.5 in 1 s and `aEgo` reached −2.8. 3 of the 28 episodes are below 10 m/s.
+- The routes predate and postdate the guard trims (237/241 against 258), so this is car behaviour,
+  not a regression.
+
+**What this does not establish.** Whether ECU overshoot depends on the command's rate (jerk) rather
+than its level. The data suggests rate, but no replay has varied it. On the road, a brake onset
+overshoot is conservative for collision but is felt as a jolt.
+
+**Options (none implemented; any change that lowers a brake command needs a decision first):**
+1. Leave it. It errs toward more braking, and a mid-range command is tracked within about 0.2.
+2. Limit command jerk at brake onset, below 10 m/s and on gas-to-brake flips only. This targets the
+   stop-and-go jolt and does not change the peak deceleration available.
+3. Do not scale down saturated commands to cancel the overshoot. It would cut peak braking in exactly
+   the emergencies where it is needed.
