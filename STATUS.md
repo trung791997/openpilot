@@ -5079,3 +5079,28 @@ release scripts, `cereal/custom.capnp` (adds only `SteeringLimitInfo`, with the 
     redneck `test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed`.
 
   `test_longitudinal_planner.py` passes (486).
+
+## 81. Speed Limit Controller ported from StarPilot Dom 79c61f479a, plus the gentler nav-turn braking. Static and unit evidence only; not driven.
+
+Source: Dom commits 50a8d1abdb (rejected limit not auto-applied), 7222b29a88 (accepting a higher limit raises the set speed),
+65c8581db3 (ghost confirmation fix, override simplification). Navigation code already matched Dom.
+
+- **`speed_limit_controller.py` is Dom's**, plus one local line: `long_active` still goes through `icbm_long_control_active`
+  so +/− accept or deny a limit, and the 30 s timeout runs, under ICBM stock long (73a).
+- **Overrides (behaviour change, user-approved 2026-09-23).** Gas above the limit overrides only while the pedal is held.
+  Raising the set speed above the limit overrides until the next posted limit that is lower, or at or above the set speed.
+  Under ICBM (`redneck_cruise`), any driver +/− is a bidirectional override: − below the limit holds until the next sign.
+  The `SLCOverride` manual / set-speed choice no longer changes behaviour. `allow_lower_override` is now just `redneck_cruise`
+  in `card.py`, `starpilot_vcruise.py` and `starpilot_acceleration.py` (×2).
+- **Confirmations.** +/− only accept or deny when a confirmation is required. Accepting a higher limit writes
+  `SLCForceCruiseSpeed` (the `card.py` consumer was already in our tree), and the accepting press does not also start an override.
+- **Denied limits.** Dom's `denied_same_limit` replaces our 74a fix. Our test
+  `test_denied_lower_limit_is_not_adopted_on_following_frames` is kept and passes.
+- **Vision source** no longer switches while the car is at a standstill.
+- **SLC targets under 25 mph now apply** (the `CSC_MIN_SPEED` floor on the SLC target is gone, so 15/20 mph school zones take effect). CSC keeps its floor.
+- **`NAV_TURN_COMFORT_DECEL` 1.25 → 0.45**: the nav-turn target starts lowering farther from the turn. Ported at the user's request.
+- **Not ported:** Dom's `card.py` Tesla preAP and steering-limit publishing, and `cruise.py` `_uses_software_cruise`.
+
+Tests (docker, one file per process): SLC 52 passed (Dom's file plus our 73a ICBM-accept and 74a denied tests), vcruise 94
+(Dom's under-25 mph SLC and two nav-turn tests added), acceleration 27, cruise_speed 38, redneck_gas_override 2,
+longitudinal_planner 486. Redneck: only the pre-existing coast test fails. `test_speed_limit_pulse` needs pyray (environment).

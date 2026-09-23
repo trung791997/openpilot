@@ -39,7 +39,10 @@ SLC_LEAD_DROP_RELAXATION_MAX_POST_DROP_CLOSING_SPEED = 0.35
 SLC_LEAD_DROP_RELAXATION_MAX_LEAD_BRAKE = 0.25
 SLC_LEAD_DROP_RELAXATION_OVERSPEED_BP = [0.0, 5.0 * CV.MPH_TO_MS, 10.0 * CV.MPH_TO_MS, 15.0 * CV.MPH_TO_MS]
 SLC_LEAD_DROP_RELAXATION_DECEL_V = [0.7, 0.9, 1.15, 1.35]
-NAV_TURN_COMFORT_DECEL = 1.25
+# This is an approach envelope, not a request for harder braking. A gentler
+# deceleration value lowers the target farther from the turn and gives the MPC
+# more time to settle before the intersection.
+NAV_TURN_COMFORT_DECEL = 0.45
 NAV_TURN_DISTANCE_BUFFER = 8.0
 NAV_TURN_MIN_TARGET_DELTA = 0.25
 NAV_TURN_TARGET_SPEEDS = {
@@ -812,8 +815,7 @@ class StarPilotVCruise:
         self.slc_offset,
         self.slc.overridden_speed,
         v_ego_diff,
-        allow_lower_override=(getattr(starpilot_toggles, "redneck_cruise", False) and
-                              getattr(starpilot_toggles, "speed_limit_controller_override_set_speed", False)),
+        allow_lower_override=getattr(starpilot_toggles, "redneck_cruise", False),
       )
       slc_control_target = get_slc_lead_drop_relaxed_target(
         slc_control_target,
@@ -825,7 +827,7 @@ class StarPilotVCruise:
         getattr(self.slc, "source", "None"),
       )
       self._applied_slc_control_target = slc_control_target if slc_control_target > 0.0 else 0.0
-      if slc_control_target >= CSC_MIN_SPEED:
+      if slc_control_target > 0.0:
         targets.append(slc_control_target)
       if self.nav_turn_target > 0.0:
         targets.append(self.nav_turn_target)
