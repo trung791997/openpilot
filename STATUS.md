@@ -4764,3 +4764,12 @@ The UI tests need pyray and were not run. ruff count unchanged at 63.
 **Open, needs a stock-long drive.** (1) Confirm lead dRel/vRel reach radarState under stock long.
 (2) Measure SCM_BUTTONS during a real driver long-press on +/− (5 mph steps) before any
 hold-mode emulation is written. Injected frames interleave with the car's own frames, so they may register as taps.
+
+**73a. The speed-limit confirm prompt now works under ICBM (static and unit evidence; not driven).**
+`SpeedLimitController.handle_limit_change` accepted a + press only when `carControl.longActive`
+was set, and longActive is never set under stock long. Under ICBM the "new speed limit" prompt could not be
+accepted with +, and it never timed out either, because the 3 s auto-deny also needed longActive. The helper
+`csc_long_control_active` moved to `starpilot_variables.icbm_long_control_active` and now gates
+both CSC and SLC confirmation. Plain stock long without ICBM is unchanged. Test:
+`test_icbm_accel_press_confirms_pending_limit`. To check on the drive: ICBM's own injected + presses must not register as
+the driver's `accelPressed`. If they did, they would auto-accept prompts.

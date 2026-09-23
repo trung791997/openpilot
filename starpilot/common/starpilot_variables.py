@@ -408,6 +408,14 @@ def curve_speed_controller_available(openpilot_longitudinal: bool, redneck_cruis
   return openpilot_longitudinal or redneck_cruise
 
 
+def icbm_long_control_active(long_active, controls_enabled, starpilot_toggles) -> bool:
+  # Under ICBM (RedneckCruise) stock ACC does the control, so longActive is always False;
+  # the set-speed target still drives the car, so treat an engaged ICBM as active.
+  icbm_active = (controls_enabled and getattr(starpilot_toggles, "redneck_cruise", False) and
+                 not getattr(starpilot_toggles, "openpilot_longitudinal", False))
+  return bool(long_active or icbm_active)
+
+
 def honda_icbm_active(redneck_cruise_available: bool, pcm_cruise_speed: bool, openpilot_longitudinal: bool) -> bool:
   # interfaces.py clears pcmCruiseSpeed only when RedneckCruise is on under stock long.
   return bool(redneck_cruise_available and not pcm_cruise_speed and not openpilot_longitudinal)

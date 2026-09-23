@@ -12,6 +12,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 
 from cereal import custom
+from openpilot.starpilot.common.starpilot_variables import icbm_long_control_active
 from openpilot.starpilot.common.starpilot_utilities import calculate_bearing_offset, calculate_distance_to_point, is_url_pingable
 
 FREE_MAPBOX_REQUESTS = 100_000
@@ -297,7 +298,8 @@ class SpeedLimitController:
     self.speed_limit_changed_timer += DT_MDL
     had_override = self.override_active(v_ego, sm["carState"].gasPressed)
 
-    long_active = sm["carControl"].longActive
+    # ICBM (stock ACC + button spam) never sets longActive, but +/- still confirm or deny the limit.
+    long_active = icbm_long_control_active(sm["carControl"].longActive, sm["selfdriveState"].enabled, self.starpilot_toggles)
     speed_limit_accepted = sm["starpilotCarState"].accelPressed and long_active
     if not speed_limit_accepted and self._slc_adopt_counter % 4 == 0:
       speed_limit_accepted = self.starpilot_planner.params_memory.get_bool("SpeedLimitAccepted")

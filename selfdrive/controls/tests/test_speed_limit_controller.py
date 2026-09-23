@@ -705,3 +705,21 @@ def test_manual_override_clears_after_sustained_disengage():
     assert not controller.override_requires_gas_release
   finally:
     controller.shutdown()
+
+
+@pytest.mark.parametrize("redneck_cruise,expected_target", [(True, 45), (False, 55)])
+def test_icbm_accel_press_confirms_pending_limit(redneck_cruise, expected_target):
+  # Under ICBM stock ACC drives, so longActive is always False; + must still accept the new limit.
+  controller = make_controller(speed_limit_confirmation_lower=True, redneck_cruise=redneck_cruise, openpilot_longitudinal=False)
+  try:
+    controller.source = "Dashboard"
+    controller.target = mph(55)
+    controller.previous_source = "Dashboard"
+    controller.previous_target = mph(55)
+
+    sm = make_sm(gas_pressed=False, long_active=False, accel_pressed=True)
+    controller.update_limits(mph(45), datetime.now(timezone.utc), False, mph(75), mph(55), sm)
+
+    assert controller.target == pytest.approx(mph(expected_target))
+  finally:
+    controller.shutdown()
