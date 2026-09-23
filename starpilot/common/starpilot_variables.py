@@ -836,6 +836,7 @@ class StarPilotVariables:
     )
 
     advanced_longitudinal_tuning = toggle.openpilot_longitudinal and self.get_value("AdvancedLongitudinalTune")
+    toggle.far_lead_coast_cap = self.get_value("FarLeadCoastCap", condition=advanced_longitudinal_tuning)
     ev_vehicle = default_ev_tuning_enabled(CP)
 
     if self.params_raw.get("EVTuning") in (None, b""):

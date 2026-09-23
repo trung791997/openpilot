@@ -884,6 +884,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "FarLeadCoastCap",
+        "label": "Coast Toward Far Leads",
+        "description": "When a slower car is far ahead (over 45 m, over 8 s away, not braking hard), limit braking to a gentle coast until it gets closer. Parked for testing: it trusts the radar's closing speed at long range. Not yet driven.",
+        "picker_description": "Coasts instead of braking early for slower cars far ahead.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLongitudinalTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "TrailerLoad",
         "label": "Trailer Load",
         "description": "Add trailer weight to vehicle mass for tow-aware gas, brake, and conservative lateral assist. Enter the loaded trailer weight in pounds.",

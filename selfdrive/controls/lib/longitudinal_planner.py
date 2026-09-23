@@ -411,6 +411,27 @@ def get_vehicle_min_accel(CP, v_ego):
   return float(ACCEL_MIN)
 
 
+def get_far_lead_coast_cap(lead, v_ego, desired_gap, output_a_target):
+  if lead is None or not bool(getattr(lead, "status", False)):
+    return float(output_a_target)
+
+  v_ego = float(v_ego)
+  lead_distance = float(getattr(lead, "dRel", float("inf")))
+  lead_speed = float(getattr(lead, "vLead", v_ego))
+  closing_speed = v_ego - lead_speed
+  if (
+    v_ego <= 10.0 or
+    closing_speed <= 0.5 or
+    lead_distance < FAR_LEAD_COAST_MIN_DISTANCE or
+    lead_distance <= float(desired_gap) + FAR_LEAD_COAST_MIN_GAP_MARGIN or
+    lead_distance / max(closing_speed, 0.1) < FAR_LEAD_COAST_MIN_TTC or
+    max(0.0, -float(getattr(lead, "aLeadK", 0.0))) > FAR_LEAD_COAST_MAX_LEAD_BRAKE
+  ):
+    return float(output_a_target)
+
+  return max(float(output_a_target), -FAR_LEAD_COAST_MAX_DECEL)
+
+
 # Restored planner constants retained by CEM, stop, and departure paths.
 A_CRUISE_MIN = -1.0
 # A soft decel profile (ECO -0.5, traffic -0.35) is a cruise-decel preference. With a closing lead
@@ -454,6 +475,13 @@ VEHICLE_FAR_FOLLOW_SLEW_MIN_DISTANCE_TIME = 1.35
 VEHICLE_FAR_FOLLOW_SLEW_MIN_HEADWAY = 1.35
 VEHICLE_FAR_FOLLOW_SLEW_MIN_TTC = 8.0
 VEHICLE_FAR_FOLLOW_SLEW_MAX_LATERAL_OFFSET = 1.5
+# Far-lead coast cap (StarPilot Dom 79c61f479a), parked behind FarLeadCoastCap, default off (STATUS 85).
+# It trusts dRel/vLead at range, where closing speed can read low; replay it before enabling.
+FAR_LEAD_COAST_MIN_DISTANCE = 45.0
+FAR_LEAD_COAST_MIN_TTC = 8.0
+FAR_LEAD_COAST_MIN_GAP_MARGIN = 6.0
+FAR_LEAD_COAST_MAX_LEAD_BRAKE = 0.35
+FAR_LEAD_COAST_MAX_DECEL = 0.20
 RADAR_DEPART_CONFLICT_MAX_EGO_SPEED = 1.6
 RADAR_DEPART_CONFLICT_MIN_RADAR_LATERAL = 1.5
 RADAR_DEPART_CONFLICT_MAX_RADAR_DISTANCE = 18.0
@@ -3046,11 +3074,13 @@ class LongitudinalPlanner:
 
     # Model-backed braking remains outside the ordinary follow policy. These
     # floors are safety responses, not comfort arbitration.
+    model_brake_floor_active = False
     if comfort_follow_lead is not None and not panic_bypass and not output_should_stop and not vision_low_speed_stop_active:
       tracked_vision_model_brake_floor = self.get_tracked_vision_model_brake_floor(
         comfort_follow_lead, scene_v_ego, output_accel_min, effective_t_follow, model_desired_accel,
       )
       if tracked_vision_model_brake_floor is not None:
+        model_brake_floor_active = True
         self.a_desired = min(self.a_desired, tracked_vision_model_brake_floor)
         output_a_target = min(output_a_target, tracked_vision_model_brake_floor)
 
@@ -3157,6 +3187,29 @@ class LongitudinalPlanner:
       bool(output_should_stop or vision_low_speed_stop_active),
       panic_bypass,
     )
+
+    # Dom gates this on its inside-gap closing cap, which this planner does not have; a nearer
+    # second lead or an active model brake floor holds it off instead.
+    far_lead_coast_other = self.lead_two if comfort_lead is self.lead_one else self.lead_one
+    far_lead_coast_allowed = (
+      bool(getattr(starpilot_toggles, "far_lead_coast_cap", False)) and
+      not experimental_mode and
+      comfort_lead is not None and
+      desired_gap is not None and
+      not output_should_stop and
+      not vision_low_speed_stop_active and
+      not close_lead_caps and
+      not panic_bypass and
+      not depart_safety_veto and
+      not model_brake_floor_active and
+      not (bool(getattr(far_lead_coast_other, "status", False)) and
+           float(getattr(far_lead_coast_other, "dRel", float("inf"))) < float(getattr(comfort_lead, "dRel", 0.0))) and
+      not bool(getattr(sm['starpilotPlan'], 'forcingStop', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'redLight', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'stopSignConfirmed', False))
+    )
+    if far_lead_coast_allowed:
+      output_a_target = get_far_lead_coast_cap(comfort_lead, scene_v_ego, desired_gap, output_a_target)
 
     if radar_gap_settle_active:
       output_a_target = RADAR_STANDSTILL_GAP_SETTLE_ACCEL

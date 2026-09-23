@@ -5178,3 +5178,19 @@ Peter's reasoning: on stock ACC openpilot does not control longitudinal, and the
   - The set speed jumps to the target a second or two after launch, and ICBM presses RES+ steadily.
   - Stock ACC still follows the lead without surging.
   - After a gas overtake, the set speed lands on the release speed.
+
+## 85. Dom's far-lead coast cap is parked behind `FarLeadCoastCap`, default off (Peter asked, 2026-09-23). Static and unit evidence only; not driven or replayed.
+
+- **What it does when on.** `get_far_lead_coast_cap` in `longitudinal_planner.py` limits braking to -0.2 m/s² while the lead is at least 45 m away and beyond the desired gap
+  by 6 m, reaching it would take 8 s or more, closing speed is above 0.5 m/s, ego speed is above 10 m/s and the lead is braking less than 0.35 m/s². It then releases to
+  the normal planner. The function and constants are Dom's (79c61f479a), unchanged.
+- **Gate.** On top of Dom's conditions (not experimental mode, no stop or red light or stop sign, no close-lead caps, panic bypass or departure veto), two differences:
+  Dom also requires `inside_gap_closing_cap is None`, which our planner does not have. It is replaced by: no nearer second lead with status, and no active tracked-vision
+  model brake floor. `desired_gap` is the planner's pre-brake headway gap, the same variable Dom used.
+- **Toggle.** `FarLeadCoastCap` (BOOL, default "0", under Advanced Longitudinal Tuning, advanced tier), read as `toggle.far_lead_coast_cap` only when advanced
+  longitudinal tuning is on (which requires openpilot longitudinal). With it off, the planner is unchanged. Artifacts rebuilt (oprad-build:cy314, /work mount):
+  `all_keys()` 850 -> 851, adding only `FarLeadCoastCap`; `params_pyx.cpp` unchanged.
+- **Before turning it on.** It trusts dRel/vLead at 45 m and beyond, where closing speed can read low (see D-063 / item 82). Replay it on routes with far, fast-closing leads
+  first. Check that no case coasts into a TTC below 4 s or needs braking harder than the normal planner would have used.
+- **Tests:** Dom's 4 cap tests plus a default-off check are added to test_longitudinal_planner (491 pass). Layout, Galaxy settings and variables suites pass. The known
+  failures (test_dashboard_stats ×2, test_starpilot_planner ×1) also fail at HEAD.

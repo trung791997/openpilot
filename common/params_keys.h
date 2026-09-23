@@ -363,6 +363,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EngageVolume", {PERSISTENT, INT, "101", "101", 2, SETTINGS_SIMPLE}},
     {"EVTuning", {PERSISTENT, BOOL, "0", "0", 3}},
     {"Fahrenheit", {PERSISTENT, BOOL, "0", "0", 3}},
+    // Dom far-lead coast cap, parked default off until replay shows closing speed at range is trustworthy (STATUS 85).
+    {"FarLeadCoastCap", {PERSISTENT, BOOL, "0", "0", 3}},
     {"FlashPanda", {CLEAR_ON_MANAGER_START, BOOL, "0", "0"}},
     {"GMDashSpoofOffsets", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"GMPedalLongitudinal", {PERSISTENT, BOOL, "1", "1", 2, SETTINGS_SIMPLE}},
