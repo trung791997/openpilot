@@ -4813,4 +4813,18 @@ that branch now skips a limit matching `denied_target`. Test: `test_denied_lower
 auto-accepted it, because the 30 s timeout also needed longActive (both fixed in 73a).
 
 **74b. 0000025b seg 15, 15:33–15:35: the vision-only lead had no radar return to match (replay of the on-device liveTracks; not a gate rejection).**
-Ego was about 13.5 m/s. Vision reported a lead at 107→89→101→99 m with vRel −8 to −11 and modelProb 0.2–0.8. The distance jumped around, and the lead was dropped at 15:35. For the whole window, liveTracks held only 0–3 points, all at 83 m or closer. Every one had vRel = −13.5, which is the negative of ego speed, so they were stationary roadside or overhead objects. No track came within 30 m of the vision range. radard therefore had nothing to associate, and rad=0 is the correct output. This is not a lateral-gate, lockout or range-gate deletion. No code change. Open question: stock ACC braked at −3 m/s² at the same time. Its target cannot be identified from these logs.
+Ego was about 24.3 m/s. (An earlier version of this note said 13.5; that was the vRel saturation rail, not ego speed.) Vision reported a lead at 107→89→101→99 m, vRel −8 to −11, modelProb 0.2–0.8. The distance was jumpy, and the lead was dropped at 15:35. liveTracks held 0–3 points, all at 83 m or closer, and all railed at vRel −13.5, which means closing at 13.5 m/s or more. Track 22 (y −1.5…−1.8, 83→42 m over 2 s) was probably a stationary in-path object. No track came within 30 m of the vision range, so radard had nothing to associate, and rad=0 is correct. No code change. Stock ACC braked to −3.4 m/s² from 15:34.0 (item 74c). Its target cannot be identified from these logs.
+
+**74c. Open-loop replay: alpha long's planner on 25b's stock-long segments (3, 11, 13, 15, 21–23). Replay evidence only.**
+Script: `/routes/an2/r25b/alpharp.py` (oprad-routes volume). It feeds the logged carState, radarState, modelV2, starpilotPlan and related messages into `LongitudinalPlanner` and compares `output_a_target` to the stock ACC's `aEgo`. **This is open loop:** ego follows stock ACC, so once the two diverge, the later alpha values are what alpha would command *from stock's state*. Episodes where either side went below −1.5 m/s²:
+
+| Time | Stock ACC | Alpha plan | What happened |
+|---|---|---|---|
+| 11:01–11:05 | min −2.1, gentle | −3.43 at 11:02, −3.45 at 11:05 | The lead was cutting out (y 1.8→7.2 m). aLeadK swung −2.7 → +8.3 → −4.7, and alpha hard-braked on each swing. |
+| 11:29–11:30 | ~0, never braked | **−3.45** | **The lead was at y −11…−14 m, two lanes over.** MPC source was `cruise`, yet a post-MPC layer drove −3.45 from aLeadK −7.8. Phantom brake. |
+| 13:18–13:21 | −1.7, onset 13:19.3 | −2.7, onset 13:18.4 | A real closing lead. Alpha started earlier and braked harder. |
+| 15:34–15:36 | −3.4 | −0.3 | Vision-only lead (74b). Alpha did not brake. |
+| 22:19–22:21 (FCW) | **−4.4, onset 22:19.0–22:19.2** | −0.4 from 22:18.0, then −3.49 (the cap) from 22:19.8 | A real hard-braking lead. Stock ramped about 0.6–0.8 s earlier and went past alpha's −3.5 floor. Alpha's step followed aLeadK, which reached −2.65 only at 22:19.8. |
+| 22:33–22:37 | −2.7, onset 22:33.3 | −3.45, onset 22:34.1 | Slow closing at 28 m. Alpha started later, then braked harder. |
+
+Takeaways (candidates, none implemented): (1) The 11:29 case reproduces the missing absolute lateral bound (items 32/35) at |y| 11–14 m. It also shows a post-MPC brake layer acting while MPC source = cruise, so find that layer and gate it on lead lateral position. (2) aLeadK on a cutting-out lead is noisy enough to trigger −3.4 bursts (11:02, 11:05). (3) On a real hard-braking lead, alpha's onset trails stock by ~0.7 s because it waits for aLeadK. Don't raise the −3.5 floor until (1) and (2) are fixed.
