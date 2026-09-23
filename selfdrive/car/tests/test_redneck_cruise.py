@@ -18,6 +18,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   get_lead_coast_buffer_ms,
   get_lead_departure_boost_ms,
   select_redneck_target_speed,
+  update_launch_state,
 )
 
 
@@ -549,6 +550,63 @@ class TestRedneckCruise(unittest.TestCase):
       lead_present=True,
     )
     self.assertAlmostEqual(37.1 * CV.MPH_TO_MS, target_speed)
+
+
+class TestRedneckLaunch(unittest.TestCase):
+  TARGET = 50.0 * CV.MPH_TO_MS
+
+  def _step(self, state, v_ego_mph, standstill=False, gas=False, button=False, enabled=True):
+    return update_launch_state(state[0], state[1], enabled, v_ego_mph * CV.MPH_TO_MS, standstill, gas, button, self.TARGET)
+
+  def test_never_starts_at_standstill(self):
+    state = self._step((False, False), 0.0, standstill=True)
+    self.assertEqual((False, True), state)
+    self.assertEqual((False, True), self._step(state, 0.0, standstill=True))
+
+  def test_starts_once_moving_after_stop(self):
+    state = self._step((False, False), 0.0, standstill=True)
+    state = self._step(state, 1.0)
+    self.assertFalse(state[0])
+    state = self._step(state, 3.0)
+    self.assertEqual((True, False), state)
+
+  def test_no_launch_without_prior_stop(self):
+    self.assertEqual((False, False), self._step((False, False), 10.0))
+
+  def test_ends_near_target(self):
+    self.assertTrue(self._step((True, False), 40.0)[0])
+    self.assertFalse(self._step((True, False), 48.5)[0])
+
+  def test_ends_on_stop_button_and_disable(self):
+    self.assertEqual((False, True), self._step((True, False), 0.0, standstill=True))
+    self.assertEqual((False, False), self._step((True, False), 10.0, button=True))
+    self.assertEqual((False, False), self._step((True, False), 10.0, enabled=False))
+
+  def test_gas_at_start_defers_launch(self):
+    state = self._step((False, True), 5.0, gas=True)
+    self.assertEqual((False, True), state)
+    self.assertTrue(self._step(state, 6.0)[0])
+
+  def test_card_raises_set_speed_on_launch_with_lead(self):
+    starpilot_plan = SimpleNamespace(vCruise=50.0 * CV.MPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False),
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False))
+    car_control = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    targets = []
+    for v_mph, standstill in ((0.0, True), (3.0, False), (8.0, False)):
+      v = v_mph * CV.MPH_TO_MS
+      longitudinal_plan = SimpleNamespace(speeds=[v] * 10, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+      sm = MagicMock()
+      sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
+      sm.valid = sm.seen.copy()
+      sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan}.__getitem__
+      card.sm = sm
+      car_state = SimpleNamespace(vEgo=v, standstill=standstill, gasPressed=False, buttonEvents=[],
+                                  vCruise=50.0 * CV.MPH_TO_KPH, cruiseState=SimpleNamespace(speedCluster=25.0 * CV.MPH_TO_MS))
+      targets.append(Car._get_redneck_target_speed(card, car_state, car_control)[0])
+    self.assertLess(targets[0], 30.0 * CV.MPH_TO_MS)
+    self.assertAlmostEqual(50.0 * CV.MPH_TO_MS, targets[1], places=2)
+    self.assertAlmostEqual(50.0 * CV.MPH_TO_MS, targets[2], places=2)
 
 
 if __name__ == "__main__":

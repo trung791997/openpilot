@@ -26,7 +26,7 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import RedneckCruise, select_redneck_target_speed
+from openpilot.selfdrive.car.redneck_cruise import RedneckCruise, select_redneck_target_speed, update_launch_state
 from openpilot.selfdrive.car.car_specific import MockCarState
 
 from openpilot.starpilot.common.favorite_slots import (
@@ -523,6 +523,31 @@ class Car:
           if lead.status:
             lead_distance_m = max(float(lead.dRel), 0.0)
             lead_rel_speed_ms = float(lead.vRel)
+
+    # Launch: the cruise target (SLC and CSC limits still apply) with no plan or lead hold.
+    launch_target_speed = select_redneck_target_speed(
+      float(getattr(CS, "vCruise", 0.0)),
+      float(CS.cruiseState.speedCluster),
+      starpilot_target_speed,
+      plan_speeds,
+      lookahead_points,
+      allow_plan_decrease=False,
+      slc_target_speed_ms=slc_target_speed,
+      csc_target_speed_ms=csc_target_speed,
+    )
+    driver_button = any(getattr(event, "pressed", False) for event in getattr(CS, "buttonEvents", []))
+    self.redneck_launch_active, self.redneck_was_stopped = update_launch_state(
+      getattr(self, "redneck_launch_active", False),
+      getattr(self, "redneck_was_stopped", False),
+      bool(getattr(CC, "enabled", True)),
+      float(getattr(CS, "vEgo", 0.0)),
+      bool(getattr(CS, "standstill", False)),
+      bool(getattr(CS, "gasPressed", False)),
+      driver_button,
+      launch_target_speed,
+    )
+    if self.redneck_launch_active:
+      return launch_target_speed, lead_present
 
     return select_redneck_target_speed(
       float(getattr(CS, "vCruise", 0.0)),

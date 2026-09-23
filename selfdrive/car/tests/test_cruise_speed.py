@@ -613,3 +613,33 @@ class TestVCruiseHelperRedneck:
 
     assert self.v_cruise_helper.v_cruise_kph == pytest.approx(75 * CV.MPH_TO_KPH)
     assert self.v_cruise_helper.v_cruise_cluster_kph == pytest.approx(75 * CV.MPH_TO_KPH)
+
+  def _gas_release_drive(self, frames, toggle=True, is_metric=False, set_mph=45):
+    self.v_cruise_helper = VCruiseHelper(self.CP, self.FPCP)
+    self.starpilot_toggles.set_speed_on_gas_release = toggle
+    self.v_cruise_helper.initialize_v_cruise(
+      car.CarState(vEgo=40 * CV.MPH_TO_MS, cruiseState={"speedCluster": set_mph * CV.MPH_TO_MS}),
+      experimental_mode=False, resume_prev_button=False, starpilot_toggles=self.starpilot_toggles)
+    for v_ego_mph, gas in frames:
+      cs = car.CarState(vEgo=v_ego_mph * CV.MPH_TO_MS, gasPressed=gas,
+                        cruiseState={"available": True, "speed": set_mph * CV.MPH_TO_MS, "speedCluster": set_mph * CV.MPH_TO_MS})
+      self.v_cruise_helper.update_v_cruise(cs, enabled=True, is_metric=is_metric, speed_limit_changed=False,
+                                           starpilot_toggles=self.starpilot_toggles)
+    return self.v_cruise_helper.v_cruise_kph
+
+  def test_gas_release_above_set_speed_sets_release_speed(self):
+    v_cruise_kph = self._gas_release_drive([(46, True), (52.4, True), (52.4, False), (52.0, False)])
+    assert v_cruise_kph == pytest.approx(52 * CV.MPH_TO_KPH, abs=0.05)
+
+  def test_gas_release_metric_rounds_to_kph(self):
+    v_cruise_kph = self._gas_release_drive([(50, True), (55, True), (55, False)], is_metric=True)
+    assert v_cruise_kph == pytest.approx(round(55 * CV.MPH_TO_KPH))
+
+  def test_gas_release_ignores_small_overshoot_and_below_set(self):
+    assert self._gas_release_drive([(45.5, True), (45.5, False)]) == pytest.approx(45 * CV.MPH_TO_KPH)
+    assert self._gas_release_drive([(40, True), (40, False)]) == pytest.approx(45 * CV.MPH_TO_KPH)
+
+  def test_gas_release_needs_falling_edge_and_toggle(self):
+    assert self._gas_release_drive([(55, True), (55, True)]) == pytest.approx(45 * CV.MPH_TO_KPH)
+    assert self._gas_release_drive([(55, False), (55, False)]) == pytest.approx(45 * CV.MPH_TO_KPH)
+    assert self._gas_release_drive([(55, True), (55, False)], toggle=False) == pytest.approx(45 * CV.MPH_TO_KPH)

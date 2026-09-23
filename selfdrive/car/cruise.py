@@ -30,6 +30,10 @@ CRUISE_INTERVAL_SIGN = {
   ButtonType.decelCruise: -1,
 }
 ACCEL_CRUISE_BUTTONS = (ButtonType.accelCruise,)
+# Gas-release set speed (SetSpeedOnGasRelease, ICBM only): when the driver lets off the gas above the set speed,
+# the set speed becomes the speed at release, rounded to a whole display unit. Peter asked for this 2026-09-23.
+# The margin keeps a small overshoot of the set speed from moving it.
+GAS_RELEASE_SET_MARGIN_KPH = 1.0 * CV.MPH_TO_KPH
 
 
 def is_speed_limit_confirmation_pending(starpilot_plan) -> bool:
@@ -43,6 +47,7 @@ class VCruiseHelper:
     self.v_cruise_kph = V_CRUISE_UNSET
     self.v_cruise_cluster_kph = V_CRUISE_UNSET
     self.v_cruise_kph_last = 0
+    self.gas_pressed_prev = False
     self.button_timers = {
       ButtonType.decelCruise: 0,
       ButtonType.accelCruise: 0,
@@ -97,6 +102,7 @@ class VCruiseHelper:
         # if stock cruise is completely disabled, then we can use our own set speed logic
         self._update_v_cruise_non_pcm(CS, enabled, is_metric, speed_limit_changed, starpilot_toggles, starpilot_car_state,
                                       slc_target_with_offset)
+        self._update_v_cruise_gas_release(CS, enabled, is_metric, starpilot_toggles)
         self.v_cruise_cluster_kph = self.v_cruise_kph
         self.update_button_timers(CS, enabled, starpilot_car_state)
       else:
@@ -111,6 +117,21 @@ class VCruiseHelper:
     else:
       self.v_cruise_kph = V_CRUISE_UNSET
       self.v_cruise_cluster_kph = V_CRUISE_UNSET
+    self.gas_pressed_prev = bool(CS.gasPressed)
+
+  def _update_v_cruise_gas_release(self, CS, enabled, is_metric, starpilot_toggles):
+    gas_released = self.gas_pressed_prev and not CS.gasPressed
+    if not (gas_released and enabled and self.redneck_non_pcm and self.v_cruise_initialized and
+            getattr(starpilot_toggles, "set_speed_on_gas_release", False)):
+      return
+    v_ego_kph = CS.vEgo * CV.MS_TO_KPH
+    if v_ego_kph <= self.v_cruise_kph + GAS_RELEASE_SET_MARGIN_KPH:
+      return
+    if is_metric:
+      v_cruise_kph = float(round(v_ego_kph))
+    else:
+      v_cruise_kph = round(round(v_ego_kph * CV.KPH_TO_MPH) * CV.MPH_TO_KPH, 1)  # exact mph, as SLC stores it
+    self.v_cruise_kph = float(np.clip(v_cruise_kph, V_CRUISE_MIN, V_CRUISE_MAX))
 
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric, speed_limit_changed, starpilot_toggles, starpilot_car_state=None,
                                 slc_target_with_offset=0.0):

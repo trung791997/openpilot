@@ -5147,3 +5147,34 @@ gate and the D-057 re-anchor. A sweep admitted only through that interval starts
   acceleration 27 (fixture now supplies `selfdriveState`; Dom's copy has the same gap), conditional chill 19 and experimental 51, longitudinal_planner 486,
   vcruise 94, SLC 52. These failures are identical at HEAD: test_starpilot_planner 1, test_starpilot_card 1, Galaxy test_longitudinal_mode 59,
   and test_mode_consumer_interleavings 37 (unified long mode not ported).
+
+## 84. ICBM launch mode and gas-release set speed (Peter asked for both, 2026-09-23). Static and unit evidence only; not driven.
+
+**Why (limited road evidence).** Route `00000260--a95a0c44ab`. The car sat stopped from 8:28 to 8:38, set to 25 mph, with a target of 49.7 mph.
+openpilot's auto-resume sent RES at 8:38.2 and the car moved at 8:39.3, but ICBM made no press until 8:51.0, the moment vEgo passed the
+25.05 mph set speed. Meanwhile the lead pulled away from 8 m to 34 m. The cause is the lead-recovery branch of `select_redneck_target_speed`:
+it raises the set speed only when `plan_speeds[0] > speedCluster`, and with a lead ahead the plan tracks vEgo, so it held at 25 mph.
+Peter's reasoning: on stock ACC openpilot does not control longitudinal, and the car's own radar does the following. So a set speed of
+40+ mph behind a stopped or slow lead does not close on the lead.
+
+- **Launch mode** (`redneck_cruise.update_launch_state`, `card._get_redneck_target_speed`, stock-ACC path only).
+  - After a full stop, once vEgo reaches 2 mph (gas released), the ICBM target becomes the cruise target, with no plan hold and no lead hold.
+    SLC and CSC caps still apply.
+  - It never starts while the car is stopped, so ICBM does not press RES+ at standstill; on a Honda that would resume the car by itself.
+  - It ends when vEgo is within 2 mph of the target, when the car stops again, on any driver cruise button, or on disengage.
+- **Gas-release set speed** (`VCruiseHelper._update_v_cruise_gas_release`, toggle `SetSpeedOnGasRelease`, **default ON**, ICBM cars only).
+  - When the gas pedal is released with vEgo more than 1 mph above the set speed, openpilot's set speed becomes vEgo, rounded to a whole
+    mph (exact conversion, as SLC stores it) or km/h. ICBM then walks the car's set speed up to it.
+  - With an SLC limit active, the new set speed becomes SLC's persistent override (the existing ICBM bidirectional path), so SLC does not
+    pull it back down to the limit. This is intended.
+  - The toggle sits in the Galaxy under Developer, next to ICBM Counter Sync.
+- **Artifacts.** `libcommon.a` and `params_pyx.so` were rebuilt with the larch64 recipe (`oprad-build:cy314`, sconsign cleared, hash changed).
+  The key count went from 849 to 850, `SetSpeedOnGasRelease` is the only difference (checked with `all_keys()`), and the key reads True by default.
+- **Tests (docker, per file):**
+  - `test_redneck_cruise`: 7 new launch tests pass, including a card-level case (stock ACC, lead, cluster 25 mph, launch from 0 to 3 mph, target = 50 mph).
+    `test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed` fails identically at HEAD (pre-existing).
+  - `test_cruise_speed` 42 (4 new), device settings layout 29, navigation params 45 and starpilot_variables 35 all pass.
+- **Watch on the next drive:**
+  - The set speed jumps to the target a second or two after launch, and ICBM presses RES+ steadily.
+  - Stock ACC still follows the lead without surging.
+  - After a gas overtake, the set speed lands on the release speed.

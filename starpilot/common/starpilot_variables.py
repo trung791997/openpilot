@@ -740,6 +740,7 @@ class StarPilotVariables:
       toggle.redneck_cruise = honda_icbm_active(toggle.redneck_cruise_available, FPCP.pcmCruiseSpeed,
                                                 toggle.openpilot_longitudinal)
     toggle.icbm_counter_sync = self.get_value("ICBMCounterSync", condition=toggle.car_make == "honda" and toggle.redneck_cruise)
+    toggle.set_speed_on_gas_release = self.get_value("SetSpeedOnGasRelease", condition=toggle.redneck_cruise)
     pcm_cruise = CP.pcmCruise
     prohibited_main_aol = not toggle.openpilot_longitudinal and hyundai_can_use_lkas_for_aol
     startAccel = CP.startAccel

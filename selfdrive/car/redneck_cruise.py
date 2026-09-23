@@ -32,6 +32,15 @@ LEAD_DEPARTURE_BOOST_MAX_MS = 3.0 * CV.MPH_TO_MS
 LEAD_DEPARTURE_BOOST_FACTOR = 0.50
 LEAD_DEPARTURE_PLAN_POINTS = 3
 
+# Launch (stock ACC only): after a full stop, raise the set speed straight to the cruise target once the
+# car is moving again, instead of holding at the 25 mph floor until vEgo passes it. Route 260 8:39-8:51:
+# the car launched to 25 mph with no ICBM press for 11 s, while the lead pulled away from 8 to 34 m.
+# Stock ACC keeps the radar and does the following, so a set speed above the lead's speed does not close
+# on it. Ends when the car has caught up to the target, stops again, or the driver takes over.
+LAUNCH_STOPPED_SPEED_MS = 0.3
+LAUNCH_MOVING_SPEED_MS = 2.0 * CV.MPH_TO_MS
+LAUNCH_CAUGHT_UP_MARGIN_MS = 2.0 * CV.MPH_TO_MS
+
 HONDA_MINIMUM_SET_SPEED_MPH = 25
 HONDA_MINIMUM_SET_SPEED_KPH = 40
 
@@ -156,6 +165,21 @@ def get_minimum_set_speed(is_metric: bool, brand: str = "") -> int:
   if brand == "honda":
     return HONDA_MINIMUM_SET_SPEED_KPH if is_metric else HONDA_MINIMUM_SET_SPEED_MPH
   return 30 if is_metric else 20
+
+
+def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v_ego: float, standstill: bool,
+                        gas_pressed: bool, driver_button: bool, launch_target_ms: float) -> tuple[bool, bool]:
+  """Returns (launch_active, was_stopped). A launch never starts while the car is stopped, so ICBM does
+  not press RES+ at standstill (on a Honda that resumes the car by itself)."""
+  if not enabled or driver_button:
+    return False, False
+  if standstill or v_ego < LAUNCH_STOPPED_SPEED_MS:
+    return False, True
+  if was_stopped and v_ego >= LAUNCH_MOVING_SPEED_MS and not gas_pressed:
+    launch_active, was_stopped = True, False
+  if launch_active and v_ego >= launch_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS:
+    launch_active = False
+  return launch_active, was_stopped
 
 
 def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int]) -> None:
