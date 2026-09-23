@@ -24,7 +24,7 @@ _HERE = os.path.dirname(__file__)
 _TOOLS = os.path.normpath(os.path.join(_HERE, "..", ".."))
 
 # Tools a user runs directly on a machine with no build. Anything added here must stay 3.9-safe.
-STANDALONE = ["konik_login.py", "plain_http.py", "konik_preflight.py"]
+STANDALONE = ["konik_login.py", "plain_http.py", "konik_preflight.py", "konik_fetch.py"]
 
 # (regex, what it is, first version). Runtime names, so the parser will not catch them.
 TOO_NEW = [

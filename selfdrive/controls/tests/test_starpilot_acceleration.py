@@ -12,6 +12,8 @@ from openpilot.starpilot.controls.lib.starpilot_acceleration import (
   PULSE_GLIDE_COAST_MIN_ACCEL,
   StarPilotAcceleration,
   get_max_accel_eco,
+  get_max_accel_low_speeds,
+  get_max_accel_ramp_off,
   get_max_accel_standard,
   get_max_accel_traffic,
   get_slc_shaped_min_accel,
@@ -279,3 +281,38 @@ def test_pulse_and_glide_is_inert_when_disabled():
   assert accel.pulse_glide_coasting is False
   assert accel.pulse_glide_target is None
   assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+def test_human_acceleration_off_leaves_max_accel_unchanged():
+  accel = StarPilotAcceleration(FakePlanner(v_cruise=10.0))
+  accel.update(9.5, make_sm(), make_toggles())
+
+  assert accel.max_accel == pytest.approx(get_max_accel_standard(9.5, True, False))
+
+
+def test_human_acceleration_low_set_speed_scales_quarter_to_full():
+  assert get_max_accel_low_speeds(2.0, 0.0) == pytest.approx(0.5)
+  assert get_max_accel_low_speeds(2.0, 12.5) == pytest.approx(1.0)
+  assert get_max_accel_low_speeds(2.0, 25.0) == pytest.approx(2.0)
+  assert get_max_accel_low_speeds(2.0, 40.0) == pytest.approx(2.0)
+
+
+def test_human_acceleration_ramps_off_toward_set_speed():
+  assert get_max_accel_ramp_off(2.0, 30.0, 30.0) == pytest.approx(0.0)
+  assert get_max_accel_ramp_off(2.0, 30.0, 29.0) == pytest.approx(0.5)
+  assert get_max_accel_ramp_off(2.0, 30.0, 25.0) == pytest.approx(2.0)
+  assert get_max_accel_ramp_off(2.0, 30.0, 31.0) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("v_cruise,v_ego", [(10.0, 2.0), (10.0, 9.5), (30.0, 10.0), (30.0, 29.0), (30.0, 30.0)])
+def test_human_acceleration_on_applies_both_limits_and_leaves_braking(v_cruise, v_ego):
+  base = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
+  base.update(v_ego, make_sm(), make_toggles())
+  human = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
+  human.update(v_ego, make_sm(), make_toggles(human_acceleration=True))
+
+  scaled = get_max_accel_low_speeds(base.max_accel, v_cruise)
+  expected = min(get_max_accel_ramp_off(scaled, v_cruise, v_ego), scaled)
+  assert human.max_accel == pytest.approx(expected)
+  assert human.max_accel <= base.max_accel
+  assert human.min_accel == pytest.approx(base.min_accel)

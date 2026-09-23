@@ -516,6 +516,16 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_value=self._get_deceleration_profile_label,
                  on_click=self._show_deceleration_profile_selector,
                  visible=self._longitudinal_enabled),
+      SettingRow("HumanAcceleration", "toggle", tr_noop("Human-Like Acceleration"),
+                 subtitle=tr_noop("Gentler acceleration at low set speeds and near the set speed."),
+                 get_state=lambda: self._params.get_bool("HumanAcceleration"),
+                 set_state=lambda s: self._params.put_bool("HumanAcceleration", s),
+                 visible=self._longitudinal_enabled),
+      SettingRow("HumanFollowing", "toggle", tr_noop("Human-Like Following"),
+                 subtitle=tr_noop("Follow the lead using the model's predicted lead path."),
+                 get_state=lambda: self._params.get_bool("HumanFollowing"),
+                 set_state=lambda s: self._params.put_bool("HumanFollowing", s),
+                 visible=self._longitudinal_enabled),
       SettingRow("HumanLaneChanges", "toggle", tr_noop("Human-Like Lane Changes"),
                  subtitle=tr_noop("Radar-informed behavior during lane changes."),
                  get_state=lambda: self._params.get_bool("HumanLaneChanges"),
@@ -590,15 +600,17 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_value=lambda: f"{self._params.get_float('VEgoStopping'):.2f}m/s",
                  on_click=lambda: self._show_slider("VEgoStopping", 0.01, 1.0, step=0.01, unit="m/s", value_type="float"),
                  visible=self._show_stop_tuning_values),
-      SettingRow("BlotV2", "toggle", tr_noop("BLoTv2 Supervisor"),
+      SettingRow("BlotV3", "toggle", tr_noop("BLoTv3 Supervisor"),
                  subtitle=tr_noop("Experimental. Tracks how much deceleration the lead actually needs, "
                                   "softens the solver's jerk cost when it has to respond, and pads "
-                                  "following time when the lead is slowing. Never commands acceleration "
+                                  "following time when the lead is slowing or stopped. The padding "
+                                  "stays at its maximum as braking need grows, and the softening is "
+                                  "held through the final crawl to a stop. Never commands acceleration "
                                   "itself. Works off the radar-tracked lead, independent of the car it's "
                                   "running on -- Model Lead Trajectory itself runs unconditionally for "
                                   "every car, matching upstream."),
-                 get_state=lambda: self._params.get_bool("BlotV2"),
-                 set_state=lambda v: self._params.put_bool("BlotV2", v),
+                 get_state=lambda: self._params.get_bool("BlotV3"),
+                 set_state=lambda v: self._params.put_bool("BlotV3", v),
                  visible=adv),
     ]
 
@@ -619,6 +631,19 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
+      SettingRow("RangeDerivedVrel", "toggle", tr_noop("Range-Derived Closing Speed"),
+                 subtitle=tr_noop("TEST, default off. Bosch-A radar only. The radar reports closing speed directly, but that "
+                                  "channel lags a lead that starts braking by around a second and pins at 13.5 m/s. This lets "
+                                  "the closing speed measured from how the DISTANCE is changing correct it, in one direction "
+                                  "only: it may report MORE closing, never less. It applies to the lead only and is capped at "
+                                  "8 m/s. It needs about a second of distance history, and a short and a long distance fit "
+                                  "must BOTH show the extra closing for 5 consecutive radar updates before it engages. It "
+                                  "clears when the distance behaves implausibly, below 5 m/s, or when the lead would read as "
+                                  "driving backwards, and fades out as the two agree. It does not change which object is "
+                                  "picked as the lead or the lead acceleration estimate. Replayed on logs only, never "
+                                  "validated on the road, which is why it ships off."),
+                 get_state=lambda: self._params.get_bool("RangeDerivedVrel"),
+                 set_state=lambda v: self._params.put_bool("RangeDerivedVrel", v)),
     ]
 
     self._slc_rows = [

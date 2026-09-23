@@ -387,15 +387,90 @@ class TestManager:
     assert not params.get_bool("HumanLaneChanges")
     assert not params_cache.get_bool("HumanLaneChanges")
 
+  # --- Renamed PERSISTENT BOOL toggles (STATUS item 41) ---------------------------------------
+  #
+  # BlotV2 -> BlotV3 shipped with no migration and a default of OFF, so the supervisor a driver
+  # had enabled came back disabled. These pin the migration that stops the next rename doing it.
+
+  def _bool_rename_flag(self, tmp_path, monkeypatch):
+    flag = tmp_path / "starpilot_bool_rename_v1"
+    monkeypatch.setattr(manager, "STARPILOT_BOOL_RENAME_MIGRATION_FLAG", flag)
+    return flag
+
+  def test_migrate_bool_rename_carries_an_enabled_toggle(self, tmp_path, monkeypatch):
+    flag = self._bool_rename_flag(tmp_path, monkeypatch)
+    params = FileBackedFakeParams(tmp_path / "params", {"BlotV2": True})
+    params_cache = FileBackedFakeParams(tmp_path / "cache")
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert params.get_bool("BlotV3")
+    assert params_cache.get_bool("BlotV3")
+    assert flag.exists()
+
+  def test_migrate_bool_rename_carries_a_deliberately_disabled_toggle(self, tmp_path, monkeypatch):
+    # A stored 0 is a choice, not an absence. It must survive the rename too, otherwise the
+    # migration only ever turns things on.
+    self._bool_rename_flag(tmp_path, monkeypatch)
+    params = FileBackedFakeParams(tmp_path / "params", {"BlotV2": False})
+    params_cache = FileBackedFakeParams(tmp_path / "cache")
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert params.get("BlotV3") == "0"
+
+  def test_migrate_bool_rename_never_overwrites_an_explicit_new_value(self, tmp_path, monkeypatch):
+    # The worse error for a toggle that gates longitudinal control is turning it ON unasked.
+    self._bool_rename_flag(tmp_path, monkeypatch)
+    params = FileBackedFakeParams(tmp_path / "params", {"BlotV2": True, "BlotV3": False})
+    params_cache = FileBackedFakeParams(tmp_path / "cache")
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert not params.get_bool("BlotV3")
+
+  def test_migrate_bool_rename_respects_an_explicit_new_value_in_the_cache(self, tmp_path, monkeypatch):
+    self._bool_rename_flag(tmp_path, monkeypatch)
+    params = FileBackedFakeParams(tmp_path / "params", {"BlotV2": True})
+    params_cache = FileBackedFakeParams(tmp_path / "cache", {"BlotV3": False})
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert not params.get_bool("BlotV3")
+
+  def test_migrate_bool_rename_is_a_noop_once_the_old_key_is_gone(self, tmp_path, monkeypatch):
+    # The state every already-updated device is in: clear_all() deleted the unknown BlotV2 on the
+    # first boot of the renamed build. Nothing to recover, and nothing must be invented.
+    flag = self._bool_rename_flag(tmp_path, monkeypatch)
+    params = FileBackedFakeParams(tmp_path / "params")
+    params_cache = FileBackedFakeParams(tmp_path / "cache")
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert params.get("BlotV3") is None
+    assert flag.exists()
+
+  def test_migrate_bool_rename_runs_only_once(self, tmp_path, monkeypatch):
+    flag = self._bool_rename_flag(tmp_path, monkeypatch)
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("already done\n")
+    params = FileBackedFakeParams(tmp_path / "params", {"BlotV2": True})
+    params_cache = FileBackedFakeParams(tmp_path / "cache")
+
+    manager.migrate_starpilot_bool_param_renames(params, params_cache)
+
+    assert params.get("BlotV3") is None
+
+  def test_the_bool_rename_table_covers_the_blot_supervisor_toggle(self, tmp_path, monkeypatch):
+    # Guards the table itself: BlotV3 is the toggle that cost a drive, and it must stay covered.
+    assert manager.LEGACY_STARPILOT_BOOL_RENAMES.get("BlotV2") == "BlotV3"
+
   def test_cleanup_removed_starpilot_params(self, tmp_path):
     params = FileBackedFakeParams(tmp_path / "params", {
       "CoastUpToLeads": True,
-      "HumanAcceleration": True,
-      "HumanFollowing": True,
       "ReverseCruise": True,
     })
     params_cache = FileBackedFakeParams(tmp_path / "cache", {
-      "HumanFollowing": False,
       "PrioritizeSmoothFollowing": True,
       "ReverseCruise": True,
     })
@@ -403,10 +478,7 @@ class TestManager:
     manager.cleanup_removed_starpilot_params(params, params_cache)
 
     assert not Path(params.get_param_path("CoastUpToLeads")).exists()
-    assert not Path(params.get_param_path("HumanAcceleration")).exists()
-    assert not Path(params.get_param_path("HumanFollowing")).exists()
     assert not Path(params.get_param_path("ReverseCruise")).exists()
-    assert not Path(params_cache.get_param_path("HumanFollowing")).exists()
     assert not Path(params_cache.get_param_path("PrioritizeSmoothFollowing")).exists()
     assert not Path(params_cache.get_param_path("ReverseCruise")).exists()
 

@@ -75,6 +75,27 @@ HARD_BRAKE_ACCEL = -1.5
 
 PERCENTILES = (5, 25, 50, 75, 90, 95, 99)
 
+# The recorded occupancy figures (ed6257ef's "confident vision lead 94.2%") match a
+# leadsV3[0].prob >= 0.5 cut, measured on 00000231--5782493b00/25 -- not the 0.9 cut the gap
+# distribution uses, under which that segment reads 1.4%. Occupancy is reported at both.
+VISION_OCCUPANCY_PROB_MIN = 0.5
+
+# U11-vs-range-rate pairs are built only inside contiguous runs of MEASURED samples. Nominal sweep
+# period is ~70 ms, so one missing sweep -- the D-049 incarnation-break signature -- already ends a
+# run. Without the split, a centred derivative spans dropouts and ID reuses: on
+# 00000231--5782493b00 that manufactured range rates up to 55.8 m/s and 11.2% gross disagreement.
+U11_RUN_GAP_S = 0.1
+
+# A driver override belongs to a hard-brake run if a pedal is pressed from the run's start until
+# this long after it ends. On 00000231--5782493b00/10 the gas press came after the commanded peak,
+# so checking the peak frame alone reported the flagged false brake as "no override".
+OVERRIDE_WINDOW_S = 1.0
+
+# experimentalMode switches separated by less than this are reported individually. STATUS.md recorded
+# 80 ms and 110 ms dwells on one segment; nothing ties them to a control fault, so this is a
+# reporting threshold for a characterisation, not a gate.
+EXPERIMENTAL_SHORT_DWELL_S = 0.5
+
 
 # --- pure geometry and statistics -----------------------------------------------------------------
 # Everything below is deliberately free of capnp and file I/O so it can be tested without a route.
@@ -165,6 +186,43 @@ def centred_derivative(times: list[float], values: list[float]) -> list[tuple[fl
   return out
 
 
+def contiguous_runs(samples: list[tuple], max_gap_s: float) -> list[list[tuple]]:
+  """Split time-ordered (t, ...) samples wherever consecutive times differ by more than max_gap_s."""
+  runs: list[list[tuple]] = []
+  current: list[tuple] = []
+  for s in samples:
+    if current and s[0] - current[-1][0] > max_gap_s:
+      runs.append(current)
+      current = []
+    current.append(s)
+  if current:
+    runs.append(current)
+  return runs
+
+
+def u11_range_rate_pairs(run: list[tuple[float, float, float]]) -> tuple[list[float], list[float]]:
+  """(U11, centred range rate) pairs for one contiguous run of (t, dRel, vRel) samples.
+
+  Paired by index in one loop. The previous pairing enumerated `centred_derivative`'s output against
+  `vs[i + 1]`, which shifts every later pair by one sample whenever a zero-dt sample is skipped.
+  """
+  u11: list[float] = []
+  rates: list[float] = []
+  for i in range(1, len(run) - 1):
+    dt = run[i + 1][0] - run[i - 1][0]
+    if dt > 1e-9:
+      u11.append(run[i][2])
+      rates.append((run[i + 1][1] - run[i - 1][1]) / dt)
+  return u11, rates
+
+
+def attach_override(runs: list[dict], pressed_times: list[float], window_s: float = OVERRIDE_WINDOW_S) -> list[dict]:
+  """Mark each brake run with whether a pedal was pressed from its start to `window_s` after its end."""
+  for row in runs:
+    row["overrideInRun"] = any(row["tStart"] <= t <= row["tEnd"] + window_s for t in pressed_times)
+  return runs
+
+
 def cross_correlation_lag(a: list[float], b: list[float], max_lag: int) -> tuple[int, float] | None:
   """Lag (in samples) maximising |corr(a shifted by lag, b)|, and that correlation.
 
@@ -235,6 +293,8 @@ def collapse_brake_runs(frames: list[dict]) -> list[dict]:
   for run in runs:
     peak = min(run, key=lambda f: f["accel"])
     row = {k: v for k, v in peak.items() if not k.startswith("_")}
+    row["tStart"] = run[0]["t"]
+    row["tEnd"] = run[-1]["t"]
     row["runFrames"] = len(run)
     row["runDuration"] = run[-1]["t"] - run[0]["t"]
     out.append(row)
@@ -276,8 +336,11 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
   frames = 0
   radar_lead_frames = 0
   vision_lead_frames = 0
+  vision_lead_frames_50 = 0
+  pressed_times: list[float] = []
   experimental_frames = 0
   experimental_seen = 0
+  experimental_switch_times: list[float] = []
 
   gaps: list[float] = []
   gap_series: list[tuple[float, float]] = []   # (t, gap) while a radar lead is selected
@@ -290,6 +353,11 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
   lr = _LogFileReader(path)
   for msg in lr:
     which = msg.which()
+    if which in ("initData", "sentinel"):
+      # initData is stamped at logger start -- ~601.5 s before the first sample of segment 10 of
+      # 00000231--5782493b00 -- so as the clock origin it put every event at route time, not
+      # segment time (the flagged brake read t=612.76 instead of ~11.3).
+      continue
     t = msg.logMonoTime * 1e-9
     if t0 is None:
       t0 = t
@@ -300,10 +368,15 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
       latest["aEgo"] = float(msg.carState.aEgo)
       latest["gasPressed"] = bool(msg.carState.gasPressed)
       latest["brakePressed"] = bool(msg.carState.brakePressed)
+      if latest["gasPressed"] or latest["brakePressed"]:
+        pressed_times.append(rel)
     elif which == "modelV2":
       latest["model"] = _vision_lead(msg.modelV2)
     elif which == "selfdriveState":
-      latest["experimental"] = bool(msg.selfdriveState.experimentalMode)
+      experimental = bool(msg.selfdriveState.experimentalMode)
+      if latest["experimental"] is not None and experimental != latest["experimental"]:
+        experimental_switch_times.append(rel)
+      latest["experimental"] = experimental
       latest["enabled"] = bool(msg.selfdriveState.enabled)
     elif which == "longitudinalPlan":
       latest["planSource"] = str(msg.longitudinalPlan.longitudinalPlanSource)
@@ -315,7 +388,10 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
       live_track_frames += 1
       live_track_count += len(pts)
       for p in pts:
-        track_samples[int(p.trackId)].append((rel, float(p.dRel), float(p.vRel)))
+        # Measured only: a coasted point carries a held vRel, not U11 (the recorded figure was
+        # "9,390 measured track samples").
+        if p.measured:
+          track_samples[int(p.trackId)].append((rel, float(p.dRel), float(p.vRel)))
       # The inverse failure mode (D-048): tracks that agree with vision in RANGE but are
       # rejected on LATERAL. Take the nearest-in-range track to the vision lead, as the
       # 16-segment analysis did, and record both residuals for it.
@@ -334,6 +410,8 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
       vis = latest["model"]
       if vis is not None and vis["prob"] >= vision_prob_min:
         vision_lead_frames += 1
+      if vis is not None and vis["prob"] >= VISION_OCCUPANCY_PROB_MIN:
+        vision_lead_frames_50 += 1
       if lead is None:
         continue
       if not lead["radar"]:
@@ -366,14 +444,10 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
   u11: list[float] = []
   drange: list[float] = []
   for samples in track_samples.values():
-    if len(samples) < 5:
-      continue
-    ts = [s[0] for s in samples]
-    ds = [s[1] for s in samples]
-    vs = [s[2] for s in samples]
-    for i, (_t, rate) in enumerate(centred_derivative(ts, ds)):
-      u11.append(vs[i + 1])
-      drange.append(rate)
+    for run in contiguous_runs(samples, U11_RUN_GAP_S):
+      run_u11, run_rates = u11_range_rate_pairs(run)
+      u11.extend(run_u11)
+      drange.extend(run_rates)
 
   return {
     "segment": _segment_number(path),
@@ -381,13 +455,19 @@ def analyse_segment(path: str, *, brake_threshold: float = HARD_BRAKE_ACCEL,
     "frames": frames,
     "radarLeadPct": 100.0 * radar_lead_frames / frames if frames else 0.0,
     "visionLeadPct": 100.0 * vision_lead_frames / frames if frames else 0.0,
+    "visionLeadPct50": 100.0 * vision_lead_frames_50 / frames if frames else 0.0,
     "experimentalPct": 100.0 * experimental_frames / experimental_seen if experimental_seen else None,
+    "experimentalSwitches": len(experimental_switch_times),
+    "experimentalShortDwells": [
+      {"t": b, "dwell": b - a} for a, b in zip(experimental_switch_times, experimental_switch_times[1:], strict=False)
+      if b - a < EXPERIMENTAL_SHORT_DWELL_S
+    ],
     "tracksPerFrame": live_track_count / live_track_frames if live_track_frames else 0.0,
     "gap": summarise(gaps),
     "gapRate": summarise(gap_rates),
     "lateralResidual": summarise([lat for _r, lat in lateral_pairs]),
     "rangeResidual": summarise([r for r, _lat in lateral_pairs]),
-    "hardBrakes": collapse_brake_runs(brake_events),
+    "hardBrakes": attach_override(collapse_brake_runs(brake_events), pressed_times),
     "_u11": u11,
     "_drange": drange,
     "_gaps": gaps,
@@ -422,6 +502,7 @@ def pool(segments: list[dict]) -> dict:
     },
     "corrExperimentalRadarLead": pearson([e for e, _ in exp_pairs], [r for _, r in exp_pairs]),
     "corrVisionRadarLead": pearson([s["visionLeadPct"] for s in segments], [s["radarLeadPct"] for s in segments]),
+    "corrVisionRadarLead50": pearson([s["visionLeadPct50"] for s in segments], [s["radarLeadPct"] for s in segments]),
     "hardBrakes": sorted((b for s in segments for b in [dict(e, segment=s["path"]) for e in s["hardBrakes"]]),
                          key=lambda b: b["accel"]),
   }
@@ -447,11 +528,12 @@ def render(segments: list[dict], pooled: dict, *, brake_threshold: float) -> str
   out.append("")
 
   out.append("Per segment")
-  out.append(f"  {'segment':<28} {'frames':>7} {'radarLead%':>11} {'visLead%':>9} {'exp%':>7} {'trk/frame':>10} {'gap p50':>9}")
+  out.append(f"  {'segment':<28} {'frames':>7} {'radarLead%':>11} {'visLead%':>9} {'vis50%':>7} {'exp%':>7} {'trk/frame':>10} {'gap p50':>9}")
   for s in segments:
     exp = f"{s['experimentalPct']:.1f}" if s["experimentalPct"] is not None else "n/a"
     gap = f"{s['gap'].get('p50', float('nan')):+.1f}" if s["gap"].get("n") else "n/a"
     row = f"  {s['path'][:28]:<28} {s['frames']:>7} {s['radarLeadPct']:>10.1f}% {s['visionLeadPct']:>8.1f}%"
+    row += f" {s['visionLeadPct50']:>6.1f}%"
     out.append(f"{row} {exp:>7} {s['tracksPerFrame']:>10.2f} {gap:>9}")
   out.append("")
 
@@ -481,7 +563,8 @@ def render(segments: list[dict], pooled: dict, *, brake_threshold: float) -> str
 
   out.append("Cross-segment correlations")
   for label, key in (("corr(experimental%, radarLead%)", "corrExperimentalRadarLead"),
-                     ("corr(visionLead%, radarLead%)", "corrVisionRadarLead")):
+                     ("corr(visionLead%, radarLead%)", "corrVisionRadarLead"),
+                     ("corr(visionLead%@0.5, radarLead%)", "corrVisionRadarLead50")):
     v = pooled[key]
     out.append(f"  {label:<34} {v:+.3f}" if v is not None else f"  {label:<34} undefined")
   out.append("")
@@ -491,12 +574,21 @@ def render(segments: list[dict], pooled: dict, *, brake_threshold: float) -> str
     out.append(f"  {'segment':<24} {'t':>7} {'accel':>7} {'dRel':>7} {'vRel':>7} {'headway':>8} {'TTC':>7} {'gap':>7} {'vprob':>6} {'source':>8} {'ovr':>4}")
     for b in pooled["hardBrakes"]:
       f2 = lambda v, w=7, p=2: f"{v:>{w}.{p}f}" if v is not None else f"{'n/a':>{w}}"  # noqa: E731
-      ovr = 'yes' if b['override'] else 'no'
+      ovr = 'yes' if b.get('overrideInRun', b['override']) else 'no'
       head = f"  {b['segment'][:24]:<24} {b['t']:>7.2f} {b['accel']:>7.2f} {b['dRel']:>7.1f} {b['vRel']:>7.2f}"
       mid = f"{f2(b['headway'], 8)} {f2(b['ttc'])} {f2(b['gap'])} {f2(b['visionProb'], 6)}"
       out.append(f"{head} {mid} {str(b['source'])[:8]:>8} {ovr:>4}")
   else:
     out.append("  (none)")
+  out.append("")
+  out.append(f"experimentalMode switching (dwell < {EXPERIMENTAL_SHORT_DWELL_S} s listed)")
+  switching = [s for s in segments if s.get("experimentalSwitches")]
+  if switching:
+    for s in switching:
+      short = ", ".join(f"t={d['t']:.2f} ({d['dwell'] * 1000:.0f} ms)" for d in s["experimentalShortDwells"]) or "none short"
+      out.append(f"  {s['path'][:24]:<24} {s['experimentalSwitches']:>3} switches; {short}")
+  else:
+    out.append("  (no switches)")
   out.append("")
   out.append("Reminder: offline replay of a recorded drive. It says nothing about how the car behaves")
   out.append("when this radar drives the planner (AGENTS.md §2).")

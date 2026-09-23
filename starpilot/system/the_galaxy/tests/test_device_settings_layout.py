@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -7,6 +8,18 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 LAYOUT_PATH = REPO_ROOT / "starpilot/common/assets/device_settings_layout.json"
 PARAM_KEYS_PATH = REPO_ROOT / "common/params_keys.h"
 RAYLIB_NRDR_TUNING_PATH = REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/nrdr_tuning.py"
+
+
+def _all_declared_keys():
+  source = PARAM_KEYS_PATH.read_text(encoding="utf-8")
+  return set(re.findall(r'\{"([A-Za-z0-9_]+)",\s*\{', source))
+
+
+def _galaxy_toggle_keys():
+  # Restricted to the Bosch-A TEST rows this work introduced. Widening it to every layout key
+  # would be a much larger claim about the whole settings surface and is deliberately not made
+  # here -- several keys legitimately live outside the device binary.
+  return ("RangeDerivedVrel",)
 
 
 def _layout():
@@ -47,7 +60,7 @@ def test_galaxy_layout_removes_obsolete_and_duplicate_controls():
   all_keys = {key for params in sections.values() for key in params}
 
   assert "Model & Customization" not in sections
-  assert "HumanAcceleration" not in all_keys
+  assert {"HumanAcceleration", "HumanFollowing"} <= all_keys
   assert "DisableWideRoad" in sections["Visual (Display & UI)"]
   assert sum(
     param.get("key") == "DisableWideRoad"
@@ -335,9 +348,14 @@ def test_toyota_auto_hold_is_galaxy_only():
   assert setting["data_type"] == "bool"
 
 
-def test_human_acceleration_param_is_removed():
+def test_human_acceleration_param_is_registered_default_off():
   params_source = PARAM_KEYS_PATH.read_text(encoding="utf-8")
-  assert '{"HumanAcceleration",' not in params_source
+  assert '{"HumanAcceleration", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},' in params_source
+  assert '{"HumanFollowing", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},' in params_source
+  longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
+  for key in ("HumanAcceleration", "HumanFollowing"):
+    assert longitudinal[key]["ui_type"] == "toggle"
+    assert longitudinal[key]["parent_key"] == "LongitudinalTune"
 
 
 def test_rivian_angle_control_is_harness_gated():
@@ -421,3 +439,79 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/appearance.py",
   )
   assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_bosch_a_test_toggles_share_one_galaxy_location_and_gate():
+  # Bosch-A-only TEST rows that act on the radar lead must all render under the same parent and
+  # behind the same car-family gate -- a row that is reachable on a car its feature cannot run
+  # on is a row that invites someone to switch on something inert. This was a pair until the
+  # far-lead brake limit was removed (STATUS item 37, D-060); it is now RangeDerivedVrel alone,
+  # and the set-equality checks below are what keep a removed key from being left behind in one
+  # surface while it is gone from the others.
+  siblings = ("RangeDerivedVrel",)
+
+  longitudinal = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
+  for key in siblings:
+    assert longitudinal[key]["parent_key"] == "AdvancedLongitudinalTune"
+    assert longitudinal[key]["settings_tier"] == "advanced"
+    assert longitudinal[key]["requires_offroad"] is True
+    assert longitudinal[key]["ui_type"] == "toggle"
+    # TEST features ship OFF. See D-053.
+    assert _declared_default(key) == "0"
+
+  # Galaxy hides these behind BoschARadarAvailable. This is the check that was missing when
+  # RangeDerivedVrel was first added: the layout entry alone would have rendered the row on
+  # every car, including ones with no Bosch-A radar to derive a closing rate from.
+  frontend = (
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings.js"
+  ).read_text(encoding="utf-8")
+  gate = re.search(r"const BOSCH_A_REQUIRED_KEYS = new Set\(\[([^\]]*)\]\)", frontend)
+  assert gate is not None, "Galaxy lost the Bosch-A key set"
+  assert set(re.findall(r'"([^"]+)"', gate.group(1))) == set(siblings)
+  assert "BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable" in frontend
+
+  # The on-device raylib settings gate the same rows through the Bosch-A radar section.
+  raylib = (
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py"
+  ).read_text(encoding="utf-8")
+  bosch_rows = raylib.split("_bosch_a_radar_rows")[1]
+  assert all(f'SettingRow("{key}"' in bosch_rows for key in siblings)
+
+
+def test_every_galaxy_toggle_key_exists_in_the_committed_device_params_binary():
+  # Galaxy's PUT /api/params rejects any key missing from the COMPILED registry:
+  # _build_default_params() enumerates _params_raw.all_keys() off common/params_pyx.so, and
+  # a key declared only in params_keys.h is 403 'not editable'. Declaring a key and shipping
+  # a stale binary therefore produces a row that renders and cannot be switched on.
+  #
+  # Regression guard for STATUS open item 12 (closed by b2baba87): this was a strict xfail while
+  # the committed binary lacked RangeDerivedVrel and a real car returned that 403.
+  #
+  # This reads the COMMITTED blob, not the working tree: the working copy is whatever the local
+  # scons produced (x86_64 in CI containers) and is skip-worktree, so it proves nothing about
+  # what the device runs. That mismatch is exactly why this went undetected until a real car.
+  blob = subprocess.run(
+    ["git", "show", "HEAD:common/params_pyx.so"],
+    cwd=REPO_ROOT, capture_output=True, check=True,
+  ).stdout
+  assert blob[:4] == b"\x7fELF", "expected an ELF shared object"
+
+  literals = set(re.findall(rb"[\x20-\x7e]{4,}", blob))
+
+  def declared_keys_ending_with(key):
+    # Tail-merged string literals mean a key that is the SUFFIX of a longer key has no
+    # standalone copy, so scanning literals would report it missing when it is present.
+    # Those keys are unprovable this way and are skipped rather than asserted on.
+    return [k for k in _all_declared_keys() if k != key and k.endswith(key)]
+
+  missing = []
+  for key in _galaxy_toggle_keys():
+    if declared_keys_ending_with(key):
+      continue
+    if key.encode() not in literals:
+      missing.append(key)
+
+  assert not missing, (
+    "keys have a Galaxy row but are absent from the committed device params binary, so the " +
+    f"row renders and the toggle 403s: {sorted(missing)}"
+  )

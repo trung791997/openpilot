@@ -2079,6 +2079,26 @@
         "settings_tier": "simple"
       },
       {
+        "key": "HumanAcceleration",
+        "label": "Human-Like Acceleration",
+        "description": "Limits acceleration when the set speed is low and eases it off as the car nears the set speed, like a human driver. Ported from FrogPilot. Braking is not changed.",
+        "picker_description": "Gentler acceleration at low set speeds and near the set speed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LongitudinalTune",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "HumanFollowing",
+        "label": "Human-Like Following",
+        "description": "Follows the lead car using the driving model's predicted lead path instead of extrapolating the lead's current acceleration, falling back to the extrapolation when closing fast (under 3 s to impact). Turning this off returns to the extrapolation everywhere.",
+        "picker_description": "Follow the lead using the model's predicted lead path.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LongitudinalTune",
+        "settings_tier": "simple"
+      },
+      {
         "key": "HumanLaneChanges",
         "label": "Human-Like Lane Changes",
         "description": "Lane-change behavior that mimics human drivers by anticipating and tracking adjacent vehicles during lane changes.",
@@ -2860,12 +2880,22 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "BlotV2",
-        "label": "BLoTv2 Supervisor",
-        "description": "Experimental. Tracks how much deceleration the lead actually needs, softens the solver's jerk cost when it has to respond, and pads following time when the lead is slowing. Never commands acceleration itself. Works off the radar-tracked lead, independent of the car it's running on -- Model Lead Trajectory itself runs unconditionally for every car, matching upstream.",
+        "key": "BlotV3",
+        "label": "BLoTv3 Supervisor",
+        "description": "Experimental. Tracks how much deceleration the lead actually needs, softens the solver's jerk cost when it has to respond, and pads following time when the lead is slowing or stopped. The padding stays at its maximum as braking need grows, and the softening is held through the final crawl to a stop. Never commands acceleration itself. Works off the radar-tracked lead, independent of the car it's running on -- Model Lead Trajectory itself runs unconditionally for every car, matching upstream.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "AdvancedLongitudinalTune",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "RangeDerivedVrel",
+        "label": "Range-Derived Closing Speed",
+        "description": "TEST, default off. Bosch-A radar only. The radar reports closing speed directly, but that channel lags a lead that starts braking by around a second and pins at 13.5 m/s. This lets the closing speed measured from how the DISTANCE is changing correct it, in one direction only: it may report MORE closing, never less. It applies to the lead only and is capped at 8 m/s. It needs about a second of distance history, and a short and a long distance fit must BOTH show the extra closing for 5 consecutive radar updates before it engages. It clears when the distance behaves implausibly, below 5 m/s, or when the lead would read as driving backwards, and fades out as the two agree. It does not change which object is picked as the lead or the lead acceleration estimate. Replayed on logs only, never validated on the road, which is why it ships off.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLongitudinalTune",
+        "requires_offroad": true,
         "settings_tier": "advanced"
       },
       {

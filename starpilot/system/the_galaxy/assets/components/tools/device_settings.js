@@ -11,7 +11,7 @@ const FAVORITE_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, s
 const FAVORITE_ACTION_PREFIX = "__starpilot_favorite_action__:"
 const GALAXY_DEVELOPER_MODE_KEY = "GalaxyDeveloperMode"
 const HIDDEN_SECTION_NAMES = new Set(["Model & Customization"])
-const HIDDEN_SETTING_KEYS = new Set(["HumanAcceleration"])
+const HIDDEN_SETTING_KEYS = new Set([])
 const GM_MAKES = ["Buick", "Cadillac", "Chevrolet", "GMC", "Holden"]
 const HKG_MAKES = ["Genesis", "Hyundai", "Kia"]
 const VEHICLE_SETTING_MAKES = {
@@ -46,6 +46,11 @@ const VEHICLE_SETTING_MAKES = {
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
+// Bosch-A-only TEST rows. Both only ever act on a Bosch-A radar lead, so they ride the same
+// car-family gate as the BoschARadar toggle itself rather than each introducing another one.
+// Keep this in step with the rows in selfdrive/ui/layouts/settings/starpilot/longitudinal.py,
+// which gates the same keys through the Bosch-A radar section.
+const BOSCH_A_REQUIRED_KEYS = new Set(["RangeDerivedVrel"])
 
 // Plain variables — scheduling/routing flags that must NOT be reactive
 let syncScheduled = false
@@ -118,6 +123,7 @@ function isSettingVisible(section, param) {
   if (RADAR_REQUIRED_KEYS.has(param.key) && !state.values.HasRadar) return false
   if (param.key === "AlphaLongitudinalEnabled" && !state.values.AlphaLongitudinalAvailable) return false
   if (param.key === "BoschARadar" && !state.values.BoschARadarAvailable) return false
+  if (BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable) return false
   if (state.values[GALAXY_DEVELOPER_MODE_KEY]) return true
   return section.name === "Favorites" || param.settings_tier === "simple"
 }

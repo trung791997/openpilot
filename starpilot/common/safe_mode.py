@@ -92,6 +92,8 @@ SAFE_MODE_MANAGED_KEYS = (
   "VEgoStopping",
   "AccelerationProfile",
   "DecelerationProfile",
+  "HumanAcceleration",
+  "HumanFollowing",
   "HumanLaneChanges",
   "LeadDetectionThreshold",
   "RecoveryPower",
