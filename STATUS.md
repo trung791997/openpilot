@@ -4768,7 +4768,7 @@ hold-mode emulation is written. Injected frames interleave with the car's own fr
 **73a. The speed-limit confirm prompt now works under ICBM (static and unit evidence; not driven).**
 `SpeedLimitController.handle_limit_change` accepted a + press only when `carControl.longActive`
 was set, and longActive is never set under stock long. Under ICBM the "new speed limit" prompt could not be
-accepted with +, and it never timed out either, because the 3 s auto-deny also needed longActive. The helper
+accepted with +, and it never timed out either, because the 30 s auto-deny also needed longActive. The helper
 `csc_long_control_active` moved to `starpilot_variables.icbm_long_control_active` and now gates
 both CSC and SLC confirmation. Plain stock long without ICBM is unchanged. Test:
 `test_icbm_accel_press_confirms_pending_limit`. To check on the drive: ICBM's own injected + presses must not register as
