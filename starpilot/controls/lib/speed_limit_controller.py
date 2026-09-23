@@ -457,7 +457,9 @@ class SpeedLimitController:
     else:
       self.speed_limit_changed_timer = 0
       self.unconfirmed_speed_limit = 0
-      if desired_source != self.source or desired_target != self.target:
+      # A denied limit must not be adopted on the next frame (route 0000025b 11:22: - "denied" 35 and SLC went to 35).
+      denied = self.denied_target > 0 and desired_target > 0 and abs(desired_target - self.denied_target) < 1
+      if not denied and (desired_source != self.source or desired_target != self.target):
         self.source = desired_source
         self.target = desired_target
       if desired_source != "None" and desired_target > 0:

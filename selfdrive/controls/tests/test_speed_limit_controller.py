@@ -723,3 +723,23 @@ def test_icbm_accel_press_confirms_pending_limit(redneck_cruise, expected_target
     assert controller.target == pytest.approx(mph(expected_target))
   finally:
     controller.shutdown()
+
+
+def test_denied_lower_limit_is_not_adopted_on_following_frames():
+  controller = make_controller(speed_limit_confirmation_lower=True)
+  try:
+    controller.source = "Dashboard"
+    controller.target = mph(50)
+    controller.previous_source = "Dashboard"
+    controller.previous_target = mph(50)
+
+    now = datetime.now(timezone.utc)
+    controller.update_limits(mph(35), now, False, mph(75), mph(50), make_sm(gas_pressed=False, decel_pressed=True))
+    for _ in range(5):
+      controller.update_limits(mph(35), now, False, mph(75), mph(50), make_sm(gas_pressed=False))
+
+    assert controller.target == pytest.approx(mph(50))
+    assert controller.unconfirmed_speed_limit == 0
+    assert controller.speed_limit_changed_timer == 0
+  finally:
+    controller.shutdown()

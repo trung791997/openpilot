@@ -4803,3 +4803,11 @@ bookmark clock reads ~10 s early (driver "3:18" is 3:28 here). Logs live under ~
 - **To look at: seg 15, 15:33–15:36.** Stock ACC braked at −3 m/s² for a closing lead (vision ~100 m, vRel −11) that
   never became a radar lead in radarState and was dropped at 15:35. The car's own radar acted on it and Bosch-A did not
   publish it. Not investigated further (parser replay needed).
+
+**74a. Speed-limit prompts on 0000025b, and − now really denies (static and unit evidence; not driven).** The car ran
+e20a86641, which predates 73a. Prompt 1 at 11:15 (50→35): + at 11:17.96 and 11:19.80 was ignored (the 73a bug).
+− at 11:22.32 cleared the prompt, **but SLC adopted 35 anyway**. `handle_limit_change` stores `denied_target` and
+nothing ever read it, so on the next frame the no-change branch took the denied limit as the target. Deny therefore behaved like accept. Fixed:
+that branch now skips a limit matching `denied_target`. Test: `test_denied_lower_limit_is_not_adopted_on_following_frames`
+(fails before the fix). Prompt 2 at 22:41 (45→40): + at 22:44.67 was ignored, and the prompt stayed up 49 s until a brake disengage
+auto-accepted it, because the 30 s timeout also needed longActive (both fixed in 73a).
