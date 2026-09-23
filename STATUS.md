@@ -4811,3 +4811,6 @@ nothing ever read it, so on the next frame the no-change branch took the denied 
 that branch now skips a limit matching `denied_target`. Test: `test_denied_lower_limit_is_not_adopted_on_following_frames`
 (fails before the fix). Prompt 2 at 22:41 (45→40): + at 22:44.67 was ignored, and the prompt stayed up 49 s until a brake disengage
 auto-accepted it, because the 30 s timeout also needed longActive (both fixed in 73a).
+
+**74b. 0000025b seg 15, 15:33–15:35: the vision-only lead had no radar return to match (replay of the on-device liveTracks; not a gate rejection).**
+Ego was about 13.5 m/s. Vision reported a lead at 107→89→101→99 m with vRel −8 to −11 and modelProb 0.2–0.8. The distance jumped around, and the lead was dropped at 15:35. For the whole window, liveTracks held only 0–3 points, all at 83 m or closer. Every one had vRel = −13.5, which is the negative of ego speed, so they were stationary roadside or overhead objects. No track came within 30 m of the vision range. radard therefore had nothing to associate, and rad=0 is the correct output. This is not a lateral-gate, lockout or range-gate deletion. No code change. Open question: stock ACC braked at −3 m/s² at the same time. Its target cannot be identified from these logs.
