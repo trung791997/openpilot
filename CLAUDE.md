@@ -25,6 +25,20 @@ Short version, in priority order:
    SessionStart hook (`.claude/hooks/session-start.sh`) builds the tree for you on remote
    containers and masks the build-dirtied binaries.
 8. Commit before handing off: `YYYY-MM-DD <what changed>`.
+9. **Only where `~/.local/bin/agy-flash` and `agy-pro` exist (the owner's Mac); elsewhere, including
+   cloud sessions and other accounts, do the work directly.**
+   **Delegate menial and automated tasks to save tokens:** Claude serves as the
+   **Architect & Supervisor**. Do not burn high-tier reasoning tokens on repetitive or
+   isolated automated tasks:
+   - **Delegate to Gemini 3.8 Flash** (`agy-flash`): Purely deterministic/mechanical tasks (running
+     `pytest`, `ruff check/format`, AST/Python 3.9 checks in `test_py39_compat.py`, CAN ID
+     mirror validation, skip-worktree binary checks, mechanical symbol refactoring).
+   - **Delegate to Gemini 3.1 Pro** (`agy-pro`): Automated tasks requiring reasoning or data processing
+     (running and diagnosing `tools/bosch_a_corpus_report.py`, telemetry residual analysis
+     for `vRelRange` vs U11 per D-044, track-ID lifecycle log parsing per D-049, building
+     mock fixtures for `test_leads.py`, synthesizing parameterized negative-control tests).
+   - **Retain for Claude**: Architecture, lead arbitration laws in `radard.py` (D-048),
+     Alpha Long P061B control invariants, gate threshold safety tuning, and final diff audits.
 
 > **More than one agent works this repo, on separate accounts.** Everything above applies to
 > all of them equally. Before you start, run `git log --oneline -10` and `git status` — if
