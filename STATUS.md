@@ -4773,3 +4773,33 @@ accepted with +, and it never timed out either, because the 30 s auto-deny also 
 both CSC and SLC confirmation. Plain stock long without ICBM is unchanged. Test:
 `test_icbm_accel_press_confirms_pending_limit`. To check on the drive: ICBM's own injected + presses must not register as
 the driver's `accelPressed`. If they did, they would auto-accept prompts.
+
+## 74. Route 0000025b (stock long, ICBM on, build e20a86641): long-press measured, an SLC set-speed grid bug fixed, 22:19 FCW was a real hard-braking lead. Replay (log decode) evidence; the fix is static and unit tested only.
+
+Params (initData): RedneckCruise=1, BoschARadar=1, SpeedLimitController=1, CurveSpeedController=0.
+CP: openpilotLongitudinalControl=False, pcmCruise=True. Route time is the qlog seg-0 t0. The driver's
+bookmark clock reads ~10 s early (driver "3:18" is 3:28 here). Logs live under ~/r25b_work, not committed.
+
+- **Stock long-press, measured (seg 3, 3:22–3:27).** The driver's SCM_BUTTONS (0x296) arrive on bus 1 at 25 Hz.
+  A held −/+ is a continuous run of btn=3/4 frames. The car steps the set speed 5 mph about 0.63 s into the hold,
+  e.g. 80→72 kph cluster (49.7→44.7 mph). ICBM's own frames (TX bus 1, ~17 Hz) interleave with the car's btn=0
+  frames. A 0.85 s ICBM + burst at 3:20.0 moved the cluster 1 mph at a time (47.8→48.5→49.7), never 5. **Emulating
+  a long press by injection is therefore not supported by this evidence.** ICBM presses did not appear as driver
+  buttonEvents, so the driver's ceiling is not polluted by ICBM (the open check in 73a is answered).
+- **Bug fixed: ICBM undid the driver's long-press −.** SLC had set vCruise to exactly 50 mph = 80.5 kph, which is off
+  the 1.6 kph imperial grid. The long-press "partial interval" snap therefore moved vCruise only to 80.0 kph (49.7 mph),
+  while the car went to 44.7. ICBM then pressed + at 3:23.19 and pulled the car back up (cluster 44.7→46.0), and again
+  at 3:25.69. Fix in `VCruiseHelper._update_v_cruise_non_pcm`: an exact-mph value is mapped onto the grid before stepping,
+  and `previous_v_cruise_kph` is taken before that mapping. Otherwise the SLC-crossing clamp would pin + presses at the limit.
+  Tests: `test_long_decel_press_from_exact_slc_speed_steps_five_units` (fails before the fix) and
+  `test_accel_press_from_exact_slc_speed_moves_above_it`.
+- **The 22:19 FCW was real (seg 22).** The lead was first seen by vision at 92 m, and radar took it at 50 m, closing 7–8 m/s.
+  The lead then braked hard: vLead 14.9→7.0 m/s over ~2 s, aLeadK down to −5.3. Stock ACC was already braking
+  (−2.3 at 22:19.25, peak −4.1) before openpilot's FCW fired at 22:19.81 (d 30 m, vRel −10). The car raised no FCW
+  because its own ACC had the event in hand. Minimum gap was ~21 m at 14 m/s. Radar and model range agreed within 1–3 m throughout.
+- **Radar coverage under stock long.** qlog: 1,989 of 2,789 leadOne frames are radar-sourced. In rlog segs
+  13/21/22, radar supplied 94/93/96% of frames where the model had a lead ≥0.7 within 80 m. Seg 13 radar reads a median 8.6 m
+  shorter than the model, which is the known vision-long bias.
+- **To look at: seg 15, 15:33–15:36.** Stock ACC braked at −3 m/s² for a closing lead (vision ~100 m, vRel −11) that
+  never became a radar lead in radarState and was dropped at 15:35. The car's own radar acted on it and Bosch-A did not
+  publish it. Not investigated further (parser replay needed).

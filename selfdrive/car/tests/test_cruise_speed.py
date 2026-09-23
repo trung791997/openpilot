@@ -221,6 +221,31 @@ class TestVCruiseHelper:
     expected_kph = math.floor(initial_v_cruise_kph / hard_interval) * hard_interval
     assert self.v_cruise_helper.v_cruise_kph == pytest.approx(expected_kph)
 
+  def test_long_decel_press_from_exact_slc_speed_steps_five_units(self):
+    # SLC stores 50 mph as 80.5 kph; a long press must reach 45 mph, not snap to 49.7 (route 0000025b).
+    self.enable(50 * CV.MPH_TO_MS, False)
+    self.v_cruise_helper.v_cruise_kph = round(50 * CV.MPH_TO_KPH, 1)
+    starpilot_car_state = SimpleNamespace(accelHardCruise=False, decelHardCruise=True)
+    for pressed in (True, False):
+      cs = car.CarState(cruiseState={"available": True})
+      cs.buttonEvents = [ButtonEvent(type=ButtonType.decelCruise, pressed=pressed)]
+      self.v_cruise_helper.update_v_cruise(cs, enabled=True, is_metric=False, speed_limit_changed=False,
+                                           starpilot_toggles=self.starpilot_toggles, starpilot_car_state=starpilot_car_state)
+
+    assert self.v_cruise_helper.v_cruise_kph * CV.KPH_TO_MPH == pytest.approx(45, abs=0.3)
+
+  def test_accel_press_from_exact_slc_speed_moves_above_it(self):
+    self.enable(50 * CV.MPH_TO_MS, False)
+    slc_kph = round(50 * CV.MPH_TO_KPH, 1)
+    self.v_cruise_helper.v_cruise_kph = slc_kph
+    for pressed in (True, False):
+      cs = car.CarState(cruiseState={"available": True})
+      cs.buttonEvents = [ButtonEvent(type=ButtonType.accelCruise, pressed=pressed)]
+      self.v_cruise_helper.update_v_cruise(cs, enabled=True, is_metric=False, speed_limit_changed=False,
+                                           starpilot_toggles=self.starpilot_toggles, slc_target_with_offset=slc_kph * CV.KPH_TO_MS)
+
+    assert self.v_cruise_helper.v_cruise_kph * CV.KPH_TO_MPH == pytest.approx(51, abs=0.3)
+
   def test_rising_edge_enable(self):
     """
     Some car interfaces may enable on rising edge of a button,

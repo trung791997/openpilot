@@ -170,8 +170,15 @@ class VCruiseHelper:
 
     short_interval, long_interval = self._get_cruise_delta_intervals(starpilot_toggles)
     v_cruise_delta_interval = long_interval if long_press or button_is_hard else short_interval
-    v_cruise_delta = v_cruise_delta * v_cruise_delta_interval
+    # SLC stores exact conversions (50 mph = 80.5 kph), which drift off the 1.6 kph imperial grid as speed rises.
+    # Map an exact mph value onto the grid first, or a long press only moves to the nearest 5-unit multiple (80.0)
+    # instead of stepping a full 5 units. Route 0000025b: long-press - from an SLC 50 left vCruise at 49.7.
     previous_v_cruise_kph = self.v_cruise_kph
+    if not is_metric:
+      speed_mph = round(self.v_cruise_kph * CV.KPH_TO_MPH)
+      if abs(self.v_cruise_kph - speed_mph * CV.MPH_TO_KPH) <= 0.06:
+        self.v_cruise_kph = round(speed_mph * v_cruise_delta, 1)
+    v_cruise_delta = v_cruise_delta * v_cruise_delta_interval
     if v_cruise_delta_interval % 5 == 0 and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
     else:
