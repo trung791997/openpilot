@@ -5,7 +5,12 @@ import pytest
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.common.starpilot_variables import PLANNER_TIME, icbm_long_control_active
-from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_MAX_DECEL_RATE, PARAM_REFRESH_FRAMES, CurveSpeedController
+from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_GLOW_HOLD_TIME, CSC_GLOW_ON_DELTA, CurveSpeedController
+from openpilot.starpilot.controls.lib.curve_speed_controller_static import (
+  CSC_MAX_DECEL_RATE,
+  PARAM_REFRESH_FRAMES,
+  StaticCurveSpeedController,
+)
 from openpilot.starpilot.controls.lib.starpilot_vcruise import (
   FORCE_STOP_CAP_SLACK_M,
   FORCE_STOP_TURN_VETO_STOP_SEEN_HOLD_TIME,
@@ -41,7 +46,8 @@ class FakeParams:
     self.writes.append((key, value))
 
 
-def make_vcruise(*, red_light=False, raw_model_stopped=False, forcing_stop=False, nav_state=None, road_curvature=0.0):
+def make_vcruise(*, red_light=False, raw_model_stopped=False, forcing_stop=False, nav_state=None, road_curvature=0.0,
+                 manual_scaling=False):
   planner = SimpleNamespace(
     params=FakeParams(),
     params_memory=FakeParams({"NavInstructionState": nav_state or {}}),
@@ -54,8 +60,12 @@ def make_vcruise(*, red_light=False, raw_model_stopped=False, forcing_stop=False
     raw_model_stopped=raw_model_stopped,
     road_curvature=road_curvature,
     road_curvature_detected=False,
+    lateral_acceleration=0.0,
+    curve_profile=((), ()),
   )
   vcruise = StarPilotVCruise(planner)
+  if manual_scaling:
+    vcruise._select_csc_mode(True, 20.0)
   vcruise.forcing_stop = forcing_stop
   vcruise.force_stop_timer = 1.0 if forcing_stop else 0.0
   vcruise.tracked_model_length = 0.0 if forcing_stop else planner.model_length
@@ -83,12 +93,12 @@ def make_sm(*, standstill=True, min_steer_speed=0.0, car_fingerprint=""):
   }
 
 
-def update_vcruise(vcruise, sm, toggles, *, now, v_ego=0.0, controls_enabled=True):
+def update_vcruise(vcruise, sm, toggles, *, now, v_ego=0.0, v_cruise=20.0, controls_enabled=True):
   return vcruise.update(
     controls_enabled=controls_enabled,
     now=now,
     time_validated=True,
-    v_cruise=20.0,
+    v_cruise=v_cruise,
     v_ego=v_ego,
     sm=sm,
     starpilot_toggles=toggles,
@@ -101,6 +111,7 @@ def make_toggles():
     force_standstill=False,
     curve_speed_controller=False,
     csc_no_lead=False,
+    csc_manual_scaling=False,
     nav_longitudinal_allowed=False,
     speed_limit_controller=False,
     show_speed_limits=False,
@@ -146,11 +157,12 @@ def test_santa_fe_force_stop_tune_only_applies_to_that_car():
   assert get_force_stop_low_speed_hold(other) is None
 
 
-def test_curve_speed_controller_holds_target_through_brief_detector_dropout():
-  planner, vcruise = make_vcruise()
+def test_static_csc_holds_target_through_brief_detector_dropout():
+  planner, vcruise = make_vcruise(manual_scaling=True)
   sm = make_sm(standstill=False)
   toggles = make_toggles()
   toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
 
   def set_curve_target(_v_ego):
     vcruise.csc.target_set = True
@@ -172,11 +184,12 @@ def test_curve_speed_controller_holds_target_through_brief_detector_dropout():
   assert not vcruise.csc_controlling_speed
 
 
-def test_curve_speed_controller_releases_immediately_when_disabled():
-  planner, vcruise = make_vcruise()
+def test_static_csc_releases_immediately_when_disabled():
+  planner, vcruise = make_vcruise(manual_scaling=True)
   sm = make_sm(standstill=False)
   toggles = make_toggles()
   toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
 
   def set_curve_target(_v_ego):
     vcruise.csc.target_set = True
@@ -194,11 +207,12 @@ def test_curve_speed_controller_releases_immediately_when_disabled():
   assert not vcruise.csc_controlling_speed
 
 
-def test_curve_speed_controller_can_be_limited_to_driving_without_a_lead():
-  planner, vcruise = make_vcruise()
+def test_static_csc_can_be_limited_to_driving_without_a_lead():
+  planner, vcruise = make_vcruise(manual_scaling=True)
   sm = make_sm(standstill=False)
   toggles = make_toggles()
   toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
   toggles.csc_no_lead = True
 
   def set_curve_target(_v_ego):
@@ -218,11 +232,12 @@ def test_curve_speed_controller_can_be_limited_to_driving_without_a_lead():
   assert not vcruise.csc_controlling_speed
 
 
-def test_curve_speed_controller_stays_enabled_with_a_lead_by_default():
-  planner, vcruise = make_vcruise()
+def test_static_csc_stays_enabled_with_a_lead_by_default():
+  planner, vcruise = make_vcruise(manual_scaling=True)
   sm = make_sm(standstill=False)
   toggles = make_toggles()
   toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
   planner.starpilot_following.following_lead = True
   planner.road_curvature_detected = True
 
@@ -237,71 +252,17 @@ def test_curve_speed_controller_stays_enabled_with_a_lead_by_default():
   assert vcruise.csc_controlling_speed
 
 
-@pytest.mark.parametrize(
-  ("long_active", "gas_pressed"),
-  [(False, False), (True, True)],
-)
-@pytest.mark.skip(reason="this build replaces the CSC learner with a static CurveSpeedLateralAccel param, so curvature_data/training_timer do not exist (see ba1530965f)")
-def test_curve_speed_controller_learns_when_speed_is_manually_controlled(long_active, gas_pressed):
-  planner, vcruise = make_vcruise(road_curvature=0.02)
-  sm = make_sm(standstill=False)
-  sm["carControl"].longActive = long_active
-  sm["carState"].gasPressed = gas_pressed
-  toggles = make_toggles()
-  toggles.curve_speed_controller = True
-  planner.driving_in_curve = True
-  planner.road_curvature_detected = True
-  planner.lateral_acceleration = 2.4
-  vcruise.csc.training_timer = PLANNER_TIME
-
-  update_vcruise(vcruise, sm, toggles, now=50.0, v_ego=20.0)
-
-  assert vcruise.csc.enable_training
-  assert vcruise.csc.curvature_data["0.02"]["count"] == 1
-  assert not vcruise.csc_controlling_speed
 
 
-@pytest.mark.skip(reason="this build replaces the CSC learner with a static CurveSpeedLateralAccel param, so curvature_data/training_timer do not exist (see ba1530965f)")
-def test_curve_speed_controller_learns_when_longitudinal_override_event_is_active():
-  planner, vcruise = make_vcruise(road_curvature=0.02)
-  sm = make_sm(standstill=False)
-  sm["onroadEvents"] = [SimpleNamespace(overrideLongitudinal=True)]
-  toggles = make_toggles()
-  toggles.curve_speed_controller = True
-  planner.driving_in_curve = True
-  planner.road_curvature_detected = True
-  planner.lateral_acceleration = 2.4
-  vcruise.csc.training_timer = PLANNER_TIME
-
-  update_vcruise(vcruise, sm, toggles, now=50.0, v_ego=20.0)
-
-  assert vcruise.csc.enable_training
-  assert vcruise.csc.curvature_data["0.02"]["count"] == 1
 
 
-@pytest.mark.skip(reason="this build replaces the CSC learner with a static CurveSpeedLateralAccel param, so curvature_data/training_timer do not exist (see ba1530965f)")
-def test_curve_speed_controller_persists_data_after_leaving_curve():
-  planner, vcruise = make_vcruise(road_curvature=0.02)
-  sm = make_sm(standstill=False)
-  sm["carControl"].longActive = False
-  planner.driving_in_curve = True
-  planner.lateral_acceleration = 2.4
-  vcruise.csc.training_timer = PLANNER_TIME
-
-  vcruise.csc.log_data(20.0, sm)
-  assert not any(key == "CurvatureData" for key, _ in planner.params.writes)
-
-  planner.driving_in_curve = False
-  vcruise.csc.log_data(20.0, sm)
-
-  assert any(key == "CurvatureData" for key, _ in planner.params.writes)
 
 
-def test_curve_speed_controller_refreshes_lateral_accel_from_params_periodically():
+def test_static_csc_refreshes_lateral_accel_from_params_periodically():
   """No learner to publish memory params anymore -- log_data() instead re-reads the static
   slider param on a fixed cadence (PARAM_REFRESH_FRAMES) so a live edit takes effect without
   a restart. See curve_speed_controller.py's update_lateral_acceleration()."""
-  planner, vcruise = make_vcruise(road_curvature=0.02)
+  planner, vcruise = make_vcruise(manual_scaling=True, road_curvature=0.02)
   sm = make_sm(standstill=False)
 
   refresh_calls = []
@@ -322,14 +283,14 @@ def test_curve_speed_controller_refreshes_lateral_accel_from_params_periodically
   assert len(refresh_calls) == 2
 
 
-def test_curve_speed_controller_ramps_toward_curve_speed_at_bounded_rate():
+def test_static_csc_ramps_toward_curve_speed_at_bounded_rate():
   planner = SimpleNamespace(
     params=FakeParams(),
     road_curvature=0.004,
     time_to_curve=2.0,
     starpilot_weather=SimpleNamespace(weather_id=0, reduce_lateral_acceleration=0.0),
   )
-  controller = CurveSpeedController(SimpleNamespace(starpilot_planner=planner))
+  controller = StaticCurveSpeedController(SimpleNamespace(starpilot_planner=planner))
   controller.lateral_acceleration = 2.0
   controller.target_set = True
   controller.target = 30.0
@@ -340,14 +301,14 @@ def test_curve_speed_controller_ramps_toward_curve_speed_at_bounded_rate():
   assert controller.target > (controller.lateral_acceleration / planner.road_curvature) ** 0.5
 
 
-def test_curve_speed_controller_does_not_slow_for_curve_speed_above_ego():
+def test_static_csc_does_not_slow_for_curve_speed_above_ego():
   planner = SimpleNamespace(
     params=FakeParams(),
     road_curvature=0.001,
     time_to_curve=2.0,
     starpilot_weather=SimpleNamespace(weather_id=0, reduce_lateral_acceleration=0.0),
   )
-  controller = CurveSpeedController(SimpleNamespace(starpilot_planner=planner))
+  controller = StaticCurveSpeedController(SimpleNamespace(starpilot_planner=planner))
   controller.lateral_acceleration = 2.0
   controller.target_set = True
   controller.target = 28.0
@@ -1143,3 +1104,572 @@ def test_icbm_long_control_active_treats_engaged_icbm_as_active():
   assert icbm_long_control_active(False, True, alpha) is False
   # Plain stock long without ICBM never runs CSC.
   assert icbm_long_control_active(False, True, stock) is False
+
+
+# ---- Learned CSC (CurveSpeedManualScaling off, the default): upstream StarPilot's tests, merge base 249b03a3f5 ----
+
+def test_curve_speed_controller_blinker_releases_the_cap_but_keeps_the_plan():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  calls = []
+
+  def set_curve_target(_v_ego, _v_cruise):
+    calls.append(_v_ego)
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+  sm["carState"].leftBlinker = True
+  result = update_vcruise(vcruise, sm, toggles, now=10.25, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+  assert len(calls) == 2
+
+
+  sm["carState"].leftBlinker = False
+  result = update_vcruise(vcruise, sm, toggles, now=10.5, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_reseeds_after_a_real_dropout():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=11.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+
+  sm["carControl"].longActive = False
+  update_vcruise(vcruise, sm, toggles, now=11.05, v_ego=20.0)
+  assert not vcruise.csc_controlling_speed
+  assert vcruise.csc.seed_pending
+
+
+def test_curve_speed_controller_releases_immediately_when_disabled():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=20.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+  toggles.curve_speed_controller = False
+  result = update_vcruise(vcruise, sm, toggles, now=20.1, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_can_be_limited_to_driving_without_a_lead():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  toggles.csc_no_lead = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+
+  result = update_vcruise(vcruise, sm, toggles, now=30.0, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+  planner.starpilot_following.following_lead = True
+  result = update_vcruise(vcruise, sm, toggles, now=30.1, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_stays_enabled_with_a_lead_by_default():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  planner.starpilot_following.following_lead = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=40.0, v_ego=20.0)
+
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+@pytest.mark.parametrize(
+  ("long_active", "gas_pressed"),
+  [(False, False), (True, True)],
+)
+def test_curve_speed_controller_learns_when_speed_is_manually_controlled(long_active, gas_pressed):
+  planner, vcruise = make_vcruise(road_curvature=0.02)
+  sm = make_sm(standstill=False)
+  sm["carControl"].longActive = long_active
+  sm["carState"].gasPressed = gas_pressed
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  planner.driving_in_curve = True
+  planner.road_curvature_detected = True
+  planner.lateral_acceleration = 2.4
+  vcruise.csc.training_timer = PLANNER_TIME
+
+  update_vcruise(vcruise, sm, toggles, now=50.0, v_ego=20.0)
+
+  assert vcruise.csc.enable_training
+  assert vcruise.csc.curvature_data["0.02"]["count"] == 1
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_learns_when_longitudinal_override_event_is_active():
+  planner, vcruise = make_vcruise(road_curvature=0.02)
+  sm = make_sm(standstill=False)
+  sm["onroadEvents"] = [SimpleNamespace(overrideLongitudinal=True)]
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  planner.driving_in_curve = True
+  planner.road_curvature_detected = True
+  planner.lateral_acceleration = 2.4
+  vcruise.csc.training_timer = PLANNER_TIME
+
+  update_vcruise(vcruise, sm, toggles, now=50.0, v_ego=20.0)
+
+  assert vcruise.csc.enable_training
+  assert vcruise.csc.curvature_data["0.02"]["count"] == 1
+
+
+def test_curve_speed_controller_persists_data_after_leaving_curve():
+  planner, vcruise = make_vcruise(road_curvature=0.02)
+  sm = make_sm(standstill=False)
+  sm["carControl"].longActive = False
+  planner.driving_in_curve = True
+  planner.lateral_acceleration = 2.4
+  vcruise.csc.training_timer = PLANNER_TIME
+
+  vcruise.csc.log_data(20.0, sm)
+  assert not any(key == "CurvatureData" for key, _ in planner.params.writes)
+
+  planner.driving_in_curve = False
+  vcruise.csc.log_data(20.0, sm)
+
+  assert any(key == "CurvatureData" for key, _ in planner.params.writes)
+
+
+def test_csc_res_press_cancels_for_episode_and_rearms():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  curve_target = {"v": 14.0}
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = curve_target["v"]
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=60.0, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+  sm["starpilotCarState"].accelPressed = True
+  result = update_vcruise(vcruise, sm, toggles, now=60.05, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+  assert vcruise.csc_override
+
+
+  sm["starpilotCarState"].accelPressed = False
+  result = update_vcruise(vcruise, sm, toggles, now=60.1, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert vcruise.csc_override
+
+
+  curve_target["v"] = 20.0
+  update_vcruise(vcruise, sm, toggles, now=60.15, v_ego=20.0)
+  assert not vcruise.csc_override
+
+  curve_target["v"] = 14.0
+  result = update_vcruise(vcruise, sm, toggles, now=60.2, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_csc_res_press_does_not_latch_when_csc_was_not_active():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+
+  sm["starpilotCarState"].accelPressed = True
+  result = update_vcruise(vcruise, sm, toggles, now=70.0, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_override
+
+  sm["starpilotCarState"].accelPressed = False
+  result = update_vcruise(vcruise, sm, toggles, now=70.05, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_csc_res_press_defers_to_slc_confirmation():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=80.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+
+  vcruise.slc.speed_limit_changed_timer = 1.0
+  vcruise.slc.unconfirmed_speed_limit = 25.0
+  sm["starpilotCarState"].accelPressed = True
+  update_vcruise(vcruise, sm, toggles, now=80.05, v_ego=20.0)
+  assert not vcruise.csc_override
+
+  sm["starpilotCarState"].accelPressed = False
+  result = update_vcruise(vcruise, sm, toggles, now=80.1, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_ignores_a_trivial_graze():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 20.0 - (CSC_GLOW_ON_DELTA / 2.0)
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=160.0, v_ego=20.0)
+
+  assert result < 20.0
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_holds_through_a_brief_release():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  curve_target = {"v": 14.0}
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = curve_target["v"]
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=130.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+
+  curve_target["v"] = 20.0
+  now = 130.0
+  for _ in range(int((CSC_GLOW_HOLD_TIME - 0.2) / DT_MDL)):
+    now += DT_MDL
+    update_vcruise(vcruise, sm, toggles, now=now, v_ego=20.0)
+    assert vcruise.csc_controlling_speed
+
+  curve_target["v"] = 14.0
+  now += DT_MDL
+  update_vcruise(vcruise, sm, toggles, now=now, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_clears_once_the_release_sticks():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  curve_target = {"v": 14.0}
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = curve_target["v"]
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=140.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+  curve_target["v"] = 20.0
+  now = 140.0
+  for _ in range(int(CSC_GLOW_HOLD_TIME / DT_MDL) + 1):
+    now += DT_MDL
+    update_vcruise(vcruise, sm, toggles, now=now, v_ego=20.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_keeps_the_cap_when_signalling_mid_curve():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=150.0, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+
+
+  planner.driving_in_curve = True
+  sm["carState"].leftBlinker = True
+  result = update_vcruise(vcruise, sm, toggles, now=150.05, v_ego=20.0)
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+  planner.driving_in_curve = False
+  result = update_vcruise(vcruise, sm, toggles, now=150.1, v_ego=20.0)
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_lights_when_the_car_arrives_at_the_cap_from_below():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 22.0
+
+  vcruise.csc.update_target = set_curve_target
+
+  update_vcruise(vcruise, sm, toggles, now=120.0, v_ego=15.0, v_cruise=32.0)
+  assert not vcruise.csc_controlling_speed
+
+  result = update_vcruise(vcruise, sm, toggles, now=120.05, v_ego=22.0, v_cruise=32.0)
+  assert result == pytest.approx(22.0)
+  assert vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_stays_off_while_the_target_is_above_v_ego():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 26.0
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=90.0, v_ego=20.0, v_cruise=30.0)
+
+  assert result == pytest.approx(26.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_glow_holds_through_the_recovery_ramp():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  curve_target = {"v": 14.0}
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = curve_target["v"]
+
+  vcruise.csc.update_target = set_curve_target
+  update_vcruise(vcruise, sm, toggles, now=100.0, v_ego=20.0)
+  assert vcruise.csc_controlling_speed
+
+
+  curve_target["v"] = 18.0
+  update_vcruise(vcruise, sm, toggles, now=100.05, v_ego=15.0)
+  assert vcruise.csc_controlling_speed
+
+
+  curve_target["v"] = 20.0
+  now = 100.1
+  update_vcruise(vcruise, sm, toggles, now=now, v_ego=17.0)
+  assert vcruise.csc_controlling_speed
+
+  for _ in range(int(CSC_GLOW_HOLD_TIME / DT_MDL) + 1):
+    now += DT_MDL
+    update_vcruise(vcruise, sm, toggles, now=now, v_ego=17.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_curve_speed_controller_hysteresis_keeps_glow_off_for_marginal_targets():
+  planner, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  def set_curve_target(_v_ego, _v_cruise):
+    vcruise.csc.target = 19.7
+
+  vcruise.csc.update_target = set_curve_target
+  result = update_vcruise(vcruise, sm, toggles, now=50.0, v_ego=20.0)
+
+  assert result == pytest.approx(19.7)
+  assert not vcruise.csc_controlling_speed
+
+
+# ---- CurveSpeedManualScaling: which controller runs ----
+
+def test_csc_defaults_to_upstream_learned_controller():
+  _, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  update_vcruise(vcruise, sm, toggles, now=60.0, v_ego=20.0)
+
+  assert not vcruise.csc_manual_scaling
+  assert vcruise.csc is vcruise.csc_learned
+  assert isinstance(vcruise.csc, CurveSpeedController)
+
+
+def test_csc_manual_scaling_uses_static_slider_controller():
+  planner, vcruise = make_vcruise()
+  planner.params.values["CurveSpeedLateralAccel"] = 2.6
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = True
+
+  update_vcruise(vcruise, sm, toggles, now=61.0, v_ego=20.0)
+
+  assert vcruise.csc_manual_scaling
+  assert vcruise.csc is vcruise.csc_static
+  assert isinstance(vcruise.csc, StaticCurveSpeedController)
+  # the static controller answers the planner's telemetry interface with the slider value
+  assert vcruise.csc.learned_lat_accel(0.01) == vcruise.csc.lateral_acceleration
+  assert vcruise.csc.binding_distance == 0.0
+
+
+def test_csc_manual_scaling_is_ignored_when_csc_is_off():
+  _, vcruise = make_vcruise()
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = False
+  toggles.csc_manual_scaling = False  # starpilot_variables gates the toggle on CurveSpeedController
+
+  update_vcruise(vcruise, sm, toggles, now=62.0, v_ego=20.0)
+
+  assert vcruise.csc is vcruise.csc_learned
+  assert not vcruise.csc_controlling_speed
+
+
+@pytest.mark.parametrize("to_manual", [True, False])
+def test_csc_mode_switch_releases_the_outgoing_cap(to_manual):
+  planner, vcruise = make_vcruise(manual_scaling=not to_manual)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = not to_manual
+
+  if to_manual:
+    vcruise.csc.update_target = lambda _v_ego, _v_cruise: setattr(vcruise.csc, "target", 14.0)
+  else:
+    planner.road_curvature_detected = True
+
+    def set_static_target(_v_ego):
+      vcruise.csc.target_set = True
+      vcruise.csc.target = 14.0
+    vcruise.csc.update_target = set_static_target
+
+  assert update_vcruise(vcruise, sm, toggles, now=63.0, v_ego=20.0) == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+  outgoing = vcruise.csc
+
+  # flip the toggle with no curve under the incoming controller: the old cap must not survive
+  planner.road_curvature_detected = False
+  toggles.csc_manual_scaling = to_manual
+  if not to_manual:
+    vcruise.csc_learned.update_target = lambda _v_ego, v_cruise: setattr(vcruise.csc_learned, "target", v_cruise)
+
+  result = update_vcruise(vcruise, sm, toggles, now=63.05, v_ego=20.0)
+
+  assert vcruise.csc is not outgoing
+  assert vcruise.csc_manual_scaling == to_manual
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+  assert not vcruise.csc_override
+
+
+def _icbm_curve_setup(manual_scaling, *, redneck_cruise=True):
+  planner, vcruise = make_vcruise(manual_scaling=manual_scaling)
+  sm = make_sm(standstill=False)
+  # Stock long: controlsd never sets longActive.
+  sm["carControl"] = SimpleNamespace(longActive=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+  toggles.csc_manual_scaling = manual_scaling
+  toggles.redneck_cruise = redneck_cruise
+  toggles.openpilot_longitudinal = False
+
+  def set_curve_target(_v_ego, *_args):
+    vcruise.csc.target_set = True
+    vcruise.csc.target = 14.0
+
+  vcruise.csc.update_target = set_curve_target
+  planner.road_curvature_detected = True
+  return vcruise, sm, toggles
+
+
+@pytest.mark.parametrize("manual_scaling", [False, True])
+def test_csc_slows_for_curve_under_icbm_stock_long(manual_scaling):
+  vcruise, sm, toggles = _icbm_curve_setup(manual_scaling)
+
+  result = update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
+
+  assert result == pytest.approx(14.0)
+  assert vcruise.csc_controlling_speed
+
+
+@pytest.mark.parametrize("manual_scaling", [False, True])
+def test_csc_stays_off_under_plain_stock_long(manual_scaling):
+  vcruise, sm, toggles = _icbm_curve_setup(manual_scaling, redneck_cruise=False)
+
+  result = update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
+
+  assert result == pytest.approx(20.0)
+  assert not vcruise.csc_controlling_speed
+
+
+def test_learner_does_not_train_while_icbm_holds_speed():
+  vcruise, sm, toggles = _icbm_curve_setup(False)
+  seen = []
+  vcruise.csc.log_data = lambda _v_ego, _sm, manual_speed_control=None: seen.append(manual_speed_control)
+
+  update_vcruise(vcruise, sm, toggles, now=10.0, v_ego=20.0)
+
+  assert seen == [False]

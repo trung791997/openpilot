@@ -166,9 +166,19 @@ def test_curve_speed_controller_no_lead_toggle_is_nested_under_csc():
 def test_curve_speed_controller_exposes_static_target_and_reset_action():
   csc = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
 
+  manual = csc["CurveSpeedManualScaling"]
+  assert manual["ui_type"] == "toggle"
+  assert manual["parent_key"] == "CurveSpeedController"
+  assert manual["is_parent_toggle"]
+  assert _declared_default("CurveSpeedManualScaling") == "0"
+
+  # the slider only shows under the manual-scaling toggle; the learned readouts sit under CSC
   target = csc["CurveSpeedLateralAccel"]
   assert target["ui_type"] == "numeric"
-  assert target["parent_key"] == "CurveSpeedController"
+  assert target["parent_key"] == "CurveSpeedManualScaling"
+  for key in ("CalibratedLateralAcceleration", "CalibrationProgress"):
+    assert csc[key]["ui_type"] == "readout"
+    assert csc[key]["parent_key"] == "CurveSpeedController"
   assert target["min"] == 1.5
   assert target["max"] == 3.0
   assert target["step"] == 0.1

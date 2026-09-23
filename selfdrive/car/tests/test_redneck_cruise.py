@@ -170,6 +170,47 @@ class TestRedneckCruise(unittest.TestCase):
     )
     self.assertAlmostEqual(104.4 * CV.KPH_TO_MS, target_speed)
 
+  def test_target_speed_caps_set_speed_at_csc_target(self):
+    for slc_mph in (0.0, 70.0):
+      with self.subTest(slc_mph=slc_mph):
+        target_speed = select_redneck_target_speed(
+          65.0 * CV.MPH_TO_KPH,
+          65.0 * CV.MPH_TO_MS,
+          65.0 * CV.MPH_TO_MS,
+          [65.0 * CV.MPH_TO_MS] * 3,
+          10,
+          allow_plan_decrease=False,
+          slc_target_speed_ms=slc_mph * CV.MPH_TO_MS,
+          csc_target_speed_ms=40.0 * CV.MPH_TO_MS,
+        )
+        self.assertAlmostEqual(40.0 * CV.MPH_TO_MS, target_speed)
+
+  def test_target_speed_csc_never_raises_set_speed(self):
+    target_speed = select_redneck_target_speed(
+      55.0 * CV.MPH_TO_KPH, 55.0 * CV.MPH_TO_MS, 0.0, [], 10,
+      csc_target_speed_ms=70.0 * CV.MPH_TO_MS,
+    )
+    self.assertAlmostEqual(55.0 * CV.MPH_TO_MS, target_speed)
+
+  def test_card_passes_csc_target_only_while_csc_controls(self):
+    for controlling, expected_mph in ((True, 40.0), (False, 65.0)):
+      with self.subTest(controlling=controlling):
+        starpilot_plan = SimpleNamespace(vCruise=40.0 * CV.MPH_TO_MS, cscControllingSpeed=controlling,
+                                         cscSpeed=40.0 * CV.MPH_TO_MS)
+        sm = MagicMock()
+        sm.seen = {"starpilotPlan": True, "longitudinalPlan": False, "radarState": False}
+        sm.valid = sm.seen.copy()
+        sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan}.__getitem__
+        card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), sm=sm,
+                               starpilot_toggles=SimpleNamespace(speed_limit_controller=False))
+        car_state = SimpleNamespace(vEgo=65.0 * CV.MPH_TO_MS, vCruise=65.0 * CV.MPH_TO_KPH,
+                                    cruiseState=SimpleNamespace(speedCluster=65.0 * CV.MPH_TO_MS))
+        car_control = SimpleNamespace(actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=False))
+
+        target_speed, _ = Car._get_redneck_target_speed(card, car_state, car_control)
+
+        self.assertAlmostEqual(expected_mph * CV.MPH_TO_MS, target_speed, places=3)
+
   def test_target_speed_respects_manual_lower_set_speed_with_slc(self):
     for internal_mph, slc_mph, expected_mph in ((55.0, 65.0, 55.0), (65.0, 55.0, 55.0)):
       with self.subTest(internal_mph=internal_mph, slc_mph=slc_mph):

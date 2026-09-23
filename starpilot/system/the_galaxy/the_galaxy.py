@@ -6175,8 +6175,8 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Curve Speed Controller setting can only be reset while parked."}), 403
 
-    # VFN's CSC uses a static lateral-acceleration target. Clear the legacy learner
-    # state as well so older clients do not retain stale calibration data.
+    # CSC has two modes (CurveSpeedManualScaling): the upstream learner and a static slider target.
+    # Reset both: clear the learner's collected data and put the slider back to its default.
     params.put("CurveSpeedLateralAccel", 2.0)
     params.put("CalibratedLateralAcceleration", 2.0)
     params.remove("CalibrationProgress")
@@ -6187,7 +6187,7 @@ def setup(app):
     params_memory.remove("CurvatureData")
 
     return jsonify({
-      "message": "Curve Speed Controller lateral-acceleration setting reset to the default.",
+      "message": "Curve Speed Controller data cleared and manual target reset to the default.",
       "updated": {
         "CurveSpeedLateralAccel": 2.0,
       },

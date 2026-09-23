@@ -486,9 +486,12 @@ class Car:
   def _get_redneck_target_speed(self, CS: car.CarState, CC: car.CarControl) -> tuple[float, bool]:
     starpilot_target_speed = 0.0
     slc_target_speed = 0.0
+    csc_target_speed = 0.0
     if self.sm.seen['starpilotPlan'] and self.sm.valid['starpilotPlan']:
       starpilot_plan = self.sm['starpilotPlan']
       starpilot_target_speed = float(starpilot_plan.vCruise)
+      if getattr(starpilot_plan, "cscControllingSpeed", False):
+        csc_target_speed = float(starpilot_plan.cscSpeed)
       if self.starpilot_toggles.speed_limit_controller:
         overridden_speed = float(starpilot_plan.slcOverriddenSpeed)
         slc_limit = float(starpilot_plan.slcSpeedLimit) + float(starpilot_plan.slcSpeedLimitOffset)
@@ -534,6 +537,7 @@ class Car:
       lead_distance_m=lead_distance_m,
       lead_rel_speed_ms=lead_rel_speed_ms,
       slc_target_speed_ms=slc_target_speed,
+      csc_target_speed_ms=csc_target_speed,
     ), lead_present
 
   def step(self):

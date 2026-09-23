@@ -1498,8 +1498,8 @@
       {
         "key": "CurveSpeedController",
         "label": "Curve Speed Controller",
-        "description": "Automatically slow down for upcoming curves using the configured lateral-acceleration target.",
-        "picker_description": "Slows for upcoming curves using the configured target.",
+        "description": "Automatically slow down for upcoming curves using data learned from your driving style, adapting to curves as you would. Turn on \"Manual Curve Scaling\" to use a fixed lateral-acceleration target instead.",
+        "picker_description": "Slows for upcoming curves using your driving history or a fixed target.",
         "data_type": "bool",
         "ui_type": "toggle",
         "is_parent_toggle": true,
@@ -1526,6 +1526,52 @@
         "settings_tier": "simple"
       },
       {
+        "key": "CalibratedLateralAcceleration",
+        "label": "Calibrated Lateral Accel",
+        "description": "The learned lateral acceleration from collected driving data. Higher values allow faster cornering. Not used while \"Manual Curve Scaling\" is on.",
+        "picker_description": "Learned cornering comfort from your driving data.",
+        "data_type": "float",
+        "ui_type": "readout",
+        "precision": 2,
+        "unit": " m/s²",
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "CalibrationProgress",
+        "label": "Calibration Progress",
+        "description": "How much curve data has been collected. Normal for the value to stay low.",
+        "picker_description": "How much curve data has been collected.",
+        "data_type": "float",
+        "ui_type": "readout",
+        "precision": 2,
+        "unit": "%",
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "ResetCurveData",
+        "label": "Reset Curve Data",
+        "description": "Clear the Curve Speed Controller's collected driving data and set the manual lateral-acceleration target back to 2.0 m/s².",
+        "ui_type": "action",
+        "action_label": "Reset",
+        "action_endpoint": "/api/curve_speed_controller/reset",
+        "confirm_message": "Clear collected curve data and reset the manual target to 2.0 m/s²?",
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "CurveSpeedManualScaling",
+        "label": "Manual Curve Scaling",
+        "description": "Off: StarPilot's default calibration learns your cornering comfort from how you drive. On: use one fixed lateral-acceleration target set with the slider.",
+        "picker_description": "Uses a fixed cornering target instead of the learned one.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "CurveSpeedController",
+        "is_parent_toggle": true,
+        "settings_tier": "simple"
+      },
+      {
         "key": "CurveSpeedLateralAccel",
         "label": "Curve Lateral Accel",
         "description": "Lateral acceleration allowed through curves, in m/s². Higher values corner faster; lower values slow down earlier and harder.",
@@ -1534,18 +1580,7 @@
         "min": 1.5,
         "max": 3.0,
         "step": 0.1,
-        "parent_key": "CurveSpeedController",
-        "settings_tier": "simple"
-      },
-      {
-        "key": "ResetCurveData",
-        "label": "Reset Curve Setting",
-        "description": "Reset the curve lateral-acceleration target to the default 2.0 m/s².",
-        "ui_type": "action",
-        "action_label": "Reset",
-        "action_endpoint": "/api/curve_speed_controller/reset",
-        "confirm_message": "Reset the curve lateral-acceleration target to 2.0 m/s²?",
-        "parent_key": "CurveSpeedController",
+        "parent_key": "CurveSpeedManualScaling",
         "settings_tier": "simple"
       },
       {

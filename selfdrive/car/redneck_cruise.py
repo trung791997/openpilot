@@ -50,7 +50,8 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
                                 lookahead_points: int, allow_plan_decrease: bool = True,
                                 lead_present: bool = False, lead_distance_m: float = 0.0,
                                 lead_rel_speed_ms: float = 0.0,
-                                slc_target_speed_ms: float = 0.0) -> float:
+                                slc_target_speed_ms: float = 0.0,
+                                csc_target_speed_ms: float = 0.0) -> float:
   target_speed_ms = float(speed_cluster_ms)
   if slc_target_speed_ms > 0:
     target_speed_ms = float(slc_target_speed_ms)
@@ -62,6 +63,11 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
     target_speed_ms = float(v_cruise_kph) * CV.KPH_TO_MS
   elif starpilot_target_speed_ms > 0:
     target_speed_ms = float(starpilot_target_speed_ms)
+
+  # Curve Speed Control publishes its own target (starpilotPlan.cscSpeed). The branches above
+  # use the driver set speed or SLC and never see it, so apply it here as a cap only.
+  if csc_target_speed_ms > 0:
+    target_speed_ms = min(target_speed_ms, float(csc_target_speed_ms))
 
   if allow_plan_decrease and len(plan_speeds_ms) > 0:
     lead_closing = lead_present and lead_rel_speed_ms < -LEAD_CLOSING_REL_SPEED_MIN_MS

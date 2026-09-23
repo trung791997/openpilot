@@ -4954,3 +4954,52 @@ diffs per variant vs `after`). `caprp.py` takes `TAG=b10` and `TAG=far` (env `FA
 parallel and skips existing outputs; run it with `TAGS="..."` from bash, because zsh doesn't word-split
 an unquoted `$R`. Colima was resized to 4 CPU / 4 GiB (2026-09-23). At 2 GiB, 6 parallel replays were
 OOM-killed; at 4 GiB, 3 run cleanly.
+
+## 75. Curve Speed Control: the upstream learner is the default again, and James's slider is behind a "Manual Curve Scaling" toggle. Static and unit evidence only; not driven.
+
+**What changed.** `starpilot/controls/lib/curve_speed_controller.py` is upstream StarPilot's learning
+controller again, verbatim from merge base 249b03a3f5 (unchanged on `Dom`). It does curvature-bucketed learning,
+override nudges, a RES-press cancel and far-field correction. James's single-slider static controller
+(ba1530965) moved to `curve_speed_controller_static.py` as `StaticCurveSpeedController`. The new param
+`CurveSpeedManualScaling` (BOOL, default **off**) picks between them. `StarPilotVCruise._select_csc_mode` swaps
+controllers live, and on any switch it releases the cap and flushes the learner.
+UI: the slider shows only when the toggle is on. The calibrated lat-accel readout, the progress readout and Reset show only when it is off
+(both the device settings and the Galaxy).
+
+**Behaviour change for current cars.** Default is now the learner, not the slider. To keep the old
+behaviour, turn Manual Curve Scaling on.
+
+**Upstream bug, not fixed (static evidence).** `_correct_far_field` clamps curvature at `MAX_CURVATURE=0.02`.
+On a hairpin the `CSC_MAX_LATERAL_ACCEL` cap (14.1 m/s) therefore never undercuts the 25 mph
+`CSC_MIN_SPEED` floor. Two upstream tests fail on `Dom` too. They are marked strict-xfail and no retune was done.
+
+**Artifacts.** `params_pyx.so` and `libcommon.a` were rebuilt per the larch64 recipe. There are 825 keys, the new key reads False, and the modes are unchanged.
+Tests: vcruise, both CSC suites and longitudinal_planner pass (xfails as above). Galaxy layout: 22 passed.
+navigation_params: 40 passed (needs Pillow in the container).
+
+## 76. ICBM never slowed for curves: two separate bugs, both fixed. Static and unit evidence only; not driven.
+
+The user reported, from road driving, that ICBM still does not slow for curves after item 73. Reading the code found two independent
+blocks. Either one alone would stop it.
+
+1. **CSC never became available under stock long.** `csc_available` required
+   `not is_manual_speed_control(sm)`, and that function is True whenever `carControl.longActive` is False.
+   longActive is always False under stock long. d9b0aa313 fixed the `long_control_active` term but
+   missed this one. The fix: `manual_speed_control = not long_control_active or is_user_overriding_longitudinal(sm)`,
+   using the ICBM-aware `long_control_active`. This is identical to before whenever ICBM is off. The learner's
+   `log_data` now takes this state too. Without it, the learner would treat every ICBM-held frame as
+   driver-controlled and train on stock ACC's curve speeds, so it would learn to slow less.
+2. **ICBM ignored the CSC target anyway.** `select_redneck_target_speed` uses `starpilotPlan.vCruise`
+   only when the car has no set speed. Once the car had a set speed, ICBM followed that set speed or the SLC target. The plan-decrease path only applied with a lead, a stop, or a
+   non-cruise source. New: card passes `cscSpeed` while `cscControllingSpeed` is true, and it is applied as a
+   cap only (it can never raise the set speed).
+
+Tests: `test_csc_slows_for_curve_under_icbm_stock_long` (both modes), `test_csc_stays_off_under_plain_stock_long`,
+`test_learner_does_not_train_while_icbm_holds_speed`, and three in `test_redneck_cruise.py`.
+`test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed` fails identically at HEAD (pre-existing).
+
+**To check on the next ICBM drive.** On a curve, `starpilotPlan.cscControllingSpeed` should go true, and
+the car's set speed should step down toward `cscSpeed` through DECEL_SET presses. The CSC target is computed from
+vEgo, while ICBM compares against cluster speed, so expect it to land ~1–2 mph under. The step rate is ICBM's
+button rate, so a sharp late curve may still be entered fast. The learner starts empty, so
+the first curves use its default lateral acceleration.

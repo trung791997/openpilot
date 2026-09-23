@@ -916,6 +916,7 @@ class StarPilotVariables:
                                                                      toggle.redneck_cruise) and \
                                     self.get_value("CurveSpeedController")
     toggle.csc_no_lead = self.get_value("CurveSpeedControllerNoLead", condition=toggle.curve_speed_controller)
+    toggle.csc_manual_scaling = self.get_value("CurveSpeedManualScaling", condition=toggle.curve_speed_controller)
     toggle.csc_status = self.get_value("ShowCSCStatus", condition=toggle.curve_speed_controller) or toggle.debug_mode
 
     toggle.goat_scream_alert = self.get_value("GoatScream")

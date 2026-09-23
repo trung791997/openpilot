@@ -329,11 +329,11 @@ class StarPilotPlanner:
     starpilotPlan.cscControllingSpeed = self.starpilot_vcruise.csc_controlling_speed
     starpilotPlan.cscSpeed = float(self.starpilot_vcruise.csc_target)
     starpilotPlan.cscTraining = self.starpilot_vcruise.csc.enable_training
-    # VFN's CSC is static rather than Dom's learned/override controller. Keep the
-    # shared telemetry fields meaningful without calling learner-only APIs.
-    starpilotPlan.cscOverridden = False
-    starpilotPlan.cscLearnedLatAccel = float(self.starpilot_vcruise.csc.lateral_acceleration)
-    starpilotPlan.cscBindingDistance = 0.0
+    # The static controller (CurveSpeedManualScaling on) answers the same interface: its slider
+    # value as the lat accel, no binding distance, and csc_override stays False.
+    starpilotPlan.cscOverridden = self.starpilot_vcruise.csc_override
+    starpilotPlan.cscLearnedLatAccel = float(self.starpilot_vcruise.csc.learned_lat_accel(self.road_curvature))
+    starpilotPlan.cscBindingDistance = float(self.starpilot_vcruise.csc.binding_distance)
 
     starpilotPlan.desiredFollowDistance = int(self.starpilot_following.desired_follow_distance)
     starpilotPlan.disableThrottle = (

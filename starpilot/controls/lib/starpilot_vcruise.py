@@ -6,7 +6,14 @@ from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 
 from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, CRUISING_SPEED, icbm_long_control_active
-from openpilot.starpilot.controls.lib.curve_speed_controller import CurveSpeedController, is_manual_speed_control
+from openpilot.starpilot.controls.lib.curve_speed_controller import (
+  CSC_ACTIVE_OFF_DELTA,
+  CSC_GLOW_HOLD_TIME,
+  CSC_GLOW_ON_DELTA,
+  CurveSpeedController,
+  is_user_overriding_longitudinal,
+)
+from openpilot.starpilot.controls.lib.curve_speed_controller_static import StaticCurveSpeedController
 from openpilot.starpilot.controls.lib.speed_limit_controller import SpeedLimitController
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_force_stop_distance_bias,
@@ -173,7 +180,13 @@ class StarPilotVCruise:
   def __init__(self, StarPilotPlanner):
     self.starpilot_planner = StarPilotPlanner
 
-    self.csc = CurveSpeedController(self)
+    # Two curve speed controllers, picked per frame by the CurveSpeedManualScaling toggle:
+    #   off (default): upstream StarPilot's learned controller, calibrated from your driving.
+    #   on: the static controller driven by the CurveSpeedLateralAccel slider.
+    self.csc_learned = CurveSpeedController(self)
+    self.csc_static = StaticCurveSpeedController(self)
+    self.csc_manual_scaling = False
+    self.csc = self.csc_learned
     self.slc = SpeedLimitController(self)
 
     self.forcing_stop = False
@@ -206,6 +219,10 @@ class StarPilotVCruise:
     self.csc_controlling_speed = False
     self.csc_target = 0.0
     self.csc_curve_last_seen_at = None
+    # Learned-mode state (upstream): glow hysteresis and the RES-press cancel.
+    self.csc_glow_release_timer = 0.0
+    self.csc_override = False
+    self.csc_manual_speed_control = True
 
   def _update_nav_instruction_state(self):
     raw = self.starpilot_planner.params_memory.get("NavInstructionState") or {}
@@ -235,6 +252,99 @@ class StarPilotVCruise:
   def _elapsed_seconds(now, since):
     delta = now - since
     return delta.total_seconds() if hasattr(delta, "total_seconds") else float(delta)
+
+  def _select_csc_mode(self, manual_scaling, v_cruise):
+    """Swap controllers when the toggle flips; release any cap the outgoing one held."""
+    if manual_scaling == self.csc_manual_scaling:
+      return
+
+    if not manual_scaling:
+      self.csc_static.target_set = False
+    else:
+      self.csc_learned.flush_data()
+      self.csc_learned.reset(v_cruise)
+
+    self.csc_manual_scaling = manual_scaling
+    self.csc = self.csc_static if manual_scaling else self.csc_learned
+    self.csc_controlling_speed = False
+    self.csc_target = v_cruise
+    self.csc_curve_last_seen_at = None
+    self.csc_glow_release_timer = 0.0
+    self.csc_override = False
+
+  def _update_static_csc(self, csc_available, now, v_cruise, v_ego, sm):
+    csc_curve_detected = csc_available and self.starpilot_planner.road_curvature_detected
+    if csc_curve_detected:
+      self.csc.update_target(v_ego)
+
+      self.csc_controlling_speed = True
+      self.csc_target = self.csc.target
+      self.csc_curve_last_seen_at = now
+    else:
+      csc_release_hold = bool(
+        csc_available and
+        self.csc_controlling_speed and
+        self.csc_curve_last_seen_at is not None and
+        self._elapsed_seconds(now, self.csc_curve_last_seen_at) < CSC_CURVE_RELEASE_HOLD_TIME
+      )
+      if not csc_release_hold:
+        self.csc.log_data(v_ego, sm)
+
+        self.csc_controlling_speed = False
+        self.csc.target_set = False
+        self.csc_curve_last_seen_at = None
+
+        self.csc_target = v_cruise
+
+  def _update_learned_csc(self, csc_available, long_control_active, v_cruise, v_ego, sm, starpilot_toggles):
+    # Upstream StarPilot's CSC block (merge base 249b03a3f5, unchanged on Dom), kept verbatim in behaviour.
+    csc_blinker_on = ((sm["carState"].leftBlinker or sm["carState"].rightBlinker) and
+                      not self.starpilot_planner.driving_in_curve)
+    csc_was_controlling = self.csc_controlling_speed
+
+    slc_confirmation_pending = self.slc.speed_limit_changed_timer > DT_MDL and self.slc.unconfirmed_speed_limit >= 1
+    csc_accel_button = bool(sm["starpilotCarState"].accelPressed) and not slc_confirmation_pending
+
+    if csc_was_controlling and csc_accel_button:
+      self.csc_override = True
+    if not (long_control_active and starpilot_toggles.curve_speed_controller):
+      self.csc_override = False
+
+    if csc_available and not csc_blinker_on:
+      self.csc.update_target(v_ego, v_cruise)
+
+      if self.csc_override and self.csc.target > v_cruise - CSC_ACTIVE_OFF_DELTA:
+        self.csc_override = False
+
+      if self.csc_override:
+        self.csc_controlling_speed = False
+        self.csc_glow_release_timer = 0.0
+        self.csc_target = v_cruise
+      else:
+        self.csc_target = self.csc.target
+
+        if self.csc_target < v_cruise - CSC_GLOW_ON_DELTA and v_ego >= self.csc_target - CSC_ACTIVE_OFF_DELTA:
+          self.csc_controlling_speed = True
+          self.csc_glow_release_timer = 0.0
+        elif self.csc_target > v_cruise - CSC_ACTIVE_OFF_DELTA:
+          self.csc_glow_release_timer += DT_MDL
+          if self.csc_glow_release_timer >= CSC_GLOW_HOLD_TIME:
+            self.csc_controlling_speed = False
+        else:
+          self.csc_glow_release_timer = 0.0
+    elif csc_available:
+      self.csc.update_target(v_ego, v_cruise)
+      self.csc_controlling_speed = False
+      self.csc_glow_release_timer = 0.0
+      self.csc_target = v_cruise
+    else:
+      self.csc.reset(v_cruise)
+      self.csc_controlling_speed = False
+      self.csc_glow_release_timer = 0.0
+      self.csc_target = v_cruise
+
+    self.csc.handle_override(v_ego, csc_was_controlling, sm, accel_button=csc_accel_button)
+    self.csc.log_data(v_ego, sm, manual_speed_control=self.csc_manual_speed_control)
 
   def _clear_standstill_force_stop_hold(self):
     self.standstill_force_stop_hold = False
@@ -563,7 +673,10 @@ class StarPilotVCruise:
 
     # Curve Speed Controller
     following_lead = bool(getattr(self.starpilot_planner.starpilot_following, "following_lead", False))
-    manual_speed_control = is_manual_speed_control(sm)
+    # Under ICBM, stock ACC holds speed and longActive stays False, so is_manual_speed_control()
+    # would call every engaged frame manual and CSC would never run. Use the ICBM-aware state.
+    manual_speed_control = not long_control_active or is_user_overriding_longitudinal(sm)
+    self.csc_manual_speed_control = manual_speed_control
     csc_available = (
       not force_stop_active and
       not self.forcing_stop and
@@ -573,28 +686,11 @@ class StarPilotVCruise:
       starpilot_toggles.curve_speed_controller and
       (not getattr(starpilot_toggles, "csc_no_lead", False) or not following_lead)
     )
-    csc_curve_detected = csc_available and self.starpilot_planner.road_curvature_detected
-    if csc_curve_detected:
-      self.csc.update_target(v_ego)
-
-      self.csc_controlling_speed = True
-      self.csc_target = self.csc.target
-      self.csc_curve_last_seen_at = now
+    self._select_csc_mode(bool(getattr(starpilot_toggles, "csc_manual_scaling", False)), v_cruise)
+    if self.csc_manual_scaling:
+      self._update_static_csc(csc_available, now, v_cruise, v_ego, sm)
     else:
-      csc_release_hold = bool(
-        csc_available and
-        self.csc_controlling_speed and
-        self.csc_curve_last_seen_at is not None and
-        self._elapsed_seconds(now, self.csc_curve_last_seen_at) < CSC_CURVE_RELEASE_HOLD_TIME
-      )
-      if not csc_release_hold:
-        self.csc.log_data(v_ego, sm)
-
-        self.csc_controlling_speed = False
-        self.csc.target_set = False
-        self.csc_curve_last_seen_at = None
-
-        self.csc_target = v_cruise
+      self._update_learned_csc(csc_available, long_control_active, v_cruise, v_ego, sm, starpilot_toggles)
 
     # Pfeiferj's Speed Limit Controller
     self.slc.starpilot_toggles = starpilot_toggles
