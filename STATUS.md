@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-17**
+**As of: 2026-09-23**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -14,6 +14,11 @@ firmware programme (RWD tunes, the `0x6A0..0x6A8` telemetry stub, the gain bench
 flashing, D-001..D-026) lives in the separate EPS knowledge-base repo and is **not** tracked
 here. Where the two touch — the CR-V lateral profile, the steering-ratio curves, the
 `extract_drives.py` lineage — that is recorded below as a cross-reference only.
+
+**Open topics to revisit** (parked by decision, not closed):
+- **Brake over-delivery and the low-speed stop-and-go jolt: item 72.** Parked 2026-09-23. Reopen
+  when there are about 10 or more low-speed gas-to-brake onsets (below 10 m/s) in rlogs. Today there
+  are 3. Also reopen if a drive reports the jolt again.
 
 ---
 
@@ -4607,6 +4612,9 @@ below the minimum command, so reaction lag does not explain them.
 - The routes predate and postdate the guard trims (237/241 against 258), so this is car behaviour,
   not a regression.
 
+**Superseded by item 72:** over-brake scales with brake depth, not onset rate, so the "fast brake
+onsets" wording in this heading and in point 4 is wrong.
+
 **What this does not establish.** Whether ECU overshoot depends on the command's rate (jerk) rather
 than its level. The data suggests rate, but no replay has varied it. On the road, a brake onset
 overshoot is conservative for collision but is felt as a jolt.
@@ -4617,3 +4625,70 @@ overshoot is conservative for collision but is felt as a jolt.
    stop-and-go jolt and does not change the peak deceleration available.
 3. Do not scale down saturated commands to cancel the overshoot. It would cut peak braking in exactly
    the emergencies where it is needed.
+
+## 72. Brake over-delivery scales with how hard openpilot asks, not how fast the brake builds; the close-lead cap is not the jolt's cause. Parked, open to revisit. Replay (log decode and closed-loop planner) evidence only.
+
+Follows item 71. Peter asked (1) whether a StarPilot planner guard causes the fast brake onset and
+could simply be deleted, as with the item 64-66 trims, and (2) for option 2 of item 71, an onset
+jerk limit. Result: no guard to delete, and option 2 is not supported. **Nothing changed in code.**
+
+**1. The 258 63:50 stop-and-go jolt runs through `get_close_lead_brake_cap`, but the cap is not
+the problem.** From 49.72 to 51.8 s `longitudinalPlan.aTarget` equals `closeLeadBrakeCap` on every
+frame. The first frame replaces the MPC's +0.45 with −0.81, because the cap arrives at full strength
+when projected TTC crosses `CLOSE_LEAD_BRAKE_CAP_MAX_TTC` (10 s). Its value is mostly
+`0.7 * aLeadK`, and here the lead really was braking (aLeadK to −2.7). A closed-loop replay from
+49.0 s (CL_TAU 0.35, lead not reactive) compares three runs:
+
+| Run | reaches −1.0 | peak cmd | min gap |
+|---|---|---|---|
+| cap on (as driven) | 49.81 s | −1.57 | 9.83 m |
+| cap off | 49.96 s | −1.75 | 9.89 m |
+| cap off below 10 m/s | same as off | −1.75 | 9.89 m |
+
+Without the cap, the MPC reaches −1.0 only 0.15 s later and then brakes harder. The cap was also kept
+by item 64 on highway gap evidence. It stays. The MPC's own swing is +0.45 to −1.0 in about 0.65 s.
+The car's `aEgo` of −3.0 against a −1.5 command came about 0.8 s later, while the command was steady.
+
+**2. All 79 brake onsets on the 7 item-71 routes.** An onset is the command crossing −1.0 from above
+−0.2, with none in the previous 4 s, followed by 3 s with long control engaged and no pedal.
+Over-brake is min `aEgo(t+0.35)` minus min command over those 3 s, pitch-corrected; negative means
+the car braked harder than asked.
+
+| onset rate (m/s³) | n | median over-brake | share worse than −0.8 |
+|---|---|---|---|
+| < 1 | 49 | −0.42 | 14% |
+| 1-2 | 8 | −0.37 | 0% |
+| 2-4 | 3 | −1.31 | 67% |
+| ≥ 4 | 19 | −0.11 | 5% |
+
+- Faster onsets over-brake **less**: the correlation of rate with over-brake is +0.46, where positive
+  means less over-brake.
+- The least-squares fit is `over = −0.13 + 0.019·rate + 0.268·cmd_min + 0.004·v`. Over-brake is about
+  27% of the requested depth, and rate and speed add nothing.
+- The worst case is 237 at 762 s: −3.5 requested, −5.98 delivered, at an onset of only 0.7 m/s³.
+- Gas-to-brake onsets (previous command ≥ +0.3), n = 16, have the same median as the rest (−0.40
+  against −0.38).
+
+**3. The one group that looks different is too small to act on.** The 2-4 m/s³ band has 3 onsets,
+2 of them 258's low-speed stop-and-go jolts:
+- 63:50 at 7.7 m/s: −1.6 requested, −3.04 delivered;
+- 2882 s at 2.4 m/s: −1.0 requested, −2.58 delivered.
+
+There are 6 onsets below 10 m/s in total. Rule 5 applies: do not tune on a handful of points.
+
+**Decision (Peter, 2026-09-23): leave it for now; it is a topic to revisit.** Onset-jerk limiting
+(item 71 option 2) is not supported by this data. Compensating for the ECU's depth-proportional
+over-delivery would lower brake commands and needs Peter's decision. If it is ever tried, it should
+be behind a toggle that defaults off, after replay, and never applied to saturated or emergency
+commands (item 71 option 3).
+
+**To revisit:** collect low-speed stop-and-go rlogs until there are about 10 or more onsets below
+10 m/s, then rerun `ob5.py` and `ob5sum.py` (in the `oprad-routes` volume at `/routes/an2`, not
+committed). The question is whether low-speed gas-to-brake flips over-brake beyond the 27% depth
+trend. If they do, retry option 2 there only.
+
+Scripts (not committed, in the `/routes/an2` volume):
+- `ob4.py`: plan, guard, lead and command trace.
+- `ob5.py`, `ob5sum.py`: the onset census.
+- The closed-loop replay is the item-64 `replay.py` plus a `CLC` env switch (`0` = cap off,
+  `v<thr>` = off below thr m/s).
