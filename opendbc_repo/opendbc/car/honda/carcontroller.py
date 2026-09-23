@@ -30,6 +30,30 @@ from openpilot.common.params import Params
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
+# ICBM counter sync (ICBMCounterSync, STATUS 77). Route 25b seg 3: the car stepped its set speed only
+# after two consecutive injected SCM_BUTTONS frames whose 2-bit COUNTER followed its own last frame
+# (3 of 3 clean pairs stepped, a lone in-sequence frame did not); the packer's free-running counter
+# hit that by chance. Synced presses go out right after each new car frame (25 Hz) with its
+# counter + 1: pressed for PRESS car frames, then released for the rest of the period.
+# + uses a longer period to limit overshoot above the target.
+ICBM_SYNC_PRESS_CAR_FRAMES = 2
+ICBM_SYNC_DECEL_PERIOD_CAR_FRAMES = 4
+ICBM_SYNC_ACCEL_PERIOD_CAR_FRAMES = 5
+
+
+def icbm_counter_sync_step(car_counter: int, last_car_counter: int, phase: int, decreasing: bool):
+  """One control frame of counter-synced ICBM presses.
+
+  Returns (counter to send or None, updated last_car_counter, updated phase).
+  """
+  if car_counter < 0 or car_counter == last_car_counter:
+    return None, last_car_counter, phase
+  period = ICBM_SYNC_DECEL_PERIOD_CAR_FRAMES if decreasing else ICBM_SYNC_ACCEL_PERIOD_CAR_FRAMES
+  phase %= period
+  counter = (car_counter + 1) % 4 if phase < ICBM_SYNC_PRESS_CAR_FRAMES else None
+  return counter, car_counter, (phase + 1) % period
+
+
 BOSCH_BRAKE_FORCE_ON = -0.12
 BOSCH_BRAKE_FORCE_RELEASE = -0.02
 
@@ -529,6 +553,8 @@ class CarController(CarControllerBase):
     self.last_pump_ts = 0.0
     self.stopping_counter = 0
     self.last_button_frame = 0
+    self.icbm_last_car_counter = -1
+    self.icbm_sync_phase = 0
 
     self.accel = 0.0
     self.speed = 0.0
@@ -832,7 +858,18 @@ class CarController(CarControllerBase):
           1: CruiseButtons.RES_ACCEL,
           2: CruiseButtons.DECEL_SET,
         }.get(getattr(CS, "redneck_send_button", 0))
-        if redneck_button is not None and (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
+        if redneck_button is None:
+          # Idle: the first press of the next run goes out on the next car frame.
+          self.icbm_sync_phase = 0
+        elif getattr(CS, "redneck_counter_sync", False):
+          counter, self.icbm_last_car_counter, self.icbm_sync_phase = icbm_counter_sync_step(
+            int(getattr(CS, "scm_buttons_counter", -1)), self.icbm_last_car_counter, self.icbm_sync_phase,
+            redneck_button == CruiseButtons.DECEL_SET)
+          if counter is not None:
+            can_sends.append(hondacan.spam_buttons_command(self.packer, self.CAN, redneck_button, self.CP.carFingerprint,
+                                                           counter=counter))
+            self.last_button_frame = self.frame
+        elif (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
           can_sends.append(hondacan.spam_buttons_command(self.packer, self.CAN, redneck_button, self.CP.carFingerprint))
           self.last_button_frame = self.frame
 

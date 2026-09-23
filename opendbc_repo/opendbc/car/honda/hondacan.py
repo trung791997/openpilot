@@ -238,11 +238,13 @@ def create_legacy_brake_command(packer, bus):
   return packer.make_can_msg("LEGACY_BRAKE_COMMAND", bus, {})
 
 
-def spam_buttons_command(packer, CAN, button_val, car_fingerprint, cruise_setting=0, ambient_light=None, bus=None):
+def spam_buttons_command(packer, CAN, button_val, car_fingerprint, cruise_setting=0, ambient_light=None, bus=None, counter=None):
   values = {
     'CRUISE_BUTTONS': button_val,
     'CRUISE_SETTING': cruise_setting,
   }
+  if counter is not None:
+    values['COUNTER'] = counter
   # Existing StarPilot callers should retain their previous payload; only the CAN-FD camera
   # takeover path explicitly echoes the live ambient-light byte.
   if ambient_light is not None:

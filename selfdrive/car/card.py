@@ -481,6 +481,7 @@ class Car:
     v_target_ms, lead_present = self._get_redneck_target_speed(CS, CC)
     send_button, v_target = self.redneck_cruise.run(CS, CC, v_target_ms, self.is_metric, lead_present=lead_present)
     self.CI.CS.redneck_send_button = send_button
+    self.CI.CS.redneck_counter_sync = bool(getattr(self.starpilot_toggles, "icbm_counter_sync", False))
     self.CI.CS.redneck_v_target = v_target
 
   def _get_redneck_target_speed(self, CS: car.CarState, CC: car.CarControl) -> tuple[float, bool]:

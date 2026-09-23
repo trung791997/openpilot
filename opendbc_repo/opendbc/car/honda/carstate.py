@@ -52,6 +52,8 @@ class CarState(CarStateBase):
 
     # Written by card.py each frame; read by the carcontroller to spam cruise buttons
     self.redneck_send_button = 0
+    self.redneck_counter_sync = False
+    self.scm_buttons_counter = -1
 
     self.steer_status_values = defaultdict(lambda: "UNKNOWN", can_define.dv["STEER_STATUS"]["STEER_STATUS"])
 
@@ -112,6 +114,7 @@ class CarState(CarStateBase):
     prev_cruise_setting = self.cruise_setting
     self.cruise_setting = cp.vl["SCM_BUTTONS"]["CRUISE_SETTING"]
     self.cruise_buttons = cp.vl["SCM_BUTTONS"]["CRUISE_BUTTONS"]
+    self.scm_buttons_counter = int(cp.vl["SCM_BUTTONS"]["COUNTER"])
     if self.CP.carFingerprint in (HONDA_BOSCH_RADARLESS | {CAR.HONDA_ACCORD_11G}):
       # The camera consumes this byte in SCM_BUTTONS too (adaptive high beam); preserve it when
       # openpilot temporarily takes over SCM_BUTTONS toward the camera.

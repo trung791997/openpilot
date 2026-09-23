@@ -5341,6 +5341,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "ICBMCounterSync",
+        "label": "ICBM Counter Sync (Honda, experimental)",
+        "description": "Honda Bosch only. Sends each ICBM button press with the message counter that follows the car's own button frame. On a logged drive the car only acted on about 1 in 4 ICBM presses, the ones that happened to have the right counter. This should make set-speed changes faster. Experimental: not yet driven.",
+        "picker_description": "Faster ICBM set-speed changes on Honda by matching the button message counter.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "GalaxyDeveloperMode",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "SubaruRedneckCruise",
         "label": "Subaru ICBM",
         "description": "On supported Subaru Impreza-family cars, use stock Resume/Set button presses to match the cluster set speed to StarPilot's target.",

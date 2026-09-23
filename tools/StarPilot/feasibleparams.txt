@@ -162,6 +162,7 @@ HondaTorqueLowPassFilter
 HondaVEgoStarting
 HondaVEgoStopping
 HumanLaneChanges
+ICBMCounterSync
 IconPack
 IgnoreIgnitionLine
 IncreaseFollowingLowVisibility

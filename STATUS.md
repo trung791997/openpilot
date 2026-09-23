@@ -5003,3 +5003,20 @@ the car's set speed should step down toward `cscSpeed` through DECEL_SET presses
 vEgo, while ICBM compares against cluster speed, so expect it to land ~1–2 mph under. The step rate is ICBM's
 button rate, so a sharp late curve may still be entered fast. The learner starts empty, so
 the first curves use its default lateral acceleration.
+
+## 77. ICBM counter sync: the car only counts button frames with the right message counter, so ICBM steps slowly. Fix is behind `ICBMCounterSync` (default off). Replay (log decode) evidence for the cause; the fix is static and unit tested only, not driven.
+
+**Finding (route 0000025b seg 3, 3:20–3:27).** The car's SCM_BUTTONS (0x296, bus 1) run at 25 Hz with a 2-bit COUNTER.
+ICBM's frames (~17 Hz) used the packer's own free-running counter. Only 9 of 34 ICBM frames had counter = car's last + 1.
+All 3 ICBM set-speed steps came right after **two consecutive in-sequence frames**. A lone in-sequence frame (205.685)
+did nothing. The pair at 206.1 fell inside a driver long press and is not counted. So the ~2–2.5 mph/s ICBM rate is
+counter luck, not the car's limit. n = 3 steps, so "two frames per press" is likely but not proven.
+
+**Change.** `ICBMCounterSync` (Honda + ICBM only; Galaxy, advanced). `carstate` exposes `scm_buttons_counter`. The
+carcontroller sends each press right after a new car frame carrying its counter + 1. A press lasts 2 car frames, then a release
+of 2 (−) or 3 (+) frames, via `icbm_counter_sync_step`. Expected rate is ~6 steps/s (−) and ~5 steps/s (+). The cluster lags ~0.1–0.2 s,
+so expect an overshoot of 1–2 steps. Off = the old path, unchanged. Params artifacts rebuilt (826 keys).
+Tests: `opendbc_repo/opendbc/car/honda/tests/test_icbm_counter_sync.py`.
+
+**Drive test.** On a straight road, let ICBM lower the set speed with the toggle off, then on. Compare mph/s and
+overshoot, and check the car raised no fault and ignored no frames.
