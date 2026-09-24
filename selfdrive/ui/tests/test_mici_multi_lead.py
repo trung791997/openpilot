@@ -4,7 +4,7 @@ import pytest
 
 from openpilot.selfdrive.ui.lib.starpilot_visuals import multi_lead_ui_enabled
 from openpilot.selfdrive.ui.mici.onroad import model_renderer as mr
-from openpilot.selfdrive.ui.mici.onroad.hud_renderer import icbm_ceiling_active
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import ICBM_SET_SPEED_SCALE, icbm_ceiling_active, set_speed_scale
 
 
 class FakeParams:
@@ -79,3 +79,14 @@ def test_overlay_without_adjacent_data_labels_only_in_lane_leads(overlay):
 
   assert labels == [(500, "22 mph")]
   assert fans == []
+
+
+@pytest.mark.parametrize("icbm, changed, expected", [
+  (True, False, ICBM_SET_SPEED_SCALE),  # persistent ICBM ceiling: compact box
+  (True, True, 1.0),                     # set speed just changed: stock pop-up size
+  (False, True, 1.0),
+  (False, False, 1.0),
+])
+def test_set_speed_scale(icbm, changed, expected):
+  assert set_speed_scale(icbm, changed) == expected
+  assert 0.4 < ICBM_SET_SPEED_SCALE < 0.7

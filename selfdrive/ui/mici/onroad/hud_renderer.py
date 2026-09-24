@@ -32,6 +32,13 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+# While ICBM holds the MAX box up it stays on screen the whole drive, so it draws at this
+# fraction of stock size (owner: "maybe make it smaller"); a set-speed change still pops it full size.
+ICBM_SET_SPEED_SCALE = 0.55
+
+
+def set_speed_scale(icbm_ceiling_active: bool, recently_changed: bool) -> float:
+  return ICBM_SET_SPEED_SCALE if icbm_ceiling_active and not recently_changed else 1.0
 
 SPEED_LIMIT_PROMPT_CARD_WIDTH = 500
 SPEED_LIMIT_PROMPT_CARD_HEIGHT = 208
@@ -429,9 +436,10 @@ class HudRenderer(Widget):
 
     x = rect.x
     y = rect.y
+    k = set_speed_scale(self._icbm_ceiling_active, recently_changed)
 
     # draw drop shadow
-    circle_radius = 162 // 2
+    circle_radius = 162 // 2 * k
     draw_circle_gradient_compat(x + circle_radius, y + circle_radius, circle_radius,
                                 rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
@@ -446,8 +454,8 @@ class HudRenderer(Widget):
     rl.draw_text_ex(
       self._font_display,
       set_speed_text,
-      rl.Vector2(x + 13 + 4, y + 3 - 8 - 3 + 4),
-      FONT_SIZES.set_speed,
+      rl.Vector2(x + (13 + 4) * k, y + (3 - 8 - 3 + 4) * k),
+      FONT_SIZES.set_speed * k,
       0,
       set_speed_color,
     )
@@ -456,8 +464,8 @@ class HudRenderer(Widget):
     rl.draw_text_ex(
       self._font_semi_bold,
       max_text,
-      rl.Vector2(x + 25, y + FONT_SIZES.set_speed - 7 + 4),
-      FONT_SIZES.max_speed,
+      rl.Vector2(x + 25 * k, y + (FONT_SIZES.set_speed - 7 + 4) * k),
+      FONT_SIZES.max_speed * k,
       0,
       max_color,
     )

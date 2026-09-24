@@ -5542,3 +5542,11 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - **Segment 1, about 62–71 s.** The left "lead" was 17–20 m to the side and partly off-screen. That is plausibly not an adjacent-lane car; the display shows whatever radard publishes.
 - **Label size.** At 32 px (13% of the 240 px screen) the label nearly matched the MAX text and ran into the wheel icon, as the owner noted ("a little big"). It is now 20 px with a 3 px gap.
 - **Tests.** 14/14 multi-lead tests pass.
+
+## 99. C4 MAX box drawn at 55% of stock size while ICBM holds it up. Replay render evidence, UI only.
+
+- **What changed.** The owner asked for a smaller box ("maybe make it smaller"). While ICBM holds the box on screen it now draws at 55% of stock size (`ICBM_SET_SPEED_SCALE`, `set_speed_scale()` in `selfdrive/ui/mici/onroad/hud_renderer.py`). The number, the "MAX" text and the drop shadow all scale.
+- **Unchanged.** For 2.5 s after the set speed changes, the box pops up at stock size, as it does without ICBM.
+- **Render check.** Route 265, segment 3, 180–200 s, rendered offline. The compact 50 MAX shows between ceiling changes, and the full-size box shows right after each change.
+- **Harness fix.** The offline harness now drives the UI clock (`rl.get_time`) from log time. Before, it read render wall time, so the length of the 2.5 s pop-up in the replay frames didn't match log time.
+- **Tests.** The UI suite ran 505 passed and 7 failed. All 7 failures come from tests that were already failing before this change (camera ROI, soundd, theme, camera cleanup). 4 new `set_speed_scale` cases are included.
