@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; pre-existing: 23e 4:54.6 genuine brake softened by the 0.10 bound itself). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5825,11 +5825,16 @@ The first nine routes (232–245) are alpha-long drives; the last eight are stoc
   - the item 102 checklist.
 
 **Pre-existing, not caused by this change (found in the same pass).**
-- 🟠 **23e 4:54.6: the 0.10 bound itself softens a genuine brake.**
-  - The bound fires on 21 frames at both thresholds and gives −1.21, against nobound −2.45. Live alpha logged −1.21; cmd was −3.03 and aEgo −3.84.
-  - Bearing 0.254, steer 30°, vision a −0.03.
-  - This is the 74e bound working as designed: vision does not see the brake, so the cap is 1.5. Here, though, the lead was a real hard brake.
-  - It needs its own look before 74e is trusted on tight curves. Is this a cut-in on a curve, or a vision miss?
+- ✅ **23e 4:54.6 (corrected on follow-up, same day): this is a live alpha false brake that the bound now removes, not a genuine brake it softens.** The first version of this entry had it the wrong way round.
+  - **Why it was labelled genuine:** on the alpha-long routes, "cmd" is alpha's own logged command, not an independent stock reference. 23e ran build 0756f8103, which predates the 74e bound (f561b6f, 2026-09-23). On the drive the logged plan went to −2.83 and the command to −3.03, and the car reached −3.5.
+  - **The lead was in our lane on a tight left curve.** Steer was +29°, radar y +9 m at 37 m, bearing 0.25. At the estimated turn radius of about 80 m, the arc puts the in-lane car roughly 8.3 m to the side, which matches. Vision agrees on the object (x 36–37 m, y −8.4, p 0.97–0.99).
+  - **Radar and vision disagree about its speed:**
+    - Radar lead speed (vEgo + vRel) goes 17.5 → 12.5 → 15.8 m/s over 294.0–297.0, and aLeadK reads −3.2.
+    - Vision holds v 15.0–15.6 with a −0.03 to +0.14 throughout.
+    - A real car does not shed 5 m/s and regain 3.3 m/s in 3 s. This is the 74e radial range-rate signature.
+  - **What happened next:** after the brake the gap opened from 37 m to 44 m while vision's lead speed held. The driver pressed the brake at 295.8 (disengaging) and then the gas at 298.3 (`gasPressedOverride`). That is consistent with overriding an unwanted brake, but it does not prove it.
+  - **Replay result:** the replayed current planner gives −1.21 against −2.45 without the bound, the same at both thresholds. The bound was doing its job.
+  - **The labelling caveat is wider than this episode.** 23 of the 125 "genuine" episodes are genuine only because alpha's own command went below −2.0, with vision a above −1.0. Four had bounded frames: 236 14:18.0, 23e 4:54.6, 241 9:09.5 and 245 0:40.4. None changed between 0.10 and 0.075, so the ship decision stands. Future passes should label alpha-long episodes by vision or by an independent reference, not by alpha's own command.
 - **241 4:56.0 and 237 18:38.6:** alpha is far shallower than cmd (−1.72 vs −3.24, −1.38 vs −2.60) at all four variants, including nobound. It is not the bound. It is on the item 103 "stock is deeper" list.
 
 **What this does not settle.**
