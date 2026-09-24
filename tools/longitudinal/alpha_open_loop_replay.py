@@ -334,9 +334,17 @@ def episodes(frames: list[Frame], thr: float) -> list[dict]:
       for key in ("a_alpha", "a_nobound", "accel_cmd", "a_ego"):
         ep["cross"][f"{key}@{thr_c}"] = next((frames[i].t for i in idx if getattr(frames[i], key) < thr_c), None)
     ep["lead_trace"] = [[round(frames[i].t, 2), frames[i].lead] for i in idx[::10]]
+    # Lag = alpha crossing minus stock crossing at the same threshold (STATUS 103). Positive: alpha trails.
+    ep["lag"] = {}
+    for thr_c in CROSS_LEVELS:
+      t_alpha = ep["cross"][f"a_alpha@{thr_c}"]
+      for key, name in (("accel_cmd", "cmd"), ("a_ego", "aego")):
+        t_stock = ep["cross"][f"{key}@{thr_c}"]
+        ep["lag"][f"{name}@{thr_c}"] = t_alpha - t_stock if t_alpha is not None and t_stock is not None else None
+    # Ramp-start lags are kept for reference only; they move by seconds on gentle pre-brake stretches.
     ar = ep["a_alpha"]["ramp"]
-    ep["lag_cmd"] = ar - ep["accel_cmd"]["ramp"] if ar is not None and ep["accel_cmd"]["ramp"] is not None else None
-    ep["lag_aego"] = ar - ep["a_ego"]["ramp"] if ar is not None and ep["a_ego"]["ramp"] is not None else None
+    ep["ramp_lag_cmd"] = ar - ep["accel_cmd"]["ramp"] if ar is not None and ep["accel_cmd"]["ramp"] is not None else None
+    ep["ramp_lag_aego"] = ar - ep["a_ego"]["ramp"] if ar is not None and ep["a_ego"]["ramp"] is not None else None
     out.append(ep)
   return out
 
@@ -351,10 +359,12 @@ def print_report(meta: dict, frames: list[Frame], eps: list[dict], thr: float) -
                    f"segs {len(meta['segments'])}", f"BLoTv3 {meta.get('blotv3')}", f"bound {meta.get('bound_active')}",
                    f"ACC_CONTROL bus {meta.get('acc_control_bus')}"]))
   print(f"frames {len(frames)}, engaged {len(engaged)} ({len(engaged) * 0.05:.0f} s); episodes below {thr}: {len(eps)}")
-  # ramp = start of the run below -0.5 that leads into the minimum; lag = alpha ramp minus stock ramp
-  # (negative: alpha starts first). lag cmd compares command with command; lag aEgo is against the car's response.
+  # ramp = start of the run below -0.5 that leads into the minimum (context only, not used for lag).
+  # lag = alpha crossing minus stock crossing at the same threshold (positive: alpha trails); "-" when either
+  # side never crosses. lag cmd compares command with command; lag aEgo is against the car's response.
   hdr = ("start", "alpha min@t", "alpha ramp", "nobound min", "cmd min@t", "cmd ramp", "aEgo min@t", "aEgo ramp",
-         "lag cmd", "lag aEgo", "d", "vRel", "aLeadK", "brg", "brg max", "visA", "steer", "vEgo", "set<v", "src", "bound")
+         "lag cmd@-1.5", "lag aEgo@-1.5", "lag cmd@-2.5", "lag aEgo@-2.5",
+         "d", "vRel", "aLeadK", "brg", "brg max", "visA", "steer", "vEgo", "set<v", "src", "bound")
   print(" | ".join(hdr))
   for ep in eps:
     a, nb, ae, ac = ep["a_alpha"], ep["a_nobound"], ep["a_ego"], ep["accel_cmd"]
@@ -367,7 +377,8 @@ def print_report(meta: dict, frames: list[Frame], eps: list[dict], thr: float) -
       return fmt_t(x) if x is not None else "-"
     print(" | ".join([
       fmt_t(ep["start"]), at(a), ts(a["ramp"]), fnum(nb["min"]), at(ac), ts(ac["ramp"]), at(ae), ts(ae["ramp"]),
-      fnum(ep["lag_cmd"], 1), fnum(ep["lag_aego"], 1),
+      fnum(ep["lag"]["cmd@-1.5"], 1), fnum(ep["lag"]["aego@-1.5"], 1),
+      fnum(ep["lag"]["cmd@-2.5"], 1), fnum(ep["lag"]["aego@-2.5"], 1),
       fnum(ld.get("d"), 1), fnum(ld.get("vRel"), 1), fnum(ld.get("aLeadK"), 1), fnum(ld.get("bearing"), 3),
       fnum(ep["max_bearing"], 3), fnum(ld.get("visA"), 2), fnum(ep["steer_deg_max"], 0), fnum(ep["v_ego"], 1),
       "y" if ep["setspeed_below_vego"] else "", ep.get("src_at_alpha_min", "-"), str(ep["bound_frames"]),

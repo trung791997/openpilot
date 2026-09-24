@@ -5274,7 +5274,9 @@ the held mph for every set speed from 25 to 90 mph (unit test). Metric cars and 
 
 ## 89. All stock-ACC routes scanned for alpha-long readiness (25b, 25d, 25e, 25f, 260, 261, 262, 263). Replay evidence only; nothing driven.
 
-Scanner: `scan.py` in the session tmp dir (not committed). Per radarState frame it joins carState, `leadOne` (with `radarTrackId`, `radar`, `measuredRadar`) and the car's own `ACC_CONTROL.ACCEL_COMMAND` (bus 0), so the stock ACC acts as a second radar opinion. Braking driven by ICBM lowering the set speed is excluded (set >= vEgo - 0.5 m/s, vEgo > 2 m/s).
+Scanner: `scan.py` in the session tmp dir (not committed). Per radarState frame it joins carState, `leadOne` (with `radarTrackId`, `radar`, `measuredRadar`) and the car's own `ACC_CONTROL.ACCEL_COMMAND`, so the stock ACC acts as a second radar opinion. Braking driven by ICBM lowering the set speed is excluded (set >= vEgo - 0.5 m/s, vEgo > 2 m/s).
+
+**Correction (added with item 103):** this entry first said ACC_CONTROL was read on bus 0. On this car it is on bus 1. The stock values in the table are real ACC_CONTROL data (25b 15:34.7 at -2.69 matches item 74), so the counts stand. `scan.py` was never committed, so which bus it actually read cannot be re-checked.
 
 | Route (build) | cruise on | stock brake, no lead | hard-brake onsets / lead age < 1 s | closing lead, stock silent | dropouts < 2 s (cruise on) | radar->vision handoffs, step > 20 m | stops: lead held from |
 |---|---|---|---|---|---|---|---|
@@ -5616,7 +5618,7 @@ The owner asked (2026-09-24) to rerun 74c on the newer stock-ACC routes. The que
 - **Open loop:** ego follows what stock ACC actually did, so alpha's output never feeds back into the gap. When alpha brakes earlier or harder than stock, the replay cannot show the gap it would have opened.
 - **radarState** is the on-device log from each route's own build. The replay does not re-run radard. Planner code is at 6805d4a.
 - **CarParams are flipped** to alpha long (`openpilotLongitudinalControl=True`, `pcmCruise=False`). These routes log `longControlState=off` throughout. The replay therefore synthesizes `pid` when `cruiseState.enabled and not brakePressed`, and `off` otherwise.
-- **ACC_CONTROL (0x1DF) is on bus 1 on this car, not bus 0** as item 89 wrote. It is decoded with DBC `honda_civic_hatchback_ex_2017_can_generated`.
+- **ACC_CONTROL (0x1DF) is on bus 1 on this car, not bus 0** as item 89 first wrote (item 89 now carries a correction). It is decoded with DBC `honda_civic_hatchback_ex_2017_can_generated`.
 - **Standstill excluded:** `ACCEL_COMMAND` is held at −4.0 at standstill, so frames with vEgo ≤ 1.0 m/s are dropped.
 - **Toggles:** `starpilotToggles` is empty on these builds, so defaults apply. BLoTv3 is read from `initData` and was True on every route. The off-axis bound was active on every route.
 - **Episodes** merge within 3 s. Times are route time from `initData.logMonoTime`.
