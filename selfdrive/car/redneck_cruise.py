@@ -60,6 +60,10 @@ GAS_SNAP_PRESS_S = 0.2
 GAS_SNAP_INTERVAL_S = 0.6
 
 HONDA_MINIMUM_SET_SPEED_MPH = 25
+# Honda reports the set speed in whole km/h, truncated: 54 mph -> 86 km/h -> 53.4 mph, which rounds to 53. With a
+# 54 mph target, route 263 10:05-10:27 hunted +/- between 85, 86 and 88 km/h (~40 presses in 5 s, the dash beeps).
+# The truncation loses up to 0.62 mph, so adding half of that before rounding recovers the whole mph the car holds.
+HONDA_KPH_TRUNCATION_MPH = 0.5 * CV.KPH_TO_MPH
 HONDA_MINIMUM_SET_SPEED_KPH = 40
 
 CRUISE_BUTTON_TIMERS = {
@@ -274,7 +278,10 @@ class RedneckCruise:
     self.v_target_ms_last = apply_hysteresis(v_target_ms, self.v_target_ms_last, HYST_GAP * ms_conv)
     self.v_target = round(self.v_target_ms_last * speed_conv)
     self.v_cruise_min = get_minimum_set_speed(is_metric, getattr(self.CP, "brand", ""))
-    self.v_cruise_cluster = round(CS.cruiseState.speedCluster * speed_conv)
+    cluster = CS.cruiseState.speedCluster * speed_conv
+    if not is_metric and getattr(self.CP, "brand", "") == "honda":
+      cluster += HONDA_KPH_TRUNCATION_MPH
+    self.v_cruise_cluster = round(cluster)
 
   def _update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
     update_manual_button_timers(CS, self.cruise_button_timers)

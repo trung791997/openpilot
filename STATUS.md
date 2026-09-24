@@ -5258,3 +5258,16 @@ it would fire in exactly the five gas-over-set episodes (0:13.6, 7:23.4, 7:25.0,
 **Watch on the next drive:**
 - Pedal from 25 to 40 mph: the dash set speed follows within about half a second while the gas is still held, and there is no ramp after the release.
 - Listen for a beep on each snap press. If -/SET under gas beeps, tell me and I'll lengthen the interval.
+
+## 88. ICBM reads Honda's truncated km/h set speed as the right whole mph (Peter approved, 2026-09-23). Static and unit evidence only; not driven.
+
+**Why (limited road evidence, route `00000263--b8afdda0eb` 10:05-10:27).** Honda's `ACC_HUD CRUISE_SPEED` is whole km/h, truncated, so a 54 mph set
+speed arrives as 86 km/h = 53.4 mph and ICBM rounded it to 53. With a 54 mph target, ICBM pressed + (to 88 km/h = 55 mph), then - (back to 86),
+about 40 presses in 5 s, with many presses the car ignored. This is the likeliest source of the dash beeps Peter reported.
+
+**Change** (`RedneckCruise._update_calculations`): on a Honda in mph, add half a km/h (0.31 mph) before rounding the set speed. This recovers
+the held mph for every set speed from 25 to 90 mph (unit test). Metric cars and other brands are unchanged.
+
+**Tests (docker, per file).** `test_redneck_cruise`: 3 new tests pass. The pre-existing failure is unchanged.
+
+**Watch on the next drive:** no +/- flicker of the dash set speed near a steady target, and fewer beeps.

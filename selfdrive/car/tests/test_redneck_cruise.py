@@ -768,3 +768,23 @@ class TestRedneckGasSnap(unittest.TestCase):
     card, plan = floor_tests._card(toggle=False)
     floor_tests._run(card, plan, 38.0, True, 24.9, 32.0)
     self.assertFalse(card.redneck_gas_snap)
+
+
+class TestHondaClusterTruncation(unittest.TestCase):
+  def _cluster(self, kph, brand="honda", metric=False):
+    redneck = RedneckCruise(SimpleNamespace(brand=brand), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+    cs = SimpleNamespace(cruiseState=SimpleNamespace(speedCluster=kph * CV.KPH_TO_MS))
+    redneck._update_calculations(cs, 0.0, metric)
+    return redneck.v_cruise_cluster
+
+  def test_truncated_kph_reads_back_as_the_set_mph(self):
+    import math
+    for mph in range(25, 91):
+      self.assertEqual(mph, self._cluster(math.floor(mph * CV.MPH_TO_KPH)), mph)
+
+  def test_route_263_hunt_values(self):
+    self.assertEqual([53, 54, 55], [self._cluster(k) for k in (85, 86, 88)])
+
+  def test_metric_and_other_brands_unchanged(self):
+    self.assertEqual(86, self._cluster(86, metric=True))
+    self.assertEqual(53, self._cluster(86, brand="hyundai"))
