@@ -5580,3 +5580,19 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - **Evidence:** offline replay of route 263, seg 3, 221–241 s. All three labels show in the sampled frames, where before the side labels were mostly hidden. 1 new unit test.
 - **UI suite:** 514 passed. The same failures as STATUS 101 remain: 7 pre-existing, plus `test_raylib_ui`, which fails only in the full run and passes alone.
 - Not seen on the device.
+
+**Watch on the 2026-09-24 drive** (nothing below has been driven since it changed; bookmark each and send the route):
+- **Brake-affecting, first road check (items 94, 96).** `ICBMFarLead` and `ICBMCounterSync` both ship on.
+  - A stopped or much slower car seen far ahead should start the set speed walking down early, at about 6-7 steps/s, instead of waiting until radar fuses at around 30 m.
+  - Hold RES+ and then SET- for 3-5 s each while ICBM is active. Expected: the cluster walks 5 mph per ~0.5 s, and ICBM does nothing until 0.5 s after the release.
+  - After a long SET- hold, watch for the set speed getting stuck low with ICBM still pressing decel. That is the open residual in item 96.
+- **Sign (item 102).** With ICBM holding MAX and a speed-limit sign up:
+  - Check MAX, the divider, the limit and +5 are evenly spaced and readable at a glance.
+  - Catch a sign with **no** offset. That layout has never been rendered.
+  - Change the set speed: the stock pop-up should show top-left for about 2.5 s, then MAX folds back into the sign.
+  - With no sign, the compact MAX box should sit top-left.
+- **Side markers (item 102).**
+  - A car genuinely in the next lane should get a marker. Watch for one going missing on curves, at merges or exits, or where the outer lane line is faint.
+  - Nothing should be marked two lanes over or on the shoulder.
+  - Side labels should sit under their marker and slide outward, not overlap.
+- **Unchanged:** D-063 `BoschARailInterval` stays off unless you switch it on.
