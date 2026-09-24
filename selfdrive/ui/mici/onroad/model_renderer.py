@@ -580,7 +580,7 @@ class ModelRenderer(Widget):
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(lead_color, lead.fill_alpha))
 
     lead_one = radar_state.leadOne
-    if show_top_lead_info(self._lead_info_mode, self._multi_lead_ui) and lead_one and lead_one.status:
+    if show_top_lead_info(self._lead_info_mode, getattr(self, "_multi_lead_ui", False)) and lead_one and lead_one.status:
       self._draw_lead_info(lead_one)
 
   @staticmethod

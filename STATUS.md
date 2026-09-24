@@ -5556,3 +5556,14 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - **What changed.** Owner: "remove the lead speed on top of the screen too no? isnt that too redundant?" The number at the top centre comes from the Lead Info toggle (`LeadInfo`, mode speed), and it repeats the speed label under the lead marker (STATUS 97). `show_top_lead_info()` in `selfdrive/ui/mici/onroad/model_renderer.py` now hides it when the multi-lead UI is on and Lead Info is set to speed.
 - **Unchanged.** Distance mode still shows at the top, because the marker labels carry speed only. With the multi-lead UI off, the top readout behaves as before.
 - **Tests.** 5 new cases. UI suite: 510 passed; the 7 failures come from tests that were already failing before this change.
+
+## 101. C4: MAX folded into the speed-limit card. Replay render evidence, UI only.
+
+- Peter asked (2026-09-24): "fit both the max and the speed limit in the current speed limit box, with the max speed being on top". He also said the compact MAX box spacing was "a little off".
+- **Sign visible and ICBM holding the MAX:** the top-left box is not drawn. The speed-limit card grows by `MAX_BAND_HEIGHT` (72 px) and shows "MAX / 50", a divider, then the sign. This applies to US and Vienna signs. Gate: `combine_max_with_sign()` in `hud_renderer.py`.
+- **No sign:** the compact 55% box (STATUS 99) stays top-left, with "MAX" now centred under the number and the gap closed.
+- **Set-speed change:** for 2.5 s the stock full-size pop-up shows top-left, next to a plain sign. The card then takes the MAX back.
+- **Evidence:** offline replay render of route 263, seg 3, 221–231 s, all three cases (card / no sign forced / pop-up forced). The same render confirms STATUS 100: the top-centre lead readout is gone. 4 new unit cases.
+- **Fix from STATUS 100:** the attribute is read with `getattr` so that `test_lead_indicator`, which builds a bare `ModelRenderer`, passes again.
+- **UI suite:** 513 passed. The same 7 pre-existing failures remain, plus `test_raylib_ui`. That test fails only inside the full suite; it passes alone 3/3. It runs offroad and never draws the HUD.
+- Not seen on the device.

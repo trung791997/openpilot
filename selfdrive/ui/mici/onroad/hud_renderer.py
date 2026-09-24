@@ -40,6 +40,16 @@ ICBM_SET_SPEED_SCALE = 0.55
 def set_speed_scale(icbm_ceiling_active: bool, recently_changed: bool) -> float:
   return ICBM_SET_SPEED_SCALE if icbm_ceiling_active and not recently_changed else 1.0
 
+
+# Height of the MAX band stacked on top of the speed-limit sign (owner: "fit both the max and the speed limit
+# in the current speed limit box, with the max speed being on top").
+MAX_BAND_HEIGHT = 72
+
+
+def combine_max_with_sign(max_box_held: bool, sign_visible: bool, recently_changed: bool) -> bool:
+  """The persistent ICBM MAX folds into the speed-limit card; a set-speed change still pops the stock box."""
+  return max_box_held and sign_visible and not recently_changed
+
 SPEED_LIMIT_PROMPT_CARD_WIDTH = 500
 SPEED_LIMIT_PROMPT_CARD_HEIGHT = 208
 SPEED_LIMIT_PROMPT_BUTTON_SIZE = 112
@@ -143,6 +153,7 @@ class HudRenderer(Widget):
     # ICBM (RedneckCruise on a stock-ACC car): the MAX box stays up and shows the driver's own
     # ceiling (carState.vCruise) instead of fading 2.5 s after the stock setpoint moves.
     self._icbm_ceiling_active: bool = False
+    self._max_in_sign: bool = False
     self._egpu_fade_time: float = 0.0
     self._show_speed_limit: bool = False
     self._speed_limit: float = 0.0
@@ -429,6 +440,8 @@ class HudRenderer(Widget):
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
     """Draw the MAX speed indicator box."""
     recently_changed = 0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE
+    if self._max_in_sign:
+      return
     alpha = self._set_speed_alpha_filter.update((recently_changed or self._icbm_ceiling_active) and
                                                 self._can_draw_top_icons and self._engaged)
     if alpha < 1e-2:
@@ -451,24 +464,33 @@ class HudRenderer(Widget):
       set_speed *= KM_TO_MILE
 
     set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(set_speed))
-    rl.draw_text_ex(
-      self._font_display,
-      set_speed_text,
-      rl.Vector2(x + (13 + 4) * k, y + (3 - 8 - 3 + 4) * k),
-      FONT_SIZES.set_speed * k,
-      0,
-      set_speed_color,
-    )
+    speed_pos = rl.Vector2(x + (13 + 4) * k, y + (3 - 8 - 3 + 4) * k)
+    rl.draw_text_ex(self._font_display, set_speed_text, speed_pos, FONT_SIZES.set_speed * k, 0, set_speed_color)
 
     max_text = tr("MAX")
-    rl.draw_text_ex(
-      self._font_semi_bold,
-      max_text,
-      rl.Vector2(x + 25 * k, y + (FONT_SIZES.set_speed - 7 + 4) * k),
-      FONT_SIZES.max_speed * k,
-      0,
-      max_color,
-    )
+    max_pos = rl.Vector2(x + 25 * k, y + (FONT_SIZES.set_speed - 7 + 4) * k)
+    if k < 1.0:
+      # compact box: centre MAX under the number and close the gap (owner: "spacing ... a little off")
+      speed_w = measure_text_cached(self._font_display, set_speed_text, round(FONT_SIZES.set_speed * k)).x
+      max_w = measure_text_cached(self._font_semi_bold, max_text, round(FONT_SIZES.max_speed * k)).x
+      max_pos = rl.Vector2(speed_pos.x + (speed_w - max_w) / 2, y + (FONT_SIZES.set_speed - 16) * k)
+    rl.draw_text_ex(self._font_semi_bold, max_text, max_pos, FONT_SIZES.max_speed * k, 0, max_color)
+
+  def _max_band_text(self) -> str:
+    set_speed = self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE
+    return str(round(set_speed))
+
+  def _draw_max_band(self, card_rect: rl.Rectangle, color: rl.Color) -> None:
+    """MAX label + ceiling number across the top of the combined card, with a divider under it."""
+    cx = card_rect.x + card_rect.width / 2
+    max_label = tr("MAX")
+    label_size = measure_text_cached(self._font_semi_bold, max_label, 20)
+    rl.draw_text_ex(self._font_semi_bold, max_label, rl.Vector2(cx - label_size.x / 2, card_rect.y + 16), 20, 0, color)
+    number = self._max_band_text()
+    number_size = measure_text_cached(self._font_bold, number, 40)
+    rl.draw_text_ex(self._font_bold, number, rl.Vector2(cx - number_size.x / 2, card_rect.y + 32), 40, 0, color)
+    divider_y = card_rect.y + MAX_BAND_HEIGHT + 4
+    rl.draw_line_ex(rl.Vector2(card_rect.x + 20, divider_y), rl.Vector2(card_rect.x + card_rect.width - 20, divider_y), 2, color)
 
   def _draw_us_speed_limit_sign(
     self,
@@ -487,17 +509,19 @@ class HudRenderer(Widget):
     footer_top: float = 0.0,
     border_color = None,
     text_color = None,
+    draw_border: bool = True,
   ) -> None:
     border_color = border_color or rl.Color(255, 255, 255, sign_alpha)
     text_color = text_color or rl.Color(255, 255, 255, sign_alpha)
 
-    inner_border_rect = rl.Rectangle(
-      sign_rect.x + 8,
-      sign_rect.y + 8,
-      sign_rect.width - 16,
-      sign_rect.height - 16,
-    )
-    rl.draw_rectangle_rounded_lines_ex(inner_border_rect, 0.14, 16, max(border_thickness - 2, 1), border_color)
+    if draw_border:
+      inner_border_rect = rl.Rectangle(
+        sign_rect.x + 8,
+        sign_rect.y + 8,
+        sign_rect.width - 16,
+        sign_rect.height - 16,
+      )
+      rl.draw_rectangle_rounded_lines_ex(inner_border_rect, 0.14, 16, max(border_thickness - 2, 1), border_color)
 
     speed_label = tr("SPEED")
     limit_label = tr("LIMIT")
@@ -546,12 +570,18 @@ class HudRenderer(Widget):
     )
 
   def _draw_speed_limit(self, rect: rl.Rectangle) -> None:
+    self._max_in_sign = False
     if not self._show_speed_limit:
       return
 
     display_speed = self._speed_limit if self._speed_limit > 0 else self._pending_speed_limit
     if display_speed <= 0:
       return
+
+    recently_changed = 0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE
+    max_box_held = self._icbm_ceiling_active and self.is_cruise_set and self._engaged and self._can_draw_top_icons
+    self._max_in_sign = combine_max_with_sign(max_box_held, True, recently_changed)
+    band = MAX_BAND_HEIGHT if self._max_in_sign else 0
 
     sign_alpha = 72 if self._speed_limit_overridden and self._pending_speed_limit <= 0 else 255
     use_vienna_speed_limit = ui_state.ui_params.get_bool("UseVienna")
@@ -567,6 +597,16 @@ class HudRenderer(Widget):
     sign_x = base_x
     sign_y = rect.y + (28 if use_vienna_speed_limit else 20)
     widget_color = self._speed_limit_pulse_color(rl.Color(255, 255, 255, 255), sign_alpha)
+    if band:
+      card_rect = rl.Rectangle(sign_x, sign_y, sign_width, sign_height + band)
+      max_color = rl.Color(255, 255, 255, int(255 * 0.9))
+      if use_vienna_speed_limit:
+        rl.draw_rectangle_rounded(card_rect, 0.3, 16, rl.Color(0, 0, 0, 110))
+      self._draw_max_band(card_rect, max_color)
+      if not use_vienna_speed_limit:
+        border_rect = rl.Rectangle(card_rect.x + 8, card_rect.y + 8, card_rect.width - 16, card_rect.height - 16)
+        rl.draw_rectangle_rounded_lines_ex(border_rect, 0.1, 16, 2, widget_color)
+      sign_y += band
 
     if use_vienna_speed_limit:
       center_x = sign_x + sign_width / 2
@@ -612,6 +652,7 @@ class HudRenderer(Widget):
         footer_top=100,
         border_color=widget_color,
         text_color=widget_color,
+        draw_border=not band,
       )
 
   def _update_prompt_layout(self, rect: rl.Rectangle) -> None:

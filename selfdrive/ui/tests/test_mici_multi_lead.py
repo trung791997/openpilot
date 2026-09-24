@@ -4,7 +4,7 @@ import pytest
 
 from openpilot.selfdrive.ui.lib.starpilot_visuals import multi_lead_ui_enabled
 from openpilot.selfdrive.ui.mici.onroad import model_renderer as mr
-from openpilot.selfdrive.ui.mici.onroad.hud_renderer import ICBM_SET_SPEED_SCALE, icbm_ceiling_active, set_speed_scale
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import ICBM_SET_SPEED_SCALE, combine_max_with_sign, icbm_ceiling_active, set_speed_scale
 
 
 class FakeParams:
@@ -101,3 +101,13 @@ def test_set_speed_scale(icbm, changed, expected):
 ])
 def test_show_top_lead_info(mode, multi, expected):
   assert mr.show_top_lead_info(mode, multi) is expected
+
+
+@pytest.mark.parametrize("held, sign, changed, expected", [
+  (True, True, False, True),    # persistent ICBM MAX folds into the speed-limit card
+  (True, True, True, False),    # a set-speed change pops the stock box top-left
+  (True, False, False, False),  # no sign: compact box stays top-left
+  (False, True, False, False),  # no ICBM ceiling: plain sign
+])
+def test_combine_max_with_sign(held, sign, changed, expected):
+  assert combine_max_with_sign(held, sign, changed) == expected
