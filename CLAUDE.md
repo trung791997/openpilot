@@ -52,9 +52,14 @@ based on arbitrary task counts. Compacting too early destroys cache economics.
 
 Trigger `~/.claude/bin/auto-compact.sh` ONLY at these two moments:
 
-1. **The 180k Volume Ceiling:** when the active context crosses ~180,000 tokens.
-   - *Why:* the prompt-cache break-even point. The window's raw size is not a
-     reason to ride higher.
+1. **The 120k / 180k Volume Ceilings:** at ~120,000 tokens (soft), finish the
+   current sub-task and compact at the next natural stop; at ~180,000 tokens
+   (hard), compact now, before the next tool call.
+   - *Why:* 180k is the prompt-cache break-even point. The window's raw size is
+     not a reason to ride higher.
+   - The sensor thresholds live in `~/.claude/settings.json` →
+     `env`: `CLAUDE_COMPACT_SOFT=120000`, `CLAUDE_COMPACT_HARD=180000`,
+     `CLAUDE_COMPACT_WINDOW=300000`.
 2. **Major phase shifts:** immediately after a plan is finalized (not between
    spec and plan), or after closing a development loop (feature branch finished,
    major bug resolved). Not after trivial sub-tasks.
@@ -72,3 +77,17 @@ Discipline:
 - The call ends the turn. No further tool calls; anything else must travel in
   `<continuation>` or it races with /compact and gets wiped.
 - Don't compact at the end of a session with no next task.
+
+# Context-aware compact
+
+A hook injects `<context-usage>` when usage crosses a threshold (soft 120k,
+hard 180k):
+1. No tag → keep working.
+2. Soft tier (no `status`) → finish the sub-task, then call
+   `~/.claude/bin/auto-compact.sh "<summary>"` at the next natural stop.
+3. Hard tier (`status="critical"`) → stop before the next tool call, call
+   `~/.claude/bin/auto-compact.sh` now with a rich summary (+ continuation arg).
+
+If you are a subagent and see `status="critical"`, do NOT compact (your context
+is ephemeral). Stop and return a `<handoff>` with: done, remaining, findings,
+next-step (exact file/function/command), files-touched.
