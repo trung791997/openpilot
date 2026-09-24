@@ -1,0 +1,31 @@
+--- opendbc_repo/opendbc/car/honda/radar_interface.py	2026-09-23 17:16:17
++++ opendbc_repo/opendbc/car/honda/radar_interface.py	2026-09-23 20:19:17
+@@ -160,6 +160,9 @@
+ # This only lets the gates accept more; nothing is withheld that was published before, and the
+ # published vRel is still the rail itself.
+ BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS = 20.0
++# D' (replay experiment): the rail interval only vouches for a track near our path. Every replay
++# over-closer so far was a railed U11 on a track 24-32 m off-axis whose range closed at 7-10 m/s.
++BOSCH_A_RAIL_INTERVAL_MAX_Y_M = 2.0
+ # u10 is a genuine uncertainty on U11, but it is CONFOUNDED WITH DYNAMICS. Measured against an
+ # event-local reference (quadratic fit to a centred window, derivative at the centre) over 16,834
+ # frames: median |err| rises 0.26 -> 0.88 -> 1.44 -> 1.95 m/s across u10 bins 0-64 / 64-128 /
+@@ -702,7 +705,8 @@
+         if previous_sample is not None and now_s > previous_sample[0]:
+           ratio_vrel = _bosch_a_range_ratio_vrel(range_ratio_raw, dRel, now_s - previous_sample[0])
+         baselines = [range_anchor] if previous_sample in (None, range_anchor) else [range_anchor, previous_sample]
+-        range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded)
++        off_path = abs(yRel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M
++        range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded, exact=off_path)
+                              for baseline in baselines)
+         rail_admitted = not range_rejected and all(
+           _bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded, exact=True)
+@@ -711,7 +715,7 @@
+       if range_rejected:
+         track.inconsistent_run.clear()
+         track.rejected_run.append((now_s, dRel, direct_vrel, degraded))
+-        if _bosch_a_lasting_clean_step(track.rejected_run):
++        if _bosch_a_lasting_clean_step(track.rejected_run, exact=abs(yRel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M):
+           rail_admitted = not _bosch_a_lasting_clean_step(track.rejected_run, exact=True)
+           # D-057: the step has outlasted every returning excursion measured, cleanly and at the U11
+           # rate. Re-root the accepted history and the anchor on it and gate this sweep as passed.

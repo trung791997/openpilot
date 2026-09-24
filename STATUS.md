@@ -5271,3 +5271,48 @@ the held mph for every set speed from 25 to 90 mph (unit test). Metric cars and 
 **Tests (docker, per file).** `test_redneck_cruise`: 3 new tests pass. The pre-existing failure is unchanged.
 
 **Watch on the next drive:** no +/- flicker of the dash set speed near a steady target, and fewer beeps.
+
+## 89. All stock-ACC routes scanned for alpha-long readiness (25b, 25d, 25e, 25f, 260, 261, 262, 263). Replay evidence only; nothing driven.
+
+Scanner: `scan.py` in the session tmp dir (not committed). Per radarState frame it joins carState, `leadOne` (with `radarTrackId`, `radar`, `measuredRadar`) and the car's own `ACC_CONTROL.ACCEL_COMMAND` (bus 0), so the stock ACC acts as a second radar opinion. Braking driven by ICBM lowering the set speed is excluded (set >= vEgo - 0.5 m/s, vEgo > 2 m/s).
+
+| Route (build) | cruise on | stock brake, no lead | hard-brake onsets / lead age < 1 s | closing lead, stock silent | dropouts < 2 s (cruise on) | radar->vision handoffs, step > 20 m | stops: lead held from |
+|---|---|---|---|---|---|---|---|
+| 25b (e20a866, 7 segs) | 282 s | 1.7 s (15:34.7, -2.69, 48 mph; item 74 case) | 2 / 1 (15:33.4, 92 m, -8.2, age 0.6 s) | 0 | 15 | 9, 2 | no stops |
+| 25d (92a8c7a) | 408 s | 0 | 4 / 1 (1:45.7, 86 m, U11 rail, 50 mph, age 0.6 s) | 0 | 7 | 41, 1 | 30-111 m |
+| 25e (92a8c7a) | 888 s | 0.6 s (16:45.4, mid-dropout) | 8 / 1 (16:41.4, 48 m, age 0.4 s) | 0 | 14 | 33, 7 | 29-90 m |
+| 25f (817c6fb) | 893 s | 0 | 5 / 0 | 1 (2:44.6, 30 m, -7.2; driver disengaged 2 s later) | 29 | 23, 3 | 16-43 m |
+| 260 (f3952d8) | 376 s | 1.3 s (10:59.1, -1.16, 39 mph) | 6 / 1 (9:30.6 cut-in at 26 m, age 0.0 s) | 0 | 5 | 25, 6 | 22 m |
+| 261 (5047b96) | 546 s | 0 | 3 / 0 | 1 (6:53.3, 40 m, -11.3 unmeasured; driver disengaged 1 s later) | 10 | 9, 3 | 9 m |
+| 262 (314b857) | 409 s | 0 | 2 / 0 | 0 | 10 | 16, 0 | 34-49 m |
+| 263 (5969cac) | 955 s | 0 | 9 / 1 (6:17.4, 31 m, age 0.8 s) | 2 (6:18.2 24 m -9.3; 8:06.8 16 m -3.4) | 17 | 96, 43 | 28-105 m |
+
+What it says:
+- **The radar rarely misses what the car's own ACC brakes for.** Over 4,757 s of cruise, stock ACC braked harder than -0.5 with no lead in radarState for 3.6 s in total. The worst is the known item-74 case, 25b 15:33-15:36: the lead at 92 m (vRel -8.2) reached radarState 0.6 s before stock ACC started braking, then dropped for 1.7 s while stock braked to -2.69 at 48 mph (build e20a866, before D-054..D-063). The other is 260 10:59.1: the lead at 46 m vanished (radar -> vision at 88 m for 0.2 s -> nothing) while stock ACC braked -1.16 for 1.3 s, then stock accelerated again by 11:02, so the lead most likely left the lane. Of 37 hard-brake onsets, 36 had a lead in radarState; 4 had held it for under 1 s. 260 9:30.6 is a cut-in at 26 m acquired the same 50 ms stock ACC started braking.
+- **Radar -> vision handoffs are the largest alpha-long risk.** When the radar lead drops for 0.1-9 s, the vision lead reads 25-30 m farther at 50-85 m (263 9:14-14:13: radar 53-56 m, vision 78-86 m, repeatedly; 25e 15:40.9: 91 -> 59 m for 2 s at 49 mph goes the other way). Under stock ACC this is invisible; under alpha long the planner sees the lead jump away and back. 263 had 96 handoffs in 955 s (one per 10 s), 43 with a step over 20 m; the other routes 9-41. Whether vision ranges the same car long or picks the next car is not known from the logs. The 42 s vision-only stretch at 263 14:32 is a standstill behind a stopped car at 3.6 m (radar minimum range) and is benign.
+- **Dropouts** are short (median 0.2-0.35 s, max 1.95 s) and 90% return the same `radarTrackId`. Four happened during stock braking (263 6:16.6 at -2.25 is the one already noted in item 88's route review).
+- **Closing lead with no stock braking** (possible phantom or overstated vRel): 4 episodes, all under 2 s, and in 25f 2:44.6 and 261 6:53.3 the driver disengaged within 2 s, so the situation was real. Not investigated further.
+- **Stops:** every stop with cruise on had a lead; it was held continuously from 22-58 m (median per route) and seen stopped from about 10 m (25d: 19 m).
+- **vRel vs range slope (lead only, measured, same track, 1 s ahead):** bias -0.1 to -0.4 m/s under 70 m with |error| > 3 m/s in 0-9% of frames; at 70-110 m the spread is 2.2-3.3 m/s and 11-20% exceed 3 m/s. 260 70-110 m reads +2.0 (vRel understates closing: 10:28-10:31, 89 m, vRel -7.8) and 261 above 110 m +2.0.
+
+**Variant D' (D-063 rail interval only for tracks within 4 m of the path)** — `tools/bosch_a_variants/` patch not yet written; the replay module is the session's `ri_new6.py`. Same A/B as item 82 (over-closing = new measured vRel more than 3 m/s more closing than the next 1 s range slope):
+
+| Route | D over-closing / lost | D' over-closing / lost | Lead points lost | Lead gains |
+|---|---|---|---|---|
+| 25e | 12/55, 7 | 12/52, 0 | 0 | unchanged (track 59 from 79.5 m, 34/38 measured) |
+| 25f | 19/47, 1 | 19/47, 0 | 0 | none either way |
+| 260 | 0/0, 5 | 0/0, 0 | 0 | none |
+| 261 | 0/0, 0 | 0/0, 0 | 0 | unchanged |
+| 262 | 13/87, 8 | 10/27, 0 | 0 | none |
+| 263 | 0/23, 5 | 0/0, 0 | 0 | none (D's 23 new measured sweeps were all non-lead) |
+| 25d | 0/0, 0 | 0/0, 0 | 0 | none |
+
+D' removes every lost point (all were off-axis, 24-32 m) while keeping D's lead gains. The remaining over-closers are three non-lead tracks with U11 on the -13.5 rail while the range closed at 9-10 m/s (25e track 6 at 78-82 m, 25f track 33 at 60 m, 262 track 9 at 62 m), inside 4 m of the path, so an adjacent lane; and the single lead sweep 25e track 48 at 404.9 s (36.5 m, vRel -1.7 against +2.8) which D publishes where HEAD publishes nothing. **D'' (same, 2 m gate; `tools/bosch_a_variants/d063_variant_d2_inpath.patch`, applies on top of the variant D patch):** over-closing 1/35 (25e), 0/0 (25f), 0/2 (262); lost 0; lead gains identical (25e track 59 still 34/38 measured). The one remaining over-closer is the 25e track 48 lead sweep. So the adjacent-lane rail cases are gone and only the in-lane one is left.
+Decision stays as in item 82: not applied. D'' now meets item 82's bar except for that single lead sweep (a point HEAD does not publish at all); it is the candidate for the default-off alpha-long toggle.
+
+**Alpha-long watchlist for the first drive (limited road evidence for everything below):**
+1. Lead jumping 25-30 m away and back at 50-85 m on a straight road at 40-55 mph: radar -> vision handoff. Expect a brief throttle then brake. Bookmark it; the fix is in radard's lead arbitration, not the radar.
+2. Far fast closer above 70 m (25d 1:45.7 pattern): radar lead arrives 0.6 s before the car's own ACC brakes, with vRel on the rail. Alpha long will brake later or softer than stock did.
+3. Cut-ins under 30 m: radar acquires them as fast as stock ACC (260 9:30.6). Stopped cars: seen stopped from about 10 m; held from 20-60 m.
+4. Standstill: the radar has no return under ~4 m; the stopped lead is vision-only until the gap opens.
+5. Stock ACC never braked for something the radar had not seen for more than 1.3 s; the reverse (a radar lead stock ignored) happened 4 times, each under 2 s.
