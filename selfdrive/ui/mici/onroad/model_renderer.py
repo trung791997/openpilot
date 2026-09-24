@@ -67,6 +67,37 @@ ADJACENT_LEAD_MIN_ALPHA = 140
 # with the speed label right below it")
 ADJACENT_LEAD_SCALE = 0.7
 ADJACENT_LEAD_LABEL_FONT_SIZE = 16
+# radard's leadLeft/leadRight is any moving track past our own lane line, with no outer bound, so a car two
+# lanes over or a roadside return can hold it. The marker only draws for a lead inside the neighbouring lane
+# (owner: "only show up when there is an actual lead on that lane"). UI only; radard is unchanged.
+ADJACENT_LANE_OUTER_MIN_PROB = 0.3  # below this the far lane line is not trusted and our own lane width stands in
+ADJACENT_LANE_WIDTH_BOUNDS = (3.0, 4.5)
+ADJACENT_LANE_OUTER_MARGIN = 0.5  # m past the far line still counts, for a car riding its lane edge
+
+
+def lead_in_adjacent_lane(d_rel: float, y_rel: float, left: bool, lane_lines, lane_line_probs) -> bool:
+  """True when a radar lead sits between our lane line and the next one out on that side.
+
+  lane_lines are the four modelV2 lines as (N, 3) x/y/z arrays, left to right; model y == -yRel.
+  """
+  if len(lane_lines) < 4 or any(len(line) == 0 for line in lane_lines):
+    return False
+  if not (0.0 < d_rel <= float(lane_lines[1][-1, 0])):
+    return False
+
+  def y_at(i):
+    return float(np.interp(d_rel, lane_lines[i][:, 0], lane_lines[i][:, 1]))
+
+  inner_i, outer_i, sign = (1, 0, -1.0) if left else (2, 3, 1.0)
+  inner = y_at(inner_i)
+  if lane_line_probs[outer_i] >= ADJACENT_LANE_OUTER_MIN_PROB:
+    outer = y_at(outer_i)
+  else:
+    outer = inner + sign * float(np.clip(y_at(2) - y_at(1), *ADJACENT_LANE_WIDTH_BOUNDS))
+  outer += sign * ADJACENT_LANE_OUTER_MARGIN
+
+  model_y = -y_rel
+  return bool(min(inner, outer) < model_y < max(inner, outer))
 
 
 @dataclass
@@ -246,8 +277,10 @@ class ModelRenderer(Widget):
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
     if starpilot_radar_state is None:
       return
+    lane_lines = [line.raw_points for line in self._lane_lines]
     for i, lead_data in enumerate((starpilot_radar_state.leadLeft, starpilot_radar_state.leadRight)):
-      if lead_data and lead_data.status:
+      if lead_data and lead_data.status and lead_in_adjacent_lane(lead_data.dRel, lead_data.yRel, i == 0,
+                                                                  lane_lines, self._lane_line_probs):
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0

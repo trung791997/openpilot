@@ -123,3 +123,31 @@ def test_adjacent_lead_marker_is_smaller():
   side_w = side.chevron[0][0] - side.chevron[2][0]
   assert side_w == pytest.approx(full_w * mr.ADJACENT_LEAD_SCALE)
   assert mr.ADJACENT_LEAD_LABEL_FONT_SIZE < mr.LEAD_LABEL_FONT_SIZE
+
+
+def _straight_lanes(ys=(-5.4, -1.8, 1.8, 5.4)):
+  import numpy as np
+  x = np.linspace(0.0, 100.0, 11, dtype=np.float32)
+  return [np.stack([x, np.full_like(x, y), np.zeros_like(x)], axis=1) for y in ys]
+
+
+@pytest.mark.parametrize("y_rel, left, probs, expected", [
+  (3.6, True, (0.9, 0.9, 0.9, 0.9), True),     # centre of the left lane (model y == -yRel)
+  (-3.6, False, (0.9, 0.9, 0.9, 0.9), True),   # centre of the right lane
+  (9.0, True, (0.9, 0.9, 0.9, 0.9), False),    # two lanes over on the left
+  (-9.0, False, (0.9, 0.9, 0.9, 0.9), False),  # two lanes over on the right
+  (5.7, True, (0.9, 0.9, 0.9, 0.9), True),     # riding the far lane edge, inside the margin
+  (-3.6, True, (0.9, 0.9, 0.9, 0.9), False),   # right-lane car is not a left lead
+  (1.0, True, (0.9, 0.9, 0.9, 0.9), False),    # inside our own lane
+  (5.0, True, (0.0, 0.9, 0.9, 0.9), True),     # far line untrusted: our lane width (3.6) + margin stands in
+  (6.5, True, (0.0, 0.9, 0.9, 0.9), False),
+])
+def test_lead_in_adjacent_lane(y_rel, left, probs, expected):
+  assert mr.lead_in_adjacent_lane(40.0, y_rel, left, _straight_lanes(), probs) is expected
+
+
+def test_lead_in_adjacent_lane_needs_lane_lines_and_range():
+  probs = (0.9, 0.9, 0.9, 0.9)
+  assert not mr.lead_in_adjacent_lane(40.0, 3.6, True, [], probs)
+  assert not mr.lead_in_adjacent_lane(150.0, 3.6, True, _straight_lanes(), probs)  # past the model's lane lines
+  assert not mr.lead_in_adjacent_lane(-2.0, 3.6, True, _straight_lanes(), probs)
