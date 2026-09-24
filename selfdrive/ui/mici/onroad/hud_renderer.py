@@ -636,7 +636,7 @@ class HudRenderer(Widget):
         speed_top=74 if offset_text else 82,
         footer_text=offset_text,
         footer_font_size=20 if offset_text else 0,
-        footer_top=111,
+        footer_top=107,
         border_color=widget_color,
         text_color=widget_color,
       )

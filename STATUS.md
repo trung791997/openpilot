@@ -5570,7 +5570,7 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 
 ## 102. C4: MAX now fits inside the original speed-limit sign; side-lane markers are smaller and always labelled. Replay render evidence, UI only.
 
-- **MAX in the sign:** Peter said the tall card from STATUS 101 "takes up a lot of real estate". He wants MAX and the speed limit to "all fit in that original square". The sign keeps its original size, 116×142, and draws a single "MAX 50" line on top with a divider below it. SPEED LIMIT / 40 / +5 are shrunk to fit underneath. A Vienna sign gets the same MAX line inside the circle. `MAX_BAND_HEIGHT` is gone. The gating and pop-up behaviour from STATUS 101 are unchanged.
+- **MAX in the sign** (+5 moved up 4 px on 2026-09-24 so its gap to 40 matches the other rows; measured from the render): Peter said the tall card from STATUS 101 "takes up a lot of real estate". He wants MAX and the speed limit to "all fit in that original square". The sign keeps its original size, 116×142, and draws a single "MAX 50" line on top with a divider below it. SPEED LIMIT / 40 / +5 are shrunk to fit underneath. A Vienna sign gets the same MAX line inside the circle. `MAX_BAND_HEIGHT` is gone. The gating and pop-up behaviour from STATUS 101 are unchanged.
 - **Side-lane markers:** Peter asked for "slightly smaller, with the speed label right below it".
   - The side markers now draw at `ADJACENT_LEAD_SCALE` (0.7) and their labels at 16 px. In-path markers stay at 20 px.
   - A side label that would overlap another label now slides outward, away from the centre, instead of being hidden.
