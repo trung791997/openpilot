@@ -6317,7 +6317,7 @@ Candidate (sim evidence only, not driven): `LatGainSchedule = {"v_mph":[20,30,40
 
 The owner asked for a prototype of item 115's stage 3 before an offline schedule had been driven, so it is built but off by default. It is meant to run in **shadow** first.
 
-**What it is:** `selfdrive/controls/lib/lat_adaptive_tune.py`, hooked into `LatControlPID` on the modified-EPS path only. Tests are in `selfdrive/controls/tests/test_lat_adaptive_tune.py` (28 tests).
+**What it is:** `selfdrive/controls/lib/lat_adaptive_tune.py`, hooked into `LatControlPID` on the modified-EPS path only. Tests are in `selfdrive/controls/tests/test_lat_adaptive_tune.py` (29 tests).
 - **One knob:** a multiplicative factor on the P trim at knots 20/30/40/50 mph, interpolated like `LatGainSchedule` and applied after the bands and the schedule. I and F are not touched.
 - **Bounded:** 0.85–1.15. It moves at most one 0.05 step per knot per drive, and neighbouring knots may differ by at most 0.10.
 - **Never mid-drive:** during a drive it only measures. Statistics are saved to `LatAdaptiveStats` once a minute with `put_nonblocking`. The step happens at the next controlsd start and is written to `LatAdaptiveState`.
@@ -6333,7 +6333,7 @@ The owner asked for a prototype of item 115's stage 3 before an offline schedule
   4. Up if the curve ratio < 0.95 **and** sign changes < 0.8/s **and** onsets < 1.5/min.
   5. Otherwise hold.
 - **Modes:** `LatAdaptiveTune` 0 = off, with no Params reads beyond the mode and no writes; 1 = shadow, which learns and stores but always applies 1.0; 2 = apply. Any Params error turns it off for the drive.
-- **Tuning fingerprint:** the state stores a hash of the manual lateral gains (`TUNING_KEYS`: P/I/F bands, `LatGainSchedule`, Kp/Ki scale, centre scale/boost, LPF taus, override fade/scale).
+- **Tuning fingerprint:** the state stores a hash of the manual lateral gains (`TUNING_KEYS`: P/I/F bands, `LatGainSchedule`, Kp/Ki scale, centre scale/boost, LPF taus, override fade/scale, and `NrdrLatUseFirmwareVgr`).
   - If any of them differs at start, the factors reset to 1.0 and the previous drive's statistics are dropped.
   - `last` then reads `reset: manual lateral tuning changed`.
 - **Params:** `LatAdaptiveTune` (INT, 0), `LatAdaptiveState` and `LatAdaptiveStats` (STRING), all in `common/params_keys.h`.
@@ -6356,6 +6356,30 @@ The owner asked for a prototype of item 115's stage 3 before an offline schedule
 
 **What this means:** on the owner's logged driving this learner would almost always hold. The metrics sit inside the dead band, or the up-step is blocked by override onsets. It adds no P the owner has not already tried. In apply mode it could not have caused the 26b 32:40 or 48:10 events. It also would not have fixed them.
 
+**Why it trims only P, not I or F** (a design choice; for the owner write-up):
+1. **The three metrics cannot tell the terms apart.** A curve shortfall can be closed by more P, more I or more F. With three knobs on the same signals, the learner could trade one against another and never settle. The replay already showed this with one knob: 40 mph walked P to 1.15 to cover I 25, which is the fault the tuning fingerprint now resets. Letting it move I would make that kind of trade-off the normal case.
+2. **I is the risky term, and a 3-minute-per-knot drive cannot judge it.**
+   - I acts slowly. Its failure modes are slow weaving and windup carried past an override or out of a curve.
+   - In the sim, adding I on the highway raised straight sign changes from 0.27 to 0.42 /s (item 115); that is why highway I is 0.
+   - The integrator also freezes during override trips. Below 25 mph those come from EPS reaction torque at 6–32 per minute (item 114), so I measured there is distorted.
+3. **F already has a learner, and there is no evidence F is the wrong setting.**
+   - Feedforward is desired curvature times the car's steering response. openpilot already learns that response live (steer ratio, stiffness, angle offset: `NrdrLearn*`), and a second learner on F would fight it.
+   - In the sim, `LatFScaleLowSpeed` 50 → 100 had no effect (item 114).
+4. **One bounded knob keeps it auditable.** One number per knot, capped at ±15 %, one step per drive, with a reason for each step in `LatAdaptiveState`. I and F stay under the owner's manual control.
+
+Adding I or F later would need a signal specific to that term, then sim validation first:
+- **For F:** the curve-entry shortfall, before I has time to build.
+- **For I:** the residual error mid-way through a long, steady curve.
+
+That should wait until the P-only version has run in shadow for a while and its steps match what the owner feels.
+
+**How it sits with the firmware VGR table:**
+- All 19 replayed routes ran with `NrdrLatUseFirmwareVgr` = 1. The car is Civic Bosch with the `VGR_CIVIC_TBA_C020` flag set, so the firmware A table was in effect. It warps the angle that `VehicleModel` computes from the paramsd-learned `sR` into the target wheel angle.
+- The tuner measures tracking of that target in steering-wheel degrees, after the map. A map error (the firmware table corrects only the VGR pinion, not the whole chain) changes the path, not the tracking. The model corrects it by asking for a different curvature, so the tuner holds rather than covering it with P.
+- Switching the map (firmware table ↔ road-measured curve) moves the centre gain by about 10 % and changes the taper. It is therefore in `TUNING_KEYS` and resets the state.
+- The paramsd-learned `sR` is not in `TUNING_KEYS`, because it drifts continuously.
+- The replay above is unchanged by this, since the map setting never changed across the 19 routes.
+
 **Limits (read before enabling apply):**
 - Desired curvature is exogenous here too. A model-path error looks like a tracking error to the learner.
 - An override onset is either the driver or EPS reaction torque (item 114). Both count, so the learner errs toward not adding P.
@@ -6374,7 +6398,7 @@ The owner asked for a prototype of item 115's stage 3 before an offline schedule
   - It only matters on the modified-EPS PID path; the tuner is never constructed elsewhere.
 - **Optional:** a reset action that clears `LatAdaptiveState`, and a read-only view of its `factor` and `last`. Read-only is enough; the owner should never hand-edit the state.
 - **Item 12 applies:** Galaxy's `allowed_keys` comes from the compiled `common/params_pyx.so` registry, not the header. Until the device runs a build with the three new keys, the row will show "not editable". A device without the keys is harmless: `LatAdaptiveTuner` catches the unknown-key error and runs as off.
-- **Write-up:** the owner-facing description should be drawn from this item (what it measures, the rules, the 0.85–1.15 bound, one step per drive, the reset on manual tuning change, shadow first). Keep the evidence level: unit-test and log replay only, not driven.
+- **Write-up:** the owner-facing description should be drawn from this item (what it measures, the rules, the 0.85–1.15 bound, one step per drive, the reset on manual tuning change, why it trims only P, shadow first). Keep the evidence level: unit-test and log replay only, not driven.
 
 ### 116a. `LatAdaptiveTune` Galaxy dropdown (live) and params artifacts. Unit-test and static evidence only; not driven, not seen on device.
 

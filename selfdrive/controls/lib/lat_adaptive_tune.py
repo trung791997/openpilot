@@ -76,6 +76,11 @@ TUNING_KEYS = (
   "HondaCenterScale", "HondaCenterBoostThreshold", "HondaCenterBoostMinSpeed",
   "HondaTorqueLowPassFilter", "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway",
   "HondaOverrideTorqueScale", "HondaOverrideFadeUpSecs", "HondaOverrideFadeDownSecs",
+  # Selects the rack map that turns curvature into the target wheel angle (firmware VGR table vs
+  # the road-measured curve). Switching moves the centre gain ~10 % and the taper, so every angle
+  # the factor was learned against changes. The paramsd-learned ratio is deliberately not here:
+  # it drifts continuously, and resetting on it would mean never learning.
+  "NrdrLatUseFirmwareVgr",
 )
 
 _FIELDS = ("n", "n_act", "n_st", "e2_st", "sc", "n_cur", "ang_cur", "des_cur", "press")
