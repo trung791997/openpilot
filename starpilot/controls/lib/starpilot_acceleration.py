@@ -22,10 +22,10 @@ from openpilot.starpilot.common.accel_profile import (
 from openpilot.starpilot.common.longitudinal_personality_profiles import active_personality_id, interpolate_category_curve, resolve_personality_category
 from openpilot.starpilot.controls.lib.starpilot_vcruise import get_active_slc_control_target
 
-# HumanAcceleration, ported from FrogPilot-Testing 728f65472 (frogpilot_acceleration.py).
-# Only the max-accel (throttle) side; braking and min_accel are untouched. FrogPilot's
-# longcontrol "start from a_target" half is not ported: StarPilot's starting state already
-# clips a_target to [0, startAccel].
+# HumanAcceleration, ported from FrogPilot-Testing 728f65472 (frogpilot_acceleration.py) and always
+# on since STATUS 118 (no toggle). Only the max-accel (throttle) side; braking and min_accel are
+# untouched. FrogPilot's other half, the longcontrol starting state launching from a_target instead
+# of startAccel, is in longcontrol.py.
 HUMAN_ACCEL_CITY_SPEED_LIMIT = 25.  # m/s, FrogPilot CITY_SPEED_LIMIT
 
 
@@ -423,10 +423,10 @@ class StarPilotAcceleration:
       else:
         self.max_accel = get_max_accel_standard(v_ego, ev_tuning, truck_tuning)
 
-    if getattr(starpilot_toggles, "human_acceleration", False):
-      v_cruise = self.starpilot_planner.v_cruise
-      self.max_accel = get_max_accel_low_speeds(self.max_accel, v_cruise)
-      self.max_accel = min(get_max_accel_ramp_off(self.max_accel, v_cruise, v_ego), self.max_accel)
+    # HumanAcceleration, always on (STATUS 118).
+    v_cruise = self.starpilot_planner.v_cruise
+    self.max_accel = get_max_accel_low_speeds(self.max_accel, v_cruise)
+    self.max_accel = min(get_max_accel_ramp_off(self.max_accel, v_cruise, v_ego), self.max_accel)
 
     if self.starpilot_planner.starpilot_weather.weather_id != 0:
       self.max_accel -= self.max_accel * self.starpilot_planner.starpilot_weather.reduce_acceleration

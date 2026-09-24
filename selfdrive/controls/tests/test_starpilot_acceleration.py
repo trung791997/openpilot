@@ -284,13 +284,6 @@ def test_pulse_and_glide_is_inert_when_disabled():
   assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
 
 
-def test_human_acceleration_off_leaves_max_accel_unchanged():
-  accel = StarPilotAcceleration(FakePlanner(v_cruise=10.0))
-  accel.update(9.5, make_sm(), make_toggles())
-
-  assert accel.max_accel == pytest.approx(get_max_accel_standard(9.5, True, False))
-
-
 def test_human_acceleration_low_set_speed_scales_quarter_to_full():
   assert get_max_accel_low_speeds(2.0, 0.0) == pytest.approx(0.5)
   assert get_max_accel_low_speeds(2.0, 12.5) == pytest.approx(1.0)
@@ -306,14 +299,17 @@ def test_human_acceleration_ramps_off_toward_set_speed():
 
 
 @pytest.mark.parametrize("v_cruise,v_ego", [(10.0, 2.0), (10.0, 9.5), (30.0, 10.0), (30.0, 29.0), (30.0, 30.0)])
-def test_human_acceleration_on_applies_both_limits_and_leaves_braking(v_cruise, v_ego):
-  base = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
-  base.update(v_ego, make_sm(), make_toggles())
-  human = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
-  human.update(v_ego, make_sm(), make_toggles(human_acceleration=True))
+def test_human_acceleration_always_applies_both_limits_and_leaves_braking(v_cruise, v_ego):
+  # Baked in since STATUS 118: the HumanAcceleration toggle is no longer read.
+  off = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
+  off.update(v_ego, make_sm(), make_toggles(human_acceleration=False))
+  on = StarPilotAcceleration(FakePlanner(v_cruise=v_cruise))
+  on.update(v_ego, make_sm(), make_toggles(human_acceleration=True))
 
-  scaled = get_max_accel_low_speeds(base.max_accel, v_cruise)
+  raw = get_max_accel_standard(v_ego, True, False)
+  scaled = get_max_accel_low_speeds(raw, v_cruise)
   expected = min(get_max_accel_ramp_off(scaled, v_cruise, v_ego), scaled)
-  assert human.max_accel == pytest.approx(expected)
-  assert human.max_accel <= base.max_accel
-  assert human.min_accel == pytest.approx(base.min_accel)
+  for accel in (off, on):
+    assert accel.max_accel == pytest.approx(expected)
+    assert accel.max_accel <= raw
+  assert off.min_accel == pytest.approx(on.min_accel)
