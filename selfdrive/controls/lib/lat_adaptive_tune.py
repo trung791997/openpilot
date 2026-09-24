@@ -286,26 +286,41 @@ def update_state(state, stats, mode):
   return state
 
 
+def _read_mode(params):
+  try:
+    mode = int(float(params.get("LatAdaptiveTune") or 0))
+  except Exception:
+    return MODE_OFF
+  return mode if mode in (MODE_SHADOW, MODE_APPLY) else MODE_OFF
+
+
 class LatAdaptiveTuner:
   """Glue for LatControlPID. All Params I/O is here; observe() is arithmetic only, plus one
-  put_nonblocking a minute."""
+  put_nonblocking a minute.
+
+  The mode is live: LatControlPID calls refresh_mode() from its 300-frame (3 s) param refresh, so
+  the Galaxy dropdown takes effect mid-drive like the Lat*Scale rows. Only the mode is live; the
+  learned factors still step at most once, at the first activation in a drive. Switching shadow ->
+  apply mid-drive applies the stored factor at once (a P step of at most +-15 %, same class as a
+  live Lat*Scale edit); switching to off returns P to 1.0 at once and pauses learning."""
   def __init__(self, params):
     self.params = params
     self.mode = MODE_OFF
     self.state = default_state()
     self.stats = None
     self.frames = 0
+    mode = _read_mode(params)
+    if mode != MODE_OFF:
+      self._start(mode, blocking=True)
+
+  def _start(self, mode, blocking):
+    """Load the state, take this drive's step from the previous drive's stats, start collecting.
+    Runs once per drive, at the first activation (controlsd start, or mid-drive from Galaxy)."""
+    put = self.params.put if blocking else self.params.put_nonblocking
     try:
-      mode = int(float(params.get("LatAdaptiveTune") or 0))
-    except Exception:
-      mode = MODE_OFF
-    self.mode = mode if mode in (MODE_SHADOW, MODE_APPLY) else MODE_OFF
-    if self.mode == MODE_OFF:
-      return
-    try:
-      tuning = tuning_fingerprint({k: params.get(k) for k in TUNING_KEYS})
-      self.state = parse_state(params.get("LatAdaptiveState") or "")
-      prev_stats = DriveStats.from_json(params.get("LatAdaptiveStats") or "")
+      tuning = tuning_fingerprint({k: self.params.get(k) for k in TUNING_KEYS})
+      self.state = parse_state(self.params.get("LatAdaptiveState") or "")
+      prev_stats = DriveStats.from_json(self.params.get("LatAdaptiveStats") or "")
       dirty = False
       if self.state["tuning"] != tuning:
         # Manual tuning changed (or first start): what was learned was relative to other gains.
@@ -317,15 +332,35 @@ class LatAdaptiveTuner:
       if prev_stats is not None and prev_stats.tuning != tuning:
         prev_stats = None  # collected under different gains, or the gains changed during that drive
       if prev_stats is not None and prev_stats.has_data():
-        self.state = update_state(self.state, prev_stats, self.mode)
+        self.state = update_state(self.state, prev_stats, mode)
         dirty = True
       if dirty:
-        params.put("LatAdaptiveState", json.dumps(self.state, separators=(",", ":")))
-      params.put("LatAdaptiveStats", "")
+        put("LatAdaptiveState", json.dumps(self.state, separators=(",", ":")))
+      put("LatAdaptiveStats", "")
       self.stats = DriveStats(self.state["carry"], tuning)
+      self.mode = mode
     except Exception:
       self.mode = MODE_OFF
       self.state = default_state()
+      self.stats = None
+
+  def refresh_mode(self):
+    """Re-read LatAdaptiveTune mid-drive. Off -> on starts learning (once per drive); on -> off
+    saves what was collected and stops applying; shadow <-> apply only changes p_factor()."""
+    mode = _read_mode(self.params)
+    if mode == self.mode:
+      return
+    if mode == MODE_OFF:
+      if self.stats is not None and self.stats.has_data():
+        try:
+          self.params.put_nonblocking("LatAdaptiveStats", self.stats.to_json())
+        except Exception:
+          pass
+      self.mode = MODE_OFF
+    elif self.stats is None:
+      self._start(mode, blocking=False)
+    else:
+      self.mode = mode
 
   def p_factor(self, v_ego):
     if self.mode != MODE_APPLY:

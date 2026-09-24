@@ -235,3 +235,59 @@ class TestTuner:
     a = A.tuning_fingerprint({"LatPScaleStandard": b"100", "SomethingElse": "1"})
     assert a == A.tuning_fingerprint({"LatPScaleStandard": "100"})
     assert a != A.tuning_fingerprint({"LatPScaleStandard": "105"})
+
+
+class TestLiveMode:
+  """LatAdaptiveTune is a live Galaxy dropdown: LatControlPID calls refresh_mode() every 300 frames."""
+
+  def test_off_to_apply_mid_drive_takes_the_one_step_then_holds(self):
+    p = saved(FakeParams(LatAdaptiveTune="0"), drive(4, 30, curve_des=10, curve_ratio=0.9))
+    t = A.LatAdaptiveTuner(p)
+    assert t.mode == A.MODE_OFF and p.puts == []
+    p.values["LatAdaptiveTune"] = "2"
+    t.refresh_mode()
+    assert t.mode == A.MODE_APPLY
+    assert t.p_factor(30 * MPH) == pytest.approx(1.05)
+    assert p.values["LatAdaptiveStats"] == ""
+    p.values["LatAdaptiveTune"] = "1"
+    t.refresh_mode()
+    p.values["LatAdaptiveTune"] = "2"
+    t.refresh_mode()  # already started this drive: no second step
+    assert t.p_factor(30 * MPH) == pytest.approx(1.05)
+    assert json.loads(p.values["LatAdaptiveState"])["drives"] == 1
+
+  def test_shadow_apply_switch_only_changes_what_is_applied(self):
+    p = saved(FakeParams(LatAdaptiveTune="1"), drive(4, 30, curve_des=10, curve_ratio=0.9))
+    t = A.LatAdaptiveTuner(p)
+    assert t.p_factor(30 * MPH) == 1.0
+    p.values["LatAdaptiveTune"] = "2"
+    t.refresh_mode()
+    assert t.p_factor(30 * MPH) == pytest.approx(1.05)
+    p.values["LatAdaptiveTune"] = "1"
+    t.refresh_mode()
+    assert t.p_factor(30 * MPH) == 1.0
+
+  def test_off_mid_drive_restores_p_saves_stats_and_stops_learning(self):
+    p = FakeParams(LatAdaptiveTune="2")
+    s = A.default_state(fp(p))
+    s["factor"] = [1.0, 1.1, 1.1, 1.0]
+    p.values["LatAdaptiveState"] = json.dumps(s)
+    t = A.LatAdaptiveTuner(p)
+    assert t.p_factor(30 * MPH) == pytest.approx(1.1)
+    for _ in range(100):
+      t.observe(30 * MPH, 0.0, 0.5, False, False, False)
+    p.values["LatAdaptiveTune"] = "0"
+    t.refresh_mode()
+    assert t.p_factor(30 * MPH) == 1.0
+    saved_n = A.DriveStats.from_json(p.values["LatAdaptiveStats"]).acc[knot_index(30)]["n"]
+    assert saved_n == pytest.approx(100)
+    for _ in range(A.SAVE_EVERY_FRAMES):
+      t.observe(30 * MPH, 0.0, 0.5, False, False, False)
+    assert A.DriveStats.from_json(p.values["LatAdaptiveStats"]).acc[knot_index(30)]["n"] == pytest.approx(saved_n)
+
+  def test_bad_mode_value_is_off(self):
+    p = FakeParams(LatAdaptiveTune="2")
+    t = A.LatAdaptiveTuner(p)
+    p.values["LatAdaptiveTune"] = "7"
+    t.refresh_mode()
+    assert t.mode == A.MODE_OFF

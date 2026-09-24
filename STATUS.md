@@ -6375,3 +6375,15 @@ The owner asked for a prototype of item 115's stage 3 before an offline schedule
 - **Optional:** a reset action that clears `LatAdaptiveState`, and a read-only view of its `factor` and `last`. Read-only is enough; the owner should never hand-edit the state.
 - **Item 12 applies:** Galaxy's `allowed_keys` comes from the compiled `common/params_pyx.so` registry, not the header. Until the device runs a build with the three new keys, the row will show "not editable". A device without the keys is harmless: `LatAdaptiveTuner` catches the unknown-key error and runs as off.
 - **Write-up:** the owner-facing description should be drawn from this item (what it measures, the rules, the 0.85–1.15 bound, one step per drive, the reset on manual tuning change, shadow first). Keep the evidence level: unit-test and log replay only, not driven.
+
+### 116a. `LatAdaptiveTune` Galaxy dropdown (live) and params artifacts. Unit-test and static evidence only; not driven, not seen on device.
+
+The item 116 handoff is done.
+- **Galaxy row:** `LatAdaptiveTune` under `LateralTune`, after the `Lat*Scale*` rows. It is an advanced-tier `int` dropdown with 0 Off, 1 Shadow (learn only), 2 Apply. It has no `requires_offroad`, so it can be changed while driving.
+- **Live mode:** `LatControlPID` calls `LatAdaptiveTuner.refresh_mode()` in its 300-frame (3 s) param refresh, the same refresh the `Lat*Scale` rows use.
+  - Off → Shadow/Apply mid-drive loads the state and takes this drive's one step, with non-blocking writes.
+  - Shadow ↔ Apply only changes what `p_factor()` returns. Going to Apply applies the stored factor at once, a P step of at most ±15 %.
+  - → Off returns P to 1.0 at once, saves the stats collected so far and pauses learning.
+  - Only the mode is live. The factors still step at most once per drive.
+- **Tests:** 4 new tests in `TestLiveMode`; 58 pass across `test_lat_adaptive_tune.py` and `test_lat_gain_schedule.py`.
+- **Params artifacts:** `common/params_pyx.so` and `common/libcommon.a` were rebuilt with the Docker larch64 recipe (Cython 3.1.4) and now have 853 → 857 keys. The 4 new keys are `LatAdaptiveTune` (default 0), `LatAdaptiveState`, `LatAdaptiveStats`, and `LatGainSchedule` (item 115), which was in the header but missing from the binary. Before this rebuild, Galaxy would have returned 403 "not editable" for all four (item 12).

@@ -623,6 +623,30 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "LatAdaptiveTune",
+        "label": "Adaptive Steering Tune",
+        "description": "Prototype for modified-EPS Hondas. Learns a small P trim at 20/30/40/50 mph from how well steering tracks when your hands are off: at most one 5% step per speed per drive, limited to 85-115%. It starts over whenever you change the manual lateral tuning. \"Shadow\" only learns and changes nothing; \"Apply\" uses what it learned. Takes effect within a few seconds, including while driving. Unit-test and log-replay evidence only; not yet driven. Try Shadow first.",
+        "picker_description": "Off, learn only (Shadow), or learn and apply the adaptive P trim.",
+        "data_type": "int",
+        "ui_type": "dropdown",
+        "options": [
+          {
+            "value": 0,
+            "label": "Off"
+          },
+          {
+            "value": 1,
+            "label": "Shadow (learn only)"
+          },
+          {
+            "value": 2,
+            "label": "Apply"
+          }
+        ],
+        "parent_key": "LateralTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "NrdrIncreaseOverrideTolerance",
         "label": "Increase Driver Override Hysteresis",
         "description": "Filters short same-direction driver torque spikes.",
