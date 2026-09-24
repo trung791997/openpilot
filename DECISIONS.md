@@ -1270,3 +1270,34 @@ and no lead point is lost. **The lead result is not uniform:** route 258 is 71 t
 `00000241` is 0 to 16 and `0000024f` 2 to 19 against it, and both lose by over-closing (earlier or
 harder braking, not missed braking). Three lead routes are too few to tune on (AGENTS.md rule on
 constants); revisit with road evidence rather than by tightening the D-057 thresholds offline.
+
+## D-063 — IMPLEMENTED behind `BoschARailInterval` (default off): a railed U11 is a bound, not a value, for in-path tracks
+**Decided 2026-09-23 on parser replay (STATUS 82, 89, 90). Static and replay evidence only; not road-validated. Peter asked for it as a default-off toggle.**
+
+### The failure
+
+The Bosch-A direct closing-speed channel (U11) pins at -13.5 m/s. The D-054 range gate and the D-057
+re-anchor predict the next range from U11, and with U11 pinned they predicted exactly 13.5 m/s of
+closing. A lead closing faster contradicted that prediction on every sweep: route 25e track 59 went
+dark from 100 m until 41 m while closing at 15-17 m/s (STATUS 82).
+
+### The decision
+
+When the toggle is on and the track is within 2.0 m of straight ahead
+(`BOSCH_A_RAIL_INTERVAL_MAX_Y_M`), a railed U11 predicts the range interval for closing speeds from
+13.5 up to 20 m/s (`BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS`) in both the gate and the re-anchor. A sweep
+admitted only through that interval (`rail_admitted`) enters the D-059 hold, so the published vRel
+stays unmeasured until a fresh fit agrees. Nothing about the published closing speed changes; only
+whether the lead is kept does. Off by default because the evidence is replay only.
+
+### Rejected alternatives
+
+- **Variant D (interval for every track, STATUS 82):** loses 24-32 m off-axis points on 3 routes and
+  admits adjacent-lane over-closers with U11 on the rail.
+- **Variant D' (4 m gate, STATUS 89):** removes the lost points but keeps three adjacent-lane
+  over-closers (25e track 6, 25f track 33, 262 track 9) inside 4 m of the path.
+- **Reusing `RangeDerivedVrel` as the switch:** that toggle is already on in the car, so D'' would
+  have gone live without a decision. A new key keeps it off until flipped.
+- **Removing D-053 in favour of this:** the two act on different layers (D-053 publishes more closing
+  on a live lead; D-063 keeps a lead alive), and D-053 fired usefully on the real closers in the
+  stock-ACC routes (STATUS 90). Both stay.

@@ -637,6 +637,18 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "validated on the road, which is why it ships off."),
                  get_state=lambda: self._params.get_bool("RangeDerivedVrel"),
                  set_state=lambda v: self._params.put_bool("RangeDerivedVrel", v)),
+      SettingRow("BoschARailInterval", "toggle", tr_noop("Keep Fast-Closing Leads"),
+                 subtitle=tr_noop("TEST, default off. Bosch-A radar only. The radar's closing-speed channel pins at 13.5 m/s. "
+                                  "The parser checks each new distance against the closing speed it expects, and with the "
+                                  "channel pinned it expected exactly 13.5 m/s, so a car closing faster (15-17 m/s on one "
+                                  "recorded route) failed the check and the lead went dark from 100 m until 41 m. With this "
+                                  "on, a pinned reading counts as 'at least 13.5 m/s' (up to 20) in those checks, for objects "
+                                  "within 2 m of straight ahead only. It does not change the closing speed that is published, "
+                                  "only whether the lead is kept. Replayed on logs only (7 routes: no lead points lost, the "
+                                  "dark lead recovered), never driven, which is why it ships off. Restart required to take "
+                                  "effect."),
+                 get_state=lambda: self._params.get_bool("BoschARailInterval"),
+                 set_state=lambda v: self._params.put_bool("BoschARailInterval", v)),
     ]
 
     self._slc_rows = [

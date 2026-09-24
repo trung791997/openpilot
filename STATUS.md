@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-23), start here:** item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-23), start here:** item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5107,7 +5107,7 @@ longitudinal_planner 486. Redneck: only the pre-existing coast test fails. `test
 
 ## 82. D-063 variant D (U11 rail bound up to 20 m/s, plus a D-059-style hold) is parked as a patch, not applied. Replay evidence only; not driven.
 
-Patch: `tools/bosch_a_variants/d063_variant_d.patch` (applies to `radar_interface.py` at this commit; the parser in the tree is unchanged).
+Patch: was `tools/bosch_a_variants/d063_variant_d.patch` (applied to `radar_interface.py` at this commit; the parser in the tree was unchanged). Superseded by item 90: the D'' refinement of this variant is now in the tree behind `BoschARailInterval` (default off) and the patch files are removed.
 Variant D treats a U11 vRel at the -13.5 m/s rail as an interval reaching down to -20 m/s. The interval is used in the D-054 range
 gate and the D-057 re-anchor. A sweep admitted only through that interval starts the D-059 hold, so vRel stays unmeasured until a fresh fit agrees.
 - **Replay A/B against HEAD** (routes 25d, 25e, 25f, 260). Over-closing means a newly measured vRel that shows more than 3 m/s more closing than the next 1 s range slope. The reference rate is ~5%.
@@ -5295,7 +5295,7 @@ What it says:
 - **Stops:** every stop with cruise on had a lead; it was held continuously from 22-58 m (median per route) and seen stopped from about 10 m (25d: 19 m).
 - **vRel vs range slope (lead only, measured, same track, 1 s ahead):** bias -0.1 to -0.4 m/s under 70 m with |error| > 3 m/s in 0-9% of frames; at 70-110 m the spread is 2.2-3.3 m/s and 11-20% exceed 3 m/s. 260 70-110 m reads +2.0 (vRel understates closing: 10:28-10:31, 89 m, vRel -7.8) and 261 above 110 m +2.0.
 
-**Variant D' (D-063 rail interval only for tracks within 4 m of the path)** — `tools/bosch_a_variants/` patch not yet written; the replay module is the session's `ri_new6.py`. Same A/B as item 82 (over-closing = new measured vRel more than 3 m/s more closing than the next 1 s range slope):
+**Variant D' (D-063 rail interval only for tracks within 4 m of the path)** — never shipped as a patch; the replay module was the session's `ri_new6.py`. Same A/B as item 82 (over-closing = new measured vRel more than 3 m/s more closing than the next 1 s range slope):
 
 | Route | D over-closing / lost | D' over-closing / lost | Lead points lost | Lead gains |
 |---|---|---|---|---|
@@ -5307,8 +5307,8 @@ What it says:
 | 263 | 0/23, 5 | 0/0, 0 | 0 | none (D's 23 new measured sweeps were all non-lead) |
 | 25d | 0/0, 0 | 0/0, 0 | 0 | none |
 
-D' removes every lost point (all were off-axis, 24-32 m) while keeping D's lead gains. The remaining over-closers are three non-lead tracks with U11 on the -13.5 rail while the range closed at 9-10 m/s (25e track 6 at 78-82 m, 25f track 33 at 60 m, 262 track 9 at 62 m), inside 4 m of the path, so an adjacent lane; and the single lead sweep 25e track 48 at 404.9 s (36.5 m, vRel -1.7 against +2.8) which D publishes where HEAD publishes nothing. **D'' (same, 2 m gate; `tools/bosch_a_variants/d063_variant_d2_inpath.patch`, applies on top of the variant D patch):** over-closing 1/35 (25e), 0/0 (25f), 0/2 (262); lost 0; lead gains identical (25e track 59 still 34/38 measured). The one remaining over-closer is the 25e track 48 lead sweep. So the adjacent-lane rail cases are gone and only the in-lane one is left.
-Decision stays as in item 82: not applied. D'' now meets item 82's bar except for that single lead sweep (a point HEAD does not publish at all); it is the candidate for the default-off alpha-long toggle.
+D' removes every lost point (all were off-axis, 24-32 m) while keeping D's lead gains. The remaining over-closers are three non-lead tracks with U11 on the -13.5 rail while the range closed at 9-10 m/s (25e track 6 at 78-82 m, 25f track 33 at 60 m, 262 track 9 at 62 m), inside 4 m of the path, so an adjacent lane; and the single lead sweep 25e track 48 at 404.9 s (36.5 m, vRel -1.7 against +2.8) which D publishes where HEAD publishes nothing. **D'' (same, 2 m gate; was `tools/bosch_a_variants/d063_variant_d2_inpath.patch` on top of the variant D patch, now in the tree per item 90):** over-closing 1/35 (25e), 0/0 (25f), 0/2 (262); lost 0; lead gains identical (25e track 59 still 34/38 measured). The one remaining over-closer is the 25e track 48 lead sweep. So the adjacent-lane rail cases are gone and only the in-lane one is left.
+Decision at the time of this item: not applied. D'' met item 82's bar except for that single lead sweep (a point HEAD does not publish at all); Peter then asked for it as a default-off toggle, which is item 90.
 
 **Alpha-long watchlist for the first drive (limited road evidence for everything below):**
 1. Lead jumping 25-30 m away and back at 50-85 m on a straight road at 40-55 mph: radar -> vision handoff. Expect a brief throttle then brake. Bookmark it; the fix is in radard's lead arbitration, not the radar.
@@ -5316,3 +5316,19 @@ Decision stays as in item 82: not applied. D'' now meets item 82's bar except fo
 3. Cut-ins under 30 m: radar acquires them as fast as stock ACC (260 9:30.6). Stopped cars: seen stopped from about 10 m; held from 20-60 m.
 4. Standstill: the radar has no return under ~4 m; the stopped lead is vision-only until the gap opens.
 5. Stock ACC never braked for something the radar had not seen for more than 1.3 s; the reverse (a radar lead stock ignored) happened 4 times, each under 2 s.
+
+## 90. D-063 variant D'' (U11 rail read as an interval, in-path tracks only) is in the tree behind `BoschARailInterval`, default off (Peter asked, 2026-09-23). Replay and unit evidence only; not driven.
+
+**What shipped.** In `_update_bosch_a`, when the toggle is on and the track is within `BOSCH_A_RAIL_INTERVAL_MAX_Y_M = 2.0` of straight ahead, a U11 on the -13.5 m/s rail is read by the D-054 range gate and the D-057 re-anchor as the interval [-20, -13.5] m/s (`BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS`) instead of the exact rail value. A sweep admitted only because of the interval (`rail_admitted`) starts the D-059 hold, so vRel stays unmeasured until a fresh fit agrees. Published vRel is unchanged; only whether the lead is kept changes. Off-axis tracks and unrailed U11 use the exact gate exactly as before. With the toggle off, `exact_gate` is True for every sweep and the parser's gate arithmetic is the pre-D-063 code.
+
+**Toggle.** `BoschARailInterval` (PERSISTENT BOOL, default 0) in `common/params_keys.h`; raylib row "Keep Fast-Closing Leads" in `selfdrive/ui/layouts/settings/starpilot/longitudinal.py` (Bosch A Radar rows, after Range-Derived Closing Speed); Galaxy entry in `starpilot/common/assets/device_settings_layout.json` under `AdvancedLongitudinalTune`, advanced tier, `requires_offroad`; `tools/StarPilot/feasibleparams.txt`. Read once in `RadarInterface.__init__` (`_bosch_a_rail_interval_enabled`), so a restart is needed after flipping it. New key, not a reuse of `RangeDerivedVrel`, so the car's existing toggle state does not turn it on.
+
+**Artifacts.** `common/libcommon.a` and `common/params_pyx.so` rebuilt in `oprad-build:cy314` (recipe in item 85): 851 -> 852 keys, `BoschARailInterval` and `RangeDerivedVrel` both present under `Params(memory=True).all_keys()` in `oprad-test:py312`. Build-dirtied `panda/board/obj/*` restored, not committed.
+
+**Evidence (replay only).** Item 89's D'' A/B: 7 routes, 0 lead points lost, lead gains identical to variant D (25e track 59 34/38 measured where HEAD went dark from 100 m to 41 m), over-closing 1/35 on 25e (the track 48 lead sweep, a point HEAD does not publish), 0 elsewhere. Unit: `test_rail_interval_gate_reads_rail_as_bound_only_when_asked` (interval helper rails/exact; the gate rejects 100 -> 80 m in 1 s at the rail under the exact reading and accepts it under the interval; 100 -> 74 m is rejected either way; an unrailed U11 is identical either way) and `test_rail_interval_toggle_default_off_and_read_at_startup`. `test_bosch_a_radar.py` + `test_device_settings_layout.py`: 144 passed. ruff: no new findings against HEAD on the edited files.
+
+**`RangeDerivedVrel` (D-053) stays.** Peter asked whether it is still useful now that D'' exists. Scan of the 7 stock-ACC routes (all had the toggle on): the assist was active about 50 s of 3,857 s of lead time (25d 0.1 s, 25e 15.7 s, 25f 16.0 s, 260 1.5 s, 261 6.4 s, 262 1.1 s, 263 8.6 s), mostly at 60-125 m. On the real closers it did the job it was written for: 25f 7:59 (lead 100 -> 42 m in 6 s, stock ACC -1.6) the assist pulled vLead down about 1 s before U11 moved; 25e 7:06 (98 -> 82 m while U11 said receding) it read the closing at 35-44 mph against a true ~41. It is a different layer from D'' (D'' keeps the lead alive; D-053 publishes more closing on a lead that is alive), so both stay exposed. Watch item for alpha long: at range it overshoots (25f 7:59 vLead read ~14 mph where ~26 was true; the correction hit its 8 m/s cap).
+
+**Removed.** `tools/bosch_a_variants/d063_variant_d.patch` and `d063_variant_d2_inpath.patch` (items 82 and 89): the code is in the tree.
+
+**Not done.** No road drive. If Peter wants it for the alpha-long drive he must turn on Keep Fast-Closing Leads under Advanced Longitudinal Tuning and restart; it stays off otherwise.

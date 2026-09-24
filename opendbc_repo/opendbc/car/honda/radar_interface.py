@@ -147,6 +147,28 @@ BOSCH_A_DIRECT_VREL_SCALE_MPS = 1.0 / 64.0
 # deleting the object does not. Recovering the true value past the rail needs the range channel and
 # is deliberately left for a separate, validated change.
 BOSCH_A_DIRECT_VREL_RAILS_RAW = (BOSCH_A_DIRECT_VREL_MIN_RAW, BOSCH_A_DIRECT_VREL_MAX_RAW)
+# D-063 (replay and static only; road evidence pending): the GATES must read a rail as the bound it
+# is, too. The publish path above already does; the range-innovation gate (D-054) and the re-anchor
+# test (D-057) did not -- they extrapolated the range at exactly -13.5 m/s. Route 0000025e at 12:03,
+# stock ACC: track 59, the lead in lane from 102.8 m, U11 on the low rail on 51% of sweeps while
+# the range closed at -15.4 to -17 m/s. The 2-3.5 m/s shortfall accumulated against the anchor, the
+# range was rejected, the re-anchor refused because the fitted slope sat more than 3 m/s past the
+# railed median, and the lead stayed dark until 41 m. A railed U11 now predicts an INTERVAL of range
+# -- from the rail out to this physical cap -- and a range inside it is not an innovation. The cap is
+# not a tuning value: it is a closing speed no same-direction or stationary target reaches from a
+# car under ~145 km/h, and it keeps a rail from vouching for an unbounded range jump.
+# This only lets the gates accept more; nothing is withheld that was published before, and the
+# published vRel is still the rail itself.
+BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS = 20.0
+# The rail interval only vouches for a track in our own lane. Replayed over 7 routes (STATUS 82, 89):
+# with the interval on every track, 21 points were lost, all on tracks 24-32 m off-axis, and the
+# over-closers were railed U11s on adjacent-lane tracks (25e track 6, 25f track 33, 262 track 9)
+# whose range closed at 7-10 m/s. A 4 m gate kept the lead gains and lost 0 points; 2 m also cleared
+# the adjacent-lane over-closers. Off-path tracks keep the exact (pre-D-063) gate.
+BOSCH_A_RAIL_INTERVAL_MAX_Y_M = 2.0
+# D-063 ships behind this toggle, default off: replay and static evidence only, never driven. With it
+# off both gate calls below run `exact`, which is the pre-D-063 gate unchanged.
+BOSCH_A_RAIL_INTERVAL_PARAM = "BoschARailInterval"
 # u10 is a genuine uncertainty on U11, but it is CONFOUNDED WITH DYNAMICS. Measured against an
 # event-local reference (quadratic fit to a centred window, derivative at the centre) over 16,834
 # frames: median |err| rises 0.26 -> 0.88 -> 1.44 -> 1.95 m/s across u10 bins 0-64 / 64-128 /
@@ -307,8 +329,26 @@ def _bosch_a_range_ratio_vrel(raw_value: int | float | None, d_rel: float, dt: f
   return d_rel * (1.0 - ratio) / dt
 
 
+def _bosch_a_direct_vrel_interval(direct_vrel: float, exact: bool = False) -> tuple[float, float]:
+  """D-063: the vRel interval a decoded U11 vouches for. A rail is a one-sided bound, anything else exact."""
+  low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+  high_rail = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+  if exact:
+    return direct_vrel, direct_vrel
+  if direct_vrel <= low_rail:
+    return -BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS, direct_vrel
+  if direct_vrel >= high_rail:
+    return direct_vrel, BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS
+  return direct_vrel, direct_vrel
+
+
+def _bosch_a_distance_to_interval(value: float, interval: tuple[float, float]) -> float:
+  return max(0.0, interval[0] - value, value - interval[1])
+
+
 def _bosch_a_range_innovation_rejected(baseline: tuple[float, float], now_s: float, dRel: float,
-                                       direct_vrel: float | None, ratio: float | None, degraded: bool) -> bool:
+                                       direct_vrel: float | None, ratio: float | None, degraded: bool,
+                                       exact: bool = False) -> bool:
   """Does this range contradict one (time, range) baseline? See the D-054 comment at the call site."""
   previous_time, previous_range = baseline
   dt = now_s - previous_time
@@ -316,7 +356,8 @@ def _bosch_a_range_innovation_rejected(baseline: tuple[float, float], now_s: flo
     return True
   residuals_m = []
   if direct_vrel is not None:
-    residuals_m.append(abs(dRel - (previous_range + direct_vrel * dt)))
+    low, high = _bosch_a_direct_vrel_interval(direct_vrel, exact)
+    residuals_m.append(_bosch_a_distance_to_interval(dRel, (previous_range + low * dt, previous_range + high * dt)))
   if ratio is not None:
     residuals_m.append(abs(previous_range - dRel * ratio))
   if not residuals_m:
@@ -334,7 +375,7 @@ def _bosch_a_measurement_degraded(range_sigma_raw: int, existence_raw: int,
   return range_quality_bad or velocity_quality_bad
 
 
-def _bosch_a_lasting_clean_step(run: list) -> bool:
+def _bosch_a_lasting_clean_step(run: list, exact: bool = False) -> bool:
   """D-057: True when the trailing window of a range-rejected run is long, clean and moving at the U11 rate."""
   if len(run) < BOSCH_A_REANCHOR_WINDOW or run[-1][0] - run[0][0] < BOSCH_A_REANCHOR_MIN_SPAN_S:
     return False
@@ -352,7 +393,18 @@ def _bosch_a_lasting_clean_step(run: list) -> bool:
   rate = sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
   rms = (sum((d - (d_mean + rate * (t - t_mean))) ** 2 for t, d in zip(ts, ds, strict=True)) / n) ** 0.5
   u11 = sorted(w[2] for w in window)[n // 2]
-  return rms <= BOSCH_A_REANCHOR_MAX_RMS_M and abs(rate - u11) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+  return (rms <= BOSCH_A_REANCHOR_MAX_RMS_M and
+          _bosch_a_distance_to_interval(rate, _bosch_a_direct_vrel_interval(u11, exact)) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+
+
+def _bosch_a_rail_interval_enabled() -> bool:
+  """BoschARailInterval, read once at startup the way interface.py reads BoschARadar. Any failure,
+  including a params_pyx.so that predates the key, means off: the pre-D-063 gates."""
+  try:
+    from openpilot.common.params import Params
+    return bool(Params().get_bool(BOSCH_A_RAIL_INTERVAL_PARAM))
+  except Exception:
+    return False
 
 
 def _create_bosch_a_can_parser(CP):
@@ -379,6 +431,7 @@ class RadarInterface(RadarInterfaceBase):
       self._tracks: dict[int, _BoschATrackState] = {}
       self._slot_track_ids: list[int | None] = [None] * BOSCH_A_NUM_SLOTS
       self._last_trigger_nanos = -1
+      self.rail_interval = _bosch_a_rail_interval_enabled()
     else:
       # Nidec
       self.rcp = _create_nidec_can_parser(CP.carFingerprint)
@@ -658,6 +711,7 @@ class RadarInterface(RadarInterfaceBase):
       range_anchor = track.range_anchor
       ratio_vrel = None
       range_rejected = False
+      rail_admitted = False
       degraded = _bosch_a_measurement_degraded(
         observation['range_sigma_raw'], observation['existence_raw'], direct_vrel_uncertainty_raw,
       )
@@ -668,13 +722,20 @@ class RadarInterface(RadarInterfaceBase):
         if previous_sample is not None and now_s > previous_sample[0]:
           ratio_vrel = _bosch_a_range_ratio_vrel(range_ratio_raw, dRel, now_s - previous_sample[0])
         baselines = [range_anchor] if previous_sample in (None, range_anchor) else [range_anchor, previous_sample]
-        range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded)
+        # D-063: a railed U11 vouches for an interval of range, but only with the toggle on and only
+        # for a track in our lane; otherwise the gate reads the rail as the exact value, as before.
+        exact_gate = not self.rail_interval or abs(yRel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M
+        range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded, exact=exact_gate)
                              for baseline in baselines)
+        rail_admitted = not exact_gate and not range_rejected and all(
+          _bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded, exact=True)
+          for baseline in baselines)
 
       if range_rejected:
         track.inconsistent_run.clear()
         track.rejected_run.append((now_s, dRel, direct_vrel, degraded))
-        if _bosch_a_lasting_clean_step(track.rejected_run):
+        if _bosch_a_lasting_clean_step(track.rejected_run, exact=exact_gate):
+          rail_admitted = not exact_gate and not _bosch_a_lasting_clean_step(track.rejected_run, exact=True)
           # D-057: the step has outlasted every returning excursion measured, cleanly and at the U11
           # rate. Re-root the accepted history and the anchor on it and gate this sweep as passed.
           recent = track.rejected_run[-BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES:]
@@ -690,6 +751,8 @@ class RadarInterface(RadarInterfaceBase):
           # D-059: a join. The range passed only after a rejection run, so `samples` straddle the gap.
           track.rejoin_samples = []
         track.rejected_run.clear()
+      if rail_admitted and track.rejoin_samples is None:
+        track.rejoin_samples = []
 
       if range_rejected:
         # Keep the last trusted point briefly as an unmeasured coast. The rejected geometry is not

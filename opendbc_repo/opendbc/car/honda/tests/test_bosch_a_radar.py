@@ -1676,3 +1676,36 @@ def test_bosch_a_gate_open_to_other_bosch_a_platforms(car):
 def test_bosch_a_gate_stays_closed_for_non_bosch_a_platforms(car):
   cp = _CLOSED_BOSCH_A_CPS[car]
   assert cp.radarUnavailable is True
+
+
+# --- D-063: the rail interval, behind BoschARailInterval (default off) -------------------------
+
+def test_rail_interval_gate_reads_rail_as_bound_only_when_asked():
+  from opendbc.car.honda.radar_interface import (_bosch_a_range_innovation_rejected, _bosch_a_direct_vrel_interval,
+                                                 BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS)
+  low_rail = _bosch_a_direct_vrel_interval(-13.5)[1]
+  assert _bosch_a_direct_vrel_interval(low_rail) == (-BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS, low_rail)
+  assert _bosch_a_direct_vrel_interval(low_rail, exact=True) == (low_rail, low_rail)
+  assert _bosch_a_direct_vrel_interval(-5.0) == (-5.0, -5.0)
+  # A lead closing at 20 m/s while U11 sits on the -13.5 rail: 100 m -> 80 m in 1 s. Exact gate rejects
+  # (6.5 m short of the rail's prediction, past the 5 m hard max); the interval gate accepts (on the
+  # rail-to-20 m/s band's edge, residual 0).
+  assert _bosch_a_range_innovation_rejected((0.0, 100.0), 1.0, 80.0, low_rail, None, False, exact=True)
+  assert not _bosch_a_range_innovation_rejected((0.0, 100.0), 1.0, 80.0, low_rail, None, False, exact=False)
+  # Past the physical cap the interval rejects too: 100 m -> 74 m in 1 s is 26 m/s, 6 m outside the band.
+  assert _bosch_a_range_innovation_rejected((0.0, 100.0), 1.0, 74.0, low_rail, None, False, exact=False)
+  # An unrailed U11 is exact either way.
+  assert (_bosch_a_range_innovation_rejected((0.0, 100.0), 1.0, 91.0, -5.0, None, False, exact=False) ==
+          _bosch_a_range_innovation_rejected((0.0, 100.0), 1.0, 91.0, -5.0, None, False, exact=True))
+
+
+def test_rail_interval_toggle_default_off_and_read_at_startup():
+  p = Params()
+  p.remove("BoschARailInterval")
+  assert make_radar_interface().rail_interval is False
+  p.put_bool("BoschARailInterval", True)
+  try:
+    assert make_radar_interface().rail_interval is True
+  finally:
+    p.remove("BoschARailInterval")
+  assert make_radar_interface().rail_interval is False
