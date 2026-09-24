@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays; 104b is a plain-language summary and notes that no StarPilot lane-centering or offset setting affects the bound). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5887,3 +5887,34 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 - Neither label is a ground truth. Vision under-counts, and the old rule counts alpha's own brakes.
 - Ego still follows the log.
 - Nothing was driven.
+
+### 104b. Item 104 in plain terms, and why no StarPilot setting changes it. Docs only; the settings finding is static code reading.
+
+**The problem.** The radar sometimes reports that the car ahead is braking hard when it is not. This happens mostly when that car is off to one side, for example in the next lane or across a curve. At that angle the radar cannot reliably tell "that car is slowing down" from "my reading of that car jumped". Without a guard, the planner believes the bad reading and brakes hard for nothing.
+
+**The guard.** `off_axis_lead_a_lead` measures how off-centre the lead is as `|yRel| / dRel`, called the bearing. When the bearing is at or above `OFF_AXIS_LEAD_MIN_BEARING`:
+- the planner will not brake harder than −1.5 m/s² for that lead;
+- the cap is lifted when the camera also sees the lead braking hard (vision `a`, probability ≥ 0.5).
+
+So the guard only overrides the radar when the camera disagrees with it.
+
+**The change.** The threshold went from 0.10 to 0.075. At 50 m ahead, a lead is now treated as off-centre once it is more than 3.75 m to the side, down from 5 m.
+
+**Why.** At 25f 13:58.4 a lead sat at bearing 0.078–0.101, just under the old threshold.
+- The radar said the lead was braking at −4.2 m/s². The camera, at probability 0.99, said about 0.
+- In replay, alpha braked at −3.45. Stock ACC braked at −0.49.
+
+**Evidence (replay only).**
+- Of 200 brake episodes on 17 routes, 2 changed. Both were false brakes and both got gentler: 25f 13:58.4 −3.45 → −1.22, and 260 9:07.8 −3.20 → −1.01.
+- None of the 125 genuine-brake episodes changed.
+- 263 6:14.3 is a real hard stop with the lead well off-centre. It is unchanged because the camera saw that lead braking.
+
+**Remaining risk.** A lead slightly off-centre brakes hard for real, and the camera misses it. The planner then brakes at only −1.5 until the camera or the driver catches up. No replayed episode showed this, and nothing has been driven. On the next drive, watch curves and multi-lane roads with a lead 3–6 m to the side at 40–70 m.
+
+**No StarPilot setting changes this.** The owner asked whether StarPilot's lane-centering setting could compensate for off-centre leads. It cannot. Static reading of this tree:
+- The bound reads the radar's `yRel` for the lead. That value is the lead's position relative to our car. `RadarD` takes it from the radar tracks.
+- `LaneCentering` and `LaneCenterOffset` (clamped to ±0.3 m) only feed the lateral curvature in `controlsd.py` through `self.lane_centering.update`.
+- `CameraOffset` shears the model input in `modeld`. It moves the camera's picture, not the radar's `yRel`.
+- `NAPRadarOffset` is a Tesla pre-AP parameter and is not read on Honda.
+
+Shifting our own car by 0.3 m in the lane would also move the bearing by only about 0.006 at 50 m. The off-centre cases the guard targets are 3–6 m to the side. The fix ships in the code on `ns-bosch-radar-testing`, and running that build is what applies it.
