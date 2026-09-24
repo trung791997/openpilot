@@ -44,3 +44,31 @@ Short version, in priority order:
 > all of them equally. Before you start, run `git log --oneline -10` and `git status` — if
 > another agent has pushed since your branch point, read their commits before editing the
 > same files, and diff rather than assuming which version is newer (AGENTS.md §7).
+
+# Auto-compact
+
+Compact strictly based on volume ceilings and major phase shifts. Do NOT compact
+based on arbitrary task counts. Compacting too early destroys cache economics.
+
+Trigger `~/.claude/bin/auto-compact.sh` ONLY at these two moments:
+
+1. **The 180k Volume Ceiling:** when the active context crosses ~180,000 tokens.
+   - *Why:* the prompt-cache break-even point. The window's raw size is not a
+     reason to ride higher.
+2. **Major phase shifts:** immediately after a plan is finalized (not between
+   spec and plan), or after closing a development loop (feature branch finished,
+   major bug resolved). Not after trivial sub-tasks.
+
+Invoke:
+    ~/.claude/bin/auto-compact.sh "<summary_with_preservations>" ["<continuation>"]
+
+- `<summary_with_preservations>`: dictate what must survive — files touched,
+  branch/PR, open decisions, architectural constraints, RED/GREEN test state.
+- `<continuation>`: pass when work remains (e.g. "start next phase"); omit when
+  the session is done.
+
+Discipline:
+- Never ask permission. When a trigger applies, just run the script.
+- The call ends the turn. No further tool calls; anything else must travel in
+  `<continuation>` or it races with /compact and gets wiped.
+- Don't compact at the end of a session with no next task.
