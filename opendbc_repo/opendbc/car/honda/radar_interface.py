@@ -397,6 +397,50 @@ def _bosch_a_lasting_clean_step(run: list, exact: bool = False) -> bool:
           _bosch_a_distance_to_interval(rate, _bosch_a_direct_vrel_interval(u11, exact)) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
 
 
+def _bosch_a_fresh_range_rate(run: list) -> float | None:
+  """Least-squares range rate over a run of (t_s, dRel, ...) tuples that grows on EVERY sweep of a coast
+  (`rejoin_samples`, `inconsistent_run`), i.e. one that is not frozen the way `samples` is during a coast
+  (D-062). None until the D-043 minimum window (4 samples over 0.25 s) is met."""
+  if len(run) < BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES or run[-1][0] - run[0][0] < BOSCH_A_VREL_RATE_CHECK_MIN_SPAN_S:
+    return None
+  ts = [w[0] for w in run]
+  ds = [w[1] for w in run]
+  n = len(run)
+  t_mean = sum(ts) / n
+  d_mean = sum(ds) / n
+  denom = sum((t - t_mean) ** 2 for t in ts)
+  if denom <= 1e-9:
+    return None
+  return sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
+
+
+def _bosch_a_coast_vrel(track, rail_interval: bool) -> float:
+  """The vRel a coast publishes. Off (pre-D-063): the last trusted vRel, verbatim. With BoschARailInterval on
+  (D-063 addendum, STATUS 92): the same value bounded to within BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS of
+  a FRESH fit over the ranges of the coast itself, when one exists. Replayed on 0000025e 6:43 (track 48): the
+  rail interval admitted a slot-merge range walk, the D-059 hold then coasted the -13.5 rail for 1.5 s while
+  its own post-join fit read +0.8 m/s and said so (fresh_ok false on every sweep), and the planner asked for
+  -3.45 m/s^2 against a lead the log and vision put at -1..-3 m/s. With the bound, replay of that window
+  bottomed at -2.39 and never crossed -3.0. The hold's one-sided law (a vRel that over-closes the fresh
+  range fit by > 3 m/s is not trusted) is applied to the value it coasts, both ways, so a stale opening
+  vRel is pulled toward a closing fit once one exists. Never a one-sweep derivative: the fit is the D-043
+  multi-sample fit, and with fewer than 4 fresh samples (0.25 s) the coast is unchanged. That is why it
+  cannot act on 0000025e 12:05 (+11.1 coasted for 0.2 s at track birth, no fresh samples yet) nor on the
+  first 5 sweeps after the 6:43 re-root, which still coast the rail. The point is always kept (D-041/D-042).
+  Replay evidence only (STATUS 92)."""
+  vrel = track.last_trusted_vrel
+  if not rail_interval:
+    return vrel
+  rate = None
+  if track.rejoin_samples is not None:
+    rate = _bosch_a_fresh_range_rate(track.rejoin_samples)
+  if rate is None:
+    rate = _bosch_a_fresh_range_rate(track.inconsistent_run)
+  if rate is None:
+    return vrel
+  return min(max(vrel, rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS), rate + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+
+
 def _bosch_a_rail_interval_enabled() -> bool:
   """BoschARailInterval, read once at startup the way interface.py reads BoschARadar. Any failure,
   including a params_pyx.so that predates the key, means off: the pre-D-063 gates."""
@@ -883,7 +927,7 @@ class RadarInterface(RadarInterfaceBase):
         if point is not None and track.last_trusted_vrel is not None:
           point.dRel = dRel
           point.yRel = yRel
-          point.vRel = track.last_trusted_vrel
+          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval)
           point.measured = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
@@ -929,7 +973,7 @@ class RadarInterface(RadarInterfaceBase):
         if point is not None and track.last_trusted_vrel is not None:
           point.dRel = dRel
           point.yRel = yRel
-          point.vRel = track.last_trusted_vrel
+          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval)
           point.measured = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to

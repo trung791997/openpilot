@@ -24,6 +24,7 @@ from opendbc.car.honda.radar_interface import (
   BOSCH_A_NUM_SLOTS,
   BOSCH_A_RANGE_RATIO_INVALID,
   BOSCH_A_RANGE_OFFSET_M,
+  BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS,
   BOSCH_A_RANGE_SCALE_M,
   BOSCH_A_STALE_S,
   BOSCH_A_SWEEP_END_MSG,
@@ -1709,3 +1710,94 @@ def test_rail_interval_toggle_default_off_and_read_at_startup():
   finally:
     p.remove("BoschARailInterval")
   assert make_radar_interface().rail_interval is False
+
+
+class TestRailIntervalBoundsTheCoast:
+  """D-063 addendum (STATUS 92). With BoschARailInterval on, a coast is bounded to within 3 m/s of a fresh
+  fit over the coast's own ranges (rejoin_samples / inconsistent_run). Modelled on 0000025e 6:43 track 48:
+  the rail interval admitted a range walk, the D-059 hold then coasted the -13.5 rail for 1.5 s while its
+  own post-join fit read +0.8 m/s. Off, the coast is the pre-D-063 verbatim last trusted vRel."""
+  DT_NANOS = 70_000_000
+  RAIL_RAW = 0  # U11 low rail: true closing >= 13.5 m/s
+  RAIL_MPS = -13.5
+
+  def _drive(self, ri, i, d, u11_raw, uncertainty=0):
+    return ri.update(sweep(0, i & 0xF, 0x7, round((d - BOSCH_A_RANGE_OFFSET_M) / BOSCH_A_RANGE_SCALE_M), 1024,
+                           (1 + 2 * i) & 0xFFF, i * self.DT_NANOS, with_aux=True, direct_vrel_raw=u11_raw,
+                           direct_vrel_uncertainty_raw=uncertainty, range_sigma_raw=1, existence_raw=126))
+
+  def _railed_birth_then_walk(self, ri):
+    """6 sweeps closing at the rail rate (measured -13.5), then the range steps 8 m closer and holds still
+    with U11 still railed. The interval gate joins the settled range ~0.2 s later (rail_admitted), the exact
+    gate only after ~0.6 s. Yields (sweep, result) over the 2 s that follow the step."""
+    d = 60.0
+    for i in range(6):
+      d += self.RAIL_MPS * self.DT_NANOS * 1e-9
+      rr = self._drive(ri, i, d, self.RAIL_RAW)
+    assert rr.points[0].measured is True and rr.points[0].vRel == pytest.approx(self.RAIL_MPS, abs=0.05)
+    d -= 8.0
+    for i in range(6, 6 + 30):
+      yield i, self._drive(ri, i, d, self.RAIL_RAW)
+
+  def test_on_a_rejoin_hold_coast_is_bounded_by_the_post_join_fit(self):
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    bounded_at = None
+    for i, rr in self._railed_birth_then_walk(ri):
+      for p in rr.points:
+        if not p.measured:
+          if bounded_at is None and p.vRel > self.RAIL_MPS + 0.01:
+            bounded_at = i
+            # The post-join ranges hold still: fit 0 m/s, so the coast may not over-close it by more than 3 m/s.
+            assert p.vRel == pytest.approx(-BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS, abs=0.2)
+          elif bounded_at is not None:
+            assert p.vRel > self.RAIL_MPS + 0.01, f"rail re-coasted at sweep {i}"
+    assert bounded_at is not None
+    # Bounded within the first second after the step (join ~0.2 s + 4 fresh samples over >= 0.25 s).
+    assert (bounded_at - 6) * self.DT_NANOS * 1e-9 <= 1.0
+
+  def test_off_the_same_coast_is_the_verbatim_last_trusted_vrel(self):
+    ri = make_radar_interface()
+    ri.rail_interval = False  # set explicitly: the toggle test above writes the shared params store under xdist
+    coasts = 0
+    for i, rr in self._railed_birth_then_walk(ri):
+      for p in rr.points:
+        if not p.measured:
+          coasts += 1
+          assert p.vRel == pytest.approx(self.RAIL_MPS, abs=0.05), f"coast changed at sweep {i} (toggle off)"
+    assert coasts > 0
+
+  def test_on_with_fewer_than_four_fresh_samples_the_coast_is_unchanged(self):
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    first_coast = None
+    for i, rr in self._railed_birth_then_walk(ri):
+      for p in rr.points:
+        if not p.measured and first_coast is None:
+          first_coast = (i, p.vRel)
+    assert first_coast is not None and first_coast[1] == pytest.approx(self.RAIL_MPS, abs=0.05)
+
+  def test_on_an_inconsistent_coast_of_a_stale_opening_vrel_is_pulled_toward_the_closing_fit(self):
+    """D-062 shape: opening at +2.8 m/s, then the lead brakes to 5 m/s closing with U11 agreeing. The stale
+    `samples` fit rejects that U11 (one-sided, > 3 m/s below +2.8) and the coast holds +2.8 until D-062
+    re-roots after 1.5 s. On, the fresh inconsistent_run fit (-5) bounds the coast to -2 within 5 sweeps."""
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    dt = self.DT_NANOS * 1e-9
+    d = 87.0
+    for i in range(12):
+      d += 2.8 * dt
+      rr = self._drive(ri, i, d, 864 + round(2.8 * 64))
+    assert rr.points[0].measured is True
+    pulled_at = None
+    for i in range(12, 12 + 12):
+      d += -5.0 * dt
+      rr = self._drive(ri, i, d, 864 + round(-5.0 * 64))
+      assert len(rr.points) == 1
+      p = rr.points[0]
+      if p.measured:
+        break
+      if pulled_at is None and p.vRel < 2.8 - 0.01:
+        pulled_at = i
+        assert p.vRel == pytest.approx(-5.0 + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS, abs=0.2)
+    assert pulled_at is not None and pulled_at - 12 <= 5

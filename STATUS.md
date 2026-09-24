@@ -5361,3 +5361,27 @@ Validity: A matched the logged radarState lead on 95-99% of cycles in every wind
 **Recommendation.** Leave `BoschARailInterval` off. Before turning it on: fix the coast branch so a rail-interval admission cannot publish a stale vRel (publish the rail as a measured bound or drop to vision), trace the 251 -1.0 hold, then re-run this A/B (scripts: `ab11.py`, `census11.py`, `ympc63.py`, recipe in the route-analysis memory).
 
 **Housekeeping.** Routes 231-258 were archived to Drive and their working copies deleted after the run; 25e-262 are still local for the next replay.
+
+## 92. D-063 addendum: the rail-interval coast is bounded by a fresh range fit (behind `BoschARailInterval`, still default off). Replay evidence only; nothing driven.
+
+Item 91 named the mechanism behind both 25e windows: with the interval on, the D-054 range gate passes a rail point whose direct vRel gate failed, and the two coast branches publish `last_trusted_vrel` verbatim as `measured=False`. Peter OK'd a brake-affecting fix on 2026-09-24 on the condition that it stays behind the toggle. This item is that fix and its replay.
+
+**Change (`radar_interface.py`, `_bosch_a_coast_vrel`, `_bosch_a_fresh_range_rate`).** With the toggle off nothing changes: the coast publishes the last trusted vRel verbatim, the pre-D-063 behaviour. With the toggle on, the coasted vRel is clamped to within 3 m/s (`BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS`, the D-059 hold's own tolerance) of a least-squares range rate over the samples the coast itself has gathered: `rejoin_samples` first (the D-059 hold appends every sweep), else `inconsistent_run` (D-062 appends every inconsistent sweep). The fit needs the D-043 minimum window, 4 samples over 0.25 s; below that the coast is unchanged. `samples` is not used because D-062 freezes it during a coast, so a fit over it would be stale by construction. The point is always published (D-041/D-042). Four unit tests in `TestRailIntervalBoundsTheCoast` (rejoin hold bounded; off path verbatim; under 4 fresh samples unchanged; stale opening vRel on an inconsistent coast pulled toward the closing fit). 119 Bosch-A tests pass in Docker.
+
+**Planner A/B, same six windows and harness as item 91 (`ympc63.py`), toggle on (B), before and after the fix.** A (toggle off) is unchanged in every window, as expected.
+
+| Route, window | B before (item 91) | B after | Note |
+|---|---|---|---|
+| 25e, 398-411 s | -0.8 at 403.36, -1.5 at 403.56, **-3.45 held 403.9-404.9** | -0.8 at 403.36, -1.5 at 403.56, min **-2.39** at 404.06, -3.0 never crossed | The 1 s hard brake is gone. The -1.5 tap remains (log and A never below -0.58). |
+| 25e, 719-737 s | onset 725.11, -1.5 at 725.26, -3.0 at 725.41 | byte-identical | The +11.1 coast is a birth coast (track 59, 724.26-724.46, 0.2 s): no fresh samples exist yet, so the bound cannot act. |
+| 237, 759-775 s | onset 764.51, -1.5 at 764.91, -3.0 at 765.46 | identical | baseline still 42% (item 91) |
+| 251, 532-547 s | -1.5 and -3.0 at 540.55 | identical | the -1.0 hold is a planner question, not a coast one |
+| 245, 258 | identical to A | identical to A | non-lead rail points |
+
+**Why the 25e 403 tap remains (parser trace, track 48).** After the D-057 re-root at 403.313 the hold starts a fresh `rejoin_samples`; the fit exists from the 5th sweep (0.26 s later). Those 5 sweeps still coast the rail at -13.5 from 35 m, 5 planner cycles carry it, and the planner reaches -1.5 at 403.56 and bottoms at -2.39 at 404.06 while the clamp holds -2.0..-3.0 (fit about +0.9 m/s, 3 m/s tolerance). A takes the same track as lead at 404.96 and outputs -0.54.
+
+**Why B admitted the walk at all.** The sweep at 402.912 was degraded (range sigma over threshold), so the D-054 gate was the 2 m one. A's residual was 2.32 m (reject); B's interval residual was 1.93 m (accept). The interval's 6.5 m/s of extra width times the 60 ms sweep is 0.39 m, and that tipped a degraded-gate decision. On a degraded sweep the interval is doing exactly what it was not meant to do: widen a gate that was tightened because the sweep was suspect.
+
+**Recommendation.** `BoschARailInterval` stays off. The coast bound is kept behind it because it removes the one -3.0 crossing and changes nothing else in 22 routes' worth of windows. The next change to look at is the interval gate on degraded sweeps (use the exact rate, not the interval, when `degraded` is true). A shorter fresh window is not the answer: a one- or two-sample derivative is what D-043 forbids. Nothing in this item has been driven; the 25e -1.5 tap is a replay number.
+
+**Housekeeping.** 237, 251, 245, 258 were retrieved for the run and deleted after it (archived on Drive). 25e deleted after this item.

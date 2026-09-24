@@ -1301,3 +1301,16 @@ whether the lead is kept does. Off by default because the evidence is replay onl
 - **Removing D-053 in favour of this:** the two act on different layers (D-053 publishes more closing
   on a live lead; D-063 keeps a lead alive), and D-053 fired usefully on the real closers in the
   stock-ACC routes (STATUS 90). Both stay.
+
+### Addendum 2026-09-24 (coast bound, STATUS 92)
+
+The two coast branches (`high_u10_live_vrel or vrel_inconsistent or rejoin_hold`, and
+`u11_and_ratio_unavailable`) published `last_trusted_vrel` verbatim as `measured=False`. With the
+interval on, that value can be the -13.5 rail on a point whose range is opening (25e 403 s, a
+replayed -3.45 m/s^2 with no threat). With the toggle on, `_bosch_a_coast_vrel` now clamps the coast
+to within 3 m/s of a least-squares range rate over the samples the coast itself gathered
+(`rejoin_samples`, else `inconsistent_run`), with the D-043 minimum window (4 samples, 0.25 s) and
+no one-sweep derivatives. The off path is untouched. Replay: the 25e -3.0 crossing is gone
+(min -2.39), five other windows identical. The toggle stays off: the first 0.26 s after a re-root
+still coast the rail, and the walk was admitted on a DEGRADED sweep where the interval widened a
+2 m gate by 0.39 m. Next: use the exact rate, not the interval, on degraded sweeps.
