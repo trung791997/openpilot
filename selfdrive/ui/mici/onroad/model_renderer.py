@@ -342,9 +342,11 @@ class ModelRenderer(Widget):
     return None
 
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
-    """Label under the marker (above it when the marker is flipped tip-down). An in-path label that would overlap another label is dropped. A side-lane label
-    (side -1 left, +1 right) also avoids the HUD obstacles: it slides outward, then inward if outward still
-    collides or leaves the screen, and is dropped only if neither fits."""
+    """Label under the marker (above it when the marker is flipped tip-down). Any label that would overlap another
+    label is dropped. Labels also avoid the HUD obstacles (the speed-limit sign): a side-lane label (side -1 left,
+    +1 right) slides outward, then inward if outward still collides or leaves the screen, then just below the sign,
+    and is dropped if none fits. An in-path label slides off the sign toward the side it is on the same way, and is
+    drawn in place if none fits (the sign alone never hides the in-path speed)."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
 
     font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -358,7 +360,8 @@ class ModelRenderer(Widget):
     else:
       y = max(chevron[0][1], chevron[2][1]) + 2
     label_rect = rl.Rectangle(x - 3, y - 1, size.x + 6, size.y + 2)
-    blockers = self._lead_label_rects + (getattr(self, "_side_label_obstacles", []) if side else [])
+    obstacles = getattr(self, "_side_label_obstacles", [])
+    blockers = self._lead_label_rects + obstacles
 
     def hits_at(rx: float) -> list[rl.Rectangle]:
       moved = rl.Rectangle(rx, label_rect.y, label_rect.width, label_rect.height)
@@ -370,23 +373,34 @@ class ModelRenderer(Widget):
       return in_view and not hits_at(rx)
 
     hits = hits_at(label_rect.x)
-    if hits and side:
-      outward = (min(r.x for r in hits) - label_rect.width if side < 0 else max(r.x + r.width for r in hits))
-      inward = (max(r.x + r.width for r in hits) if side < 0 else min(r.x for r in hits) - label_rect.width)
+    hit_obstacle = next((r for r in hits if any(r is ob for ob in obstacles)), None)
+    dodge = side
+    if not side and hit_obstacle is not None:
+      # in-path label on the sign (e.g. a flipped cut-in at the right edge; owner: "make the cut-in label avoid the
+      # sign too"): slide off it toward the side it is already on
+      dodge = -1 if label_rect.x + label_rect.width / 2 < hit_obstacle.x + hit_obstacle.width / 2 else 1
+    if hits and dodge:
+      outward = (min(r.x for r in hits) - label_rect.width if dodge < 0 else max(r.x + r.width for r in hits))
+      inward = (max(r.x + r.width for r in hits) if dodge < 0 else min(r.x for r in hits) - label_rect.width)
       new_x = next((rx for rx in (outward, inward) if fits(rx)), None)
-      if new_x is None:
+      if new_x is not None:
+        x += new_x - label_rect.x
+        label_rect.x = new_x
+        hits = []
+      else:
         # No room beside it: if the sign is what blocks it, drop the label just below the sign (owner: "drop just
         # below the sign"), centred under it, rather than hiding the speed.
         below = self._below_obstacle(label_rect, [label_rect.x, outward, inward])
-        if below is None:
+        if below is not None:
+          x += below.x - label_rect.x
+          y += below.y - label_rect.y
+          label_rect = below
+          hits = []
+        elif side:
           return
-        x += below.x - label_rect.x
-        y += below.y - label_rect.y
-        label_rect = below
-      else:
-        x += new_x - label_rect.x
-        label_rect.x = new_x
-      hits = []
+        else:
+          # the sign alone never hides the in-path speed: draw it in place unless it would cover another label
+          hits = [r for r in hits if not any(r is ob for ob in obstacles)]
     if hits:
       return
     self._lead_label_rects.append(label_rect)

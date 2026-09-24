@@ -185,10 +185,34 @@ def test_side_label_slides_inward_off_the_speed_limit_sign(monkeypatch):
   assert drawn[0] - 3 + 66 <= 300
 
 
-def test_in_path_label_ignores_the_sign(monkeypatch):
+def test_in_path_label_slides_off_the_sign(monkeypatch):
+  # box 297..363 on the 300..400 sign, centre left of the sign's: slides left of it
   renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()])
   renderer._draw_lead_label(_chevron(330), "22 mph", 26, side=0)
-  assert drawn == [300.0]
+  assert drawn == [237.0]
+
+
+def test_in_path_label_on_the_right_of_the_sign_centre_slides_right(monkeypatch):
+  import pyray as rl
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[rl.Rectangle(200, 20, 100, 140)])
+  renderer._draw_lead_label(_chevron(280), "22 mph", 26, side=0)
+  assert drawn == [303.0]
+
+
+def test_in_path_label_boxed_in_by_the_sign_is_still_drawn(monkeypatch):
+  import pyray as rl
+  # left of the sign is taken by a label and right of it is off-screen; below the sign is taken too
+  placed = [rl.Rectangle(200, 100, 90, 40), rl.Rectangle(300, 165, 100, 30)]
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=placed)
+  renderer._draw_lead_label(_chevron(340), "22 mph", 26, side=0)
+  assert drawn == [310.0]
+
+
+def test_in_path_label_drops_below_the_sign_when_no_side_fits(monkeypatch):
+  import pyray as rl
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=[rl.Rectangle(200, 100, 90, 40)])
+  renderer._draw_lead_label(_chevron(340), "22 mph", 26, side=0)
+  assert drawn == [320.0]
 
 
 def test_side_label_drops_below_the_sign_when_neither_direction_fits(monkeypatch):

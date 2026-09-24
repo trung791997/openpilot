@@ -6023,4 +6023,9 @@ Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEA
   - The flip now also fires when only the label would be cut off. The upright marker needs `sz + LEAD_LABEL_ROOM` (32 px: a 2 px gap plus the 30.2 px box of a 26 px label) above the bottom of the view. The unflip band is 1.0·sz.
   - Re-render seg 13 56.0 s (lead 10.9 m): before, "14 mph" was cut off at the bottom edge; now it flips onto the roof with "14 mph" above. At 52.9 s (18.2 m) the label fits and the marker stays upright. The 10.9 m left-lane pickup there flips too.
   - 1 new test; 68 passed.
+- **In-path labels now avoid the sign too** (owner: "make the cut-in label avoid the sign too"). This replaces the item 105 rule that in-path labels ignore it.
+  - An in-path label that hits the sign slides off it toward the side its centre is on, then the other way, then goes just below the sign.
+  - If none of those fits, it is drawn in place. The sign alone never hides the in-path speed; overlapping another label still hides it, as before.
+  - 4 tests replace `test_in_path_label_ignores_the_sign`; 71 passed.
+  - Re-render seg 16 38.2 s: the in-path "12 mph" moves left of the sign and the right-lane "12 mph" (the same car) drops below it; both are clear. The 7.0 and 35.2 s label positions are unchanged.
 - **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it. Photograph it if the marker flickers between the two forms in stop-and-go.
