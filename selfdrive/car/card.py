@@ -27,7 +27,7 @@ from openpilot.selfdrive.car.cruise import (
   is_speed_limit_confirmation_pending,
 )
 from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, select_redneck_target_speed, update_gas_release_floor,
-                                                    update_launch_state)
+                                                    update_launch_state, want_gas_snap)
 from openpilot.selfdrive.car.car_specific import MockCarState
 
 from openpilot.starpilot.common.favorite_slots import (
@@ -480,7 +480,8 @@ class Car:
       return
 
     v_target_ms, lead_present = self._get_redneck_target_speed(CS, CC)
-    send_button, v_target = self.redneck_cruise.run(CS, CC, v_target_ms, self.is_metric, lead_present=lead_present)
+    send_button, v_target = self.redneck_cruise.run(CS, CC, v_target_ms, self.is_metric, lead_present=lead_present,
+                                                    gas_snap=getattr(self, "redneck_gas_snap", False))
     self.CI.CS.redneck_send_button = send_button
     self.CI.CS.redneck_counter_sync = bool(getattr(self.starpilot_toggles, "icbm_counter_sync", False))
     self.CI.CS.redneck_v_target = v_target
@@ -569,7 +570,12 @@ class Car:
     )
 
     gas_release_floor = 0.0
+    self.redneck_gas_snap = False
     if getattr(self.starpilot_toggles, "set_speed_on_gas_release", False):
+      brake_pressed = bool(getattr(CS, "brakePressed", False))
+      self.redneck_gas_snap = want_gas_snap(enabled, gas_pressed, driver_button, brake_pressed, v_ego, set_speed,
+                                            launch_target_speed)
+      gas_snapped = getattr(self, "redneck_gas_snapped", False) and gas_pressed or self.redneck_gas_snap
       gas_release_floor = update_gas_release_floor(
         getattr(self, "redneck_gas_release_floor", 0.0),
         getattr(self, "redneck_gas_pressed_prev", False),
@@ -577,11 +583,13 @@ class Car:
         enabled,
         v_ego,
         standstill,
-        bool(getattr(CS, "brakePressed", False)),
+        brake_pressed,
         driver_button,
         set_speed,
         bool(getattr(self, "is_metric", False)),
+        snapped=getattr(self, "redneck_gas_snapped", False),
       )
+      self.redneck_gas_snapped = gas_snapped
     self.redneck_gas_release_floor = gas_release_floor
     self.redneck_gas_pressed_prev = gas_pressed
 

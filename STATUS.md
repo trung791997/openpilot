@@ -5228,3 +5228,33 @@ one, so the target is valid only up to the first divergence.
 **Watch on the next drive:**
 - After an overtake on the gas, the set speed on the dash walks up to the release speed and stays there until a button or the brake.
 - After a launch, once the set speed has jumped up, it comes back down to follow the lead within a few seconds.
+
+## 87. ICBM gas snap: while the gas is held above the set speed, ICBM presses -/SET so the dash set speed jumps to vEgo (Peter approved, 2026-09-23). Static, unit and open-loop replay evidence only; not driven.
+
+**Why (limited road evidence, route `00000263--b8afdda0eb`, build 5969cac4f, which has the STATUS 86 floor).** The floor works, but it
+walks the set speed up at 1 mph per press only after the release, while stock ACC is already braking toward the old set speed.
+- 13:44.0: release at 42.0 mph over a 26.1 mph set speed. The set speed reached 41 mph at 13:47.1 (3.1 s), and the car slowed from
+  42.4 to 40.4 mph meanwhile (`ACCEL_COMMAND` down to -1.1).
+- 7:28.1 (38.3 over 28.0) and 9:12.7 (43.7 over 33.6) took about 3 s the same way. Peter's report: "it will speed up very quickly
+  from 25 to 40, I expected to be instantaneous".
+
+**Change** (`redneck_cruise.want_gas_snap`, `RedneckCruise._gas_snap_button`, `card._get_redneck_target_speed`; `SetSpeedOnGasRelease`).
+- While the gas is held, with vEgo more than 1 mph above the set speed and no higher than the cruise target (vCruise, SLC, CSC), ICBM sends
+  DECEL_SET for 0.2 s every 0.6 s. On a Honda, -/SET under gas sets the set speed to vEgo (route 260 seg 9: 29 -> 32 mph).
+- **It only raises the set speed.** Honda's set speed is never below 25 mph, so the snap needs vEgo > 26 mph. It never fires where
+  -/SET would set 25 mph (route 260: 39 -> 25 at 14 mph).
+- The pulses stop on the frame the gas is released, so a -/SET cannot land without gas, where it would lower the set speed by 1 mph.
+  A cancel, a resume, a driver button, the brake or a disengage also stops it.
+- A release after a snap starts the STATUS 86 floor even though the set speed is already close to vEgo, so the lead-hold target does not
+  walk it back down.
+- Above the cruise target there is no snap; the capped floor ramps as before.
+
+**Open-loop replay on 263** (logged inputs; the logged set speed does not move, so this shows where it fires, not the closed loop):
+it would fire in exactly the five gas-over-set episodes (0:13.6, 7:23.4, 7:25.0, 9:08.9, 13:39.2). Each ends on the release frame. No other snaps.
+
+**Tests (docker, per file).** `test_redneck_cruise`: 6 new tests pass. The pre-existing failure
+`test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed` is unchanged.
+
+**Watch on the next drive:**
+- Pedal from 25 to 40 mph: the dash set speed follows within about half a second while the gas is still held, and there is no ramp after the release.
+- Listen for a beep on each snap press. If -/SET under gas beeps, tell me and I'll lengthen the interval.

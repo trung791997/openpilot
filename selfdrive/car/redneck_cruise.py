@@ -50,6 +50,14 @@ LAUNCH_CAUGHT_UP_MARGIN_MS = 2.0 * CV.MPH_TO_MS
 # disengage. Route 262 1:29 and 2:25: the old path moved openpilot's v_cruise (the 55 mph ICBM max), not
 # the dash set speed, so a release at 37 mph over a 24.9 mph set speed changed nothing.
 GAS_RELEASE_SET_MARGIN_MS = 1.0 * CV.MPH_TO_MS
+# Gas snap: the floor alone ramps the set speed at 1 mph per press after the release (route 263 13:44:
+# 26 -> 41 mph took 3.1 s while the car slowed 42.4 -> 40.4 mph), so while the gas is still held ICBM
+# pulses DECEL_SET, which on a Honda snaps the set speed to vEgo under gas (route 260 seg 9: 29 -> 32 mph).
+# Only above set + 1 mph (Honda: set >= 25 mph, so never at low speed, where DECEL_SET would set 25) and
+# not above the cruise target (vCruise, SLC, CSC), so it only ever raises the set speed to where the
+# driver already is.
+GAS_SNAP_PRESS_S = 0.2
+GAS_SNAP_INTERVAL_S = 0.6
 
 HONDA_MINIMUM_SET_SPEED_MPH = 25
 HONDA_MINIMUM_SET_SPEED_KPH = 40
@@ -199,15 +207,22 @@ def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v
 
 def update_gas_release_floor(floor_ms: float, gas_pressed_prev: bool, gas_pressed: bool, enabled: bool, v_ego: float,
                              standstill: bool, brake_pressed: bool, driver_button: bool, set_speed_ms: float,
-                             is_metric: bool) -> float:
-  """Returns the ICBM target floor in m/s (0 = none). The caller caps it at the cruise target."""
+                             is_metric: bool, snapped: bool = False) -> float:
+  """Returns the ICBM target floor in m/s (0 = none). The caller caps it at the cruise target. snapped: a gas
+  snap raised the set speed during this press, so the release is floored even with the set already near vEgo."""
   if not enabled or driver_button or brake_pressed or standstill or v_ego < LAUNCH_STOPPED_SPEED_MS:
     return 0.0
-  if gas_pressed_prev and not gas_pressed and v_ego > set_speed_ms + GAS_RELEASE_SET_MARGIN_MS:
+  if gas_pressed_prev and not gas_pressed and (snapped or v_ego > set_speed_ms + GAS_RELEASE_SET_MARGIN_MS):
     if is_metric:
       return round(v_ego * CV.MS_TO_KPH) * CV.KPH_TO_MS
     return round(v_ego * CV.MS_TO_MPH) * CV.MPH_TO_MS
   return floor_ms
+
+
+def want_gas_snap(enabled: bool, gas_pressed: bool, driver_button: bool, brake_pressed: bool, v_ego: float,
+                  set_speed_ms: float, cap_ms: float) -> bool:
+  return enabled and gas_pressed and not driver_button and not brake_pressed and \
+    set_speed_ms + GAS_RELEASE_SET_MARGIN_MS < v_ego <= cap_ms
 
 
 def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int]) -> None:
@@ -235,6 +250,8 @@ class RedneckCruise:
     self.is_ready = False
     self.is_ready_prev = False
     self.cruise_button_timers = dict(CRUISE_BUTTON_TIMERS)
+    self.manual_button_pressed = False
+    self.gas_snap_frame = 0
 
   @staticmethod
   def _send_button_for_state(state: str) -> int:
@@ -262,6 +279,7 @@ class RedneckCruise:
   def _update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
     update_manual_button_timers(CS, self.cruise_button_timers)
     button_pressed = any(0 < timer <= int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL) for timer in self.cruise_button_timers.values())
+    self.manual_button_pressed = button_pressed
     # cruiseControl.override is only set under openpilot long, so the stock-ACC gas override is
     # checked directly. Honda DECEL/SET under gas snaps the set speed to vEgo (route 260 seg 6/9:
     # 39 -> 25 mph at 14 mph, 29 -> 32 mph while ICBM was decreasing).
@@ -323,8 +341,18 @@ class RedneckCruise:
 
     return self._send_button_for_state(self.state)
 
+  def _gas_snap_button(self, CS: car.CarState, CC: car.CarControl, gas_snap: bool) -> int:
+    # Pulsed, so a press never lands after the gas is released (without gas, DECEL_SET lowers the set speed).
+    if not gas_snap or not getattr(CS, "gasPressed", False) or not CC.enabled or CC.cruiseControl.cancel or \
+        CC.cruiseControl.resume or self.manual_button_pressed:
+      self.gas_snap_frame = 0
+      return SEND_BUTTON_NONE
+    phase = self.gas_snap_frame % int(GAS_SNAP_INTERVAL_S / DT_CTRL)
+    self.gas_snap_frame += 1
+    return SEND_BUTTON_DECREASE if phase < int(GAS_SNAP_PRESS_S / DT_CTRL) else SEND_BUTTON_NONE
+
   def run(self, CS: car.CarState, CC: car.CarControl, v_target_ms: float, is_metric: bool,
-          lead_present: bool = False) -> tuple[int, int]:
+          lead_present: bool = False, gas_snap: bool = False) -> tuple[int, int]:
     if self.FPCP.pcmCruiseSpeed or not self.FPCP.redneckCruiseAvailable:
       self._reset()
       return SEND_BUTTON_NONE, 0
@@ -332,6 +360,9 @@ class RedneckCruise:
     self._update_calculations(CS, v_target_ms, is_metric)
     self._update_readiness(CS, CC)
     send_button = self._update_state_machine(lead_present)
+    snap_button = self._gas_snap_button(CS, CC, gas_snap)
+    if snap_button != SEND_BUTTON_NONE:
+      send_button = snap_button
 
     self.is_ready_prev = self.is_ready
     return send_button, self.v_target

@@ -8,6 +8,8 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.card import Car
 from openpilot.selfdrive.car.redneck_cruise import (
   DECREASE_INACTIVE_TIMER,
+  GAS_SNAP_INTERVAL_S,
+  GAS_SNAP_PRESS_S,
   INCREASE_INACTIVE_TIMER,
   LEAD_INCREASE_INACTIVE_TIMER,
   MANUAL_BUTTON_INACTIVE_TIMER,
@@ -20,6 +22,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   select_redneck_target_speed,
   update_gas_release_floor,
   update_launch_state,
+  want_gas_snap,
 )
 
 
@@ -703,3 +706,65 @@ class TestRedneckGasReleaseFloor(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class TestRedneckGasSnap(unittest.TestCase):
+  SET = 25.0 * CV.MPH_TO_MS
+  CAP = 55.0 * CV.MPH_TO_MS
+
+  def _want(self, v_mph, gas=True, button=False, brake=False, enabled=True, cap=CAP):
+    return want_gas_snap(enabled, gas, button, brake, v_mph * CV.MPH_TO_MS, self.SET, cap)
+
+  def test_wants_snap_only_under_gas_above_set_and_within_cap(self):
+    self.assertTrue(self._want(40.0))
+    self.assertFalse(self._want(40.0, gas=False))
+    self.assertFalse(self._want(25.8))
+    self.assertFalse(self._want(56.0))
+    self.assertFalse(self._want(40.0, cap=30.0 * CV.MPH_TO_MS))
+    self.assertFalse(self._want(40.0, button=True))
+    self.assertFalse(self._want(40.0, brake=True))
+    self.assertFalse(self._want(40.0, enabled=False))
+
+  def _redneck_run(self, redneck, gas, gas_snap, set_mph=25.0, cancel=False):
+    cs = SimpleNamespace(cruiseState=SimpleNamespace(speedCluster=set_mph * CV.MPH_TO_MS), buttonEvents=[], gasPressed=gas)
+    cc = SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False, cancel=cancel, resume=False))
+    return redneck.run(cs, cc, 40.0 * CV.MPH_TO_MS, False, gas_snap=gas_snap)[0]
+
+  def test_redneck_pulses_decel_set_while_gas_held(self):
+    redneck = RedneckCruise(SimpleNamespace(), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+    period = int(GAS_SNAP_INTERVAL_S / DT_CTRL)
+    buttons = [self._redneck_run(redneck, True, True) for _ in range(2 * period)]
+    press = int(GAS_SNAP_PRESS_S / DT_CTRL)
+    self.assertEqual([SEND_BUTTON_DECREASE] * press + [SEND_BUTTON_NONE] * (period - press), buttons[:period])
+    self.assertEqual(buttons[:period], buttons[period:])
+
+  def test_redneck_never_snaps_without_gas_or_on_cancel(self):
+    redneck = RedneckCruise(SimpleNamespace(), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+    self.assertEqual(SEND_BUTTON_NONE, self._redneck_run(redneck, False, True, set_mph=40.0))
+    self.assertEqual(SEND_BUTTON_NONE, self._redneck_run(redneck, True, True, cancel=True))
+    self.assertEqual(SEND_BUTTON_NONE, self._redneck_run(redneck, True, False))
+
+  def test_snapped_release_sets_floor_near_set_speed(self):
+    # After a snap the set speed is already ~vEgo, so the release floor must not need set + 1 mph.
+    floor = update_gas_release_floor(0.0, True, False, True, 40.2 * CV.MPH_TO_MS, False, False, False,
+                                     40.0 * CV.MPH_TO_MS, False, snapped=True)
+    self.assertAlmostEqual(40.0 * CV.MPH_TO_MS, floor)
+    self.assertEqual(0.0, update_gas_release_floor(0.0, True, False, True, 40.2 * CV.MPH_TO_MS, False, False, False,
+                                                   40.0 * CV.MPH_TO_MS, False))
+
+  def test_card_snaps_under_gas_and_holds_set_after_release(self):
+    floor_tests = TestRedneckGasReleaseFloor()
+    card, plan = floor_tests._card()
+    floor_tests._run(card, plan, 38.0, True, 24.9, 32.0)
+    self.assertTrue(card.redneck_gas_snap)
+    # Set speed snapped to 38 while the gas was held; release at 38.3 still holds 38 over the 32 mph lead plan.
+    floor_tests._run(card, plan, 38.3, True, 38.0, 32.0)
+    self.assertFalse(card.redneck_gas_snap)
+    target = floor_tests._run(card, plan, 38.3, False, 38.0, 32.0)
+    self.assertAlmostEqual(38.0 * CV.MPH_TO_MS, target, places=2)
+
+  def test_card_no_snap_with_toggle_off(self):
+    floor_tests = TestRedneckGasReleaseFloor()
+    card, plan = floor_tests._card(toggle=False)
+    floor_tests._run(card, plan, 38.0, True, 24.9, 32.0)
+    self.assertFalse(card.redneck_gas_snap)
