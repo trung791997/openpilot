@@ -10,7 +10,6 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.pid import PIDController
 from openpilot.starpilot.common.testing_grounds import testing_ground
-from openpilot.selfdrive.controls.lib.lat_adaptive_tune import LatAdaptiveTuner
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   RAV4_TSS2_CARS,
@@ -493,9 +492,6 @@ class LatControlPID(LatControl):
     self.lat_f_scale_standard = 1.0
     self.lat_f_scale_highway = 1.0
     self.lat_gain_schedule = None
-    # LatAdaptiveTune (default 0 = off) -- see lat_adaptive_tune.py. The mode is re-read in the
-    # 300-frame refresh (live from Galaxy); the learned factors step at most once per drive.
-    self.adaptive = LatAdaptiveTuner(self.params) if self.is_eps_modified else None
     self.center_taper_high = 0.5
     self.center_boost_threshold = 3.0
     self.center_boost_min_speed = 50.0
@@ -697,8 +693,6 @@ class LatControlPID(LatControl):
           self.lpf_tau_standard = _get_param_float(self.params, "HondaLpfTauStandard", NRDR_TARGET_SMOOTH_TAU, 0.0, 5.0)
           self.lpf_tau_highway = _get_param_float(self.params, "HondaLpfTauHighway", NRDR_TARGET_SMOOTH_TAU, 0.0, 5.0)
           self.use_firmware_vgr = _get_param_bool(self.params, "NrdrLatUseFirmwareVgr")
-          if self.adaptive is not None:
-            self.adaptive.refresh_mode()
 
         p_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_p_scale_low, self.lat_p_scale_standard, self.lat_p_scale_highway)
         i_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_i_scale_low, self.lat_i_scale_standard, self.lat_i_scale_highway)
@@ -706,14 +700,9 @@ class LatControlPID(LatControl):
         p_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "p", CS.vEgo, p_scale)
         i_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "i", CS.vEgo, i_scale)
         f_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "f", CS.vEgo, f_scale)
-        if self.adaptive is not None:
-          p_scale *= self.adaptive.p_factor(CS.vEgo)
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
 
         lane_change = bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False))
-        if self.adaptive is not None:
-          self.adaptive.observe(CS.vEgo, angle_steers_des, CS.steeringAngleDeg, bool(CS.steeringPressed),
-                                lane_change, steer_limited_by_safety)
         if lane_change:
           self.center_taper_scale.x = 0.0
           center_taper_scale = 0.0

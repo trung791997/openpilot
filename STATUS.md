@@ -6411,3 +6411,10 @@ The item 116 handoff is done.
   - Only the mode is live. The factors still step at most once per drive.
 - **Tests:** 4 new tests in `TestLiveMode`; 58 pass across `test_lat_adaptive_tune.py` and `test_lat_gain_schedule.py`.
 - **Params artifacts:** `common/params_pyx.so` and `common/libcommon.a` were rebuilt with the Docker larch64 recipe (Cython 3.1.4) and now have 853 → 857 keys. The 4 new keys are `LatAdaptiveTune` (default 0), `LatAdaptiveState`, `LatAdaptiveStats`, and `LatGainSchedule` (item 115), which was in the header but missing from the binary. Before this rebuild, Galaxy would have returned 403 "not editable" for all four (item 12).
+
+### 116b. Items 116 and 116a reverted (owner request, 2026-09-24).
+
+The owner wants the adaptive lateral tuner rebuilt in the Galaxy FLM format instead. That means up to 8 selected routes, learning on the device while the car is off, results kept as separate trials, and a revert per trial.
+- **Removed:** `lat_adaptive_tune.py` and its tests, the `LatControlPID` hook, the Galaxy `LatAdaptiveTune` row, and the three `LatAdaptive*` keys.
+- **Params artifacts:** rebuilt, 857 → 854 keys. `LatGainSchedule` (item 115) stays in the binary.
+- **Kept:** the item 116 text above, as the design record for the rebuild. Its rules, thresholds and 19-route replay findings still apply.
