@@ -1,3 +1,5 @@
+import math
+
 from cereal import car
 from opendbc.car import apply_hysteresis
 from openpilot.common.constants import CV
@@ -31,6 +33,18 @@ LEAD_DEPARTURE_BOOST_MIN_MS = 1.25 * CV.MPH_TO_MS
 LEAD_DEPARTURE_BOOST_MAX_MS = 3.0 * CV.MPH_TO_MS
 LEAD_DEPARTURE_BOOST_FACTOR = 0.50
 LEAD_DEPARTURE_PLAN_POINTS = 3
+
+# Far lead (stock ACC only, behind ICBMFarLead): the chill planner's speeds are ICBM's only lead input
+# and they do not come down for a slow or stopped lead 100 m out (route 25e 723-727 s, replay: the plan
+# stayed at the set speed until the lead was 83 m away, then wanted 22 -> 8 m/s in 3 s and the car's own
+# ACC braked -3.5). This target is the speed from which a constant FAR_LEAD_DECEL_MS2 stop reaches the
+# lead's speed with FAR_LEAD_HEADWAY_S of headway (never under FAR_LEAD_MIN_GAP_M). It is taken as the
+# minimum with the plan-derived target, so it only ever lowers the set speed. 1.5 m/s^2 is what the
+# set speed can follow at ~2 steps/s (1 mph/step) without the stock ACC having to brake hard. Replay
+# evidence only, never driven.
+FAR_LEAD_DECEL_MS2 = 1.5
+FAR_LEAD_MIN_GAP_M = 6.0
+FAR_LEAD_HEADWAY_S = 1.5
 
 # Launch (stock ACC only): after a full stop, raise the set speed straight to the cruise target once the
 # car is moving again, instead of holding at the 25 mph floor until vEgo passes it. Route 260 8:39-8:51:
@@ -81,6 +95,7 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
                                 lookahead_points: int, allow_plan_decrease: bool = True,
                                 lead_present: bool = False, lead_distance_m: float = 0.0,
                                 lead_rel_speed_ms: float = 0.0,
+                                lead_speed_ms: float | None = None,
                                 slc_target_speed_ms: float = 0.0,
                                 csc_target_speed_ms: float = 0.0) -> float:
   target_speed_ms = float(speed_cluster_ms)
@@ -100,8 +115,13 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
   if csc_target_speed_ms > 0:
     target_speed_ms = min(target_speed_ms, float(csc_target_speed_ms))
 
+  lead_closing = lead_present and lead_rel_speed_ms < -LEAD_CLOSING_REL_SPEED_MIN_MS
+  # ICBMFarLead: inf (no effect) unless card.py passed the lead speed and the lead is closing.
+  far_lead_target_ms = float("inf")
+  if lead_closing and lead_speed_ms is not None:
+    far_lead_target_ms = get_far_lead_target_ms(lead_distance_m, lead_speed_ms)
+
   if allow_plan_decrease and len(plan_speeds_ms) > 0:
-    lead_closing = lead_present and lead_rel_speed_ms < -LEAD_CLOSING_REL_SPEED_MIN_MS
     if lead_present and not lead_closing and target_speed_ms > speed_cluster_ms and plan_speeds_ms[0] > speed_cluster_ms:
       recovery_lookahead_points = min(len(plan_speeds_ms), LEAD_RECOVERY_LOOKAHEAD_POINTS)
       recovery_target_speed_ms = max(speed_cluster_ms, min(plan_speeds_ms[:recovery_lookahead_points]))
@@ -113,7 +133,7 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
       )
       if departure_boost_ms > 0.0:
         recovery_target_speed_ms = max(recovery_target_speed_ms, speed_cluster_ms + departure_boost_ms)
-      return min(target_speed_ms, recovery_target_speed_ms)
+      return min(target_speed_ms, recovery_target_speed_ms, far_lead_target_ms)
 
     decrease_target_speed_ms = min(plan_speeds_ms[:lookahead_points])
     lead_headway_s = lead_distance_m / speed_cluster_ms if lead_distance_m > 0.0 and speed_cluster_ms > 0.1 else float("inf")
@@ -121,7 +141,7 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
 
     if not proactive_coast and lead_present and target_speed_ms > speed_cluster_ms and \
         decrease_target_speed_ms >= speed_cluster_ms - LEAD_RECOVERY_HOLD_BUFFER_MS:
-      return speed_cluster_ms
+      return min(speed_cluster_ms, far_lead_target_ms)
 
     if lead_present and (decrease_target_speed_ms < speed_cluster_ms or proactive_coast):
       decrease_target_speed_ms = max(0.0, decrease_target_speed_ms - get_lead_coast_buffer_ms(
@@ -132,12 +152,12 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
 
     if proactive_coast and target_speed_ms > speed_cluster_ms and \
         decrease_target_speed_ms >= speed_cluster_ms - LEAD_RECOVERY_HOLD_BUFFER_MS:
-      return speed_cluster_ms
+      return min(speed_cluster_ms, far_lead_target_ms)
 
     if decrease_target_speed_ms < target_speed_ms:
-      return decrease_target_speed_ms
+      return min(decrease_target_speed_ms, far_lead_target_ms)
 
-  return target_speed_ms
+  return min(target_speed_ms, far_lead_target_ms)
 
 
 def get_lead_coast_buffer_ms(speed_cluster_ms: float, lead_distance_m: float, lead_rel_speed_ms: float) -> float:
@@ -156,6 +176,15 @@ def get_lead_coast_buffer_ms(speed_cluster_ms: float, lead_distance_m: float, le
 
   extra_buffer_ms = min(LEAD_EXTRA_COAST_BUFFER_MAX_MS, lead_closing_speed_ms * LEAD_EXTRA_COAST_BUFFER_FACTOR)
   return LEAD_COAST_BUFFER_MS + extra_buffer_ms * (0.5 + (0.5 * headway_factor))
+
+
+def get_far_lead_target_ms(lead_distance_m: float, lead_speed_ms: float) -> float:
+  """Speed from which a FAR_LEAD_DECEL_MS2 decel reaches lead_speed_ms at the desired gap. inf if no lead."""
+  if lead_distance_m <= 0.0:
+    return float("inf")
+  lead_speed_ms = max(float(lead_speed_ms), 0.0)
+  gap_m = max(FAR_LEAD_MIN_GAP_M, FAR_LEAD_HEADWAY_S * lead_speed_ms)
+  return math.sqrt(max(0.0, lead_speed_ms ** 2 + 2.0 * FAR_LEAD_DECEL_MS2 * (lead_distance_m - gap_m)))
 
 
 def get_lead_departure_boost_ms(speed_cluster_ms: float, lead_distance_m: float, lead_rel_speed_ms: float,

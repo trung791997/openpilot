@@ -17,6 +17,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   SEND_BUTTON_DECREASE,
   SEND_BUTTON_INCREASE,
   SEND_BUTTON_NONE,
+  get_far_lead_target_ms,
   get_lead_coast_buffer_ms,
   get_lead_departure_boost_ms,
   select_redneck_target_speed,
@@ -420,6 +421,44 @@ class TestRedneckCruise(unittest.TestCase):
     )
 
     self.assertLess(target_speed, 100.0 * CV.KPH_TO_MS)
+
+  def test_far_lead_target_is_stopping_distance_speed(self):
+    # 25e 723.0 s: lead 102.7 m, vLead 14.7 m/s. d_min = max(6, 1.5*14.7) = 22.05 m.
+    self.assertAlmostEqual(get_far_lead_target_ms(102.7, 14.7), 21.4, delta=0.1)
+    # stopped lead 100 m ahead: d_min = 6 m -> sqrt(2*1.5*94)
+    self.assertAlmostEqual(get_far_lead_target_ms(100.0, 0.0), 16.8, delta=0.1)
+    self.assertEqual(get_far_lead_target_ms(0.0, 10.0), float("inf"))
+    self.assertEqual(get_far_lead_target_ms(5.0, 0.0), 0.0)
+
+  def _far_lead_args(self):
+    # 25e 723.0 s (replay): cruise 80 km/h, cluster 22.22 m/s, chill plan still at the set speed,
+    # vision lead 102.7 m closing 7.5 m/s. HEAD returns the set speed here (hold branch).
+    return dict(
+      v_cruise_kph=80.0, speed_cluster_ms=22.22, starpilot_target_speed_ms=0.0,
+      plan_speeds_ms=[22.2, 22.1, 22.0, 22.0, 22.0], lookahead_points=5,
+      allow_plan_decrease=True, lead_present=True, lead_distance_m=102.7, lead_rel_speed_ms=-7.5,
+    )
+
+  def test_far_lead_lowers_target_for_closing_lead(self):
+    args = self._far_lead_args()
+    off = select_redneck_target_speed(**args)
+    on = select_redneck_target_speed(**args, lead_speed_ms=14.7)
+    self.assertAlmostEqual(off, 22.22, places=3)
+    self.assertLess(on, 22.22)
+    self.assertAlmostEqual(on, get_far_lead_target_ms(102.7, 14.7), places=6)
+
+  def test_far_lead_none_is_byte_identical(self):
+    args = self._far_lead_args()
+    self.assertEqual(select_redneck_target_speed(**args), select_redneck_target_speed(**args, lead_speed_ms=None))
+    args["lead_rel_speed_ms"] = 0.5  # not closing
+    self.assertEqual(select_redneck_target_speed(**args), select_redneck_target_speed(**args, lead_speed_ms=14.7))
+    args["lead_present"] = False
+    self.assertEqual(select_redneck_target_speed(**args), select_redneck_target_speed(**args, lead_speed_ms=0.0))
+
+  def test_far_lead_never_raises_target(self):
+    args = self._far_lead_args()
+    args["plan_speeds_ms"] = [15.0] * 5  # plan already wants less than the far target
+    self.assertEqual(select_redneck_target_speed(**args), select_redneck_target_speed(**args, lead_speed_ms=14.7))
 
   def test_target_speed_holds_for_distant_closing_lead(self):
     target_speed = select_redneck_target_speed(
