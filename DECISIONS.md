@@ -1314,3 +1314,46 @@ no one-sweep derivatives. The off path is untouched. Replay: the 25e -3.0 crossi
 (min -2.39), five other windows identical. The toggle stays off: the first 0.26 s after a re-root
 still coast the rail, and the walk was admitted on a DEGRADED sweep where the interval widened a
 2 m gate by 0.39 m. Next: use the exact rate, not the interval, on degraded sweeps.
+
+## D-064 — IMPLEMENTED behind `ICBMFarLead` (default ON at the owner's request, stock off): ICBM lowers the set speed toward a stopping-distance speed for a closing lead the chill plan ignores
+**Decided 2026-09-24 on 25e replay (STATUS 94). Replay and unit evidence only; not driven. Peter asked for it to ship on so he can try it on the next update.**
+
+### The failure
+
+ICBM (`RedneckCruise`) has one lead input: the chill MPC plan's minimum speed. On 25e a stopped-ish
+lead was visible at 102 m closing 7.5 m/s, but the plan did not dip below the set speed until 83 m,
+so the first decel press came 1.5 s after the lead was known, and the 2 steps/s set-speed walk then
+ran out of road (STATUS 94). Peter's expectation, "if OP already detects a stopped lead from far
+away, command stock ACC to slow down," is the right one for a system whose only brake is the ACC
+set speed.
+
+### The decision
+
+`select_redneck_target_speed` takes `lead_speed_ms` (default `None`). With the toggle on, `card.py`
+passes `leadOne.vLead`; when the lead is closing, the target is capped at
+`sqrt(vLead^2 + 2 * FAR_LEAD_DECEL_MS2 * (d - max(FAR_LEAD_MIN_GAP_M, FAR_LEAD_HEADWAY_S * vLead)))`
+with 1.5 m/s^2, 6 m and 1.5 s: the speed from which a comfortable decel reaches the lead's speed at
+the desired gap. The cap wraps every return of the plan block, so it only ever lowers the target.
+`None` (toggle off) leaves the HEAD arithmetic byte-identical (replay max difference 0.0). On 25e the
+first press moves from 724.07 to 723.02 s and the simulated set runs ~2 mph lower throughout; the
+317 s episode is unchanged; the 310.5 s U11-rail episode gets one extra step (D-063 interaction,
+mitigated by `BoschARailInterval`).
+
+### Rejected alternatives
+
+- **Raising `LEAD_PROACTIVE_COAST_HEADWAY_MAX_S`.** Widens the coast for every closing lead, not just
+  the far ones the plan ignores, and the coast is a fixed buffer, not a distance-aware target.
+- **Lowering the hold band (`LEAD_RECOVERY_HOLD_BUFFER_MS`, 1.5 mph).** Behaviour change on every
+  ICBM drive for ~0.5 s of gain; Peter said change nothing else before the bench test.
+- **Changing the planner (chill MPC) floor.** Brake-affecting on alpha long too, retained for Claude
+  and needs Peter's OK; the far-lead rule keeps the change inside ICBM.
+- **Changing the 662 send pattern (counter sync on by default, press-release taps).** The press/step
+  dump says the step rate is locked to the counter beat, so `ICBMCounterSync` is the likely fix, but
+  it is measured by the STATUS 94 bench test, not assumed.
+
+### Limits
+
+The walk is still limited to ~2 steps/s and the 25 mph floor; a far target cannot make stock ACC
+brake harder than the set-speed walk allows. The 726-728 s stall (presses out, no steps) is not
+explained. If the set speed comes down too early on the road, the toggle is in Galaxy Developer
+Mode as "ICBM Far-Lead Slowdown".

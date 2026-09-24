@@ -5410,3 +5410,43 @@ The MPC wanted the same -5.7 in both. The planner clips its output to `output_ac
 **Not done, and why.** No planner change. The floor and its release are longitudinal control invariants (retained for Claude per CLAUDE.md, brake-affecting, Peter's OK required), and the right fix is a design choice: let a radar lead open the floor the way a vision lead does (same TTC/closing-speed conditions, `radar` flag ignored), or drop the `radar` exclusion in the slow-stopped cap. Either would change braking on every alpha-long drive and needs the corpus scan first.
 
 **Housekeeping.** 251 retrieved for the trace and deleted after (archived, unsynced=0).
+
+## 94. ICBM far-lead target (`ICBMFarLead`, ships ON at the owner's request) replayed on 25e on vs off, plus the 662 press/step dump. Replay and unit evidence only; nothing driven.
+
+Peter reported (route `11c8fa231c0499ed/0000025e--919b58ab81`): "if OP already detects a stopped lead from faraway, I would expect OP will command stock ACC to slow down." ICBM (`RedneckCruise`) does not brake; it walks the stock ACC set speed down with spoofed `SCM_BUTTONS` (address 662) decel presses, and stock ACC does the braking. Alpha long was off on 25e and experimental mode never came on.
+
+**The three 25e episodes (replay, `icbmscan.py` / `icbmtl.py`).**
+
+| Window | What happened | Why ICBM was late |
+|---|---|---|
+| 723-733 s | Vision-only lead at 102 m, vLead 14.7 m/s, closing 7.5 m/s. Planner `planMin` stayed at the set speed until 724.5 s (83 m); first decel press 724.5; set stepped 1 mph per ~0.5 s, stalled at 74 km/h from 726.1 to 727.9 with presses still going out; radar fused only at 28.6 m (728.0); stock ACC braked -3.5 from 726; Peter braked at 732.5 with a 4.8 m gap. | The chill MPC plan is ICBM's only lead input and does not slow for a far lead; then the ~2 steps/s walk. |
+| 317-323 s | Same pattern, radar lead; the car's own ACC did the decel, the ICBM set never went below vEgo. | Same, plus the 25 mph floor. |
+| 310.5-311.5 s | Radar lead at 96-101 m with vRel pinned at -13.50 for 3 cycles, then +0.45: 28 decel presses, 2 mph lost. | U11 rail (D-063); the planner itself also dipped 0.3 s later. |
+
+**What changed (commits 5fdc433dc, afe003d7b).** `select_redneck_target_speed` takes `lead_speed_ms=None`. When the lead is closing (`vRel < -LEAD_CLOSING_REL_SPEED_MIN_MS`) and a speed was given, the target is capped at `get_far_lead_target_ms(d, vLead) = sqrt(vLead^2 + 2 * 1.5 * (d - max(6 m, 1.5 s * vLead)))`: the speed from which a 1.5 m/s^2 decel reaches the lead's speed at the desired gap. Every return of the plan block is wrapped in `min(..., far_lead_target)`, so the rule can only lower the target, never raise it, and `None` leaves the HEAD arithmetic byte-identical (replay: max difference 0.0 in all three windows). `card.py` passes `radarState.leadOne.vLead` only when the toggle is on. Toggle `ICBMFarLead` (Galaxy Developer Mode, "ICBM Far-Lead Slowdown (Honda, experimental)") ships **on** because Peter asked to try it on the next update; stock value off. Params artifacts rebuilt 852 → 853 keys (aarch64, hash checked, modes unchanged).
+
+**Replay on 25e, toggle on vs off (`icbmfar.py`, set walk simulated at 1 mph per 0.5 s).**
+
+| Window | Off | On |
+|---|---|---|
+| 723-733: first cycle with target below the set speed | 724.07 s (86.9 m) | 723.02 s (102.7 m, target 21.39 vs set 22.22 m/s) |
+| simulated set at 726.0 / 728.0 / 730.0 s (m/s) | 20.43 / 18.65 / 16.86 | 19.54 / 17.75 / 15.96 |
+| 317-323 | first below set at 316.93 s (79.1 m) | identical to off |
+| 310.5-311.5 rail | set steps at 311.08 | one step earlier, 310.53 (target 16.8 vs planMin 18.6 while U11 is railed; from 310.83 the planner drops and on == off) |
+
+The far lead brings the first press forward by 1.05 s and keeps the set about 2 mph lower through the whole slowdown. Both walks are limited by the ~2 steps/s press rate, not by the target (the on-target falls to 11 m/s by 726 while the simulated set is still 19.5 m/s). The rail case is the D-063 interaction: a pinned -13.50 makes the far lead pull one extra step; `BoschARailInterval` (off) is the mitigation, and the planner reacted to the same rail 0.3 s later on its own.
+
+**662 press/step dump (`icbmcan.py`, `icbmclass.py`; windows 724-729, 306-309, 313-315).**
+
+- (a) openpilot sends 662 continuously at 16.0 frames/s (gap median 60 ms, min 56, max 66, no gap over 120 ms): there are no press-release edges today. The car's own bus-1 662 runs at 25 frames/s with COUNTER cycling 0-3.
+- (b) openpilot's COUNTER advances once per frame on its own clock. Classed against the car's last counter it repeats a fixed 8-frame pattern (other x4, next x2, dup x2) every 0.48 s, the beat between the two counter cycles (25/4 = 6.25 Hz vs 16.7/4 = 4.17 Hz).
+- (c) The cluster set speed steps at most once per beat: 724-729 has 7 steps, each 0.07-0.19 s after a "next" pair, and every "next" pair produced a step except the three inside the 726.1-727.9 stall. 306-309 (accel presses): 6 steps in 6 of 7 beats. So the ~2 steps/s rate is locked to the counter beat, not to the frame rate, which says the car accepts a press only in one counter phase. `ICBMCounterSync` puts every frame in the "next" phase and should raise the rate; the bench test below measures it. The stall itself is not explained by counter class (three good pairs, no step); stock ACC was braking -3.5 during it, and whether the ECU freezes the set speed while it brakes is left to the bench test and road evidence.
+- (d) A single ICBM press today is 6 frames (~0.36 s, 313-315) and yields exactly 1 step, the same as the 7 steps of the continuous 724-729 run per beat.
+
+**Bench test for Peter (parked, ACC set, engine running, count cluster set-speed steps in 5 s).** Pattern A: today's continuous frames (toggle `ICBMCounterSync` off). Pattern B: `ICBMCounterSync` on. Pattern C: press-release taps (needs a test build, 3 frames on, 3 off). If the counter-phase reading is right, B >> A. If the ECU auto-repeats a held press, A ~10 and C ~25+. Record it as a route so the 662 frames are logged.
+
+**Tests.** `test_redneck_cruise.py` (5 new: stopping-distance value, lowers target for a closing lead, `None` byte-identical, never raises the target, card toggle gate) + `test_device_settings_layout.py`: 91 passed, 1 failed (pre-existing, item 38 of the session notes: `test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed` broke when the hold buffer went 0.5 → 1.5 mph in 50e1c1d37; retune the test or revert the band is Peter's call). ruff: no new findings vs HEAD.
+
+**Not done.** No planner change, no hold-band change, no send-pattern change (Peter: change nothing else before the bench test). The stall cause is open. Nothing here has been driven.
+
+**Housekeeping.** 25e verified (unsynced=0) and deleted from the volume after this item. A second copy `0000025e--919b58ab81o` exists in the volume from an unknown earlier run; left in place.
