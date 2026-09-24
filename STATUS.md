@@ -169,16 +169,16 @@ Two traps to know before you start:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y capnproto libcapnp-dev libzmq3-dev opencl-headers \
+sudo apt-get install -y clang build-essential xvfb capnproto libcapnp-dev libzmq3-dev opencl-headers \
                         ocl-icd-opencl-dev libeigen3-dev libusb-1.0-0-dev
 
 export UV_PROJECT_ENVIRONMENT=/tmp/opvenv       # NOT the repo's broken .venv
-uv venv --python 3.12 "$UV_PROJECT_ENVIRONMENT"   # 3.12 matches the device (3.12.3)
+uv venv --managed-python --python 3.12 "$UV_PROJECT_ENVIRONMENT"   # device is 3.12.3; managed CPython ships Python.h
 uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
   numpy pycapnp pytest pytest-xdist pytest-asyncio pytest-cpp cython scons setuptools \
   smbus2 pyzmq sentry-sdk requests psutil pyserial tqdm zstandard crcmod setproctitle \
   pyjwt libusb1 python-dateutil pycryptodome cffi sympy casadi future-fstrings \
-  parameterized hypothesis ruff
+  parameterized hypothesis ruff "raylib<5.5.0.3" qrcode pillow   # last three: UI tests (run under xvfb-run -a)
 
 export PYTHONPATH=$(dirname "$PWD"):$PWD
 scons -j8 msgq_repo/ cereal/ opendbc_repo/ common/ selfdrive/
@@ -5903,4 +5903,10 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 - `PARAMS_ROOT` pointed at a scratch directory, because Params otherwise tries `/data/params`;
 - running under `xvfb-run -a`, because raylib segfaults at import without a display.
 
-Still open in the hook: the scons step exits non-zero without `clang++`, so on this host it stops before the skip-worktree step. It also installs neither the UI deps (`raylib`, `qrcode`, `pillow`) nor Xvfb.
+**Hook fixed further, same day.**
+- It apt-installs `clang build-essential xvfb`. SConstruct hardcodes clang; the hook used to exit on `clang++: not found` before masking the artifacts.
+- The venv now uses **uv-managed** CPython 3.12. The system `python3.12` on this image has no `Python.h`, and scons failed compiling `ipc_pyx.cpp` against it. An existing venv without headers is rebuilt.
+- It installs `raylib<5.5.0.3 qrcode pillow`.
+- The session env file exports `PARAMS_ROOT` (default `~/.comma/params`).
+
+Checked on this aarch64 host (uv-managed 3.12.14): the hook exits 0, the full scons build completes, and 53 artifacts are skip-worktree. A second run is a no-op (1.4 s). Tests: `opendbc_repo/opendbc/car/honda/tests/` 271 passed; the five radard/longitudinal suites 129 passed; `test_mici_multi_lead.py` under `xvfb-run` 38 passed. **Not run on an x86_64 container.**
