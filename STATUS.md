@@ -5900,6 +5900,15 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
   - Nothing reaches the wheel icon.
 
   The render script was scratch and is not committed.
+- **Route render (same day).** Route `00000267--e83a1fa671` seg 16 was fetched from Konik: rlog plus qcamera.
+  - Method: the real mici `ModelRenderer` was driven offscreen under Xvfb by a stub SubMaster, with toggles from the route's initData. The transform copies `AugmentedRoadView._calc_frame_matrix`, using mici os04c10 fcam 1344×760 with the qcamera stretched to it.
+  - The HUD and speed-limit sign are **not** drawn. The harness is scratch and is not committed.
+  - Checked at t = 7.9, 24.2, 30.2 and 43.1 s, at 20/16 vs 26/22:
+    - 7.9 s: two close in-path leads (22 and 23 mph). At 26 px one in-path label is dropped by the overlap rule; at 20 px both showed.
+    - 24.2 s: at 26/22 all three labels show (4 / 17 / 4 mph). At 20/16 the left one did not appear.
+    - 30.2 and 43.1 s: fine at both sizes.
+  - Replay render evidence, UI only.
+  - qlogs carry no `modelV2`, so the render needs rlogs.
 - **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
   - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
   - a side label slides outward, and could now reach the screen edge or the wheel icon.
