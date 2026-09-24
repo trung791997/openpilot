@@ -59,12 +59,16 @@ def _load(tmp_path):
   return module
 
 
-def _trial(module, trial_id="lt-1", fingerprint="fp1", p=(100.0, 105.0, 100.0, 100.0)):
-  t = {"schemaVersion": 1, "trialId": trial_id, "createdAt": 1.0, "knotsMph": [20.0, 30.0, 40.0, 50.0], "routeNames": ["r"],
-       "warnings": [], "baseline": {"fingerprint": fingerprint, "pPct": [100.0] * 4, "raw": {}}, "factors": [1.0, 1.05, 1.0, 1.0],
-       "proposedPPct": list(p), "perRoute": [], "applied": None,
-       "knots": [{"mph": m, "minutes": 4.0, "ready": True, "factor": 1.0, "decision": "hold", "reason": "hold",
-                  "signRate": 0.1, "curveRatio": None, "straightRms": 0.2, "pressRate": 0.0} for m in (20.0, 30.0, 40.0, 50.0)]}
+def _trial(module, trial_id="lt-1", fingerprint="fp1", p=(100, 105, 105)):
+  cur = [{"p": 100, "i": 100, "f": 50}, {"p": 100, "i": 75, "f": 100}, {"p": 105, "i": 100, "f": 100}]
+  bands = []
+  for (name, lo, hi), c, pk, newp in zip(module.lat.BANDS, cur, module.lat.P_KEYS, p, strict=True):
+    bands.append({"name": name, "lowMph": lo, "highMph": hi, "pKey": pk, "minutes": 4.0, "ready": True, "factor": 1.0,
+                  "decision": "hold", "reason": f"{name}: hold", "signRate": 0.1, "curveRatio": None, "straightRms": 0.2,
+                  "pressRate": 0.0, "current": dict(c), "proposed": dict(c, p=newp)})
+  t = {"schemaVersion": 2, "trialId": trial_id, "createdAt": 1.0, "bandNames": list(module.lat.BAND_NAMES), "routeNames": ["r"],
+       "warnings": [], "baseline": {"fingerprint": fingerprint, "gains": cur, "raw": {}, "scheduleTerms": []},
+       "factors": [1.0, 1.05, 1.0], "perRoute": [], "applied": None, "bands": bands}
   module.ensure_workspace()
   module._write_json(module.get_workspace_root() / "trials" / f"{trial_id}.json", t)
   return t
@@ -129,31 +133,58 @@ def test_run_worker_writes_trial_and_complete_status(tmp_path, monkeypatch):
   assert saved["trialId"] == st["trialId"] and saved["routeNames"] == ["r"]
 
 
-def test_apply_and_revert_round_trip(tmp_path):
+def test_apply_writes_p_band_params_strips_schedule_p_and_reverts_exactly(tmp_path):
   module = _load(tmp_path)
+  sched = '{"v_mph":[10,60],"p":[100,100],"i":[40,90]}'
+  FakeParams._store.update({"LatPScaleLowSpeed": 100, "LatPScaleStandard": 100, "LatPScaleHighway": 105,
+                            "LatIScaleStandard": 75, "LatGainSchedule": sched})
   _trial(module, "lt-1", fingerprint=module.current_fingerprint())
-  FakeParams._store["LatGainSchedule"] = '{"v_mph":[10,60],"p":[100,100],"i":[40,90]}'
-  _trial(module, "lt-1", fingerprint=module.current_fingerprint())   # re-write with the fingerprint that includes the schedule
   result = module.apply_trial("lt-1")
-  written = json.loads(FakeParams._store["LatGainSchedule"])
-  assert written["p"] == [100.0, 105.0, 100.0, 100.0] and "i" in written
+  assert result["written"] == {"LatPScaleLowSpeed": 100, "LatPScaleStandard": 105, "LatPScaleHighway": 105}
+  assert FakeParams._store["LatPScaleStandard"] == 105 and isinstance(FakeParams._store["LatPScaleStandard"], int)
+  assert FakeParams._store["LatIScaleStandard"] == 75                               # I/F never written
+  assert json.loads(FakeParams._store["LatGainSchedule"]) == {"v_mph": [10, 60], "i": [40, 90]}  # p dropped, i kept
   assert FakeParams._memory_store["StarPilotTogglesUpdated"] is True
-  assert module.load_trial("lt-1")["applied"]["priorSchedule"] == '{"v_mph":[10,60],"p":[100,100],"i":[40,90]}'
+  applied = module.load_trial("lt-1")["applied"]
+  assert applied["priorParams"] == {"LatPScaleLowSpeed": "100", "LatPScaleStandard": "100", "LatPScaleHighway": "105"}
+  assert applied["priorSchedule"] == sched
   assert module.list_workspace()["activeStack"] == ["lt-1"]
-  assert result["trial"]["trialId"] == "lt-1"
   module.revert_trial("lt-1")
-  assert FakeParams._store["LatGainSchedule"] == '{"v_mph":[10,60],"p":[100,100],"i":[40,90]}'
+  assert (FakeParams._store["LatPScaleLowSpeed"], FakeParams._store["LatPScaleStandard"], FakeParams._store["LatPScaleHighway"]) == (100, 100, 105)
+  assert FakeParams._store["LatGainSchedule"] == sched
   assert module.load_trial("lt-1")["applied"] is None
   assert module.list_workspace()["activeStack"] == []
 
 
-def test_revert_removes_key_when_prior_was_empty(tmp_path):
+def test_apply_without_schedule_leaves_it_absent_and_revert_removes_unset_bands(tmp_path):
   module = _load(tmp_path)
   _trial(module, "lt-1", fingerprint=module.current_fingerprint())
   module.apply_trial("lt-1")
-  assert "LatGainSchedule" in FakeParams._store
-  module.revert_trial("lt-1")
   assert "LatGainSchedule" not in FakeParams._store
+  assert FakeParams._store["LatPScaleStandard"] == 105
+  module.revert_trial("lt-1")
+  assert not any(k in FakeParams._store for k in module.lat.P_KEYS)   # they were unset before the apply
+  assert "LatGainSchedule" not in FakeParams._store
+
+
+def test_apply_removes_schedule_that_only_had_p(tmp_path):
+  module = _load(tmp_path)
+  FakeParams._store["LatGainSchedule"] = '{"v_mph":[20,50],"p":[100,120]}'
+  _trial(module, "lt-1", fingerprint=module.current_fingerprint())
+  module.apply_trial("lt-1")
+  assert "LatGainSchedule" not in FakeParams._store
+  module.revert_trial("lt-1")
+  assert FakeParams._store["LatGainSchedule"] == '{"v_mph":[20,50],"p":[100,120]}'
+
+
+def test_apply_refuses_pre_band_trials(tmp_path):
+  import pytest
+  module = _load(tmp_path)
+  t = _trial(module, "lt-old", fingerprint=module.current_fingerprint())
+  t["schemaVersion"] = 1
+  module._write_json(module.get_workspace_root() / "trials" / "lt-old.json", t)
+  with pytest.raises(RuntimeError, match="speed bands"):
+    module.apply_trial("lt-old")
 
 
 def test_stack_only_top_can_be_reverted_and_second_apply_chains(tmp_path):
@@ -161,7 +192,7 @@ def test_stack_only_top_can_be_reverted_and_second_apply_chains(tmp_path):
   module = _load(tmp_path)
   _trial(module, "lt-1", fingerprint=module.current_fingerprint())
   module.apply_trial("lt-1")
-  _trial(module, "lt-2", fingerprint=module.current_fingerprint(), p=(100.0, 110.0, 100.0, 100.0))
+  _trial(module, "lt-2", fingerprint=module.current_fingerprint(), p=(100, 110, 105))
   module.apply_trial("lt-2")
   assert module.list_workspace()["activeStack"] == ["lt-1", "lt-2"]
   with pytest.raises(RuntimeError):
@@ -169,7 +200,7 @@ def test_stack_only_top_can_be_reverted_and_second_apply_chains(tmp_path):
   with pytest.raises(RuntimeError):
     module.delete_trial("lt-2")
   module.revert_trial("lt-2")
-  assert json.loads(FakeParams._store["LatGainSchedule"])["p"] == [100.0, 105.0, 100.0, 100.0]
+  assert FakeParams._store["LatPScaleStandard"] == 105
   module.revert_trial("lt-1")
   assert module.list_workspace()["activeStack"] == []
   module.delete_trial("lt-2")
@@ -201,5 +232,7 @@ def test_list_workspace_summaries_newest_first(tmp_path):
     module._write_json(module.get_workspace_root() / "trials" / f"lt-{i}.json", t)
   ws = module.list_workspace()
   assert [t["trialId"] for t in ws["trials"]] == ["lt-1", "lt-0", "lt-2"]
-  assert set(ws["trials"][0]) >= {"trialId", "createdAt", "routeNames", "factors", "proposedPPct", "readyKnots", "applied"}
+  assert set(ws["trials"][0]) >= {"trialId", "createdAt", "routeNames", "factors", "currentP", "proposedP", "readyBands", "applied"}
+  assert ws["trials"][0]["proposedP"] == [100, 105, 105] and ws["trials"][0]["readyBands"] == ["LowSpeed", "Standard", "Highway"]
   assert "currentSchedule" in ws and "currentFingerprint" in ws and "status" in ws
+  assert [(b["name"], b["p"], b["i"]) for b in ws["currentBands"]] == [("LowSpeed", 100, 100), ("Standard", 100, 100), ("Highway", 100, 100)]

@@ -2,7 +2,9 @@
 
 Storage: <galaxy dir>/lat_tune/trials/<trialId>.json, active.json (applied stack), status in /tmp.
 Analysis runs in a detached worker (`python lat_tune_workspace.py worker <json>`), offroad only.
-Apply/revert write only LatGainSchedule and are offroad only. Unit-test/replay evidence only, not driven.
+Apply writes StarPilot's PID band params LatPScaleLowSpeed/Standard/Highway (P only; I/F are never touched) and
+drops a "p" term from LatGainSchedule so the bands drive P. Revert restores all four exactly. Offroad only.
+Unit-test/replay evidence only, not driven.
 """
 import json
 import os
@@ -24,7 +26,7 @@ LOG_PATH = Path("/tmp/galaxy_lat_tune.log")
 STATUS_MAX_AGE_SECONDS = 3600.0
 ROUTE_LIMIT = 8
 ONROAD_POLL_INTERVAL_SECONDS = 0.25
-SCHEDULE_KEY = "LatGainSchedule"
+SCHEDULE_KEY = lat.SCHEDULE_KEY
 _PROCESS = None
 _LOCK = threading.Lock()
 
@@ -107,9 +109,11 @@ def delete_trial(trial_id):
 
 
 def _summary(trial):
+  bands = trial.get("bands", [])
   return {"trialId": trial["trialId"], "createdAt": trial.get("createdAt"), "routeNames": trial.get("routeNames", []),
-          "factors": trial.get("factors"), "proposedPPct": trial.get("proposedPPct"),
-          "readyKnots": [k["mph"] for k in trial.get("knots", []) if k.get("ready")],
+          "factors": trial.get("factors"), "schemaVersion": trial.get("schemaVersion"),
+          "currentP": [b["current"]["p"] for b in bands], "proposedP": [b["proposed"]["p"] for b in bands],
+          "readyBands": [b["name"] for b in bands if b.get("ready")],
           "applied": trial.get("applied"), "warnings": trial.get("warnings", [])}
 
 
@@ -126,7 +130,11 @@ def current_schedule(params=None):
 
 def current_tuning(params=None):
   p = params or _params()
-  return {k: lat._param_str(p.get(k)) for k in set(lat.TUNING_KEYS) | set(lat.BAND_KEYS)}
+  return {k: lat._param_str(p.get(k)) for k in lat.TUNING_KEYS}
+
+
+def current_band_gains(params=None):
+  return lat.band_gains(current_tuning(params))
 
 
 def current_fingerprint(params=None):
@@ -331,23 +339,33 @@ def apply_trial(trial_id, force=False):
   params = _params()
   _require_offroad(params, "Applying a trial")
   trial = load_trial(trial_id)
+  if trial.get("schemaVersion") != lat.SCHEMA_VERSION or not trial.get("bands"):
+    raise RuntimeError("this trial predates the StarPilot speed bands; re-analyze the routes")
   if trial.get("applied"):
     raise RuntimeError("trial is already applied")
   fp_now = current_fingerprint(params)
   if not force and trial["baseline"].get("fingerprint") != fp_now:
     raise RuntimeError("manual lateral tuning changed since these routes were driven (fingerprint mismatch); "
                        "re-analyze, or apply with force")
-  prior = current_schedule(params)
-  written = lat.build_schedule(trial, prior)
-  trial["applied"] = {"at": time.time(), "priorSchedule": prior, "writtenSchedule": written, "priorFingerprint": fp_now,
-                      "forced": bool(force)}
+  prior = {k: lat._param_str(params.get(k)) for k in lat.P_KEYS}
+  prior_schedule = current_schedule(params)
+  written = lat.build_band_params(trial)
+  written_schedule = lat.strip_schedule_p(prior_schedule)
+  trial["applied"] = {"at": time.time(), "priorParams": prior, "writtenParams": written, "priorSchedule": prior_schedule,
+                      "writtenSchedule": written_schedule, "priorFingerprint": fp_now, "forced": bool(force)}
   save_trial(trial)
   stack = _read_stack()
   stack.append(trial_id)
   _write_stack(stack)
-  params.put(SCHEDULE_KEY, written)
+  for k, v in written.items():
+    params.put(k, int(v))
+  if written_schedule != prior_schedule:
+    if written_schedule:
+      params.put(SCHEDULE_KEY, written_schedule)
+    else:
+      params.remove(SCHEDULE_KEY)
   Params(memory=True).put_bool("StarPilotTogglesUpdated", True)
-  return {"trial": trial, "written": written, "activeStack": stack}
+  return {"trial": trial, "written": written, "writtenSchedule": written_schedule, "activeStack": stack}
 
 
 def revert_trial(trial_id):
@@ -357,7 +375,13 @@ def revert_trial(trial_id):
   stack = _read_stack()
   if not trial.get("applied") or not stack or stack[-1] != trial_id:
     raise RuntimeError("only the most recently applied trial can be reverted" if stack else "trial is not applied")
-  prior = trial["applied"].get("priorSchedule") or ""
+  applied = trial["applied"]
+  for k, v in (applied.get("priorParams") or {}).items():
+    if str(v).strip():
+      params.put(k, int(round(float(v))))
+    else:
+      params.remove(k)
+  prior = applied.get("priorSchedule") or ""
   if prior.strip():
     params.put(SCHEDULE_KEY, prior)
   else:
@@ -367,7 +391,7 @@ def revert_trial(trial_id):
   save_trial(trial)
   stack.pop()
   _write_stack(stack)
-  return {"trial": trial, "restored": prior, "activeStack": stack}
+  return {"trial": trial, "restored": applied.get("priorParams") or {}, "restoredSchedule": prior, "activeStack": stack}
 
 
 def list_workspace():
@@ -377,7 +401,9 @@ def list_workspace():
   params = _params()
   return {"trials": [_summary(t) for t in trials[:20]], "activeStack": _read_stack(), "status": read_status(),
           "currentSchedule": current_schedule(params), "currentFingerprint": current_fingerprint(params),
-          "routeLimit": ROUTE_LIMIT, "knotsMph": list(lat.KNOTS_MPH)}
+          "currentBands": [{"name": n, "lowMph": lo, "highMph": hi, **g}
+                           for (n, lo, hi), g in zip(lat.BANDS, current_band_gains(params), strict=True)],
+          "routeLimit": ROUTE_LIMIT}
 
 
 def main(argv):

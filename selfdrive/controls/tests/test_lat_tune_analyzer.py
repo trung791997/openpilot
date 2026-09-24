@@ -53,28 +53,29 @@ def saved(params, stats):
   return params
 
 
-def knot_index(v_mph):
-  return lat.KNOTS_MPH.index(v_mph)
+def band_of(v_mph):
+  return lat.band_index(v_mph * MPH)
 
 
-class TestWeights:
-  def test_weights_sum_to_one_and_are_flat_past_ends(self):
-    for v in (0.0, 5.0, 10.0, 15.0, 20.0, 30.0):
-      assert sum(w for _, w in lat.knot_weights(v)) == pytest.approx(1.0)
-    assert lat.knot_weights(0.0) == ((0, 1.0),)
-    assert lat.knot_weights(40.0) == ((len(lat.KNOTS) - 1, 1.0),)
+class TestBands:
+  def test_bands_match_latcontrol_pid_edges(self):
+    from openpilot.selfdrive.controls.lib.latcontrol_pid import _lat_pid_scale_banded
+    for v_mph in (0.0, 10.0, 24.9, 25.0, 25.1, 37.0, 49.9, 50.0, 50.1, 80.0):
+      v = v_mph * MPH
+      assert lat.band_index(v) == _lat_pid_scale_banded(v, 0, 1, 2)
+    assert lat.BAND_NAMES == ("LowSpeed", "Standard", "Highway")
+    assert lat.P_KEYS == ("LatPScaleLowSpeed", "LatPScaleStandard", "LatPScaleHighway")
 
-  def test_interp_factor(self):
-    f = [1.0, 1.1, 1.0, 0.9]
-    assert lat.interp_factor(f, 25 * MPH) == pytest.approx(1.05)
-    assert lat.interp_factor(f, 10 * MPH) == pytest.approx(1.0)
-    assert lat.interp_factor(f, 70 * MPH) == pytest.approx(0.9)
+  def test_band_weights_are_hard(self):
+    assert lat.band_weights(20 * MPH) == ((0, 1.0),)
+    assert lat.band_weights(30 * MPH) == ((1, 1.0),)
+    assert lat.band_weights(70 * MPH) == ((2, 1.0),)
 
 
 class TestMetrics:
   def test_sign_rate_straight_rms_and_curve_ratio(self):
     st = drive(4, 30, straight_err=0.5, flip_every=100, curve_des=10.0, curve_ratio=0.9)  # 2 flips per 300-frame run
-    m = lat.knot_metrics(st.acc[knot_index(30)])
+    m = lat.band_metrics(st.acc[band_of(30)])
     assert m["min"] == pytest.approx(4.0, rel=1e-3)
     assert m["straight_rms"] == pytest.approx(0.5)
     assert m["sign_rate"] == pytest.approx(2 / 3, rel=0.01)
@@ -92,7 +93,7 @@ class TestMetrics:
   def test_json_round_trip_and_rejects_garbage(self):
     st = drive(1, 40)
     back = lat.DriveStats.from_json(st.to_json())
-    assert back.acc[knot_index(40)]["n"] == pytest.approx(st.acc[knot_index(40)]["n"])
+    assert back.acc[band_of(40)]["n"] == pytest.approx(st.acc[band_of(40)]["n"])
     for bad in ("", "x", "[]", json.dumps({"version": 99}), json.dumps({"version": 1, "knots_mph": [1, 2], "acc": []})):
       assert lat.DriveStats.from_json(bad) is None
 
@@ -100,126 +101,121 @@ class TestMetrics:
 class TestRules:
   def test_short_drive_holds_and_carries(self):
     s1 = lat.update_state(lat.default_state(), drive(2, 40, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
-    assert s1["factor"] == [1.0] * len(lat.KNOTS)
-    assert s1["carry"][knot_index(40)] is not None
+    assert s1["factor"] == [1.0] * len(lat.BANDS)
+    assert s1["carry"][band_of(40)] is not None
     s2 = lat.update_state(s1, drive(2, 40, curve_des=10, curve_ratio=0.9, carry=s1["carry"]), lat.APPLY_MODE)
-    assert s2["factor"][knot_index(40)] == pytest.approx(1.0 + lat.STEP)
-    assert s2["carry"][knot_index(40)] is None
+    assert s2["factor"][band_of(40)] == pytest.approx(1.0 + lat.STEP)
+    assert s2["carry"][band_of(40)] is None
 
   def test_curve_shortfall_steps_up_one_step_per_drive_and_is_bounded(self):
     s = lat.default_state()
     for _ in range(10):
       s = lat.update_state(s, drive(4, 30, curve_des=10, curve_ratio=0.9), 0)
-    assert s["factor"][knot_index(30)] == pytest.approx(1.0 + lat.MAX_NEIGHBOUR_GAP)  # neighbours had no data
+    assert s["factor"][band_of(30)] == pytest.approx(1.0 + lat.MAX_NEIGHBOUR_GAP)  # neighbours had no data
     for _ in range(10):
       st = lat.DriveStats()
-      for v in lat.KNOTS_MPH:
-        st.acc[knot_index(v)] = drive(4, v, curve_des=10, curve_ratio=0.9).acc[knot_index(v)]
+      for v in (15.0, 35.0, 60.0):
+        st.acc[band_of(v)] = drive(4, v, curve_des=10, curve_ratio=0.9).acc[band_of(v)]
       s = lat.update_state(s, st, 0)
-    assert s["factor"] == pytest.approx([lat.FACTOR_MAX] * len(lat.KNOTS))
+    assert s["factor"] == pytest.approx([lat.FACTOR_MAX] * len(lat.BANDS))
 
   def test_one_step_per_drive(self):
     s = lat.update_state(lat.default_state(), drive(20, 30, curve_des=10, curve_ratio=0.5), 0)
-    assert s["factor"][knot_index(30)] == pytest.approx(1.0 + lat.STEP)
+    assert s["factor"][band_of(30)] == pytest.approx(1.0 + lat.STEP)
 
   def test_oscillation_steps_down_to_bound(self):
     s = lat.default_state()
     for _ in range(10):
       s = lat.update_state(s, drive(4, 40, flip_every=50), 0)  # 2 sign changes /s
-    assert s["factor"][knot_index(40)] == pytest.approx(1.0 - lat.MAX_NEIGHBOUR_GAP)
+    assert s["factor"][band_of(40)] == pytest.approx(1.0 - lat.MAX_NEIGHBOUR_GAP)
 
   def test_overshoot_steps_down(self):
     s = lat.update_state(lat.default_state(), drive(4, 40, curve_des=10, curve_ratio=1.1), 0)
-    assert s["factor"][knot_index(40)] == pytest.approx(1.0 - lat.STEP)
+    assert s["factor"][band_of(40)] == pytest.approx(1.0 - lat.STEP)
 
   def test_no_step_up_when_override_onsets_high(self):
     s = lat.update_state(lat.default_state(), drive(4, 20, curve_des=10, curve_ratio=0.85, press_every=2000), lat.APPLY_MODE)
-    assert s["factor"][knot_index(20)] == pytest.approx(1.0)  # 3 onsets/min > PRESS_RATE_UP_MAX
+    assert s["factor"][band_of(20)] == pytest.approx(1.0)  # 3 onsets/min > PRESS_RATE_UP_MAX
 
   def test_no_step_up_when_already_near_oscillation_limit(self, monkeypatch):
     monkeypatch.setattr(lat, "SIGN_RATE_UP_MAX", 0.5)  # 0.67 /s: above the step-up limit, below SIGN_RATE_MAX
     s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.85), lat.APPLY_MODE)
-    assert s["factor"][knot_index(30)] == pytest.approx(1.0)
+    assert s["factor"][band_of(30)] == pytest.approx(1.0)
 
   def test_revert_after_increase_that_raised_oscillation_only_in_apply(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=150, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
-    assert s["factor"][knot_index(30)] == pytest.approx(1.05)
+    assert s["factor"][band_of(30)] == pytest.approx(1.05)
     worse = drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.9)  # 0.33 -> 0.67 /s, still under the limits
-    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][knot_index(30)] == pytest.approx(1.0)
-    assert lat.update_state(s, worse, 0)["factor"][knot_index(30)] == pytest.approx(1.10)
+    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][band_of(30)] == pytest.approx(1.0)
+    assert lat.update_state(s, worse, 0)["factor"][band_of(30)] == pytest.approx(1.10)
 
   def test_revert_after_increase_that_raised_override_onsets(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
     worse = drive(4, 30, curve_des=10, curve_ratio=0.9, press_every=6000)  # 1 onset/min, from 0
-    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][knot_index(30)] == pytest.approx(1.0)
+    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][band_of(30)] == pytest.approx(1.0)
 
   def test_neighbour_gap_is_bounded(self):
     s = lat.default_state()
-    s["factor"] = [0.85, 1.15, 1.0, 1.0]
+    s["factor"] = [0.85, 1.15, 1.0]
     s = lat.update_state(s, lat.DriveStats(), 0)
     f = s["factor"]
     assert all(abs(a - b) <= lat.MAX_NEIGHBOUR_GAP + 1e-9 for a, b in zip(f[:-1], f[1:], strict=True))
     assert all(lat.FACTOR_MIN <= x <= lat.FACTOR_MAX for x in f)
 
-  @pytest.mark.parametrize("raw", ["", "junk", "[]", json.dumps({"version": 1, "knots_mph": [20, 30, 40, 50], "factor": [2, 1, 1, 1]}),
-                                   json.dumps({"version": 1, "knots_mph": [10, 30], "factor": [1, 1]})])
+  @pytest.mark.parametrize("raw", ["", "junk", "[]", json.dumps({"version": 2, "bands": list(lat.BAND_NAMES), "factor": [2, 1, 1]}),
+                                   json.dumps({"version": 1, "knots_mph": [20, 30, 40, 50], "factor": [1, 1, 1, 1]}),
+                                   json.dumps({"version": 2, "bands": ["a", "b"], "factor": [1, 1]})])
   def test_bad_state_resets(self, raw):
-    assert lat.parse_state(raw)["factor"] == [1.0] * len(lat.KNOTS)
+    assert lat.parse_state(raw)["factor"] == [1.0] * len(lat.BANDS)
 
 
-class TestTrialAndSchedule:
-  BASELINE = {"fingerprint": "deadbeef", "pPct": [100.0, 100.0, 100.0, 100.0], "raw": {}}
+class TestTrialAndBandParams:
+  GAINS = [{"p": 100, "i": 100, "f": 50}, {"p": 100, "i": 75, "f": 100}, {"p": 105, "i": 100, "f": 100}]
+  BASELINE = {"fingerprint": "deadbeef", "gains": GAINS, "raw": {}}
 
-  def test_build_trial_reports_readiness_factors_and_reasons(self):
-    stats = drive(4, 30, curve_des=8.0, curve_ratio=0.9)   # 4 min at 30 mph, curve shortfall -> up
-    trial = lat.build_trial(stats, self.BASELINE, ["r1"], [{"route": "r1", "minutes": [0, 4, 0, 0]}], [])
-    assert trial["schemaVersion"] == 1
-    assert trial["knotsMph"] == [20.0, 30.0, 40.0, 50.0]
-    k30 = trial["knots"][1]
-    assert k30["ready"] is True and k30["minutes"] >= 3.9
-    assert k30["decision"] == "up" and k30["factor"] == 1.05
-    assert trial["knots"][0]["ready"] is False and trial["knots"][0]["factor"] == 1.0
-    assert trial["proposedPPct"] == [100.0, 105.0, 100.0, 100.0]
-    assert trial["baseline"]["fingerprint"] == "deadbeef"
+  def test_build_trial_reports_bands_readiness_factors_and_reasons(self):
+    stats = drive(4, 30, curve_des=8.0, curve_ratio=0.9)   # 4 min in the 25-50 mph band, curve shortfall -> up
+    trial = lat.build_trial(stats, self.BASELINE, ["r1"], [{"route": "r1", "minutes": [0, 4, 0]}], [])
+    assert trial["schemaVersion"] == 2
+    assert [(b["name"], b["lowMph"], b["highMph"]) for b in trial["bands"]] == [
+      ("LowSpeed", 0.0, 25.0), ("Standard", 25.0, 50.0), ("Highway", 50.0, None)]
+    std = trial["bands"][1]
+    assert std["ready"] is True and std["minutes"] >= 3.9
+    assert std["decision"] == "up" and std["factor"] == 1.05 and std["reason"].startswith("Standard: up")
+    assert std["current"] == {"p": 100, "i": 75, "f": 100}
+    assert std["proposed"] == {"p": 105, "i": 75, "f": 100}     # only P moves
+    low = trial["bands"][0]
+    assert low["ready"] is False and low["factor"] == 1.0 and low["proposed"] == low["current"]
+    assert trial["baseline"]["fingerprint"] == "deadbeef" and trial["baseline"]["scheduleTerms"] == []
     assert trial["routeNames"] == ["r1"] and trial["perRoute"][0]["route"] == "r1"
     assert trial["applied"] is None
 
-  def test_build_trial_scales_the_baseline_p(self):
-    stats = drive(4, 30, curve_des=8.0, curve_ratio=0.9)
-    base = dict(self.BASELINE, pPct=[110.0, 120.0, 130.0, 140.0])
-    trial = lat.build_trial(stats, base, ["r1"], [], [])
-    assert trial["proposedPPct"] == [110.0, 126.0, 130.0, 140.0]
+  def test_build_band_params_writes_only_p(self):
+    trial = lat.build_trial(drive(4, 30, curve_des=8.0, curve_ratio=0.9), self.BASELINE, ["r1"], [], [])
+    assert lat.build_band_params(trial) == {"LatPScaleLowSpeed": 100, "LatPScaleStandard": 105, "LatPScaleHighway": 105}
 
-  def test_build_schedule_is_parseable_and_carries_i_f(self):
-    from openpilot.selfdrive.controls.lib.latcontrol_pid import parse_lat_gain_schedule
-    stats = drive(4, 30, curve_des=8.0, curve_ratio=0.9)
-    trial = lat.build_trial(stats, self.BASELINE, ["r1"], [], [])
-    raw = lat.build_schedule(trial, '{"v_mph": [10, 60], "p": [100, 100], "i": [40, 90], "f": [100, 100]}')
-    sched = parse_lat_gain_schedule(raw)
-    assert sched is not None
-    d = json.loads(raw)
-    assert d["v_mph"] == [20.0, 30.0, 40.0, 50.0]
-    assert d["p"] == [100.0, 105.0, 100.0, 100.0]
-    assert d["i"] == [50.0, 60.0, 70.0, 80.0]      # linear 40@10 -> 90@60
-    assert d["f"] == [100.0, 100.0, 100.0, 100.0]
+  @pytest.mark.parametrize("cur,factor,want", [(100, 1.0, 100), (100, 1.05, 105), (100, 0.95, 95), (135, 1.05, 140),
+                                               (200, 0.95, 190), (20, 1.05, 25), (20, 0.95, 15), (3, 0.95, 0),
+                                               (498, 1.05, 500), (100, 1.10, 110)])
+  def test_propose_p_rounds_to_galaxy_step_and_never_cancels_the_step(self, cur, factor, want):
+    assert lat.propose_p(cur, factor) == want
 
-  def test_build_schedule_without_current_schedule_has_only_p(self):
-    stats = drive(4, 30)
-    trial = lat.build_trial(stats, self.BASELINE, [], [], [])
-    d = json.loads(lat.build_schedule(trial, None))
-    assert set(d) == {"v_mph", "p"}
+  def test_band_gains_reads_params_and_defaults_to_100(self):
+    raw = {"LatPScaleLowSpeed": "80", "LatPScaleStandard": b"135", "LatIScaleStandard": "75", "LatFScaleLowSpeed": "junk"}
+    g = lat.band_gains(raw)
+    assert g[0] == {"p": 80, "i": 100, "f": 100}
+    assert g[1] == {"p": 135, "i": 75, "f": 100}
+    assert g[2] == {"p": 100, "i": 100, "f": 100}
 
-  def test_build_schedule_clamps_p_to_schedule_limits(self):
-    stats = drive(4, 30, curve_des=8.0, curve_ratio=0.9)
-    trial = lat.build_trial(stats, dict(self.BASELINE, pPct=[290.0, 290.0, 290.0, 290.0]), [], [], [])
-    d = json.loads(lat.build_schedule(trial, None))
-    assert max(d["p"]) == 300.0
-
-  def test_effective_p_pct_from_bands_and_schedule(self):
-    raw = {"LatPScaleLowSpeed": "80", "LatPScaleStandard": "120", "LatPScaleHighway": "90", "LatGainSchedule": ""}
-    assert lat.effective_p_pct(raw) == [80.0, 120.0, 120.0, 90.0]
-    raw["LatGainSchedule"] = '{"v_mph": [20, 50], "p": [100, 200]}'
-    assert lat.effective_p_pct(raw) == [100.0, 133.3, 166.7, 200.0]
+  def test_schedule_terms_and_strip_p(self):
+    both = '{"v_mph": [20, 50], "p": [100, 200], "i": [50, 60]}'
+    assert lat.schedule_terms(both) == ["i", "p"]
+    assert lat.schedule_terms("") == [] and lat.schedule_terms(None) == []
+    assert json.loads(lat.strip_schedule_p(both)) == {"v_mph": [20, 50], "i": [50, 60]}
+    assert lat.strip_schedule_p('{"v_mph": [20, 50], "p": [100, 200]}') == ""
+    assert lat.strip_schedule_p("") == ""
+    only_i = '{"v_mph": [20, 50], "i": [50, 60]}'
+    assert lat.strip_schedule_p(only_i) == only_i
 
 
 class _Which:
@@ -275,7 +271,14 @@ class TestFrames:
     sources = [lat.RouteLog("r-old", "1", "a", _fake_log(a)), lat.RouteLog("r-new", "1", "b", _fake_log(b))]
     trial = lat.analyze_sources(sources)
     assert trial["routeNames"] == ["r-old", "r-new"]
-    assert trial["baseline"]["pPct"][1] == 120.0                 # latest route's initData wins
+    assert trial["baseline"]["gains"][1]["p"] == 120             # latest route's initData wins
+    assert trial["bands"][1]["current"]["p"] == 120
     assert any("fingerprint" in w for w in trial["warnings"])     # routes disagree
     assert trial["perRoute"][0]["route"] == "r-old" and trial["perRoute"][0]["minutes"][1] >= 3.9
-    assert trial["knots"][1]["ready"] is True
+    assert trial["bands"][1]["ready"] is True
+
+  def test_analyze_sources_warns_when_schedule_overrides_p(self):
+    msgs = [_init_msg({"LatGainSchedule": '{"v_mph": [20, 50], "p": [100, 120]}'}), _cs(13.4, 0.5), _pid(0.4)]
+    trial = lat.analyze_sources([lat.RouteLog("r", "1", "a", _fake_log(msgs))])
+    assert trial["baseline"]["scheduleTerms"] == ["p"]
+    assert any("LatGainSchedule overrides P" in w for w in trial["warnings"])
