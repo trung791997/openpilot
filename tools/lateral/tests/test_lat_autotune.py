@@ -52,3 +52,34 @@ def test_band_of():
   assert at.band_of(20).startswith("low")
   assert at.band_of(30).startswith("standard")
   assert at.band_of(55).startswith("highway")
+
+
+def _res(**bands):
+  names = [b[0] for b in at.sim.BANDS]
+  row = dict.fromkeys(names)
+  for key, m in bands.items():
+    row[next(n for n in names if n.startswith(key))] = m
+  return [{"fit": row, "holdout": row, "all": row}]
+
+
+M = {"min": 5.0, "err_rms": 1.0, "straight_rms": 0.5, "curve_ratio": 1.0, "zero_cross": 0.3}
+
+
+def test_untrusted_band_may_not_oscillate_more():
+  trusted = {b[0]: not b[0].startswith("highway") for b in at.sim.BANDS}
+  ref = _res(highway=M)
+  assert at.untrusted_ok(_res(highway=dict(M, zero_cross=0.32)), ref, trusted) == []
+  assert at.untrusted_ok(_res(highway=dict(M, zero_cross=0.42)), ref, trusted)
+  assert at.untrusted_ok(_res(highway=dict(M, err_rms=1.01)), ref, trusted)
+
+
+def test_costs_are_relative_to_seed():
+  seed = _res(low=dict(M, err_rms=12.0), standard=M)
+  total, per_band = at.costs(seed, seed, "fit")
+  assert total == pytest.approx(1.0)
+  better = _res(low=dict(M, err_rms=11.0), standard=dict(M, err_rms=0.9))
+  _, per_band = at.costs(better, seed, "fit")
+  low = next(v for k, v in per_band.items() if k.startswith("low"))
+  std = next(v for k, v in per_band.items() if k.startswith("standard"))
+  assert low[0] == pytest.approx(11.5 / 12.5)
+  assert std[0] == pytest.approx(1.4 / 1.5)

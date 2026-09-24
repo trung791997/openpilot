@@ -17,9 +17,14 @@ Method:
      computed on alternate 2-minute blocks of the drive ("fit"); the other blocks ("holdout") are only
      used to accept or reject the final answer.
   4. Verdict. The schedule is recommended only if the holdout cost improves, no trusted band gets worse
-     on holdout by more than 2 %, and no untrusted band gets worse at all.
+     on holdout by more than 2 %, and no untrusted band gets worse on all data (err rms, straight rms,
+     or straight sign-change rate by more than 10 %).
 
-Cost per band (engaged, hands off, > 4 m/s; minutes-weighted across bands and routes):
+The default knots 20/30/40/50 mph put the whole blend inside the bands the sim can score: above 50 mph
+the schedule is flat at the highway value, exactly as the bands are. Knots in an untrusted band only
+move if the gate trusts that band.
+
+Cost per band (engaged, hands off, > 4 m/s; relative to the seed, minutes-weighted across bands and routes):
   err_rms + straight_rms + 5 * |curve ratio outside 0.97..1.03| + 2 * (straight sign-change rate
   increase over the seed beyond 10 %). The last term is there because the plant under-predicts
   oscillation: the sim is only trusted to say a change makes the car less settled, never more.
@@ -30,7 +35,7 @@ is a candidate for a drive, not a verified tune.
 
 Usage:
   python tools/lateral/lat_autotune.py --plant plant.json ROUTE_DIR [ROUTE_DIR ...]
-      [--knots 20,30,45,55] [--terms p,i] [--set LatPScaleStandard=115] [--out schedule.json] [-j 4]
+      [--knots 20,30,40,50] [--terms p,i] [--set LatPScaleStandard=115] [--out schedule.json] [-j 4]
 """
 from __future__ import annotations
 
@@ -132,21 +137,44 @@ def band_cost(r, r0):
 
 
 def costs(res, seed_res, mask):
-  """Minutes-weighted cost per band across routes, and the total over bands."""
+  """Per band: minutes-weighted cost across routes relative to the seed's (seed = 1.0), so a band with
+  large absolute errors (tight turns below 25 mph) does not drown the others. Total: minutes-weighted."""
   per_band = {}
   for name, _, _ in sim.BANDS:
-    num = w = 0.0
+    num = den = w = 0.0
     for r_route, s_route in zip(res, seed_res, strict=True):
       r = r_route[mask][name]
       s = s_route[mask][name]
-      if r is None:
+      if r is None or s is None:
         continue
       num += band_cost(r, s) * r["min"]
+      den += band_cost(s, s) * r["min"]
       w += r["min"]
-    per_band[name] = (num / w, w) if w >= MIN_BAND_MIN else None
+    per_band[name] = (num / den, w) if w >= MIN_BAND_MIN and den > 0 else None
   tot_w = sum(v[1] for v in per_band.values() if v is not None)
   total = sum(v[0] * v[1] for v in per_band.values() if v is not None) / tot_w if tot_w else float("nan")
   return total, per_band
+
+
+def untrusted_ok(res, ref_res, trusted):
+  """An untrusted band may not get worse than `ref` on any tracked figure, over all data (the fit and
+  holdout halves alone can each be too short to score). Returns a list of violations."""
+  bad = []
+  for name, ok in trusted.items():
+    if ok:
+      continue
+    for key, tol in (("err_rms", 1.0), ("straight_rms", 1.0), ("zero_cross", 1.10)):
+      num = den = 0.0
+      for r_route, f_route in zip(res, ref_res, strict=True):
+        r = r_route["all"][name]
+        f = f_route["all"][name]
+        if r is None or f is None or r[key] is None or f[key] is None:
+          continue
+        num += r[key] * r["min"]
+        den += f[key] * r["min"]
+      if den > 0 and num > den * tol + 1e-9:
+        bad.append(f"{name} {key} {num / den:.2f}x reference (untrusted band may not get worse)")
+  return bad
 
 
 def trust_gate(sim_res, log_res):
@@ -193,12 +221,9 @@ def search(pool, base_overrides, knots, terms, x0, free, lo, hi, seed_res, trust
     return o
 
   def score(res):
-    total, per_band = costs(res, seed_res, "fit")
-    _, seed_band = costs(seed_res, seed_res, "fit")
-    for name, ok in trusted.items():
-      if not ok and per_band[name] is not None and seed_band[name] is not None and per_band[name][0] > seed_band[name][0] + 1e-9:
-        return float("inf")
-    return total
+    if untrusted_ok(res, seed_res, trusted):
+      return float("inf")
+    return costs(res, seed_res, "fit")[0]
 
   x = np.array(x0, dtype=float)
   best = score(seed_res)
@@ -242,7 +267,7 @@ def main(argv=None):
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("routes", nargs="+")
   ap.add_argument("--plant", required=True, help="plant json from lat_pid_sim.py fit")
-  ap.add_argument("--knots", default="20,30,45,55", help="knot speeds, mph, strictly increasing (2-8)")
+  ap.add_argument("--knots", default="20,30,40,50", help="knot speeds, mph, strictly increasing (2-8)")
   ap.add_argument("--terms", default="p,i", help="subset of p,i,f to tune")
   ap.add_argument("--set", action="append", help="current tuning if it differs from the logged one, K=V")
   ap.add_argument("--trust-region", type=float, default=TRUST_REGION, help="max move per knot, percentage points")
@@ -310,7 +335,7 @@ def main(argv=None):
   verdict = True
   reasons = []
   for mask in ("fit", "holdout"):
-    print(f"  {mask} cost per band (lower is better)")
+    print(f"  {mask} cost per band, relative to the seed schedule (lower is better)")
     c_tot, c_band = costs(current_res, seed_res, mask)
     s_tot, s_band = costs(seed_res, seed_res, mask)
     p_tot, p_band = costs(prop_res, seed_res, mask)
@@ -324,10 +349,17 @@ def main(argv=None):
       for name, ok in trusted.items():
         if p_band[name] is None or c_band[name] is None:
           continue
-        limit = c_band[name][0] * (1.02 if ok else 1.0) + 1e-9
+        if not ok:
+          continue  # checked on all data below
+        limit = c_band[name][0] * 1.02 + 1e-9
         if p_band[name][0] > limit:
           verdict = False
           reasons.append(f"{name} holdout worse than current ({p_band[name][0]:.4f} vs {c_band[name][0]:.4f})")
+
+  bad = untrusted_ok(prop_res, current_res, trusted)
+  if bad:
+    verdict = False
+    reasons += bad
 
   print("  proposed vs current, all data, per band:")
   for name, _, _ in sim.BANDS:
