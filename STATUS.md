@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5887,3 +5887,20 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 - Neither label is a ground truth. Vision under-counts, and the old rule counts alpha's own brakes.
 - Ego still follows the log.
 - Nothing was driven.
+
+## 105. C4 lead speed labels enlarged: in-path 20 → 26 px, side-lane 16 → 22 px. Unit evidence, UI only; not rendered, not seen on the device.
+
+- **Owner's ask** (2026-09-24, on-road photo of the C4 on a 45 mph arterial showing "13 mph", "13 mph", "38 mph" markers): "the speed labels are a little too small, can you make it a little bit bigger". A first step to 24/20 px (`16c4a731`) was followed by "go to 26 / 22" (`418a35c9`).
+- **What changed.** `LEAD_LABEL_FONT_SIZE` 20 → 26 and `ADJACENT_LEAD_LABEL_FONT_SIZE` 16 → 22 in `selfdrive/ui/mici/onroad/model_renderer.py`. Side labels stay smaller than the in-path one (the test asserts it). Marker sizes, placement and the overlap rules from item 102 are unchanged. Item 98 had cut the label from 32 px to 20 px because 32 px "ran into the wheel icon"; 26 px sits between the two.
+- **Evidence.** `selfdrive/ui/tests/test_mici_multi_lead.py`: 38 passed (Xvfb, Python 3.12, on `418a35c9`). ruff clean. The full UI suite was not run. No offline render: this session had no route logs.
+- **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
+  - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
+  - a side label slides outward, and could now reach the screen edge or the wheel icon.
+  - Photograph it if a label goes missing or clips.
+
+**Test environment on an aarch64 Linux host (this session).** The checked-in `.so` files load natively. They were built for **Python 3.12** (`msgq/ipc_pyx.so` needs `PyType_FromMetaclass`), but the SessionStart hook creates a 3.11 `.venv`. Its scons step also fails without `clang++`, and it leaves `panda/board/obj/{gitversion.h,version}` dirty (restore them). What worked for the mici UI tests:
+- a 3.12 venv outside the repo with the hook's package list plus `raylib<5.5.0.3`, `qrcode` and `pillow`;
+- `PARAMS_ROOT` pointed at a scratch directory, because Params otherwise tries `/data/params`;
+- running under `xvfb-run -a`, because raylib segfaults at import without a display.
+
+The hook itself is not changed here.
