@@ -412,7 +412,7 @@ class TestRedneckCruise(unittest.TestCase):
       100.0 * CV.KPH_TO_MS,
       0.0,
       [106.0 * CV.KPH_TO_MS, 105.0 * CV.KPH_TO_MS, 104.0 * CV.KPH_TO_MS,
-       103.0 * CV.KPH_TO_MS, 102.0 * CV.KPH_TO_MS],
+       103.0 * CV.KPH_TO_MS, 101.0 * CV.KPH_TO_MS],
       5,
       allow_plan_decrease=True,
       lead_present=True,
@@ -420,6 +420,9 @@ class TestRedneckCruise(unittest.TestCase):
       lead_rel_speed_ms=-1.1,
     )
 
+    # Plan min 101 km/h minus the 2.0 s headway coast buffer (0.995 m/s) lands 0.05 m/s under the
+    # 1.5 mph hold band (LEAD_RECOVERY_HOLD_BUFFER_MS, widened from 0.5 mph in 50e1c1d37), so the
+    # coast fires. At 102 km/h it sits inside the band and the cluster speed is held instead.
     self.assertLess(target_speed, 100.0 * CV.KPH_TO_MS)
 
   def test_far_lead_target_is_stopping_distance_speed(self):
