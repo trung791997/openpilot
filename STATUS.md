@@ -5914,7 +5914,10 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
   - A side-lane label that hits the sign or another label first slides outward. If that still collides or leaves the view, it slides inward. If neither fits, it is dropped.
   - In-path labels ignore the sign (unchanged: dropped only on overlap with another label).
   - Unit evidence: 4 new tests in `test_mici_multi_lead.py`, 42 passed. ruff clean on the changed files; the 2 E501 findings in `sidebar_widgets.py` pre-date this change.
-  - Not rendered with the sign, because the route harness draws no HUD. Not seen on the device. UI only, not brake-affecting.
+  - **Rendered with the sign** (same day). The route harness now also runs the real mici `HudRenderer`: `prepare()`, then `speed_limit_rect()` passed to the labels, then `render_background()`. Route `00000267--e83a1fa671` seg 16:
+    - 24.2 s: before, at 20/16, the right-lane "4 mph" label ran into the sign's "+5". Now it is dropped, because outward hits the sign and inward hits the in-path "17 mph". The left-lane and in-path labels still show.
+    - 34.2 and 43.1 s: no conflict; all labels draw at 26/22.
+  - Replay render evidence; the harness is scratch and is not committed. Not seen on the device. UI only, not brake-affecting.
 - **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
   - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
   - a side label slides outward, and could now reach the screen edge or the wheel icon.
