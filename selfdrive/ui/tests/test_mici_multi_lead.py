@@ -151,3 +151,54 @@ def test_lead_in_adjacent_lane_needs_lane_lines_and_range():
   assert not mr.lead_in_adjacent_lane(40.0, 3.6, True, [], probs)
   assert not mr.lead_in_adjacent_lane(150.0, 3.6, True, _straight_lanes(), probs)  # past the model's lane lines
   assert not mr.lead_in_adjacent_lane(-2.0, 3.6, True, _straight_lanes(), probs)
+
+
+def _label_renderer(monkeypatch, obstacles=(), placed=()):
+  """Bare renderer on a 400x240 view; every label measures 60x20, so its box is 66x22."""
+  import pyray as rl
+  import openpilot.selfdrive.ui.onroad.starpilot.path as path
+  drawn = []
+  monkeypatch.setattr(mr, "measure_text_cached", lambda font, text, size: SimpleNamespace(x=60.0, y=20.0))
+  monkeypatch.setattr(mr.gui_app, "font", lambda *a, **k: None)
+  monkeypatch.setattr(path, "_draw_text_with_outline", lambda text, x, y, font, size: drawn.append(x))
+  renderer = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  renderer._rect = rl.Rectangle(0, 0, 400, 240)
+  renderer._lead_label_rects = list(placed)
+  renderer.set_side_label_obstacles(list(obstacles))
+  return renderer, drawn
+
+
+def _chevron(x, y=100.0):
+  return [(x + 10, y + 8), (x, y), (x - 10, y + 8)]
+
+
+def _sign():
+  import pyray as rl
+  return rl.Rectangle(300, 20, 100, 140)
+
+
+def test_side_label_slides_inward_off_the_speed_limit_sign(monkeypatch):
+  # Outward (right of the sign) would leave the 400 px view, so the label moves left of the sign.
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()])
+  renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
+  assert drawn == [237.0]
+  assert drawn[0] - 3 + 66 <= 300
+
+
+def test_in_path_label_ignores_the_sign(monkeypatch):
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()])
+  renderer._draw_lead_label(_chevron(330), "22 mph", 26, side=0)
+  assert drawn == [300.0]
+
+
+def test_side_label_dropped_when_neither_direction_fits(monkeypatch):
+  import pyray as rl
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=[rl.Rectangle(200, 100, 90, 40)])
+  renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
+  assert drawn == []
+
+
+def test_side_label_without_obstacles_stays_under_its_marker(monkeypatch):
+  renderer, drawn = _label_renderer(monkeypatch)
+  renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
+  assert drawn == [300.0]

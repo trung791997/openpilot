@@ -120,6 +120,7 @@ class ModelRenderer(Widget):
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._multi_lead_ui = False
     self._lead_label_rects: list[rl.Rectangle] = []
+    self._side_label_obstacles: list[rl.Rectangle] = []
     self._lead_info_mode = LeadInfoMode.OFF
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -312,9 +313,14 @@ class ModelRenderer(Widget):
       text = self._format_lead_speed(getattr(lead_data, "vLead", 0.0), ui_state.is_metric, use_si_metrics)
       self._draw_lead_label(lead.chevron, text, font_size, side)
 
+  def set_side_label_obstacles(self, rects: list[rl.Rectangle]) -> None:
+    """HUD boxes (the speed-limit sign) that side-lane labels must not cover. Set each frame before render()."""
+    self._side_label_obstacles = list(rects)
+
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
-    """Label under the marker. A side-lane label that would overlap slides outward (side -1 left, +1 right)
-    rather than being dropped; an in-path label that would overlap is dropped."""
+    """Label under the marker. An in-path label that would overlap another label is dropped. A side-lane label
+    (side -1 left, +1 right) also avoids the HUD obstacles: it slides outward, then inward if outward still
+    collides or leaves the screen, and is dropped only if neither fits."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
 
     font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -322,13 +328,27 @@ class ModelRenderer(Widget):
     x = chevron[1][0] - size.x / 2
     y = max(chevron[0][1], chevron[2][1]) + 2
     label_rect = rl.Rectangle(x - 3, y - 1, size.x + 6, size.y + 2)
-    hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
+    blockers = self._lead_label_rects + (getattr(self, "_side_label_obstacles", []) if side else [])
+
+    def hits_at(rx: float) -> list[rl.Rectangle]:
+      moved = rl.Rectangle(rx, label_rect.y, label_rect.width, label_rect.height)
+      return [r for r in blockers if rl.check_collision_recs(moved, r)]
+
+    def fits(rx: float) -> bool:
+      view = getattr(self, "_rect", None)
+      in_view = view is None or view.width <= 0 or (rx >= view.x and rx + label_rect.width <= view.x + view.width)
+      return in_view and not hits_at(rx)
+
+    hits = hits_at(label_rect.x)
     if hits and side:
-      shift = (min(r.x for r in hits) - (label_rect.x + label_rect.width) if side < 0
-               else max(r.x + r.width for r in hits) - label_rect.x)
-      label_rect.x += shift
-      x += shift
-      hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
+      outward = (min(r.x for r in hits) - label_rect.width if side < 0 else max(r.x + r.width for r in hits))
+      inward = (max(r.x + r.width for r in hits) if side < 0 else min(r.x for r in hits) - label_rect.width)
+      new_x = next((rx for rx in (outward, inward) if fits(rx)), None)
+      if new_x is None:
+        return
+      x += new_x - label_rect.x
+      label_rect.x = new_x
+      hits = []
     if hits:
       return
     self._lead_label_rects.append(label_rect)

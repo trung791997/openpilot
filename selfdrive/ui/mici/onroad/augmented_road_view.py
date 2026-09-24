@@ -756,6 +756,8 @@ class AugmentedRoadView(CameraView):
     # Draw all UI overlays
     if draw_road_overlays:
       gui_app.mark_progress("mici.onroad.before_model")
+      sign_rect = self._hud_renderer.speed_limit_rect() if draw_hud_controls else None
+      self._model_renderer.set_side_label_obstacles([sign_rect] if sign_rect else [])
       self._model_renderer.render(self._content_rect)
       gui_app.mark_progress("mici.onroad.after_model")
 

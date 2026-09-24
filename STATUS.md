@@ -5909,6 +5909,12 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
     - 30.2 and 43.1 s: fine at both sizes.
   - Replay render evidence, UI only.
   - qlogs carry no `modelV2`, so the render needs rlogs.
+- **26/22 kept; side labels now avoid the speed-limit sign** (owner, 2026-09-24: "keep 26/22 and make side labels avoid the sign").
+  - `HudRenderer.speed_limit_rect()` is the one source of the sign geometry: `_draw_speed_limit` draws from it, and `AugmentedRoadView` passes it to `ModelRenderer.set_side_label_obstacles()` after `prepare()` and before the model overlay.
+  - A side-lane label that hits the sign or another label first slides outward. If that still collides or leaves the view, it slides inward. If neither fits, it is dropped.
+  - In-path labels ignore the sign (unchanged: dropped only on overlap with another label).
+  - Unit evidence: 4 new tests in `test_mici_multi_lead.py`, 42 passed. ruff clean on the changed files; the 2 E501 findings in `sidebar_widgets.py` pre-date this change.
+  - Not rendered with the sign, because the route harness draws no HUD. Not seen on the device. UI only, not brake-affecting.
 - **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
   - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
   - a side label slides outward, and could now reach the screen edge or the wheel icon.
