@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5841,3 +5841,47 @@ The first nine routes (232–245) are alpha-long drives; the last eight are stoc
 - Ego follows the log, so a softer planner's effect on the gap is not simulated.
 - Mixed on-device builds explain the lower track agreement. Frame-level lead identity is not trustworthy for these routes.
 - Nothing here was driven.
+
+### 104a. Rerun with a vision-based genuine-brake label (same day). 0.075 stays. Replay evidence only; not driven.
+
+The 23e 4:54.6 correction showed that the pass labelled alpha-long episodes as genuine brakes using alpha's own command. The owner asked for the episodes to be relabelled by vision and the pass rerun, with 0.075 reverted to 0.10 if any genuine episode changed.
+
+**Tool change** (`alpha_closed_loop_replay.py`, bff8fa7).
+- Each episode carries an independent reference built from `modelV2.leadsV3[0]`. It uses no radar and no planner output.
+- The episode is genuine when, on ≥ 3 frames with p ≥ 0.5, either vision a ≤ −1.0 or the required deceleration reaches ≥ 2.0 m/s²:
+  `req = max(0, −a_vis) + max(0, v_ego − v_vis)² / (2·max(x_vis − 4 m, 0.5))`
+- On stock-ACC routes, a stock command below −2.0 also counts.
+- Driver brake presses are reported but not used.
+- The default `--bearings` is now `0.1,0.075` explicitly.
+
+**Pass rule used.** An episode is **protected** if either label calls it genuine: the new vision/stock label, or the item 104 rule (any command < −2.0, or vision a ≤ −1.0 on any one frame). The new label under-counts on its own. On the stock routes it catches 19 of the 21 stock hard brakes. It misses:
+- 25b 15:33.7, the 74b vision-only lead (stock −2.73, vision a −0.89);
+- 25f 11:39.7 (stock −2.29, vision a −0.71).
+
+It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 with vision a −0.94. So neither label is used alone.
+
+**Result: 17 of 17 routes, 200 episodes; 125 protected; 0 protected episodes changed.**
+- **Labels:** the new label calls 95 episodes genuine (52 alpha, 43 stock). The old rule called 125. 30 episodes are genuine under the old rule only, including 23e 4:54.6; none is genuine under the new rule only. The union is therefore the same 125.
+- **The only two changed episodes are the targeted false brakes, as in item 104:**
+  - 25f 13:58.4: −3.45 → −1.22. Stock −0.49, maximum required deceleration 0.1.
+  - 260 9:07.8: −3.20 → −1.01. Stock −0.36, maximum required deceleration 0.3.
+- **Genuine episodes where the bound fires, all unchanged** (Δmin ≤ 0.01, Δt 0.00):
+  - 237 18:38.6
+  - 23e 12:51.3
+  - 241 4:56.0
+  - 241 5:17.2 (1 → 33 bounded frames)
+  - 25e 12:05.5 (0 → 3)
+  - 260 9:53.9
+  - 263 6:14.3 (10 → 15; required deceleration 2.6; vision a −1.55 keeps the cap at −1.55)
+- **Determinism:** b0.1, b0.075 and nobound are bit-identical to the first run on all 200 episodes. Only `logged` moved, because it runs the shipped constant (0.10 then, 0.075 now). So the unpatched shipped planner on the on-device radarState now also gives 25f 13:58.4 −1.21 and 260 9:07.8 −1.01.
+- **Tests on the shipped tree** (0.075), all passing:
+  - `test_longitudinal_planner.py`: 493 passed.
+  - `opendbc_repo/opendbc/car/honda/tests/`: 271 passed.
+  - `test_radard_bosch`, `test_lead_behavior`, `test_lead_follow_policy`, `test_following_distance`, `test_turn_lead`: 129 passed.
+
+  `OFF_AXIS_LEAD_MIN_BEARING` has one consumer (`off_axis_lead_a_lead`).
+
+**Still open.**
+- Neither label is a ground truth. Vision under-counts, and the old rule counts alpha's own brakes.
+- Ego still follows the log.
+- Nothing was driven.
