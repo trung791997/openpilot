@@ -522,6 +522,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LatFScaleHighway", {PERSISTENT, INT, "100", "100", 2}},
     {"LatFScaleLowSpeed", {PERSISTENT, INT, "100", "100", 2}},
     {"LatFScaleStandard", {PERSISTENT, INT, "100", "100", 2}},
+    {"LatGainSchedule", {PERSISTENT, STRING, "", ""}},
     {"LatIScaleHighway", {PERSISTENT, INT, "0", "0", 2}},
     {"LatIScaleLowSpeed", {PERSISTENT, INT, "20", "20", 2}},
     {"LatIScaleStandard", {PERSISTENT, INT, "100", "100", 2}},

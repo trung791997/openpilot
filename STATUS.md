@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 112 (route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 114 (route 0000026b: sensor-reaction blips over `NrdrDriverOverrideThreshold` 2000 cut steering torque for ~1 s in low-speed turns and explain the owner's 32:40 exit oversteer and 48:10 stutter; corrected the same day: the 32:40 blips were a sustained driver push below the 2000 threshold, so do NOT raise it; 0.5 s fade-up, then `LatPScaleStandard` 115; replay/sim only). Then item 113 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 112 (radar: route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (radar: one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5888,6 +5888,37 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 - Ego still follows the log.
 - Nothing was driven.
 
+### 104b. Item 104 in plain terms, and why no StarPilot setting changes it. Docs only; the settings finding is static code reading.
+
+**The problem.** The radar sometimes reports that the car ahead is braking hard when it is not. This happens mostly when that car is off to one side, for example in the next lane or across a curve. At that angle the radar cannot reliably tell "that car is slowing down" from "my reading of that car jumped". Without a guard, the planner believes the bad reading and brakes hard for nothing.
+
+**The guard.** `off_axis_lead_a_lead` measures how off-centre the lead is as `|yRel| / dRel`, called the bearing. When the bearing is at or above `OFF_AXIS_LEAD_MIN_BEARING`:
+- the planner will not brake harder than −1.5 m/s² for that lead;
+- the cap is lifted when the camera also sees the lead braking hard (vision `a`, probability ≥ 0.5).
+
+So the guard only overrides the radar when the camera disagrees with it.
+
+**The change.** The threshold went from 0.10 to 0.075. At 50 m ahead, a lead is now treated as off-centre once it is more than 3.75 m to the side, down from 5 m.
+
+**Why.** At 25f 13:58.4 a lead sat at bearing 0.078–0.101, just under the old threshold.
+- The radar said the lead was braking at −4.2 m/s². The camera, at probability 0.99, said about 0.
+- In replay, alpha braked at −3.45. Stock ACC braked at −0.49.
+
+**Evidence (replay only).**
+- Of 200 brake episodes on 17 routes, 2 changed. Both were false brakes and both got gentler: 25f 13:58.4 −3.45 → −1.22, and 260 9:07.8 −3.20 → −1.01.
+- None of the 125 genuine-brake episodes changed.
+- 263 6:14.3 is a real hard stop with the lead well off-centre. It is unchanged because the camera saw that lead braking.
+
+**Remaining risk.** A lead slightly off-centre brakes hard for real, and the camera misses it. The planner then brakes at only −1.5 until the camera or the driver catches up. No replayed episode showed this, and nothing has been driven. On the next drive, watch curves and multi-lane roads with a lead 3–6 m to the side at 40–70 m.
+
+**No StarPilot setting changes this.** The owner asked whether StarPilot's lane-centering setting could compensate for off-centre leads. It cannot. Static reading of this tree:
+- The bound reads the radar's `yRel` for the lead. That value is the lead's position relative to our car. `RadarD` takes it from the radar tracks.
+- `LaneCentering` and `LaneCenterOffset` (clamped to ±0.3 m) only feed the lateral curvature in `controlsd.py` through `self.lane_centering.update`.
+- `CameraOffset` shears the model input in `modeld`. It moves the camera's picture, not the radar's `yRel`.
+- `NAPRadarOffset` is a Tesla pre-AP parameter and is not read on Honda.
+
+Shifting our own car by 0.3 m in the lane would also move the bearing by only about 0.006 at 50 m. The off-centre cases the guard targets are 3–6 m to the side. The fix ships in the code on `ns-bosch-radar-testing`, and running that build is what applies it.
+
 ## 105. C4 lead speed labels enlarged: in-path 20 → 26 px, side-lane 16 → 22 px. Unit evidence, UI only; not rendered, not seen on the device.
 
 - **Owner's ask** (2026-09-24, on-road photo of the C4 on a 45 mph arterial showing "13 mph", "13 mph", "38 mph" markers): "the speed labels are a little too small, can you make it a little bit bigger". A first step to 24/20 px (`16c4a731`) was followed by "go to 26 / 22" (`418a35c9`).
@@ -6125,3 +6156,112 @@ Build b6619f55 predates the hold (ffa72fdc), so this drive ran without it. Toggl
   - The three gas overrides are at 9:20.6, 9:42.4 and 42:31.5.
 - **Item 111 bound on this route:** no episode minimum or −1.5 crossing changes.
 - **Open:** the ~1–2 s mild ramp before hard braking on a lead that slows while moving in through a curve (39:27.5 here, item 110 11:41) keeps recurring. Not changed.
+
+## 113. Lateral PID simulator (`tools/lateral/lat_pid_sim.py`) for dialing in the Civic Bosch lateral scales. Replay and simulation evidence only; no controller or setting change; nothing driven.
+
+**What it is.** The tool runs the real `LatControlPID` (modified-EPS Civic Bosch path, banded `Lat{P,I,F}Scale*`, `HondaLateralPidKp/KiScale`, output shaping) on logged inputs. Around it sits a mirror of the Honda carcontroller steering stage: min steer speed, the override ramp and fade-up, and the optional delta limiter. It has three stages:
+- `replay` is open loop. It feeds the logged angle, rate and desired curvature through the controller and compares the torque it computes with the torque the car logged.
+- `fit` / `validate` fit a steering plant to engaged, hands-off frames by Levenberg–Marquardt on 1 s free-run windows. The plant is a 2-state angle/rate model with speed-dependent stiffness, damping and torque gain, plus a bias term and a tanh friction term. `validate` then checks that the closed loop at the logged settings reproduces the logged metrics.
+- `sim` / `sweep` run the controller and plant closed loop while the desired curvature stays held to the log. Whenever the driver's hands are on, the plant re-syncs to the log. `sweep` reports per-band error rms, bias, curve actual/desired ratio, straight rms and sign-change rate for each value of one parameter.
+
+Desired curvature is exogenous: the model and planner are not simulated, so this tunes tracking of the path the car asked for, not the path itself. Route data is cached in the route directory, never in the repo.
+
+**Replay (open loop) finding: the Kp scale on route 00000268 was not in effect.** initData recorded `HondaLateralPidKpScale = 0.65`. Yet the logged `pidState.p` is exactly 1/0.65 = 1.538× the P the controller recomputes at 0.65, on every active frame of the drive. With a 1.0 override, P matches exactly. The car ran Kp 1.0 on 268. The item this corrects is chat-only: the earlier attribution of 268's looser straights to the Kp cut was wrong. Why the setting did not apply live has not been checked.
+
+**Replay (open loop) torque match on 268 with the 1.0 override:**
+- With the integrator freeze taken from the log (the logged I is unchanged from the previous frame), the median torque error is 6.9e-4 and p99 is 9.1e-3, against a logged median |out| of 0.041.
+- With the freeze recomputed from carControl/carOutput, the median error is 2.3e-2. The one-frame `steer_limited_by_safety` timing cannot be recovered from message interleaving: none of 8 alignments tried was exact. The sim uses the recomputed freeze, so its integrator is somewhat more active than the car's.
+
+**Plant fit** (fit on 260–263, coefficients kept in scratch; not committed). Error at the end of a 3 s free run:
+
+| Route | Plant | Hold-last-angle baseline |
+|---|---|---|
+| 263 (in fit set) | 1.33° | 4.04° |
+| 268 (held out) | 1.93° | 11.33° |
+
+**Closed-loop validation at the logged settings, 25–50 mph band:**
+
+| Route | Curve ratio, log → sim | Straight rms, log → sim |
+|---|---|---|
+| 263 | 0.926 → 0.911 | 0.55° → 0.53° |
+| 268 (held out, Kp 1.0) | 0.963 → 0.955 | 0.86° → 0.89° |
+
+**Limits:**
+- The sim under-predicts sign changes: about 0.5–0.6/s against 0.8/s logged. It has no sensor noise and no actuator delay. That makes it optimistic about weave, and more so at higher gain.
+- Below 25 mph it does not validate. On 268 the sim's curve ratio is 0.913 against 0.849 logged.
+- There is too little highway data to say anything.
+
+**Sweep 1: `LatIScaleStandard`** (Kp 1.0). Each cell is curve ratio / straight rms in the 25–50 mph band:
+
+| I scale | 261 | 263 | 268 |
+|---|---|---|---|
+| 25 | 0.943 / 0.52 | 0.911 / 0.53 | 0.903 / 0.81 |
+| 50 | 0.964 / 0.57 | 0.944 / 0.55 | 0.934 / 0.86 |
+| 75 | 0.978 / 0.62 | 0.966 / 0.56 | 0.955 / 0.89 |
+| 100 | 0.986 / 0.66 | 0.978 / 0.57 | 0.972 / 0.92 |
+| 150 | 0.992 / 0.74 | 0.991 / 0.60 | 0.990 / 0.97 |
+
+More I closes curve undershoot and costs a little on straights. Even at I 25, 268's straights were 0.81°, so most of their looseness comes from the road. The 25 → 75 change adds about 0.08°. 75 (the current setting) is a reasonable middle.
+
+**Sweep 2: `HondaLateralPidKpScale`** (I 75). Each cell is straight rms / sign changes per second in the 25–50 mph band:
+
+| Kp | 261 | 263 | 268 |
+|---|---|---|---|
+| 0.65 | 0.89 / 0.5 | 0.74 / 0.5 | 1.19 / 0.5 |
+| 1.0 | 0.62 / 0.6 | 0.56 / 0.6 | 0.89 / 0.5 |
+| 1.25 | 0.50 / 0.7 | 0.47 / 0.7 | 0.77 / 0.5 |
+| 1.5 | 0.43 / 0.8 | 0.42 / 0.7 | 0.69 / 0.6 |
+| 2.0 | 0.33 / 0.9 | 0.34 / 0.9 | 0.58 / 0.6 |
+
+The curve ratio barely moves with Kp (±0.01). In the sim, more P tightens straights steadily and raises the sign-change rate. Because the sim under-predicts oscillation, anything above about 1.25 is outside what it can vouch for.
+
+**Suggested next on-road step** (sim evidence only):
+- Keep I 75.
+- Try `LatPScaleStandard` 100 → 115–125, in one step. This band-limited P is nearly the same lever as Kp for 25–50 mph. On 268 in the sim, P 125 gives straight rms 0.80° and curve ratio 0.960; Kp 1.25 gives 0.77°.
+- Watch for weave on straights. The sign-change rate in `sweep` output of the new drive is the check.
+- Leave low-speed and highway alone until the sim validates there.
+
+## 114. Route 0000026b (48 min, lateral settings as in 268: I 75, Kp 1.0): false driver-override trips cut steering torque in low-speed turns. Replay and log-decode evidence only; no code or setting change.
+
+**Owner report:** slight oversteer at 32:40 and wheel stutter in a right turn at 48:10; otherwise good.
+
+**Mechanism** (log decode, 100 Hz):
+- `STEER_TORQUE_SENSOR` reads the column torque. That is the driver's hands plus the reaction to the EPS's own torque, and in hard low-speed turns it reaches 1500–2100.
+- With `NrdrDriverOverrideThreshold = 2000` (the code default is 2400), the sensor crossed the threshold in 62 episodes while engaged:
+  - 41 were blips of ≤ 0.2 s, peaking at 2001–2394, typically mid-turn with |cmd| around 0.2–1.0.
+  - 21 were sustained genuine overrides, peaking at 2125–3480 (median 2824).
+- Each blip sets the override ramp to `HondaOverrideTorqueScale = 0` and fades it back up over `HondaOverrideFadeUpSecs = 1.0`. The delivered torque is therefore cut for about a second, and the integrator freezes while `steer_limited_by_safety` holds.
+- Below 25 mph, delivered torque was under 50% of the command on 22% of engaged frames.
+
+**The two reported events:**
+- **32:40 (15 mph left turn, 137° of wheel).** Turn-in lagged by about 20°. At 32:45.6, 15 pressed frames in 0.9 s cut the torque, and the wheel unwound from 128° to 67° against a desired of about 100–130°. The integrator froze at +0.36, wound up. On the exit the wheel trailed the unwind by up to 18° (32:48.4), then held 1–5° left of desired for about 2 s until the integrator released at 32:51.5. That is the reported oversteer. Whether the driver's hand contributed cannot be separated from sensor reaction in this signal.
+- **48:10 (18 mph right turn).** A 3-frame blip to 2042 at 48:12.9 cut the torque from −0.52 to −0.07, with a 1 s fade back: the turn-in stutter. On the exit, the wheel trailed the unwind by 25–45° (48:17) with the torque delivered in full, which is gain- and plant-limited, not a cut. The driver took over at 48:19 (2800–3000).
+
+**Counterfactual on the logged sensor trace** (open loop, so it cannot see the reaction torque change once more torque is delivered):
+
+| Threshold | Fade-up | Episodes (blips) | Torque·s withheld outside genuine overrides | Frames < 25 mph with < 50% delivered | Genuine overrides still over threshold |
+|---|---|---|---|---|---|
+| 2000 | 1.0 s | 62 (41) | 11.2 | 8.1% | 21/21 |
+| 2000 | 0.5 s | 62 (41) | 6.8 | 4.5% | 21/21 |
+| 2200 | 0.5 s | 37 (15) | 1.6 | 1.2% | 20/21 (median +30 ms) |
+| 2400 | 1.0 s | 25 (8) | 1.3 | 1.5% | 18/21 (median +40 ms) |
+| 2400 | 0.5 s | 25 (8) | 0.6 | 0.6% | 18/21 (median +40 ms) |
+
+The 3 genuine overrides that 2400 would miss peaked at 2125–2312. In practice the driver pushes harder, so the cost is a firmer override, not a missed one.
+
+**Other results:**
+- **25–50 mph band is good** (logged): curve actual/desired 0.975, straight rms 0.76°. On 268 these were 0.963 and 0.86°.
+- **Vehicle model is accurate.** Yaw-rate curvature over angle-derived curvature is 0.99–1.01 from 9 to 50 mph (learned SR 15.14, stiffness 1.35). So the lane-position p99 of 0.52 m, driven by curves at 40–46 mph (37:40 −0.68 m, 40:48 +0.74 m; angle tracked within 0.5°), sits in the planned path, not in PID tracking. The 24:09–24:31 spikes (up to 1.2 m in under 1 s, on straights) look like lane-line detection jumps.
+- **Sim sweeps on this route** (plant `plant_260_263`, held out). `LatPScaleStandard` 100 → 115 → 125: straight rms 0.87 → 0.81 → 0.78°, curve ratio unchanged. `LatPScaleLowSpeed` 100 → 125: curve ratio 0.902 → 0.916 (the low band is weakly validated). `LatFScaleLowSpeed` 50 → 100: no effect.
+
+**Correction, same day (owner report plus log decode). Do NOT raise the override threshold.** The owner reports that at 32:40 the car nearly went into the adjacent left lane while another car was also turning left.
+- `steeringTorque` (negative = right push) reads −1200 to −1890 almost continuously from 32:42.4 to about 32:51. That is the driver resisting the left turn, and it stayed below the 2000 threshold except at 32:45.6 and 32:48.7. For roughly 6 s, openpilot kept full left torque against the driver.
+- The "blips" at 32:45.6 were the crests of a sustained driver push, not sensor reaction. Raising the threshold to 2400 would have left openpilot fighting the driver for the whole turn.
+- The desired curvature came straight from the model action. No blinker was on, so the turn hold and turn lead did not engage, and lane centering left it unchanged.
+- Actual heading change was 88°. The integrated desired curvature reaches 110°, but that over-counts, because the model re-asks for curvature while the car lags. The car's placement in the lane cannot be recovered: no lane lines are seen during the turn.
+- The open design issue is that the raw threshold cannot separate driver push from EPS reaction. A reaction-compensated override (driver torque minus k × delivered torque) would need its own replay before any change.
+
+**Suggested settings** (replay and sim evidence only, not driven):
+1. Keep `NrdrDriverOverrideThreshold` at 2000. Do not raise it. `HondaOverrideFadeUpSecs` 1.0 → 0.5 is still reasonable. It only shortens the torque gap after a release, and it does not change when an override is detected.
+2. `LatPScaleStandard` 100 → 115.
+3. Only after (1) is driven: `LatPScaleLowSpeed` 100 → 125. More low-speed P means more torque, which means more sensor reaction.

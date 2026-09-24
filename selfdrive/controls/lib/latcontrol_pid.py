@@ -1,3 +1,4 @@
+import json
 import math
 import numpy as np
 
@@ -298,6 +299,71 @@ def _lat_pid_scale_banded(v_ego: float, low: float, standard: float, highway: fl
   return highway
 
 
+# LatGainSchedule: an optional continuous speed schedule for the modified-EPS P/I/F trims,
+# replacing the three Lat*Scale bands per term. JSON, percent values like the band params:
+#   {"v_mph": [15, 35, 60], "p": [110, 115, 105], "i": [50, 75, 0], "f": [50, 100, 100]}
+# Any of p/i/f may be omitted; an omitted term keeps its band. The whole schedule is rejected
+# (every term falls back to the bands) on any malformed field -- an out-of-range knot is never
+# clamped into something the owner did not write. Written by tools/lateral/lat_autotune.py for
+# review; nothing on the car writes it. Linear between knots, held flat past the end knots.
+LAT_GAIN_SCHEDULE_MAX_KNOTS = 8
+LAT_GAIN_SCHEDULE_MAX_MPH = 100.0
+LAT_GAIN_SCHEDULE_LIMITS = {"p": (25.0, 300.0), "i": (0.0, 300.0), "f": (0.0, 200.0)}
+
+
+def parse_lat_gain_schedule(raw):
+  """Return {"v": [m/s], term: [scale]} or None when absent/invalid."""
+  if raw is None:
+    return None
+  try:
+    if isinstance(raw, bytes):
+      raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+      if not raw.strip():
+        return None
+      raw = json.loads(raw)
+    if not isinstance(raw, dict):
+      return None
+    v_mph = [float(x) for x in raw["v_mph"]]
+  except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+    return None
+  n = len(v_mph)
+  if not 2 <= n <= LAT_GAIN_SCHEDULE_MAX_KNOTS:
+    return None
+  if not all(math.isfinite(x) and 0.0 <= x <= LAT_GAIN_SCHEDULE_MAX_MPH for x in v_mph):
+    return None
+  if any(b <= a for a, b in zip(v_mph[:-1], v_mph[1:], strict=True)):
+    return None
+  sched = {"v": [x * _MPH_TO_MS for x in v_mph]}
+  for term, (lo, hi) in LAT_GAIN_SCHEDULE_LIMITS.items():
+    if term not in raw:
+      continue
+    try:
+      vals = [float(x) for x in raw[term]]
+    except (TypeError, ValueError):
+      return None
+    if len(vals) != n or not all(math.isfinite(x) and lo <= x <= hi for x in vals):
+      return None
+    sched[term] = [x / 100.0 for x in vals]
+  if len(sched) == 1:
+    return None
+  return sched
+
+
+def lat_gain_schedule_scale(sched, term: str, v_ego: float, banded: float) -> float:
+  if sched is None or term not in sched:
+    return banded
+  vs = sched["v"]
+  ys = sched[term]
+  if v_ego <= vs[0]:
+    return ys[0]
+  for i in range(1, len(vs)):
+    if v_ego <= vs[i]:
+      t = (v_ego - vs[i - 1]) / (vs[i] - vs[i - 1])
+      return ys[i - 1] + t * (ys[i] - ys[i - 1])
+  return ys[-1]
+
+
 def _get_param_float(params, key, default, min_value=None, max_value=None, scale=1.0):
   try:
     value = params.get(key)
@@ -425,6 +491,7 @@ class LatControlPID(LatControl):
     self.lat_f_scale_low = 1.0
     self.lat_f_scale_standard = 1.0
     self.lat_f_scale_highway = 1.0
+    self.lat_gain_schedule = None
     self.center_taper_high = 0.5
     self.center_boost_threshold = 3.0
     self.center_boost_min_speed = 50.0
@@ -612,6 +679,10 @@ class LatControlPID(LatControl):
           self.lat_f_scale_low = _get_param_float(self.params, "LatFScaleLowSpeed", 1.0, 0.0, 5.0, scale=100.0)
           self.lat_f_scale_standard = _get_param_float(self.params, "LatFScaleStandard", 1.0, 0.0, 5.0, scale=100.0)
           self.lat_f_scale_highway = _get_param_float(self.params, "LatFScaleHighway", 1.0, 0.0, 5.0, scale=100.0)
+          try:
+            self.lat_gain_schedule = parse_lat_gain_schedule(self.params.get("LatGainSchedule"))
+          except Exception:
+            self.lat_gain_schedule = None
           self.center_taper_high = _get_param_float(self.params, "HondaCenterScale", 0.5, 0.0, 5.0)
           self.center_boost_threshold = _get_param_float(self.params, "HondaCenterBoostThreshold", 3.0, 0.0, 10.0)
           self.center_boost_min_speed = _get_param_float(self.params, "HondaCenterBoostMinSpeed", 50.0, 0.0, 90.0)
@@ -626,6 +697,9 @@ class LatControlPID(LatControl):
         p_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_p_scale_low, self.lat_p_scale_standard, self.lat_p_scale_highway)
         i_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_i_scale_low, self.lat_i_scale_standard, self.lat_i_scale_highway)
         f_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_f_scale_low, self.lat_f_scale_standard, self.lat_f_scale_highway)
+        p_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "p", CS.vEgo, p_scale)
+        i_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "i", CS.vEgo, i_scale)
+        f_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "f", CS.vEgo, f_scale)
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
 
         lane_change = bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False))
