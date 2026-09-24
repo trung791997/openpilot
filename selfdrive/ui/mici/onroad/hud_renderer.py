@@ -516,27 +516,28 @@ class HudRenderer(Widget):
     )
     rl.draw_rectangle_rounded_lines_ex(inner_border_rect, 0.14, 16, max(border_thickness - 2, 1), border_color)
 
-    speed_label = tr("SPEED")
-    limit_label = tr("LIMIT")
-    speed_label_size = measure_text_cached(self._font_semi_bold, speed_label, header_font_size)
-    limit_label_size = measure_text_cached(self._font_semi_bold, limit_label, header_font_size)
+    if header_font_size > 0:
+      speed_label = tr("SPEED")
+      limit_label = tr("LIMIT")
+      speed_label_size = measure_text_cached(self._font_semi_bold, speed_label, header_font_size)
+      limit_label_size = measure_text_cached(self._font_semi_bold, limit_label, header_font_size)
 
-    rl.draw_text_ex(
-      self._font_semi_bold,
-      speed_label,
-      rl.Vector2(sign_rect.x + sign_rect.width / 2 - speed_label_size.x / 2, sign_rect.y + header_top),
-      header_font_size,
-      0,
-      text_color,
-    )
-    rl.draw_text_ex(
-      self._font_semi_bold,
-      limit_label,
-      rl.Vector2(sign_rect.x + sign_rect.width / 2 - limit_label_size.x / 2, sign_rect.y + header_top + header_gap),
-      header_font_size,
-      0,
-      text_color,
-    )
+      rl.draw_text_ex(
+        self._font_semi_bold,
+        speed_label,
+        rl.Vector2(sign_rect.x + sign_rect.width / 2 - speed_label_size.x / 2, sign_rect.y + header_top),
+        header_font_size,
+        0,
+        text_color,
+      )
+      rl.draw_text_ex(
+        self._font_semi_bold,
+        limit_label,
+        rl.Vector2(sign_rect.x + sign_rect.width / 2 - limit_label_size.x / 2, sign_rect.y + header_top + header_gap),
+        header_font_size,
+        0,
+        text_color,
+      )
 
     speed_text_size = measure_text_cached(self._font_bold, speed_text, speed_font_size)
     speed_text_pos = rl.Vector2(sign_rect.x + sign_rect.width / 2 - speed_text_size.x / 2, sign_rect.y + speed_top)
@@ -623,20 +624,22 @@ class HudRenderer(Widget):
         rl.draw_text_ex(self._font_semi_bold, offset_text, offset_pos, offset_font_size, 0, text_color)
     elif combined:
       sign_rect = rl.Rectangle(sign_x, sign_y, sign_width, sign_height)
-      self._draw_max_line(sign_rect, sign_y + 14, widget_color, divider_y=sign_y + 48)
+      # No "SPEED LIMIT" words: the sign shape says it, and the MAX line above disambiguates the two numbers.
+      # Glyph rows (MAX line, divider, limit, offset) sit with equal gaps between each other and the border.
+      self._draw_max_line(sign_rect, sign_y + (13.5 if offset_text else 16.5), widget_color, divider_y=sign_y + (52.5 if offset_text else 58.5))
       self._draw_us_speed_limit_sign(
         sign_rect,
         speed_text,
         sign_alpha,
         border_thickness=4,
-        header_font_size=13,
-        header_gap=12,
-        speed_font_size=(34 if offset_text else 38) if len(speed_text) <= 2 else 32,
-        header_top=53,
-        speed_top=74 if offset_text else 82,
+        header_font_size=0,
+        header_gap=0,
+        speed_font_size=(44 if offset_text else 48) if len(speed_text) <= 2 else 38,
+        header_top=0,
+        speed_top=55.5 if offset_text else 63.5,
         footer_text=offset_text,
         footer_font_size=20 if offset_text else 0,
-        footer_top=107,
+        footer_top=103,
         border_color=widget_color,
         text_color=widget_color,
       )
