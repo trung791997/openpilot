@@ -22,6 +22,6 @@
 - Evidence level: unit-test/static only, not driven, no real-route replay yet.
 
 ## 4. Immediate Next Step
-- **Action:** None pending. Follow-ups when the owner asks: run `tools/lateral/lat_tune_cli.py` on the Konik archive (oprad-routes volume) and record proposed factors in STATUS 117; mobile Vue panel for `/lat_tune`.
+- **Action:** None pending. Both follow-ups done 2026-09-24: mobile `NRDR PID lateral tune` panel (6efd152f5), CLI Konik-layout fix (1965657c0), first 8-route run recorded in STATUS 117 (5bef2197c): proposes +5% P at 40 mph only. Route logs deleted from the volume; trial JSON kept at /routes/an2/lat_tune_trial_262-26b.json.
 - **Target:** —
 - **Expected Outcome:** —
