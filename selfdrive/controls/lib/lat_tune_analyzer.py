@@ -346,3 +346,105 @@ def build_schedule(trial, current_raw):
         t_lo, t_hi = LAT_GAIN_SCHEDULE_LIMITS[term]
         out[term] = [min(max(x, t_lo), t_hi) for x in _interp_at_knots(v_mph, [float(x) for x in vals])]
   return json.dumps(out, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# rlog -> frames. Only what DriveStats.observe needs; everything else is skipped.
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class RouteLog:
+  route: str
+  segment: str
+  log_path: str
+  log_reader: object = None   # callable(path, **kw) -> iterable of messages; None = LogReader
+
+
+def _default_log_reader(path, **kw):
+  from openpilot.tools.lib.logreader import LogReader
+  return LogReader(path, **kw)
+
+
+def _steer_of(actuators):
+  for name in ("torque", "steer"):
+    if hasattr(actuators, name):
+      return float(getattr(actuators, name))
+  return None
+
+
+class FrameSource:
+  """Iterates one segment log and yields DriveStats.observe() arguments at each pidState controlsState."""
+
+  def __init__(self, log_path, log_reader=None, should_continue=None):
+    self.log_path = log_path
+    self.log_reader = log_reader or _default_log_reader
+    self.should_continue = should_continue
+    self.tuning = {}      # TUNING_KEYS + BAND_KEYS values from initData, str
+    self.n = 0
+
+  def frames(self):
+    wanted = set(TUNING_KEYS) | set(BAND_KEYS)
+    v_ego = angle = 0.0
+    pressed = lane_change = False
+    cc_steer = co_steer = None
+    for msg in self.log_reader(self.log_path):
+      if self.should_continue is not None and not self.should_continue():
+        return
+      which = msg.which()
+      if which == "initData":
+        params = getattr(msg.initData, "params", None)
+        entries = getattr(params, "entries", None)
+        if entries is not None:
+          for e in entries:
+            if e.key in wanted:
+              self.tuning[e.key] = _param_str(e.value)
+        elif isinstance(params, dict):
+          self.tuning.update({k: _param_str(v) for k, v in params.items() if k in wanted})
+      elif which == "carState":
+        cs = msg.carState
+        v_ego, angle, pressed = float(cs.vEgo), float(cs.steeringAngleDeg), bool(cs.steeringPressed)
+      elif which == "modelV2":
+        lane_change = str(getattr(getattr(msg.modelV2, "meta", None), "laneChangeState", "off")) != "off"
+      elif which == "carControl":
+        cc_steer = _steer_of(msg.carControl.actuators)
+      elif which == "carOutput":
+        co_steer = _steer_of(msg.carOutput.actuatorsOutput)
+      elif which == "controlsState":
+        lcs = msg.controlsState.lateralControlState
+        if lcs.which() != "pidState" or not lcs.pidState.active:
+          continue
+        steer_limited = cc_steer is not None and co_steer is not None and abs(cc_steer - co_steer) > 0.01
+        self.n += 1
+        yield v_ego, float(lcs.pidState.steeringAngleDesiredDeg), angle, pressed, lane_change, steer_limited
+
+
+def analyze_sources(sources, should_continue=None, on_progress=None):
+  """sources: RouteLog list in analysis order (oldest first). Returns a trial dict (build_trial)."""
+  stats = DriveStats()
+  per_route = {}
+  warnings = []
+  tuning_by_route = {}
+  for idx, src in enumerate(sources):
+    if on_progress is not None:
+      on_progress(idx, len(sources), src)
+    fs = FrameSource(src.log_path, log_reader=src.log_reader, should_continue=should_continue)
+    route_stats = DriveStats()
+    for frame in fs.frames():
+      stats.observe(*frame)
+      route_stats.observe(*frame)
+    if fs.n == 0:
+      warnings.append(f"{src.route}--{src.segment}: no engaged pidState frames (not modified-EPS PID, or never engaged)")
+    if fs.tuning:
+      tuning_by_route[src.route] = fs.tuning
+    per_route.setdefault(src.route, [0.0] * len(KNOTS))
+    for i in range(len(KNOTS)):
+      per_route[src.route][i] = round(per_route[src.route][i] + knot_metrics(route_stats.acc[i])["min"], 2)
+  route_names = list(dict.fromkeys(s.route for s in sources))
+  latest = next((tuning_by_route[r] for r in reversed(route_names) if r in tuning_by_route), {})
+  fps = {r: tuning_fingerprint(t) for r, t in tuning_by_route.items()}
+  if len(set(fps.values())) > 1:
+    warnings.append("routes were driven with different lateral tuning (fingerprint mismatch); the newest route's tuning is the baseline")
+  baseline = {"fingerprint": tuning_fingerprint(latest) if latest else None, "pPct": effective_p_pct(latest), "raw": latest}
+  return build_trial(stats, baseline, route_names, [{"route": r, "minutes": m} for r, m in per_route.items()], warnings)

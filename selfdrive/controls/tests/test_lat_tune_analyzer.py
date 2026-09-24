@@ -220,3 +220,62 @@ class TestTrialAndSchedule:
     assert lat.effective_p_pct(raw) == [80.0, 120.0, 120.0, 90.0]
     raw["LatGainSchedule"] = '{"v_mph": [20, 50], "p": [100, 200]}'
     assert lat.effective_p_pct(raw) == [100.0, 133.3, 166.7, 200.0]
+
+
+class _Which:
+  """Tiny capnp-like message stand-in: .which() plus one attribute holding the payload."""
+  def __init__(self, which, **payload):
+    self._which = which
+    for k, v in payload.items():
+      setattr(self, k, v)
+  def which(self):
+    return self._which
+
+
+class _Obj:
+  def __init__(self, **kw):
+    self.__dict__.update(kw)
+
+
+def _init_msg(entries):
+  params = _Obj(entries=[_Obj(key=k, value=v.encode()) for k, v in entries.items()])
+  return _Which("initData", initData=_Obj(params=params))
+
+
+def _cs(v, angle, pressed=False):
+  return _Which("carState", carState=_Obj(vEgo=v, steeringAngleDeg=angle, steeringPressed=pressed))
+
+
+def _pid(desired, active=True):
+  lcs = _Which("pidState", pidState=_Obj(active=active, steeringAngleDesiredDeg=desired))
+  return _Which("controlsState", controlsState=_Obj(lateralControlState=lcs))
+
+
+def _fake_log(msgs):
+  return lambda path, **kw: iter(msgs)
+
+
+class TestFrames:
+  def test_frames_follow_pid_state_and_carry_init_tuning(self):
+    msgs = [_init_msg({"LatPScaleStandard": "120", "LatGainSchedule": ""}), _cs(13.4, 1.0), _pid(0.5), _cs(13.4, -1.0, pressed=True),
+            _pid(0.3), _Which("controlsState", controlsState=_Obj(lateralControlState=_Which("torqueState")))]
+    src = lat.FrameSource("x/rlog.zst", log_reader=_fake_log(msgs))
+    frames = list(src.frames())
+    assert frames == [(13.4, 0.5, 1.0, False, False, False), (13.4, 0.3, -1.0, True, False, False)]
+    assert src.tuning["LatPScaleStandard"] == "120"
+
+  def test_inactive_pid_frames_are_skipped(self):
+    src = lat.FrameSource("x", log_reader=_fake_log([_cs(13.4, 0.0), _pid(0.5, active=False)]))
+    assert list(src.frames()) == []
+
+  def test_analyze_sources_builds_trial_with_baseline_from_latest_route(self):
+    n = 6000 * 4
+    a = [_init_msg({"LatPScaleStandard": "100"}), _cs(13.4, 0.5)] + [_pid(0.4 if i % 100 < 50 else -0.4) for i in range(n)]
+    b = [_init_msg({"LatPScaleStandard": "120"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(600)]
+    sources = [lat.RouteLog("r-old", "1", "a", _fake_log(a)), lat.RouteLog("r-new", "1", "b", _fake_log(b))]
+    trial = lat.analyze_sources(sources)
+    assert trial["routeNames"] == ["r-old", "r-new"]
+    assert trial["baseline"]["pPct"][1] == 120.0                 # latest route's initData wins
+    assert any("fingerprint" in w for w in trial["warnings"])     # routes disagree
+    assert trial["perRoute"][0]["route"] == "r-old" and trial["perRoute"][0]["minutes"][1] >= 3.9
+    assert trial["knots"][1]["ready"] is True
