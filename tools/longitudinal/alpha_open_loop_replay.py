@@ -73,6 +73,7 @@ EPISODE_MERGE_GAP_S = 3.0
 ONSET_SOFT = -0.5
 # Stock ACC holds ACCEL_COMMAND at -4.0 at standstill; that is a hold, not a brake event.
 MOVING_MIN_V = 1.0
+CROSS_LEVELS = (-1.0, -1.5, -2.5)
 
 
 def default_toggles() -> SimpleNamespace:
@@ -326,6 +327,13 @@ def episodes(frames: list[Frame], thr: float) -> list[dict]:
     ep["min_d"] = min((ld["d"] for ld in leads), default=float("nan"))
     ep["bound_frames"] = sum(1 for ld in leads if ld.get("offAxisBound"))
     ep["setspeed_below_vego"] = frames[ref].v_cruise < frames[ref].v_ego - 0.5
+    # Same-threshold crossing times, command against command. Less sensitive than the ramp start to a long
+    # gentle stretch below ONSET_SOFT, which can move a ramp start by several seconds.
+    ep["cross"] = {}
+    for thr_c in CROSS_LEVELS:
+      for key in ("a_alpha", "a_nobound", "accel_cmd", "a_ego"):
+        ep["cross"][f"{key}@{thr_c}"] = next((frames[i].t for i in idx if getattr(frames[i], key) < thr_c), None)
+    ep["lead_trace"] = [[round(frames[i].t, 2), frames[i].lead] for i in idx[::10]]
     ar = ep["a_alpha"]["ramp"]
     ep["lag_cmd"] = ar - ep["accel_cmd"]["ramp"] if ar is not None and ep["accel_cmd"]["ramp"] is not None else None
     ep["lag_aego"] = ar - ep["a_ego"]["ramp"] if ar is not None and ep["a_ego"]["ramp"] is not None else None
