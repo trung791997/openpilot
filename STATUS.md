@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-23), start here:** item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-23), start here:** item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5332,3 +5332,32 @@ Decision at the time of this item: not applied. D'' met item 82's bar except for
 **Removed.** `tools/bosch_a_variants/d063_variant_d.patch` and `d063_variant_d2_inpath.patch` (items 82 and 89): the code is in the tree.
 
 **Not done.** No road drive. If Peter wants it for the alpha-long drive he must turn on Keep Fast-Closing Leads under Advanced Longitudinal Tuning and restart; it stays off otherwise.
+
+## 91. D-063 (`BoschARailInterval`) replayed on all 22 alpha-long routes, toggle on vs off. Replay evidence only; nothing driven.
+
+Peter asked (2026-09-23) whether the shipped toggle (item 90) had been tried on every earlier alpha-long route at the depth of the stock-ACC scans (items 82 and 89). Answer: it has now, and **the toggle should stay off** (its default). Two of the planner-level differences are in the wrong direction and one root cause is still unidentified.
+
+**Method.** Two in-tree `RadarInterface` instances run off each route's logged CAN, one with `rail_interval=False` (A, the default) and one with `rail_interval=True` (B). Nothing else differs. The point-level census compares every sweep. Brake onsets come from openpilot's own ACC_CONTROL command as the panda echoed it on bus 1 (`can` src 129; these routes carry no camera copy of 0x1DF, so the parser had to be given the frames with the bus bit masked off). An onset is ACCEL_COMMAND crossing -0.8 with cruise engaged, no brake pedal and vEgo above 2 m/s; a hard episode is a crossing of -1.5. For every window where A and B disagreed near a brake, two real `LongitudinalPlanner` instances were run on the two radar states (same replay harness as item 89 a3, planner columns from 20 s of preroll), with hard crossings at -1.5 and -3.0 recorded because the -0.8 onset is often reached by vision alone.
+
+**Point-level census, 22 alpha-long routes (231 through 258, plus 25d/25e for reference).** 407 567 sweeps, 461 brake onsets, 237 hard episodes. B loses **0** points and **0** lead points on every route. B publishes a new measured vRel on 6 routes (237, 23e, 246, 24d, 251, 258); the over-closing rate of those (vRel more than 3 m/s more closing than the next 1 s range slope) is 10/23 on 237, 12/21 on 24d, 14/37 on 251, 0 elsewhere. Every one of the 22 over-closers is a point sitting at the -13.5 rail while the range closed at 6-10 m/s, as item 82 found on route 262. Only two of them were the lead: 237 track 31 (765.1-766.2 s, 42 to 32 m) and 251 track 53 (539.0-540.4 s, 51 to 39 m). Lead-changing differences near a brake occurred on 2 routes (237, 25e); two more routes (245, 258) gained a non-lead rail point at -13.5 next to an onset and were checked anyway (identical planner output, both).
+
+**Planner A/B on every candidate window** (t is seconds from the route's first message; "log" is what the car actually commanded):
+
+| Route, window | Off (A) | On (B) | What changed |
+|---|---|---|---|
+| 237, 759-775 s | onset 765.06, -1.5 at 765.71, -3.0 at 766.31 | onset 764.51, -1.5 at 764.91, -3.0 at 765.46 | B takes track 31 as lead 1.2 s earlier, at 54 m with vRel at the -13.5 rail (vision said -6). B brakes 0.55-0.85 s earlier and harder; both saturate at -3.5 by 766.3; the log reached -3.5 at 766.16. Conservative direction. |
+| 25e, 719-737 s | onset 724.31, -1.5 at 725.91, -3.0 at 726.11 | onset 725.11, -1.5 at 725.26, -3.0 at 725.41 | B gains track 59 at 79.5 m published **unmeasured with a stale +11.1 m/s** for 0.3 s (planner eased -0.80 to -0.55), then measured at the -13.5 rail; B then hard-brakes 0.65-0.7 s earlier than A. |
+| 25e, 398-411 s | never below -0.58 (log -0.58) | -0.8 at 403.36, -1.5 at 403.56, **-3.45 held 403.9-404.9** | B publishes track 48 as lead at 35 m with vRel -13.5 for 1.5 s (1 measured sweep of 26; the range was *opening* at +0.8 m/s). A, the log and vision all held a lead at 38-44 m closing 1-3 m/s. **A spurious hard brake at 68 km/h with no threat.** Wrong direction. |
+| 251, 532-547 s | -1.5 and -3.0 at 537.70 (log -3.5 at 537.85) | -1.5 and -3.0 at **540.55** | A and the log brake on a vision-only lead at 75 m closing 14.7 m/s. B holds track 53 as radar lead (77 m, -13.5, vision-confirmed) but the planner stays at the -1.0 cruise floor until the lead is 37.7 m away, 2.85 s later, at 21 m/s closing 12 m/s. **Under-braking.** Wrong direction; the planner rule that holds -1.0 for the radar lead but not for the vision lead has NOT been identified (FarLeadCoastCap is off and caps at -0.2; the CR-V catch-up cap is CR-V only). |
+| 245, 38-46 s | identical | identical | non-lead rail point, no effect |
+| 258, 3728-3736 s | identical | identical | non-lead rail point, no effect |
+
+Validity: A matched the logged radarState lead on 95-99% of cycles in every window except 237 (42%), where the in-tree parser takes track 31 as lead from 765.7 s and the code driven that day kept the vision lead; A is the current default and is the right baseline.
+
+**What this shows.** Point-level, D'' does what item 90 said: nothing lost, in-path rail points published at the rail. Planner-level, on 22 routes it changed braking in 4 windows: 2 earlier/harder brakes on real closing leads (fine), 1 spurious -3.45 hard brake on a coasting point carrying a stale -13.5 (25e 403 s), and 1 hard brake delayed by 2.85 s (251). The stale-vRel coast is the mechanism behind both 25e windows: with the interval on, the D-054 range gate passes a rail point whose direct vRel gate failed, and the coast branch publishes `last_trusted_vrel` (+11.1 or -13.5) as `measured=False`. That coast path is item 89 a2's open question and is brake-affecting; it needs Peter's OK before any change. The 251 hold needs a planner trace first.
+
+**What this does not show.** Nothing was driven. The planner replay uses the logged model and car state, so B's earlier brakes never fed back into the scene. The 251 planner hold may also exist with the toggle off whenever the radar lead is the one at range; only the toggle-on case was hit in these windows.
+
+**Recommendation.** Leave `BoschARailInterval` off. Before turning it on: fix the coast branch so a rail-interval admission cannot publish a stale vRel (publish the rail as a measured bound or drop to vision), trace the 251 -1.0 hold, then re-run this A/B (scripts: `ab11.py`, `census11.py`, `ympc63.py`, recipe in the route-analysis memory).
+
+**Housekeeping.** Routes 231-258 were archived to Drive and their working copies deleted after the run; 25e-262 are still local for the next replay.
