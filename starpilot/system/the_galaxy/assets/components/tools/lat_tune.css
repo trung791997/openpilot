@@ -1,0 +1,26 @@
+.latTunePage { display: grid; gap: 16px; padding: 16px; color: var(--text-color, #e8e8f0); }
+.latTuneCard { background: var(--card-bg, #1c1f26); color: var(--text-color, #e8e8f0); border-radius: 12px; padding: 16px; }
+.latTuneCardHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.latTuneActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.latTuneButton { padding: 8px 14px; border-radius: 8px; border: 1px solid #3a3f4b; background: #2a2f3a; color: inherit; cursor: pointer; }
+.latTuneButton:disabled { opacity: 0.45; cursor: not-allowed; }
+.latTuneButton.danger { border-color: #7a2e2e; background: #4a1f1f; }
+.latTuneButton.primary { border-color: #2e5a7a; background: #1f3a4a; }
+.latTuneStatusGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.latTuneStatusGrid div span { display: block; opacity: 0.7; font-size: 12px; }
+.latTuneError { color: #ff8a8a; margin-top: 8px; }
+.latTuneMuted { opacity: 0.7; font-size: 13px; }
+.latTuneRouteList { max-height: 360px; overflow-y: auto; display: grid; gap: 4px; }
+.latTuneRouteRow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; }
+.latTuneRouteRow.selected { background: #26303d; }
+.latTuneTrial { border-top: 1px solid #2f3440; padding: 12px 0; }
+.latTuneTrial.applied { border-left: 3px solid #4caf50; padding-left: 10px; }
+.latTuneKnots { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.latTuneKnots th, .latTuneKnots td { text-align: right; padding: 4px 6px; border-bottom: 1px solid #2f3440; }
+.latTuneKnots th:first-child, .latTuneKnots td:first-child { text-align: left; }
+.latTuneKnots td.reason { text-align: left; white-space: normal; }
+.latTuneReady { color: #7fd48a; }
+.latTuneNotReady { color: #e0b060; }
+.latTuneWarning { color: #e0b060; font-size: 13px; }
+.latTuneCode { font-family: monospace; font-size: 12px; word-break: break-all; opacity: 0.85; }
+@media (max-width: 720px) { .latTunePage { padding: 8px; } .latTuneKnots { font-size: 12px; } }
