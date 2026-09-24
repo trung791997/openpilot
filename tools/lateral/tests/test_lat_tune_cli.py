@@ -27,6 +27,18 @@ def test_discover_routes_handles_dongle_prefixed_konik_dirs(tmp_path):
   assert [r for r, _ in routes] == ["abc123|2026-09-22--08-30-00"]
 
 
+def test_discover_routes_handles_konik_fetch_layout(tmp_path):
+  for route, segs in (("00000268--4bc9811934", [0, 10, 2]), ("0000026b--92b1979afa", [0]), ("00000262--864cc3c6db", [0])):
+    for s in segs:
+      d = tmp_path / route / str(s)
+      d.mkdir(parents=True)
+      (d / "rlog.zst").write_bytes(b"")
+  (tmp_path / "notes" / "3").mkdir(parents=True)
+  routes = cli.discover_routes(tmp_path, latest=2)
+  assert [r for r, _ in routes] == ["00000268--4bc9811934", "0000026b--92b1979afa"]
+  assert [p.parent.name for p in routes[0][1]] == ["0", "2", "10"]
+
+
 def test_main_prints_schedule_line(tmp_path, monkeypatch, capsys):
   _mk(tmp_path, "2026-09-22--08-30-00", [0])
   fake_trial = {"knotsMph": [20.0, 30.0, 40.0, 50.0], "routeNames": ["2026-09-22--08-30-00"], "warnings": [],
