@@ -5530,3 +5530,15 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - UI suites (`selfdrive/ui/tests`, `selfdrive/ui/mici/tests`, under Xvfb in a raylib image): 500 passed.
 - The 8 failures are identical to the pre-change baseline run on the same image: camera ROI, raylib_ui, soundd, theme, and mici camera cleanup. `test_aethergrid` was excluded because it segfaults drawing without a GL window, before and after the change.
 - ruff clean.
+
+## 98. STATUS 97 follow-up: the C4 UI rendered offline from logged route 265, and the lead speed label shrunk from 32 px to 20 px. Replay render evidence, UI only.
+- **How it was rendered.** The real mici `AugmentedRoadView` was driven offscreen (raylib under Xvfb, `RECORD=1`) by a stub SubMaster fed from 265's rlogs. Toggles came from the logged initData params: Developer UI, DeveloperWidgets, AdjacentLeadsUI and RedneckCruise were all on during that drive.
+  - The camera video was not in the route copy, so the background is flat.
+  - `CameraView._render` was replaced with the same projection maths and no video.
+  - The harness is scratch and is not committed.
+- **Segment 3, about 180–200 s of its log time.**
+  - A left-lane radar lead is drawn at the side of the path, labelled "47 mph" and then "44 mph".
+  - While ICBM is engaged, the MAX box stays up at the driver's 50 mph ceiling beside the 50 speed-limit sign.
+- **Segment 1, about 62–71 s.** The left "lead" was 17–20 m to the side and partly off-screen. That is plausibly not an adjacent-lane car; the display shows whatever radard publishes.
+- **Label size.** At 32 px (13% of the 240 px screen) the label nearly matched the MAX text and ran into the wheel icon, as the owner noted ("a little big"). It is now 20 px with a 3 px gap.
+- **Tests.** 14/14 multi-lead tests pass.

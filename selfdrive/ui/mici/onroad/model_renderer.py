@@ -50,7 +50,7 @@ class ModelPoints:
   projected_points: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
 
 
-LEAD_LABEL_FONT_SIZE = 32
+LEAD_LABEL_FONT_SIZE = 20
 ADJACENT_LEFT_LEAD_COLOR = rl.Color(0, 150, 255, 255)
 ADJACENT_RIGHT_LEAD_COLOR = rl.Color(180, 0, 255, 255)
 ADJACENT_LEAD_MIN_ALPHA = 140
@@ -271,7 +271,7 @@ class ModelRenderer(Widget):
     font = gui_app.font(FontWeight.SEMI_BOLD)
     size = measure_text_cached(font, text, LEAD_LABEL_FONT_SIZE)
     x = chevron[1][0] - size.x / 2
-    y = max(chevron[0][1], chevron[2][1]) + 6
+    y = max(chevron[0][1], chevron[2][1]) + 3
     label_rect = rl.Rectangle(x - 4, y - 2, size.x + 8, size.y + 4)
     if any(rl.check_collision_recs(label_rect, r) for r in self._lead_label_rects):
       return
