@@ -19,6 +19,11 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
+# A close lead's marker is clamped against the bottom of the view (behind the HUD, its label off-screen), so it is
+# flipped: drawn on the lead's roof, pointing down, with its speed above it (owner request).
+LEAD_ROOF_HEIGHT = 1.5         # m above the road where the flipped marker's tip sits
+FLIPPED_LEAD_UNFLIP_SZ = 1.6   # hysteresis: stays flipped until the normal tip is this many marker sizes above the clamp
+FLIPPED_LEAD_LABEL_ROOM = 30   # px kept above a flipped marker for its label
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 STOCK_LANE_LINES_COLOR = rl.Color(255, 255, 255, 255)
@@ -105,6 +110,7 @@ class LeadVehicle:
   glow: list[float] = field(default_factory=list)
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
+  flipped: bool = False
 
 
 class ModelRenderer(Widget):
@@ -259,6 +265,7 @@ class ModelRenderer(Widget):
 
   def _update_leads(self, radar_state, path_x_array):
     """Update positions of lead vehicles"""
+    prev = getattr(self, "_lead_vehicles", None) or [LeadVehicle(), LeadVehicle()]
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
@@ -270,11 +277,14 @@ class ModelRenderer(Widget):
         # Get z-coordinate from path at the lead vehicle position
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
-        if point:
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
+        top = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z - LEAD_ROOF_HEIGHT)
+        if point or top:
+          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, top=top,
+                                                             was_flipped=prev[i].flipped)
 
   def _update_adjacent_leads(self, starpilot_radar_state, path_x_array):
     """Screen positions of the left/right adjacent-lane leads (starpilotRadarState), Developer UI only."""
+    prev = getattr(self, "_adjacent_lead_vehicles", None) or [LeadVehicle(), LeadVehicle()]
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
     if starpilot_radar_state is None:
       return
@@ -286,9 +296,11 @@ class ModelRenderer(Widget):
         idx = self._get_path_length_idx(path_x_array, d_rel)
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
-        if point:
+        top = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z - LEAD_ROOF_HEIGHT)
+        if point or top:
           self._adjacent_lead_vehicles[i] = self._update_lead_vehicle(d_rel + abs(y_rel), v_rel, point, self._rect,
-                                                                      scale=ADJACENT_LEAD_SCALE)
+                                                                      scale=ADJACENT_LEAD_SCALE, top=top,
+                                                                      was_flipped=prev[i].flipped)
 
   def _draw_multi_lead_overlay(self, radar_state, starpilot_radar_state) -> None:
     """Developer UI: adjacent-lane lead markers, and each marker's lead speed right beneath it."""
@@ -330,7 +342,7 @@ class ModelRenderer(Widget):
     return None
 
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
-    """Label under the marker. An in-path label that would overlap another label is dropped. A side-lane label
+    """Label under the marker (above it when the marker is flipped tip-down). An in-path label that would overlap another label is dropped. A side-lane label
     (side -1 left, +1 right) also avoids the HUD obstacles: it slides outward, then inward if outward still
     collides or leaves the screen, and is dropped only if neither fits."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
@@ -338,7 +350,13 @@ class ModelRenderer(Widget):
     font = gui_app.font(FontWeight.SEMI_BOLD)
     size = measure_text_cached(font, text, font_size)
     x = chevron[1][0] - size.x / 2
-    y = max(chevron[0][1], chevron[2][1]) + 2
+    view = getattr(self, "_rect", None)
+    if view is not None and view.width > size.x + 6:  # keep a marker near the edge from pushing its label off-screen
+      x = min(max(x, view.x + 3), view.x + view.width - size.x - 3)
+    if chevron[1][1] > chevron[0][1]:  # flipped marker: tip below its base, label goes on top
+      y = min(chevron[0][1], chevron[2][1]) - 2 - size.y
+    else:
+      y = max(chevron[0][1], chevron[2][1]) + 2
     label_rect = rl.Rectangle(x - 3, y - 1, size.x + 6, size.y + 2)
     blockers = self._lead_label_rects + (getattr(self, "_side_label_obstacles", []) if side else [])
 
@@ -499,7 +517,9 @@ class ModelRenderer(Widget):
     gradient_top = np.clip((float(np.min(visible_track_y)) - self._rect.y) / self._rect.height, 0.0, 1.0)
     return float(gradient_bottom), float(gradient_top)
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0, top=None, was_flipped: bool = False):
+    """Marker under the lead (tip up at its bottom edge). When that would be clamped against the bottom of the view
+    (a close lead) and the lead's roof point `top` is known, the marker flips: tip down on the roof."""
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -512,11 +532,22 @@ class ModelRenderer(Widget):
 
     # Calculate size and position
     sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * scale
-    x = np.clip(point[0], 0.0, rect.width - sz / 2)
-    y = min(point[1], rect.height - sz * 0.6)
-
     g_xo = sz / 5
     g_yo = sz / 10
+
+    clamp_margin = sz * (FLIPPED_LEAD_UNFLIP_SZ if was_flipped else 0.6)
+    if top is not None and (point is None or point[1] > rect.height - clamp_margin):
+      x = np.clip(top[0], 0.0, rect.width - sz / 2)
+      y = min(max(top[1], sz + FLIPPED_LEAD_LABEL_ROOM), rect.height - sz * 0.6)
+      # tip down; points listed in reverse so the fan keeps the winding of the upright marker
+      glow = [(x - (sz * 1.35) - g_xo, y - sz - g_yo), (x, y + g_yo), (x + (sz * 1.35) + g_xo, y - sz - g_yo)]
+      chevron = [(x - (sz * 1.25), y - sz), (x, y), (x + (sz * 1.25), y - sz)]
+      return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), flipped=True)
+
+    if point is None:
+      return LeadVehicle()
+    x = np.clip(point[0], 0.0, rect.width - sz / 2)
+    y = min(point[1], rect.height - sz * 0.6)
 
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]

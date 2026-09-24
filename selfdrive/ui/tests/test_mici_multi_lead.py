@@ -221,3 +221,76 @@ def test_side_label_without_obstacles_stays_under_its_marker(monkeypatch):
   renderer, drawn = _label_renderer(monkeypatch)
   renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
   assert drawn == [300.0]
+
+
+def _winding(pts):
+  (x0, y0), (x1, y1), (x2, y2) = pts
+  return (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
+
+
+def test_far_lead_marker_stays_upright_under_the_lead():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  lead = r._update_lead_vehicle(30.0, 0.0, (250, 150), rl.Rectangle(0, 0, 500, 240), top=(250, 110))
+  assert not lead.flipped
+  assert lead.chevron[1] == (250, 150)  # tip up, at the lead's bottom edge
+
+
+def test_close_lead_marker_flips_onto_the_roof():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  rect = rl.Rectangle(0, 0, 500, 240)
+  upright = r._update_lead_vehicle(5.0, 0.0, (250, 150), rect)
+  # bottom edge below the view (it would be clamped), roof at y 90
+  lead = r._update_lead_vehicle(5.0, 0.0, (250, 300), rect, top=(250, 90))
+  assert lead.flipped
+  assert lead.chevron[1] == (250, 90)                       # tip on the roof
+  assert lead.chevron[0][1] < 90 and lead.chevron[2][1] < 90  # pointing down
+  assert _winding(lead.chevron) == pytest.approx(_winding(upright.chevron))  # same fan winding, so raylib draws it
+  assert _winding(lead.glow) * _winding(upright.glow) > 0
+
+
+def test_flipped_marker_without_a_bottom_point_still_draws():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  lead = r._update_lead_vehicle(3.0, 0.0, None, rl.Rectangle(0, 0, 500, 240), top=(250, 120))
+  assert lead.flipped and lead.chevron[1] == (250, 120)
+  assert r._update_lead_vehicle(3.0, 0.0, None, rl.Rectangle(0, 0, 500, 240)).chevron == []
+
+
+def test_flipped_marker_leaves_room_for_its_label_at_the_top():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  lead = r._update_lead_vehicle(3.0, 0.0, (250, 400), rl.Rectangle(0, 0, 500, 240), top=(250, 5))
+  sz = lead.chevron[1][1] - lead.chevron[0][1]
+  assert lead.chevron[0][1] >= mr.FLIPPED_LEAD_LABEL_ROOM
+  assert sz > 0
+
+
+def test_flip_has_hysteresis():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  rect = rl.Rectangle(0, 0, 500, 240)
+  sz = 750 / (3.0 / 3 + 30)  # marker size at d_rel 3 m, in-path
+  point = (250, rect.height - sz * 1.0)  # just above the clamp line (0.6 sz), inside the unflip band (1.6 sz)
+  assert not r._update_lead_vehicle(3.0, 0.0, point, rect, top=(250, 100)).flipped
+  assert r._update_lead_vehicle(3.0, 0.0, point, rect, top=(250, 100), was_flipped=True).flipped
+  far = (250, rect.height - sz * 2.0)
+  assert not r._update_lead_vehicle(3.0, 0.0, far, rect, top=(250, 100), was_flipped=True).flipped
+
+
+def test_flipped_marker_label_goes_on_top(monkeypatch):
+  import openpilot.selfdrive.ui.onroad.starpilot.path as path
+  ys = []
+  renderer, drawn = _label_renderer(monkeypatch)
+  monkeypatch.setattr(path, "_draw_text_with_outline", lambda text, x, y, font, size: ys.append((x, y)))
+  flipped = [(320, 92), (330, 100), (340, 92)]  # tip down at y 100, base at 92
+  renderer._draw_lead_label(flipped, "5 mph", 26, side=0)
+  assert ys == [(300.0, 70.0)]  # 60x20 label, 2 px above the base
+  assert renderer._lead_label_rects[-1].y + renderer._lead_label_rects[-1].height <= 92
+
+
+def test_label_near_the_view_edge_is_kept_on_screen(monkeypatch):
+  renderer, drawn = _label_renderer(monkeypatch)
+  renderer._draw_lead_label(_chevron(395), "12 mph", 26, side=0)
+  assert drawn == [400 - 60 - 3]
