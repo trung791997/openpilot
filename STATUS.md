@@ -5118,6 +5118,8 @@ gate and the D-057 re-anchor. A sweep admitted only through that interval starts
   | 25f | 19/47 | 1 | 0 | No lead points gained |
   | 25d | 0/0 | 0 | 0 | |
   | 260 | 0/0 | 5 | 0 | Losses are non-lead points at the rail, 25-31 m off-axis |
+  | 261 (added 2026-09-23) | 0/0 | 0 | 0 | 50 points gained, 9 of them lead points, none newly measured |
+  | 262 (added 2026-09-23) | 13/87 | 8 | 0 | Reference 12/242. Every over-closer is non-lead: track 9 at 52-62 m (U11 on the rail, range closing at 7-10 m/s) and track 52 at 88-92 m. The 8 lost are non-lead rail points at 84-86 m, 24-32 m off-axis. 2 in-path gains, not lead (track 2 at 144.3 s, 79 m) |
 
 - **Over-closing sweeps.** Almost all come from three non-lead tracks at 60-81 m. In two of them U11 sat on the rail while the range
   closed at only about 10 m/s, so the rail is not always a lower bound on closing speed. The third (25f track 33) was a genuine unrailed U11 of -12.5
