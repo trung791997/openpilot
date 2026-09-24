@@ -25,6 +25,19 @@ Validity is printed first, for cycles where the log and the replay both have a l
 on `radar`, `|dRel| < 1 m` and the same track id. When the logged build's parser differed from this tree, a
 lower agreement is expected. Quote it next to any result.
 
+Which episodes count as genuine brakes
+--------------------------------------
+The label has to be independent of the planners under test. On an alpha-long route the logged command is
+alpha's own output (STATUS 104: 23e 4:54.6 was labelled genuine only because the pre-74e build braked on a
+curve artifact), so the reference there is the vision lead alone. An episode is genuine when, on at least
+VISION_REF_MIN_FRAMES frames with leadsV3[0].prob >= VISION_REF_MIN_PROB, either vision a <= VISION_REF_MAX_A
+or the vision-kinematic required decel reaches VISION_REF_MIN_REQ:
+
+    req = max(0, -a_vis) + max(0, v_ego - v_vis)^2 / (2 * max(x_vis - VISION_REF_STANDOFF, 0.5))
+
+On a stock-ACC route the stock command below STOCK_REF_CMD also counts, since stock ACC is independent of
+alpha. A driver brake press is reported but not used: it can be an override of a false brake.
+
 The toggles are the shipped defaults. BoschARailInterval (D-063) and the D-053 range assist are forced off.
 
 Route data is never committed (AGENTS.md section 7).
@@ -65,6 +78,15 @@ BOSCH_A_IDS = frozenset(HRI.BOSCH_A_ALL_IDS)
 # than CHANGE_DT. Smaller moves are planner-state noise after a divergence.
 CHANGE_DA = 0.3
 CHANGE_DT = 0.2
+# Genuine-brake reference (see the module docstring). Independent of radar and of every planner under test.
+VISION_REF_MIN_PROB = 0.5
+VISION_REF_MAX_A = -1.0
+VISION_REF_MIN_REQ = 2.0
+VISION_REF_STANDOFF = 4.0
+VISION_REF_MIN_FRAMES = 3
+STOCK_REF_CMD = -2.0
+# Baseline first: the pre-STATUS-104 threshold, then the shipped one.
+DEFAULT_BEARINGS = "0.1,0.075"
 
 
 class _RadardSM:
@@ -117,6 +139,19 @@ def lead_view(lead, model, bearings) -> dict:
   finally:
     LP.OFF_AXIS_LEAD_MIN_BEARING = saved
   return out
+
+
+def vision_view(model, v_ego: float) -> dict | None:
+  """leadsV3[0] now, with the kinematic decel it demands; None when the model has no lead output."""
+  if len(model.leadsV3) == 0:
+    return None
+  ld = model.leadsV3[0]
+  if len(ld.x) == 0 or len(ld.v) == 0 or len(ld.a) == 0:
+    return None
+  x, v, a = float(ld.x[0]), float(ld.v[0]), float(ld.a[0])
+  closing = max(0.0, v_ego - v)
+  req = max(0.0, -a) + closing * closing / (2.0 * max(x - VISION_REF_STANDOFF, 0.5))
+  return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
 def replay(route_dir: Path, bearings: list[float]):
@@ -267,7 +302,8 @@ def replay(route_dir: Path, bearings: list[float]):
       frames.append({
         "t": (msg.logMonoTime - t0) / 1e9, "engaged": engaged, "v_ego": float(cs.vEgo), "a_ego": float(cs.aEgo),
         "accel_cmd": accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel),
-        "steer": float(cs.steeringAngleDeg), "out": out, "src": src,
+        "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed),
+        "vis": vision_view(model, float(cs.vEgo)),
         "lead": lead_view(lr, model, bearings), "lead_logged_bearing":
           abs(float(lg.yRel)) / max(float(lg.dRel), 1.0) if lg.status and lg.radar else None,
       })
@@ -324,6 +360,16 @@ def episodes(frames: list[dict], meta: dict, thr: float) -> list[dict]:
     ep["min_visA"] = min((ld["visA"] for ld in leads if math.isfinite(ld["visA"])), default=float("nan"))
     ep["bound_frames"] = {f"{b:g}": sum(1 for ld in leads if ld.get(f"bound@{b:g}")) for b in meta["bearings"]}
     ep["steer_max"] = max(abs(frames[i]["steer"]) for i in idx)
+    vis = [frames[i]["vis"] for i in idx if frames[i]["vis"] is not None and frames[i]["vis"]["p"] >= VISION_REF_MIN_PROB]
+    n_req = sum(1 for x in vis if x["req"] >= VISION_REF_MIN_REQ)
+    n_a = sum(1 for x in vis if x["a"] <= VISION_REF_MAX_A)
+    vision_ref = n_req >= VISION_REF_MIN_FRAMES or n_a >= VISION_REF_MIN_FRAMES
+    stock_ref = not meta["logged_op_long"] and math.isfinite(ep["min"]["cmd"]) and ep["min"]["cmd"] < STOCK_REF_CMD
+    ep["ref"] = {"vision": vision_ref, "stock": stock_ref, "genuine": vision_ref or stock_ref,
+                 "req_frames": n_req, "visA_frames": n_a, "max_req": max((x["req"] for x in vis), default=0.0),
+                 "driver_brake": any(frames[i]["brake"] for i in range(lo, hi + 1)),
+                 "legacy": (math.isfinite(ep["min"]["cmd"]) and ep["min"]["cmd"] < STOCK_REF_CMD) or
+                           (math.isfinite(ep["min_visA"]) and ep["min_visA"] <= VISION_REF_MAX_A)}
     imin = min(idx, key=lambda i: frames[i]["out"][base])
     ep["src_at_min"] = frames[imin]["src"][base]
     ep["lead_at_min"] = frames[imin]["lead"]
@@ -360,6 +406,11 @@ def frame_diffs(frames: list[dict], meta: dict) -> dict:
   return out
 
 
+def _ref_label(ref: dict) -> str:
+  tags = [t for t, on in (("vision", ref["vision"]), ("stock", ref["stock"]), ("driver-brake", ref["driver_brake"])) if on]
+  return ("GENUINE " if ref["genuine"] else "") + ("+".join(tags) or "-") + f" req {ref['max_req']:.1f}"
+
+
 def print_report(meta, frames, eps, diffs, thr):
   a = meta["agreement"]
   engaged = sum(1 for f in frames if f["engaged"])
@@ -376,18 +427,18 @@ def print_report(meta, frames, eps, diffs, thr):
     print(f"frame diffs {v} vs {meta['variants'][0]} (|d| > {CHANGE_DA}): {d['frames']} frames in {len(d['clusters'])} clusters "
           + ", ".join(f"{fmt_t(c[0])}({c[2]})" for c in d["clusters"][:20]))
   variants = meta["variants"]
-  print(" | ".join(["start"] + [f"{v} min" for v in variants] + ["cmd", "aEgo", "brg max", "visA min", "bound frames", "changed"]))
+  print(" | ".join(["start"] + [f"{v} min" for v in variants] + ["cmd", "aEgo", "brg max", "visA min", "bound frames", "ref", "changed"]))
   for ep in eps:
     ch = ",".join(f"{v}:{fnum(c['da'])}/{fnum(c['dt'], 1)}" for v, c in ep["changed"].items() if c["moved"])
     print(" | ".join([fmt_t(ep["start"])] + [fnum(ep["min"][v]) for v in variants] +
                      [fnum(ep["min"]["cmd"]), fnum(ep["min"]["aEgo"]), fnum(ep["max_bearing"], 3), fnum(ep["min_visA"]),
-                      "/".join(str(x) for x in ep["bound_frames"].values()), ch or "-"]))
+                      "/".join(str(x) for x in ep["bound_frames"].values()), _ref_label(ep["ref"]), ch or "-"]))
 
 
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("route_dir", type=Path, help="<out>/<ROUTE> directory written by tools/konik_fetch.py")
-  ap.add_argument("--bearings", default=f"{LP.OFF_AXIS_LEAD_MIN_BEARING:g},0.075",
+  ap.add_argument("--bearings", default=DEFAULT_BEARINGS,
                   help="comma list; the first is the baseline the others are diffed against")
   ap.add_argument("--threshold", type=float, default=-1.5)
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
