@@ -191,10 +191,29 @@ def test_in_path_label_ignores_the_sign(monkeypatch):
   assert drawn == [300.0]
 
 
-def test_side_label_dropped_when_neither_direction_fits(monkeypatch):
+def test_side_label_drops_below_the_sign_when_neither_direction_fits(monkeypatch):
   import pyray as rl
   renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=[rl.Rectangle(200, 100, 90, 40)])
   renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
+  # centred under the 300..400 sign (box x 317), top 2 px below its bottom edge at 160
+  assert drawn == [320.0]
+  assert renderer._lead_label_rects[-1].y == 162
+
+
+def test_side_label_hidden_when_below_the_sign_is_taken_too(monkeypatch):
+  import pyray as rl
+  placed = [rl.Rectangle(200, 100, 90, 40), rl.Rectangle(300, 165, 100, 30)]
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=placed)
+  renderer._draw_lead_label(_chevron(330), "38 mph", 22, side=1)
+  assert drawn == []
+
+
+def test_label_blocked_only_by_other_labels_is_not_moved_under_the_sign(monkeypatch):
+  import pyray as rl
+  # left-side label boxed in by labels, nowhere near the sign: hidden as before
+  placed = [rl.Rectangle(0, 100, 130, 40), rl.Rectangle(130, 100, 90, 40), rl.Rectangle(220, 100, 70, 40)]
+  renderer, drawn = _label_renderer(monkeypatch, obstacles=[_sign()], placed=placed)
+  renderer._draw_lead_label(_chevron(100), "12 mph", 22, side=-1)
   assert drawn == []
 
 

@@ -317,6 +317,18 @@ class ModelRenderer(Widget):
     """HUD boxes (the speed-limit sign) that side-lane labels must not cover. Set each frame before render()."""
     self._side_label_obstacles = list(rects)
 
+  def _below_obstacle(self, label_rect: rl.Rectangle, tried_x: list[float]):
+    """The spot just below a HUD obstacle that one of the tried positions ran into, if it is free and on screen."""
+    view = getattr(self, "_rect", None)
+    for ob in getattr(self, "_side_label_obstacles", []):
+      if not any(rl.check_collision_recs(rl.Rectangle(rx, label_rect.y, label_rect.width, label_rect.height), ob) for rx in tried_x):
+        continue
+      spot = rl.Rectangle(ob.x + (ob.width - label_rect.width) / 2, ob.y + ob.height + 2, label_rect.width, label_rect.height)
+      on_screen = view is None or view.height <= 0 or spot.y + spot.height <= view.y + view.height
+      if on_screen and not any(rl.check_collision_recs(spot, r) for r in self._lead_label_rects):
+        return spot
+    return None
+
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
     """Label under the marker. An in-path label that would overlap another label is dropped. A side-lane label
     (side -1 left, +1 right) also avoids the HUD obstacles: it slides outward, then inward if outward still
@@ -345,9 +357,17 @@ class ModelRenderer(Widget):
       inward = (max(r.x + r.width for r in hits) if side < 0 else min(r.x for r in hits) - label_rect.width)
       new_x = next((rx for rx in (outward, inward) if fits(rx)), None)
       if new_x is None:
-        return
-      x += new_x - label_rect.x
-      label_rect.x = new_x
+        # No room beside it: if the sign is what blocks it, drop the label just below the sign (owner: "drop just
+        # below the sign"), centred under it, rather than hiding the speed.
+        below = self._below_obstacle(label_rect, [label_rect.x, outward, inward])
+        if below is None:
+          return
+        x += below.x - label_rect.x
+        y += below.y - label_rect.y
+        label_rect = below
+      else:
+        x += new_x - label_rect.x
+        label_rect.x = new_x
       hits = []
     if hits:
       return
