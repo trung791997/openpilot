@@ -19,7 +19,7 @@ export const NrdrLatTunePanel = {
       loadingRoutes: false,
       routes: [],
       selectedRoutes: [],
-      workspace: { trials: [], activeStack: [], currentSchedule: "", currentFingerprint: "" },
+      workspace: { trials: [], activeStack: [], currentSchedule: "", currentFingerprint: "", currentBands: [] },
       status: {},
       isOnroad: false,
       expanded: {},
@@ -44,6 +44,10 @@ export const NrdrLatTunePanel = {
   },
   methods: {
     fmt(v, d = 2) { return typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "–" },
+    bandRange(b) { return b.highMph == null ? `${b.lowMph}+ mph` : `${b.lowMph}–${b.highMph} mph` },
+    pif(g) { return g ? `${g.p} / ${g.i} / ${g.f}` : "–" },
+    isBandTrial(t) { return t && t.schemaVersion === 2 },
+    kv(obj) { return Object.entries(obj || {}).map(([k, v]) => `${k}=${v === "" ? "(unset)" : v}`).join(", ") },
     fmtList(values, d = 2) { return (values || []).map((v) => this.fmt(v, d)).join(" / ") },
     when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "" },
     fmtDate(value) {
@@ -60,6 +64,7 @@ export const NrdrLatTunePanel = {
           activeStack: Array.isArray(ws?.activeStack) ? ws.activeStack : [],
           currentSchedule: ws?.currentSchedule || "",
           currentFingerprint: ws?.currentFingerprint || "",
+          currentBands: Array.isArray(ws?.currentBands) ? ws.currentBands : [],
         }
         this.error = ""
       } catch (e) {
@@ -142,7 +147,7 @@ export const NrdrLatTunePanel = {
     async applyTrial(trial) {
       const ok = await GalaxyConfirm({
         title: "Apply Trial",
-        message: `Apply trial ${trial.trialId}? This writes LatGainSchedule (P at 20/30/40/50 mph). You can revert it here.`,
+        message: `Apply trial ${trial.trialId}? This writes the PID band P scales LatPScaleLowSpeed/Standard/Highway (I and F unchanged) and drops any P term from LatGainSchedule. You can revert it here.`,
         confirmLabel: "Apply",
       })
       if (!ok) return
@@ -162,7 +167,7 @@ export const NrdrLatTunePanel = {
     async revertTrial(trial) {
       const ok = await GalaxyConfirm({
         title: "Revert Trial",
-        message: `Revert trial ${trial.trialId}? The previous LatGainSchedule is restored.`,
+        message: `Revert trial ${trial.trialId}? The previous P band scales and LatGainSchedule are restored.`,
         confirmLabel: "Revert",
       })
       if (ok) await this.runWith(() => api.latTuneRevertTrial(trial.trialId), "Trial reverted.").catch(() => {})
@@ -193,8 +198,8 @@ export const NrdrLatTunePanel = {
         </div>
         <div style="padding: var(--sp-4);">
           <p style="color: var(--text-muted); line-height:1.6; margin:0 0 var(--sp-3);">
-            Pick up to {{ maxRoutes }} routes. The device analyzes them while parked and proposes one P step per speed knot
-            (20/30/40/50 mph, factor 0.85–1.15). Each run is a trial you can apply and revert.
+            Pick up to {{ maxRoutes }} routes. The device analyzes them while parked and proposes one P step per StarPilot PID speed band
+            (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Only P changes; I and F are shown and kept. Each run is a trial you can apply and revert.
             Unit-test/replay evidence only; nothing here is road-validated.
           </p>
           <GxNotice v-if="isOnroad" text="Analyze, apply and revert are offroad-only. Park and go offroad first." style="margin:0 0 var(--sp-3);" />
@@ -218,7 +223,9 @@ export const NrdrLatTunePanel = {
           <div v-if="status.currentSegment" class="gx-row"><span class="gx-row__label">Segment</span><span class="gx-row__value">{{ status.currentSegment }}</span></div>
           <div class="gx-row"><span class="gx-row__label">Applied stack</span><span class="gx-row__value">{{ (workspace.activeStack || []).join(' → ') || 'none' }}</span></div>
           <div style="border-top:1px solid var(--glass-border); padding: var(--sp-2) 0 0;">
-            <div class="gx-row__label">Current LatGainSchedule</div>
+            <div class="gx-row__label">Current P / I / F</div>
+            <div v-for="b in workspace.currentBands" :key="'cb' + b.name" class="gx-row__desc">{{ b.name }} ({{ bandRange(b) }}): {{ pif(b) }}</div>
+            <div class="gx-row__label" style="margin-top:6px;">Current LatGainSchedule</div>
             <div class="gx-row__desc" style="word-break:break-all; font-family:monospace;">{{ workspace.currentSchedule || '(none)' }}</div>
           </div>
         </div>
@@ -262,31 +269,39 @@ export const NrdrLatTunePanel = {
             <span v-if="t.applied" class="gx-chip" style="background:var(--primary);color:var(--on-primary); margin-left:6px;">Applied</span>
             <div class="gx-row__desc">{{ when(t.createdAt) }}<span v-if="t.applied"> · applied {{ when(t.applied.at) }}</span></div>
             <div class="gx-row__desc" style="word-break:break-all;">{{ (t.routeNames || []).length }} route(s): {{ (t.routeNames || []).join(', ') }}</div>
-            <div class="gx-row__desc">Ready: {{ (t.readyKnots || []).length ? t.readyKnots.map((m) => m + ' mph').join(', ') : 'none' }}</div>
-            <div class="gx-row__desc">Factors {{ fmtList(t.factors) }} · P% {{ fmtList(t.proposedPPct, 1) }}</div>
+            <template v-if="isBandTrial(t)">
+              <div class="gx-row__desc">Ready: {{ (t.readyBands || []).join(', ') || 'none' }}</div>
+              <div class="gx-row__desc">P low / std / hwy: {{ (t.currentP || []).join(' / ') }} → {{ (t.proposedP || []).join(' / ') }}</div>
+            </template>
+            <div v-else class="gx-row__desc" style="color:var(--error);">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze for StarPilot band values.</div>
             <div v-for="w in (t.warnings || [])" :key="w" class="gx-row__desc" style="color:var(--error);">⚠ {{ w }}</div>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
               <button type="button" class="gx-btn gx-btn--text" @click="toggleDetails(t)">{{ expanded[t.trialId] ? 'Hide' : 'Details' }}</button>
-              <button type="button" class="gx-btn gx-btn--tonal" :disabled="busy || isOnroad || !!t.applied || !(t.readyKnots || []).length" @click="applyTrial(t)">Apply</button>
+              <button type="button" class="gx-btn gx-btn--tonal" :disabled="busy || isOnroad || !!t.applied || !isBandTrial(t) || !(t.readyBands || []).length" @click="applyTrial(t)">Apply</button>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="busy || isOnroad || !t.applied || stackTop !== t.trialId" @click="revertTrial(t)">Revert</button>
               <button type="button" class="gx-btn gx-btn--text" :disabled="busy || !!t.applied" style="color:var(--error);" @click="deleteTrial(t)">Delete</button>
             </div>
             <div v-if="expanded[t.trialId]" style="margin-top:8px; overflow-x:auto;">
+              <div v-if="!Array.isArray(expanded[t.trialId].bands)" class="gx-row__desc" style="color:var(--error);">⚠ This trial predates the speed bands; re-analyze the routes.</div>
+              <template v-else>
               <table style="width:100%; border-collapse:collapse; font-size:var(--fs-xs);">
-                <thead><tr style="text-align:left; color:var(--text-muted);"><th>Knot</th><th>Min</th><th>Ready</th><th>Sign/s</th><th>Curve</th><th>Ovr/min</th><th>Factor</th><th>P%</th></tr></thead>
+                <thead><tr style="text-align:left; color:var(--text-muted);"><th>Band</th><th>Min</th><th>Ready</th><th>P/I/F now</th><th>P new</th></tr></thead>
                 <tbody>
-                  <tr v-for="(k, i) in expanded[t.trialId].knots" :key="k.mph" style="border-top:1px solid var(--glass-border);">
-                    <td>{{ k.mph }} mph</td><td>{{ fmt(k.minutes, 1) }}</td>
-                    <td :style="k.ready ? 'color:var(--primary);' : 'color:var(--text-muted);'">{{ k.ready ? 'yes' : 'need 3 min' }}</td>
-                    <td>{{ fmt(k.signRate) }}</td><td>{{ fmt(k.curveRatio, 3) }}</td><td>{{ fmt(k.pressRate) }}</td>
-                    <td>{{ fmt(k.factor) }}</td><td>{{ fmt(expanded[t.trialId].proposedPPct[i], 1) }}</td>
+                  <tr v-for="b in expanded[t.trialId].bands" :key="b.name" style="border-top:1px solid var(--glass-border);">
+                    <td>{{ b.name }}<br /><span style="color:var(--text-muted);">{{ bandRange(b) }}</span></td><td>{{ fmt(b.minutes, 1) }}</td>
+                    <td :style="b.ready ? 'color:var(--primary);' : 'color:var(--text-muted);'">{{ b.ready ? 'yes' : 'need 3 min' }}</td>
+                    <td>{{ pif(b.current) }}</td>
+                    <td :style="b.proposed.p !== b.current.p ? 'color:var(--primary); font-weight:600;' : ''">{{ b.proposed.p }}</td>
                   </tr>
                 </tbody>
               </table>
-              <div v-for="k in expanded[t.trialId].knots" :key="'r' + k.mph" class="gx-row__desc">{{ k.reason }}</div>
-              <div class="gx-row__desc">Baseline P% from the logs: {{ fmtList((expanded[t.trialId].baseline || {}).pPct, 1) }}</div>
+              <div v-for="b in expanded[t.trialId].bands" :key="'r' + b.name" class="gx-row__desc">
+                sign {{ fmt(b.signRate) }}/s · curve {{ fmt(b.curveRatio, 3) }} · overrides {{ fmt(b.pressRate) }}/min · factor {{ fmt(b.factor) }} — {{ b.reason }}
+              </div>
+              <div class="gx-row__desc">Band values from the newest route's logs (fingerprint {{ (expanded[t.trialId].baseline || {}).fingerprint || '–' }}).</div>
+              </template>
               <div v-if="expanded[t.trialId].applied" class="gx-row__desc" style="word-break:break-all; font-family:monospace;">
-                written: {{ expanded[t.trialId].applied.writtenSchedule }}<br />prior: {{ expanded[t.trialId].applied.priorSchedule || '(none)' }}
+                written: {{ kv(expanded[t.trialId].applied.writtenParams) }}<br />prior: {{ kv(expanded[t.trialId].applied.priorParams) }}<br />LatGainSchedule prior: {{ expanded[t.trialId].applied.priorSchedule || '(none)' }}
               </div>
             </div>
           </div>

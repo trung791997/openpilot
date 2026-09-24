@@ -8826,7 +8826,7 @@ def setup(app):
       result = lat_tune_workspace.apply_trial(trial_id, force=bool(body.get("force", False)))
     except Exception as e:  # noqa: BLE001
       return _lat_tune_error(e)
-    return jsonify({"message": f"Applied trial {trial_id}: LatGainSchedule written.", **result})
+    return jsonify({"message": f"Applied trial {trial_id}: LatPScaleLowSpeed/Standard/Highway written.", **result})
 
   @app.route("/api/lat_tune/trial/<trial_id>/revert", methods=["POST"])
   def revert_lat_tune_trial(trial_id):
@@ -8834,7 +8834,7 @@ def setup(app):
       result = lat_tune_workspace.revert_trial(trial_id)
     except Exception as e:  # noqa: BLE001
       return _lat_tune_error(e)
-    return jsonify({"message": f"Reverted trial {trial_id}: previous LatGainSchedule restored.", **result})
+    return jsonify({"message": f"Reverted trial {trial_id}: previous P band scales and LatGainSchedule restored.", **result})
 
   @app.route("/api/update/fast/status", methods=["GET"])
   def get_fast_update_status():

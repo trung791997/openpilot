@@ -12,7 +12,7 @@ const state = reactive({
   selectedRoutes: [],
   routeProgress: 0,
   routeTotal: 0,
-  workspace: { trials: [], activeStack: [], currentSchedule: "", currentFingerprint: "", status: {} },
+  workspace: { trials: [], activeStack: [], currentSchedule: "", currentFingerprint: "", currentBands: [], status: {} },
   status: { isOnroad: false, running: false, state: "" },
   expanded: {},
 });
@@ -159,7 +159,7 @@ function stopAnalyze() {
 }
 
 async function applyTrial(trialId) {
-  if (!window.confirm(`Apply trial ${trialId}? This writes LatGainSchedule (P at 20/30/40/50 mph). You can revert it here.`)) return;
+  if (!window.confirm(`Apply trial ${trialId}? This writes the PID band P scales LatPScaleLowSpeed/Standard/Highway (I and F unchanged) and drops any P term from LatGainSchedule. You can revert it here.`)) return;
   try {
     await runAction("apply", () => requestJson(`/api/lat_tune/trial/${trialId}/apply`, { method: "POST", body: JSON.stringify({}) }));
   } catch (e) {
@@ -171,7 +171,7 @@ async function applyTrial(trialId) {
 }
 
 function revertTrial(trialId) {
-  if (!window.confirm(`Revert trial ${trialId}? The previous LatGainSchedule is restored.`)) return;
+  if (!window.confirm(`Revert trial ${trialId}? The previous P band scales and LatGainSchedule are restored.`)) return;
   return runAction("revert", () => requestJson(`/api/lat_tune/trial/${trialId}/revert`, { method: "POST" })).catch(() => {});
 }
 
@@ -196,17 +196,23 @@ async function toggleExpanded(trialId) {
 const fmt = (v, d = 2) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "–");
 const when = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "");
 
-function renderKnots(trial) {
+const bandRange = (b) => (b.highMph == null ? `${b.lowMph}+ mph` : `${b.lowMph}–${b.highMph} mph`);
+const pif = (g) => (g ? `${g.p} / ${g.i} / ${g.f}` : "–");
+const isBandTrial = (t) => t.schemaVersion === 2;
+
+function renderBands(trial) {
+  if (!Array.isArray(trial.bands)) return html`<div class="latTuneWarning">⚠ This trial predates the StarPilot speed bands; re-analyze the routes.</div>`;
   return html`
     <table class="latTuneKnots">
-      <thead><tr><th>Knot</th><th>Minutes</th><th>Ready</th><th>Sign/s</th><th>Curve ratio</th><th>Overrides/min</th><th>Factor</th><th>P %</th><th>Why</th></tr></thead>
+      <thead><tr><th>Band</th><th>Minutes</th><th>Ready</th><th>Sign/s</th><th>Curve ratio</th><th>Overrides/min</th><th>Factor</th><th>P / I / F now</th><th>P new</th><th>Why</th></tr></thead>
       <tbody>
-        ${() => trial.knots.map((k, i) => html`
+        ${() => trial.bands.map((b) => html`
           <tr>
-            <td>${k.mph} mph</td><td>${fmt(k.minutes, 1)}</td>
-            <td class="${k.ready ? "latTuneReady" : "latTuneNotReady"}">${k.ready ? "yes" : "need 3 min"}</td>
-            <td>${fmt(k.signRate)}</td><td>${fmt(k.curveRatio, 3)}</td><td>${fmt(k.pressRate)}</td>
-            <td>${fmt(k.factor)}</td><td>${fmt(trial.proposedPPct[i], 1)}</td><td class="reason">${k.reason}</td>
+            <td>${b.name}<br/><span class="latTuneMuted">${bandRange(b)}</span></td><td>${fmt(b.minutes, 1)}</td>
+            <td class="${b.ready ? "latTuneReady" : "latTuneNotReady"}">${b.ready ? "yes" : "need 3 min"}</td>
+            <td>${fmt(b.signRate)}</td><td>${fmt(b.curveRatio, 3)}</td><td>${fmt(b.pressRate)}</td>
+            <td>${fmt(b.factor)}</td><td>${pif(b.current)}</td>
+            <td class="${b.proposed.p !== b.current.p ? "latTuneReady" : ""}">${b.proposed.p}</td><td class="reason">${b.reason}</td>
           </tr>`)}
       </tbody>
     </table>`;
@@ -224,20 +230,22 @@ function renderTrial(t) {
           <strong>${t.trialId}</strong> <span class="latTuneMuted">${when(t.createdAt)}</span>
           ${t.applied ? html`<span class="latTuneReady"> · applied ${when(t.applied.at)}</span>` : ""}
           <div class="latTuneMuted">${t.routeNames.length} route(s): ${t.routeNames.join(", ")}</div>
-          <div>Ready knots: ${t.readyKnots.length ? t.readyKnots.map((m) => `${m} mph`).join(", ") : "none"} · factors ${t.factors.map((f) => fmt(f)).join(" / ")} · P% ${t.proposedPPct.map((p) => fmt(p, 1)).join(" / ")}</div>
+          ${isBandTrial(t)
+            ? html`<div>Ready bands: ${(t.readyBands || []).join(", ") || "none"} · P (low / standard / highway) ${(t.currentP || []).join(" / ")} → ${(t.proposedP || []).join(" / ")}</div>`
+            : html`<div class="latTuneWarning">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze to get StarPilot band values.</div>`}
           ${() => (t.warnings || []).map((w) => html`<div class="latTuneWarning">⚠ ${w}</div>`)}
         </div>
         <div class="latTuneActions">
           <button class="latTuneButton" @click="${() => toggleExpanded(t.trialId)}">${() => (full() ? "Hide" : "Details")}</button>
-          <button class="latTuneButton primary" disabled="${() => busy() || !!t.applied || t.readyKnots.length === 0}" @click="${() => applyTrial(t.trialId)}">Apply</button>
+          <button class="latTuneButton primary" disabled="${() => busy() || !!t.applied || !isBandTrial(t) || (t.readyBands || []).length === 0}" @click="${() => applyTrial(t.trialId)}">Apply</button>
           <button class="latTuneButton danger" disabled="${() => busy() || !t.applied || !isTop}" @click="${() => revertTrial(t.trialId)}">Revert</button>
           <button class="latTuneButton" disabled="${() => !!state.runningAction || !!t.applied}" @click="${() => deleteTrial(t.trialId)}">Delete</button>
         </div>
       </div>
       ${() => (full() ? html`
-        ${renderKnots(full())}
-        <div class="latTuneMuted">Baseline P% from the logs: ${full().baseline.pPct.map((p) => fmt(p, 1)).join(" / ")} (fingerprint ${full().baseline.fingerprint || "–"})</div>
-        ${full().applied ? html`<div class="latTuneCode">written: ${full().applied.writtenSchedule}<br/>prior: ${full().applied.priorSchedule || "(none)"}</div>` : ""}
+        ${renderBands(full())}
+        <div class="latTuneMuted">Band values from the newest route's logs (fingerprint ${full().baseline.fingerprint || "–"}). Only P is proposed; I and F stay as they are.</div>
+        ${full().applied && full().applied.writtenParams ? html`<div class="latTuneCode">written: ${Object.entries(full().applied.writtenParams).map(([k, v]) => `${k}=${v}`).join(", ")}<br/>prior: ${Object.entries(full().applied.priorParams || {}).map(([k, v]) => `${k}=${v || "(unset)"}`).join(", ")}<br/>LatGainSchedule prior: ${full().applied.priorSchedule || "(none)"}</div>` : ""}
       ` : "")}
     </div>`;
 }
@@ -257,7 +265,7 @@ export function LatTune() {
             <button class="latTuneButton" @click="${() => { fetchWorkspace(); fetchStatus(); }}">Refresh</button>
           </div>
         </div>
-        <p class="latTuneMuted">Pick up to ${MAX_ROUTES} routes. The analysis runs on the device while parked and proposes one P step per speed knot (20/30/40/50 mph, 0.85–1.15). Each run is a trial you can apply and revert. Unit-test/replay evidence only; nothing here is road-validated.</p>
+        <p class="latTuneMuted">Pick up to ${MAX_ROUTES} routes. The analysis runs on the device while parked and proposes one P step per StarPilot PID speed band (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Each run is a trial you can apply and revert. Unit-test/replay evidence only; nothing here is road-validated.</p>
         <div class="latTuneStatusGrid">
           <div><span>State</span>${() => s().state || "idle"}</div>
           <div><span>Onroad</span>${() => (s().isOnroad ? "yes (parked only)" : "no")}</div>
@@ -267,7 +275,7 @@ export function LatTune() {
         </div>
         ${() => (s().state === "failed" ? html`<div class="latTuneError">${s().error}</div>` : "")}
         ${() => (state.error ? html`<div class="latTuneError">${state.error}</div>` : "")}
-        <div class="latTuneCode">current LatGainSchedule: ${() => state.workspace.currentSchedule || "(none)"}</div>
+        <div class="latTuneCode">current P / I / F: ${() => (state.workspace.currentBands || []).map((b) => `${b.name} ${pif(b)}`).join(" · ") || "–"}<br/>current LatGainSchedule: ${() => state.workspace.currentSchedule || "(none)"}</div>
       </div>
 
       <div class="latTuneCard">

@@ -39,18 +39,26 @@ def test_discover_routes_handles_konik_fetch_layout(tmp_path):
   assert [p.parent.name for p in routes[0][1]] == ["0", "2", "10"]
 
 
-def test_main_prints_schedule_line(tmp_path, monkeypatch, capsys):
+def test_main_prints_band_params(tmp_path, monkeypatch, capsys):
   _mk(tmp_path, "2026-09-22--08-30-00", [0])
-  fake_trial = {"knotsMph": [20.0, 30.0, 40.0, 50.0], "routeNames": ["2026-09-22--08-30-00"], "warnings": [],
-                "knots": [{"mph": m, "minutes": 4.0, "ready": True, "factor": 1.0, "decision": "hold", "reason": "hold",
-                           "signRate": 0.1, "curveRatio": None, "pressRate": 0.0} for m in (20.0, 30.0, 40.0, 50.0)],
-                "proposedPPct": [100.0, 100.0, 100.0, 100.0], "baseline": {"fingerprint": "x", "pPct": [100.0] * 4, "raw": {}},
-                "factors": [1.0] * 4, "perRoute": [], "applied": None, "schemaVersion": 1}
+  cur = [{"p": 100, "i": 100, "f": 50}, {"p": 100, "i": 75, "f": 100}, {"p": 105, "i": 100, "f": 100}]
+  new_p = [100, 105, 105]
+  bands = [{"name": n, "lowMph": lo, "highMph": hi, "pKey": f"LatPScale{n}", "minutes": 4.0, "ready": True, "factor": 1.0,
+            "decision": "hold", "reason": f"{n}: hold", "signRate": 0.1, "curveRatio": None, "pressRate": 0.0,
+            "current": c, "proposed": dict(c, p=p)}
+           for (n, lo, hi), c, p in zip(cli.lat.BANDS, cur, new_p, strict=True)]
+  fake_trial = {"bandNames": list(cli.lat.BAND_NAMES), "routeNames": ["2026-09-22--08-30-00"], "warnings": [], "bands": bands,
+                "baseline": {"fingerprint": "x", "gains": cur, "raw": {}, "scheduleTerms": []},
+                "factors": [1.0, 1.05, 1.0], "perRoute": [], "applied": None, "schemaVersion": 2}
   monkeypatch.setattr(cli.lat, "analyze_sources", lambda sources, **kw: fake_trial)
   rc = cli.main(["--routes-root", str(tmp_path), "--latest", "1", "--json", str(tmp_path / "trial.json")])
   out = capsys.readouterr().out
   assert rc == 0
-  assert 'LatGainSchedule = {"v_mph":[20.0,30.0,40.0,50.0],"p":[100.0,100.0,100.0,100.0]}' in out
+  assert "LatPScaleLowSpeed = 100\n" in out
+  assert "LatPScaleStandard = 105   (was 100)" in out
+  assert "LatPScaleHighway = 105\n" in out
+  assert "100/75/100" in out and "50+" in out and "25-50" in out
+  assert "LatGainSchedule =" not in out
   assert json.loads((tmp_path / "trial.json").read_text())["routeNames"] == ["2026-09-22--08-30-00"]
 
 

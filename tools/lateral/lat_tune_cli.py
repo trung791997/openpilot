@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Off-device Lateral Tune trial: latest N Konik/route dirs -> proposed LatGainSchedule.
+"""Off-device Lateral Tune trial: latest N Konik/route dirs -> proposed StarPilot PID band P scales.
 
 Usage (inside the oprad-test container, routes volume mounted at /routes):
-  python tools/lateral/lat_tune_cli.py --routes-root /routes/konik --latest 8 [--json trial.json] [--current-schedule '<json>']
+  python tools/lateral/lat_tune_cli.py --routes-root /routes/konik --latest 8 [--json trial.json]
 
 Segment dirs are `<route>--<seg>` or `<route>/<seg>` (the tools/konik_fetch.py layout), optionally under a
 `<dongle>/` folder, holding rlog.zst/rlog.bz2/rlog. `<route>` is a date name or a counter name (`0000026b--92b1979afa`).
-Prints a per-knot table and a final `LatGainSchedule = ...` line to paste into Galaxy (Toggles -> LatGainSchedule).
+Prints a per-band table (LowSpeed < 25 mph, Standard 25-50, Highway 50+, as LatControlPID bins them) and
+`LatPScaleLowSpeed = N` lines to set in Galaxy. Only P is proposed; I and F are shown and left alone.
 Unit-test/replay evidence only; nothing here is driven.
 """
 import argparse
@@ -55,12 +56,20 @@ def discover_routes(root, latest=MAX_ROUTES):
   return [(n, [p for _, p in sorted(groups[n])]) for n in keep]
 
 
+def _band_range(b):
+  return f"{b['lowMph']:g}-{b['highMph']:g}" if b.get("highMph") is not None else f"{b['lowMph']:g}+"
+
+
 def _table(trial):
-  lines = [f"{'knot':>6} {'min':>6} {'ready':>5} {'sign/s':>7} {'curve':>6} {'ovr/min':>7} {'factor':>6} {'P%':>6}  decision"]
-  for k, p in zip(trial["knots"], trial["proposedPPct"], strict=True):
+  lines = [f"{'band':<9} {'mph':>6} {'min':>6} {'ready':>5} {'sign/s':>7} {'curve':>6} {'ovr/min':>7} {'factor':>6} "
+           f"{'P/I/F now':>12} {'P new':>5}  decision"]
+  for b in trial["bands"]:
     f = lambda x, w: f"{x:{w}.2f}" if isinstance(x, (int, float)) else f"{'-':>{w}}"
-    lines.append(f"{k['mph']:>4.0f}mph {k['minutes']:>6.1f} {'yes' if k['ready'] else 'no':>5} {f(k['signRate'], 7)} "
-                 f"{f(k['curveRatio'], 6)} {f(k['pressRate'], 7)} {k['factor']:>6.2f} {p:>6.1f}  {k['reason']}")
+    cur = b["current"]
+    pif = f"{cur['p']}/{cur['i']}/{cur['f']}"
+    lines.append(f"{b['name']:<9} {_band_range(b):>6} {b['minutes']:>6.1f} {'yes' if b['ready'] else 'no':>5} "
+                 f"{f(b['signRate'], 7)} {f(b['curveRatio'], 6)} {f(b['pressRate'], 7)} {b['factor']:>6.2f} "
+                 f"{pif:>12} {b['proposed']['p']:>5}  {b['reason']}")
   return "\n".join(lines)
 
 
@@ -69,7 +78,6 @@ def main(argv=None):
   ap.add_argument("--routes-root", required=True, help="directory holding <route>--<seg> dirs (Konik layout ok)")
   ap.add_argument("--latest", type=int, default=MAX_ROUTES, help=f"newest N routes, 1..{MAX_ROUTES}")
   ap.add_argument("--json", help="write the trial JSON here")
-  ap.add_argument("--current-schedule", default=None, help="LatGainSchedule currently on the device, to carry i/f")
   args = ap.parse_args(argv)
   if not 1 <= args.latest <= MAX_ROUTES:
     print(f"--latest must be at most {MAX_ROUTES}", file=sys.stderr)
@@ -86,8 +94,12 @@ def main(argv=None):
     print(f"warning: {w}")
   if args.json:
     Path(args.json).write_text(json.dumps(trial, indent=2, sort_keys=True))
-  print(f"baseline P% (from the newest route's logs): {trial['baseline']['pPct']}")
-  print(f"LatGainSchedule = {lat.build_schedule(trial, args.current_schedule)}")
+  print("Galaxy > Lateral > PID speed bands (P only; I and F unchanged). Values from the newest route's logs:")
+  for b in trial["bands"]:
+    mark = "" if b["proposed"]["p"] == b["current"]["p"] else f"   (was {b['current']['p']})"
+    print(f"{b['pKey']} = {b['proposed']['p']}{mark}")
+  if "p" in trial["baseline"].get("scheduleTerms", []):
+    print("note: LatGainSchedule has a p term, which overrides these bands; remove it (or apply from Galaxy, which does)")
   return 0
 
 
