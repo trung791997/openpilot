@@ -509,6 +509,7 @@ class Car:
     lead_present = False
     lead_distance_m = 0.0
     lead_rel_speed_ms = 0.0
+    lead_speed_ms = None  # ICBMFarLead: leadOne.vLead, only when the toggle is on
     lookahead_points = REDNECK_DECREASE_LOOKAHEAD_POINTS
 
     plan_speeds = []
@@ -525,6 +526,8 @@ class Car:
           if lead.status:
             lead_distance_m = max(float(lead.dRel), 0.0)
             lead_rel_speed_ms = float(lead.vRel)
+            if getattr(self.starpilot_toggles, "icbm_far_lead", False):
+              lead_speed_ms = float(lead.vLead)
 
     # Launch: the cruise target (SLC and CSC limits still apply) with no plan or lead hold.
     launch_target_speed = select_redneck_target_speed(
@@ -547,6 +550,7 @@ class Car:
       lead_present=lead_present,
       lead_distance_m=lead_distance_m,
       lead_rel_speed_ms=lead_rel_speed_ms,
+      lead_speed_ms=lead_speed_ms,
       slc_target_speed_ms=slc_target_speed,
       csc_target_speed_ms=csc_target_speed,
     )

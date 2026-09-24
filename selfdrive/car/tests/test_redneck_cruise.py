@@ -460,6 +460,33 @@ class TestRedneckCruise(unittest.TestCase):
     args["plan_speeds_ms"] = [15.0] * 5  # plan already wants less than the far target
     self.assertEqual(select_redneck_target_speed(**args), select_redneck_target_speed(**args, lead_speed_ms=14.7))
 
+  def _make_card_with_lead(self, v_cruise_kph, cluster_ms, plan, d_rel, v_rel, v_lead):
+    starpilot_plan = SimpleNamespace(vCruise=v_cruise_kph * CV.KPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    longitudinal_plan = SimpleNamespace(speeds=plan, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+    radar_state = SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=d_rel, vRel=v_rel, vLead=v_lead))
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan,
+                                  "radarState": radar_state}.__getitem__
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), sm=sm,
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False, icbm_far_lead=False))
+    card.CS = SimpleNamespace(vEgo=cluster_ms, standstill=False, gasPressed=False, buttonEvents=[],
+                              vCruise=v_cruise_kph, cruiseState=SimpleNamespace(speedCluster=cluster_ms))
+    card.CC = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    return card
+
+  def test_far_lead_toggle_gates_lead_speed(self):
+    # 25e 723.0 s inputs through card.py: the toggle decides whether leadOne.vLead reaches the selector.
+    card = self._make_card_with_lead(v_cruise_kph=80.0, cluster_ms=22.22, plan=[22.2, 22.1, 22.0, 22.0, 22.0],
+                                     d_rel=102.7, v_rel=-7.5, v_lead=14.7)
+    card.starpilot_toggles.icbm_far_lead = False
+    off, _ = Car._get_redneck_target_speed(card, card.CS, card.CC)
+    card.starpilot_toggles.icbm_far_lead = True
+    on, _ = Car._get_redneck_target_speed(card, card.CS, card.CC)
+    self.assertAlmostEqual(off, 22.22, places=3)
+    self.assertAlmostEqual(on, get_far_lead_target_ms(102.7, 14.7), places=6)
+
   def test_target_speed_holds_for_distant_closing_lead(self):
     target_speed = select_redneck_target_speed(
       120.0,
