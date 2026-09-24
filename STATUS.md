@@ -6365,3 +6365,12 @@ The owner asked for a prototype of item 115's stage 3 before an offline schedule
 1. Set `LatAdaptiveTune=1` (shadow). Drive a few times. Read `LatAdaptiveState`: `factor` is what apply mode would use, and `last` gives the reason for each knot.
 2. Consider `LatAdaptiveTune=2` only if the shadow factors stay near 1.0, move for reasons that match what the owner feels, and do not ping-pong.
 3. To reset, clear `LatAdaptiveState`. To remove it from the loop, set `LatAdaptiveTune=0`.
+
+**Handoff: Galaxy toggle and owner write-up (not done here; for the next agent).**
+- **Toggle:** add a `LatAdaptiveTune` row to `starpilot/common/assets/device_settings_layout.json`.
+  - Place it under `LateralTune` (`"parent_key": "LateralTune"`, `"settings_tier": "advanced"`), after the `Lat*Scale*` rows.
+  - Use a 3-way `"ui_type": "dropdown"` with `"data_type": "int"`, patterned on `AccelerationProfile`: 0 Off, 1 Shadow (learn only), 2 Apply. A bool toggle cannot express shadow mode.
+  - It only matters on the modified-EPS PID path; the tuner is never constructed elsewhere.
+- **Optional:** a reset action that clears `LatAdaptiveState`, and a read-only view of its `factor` and `last`. Read-only is enough; the owner should never hand-edit the state.
+- **Item 12 applies:** Galaxy's `allowed_keys` comes from the compiled `common/params_pyx.so` registry, not the header. Until the device runs a build with the three new keys, the row will show "not editable". A device without the keys is harmless: `LatAdaptiveTuner` catches the unknown-key error and runs as off.
+- **Write-up:** the owner-facing description should be drawn from this item (what it measures, the rules, the 0.85–1.15 bound, one step per drive, the reset on manual tuning change, shadow first). Keep the evidence level: unit-test and log replay only, not driven.
