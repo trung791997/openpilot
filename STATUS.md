@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5917,3 +5917,49 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 - The session env file exports `PARAMS_ROOT` (default `~/.comma/params`).
 
 Checked on this aarch64 host (uv-managed 3.12.14): the hook exits 0, the full scons build completes, and 53 artifacts are skip-worktree. A second run is a no-op (1.4 s). Tests: `opendbc_repo/opendbc/car/honda/tests/` 271 passed; the five radard/longitudinal suites 129 passed; `test_mici_multi_lead.py` under `xvfb-run` 38 passed. **Not run on an x86_64 container.**
+
+## 106. Stock-ACC routes 266 and 267 (build d20a18d28, the 0.075 bound on the device): the item 103/104 replays, both FCW events, and every brake takeover. Replay (log decode, open- and closed-loop planner) evidence only; no code change, nothing driven under alpha.
+
+The owner asked (2026-09-24) for analysis of two new stock-ACC drives. The routes were fetched on an aarch64 Oracle host (`konik_preflight.py` 8/8, `konik_fetch.py` 30/30 and 21/21 rlog segments). Route data is outside the repo, not committed.
+
+| Route | Build | Car | Duration / cruise on | Episodes < −1.5 | Brake takeovers | FCW |
+|---|---|---|---|---|---|---|
+| `00000266--f766f599f0` | d20a18d28 | HONDA_CIVIC_BOSCH, stock ACC | 1777 s / 972 s | 13 | 4 (+1 gas, 3 other) | 4:27.5, 4:28.7, 4:29.4, 14:32.5 |
+| `00000267--e83a1fa671` | d20a18d28 | HONDA_CIVIC_BOSCH, stock ACC | 1218 s / 639 s | 5 | 5 (+1 other) | none |
+
+Tools, run at 2026-09-24 HEAD `d3786234`, with planner code identical to item 104a: `tools/longitudinal/alpha_open_loop_replay.py` and `alpha_closed_loop_replay.py` (default bearings 0.1,0.075). Closed-loop validity is `leadOne.status` agreement **99.14% (266) and 99.36% (267)**, radar flag 99.20/99.53%, dRel ±1 m 91.9/95.5%, same track 81.9/67.4%. Open and closed loop agree on every episode to within 0.03 m/s².
+
+**Protected episodes: none changed between 0.10 and 0.075** (266: 6 genuine by vision/stock label; 267: 3). The only b0.1/b0.075 frame differences are 266 14:29.1 (13 frames, genuine, −3.77 → −3.69, crossing unchanged) and 267 15:13.0 (16 frames, below).
+
+### The two FCWs on 266 (openpilot planner FCW; `stockFcw` stayed 0)
+
+- **4:27.5–4:29.4: a real hard stop, and the FCW was justified.** A slow lead, vision v 5.6 → 0.5 m/s, was approached from 94 m at vRel −9.4 at 52 mph (radar track 13, y ±0.2 throughout). Stock braked to cmd −3.23, aEgo −3.80, and stopped about 12 m behind with no driver input. The owner bookmarked it at 4:31.4. Alpha replay: −3.45, crossing −1.5 0.7 s **before** the stock command and −2.5 1.7 s before it. Radar quirks during the stop were a one-sample vRel −15.0 at 4:27.4 (from −9.5; not a rail value) and aLeadK down to −6.9 at 4:29.1 while vision a was −0.4. The lead really was coming to rest, and the FCW was already firing on range/TTC.
+- **14:32.5: a real braking lead, but the FCW was marginal and radar-driven.** Track 36 came in from y −3.3 to 0 on a left curve (steer −10° → 0) at 29–37 m. Vision a was −1.5 to −2.1, stock cmd −1.78, so the brake was real. At the FCW frame radar vRel was −8.4 and aLeadK −7.6. The 1 s range slope was −6.6 and vision vRel −4.7. With vRel −8.4, TTC is 3.4 s, under the 4.0 s FCW limit. With the range slope it is about 4.5 s. The driver braked at 14:35.9 and then took over on the gas and steering for a turn. The replay episode (14:29.1) is genuine: alpha −3.69 vs cmd −2.11, and the bound fired 11 frames at 0.075.
+
+### Alpha-only brakes (alpha ≤ −3 while stock stayed above −1.5)
+
+- 🔴 **267 15:13.3: off-axis false brake that 0.075 does not catch. Same signature as 25f 13:58.4 and 237 942.6.**
+  - This was on a right-curve exit, steer +13° → 0. Radar track 39 swings from y +8.8 to +0.2 at 56–69 m.
+  - Radar vRel went +6.1 → −8.2 → −0.9 in about 3 s, and aLeadK reached −9.4.
+  - Over the same time vision held v 14.8–15.9 and a +0.0–0.25 at p 0.92–0.97. Ego was at 13.4–14.4, so vision vRel ≈ +1. The radar range dipped 69 → 56 m and recovered to 59 m.
+  - Alpha went to −3.45 at both thresholds and with no bound. Stock cmd was +0.28 at the peak and −0.60 later. Required decel is 0.0, so it is not protected.
+  - **Why the bound misses:** bearing was 0.084 at 15:13.25 (bounded), then 0.074 and 0.070 at 15:13.40–15:13.55, where aLeadK was −9.1 to −9.4. The lead swings toward the centre as the curve unwinds, so the worst radial-rate artifact arrives **after** bearing falls under the threshold. 0.075 bounded 11 frames (Δ up to 0.3 on single frames) and did not change the minimum.
+  - **Not changed here.** Lowering the threshold a second time (0.10 → 0.075 → about 0.065) chases the threshold on one case at a time, and 263 6:14.3 would have to survive each step. The structural alternative is a design question for the owner. Candidates: hold the bound on a track for about 1 s after its bearing was above the threshold, or while steering or yaw rate is high; or bound when vision is confident (p ≥ 0.9) and disagrees with the radar lead speed by more than about 5 m/s. Any of these needs its own closed-loop pass against the 125 protected episodes.
+- 🟠 **266 2:27.9: vRel settling on a newly acquired track, centred.** Track 61 took over from a vision-only lead at 61 m. vRel went +3.1 → −3.5 in 1 s and aLeadK hit −4.8, while vision v held 18.1–18.9 against ego 18.8 (vision vRel ≈ 0). Alpha −3.45, stock cmd −0.99, required decel 0.2. At 2:29.7 the driver pressed the gas against even stock's −1.0. Bearing 0.00–0.01, so no bearing bound applies. This is the 260 9:01.2 class: the aLeadK filter passes a short vRel transient to the planner.
+- 🟡 **266 11:42.3: real mild slowdown; alpha goes to the rail.** Track 12, centred at 26–35 m, lead slowing from 19.4 to 16.9 (vision). The range closed at about 3.8 m/s and radar vRel reached −5.0, aLeadK −4.1. Alpha −3.48, stock cmd −1.14. Item 103's "alpha is harsher on ordinary slowdowns" pattern.
+- ✅ **266 16:11.6: the bound worked.** Bearing 0.12–0.13, 46/46 frames bounded, −3.45 → −1.79 (stock −0.30).
+
+### Stock deeper than alpha (genuine)
+
+- **267 14:47.0: close cut-in.** Track 28 appeared at 9.7 m (y +1.6), replacing the 23 m lead. Stock started braking the same frame and went to cmd −3.46, aEgo −4.05, bottoming at a 7.1 m gap at 6.9 m/s. Alpha reached only −2.53 and trailed by +0.2 s. Radar vRel went −3.3 → −3.9 → −1.6, consistent with vision. This adds to item 103's "stock is deeper at the peak" list; replay only, it does not say −2.5 would have been too little.
+- **266 4:24.8 and 13:19.4** were genuine hard brakes where alpha led stock (−0.7 s and −0.2 s at −1.5).
+
+### Driver brake takeovers (the 5 s before each)
+
+- **Not a lead problem:** 266 6:44.0 (no lead, ICBM/CSC set speed falling 25 → 14), 18:47.3 (no lead, accelerating), 26:19.4 (no lead), 267 3:25.2 (no lead), 267 10:01.5 (no lead in radarState; vision lead at 128 m, p ≤ 0.1). These are ordinary exits and slowdowns.
+- **266 16:15.7:** off-axis track 59 on a curve (y +9.4 → +3.4, bearing 0.13 → 0.07) read vRel −8.6 and aLeadK −6.7 while vision said about −1.6. Stock stayed at −0.3; the driver braked as the vision lead began braking (a −1.4). Same radial-rate signature as 267 15:13.3, but the bound (bearing ≥ 0.075 for most of it) covers the worst frames.
+- **267 6:48.6:** lead track 2 swinging y −3.6 → +3.7 on a curve with the set speed falling; the lead dropped, and the driver braked.
+- **267 11:31.4:** far lead 110–127 m decelerating (vision a −1.1 to −1.6), stock only −0.5; the driver braked early. Radar had it at vRel −4 to −7.
+- 🟠 **267 16:28.1: a radar lead that may be the wrong object at 90 m.** Track 39 at 87–92 m read vRel **+4.1 → +2.0 (opening)**, and its range really did open (86.9 → 92.3 m). Vision showed a lead braking: v 13.5 → 7.7, a −1.1, ego 14.6–15.9. Stock ACC was **accelerating** (cmd +0.37), so stock missed it as well. radarState then flipped to a vision-only lead reading −7.6 to −9.4, and the driver braked at 16:27.8. Under alpha the planner would have seen the same opening radar lead for about 2.5 s. It is no worse than stock here, but it is a far-range lead-identity case for the watchlist.
+
+**What this does not settle.** Ego follows the log, so no replay shows the gap alpha would have opened. Frame-level track identity agrees only 67–82% with the on-device parser. Nothing here was driven under alpha long.
