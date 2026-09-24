@@ -98,13 +98,19 @@ class TestMetrics:
       assert lat.DriveStats.from_json(bad) is None
 
 
+class TestStepSize:
+  @pytest.mark.parametrize("ratio,step", [(0.944, 0.05), (0.97, 0.05), (0.90, 0.10), (0.87, 0.15), (0.50, 0.15), (1.10, 0.10), (1.04, 0.05)])
+  def test_curve_step_is_on_grid_and_capped_at_15_percent(self, ratio, step):
+    assert lat.curve_step(ratio) == pytest.approx(step)
+
+
 class TestRules:
   def test_short_drive_holds_and_carries(self):
     s1 = lat.update_state(lat.default_state(), drive(2, 40, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
     assert s1["factor"] == [1.0] * len(lat.BANDS)
     assert s1["carry"][band_of(40)] is not None
     s2 = lat.update_state(s1, drive(2, 40, curve_des=10, curve_ratio=0.9, carry=s1["carry"]), lat.APPLY_MODE)
-    assert s2["factor"][band_of(40)] == pytest.approx(1.0 + lat.STEP)
+    assert s2["factor"][band_of(40)] == pytest.approx(1.10)   # curve ratio 0.9 needs +0.11 -> 0.10 step
     assert s2["carry"][band_of(40)] is None
 
   def test_curve_shortfall_steps_up_one_step_per_drive_and_is_bounded(self):
@@ -121,7 +127,7 @@ class TestRules:
 
   def test_one_step_per_drive(self):
     s = lat.update_state(lat.default_state(), drive(20, 30, curve_des=10, curve_ratio=0.5), 0)
-    assert s["factor"][band_of(30)] == pytest.approx(1.0 + lat.STEP)
+    assert s["factor"][band_of(30)] == pytest.approx(1.0 + lat.MAX_STEP)   # capped at 15 % however short the curve
 
   def test_oscillation_steps_down_to_bound(self):
     s = lat.default_state()
@@ -131,7 +137,7 @@ class TestRules:
 
   def test_overshoot_steps_down(self):
     s = lat.update_state(lat.default_state(), drive(4, 40, curve_des=10, curve_ratio=1.1), 0)
-    assert s["factor"][band_of(40)] == pytest.approx(1.0 - lat.STEP)
+    assert s["factor"][band_of(40)] == pytest.approx(0.90)   # 1/1.1 - 1 = -0.09 -> 0.10 step
 
   def test_no_step_up_when_override_onsets_high(self):
     s = lat.update_state(lat.default_state(), drive(4, 20, curve_des=10, curve_ratio=0.85, press_every=2000), lat.APPLY_MODE)
@@ -144,10 +150,10 @@ class TestRules:
 
   def test_revert_after_increase_that_raised_oscillation_only_in_apply(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=150, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
-    assert s["factor"][band_of(30)] == pytest.approx(1.05)
+    assert s["factor"][band_of(30)] == pytest.approx(1.10)
     worse = drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.9)  # 0.33 -> 0.67 /s, still under the limits
     assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][band_of(30)] == pytest.approx(1.0)
-    assert lat.update_state(s, worse, 0)["factor"][band_of(30)] == pytest.approx(1.10)
+    assert lat.update_state(s, worse, 0)["factor"][band_of(30)] == pytest.approx(1.15)   # 1.10 + 0.10, held to 0.15 of the 1.0 neighbours
 
   def test_revert_after_increase_that_raised_override_onsets(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
@@ -181,9 +187,9 @@ class TestTrialAndBandParams:
       ("LowSpeed", 0.0, 25.0), ("Standard", 25.0, 50.0), ("Highway", 50.0, None)]
     std = trial["bands"][1]
     assert std["ready"] is True and std["minutes"] >= 3.9
-    assert std["decision"] == "up" and std["factor"] == 1.05 and std["reason"].startswith("Standard: up")
+    assert std["decision"] == "up" and std["factor"] == 1.10 and std["reason"].startswith("Standard: up")
     assert std["current"] == {"p": 100, "i": 75, "f": 100}
-    assert std["proposed"] == {"p": 105, "i": 75, "f": 100}     # only P moves
+    assert std["proposed"] == {"p": 110, "i": 75, "f": 100}     # only P moves
     low = trial["bands"][0]
     assert low["ready"] is False and low["factor"] == 1.0 and low["proposed"] == low["current"]
     assert trial["baseline"]["fingerprint"] == "deadbeef" and trial["baseline"]["scheduleTerms"] == []
@@ -192,7 +198,7 @@ class TestTrialAndBandParams:
 
   def test_build_band_params_writes_only_p(self):
     trial = lat.build_trial(drive(4, 30, curve_des=8.0, curve_ratio=0.9), self.BASELINE, ["r1"], [], [])
-    assert lat.build_band_params(trial) == {"LatPScaleLowSpeed": 100, "LatPScaleStandard": 105, "LatPScaleHighway": 105}
+    assert lat.build_band_params(trial) == {"LatPScaleLowSpeed": 100, "LatPScaleStandard": 110, "LatPScaleHighway": 105}
 
   @pytest.mark.parametrize("cur,factor,want", [(100, 1.0, 100), (100, 1.05, 105), (100, 0.95, 95), (135, 1.05, 140),
                                                (200, 0.95, 190), (20, 1.05, 25), (20, 0.95, 15), (3, 0.95, 0),
@@ -276,6 +282,17 @@ class TestFrames:
     assert any("fingerprint" in w for w in trial["warnings"])     # routes disagree
     assert trial["perRoute"][0]["route"] == "r-old" and trial["perRoute"][0]["minutes"][1] >= 3.9
     assert trial["bands"][1]["ready"] is True
+
+  def test_analyze_sources_baseline_override_changes_start_value_not_metrics(self):
+    n = 6000 * 4
+    msgs = [_init_msg({"LatPScaleStandard": "100"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(n)]
+    plain = lat.analyze_sources([lat.RouteLog("r", "1", "a", _fake_log(msgs))])
+    what_if = lat.analyze_sources([lat.RouteLog("r", "1", "a", _fake_log(msgs))], baseline_overrides={"LatPScaleStandard": "115"})
+    assert plain["bands"][1]["current"]["p"] == 100 and what_if["bands"][1]["current"]["p"] == 115
+    assert what_if["bands"][1]["minutes"] == plain["bands"][1]["minutes"]
+    assert what_if["bands"][1]["factor"] == plain["bands"][1]["factor"]
+    assert any("baseline override: LatPScaleStandard = 115" in w and "driven with 100" in w for w in what_if["warnings"])
+    assert what_if["baseline"]["fingerprint"] != plain["baseline"]["fingerprint"]   # matches a device set to 115
 
   def test_analyze_sources_warns_when_schedule_overrides_p(self):
     msgs = [_init_msg({"LatGainSchedule": '{"v_mph": [20, 50], "p": [100, 120]}'}), _cs(13.4, 0.5), _pid(0.4)]

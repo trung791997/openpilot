@@ -17,10 +17,11 @@ _BAND_EDGES = tuple(b[2] * MPH_TO_MS for b in BANDS[:-1])
 PCT_STEP = 5          # Galaxy step for Lat*Scale*
 PCT_MIN, PCT_MAX = 0, 500
 
-STEP = 0.05
+STEP = 0.05          # factor grid; the smallest step
+MAX_STEP = 0.15      # largest step per trial (owner, 2026-09-24: "up to 15 % per trial")
 FACTOR_MIN = 0.85
 FACTOR_MAX = 1.15
-MAX_NEIGHBOUR_GAP = 0.10
+MAX_NEIGHBOUR_GAP = 0.15
 MIN_MINUTES = 3.0
 MIN_SPEED = 4.0
 STRAIGHT_DEG = 3.0
@@ -216,6 +217,12 @@ def band_metrics(a, dt=0.01):
   }
 
 
+def curve_step(curve_ratio):
+  """Step that would bring the curve ratio to 1.0 if angle tracked P linearly, on the STEP grid, 1..3 steps."""
+  need = abs(1.0 / curve_ratio - 1.0)
+  return min(max(round(need / STEP) * STEP, STEP), MAX_STEP)
+
+
 def update_state(state, stats, mode):
   """One drive's step. Returns the new state; `last` lists what each band did and why."""
   state = parse_state(state) if not isinstance(state, dict) else parse_state(json.dumps(state))
@@ -236,17 +243,20 @@ def update_state(state, stats, mode):
     why = "hold"
     stepped_up = p is not None and p.get("stepped", 0.0) > 0 and mode == APPLY_MODE
     press_now = m["press_rate"] or 0.0
+    undo = -p["stepped"] if stepped_up else 0.0
     if stepped_up and p.get("sign_rate") and m["sign_rate"] > p["sign_rate"] * OSC_GROWTH:
-      step, why = -STEP, f"revert: sign changes {p['sign_rate']:.2f} -> {m['sign_rate']:.2f}/s after the last increase"
+      step, why = undo, f"revert: sign changes {p['sign_rate']:.2f} -> {m['sign_rate']:.2f}/s after the last increase"
     elif stepped_up and p.get("press_rate") is not None and press_now > p["press_rate"] * PRESS_GROWTH + PRESS_SLACK:
-      step, why = -STEP, f"revert: override onsets {p['press_rate']:.2f} -> {press_now:.2f}/min after the last increase"
+      step, why = undo, f"revert: override onsets {p['press_rate']:.2f} -> {press_now:.2f}/min after the last increase"
     elif m["sign_rate"] > SIGN_RATE_MAX:
       step, why = -STEP, f"down: sign changes {m['sign_rate']:.2f}/s > {SIGN_RATE_MAX}"
     elif m["curve_ratio"] is not None and m["curve_ratio"] > CURVE_RATIO_HIGH:
-      step, why = -STEP, f"down: curve ratio {m['curve_ratio']:.3f} > {CURVE_RATIO_HIGH}"
+      step = -curve_step(m["curve_ratio"])
+      why = f"down {-step:.2f}: curve ratio {m['curve_ratio']:.3f} > {CURVE_RATIO_HIGH}"
     elif (m["curve_ratio"] is not None and m["curve_ratio"] < CURVE_RATIO_LOW and m["sign_rate"] < SIGN_RATE_UP_MAX
           and press_now < PRESS_RATE_UP_MAX):
-      step, why = STEP, f"up: curve ratio {m['curve_ratio']:.3f} < {CURVE_RATIO_LOW}"
+      step = curve_step(m["curve_ratio"])
+      why = f"up {step:.2f}: curve ratio {m['curve_ratio']:.3f} < {CURVE_RATIO_LOW}"
     elif m["curve_ratio"] is not None and m["curve_ratio"] < CURVE_RATIO_LOW:
       why = f"hold: curve ratio {m['curve_ratio']:.3f} low but sign changes {m['sign_rate']:.2f}/s or onsets {press_now:.2f}/min too high"
     new = min(max(f[i] + step, FACTOR_MIN), FACTOR_MAX)
@@ -432,8 +442,11 @@ class FrameSource:
         yield v_ego, float(lcs.pidState.steeringAngleDesiredDeg), angle, pressed, lane_change, steer_limited
 
 
-def analyze_sources(sources, should_continue=None, on_progress=None):
-  """sources: RouteLog list in analysis order (oldest first). Returns a trial dict (build_trial)."""
+def analyze_sources(sources, should_continue=None, on_progress=None, baseline_overrides=None):
+  """sources: RouteLog list in analysis order (oldest first). Returns a trial dict (build_trial).
+
+  baseline_overrides: {param: value} replacing the logged Lat*Scale* values the proposal starts from (what-if).
+  The metrics still come from the logs, i.e. from the gains the routes were actually driven with."""
   stats = DriveStats()
   per_route = {}
   warnings = []
@@ -458,6 +471,12 @@ def analyze_sources(sources, should_continue=None, on_progress=None):
   fps = {r: tuning_fingerprint(t) for r, t in tuning_by_route.items()}
   if len(set(fps.values())) > 1:
     warnings.append("routes were driven with different lateral tuning (fingerprint mismatch); the newest route's tuning is the baseline")
+  if baseline_overrides:
+    logged = dict(latest)
+    latest = {**latest, **{k: _param_str(v) for k, v in baseline_overrides.items()}}
+    for k, v in baseline_overrides.items():
+      warnings.append(f"baseline override: {k} = {v} (routes were driven with {logged.get(k) or 'default'}; "
+                      "the metrics describe that gain, not this one)")
   if "p" in schedule_terms(latest.get(SCHEDULE_KEY)):
     warnings.append("LatGainSchedule overrides P on these routes; the proposal is relative to the LatPScale* bands, "
                     "and applying removes the schedule's p term")

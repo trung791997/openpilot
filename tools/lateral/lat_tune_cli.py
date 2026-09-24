@@ -78,17 +78,28 @@ def main(argv=None):
   ap.add_argument("--routes-root", required=True, help="directory holding <route>--<seg> dirs (Konik layout ok)")
   ap.add_argument("--latest", type=int, default=MAX_ROUTES, help=f"newest N routes, 1..{MAX_ROUTES}")
   ap.add_argument("--json", help="write the trial JSON here")
+  ap.add_argument("--baseline", action="append", default=[], metavar="KEY=N",
+                  help="what-if: start the proposal from this band value instead of the logged one, e.g. LatPScaleStandard=115")
   args = ap.parse_args(argv)
   if not 1 <= args.latest <= MAX_ROUTES:
     print(f"--latest must be at most {MAX_ROUTES}", file=sys.stderr)
     return 2
+  overrides = {}
+  band_keys = set(lat.P_KEYS) | set(lat.I_KEYS) | set(lat.F_KEYS)
+  for item in args.baseline:
+    key, _, val = item.partition("=")
+    if key not in band_keys or not val.strip().isdigit():
+      print(f"--baseline takes KEY=N with KEY one of {', '.join(sorted(band_keys))}", file=sys.stderr)
+      return 2
+    overrides[key] = val.strip()
   routes = discover_routes(args.routes_root, latest=args.latest)
   if not routes:
     print(f"no route segments with rlogs under {args.routes_root}", file=sys.stderr)
     return 1
   sources = [lat.RouteLog(name, str(i), str(p)) for name, logs in routes for i, p in enumerate(logs)]
   print(f"analyzing {len(routes)} route(s), {len(sources)} segment(s): " + ", ".join(n for n, _ in routes))
-  trial = lat.analyze_sources(sources, on_progress=lambda i, n, s: print(f"  [{i + 1}/{n}] {s.route}--{s.segment}", flush=True))
+  trial = lat.analyze_sources(sources, on_progress=lambda i, n, s: print(f"  [{i + 1}/{n}] {s.route}--{s.segment}", flush=True),
+                              baseline_overrides=overrides or None)
   print(_table(trial))
   for w in trial["warnings"]:
     print(f"warning: {w}")
