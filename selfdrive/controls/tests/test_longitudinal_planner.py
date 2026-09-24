@@ -4166,6 +4166,24 @@ def test_off_axis_lead_bound_covers_route_237_942_geometry():
   assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-longitudinal_planner_module.OFF_AXIS_LEAD_MAX_BRAKE)
 
 
+def test_off_axis_lead_bound_covers_route_25f_1358_geometry():
+  # 0000025f 13:58.4: in-lane lead at 49 m on a curve, bearing 0.078 (below the old 0.10 threshold),
+  # aLeadK -3.4 while vision saw a +0.01 at p 0.998. Replay alpha reached -3.45; stock cmd -0.49.
+  sm = _off_axis_sm(y_rel=-3.8, vision_a=0.01, a_lead=-3.4, v_ego=20.0, d_rel=48.9, v_rel=-2.9, vision_prob=0.998)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
+  assert bounded is not sm
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-longitudinal_planner_module.OFF_AXIS_LEAD_MAX_BRAKE)
+
+
+def test_off_axis_lead_bound_threshold_edge():
+  # Bearing just under OFF_AXIS_LEAD_MIN_BEARING is left alone; a vision-corroborated brake above it is kept.
+  below = _off_axis_sm(y_rel=-3.4, vision_a=0.01, a_lead=-3.4, v_ego=20.0, d_rel=48.9, v_rel=-2.9, vision_prob=0.998)
+  assert longitudinal_planner_module.bound_off_axis_leads(below) is below
+  corroborated = _off_axis_sm(y_rel=-3.8, vision_a=-3.0, a_lead=-3.4, v_ego=20.0, d_rel=48.9, v_rel=-2.9, vision_prob=0.998)
+  bounded = longitudinal_planner_module.bound_off_axis_leads(corroborated)
+  assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-3.0)
+
+
 def test_off_axis_lead_bound_leaves_straight_lead_unchanged():
   sm = _off_axis_sm(y_rel=0.0, vision_a=-0.08)
   assert longitudinal_planner_module.bound_off_axis_leads(sm) is sm
