@@ -59,14 +59,14 @@ class ModelPoints:
   projected_points: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
 
 
-LEAD_LABEL_FONT_SIZE = 24  # owner: 20 read too small on the road (2026-09-24)
+LEAD_LABEL_FONT_SIZE = 26  # owner: 20, then 24, read too small on the road (2026-09-24)
 ADJACENT_LEFT_LEAD_COLOR = rl.Color(0, 150, 255, 255)
 ADJACENT_RIGHT_LEAD_COLOR = rl.Color(180, 0, 255, 255)
 ADJACENT_LEAD_MIN_ALPHA = 140
 # adjacent-lane markers draw smaller than the in-path ones, with a smaller speed label (owner: "slightly smaller,
 # with the speed label right below it")
 ADJACENT_LEAD_SCALE = 0.7
-ADJACENT_LEAD_LABEL_FONT_SIZE = 20
+ADJACENT_LEAD_LABEL_FONT_SIZE = 22
 # radard's leadLeft/leadRight is any moving track past our own lane line, with no outer bound, so a car two
 # lanes over or a roadside return can hold it. The marker only draws for a lead inside the neighbouring lane
 # (owner: "only show up when there is an actual lead on that lane"). UI only; radard is unchanged.
