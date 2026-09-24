@@ -5385,3 +5385,28 @@ Item 91 named the mechanism behind both 25e windows: with the interval on, the D
 **Recommendation.** `BoschARailInterval` stays off. The coast bound is kept behind it because it removes the one -3.0 crossing and changes nothing else in 22 routes' worth of windows. The next change to look at is the interval gate on degraded sweeps (use the exact rate, not the interval, when `degraded` is true). A shorter fresh window is not the answer: a one- or two-sample derivative is what D-043 forbids. Nothing in this item has been driven; the 25e -1.5 tap is a replay number.
 
 **Housekeeping.** 237, 251, 245, 258 were retrieved for the run and deleted after it (archived on Drive). 25e deleted after this item.
+
+## 93. Item B traced: the 251 "-1.0 hold" is the planner's ACC comfort floor, which only a vision-only lead can open. Replay evidence only; nothing changed in code.
+
+Item 91 left one cause unidentified: with `BoschARailInterval` on, 251 (532-547 s) held aTarget at exactly -1.0 for 2.85 s while a radar lead closed at 12-15 m/s, and the toggle-off run braked -3.5 at 537.70. A `sys.settrace` dump of every numeric local of `LongitudinalPlanner.update` at its return, per cycle, both variants, 535-541 s (`trace251.py`, outputs `trace251_A.txt`/`trace251_B.txt` in `/routes/an2`) answers it.
+
+**What the two variants computed at 538.40 s (lead 62.5 m, closing 16 m/s, vEgo 23 m/s, ACC mode).**
+
+| Local | A (toggle off, lead = vision, `radar=False`) | B (toggle on, lead = radar track 53, `radar=True`) |
+|---|---|---|
+| `output_a_target_mpc` (the MPC's own request) | -5.684 | -5.684 |
+| `accel_limits_turns[0]` (starpilotPlan floor, forced to <= -1.0 by `A_CRUISE_MIN` with a closing lead) | -1.000 | -1.000 |
+| `slow_stop_cap` (`get_vision_slow_stopped_lead_cap`) | -1.200 | None |
+| `vision_brake_cap_active` | True | False |
+| `output_accel_min` (the clip floor at `:3096`) | **-3.500** | **-1.000** |
+| `output_a_target` | -3.500 | -1.000 |
+
+The MPC wanted the same -5.7 in both. The planner clips its output to `output_accel_min`, which starts at the comfort floor (-1.0 here) and is opened to the vehicle minimum (-3.5) in exactly one place, `:3041`, when `vision_brake_cap_active` is set. That flag is set only by `get_vision_slow_stopped_lead_cap` and `get_vision_low_speed_stop_buffer_cap`, and the first line of the slow-stopped cap is `if ... bool(getattr(lead, "radar", False)): return None`. So with a radar-tracked lead in ACC mode the MPC's request is clipped at the comfort floor; with the same scene seen as a vision-only lead, the -1.2 vision cap's side effect opens the floor and the -5.7 request passes through, clipped to -3.5. The cap that was designed as a gentle -1.2 limit is what releases the hard brake.
+
+**What released B at 540.55 s.** Not the lead distance. The logged `selfdriveState.experimentalMode` flipped on at 540.6 (the car's own mode switch that day); `experimental_mlsim` then selects `get_vehicle_min_accel` (-3.5) as the comfort floor and the -5.7 request passes. Item 91's wording "until the lead is 37.7 m away" was the coincident distance, not the cause.
+
+**What this means.** The hold is a planner property, independent of D-063: any radar-tracked lead in ACC (chill) mode is limited to the comfort floor until a vision cap fires or the mode flips. D-063 exposed it on 251 only because B made the closing lead a radar track that the toggle-off parser had left to vision. The car that day braked -3.5 at 537.85 on its vision lead (log lead `radar=False`), through the same vision path A took. Whether the toggle-off code hits this hold on real drives is a corpus question: cycles in ACC mode with `leadOne.radar` true, MPC request below -1.5, output pinned at the floor, and no vision cap. That scan has not been run. STATUS 42 and 61 (24f, 251 bookmarked brakes) reached -3.5 on the road, consistent with those brakes going through the vision path.
+
+**Not done, and why.** No planner change. The floor and its release are longitudinal control invariants (retained for Claude per CLAUDE.md, brake-affecting, Peter's OK required), and the right fix is a design choice: let a radar lead open the floor the way a vision lead does (same TTC/closing-speed conditions, `radar` flag ignored), or drop the `radar` exclusion in the slow-stopped cap. Either would change braking on every alpha-long drive and needs the corpus scan first.
+
+**Housekeeping.** 251 retrieved for the trace and deleted after (archived, unsynced=0).
