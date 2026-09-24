@@ -88,6 +88,68 @@ STOCK_REF_CMD = -2.0
 # Baseline first: the pre-STATUS-104 threshold, then the shipped one.
 DEFAULT_BEARINGS = "0.1,0.075"
 
+# Candidate follow-ups to the bearing bound (STATUS 106/107), replay-only, behind --fixes. Both keep the shipped
+# rule and add one more way to reach the same bound (aLeadK >= -max(1.5, vision brake)); nothing is shipped.
+#   hold:   the bearing test also passes for FIX_HOLD_S after the same radar track last sat at or above the
+#           shipped threshold. 267 15:13.3: the lead swung to the centre on a curve exit, bearing fell 0.084 ->
+#           0.070 while aLeadK was still -9.
+#   visdis: the bearing test also passes when a confident vision lead is the same object (x within
+#           max(FIX_VIS_X_ABS, FIX_VIS_X_REL * dRel)) and its speed disagrees with the radar vLead by >= FIX_VIS_DV.
+FIX_HOLD_S = 1.0
+FIX_VIS_MIN_PROB = 0.9
+FIX_VIS_X_ABS = 5.0
+FIX_VIS_X_REL = 0.15
+FIX_VIS_DV = 5.0
+FIX_VARIANTS = ("hold", "visdis")
+
+
+class FixBound:
+  """Per-planner replacement for LP.off_axis_lead_a_lead: the shipped rule, with an extra way past the bearing test."""
+  def __init__(self, kind: str):
+    self.kind = kind
+    self.last_off_axis: dict[int, float] = {}
+    self.t = 0.0
+    self.v_ego = 0.0
+    self.fired = False
+
+  def observe(self, radar_state, t: float, v_ego: float) -> None:
+    self.t, self.v_ego, self.fired = t, v_ego, False
+    for lead in (radar_state.leadOne, radar_state.leadTwo):
+      if lead.status and lead.radar and float(lead.dRel) > 1.0 and \
+         abs(float(lead.yRel)) / float(lead.dRel) >= LP.OFF_AXIS_LEAD_MIN_BEARING:
+        self.last_off_axis[int(lead.radarTrackId)] = t
+
+  def _extra(self, lead, model_msg) -> bool:
+    if self.kind == "hold":
+      last = self.last_off_axis.get(int(lead.radarTrackId))
+      return last is not None and self.t - last <= FIX_HOLD_S
+    leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
+    if leads is None or not len(leads) or float(leads[0].prob) < FIX_VIS_MIN_PROB or not len(leads[0].x) or not len(leads[0].v):
+      return False
+    d = float(lead.dRel)
+    if abs(float(leads[0].x[0]) - d) > max(FIX_VIS_X_ABS, FIX_VIS_X_REL * d):
+      return False
+    return abs((self.v_ego + float(lead.vRel)) - float(leads[0].v[0])) >= FIX_VIS_DV
+
+  def __call__(self, lead, model_msg):
+    if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
+      return None
+    d_rel = float(lead.dRel)
+    a_lead = float(lead.aLeadK)
+    if d_rel <= 1.0 or a_lead >= -LP.OFF_AXIS_LEAD_MAX_BRAKE:
+      return None
+    if abs(float(lead.yRel)) / d_rel < LP.OFF_AXIS_LEAD_MIN_BEARING and not self._extra(lead, model_msg):
+      return None
+    vision_brake = 0.0
+    leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
+    if leads is not None and len(leads) and float(leads[0].prob) >= LP.OFF_AXIS_LEAD_VISION_MIN_PROB and len(leads[0].a):
+      vision_brake = max(0.0, -float(leads[0].a[0]))
+    bounded = max(a_lead, -max(LP.OFF_AXIS_LEAD_MAX_BRAKE, vision_brake))
+    if bounded > a_lead:
+      self.fired = True
+      return bounded
+    return None
+
 
 class _RadardSM:
   """The SubMaster surface RadarD.update() reads: [], seen, logMonoTime, recv_frame, all_checks()."""
@@ -154,12 +216,14 @@ def vision_view(model, v_ego: float) -> dict | None:
   return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
-def replay(route_dir: Path, bearings: list[float]):
+def replay(route_dir: Path, bearings: list[float], fixes: bool = False):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
 
-  variants = [f"b{b:g}" for b in bearings] + ["nobound", "logged"]
+  variants = [f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) + ["nobound", "logged"]
+  fix_bounds = {k: FixBound(k) for k in FIX_VARIANTS} if fixes else {}
+  original_bound = LP.off_axis_lead_a_lead
   state: dict = {}
   valid: dict = {}
   toggles = default_toggles()
@@ -270,7 +334,9 @@ def replay(route_dir: Path, bearings: list[float]):
 
       out = {}
       src = {}
+      fix_fired = {}
       saved = LP.OFF_AXIS_LEAD_MIN_BEARING
+      t_now = (msg.logMonoTime - t0) / 1e9
       try:
         for v, p in planners.items():
           sm = _ReplaySM(state, valid)
@@ -283,11 +349,18 @@ def replay(route_dir: Path, bearings: list[float]):
             sm["radarState"] = rs
             sm._valid = {**valid, "radarState": bool(rd.radar_state_valid)}
             LP.OFF_AXIS_LEAD_MIN_BEARING = float(v[1:]) if v.startswith("b") else saved
+          if v in fix_bounds:
+            fix_bounds[v].observe(rs, t_now, float(cs.vEgo))
+            LP.off_axis_lead_a_lead = fix_bounds[v]
           p.update(sm, toggles)
+          LP.off_axis_lead_a_lead = original_bound
+          if v in fix_bounds:
+            fix_fired[v] = fix_bounds[v].fired
           out[v] = float(p.output_a_target)
           src[v] = str(p.mpc.source)
       finally:
         LP.OFF_AXIS_LEAD_MIN_BEARING = saved
+        LP.off_axis_lead_a_lead = original_bound
 
       lg = state["radarState_logged"].leadOne
       lr = rs.leadOne
@@ -302,7 +375,7 @@ def replay(route_dir: Path, bearings: list[float]):
       frames.append({
         "t": (msg.logMonoTime - t0) / 1e9, "engaged": engaged, "v_ego": float(cs.vEgo), "a_ego": float(cs.aEgo),
         "accel_cmd": accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel),
-        "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed),
+        "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed), "fix": fix_fired,
         "vis": vision_view(model, float(cs.vEgo)),
         "lead": lead_view(lr, model, bearings), "lead_logged_bearing":
           abs(float(lg.yRel)) / max(float(lg.dRel), 1.0) if lg.status and lg.radar else None,
@@ -360,6 +433,7 @@ def episodes(frames: list[dict], meta: dict, thr: float) -> list[dict]:
     ep["min_visA"] = min((ld["visA"] for ld in leads if math.isfinite(ld["visA"])), default=float("nan"))
     ep["bound_frames"] = {f"{b:g}": sum(1 for ld in leads if ld.get(f"bound@{b:g}")) for b in meta["bearings"]}
     ep["steer_max"] = max(abs(frames[i]["steer"]) for i in idx)
+    ep["fix_frames"] = {k: sum(1 for i in idx if frames[i].get("fix", {}).get(k)) for k in FIX_VARIANTS if k in variants}
     vis = [frames[i]["vis"] for i in idx if frames[i]["vis"] is not None and frames[i]["vis"]["p"] >= VISION_REF_MIN_PROB]
     n_req = sum(1 for x in vis if x["req"] >= VISION_REF_MIN_REQ)
     n_a = sum(1 for x in vis if x["a"] <= VISION_REF_MAX_A)
@@ -393,7 +467,7 @@ def frame_diffs(frames: list[dict], meta: dict) -> dict:
   base = meta["variants"][0]
   out = {}
   for v in meta["variants"][1:]:
-    if not v.startswith("b"):
+    if v in ("nobound", "logged"):
       continue
     hits = [f["t"] for f in frames if f["engaged"] and f["v_ego"] > MOVING_MIN_V and abs(f["out"][v] - f["out"][base]) > CHANGE_DA]
     clusters: list[list[float]] = []
@@ -432,7 +506,7 @@ def print_report(meta, frames, eps, diffs, thr):
     ch = ",".join(f"{v}:{fnum(c['da'])}/{fnum(c['dt'], 1)}" for v, c in ep["changed"].items() if c["moved"])
     print(" | ".join([fmt_t(ep["start"])] + [fnum(ep["min"][v]) for v in variants] +
                      [fnum(ep["min"]["cmd"]), fnum(ep["min"]["aEgo"]), fnum(ep["max_bearing"], 3), fnum(ep["min_visA"]),
-                      "/".join(str(x) for x in ep["bound_frames"].values()), _ref_label(ep["ref"]), ch or "-"]))
+                      "/".join(str(x) for x in list(ep["bound_frames"].values()) + list(ep.get("fix_frames", {}).values())), _ref_label(ep["ref"]), ch or "-"]))
 
 
 def main() -> int:
@@ -441,11 +515,12 @@ def main() -> int:
   ap.add_argument("--bearings", default=DEFAULT_BEARINGS,
                   help="comma list; the first is the baseline the others are diffed against")
   ap.add_argument("--threshold", type=float, default=-1.5)
+  ap.add_argument("--fixes", action="store_true", help="add the replay-only 'hold' and 'visdis' bound variants (STATUS 107)")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
-  frames, meta = replay(args.route_dir, bearings)
+  frames, meta = replay(args.route_dir, bearings, args.fixes)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)
