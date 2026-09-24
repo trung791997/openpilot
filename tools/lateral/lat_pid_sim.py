@@ -52,7 +52,7 @@ BANDS = (("low <25mph", 0.0, 25 * MPH), ("standard 25-50", 25 * MPH, 50 * MPH), 
 TUNING_KEYS = (
   "LatPScaleLowSpeed", "LatPScaleStandard", "LatPScaleHighway",
   "LatIScaleLowSpeed", "LatIScaleStandard", "LatIScaleHighway",
-  "LatFScaleLowSpeed", "LatFScaleStandard", "LatFScaleHighway",
+  "LatFScaleLowSpeed", "LatFScaleStandard", "LatFScaleHighway", "LatGainSchedule",
   "HondaCenterScale", "HondaCenterBoostThreshold", "HondaCenterBoostMinSpeed",
   "NrdrLatAngleRateLimit", "HondaTorqueLowPassFilter",
   "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway", "NrdrLatUseFirmwareVgr",
