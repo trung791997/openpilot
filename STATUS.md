@@ -173,7 +173,7 @@ sudo apt-get install -y capnproto libcapnp-dev libzmq3-dev opencl-headers \
                         ocl-icd-opencl-dev libeigen3-dev libusb-1.0-0-dev
 
 export UV_PROJECT_ENVIRONMENT=/tmp/opvenv       # NOT the repo's broken .venv
-uv venv --python 3.11 "$UV_PROJECT_ENVIRONMENT"
+uv venv --python 3.12 "$UV_PROJECT_ENVIRONMENT"   # 3.12 matches the device (3.12.3)
 uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
   numpy pycapnp pytest pytest-xdist pytest-asyncio pytest-cpp cython scons setuptools \
   smbus2 pyzmq sentry-sdk requests psutil pyserial tqdm zstandard crcmod setproctitle \
@@ -5898,9 +5898,9 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
   - a side label slides outward, and could now reach the screen edge or the wheel icon.
   - Photograph it if a label goes missing or clips.
 
-**Test environment on an aarch64 Linux host (this session).** The checked-in `.so` files load natively. They were built for **Python 3.12** (`msgq/ipc_pyx.so` needs `PyType_FromMetaclass`), but the SessionStart hook creates a 3.11 `.venv`. Its scons step also fails without `clang++`, and it leaves `panda/board/obj/{gitversion.h,version}` dirty (restore them). What worked for the mici UI tests:
+**Test environment on an aarch64 Linux host (this session).** The checked-in `.so` files load natively. They were built for **Python 3.12** (`msgq/ipc_pyx.so` needs `PyType_FromMetaclass`), but the SessionStart hook created a 3.11 `.venv`. **Fixed 2026-09-24:** the hook now creates `.venv` on 3.12, and rebuilds an existing venv on another version unless `.venv` is tracked by git. Checked on this aarch64 host: `.venv` 3.11 → 3.12.3, and `msgq.ipc_pyx`, `cereal.messaging` and `Params` import. Its scons step also fails without `clang++`, and it leaves `panda/board/obj/{gitversion.h,version}` dirty (restore them). What worked for the mici UI tests:
 - a 3.12 venv outside the repo with the hook's package list plus `raylib<5.5.0.3`, `qrcode` and `pillow`;
 - `PARAMS_ROOT` pointed at a scratch directory, because Params otherwise tries `/data/params`;
 - running under `xvfb-run -a`, because raylib segfaults at import without a display.
 
-The hook itself is not changed here.
+Still open in the hook: the scons step exits non-zero without `clang++`, so on this host it stops before the skip-worktree step. It also installs neither the UI deps (`raylib`, `qrcode`, `pillow`) nor Xvfb.

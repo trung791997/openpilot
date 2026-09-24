@@ -86,9 +86,23 @@ fi
 # json-rpc needs a raised HTTP timeout), so the dependency set needed to build and to run
 # the radar/longitudinal suites is installed explicitly. Keep this list in sync with
 # STATUS.md -> "Build and test environment".
+# Python 3.12 matches the device (3.12.3): the checked-in aarch64 .so files need 3.12
+# (msgq/ipc_pyx.so imports PyType_FromMetaclass) and fail to import under 3.11.
+# An existing venv on another version is rebuilt, unless .venv is tracked by git
+# (it once was a committed symlink -- AGENTS.md §10 says not to delete it in passing).
+PY_VERSION=3.12
+if [ -x "$VENV/bin/python" ] \
+   && [ "$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')" != "$PY_VERSION" ]; then
+  if [ -n "$(git ls-files -- .venv)" ]; then
+    echo "[session-start] WARNING: .venv is not Python $PY_VERSION and is tracked by git; leaving it alone."
+  else
+    echo "[session-start] Rebuilding .venv on Python $PY_VERSION ..."
+    rm -rf "$VENV"
+  fi
+fi
 if [ ! -x "$VENV/bin/python" ]; then
-  echo "[session-start] Creating virtualenv at .venv ..."
-  "$UV_BIN" venv --python 3.11 "$VENV"
+  echo "[session-start] Creating virtualenv at .venv (Python $PY_VERSION) ..."
+  "$UV_BIN" venv --python "$PY_VERSION" "$VENV"
 fi
 
 echo "[session-start] Installing Python dependencies (idempotent)..."
