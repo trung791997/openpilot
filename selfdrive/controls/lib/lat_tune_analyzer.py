@@ -33,6 +33,13 @@ SIGN_RATE_UP_MAX = 0.8     # /s, no step up above this
 CURVE_RATIO_LOW = 0.95
 CURVE_RATIO_HIGH = 1.03
 PRESS_RATE_UP_MAX = 1.5    # override onsets per engaged minute; no step up above this
+# A driver fighting the wheel near NrdrDriverOverrideThreshold flickers steeringPressed: each press cuts the
+# torque, the driver's reading drops under the threshold, the fade brings it back, and it trips again.
+# Route 0000026b 32:43.7-45.2 shows seven 0.02-0.04 s presses inside one real fight; across 262-26b, 723 of
+# 724 press onsets had >= 0.2 s of |torque| > 1000 within +-1 s, so short presses are not sensor noise.
+# Counting every onset tripled the rate (Standard 179 onsets -> 63 fights), so onsets closer than this to
+# the previous pressed frame belong to the same override.
+PRESS_MERGE_FRAMES = 150   # 1.5 s at 100 Hz
 OSC_GROWTH = 1.15
 PRESS_GROWTH = 1.25
 PRESS_SLACK = 0.2
@@ -137,11 +144,13 @@ class DriveStats:
         a.update(c)
     self.prev_sign = 0.0
     self.prev_pressed = False
+    self.since_press = PRESS_MERGE_FRAMES
 
   def observe(self, v_ego, desired_deg, angle_deg, pressed, lane_change, steer_limited):
     """Call once per engaged frame."""
-    onset = pressed and not self.prev_pressed
+    onset = pressed and not self.prev_pressed and self.since_press >= PRESS_MERGE_FRAMES
     self.prev_pressed = pressed
+    self.since_press = 0 if pressed else self.since_press + 1
     if v_ego < MIN_SPEED:
       self.prev_sign = 0.0
       return

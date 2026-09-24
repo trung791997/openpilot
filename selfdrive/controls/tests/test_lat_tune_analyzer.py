@@ -143,6 +143,15 @@ class TestRules:
     s = lat.update_state(lat.default_state(), drive(4, 20, curve_des=10, curve_ratio=0.85, press_every=2000), lat.APPLY_MODE)
     assert s["factor"][band_of(20)] == pytest.approx(1.0)  # 3 onsets/min > PRESS_RATE_UP_MAX
 
+  def test_press_chatter_within_one_fight_counts_once(self):
+    # 0000026b 32:43.7-45.2: seven 2-4 frame presses 10-40 frames apart while the driver held the wheel
+    st = lat.DriveStats()
+    v = 20 * lat.MPH_TO_MS
+    pattern = ([True] * 4 + [False] * 12) * 7 + [False] * 400 + [True] * 25 + [False] * 400
+    for p in pattern:
+      st.observe(v, 0.0, 0.0, p, False, False)
+    assert st.acc[band_of(20)]["press"] == pytest.approx(2.0)   # the chatter burst, then a separate press 4 s later
+
   def test_no_step_up_when_already_near_oscillation_limit(self, monkeypatch):
     monkeypatch.setattr(lat, "SIGN_RATE_UP_MAX", 0.5)  # 0.67 /s: above the step-up limit, below SIGN_RATE_MAX
     s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.85), lat.APPLY_MODE)
