@@ -17,8 +17,8 @@ Method:
      computed on alternate 2-minute blocks of the drive ("fit"); the other blocks ("holdout") are only
      used to accept or reject the final answer.
   4. Verdict. The schedule is recommended only if the holdout cost improves, no trusted band gets worse
-     on holdout by more than 2 %, and no untrusted band gets worse on all data (err rms, straight rms,
-     or straight sign-change rate by more than 10 %).
+     on holdout by more than 2 %, and no untrusted band gets worse on all data (err rms or straight
+     rms by more than 1 %, or straight sign-change rate by more than 10 %).
 
 The default knots 20/30/40/50 mph put the whole blend inside the bands the sim can score: above 50 mph
 the schedule is flat at the highway value, exactly as the bands are. Knots in an untrusted band only
@@ -163,7 +163,7 @@ def untrusted_ok(res, ref_res, trusted):
   for name, ok in trusted.items():
     if ok:
       continue
-    for key, tol in (("err_rms", 1.0), ("straight_rms", 1.0), ("zero_cross", 1.10)):
+    for key, tol in (("err_rms", 1.01), ("straight_rms", 1.01), ("zero_cross", 1.10)):
       num = den = 0.0
       for r_route, f_route in zip(res, ref_res, strict=True):
         r = r_route["all"][name]

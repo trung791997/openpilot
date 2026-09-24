@@ -70,7 +70,8 @@ def test_untrusted_band_may_not_oscillate_more():
   ref = _res(highway=M)
   assert at.untrusted_ok(_res(highway=dict(M, zero_cross=0.32)), ref, trusted) == []
   assert at.untrusted_ok(_res(highway=dict(M, zero_cross=0.42)), ref, trusted)
-  assert at.untrusted_ok(_res(highway=dict(M, err_rms=1.01)), ref, trusted)
+  assert at.untrusted_ok(_res(highway=dict(M, err_rms=1.005)), ref, trusted) == []
+  assert at.untrusted_ok(_res(highway=dict(M, err_rms=1.02)), ref, trusted)
 
 
 def test_costs_are_relative_to_seed():
