@@ -169,7 +169,12 @@ CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
 # 0.12 -> 0.10 (STATUS 74g): 00000237 15:42.5 was the same failure at bearing 0.116-0.119, an in-lane lead at
 # 89 m with aLeadK -6.0 vs vision a +0.06; live alpha commanded -2.0 and reached aEgo -2.7. Genuine brakes on
 # the fleet sit at bearing <= 0.004; a 10-route replay changed no protected episode at 0.10.
-OFF_AXIS_LEAD_MIN_BEARING = 0.10
+# 0.10 -> 0.075 (STATUS 104): 0000025f 13:58.4 was the same failure at bearing 0.078-0.101 (aLeadK -4.2 vs
+# vision a ~0.0 at p 0.99); alpha -3.45 in replay against stock cmd -0.49. A closed-loop pass (current Bosch-A
+# parser + radard re-run from logged CAN) over 17 routes changed 2 of 200 episodes, both false brakes (25f
+# 13:58.4 -3.45 -> -1.22, 260 9:07.8 -3.20 -> -1.01), and none of the 125 genuine-brake episodes. 00000263
+# 6:14.3 (real hard lead at bearing up to 0.149) is unchanged because vision a -1.55 caps the bound.
+OFF_AXIS_LEAD_MIN_BEARING = 0.075
 OFF_AXIS_LEAD_MAX_BRAKE = 1.5
 OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 

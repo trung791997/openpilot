@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; pre-existing: 23e 4:54.6 genuine brake softened by the 0.10 bound itself). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5744,3 +5744,95 @@ A hard-lead episode here means a vision lead with a ≤ −1.0 and a stock comma
 **What this does not settle.**
 - Everything here is open loop and uses on-device radarState from mixed builds. Nothing was driven.
 - The 0.10 bearing threshold stays as it is. 25f 13:58.4 argues for lowering it; 263 6:14.3 is the case that would have to survive the change. Both need a closed-loop radard + planner pass before a number moves.
+
+## 104. Closed-loop radar + planner replay of `OFF_AXIS_LEAD_MIN_BEARING` 0.10 vs 0.075 on 17 routes; 0.075 ships. Replay evidence only; brake-affecting; not driven.
+
+The owner asked (2026-09-24) for the closed-loop pass that item 103 said had to come before the threshold moved, and to ship 0.075 if it passed.
+
+**Pass criteria, fixed before the results were read.**
+1. Replayed vs logged `leadOne.status` agrees on ≥ 99% of frames on every route.
+2. No genuine-brake episode is softened by more than 0.3 m/s² or delayed by more than 0.2 s at the −1.5 crossing. An episode is genuine if the stock or live command goes below −2.0, or vision a ≤ −1.0. This includes 263 6:14.3 and the 74g protected episodes.
+3. The targeted false brakes improve.
+
+**Tool.** `tools/longitudinal/alpha_closed_loop_replay.py` (f1bc872).
+- **Usage:** `python tools/longitudinal/alpha_closed_loop_replay.py ROUTE_DIR [--bearings 0.10,0.075] [--threshold -1.5] [--json OUT]`
+- **"Closed loop" in item 36's sense:** the radar chain is re-run from logged CAN. The current Bosch-A `RadarInterface` feeds the current `RadarD`, which feeds radarState, which feeds `LongitudinalPlanner`.
+- D-063 rail interval and D-053 range/vRel assist are off, as shipped.
+- **Four planners** run side by side: `b0.1`, `b0.075`, `nobound`, and `logged` (the on-device radarState at 0.10).
+- **Ego motion is still the logged motion.** The planner output never feeds back into the gap.
+- Alpha-long routes use their logged controlsState. Stock routes use item 103's synthesized pid state and ACC_CONTROL on bus 1.
+- Episodes and crossings are the same as in item 103.
+
+**Validity.** `leadOne.status` agrees on 99.10–99.81% of frames on every route. Same-track agreement is lower, 60.8% (260) to 90.4% (23e), because the drives ran older parser builds than the tree. Status, radar flag and dRel (±1 m) agree well enough for episode-level comparison. Frame-level track identity does not.
+
+| Route | Build | Episodes | status | radar | dRel ±1 m | track |
+|---|---|---|---|---|---|---|
+| `00000232--3a01619ce5` | 9984de885 | 19 | 99.81% | 96.3% | 94.1% | 65.4% |
+| `00000236--60bfb34cb1` | fa262e0c7 | 31 | 99.48% | 95.1% | 89.1% | 82.7% |
+| `00000237--77313c5a66` | fa262e0c7 | 20 | 99.35% | 92.3% | 84.3% | 74.1% |
+| `00000239--d1cf55daa7` | fa262e0c7 | 7 | 99.66% | 99.1% | 93.9% | 83.3% |
+| `0000023a--5c3a439dfc` | fa262e0c7 | 1 | 99.69% | 98.9% | 93.6% | 81.1% |
+| `0000023b--7f6d4c1ba9` | 0756f8103 | 3 | 99.69% | 99.5% | 97.2% | 67.0% |
+| `0000023e--9a40b07f55` | 0756f8103 | 31 | 99.50% | 99.4% | 96.2% | 90.4% |
+| `00000241--7948e97423` | 9845e8775 | 8 | 99.46% | 99.2% | 92.3% | 83.3% |
+| `00000245--1356bb0355` | 0dae515c5 | 13 | 99.70% | 99.5% | 96.2% | 89.3% |
+| `0000025b--1f614c85d6` (item 103 segs) | e20a86641 | 11 | 99.19% | 99.1% | 86.9% | 71.6% |
+| `0000025d--0a4208fba9` | 92a8c7a01 | 4 | 99.58% | 99.5% | 96.1% | 63.4% |
+| `0000025e--919b58ab81` | 92a8c7a01 | 10 | 99.64% | 99.7% | 90.0% | 68.4% |
+| `0000025f--ff78805bdc` | 817c6fb25 | 11 | 99.38% | 99.5% | 90.3% | 80.6% |
+| `00000260--a95a0c44ab` | f3952d84c | 9 | 99.21% | 98.9% | 80.8% | 60.8% |
+| `00000261--70d5276477` | 5047b9631 | 5 | 99.20% | 99.6% | 92.0% | 78.3% |
+| `00000262--864cc3c6db` | 314b85768 | 5 | 99.10% | 99.5% | 94.9% | 85.6% |
+| `00000263--b8afdda0eb` | 5969cac4f | 12 | 99.76% | 98.7% | 93.1% | 83.8% |
+
+The first nine routes (232–245) are alpha-long drives; the last eight are stock ACC. All are on dongle `11c8fa231c0499ed`. Route data stays in the session scratchpad and is not committed.
+
+**Result: 200 episodes; 2 changed, both false brakes; 0 of 125 genuine-brake episodes changed.**
+- ✅ **25f 13:58.4**, the item 103 target:
+  - b0.1 −3.45 → b0.075 **−1.22**. Stock cmd was −0.49 and aEgo −0.73; nobound and logged were both −3.45.
+  - Bearing 0.078–0.101, aLeadK −3.4 to −4.2, vision a about 0.0 at p 0.99.
+  - The bound fired on 0 frames at 0.10 and on 46 at 0.075.
+- ✅ **260 9:07.8**, which item 103 found only partly bounded:
+  - −3.20 → **−1.01**. Stock cmd was −0.38 and nobound −3.45.
+  - The bound fired on 9 frames at 0.10 and on 17 at 0.075.
+- **Negative controls, all unchanged** (Δmin 0.00, Δt 0.00 at −1.5):
+  - **263 6:14.3:** −3.45 at both thresholds; cmd −2.46, aEgo −3.07. Bearing reaches 0.149 and the bound fires on 10 and 15 frames. Vision a −1.55 caps the bound at −1.55 (`max(1.5, vision_brake)`), so the brake survives.
+  - **237 15:42.5** (74g target) is still bounded at both thresholds.
+  - **245 0:40.4:** −2.93 at both.
+  - **25b** 13:17.8, 22:18.9 and 22:33.2.
+  - **241:** the 5:17.2 hard brake, where the bound fires on 1 frame at 0.10 and on 33 at 0.075. Output −2.84 vs −2.83; crossing unchanged.
+  - **236 14:18.0:** 9 frames bounded at 0.075; output −3.50 at both.
+  - **25e 12:05.5:** 3 frames bounded at 0.075; −3.50 at both.
+- **Why the extra bounded frames on real brakes change nothing:** in each case either vision corroborates the lead's braking, which raises the cap, or aLeadK was not what set the output on those frames.
+
+**Frame-level differences outside the two episodes** (|Δ| > 0.3 m/s² between b0.1 and b0.075). Each cluster was inspected frame by frame:
+- **23e 23:47–23:52 (232 frames):**
+  - No lead on any frame, and none below −0.3.
+  - It is the post-disengage acceleration ramp: b0.075 +1.27 against b0.1 +0.84. b0.075 matches nobound and b0.1 matches logged.
+  - This is MPC internal state carried from earlier on the route. A segments 22–23 subset replay gives identical variants.
+- **260 10:08.6:** no lead, ego accelerating. b0.075 is 0.2–0.6 higher.
+- **25e 16:28.4:** centred lead at bearing 0.01. b0.075 matches logged; b0.1 is −0.5 for two frames.
+- **245 14:19.7:** bearing 0.001, one frame after a QP solver error. **b0.075 is lower** (−0.54 vs 0.00), the same as nobound.
+- **241 4:23.0:** a lead 6 m to the side at 49–67 m, bearing 0.085–0.095, aLeadK −2.7 to −3.0, vision p 0.44 (so vision is ignored). The bound fires; b0.1 −0.31 → b0.075 0.00. Live alpha logged −0.25 and stock did not brake. Not a genuine brake.
+- **25b 20:50.5 (17 frames):** inside an episode whose outcome did not move, −3.45 → −3.42.
+
+**Shipped.**
+- `OFF_AXIS_LEAD_MIN_BEARING` goes from 0.10 to **0.075** in `selfdrive/controls/lib/longitudinal_planner.py`. The comment block records the evidence.
+- **New tests:** `test_off_axis_lead_bound_covers_route_25f_1358_geometry` and `test_off_axis_lead_bound_threshold_edge`. The second checks that bearing 0.070 is left alone and that a vision-corroborated −3.0 is kept at 0.078.
+- `test_longitudinal_planner.py`: 493 passed. Ruff reports no new findings; the 9 on these two files predate this change.
+- **Brake-affecting and not road-validated.** The evidence is replay only, with ego following the log. What to watch on the next drives:
+  - curves with a lead 3–6 m off-centre at 40–70 m;
+  - the item 102 checklist.
+
+**Pre-existing, not caused by this change (found in the same pass).**
+- 🟠 **23e 4:54.6: the 0.10 bound itself softens a genuine brake.**
+  - The bound fires on 21 frames at both thresholds and gives −1.21, against nobound −2.45. Live alpha logged −1.21; cmd was −3.03 and aEgo −3.84.
+  - Bearing 0.254, steer 30°, vision a −0.03.
+  - This is the 74e bound working as designed: vision does not see the brake, so the cap is 1.5. Here, though, the lead was a real hard brake.
+  - It needs its own look before 74e is trusted on tight curves. Is this a cut-in on a curve, or a vision miss?
+- **241 4:56.0 and 237 18:38.6:** alpha is far shallower than cmd (−1.72 vs −3.24, −1.38 vs −2.60) at all four variants, including nobound. It is not the bound. It is on the item 103 "stock is deeper" list.
+
+**What this does not settle.**
+- Ego follows the log, so a softer planner's effect on the gap is not simulated.
+- Mixed on-device builds explain the lower track agreement. Frame-level lead identity is not trustworthy for these routes.
+- Nothing here was driven.
