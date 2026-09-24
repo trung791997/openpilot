@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-23**
+**As of: 2026-09-24**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-23), start here:** item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -5596,3 +5596,151 @@ So on both approaches the lead entered the picture at ~110 m already at or below
   - Nothing should be marked two lanes over or on the shoulder.
   - Side labels should sit under their marker and slide outward, not overlap.
 - **Unchanged:** D-063 `BoschARailInterval` stays off unless you switch it on.
+
+## 103. STATUS 74c open-loop alpha planner replay on the seven stock-ACC routes 25d–263. Replay evidence only; nothing driven, no code change to the planner.
+
+The owner asked (2026-09-24) to rerun 74c on the newer stock-ACC routes. The question was whether alpha long would brake harder than stock ACC, or later than it.
+
+**Tool.** `alpharp.py` only exists on the Mac, so this item rebuilds it as `tools/longitudinal/alpha_open_loop_replay.py` (7411fe9, 8a70d51).
+- **Usage:** `python tools/longitudinal/alpha_open_loop_replay.py ROUTE_DIR [--threshold -1.5] [--json OUT]`. `ROUTE_DIR` is in the `tools/konik_fetch.py` layout, `<dir>/<seg>/rlog.zst`.
+- **What it does:** each route's logged messages are fed into `LongitudinalPlanner` at 20 Hz. The planner's `output_a_target` is compared with stock ACC's `carState.aEgo` and with `ACC_CONTROL.ACCEL_COMMAND`.
+- **Output:** every episode where any side goes below the threshold. For each episode the tool reports:
+  - the minimum on each side;
+  - the time each side first crosses −1.0, −1.5 and −2.5;
+  - a lead trace;
+  - how many frames the off-axis bound fired on.
+- **Two planners** run side by side. `alpha` is the tree as shipped. `nobound` has `bound_off_axis_radar_leads=False`, the same as 74f's `TAG=before`.
+- **Existing tools didn't cover this.** `score_route_longitudinal.py` does not compare against stock, and it crashes on `sm.all_checks` because it is handed a plain dict.
+
+**Method and caveats.**
+- **Open loop:** ego follows what stock ACC actually did, so alpha's output never feeds back into the gap. When alpha brakes earlier or harder than stock, the replay cannot show the gap it would have opened.
+- **radarState** is the on-device log from each route's own build. The replay does not re-run radard. Planner code is at 6805d4a.
+- **CarParams are flipped** to alpha long (`openpilotLongitudinalControl=True`, `pcmCruise=False`). These routes log `longControlState=off` throughout. The replay therefore synthesizes `pid` when `cruiseState.enabled and not brakePressed`, and `off` otherwise.
+- **ACC_CONTROL (0x1DF) is on bus 1 on this car, not bus 0** as item 89 wrote. It is decoded with DBC `honda_civic_hatchback_ex_2017_can_generated`.
+- **Standstill excluded:** `ACCEL_COMMAND` is held at −4.0 at standstill, so frames with vEgo ≤ 1.0 m/s are dropped.
+- **Toggles:** `starpilotToggles` is empty on these builds, so defaults apply. BLoTv3 is read from `initData` and was True on every route. The off-axis bound was active on every route.
+- **Episodes** merge within 3 s. Times are route time from `initData.logMonoTime`.
+- **Lag** means alpha's crossing time minus stock's crossing time, at the same threshold. Positive means alpha trails. Ramp-start lag was also tried, but it moved by seconds on gentle pre-brake stretches, so it is not used.
+
+**Routes** (dongle `11c8fa231c0499ed`). All are HONDA_CIVIC_BOSCH on stock ACC. Route data stays in the session scratchpad and is not committed.
+
+| Route | Build | Engaged | Episodes < −1.5 |
+|---|---|---|---|
+| `0000025d--0a4208fba9` | 92a8c7a01 | 407 s | 4 |
+| `0000025e--919b58ab81` | 92a8c7a01 | 887 s | 10 |
+| `0000025f--ff78805bdc` | 817c6fb25 | 891 s | 11 |
+| `00000260--a95a0c44ab` | f3952d84c | 372 s | 9 |
+| `00000261--70d5276477` | 5047b9631 | 544 s | 5 |
+| `00000262--864cc3c6db` | 314b85768 | 408 s | 5 |
+| `00000263--b8afdda0eb` | 5969cac4f | 950 s | 12 (20 rlog segments; the API lists 21) |
+| `0000025b--1f614c85d6` (segs 3, 11, 13, 15, 21–23 only; the 74c check) | e20a86641 | 272 s | 7 |
+
+The 63 episodes split as follows:
+- 41 where both sides went below −1.5;
+- 18 alpha only;
+- 4 stock only (one of these is alpha below −1.5 only with the bound off).
+
+`konik_preflight.py` passed 6 of 6 checks before the fetch.
+
+**The tool reproduces 74c on 25b.**
+- **22:18.9 hard lead:**
+  - Alpha crosses −1.5 at 22:19.7, and the command crossed it at 22:18.9, so alpha is **+0.8 s** late.
+  - At −2.5 alpha is +0.6 s late against the command and +0.5 s against aEgo. This is 74c's ~0.7 s.
+  - Stock went deeper: aEgo −4.40 and cmd −3.0, against alpha's floor of −3.48.
+- **22:33.2:** alpha is +0.5 s late against the command.
+- **15:33.7 vision-only lead (74b):** stock only. Cmd was −2.73 and aEgo −3.38, while alpha reached only −0.58.
+- **11:29 off-axis lead:** −3.45 without the bound and −2.16 with it; stock was −0.6. This is the 74e case.
+- **11:01:** the bound fired on 55 frames but alpha still reached −3.46, against stock aEgo −2.09.
+- **13:17.8:** alpha reaches −3.45 against cmd −1.13. 74c had −2.7 here; the planner has changed since 74c.
+
+### Hard-braking leads: the ~0.7 s trail does not reproduce on the newer builds
+
+A hard-lead episode here means a vision lead with a ≤ −1.0 and a stock command below −2.0. Lag is alpha's −1.5 crossing minus the command's −1.5 crossing.
+
+| Route | Time | Lag vs cmd | Alpha min | Cmd min | aEgo min |
+|---|---|---|---|---|---|
+| 25d | 1:46.2 | +0.2 s | −3.45 | −2.47 | −3.06 |
+| 25e | 2:48.0 | +0.3 s | −3.62 | −2.22 | −2.86 |
+| 25e | 6:09.2 | −0.5 s | −3.46 | −2.81 | −3.21 |
+| 25e | 8:49.9 | −3.4 s | −3.42 | −2.15 | −2.41 |
+| 25e | 12:05.5 | +0.2 s | −3.50 | **−4.00** | **−4.34** |
+| 25e | 14:15.2 | +0.4 s | −3.48 | −2.62 | −3.40 |
+| 25e | 15:47.0 | −0.4 s | −3.46 | −2.02 | −2.36 |
+| 25f | 6:54.2 | +0.4 s | −3.73 | −2.92 | **−4.05** |
+| 25f | 12:49.2 | −0.8 s | −3.45 | −2.64 | −3.07 |
+| 260 | 9:30.6 | −0.5 s | −3.45 | −2.24 | −2.81 |
+| 261 | 2:12.2 | −3.8 s | −3.48 | −2.99 | −3.35 |
+| 262 | 2:42.3 | +0.1 s | −3.45 | −2.64 | −2.89 |
+| 262 | 5:10.3 | −2.5 s | −3.00 | −2.29 | −2.65 |
+| 263 | 6:14.3 | +0.3 s | −3.45 | −2.46 | −3.07 |
+| 263 | 14:25.2 | −3.0 s | −3.47 | −2.04 | −2.41 |
+
+- **Across all 17 hard-lead episodes** (including the two on 25b):
+  - Against the command: median lag **+0.05 s**. The worst on the new routes is +0.4 s.
+  - Against aEgo: median lag +0.30 s. The worst is +1.3 s, at 25e 2:48.0.
+  - At −2.5 (n = 8): median −0.45 s. The worst is +0.6 s, and only on 25b.
+- **Stock is deeper at the peak.** In three hard stops stock went below alpha's floor of about −3.45 to −3.73:
+  - 25e 12:05.5: cmd −4.00, aEgo −4.34. This was a vision-only lead closing from about 100 m at vRel −7 to −15, with vision a ≈ −1.2 to −1.4.
+  - 25f 6:54.2: aEgo −4.05.
+  - 25b 22:19: aEgo −4.40.
+
+  This is replay only, and open loop. It does not say whether alpha's floor would have been enough.
+- **25e 8:49.9 is not an off-axis case.** The lead was straight ahead (bearing ≤ 0.036). The 0.39 maximum bearing comes after the lead turned off. Alpha started 3.4 s ahead of stock.
+
+### Off-axis leads on curves (the 74e/74g bound)
+
+- 🔴 **25f 13:58.4: off-axis false brake just below the 0.10 threshold. The bound never fired.**
+  - Alpha −3.45 (source `cruise`); stock cmd −0.49 and aEgo −0.73.
+  - The radar lead sat at 49–61 m, y −4 to −6 m, bearing **0.078–0.101**, with steer about 12°.
+  - aLeadK read −4.2 and −3.9 while vision a stayed at about 0.0 with p 0.99. The bound fired on **0** frames.
+  - This is the same signature as 74g's 237 942.6. 74g's margin note (0.099 at 943.5) has now happened on a route.
+  - `OFF_AXIS_LEAD_MIN_BEARING=0.10` would need to come down to about 0.075 to catch it. That is **not changed here**: lowering it also widens the bound onto real in-lane leads on curves. See 263 6:14.3 below. It needs its own negative-control pass before any change.
+- 🟠 **260 9:07.8: the bound is only partly effective.**
+  - Bearing 0.093–0.119, with y swinging −1.7 → +6.5 m and the lead flipping between radar and vision.
+  - The bound fired on 9 frames: alpha −3.21 with it, −3.45 without. Stock cmd was −0.38.
+  - The frames below 0.10 carry the brake.
+- ✅ **25f 16:52.0: the bound worked.**
+  - Bearing 0.11–0.128, aLeadK −5.1, vision a about +0.05.
+  - The bound fired on 41 frames and took alpha from −1.81 to −0.89; stock was −0.4.
+- ✅ **260 9:53.9: the bound fired on 7 frames,** −2.09 → −1.96. Stock cmd −1.09. Small effect.
+- ✅ **263 6:14.3: a real hard lead cutting out on a curve.**
+  - y +1.3 → −4.6 m, bearing up to 0.149, vision a about −1.5.
+  - The bound fired on 9 frames and did **not** delay alpha: +0.3 s against the command, the same as the unbounded planner.
+  - This is the negative control that any threshold change has to keep.
+- **260 9:01.2 is not off-axis.** Bearing was 0.02. Track 35, which otherwise reads vRel about +1, had a single-sample spike of vRel −3.6 and aLeadK −3.7. Alpha went to −2.67; stock stayed at −0.30. The aLeadK filter passes a one-sample spike through to the planner.
+- **260 6:03.4:** bearing 0.268 only after the event, as the lead leaves. Alpha is +0.1 s against the command.
+
+### Alpha-only and stock-only episodes
+
+- **Alpha is often much harsher than stock on ordinary slowdowns.** In 16 episodes alpha reached −3.1 to −3.48 while the stock command stayed above −2.0:
+  - 25b 11:01.6, 13:17.8
+  - 25d 9:35.2 (cmd −0.80)
+  - 25e 1:28.6, 5:18.0, 9:15.8, 16:42.0
+  - 25f 2:37.1, 8:02.6, 13:58.4
+  - 260 5:53.9, 6:03.4, 9:07.8
+  - 263 2:43.0, 13:21.1, 15:57.9
+
+  Most are real leads that stock handled at −1.3 to −1.8. Alpha goes to the rail. In open loop that difference may partly close, because alpha would have opened the gap earlier. It is still the biggest feel difference between alpha and stock in this data.
+- **Alpha only, no brake from stock** (worst first):
+  - 25f 13:58.4 (off-axis, above)
+  - 260 9:07.8 (off-axis, above)
+  - 260 9:01.2 (aLeadK spike, above)
+  - 25f 0:43.7: newly acquired lead at 61 m, vRel −11, vision a +0.1. Alpha −2.33; stock −0.5.
+  - 262 1:30.3: alpha −2.28; cmd −1.19.
+  - 263 0:13.4: vRel −11.1 with aLeadK +1.8/+7.6 and vision a +0.4. Alpha −2.06; stock cmd −0.95, aEgo +0.5.
+  - 261 2:42.3: alpha −2.02.
+  - 25b 23:05.4: alpha −1.95; stock −0.42.
+  - 263 5:58.2 −1.93, 17:01.8 −1.92
+  - 261 6:43.4 −1.77, 8:42.1 −1.64
+  - 263 2:35.6 −1.57, 6:05.0 −1.53
+  - 262 1:34.1 −1.56
+  - 25f 6:09.1 −1.52
+- **Stock only:**
+  - 25b 15:33.7: vision-only lead (74b).
+  - 260 10:59.6: lead lost. Stock cmd −1.16 and aEgo −1.57, while alpha stayed at −0.08. This is the item 89 case.
+  - 25d 1:57.4: aEgo −1.60 on its own.
+  - 25f 16:52.0: bounded, above.
+
+**What this does not settle.**
+- Everything here is open loop and uses on-device radarState from mixed builds. Nothing was driven.
+- The 0.10 bearing threshold stays as it is. 25f 13:58.4 argues for lowering it; 263 6:14.3 is the case that would have to survive the change. Both need a closed-loop radard + planner pass before a number moves.
