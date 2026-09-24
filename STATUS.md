@@ -5920,6 +5920,7 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
   - **Below-sign fallback** (owner: "drop just below the sign"). When neither slide fits and one of the tried positions ran into the sign, the side label goes centred just below the sign (`_below_obstacle`). It is hidden only if that spot is taken or off-screen. A label boxed in only by other labels, never touching the sign, is still hidden.
     - Re-rendered 24.2 s: the right-lane "4 mph" now shows under the "35 +5" sign.
     - 3 tests replace the drop test; 44 passed.
+    - With MAX in the sign (ICBM holding, engaged, no recent set-speed change): same 24.2 s frame, sign "MAX 45 / 35 / +5". The right-lane label sits centred just below it. The sign box is the same 116×142 with or without MAX (item 102), so the spot does not move. The harness clock had to be pushed past the 2.5 s set-speed pop-up, or the plain sign drew.
   - Replay render evidence; the harness is scratch and is not committed. Not seen on the device. UI only, not brake-affecting.
 - **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
   - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
