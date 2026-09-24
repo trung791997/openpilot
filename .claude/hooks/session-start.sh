@@ -65,15 +65,18 @@ UV_BIN="$(command -v uv || echo /root/.local/bin/uv)"
 echo "[session-start] Remote container detected. Preparing build + test environment."
 
 # --- native libraries ------------------------------------------------------
-# openpilot needs capnp, zmq, OpenCL headers, eigen and libusb to build.
-# `apt-get update` can fail on unrelated third-party PPAs in this image; that must not
-# abort setup, so it is tolerated and the install is what actually gates.
-if ! [ -f /usr/include/capnp/common.h ] || ! [ -f /usr/include/zmq.h ] \
+# openpilot needs clang (SConstruct hardcodes clang/clang++), capnp, zmq, OpenCL headers,
+# eigen and libusb to build, and Xvfb to run the UI tests (raylib segfaults at import
+# without a display). `apt-get update` can fail on unrelated third-party PPAs in this
+# image; that must not abort setup, so it is tolerated and the install is what actually gates.
+if ! command -v clang++ >/dev/null || ! command -v xvfb-run >/dev/null \
+   || ! [ -f /usr/include/capnp/common.h ] || ! [ -f /usr/include/zmq.h ] \
    || ! [ -f /usr/include/eigen3/Eigen/Dense ] || ! [ -f /usr/include/libusb-1.0/libusb.h ]; then
   echo "[session-start] Installing native libraries via apt..."
   export DEBIAN_FRONTEND=noninteractive
   sudo apt-get update -qq || echo "[session-start] apt-get update reported errors; continuing."
   sudo apt-get install -y -qq \
+    clang build-essential xvfb \
     capnproto libcapnp-dev libzmq3-dev \
     opencl-headers ocl-icd-opencl-dev \
     libeigen3-dev libusb-1.0-0-dev
@@ -86,9 +89,34 @@ fi
 # json-rpc needs a raised HTTP timeout), so the dependency set needed to build and to run
 # the radar/longitudinal suites is installed explicitly. Keep this list in sync with
 # STATUS.md -> "Build and test environment".
+# Python 3.12 matches the device (3.12.3): the checked-in aarch64 .so files need 3.12
+# (msgq/ipc_pyx.so imports PyType_FromMetaclass) and fail to import under 3.11.
+# The venv uses uv's managed CPython, which ships Python.h; a system python3.12 often
+# lacks the -dev headers and scons then fails compiling the Cython extensions.
+# An existing venv on another version, or without Python.h, is rebuilt, unless .venv is
+# tracked by git (it once was a committed symlink -- AGENTS.md §10 says not to delete it
+# in passing).
+PY_VERSION=3.12
+_venv_ok() {
+  "$VENV/bin/python" - "$PY_VERSION" <<'PY'
+import os, sys, sysconfig
+ok = "%d.%d" % sys.version_info[:2] == sys.argv[1]
+ok = ok and os.path.isfile(os.path.join(sysconfig.get_paths()["include"], "Python.h"))
+sys.exit(0 if ok else 1)
+PY
+}
+if [ -x "$VENV/bin/python" ] && ! _venv_ok; then
+  if [ -n "$(git ls-files -- .venv)" ]; then
+    echo "[session-start] WARNING: .venv is not a Python $PY_VERSION with headers and is tracked by git; leaving it alone."
+  else
+    echo "[session-start] Rebuilding .venv on uv-managed Python $PY_VERSION ..."
+    rm -rf "$VENV"
+  fi
+fi
 if [ ! -x "$VENV/bin/python" ]; then
-  echo "[session-start] Creating virtualenv at .venv ..."
-  "$UV_BIN" venv --python 3.11 "$VENV"
+  echo "[session-start] Creating virtualenv at .venv (uv-managed Python $PY_VERSION) ..."
+  "$UV_BIN" venv --managed-python --python "$PY_VERSION" "$VENV" \
+    || "$UV_BIN" venv --python-preference only-managed --python "$PY_VERSION" "$VENV"
 fi
 
 echo "[session-start] Installing Python dependencies (idempotent)..."
@@ -97,7 +125,8 @@ UV_HTTP_TIMEOUT=300 "$UV_BIN" pip install --quiet --python "$VENV/bin/python" \
   pytest pytest-xdist pytest-asyncio pytest-cpp pytest-mock parameterized hypothesis ruff \
   pyzmq smbus2 sentry-sdk requests psutil pyserial tqdm zstandard crcmod \
   setproctitle pyjwt libusb1 python-dateutil pycryptodome cffi sympy casadi \
-  future-fstrings
+  future-fstrings \
+  "raylib<5.5.0.3" qrcode pillow
 
 # --- build the native extensions ------------------------------------------
 # The tracked .so files are aarch64 (built for the comma). They must be rebuilt for x86_64
@@ -144,6 +173,9 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
     echo "export PYTHONPATH=\"$PROJECT_DIR\""
     echo "export PATH=\"$VENV/bin:\$PATH\""
     echo "export UV_PROJECT_ENVIRONMENT=\"$VENV\""
+    # On an aarch64 host Params defaults to /data/params (the device path), which is not
+    # writable here; use the path a PC gets.
+    echo "export PARAMS_ROOT=\"\${PARAMS_ROOT:-\$HOME/.comma/params}\""
   } >> "$CLAUDE_ENV_FILE"
 fi
 
@@ -157,6 +189,9 @@ cat <<'READY'
                      selfdrive/controls/tests/test_lead_follow_policy.py \
                      selfdrive/controls/tests/test_following_distance.py \
                      selfdrive/controls/tests/test_turn_lead.py -q -o addopts=""
+
+  Run UI tests under a virtual display (raylib segfaults at import without one):
+    xvfb-run -a python -m pytest selfdrive/ui/tests/test_mici_multi_lead.py -q -o addopts=""
 
   Lint from the tree that owns the file -- opendbc_repo has its own ruff config:
     ruff check <changed files>

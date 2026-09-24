@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays; 104b is a plain-language summary and notes that no StarPilot lane-centering or offset setting affects the bound). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 111 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays; 104b is a plain-language summary and notes that no StarPilot lane-centering or offset setting affects the bound). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -169,16 +169,16 @@ Two traps to know before you start:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y capnproto libcapnp-dev libzmq3-dev opencl-headers \
+sudo apt-get install -y clang build-essential xvfb capnproto libcapnp-dev libzmq3-dev opencl-headers \
                         ocl-icd-opencl-dev libeigen3-dev libusb-1.0-0-dev
 
 export UV_PROJECT_ENVIRONMENT=/tmp/opvenv       # NOT the repo's broken .venv
-uv venv --python 3.11 "$UV_PROJECT_ENVIRONMENT"
+uv venv --managed-python --python 3.12 "$UV_PROJECT_ENVIRONMENT"   # device is 3.12.3; managed CPython ships Python.h
 uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
   numpy pycapnp pytest pytest-xdist pytest-asyncio pytest-cpp cython scons setuptools \
   smbus2 pyzmq sentry-sdk requests psutil pyserial tqdm zstandard crcmod setproctitle \
   pyjwt libusb1 python-dateutil pycryptodome cffi sympy casadi future-fstrings \
-  parameterized hypothesis ruff
+  parameterized hypothesis ruff "raylib<5.5.0.3" qrcode pillow   # last three: UI tests (run under xvfb-run -a)
 
 export PYTHONPATH=$(dirname "$PWD"):$PWD
 scons -j8 msgq_repo/ cereal/ opendbc_repo/ common/ selfdrive/
@@ -5918,3 +5918,261 @@ So the guard only overrides the radar when the camera disagrees with it.
 - `NAPRadarOffset` is a Tesla pre-AP parameter and is not read on Honda.
 
 Shifting our own car by 0.3 m in the lane would also move the bearing by only about 0.006 at 50 m. The off-centre cases the guard targets are 3–6 m to the side. The fix ships in the code on `ns-bosch-radar-testing`, and running that build is what applies it.
+
+## 105. C4 lead speed labels enlarged: in-path 20 → 26 px, side-lane 16 → 22 px. Unit evidence, UI only; not rendered, not seen on the device.
+
+- **Owner's ask** (2026-09-24, on-road photo of the C4 on a 45 mph arterial showing "13 mph", "13 mph", "38 mph" markers): "the speed labels are a little too small, can you make it a little bit bigger". A first step to 24/20 px (`16c4a731`) was followed by "go to 26 / 22" (`418a35c9`).
+- **What changed.** `LEAD_LABEL_FONT_SIZE` 20 → 26 and `ADJACENT_LEAD_LABEL_FONT_SIZE` 16 → 22 in `selfdrive/ui/mici/onroad/model_renderer.py`. Side labels stay smaller than the in-path one (the test asserts it). Marker sizes, placement and the overlap rules from item 102 are unchanged. Item 98 had cut the label from 32 px to 20 px because 32 px "ran into the wheel icon"; 26 px sits between the two.
+- **Evidence.** `selfdrive/ui/tests/test_mici_multi_lead.py`: 38 passed (Xvfb, Python 3.12, on `418a35c9`). ruff clean. The full UI suite was not run. No route render: this session had no route logs and no comma connect login.
+- **Synthetic render instead (same day).** The real `_update_lead_vehicle` chevrons and `_draw_lead_label` were drawn at 536×240 under Xvfb, with the three markers placed as in the owner's photo. The 20/16 panel matches the photo's label sizes and positions. At 26/22 on that scene:
+  - all three labels draw;
+  - the right "38 mph" label slides outward and spans about x 344–418;
+  - the speed-limit sign starts at about x 396, so that label now runs roughly 20 px into the sign. At 20/16 the photo already shows "mph" touching the sign edge.
+  - Nothing reaches the wheel icon.
+
+  The render script was scratch and is not committed.
+- **Route render (same day).** Route `00000267--e83a1fa671` seg 16 was fetched from Konik: rlog plus qcamera.
+  - Method: the real mici `ModelRenderer` was driven offscreen under Xvfb by a stub SubMaster, with toggles from the route's initData. The transform copies `AugmentedRoadView._calc_frame_matrix`, using mici os04c10 fcam 1344×760 with the qcamera stretched to it.
+  - The HUD and speed-limit sign are **not** drawn. The harness is scratch and is not committed.
+  - Checked at t = 7.9, 24.2, 30.2 and 43.1 s, at 20/16 vs 26/22:
+    - 7.9 s: two close in-path leads (22 and 23 mph). At 26 px one in-path label is dropped by the overlap rule; at 20 px both showed.
+    - 24.2 s: at 26/22 all three labels show (4 / 17 / 4 mph). At 20/16 the left one did not appear.
+    - 30.2 and 43.1 s: fine at both sizes.
+  - Replay render evidence, UI only.
+  - qlogs carry no `modelV2`, so the render needs rlogs.
+- **26/22 kept; side labels now avoid the speed-limit sign** (owner, 2026-09-24: "keep 26/22 and make side labels avoid the sign").
+  - `HudRenderer.speed_limit_rect()` is the one source of the sign geometry: `_draw_speed_limit` draws from it, and `AugmentedRoadView` passes it to `ModelRenderer.set_side_label_obstacles()` after `prepare()` and before the model overlay.
+  - A side-lane label that hits the sign or another label first slides outward. If that still collides or leaves the view, it slides inward. If neither fits, it is dropped.
+  - In-path labels ignore the sign (unchanged: dropped only on overlap with another label).
+  - Unit evidence: 4 new tests in `test_mici_multi_lead.py`, 42 passed. ruff clean on the changed files; the 2 E501 findings in `sidebar_widgets.py` pre-date this change.
+  - **Rendered with the sign** (same day). The route harness now also runs the real mici `HudRenderer`: `prepare()`, then `speed_limit_rect()` passed to the labels, then `render_background()`. Route `00000267--e83a1fa671` seg 16:
+    - 24.2 s: before, at 20/16, the right-lane "4 mph" label ran into the sign's "+5". Now it is dropped, because outward hits the sign and inward hits the in-path "17 mph". The left-lane and in-path labels still show.
+    - 34.2 and 43.1 s: no conflict; all labels draw at 26/22.
+  - **Below-sign fallback** (owner: "drop just below the sign"). When neither slide fits and one of the tried positions ran into the sign, the side label goes centred just below the sign (`_below_obstacle`). It is hidden only if that spot is taken or off-screen. A label boxed in only by other labels, never touching the sign, is still hidden.
+    - Re-rendered 24.2 s: the right-lane "4 mph" now shows under the "35 +5" sign.
+    - 3 tests replace the drop test; 44 passed.
+    - With MAX in the sign (ICBM holding, engaged, no recent set-speed change): same 24.2 s frame, sign "MAX 45 / 35 / +5". The right-lane label sits centred just below it. The sign box is the same 116×142 with or without MAX (item 102), so the spot does not move. The harness clock had to be pushed past the 2.5 s set-speed pop-up, or the plain sign drew.
+  - Replay render evidence; the harness is scratch and is not committed. Not seen on the device. UI only, not brake-affecting.
+- **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
+  - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
+  - a side label slides outward, and could now reach the screen edge or the wheel icon.
+  - Photograph it if a label goes missing or clips.
+
+**Test environment on an aarch64 Linux host (this session).** The checked-in `.so` files load natively. They were built for **Python 3.12** (`msgq/ipc_pyx.so` needs `PyType_FromMetaclass`), but the SessionStart hook created a 3.11 `.venv`. **Fixed 2026-09-24:** the hook now creates `.venv` on 3.12, and rebuilds an existing venv on another version unless `.venv` is tracked by git. Checked on this aarch64 host: `.venv` 3.11 → 3.12.3, and `msgq.ipc_pyx`, `cereal.messaging` and `Params` import. Its scons step also fails without `clang++`, and it leaves `panda/board/obj/{gitversion.h,version}` dirty (restore them). What worked for the mici UI tests:
+- a 3.12 venv outside the repo with the hook's package list plus `raylib<5.5.0.3`, `qrcode` and `pillow`;
+- `PARAMS_ROOT` pointed at a scratch directory, because Params otherwise tries `/data/params`;
+- running under `xvfb-run -a`, because raylib segfaults at import without a display.
+
+**Hook fixed further, same day.**
+- It apt-installs `clang build-essential xvfb`. SConstruct hardcodes clang; the hook used to exit on `clang++: not found` before masking the artifacts.
+- The venv now uses **uv-managed** CPython 3.12. The system `python3.12` on this image has no `Python.h`, and scons failed compiling `ipc_pyx.cpp` against it. An existing venv without headers is rebuilt.
+- It installs `raylib<5.5.0.3 qrcode pillow`.
+- The session env file exports `PARAMS_ROOT` (default `~/.comma/params`).
+
+Checked on this aarch64 host (uv-managed 3.12.14): the hook exits 0, the full scons build completes, and 53 artifacts are skip-worktree. A second run is a no-op (1.4 s). Tests: `opendbc_repo/opendbc/car/honda/tests/` 271 passed; the five radard/longitudinal suites 129 passed; `test_mici_multi_lead.py` under `xvfb-run` 38 passed. **Not run on an x86_64 container.**
+
+## 106. Stock-ACC routes 266 and 267 (build d20a18d28, the 0.075 bound on the device): the item 103/104 replays, both FCW events, and every brake takeover. Replay (log decode, open- and closed-loop planner) evidence only; no code change, nothing driven under alpha.
+
+The owner asked (2026-09-24) for analysis of two new stock-ACC drives. The routes were fetched on an aarch64 Oracle host (`konik_preflight.py` 8/8, `konik_fetch.py` 30/30 and 21/21 rlog segments). Route data is outside the repo, not committed.
+
+| Route | Build | Car | Duration / cruise on | Episodes < −1.5 | Brake takeovers | FCW |
+|---|---|---|---|---|---|---|
+| `00000266--f766f599f0` | d20a18d28 | HONDA_CIVIC_BOSCH, stock ACC | 1777 s / 972 s | 13 | 4 (+1 gas, 3 other) | 4:27.5, 4:28.7, 4:29.4, 14:32.5 |
+| `00000267--e83a1fa671` | d20a18d28 | HONDA_CIVIC_BOSCH, stock ACC | 1218 s / 639 s | 5 | 5 (+1 other) | none |
+
+Tools, run at 2026-09-24 HEAD `d3786234`, with planner code identical to item 104a: `tools/longitudinal/alpha_open_loop_replay.py` and `alpha_closed_loop_replay.py` (default bearings 0.1,0.075). Closed-loop validity is `leadOne.status` agreement **99.14% (266) and 99.36% (267)**, radar flag 99.20/99.53%, dRel ±1 m 91.9/95.5%, same track 81.9/67.4%. Open and closed loop agree on every episode to within 0.03 m/s².
+
+**Protected episodes: none changed between 0.10 and 0.075** (266: 6 genuine by vision/stock label; 267: 3). The only b0.1/b0.075 frame differences are 266 14:29.1 (13 frames, genuine, −3.77 → −3.69, crossing unchanged) and 267 15:13.0 (16 frames, below).
+
+### The two FCWs on 266 (openpilot planner FCW; `stockFcw` stayed 0)
+
+- **4:27.5–4:29.4: a real hard stop, and the FCW was justified.** A slow lead, vision v 5.6 → 0.5 m/s, was approached from 94 m at vRel −9.4 at 52 mph (radar track 13, y ±0.2 throughout). Stock braked to cmd −3.23, aEgo −3.80, and stopped about 12 m behind with no driver input. The owner bookmarked it at 4:31.4. Alpha replay: −3.45, crossing −1.5 0.7 s **before** the stock command and −2.5 1.7 s before it. Radar quirks during the stop were a one-sample vRel −15.0 at 4:27.4 (from −9.5; not a rail value) and aLeadK down to −6.9 at 4:29.1 while vision a was −0.4. The lead really was coming to rest, and the FCW was already firing on range/TTC.
+- **14:32.5: a real braking lead, but the FCW was marginal and radar-driven.** Track 36 came in from y −3.3 to 0 on a left curve (steer −10° → 0) at 29–37 m. Vision a was −1.5 to −2.1, stock cmd −1.78, so the brake was real. At the FCW frame radar vRel was −8.4 and aLeadK −7.6. The 1 s range slope was −6.6 and vision vRel −4.7. With vRel −8.4, TTC is 3.4 s, under the 4.0 s FCW limit. With the range slope it is about 4.5 s. The driver braked at 14:35.9 and then took over on the gas and steering for a turn. The replay episode (14:29.1) is genuine: alpha −3.69 vs cmd −2.11, and the bound fired 11 frames at 0.075.
+
+### Alpha-only brakes (alpha ≤ −3 while stock stayed above −1.5)
+
+- 🔴 **267 15:13.3: off-axis false brake that 0.075 does not catch. Same signature as 25f 13:58.4 and 237 942.6.**
+  - This was on a right-curve exit, steer +13° → 0. Radar track 39 swings from y +8.8 to +0.2 at 56–69 m.
+  - Radar vRel went +6.1 → −8.2 → −0.9 in about 3 s, and aLeadK reached −9.4.
+  - Over the same time vision held v 14.8–15.9 and a +0.0–0.25 at p 0.92–0.97. Ego was at 13.4–14.4, so vision vRel ≈ +1. The radar range dipped 69 → 56 m and recovered to 59 m.
+  - Alpha went to −3.45 at both thresholds and with no bound. Stock cmd was +0.28 at the peak and −0.60 later. Required decel is 0.0, so it is not protected.
+  - **Why the bound misses:** bearing was 0.084 at 15:13.25 (bounded), then 0.074 and 0.070 at 15:13.40–15:13.55, where aLeadK was −9.1 to −9.4. The lead swings toward the centre as the curve unwinds, so the worst radial-rate artifact arrives **after** bearing falls under the threshold. 0.075 bounded 11 frames (Δ up to 0.3 on single frames) and did not change the minimum.
+  - **Not changed here.** Lowering the threshold a second time (0.10 → 0.075 → about 0.065) chases the threshold on one case at a time, and 263 6:14.3 would have to survive each step. The structural alternative is a design question for the owner. Candidates: hold the bound on a track for about 1 s after its bearing was above the threshold, or while steering or yaw rate is high; or bound when vision is confident (p ≥ 0.9) and disagrees with the radar lead speed by more than about 5 m/s. Any of these needs its own closed-loop pass against the 125 protected episodes.
+- 🟠 **266 2:27.9: vRel settling on a newly acquired track, centred.** Track 61 took over from a vision-only lead at 61 m. vRel went +3.1 → −3.5 in 1 s and aLeadK hit −4.8, while vision v held 18.1–18.9 against ego 18.8 (vision vRel ≈ 0). Alpha −3.45, stock cmd −0.99, required decel 0.2. At 2:29.7 the driver pressed the gas against even stock's −1.0. Bearing 0.00–0.01, so no bearing bound applies. This is the 260 9:01.2 class: the aLeadK filter passes a short vRel transient to the planner.
+- 🟡 **266 11:42.3: real mild slowdown; alpha goes to the rail.** Track 12, centred at 26–35 m, lead slowing from 19.4 to 16.9 (vision). The range closed at about 3.8 m/s and radar vRel reached −5.0, aLeadK −4.1. Alpha −3.48, stock cmd −1.14. Item 103's "alpha is harsher on ordinary slowdowns" pattern.
+- ✅ **266 16:11.6: the bound worked.** Bearing 0.12–0.13, 46/46 frames bounded, −3.45 → −1.79 (stock −0.30).
+
+### Stock deeper than alpha (genuine)
+
+- **267 14:47.0: close cut-in.** Track 28 appeared at 9.7 m (y +1.6), replacing the 23 m lead. Stock started braking the same frame and went to cmd −3.46, aEgo −4.05, bottoming at a 7.1 m gap at 6.9 m/s. Alpha reached only −2.53 and trailed by +0.2 s. Radar vRel went −3.3 → −3.9 → −1.6, consistent with vision. This adds to item 103's "stock is deeper at the peak" list; replay only, it does not say −2.5 would have been too little.
+- **266 4:24.8 and 13:19.4** were genuine hard brakes where alpha led stock (−0.7 s and −0.2 s at −1.5).
+
+### Driver brake takeovers (the 5 s before each)
+
+- **Not a lead problem:** 266 6:44.0 (no lead, ICBM/CSC set speed falling 25 → 14), 18:47.3 (no lead, accelerating), 26:19.4 (no lead), 267 3:25.2 (no lead), 267 10:01.5 (no lead in radarState; vision lead at 128 m, p ≤ 0.1). These are ordinary exits and slowdowns.
+- **266 16:15.7:** off-axis track 59 on a curve (y +9.4 → +3.4, bearing 0.13 → 0.07) read vRel −8.6 and aLeadK −6.7 while vision said about −1.6. Stock stayed at −0.3; the driver braked as the vision lead began braking (a −1.4). Same radial-rate signature as 267 15:13.3, but the bound (bearing ≥ 0.075 for most of it) covers the worst frames.
+- **267 6:48.6:** lead track 2 swinging y −3.6 → +3.7 on a curve with the set speed falling; the lead dropped, and the driver braked.
+- **267 11:31.4:** far lead 110–127 m decelerating (vision a −1.1 to −1.6), stock only −0.5; the driver braked early. Radar had it at vRel −4 to −7.
+- 🟠 **267 16:28.1: a radar lead that may be the wrong object at 90 m.** Track 39 at 87–92 m read vRel **+4.1 → +2.0 (opening)**, and its range really did open (86.9 → 92.3 m). Vision showed a lead braking: v 13.5 → 7.7, a −1.1, ego 14.6–15.9. Stock ACC was **accelerating** (cmd +0.37), so stock missed it as well. radarState then flipped to a vision-only lead reading −7.6 to −9.4, and the driver braked at 16:27.8. Under alpha the planner would have seen the same opening radar lead for about 2.5 s. It is no worse than stock here, but it is a far-range lead-identity case for the watchlist.
+
+**What this does not settle.** Ego follows the log, so no replay shows the gap alpha would have opened. Frame-level track identity agrees only 67–82% with the on-device parser. Nothing here was driven under alpha long.
+
+## 107. The two item 106 follow-ups replayed closed-loop on 19 routes: the per-track 1 s hold beats the vision-disagreement bound. Replay evidence only; nothing shipped, nothing driven.
+
+The owner asked (2026-09-24) to test both fixes and pick the better one. Both are in `tools/longitudinal/alpha_closed_loop_replay.py --fixes` as replay-only planner variants on top of the shipped 0.075 rule. The planner is unchanged. Both reach the same bound, aLeadK ≥ −max(1.5, vision brake); they differ only in the extra way past the bearing test:
+- **hold:** the bearing test also passes for 1.0 s after the same radar track last sat at bearing ≥ 0.075.
+- **visdis:** the bearing test also passes when vision is confident (p ≥ 0.9), is the same object (x within max(5 m, 15% of dRel)), and its lead speed disagrees with the radar's vEgo + vRel by ≥ 5 m/s.
+
+Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEAD 17ba13db plus the tool change. 214 episodes, 132 protected (vision/stock label or the item 104 rule, as in 104a). leadOne.status agreement ≥ 99.10% on every route. Pass criteria are item 104's: 0 protected episodes softened > 0.3 or delayed > 0.2 s at −1.5.
+
+| | hold | visdis |
+|---|---|---|
+| 267 15:13.3 off-axis false brake (stock −0.60) | −3.45 → **−1.45** | −3.45 → −2.97 |
+| Protected episodes changed | 1: 237 18:09.4 (see below) | 1: **25f 8:02.6, a real closing brake delayed 0.35 s** |
+| Other frame-level differences > 0.3 | none | 25f 8:03.3 (10 frames), 266 4:27.3 (1 frame) |
+| 266 2:27.9 (centred new-track transient) | unchanged | unchanged (disagreement 3.6 m/s, under 5) |
+
+- **visdis fails in the dangerous direction.** At 25f 8:02.6 a centred lead (bearing 0.008) closed from 94 m to 42 m. Radar vRel grew −0.8 → −13.4, and the range confirms it: 55.2 → 41.6 m in 1 s. Vision under-read the closure (a −0.3 to −0.6), so the disagreement rule fired on 49 frames and bounded aLeadK to vision. Alpha crossed −1.5 at 8:03.70 instead of 8:03.34, 0.4 s behind stock's own command (8:03.29). Vision lagging a real closure is exactly the case where the radar has to win (D-041/D-042 spirit). Rejected.
+- **hold's one protected change is protected only by the circular label.** At 237 18:09.4 (alpha-long, build fa262e0c7, before the bound) track 62 at 64–69 m swung in from y +5.4 to 0, with vRel −3.6 and aLeadK −3.5, while vision a was ~0.0 (p 0.26–0.58). The range closed 68.6 → 61.7 m and then held. Live alpha commanded −2.57 and the car reached −3.29 with no driver brake. The episode is protected only because alpha's own command went below −2.0 (the item 104 caveat that also covered 23e 4:54.6). Vision a stayed above −1.0 until later, and the peak vision-required decel was 1.0. Hold gives −0.73 against a closing speed of 3.6 m/s at 64 m (TTC about 18 s). Read as a false alpha brake that hold softens, **but that is judgment, not the pre-set criterion**. The owner drove this route and can say whether that brake was wanted.
+- **Recommendation: hold, not shipped yet.** It needs the owner's call on 237 18:09.4. If approved, it goes into `off_axis_lead_a_lead` as a planner change with unit tests, followed by a road drive on curve exits. Ego still follows the log in all of this.
+
+## 108. C4 close-lead marker flips onto the lead's roof, tip down, with its speed above it (owner request). Unit and replay render evidence; UI only, not brake-affecting; not seen on the device.
+
+- **Problem** (owner: "when I'm getting really close to lead, sometimes I can't see the marker at all"). The mici chevron sits at the lead's bottom edge. `_update_lead_vehicle` clamps it to `rect.height - 0.6·sz`, so a close lead's marker is pinned to the bottom of the view and its speed label is drawn below the screen.
+- **Change** (`selfdrive/ui/mici/onroad/model_renderer.py`):
+  - Each lead (in-path and side-lane) also projects its roof, 1.5 m above the road (`LEAD_ROOF_HEIGHT`).
+  - When the normal marker would be clamped, or its bottom point is off the projection, and the roof point is known, the marker flips. It draws tip down on the roof, and `_draw_lead_label` puts the speed above it.
+  - Hysteresis stops it flickering: it un-flips only once the normal tip is 1.6·sz above the bottom (`FLIPPED_LEAD_UNFLIP_SZ`). The tip is kept 30 px below the top, leaving room for the label.
+  - The flipped points are listed in reverse, so the triangle fan keeps the upright marker's winding and raylib still draws it.
+  - Every label is now clamped horizontally into the view. The in-path label of a marker near the right edge was running off-screen.
+- **Tests:** 7 new tests in `test_mici_multi_lead.py` cover the flip, winding, hysteresis, label on top and edge clamp. 67 passed together with `mici/tests/test_lead_indicator.py`.
+- **Route render** (00000267--e83a1fa671, real mici `ModelRenderer` and `HudRenderer` offscreen over the qcamera; scratch harness, not committed):
+  - seg 13 59.0 s, lead 7.3 m at 5 mph: before, a marker sliver at the bottom edge and no label. Now there is a red down-chevron on the car's roof with "5 mph" above it.
+  - seg 13 56.0 s, lead 10.9 m: not flipped, unchanged.
+  - seg 16 38.2 s, leadOne 7.9 m at yRel −3.2 (a cut-in at the right edge): the flipped marker lands top-right, next to the speed-limit sign. Its label now stays on screen but touches the top edge of the sign. In-path labels ignore the sign by the item 105 rule.
+- **Follow-up, same day** (owner: "the 14 mph is still occluded a little bit by the frame"):
+  - The flip now also fires when only the label would be cut off. The upright marker needs `sz + LEAD_LABEL_ROOM` (32 px: a 2 px gap plus the 30.2 px box of a 26 px label) above the bottom of the view. The unflip band is 1.0·sz.
+  - Re-render seg 13 56.0 s (lead 10.9 m): before, "14 mph" was cut off at the bottom edge; now it flips onto the roof with "14 mph" above. At 52.9 s (18.2 m) the label fits and the marker stays upright. The 10.9 m left-lane pickup there flips too.
+  - 1 new test; 68 passed.
+- **In-path labels now avoid the sign too** (owner: "make the cut-in label avoid the sign too"). This replaces the item 105 rule that in-path labels ignore it.
+  - An in-path label that hits the sign slides off it toward the side its centre is on, then the other way, then goes just below the sign.
+  - If none of those fits, it is drawn in place. The sign alone never hides the in-path speed; overlapping another label still hides it, as before.
+  - 4 tests replace `test_in_path_label_ignores_the_sign`; 71 passed.
+  - Re-render seg 16 38.2 s: the in-path "12 mph" moves left of the sign and the right-lane "12 mph" (the same car) drops below it; both are clear. The 7.0 and 35.2 s label positions are unchanged.
+- **Tall leads rendered** (owner request; route 00000267, rlogs and qcameras for segs 4, 10 and 17 fetched from Konik; build d0b52514):
+  - seg 4 11.5 s, a Sprinter-height van at 5.4 m, stopped: the roof is above the screen. The marker is held at the label-room limit (tip y 56) on the rear windows, with "0 mph" above it.
+  - seg 10 16.2 s, a Ram pickup at 8.1 m, 9 mph: the marker sits on the rear window, just under the cab roof.
+  - seg 17 45.0 s, an SUV at 3.5 m, stopped: the marker is held at the top, on the rear glass.
+  - In all three the marker and label are fully visible; before, each showed only a marker corner at the bottom edge.
+- **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it (rendered above). Photograph it if the marker flickers between the two forms in stop-and-go.
+
+## 109. The item 107 per-track hold is shipped in the planner (ffa72fdc, owner approved); the shipped code reproduces the replay prototype on 19 routes. Replay evidence only; brake-affecting; not driven.
+
+The owner confirmed that 237 18:09.4 was a phantom brake ("braked way too early … nowhere close in the zone where it should constitute a hard brake"), which settles item 107's open judgment call. Hold then passes the pre-set criterion, and the owner approved shipping it.
+
+- **Code (ffa72fdc):** `longitudinal_planner.py` adds `OFF_AXIS_LEAD_HOLD_FRAMES = 20` (1 s at 20 Hz; its comment block carries the evidence) and `OffAxisLeadHold`, which records the last frame each `radarTrackId` sat at |yRel|/dRel ≥ `OFF_AXIS_LEAD_MIN_BEARING` (0.075). `off_axis_lead_a_lead(lead, model_msg, held=False)` skips the bearing test while the track is held. The bound itself is unchanged: aLeadK ≥ −max(1.5, vision brake). 3 new tests (the 267 15:13.3 curve exit, expiry after exactly 20 frames, and a never-off-axis track left untouched); 625 planner/radard/lead tests pass.
+- **Verification:** all 19 routes re-run with `alpha_closed_loop_replay.py --bearings 0.075` on the shipped planner (no `--fixes`). All 214 episodes match item 107's `hold` variant: min within 0.02 and the −1.5 crossing within 0.05 s, 0 mismatches. Against the old 0.075 run only three episodes move: 267 15:13.3 (−3.45 → −1.45), 237 18:09.4 (−2.57 → −0.73) and 25f 13:58.4 (−1.22 → −1.18, above −1.5 either way). 0 protected episodes change.
+- **Not addressed:** 266 2:27.9 (centred new-track vRel transient; item 106) is unchanged. Hold only acts on a track that was off-axis in the last second.
+- **Watch on the road:** curve exits with a lead at 40–70 m. If alpha now reacts late to a lead that really brakes just as the curve straightens, the hold is the first suspect, because it keeps the bound on for 1 s after the lead centres. The owner's next drive has "Keep Fast-Closing Leads" (`BoschARailInterval`) off, so that brakes on that drive can be attributed to the hold.
+
+## 110. Route 00000268 (the owner's first alpha-long drive on the vision-radar fusion build b6619f55): the hold changes nothing here; the FCW was a real approach into slowing traffic; one D-062 latch held a wrong-sign vRel for 2.35 s. Replay and log-decode evidence only; no code change.
+
+Build b6619f55 predates the hold (ffa72fdc), so this drive ran without it. Toggles as logged: `RangeDerivedVrel` 1, `BoschARailInterval` 0, `FarLeadCoastCap` 1. 858 s, 498 s engaged, 9 episodes below −1.5. Replay agrees with the device: leadOne status 99.63%, and every episode minimum is within 0.07 of the logged value.
+
+- **Hold vs no hold:** the shipped planner and a copy with `OFF_AXIS_LEAD_HOLD_FRAMES = -1` give identical minima and crossings on all 9 episodes. The hold neither helped nor hurt this route.
+- **`FarLeadCoastCap`:** forced on or forced off in replay, all 9 episodes are identical (`starpilotToggles` in the log does not carry this key, so the replay default is off). The cap never binds: every far approach here had a braking lead or a TTC under 8 s.
+- **Startup faults:** `commIssue`, `selfdrivedLagging`, `posenetInvalid` and `radarTempUnavailable` all fall in the first 13 s. None of them occur while driving.
+- **The three disengagements are all brake takeovers, and none follows an alpha misstep:**
+  - 5:37.7: a lead pulling away at 23 m, alpha accelerating gently.
+  - 7:46.7: a vision-only lead at 49 m.
+  - 12:30.3: a lead closing 2–3 m/s at 46 m, with alpha already at −0.5.
+
+**The owner's five bookmarks**
+
+| Bookmark | Episode (alpha min, aEgo) | What the log shows |
+|---|---|---|
+| 5:28.6 | 5:25.9 (−3.50, −4.03) | In a turn (steer +14°), track 18 at 43 m swung from y +5.5 to +3.9 (bearing 0.12). The range closed at about 6.6 m/s and vision had the lead slowing from 12.6 to 7.1 m/s. The 74e off-axis bound was active (20 frames) and cut aLeadK −7.7 to the vision value, yet the closure alone drove −3.5. Vision label: genuine (required 1.8). |
+| 5:57.2 | 5:56.6 (−1.37) | A new radar track 43 at 40 m, 5 m/s slower than ego. Mild; genuine. |
+| 9:08.4 | 9:05.5 (−3.48, −4.44) | A lead in a curve (y +8 → +0.5), vision-only until 9:06.0, slowing to 4.5 m/s. Radar range read 12 m shorter than vision (48.9 vs 62.7). Genuine (required 2.7). |
+| 9:59.7 | 9:55.2 (−2.16, −2.73) | **The D-062 latch, below**, then a cut-in by track 35 at 26 m closing 4 m/s. Vision label: not genuine (required 1.0). |
+| 11:43.0 | 11:41.2 (−3.45, −4.44), FCW 11:43.8 | See the FCW bullet below. |
+
+- **FCW 11:43.8 (openpilot planner FCW; no driver brake):**
+  - From 11:39 a vision-only lead at 95–105 m closed at 7–8 m/s while slowing (vision v 14.6 → 4.5 m/s, a −1.1).
+  - At 11:40.3 radar track 34 was picked up at 98 m with vRel on the −13.5 m/s rail (D-041).
+  - Alpha braked −0.8 to −1.0 until 11:41.0 and passed −1.5 at 11:41.2 (TTC about 6 s), then −4.0 from 11:42.3. The FCW fired at 41 m with 11.5 m/s closing, while the car was already at −4.
+  - The car stopped closing at 34 m, at 7.4 m/s.
+  - The brake was real and needed. The ~1.2 s at −1.0 before the hard brake is the same shape as the unexplained 251 532–547 s under-brake (item 85 table), and it is not explained here either. `FarLeadCoastCap` is ruled out: see above.
+- **D-062 latch at 9:51.6–9:54.7, track 25 (y −2.2 → −0.9 as it moved in):**
+  - At 9:51.6–9:52.4 the range stepped from 45.3 to 51.7 m, as a reflection or association change. The two U11 samples measured during the step (+3.3, +4.1) became the trusted vRel.
+  - The range then closed at about 6 m/s (52.2 → 38.3 m in 2.4 s). Vision's lead speed agreed: 18.4 against ego 22.0.
+  - The one-sided rate check rejected the true closing U11 against the stale opening fit (+7.2), so vRel was coasted at **+4.06, and aLeadK +3.26**, flagged `measured=False`.
+  - The D-062 lasting-clean-step re-root released it only at 9:54.74, after 2.35 s. vRel then read −5.98, and aLeadK swung to −4.0 within 0.5 s.
+  - `vRelRangeDerived` was NaN for the whole coast, because the D-053 assist disarms on unmeasured samples. So the assist, which was on, could not act, even though the coasted dRel was the radar's live, innovation-checked range.
+  - Outcome: about 2.3 s with no brake while closing from 50 to 38 m at 22 m/s, then a −2.1 catch-up brake. Not dangerous here: the gap stayed at 1.7 s or more.
+  - The mechanism goes further than the D-041 note in the coast path, which says "an understated closing rate still brakes". Here the coasted value had the **wrong sign**, and it would have been the same on a hard-braking lead.
+- **Open (design, not changed):** during a coast whose dRel is live, the lead could be bounded by the range slope, for example by letting the D-053 assist consume coasted live ranges, one-sided toward more closing. D-062 rejected appending coasted ranges to the U11 check's samples, because that re-admits over-closing U11. The planner-side bound is a separate question and would need its own replay on the 24-route set before any change.
+
+## 111. Lateral PID simulator (`tools/lateral/lat_pid_sim.py`) for dialing in the Civic Bosch lateral scales. Replay and simulation evidence only; no controller or setting change; nothing driven.
+
+**What it is.** The tool runs the real `LatControlPID` (modified-EPS Civic Bosch path, banded `Lat{P,I,F}Scale*`, `HondaLateralPidKp/KiScale`, output shaping) on logged inputs. Around it sits a mirror of the Honda carcontroller steering stage: min steer speed, the override ramp and fade-up, and the optional delta limiter. It has three stages:
+- `replay` is open loop. It feeds the logged angle, rate and desired curvature through the controller and compares the torque it computes with the torque the car logged.
+- `fit` / `validate` fit a steering plant to engaged, hands-off frames by Levenberg–Marquardt on 1 s free-run windows. The plant is a 2-state angle/rate model with speed-dependent stiffness, damping and torque gain, plus a bias term and a tanh friction term. `validate` then checks that the closed loop at the logged settings reproduces the logged metrics.
+- `sim` / `sweep` run the controller and plant closed loop while the desired curvature stays held to the log. Whenever the driver's hands are on, the plant re-syncs to the log. `sweep` reports per-band error rms, bias, curve actual/desired ratio, straight rms and sign-change rate for each value of one parameter.
+
+Desired curvature is exogenous: the model and planner are not simulated, so this tunes tracking of the path the car asked for, not the path itself. Route data is cached in the route directory, never in the repo.
+
+**Replay (open loop) finding: the Kp scale on route 00000268 was not in effect.** initData recorded `HondaLateralPidKpScale = 0.65`. Yet the logged `pidState.p` is exactly 1/0.65 = 1.538× the P the controller recomputes at 0.65, on every active frame of the drive. With a 1.0 override, P matches exactly. The car ran Kp 1.0 on 268. The item this corrects is chat-only: the earlier attribution of 268's looser straights to the Kp cut was wrong. Why the setting did not apply live has not been checked.
+
+**Replay (open loop) torque match on 268 with the 1.0 override:**
+- With the integrator freeze taken from the log (the logged I is unchanged from the previous frame), the median torque error is 6.9e-4 and p99 is 9.1e-3, against a logged median |out| of 0.041.
+- With the freeze recomputed from carControl/carOutput, the median error is 2.3e-2. The one-frame `steer_limited_by_safety` timing cannot be recovered from message interleaving: none of 8 alignments tried was exact. The sim uses the recomputed freeze, so its integrator is somewhat more active than the car's.
+
+**Plant fit** (fit on 260–263, coefficients kept in scratch; not committed). Error at the end of a 3 s free run:
+
+| Route | Plant | Hold-last-angle baseline |
+|---|---|---|
+| 263 (in fit set) | 1.33° | 4.04° |
+| 268 (held out) | 1.93° | 11.33° |
+
+**Closed-loop validation at the logged settings, 25–50 mph band:**
+
+| Route | Curve ratio, log → sim | Straight rms, log → sim |
+|---|---|---|
+| 263 | 0.926 → 0.911 | 0.55° → 0.53° |
+| 268 (held out, Kp 1.0) | 0.963 → 0.955 | 0.86° → 0.89° |
+
+**Limits:**
+- The sim under-predicts sign changes: about 0.5–0.6/s against 0.8/s logged. It has no sensor noise and no actuator delay. That makes it optimistic about weave, and more so at higher gain.
+- Below 25 mph it does not validate. On 268 the sim's curve ratio is 0.913 against 0.849 logged.
+- There is too little highway data to say anything.
+
+**Sweep 1: `LatIScaleStandard`** (Kp 1.0). Each cell is curve ratio / straight rms in the 25–50 mph band:
+
+| I scale | 261 | 263 | 268 |
+|---|---|---|---|
+| 25 | 0.943 / 0.52 | 0.911 / 0.53 | 0.903 / 0.81 |
+| 50 | 0.964 / 0.57 | 0.944 / 0.55 | 0.934 / 0.86 |
+| 75 | 0.978 / 0.62 | 0.966 / 0.56 | 0.955 / 0.89 |
+| 100 | 0.986 / 0.66 | 0.978 / 0.57 | 0.972 / 0.92 |
+| 150 | 0.992 / 0.74 | 0.991 / 0.60 | 0.990 / 0.97 |
+
+More I closes curve undershoot and costs a little on straights. Even at I 25, 268's straights were 0.81°, so most of their looseness comes from the road. The 25 → 75 change adds about 0.08°. 75 (the current setting) is a reasonable middle.
+
+**Sweep 2: `HondaLateralPidKpScale`** (I 75). Each cell is straight rms / sign changes per second in the 25–50 mph band:
+
+| Kp | 261 | 263 | 268 |
+|---|---|---|---|
+| 0.65 | 0.89 / 0.5 | 0.74 / 0.5 | 1.19 / 0.5 |
+| 1.0 | 0.62 / 0.6 | 0.56 / 0.6 | 0.89 / 0.5 |
+| 1.25 | 0.50 / 0.7 | 0.47 / 0.7 | 0.77 / 0.5 |
+| 1.5 | 0.43 / 0.8 | 0.42 / 0.7 | 0.69 / 0.6 |
+| 2.0 | 0.33 / 0.9 | 0.34 / 0.9 | 0.58 / 0.6 |
+
+The curve ratio barely moves with Kp (±0.01). In the sim, more P tightens straights steadily and raises the sign-change rate. Because the sim under-predicts oscillation, anything above about 1.25 is outside what it can vouch for.
+
+**Suggested next on-road step** (sim evidence only):
+- Keep I 75.
+- Try `LatPScaleStandard` 100 → 115–125, in one step. This band-limited P is nearly the same lever as Kp for 25–50 mph. On 268 in the sim, P 125 gives straight rms 0.80° and curve ratio 0.960; Kp 1.25 gives 0.77°.
+- Watch for weave on straights. The sign-change rate in `sweep` output of the new drive is the check.
+- Leave low-speed and highway alone until the sim validates there.

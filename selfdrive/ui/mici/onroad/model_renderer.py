@@ -19,6 +19,11 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
+# A close lead's marker is clamped against the bottom of the view and its speed label is cut off below it, so it is
+# flipped: drawn on the lead's roof, pointing down, with its speed above it (owner request).
+LEAD_ROOF_HEIGHT = 1.5         # m above the road where the flipped marker's tip sits
+LEAD_LABEL_ROOM = 32           # px a speed label needs next to its marker: 2 px gap + the 26 px label box (30.2 px)
+FLIPPED_LEAD_UNFLIP_SZ = 1.0   # hysteresis: stays flipped until the upright label has this many marker sizes to spare
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 STOCK_LANE_LINES_COLOR = rl.Color(255, 255, 255, 255)
@@ -59,14 +64,14 @@ class ModelPoints:
   projected_points: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
 
 
-LEAD_LABEL_FONT_SIZE = 20
+LEAD_LABEL_FONT_SIZE = 26  # owner: 20, then 24, read too small on the road (2026-09-24)
 ADJACENT_LEFT_LEAD_COLOR = rl.Color(0, 150, 255, 255)
 ADJACENT_RIGHT_LEAD_COLOR = rl.Color(180, 0, 255, 255)
 ADJACENT_LEAD_MIN_ALPHA = 140
 # adjacent-lane markers draw smaller than the in-path ones, with a smaller speed label (owner: "slightly smaller,
 # with the speed label right below it")
 ADJACENT_LEAD_SCALE = 0.7
-ADJACENT_LEAD_LABEL_FONT_SIZE = 16
+ADJACENT_LEAD_LABEL_FONT_SIZE = 22
 # radard's leadLeft/leadRight is any moving track past our own lane line, with no outer bound, so a car two
 # lanes over or a roadside return can hold it. The marker only draws for a lead inside the neighbouring lane
 # (owner: "only show up when there is an actual lead on that lane"). UI only; radard is unchanged.
@@ -105,6 +110,7 @@ class LeadVehicle:
   glow: list[float] = field(default_factory=list)
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
+  flipped: bool = False
 
 
 class ModelRenderer(Widget):
@@ -120,6 +126,7 @@ class ModelRenderer(Widget):
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._multi_lead_ui = False
     self._lead_label_rects: list[rl.Rectangle] = []
+    self._side_label_obstacles: list[rl.Rectangle] = []
     self._lead_info_mode = LeadInfoMode.OFF
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -258,6 +265,7 @@ class ModelRenderer(Widget):
 
   def _update_leads(self, radar_state, path_x_array):
     """Update positions of lead vehicles"""
+    prev = getattr(self, "_lead_vehicles", None) or [LeadVehicle(), LeadVehicle()]
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
@@ -269,11 +277,14 @@ class ModelRenderer(Widget):
         # Get z-coordinate from path at the lead vehicle position
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
-        if point:
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
+        top = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z - LEAD_ROOF_HEIGHT)
+        if point or top:
+          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, top=top,
+                                                             was_flipped=prev[i].flipped)
 
   def _update_adjacent_leads(self, starpilot_radar_state, path_x_array):
     """Screen positions of the left/right adjacent-lane leads (starpilotRadarState), Developer UI only."""
+    prev = getattr(self, "_adjacent_lead_vehicles", None) or [LeadVehicle(), LeadVehicle()]
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
     if starpilot_radar_state is None:
       return
@@ -285,9 +296,11 @@ class ModelRenderer(Widget):
         idx = self._get_path_length_idx(path_x_array, d_rel)
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
-        if point:
+        top = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z - LEAD_ROOF_HEIGHT)
+        if point or top:
           self._adjacent_lead_vehicles[i] = self._update_lead_vehicle(d_rel + abs(y_rel), v_rel, point, self._rect,
-                                                                      scale=ADJACENT_LEAD_SCALE)
+                                                                      scale=ADJACENT_LEAD_SCALE, top=top,
+                                                                      was_flipped=prev[i].flipped)
 
   def _draw_multi_lead_overlay(self, radar_state, starpilot_radar_state) -> None:
     """Developer UI: adjacent-lane lead markers, and each marker's lead speed right beneath it."""
@@ -312,23 +325,82 @@ class ModelRenderer(Widget):
       text = self._format_lead_speed(getattr(lead_data, "vLead", 0.0), ui_state.is_metric, use_si_metrics)
       self._draw_lead_label(lead.chevron, text, font_size, side)
 
+  def set_side_label_obstacles(self, rects: list[rl.Rectangle]) -> None:
+    """HUD boxes (the speed-limit sign) that side-lane labels must not cover. Set each frame before render()."""
+    self._side_label_obstacles = list(rects)
+
+  def _below_obstacle(self, label_rect: rl.Rectangle, tried_x: list[float]):
+    """The spot just below a HUD obstacle that one of the tried positions ran into, if it is free and on screen."""
+    view = getattr(self, "_rect", None)
+    for ob in getattr(self, "_side_label_obstacles", []):
+      if not any(rl.check_collision_recs(rl.Rectangle(rx, label_rect.y, label_rect.width, label_rect.height), ob) for rx in tried_x):
+        continue
+      spot = rl.Rectangle(ob.x + (ob.width - label_rect.width) / 2, ob.y + ob.height + 2, label_rect.width, label_rect.height)
+      on_screen = view is None or view.height <= 0 or spot.y + spot.height <= view.y + view.height
+      if on_screen and not any(rl.check_collision_recs(spot, r) for r in self._lead_label_rects):
+        return spot
+    return None
+
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
-    """Label under the marker. A side-lane label that would overlap slides outward (side -1 left, +1 right)
-    rather than being dropped; an in-path label that would overlap is dropped."""
+    """Label under the marker (above it when the marker is flipped tip-down). Any label that would overlap another
+    label is dropped. Labels also avoid the HUD obstacles (the speed-limit sign): a side-lane label (side -1 left,
+    +1 right) slides outward, then inward if outward still collides or leaves the screen, then just below the sign,
+    and is dropped if none fits. An in-path label slides off the sign toward the side it is on the same way, and is
+    drawn in place if none fits (the sign alone never hides the in-path speed)."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
 
     font = gui_app.font(FontWeight.SEMI_BOLD)
     size = measure_text_cached(font, text, font_size)
     x = chevron[1][0] - size.x / 2
-    y = max(chevron[0][1], chevron[2][1]) + 2
+    view = getattr(self, "_rect", None)
+    if view is not None and view.width > size.x + 6:  # keep a marker near the edge from pushing its label off-screen
+      x = min(max(x, view.x + 3), view.x + view.width - size.x - 3)
+    if chevron[1][1] > chevron[0][1]:  # flipped marker: tip below its base, label goes on top
+      y = min(chevron[0][1], chevron[2][1]) - 2 - size.y
+    else:
+      y = max(chevron[0][1], chevron[2][1]) + 2
     label_rect = rl.Rectangle(x - 3, y - 1, size.x + 6, size.y + 2)
-    hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
-    if hits and side:
-      shift = (min(r.x for r in hits) - (label_rect.x + label_rect.width) if side < 0
-               else max(r.x + r.width for r in hits) - label_rect.x)
-      label_rect.x += shift
-      x += shift
-      hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
+    obstacles = getattr(self, "_side_label_obstacles", [])
+    blockers = self._lead_label_rects + obstacles
+
+    def hits_at(rx: float) -> list[rl.Rectangle]:
+      moved = rl.Rectangle(rx, label_rect.y, label_rect.width, label_rect.height)
+      return [r for r in blockers if rl.check_collision_recs(moved, r)]
+
+    def fits(rx: float) -> bool:
+      view = getattr(self, "_rect", None)
+      in_view = view is None or view.width <= 0 or (rx >= view.x and rx + label_rect.width <= view.x + view.width)
+      return in_view and not hits_at(rx)
+
+    hits = hits_at(label_rect.x)
+    hit_obstacle = next((r for r in hits if any(r is ob for ob in obstacles)), None)
+    dodge = side
+    if not side and hit_obstacle is not None:
+      # in-path label on the sign (e.g. a flipped cut-in at the right edge; owner: "make the cut-in label avoid the
+      # sign too"): slide off it toward the side it is already on
+      dodge = -1 if label_rect.x + label_rect.width / 2 < hit_obstacle.x + hit_obstacle.width / 2 else 1
+    if hits and dodge:
+      outward = (min(r.x for r in hits) - label_rect.width if dodge < 0 else max(r.x + r.width for r in hits))
+      inward = (max(r.x + r.width for r in hits) if dodge < 0 else min(r.x for r in hits) - label_rect.width)
+      new_x = next((rx for rx in (outward, inward) if fits(rx)), None)
+      if new_x is not None:
+        x += new_x - label_rect.x
+        label_rect.x = new_x
+        hits = []
+      else:
+        # No room beside it: if the sign is what blocks it, drop the label just below the sign (owner: "drop just
+        # below the sign"), centred under it, rather than hiding the speed.
+        below = self._below_obstacle(label_rect, [label_rect.x, outward, inward])
+        if below is not None:
+          x += below.x - label_rect.x
+          y += below.y - label_rect.y
+          label_rect = below
+          hits = []
+        elif side:
+          return
+        else:
+          # the sign alone never hides the in-path speed: draw it in place unless it would cover another label
+          hits = [r for r in hits if not any(r is ob for ob in obstacles)]
     if hits:
       return
     self._lead_label_rects.append(label_rect)
@@ -459,7 +531,9 @@ class ModelRenderer(Widget):
     gradient_top = np.clip((float(np.min(visible_track_y)) - self._rect.y) / self._rect.height, 0.0, 1.0)
     return float(gradient_bottom), float(gradient_top)
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0, top=None, was_flipped: bool = False):
+    """Marker under the lead (tip up at its bottom edge). When it and its speed label would not fit above the bottom
+    of the view (a close lead) and the lead's roof point `top` is known, the marker flips: tip down on the roof."""
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -472,11 +546,23 @@ class ModelRenderer(Widget):
 
     # Calculate size and position
     sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * scale
-    x = np.clip(point[0], 0.0, rect.width - sz / 2)
-    y = min(point[1], rect.height - sz * 0.6)
-
     g_xo = sz / 5
     g_yo = sz / 10
+
+    # flip when the upright marker plus the label under it would not fit above the bottom of the view
+    bottom_room = sz + LEAD_LABEL_ROOM + (sz * FLIPPED_LEAD_UNFLIP_SZ if was_flipped else 0.0)
+    if top is not None and (point is None or point[1] > rect.height - bottom_room):
+      x = np.clip(top[0], 0.0, rect.width - sz / 2)
+      y = min(max(top[1], sz + LEAD_LABEL_ROOM), rect.height - sz * 0.6)
+      # tip down; points listed in reverse so the fan keeps the winding of the upright marker
+      glow = [(x - (sz * 1.35) - g_xo, y - sz - g_yo), (x, y + g_yo), (x + (sz * 1.35) + g_xo, y - sz - g_yo)]
+      chevron = [(x - (sz * 1.25), y - sz), (x, y), (x + (sz * 1.25), y - sz)]
+      return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), flipped=True)
+
+    if point is None:
+      return LeadVehicle()
+    x = np.clip(point[0], 0.0, rect.width - sz / 2)
+    y = min(point[1], rect.height - sz * 0.6)
 
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]

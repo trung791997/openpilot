@@ -563,14 +563,32 @@ class HudRenderer(Widget):
       alpha,
     )
 
+  def _speed_limit_offset_text(self) -> str:
+    if self._show_speed_limit_offset and not self._speed_limit_overridden:
+      rounded_offset = round(self._speed_limit_offset)
+      return "–" if rounded_offset == 0 else f"{rounded_offset:+d}"
+    return ""
+
+  def speed_limit_rect(self) -> "rl.Rectangle | None":
+    """Where the speed-limit sign draws this frame, or None when it does not. Valid after prepare(); the lead
+    speed labels use it to keep side-lane labels off the sign (owner: "make side labels avoid the sign")."""
+    if not self._show_speed_limit:
+      return None
+    if (self._speed_limit if self._speed_limit > 0 else self._pending_speed_limit) <= 0:
+      return None
+    use_vienna_speed_limit = ui_state.ui_params.get_bool("UseVienna")
+    sign_width = 118 if use_vienna_speed_limit else 116
+    sign_height = 118 if use_vienna_speed_limit else (142 if self._speed_limit_offset_text() else 132)
+    rect = self._rect
+    return rl.Rectangle(rect.x + rect.width - sign_width - 28, rect.y + (28 if use_vienna_speed_limit else 20), sign_width, sign_height)
+
   def _draw_speed_limit(self, rect: rl.Rectangle) -> None:
     self._max_in_sign = False
-    if not self._show_speed_limit:
+    sign = self.speed_limit_rect()
+    if sign is None:
       return
 
     display_speed = self._speed_limit if self._speed_limit > 0 else self._pending_speed_limit
-    if display_speed <= 0:
-      return
 
     recently_changed = 0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE
     max_box_held = self._icbm_ceiling_active and self.is_cruise_set and self._engaged and self._can_draw_top_icons
@@ -580,16 +598,8 @@ class HudRenderer(Widget):
     sign_alpha = 72 if self._speed_limit_overridden and self._pending_speed_limit <= 0 else 255
     use_vienna_speed_limit = ui_state.ui_params.get_bool("UseVienna")
     speed_text = str(round(display_speed))
-    offset_text = ""
-    if self._show_speed_limit_offset and not self._speed_limit_overridden:
-      rounded_offset = round(self._speed_limit_offset)
-      offset_text = "–" if rounded_offset == 0 else f"{rounded_offset:+d}"
-
-    sign_width = 118 if use_vienna_speed_limit else 116
-    sign_height = 118 if use_vienna_speed_limit else (142 if offset_text else 132)
-    base_x = rect.x + rect.width - sign_width - 28
-    sign_x = base_x
-    sign_y = rect.y + (28 if use_vienna_speed_limit else 20)
+    offset_text = self._speed_limit_offset_text()
+    sign_x, sign_y, sign_width, sign_height = sign.x, sign.y, sign.width, sign.height
     widget_color = self._speed_limit_pulse_color(rl.Color(255, 255, 255, 255), sign_alpha)
 
     if use_vienna_speed_limit:

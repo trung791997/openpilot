@@ -175,6 +175,14 @@ CLOSE_LEAD_BRAKE_CAP_RAMP_FULL = 0.5
 # 13:58.4 -3.45 -> -1.22, 260 9:07.8 -3.20 -> -1.01), and none of the 125 genuine-brake episodes. 00000263
 # 6:14.3 (real hard lead at bearing up to 0.149) is unchanged because vision a -1.55 caps the bound.
 OFF_AXIS_LEAD_MIN_BEARING = 0.075
+# Hold (STATUS 107/108): once a radar track has sat at or above the threshold, it stays eligible for the bound for
+# this many planner frames (20 Hz, so 1.0 s) after its bearing falls back under it. 00000267 15:13.3: the lead
+# swung to the centre on a curve exit, bearing 0.084 -> 0.070 while aLeadK was still -9.1..-9.4 against vision
+# a ~0.0 at p 0.95; 0.075 alone left alpha at -3.45 (stock -0.60), the hold gives -1.45. 00000237 18:09.4 (owner
+# confirmed a phantom brake) -2.57 -> -0.73. Closed-loop replay on 19 routes changed no other episode. The rejected
+# alternative, bounding on radar/vision speed disagreement, delayed a real closing brake (0000025f 8:02.6) 0.35 s
+# because vision under-read the closure.
+OFF_AXIS_LEAD_HOLD_FRAMES = 20
 OFF_AXIS_LEAD_MAX_BRAKE = 1.5
 OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 
@@ -614,15 +622,16 @@ def human_following_model(model_v2, starpilot_toggles):
   return model_v2 if getattr(starpilot_toggles, "human_following", True) else None
 
 
-def off_axis_lead_a_lead(lead, model_msg):
-  """aLeadK bounded for an off-axis radar lead (STATUS 74e); None when the lead is left as is."""
+def off_axis_lead_a_lead(lead, model_msg, held=False):
+  """aLeadK bounded for an off-axis radar lead (STATUS 74e); None when the lead is left as is.
+  held: the track was off-axis within OFF_AXIS_LEAD_HOLD_FRAMES (STATUS 108), so the bearing test is waived."""
   if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
     return None
   d_rel = float(lead.dRel)
   a_lead = float(lead.aLeadK)
   if d_rel <= 1.0 or a_lead >= -OFF_AXIS_LEAD_MAX_BRAKE:
     return None
-  if abs(float(lead.yRel)) / d_rel < OFF_AXIS_LEAD_MIN_BEARING:
+  if abs(float(lead.yRel)) / d_rel < OFF_AXIS_LEAD_MIN_BEARING and not held:
     return None
   vision_brake = 0.0
   leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
@@ -672,16 +681,38 @@ def uses_off_axis_lead_bound(CP):
   return getattr(CP, "brand", "") == "honda" and CP.carFingerprint in HONDA_BOSCH_A
 
 
-def bound_off_axis_leads(sm):
+class OffAxisLeadHold:
+  """Frames since each radar track last sat at bearing >= OFF_AXIS_LEAD_MIN_BEARING (STATUS 108)."""
+  def __init__(self):
+    self.frame = 0
+    self.last_off_axis: dict[int, int] = {}
+
+  def observe(self, radar_state) -> None:
+    self.frame += 1
+    for lead in (radar_state.leadOne, radar_state.leadTwo):
+      if bool(getattr(lead, "status", False)) and bool(getattr(lead, "radar", False)) and float(lead.dRel) > 1.0 and \
+         abs(float(lead.yRel)) / float(lead.dRel) >= OFF_AXIS_LEAD_MIN_BEARING:
+        self.last_off_axis[int(lead.radarTrackId)] = self.frame
+    if len(self.last_off_axis) > 64:
+      self.last_off_axis = {k: f for k, f in self.last_off_axis.items() if self.frame - f <= OFF_AXIS_LEAD_HOLD_FRAMES}
+
+  def held(self, lead) -> bool:
+    last = self.last_off_axis.get(int(getattr(lead, "radarTrackId", -1)))
+    return last is not None and self.frame - last <= OFF_AXIS_LEAD_HOLD_FRAMES
+
+
+def bound_off_axis_leads(sm, hold=None):
   try:
     radar_state = sm['radarState']
     model_msg = sm['modelV2']
   except (KeyError, AttributeError):
     return sm
+  if hold is not None:
+    hold.observe(radar_state)
   leads = []
   changed = False
   for lead in (radar_state.leadOne, radar_state.leadTwo):
-    a_lead = off_axis_lead_a_lead(lead, model_msg)
+    a_lead = off_axis_lead_a_lead(lead, model_msg, hold is not None and hold.held(lead))
     if a_lead is None:
       leads.append(lead)
     else:
@@ -711,6 +742,7 @@ class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
     self.bound_off_axis_radar_leads = uses_off_axis_lead_bound(CP)
+    self.off_axis_lead_hold = OffAxisLeadHold()
     self.longitudinal_actuator_delay = max(DT_MDL, float(CP.longitudinalActuatorDelay))
     self.close_lead_brake_cap_value = 0.0
     self.lead_geometry_required_accel = 0.0
@@ -2097,7 +2129,7 @@ class LongitudinalPlanner:
 
   def update(self, sm, starpilot_toggles):
     if self.bound_off_axis_radar_leads:
-      sm = bound_off_axis_leads(sm)
+      sm = bound_off_axis_leads(sm, self.off_axis_lead_hold)
     if self.is_preap:
       self._preap_param_frame += 1
       if self._preap_params is not None and (self._preap_param_frame % 20) == 0:

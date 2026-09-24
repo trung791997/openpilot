@@ -4256,3 +4256,30 @@ def test_far_lead_coast_cap_param_defaults_off():
   with open(f"{BASEDIR}/common/params_keys.h") as f:
     keys = f.read()
   assert '{"FarLeadCoastCap", {PERSISTENT, BOOL, "0", "0", 3}}' in keys
+
+
+def test_off_axis_lead_hold_covers_route_267_1513_curve_exit():
+  # 00000267 15:13.3: bearing 0.084 (bounded) then 0.070 with aLeadK -9.4 and vision a ~0.0 at p 0.95.
+  hold = longitudinal_planner_module.OffAxisLeadHold()
+  off = _off_axis_sm(y_rel=5.2, vision_a=0.13, a_lead=-6.7, v_ego=14.0, d_rel=62.0, v_rel=-4.9, vision_prob=0.96)
+  assert longitudinal_planner_module.bound_off_axis_leads(off, hold)['radarState'].leadOne.aLeadK == pytest.approx(-1.5)
+  centred = _off_axis_sm(y_rel=4.1, vision_a=0.10, a_lead=-9.4, v_ego=14.0, d_rel=58.8, v_rel=-7.1, vision_prob=0.92)
+  assert longitudinal_planner_module.bound_off_axis_leads(centred) is centred  # 0.070 < 0.075 without the hold
+  assert longitudinal_planner_module.bound_off_axis_leads(centred, hold)['radarState'].leadOne.aLeadK == pytest.approx(-1.5)
+
+
+def test_off_axis_lead_hold_expires():
+  hold = longitudinal_planner_module.OffAxisLeadHold()
+  off = _off_axis_sm(y_rel=5.2, vision_a=0.0, a_lead=-6.7, v_ego=14.0, d_rel=62.0, v_rel=-4.9)
+  centred = _off_axis_sm(y_rel=0.3, vision_a=0.0, a_lead=-6.7, v_ego=14.0, d_rel=58.0, v_rel=-4.9)
+  longitudinal_planner_module.bound_off_axis_leads(off, hold)
+  for _ in range(longitudinal_planner_module.OFF_AXIS_LEAD_HOLD_FRAMES):
+    assert longitudinal_planner_module.bound_off_axis_leads(centred, hold) is not centred
+  assert longitudinal_planner_module.bound_off_axis_leads(centred, hold) is centred
+
+
+def test_off_axis_lead_hold_never_off_axis_is_untouched():
+  hold = longitudinal_planner_module.OffAxisLeadHold()
+  sm = _off_axis_sm(y_rel=0.3, vision_a=-0.5, a_lead=-3.6, v_ego=22.0, d_rel=38.0, v_rel=-6.9)
+  for _ in range(5):
+    assert longitudinal_planner_module.bound_off_axis_leads(sm, hold) is sm
