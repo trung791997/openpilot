@@ -1357,3 +1357,39 @@ The walk is still limited to ~2 steps/s and the 25 mph floor; a far target canno
 brake harder than the set-speed walk allows. The 726-728 s stall (presses out, no steps) is not
 explained. If the set speed comes down too early on the road, the toggle is in Galaxy Developer
 Mode as "ICBM Far-Lead Slowdown".
+
+## D-065 — IMPLEMENTED: `ICBMCounterSync` defaults on, and ICBM yields to a held physical cruise button for the whole hold plus 0.5 s
+**Decided 2026-09-24 on the bench routes 264/265 (STATUS 95) at the owner's request (STATUS 96). Sync: limited road evidence. Yield: unit evidence only; not driven.**
+
+### The failure
+
+Two things from the bench drives. (1) With the free-running 662 counter the set-speed walk is
+~2 steps/s; with the counter synced to the car's own SCM_BUTTONS frames it is ~6-7 steps/s, and
+every lead approach on ICBM depends on that rate. (2) `RedneckCruise` blocked its own presses for
+only 0.5 s from a physical button's press edge and unblocked on release in the same frame. The Honda
+ECU auto-repeats 5 mph per ~0.5 s under a hold, so any hold longer than 0.5 s had ICBM pressing
+decel against the driver's held RES+ (264 at 101.5 s, 265 at 156.5 s); with sync on, ICBM won.
+
+### The decision
+
+- `ICBMCounterSync` ships on (`params_keys.h` default "1").
+- ICBM yields while any cruise button is physically held (`cruise_button_held`, capped at
+  `MANUAL_BUTTON_HELD_MAX_S` = 10 s so a missed release edge cannot silence ICBM for the drive) and
+  for `MANUAL_BUTTON_INACTIVE_TIMER` = 0.5 s after the release edge. The driver's finger always
+  wins; ICBM resumes half a second after it lifts.
+
+### Rejected alternatives
+
+- **Folding the ECU's 5 mph hold steps into openpilot's cruise target.** The target side
+  (`selfdrive/car/cruise.py` long-press logic) already diverges from the ECU under a hold (265 at
+  1:38.8: ECU at the 25 mph floor, `vCruise` at 8 km/h). Reconciling them is a target-side change on
+  every car, not an ICBM change, and needs its own evidence. Left as the open residual in STATUS 96.
+- **Keeping the 0.5 s window but restarting it on each ECU step.** The ECU's steps are visible only
+  through the cluster speed, which lags; the press edge and release edge are the direct signal.
+- **No cap on the hold.** A missed release edge (CAN drop, state reset) would then disable ICBM
+  until the next press; 10 s is longer than any deliberate hold to the floor (2.5 s) or ceiling.
+
+### Limits
+
+The yield is measured by unit tests only. Whether a held button on the road produces a clean press
+and release edge pair in `buttonEvents` on every hold is the bench question in STATUS 96.

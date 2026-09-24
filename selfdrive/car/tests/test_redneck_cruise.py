@@ -12,6 +12,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   GAS_SNAP_PRESS_S,
   INCREASE_INACTIVE_TIMER,
   LEAD_INCREASE_INACTIVE_TIMER,
+  MANUAL_BUTTON_HELD_MAX_S,
   MANUAL_BUTTON_INACTIVE_TIMER,
   RedneckCruise,
   SEND_BUTTON_DECREASE,
@@ -127,7 +128,8 @@ class TestRedneckCruise(unittest.TestCase):
     )
     self.assertEqual(SEND_BUTTON_NONE, send_button)
 
-    frames = int((MANUAL_BUTTON_INACTIVE_TIMER + INCREASE_INACTIVE_TIMER) / DT_CTRL) + 4
+    # No release edge ever arrives: ICBM stays quiet for the whole held cap, then resumes.
+    frames = int((MANUAL_BUTTON_HELD_MAX_S + MANUAL_BUTTON_INACTIVE_TIMER + INCREASE_INACTIVE_TIMER) / DT_CTRL) + 4
     for _ in range(frames):
       send_button, _ = self.redneck.run(
         self._new_state(speed_cluster_mph=20.0),
@@ -137,6 +139,44 @@ class TestRedneckCruise(unittest.TestCase):
       )
 
     self.assertEqual(SEND_BUTTON_INCREASE, send_button)
+
+  def _run_frames(self, frames, button_events=None):
+    sent = []
+    for _ in range(frames):
+      send_button, _ = self.redneck.run(
+        self._new_state(speed_cluster_mph=20.0, button_events=button_events),
+        self._new_control(),
+        25.0 * CV.MPH_TO_MS,
+        is_metric=False,
+      )
+      sent.append(send_button)
+      button_events = None
+    return sent
+
+  def test_held_physical_button_suppresses_output_for_the_whole_hold(self):
+    # Bench routes 264/265: a physical RES+ held ~3-4 s auto-repeats in the ECU; the old 0.5 s
+    # window let ICBM press decel against it after 0.5 s. Now: press edge, then 3 s with no
+    # release -> SEND_BUTTON_NONE on every frame.
+    self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
+    sent = self._run_frames(int(3.0 / DT_CTRL), button_events=[self._button_event(ButtonType.resumeCruise, True)])
+    self.assertEqual({SEND_BUTTON_NONE}, set(sent))
+
+  def test_released_physical_button_suppresses_output_for_inactive_timer_only(self):
+    self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
+    self._run_frames(int(3.0 / DT_CTRL), button_events=[self._button_event(ButtonType.resumeCruise, True)])
+    quiet = int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL)
+    sent = self._run_frames(quiet + int(INCREASE_INACTIVE_TIMER / DT_CTRL) + 4,
+                            button_events=[self._button_event(ButtonType.resumeCruise, False)])
+    self.assertEqual({SEND_BUTTON_NONE}, set(sent[:quiet]))
+    self.assertEqual(SEND_BUTTON_INCREASE, sent[-1])
+
+  def test_held_button_cap_assumes_missed_release(self):
+    self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
+    cap = int(MANUAL_BUTTON_HELD_MAX_S / DT_CTRL)
+    sent = self._run_frames(cap + int(INCREASE_INACTIVE_TIMER / DT_CTRL) + 4,
+                            button_events=[self._button_event(ButtonType.decelCruise, True)])
+    self.assertEqual({SEND_BUTTON_NONE}, set(sent[:cap]))
+    self.assertEqual(SEND_BUTTON_INCREASE, sent[-1])
 
   def test_suppresses_output_for_capnp_style_button_events(self):
     button_event = SimpleNamespace(type=SimpleNamespace(raw=int(ButtonType.accelCruise)), pressed=True)

@@ -17,6 +17,10 @@ INCREASE_INACTIVE_TIMER = 0.12
 DECREASE_INACTIVE_TIMER = 0.05
 LEAD_INCREASE_INACTIVE_TIMER = 0.05
 MANUAL_BUTTON_INACTIVE_TIMER = 0.5
+# ICBM yields for the whole time a physical cruise button is held (the Honda ECU auto-repeats 5 mph
+# per ~0.5 s under a hold; bench routes 264 at 101.5 s and 265 at 156.5 s showed ICBM pressing decel
+# against a held RES+ once the old 0.5 s window expired). The cap guards a missed release edge.
+MANUAL_BUTTON_HELD_MAX_S = 10.0
 LEAD_RECOVERY_LOOKAHEAD_POINTS = 4
 LEAD_RECOVERY_HOLD_BUFFER_MS = 1.5 * CV.MPH_TO_MS
 LEAD_COAST_BUFFER_MS = 1.0 * CV.MPH_TO_MS
@@ -258,15 +262,33 @@ def want_gas_snap(enabled: bool, gas_pressed: bool, driver_button: bool, brake_p
     set_speed_ms + GAS_RELEASE_SET_MARGIN_MS < v_ego <= cap_ms
 
 
-def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int]) -> None:
+def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int], button_held: dict[int, int]) -> None:
+  """button_held[t] counts frames since the press edge (0 = not held); button_timers[t] counts frames
+  since the release edge (0 = never released or a new press). Both advance once per frame."""
   for button_type in button_timers:
+    if button_held[button_type] > 0:
+      button_held[button_type] += 1
     if button_timers[button_type] > 0:
       button_timers[button_type] += 1
 
   for event in CS.buttonEvents:
     button_type = event.type.raw if hasattr(event.type, "raw") else int(event.type)
     if button_type in button_timers:
-      button_timers[button_type] = 1 if event.pressed else 0
+      if event.pressed:
+        button_held[button_type] = 1
+        button_timers[button_type] = 0
+      else:
+        button_held[button_type] = 0
+        button_timers[button_type] = 1
+
+
+def manual_button_active(button_timers: dict[int, int], button_held: dict[int, int]) -> bool:
+  """True while any cruise button is physically held (up to MANUAL_BUTTON_HELD_MAX_S, after which a
+  missed release is assumed) and for MANUAL_BUTTON_INACTIVE_TIMER after its release."""
+  held_max = int(MANUAL_BUTTON_HELD_MAX_S / DT_CTRL)
+  release_max = int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL)
+  return any(0 < held <= held_max for held in button_held.values()) or \
+    any(0 < timer <= release_max for timer in button_timers.values())
 
 
 class RedneckCruise:
@@ -283,6 +305,7 @@ class RedneckCruise:
     self.is_ready = False
     self.is_ready_prev = False
     self.cruise_button_timers = dict(CRUISE_BUTTON_TIMERS)
+    self.cruise_button_held = dict(CRUISE_BUTTON_TIMERS)
     self.manual_button_pressed = False
     self.gas_snap_frame = 0
 
@@ -313,8 +336,8 @@ class RedneckCruise:
     self.v_cruise_cluster = round(cluster)
 
   def _update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
-    update_manual_button_timers(CS, self.cruise_button_timers)
-    button_pressed = any(0 < timer <= int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL) for timer in self.cruise_button_timers.values())
+    update_manual_button_timers(CS, self.cruise_button_timers, self.cruise_button_held)
+    button_pressed = manual_button_active(self.cruise_button_timers, self.cruise_button_held)
     self.manual_button_pressed = button_pressed
     # cruiseControl.override is only set under openpilot long, so the stock-ACC gas override is
     # checked directly. Honda DECEL/SET under gas snaps the set speed to vEgo (route 260 seg 6/9:
