@@ -5550,3 +5550,9 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - **Render check.** Route 265, segment 3, 180–200 s, rendered offline. The compact 50 MAX shows between ceiling changes, and the full-size box shows right after each change.
 - **Harness fix.** The offline harness now drives the UI clock (`rl.get_time`) from log time. Before, it read render wall time, so the length of the 2.5 s pop-up in the replay frames didn't match log time.
 - **Tests.** The UI suite ran 505 passed and 7 failed. All 7 failures come from tests that were already failing before this change (camera ROI, soundd, theme, camera cleanup). 4 new `set_speed_scale` cases are included.
+
+## 100. C4: the top-centre lead readout is hidden while the marker labels show lead speed. Unit evidence, UI only; not yet re-rendered.
+
+- **What changed.** Owner: "remove the lead speed on top of the screen too no? isnt that too redundant?" The number at the top centre comes from the Lead Info toggle (`LeadInfo`, mode speed), and it repeats the speed label under the lead marker (STATUS 97). `show_top_lead_info()` in `selfdrive/ui/mici/onroad/model_renderer.py` now hides it when the multi-lead UI is on and Lead Info is set to speed.
+- **Unchanged.** Distance mode still shows at the top, because the marker labels carry speed only. With the multi-lead UI off, the top readout behaves as before.
+- **Tests.** 5 new cases. UI suite: 510 passed; the 7 failures come from tests that were already failing before this change.

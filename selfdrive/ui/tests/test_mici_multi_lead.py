@@ -90,3 +90,14 @@ def test_overlay_without_adjacent_data_labels_only_in_lane_leads(overlay):
 def test_set_speed_scale(icbm, changed, expected):
   assert set_speed_scale(icbm, changed) == expected
   assert 0.4 < ICBM_SET_SPEED_SCALE < 0.7
+
+
+@pytest.mark.parametrize("mode, multi, expected", [
+  (mr.LeadInfoMode.SPEED, True, False),     # marker labels already show the lead speed
+  (mr.LeadInfoMode.SPEED, False, True),
+  (mr.LeadInfoMode.DISTANCE, True, True),   # distance is not on the marker labels
+  (mr.LeadInfoMode.OFF, False, False),
+  (mr.LeadInfoMode.OFF, True, False),
+])
+def test_show_top_lead_info(mode, multi, expected):
+  assert mr.show_top_lead_info(mode, multi) is expected

@@ -44,6 +44,15 @@ NO_THROTTLE_COLORS = [
   rl.Color(242, 242, 242, 0),   # HSLF(112/360, 0.0, 0.95, 0.0)
 ]
 
+
+def show_top_lead_info(mode: LeadInfoMode, multi_lead_ui: bool) -> bool:
+  """The top-centre lead readout. Hidden in speed mode while every marker carries its own speed label
+  (owner: "too redundant"); distance mode still shows, since the marker labels carry speed only."""
+  if mode == LeadInfoMode.OFF:
+    return False
+  return not (multi_lead_ui and mode == LeadInfoMode.SPEED)
+
+
 @dataclass
 class ModelPoints:
   raw_points: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.float32))
@@ -571,7 +580,7 @@ class ModelRenderer(Widget):
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(lead_color, lead.fill_alpha))
 
     lead_one = radar_state.leadOne
-    if self._lead_info_mode != LeadInfoMode.OFF and lead_one and lead_one.status:
+    if show_top_lead_info(self._lead_info_mode, self._multi_lead_ui) and lead_one and lead_one.status:
       self._draw_lead_info(lead_one)
 
   @staticmethod
