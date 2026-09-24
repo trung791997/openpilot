@@ -5593,7 +5593,7 @@
       {
         "key": "ICBMCounterSync",
         "label": "ICBM Counter Sync (Honda, experimental)",
-        "description": "Honda Bosch only. Sends each ICBM button press with the message counter that follows the car's own button frame. On a logged drive the car only acted on about 1 in 4 ICBM presses, the ones that happened to have the right counter. This should make set-speed changes faster. Experimental: not yet driven.",
+        "description": "Honda Bosch only. Sends each ICBM button press with the message counter that follows the car's own button frame. Without it the car steps the set speed about 2 times a second because only presses with the right counter count; with it, about 6 to 7 times a second on two logged drives. On those drives it also let ICBM out-press a held physical RES+ button. On by default; turn it off here to go back to the slower walk.",
         "picker_description": "Faster ICBM set-speed changes on Honda by matching the button message counter.",
         "data_type": "bool",
         "ui_type": "toggle",

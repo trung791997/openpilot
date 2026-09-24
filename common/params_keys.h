@@ -491,8 +491,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IncreasedStoppedDistanceRainStorm", {PERSISTENT, FLOAT, "0.0", "0.0", 2, SETTINGS_SIMPLE}},
     {"IncreasedStoppedDistanceSnow", {PERSISTENT, FLOAT, "0.0", "0.0", 2, SETTINGS_SIMPLE}},
     {"RedneckCruise", {PERSISTENT, BOOL, "0", "0", 1, SETTINGS_SIMPLE}},
-    // Honda ICBM: send each button press with the SCM_BUTTONS counter that follows the car's own frame.
-    {"ICBMCounterSync", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
+    // Honda ICBM: send each button press with the SCM_BUTTONS counter that follows the car's own frame. Ships on (owner's request after bench routes 264/265, STATUS 95-96), stock off.
+    {"ICBMCounterSync", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
     // ICBM: lower the set speed toward a stopping-distance speed for a closing lead the chill plan ignores. Ships on (owner's request), stock off.
     {"ICBMFarLead", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
     // ICBM: letting off the gas above the set speed sets the set speed to the release speed.
