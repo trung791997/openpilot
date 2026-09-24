@@ -131,14 +131,14 @@ class FixBound:
       return False
     return abs((self.v_ego + float(lead.vRel)) - float(leads[0].v[0])) >= FIX_VIS_DV
 
-  def __call__(self, lead, model_msg):
+  def __call__(self, lead, model_msg, held=False):
     if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
       return None
     d_rel = float(lead.dRel)
     a_lead = float(lead.aLeadK)
     if d_rel <= 1.0 or a_lead >= -LP.OFF_AXIS_LEAD_MAX_BRAKE:
       return None
-    if abs(float(lead.yRel)) / d_rel < LP.OFF_AXIS_LEAD_MIN_BEARING and not self._extra(lead, model_msg):
+    if abs(float(lead.yRel)) / d_rel < LP.OFF_AXIS_LEAD_MIN_BEARING and not held and not self._extra(lead, model_msg):
       return None
     vision_brake = 0.0
     leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
