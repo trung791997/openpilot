@@ -6019,4 +6019,8 @@ Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEA
   - seg 13 59.0 s, lead 7.3 m at 5 mph: before, a marker sliver at the bottom edge and no label. Now there is a red down-chevron on the car's roof with "5 mph" above it.
   - seg 13 56.0 s, lead 10.9 m: not flipped, unchanged.
   - seg 16 38.2 s, leadOne 7.9 m at yRel −3.2 (a cut-in at the right edge): the flipped marker lands top-right, next to the speed-limit sign. Its label now stays on screen but touches the top edge of the sign. In-path labels ignore the sign by the item 105 rule.
+- **Follow-up, same day** (owner: "the 14 mph is still occluded a little bit by the frame"):
+  - The flip now also fires when only the label would be cut off. The upright marker needs `sz + LEAD_LABEL_ROOM` (32 px: a 2 px gap plus the 30.2 px box of a 26 px label) above the bottom of the view. The unflip band is 1.0·sz.
+  - Re-render seg 13 56.0 s (lead 10.9 m): before, "14 mph" was cut off at the bottom edge; now it flips onto the roof with "14 mph" above. At 52.9 s (18.2 m) the label fits and the marker stays upright. The 10.9 m left-lane pickup there flips too.
+  - 1 new test; 68 passed.
 - **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it. Photograph it if the marker flickers between the two forms in stop-and-go.

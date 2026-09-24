@@ -263,7 +263,7 @@ def test_flipped_marker_leaves_room_for_its_label_at_the_top():
   r = mr.ModelRenderer.__new__(mr.ModelRenderer)
   lead = r._update_lead_vehicle(3.0, 0.0, (250, 400), rl.Rectangle(0, 0, 500, 240), top=(250, 5))
   sz = lead.chevron[1][1] - lead.chevron[0][1]
-  assert lead.chevron[0][1] >= mr.FLIPPED_LEAD_LABEL_ROOM
+  assert lead.chevron[0][1] >= mr.LEAD_LABEL_ROOM
   assert sz > 0
 
 
@@ -272,11 +272,24 @@ def test_flip_has_hysteresis():
   r = mr.ModelRenderer.__new__(mr.ModelRenderer)
   rect = rl.Rectangle(0, 0, 500, 240)
   sz = 750 / (3.0 / 3 + 30)  # marker size at d_rel 3 m, in-path
-  point = (250, rect.height - sz * 1.0)  # just above the clamp line (0.6 sz), inside the unflip band (1.6 sz)
+  fits = rect.height - sz - mr.LEAD_LABEL_ROOM  # lowest tip whose label still fits under it
+  point = (250, fits - sz * 0.5)  # label fits, but inside the unflip band
   assert not r._update_lead_vehicle(3.0, 0.0, point, rect, top=(250, 100)).flipped
   assert r._update_lead_vehicle(3.0, 0.0, point, rect, top=(250, 100), was_flipped=True).flipped
-  far = (250, rect.height - sz * 2.0)
+  far = (250, fits - sz * 1.5)
   assert not r._update_lead_vehicle(3.0, 0.0, far, rect, top=(250, 100), was_flipped=True).flipped
+
+
+def test_marker_flips_when_only_its_label_would_be_cut_off():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  rect = rl.Rectangle(0, 0, 500, 240)
+  sz = 750 / (10.9 / 3 + 30)
+  # marker itself is on screen (not clamped), but the label under it would run past the bottom edge
+  point = (250, rect.height - sz - mr.LEAD_LABEL_ROOM + 5)
+  upright = r._update_lead_vehicle(10.9, 0.0, point, rect)
+  assert upright.chevron[1][1] == point[1]
+  assert r._update_lead_vehicle(10.9, 0.0, point, rect, top=(250, 100)).flipped
 
 
 def test_flipped_marker_label_goes_on_top(monkeypatch):

@@ -19,11 +19,11 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
-# A close lead's marker is clamped against the bottom of the view (behind the HUD, its label off-screen), so it is
+# A close lead's marker is clamped against the bottom of the view and its speed label is cut off below it, so it is
 # flipped: drawn on the lead's roof, pointing down, with its speed above it (owner request).
 LEAD_ROOF_HEIGHT = 1.5         # m above the road where the flipped marker's tip sits
-FLIPPED_LEAD_UNFLIP_SZ = 1.6   # hysteresis: stays flipped until the normal tip is this many marker sizes above the clamp
-FLIPPED_LEAD_LABEL_ROOM = 30   # px kept above a flipped marker for its label
+LEAD_LABEL_ROOM = 32           # px a speed label needs next to its marker: 2 px gap + the 26 px label box (30.2 px)
+FLIPPED_LEAD_UNFLIP_SZ = 1.0   # hysteresis: stays flipped until the upright label has this many marker sizes to spare
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 STOCK_LANE_LINES_COLOR = rl.Color(255, 255, 255, 255)
@@ -518,8 +518,8 @@ class ModelRenderer(Widget):
     return float(gradient_bottom), float(gradient_top)
 
   def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0, top=None, was_flipped: bool = False):
-    """Marker under the lead (tip up at its bottom edge). When that would be clamped against the bottom of the view
-    (a close lead) and the lead's roof point `top` is known, the marker flips: tip down on the roof."""
+    """Marker under the lead (tip up at its bottom edge). When it and its speed label would not fit above the bottom
+    of the view (a close lead) and the lead's roof point `top` is known, the marker flips: tip down on the roof."""
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -535,10 +535,11 @@ class ModelRenderer(Widget):
     g_xo = sz / 5
     g_yo = sz / 10
 
-    clamp_margin = sz * (FLIPPED_LEAD_UNFLIP_SZ if was_flipped else 0.6)
-    if top is not None and (point is None or point[1] > rect.height - clamp_margin):
+    # flip when the upright marker plus the label under it would not fit above the bottom of the view
+    bottom_room = sz + LEAD_LABEL_ROOM + (sz * FLIPPED_LEAD_UNFLIP_SZ if was_flipped else 0.0)
+    if top is not None and (point is None or point[1] > rect.height - bottom_room):
       x = np.clip(top[0], 0.0, rect.width - sz / 2)
-      y = min(max(top[1], sz + FLIPPED_LEAD_LABEL_ROOM), rect.height - sz * 0.6)
+      y = min(max(top[1], sz + LEAD_LABEL_ROOM), rect.height - sz * 0.6)
       # tip down; points listed in reverse so the fan keeps the winding of the upright marker
       glow = [(x - (sz * 1.35) - g_xo, y - sz - g_yo), (x, y + g_yo), (x + (sz * 1.35) + g_xo, y - sz - g_yo)]
       chevron = [(x - (sz * 1.25), y - sz), (x, y), (x + (sz * 1.25), y - sz)]
