@@ -6064,6 +6064,7 @@ Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEA
   - seg 10 16.2 s, a Ram pickup at 8.1 m, 9 mph: the marker sits on the rear window, just under the cab roof.
   - seg 17 45.0 s, an SUV at 3.5 m, stopped: the marker is held at the top, on the rear glass.
   - In all three the marker and label are fully visible; before, each showed only a marker corner at the bottom edge.
+  - Owner reviewed these renders and kept `LEAD_ROOF_HEIGHT` at 1.5 m ("it looks fine"). Raising it to about 1.9 m was offered, to put the marker above pickup cabs.
 - **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it (rendered above). Photograph it if the marker flickers between the two forms in stop-and-go.
 
 ## 109. The item 107 per-track hold is shipped in the planner (ffa72fdc, owner approved); the shipped code reproduces the replay prototype on 19 routes. Replay evidence only; brake-affecting; not driven.
