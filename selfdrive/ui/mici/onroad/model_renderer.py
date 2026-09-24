@@ -63,6 +63,10 @@ LEAD_LABEL_FONT_SIZE = 20
 ADJACENT_LEFT_LEAD_COLOR = rl.Color(0, 150, 255, 255)
 ADJACENT_RIGHT_LEAD_COLOR = rl.Color(180, 0, 255, 255)
 ADJACENT_LEAD_MIN_ALPHA = 140
+# adjacent-lane markers draw smaller than the in-path ones, with a smaller speed label (owner: "slightly smaller,
+# with the speed label right below it")
+ADJACENT_LEAD_SCALE = 0.7
+ADJACENT_LEAD_LABEL_FONT_SIZE = 16
 
 
 @dataclass
@@ -249,7 +253,8 @@ class ModelRenderer(Widget):
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
-          self._adjacent_lead_vehicles[i] = self._update_lead_vehicle(d_rel + abs(y_rel), v_rel, point, self._rect)
+          self._adjacent_lead_vehicles[i] = self._update_lead_vehicle(d_rel + abs(y_rel), v_rel, point, self._rect,
+                                                                      scale=ADJACENT_LEAD_SCALE)
 
   def _draw_multi_lead_overlay(self, radar_state, starpilot_radar_state) -> None:
     """Developer UI: adjacent-lane lead markers, and each marker's lead speed right beneath it."""
@@ -257,7 +262,7 @@ class ModelRenderer(Widget):
     labelled = []
     for lead, lead_data in zip(self._lead_vehicles, (radar_state.leadOne, radar_state.leadTwo), strict=True):
       if lead.chevron and lead_data and lead_data.status:
-        labelled.append((lead, lead_data))
+        labelled.append((lead, lead_data, LEAD_LABEL_FONT_SIZE, 0))
 
     if starpilot_radar_state is not None:
       for lead, lead_data, color in zip(self._adjacent_lead_vehicles,
@@ -267,25 +272,34 @@ class ModelRenderer(Widget):
           continue
         rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
         rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, max(lead.fill_alpha, ADJACENT_LEAD_MIN_ALPHA)))
-        labelled.append((lead, lead_data))
+        labelled.append((lead, lead_data, ADJACENT_LEAD_LABEL_FONT_SIZE, -1 if color is ADJACENT_LEFT_LEAD_COLOR else 1))
 
     use_si_metrics = ui_state.starpilot_toggles.get("UseSiMetrics", False)
-    for lead, lead_data in labelled:
+    for lead, lead_data, font_size, side in labelled:
       text = self._format_lead_speed(getattr(lead_data, "vLead", 0.0), ui_state.is_metric, use_si_metrics)
-      self._draw_lead_label(lead.chevron, text)
+      self._draw_lead_label(lead.chevron, text, font_size, side)
 
-  def _draw_lead_label(self, chevron, text: str) -> None:
+  def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
+    """Label under the marker. A side-lane label that would overlap slides outward (side -1 left, +1 right)
+    rather than being dropped; an in-path label that would overlap is dropped."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
 
     font = gui_app.font(FontWeight.SEMI_BOLD)
-    size = measure_text_cached(font, text, LEAD_LABEL_FONT_SIZE)
+    size = measure_text_cached(font, text, font_size)
     x = chevron[1][0] - size.x / 2
-    y = max(chevron[0][1], chevron[2][1]) + 3
-    label_rect = rl.Rectangle(x - 4, y - 2, size.x + 8, size.y + 4)
-    if any(rl.check_collision_recs(label_rect, r) for r in self._lead_label_rects):
+    y = max(chevron[0][1], chevron[2][1]) + 2
+    label_rect = rl.Rectangle(x - 3, y - 1, size.x + 6, size.y + 2)
+    hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
+    if hits and side:
+      shift = (min(r.x for r in hits) - (label_rect.x + label_rect.width) if side < 0
+               else max(r.x + r.width for r in hits) - label_rect.x)
+      label_rect.x += shift
+      x += shift
+      hits = [r for r in self._lead_label_rects if rl.check_collision_recs(label_rect, r)]
+    if hits:
       return
     self._lead_label_rects.append(label_rect)
-    _draw_text_with_outline(text, float(x), float(y), font, LEAD_LABEL_FONT_SIZE)
+    _draw_text_with_outline(text, float(x), float(y), font, font_size)
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
@@ -412,7 +426,7 @@ class ModelRenderer(Widget):
     gradient_top = np.clip((float(np.min(visible_track_y)) - self._rect.y) / self._rect.height, 0.0, 1.0)
     return float(gradient_bottom), float(gradient_top)
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, scale: float = 1.0):
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -424,7 +438,7 @@ class ModelRenderer(Widget):
       fill_alpha = min(fill_alpha, 255)
 
     # Calculate size and position
-    sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * 1
+    sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * scale
     x = np.clip(point[0], 0.0, rect.width - sz / 2)
     y = min(point[1], rect.height - sz * 0.6)
 

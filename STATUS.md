@@ -5567,3 +5567,14 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 - **Fix from STATUS 100:** the attribute is read with `getattr` so that `test_lead_indicator`, which builds a bare `ModelRenderer`, passes again.
 - **UI suite:** 513 passed. The same 7 pre-existing failures remain, plus `test_raylib_ui`. That test fails only inside the full suite; it passes alone 3/3. It runs offroad and never draws the HUD.
 - Not seen on the device.
+
+## 102. C4: MAX now fits inside the original speed-limit sign; side-lane markers are smaller and always labelled. Replay render evidence, UI only.
+
+- **MAX in the sign:** Peter said the tall card from STATUS 101 "takes up a lot of real estate". He wants MAX and the speed limit to "all fit in that original square". The sign keeps its original size, 116×142, and draws a single "MAX 50" line on top with a divider below it. SPEED LIMIT / 40 / +5 are shrunk to fit underneath. A Vienna sign gets the same MAX line inside the circle. `MAX_BAND_HEIGHT` is gone. The gating and pop-up behaviour from STATUS 101 are unchanged.
+- **Side-lane markers:** Peter asked for "slightly smaller, with the speed label right below it".
+  - The side markers now draw at `ADJACENT_LEAD_SCALE` (0.7) and their labels at 16 px. In-path markers stay at 20 px.
+  - A side label that would overlap another label now slides outward, away from the centre, instead of being hidden.
+  - In-path labels are still dropped on overlap.
+- **Evidence:** offline replay of route 263, seg 3, 221–241 s. All three labels show in the sampled frames, where before the side labels were mostly hidden. 1 new unit test.
+- **UI suite:** 514 passed. The same failures as STATUS 101 remain: 7 pre-existing, plus `test_raylib_ui`, which fails only in the full run and passes alone.
+- Not seen on the device.

@@ -48,7 +48,7 @@ def overlay(monkeypatch):
   monkeypatch.setattr(mr.rl, "draw_triangle_fan", lambda pts, n, color: fans.append(color))
   monkeypatch.setattr(mr.ui_state, "starpilot_toggles", {}, raising=False)
   monkeypatch.setattr(mr.ui_state, "is_metric", False, raising=False)
-  renderer._draw_lead_label = lambda chevron, text: labels.append((chevron[1][0], text))
+  renderer._draw_lead_label = lambda chevron, text, font_size=mr.LEAD_LABEL_FONT_SIZE, side=0: labels.append((chevron[1][0], text))
   return renderer, fans, labels
 
 
@@ -111,3 +111,15 @@ def test_show_top_lead_info(mode, multi, expected):
 ])
 def test_combine_max_with_sign(held, sign, changed, expected):
   assert combine_max_with_sign(held, sign, changed) == expected
+
+
+def test_adjacent_lead_marker_is_smaller():
+  import pyray as rl
+  r = mr.ModelRenderer.__new__(mr.ModelRenderer)
+  rect = rl.Rectangle(0, 0, 1000, 500)
+  full = r._update_lead_vehicle(30.0, 0.0, (500, 250), rect)
+  side = r._update_lead_vehicle(30.0, 0.0, (500, 250), rect, scale=mr.ADJACENT_LEAD_SCALE)
+  full_w = full.chevron[0][0] - full.chevron[2][0]
+  side_w = side.chevron[0][0] - side.chevron[2][0]
+  assert side_w == pytest.approx(full_w * mr.ADJACENT_LEAD_SCALE)
+  assert mr.ADJACENT_LEAD_LABEL_FONT_SIZE < mr.LEAD_LABEL_FONT_SIZE

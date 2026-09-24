@@ -41,11 +41,6 @@ def set_speed_scale(icbm_ceiling_active: bool, recently_changed: bool) -> float:
   return ICBM_SET_SPEED_SCALE if icbm_ceiling_active and not recently_changed else 1.0
 
 
-# Height of the MAX band stacked on top of the speed-limit sign (owner: "fit both the max and the speed limit
-# in the current speed limit box, with the max speed being on top").
-MAX_BAND_HEIGHT = 72
-
-
 def combine_max_with_sign(max_box_held: bool, sign_visible: bool, recently_changed: bool) -> bool:
   """The persistent ICBM MAX folds into the speed-limit card; a set-speed change still pops the stock box."""
   return max_box_held and sign_visible and not recently_changed
@@ -480,17 +475,17 @@ class HudRenderer(Widget):
     set_speed = self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE
     return str(round(set_speed))
 
-  def _draw_max_band(self, card_rect: rl.Rectangle, color: rl.Color) -> None:
-    """MAX label + ceiling number across the top of the combined card, with a divider under it."""
-    cx = card_rect.x + card_rect.width / 2
-    max_label = tr("MAX")
-    label_size = measure_text_cached(self._font_semi_bold, max_label, 20)
-    rl.draw_text_ex(self._font_semi_bold, max_label, rl.Vector2(cx - label_size.x / 2, card_rect.y + 16), 20, 0, color)
-    number = self._max_band_text()
-    number_size = measure_text_cached(self._font_bold, number, 40)
-    rl.draw_text_ex(self._font_bold, number, rl.Vector2(cx - number_size.x / 2, card_rect.y + 32), 40, 0, color)
-    divider_y = card_rect.y + MAX_BAND_HEIGHT + 4
-    rl.draw_line_ex(rl.Vector2(card_rect.x + 20, divider_y), rl.Vector2(card_rect.x + card_rect.width - 20, divider_y), 2, color)
+  def _draw_max_line(self, sign_rect: rl.Rectangle, top: float, color: rl.Color, divider_y: float = 0.0) -> None:
+    """One "MAX 50" line across the top of the speed-limit sign, inside its original footprint."""
+    label, number = tr("MAX"), self._max_band_text()
+    label_w = measure_text_cached(self._font_semi_bold, label, 15).x
+    number_w = measure_text_cached(self._font_bold, number, 28).x
+    gap = 5
+    x = sign_rect.x + (sign_rect.width - label_w - gap - number_w) / 2
+    rl.draw_text_ex(self._font_semi_bold, label, rl.Vector2(x, top + 9), 15, 0, color)
+    rl.draw_text_ex(self._font_bold, number, rl.Vector2(x + label_w + gap, top), 28, 0, color)
+    if divider_y:
+      rl.draw_line_ex(rl.Vector2(sign_rect.x + 18, divider_y), rl.Vector2(sign_rect.x + sign_rect.width - 18, divider_y), 2, color)
 
   def _draw_us_speed_limit_sign(
     self,
@@ -509,19 +504,17 @@ class HudRenderer(Widget):
     footer_top: float = 0.0,
     border_color = None,
     text_color = None,
-    draw_border: bool = True,
   ) -> None:
     border_color = border_color or rl.Color(255, 255, 255, sign_alpha)
     text_color = text_color or rl.Color(255, 255, 255, sign_alpha)
 
-    if draw_border:
-      inner_border_rect = rl.Rectangle(
-        sign_rect.x + 8,
-        sign_rect.y + 8,
-        sign_rect.width - 16,
-        sign_rect.height - 16,
-      )
-      rl.draw_rectangle_rounded_lines_ex(inner_border_rect, 0.14, 16, max(border_thickness - 2, 1), border_color)
+    inner_border_rect = rl.Rectangle(
+      sign_rect.x + 8,
+      sign_rect.y + 8,
+      sign_rect.width - 16,
+      sign_rect.height - 16,
+    )
+    rl.draw_rectangle_rounded_lines_ex(inner_border_rect, 0.14, 16, max(border_thickness - 2, 1), border_color)
 
     speed_label = tr("SPEED")
     limit_label = tr("LIMIT")
@@ -581,7 +574,7 @@ class HudRenderer(Widget):
     recently_changed = 0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE
     max_box_held = self._icbm_ceiling_active and self.is_cruise_set and self._engaged and self._can_draw_top_icons
     self._max_in_sign = combine_max_with_sign(max_box_held, True, recently_changed)
-    band = MAX_BAND_HEIGHT if self._max_in_sign else 0
+    combined = self._max_in_sign  # owner: MAX and speed limit "all fit in that original square"
 
     sign_alpha = 72 if self._speed_limit_overridden and self._pending_speed_limit <= 0 else 255
     use_vienna_speed_limit = ui_state.ui_params.get_bool("UseVienna")
@@ -597,16 +590,6 @@ class HudRenderer(Widget):
     sign_x = base_x
     sign_y = rect.y + (28 if use_vienna_speed_limit else 20)
     widget_color = self._speed_limit_pulse_color(rl.Color(255, 255, 255, 255), sign_alpha)
-    if band:
-      card_rect = rl.Rectangle(sign_x, sign_y, sign_width, sign_height + band)
-      max_color = rl.Color(255, 255, 255, int(255 * 0.9))
-      if use_vienna_speed_limit:
-        rl.draw_rectangle_rounded(card_rect, 0.3, 16, rl.Color(0, 0, 0, 110))
-      self._draw_max_band(card_rect, max_color)
-      if not use_vienna_speed_limit:
-        border_rect = rl.Rectangle(card_rect.x + 8, card_rect.y + 8, card_rect.width - 16, card_rect.height - 16)
-        rl.draw_rectangle_rounded_lines_ex(border_rect, 0.1, 16, 2, widget_color)
-      sign_y += band
 
     if use_vienna_speed_limit:
       center_x = sign_x + sign_width / 2
@@ -626,15 +609,37 @@ class HudRenderer(Widget):
         ring_color,
       )
 
-      font_size = 58 if len(speed_text) <= 2 else 48
+      if combined:
+        self._draw_max_line(rl.Rectangle(sign_x, sign_y, sign_width, sign_height), sign_y + 20, text_color)
+      font_size = (40 if combined else 58) if len(speed_text) <= 2 else (34 if combined else 48)
       text_size = measure_text_cached(self._font_bold, speed_text, font_size)
-      text_pos = rl.Vector2(center_x - text_size.x / 2, center_y - text_size.y / 2 + (-14 if offset_text else 4))
+      text_dy = (4 if offset_text else 12) if combined else (-14 if offset_text else 4)
+      text_pos = rl.Vector2(center_x - text_size.x / 2, center_y - text_size.y / 2 + text_dy)
       rl.draw_text_ex(self._font_bold, speed_text, text_pos, font_size, 0, text_color)
       if offset_text:
-        offset_font_size = 34
+        offset_font_size = 24 if combined else 34
         offset_size = measure_text_cached(self._font_semi_bold, offset_text, offset_font_size)
-        offset_pos = rl.Vector2(center_x - offset_size.x / 2, sign_y + sign_height - 42)
+        offset_pos = rl.Vector2(center_x - offset_size.x / 2, sign_y + sign_height - (36 if combined else 42))
         rl.draw_text_ex(self._font_semi_bold, offset_text, offset_pos, offset_font_size, 0, text_color)
+    elif combined:
+      sign_rect = rl.Rectangle(sign_x, sign_y, sign_width, sign_height)
+      self._draw_max_line(sign_rect, sign_y + 14, widget_color, divider_y=sign_y + 48)
+      self._draw_us_speed_limit_sign(
+        sign_rect,
+        speed_text,
+        sign_alpha,
+        border_thickness=4,
+        header_font_size=13,
+        header_gap=12,
+        speed_font_size=(34 if offset_text else 38) if len(speed_text) <= 2 else 32,
+        header_top=53,
+        speed_top=74 if offset_text else 82,
+        footer_text=offset_text,
+        footer_font_size=20 if offset_text else 0,
+        footer_top=111,
+        border_color=widget_color,
+        text_color=widget_color,
+      )
     else:
       sign_rect = rl.Rectangle(sign_x, sign_y, sign_width, sign_height)
       self._draw_us_speed_limit_sign(
@@ -652,7 +657,6 @@ class HudRenderer(Widget):
         footer_top=100,
         border_color=widget_color,
         text_color=widget_color,
-        draw_border=not band,
       )
 
   def _update_prompt_layout(self, rect: rl.Rectangle) -> None:
