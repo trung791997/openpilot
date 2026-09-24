@@ -47,6 +47,12 @@ Short version, in priority order:
 
 # Auto-compact
 
+> **Only where `~/.claude/bin/auto-compact.sh` exists** (the machine with the
+> sure-scale `claude-code-auto-compact` plugin, the `~/.claude/bin` links, the
+> `CLAUDE_COMPACT_*` env in `~/.claude/settings.json`, and Claude running inside
+> tmux). **Elsewhere, including cloud sessions and other accounts, ignore this
+> section and the Context-aware compact section below.**
+
 Compact strictly based on volume ceilings and major phase shifts. Do NOT compact
 based on arbitrary task counts. Compacting too early destroys cache economics.
 
