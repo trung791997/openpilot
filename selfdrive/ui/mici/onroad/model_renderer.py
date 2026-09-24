@@ -10,7 +10,7 @@ from openpilot.selfdrive.controls.lib.lane_centering import get_lane_centering_v
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.lib.starpilot_theme import get_param_color, get_theme_color, get_visual_color, is_stock_color_scheme, with_alpha
 from openpilot.selfdrive.ui.onroad.starpilot.rainbow_path import RainbowPath
-from openpilot.selfdrive.ui.lib.starpilot_visuals import LeadInfoMode, blend_colors, lead_indicator_enabled, lead_info_mode
+from openpilot.selfdrive.ui.lib.starpilot_visuals import LeadInfoMode, blend_colors, lead_indicator_enabled, lead_info_mode, multi_lead_ui_enabled
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad.starpilot_status import get_border_color
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -50,6 +50,12 @@ class ModelPoints:
   projected_points: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
 
 
+LEAD_LABEL_FONT_SIZE = 32
+ADJACENT_LEFT_LEAD_COLOR = rl.Color(0, 150, 255, 255)
+ADJACENT_RIGHT_LEAD_COLOR = rl.Color(180, 0, 255, 255)
+ADJACENT_LEAD_MIN_ALPHA = 140
+
+
 @dataclass
 class LeadVehicle:
   glow: list[float] = field(default_factory=list)
@@ -67,6 +73,9 @@ class ModelRenderer(Widget):
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._multi_lead_ui = False
+    self._lead_label_rects: list[rl.Rectangle] = []
     self._lead_info_mode = LeadInfoMode.OFF
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -142,10 +151,12 @@ class ModelRenderer(Widget):
     lead_one = radar_state.leadOne if radar_state else None
     self._lead_info_mode = lead_info_mode(self._params)
     render_lead_indicator = self._should_render_lead_indicator(radar_state)
+    self._multi_lead_ui = render_lead_indicator and multi_lead_ui_enabled(self._params)
+    starpilot_radar_state = sm['starpilotRadarState'] if self._multi_lead_ui and sm.valid.get('starpilotRadarState', False) else None
 
     # Update model data when needed
     model_updated = sm.updated['modelV2']
-    if model_updated or sm.updated['radarState'] or self._transform_dirty:
+    if model_updated or sm.updated['radarState'] or sm.updated['starpilotRadarState'] or self._transform_dirty:
       if model_updated:
         self._update_raw_points(model)
 
@@ -156,6 +167,7 @@ class ModelRenderer(Widget):
       self._update_model(lead_one, path_x_array)
       if render_lead_indicator:
         self._update_leads(radar_state, path_x_array)
+      self._update_adjacent_leads(starpilot_radar_state, path_x_array)
       self._transform_dirty = False
 
     self._draw_lane_lines()
@@ -165,6 +177,8 @@ class ModelRenderer(Widget):
 
     if render_lead_indicator and radar_state:
       self._draw_lead_indicator(radar_state)
+      if self._multi_lead_ui:
+        self._draw_multi_lead_overlay(radar_state, starpilot_radar_state)
 
   def _should_render_lead_indicator(self, radar_state) -> bool:
     return radar_state is not None and lead_indicator_enabled(self._params, hide_by_default=True)
@@ -213,6 +227,56 @@ class ModelRenderer(Widget):
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
           self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
+
+  def _update_adjacent_leads(self, starpilot_radar_state, path_x_array):
+    """Screen positions of the left/right adjacent-lane leads (starpilotRadarState), Developer UI only."""
+    self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    if starpilot_radar_state is None:
+      return
+    for i, lead_data in enumerate((starpilot_radar_state.leadLeft, starpilot_radar_state.leadRight)):
+      if lead_data and lead_data.status:
+        d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
+        idx = self._get_path_length_idx(path_x_array, d_rel)
+        z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
+        point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
+        if point:
+          self._adjacent_lead_vehicles[i] = self._update_lead_vehicle(d_rel + abs(y_rel), v_rel, point, self._rect)
+
+  def _draw_multi_lead_overlay(self, radar_state, starpilot_radar_state) -> None:
+    """Developer UI: adjacent-lane lead markers, and each marker's lead speed right beneath it."""
+    self._lead_label_rects = []
+    labelled = []
+    for lead, lead_data in zip(self._lead_vehicles, (radar_state.leadOne, radar_state.leadTwo), strict=True):
+      if lead.chevron and lead_data and lead_data.status:
+        labelled.append((lead, lead_data))
+
+    if starpilot_radar_state is not None:
+      for lead, lead_data, color in zip(self._adjacent_lead_vehicles,
+                                        (starpilot_radar_state.leadLeft, starpilot_radar_state.leadRight),
+                                        (ADJACENT_LEFT_LEAD_COLOR, ADJACENT_RIGHT_LEAD_COLOR), strict=True):
+        if not lead.glow or not lead.chevron or not (lead_data and lead_data.status):
+          continue
+        rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
+        rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, max(lead.fill_alpha, ADJACENT_LEAD_MIN_ALPHA)))
+        labelled.append((lead, lead_data))
+
+    use_si_metrics = ui_state.starpilot_toggles.get("UseSiMetrics", False)
+    for lead, lead_data in labelled:
+      text = self._format_lead_speed(getattr(lead_data, "vLead", 0.0), ui_state.is_metric, use_si_metrics)
+      self._draw_lead_label(lead.chevron, text)
+
+  def _draw_lead_label(self, chevron, text: str) -> None:
+    from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
+
+    font = gui_app.font(FontWeight.SEMI_BOLD)
+    size = measure_text_cached(font, text, LEAD_LABEL_FONT_SIZE)
+    x = chevron[1][0] - size.x / 2
+    y = max(chevron[0][1], chevron[2][1]) + 6
+    label_rect = rl.Rectangle(x - 4, y - 2, size.x + 8, size.y + 4)
+    if any(rl.check_collision_recs(label_rect, r) for r in self._lead_label_rects):
+      return
+    self._lead_label_rects.append(label_rect)
+    _draw_text_with_outline(text, float(x), float(y), font, LEAD_LABEL_FONT_SIZE)
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""

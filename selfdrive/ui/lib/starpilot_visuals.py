@@ -63,3 +63,12 @@ def lead_info_mode(params: Params | None = None) -> LeadInfoMode:
     mode = LeadInfoMode.SPEED
 
   return LeadInfoMode.SPEED if mode == LeadInfoMode.OFF else mode
+
+
+def multi_lead_ui_enabled(params: Params | None = None) -> bool:
+  """Developer UI multi-lead overlay on the small (C4) UI: adjacent-lane lead markers plus a speed label
+  beneath every marker. Same chain radard uses to publish leadLeft/leadRight on a non-big UI
+  (DeveloperUI -> DeveloperWidgets -> AdjacentLeadsUI), so the overlay is on exactly when the data is."""
+  active_params = params if params is not None else Params()
+  return active_params.get_bool("DeveloperUI") and active_params.get_bool("DeveloperWidgets") and \
+    active_params.get_bool("AdjacentLeadsUI")

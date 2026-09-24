@@ -18,6 +18,12 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
 from cereal import log
 
+
+def icbm_ceiling_active(redneck_cruise: bool, has_car_params: bool, has_longitudinal_control: bool) -> bool:
+  """ICBM only drives stock ACC, so the ceiling display applies only without openpilot longitudinal."""
+  return redneck_cruise and has_car_params and not has_longitudinal_control
+
+
 EventName = log.OnroadEvent.EventName
 
 # Constants
@@ -127,6 +133,9 @@ class HudRenderer(Widget):
     self.v_ego_cluster_seen: bool = False
     self._engaged: bool = False
     self._small_model_engaged: bool = False
+    # ICBM (RedneckCruise on a stock-ACC car): the MAX box stays up and shows the driver's own
+    # ceiling (carState.vCruise) instead of fading 2.5 s after the stock setpoint moves.
+    self._icbm_ceiling_active: bool = False
     self._egpu_fade_time: float = 0.0
     self._show_speed_limit: bool = False
     self._speed_limit: float = 0.0
@@ -214,6 +223,12 @@ class HudRenderer(Widget):
     set_speed = (
       controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster
     )
+    self._icbm_ceiling_active = icbm_ceiling_active(ui_state.ui_params.get_bool("RedneckCruise"),
+                                                    getattr(ui_state, "CP", None) is not None,
+                                                    bool(getattr(ui_state, "has_longitudinal_control", True)))
+    ceiling = float(getattr(car_state, "vCruise", 0.0))
+    if self._icbm_ceiling_active and ceiling > 0:
+      set_speed = ceiling
     engaged = sm['selfdriveState'].enabled
     if (engaged and not self._engaged and not ui_state.usbgpu_loading and ui_state.usbgpu_active is not True and
         sm.recv_frame['modelV2'] > ui_state.started_frame):
@@ -406,7 +421,8 @@ class HudRenderer(Widget):
 
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
     """Draw the MAX speed indicator box."""
-    alpha = self._set_speed_alpha_filter.update(0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE and
+    recently_changed = 0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE
+    alpha = self._set_speed_alpha_filter.update((recently_changed or self._icbm_ceiling_active) and
                                                 self._can_draw_top_icons and self._engaged)
     if alpha < 1e-2:
       return

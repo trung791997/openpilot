@@ -5503,3 +5503,30 @@ So on both approaches the lead entered the picture at ~110 m already at or below
 **Open residual, seen on 265 at 1:38.8 (item 95(d)).** The target side is untouched: under a physical hold longer than 0.5 s, openpilot's own cruise target (`selfdrive/car/cruise.py` long-press logic, 5-unit steps every 50 frames) walks independently of the ECU's 5 mph auto-repeat, so after a long SET- hold the ECU set can sit at the 25 mph floor while `vCruise` reads 8 km/h and ICBM keeps pressing decel until the driver disengages. The yield fix stops ICBM fighting the hold itself; it does not reconcile the two targets afterwards. Folding the ECU's hold steps into the target is D-065's rejected alternative for now; a resync of `vCruise` to the cluster on release is the obvious next step if the owner sees the set stuck low after a hold.
 
 **Ask of the owner.** On the next drive with counter sync on: hold RES+ and SET- for 3-5 s each while ICBM is active, bookmark each, and send the route. Expected: the cluster walks 5 mph per ~0.5 s with no ICBM press in the 662 log until 0.5 s after the release.
+
+## 97. C4 (mici) UI: every lead marker carries its speed beneath it, adjacent-lane leads are drawn, and under ICBM the MAX box stays up showing the driver's own ceiling. UI only, not brake-affecting. Unit evidence (14 new tests); render check on a logged drive pending in the follow-up entry.
+
+**Owner's ask.** The comma 3/3X UI shows several lead markers; the C4 showed one (occasionally two). He wants each marker's speed right under it, adjacent leads especially, behind the Developer UI. He also wants a persistent display of his own ICBM ceiling next to the road speed-limit sign.
+
+**Why the C4 showed fewer markers.** `selfdrive/ui/mici/onroad/model_renderer.py` drew only `radarState.leadOne/leadTwo` and printed leadOne's speed once at top-centre (`LeadInfo`). The big UI (`selfdrive/ui/onroad/model_renderer.py`) also draws `starpilotRadarState.leadLeft/leadRight`, with metrics under each. radard only publishes leadLeft/leadRight when `adjacent_lead_tracking` is on (has radar AND `AdjacentLeadsUI`, which sits under `DeveloperWidgets` under `developer_ui = DeveloperUI or big_ui`) or with human lane changes (`starpilot_variables.py:1032,1059`, `radard.py:1021`). On the C3X `big_ui` switches it on. On the C4, `DeveloperUI` defaults off.
+
+**Change.**
+- mici `ModelRenderer`, when `multi_lead_ui_enabled()` holds (`DeveloperUI && DeveloperWidgets && AdjacentLeadsUI`, `selfdrive/ui/lib/starpilot_visuals.py`):
+  - draws leadLeft (blue) and leadRight (purple) chevrons, placed like the big UI;
+  - puts a speed label beneath every drawn marker (leadOne, leadTwo, left, right) in the configured units;
+  - skips a label whose box would overlap one already drawn.
+  - The top-centre `LeadInfo` text is unchanged.
+- mici `HudRenderer`: when ICBM is active (`RedneckCruise` on, CarParams loaded, no openpilot longitudinal; `icbm_ceiling_active()`) and engaged, the MAX box stays visible (no 2.5 s fade) and shows `carState.vCruise`, which is the driver's ceiling that ICBM holds the stock setpoint under. Otherwise the behaviour is stock. No new params, so no params artifact rebuild.
+
+**How to turn it on (C4).** Galaxy → Developer UI on. `DeveloperWidgets` and `AdjacentLeadsUI` already default on. The ICBM ceiling needs no toggle.
+
+**Caveat: Developer UI on the C4 also changes a control input.** `conditional_chill_mode.py:330-347` `_adjacent_lead_ambiguous` reads leadLeft/leadRight. Switching Developer UI on therefore also turns on CCM's adjacent-lead veto on the C4. The C3X already runs with it through `big_ui`. Not changed here; the owner decides.
+
+**Evidence.** Static/unit only.
+- `selfdrive/ui/tests/test_mici_multi_lead.py`, 14 tests:
+  - the three-toggle truth table;
+  - the ICBM-ceiling predicate;
+  - the overlay labels each drawn lead with its own speed, draws adjacent chevrons in their colours with a visible minimum alpha, and draws nothing adjacent without starpilotRadarState.
+- UI suites (`selfdrive/ui/tests`, `selfdrive/ui/mici/tests`, under Xvfb in a raylib image): 500 passed.
+- The 8 failures are identical to the pre-change baseline run on the same image: camera ROI, raylib_ui, soundd, theme, and mici camera cleanup. `test_aethergrid` was excluded because it segfaults drawing without a GL window, before and after the change.
+- ruff clean.
