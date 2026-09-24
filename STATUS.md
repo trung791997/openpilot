@@ -5892,7 +5892,14 @@ It also drops alpha episodes that look real, e.g. 237 12:45.4 at aEgo −5.71 wi
 
 - **Owner's ask** (2026-09-24, on-road photo of the C4 on a 45 mph arterial showing "13 mph", "13 mph", "38 mph" markers): "the speed labels are a little too small, can you make it a little bit bigger". A first step to 24/20 px (`16c4a731`) was followed by "go to 26 / 22" (`418a35c9`).
 - **What changed.** `LEAD_LABEL_FONT_SIZE` 20 → 26 and `ADJACENT_LEAD_LABEL_FONT_SIZE` 16 → 22 in `selfdrive/ui/mici/onroad/model_renderer.py`. Side labels stay smaller than the in-path one (the test asserts it). Marker sizes, placement and the overlap rules from item 102 are unchanged. Item 98 had cut the label from 32 px to 20 px because 32 px "ran into the wheel icon"; 26 px sits between the two.
-- **Evidence.** `selfdrive/ui/tests/test_mici_multi_lead.py`: 38 passed (Xvfb, Python 3.12, on `418a35c9`). ruff clean. The full UI suite was not run. No offline render: this session had no route logs.
+- **Evidence.** `selfdrive/ui/tests/test_mici_multi_lead.py`: 38 passed (Xvfb, Python 3.12, on `418a35c9`). ruff clean. The full UI suite was not run. No route render: this session had no route logs and no comma connect login.
+- **Synthetic render instead (same day).** The real `_update_lead_vehicle` chevrons and `_draw_lead_label` were drawn at 536×240 under Xvfb, with the three markers placed as in the owner's photo. The 20/16 panel matches the photo's label sizes and positions. At 26/22 on that scene:
+  - all three labels draw;
+  - the right "38 mph" label slides outward and spans about x 344–418;
+  - the speed-limit sign starts at about x 396, so that label now runs roughly 20 px into the sign. At 20/16 the photo already shows "mph" touching the sign edge.
+  - Nothing reaches the wheel icon.
+
+  The render script was scratch and is not committed.
 - **What to watch.** The larger labels need more room, so the item 102 overlap rules fire more often:
   - an in-path label that would overlap another label is hidden (e.g. leadOne and leadTwo close together);
   - a side label slides outward, and could now reach the screen edge or the wheel icon.
