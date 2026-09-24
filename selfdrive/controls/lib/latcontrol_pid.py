@@ -10,6 +10,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.pid import PIDController
 from openpilot.starpilot.common.testing_grounds import testing_ground
+from openpilot.selfdrive.controls.lib.lat_adaptive_tune import LatAdaptiveTuner
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   RAV4_TSS2_CARS,
@@ -492,6 +493,9 @@ class LatControlPID(LatControl):
     self.lat_f_scale_standard = 1.0
     self.lat_f_scale_highway = 1.0
     self.lat_gain_schedule = None
+    # LatAdaptiveTune (default 0 = off) -- see lat_adaptive_tune.py. Read once per drive; the P
+    # factor it applies is fixed for the drive.
+    self.adaptive = LatAdaptiveTuner(self.params) if self.is_eps_modified else None
     self.center_taper_high = 0.5
     self.center_boost_threshold = 3.0
     self.center_boost_min_speed = 50.0
@@ -700,9 +704,14 @@ class LatControlPID(LatControl):
         p_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "p", CS.vEgo, p_scale)
         i_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "i", CS.vEgo, i_scale)
         f_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "f", CS.vEgo, f_scale)
+        if self.adaptive is not None:
+          p_scale *= self.adaptive.p_factor(CS.vEgo)
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
 
         lane_change = bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False))
+        if self.adaptive is not None:
+          self.adaptive.observe(CS.vEgo, angle_steers_des, CS.steeringAngleDeg, bool(CS.steeringPressed),
+                                lane_change, steer_limited_by_safety)
         if lane_change:
           self.center_taper_scale.x = 0.0
           center_taper_scale = 0.0
