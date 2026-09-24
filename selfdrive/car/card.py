@@ -26,7 +26,8 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import RedneckCruise, select_redneck_target_speed, update_launch_state
+from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, select_redneck_target_speed, update_gas_release_floor,
+                                                    update_launch_state)
 from openpilot.selfdrive.car.car_specific import MockCarState
 
 from openpilot.starpilot.common.favorite_slots import (
@@ -535,21 +536,7 @@ class Car:
       slc_target_speed_ms=slc_target_speed,
       csc_target_speed_ms=csc_target_speed,
     )
-    driver_button = any(getattr(event, "pressed", False) for event in getattr(CS, "buttonEvents", []))
-    self.redneck_launch_active, self.redneck_was_stopped = update_launch_state(
-      getattr(self, "redneck_launch_active", False),
-      getattr(self, "redneck_was_stopped", False),
-      bool(getattr(CC, "enabled", True)),
-      float(getattr(CS, "vEgo", 0.0)),
-      bool(getattr(CS, "standstill", False)),
-      bool(getattr(CS, "gasPressed", False)),
-      driver_button,
-      launch_target_speed,
-    )
-    if self.redneck_launch_active:
-      return launch_target_speed, lead_present
-
-    return select_redneck_target_speed(
+    normal_target_speed = select_redneck_target_speed(
       float(getattr(CS, "vCruise", 0.0)),
       float(CS.cruiseState.speedCluster),
       starpilot_target_speed,
@@ -561,7 +548,50 @@ class Car:
       lead_rel_speed_ms=lead_rel_speed_ms,
       slc_target_speed_ms=slc_target_speed,
       csc_target_speed_ms=csc_target_speed,
-    ), lead_present
+    )
+    driver_button = any(getattr(event, "pressed", False) for event in getattr(CS, "buttonEvents", []))
+    enabled = bool(getattr(CC, "enabled", True))
+    v_ego = float(getattr(CS, "vEgo", 0.0))
+    standstill = bool(getattr(CS, "standstill", False))
+    gas_pressed = bool(getattr(CS, "gasPressed", False))
+    set_speed = float(CS.cruiseState.speedCluster)
+    self.redneck_launch_active, self.redneck_was_stopped = update_launch_state(
+      getattr(self, "redneck_launch_active", False),
+      getattr(self, "redneck_was_stopped", False),
+      enabled,
+      v_ego,
+      standstill,
+      gas_pressed,
+      driver_button,
+      launch_target_speed,
+      set_speed_ms=set_speed,
+      hold_target_ms=normal_target_speed,
+    )
+
+    gas_release_floor = 0.0
+    if getattr(self.starpilot_toggles, "set_speed_on_gas_release", False):
+      gas_release_floor = update_gas_release_floor(
+        getattr(self, "redneck_gas_release_floor", 0.0),
+        getattr(self, "redneck_gas_pressed_prev", False),
+        gas_pressed,
+        enabled,
+        v_ego,
+        standstill,
+        bool(getattr(CS, "brakePressed", False)),
+        driver_button,
+        set_speed,
+        bool(getattr(self, "is_metric", False)),
+      )
+    self.redneck_gas_release_floor = gas_release_floor
+    self.redneck_gas_pressed_prev = gas_pressed
+
+    if self.redneck_launch_active:
+      return launch_target_speed, lead_present
+
+    # The floor never raises the target above the cruise target (vCruise, SLC and CSC still cap it).
+    if gas_release_floor > 0.0:
+      return max(normal_target_speed, min(gas_release_floor, launch_target_speed)), lead_present
+    return normal_target_speed, lead_present
 
   def step(self):
     CS, RD, FPCS = self.state_update()

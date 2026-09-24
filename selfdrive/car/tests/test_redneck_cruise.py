@@ -18,6 +18,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   get_lead_coast_buffer_ms,
   get_lead_departure_boost_ms,
   select_redneck_target_speed,
+  update_gas_release_floor,
   update_launch_state,
 )
 
@@ -608,6 +609,97 @@ class TestRedneckLaunch(unittest.TestCase):
     self.assertAlmostEqual(50.0 * CV.MPH_TO_MS, targets[1], places=2)
     self.assertAlmostEqual(50.0 * CV.MPH_TO_MS, targets[2], places=2)
 
+
+  def test_ends_when_set_raised_and_caught_up_to_lead_target(self):
+    # Route 262 3:50-4:26: set speed already at the launch target, car following a 35 mph lead.
+    set_ms, hold_ms = 49.7 * CV.MPH_TO_MS, 35.0 * CV.MPH_TO_MS
+    step = lambda v, s, h: update_launch_state(True, False, True, v * CV.MPH_TO_MS, False, False, False, self.TARGET,
+                                               set_speed_ms=s, hold_target_ms=h)
+    self.assertFalse(step(34.0, set_ms, hold_ms)[0])
+    self.assertTrue(step(30.0, set_ms, hold_ms)[0])  # still catching up to the lead
+    self.assertTrue(step(34.0, 25.0 * CV.MPH_TO_MS, hold_ms)[0])  # set speed not raised yet
+
+  def test_card_launch_ends_once_following_lead(self):
+    starpilot_plan = SimpleNamespace(vCruise=50.0 * CV.MPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False),
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False),
+                           redneck_launch_active=True, redneck_was_stopped=False)
+    car_control = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    v = 35.0 * CV.MPH_TO_MS
+    longitudinal_plan = SimpleNamespace(speeds=[v] * 10, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan}.__getitem__
+    card.sm = sm
+    car_state = SimpleNamespace(vEgo=v, standstill=False, gasPressed=False, buttonEvents=[],
+                                vCruise=50.0 * CV.MPH_TO_KPH, cruiseState=SimpleNamespace(speedCluster=49.7 * CV.MPH_TO_MS))
+    target = Car._get_redneck_target_speed(card, car_state, car_control)[0]
+    self.assertFalse(card.redneck_launch_active)
+    self.assertLess(target, 36.0 * CV.MPH_TO_MS)
+
+
+class TestRedneckGasReleaseFloor(unittest.TestCase):
+  SET = 25.0 * CV.MPH_TO_MS
+
+  def _step(self, floor, v_mph, prev=True, gas=False, brake=False, button=False, enabled=True, metric=False):
+    return update_gas_release_floor(floor, prev, gas, enabled, v_mph * CV.MPH_TO_MS, False, brake, button, self.SET, metric)
+
+  def test_release_above_set_speed_sets_rounded_floor(self):
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, self._step(0.0, 36.8))
+    self.assertAlmostEqual(60.0 * CV.KPH_TO_MS, self._step(0.0, 60.2 * CV.KPH_TO_MPH, metric=True))
+
+  def test_no_floor_without_release_or_near_set_speed(self):
+    self.assertEqual(0.0, self._step(0.0, 37.0, prev=False))
+    self.assertEqual(0.0, self._step(0.0, 37.0, gas=True))
+    self.assertEqual(0.0, self._step(0.0, 25.8))
+
+  def test_floor_holds_then_clears_on_brake_button_disable_stop(self):
+    floor = self._step(0.0, 37.0)
+    self.assertEqual(floor, self._step(floor, 33.0, prev=False))
+    self.assertEqual(0.0, self._step(floor, 33.0, prev=False, brake=True))
+    self.assertEqual(0.0, self._step(floor, 33.0, prev=False, button=True))
+    self.assertEqual(0.0, self._step(floor, 33.0, prev=False, enabled=False))
+    self.assertEqual(0.0, self._step(floor, 0.0, prev=False))
+
+  def _card(self, toggle=True):
+    starpilot_plan = SimpleNamespace(vCruise=55.0 * CV.MPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), is_metric=False,
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False, set_speed_on_gas_release=toggle))
+    return card, starpilot_plan
+
+  def _run(self, card, starpilot_plan, v_mph, gas, set_mph, lead_mph):
+    lead = lead_mph * CV.MPH_TO_MS
+    longitudinal_plan = SimpleNamespace(speeds=[lead] * 10, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan}.__getitem__
+    card.sm = sm
+    car_state = SimpleNamespace(vEgo=v_mph * CV.MPH_TO_MS, standstill=False, gasPressed=gas, brakePressed=False, buttonEvents=[],
+                                vCruise=55.0 * CV.MPH_TO_KPH, cruiseState=SimpleNamespace(speedCluster=set_mph * CV.MPH_TO_MS))
+    car_control = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    return Car._get_redneck_target_speed(card, car_state, car_control)[0]
+
+  def test_card_floor_keeps_set_speed_at_release_speed(self):
+    # Route 262 1:29: released at 37 mph over a 24.9 mph set speed, lead plan ~32 mph.
+    card, plan = self._card()
+    self._run(card, plan, 37.0, True, 24.9, 32.0)
+    target = self._run(card, plan, 37.0, False, 24.9, 32.0)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, target, places=2)
+    target = self._run(card, plan, 34.0, False, 37.0, 32.0)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, target, places=2)
+
+  def test_card_floor_off_with_toggle(self):
+    card, plan = self._card(toggle=False)
+    self._run(card, plan, 37.0, True, 24.9, 32.0)
+    self.assertLess(self._run(card, plan, 37.0, False, 24.9, 32.0), 33.0 * CV.MPH_TO_MS)
+
+  def test_card_floor_capped_by_csc(self):
+    card, plan = self._card()
+    plan.cscControllingSpeed, plan.cscSpeed = True, 30.0 * CV.MPH_TO_MS
+    self._run(card, plan, 37.0, True, 24.9, 40.0)
+    self.assertLessEqual(self._run(card, plan, 37.0, False, 24.9, 40.0), 30.0 * CV.MPH_TO_MS + 1e-6)
 
 if __name__ == "__main__":
   unittest.main()

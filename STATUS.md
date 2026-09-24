@@ -5194,3 +5194,35 @@ Peter's reasoning: on stock ACC openpilot does not control longitudinal, and the
   first. Check that no case coasts into a TTC below 4 s or needs braking harder than the normal planner would have used.
 - **Tests:** Dom's 4 cap tests plus a default-off check are added to test_longitudinal_planner (491 pass). Layout, Galaxy settings and variables suites pass. The known
   failures (test_dashboard_stats ×2, test_starpilot_planner ×1) also fail at HEAD.
+
+## 86. ICBM gas release now sets a floor on the ICBM target, and launch hands back to lead following sooner (Peter approved both, 2026-09-23). Static, unit and open-loop replay evidence only; not driven.
+
+**Why (limited road evidence, route `00000262--864cc3c6db`, build 314b85768).**
+- **Gas release did nothing.** The STATUS 84 path compares vEgo with openpilot's v_cruise, which on ICBM is the 55 mph maximum rather than the set speed on the dash.
+  At 1:29.3 Peter released the gas at 37 mph over a 24.9 mph set speed. Nothing changed, and stock ACC braked back to 32 mph.
+- **Launch held too long.** At 3:43.8 the launch raised the set speed to 49.7 mph by 3:50, as intended. It then made no press for 36 s (until about 4:26)
+  while the lead drove at 30-45 mph, because the launch only ended when vEgo came within 2 mph of the cruise target.
+
+**Changes** (`redneck_cruise.py`, `card._get_redneck_target_speed`):
+- **Gas-release floor** (`update_gas_release_floor`, same `SetSpeedOnGasRelease` toggle).
+  - When the gas is released with vEgo more than 1 mph above the car's set speed (`cruiseState.speedCluster`), the ICBM target is held at
+    or above the release speed, rounded to a whole mph or km/h.
+  - The floor is capped by the cruise target (vCruise, SLC, CSC).
+  - It clears on any driver cruise button, on the brake, on a stop and on disengage.
+  - The old `VCruiseHelper` path stays. It only matters when the release is above the 55 mph maximum, where it raises that maximum.
+- **Launch end.** The launch now also ends once the set speed has reached the launch target and vEgo has come within 2 mph of the normal
+  (lead or plan) target. The existing exits are unchanged.
+
+**Open-loop replay on 262.** The logged inputs were fed through the new `_get_redneck_target_speed`. The set speed in the log is the old
+one, so the target is valid only up to the first divergence.
+- **1:30:** the floor is 37 mph, so the target is 37, where the old target was about 33. A second release at 1:33 moves it to 38.
+- **2:25.7:** the release at 35.8 mph was under the 41.6 mph set speed, so there is no floor, correctly. The drop to 33.6 there was normal lead following.
+- **Launch:** it ends at 3:50.0. From then the target tracks the lead: 22.6, then 31 at 3:55, 37 at 4:05 and 44 at 4:19.
+
+**Tests (docker, per file).**
+- `test_redneck_cruise`: 8 new tests pass. The pre-existing failure `test_target_speed_coasts_before_closing_lead_plan_crosses_set_speed` also fails at HEAD.
+- `test_cruise_speed`: all 42 pass.
+
+**Watch on the next drive:**
+- After an overtake on the gas, the set speed on the dash walks up to the release speed and stays there until a button or the brake.
+- After a launch, once the set speed has jumped up, it comes back down to follow the lead within a few seconds.

@@ -40,6 +40,16 @@ LEAD_DEPARTURE_PLAN_POINTS = 3
 LAUNCH_STOPPED_SPEED_MS = 0.3
 LAUNCH_MOVING_SPEED_MS = 2.0 * CV.MPH_TO_MS
 LAUNCH_CAUGHT_UP_MARGIN_MS = 2.0 * CV.MPH_TO_MS
+# Route 262 3:43-4:26: the launch raised the set speed to 49.7 mph by 3:50, then held it for 36 s while
+# the lead drove 30-45 mph, because it only ended at vEgo >= target - 2 mph. It now also ends once the set
+# speed has been raised and the car has caught up to the normal (lead or plan) target, so ICBM follows the
+# lead again.
+
+# Gas release (SetSpeedOnGasRelease): when the driver releases the gas above the set speed on the dash,
+# hold the ICBM target at or above the release speed until a cruise button, the brake, a stop or a
+# disengage. Route 262 1:29 and 2:25: the old path moved openpilot's v_cruise (the 55 mph ICBM max), not
+# the dash set speed, so a release at 37 mph over a 24.9 mph set speed changed nothing.
+GAS_RELEASE_SET_MARGIN_MS = 1.0 * CV.MPH_TO_MS
 
 HONDA_MINIMUM_SET_SPEED_MPH = 25
 HONDA_MINIMUM_SET_SPEED_KPH = 40
@@ -168,7 +178,8 @@ def get_minimum_set_speed(is_metric: bool, brand: str = "") -> int:
 
 
 def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v_ego: float, standstill: bool,
-                        gas_pressed: bool, driver_button: bool, launch_target_ms: float) -> tuple[bool, bool]:
+                        gas_pressed: bool, driver_button: bool, launch_target_ms: float,
+                        set_speed_ms: float | None = None, hold_target_ms: float | None = None) -> tuple[bool, bool]:
   """Returns (launch_active, was_stopped). A launch never starts while the car is stopped, so ICBM does
   not press RES+ at standstill (on a Honda that resumes the car by itself)."""
   if not enabled or driver_button:
@@ -179,7 +190,24 @@ def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v
     launch_active, was_stopped = True, False
   if launch_active and v_ego >= launch_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS:
     launch_active = False
+  if launch_active and set_speed_ms is not None and hold_target_ms is not None and \
+      set_speed_ms >= launch_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS and \
+      v_ego >= hold_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS:
+    launch_active = False
   return launch_active, was_stopped
+
+
+def update_gas_release_floor(floor_ms: float, gas_pressed_prev: bool, gas_pressed: bool, enabled: bool, v_ego: float,
+                             standstill: bool, brake_pressed: bool, driver_button: bool, set_speed_ms: float,
+                             is_metric: bool) -> float:
+  """Returns the ICBM target floor in m/s (0 = none). The caller caps it at the cruise target."""
+  if not enabled or driver_button or brake_pressed or standstill or v_ego < LAUNCH_STOPPED_SPEED_MS:
+    return 0.0
+  if gas_pressed_prev and not gas_pressed and v_ego > set_speed_ms + GAS_RELEASE_SET_MARGIN_MS:
+    if is_metric:
+      return round(v_ego * CV.MS_TO_KPH) * CV.KPH_TO_MS
+    return round(v_ego * CV.MS_TO_MPH) * CV.MPH_TO_MS
+  return floor_ms
 
 
 def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int]) -> None:
