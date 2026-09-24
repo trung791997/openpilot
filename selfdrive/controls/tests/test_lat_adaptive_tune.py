@@ -235,3 +235,12 @@ class TestTuner:
     a = A.tuning_fingerprint({"LatPScaleStandard": b"100", "SomethingElse": "1"})
     assert a == A.tuning_fingerprint({"LatPScaleStandard": "100"})
     assert a != A.tuning_fingerprint({"LatPScaleStandard": "105"})
+
+  def test_rack_map_switch_resets_the_learned_factor(self):
+    p = FakeParams(LatAdaptiveTune="2", NrdrLatUseFirmwareVgr="1")
+    s = A.default_state(fp(p))
+    s["factor"] = [1.0, 1.05, 1.10, 1.05]
+    p.values["LatAdaptiveState"] = json.dumps(s)
+    assert A.LatAdaptiveTuner(p).p_factor(40 * MPH) == pytest.approx(1.10)
+    p.values["NrdrLatUseFirmwareVgr"] = "0"  # firmware VGR table -> road-measured curve
+    assert A.LatAdaptiveTuner(p).p_factor(40 * MPH) == pytest.approx(1.0)
