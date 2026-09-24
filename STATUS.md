@@ -6028,4 +6028,9 @@ Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEA
   - If none of those fits, it is drawn in place. The sign alone never hides the in-path speed; overlapping another label still hides it, as before.
   - 4 tests replace `test_in_path_label_ignores_the_sign`; 71 passed.
   - Re-render seg 16 38.2 s: the in-path "12 mph" moves left of the sign and the right-lane "12 mph" (the same car) drops below it; both are clear. The 7.0 and 35.2 s label positions are unchanged.
-- **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it. Photograph it if the marker flickers between the two forms in stop-and-go.
+- **Tall leads rendered** (owner request; route 00000267, rlogs and qcameras for segs 4, 10 and 17 fetched from Konik; build d0b52514):
+  - seg 4 11.5 s, a Sprinter-height van at 5.4 m, stopped: the roof is above the screen. The marker is held at the label-room limit (tip y 56) on the rear windows, with "0 mph" above it.
+  - seg 10 16.2 s, a Ram pickup at 8.1 m, 9 mph: the marker sits on the rear window, just under the cab roof.
+  - seg 17 45.0 s, an SUV at 3.5 m, stopped: the marker is held at the top, on the rear glass.
+  - In all three the marker and label are fully visible; before, each showed only a marker corner at the bottom edge.
+- **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it (rendered above). Photograph it if the marker flickers between the two forms in stop-and-go.
