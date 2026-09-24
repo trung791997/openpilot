@@ -1712,6 +1712,18 @@ def test_rail_interval_toggle_default_off_and_read_at_startup():
   assert make_radar_interface().rail_interval is False
 
 
+def test_coast_range_bound_follows_range_derived_vrel_read_at_startup():
+  p = Params()
+  p.remove("RangeDerivedVrel")
+  assert make_radar_interface().coast_range_bound is False
+  p.put_bool("RangeDerivedVrel", True)
+  try:
+    assert make_radar_interface().coast_range_bound is True
+  finally:
+    p.remove("RangeDerivedVrel")
+  assert make_radar_interface().coast_range_bound is False
+
+
 class TestRailIntervalBoundsTheCoast:
   """D-063 addendum (STATUS 92). With BoschARailInterval on, a coast is bounded to within 3 m/s of a fresh
   fit over the coast's own ranges (rejoin_samples / inconsistent_run). Modelled on 0000025e 6:43 track 48:
@@ -1759,12 +1771,27 @@ class TestRailIntervalBoundsTheCoast:
   def test_off_the_same_coast_is_the_verbatim_last_trusted_vrel(self):
     ri = make_radar_interface()
     ri.rail_interval = False  # set explicitly: the toggle test above writes the shared params store under xdist
+    ri.coast_range_bound = False
     coasts = 0
     for i, rr in self._railed_birth_then_walk(ri):
       for p in rr.points:
         if not p.measured:
           coasts += 1
           assert p.vRel == pytest.approx(self.RAIL_MPS, abs=0.05), f"coast changed at sweep {i} (toggle off)"
+    assert coasts > 0
+
+  def test_range_derived_vrel_alone_never_softens_an_over_closing_coast(self):
+    """STATUS 111: without the rail interval the bound is one-sided. The same railed coast whose fresh fit reads
+    0 m/s keeps the rail: making a coast LESS closing is the rail-interval path's job, not this one's."""
+    ri = make_radar_interface()
+    ri.rail_interval = False
+    ri.coast_range_bound = True
+    coasts = 0
+    for i, rr in self._railed_birth_then_walk(ri):
+      for p in rr.points:
+        if not p.measured:
+          coasts += 1
+          assert p.vRel == pytest.approx(self.RAIL_MPS, abs=0.05), f"coast softened at sweep {i}"
     assert coasts > 0
 
   def test_on_with_fewer_than_four_fresh_samples_the_coast_is_unchanged(self):
@@ -1777,12 +1804,42 @@ class TestRailIntervalBoundsTheCoast:
           first_coast = (i, p.vRel)
     assert first_coast is not None and first_coast[1] == pytest.approx(self.RAIL_MPS, abs=0.05)
 
-  def test_on_an_inconsistent_coast_of_a_stale_opening_vrel_is_pulled_toward_the_closing_fit(self):
+  def _stale_opening_then_closing(self, ri):
+    """Opening at +2.8 m/s for 12 sweeps, then closing at 5 m/s with U11 agreeing. Yields each coasted point
+    until the first measured one."""
+    dt = self.DT_NANOS * 1e-9
+    d = 87.0
+    for i in range(12):
+      d += 2.8 * dt
+      rr = self._drive(ri, i, d, 864 + round(2.8 * 64))
+    assert rr.points[0].measured is True
+    for i in range(12, 12 + 12):
+      d += -5.0 * dt
+      rr = self._drive(ri, i, d, 864 + round(-5.0 * 64))
+      assert len(rr.points) == 1
+      if rr.points[0].measured:
+        return
+      yield i, rr.points[0]
+
+  def test_off_an_inconsistent_coast_holds_the_stale_opening_vrel(self):
+    """Both toggles off: the pre-STATUS 92 behaviour, the route 00000268 9:52 shape (+4.06 coasted 2.35 s)."""
+    ri = make_radar_interface()
+    ri.rail_interval = False
+    ri.coast_range_bound = False
+    coasts = [p.vRel for _, p in self._stale_opening_then_closing(ri)]
+    assert coasts and all(v == pytest.approx(2.8, abs=0.05) for v in coasts)
+
+  @pytest.mark.parametrize("rail_interval, coast_range_bound", [(True, False), (False, True)],
+                           ids=["BoschARailInterval", "RangeDerivedVrel"])
+  def test_on_an_inconsistent_coast_of_a_stale_opening_vrel_is_pulled_toward_the_closing_fit(
+      self, rail_interval, coast_range_bound):
     """D-062 shape: opening at +2.8 m/s, then the lead brakes to 5 m/s closing with U11 agreeing. The stale
     `samples` fit rejects that U11 (one-sided, > 3 m/s below +2.8) and the coast holds +2.8 until D-062
-    re-roots after 1.5 s. On, the fresh inconsistent_run fit (-5) bounds the coast to -2 within 5 sweeps."""
+    re-roots after 1.5 s. On, the fresh inconsistent_run fit (-5) bounds the coast to -2 within 5 sweeps.
+    Either toggle turns the bound on (STATUS 111 split it out of the rail interval for route 00000268)."""
     ri = make_radar_interface()
-    ri.rail_interval = True
+    ri.rail_interval = rail_interval
+    ri.coast_range_bound = coast_range_bound
     dt = self.DT_NANOS * 1e-9
     d = 87.0
     for i in range(12):

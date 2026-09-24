@@ -169,6 +169,16 @@ BOSCH_A_RAIL_INTERVAL_MAX_Y_M = 2.0
 # D-063 ships behind this toggle, default off: replay and static evidence only, never driven. With it
 # off both gate calls below run `exact`, which is the pre-D-063 gate unchanged.
 BOSCH_A_RAIL_INTERVAL_PARAM = "BoschARailInterval"
+# The D-063 addendum's coast bound (_bosch_a_coast_vrel) also runs, without the rail interval, when the
+# D-053 range-derived vRel toggle is on. The coast is exactly where D-053 cannot act: radard disarms its
+# assist on every unmeasured sample. Route 00000268 9:52.3-9:54.7 (STATUS 110): a 5 m range step as track
+# 25 moved in made two opening U11 samples (+3.3, +4.1) the trusted vRel; the true closing U11 then failed
+# the one-sided check against the stale fit and +4.06 was coasted for 2.35 s while the live, gated range
+# closed 52.2 -> 38.3 m (~-6 m/s) and vision agreed. The bound pulls such a coast to within 3 m/s of the
+# coast's own fresh range fit. Item 91's two wrong-direction brakes came from the rail-interval ADMISSION,
+# not from this bound (item 92), so the bound is split out here, one-sided (more closing only; see
+# _bosch_a_coast_vrel). Replay evidence only (STATUS 111).
+BOSCH_A_COAST_RANGE_BOUND_PARAM = "RangeDerivedVrel"
 # u10 is a genuine uncertainty on U11, but it is CONFOUNDED WITH DYNAMICS. Measured against an
 # event-local reference (quadratic fit to a centred window, derivative at the centre) over 16,834
 # frames: median |err| rises 0.26 -> 0.88 -> 1.44 -> 1.95 m/s across u10 bins 0-64 / 64-128 /
@@ -414,7 +424,7 @@ def _bosch_a_fresh_range_rate(run: list) -> float | None:
   return sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
 
 
-def _bosch_a_coast_vrel(track, rail_interval: bool) -> float:
+def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False) -> float:
   """The vRel a coast publishes. Off (pre-D-063): the last trusted vRel, verbatim. With BoschARailInterval on
   (D-063 addendum, STATUS 92): the same value bounded to within BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS of
   a FRESH fit over the ranges of the coast itself, when one exists. Replayed on 0000025e 6:43 (track 48): the
@@ -427,9 +437,14 @@ def _bosch_a_coast_vrel(track, rail_interval: bool) -> float:
   multi-sample fit, and with fewer than 4 fresh samples (0.25 s) the coast is unchanged. That is why it
   cannot act on 0000025e 12:05 (+11.1 coasted for 0.2 s at track birth, no fresh samples yet) nor on the
   first 5 sweeps after the 6:43 re-root, which still coast the rail. The point is always kept (D-041/D-042).
-  Replay evidence only (STATUS 92)."""
+  Replay evidence only (STATUS 92).
+
+  With only RangeDerivedVrel on (`range_bound`, STATUS 111) the bound is ONE-SIDED, D-053's rule: a coast may
+  be made more closing, never less. The two-sided clamp without the rail interval softened 6 protected
+  brakes on the 20-route replay (237 9:58.5 -3.10 -> -2.38, 266 8:04 -1.98 -> -1.48, 266 9:20.9 -1.66 ->
+  -1.11, ...): the down side exists to undo a rail-interval admission, which this path never makes."""
   vrel = track.last_trusted_vrel
-  if not rail_interval:
+  if not (rail_interval or range_bound):
     return vrel
   rate = None
   if track.rejoin_samples is not None:
@@ -438,7 +453,10 @@ def _bosch_a_coast_vrel(track, rail_interval: bool) -> float:
     rate = _bosch_a_fresh_range_rate(track.inconsistent_run)
   if rate is None:
     return vrel
-  return min(max(vrel, rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS), rate + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+  vrel = min(vrel, rate + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+  if rail_interval:
+    vrel = max(vrel, rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+  return vrel
 
 
 def _bosch_a_rail_interval_enabled() -> bool:
@@ -447,6 +465,16 @@ def _bosch_a_rail_interval_enabled() -> bool:
   try:
     from openpilot.common.params import Params
     return bool(Params().get_bool(BOSCH_A_RAIL_INTERVAL_PARAM))
+  except Exception:
+    return False
+
+
+def _bosch_a_coast_range_bound_enabled() -> bool:
+  """RangeDerivedVrel, read once at startup like BoschARailInterval. Any failure means off: coasts publish
+  the last trusted vRel verbatim, as before STATUS 111."""
+  try:
+    from openpilot.common.params import Params
+    return bool(Params().get_bool(BOSCH_A_COAST_RANGE_BOUND_PARAM))
   except Exception:
     return False
 
@@ -476,6 +504,7 @@ class RadarInterface(RadarInterfaceBase):
       self._slot_track_ids: list[int | None] = [None] * BOSCH_A_NUM_SLOTS
       self._last_trigger_nanos = -1
       self.rail_interval = _bosch_a_rail_interval_enabled()
+      self.coast_range_bound = _bosch_a_coast_range_bound_enabled()
     else:
       # Nidec
       self.rcp = _create_nidec_can_parser(CP.carFingerprint)
@@ -927,7 +956,7 @@ class RadarInterface(RadarInterfaceBase):
         if point is not None and track.last_trusted_vrel is not None:
           point.dRel = dRel
           point.yRel = yRel
-          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval)
+          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound)
           point.measured = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
@@ -973,7 +1002,7 @@ class RadarInterface(RadarInterfaceBase):
         if point is not None and track.last_trusted_vrel is not None:
           point.dRel = dRel
           point.yRel = yRel
-          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval)
+          point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound)
           point.measured = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to

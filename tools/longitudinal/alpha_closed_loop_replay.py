@@ -179,6 +179,7 @@ def build_radar_interface(fingerprint: str):
   if not ri.bosch_a_radar:
     raise SystemExit("RadarInterface did not select the Bosch-A parser")
   ri.rail_interval = False  # D-063 ships off
+  ri.coast_range_bound = False  # STATUS 111: set by --coast-bound
   return ri, cp
 
 
@@ -216,7 +217,7 @@ def vision_view(model, v_ego: float) -> dict | None:
   return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
-def replay(route_dir: Path, bearings: list[float], fixes: bool = False):
+def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
@@ -265,6 +266,8 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False):
           planners[v] = p
         meta["bound_active"] = bool(planners[variants[0]].bound_off_axis_radar_leads)
         ri, ocp = build_radar_interface(str(cp.carFingerprint))
+        ri.coast_range_bound = coast_bound
+        meta["coast_bound"] = coast_bound
         rd = RDM.RadarD(radar_ts=RDM.DT_MDL, delay=float(cp.radarDelay), honda_bosch_a_radar=True)
         rd._range_vrel_assist_enabled = lambda: False  # D-053 ships off
         from opendbc.car.honda.values import DBC
@@ -516,11 +519,13 @@ def main() -> int:
                   help="comma list; the first is the baseline the others are diffed against")
   ap.add_argument("--threshold", type=float, default=-1.5)
   ap.add_argument("--fixes", action="store_true", help="add the replay-only 'hold' and 'visdis' bound variants (STATUS 107)")
+  ap.add_argument("--coast-bound", action="store_true",
+                  help="bound Bosch-A coasts by their fresh range fit, as RangeDerivedVrel does on the car (STATUS 111)")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
-  frames, meta = replay(args.route_dir, bearings, args.fixes)
+  frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)
