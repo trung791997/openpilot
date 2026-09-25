@@ -113,6 +113,10 @@ HUMAN_VARIANTS = ("human_off", "frog", "frog_guard")
 # 'late_A' = only the comfort-floor pass, 'late_B' = only the merge-floor release.
 LATE_VARIANTS = {"late_off": (False, None), "late_A": (True, None), "late_B": (False, -1.5)}
 LATE_DEFAULTS = (LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND)
+# --hf-gate: FrogPilot e7debabe5 (2026-09-20) gates the HumanFollowing model path on the radar lead's own
+# modelProb as well as the model lead's prob, so a lead the model never matched (low-speed override,
+# modelProb 0) keeps its aLeadK extrapolation. 'hf_gate' = the shipped builder plus that gate.
+HF_GATE_VARIANT = "hf_gate"
 GUARD_TTC = 3.0
 GUARD_MIN_CLOSING = 0.75
 
@@ -261,15 +265,26 @@ def vision_view(model, v_ego: float) -> dict | None:
   return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
+def hf_gated_model_lead_trajectory(builder, lead_detection_probability, fired):
+  """The shipped HumanFollowing builder, refused when the radar lead is not vision-matched (FrogPilot e7debabe5)."""
+  def build(model_lead, radar_lead, v_ego, *args, **kwargs):
+    xv = builder(model_lead, radar_lead, v_ego, *args, **kwargs)
+    if xv is not None and not float(getattr(radar_lead, "modelProb", 0.0)) > lead_detection_probability:
+      fired.append(True)
+      return None
+    return xv
+  return build
+
+
 def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False,
-           human_ab: bool = False, vision_only: bool = False, late_ab: bool = False):
+           human_ab: bool = False, vision_only: bool = False, late_ab: bool = False, hf_gate: bool = False):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
 
   variants = ([f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) +
               (list(HUMAN_VARIANTS) if human_ab else []) + (list(LATE_VARIANTS) if late_ab else []) +
-              ["nobound", "logged"])
+              ([HF_GATE_VARIANT] if hf_gate else []) + ["nobound", "logged"])
   original_builder = LM.build_model_lead_trajectory
   fix_bounds = {k: FixBound(k) for k in FIX_VARIANTS} if fixes else {}
   original_bound = LP.off_axis_lead_a_lead
@@ -389,6 +404,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
       out = {}
       src = {}
       guard_trip = False
+      hf_gate_fired = []
       fix_fired = {}
       saved = LP.OFF_AXIS_LEAD_MIN_BEARING
       t_now = (msg.logMonoTime - t0) / 1e9
@@ -420,6 +436,11 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
                 float(getattr(toggles, "lead_detection_probability", 0.35)), v == "frog_guard", trips)
             p.update(sm, vt)
             LM.build_model_lead_trajectory = original_builder
+          elif v == HF_GATE_VARIANT:
+            LM.build_model_lead_trajectory = hf_gated_model_lead_trajectory(
+              original_builder, float(getattr(toggles, "lead_detection_probability", 0.35)), hf_gate_fired)
+            p.update(sm, toggles)
+            LM.build_model_lead_trajectory = original_builder
           else:
             p.update(sm, toggles)
           LP.off_axis_lead_a_lead = original_bound
@@ -449,6 +470,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
         "t": (msg.logMonoTime - t0) / 1e9, "engaged": engaged, "v_ego": float(cs.vEgo), "a_ego": float(cs.aEgo),
         "accel_cmd": accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel),
         "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed), "fix": fix_fired, "guard_trip": guard_trip,
+        "hf_gate": bool(hf_gate_fired),
         "vis": vision_view(model, float(cs.vEgo)),
         "lead": lead_view(lr, model, bearings), "lead_logged_bearing":
           abs(float(lg.yRel)) / max(float(lg.dRel), 1.0) if lg.status and lg.radar else None,
@@ -596,12 +618,14 @@ def main() -> int:
   ap.add_argument("--vision-only", action="store_true", help="drop every radar point, so radard publishes vision leads only")
   ap.add_argument("--late-ab", action="store_true",
                   help="add STATUS 119 variants: 'late_off' (both fixes off), 'late_A' / 'late_B' (one fix only)")
+  ap.add_argument("--hf-gate", action="store_true",
+                  help="add 'hf_gate': HumanFollowing also needs the radar lead's modelProb (FrogPilot e7debabe5)")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
   frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound, args.human_ab, args.vision_only,
-                        args.late_ab)
+                        args.late_ab, args.hf_gate)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)

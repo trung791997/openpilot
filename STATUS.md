@@ -6654,3 +6654,18 @@ committed.
 - E4 is the only candidate past 0.2 s. It re-opens the D-053 phantom class (12 → 32 episodes), and adding the U11 gate removes its gain.
 
 **Decision.** No radard change. Scripts and data are kept off-repo.
+
+## 122. FrogPilot e7debabe5 HumanFollowing gate (radar lead must be vision-matched) replayed on 22 routes: it never fires. Replay evidence only; no planner change.
+
+**Question (owner, 2026-09-25).** FrogPilot e7debabe5 (2026-09-20) adds `radar_lead.modelProb > lead_detection_probability` to the HumanFollowing condition in `process_lead`. Our `build_model_lead_trajectory` checks only `model_lead.prob` and `radar_lead.status`. Does the extra gate change anything here?
+- Their radard change (lane-change adjacent track returned with modelProb 0 unless it is the vision match) has no counterpart here: our `match_vision_to_track` only narrows candidates by side and still runs the full match. Their CEM `slow_lead` change is already covered: StarPilot's CEM reads `lead.modelProb`.
+- The only path here that publishes a radar lead with modelProb 0 is the low-speed override (`closest_track.get_RadarState()`, `radard.py` ~758).
+
+**Method.** `alpha_closed_loop_replay.py --hf-gate` adds variant `hf_gate`: the shipped builder, refused when the radar lead's modelProb is at or below the threshold. Harness `/tmp/lt/lab4.py` + `sum4.py` (STATUS 120's lab3/sum3 with this variant), HEAD 981df7d2, all 22 routes 20c-26b, fused radar.
+
+**Result.**
+- Gate refusals on engaged frames: **0 on every route.** 226 episodes, 0 changed; frames < -1.5 8783 and < -2.5 2510 in both; 0.5 s drops 76 in both; vs stock (23 brakes) median -0.70, late > 0.3 s: 2 in both (25b 1353.2, 25f 55.8).
+- Not a wiring fault: on 23b the builder produced a model path on 5,634 ticks (5,361 radar, 273 vision) and the radar lead's modelProb there never fell below 0.362.
+- Why: HumanFollowing needs `model_lead.prob` above the threshold, and on Bosch-A `candidate_is_established` only lets a low-speed-override track replace the lead when there is no valid lead or it matches vision. The matched-vision case would publish modelProb 0 and be gated (switching HumanFollowing off for a correct lead); it did not occur on these routes.
+
+**Decision.** Nothing to adopt for Bosch-A: inert on this data. It could matter on non-Bosch-A cars, where `candidate_is_established` always passes; if ported, the low-speed override should carry `filtered_lead_prob` when the candidate matches vision. It does not touch the 262/25e late brakes (STATUS 120), which are on vision-confirmed leads.
