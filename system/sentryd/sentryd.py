@@ -113,7 +113,9 @@ class SentryMode:
   def _capture_images(self, event_id: str) -> list[str]:
     self.params.put_bool("SentryModeCapture", True)
     try:
-      rear, front = snapshot(allow_existing=True)
+      # driver camera regardless of RecordFront: these images only go to the owner's own
+      # notification channels, and the cabin view is the useful one for a break-in
+      rear, front = snapshot(allow_existing=True, include_front=True)
     except Exception:
       cloudlog.exception("sentryd: snapshot failed")
       return []
