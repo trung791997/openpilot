@@ -5591,16 +5591,6 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "ICBMCounterSync",
-        "label": "ICBM Counter Sync (Honda, experimental)",
-        "description": "Honda Bosch only. Sends each ICBM button press with the message counter that follows the car's own button frame. Without it the car steps the set speed about 2 times a second because only presses with the right counter count; with it, about 6 to 7 times a second on two logged drives. On those drives it also let ICBM out-press a held physical RES+ button. On by default; turn it off here to go back to the slower walk.",
-        "picker_description": "Faster ICBM set-speed changes on Honda by matching the button message counter.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "GalaxyDeveloperMode",
-        "settings_tier": "advanced"
-      },
-      {
         "key": "ICBMFarLead",
         "label": "ICBM Far-Lead Slowdown (Honda, experimental)",
         "description": "Stock ACC with ICBM only. Today the set speed only comes down when the planner's speeds do, and on a recorded drive the planner held the set speed until a slow lead was 83 m away, so the car's own ACC had to brake hard. With this on, ICBM also computes the speed from which a gentle 1.5 m/s^2 slowdown would reach the lead's speed at a 1.5 s gap, and walks the set speed down to the lower of the two while the lead is closing. It never raises the set speed. Replayed on logs only, not yet driven; turn it off here if the set speed comes down too early.",

@@ -739,7 +739,9 @@ class StarPilotVariables:
     if toggle.car_make == "honda":
       toggle.redneck_cruise = honda_icbm_active(toggle.redneck_cruise_available, FPCP.pcmCruiseSpeed,
                                                 toggle.openpilot_longitudinal)
-    toggle.icbm_counter_sync = self.get_value("ICBMCounterSync", condition=toggle.car_make == "honda" and toggle.redneck_cruise)
+    # Counter sync is baked in on Honda ICBM (owner, 2026-09-25; D-065, STATUS 127). The ICBMCounterSync param is
+    # no longer read or shown.
+    toggle.icbm_counter_sync = bool(toggle.car_make == "honda" and toggle.redneck_cruise)
     toggle.icbm_far_lead = self.get_value("ICBMFarLead", condition=toggle.car_make == "honda" and toggle.redneck_cruise)
     toggle.set_speed_on_gas_release = self.get_value("SetSpeedOnGasRelease", condition=toggle.redneck_cruise)
     pcm_cruise = CP.pcmCruise

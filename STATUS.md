@@ -6831,3 +6831,14 @@ committed.
   - CSC controlling-flag toggles still move the target (44 reversals on 271).
   - 1-mph approaches are up to ~0.55 s slower, and an increase waits 1 s after a decrease.
   - No pause on the ACC_CONTROL byte-6 stall flag (item 94).
+
+## 127. ICBM counter sync is baked in on Honda (owner request); the `ICBMCounterSync` toggle is gone. Static only.
+
+- **Why:** D-065 has shipped counter sync on by default since STATUS 96. Every ICBM drive since then ran with it on, 00000271 included. With sync the set speed steps about 6-7 times/s; without it, about 2 times/s (limited road evidence, bench routes 264/265). The owner asked for no more toggles where a feature is good enough.
+- **Change:**
+  - `starpilot/common/starpilot_variables.py`: `icbm_counter_sync` is now `car_make == "honda" and redneck_cruise`. The param is no longer read.
+  - `starpilot/common/assets/device_settings_layout.json`: the Galaxy toggle entry is removed.
+  - The `ICBMCounterSync` key stays in `params_keys.h` and `feasibleparams.txt`, so the aarch64 `libcommon.a`/`params_pyx.so` need no rebuild. It is unused.
+- **Effect:** a car that had the toggle turned off now syncs too. The STATUS 126 last-step pacing (counter-sync only) now always applies on Honda ICBM.
+- **Open items carried from 124:** about 8 % of the car's own SCM frames are modelled as dropped by sync. The gap/LKAS yield from 124 covers the presses that matter.
+- **Tests:** `test_redneck_cruise.py` 81 pass, honda `test_icbm_counter_sync.py` 5 pass, the_galaxy `test_device_settings_layout.py` 29 pass and `test_device_settings_frontend.py` 9 pass. `test_personality_profiles_js.py` has 14 failures that are also there at HEAD without this change.
