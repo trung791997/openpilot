@@ -31,19 +31,19 @@ PPP_OFF = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x000\0lcp-echo-i
 PPP_ON = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x003\0lcp-echo-interval\x0010\0"
 
 
-def _eg916_hardware(mocker, tmp_path, model="EG916Q-GL", profile=BOOT_PROFILE, ppp_args=None, apn="fast.t-mobile.com"):
+def _eg916_hardware(mocker, tmp_path, model="EG916Q-GL", profile=BOOT_PROFILE, ppp_args=None, apn="fast.t-mobile.com", device="mici"):
   hardware = Tici()
   modem = mocker.MagicMock()
   modem.Get.side_effect = lambda iface, prop, **kw: model if prop == 'Model' else "Quectel"
   mocker.patch.object(hardware, "get_sim_info", return_value={"sim_id": ""})
   mocker.patch.object(hardware, "get_modem", return_value=modem)
-  mocker.patch.object(hardware, "get_device_type", return_value="mici")
+  mocker.patch.object(hardware, "get_device_type", return_value=device)
   mocker.patch("openpilot.system.hardware.tici.hardware.os.system")
 
   params = mocker.MagicMock()
   params.get.side_effect = lambda k: apn if k == "GsmApn" else None
   params.get_bool.side_effect = lambda k: {"GsmRoaming": True, "GsmMetered": True}.get(k, False)
-  mocker.patch("openpilot.system.hardware.tici.hardware.Params", return_value=params)
+  mocker.patch("openpilot.common.params.Params", return_value=params)
 
   def check_output(cmd, **kw):
     if cmd[0] == "pgrep":
@@ -131,8 +131,22 @@ def test_eg916_no_session_yet(mocker, tmp_path):
   assert len(calls) == 1 and "modify" in calls[0]
 
 
-def test_other_modems_untouched(mocker, tmp_path):
-  hardware = _eg916_hardware(mocker, tmp_path, model="EG25-G")
+def test_mici_configured_when_model_read_fails(mocker, tmp_path):
+  # the Model D-Bus read can time out at boot; that skipped the whole setup on one boot
+  hardware = _eg916_hardware(mocker, tmp_path, ppp_args=PPP_OFF)
+  hardware.get_modem().Get.side_effect = lambda iface, prop, **kw: (_ for _ in ()).throw(Exception("timeout")) if prop == 'Model' else "Quectel"
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.configure_modem()
+
+  modify, up = _nmcli_calls(call)
+  assert _value(modify, "ppp.lcp-echo-interval") == "10"
+  assert up[-3:] == ["connection", "up", "lte"]
+
+
+@pytest.mark.parametrize("device", ["tici", "tizi"])
+def test_other_devices_untouched(mocker, tmp_path, device):
+  hardware = _eg916_hardware(mocker, tmp_path, model="EG25-G", device=device)
   call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
 
   hardware.configure_modem()

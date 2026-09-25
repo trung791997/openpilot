@@ -8,7 +8,6 @@ from functools import cached_property, lru_cache
 from pathlib import Path
 
 from cereal import log
-from openpilot.common.params import Params
 from openpilot.common.util import sudo_read, sudo_write
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
 from openpilot.system.hardware.base import HardwareBase, LPABase, ThermalConfig, ThermalZone
@@ -517,11 +516,9 @@ class Tici(HardwareBase):
       except Exception:
         pass
 
-    try:
-      model = str(modem.Get(MM_MODEM, 'Model', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-    except Exception:
-      model = ''
-    if model.startswith('EG916'):
+    # gated on device type, not the modem's Model: that D-Bus read uses the 0.1 s TIMEOUT and
+    # came back empty on one boot of the owner's comma 4, which silently skipped this
+    if self.get_device_type() == "mici":
       self.configure_ppp_keepalive()
 
     # eSIM prime
@@ -538,7 +535,7 @@ class Tici(HardwareBase):
       os.system(f"sudo nmcli con load {dest}")
 
   def configure_ppp_keepalive(self):
-    # The Quectel EG916 (comma 4) carries data over PPP on its only AT port (ttyUSB3), so
+    # The Quectel EG916 in the comma 4 carries data over PPP on its only AT port (ttyUSB3), so
     # ModemManager logs "connection monitoring is unsupported by the device" and cannot see a
     # data session die: the modem stays "connected", the signal bars stay cached, and there is
     # no internet until reboot. LCP echo lets pppd detect the dead link itself (3 missed echoes
@@ -549,6 +546,10 @@ class Tici(HardwareBase):
     # The saved APN/roaming/metered settings are applied here too: the mici UI only pushes them
     # when its Settings screen is first opened, so after a plain boot the profile kept the
     # on-disk blank APN. Same mapping as WifiManager.update_gsm_settings.
+    # Imported here: at module level these close a cycle through openpilot.system.hardware,
+    # and common.params then silently falls back to non-persistent in-process params.
+    from openpilot.common.params import Params
+    from openpilot.common.swaglog import cloudlog
     params = Params()
     apn = params.get("GsmApn") or ""
     want = {
@@ -576,10 +577,13 @@ class Tici(HardwareBase):
       with open(f"/proc/{pid}/cmdline", "rb") as f:
         args = f.read().decode(errors='replace').split('\0')
     except (subprocess.CalledProcessError, IndexError, OSError):
+      cloudlog.event("lte profile configured", apn=apn, running_lcp=None, restart=False)
       return  # no session yet, the first activation picks the settings up
     running = {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
     session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only")
-    if running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys):
+    restart = running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys)
+    cloudlog.event("lte profile configured", apn=apn, running_lcp=running, restart=restart)
+    if restart:
       subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
 
   def reboot_modem(self):
