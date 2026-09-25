@@ -75,6 +75,7 @@ NRDR_HONDA_TUNING_DEFAULTS_MIGRATION_FLAG = Path("/data") / "nrdr_honda_tuning_d
 NRDR_HONDA_OVERRIDE_SEMANTICS_MIGRATION_FLAG = Path("/data") / "nrdr_honda_override_semantics_v1"
 NRDR_KONIK_DEFAULT_MIGRATION_FLAG = Path("/data") / "nrdr_konik_default_v1"
 NRDR_DM_DEFAULTS_MIGRATION_FLAG = Path("/data") / "nrdr_dm_defaults_v1"
+NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG = Path("/data") / "nrdr_lat_tune_2026_09_24_v1"
 STARPILOT_REMOVED_PARAM_KEYS = (
   "CoastUpToLeads", "PrioritizeSmoothFollowing",
   "NrdrTuneLearner", "NrdrTuneLearnerMap", "NrdrTuneLearnerRate", "NrdrTuneLearnerReset", "NrdrTuneLearnerStrength",
@@ -954,6 +955,37 @@ def migrate_nrdr_honda_override_semantics(params: Params, params_cache: Params) 
     cloudlog.exception(f"Failed to write migration flag: {NRDR_HONDA_OVERRIDE_SEMANTICS_MIGRATION_FLAG}")
 
 
+# Owner-requested one-time write (2026-09-24, STATUS 117): the lateral settings route 0000026b was driven
+# with, read from its initData, plus the lat tune's only proposal, LatPScaleStandard 100 -> 105 (offline
+# replay of routes 262-26b; not driven). Overwrites once, then the Galaxy sliders own these keys again.
+NRDR_LAT_TUNE_2026_09_24_INT_VALUES = {
+  "LatPScaleLowSpeed": 100, "LatPScaleStandard": 105, "LatPScaleHighway": 105,
+  "LatIScaleLowSpeed": 50, "LatIScaleStandard": 75, "LatIScaleHighway": 0,
+  "LatFScaleLowSpeed": 50, "LatFScaleStandard": 100, "LatFScaleHighway": 100,
+  "NrdrDriverOverrideThreshold": 2000, "NrdrOverrideThresholdCenterBoost": 2000,
+}
+NRDR_LAT_TUNE_2026_09_24_FLOAT_VALUES = {"HondaOverrideFadeUpSecs": 1.0, "HondaOverrideFadeDownSecs": 0.0}
+
+
+def migrate_nrdr_lat_tune_2026_09_24(params: Params, params_cache: Params) -> None:
+  if NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG.exists():
+    return
+
+  for key, value in NRDR_LAT_TUNE_2026_09_24_INT_VALUES.items():
+    params.put_int(key, value)
+    params_cache.put_int(key, value)
+  for key, value in NRDR_LAT_TUNE_2026_09_24_FLOAT_VALUES.items():
+    params.put_float(key, value)
+    params_cache.put_float(key, value)
+  cloudlog.warning("Applied one-time NRDR lateral tune 2026-09-24 (LatPScaleStandard 105)")
+
+  try:
+    NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG.write_text(f"{datetime.datetime.now(datetime.UTC).isoformat()}\n")
+  except Exception:
+    cloudlog.exception(f"Failed to write migration flag: {NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG}")
+
+
 def migrate_nrdr_konik_default(params: Params, params_cache: Params) -> None:
   if NRDR_KONIK_DEFAULT_MIGRATION_FLAG.exists():
     return
@@ -1232,6 +1264,7 @@ def manager_init() -> None:
   migrate_nrdr_honda_override_semantics(params, params_cache)
   migrate_nrdr_konik_default(params, params_cache)
   migrate_nrdr_dm_defaults(params, params_cache)
+  migrate_nrdr_lat_tune_2026_09_24(params, params_cache)
   last_timing = _log_boot_timing("manager_init", "starpilot_migrations", manager_init_start, last_timing)
 
   # set unset params to their default value
