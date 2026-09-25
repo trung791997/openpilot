@@ -6729,3 +6729,28 @@ committed.
 
   Both runs agree: keep P at 100 / 105 / 105.
 - **Next:** collect ≥ 3 min per band on the current tuning (mostly highway and low speed), then re-run on routes from `…26c` onward only.
+
+## 124. ICBM yields to the distance (gap) and LKAS buttons (owner request). Unit tests and log decode only; not driven.
+
+- **Problem (owner):** changing the stock-ACC gap while ICBM is active is hard, because presses don't take.
+- **Log decode of stock-ACC routes `…0000026f--896ba35291` and `…00000270--56a94f62cd` (segs 0-11), limited road evidence:**
+  - 9 driver gap presses (`gapAdjustCruise`), 3 registered (ACC_HUD `HUD_DISTANCE` stepped).
+  - With no ICBM frame within 0.5 s: 2/2 registered. With ICBM frames overlapping the press: 1/7, and that one was the longest press (0.36 s).
+  - 270 2:36-2:45: six presses in 8 s for one gap step, while ICBM hunted the set speed behind a lead pulling away.
+- **Mechanism (static):**
+  - With `ICBMCounterSync` (D-065) each ICBM `SCM_BUTTONS` frame takes the car's next counter and always writes `CRUISE_SETTING=0` (`hondacan.py` `spam_buttons_command`), so the ECU drops the car's own frame carrying the press.
+  - D-065's yield covered only the speed/cancel/main buttons: `CRUISE_BUTTON_TIMERS` had no `gapAdjustCruise` or `lkas`.
+  - The panda is not involved (0x296 TX on bus 1, nothing forwarded or blocked).
+- **Change** (`selfdrive/car/redneck_cruise.py`, `selfdrive/car/card.py`):
+  - `gapAdjustCruise` and `lkas` join `CRUISE_BUTTON_TIMERS`, so ICBM sends nothing while one is held (10 s missed-release cap as before) and for `SETTING_BUTTON_INACTIVE_TIMER = 1.0 s` after release. Speed buttons keep 0.5 s.
+  - 1.0 s rather than 0.5 s because repeat gap presses came 0.69-0.71 s after the previous release; a 0.5 s window lets a burst land in between.
+  - `driver_button` in `card.py` now uses `is_speed_button_press`, so a gap or LKAS press no longer cancels ICBM launch or clears the gas-release floor.
+  - Detection uses the car's own frames (src 1); the ICBM echo is src 129. All 9 presses appeared as buttonEvents while spoofing.
+  - A frame already sent just before the press edge cannot be recalled (270 163.03), so the first frame of a press can still be lost.
+- **Tests:** `test_redneck_cruise.py` 69 pass (3 new: distance/LKAS held, 1.0 s release window, `is_speed_button_press`); `test_redneck_gas_override.py` 2 pass. ruff: only the file's pre-existing unittest/E731 errors.
+- **Road check to do:** with ICBM hunting, press distance 3-4 times. Each press should step `HUD_DISTANCE` once, and no src-129 `SCM_BUTTONS` frame should appear from the press until 1.0 s after release.
+- **Open ICBM items found alongside, not changed:**
+  - set-speed hunting: `HYST_GAP = 0`, and presses outrun the 0.2-0.3 s cluster lag; 69/91 direction reversals within 1.5 s on 26f/270; scratch `/tmp/icbm/`;
+  - about 8 % of the car's SCM frames modelled as dropped by counter sync;
+  - no pause on the ACC_CONTROL byte-6 stall flag (item 94);
+  - the item 96 `vCruise` resync.

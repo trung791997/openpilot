@@ -21,6 +21,13 @@ MANUAL_BUTTON_INACTIVE_TIMER = 0.5
 # per ~0.5 s under a hold; bench routes 264 at 101.5 s and 265 at 156.5 s showed ICBM pressing decel
 # against a held RES+ once the old 0.5 s window expired). The cap guards a missed release edge.
 MANUAL_BUTTON_HELD_MAX_S = 10.0
+# Distance (gap) and LKAS presses get the same yield with a longer post-release window. ICBM frames
+# carry the car's next SCM_BUTTONS counter (D-065) with CRUISE_SETTING=0, so the ECU drops the car's
+# own frame that carries the press. Stock-ACC routes 26f/270 (log decode, limited road evidence): 9
+# gap presses, 2/2 registered with no ICBM frame within 0.5 s, 1/7 with ICBM frames overlapping
+# (270 2:36-2:45, six presses in 8 s for one gap step). Repeat presses came 0.69-0.71 s after the
+# previous release, so a 0.5 s window would let a burst land between them; 1.0 s covers them.
+SETTING_BUTTON_INACTIVE_TIMER = 1.0
 LEAD_RECOVERY_LOOKAHEAD_POINTS = 4
 LEAD_RECOVERY_HOLD_BUFFER_MS = 1.5 * CV.MPH_TO_MS
 LEAD_COAST_BUFFER_MS = 1.0 * CV.MPH_TO_MS
@@ -91,7 +98,12 @@ CRUISE_BUTTON_TIMERS = {
   int(ButtonType.resumeCruise): 0,
   int(ButtonType.cancel): 0,
   int(ButtonType.mainCruise): 0,
+  int(ButtonType.gapAdjustCruise): 0,
+  int(ButtonType.lkas): 0,
 }
+SETTING_BUTTONS = frozenset({int(ButtonType.gapAdjustCruise), int(ButtonType.lkas)})
+# Buttons that move the ACC set speed or cancel it; only these cancel ICBM launch and the gas-release floor.
+SPEED_BUTTONS = frozenset(set(CRUISE_BUTTON_TIMERS) - SETTING_BUTTONS)
 
 
 def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
@@ -284,11 +296,26 @@ def update_manual_button_timers(CS: car.CarState, button_timers: dict[int, int],
 
 def manual_button_active(button_timers: dict[int, int], button_held: dict[int, int]) -> bool:
   """True while any cruise button is physically held (up to MANUAL_BUTTON_HELD_MAX_S, after which a
-  missed release is assumed) and for MANUAL_BUTTON_INACTIVE_TIMER after its release."""
+  missed release is assumed) and for MANUAL_BUTTON_INACTIVE_TIMER (SETTING_BUTTON_INACTIVE_TIMER for
+  distance/LKAS) after its release."""
   held_max = int(MANUAL_BUTTON_HELD_MAX_S / DT_CTRL)
   release_max = int(MANUAL_BUTTON_INACTIVE_TIMER / DT_CTRL)
+  setting_release_max = int(SETTING_BUTTON_INACTIVE_TIMER / DT_CTRL)
   return any(0 < held <= held_max for held in button_held.values()) or \
-    any(0 < timer <= release_max for timer in button_timers.values())
+    any(0 < timer <= (setting_release_max if button in SETTING_BUTTONS else release_max)
+        for button, timer in button_timers.items())
+
+
+def is_speed_button_press(button_events) -> bool:
+  """A driver press of a set-speed or cancel button. Distance and LKAS presses are excluded: they do not
+  move the set speed, so they must not cancel ICBM launch or clear the gas-release floor."""
+  for event in button_events:
+    if not getattr(event, "pressed", False):
+      continue
+    button_type = event.type.raw if hasattr(event.type, "raw") else int(event.type)
+    if button_type not in SETTING_BUTTONS:
+      return True
+  return False
 
 
 class RedneckCruise:

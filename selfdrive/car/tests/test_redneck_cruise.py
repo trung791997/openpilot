@@ -18,9 +18,11 @@ from openpilot.selfdrive.car.redneck_cruise import (
   SEND_BUTTON_DECREASE,
   SEND_BUTTON_INCREASE,
   SEND_BUTTON_NONE,
+  SETTING_BUTTON_INACTIVE_TIMER,
   get_far_lead_target_ms,
   get_lead_coast_buffer_ms,
   get_lead_departure_boost_ms,
+  is_speed_button_press,
   select_redneck_target_speed,
   update_gas_release_floor,
   update_launch_state,
@@ -169,6 +171,35 @@ class TestRedneckCruise(unittest.TestCase):
                             button_events=[self._button_event(ButtonType.resumeCruise, False)])
     self.assertEqual({SEND_BUTTON_NONE}, set(sent[:quiet]))
     self.assertEqual(SEND_BUTTON_INCREASE, sent[-1])
+
+  def test_distance_button_press_suppresses_output_while_held(self):
+    # Stock-ACC 270 2:36-2:45: gap presses overlapped by ICBM frames failed 6 of 7 times.
+    for button in (ButtonType.gapAdjustCruise, ButtonType.lkas):
+      with self.subTest(button=button):
+        self.redneck = RedneckCruise(self.CP, self.FPCP)
+        self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
+        sent = self._run_frames(int(0.3 / DT_CTRL), button_events=[self._button_event(button, True)])
+        self.assertEqual({SEND_BUTTON_NONE}, set(sent))
+
+  def test_distance_button_release_suppresses_output_for_setting_timer(self):
+    self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
+    self._run_frames(int(0.2 / DT_CTRL), button_events=[self._button_event(ButtonType.gapAdjustCruise, True)])
+    quiet = int(SETTING_BUTTON_INACTIVE_TIMER / DT_CTRL)
+    sent = self._run_frames(quiet + int(INCREASE_INACTIVE_TIMER / DT_CTRL) + 4,
+                            button_events=[self._button_event(ButtonType.gapAdjustCruise, False)])
+    # longer than the speed-button window: repeat gap presses came ~0.7 s apart on 26f/270
+    self.assertGreater(SETTING_BUTTON_INACTIVE_TIMER, MANUAL_BUTTON_INACTIVE_TIMER)
+    self.assertEqual({SEND_BUTTON_NONE}, set(sent[:quiet]))
+    self.assertEqual(SEND_BUTTON_INCREASE, sent[-1])
+
+  def test_speed_button_press_excludes_distance_and_lkas(self):
+    self.assertFalse(is_speed_button_press([self._button_event(ButtonType.gapAdjustCruise, True)]))
+    self.assertFalse(is_speed_button_press([self._button_event(ButtonType.lkas, True)]))
+    self.assertFalse(is_speed_button_press([self._button_event(ButtonType.accelCruise, False)]))
+    self.assertTrue(is_speed_button_press([self._button_event(ButtonType.decelCruise, True)]))
+    self.assertTrue(is_speed_button_press([self._button_event(ButtonType.cancel, True)]))
+    capnp_style = SimpleNamespace(type=SimpleNamespace(raw=int(ButtonType.gapAdjustCruise)), pressed=True)
+    self.assertFalse(is_speed_button_press([capnp_style]))
 
   def test_held_button_cap_assumes_missed_release(self):
     self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)

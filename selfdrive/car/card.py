@@ -26,8 +26,8 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, select_redneck_target_speed, update_gas_release_floor,
-                                                    update_launch_state, want_gas_snap)
+from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, is_speed_button_press, select_redneck_target_speed,
+                                                    update_gas_release_floor, update_launch_state, want_gas_snap)
 from openpilot.selfdrive.car.car_specific import MockCarState
 
 from openpilot.starpilot.common.favorite_slots import (
@@ -554,7 +554,7 @@ class Car:
       slc_target_speed_ms=slc_target_speed,
       csc_target_speed_ms=csc_target_speed,
     )
-    driver_button = any(getattr(event, "pressed", False) for event in getattr(CS, "buttonEvents", []))
+    driver_button = is_speed_button_press(getattr(CS, "buttonEvents", []))
     enabled = bool(getattr(CC, "enabled", True))
     v_ego = float(getattr(CS, "vEgo", 0.0))
     standstill = bool(getattr(CS, "standstill", False))
