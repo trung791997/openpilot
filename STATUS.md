@@ -6610,3 +6610,47 @@ committed.
 - 262 379.4 and 25e 1002.0 are not stock-labelled here, so they do not appear in that column.
 
 **Next, if pursued:** aLeadK responsiveness in radard, weighed against the noise that 62/63 removed. Not started.
+
+## 121. Faster radard aLeadK: five causal estimators studied offline; none clears the bar. Offline replay only; no code change.
+
+**Question.** Can aLeadK recognise a braking lead sooner without adding false dips? This is the follow-up named in 120.
+
+**Setup.**
+- Bosch-A `RadarInterface` + `RadarD` replayed on the 22 routes, D-053 off.
+- The re-run current KF (E0) matches `Track.aLeadK` to within 1.7e-7.
+- Ground truth: aEgo + d²dRel/dt² from a centred 1.5 s range fit. **It is weak.**
+  - The 1.0 s and 1.5 s fits differ by 1.2 m/s² (std).
+  - The fit correlates only 0.4-0.55 with the native-vLead derivative.
+  - 573 of 1024 lead segments are under 3 s because of identity breaks.
+- The U11-derived reference lags range onset by 0.3-0.6 s, consistent with D-044.
+- 275 confirmed braking events.
+
+**Candidates.**
+- **E0:** the current KF. K = (0.2272, 0.2815) is the DARE result for Q = diag(10, 100), R = 1e3.
+- **E1:** Q ×2 and Q ×4.
+- **E2:** matched vision visA assist (min, or blend), after N ticks of disagreement.
+- **E3:** asymmetric: the Q×4 KF only toward braking, with a closing gate.
+- **E4:** a KF fed the range-LSQ vRel, with and without a U11 corroboration gate.
+
+| cand | onset lag to -1.0, median / p90 s | paired vs E0, median s | phantom episodes (worst) | false-dip ticks < -1 |
+|---|---|---|---|---|
+| E0 | 1.20 / 3.00 | 0 | 12 (-6.22) | 36 |
+| E1 Q×2 | 1.05 / 1.67 | -0.10 | 13 (-7.18) | 15 |
+| E1 Q×4 | 0.95 / 1.45 | -0.15 | 12 (-8.15), every recorded phantom 0.4-1.9 deeper, a new one at 0236 1392.6 (-4.69) | 2 |
+| E2 N=2/3/5 | 1.15 / 3.00 | 0 | 15-17 | 37 |
+| E3 | 1.15 / 1.85 | 0 | 12 (-7.30) | 36 |
+| E4 with U11 corroboration | 1.05 / 1.73 | 0 | 23 | 42 |
+| E4 without | 0.80 / 1.40 | -0.25 | 32 | 60 |
+
+**The four late cases.**
+- **25f 55.8:** truth crosses at 54.75, E0 at 56.01, the best candidate at 55.96. U11 lags range by about 0.6 s, and the lead really brakes at about -7.
+- **25b 1353.2:** E1 and E4 are 0.15 s earlier.
+- **262 379.4:** Q×4 is 0.2 s earlier.
+- **25e 1002.0:** unchanged; the cause is the model path (120).
+
+**Reading (offline).**
+- The limit is U11's onset lag, not the KF gain.
+- Every candidate that starts earlier deepens or multiplies the phantom dips. long_mpc and chill read aLeadK directly (D-048), so those dips become braking authority.
+- E4 is the only candidate past 0.2 s. It re-opens the D-053 phantom class (12 → 32 episodes), and adding the U11 gate removes its gain.
+
+**Decision.** No radard change. Scripts and data are kept off-repo.
