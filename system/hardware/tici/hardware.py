@@ -597,7 +597,7 @@ class Tici(HardwareBase):
     return {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
 
   def check_modem_config(self):
-    # Called periodically by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
+    # Called every 30 s by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
     # "lcp-echo-interval 0" hours later and the link died silently: likely NM had already started
     # the session with the old profile when configure_modem found no pppd yet. Re-apply whenever
     # a running pppd lacks the echo, at most every 5 min so a carrier that rejects it can't loop.
