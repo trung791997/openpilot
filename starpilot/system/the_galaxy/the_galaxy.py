@@ -1200,7 +1200,8 @@ def _dispatch_sentry_event(event: dict, *, bypass_rate_limit: bool = False) -> N
       for image_path in event.get("imagePaths", []):
         handle = open(image_path, "rb")
         handles.append(handle)
-        files.append(("file", (Path(image_path).name, handle, "image/jpeg")))
+        # Discord keeps one attachment per form field name, so each image needs its own (files[n])
+        files.append((f"files[{len(files)}]", (Path(image_path).name, handle, "image/jpeg")))
 
       body = {"content": message, "event": json.dumps(event, separators=(",", ":"))}
       response = requests.post(webhook, data=body, files=files or None, timeout=10)
