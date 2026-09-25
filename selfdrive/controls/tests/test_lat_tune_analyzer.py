@@ -207,7 +207,10 @@ class TestTrialAndBandParams:
 
   def test_build_band_params_writes_only_p(self):
     trial = lat.build_trial(drive(4, 30, curve_des=8.0, curve_ratio=0.9), self.BASELINE, ["r1"], [], [])
-    assert lat.build_band_params(trial) == {"LatPScaleLowSpeed": 100, "LatPScaleStandard": 110, "LatPScaleHighway": 105}
+    assert lat.build_band_params(trial) == {"LatPScaleStandard": 110}       # held bands are not written
+    # forced apply after a manual change: the step lands on the device's P, the logged 100 is not restored
+    device = [{"p": 90, "i": 20, "f": 100}, {"p": 120, "i": 75, "f": 100}, {"p": 130, "i": 0, "f": 100}]
+    assert lat.build_band_params(trial, device) == {"LatPScaleStandard": 130}
 
   @pytest.mark.parametrize("cur,factor,want", [(100, 1.0, 100), (100, 1.05, 105), (100, 0.95, 95), (135, 1.05, 140),
                                                (200, 0.95, 190), (20, 1.05, 25), (20, 0.95, 15), (3, 0.95, 0),
@@ -215,12 +218,26 @@ class TestTrialAndBandParams:
   def test_propose_p_rounds_to_galaxy_step_and_never_cancels_the_step(self, cur, factor, want):
     assert lat.propose_p(cur, factor) == want
 
-  def test_band_gains_reads_params_and_defaults_to_100(self):
+  def test_band_gains_reads_params_and_uses_the_real_defaults(self):
     raw = {"LatPScaleLowSpeed": "80", "LatPScaleStandard": b"135", "LatIScaleStandard": "75", "LatFScaleLowSpeed": "junk"}
     g = lat.band_gains(raw)
-    assert g[0] == {"p": 80, "i": 100, "f": 100}
+    assert g[0] == {"p": 80, "i": 20, "f": 100}
     assert g[1] == {"p": 135, "i": 75, "f": 100}
-    assert g[2] == {"p": 100, "i": 100, "f": 100}
+    assert g[2] == {"p": 100, "i": 0, "f": 100}
+
+  def test_band_defaults_match_params_keys_and_the_controller(self):
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    header = (root / "common" / "params_keys.h").read_text()
+    ctrl = (root / "selfdrive" / "controls" / "lib" / "latcontrol_pid.py").read_text()
+    for term, keys in (("p", lat.P_KEYS), ("i", lat.I_KEYS), ("f", lat.F_KEYS)):
+      for n, key in enumerate(keys):
+        want = lat.BAND_DEFAULTS[term][n]
+        h = re.search(r'\{"%s", \{PERSISTENT, INT, "(\d+)"' % key, header)
+        c = re.search(r'"%s", ([\d.]+), ' % key, ctrl)
+        assert h and int(h.group(1)) == want, key
+        assert c and round(float(c.group(1)) * 100) == want, key
 
   def test_schedule_terms_and_strip_p(self):
     both = '{"v_mph": [20, 50], "p": [100, 200], "i": [50, 60]}'
@@ -231,6 +248,9 @@ class TestTrialAndBandParams:
     assert lat.strip_schedule_p("") == ""
     only_i = '{"v_mph": [20, 50], "i": [50, 60]}'
     assert lat.strip_schedule_p(only_i) == only_i
+    # the controller rejects this whole schedule (p over 300), so its i is not live; stripping p would switch it on
+    rejected = '{"v_mph": [20, 50], "p": [500, 500], "i": [40, 90]}'
+    assert lat.schedule_terms(rejected) == [] and lat.strip_schedule_p(rejected) == rejected
 
 
 class _Which:

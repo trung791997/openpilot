@@ -8826,7 +8826,8 @@ def setup(app):
       result = lat_tune_workspace.apply_trial(trial_id, force=bool(body.get("force", False)))
     except Exception as e:  # noqa: BLE001
       return _lat_tune_error(e)
-    return jsonify({"message": f"Applied trial {trial_id}: LatPScaleLowSpeed/Standard/Highway written.", **result})
+    written = ", ".join(f"{k}={v}" for k, v in result.get("written", {}).items()) or "no band P change"
+    return jsonify({"message": f"Applied trial {trial_id}: {written}.", **result})
 
   @app.route("/api/lat_tune/trial/<trial_id>/revert", methods=["POST"])
   def revert_lat_tune_trial(trial_id):

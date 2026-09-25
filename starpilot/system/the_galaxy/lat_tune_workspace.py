@@ -401,10 +401,12 @@ def _apply_trial(trial_id, force):
   if not force and trial["baseline"].get("fingerprint") != fp_now:
     raise RuntimeError("manual lateral tuning changed since these routes were driven (fingerprint mismatch); "
                        "re-analyze, or apply with force")
-  prior = {k: lat._param_str(params.get(k)) for k in lat.P_KEYS}
   prior_schedule = current_schedule(params)
-  written = lat.build_band_params(trial)
+  written = lat.build_band_params(trial, current_band_gains(params))
   written_schedule = lat.strip_schedule_p(prior_schedule)
+  if not written and written_schedule == prior_schedule:
+    raise RuntimeError("this trial proposes no P change; nothing to apply")
+  prior = {k: lat._param_str(params.get(k)) for k in written}
   trial["applied"] = {"at": time.time(), "priorParams": prior, "writtenParams": written, "priorSchedule": prior_schedule,
                       "writtenSchedule": written_schedule, "priorFingerprint": fp_now, "forced": bool(force)}
   save_trial(trial)

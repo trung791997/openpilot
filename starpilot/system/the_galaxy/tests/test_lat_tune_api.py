@@ -33,12 +33,13 @@ def _ws(**over):
   ws = types.SimpleNamespace(
     list_workspace=lambda: {"trials": [], "activeStack": [], "status": {}},
     read_status=lambda: {"state": "idle"},
+    public_status=lambda: {"state": "idle"},
     cancel_if_onroad=lambda: None,
     start_background_analysis=lambda routes, paths: True,
     stop_background_analysis=lambda: True,
     load_trial=lambda tid: {"trialId": tid},
     delete_trial=lambda tid: {"trials": []},
-    apply_trial=lambda tid, force=False: {"trial": {"trialId": tid}, "written": "{}", "activeStack": [tid]},
+    apply_trial=lambda tid, force=False: {"trial": {"trialId": tid}, "written": {"LatPScaleStandard": 105}, "activeStack": [tid]},
     revert_trial=lambda tid: {"trial": {"trialId": tid}, "restored": "", "activeStack": []},
   )
   for k, v in over.items():

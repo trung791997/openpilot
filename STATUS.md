@@ -6690,7 +6690,13 @@ committed.
   6. **The UI status shows a worker that died without reporting as `failed`.** Before, it stayed `running` for up to an hour.
   7. **Trial ids now carry the worker pid.**
   8. **Applied trials stay listed past the newest 20.**
-- **Open, not changed:**
-  - A forced apply writes the logged baseline × factor as absolute values for all three bands, including held ones. This discards any newer manual change to the band P. Owner decision needed.
-  - `strip_schedule_p` does not validate the schedule first. A schedule the controller was rejecting (for example a `p` knot over 300) can become valid once `p` is stripped, which would enable its `i`/`f` terms.
-  - `band_gains` shows unset keys as 100. The real defaults for LowSpeed I (20) and Highway I (0) differ. Display only.
+- **The three open items are closed in 123a below.**
+
+### 123a. The three open items from 123, closed (owner approved). Unit tests only; not driven.
+
+1. **Apply is relative to the device.** `build_band_params(trial, device_gains)` writes `propose_p(device P, factor)` and only for bands whose factor moved. Held bands are not written. Apply snapshots only the keys it writes, and refuses a trial with nothing to change. For an unforced apply the fingerprint matches, so the device P equals the logged P and the result is unchanged. A forced apply now keeps a manual change made since the drive: logged 100 → 105, device 120 → 125.
+2. **`strip_schedule_p` only strips a schedule the controller accepts** (`"p" in schedule_terms`). `LatControlPID` rejects a malformed schedule whole, so its i/f are not live and the bands already drive P. Stripping a bad `p` could make the rest valid and turn those i/f terms on, so a rejected schedule is left untouched.
+3. **Unset band keys show their real defaults.** `BAND_DEFAULTS`: P 100/100/100, I 20/100/0, F 100/100/100. A test pins these against `common/params_keys.h` and the `latcontrol_pid.py` fallbacks.
+- **Tests:** analyzer 50, workspace 20, API 3, CLI 6, test_ui_vue_frontend 31, frontend_module_graph 11.
+  - `test_lat_tune_api.py` now runs. flask was installed into `.venv` with `uv pip install flask`; this is a local env only, and no dependency file changed.
+  - Its stub needed `public_status`, and `written` as a dict.

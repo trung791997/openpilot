@@ -318,6 +318,12 @@ def _param_str(v):
   return "" if v is None else str(v)
 
 
+# Per-band defaults when a Lat*Scale* key is unset, in BAND_NAMES order. They must match both
+# common/params_keys.h and the fallbacks in LatControlPID's param refresh (latcontrol_pid.py); the
+# display used to show 100 for every unset key, which was wrong for LowSpeed I (20) and Highway I (0).
+BAND_DEFAULTS = {"p": (100, 100, 100), "i": (20, 100, 0), "f": (100, 100, 100)}
+
+
 def _pct(raw, default=100):
   try:
     return int(round(float(_param_str(raw).strip() or default)))
@@ -326,9 +332,10 @@ def _pct(raw, default=100):
 
 
 def band_gains(raw_params):
-  """[{"p", "i", "f"}] per band: the Lat*Scale* percent params as stored (missing -> 100)."""
-  return [{"p": _pct(raw_params.get(pk)), "i": _pct(raw_params.get(ik)), "f": _pct(raw_params.get(fk))}
-          for pk, ik, fk in zip(P_KEYS, I_KEYS, F_KEYS, strict=True)]
+  """[{"p", "i", "f"}] per band: the Lat*Scale* percent params as stored (missing -> BAND_DEFAULTS)."""
+  return [{"p": _pct(raw_params.get(pk), BAND_DEFAULTS["p"][n]), "i": _pct(raw_params.get(ik), BAND_DEFAULTS["i"][n]),
+           "f": _pct(raw_params.get(fk), BAND_DEFAULTS["f"][n])}
+          for n, (pk, ik, fk) in enumerate(zip(P_KEYS, I_KEYS, F_KEYS, strict=True))]
 
 
 def schedule_terms(raw):
@@ -342,10 +349,17 @@ def schedule_terms(raw):
 
 
 def strip_schedule_p(raw):
-  """LatGainSchedule without its "p" term, so the LatPScale* bands drive P again. "" when nothing is left."""
+  """LatGainSchedule without its "p" term, so the LatPScale* bands drive P again. "" when nothing is left.
+
+  Only a schedule the controller currently accepts is touched. LatControlPID rejects a malformed schedule
+  whole, so its i/f terms are not in effect; stripping a bad "p" (e.g. a knot over the 300 limit) could make
+  the rest valid and switch those i/f terms on, which this tool must never do. A rejected schedule already
+  leaves P on the bands, so it is returned unchanged."""
   text = _param_str(raw).strip()
   if not text:
     return ""
+  if "p" not in schedule_terms(text):
+    return text
   try:
     d = json.loads(text)
   except ValueError:
@@ -391,9 +405,21 @@ def build_trial(stats, baseline, route_names, per_route, warnings):
           "bands": bands, "factors": list(state["factor"]), "perRoute": list(per_route), "applied": None}
 
 
-def build_band_params(trial):
-  """{"LatPScaleLowSpeed": int, ...}: the P band params a trial writes. I/F are never written."""
-  return {b["pKey"]: int(b["proposed"]["p"]) for b in trial["bands"]}
+def build_band_params(trial, device_gains=None):
+  """{"LatPScaleStandard": int, ...}: the P band params a trial writes. I/F are never written.
+
+  Only bands whose factor moved are written; a held band keeps whatever the device has. The step is
+  applied to the device's current P (device_gains, as band_gains returns), not the P logged on the routes:
+  the two differ only on a forced apply, and there writing the logged value x factor would silently undo a
+  manual change made since the drive. Without device_gains the logged value is used."""
+  out = {}
+  for n, b in enumerate(trial["bands"]):
+    factor = float(b.get("factor", 1.0))
+    if abs(factor - 1.0) < 1e-9:
+      continue
+    base = device_gains[n]["p"] if device_gains is not None else b["current"]["p"]
+    out[b["pKey"]] = int(propose_p(int(base), factor))
+  return out
 
 
 # ---------------------------------------------------------------------------

@@ -240,7 +240,7 @@ function stopAnalyze() {
 }
 
 async function applyTrial(trialId) {
-  if (!window.confirm(`Apply trial ${trialId}?\n\nThis writes the NRDR PID band P scales (LatPScaleLowSpeed / Standard / Highway) and drops any P term from LatGainSchedule. I and F are not changed. You can revert it here.`)) return;
+  if (!window.confirm(`Apply trial ${trialId}?\n\nEach band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed / Standard / Highway); held bands are not written. A P term in a valid LatGainSchedule is dropped. I and F are not changed. You can revert it here.`)) return;
   try {
     await runAction("apply", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}/apply`, { method: "POST", body: JSON.stringify({}) }));
   } catch (e) {
@@ -417,7 +417,7 @@ function renderDetail() {
       ${Array.isArray(t.bands)
         ? html`<div class="flmTrackingGrid">${t.bands.map(renderBandCard)}</div>`
         : html`<p class="latTuneWarning">This trial predates the NRDR PID speed bands; re-analyze the routes.</p>`}
-      <div class="flmTrackingNotice">P now is the value logged on the newest route. Only P is proposed; I and F stay as they are.
+      <div class="flmTrackingNotice">P now is the value logged on the newest route. On apply, each moving band's step is applied to the device's current P, so a forced apply keeps any manual change made since. Only P is proposed; I and F stay as they are.
         Steps are bounded to a factor of 0.85–1.15 and written on the 5 % grid.</div>
       ${renderApplied(t.applied)}
       ${(t.warnings || []).length ? html`
