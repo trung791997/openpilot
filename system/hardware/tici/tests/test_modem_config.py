@@ -1,3 +1,5 @@
+import pytest
+
 from openpilot.system.hardware.base import LPABase
 from openpilot.system.hardware.tici.hardware import Tici
 
@@ -35,12 +37,17 @@ def _nmcli_calls(call):
   return [c.args[0] for c in call.call_args_list if "nmcli" in c.args[0]]
 
 
-def test_eg916_ppp_keepalive_restarts_session_without_echo(mocker, tmp_path):
+# NM passes the echo options even when they are off (seen on a comma 4, 2026-09-25)
+@pytest.mark.parametrize("ppp_args", [
+  b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x000\0lcp-echo-interval\x000\0",
+  b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0",
+])
+def test_eg916_ppp_keepalive_restarts_session_without_echo(mocker, tmp_path, ppp_args):
   hardware = _eg916_hardware(mocker, "EG916Q-GL")
   call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
   mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.check_output", return_value="4242\n")
   cmdline = tmp_path / "cmdline"
-  cmdline.write_bytes(b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0")
+  cmdline.write_bytes(ppp_args)
   real_open = open
   mocker.patch("builtins.open", lambda p, *a, **k: real_open(cmdline, *a, **k) if p == "/proc/4242/cmdline" else real_open(p, *a, **k))
 

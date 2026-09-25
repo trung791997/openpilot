@@ -549,14 +549,16 @@ class Tici(HardwareBase):
                      "ppp.lcp-echo-interval", "10",
                      "ppp.lcp-echo-failure", "3"])
 
-    # pppd reads these only when it starts, so restart an already-running session once
+    # pppd reads these only when it starts, so restart an already-running session once.
+    # NM always passes the options, as "lcp-echo-interval 0" when off, so compare the values.
     try:
       pid = subprocess.check_output(["pgrep", "-x", "pppd"], encoding='utf8').split()[0]
       with open(f"/proc/{pid}/cmdline", "rb") as f:
-        running_with_echo = b"lcp-echo-interval" in f.read()
+        args = f.read().decode(errors='replace').split('\0')
     except (subprocess.CalledProcessError, IndexError, OSError):
       return  # no session yet, the first activation picks the settings up
-    if not running_with_echo:
+    running = {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
+    if running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"}:
       subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
 
   def reboot_modem(self):
