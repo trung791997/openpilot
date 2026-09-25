@@ -8,6 +8,7 @@ from functools import cached_property, lru_cache
 from pathlib import Path
 
 from cereal import log
+from openpilot.common.params import Params
 from openpilot.common.util import sudo_read, sudo_write
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
 from openpilot.system.hardware.base import HardwareBase, LPABase, ThermalConfig, ThermalZone
@@ -544,13 +545,32 @@ class Tici(HardwareBase):
     # at 10 s), and unlimited autoconnect retries let NetworkManager bring it back.
     # Checked on one device (T-Mobile, 2026-09-25): pppd ran with these values and the link held
     # with no LCP drops for >3 min. A carrier that ignores LCP echo would drop every ~30 s.
-    subprocess.call(["sudo", "nmcli", "connection", "modify", "--temporary", "lte",
-                     "connection.autoconnect-retries", "0",
-                     "ppp.lcp-echo-interval", "10",
-                     "ppp.lcp-echo-failure", "3"])
+    #
+    # The saved APN/roaming/metered settings are applied here too: the mici UI only pushes them
+    # when its Settings screen is first opened, so after a plain boot the profile kept the
+    # on-disk blank APN. Same mapping as WifiManager.update_gsm_settings.
+    params = Params()
+    apn = params.get("GsmApn") or ""
+    want = {
+      "gsm.apn": apn,
+      "gsm.auto-config": "yes" if apn == "" else "no",
+      "gsm.home-only": "no" if params.get_bool("GsmRoaming") else "yes",
+      "connection.metered": "unknown" if params.get_bool("GsmMetered") else "no",
+      "connection.autoconnect-retries": "0",
+      "ppp.lcp-echo-interval": "10",
+      "ppp.lcp-echo-failure": "3",
+    }
+    try:
+      out = subprocess.check_output(["nmcli", "-g", ",".join(want), "connection", "show", "lte"], encoding='utf8')
+      current = dict(zip(want, out.split('\n'), strict=False))
+    except (subprocess.CalledProcessError, OSError):
+      current = {}
+    modify = [x for k, v in want.items() for x in (k, v)]
+    subprocess.call(["sudo", "nmcli", "connection", "modify", "--temporary", "lte", *modify])
 
-    # pppd reads these only when it starts, so restart an already-running session once.
-    # NM always passes the options, as "lcp-echo-interval 0" when off, so compare the values.
+    # pppd and the bearer read these only when the session starts, so restart a running session
+    # once if it came up with anything else. NM always passes the LCP options to pppd, as
+    # "lcp-echo-interval 0" when off, so compare the values, not just their presence.
     try:
       pid = subprocess.check_output(["pgrep", "-x", "pppd"], encoding='utf8').split()[0]
       with open(f"/proc/{pid}/cmdline", "rb") as f:
@@ -558,7 +578,8 @@ class Tici(HardwareBase):
     except (subprocess.CalledProcessError, IndexError, OSError):
       return  # no session yet, the first activation picks the settings up
     running = {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
-    if running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"}:
+    session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only")
+    if running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys):
       subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
 
   def reboot_modem(self):
