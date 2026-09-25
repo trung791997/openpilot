@@ -4281,3 +4281,54 @@ def test_off_axis_lead_hold_never_off_axis_is_untouched():
   sm = _off_axis_sm(y_rel=0.3, vision_a=-0.5, a_lead=-3.6, v_ego=22.0, d_rel=38.0, v_rel=-6.9)
   for _ in range(5):
     assert longitudinal_planner_module.bound_off_axis_leads(sm, hold) is sm
+
+
+def _closing_lead(v_rel=-5.0, a_lead=0.0):
+  lead = make_lead(status=True, d_rel=45.0, v_lead=17.0, a_lead=a_lead, radar=True, model_prob=1.0)
+  lead.vRel = v_rel
+  return lead
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_mpc_lead_brake_passes_comfort_floor_after_persisting(enabled, monkeypatch):
+  # STATUS 119, 25e 318.1: the MPC's lead brake passes the -1.0 comfort floor once it has
+  # persisted, at the mildest of the persisted ticks.
+  monkeypatch.setattr(longitudinal_planner_module, "MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR", enabled)
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  planner.lead_one = _closing_lead()
+  planner.mpc.source = 'lead0'
+  floors = [planner.get_mpc_lead_brake_accel_min(-1.0, demand) for demand in (-1.4, -1.6, -1.8, -2.0)]
+  assert floors[:2] == [-1.0, -1.0]
+  assert floors[2:] == ([-1.4, -1.6] if enabled else [-1.0, -1.0])
+
+
+@pytest.mark.parametrize("case", ["source_switch_spike", "not_closing", "cruise_source"])
+def test_mpc_lead_brake_keeps_comfort_floor_for_spikes(case):
+  # STATUS 119, 25f 634.9 / 0237 796.0: a one- or two-tick MPC spike on a source switch, or a
+  # demand for a lead that is neither closing nor braking, stays behind the comfort floor.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  planner.lead_one = _closing_lead(v_rel=-0.17) if case == "not_closing" else _closing_lead()
+  sources = {"source_switch_spike": ['lead0', 'lead0', 'cruise', 'lead0', 'lead0', 'cruise'],
+             "not_closing": ['lead0'] * 6, "cruise_source": ['cruise'] * 6}[case]
+  for source in sources:
+    planner.mpc.source = source
+    assert planner.get_mpc_lead_brake_accel_min(-0.5, -2.0) == -0.5
+
+
+def _merge_sm(lead_v_ego=22.0):
+  meta = SimpleNamespace(laneChangeState=log.LaneChangeState.laneChangeStarting,
+                         laneChangeDirection=log.LaneChangeDirection.left)
+  car_state = SimpleNamespace(standstill=False, brakePressed=False, leftBlindspot=False, rightBlindspot=False)
+  return {'modelV2': SimpleNamespace(meta=meta), 'carState': car_state}
+
+
+@pytest.mark.parametrize("mpc_demand, expected_floor", [(None, True), (-1.0, True), (-1.6, False)])
+def test_lane_change_merge_floor_releases_on_hard_mpc_lead_brake(mpc_demand, expected_floor):
+  # STATUS 119, 25b 1338.6: the -0.4 merge floor held for 1.3 s while the MPC asked -1.5..-4.2
+  # at TTC 5.9 s. A hard MPC lead demand inside LC_MERGE_TTC_ACCEL now releases it.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  planner.lead_one = make_lead(status=True, d_rel=45.2, v_lead=14.4, radar=True, model_prob=1.0)
+  toggles = SimpleNamespace(lane_change_close_gap=True, minimum_lane_change_speed=0.0)
+  floor = planner.get_lane_change_merge_accel_floor(_merge_sm(), toggles, 22.0, 30.0, 0.3, blocked=False,
+                                                    mpc_demand=mpc_demand)
+  assert (floor is not None) == expected_floor

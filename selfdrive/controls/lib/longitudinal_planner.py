@@ -81,6 +81,22 @@ LC_MERGE_TTC_ACCEL = 6.0
 LC_MERGE_ACCEL_MIN_DIST = 30.0
 LC_MERGE_HEADROOM_MIN = 2.0
 LC_MERGE_ACCEL_BIAS = 0.55
+# Late start (STATUS 119, replay evidence only, not driven). The final comfort-floor clip let
+# MPC lead braking below the -1.0 cruise floor through only as a_desired (the MPC one step
+# ahead, not at action_t) caught up, so the output trailed the MPC's own demand (items 45/46):
+# 25e 318.1 MPC -1.5 at 319.0, stock ACC 319.92, output 320.92. A persistent lead-sourced MPC
+# demand now passes that floor.
+MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR = True
+# The floor is also a spike filter: when the lead source switches (radar lead dropped, far
+# vision lead picked up) the MPC can ask -1.6..-2.0 for one or two ticks with no closing
+# speed (25f 634.9, 0237 796.0). Only a demand that has been lead-sourced for this many
+# consecutive ticks from a closing or braking lead (the LEAD_CLOSING_FLOOR test) passes, and
+# only its mildest value over those ticks.
+MPC_LEAD_BRAKE_PERSIST_TICKS = 3
+# The merge floor (-0.4) let go only under a 4 s TTC at the current closing speed; on 25b
+# 1338.6 it held -0.4 for 1.3 s while the MPC asked -1.5..-4.2 and the lead braked 3-5 m/s^2,
+# 0.85 s behind stock ACC. It now lets go when the MPC asks this much inside LC_MERGE_TTC_ACCEL.
+LC_MERGE_RELEASE_MPC_DEMAND = -1.5
 
 A_CRUISE_MAX_BP = [0.0, 5., 10., 15., 20., 25., 40.]
 A_CRUISE_MAX_VALS = [1.125, 1.125, 1.125, 1.125, 1.25, 1.25, 1.5]
@@ -768,6 +784,7 @@ class LongitudinalPlanner:
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.v_model_error = 0.0
     self.output_a_target = 0.0
+    self.mpc_lead_demand_hist = []
     # The MPC's own solution, kept separately from the arbitrated output_a_target.
     self.last_mpc_a_target = 0.0
     self.output_should_stop = False
@@ -2079,7 +2096,21 @@ class LongitudinalPlanner:
     ttc = d_rel / max(closing_speed, 0.1) if closing_speed > 0.1 else float("inf")
     return d_rel < dynamic_distance and (ttc < RAW_LEAD_SAFETY_TTC or lead_braking)
 
-  def get_lane_change_merge_accel_floor(self, sm, starpilot_toggles, scene_v_ego, v_cruise, action_t, blocked):
+  def get_mpc_lead_brake_accel_min(self, accel_min, mpc_target):
+    # Output floor for the final clip: accel_min, lowered to a persistent MPC lead-brake demand.
+    lead_demand = None
+    if mpc_target is not None and self.mpc.source in ('lead0', 'lead1'):
+      lead = self.lead_one if self.mpc.source == 'lead0' else self.lead_two
+      if lead.status and (float(lead.vRel) < LEAD_CLOSING_FLOOR_VREL or float(lead.aLeadK) < LEAD_CLOSING_FLOOR_ALEAD):
+        lead_demand = float(mpc_target)
+    self.mpc_lead_demand_hist = (self.mpc_lead_demand_hist + [lead_demand])[-MPC_LEAD_BRAKE_PERSIST_TICKS:]
+    if (not MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR or len(self.mpc_lead_demand_hist) < MPC_LEAD_BRAKE_PERSIST_TICKS or
+        None in self.mpc_lead_demand_hist):
+      return accel_min
+    return min(accel_min, max(self.mpc_lead_demand_hist))
+
+  def get_lane_change_merge_accel_floor(self, sm, starpilot_toggles, scene_v_ego, v_cruise, action_t, blocked,
+                                        mpc_demand=None):
     # Accel floor (m/s^2) to apply as max(output_a_target, floor) while merging out, else None.
     if blocked or not getattr(starpilot_toggles, "lane_change_close_gap", False):
       return None
@@ -2109,6 +2140,9 @@ class LongitudinalPlanner:
     ttc = d_rel / closing if closing > LC_MERGE_CLOSING_MIN else float('inf')
     # A close lead (small gap or short time-to-reach) keeps full braking authority.
     if ttc < LC_MERGE_TTC_MIN or d_rel < LC_MERGE_MIN_DIST:
+      return None
+    if (LC_MERGE_RELEASE_MPC_DEMAND is not None and mpc_demand is not None and
+        mpc_demand < LC_MERGE_RELEASE_MPC_DEMAND and ttc < LC_MERGE_TTC_ACCEL):
       return None
 
     floor = LC_MERGE_BRAKE_FLOOR
@@ -3122,7 +3156,8 @@ class LongitudinalPlanner:
         output_a_target = max(output_a_target, tracked_vision_model_brake_cap)
 
     output_accel_max = no_throttle_output_max if not self.allow_throttle else accel_limits_turns[1]
-    output_a_target = float(np.clip(output_a_target, output_accel_min, output_accel_max))
+    final_accel_min = self.get_mpc_lead_brake_accel_min(output_accel_min, output_a_target_mpc)
+    output_a_target = float(np.clip(output_a_target, final_accel_min, output_accel_max))
 
     if close_stop_hold_cap is not None:
       self.a_desired = min(self.a_desired, close_stop_hold_cap)
@@ -3269,6 +3304,7 @@ class LongitudinalPlanner:
         getattr(sm['starpilotPlan'], 'forcingStop', False) or
         getattr(sm['starpilotPlan'], 'redLight', False)
       ),
+      mpc_demand=output_a_target_mpc if self.mpc.source in ('lead0', 'lead1') else None,
     )
     if lc_merge_floor is not None:
       output_a_target = float(min(max(output_a_target, lc_merge_floor), output_accel_max))

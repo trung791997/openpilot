@@ -6536,3 +6536,36 @@ committed.
 - **Conclusion:** keep 3 s. Across the 8 stock routes it never trips where stock ACC was calm and the driver did not
   take over. The open item is still the planner's late start against stock on some closings (25b 22:19 +0.85 s,
   25f 8:03 +0.35 s, 262 6:19 +1.05 s), item 74.
+
+## 119. Late brake start vs stock ACC: two fixes shipped (comfort-floor pass for persistent MPC lead braking, merge-floor release). Replay evidence only; not driven.
+
+**Question (owner, 2026-09-25).** On some closing leads the alpha planner reaches −1.5 later than stock ACC (item 74; item 118a listed 8 such brakes on the 8 stock-long routes).
+
+**Method.** Per-frame line trace of `LongitudinalPlanner.update` (which line last set `output_a_target`, plus the accel limits and merge floor) on 25b 1338.9, 262 379.4, 25e 318.1 and 25f 483.1. Then `alpha_closed_loop_replay.py --late-ab` on all 22 routes. The replay is open loop (ego follows the logged drive), so onset times are indicative.
+
+**Causes found.**
+1. **Comfort-floor clip lag (systematic).** The final `np.clip(output_a_target, output_accel_min, …)` uses `accel_limits_turns[0] = min(cruise floor −1.0 / ECO −0.5, a_desired + 0.05)`. `a_desired` is the MPC one step ahead, not at `action_t`, so any MPC lead brake below the cruise floor was held back and trailed the MPC. This is the mechanism of items 45/46, whose counterfactual had never been run. 25e 318.1: MPC −1.5 at 319.0, stock ACC 319.92, output 320.92.
+2. **Lane-change merge floor (25b 1338.9).** During a real lane change (starting 1336.0, finishing 1340.6) `get_lane_change_merge_accel_floor` held −0.4 for 1.3 s while the MPC asked −1.5…−4.2 and the lead braked 3–5 m/s² down to TTC 2.6. Its 4 s TTC gate uses the current closing speed only. Holding `a_desired` at −0.4 also kept cause 1's floor at −1.0.
+3. **MPC gentler than stock on a slow-closing follow (262 379.4).** At ~20 m the MPC asked −0.93 where stock went −1.5. Not addressed.
+
+**Fixes (`longitudinal_planner.py`).**
+- **A.** `MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR`, `get_mpc_lead_brake_accel_min`. The final clip's floor is lowered to the MPC demand when that demand has been lead-sourced (`lead0`/`lead1`) for `MPC_LEAD_BRAKE_PERSIST_TICKS = 3` ticks from a lead that is closing or braking (the existing `LEAD_CLOSING_FLOOR_VREL`/`_ALEAD` test). It uses the mildest of those 3 ticks.
+  - A first version without the persistence and closing gate let **phantom source-switch spikes** through: 25f 634.9, a vision lead at 89 m closing 0.2 m/s, went to −2.78; 0237 796.0 went to −1.68. The comfort floor had been acting as a spike filter. The gated version leaves both unchanged.
+- **B.** `LC_MERGE_RELEASE_MPC_DEMAND = −1.5`. The merge floor lets go when the MPC lead demand is below −1.5 inside `LC_MERGE_TTC_ACCEL` (6 s).
+
+**Replay, 22 routes, pre-119 (`late_off`) vs shipped.**
+- 225 episodes. 122 changed, 0 softer by more than 0.3 and 0 later by more than 0.2 s at −1.5. Median crossing 0.20 s earlier. Every changed episode has a closing radar lead.
+- Frames below −1.5: 8,056 → 8,852. Below −2.5: 2,182 → 2,510.
+- Against stock ACC (37 stock −1.5 brakes on the stock-long routes): median planner-minus-stock −0.47 → −0.78 s; brakes more than 0.3 s late 8 → 4.
+
+| Brake | Pre-119 vs stock | Shipped vs stock |
+|---|---|---|
+| 25b 1338.8 (lane change) | +0.85 s | −0.15 s (needs A+B) |
+| 25e 318.1 | +1.00 s | −0.85 s |
+| 25f 483.1 | +0.35 s | −0.15 s |
+| 0263 374.3 | +0.55 s | +0.15 s |
+| Still late: 0262 379.4 / 25f 55.8 / 25b 1353.2 / 25e 1002.0 | +1.05 / +0.85 / +0.55 / +0.50 s | +1.05 / +0.70 / +0.55 / +0.35 s |
+
+**Tests.** Eight new unit tests: the pass after persistence (on and off), spike, not-closing and cruise-source cases held, and the merge-floor release. Results: test_longitudinal_planner 504, test_longcontrol 89, test_leads 6, test_starpilot_acceleration 26, tools/longitudinal/tests 9, all passing.
+
+**Not verified.** Not driven. Needs a drive with a braking lead ahead and one with a lane change behind a braking car; watch for any brake on a far vision lead at a source switch. Replay variants `late_off` / `late_A` / `late_B` (`--late-ab`) reproduce this.

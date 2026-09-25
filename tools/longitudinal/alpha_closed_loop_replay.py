@@ -109,6 +109,10 @@ FIX_VARIANTS = ("hold", "visdis")
 # (FrogPilot-Testing 728f65472 long_mpc.py process_lead), and that path with StarPilot's former
 # 3 s closing-TTC fallback kept ('frog_guard', STATUS 63). Trips of the fallback are counted per frame.
 HUMAN_VARIANTS = ("human_off", "frog", "frog_guard")
+# STATUS 119 late-start fixes (shipped on): 'late_off' = both off (the pre-119 planner),
+# 'late_A' = only the comfort-floor pass, 'late_B' = only the merge-floor release.
+LATE_VARIANTS = {"late_off": (False, None), "late_A": (True, None), "late_B": (False, -1.5)}
+LATE_DEFAULTS = (LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND)
 GUARD_TTC = 3.0
 GUARD_MIN_CLOSING = 0.75
 
@@ -258,13 +262,14 @@ def vision_view(model, v_ego: float) -> dict | None:
 
 
 def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False,
-           human_ab: bool = False, vision_only: bool = False):
+           human_ab: bool = False, vision_only: bool = False, late_ab: bool = False):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
 
   variants = ([f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) +
-              (list(HUMAN_VARIANTS) if human_ab else []) + ["nobound", "logged"])
+              (list(HUMAN_VARIANTS) if human_ab else []) + (list(LATE_VARIANTS) if late_ab else []) +
+              ["nobound", "logged"])
   original_builder = LM.build_model_lead_trajectory
   fix_bounds = {k: FixBound(k) for k in FIX_VARIANTS} if fixes else {}
   original_bound = LP.off_axis_lead_a_lead
@@ -399,6 +404,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
             sm["radarState"] = rs
             sm._valid = {**valid, "radarState": bool(rd.radar_state_valid)}
             LP.OFF_AXIS_LEAD_MIN_BEARING = float(v[1:]) if v.startswith("b") else saved
+          LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND = LATE_VARIANTS.get(v, LATE_DEFAULTS)
           if v in fix_bounds:
             fix_bounds[v].observe(rs, t_now, float(cs.vEgo))
             LP.off_axis_lead_a_lead = fix_bounds[v]
@@ -427,6 +433,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
         LP.OFF_AXIS_LEAD_MIN_BEARING = saved
         LP.off_axis_lead_a_lead = original_bound
         LM.build_model_lead_trajectory = original_builder
+        LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND = LATE_DEFAULTS
 
       lg = state["radarState_logged"].leadOne
       lr = rs.leadOne
@@ -587,11 +594,14 @@ def main() -> int:
   ap.add_argument("--human-ab", action="store_true",
                   help="add HumanFollowing/HumanAcceleration variants: 'human_off' (both off) and 'frog' (FrogPilot path)")
   ap.add_argument("--vision-only", action="store_true", help="drop every radar point, so radard publishes vision leads only")
+  ap.add_argument("--late-ab", action="store_true",
+                  help="add STATUS 119 variants: 'late_off' (both fixes off), 'late_A' / 'late_B' (one fix only)")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
-  frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound, args.human_ab, args.vision_only)
+  frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound, args.human_ab, args.vision_only,
+                        args.late_ab)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)
