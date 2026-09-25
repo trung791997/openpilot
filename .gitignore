@@ -137,3 +137,6 @@ Pipfile
 !rednose_repo/rednose/helpers/ekf_sym_pyx.so
 !panda/board/obj/
 !panda/board/obj/**
+
+# per-session compact checkpoints (see CLAUDE.md); never committed
+.claude/compact-state*.md

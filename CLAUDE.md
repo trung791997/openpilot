@@ -45,6 +45,18 @@ Short version, in priority order:
 > another agent has pushed since your branch point, read their commits before editing the
 > same files, and diff rather than assuming which version is newer (AGENTS.md §7).
 
+# Compact checkpoints are per session
+
+Any compact/checkpoint manifest goes in **`.claude/compact-state-<session-id>.md`**, where
+`<session-id>` is `$CLAUDE_CODE_SESSION_ID` (fallback when empty:
+`.claude/compact-state-<branch>-<UTC yyyymmddThhmmss>.md`, named in the compact summary). This applies
+everywhere, including cloud sessions and other accounts.
+- Several sessions share this checkout. **Never read, restore from, overwrite or delete another
+  session's `compact-state*` file**, even if it is newer; after a compact, resume only from your own.
+- **Never commit one.** `.claude/compact-state*.md` is gitignored. A shared `.claude/compact-state.md`
+  was committed once (`c617d5b8`), which put another session's stale next-step in every checkout.
+- Delete your own manifest once its next step is done.
+
 # Auto-compact
 
 > **Only where `~/.claude/bin/auto-compact.sh` exists** (the machine with the

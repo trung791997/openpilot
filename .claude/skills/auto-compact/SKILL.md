@@ -19,7 +19,14 @@ Gather the current operational context without making code edits:
 
 ## Step 2: Write Checkpoint Manifest
 
-Write the collected state to `.claude/compact-state.md` at the project or worktree root:
+**The manifest is per session.** `<session-id>` is `$CLAUDE_CODE_SESSION_ID` (read it with
+`echo "$CLAUDE_CODE_SESSION_ID"`). Several sessions and agents share this checkout, so a fixed name
+like `.claude/compact-state.md` gets picked up by the wrong session. Never write, read, restore from or
+delete another session's manifest, and never commit one (`.claude/compact-state*.md` is gitignored).
+If `$CLAUDE_CODE_SESSION_ID` is empty, use `.claude/compact-state-<branch>-<UTC yyyymmddThhmmss>.md`
+and pass that exact path in the compact summary.
+
+Write the collected state to `.claude/compact-state-<session-id>.md` at the project or worktree root:
 
 ```markdown
 # Checkpoint Manifest
@@ -46,32 +53,32 @@ Write the collected state to `.claude/compact-state.md` at the project or worktr
 - **Expected Outcome:** <what success looks like>
 ```
 
-Ensure `.claude/compact-state.md` is successfully written to disk.
+Ensure `.claude/compact-state-<session-id>.md` is successfully written to disk.
 
 ## Step 3: Trigger Compaction
 
 ### In Terminal / Tmux:
 If running inside tmux (`$TMUX` set):
-Invoke `~/.claude/bin/auto-compact.sh "Restoring from .claude/compact-state.md" "<optional continuation>"`.
+Invoke `~/.claude/bin/auto-compact.sh "Restoring from .claude/compact-state-<session-id>.md" "<optional continuation>"`.
 
 ### In Claude Code Desktop:
 If running inside Claude Code Desktop (no tmux):
-1. Confirm that `.claude/compact-state.md` has been saved to disk.
+1. Confirm that `.claude/compact-state-<session-id>.md` has been saved to disk.
 2. Present a clear, actionable directive to the user:
    ```text
-   📦 **State Checkpoint Saved to `.claude/compact-state.md`**
+   📦 **State Checkpoint Saved to `.claude/compact-state-<session-id>.md`**
 
    Full context, modified files, test states, and the next steps are safely anchored to disk.
    
    To compact without losing context, please type:
-   /compact Resume from .claude/compact-state.md and execute the Immediate Next Step
+   /compact Resume from .claude/compact-state-<session-id>.md and execute the Immediate Next Step
    ```
 3. Conclude the turn immediately without making further tool calls.
 
 ## Step 4: Post-Compaction Recovery Contract
 
 Immediately after any `/compact` or fresh session resume:
-1. Always check for the presence of `.claude/compact-state.md`.
+1. Check only for `.claude/compact-state-<session-id>.md` with **your own** session id (or the exact path named in the compact summary). Ignore every other `compact-state*` file, even if it is newer.
 2. If it exists, read it immediately on turn 1.
-3. Announce that context has been restored from `.claude/compact-state.md` and immediately execute the **Immediate Next Step** without asking the user for recap.
-4. Once the immediate task is confirmed verified, remove or update `.claude/compact-state.md`.
+3. Announce that context has been restored from `.claude/compact-state-<session-id>.md` and immediately execute the **Immediate Next Step** without asking the user for recap.
+4. Once the immediate task is confirmed verified, remove or update `.claude/compact-state-<session-id>.md`.
