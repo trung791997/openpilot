@@ -6511,3 +6511,28 @@ Replaces the reverted on-road tuner (116/116b) with the FLM workflow the owner a
 
 *Open.* A staged alpha-side warning or brake mirroring CMBS stage 1 (about 2.4 s) was raised, not built. It needs its own
 replay study and the owner's go-ahead.
+
+### 118a. Correction: the stock-ACC check covers all 8 stock-long routes, not one. Replay evidence only; not driven.
+
+Item 118 cited 25b as "the only stock-long rlog", from the item-74 census. Item 89 already lists 8 stock-ACC routes, all
+driven with ICBM: 25b, 25d, 25e, 25f, 260, 261, 262, 263. About 4,760 s of cruise, ACC_CONTROL on bus 1. Braking
+from an ICBM-lowered set speed (set < vEgo − 0.5) is excluded. Scripts `/tmp/stock_ttc.py`, `/tmp/stock_an2.py`, not
+committed.
+
+- **Fallback trips (closing > 0.75 m/s, TTC < 3 s, model prob > 0.35):** 18 episodes.
+  - 16: stock was already braking (command < −1) 0.3-7.9 s before the trip, at TTC 3.8-16 s. At the trip it commanded
+    −1.1 to −3.1; the lowest per episode ranged −1.2 to −4.0.
+  - 2: stock stayed silent. Both are item 89's "closing lead, stock silent" cases, and the driver took over within
+    1-2 s each time: 25f 2:45, 22 m at −7.5 m/s; 261 6:54, 34 m at −11.3 m/s. These are where the fallback is meant to
+    act.
+- **Stock hard-brake onsets (command < −1.5) on a closing radar lead:** 14. TTC at onset had median 6.5 s, p25 5.3 s,
+  range 1.9-21 s. Only 2 were under 3 s, both on 25f at under 8 m/s and about −1.5.
+- **Planner vs stock on 28 stock-route brakes** (open loop; `g_*_0.json`, frog_guard vs the logged command):
+  - Reaching −1.5: the planner is a median 0.25 s earlier than stock (range 5.3 s earlier to 1.05 s later).
+  - Deepest brake: median −2.66 vs stock −2.23.
+  - The fallback changes one brake by more than 0.3: 25f 483.1, −3.03 → −3.45, where stock settled at −1.8. There the
+    planner reaches −1.5 0.35 s after stock, so the firmer brake comes from the late start, not from the 3 s threshold.
+    Lowering the threshold would soften that brake and leave the late start.
+- **Conclusion:** keep 3 s. Across the 8 stock routes it never trips where stock ACC was calm and the driver did not
+  take over. The open item is still the planner's late start against stock on some closings (25b 22:19 +0.85 s,
+  25f 8:03 +0.35 s, 262 6:19 +1.05 s), item 74.
