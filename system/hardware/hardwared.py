@@ -291,7 +291,7 @@ def hw_state_thread(end_event, hw_queue):
           cloudlog.warning("configuring modem")
           HARDWARE.configure_modem()
           modem_configured = True
-        elif modem_configured and (count % int(30. / DT_HW)) == 0:
+        elif modem_configured:
           HARDWARE.check_modem_config()
 
         prev_hw_state = hw_state

@@ -52,6 +52,9 @@ class NMMetered(IntEnum):
   NM_METERED_GUESS_NO = 4
 
 TIMEOUT = 0.1
+
+# comma 4 (EG916) pppd link check, see configure_ppp_keepalive
+PPP_LCP_ECHO = {"lcp-echo-interval": "5", "lcp-echo-failure": "4"}
 REFRESH_RATE_MS = 1000
 
 NetworkType = log.DeviceState.NetworkType
@@ -538,8 +541,11 @@ class Tici(HardwareBase):
     # The Quectel EG916 in the comma 4 carries data over PPP on its only AT port (ttyUSB3), so
     # ModemManager logs "connection monitoring is unsupported by the device" and cannot see a
     # data session die: the modem stays "connected", the signal bars stay cached, and there is
-    # no internet until reboot. LCP echo lets pppd detect the dead link itself (3 missed echoes
-    # at 10 s), and unlimited autoconnect retries let NetworkManager bring it back.
+    # no internet until reboot. LCP echo lets pppd detect the dead link itself (4 missed echoes
+    # at 5 s, ~20 s), and unlimited autoconnect retries let NetworkManager bring it back.
+    # 10 s x 3 was the value checked on the device below; 5 s x 4 was chosen by the owner for
+    # faster recovery (2026-09-25), not yet driven. More brief drops while driving (echoes lost in
+    # handovers) would mean it is too tight: go back to 10 s x 3.
     # Checked on one device (T-Mobile, 2026-09-25): pppd ran with these values and the link held
     # with no LCP drops for >3 min. A carrier that ignores LCP echo would drop every ~30 s.
     #
@@ -562,8 +568,8 @@ class Tici(HardwareBase):
       "gsm.home-only": "no" if params.get_bool("GsmRoaming") else "yes",
       "connection.metered": "unknown" if params.get_bool("GsmMetered") else "no",
       "connection.autoconnect-retries": "0",
-      "ppp.lcp-echo-interval": "10",
-      "ppp.lcp-echo-failure": "3",
+      "ppp.lcp-echo-interval": PPP_LCP_ECHO["lcp-echo-interval"],
+      "ppp.lcp-echo-failure": PPP_LCP_ECHO["lcp-echo-failure"],
       "ipv4.dns": "94.140.14.14,94.140.15.15",
     }
     try:
@@ -582,7 +588,7 @@ class Tici(HardwareBase):
       cloudlog.event("lte profile configured", apn=apn, running_lcp=None, restart=False)
       return  # no session yet; check_modem_config catches one that was already being set up
     session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only", "ipv4.dns")
-    restart = running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys)
+    restart = running != PPP_LCP_ECHO or any(current.get(k) != want[k] for k in session_keys)
     cloudlog.event("lte profile configured", apn=apn, running_lcp=running, restart=restart)
     if restart:
       subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
@@ -597,14 +603,14 @@ class Tici(HardwareBase):
     return {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
 
   def check_modem_config(self):
-    # Called every 30 s by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
+    # Called every 10 s by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
     # "lcp-echo-interval 0" hours later and the link died silently: likely NM had already started
     # the session with the old profile when configure_modem found no pppd yet. Re-apply whenever
     # a running pppd lacks the echo, at most every 5 min so a carrier that rejects it can't loop.
     if self.get_device_type() != "mici":
       return
     running = self._running_ppp_lcp()
-    if running is None or running == {"lcp-echo-interval": "10", "lcp-echo-failure": "3"}:
+    if running is None or running == PPP_LCP_ECHO:
       return
     now = time.monotonic()
     if now - getattr(self, "_last_ppp_fix", -float("inf")) < 300:

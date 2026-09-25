@@ -26,9 +26,9 @@ def test_comma_profile_detection_without_lpa(mocker):
 
 # on-disk profile at boot on a comma 4 (2026-09-25): blank APN, NM defaults
 BOOT_PROFILE = "\nyes\nno\nunknown\n-1\n0\n0\n\n"
-APPLIED_PROFILE = "fast.t-mobile.com\nno\nno\nunknown\n0\n10\n3\n94.140.14.14,94.140.15.15\n"
+APPLIED_PROFILE = "fast.t-mobile.com\nno\nno\nunknown\n0\n5\n4\n94.140.14.14,94.140.15.15\n"
 PPP_OFF = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x000\0lcp-echo-interval\x000\0"
-PPP_ON = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x003\0lcp-echo-interval\x0010\0"
+PPP_ON = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x004\0lcp-echo-interval\x005\0"
 
 
 def _eg916_hardware(mocker, tmp_path, model="EG916Q-GL", profile=BOOT_PROFILE, ppp_args=None, apn="fast.t-mobile.com", device="mici"):
@@ -80,8 +80,8 @@ def test_eg916_restarts_session_without_echo(mocker, tmp_path, ppp_args):
   modify, up = _nmcli_calls(call)
   assert "--temporary" in modify
   assert _value(modify, "connection.autoconnect-retries") == "0"
-  assert _value(modify, "ppp.lcp-echo-interval") == "10"
-  assert _value(modify, "ppp.lcp-echo-failure") == "3"
+  assert _value(modify, "ppp.lcp-echo-interval") == "5"
+  assert _value(modify, "ppp.lcp-echo-failure") == "4"
   assert up[-3:] == ["connection", "up", "lte"]
 
 
@@ -124,6 +124,17 @@ def test_eg916_blank_apn_uses_auto_config(mocker, tmp_path):
   assert _value(modify, "gsm.auto-config") == "yes"
 
 
+def test_eg916_restarts_session_on_old_echo_values(mocker, tmp_path):
+  # sessions started under the earlier 10 s x 3 setting get moved to the current one
+  old = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x003\0lcp-echo-interval\x0010\0"
+  hardware = _eg916_hardware(mocker, tmp_path, profile=APPLIED_PROFILE, ppp_args=old)
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.check_modem_config()
+
+  assert _nmcli_calls(call)[-1][-3:] == ["connection", "up", "lte"]
+
+
 def test_eg916_leaves_matching_session(mocker, tmp_path):
   hardware = _eg916_hardware(mocker, tmp_path, profile=APPLIED_PROFILE, ppp_args=PPP_ON)
   call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
@@ -153,7 +164,7 @@ def test_mici_configured_when_model_read_fails(mocker, tmp_path):
   hardware.configure_modem()
 
   modify, up = _nmcli_calls(call)
-  assert _value(modify, "ppp.lcp-echo-interval") == "10"
+  assert _value(modify, "ppp.lcp-echo-interval") == "5"
   assert up[-3:] == ["connection", "up", "lte"]
 
 
@@ -174,7 +185,7 @@ def test_watchdog_fixes_session_that_lost_echo(mocker, tmp_path):
 
   hardware.check_modem_config()
   modify, up = _nmcli_calls(call)
-  assert _value(modify, "ppp.lcp-echo-interval") == "10"
+  assert _value(modify, "ppp.lcp-echo-interval") == "5"
   assert up[-3:] == ["connection", "up", "lte"]
 
   # rate limited: a carrier that rejects the echo must not cause a restart loop
