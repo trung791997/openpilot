@@ -9,7 +9,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`; `claude/radar-testing-state-88vt2t` is kept identical to it (every commit
 is pushed to both). For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-09-24), start here:** item 114 (route 0000026b: sensor-reaction blips over `NrdrDriverOverrideThreshold` 2000 cut steering torque for ~1 s in low-speed turns and explain the owner's 32:40 exit oversteer and 48:10 stutter; corrected the same day: the 32:40 blips were a sustained driver push below the 2000 threshold, so do NOT raise it; 0.5 s fade-up, then `LatPScaleStandard` 115; replay/sim only). Then item 113 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 112 (radar: route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (radar: one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-09-24), start here:** item 116 (on-device adaptive P trim prototype, `LatAdaptiveTune` default 0 = off, 1 shadow, 2 apply: one bounded 0.05 step per knot per drive at 20/30/40/50 mph, 0.85–1.15, resets when the manual lateral tuning changes; shadow replay over 19 routes holds 1.00 at every knot on the current tuning, 20 mph never steps up because of override onsets; unit-test/log-replay only, not driven; try shadow first). Then item 115 (continuous lateral gain schedule `LatGainSchedule`, default off, falls back to the bands when absent or invalid, plus offline tuner `tools/lateral/lat_autotune.py`; on 26b+263 it suggests P 120/110/120/105 at 20/30/40/50 mph with I unchanged, about 2 % better on holdout; highway untrusted and frozen; unit-test/replay/sim only, not driven). Then item 114 (route 0000026b: sensor-reaction blips over `NrdrDriverOverrideThreshold` 2000 cut steering torque for ~1 s in low-speed turns and explain the owner's 32:40 exit oversteer and 48:10 stutter; corrected the same day: the 32:40 blips were a sustained driver push below the 2000 threshold, so do NOT raise it; 0.5 s fade-up, then `LatPScaleStandard` 115; replay/sim only). Then item 113 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 112 (radar: route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (radar: one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -6265,3 +6265,203 @@ The 3 genuine overrides that 2400 would miss peaked at 2125–2312. In practice 
 1. Keep `NrdrDriverOverrideThreshold` at 2000. Do not raise it. `HondaOverrideFadeUpSecs` 1.0 → 0.5 is still reasonable. It only shortens the torque gap after a release, and it does not change when an override is detected.
 2. `LatPScaleStandard` 100 → 115.
 3. Only after (1) is driven: `LatPScaleLowSpeed` 100 → 125. More low-speed P means more torque, which means more sensor reaction.
+
+## 115. Continuous lateral gain schedule (`LatGainSchedule`) and an offline auto-tuner (`tools/lateral/lat_autotune.py`). Unit-test, replay and sim evidence only; nothing driven; no setting changed.
+
+**Controller (`selfdrive/controls/lib/latcontrol_pid.py`, modified-EPS path):** optional param `LatGainSchedule`, JSON in percent like the band params, e.g. `{"v_mph":[20,30,40,50],"p":[120,110,120,105],"i":[50,75,75,0]}`. The P/I/F trims are interpolated linearly between knots and held flat past the end knots. Any of p/i/f may be omitted; an omitted term keeps its `Lat*Scale` band.
+- Validation: 2–8 knots, strictly increasing speeds within 0–100 mph. Limits are P 25–300 %, I 0–300 %, F 0–200 %, all finite.
+- Any malformed field rejects the whole schedule, and every term falls back to the bands. An out-of-range knot is never clamped into a value the owner did not write.
+- The param is read in the existing 300-frame refresh and registered in `common/params_keys.h` (STRING, default empty). Empty or absent means the behaviour is unchanged.
+- Tests: `selfdrive/controls/tests/test_lat_gain_schedule.py` (26 tests).
+- Replay on 00000263 through `lat_pid_sim`:
+  - a flat schedule gives torque bit-identical to the same flat values set as bands;
+  - an invalid schedule gives torque bit-identical to no schedule.
+- The two `test_latcontrol.py` failures (Bolt 2022–23 low-speed limit, Palisade taper) and the two `test_accel_profile.py` failures also fail on the base tree without this change.
+
+**Tuner (`tools/lateral/lat_autotune.py`)** builds on `lat_pid_sim`, with tests in `tools/lateral/tests/test_lat_autotune.py`. It prints a schedule for the owner to review and never writes a param.
+- **Seed:** it starts from the current bands (or an existing schedule) plus `--set`. The default knots are 20/30/40/50 mph, so above 50 mph the seed is exactly the highway band.
+- **Trust gate:** per band, the sim at the driven tuning is compared with the log. The band is untrusted if err rms or straight rms differ by more than 25 %, or the curve ratio by more than 0.05.
+  - Knots in an untrusted band are frozen.
+  - An untrusted band may not get worse on all data: err or straight rms by more than 1 %, or straight sign-change rate by more than 10 %.
+- **Search:** best-improvement coordinate search with steps 10/5/2.5 points, within ±25 points of the seed.
+  - The per-band cost is relative to the seed, so the large turn errors below 25 mph do not drown the other bands.
+  - Scoring uses alternate 2-minute blocks of the drive. The other blocks are holdout and decide the verdict: the holdout total must improve, and no trusted band may get worse by more than 2 %.
+- **Two faults found in the first runs:**
+  - The first run blended I 75 → 0 across 45–55 mph. That added I on the highway and raised highway sign changes from 0.27 to 0.42 /s. The untrusted-band guard missed it, because each half had under 3 minutes of highway. Fixed with the all-data guard and the 20/30/40/50 default knots.
+  - The second run was vetoed by a strict 1.00× rule over a highway err rms change of 0.758 → 0.759°, which is carry-in from the blend. The tolerance is now 1 %.
+
+**Run on 0000026b + 00000263, current owner tuning:** P 100/100/105, I 50/75/0, F 50/100/100; plant `plant_260_263`; 96 closed-loop evaluations.
+- Gate: low band trusted (9.8 min), standard trusted (29.6 min).
+- Highway untrusted: err rms sim 0.76 vs log 0.58°, curve ratio sim 0.738 vs log 0.851. Knots at 50 mph were frozen.
+- Holdout total, relative to the seed: current bands 0.952, proposed 0.932, about 2 % better.
+
+| Band (all data) | err rms | straight rms | curve ratio | straight sign changes |
+|---|---|---|---|---|
+| < 25 mph, current → proposed | 12.74 → 12.25° | 3.12 → 2.89° | 0.882 → 0.897 | 0.66 → 0.67 /s |
+| 25–50 mph | 1.109 → 1.058° | 0.743 → 0.712° | 0.967 → 0.955 | 0.62 → 0.66 /s |
+| > 50 mph (untrusted, frozen) | 0.758 → 0.759° | 0.583 → 0.584° | 0.738 → 0.738 | 0.27 → 0.26 /s |
+
+Candidate (sim evidence only, not driven): `LatGainSchedule = {"v_mph":[20,30,40,50],"p":[120,110,120,105],"i":[50,75,75,0]}`
+
+**Read before trying it:**
+- The gain is small, about 2 % on holdout. It is mostly more P below 25 mph and at 35–45 mph.
+- The 25–50 mph sign-change rate rises 6 % and the curve ratio drops 0.967 → 0.955. The drop comes from the 40–50 mph I blend (75 → 0) replacing the 50 mph step.
+- The plant under-predicts oscillation.
+- The sim does not model driver-override trips. Item 114 found that EPS reaction torque from low-speed torque trips the 2000 threshold in turns, and P 120 below 20 mph adds torque exactly there.
+- Desired curvature is exogenous, so model-path problems like 26b 32:40 are invisible to the tuner.
+- If driven, compare the next route's low-speed turn override crossings and 25–50 mph straight rms against 26b before keeping it. Clearing `LatGainSchedule` returns to the bands.
+
+**Stage 3 (on-device adaptive tuning)** is deliberately not built. It waits until an offline schedule from this tool has been driven and shown to match the sim's prediction.
+
+## 116. On-device adaptive P trim, prototype (`LatAdaptiveTune`, default 0 = off). Unit-test and log-replay evidence only; nothing driven; no setting changed.
+
+The owner asked for a prototype of item 115's stage 3 before an offline schedule had been driven, so it is built but off by default. It is meant to run in **shadow** first.
+
+**What it is:** `selfdrive/controls/lib/lat_adaptive_tune.py`, hooked into `LatControlPID` on the modified-EPS path only. Tests are in `selfdrive/controls/tests/test_lat_adaptive_tune.py` (29 tests).
+- **One knob:** a multiplicative factor on the P trim at knots 20/30/40/50 mph, interpolated like `LatGainSchedule` and applied after the bands and the schedule. I and F are not touched.
+- **Bounded:** 0.85–1.15. It moves at most one 0.05 step per knot per drive, and neighbouring knots may differ by at most 0.10.
+- **Never mid-drive:** during a drive it only measures. Statistics are saved to `LatAdaptiveStats` once a minute with `put_nonblocking`. The step happens at the next controlsd start and is written to `LatAdaptiveState`.
+- **What it measures:** engaged, hands-off frames above 4 m/s, with no blinker and not steer-limited, split between the two neighbouring knots. It uses the same definitions as `lat_pid_sim` metrics(): straight is |desired| < 3°, curve is |desired| > 5°. It records:
+  - straight rms error;
+  - straight error sign changes per second, counted on consecutive straight frames only;
+  - curve ratio (achieved / desired);
+  - driver-override onsets per engaged minute.
+- **Rules per knot,** in order. A knot needs ≥ 3 min of data, and a shorter knot's data carries over into the next drive.
+  1. Revert. Only in apply mode, and only after an up-step, if sign changes rose > 15 % or onsets rose > 25 % + 0.2/min.
+  2. Down if sign changes > 1.0/s.
+  3. Down if the curve ratio > 1.03.
+  4. Up if the curve ratio < 0.95 **and** sign changes < 0.8/s **and** onsets < 1.5/min.
+  5. Otherwise hold.
+- **Modes:** `LatAdaptiveTune` 0 = off, with no Params reads beyond the mode and no writes; 1 = shadow, which learns and stores but always applies 1.0; 2 = apply. Any Params error turns it off for the drive.
+- **Tuning fingerprint:** the state stores a hash of the manual lateral gains (`TUNING_KEYS`: P/I/F bands, `LatGainSchedule`, Kp/Ki scale, centre scale/boost, LPF taus, override fade/scale, and `NrdrLatUseFirmwareVgr`).
+  - If any of them differs at start, the factors reset to 1.0 and the previous drive's statistics are dropped.
+  - `last` then reads `reset: manual lateral tuning changed`.
+- **Params:** `LatAdaptiveTune` (INT, 0), `LatAdaptiveState` and `LatAdaptiveStats` (STRING), all in `common/params_keys.h`.
+- **Mode 0 changes nothing:** the `lat_pid_sim` replay of 00000263 is unchanged, torque |sim−log| median 8.9e-4. `test_latcontrol.py` has only the two failures that item 115 already showed fail on base.
+
+**Log replay, all 19 extracted routes in drive order (00000232 → 0000026b), shadow mode, with carry-over:**
+
+| Knot | Minutes (all routes) | Straight rms | Sign changes | Curve ratio | Override onsets |
+|---|---|---|---|---|---|
+| 20 mph | 39.9 | 1.76° | 0.53 /s | 0.911 | 15.3 /min |
+| 30 mph | 45.4 | 0.83° | 0.67 /s | 0.942 | 3.4 /min |
+| 40 mph | 71.7 | 0.56° | 0.75 /s | 0.955 | 1.4 /min |
+| 50 mph | 99.6 | 0.46° | 0.82 /s | 0.947 | 0.8 /min |
+
+- **20 mph never steps up.** Onsets are 6–32/min on every route, far over 1.5. This is intended, because item 114 found EPS reaction torque trips the 2000 threshold in low-speed turns, and more P there makes it worse. The learner cannot tell those from real driver input, so it simply refuses to add P there.
+- **30 mph** stepped up once, on 237 (curve ratio 0.948). It was then held by onsets of 1.6–3.3/min on later routes.
+- **Sign changes** per drive with ≥ 10 s straight range from 0.36 to 1.17/s. Only 23a at 40 mph (1.02, 1 min) and 262 at 50 mph (1.17, 1.5 min) exceed 1.0, and both are too short to act on alone. With carry-over, no knot ever stepped down.
+- **A fault the replay found and fixed:** without the fingerprint, 40 mph walked 1.0 → 1.15 on 25f, 261 and 263, while the standard-band I was 25. P was covering an I shortfall. After I went back to 75 (268, 26b), the curve ratio returned to 0.977, inside the dead band, and 1.15 would have been held on the new tuning indefinitely. With the fingerprint, each tuning change (245 → 25b, 263 → 268, 268 → 26b) resets it.
+- **Final state on the current tuning** (P 100/100/105, I 50/75/0, 26b): all four knots hold at 1.00. At 30 mph the curve ratio is 0.916, but onsets of 2.7/min block the step-up.
+
+**What this means:** on the owner's logged driving this learner would almost always hold. The metrics sit inside the dead band, or the up-step is blocked by override onsets. It adds no P the owner has not already tried. In apply mode it could not have caused the 26b 32:40 or 48:10 events. It also would not have fixed them.
+
+**Why it trims only P, not I or F** (a design choice; for the owner write-up):
+1. **The three metrics cannot tell the terms apart.** A curve shortfall can be closed by more P, more I or more F. With three knobs on the same signals, the learner could trade one against another and never settle. The replay already showed this with one knob: 40 mph walked P to 1.15 to cover I 25, which is the fault the tuning fingerprint now resets. Letting it move I would make that kind of trade-off the normal case.
+2. **I is the risky term, and a 3-minute-per-knot drive cannot judge it.**
+   - I acts slowly. Its failure modes are slow weaving and windup carried past an override or out of a curve.
+   - In the sim, adding I on the highway raised straight sign changes from 0.27 to 0.42 /s (item 115); that is why highway I is 0.
+   - The integrator also freezes during override trips. Below 25 mph those come from EPS reaction torque at 6–32 per minute (item 114), so I measured there is distorted.
+3. **F already has a learner, and there is no evidence F is the wrong setting.**
+   - Feedforward is desired curvature times the car's steering response. openpilot already learns that response live (steer ratio, stiffness, angle offset: `NrdrLearn*`), and a second learner on F would fight it.
+   - In the sim, `LatFScaleLowSpeed` 50 → 100 had no effect (item 114).
+4. **One bounded knob keeps it auditable.** One number per knot, capped at ±15 %, one step per drive, with a reason for each step in `LatAdaptiveState`. I and F stay under the owner's manual control.
+
+Adding I or F later would need a signal specific to that term, then sim validation first:
+- **For F:** the curve-entry shortfall, before I has time to build.
+- **For I:** the residual error mid-way through a long, steady curve.
+
+That should wait until the P-only version has run in shadow for a while and its steps match what the owner feels.
+
+**How it sits with the firmware VGR table:**
+- All 19 replayed routes ran with `NrdrLatUseFirmwareVgr` = 1. The car is Civic Bosch with the `VGR_CIVIC_TBA_C020` flag set, so the firmware A table was in effect. It warps the angle that `VehicleModel` computes from the paramsd-learned `sR` into the target wheel angle.
+- The tuner measures tracking of that target in steering-wheel degrees, after the map. A map error (the firmware table corrects only the VGR pinion, not the whole chain) changes the path, not the tracking. The model corrects it by asking for a different curvature, so the tuner holds rather than covering it with P.
+- Switching the map (firmware table ↔ road-measured curve) moves the centre gain by about 10 % and changes the taper. It is therefore in `TUNING_KEYS` and resets the state.
+- The paramsd-learned `sR` is not in `TUNING_KEYS`, because it drifts continuously.
+- The replay above is unchanged by this, since the map setting never changed across the 19 routes.
+
+**Limits (read before enabling apply):**
+- Desired curvature is exogenous here too. A model-path error looks like a tracking error to the learner.
+- An override onset is either the driver or EPS reaction torque (item 114). Both count, so the learner errs toward not adding P.
+- The revert rule (1) has only been exercised in unit tests; no real drive has run in apply mode.
+- The thresholds (0.95/1.03 curve ratio, 0.8/1.0 sign changes, 1.5 onsets/min) are checked against these 19 routes only. They are not tuned on closed-loop outcomes.
+
+**To try it:**
+1. Set `LatAdaptiveTune=1` (shadow). Drive a few times. Read `LatAdaptiveState`: `factor` is what apply mode would use, and `last` gives the reason for each knot.
+2. Consider `LatAdaptiveTune=2` only if the shadow factors stay near 1.0, move for reasons that match what the owner feels, and do not ping-pong.
+3. To reset, clear `LatAdaptiveState`. To remove it from the loop, set `LatAdaptiveTune=0`.
+
+**Handoff: Galaxy toggle and owner write-up (not done here; for the next agent).**
+- **Toggle:** add a `LatAdaptiveTune` row to `starpilot/common/assets/device_settings_layout.json`.
+  - Place it under `LateralTune` (`"parent_key": "LateralTune"`, `"settings_tier": "advanced"`), after the `Lat*Scale*` rows.
+  - Use a 3-way `"ui_type": "dropdown"` with `"data_type": "int"`, patterned on `AccelerationProfile`: 0 Off, 1 Shadow (learn only), 2 Apply. A bool toggle cannot express shadow mode.
+  - It only matters on the modified-EPS PID path; the tuner is never constructed elsewhere.
+- **Optional:** a reset action that clears `LatAdaptiveState`, and a read-only view of its `factor` and `last`. Read-only is enough; the owner should never hand-edit the state.
+- **Item 12 applies:** Galaxy's `allowed_keys` comes from the compiled `common/params_pyx.so` registry, not the header. Until the device runs a build with the three new keys, the row will show "not editable". A device without the keys is harmless: `LatAdaptiveTuner` catches the unknown-key error and runs as off.
+- **Write-up:** the owner-facing description should be drawn from this item (what it measures, the rules, the 0.85–1.15 bound, one step per drive, the reset on manual tuning change, why it trims only P, shadow first). Keep the evidence level: unit-test and log replay only, not driven.
+
+### 116a. `LatAdaptiveTune` Galaxy dropdown (live) and params artifacts. Unit-test and static evidence only; not driven, not seen on device.
+
+The item 116 handoff is done.
+- **Galaxy row:** `LatAdaptiveTune` under `LateralTune`, after the `Lat*Scale*` rows. It is an advanced-tier `int` dropdown with 0 Off, 1 Shadow (learn only), 2 Apply. It has no `requires_offroad`, so it can be changed while driving.
+- **Live mode:** `LatControlPID` calls `LatAdaptiveTuner.refresh_mode()` in its 300-frame (3 s) param refresh, the same refresh the `Lat*Scale` rows use.
+  - Off → Shadow/Apply mid-drive loads the state and takes this drive's one step, with non-blocking writes.
+  - Shadow ↔ Apply only changes what `p_factor()` returns. Going to Apply applies the stored factor at once, a P step of at most ±15 %.
+  - → Off returns P to 1.0 at once, saves the stats collected so far and pauses learning.
+  - Only the mode is live. The factors still step at most once per drive.
+- **Tests:** 4 new tests in `TestLiveMode`; 58 pass across `test_lat_adaptive_tune.py` and `test_lat_gain_schedule.py`.
+- **Params artifacts:** `common/params_pyx.so` and `common/libcommon.a` were rebuilt with the Docker larch64 recipe (Cython 3.1.4) and now have 853 → 857 keys. The 4 new keys are `LatAdaptiveTune` (default 0), `LatAdaptiveState`, `LatAdaptiveStats`, and `LatGainSchedule` (item 115), which was in the header but missing from the binary. Before this rebuild, Galaxy would have returned 403 "not editable" for all four (item 12).
+
+### 116b. Items 116 and 116a reverted (owner request, 2026-09-24).
+
+The owner wants the adaptive lateral tuner rebuilt in the Galaxy FLM format instead. That means up to 8 selected routes, learning on the device while the car is off, results kept as separate trials, and a revert per trial.
+- **Removed:** `lat_adaptive_tune.py` and its tests, the `LatControlPID` hook, the Galaxy `LatAdaptiveTune` row, and the three `LatAdaptive*` keys.
+- **Params artifacts:** rebuilt, 857 → 854 keys. `LatGainSchedule` (item 115) stays in the binary.
+- **Kept:** the item 116 text above, as the design record for the rebuild. Its rules, thresholds and 19-route replay findings still apply.
+
+## 117. Lateral Tune workspace: item-116 P trim rebuilt FLM-style (routes → offroad trial → apply/revert). Unit-test and static evidence only; nothing driven; no setting changed by default.
+
+Replaces the reverted on-road tuner (116/116b) with the FLM workflow the owner asked for.
+
+- **Analyzer** `selfdrive/controls/lib/lat_tune_analyzer.py`: the item-116 rules verbatim, **per StarPilot PID speed band** since `e0ba9af8a` (LowSpeed < 25 mph, Standard 25–50, Highway ≥ 50, hard steps exactly as `_lat_pid_scale_banded`; before that, triangular-weighted knots at 20/30/40/50 mph) ( factor 0.85–1.15, one 0.05 step per trial, neighbour gap ≤ 0.10, ready at ≥ 3 min per band, straight < 3°, curve > 5°; down on sign-rate > 1.0/s or curve ratio > 1.03, up on curve ratio < 0.95 with sign-rate < 0.8/s and onsets < 1.5/min). Frames come from rlogs (`controlsState.lateralControlState.pidState` + `carState`); the current `LatPScale*`/`LatIScale*`/`LatFScale*` per band are read from the newest route's `initData`; proposed band P = current × factor on the Galaxy 5 % grid (a step never rounds away to nothing); I and F are shown and never proposed (item 116). One trial = one step: the logs were driven with one gain, so compounding steps across routes would have no evidence behind it.
+- **Galaxy** `Tools → Lateral Tune` (`/lat_tune`, classic UI): pick up to 8 local routes, Analyze runs `lat_tune_workspace.py worker` detached (`nice -n 19`, status in `/tmp/galaxy_lat_tune_status.json`, cancelled the moment `IsOnroad` goes true), trials stored at `/data/galaxy/lat_tune/trials/<id>.json` with per-band minutes / readiness / metrics / factor / reason / current P/I/F / proposed P. **Apply** writes `LatPScaleLowSpeed/Standard/Highway` (INT) and drops a `p` term from `LatGainSchedule` if one is set (it would override the bands), after snapshotting all four prior values into the trial; pre-band (schema 1) trials are refused; applied trials form a stack in `active.json` and only the top can be **reverted** (restores all four prior values exactly, or removes keys that were unset). Apply is refused (409) when the device's manual tuning fingerprint (the 116 `TUNING_KEYS`) differs from the one the routes were driven with, unless forced. Analyze, apply and revert are all parked-only (FLM gates only analyze; a live lateral gain deserves the stricter default).
+- **API** `/api/lat_tune/{workspace,status,analyze,analyze/stop,trial/<id>[,/apply,/revert]}` mirrors `/api/flm/*` (404/400/409 mapping).
+- **CLI for when the comma is unreachable** `tools/lateral/lat_tune_cli.py --routes-root <dir> --latest 8 [--json trial.json]` runs the same analyzer over the newest ≤ 8 route dirs (Konik `<dongle>/<time>--<seg>` layout accepted) and prints the per-band table (P/I/F now → P new) plus `LatPScaleLowSpeed = N` / `Standard` / `Highway` lines to set in Galaxy.
+- **No new Params keys**, so the aarch64 params artifacts stay at 854 keys; workspace state is files only.
+- **Evidence:** 29 analyzer tests, 10 workspace tests, 3 route tests, 4 CLI tests pass in `oprad-test:py312` (Galaxy files run one per process with flask + pillow pip-installed into the throwaway container, since the image lacks them); dashboard_stats 70 + its 2 pre-existing failures, longitudinal_mode_api 20, frontend_module_graph 11, device_settings_layout 29, lat_gain_schedule 26, latcontrol 171 + the 2 known base failures. Classic page render-checked static on the Mac: the real assets and CSS served with mocked `/api/lat_tune/*` and `/api/routes`, screenshotted in headless Chromium (not the full Galaxy server). That check caught body text inheriting black on the dark cards; fixed by setting `var(--text-color)` as FLM's cards do. Not driven; no replay against real routes yet — run the CLI on the Konik archive next and record the proposed factors here before anyone applies a trial.
+- **Mobile panel (2026-09-24):** `Tuning → NRDR PID lateral tune` (`/tuning/nrdr-pid`, `NrdrLatTunePanel.js`) is the mobile Vue face of the same `/api/lat_tune/*` endpoints: route picker (max 8), status, trials with per-knot details, apply (force retry only after a fingerprint refusal), revert of the stack top only, delete. `test_ui_vue_frontend` 31 pass; static render check at 390 px against mocked endpoints only, not driven, not seen on device.
+- **First real run, CLI, offline replay (2026-09-24) — superseded by the 3-band re-run below; the `LatGainSchedule` line in it must not be applied:** the owner's 8 newest Konik routes `11c8fa231c0499ed|00000262--864cc3c6db`, `…263--b8afdda0eb`, `…264--da75030df6`, `…265--28d99bed88`, `…266--f766f599f0`, `…267--e83a1fa671`, `…268--4bc9811934`, `…26b--92b1979afa` (164 rlog segments; `…269`/`…26a` skipped as empty). 22 segments had no engaged pidState frames (disengaged stretches, mostly `…26b` 0–7 and 18–22).
+
+  | knot | minutes | sign/s | curve ratio | overrides/min | factor | P% |
+  |---|---|---|---|---|---|---|
+  | 20 mph | 15.0 | 0.53 | 0.922 | 17.10 | 1.00 hold | 100 |
+  | 30 mph | 17.2 | 0.62 | 0.924 | 4.25 | 1.00 hold | 100 |
+  | 40 mph | 33.9 | 0.73 | 0.940 | 1.44 | **1.05 up** | 100 → **105** |
+  | 50 mph | 30.1 | 0.82 | 0.936 | 1.37 | 1.00 hold | 105 |
+
+  Proposed setting: `LatGainSchedule = {"v_mph":[20.0,30.0,40.0,50.0],"p":[100.0,100.0,105.0,105.0]}`. The analyzer reads `curve ratio < 0.95` everywhere as under-steer on curves, but at 20/30/50 mph the sign-change or override rate vetoes the step (the 20 mph override rate of 17/min is town turning with the wheel held, not an oscillation). So the only change is +5 % P at 40 mph. **Caveat:** the routes were not driven on one tuning: `LatIScaleStandard` is 25 on `…262` and 75 on `…26b`, and the fingerprint mismatch warning fired, so the baseline is `…26b`'s tuning (`LatPScaleStandard 100`, `LatPScaleHighway 105`). Offline replay only; the proposal has not been applied or driven. The trial JSON is `/routes/an2/lat_tune_trial_262-26b.json` in the `oprad-routes` volume. The CLI's Konik-layout discovery fix is `1965657c0`.
+- **Re-run on StarPilot's 3 PID speed bands (2026-09-24, owner request: match the Galaxy PID settings, 3 bands × P/I/F; see PR #6).** Same 8 routes, 164 segments (22 with no engaged pidState frames), offline replay only:
+
+  | band | minutes | sign/s | curve ratio | overrides/min | factor | P / I / F now | P new |
+  |---|---|---|---|---|---|---|---|
+  | LowSpeed 0–25 mph | 15.1 | 0.50 | 0.916 | 16.83 | 1.00 hold | 100 / 50 / 50 | 100 |
+  | Standard 25–50 mph | 73.4 | 0.74 | 0.944 | 2.10 | 1.00 hold | 100 / 75 / 100 | 100 |
+  | Highway 50+ mph | 7.7 | 0.83 | – (< 30 s of curve) | 1.83 | 1.00 hold | 105 / 0 / 100 | 105 |
+
+  **Result (superseded by the override-episode re-run below): no change proposed** (`LatPScaleLowSpeed = 100`, `LatPScaleStandard = 100`, `LatPScaleHighway = 105`). The old +5 % at the 40 mph knot does not survive banding: its minutes now pool with 25–40 mph town driving, and the Standard band's override-onset rate (2.10/min) is above the 1.5/min step-up veto. Highway has only 7.7 min at ≥ 50 mph (the old 50 mph knot borrowed 40–50 mph minutes through the triangular weights) and no curve data, so there is no up/down evidence there. The values shown are the newest route's (`…26b`) logged tuning, including `LatIScaleHighway = 0`; the routes were driven on mixed tuning (fingerprint warning). Trial JSON: `/routes/an2/lat_tune_trial_bands_262-26b.json`; route logs deleted from the volume after the run. Tests after the rework: analyzer 39, workspace 12, API 3, CLI 5, test_ui_vue_frontend 31, frontend_module_graph 11; both Galaxy panels render-checked statically with band mock data. Not applied, not driven.
+- **Re-run with 15 % steps and override episodes (2026-09-24), offline replay, same 8 routes:** two analyzer changes. (1) Curve steps are sized to the shortfall, 5–15 % per trial (owner: "up to 15 % per trial"); sign-rate step-downs stay 5 %. (2) The override veto counts **override episodes**: a press starting within 1.5 s of the previous pressed frame joins the same override (`PRESS_MERGE_FRAMES`). The reason: at `NrdrDriverOverrideThreshold` 2000 a driver fighting the wheel makes `steeringPressed` flicker, because each press cuts the torque, the reading drops under the threshold, the 1.0 s fade-up brings the torque back, and it trips again. Across the 8 routes, 723 of 724 engaged press onsets had ≥ 0.2 s of |steeringTorque| > 1000 within ±1 s, and only 1 of the 724 looked like an isolated sensor spike. So the short presses are real driver effort, not noise, and they should be merged, not dropped. Episodes vs onsets: LowSpeed 185 vs 530, Standard 63 vs 179, Highway 4 vs 15. The fade-up frames were already left out of the metrics by the `steer_limited` check (carControl vs carOutput torque).
+
+  | band | min | sign/s | curve ratio | override episodes/min | P now → proposed |
+  |---|---|---|---|---|---|
+  | LowSpeed 0–25 | 15.1 | 0.50 | 0.916 | 4.14 (veto > 1.5) | 100 → 100 |
+  | Standard 25–50 | 73.4 | 0.74 | 0.944 | 0.75 | **100 → 105** (shortfall 6 % → one 5 % step) |
+  | Highway 50+ | 7.7 | 0.83 | – | 0.49 | 105 → 105 (no curve data) |
+
+  What-if `--baseline LatPScaleStandard=115`: the same metrics give 115 → 120. Those metrics were measured at P 100, so this only says the evidence doesn't argue against 115; it doesn't show that 115 is better. The analyzer's own evidence supports **105**. Trial JSONs: `/routes/an2/lat_tune_trial_bands_262-26b_ep.json` and `…_ep115.json`. Tests: analyzer 48, CLI 6, workspace 12. Not applied, not driven.
+- **Route `…26b` 32:40 left swerve (log decode, offline):** at 15 mph (6.8 m/s), from about 32:38.5 the model lost both lane lines (probabilities 0.7 → 0.01) and its path swung up to 9 m left, with no blinker. The PID followed it: desired curvature −0.064, actual −0.054, steering +128°. The driver resisted from about 32:40.4 at 1500–1990 torque, but at threshold 2000 (the centre-boost threshold was also 2000) the first press registered only at 32:43.7, **about 3 s late**. Seven 0.02–0.04 s presses followed through 32:45.2, then a 0.25 s press peaking at 2578 at 32:46.6. The cause was the model's path, not the gains; a higher P would have turned harder. **At 2400 only the 32:46.6 press would have registered**, so raising the threshold to cut "blips" would have lengthened this event. Offline log reading only.
+- **Settings shipped (2026-09-24, owner request):** `migrate_nrdr_lat_tune_2026_09_24` in `system/manager/manager.py` writes the lateral settings once at the next boot, then sets the flag `/data/nrdr_lat_tune_2026_09_24_v1`. The values are what `…26b` was driven with, from its initData, except `LatPScaleStandard` 100 → 105:
+  - `LatPScale` Low/Std/Hwy 100/105/105, `LatIScale` 50/75/0, `LatFScale` 50/100/100;
+  - `NrdrDriverOverrideThreshold` 2000, `NrdrOverrideThresholdCenterBoost` 2000;
+  - `HondaOverrideFadeUpSecs` 1.0, `HondaOverrideFadeDownSecs` 0.0.
+
+  It overwrites the keys unconditionally, and on any device running this branch. Later slider changes persist. Evidence: unit test only; the 105 is not driven yet.

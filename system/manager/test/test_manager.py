@@ -754,3 +754,23 @@ class TestManager:
         if p.sigkill:
           exit_codes = [-signal.SIGKILL]
         assert exit_code in exit_codes, f"{p.name} died with {exit_code}"
+
+
+def test_migrate_nrdr_lat_tune_2026_09_24_writes_once(tmp_path, monkeypatch):
+  class Rec:
+    def __init__(self):
+      self.v = {}
+    def put_int(self, k, x):
+      self.v[k] = int(x)
+    def put_float(self, k, x):
+      self.v[k] = float(x)
+  flag = tmp_path / "flag"
+  monkeypatch.setattr(manager, "NRDR_LAT_TUNE_2026_09_24_MIGRATION_FLAG", flag)
+  params, cache = Rec(), Rec()
+  manager.migrate_nrdr_lat_tune_2026_09_24(params, cache)
+  assert params.v["LatPScaleStandard"] == 105 and cache.v["LatPScaleStandard"] == 105
+  assert params.v["NrdrDriverOverrideThreshold"] == 2000 and params.v["HondaOverrideFadeUpSecs"] == 1.0
+  assert len(params.v) == 13 and flag.exists()
+  params.v["LatPScaleStandard"] = 110   # the driver's later slider change survives the next boot
+  manager.migrate_nrdr_lat_tune_2026_09_24(params, cache)
+  assert params.v["LatPScaleStandard"] == 110

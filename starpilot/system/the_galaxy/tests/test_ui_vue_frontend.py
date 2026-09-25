@@ -887,3 +887,25 @@ def test_ui_navigation_map_first_layout_regressions():
   assert destination.count('class="gx-navigation-metric"') == 3
   assert "gx-navigation-summary__rows" not in destination and "gx-navigation-summary__rows" not in css
   assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
+
+
+def test_ui_nrdr_pid_lateral_tune_tab_uses_lat_tune_api():
+  tuning = _read("js/views/Tuning.js")
+  assert 'nrdr: "NRDR PID lateral tune"' in tuning and "<NrdrLatTunePanel />" in tuning
+  assert 'nrdr: "nrdr-pid"' in tuning
+  panel = _read("js/components/NrdrLatTunePanel.js")
+  api = _read("js/api.js")
+  assert "fetch(" not in panel
+  assert "NRDR PID lateral tune" in panel and "MAX_ROUTES = 8" in panel
+  for method in ["getLatTuneWorkspace", "getLatTuneStatus", "getLatTuneTrial", "latTuneAnalyze", "latTuneStopAnalyze",
+                 "latTuneApplyTrial", "latTuneRevertTrial", "latTuneDeleteTrial"]:
+    assert f"{method}(" in api and f"api.{method}(" in panel, method
+  for path in ['"/api/lat_tune/workspace"', '"/api/lat_tune/status"', '"/api/lat_tune/analyze"', '"/api/lat_tune/analyze/stop"',
+               "`/api/lat_tune/trial/${encodeURIComponent(trialId)}/apply`", "`/api/lat_tune/trial/${encodeURIComponent(trialId)}/revert`"]:
+    assert path in api, path
+  # Revert only the top of the applied stack; apply retries with force only after a fingerprint refusal.
+  assert "stackTop !== t.trialId" in panel
+  assert "/fingerprint/i.test(" in panel and "latTuneApplyTrial(trial.trialId, true)" in panel
+  # StarPilot's three PID speed bands, P only: no knot schedule left in the panel
+  assert "LatPScaleLowSpeed/Standard/Highway" in panel and "readyBands" in panel and "currentBands" in panel
+  assert "readyKnots" not in panel and "proposedPPct" not in panel and "20/30/40/50 mph)" not in panel
