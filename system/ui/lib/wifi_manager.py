@@ -33,7 +33,7 @@ except ImportError:
     raise RuntimeError("jeepney unavailable")
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.hardware import PC
+from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.ui.lib.networkmanager import (NM, NM_WIRELESS_IFACE, NM_802_11_AP_SEC_PAIR_WEP40,
                                                     NM_802_11_AP_SEC_PAIR_WEP104, NM_802_11_AP_SEC_GROUP_WEP40,
                                                     NM_802_11_AP_SEC_GROUP_WEP104, NM_802_11_AP_SEC_KEY_MGMT_PSK,
@@ -171,6 +171,15 @@ class ConnectStatus(IntEnum):
 class WifiState:
   ssid: str | None = None
   status: ConnectStatus = ConnectStatus.DISCONNECTED
+
+
+def tethering_band(device_type: str) -> dict[str, tuple[str, Any]]:
+  # comma 4: 5 GHz on channel 36 (non-DFS, allowed everywhere). Checked on one comma 4
+  # (2026-09-25): a phone joined at 5 GHz and had internet. Other devices keep 2.4 GHz, untested.
+  # Only used when the Hotspot profile is created; an existing profile keeps its band.
+  if device_type == "mici":
+    return {'band': ('s', 'a'), 'channel': ('u', 36)}
+  return {'band': ('s', 'bg')}
 
 
 class WifiManager:
@@ -722,7 +731,7 @@ class WifiManager:
         'autoconnect': ('b', False),
       },
       '802-11-wireless': {
-        'band': ('s', 'bg'),
+        **tethering_band(HARDWARE.get_device_type()),
         'mode': ('s', 'ap'),
         'ssid': ('ay', self._tethering_ssid.encode("utf-8")),
       },
