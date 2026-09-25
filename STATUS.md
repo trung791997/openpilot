@@ -6842,3 +6842,19 @@ committed.
 - **Effect:** a car that had the toggle turned off now syncs too. The STATUS 126 last-step pacing (counter-sync only) now always applies on Honda ICBM.
 - **Open items carried from 124:** about 8 % of the car's own SCM frames are modelled as dropped by sync. The gap/LKAS yield from 124 covers the presses that matter.
 - **Tests:** `test_redneck_cruise.py` 81 pass, honda `test_icbm_counter_sync.py` 5 pass, the_galaxy `test_device_settings_layout.py` 29 pass and `test_device_settings_frontend.py` 9 pass. `test_personality_profiles_js.py` has 14 failures that are also there at HEAD without this change.
+
+## 128. Radar lead-loss census, pre-fix vs post-fix drives (`tools/bosch_a_lead_loss.py`). Log decode on 10 routes; limited road evidence for D-052..D-062; no parser change.
+
+**The tool:** it reads what the device published. A loss is `leadOne` stopping being a radar lead for ≥ 1 s, while the car is engaged (`carControl.enabled`), after a radar lead held ≥ 0.5 s, and while vision still sees a lead (prob > 0.5, < 80 m). It ends when radar returns, vision goes away, or the car disengages. A loss counts as **parser** when the lost track id is missing from `liveTracks` on at least half its frames. Otherwise `radard` chose not to use a published track. This is not the D-054 replay metric (two parsers on the same CAN), so do not put the two in one table. Tests: `tools/lib/tests/test_bosch_a_lead_loss.py`, 8 pass, with negative controls: a held lead, no vision lead, and disengaged.
+
+**Builds, from `initData`:** 232 `9984de885`, and 236/237/239/23a `fa262e0c7`. Both are before D-054 (`0756f810`). 26b `d0b525140`, 26c `cbab2214e`, 26f/270 `4b80584da` and 271 `95eb27abe` all contain D-054/055/057/059/062. 26f, 270 and 271 are stock-long (lateral only; the parser runs the same).
+
+| | engaged | losses ≥ 1 s | loss time | parser losses | longest parser loss |
+|---|---|---|---|---|---|
+| pre-fix: 232, 236, 237, 239, 23a | 88 min | 38 (26/h) | 65 s (44 s/h) | 15 (10/h), 35 s | 5.8 s (236 seg 29) |
+| post-fix: 26b, 26c, 26f, 270, 271 | 75 min | 19 (15/h) | 32 s (26 s/h) | 5 (4/h), 9 s | 3.3 s (26b seg 39) |
+
+- Most of the per-hour gain is 236 (20 losses, 10 of them parser losses). 26c has 0 parser losses. Its loss time (31 s/h) is still about the same as pre-fix 232 and 237 (about 28 s/h).
+- **271 seg 25, id 26, 2.0 s** (the longest parser loss today) was traced through the real parser. Just before it stopped being published, the track moved from y −3.4 to −7.5 m and opened at +3.6 m/s. That looks like a car leaving the path, not a lockout. Why the parser stopped publishing it was not checked against the raw slots.
+- `bosch_a_lifecycle_report.py` on 26c/26f/270/271 (current parser): 5 single-sweep breaks in total, 0 on the device lead, 0 within 2 s of a hard brake, and 0 chronic.
+- **Limits:** different traffic on each side, and about 1.25 engaged hours per side. No loss fell inside a hard brake, so this says nothing about braking authority.
