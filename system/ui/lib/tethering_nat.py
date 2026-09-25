@@ -136,6 +136,12 @@ def ensure_tethering_nat(interface: str = "wlan0", include_live_subnet: bool = T
         ("-C", "FORWARD", "-d", subnet, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"),
         ("-A", "FORWARD", "-d", subnet, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"),
       )
+
+    # Clamp forwarded TCP to the WAN path MTU. On a comma 4 over T-Mobile LTE (PPP, 2026-09-25) a
+    # phone on the hotspot got ~3 Mbps down while the comma itself got 8.4; with this rule the
+    # phone got 8.55. One run each, so a clue more than a measurement.
+    mss = ("FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu")
+    ok &= _ensure_rule(("-t", "mangle", "-C", *mss), ("-t", "mangle", "-A", *mss))
   except (OSError, subprocess.SubprocessError) as exc:
     cloudlog.warning(f"Error applying tethering NAT: {exc}")
     return False

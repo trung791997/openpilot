@@ -81,9 +81,9 @@ class TestTetheringNat(unittest.TestCase):
     self.assertEqual(len(sysctls), 1)
     self.assertIn("net.ipv4.ip_forward=1", sysctls[0])
 
-    # check-only passes: nothing re-added; 3 checks per subnet, 2 candidate subnets
+    # check-only passes: nothing re-added; 3 checks per subnet, 2 candidate subnets, + MSS clamp
     ipt = [c for c in calls if "iptables-legacy" in c]
-    self.assertEqual(len(ipt), 6)
+    self.assertEqual(len(ipt), 7)
     self.assertTrue(all("-C" in c for c in ipt))
 
   def test_ensure_adds_when_check_fails(self):
@@ -101,8 +101,12 @@ class TestTetheringNat(unittest.TestCase):
       self.assertTrue(tethering_nat.ensure_tethering_nat())
 
     ipt = [c for c in calls if "iptables-legacy" in c]
-    self.assertEqual(len(ipt), 12)  # check+add per rule, 3 rules x 2 subnets
-    self.assertEqual(len([c for c in ipt if "-A" in c]), 6)
+    self.assertEqual(len(ipt), 14)  # check+add per rule, 3 rules x 2 subnets + MSS clamp
+    self.assertEqual(len([c for c in ipt if "-A" in c]), 7)
+    mss = [c for c in ipt if "-A" in c and "TCPMSS" in c]
+    self.assertEqual(len(mss), 1)
+    self.assertEqual(mss[0][mss[0].index("-t") + 1], "mangle")
+    self.assertIn("--clamp-mss-to-pmtu", mss[0])
 
   def test_ensure_excludes_live_subnet_when_not_hotspot(self):
     calls = []
