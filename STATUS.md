@@ -6700,3 +6700,32 @@ committed.
 - **Tests:** analyzer 50, workspace 20, API 3, CLI 6, test_ui_vue_frontend 31, frontend_module_graph 11.
   - `test_lat_tune_api.py` now runs. flask was installed into `.venv` with `uv pip install flask`; this is a local env only, and no dependency file changed.
   - Its stub needed `public_status`, and `written` as a dict.
+
+### 123b. NRDR PID Tuning, offline run on the 4 newest routes (owner request; the comma was unreachable). Offline replay only; nothing applied, nothing driven.
+
+- **Command:** `tools/lateral/lat_tune_cli.py --routes-root <routes dir> --latest 4` at `5e091b67`, over `00000267--e83a1fa671`, `00000268--4bc9811934`, `0000026b--92b1979afa` and `0000026c--10bec2e200`.
+  - 113 rlog segments. 21 of them had no engaged pidState frames, mostly `…26b` 0–7 and 18–22.
+  - The run needs `PYTHONPATH` to contain a directory that holds an `openpilot` → repo symlink, because `.venv` does not install the repo as `openpilot`.
+
+  | band | min | sign/s | curve ratio | override episodes/min | factor | P/I/F now (from `…26c`) | P new |
+  |---|---|---|---|---|---|---|---|
+  | LowSpeed 0–25 | 12.3 | 0.37 | 0.913 | 3.88 (veto > 1.5) | 1.00 hold | 100 / 50 / 50 | 100 |
+  | Standard 25–50 | 47.8 | 0.75 | 0.96 | 0.65 | 1.00 hold | 105 / 75 / 100 | 105 |
+  | Highway 50+ | 4.8 | 0.86 | – (no curve data) | 0.00 | 1.00 hold | 105 / 0 / 100 | 105 |
+
+- **No change proposed.** Standard's curve ratio went from 0.944 in the item 117 run to 0.96. That is inside the 0.95–1.03 dead band, so the +5 % that item 117 proposed is not asked for again.
+- **Caveat: the 4 routes ran on 4 different tunings.** The initData fingerprints differ on every route. The differing keys:
+
+  | key | `…267` | `…268` | `…26b` | `…26c` |
+  |---|---|---|---|---|
+  | `LatPScaleStandard` | 100 | 100 | 100 | 105 |
+  | `LatIScaleStandard` | 25 | 75 | 75 | 75 |
+  | `HondaLateralPidKpScale` | 0.65 | 0.65 | 1.0 | 1.0 |
+  | `HondaLateralPidKiScale` | 1.0 | 1.0 | 1.0 | 3.07 |
+
+  So the pooled metrics mix gains. The only route on the current tuning is `0000026c--10bec2e200`. Run alone (`--latest 1`), it gives:
+  - Standard: 14.6 min, sign 0.81/s, curve 0.98, override episodes 0.64/min → hold at 105.
+  - LowSpeed (2.6 min) and Highway (0.8 min): not ready.
+
+  Both runs agree: keep P at 100 / 105 / 105.
+- **Next:** collect ≥ 3 min per band on the current tuning (mostly highway and low speed), then re-run on routes from `…26c` onward only.
