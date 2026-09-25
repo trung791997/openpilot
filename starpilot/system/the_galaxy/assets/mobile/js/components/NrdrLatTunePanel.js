@@ -147,7 +147,7 @@ export const NrdrLatTunePanel = {
     async applyTrial(trial) {
       const ok = await GalaxyConfirm({
         title: "Apply Trial",
-        message: `Apply trial ${trial.trialId}? This writes the PID band P scales LatPScaleLowSpeed/Standard/Highway (I and F unchanged) and drops any P term from LatGainSchedule. You can revert it here.`,
+        message: `Apply trial ${trial.trialId}? Each band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed/Standard/Highway); held bands are not written. A P term in a valid LatGainSchedule is dropped. I and F are unchanged. You can revert it here.`,
         confirmLabel: "Apply",
       })
       if (!ok) return

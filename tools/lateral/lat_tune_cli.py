@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Off-device Lateral Tune trial: latest N Konik/route dirs -> proposed StarPilot PID band P scales.
+"""Off-device Lateral Tune trial: latest N Konik/route dirs -> proposed NRDR PID band P scales.
 
 Usage (inside the oprad-test container, routes volume mounted at /routes):
   python tools/lateral/lat_tune_cli.py --routes-root /routes/konik --latest 8 [--json trial.json]
@@ -110,7 +110,7 @@ def main(argv=None):
     mark = "" if b["proposed"]["p"] == b["current"]["p"] else f"   (was {b['current']['p']})"
     print(f"{b['pKey']} = {b['proposed']['p']}{mark}")
   if "p" in trial["baseline"].get("scheduleTerms", []):
-    print("note: LatGainSchedule has a p term, which overrides these bands; remove it (or apply from Galaxy, which does)")
+    print("note: LatGainSchedule has a p term, which overrides these bands; remove it (or apply from Galaxy, which does when the controller accepts the schedule)")
   return 0
 
 
