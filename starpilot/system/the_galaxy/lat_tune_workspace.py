@@ -1,8 +1,8 @@
-"""Lateral Tune workspace (FLM-style trials for the modified-EPS Honda P trim, item 117).
+"""NRDR PID Tuning workspace (FLM-style trials for the modified-EPS Honda P trim, item 117).
 
 Storage: <galaxy dir>/lat_tune/trials/<trialId>.json, active.json (applied stack), status in /tmp.
 Analysis runs in a detached worker (`python lat_tune_workspace.py worker <json>`), offroad only.
-Apply writes StarPilot's PID band params LatPScaleLowSpeed/Standard/Highway (P only; I/F are never touched) and
+Apply writes the NRDR PID band params LatPScaleLowSpeed/Standard/Highway (P only; I/F are never touched) and
 drops a "p" term from LatGainSchedule so the bands drive P. Revert restores all four exactly. Offroad only.
 Unit-test/replay evidence only, not driven.
 """
@@ -29,6 +29,8 @@ ONROAD_POLL_INTERVAL_SECONDS = 0.25
 SCHEDULE_KEY = lat.SCHEDULE_KEY
 _PROCESS = None
 _LOCK = threading.Lock()
+_TRIAL_LOCK = threading.Lock()   # apply / revert / delete: Flask is threaded, and a double-click must not
+                                 # snapshot the first apply's writes as the "prior" values or lose a stack entry
 
 
 class AnalysisCancelled(RuntimeError):
@@ -101,6 +103,11 @@ def save_trial(trial):
 
 
 def delete_trial(trial_id):
+  with _TRIAL_LOCK:
+    return _delete_trial(trial_id)
+
+
+def _delete_trial(trial_id):
   trial = load_trial(trial_id)
   if trial.get("applied"):
     raise RuntimeError("revert the trial before deleting it")
@@ -141,6 +148,25 @@ def current_fingerprint(params=None):
   return lat.tuning_fingerprint(current_tuning(params))
 
 
+def _cache_params():
+  """manager_init restores every unset key from the params cache at boot, so a remove() that is not
+  mirrored there comes back on the next boot (e.g. a stripped LatGainSchedule with its p term)."""
+  try:
+    return Params(Paths.params_cache_root())
+  except Exception:  # no cache on this platform: nothing to keep in sync
+    return None
+
+
+def _remove_param(params, key):
+  params.remove(key)
+  cache = _cache_params()
+  if cache is not None:
+    try:
+      cache.remove(key)
+    except Exception:
+      pass
+
+
 def _require_offroad(params=None, what="This action"):
   if (params or _params()).get_bool("IsOnroad"):
     raise RuntimeError(f"{what} is offroad only; park the car first.")
@@ -158,6 +184,26 @@ def _write_status(payload):
   _write_json(STATUS_PATH, payload)
 
 
+def _pid_alive(pid):
+  try:
+    pid = int(pid or 0)
+    if pid <= 0:
+      return False
+    os.kill(pid, 0)
+    return True
+  except (OSError, ValueError):
+    return False
+
+
+def public_status():
+  """Status for the UI: a worker that died without writing its final state (SIGKILL, OOM) no longer
+  shows as running forever."""
+  st = read_status()
+  if st.get("running") and not analyzer_running():
+    st = {**st, "running": False, "state": "failed", "error": st.get("error") or "the analysis worker exited without reporting"}
+  return st
+
+
 def clear_status():
   STATUS_PATH.unlink(missing_ok=True)
 
@@ -173,19 +219,19 @@ def analyzer_running():
     return False
   if time.time() - float(st.get("updatedAt", 0)) > STATUS_MAX_AGE_SECONDS:
     return False
-  try:
-    os.kill(int(st.get("pid", 0)), 0)
-    return True
-  except (OSError, ValueError):
-    return False
+  return _pid_alive(st.get("pid"))
 
 
 def stop_background_analysis(reason="cancelled"):
   st = read_status()
   pid = int(st.get("pid") or 0)
   stopped = False
-  if pid:
+  # Only signal a live, fresh worker that leads its own group (it is started with start_new_session).
+  # The status file outlives the worker, and a reused pid must never take another process group down.
+  if pid and analyzer_running():
     try:
+      if os.getpgid(pid) != pid:
+        raise ProcessLookupError(pid)
       os.killpg(os.getpgid(pid), signal.SIGTERM)
       stopped = True
     except (OSError, ProcessLookupError):
@@ -258,10 +304,13 @@ def start_background_analysis(route_names, footage_paths):
   if not route_names:
     raise ValueError("select at least one route")
   if len(route_names) > ROUTE_LIMIT:
-    raise ValueError(f"Lateral Tune analysis is limited to {ROUTE_LIMIT} routes at a time (requested {len(route_names)}).")
+    raise ValueError(f"NRDR PID Tuning analysis is limited to {ROUTE_LIMIT} routes at a time (requested {len(route_names)}).")
   with _LOCK:
     if _PROCESS is not None and _PROCESS.poll() is None:
       return True
+  if analyzer_running():   # e.g. a worker left over from before a Galaxy restart
+    raise RuntimeError("an analysis is already running; stop it first")
+  with _LOCK:
     payload = json.dumps({"routes": route_names, "footagePaths": [str(p) for p in footage_paths]})
     command = ["nice", "-n", "19", sys.executable or "python3", str(Path(__file__).resolve()), "worker", payload]
     log_file = open(LOG_PATH, "ab")
@@ -319,7 +368,7 @@ def run_worker(payload_json):
     trial = lat.analyze_sources(sources, should_continue=should_continue, on_progress=on_progress)
     if params.get_bool("IsOnroad"):
       raise AnalysisCancelled("vehicle went onroad")
-    trial["trialId"] = f"lt-{int(time.time())}"
+    trial["trialId"] = f"lt-{int(time.time())}-{os.getpid()}"
     trial["createdAt"] = time.time()
     trial["warnings"] = list(warnings) + list(trial.get("warnings", []))
     trial["segmentCount"] = len(sources)
@@ -336,11 +385,16 @@ def run_worker(payload_json):
 # ---------------------------------------------------------------- apply / revert
 
 def apply_trial(trial_id, force=False):
+  with _TRIAL_LOCK:
+    return _apply_trial(trial_id, force)
+
+
+def _apply_trial(trial_id, force):
   params = _params()
   _require_offroad(params, "Applying a trial")
   trial = load_trial(trial_id)
   if trial.get("schemaVersion") != lat.SCHEMA_VERSION or not trial.get("bands"):
-    raise RuntimeError("this trial predates the StarPilot speed bands; re-analyze the routes")
+    raise RuntimeError("this trial predates the NRDR PID speed bands; re-analyze the routes")
   if trial.get("applied"):
     raise RuntimeError("trial is already applied")
   fp_now = current_fingerprint(params)
@@ -363,12 +417,17 @@ def apply_trial(trial_id, force=False):
     if written_schedule:
       params.put(SCHEDULE_KEY, written_schedule)
     else:
-      params.remove(SCHEDULE_KEY)
+      _remove_param(params, SCHEDULE_KEY)
   Params(memory=True).put_bool("StarPilotTogglesUpdated", True)
   return {"trial": trial, "written": written, "writtenSchedule": written_schedule, "activeStack": stack}
 
 
 def revert_trial(trial_id):
+  with _TRIAL_LOCK:
+    return _revert_trial(trial_id)
+
+
+def _revert_trial(trial_id):
   params = _params()
   _require_offroad(params, "Reverting a trial")
   trial = load_trial(trial_id)
@@ -380,12 +439,12 @@ def revert_trial(trial_id):
     if str(v).strip():
       params.put(k, int(round(float(v))))
     else:
-      params.remove(k)
+      _remove_param(params, k)
   prior = applied.get("priorSchedule") or ""
   if prior.strip():
     params.put(SCHEDULE_KEY, prior)
   else:
-    params.remove(SCHEDULE_KEY)
+    _remove_param(params, SCHEDULE_KEY)
   Params(memory=True).put_bool("StarPilotTogglesUpdated", True)
   trial["applied"] = None
   save_trial(trial)
@@ -399,7 +458,10 @@ def list_workspace():
   trials = [t for t in (_read_json(p, None) for p in (get_workspace_root() / "trials").glob("*.json")) if t]
   trials.sort(key=lambda t: float(t.get("createdAt") or 0), reverse=True)
   params = _params()
-  return {"trials": [_summary(t) for t in trials[:20]], "activeStack": _read_stack(), "status": read_status(),
+  stack = _read_stack()
+  # Show the newest 20, plus every applied trial however old: an applied trial must stay revertable.
+  shown = [t for i, t in enumerate(trials) if i < 20 or t["trialId"] in stack or t.get("applied")]
+  return {"trials": [_summary(t) for t in shown], "activeStack": stack, "status": public_status(),
           "currentSchedule": current_schedule(params), "currentFingerprint": current_fingerprint(params),
           "currentBands": [{"name": n, "lowMph": lo, "highMph": hi, **g}
                            for (n, lo, hi), g in zip(lat.BANDS, current_band_gains(params), strict=True)],

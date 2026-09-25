@@ -198,7 +198,7 @@ export const NrdrLatTunePanel = {
         </div>
         <div style="padding: var(--sp-4);">
           <p style="color: var(--text-muted); line-height:1.6; margin:0 0 var(--sp-3);">
-            Pick up to {{ maxRoutes }} routes. The device analyzes them while parked and proposes one P step per StarPilot PID speed band
+            Pick up to {{ maxRoutes }} routes. The device analyzes them while parked and proposes one P step per NRDR PID speed band
             (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Only P changes; I and F are shown and kept. Each run is a trial you can apply and revert.
             Unit-test/replay evidence only; nothing here is road-validated.
           </p>
@@ -273,7 +273,7 @@ export const NrdrLatTunePanel = {
               <div class="gx-row__desc">Ready: {{ (t.readyBands || []).join(', ') || 'none' }}</div>
               <div class="gx-row__desc">P low / std / hwy: {{ (t.currentP || []).join(' / ') }} → {{ (t.proposedP || []).join(' / ') }}</div>
             </template>
-            <div v-else class="gx-row__desc" style="color:var(--error);">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze for StarPilot band values.</div>
+            <div v-else class="gx-row__desc" style="color:var(--error);">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze for NRDR PID band values.</div>
             <div v-for="w in (t.warnings || [])" :key="w" class="gx-row__desc" style="color:var(--error);">⚠ {{ w }}</div>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
               <button type="button" class="gx-btn gx-btn--text" @click="toggleDetails(t)">{{ expanded[t.trialId] ? 'Hide' : 'Details' }}</button>

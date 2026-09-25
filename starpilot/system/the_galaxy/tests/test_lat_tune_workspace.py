@@ -236,3 +236,55 @@ def test_list_workspace_summaries_newest_first(tmp_path):
   assert ws["trials"][0]["proposedP"] == [100, 105, 105] and ws["trials"][0]["readyBands"] == ["LowSpeed", "Standard", "Highway"]
   assert "currentSchedule" in ws and "currentFingerprint" in ws and "status" in ws
   assert [(b["name"], b["p"], b["i"]) for b in ws["currentBands"]] == [("LowSpeed", 100, 100), ("Standard", 100, 100), ("Highway", 100, 100)]
+
+
+def test_removals_are_mirrored_into_the_params_cache(tmp_path):
+  # manager_init restores unset keys from the params cache at boot; a remove() not mirrored there comes back.
+  module = _load(tmp_path)
+  removed = []
+  module._cache_params = lambda: types.SimpleNamespace(remove=removed.append)
+  FakeParams._store["LatGainSchedule"] = '{"v_mph":[20,50],"p":[100,110]}'
+  _trial(module, "lt-1", fingerprint=module.current_fingerprint())
+  module.apply_trial("lt-1")
+  assert "LatGainSchedule" not in FakeParams._store and removed == ["LatGainSchedule"]
+  module.revert_trial("lt-1")
+  assert set(removed) >= {"LatPScaleLowSpeed", "LatPScaleStandard", "LatPScaleHighway"}
+
+
+def test_stop_never_signals_a_dead_or_foreign_pid(tmp_path, monkeypatch):
+  module = _load(tmp_path)
+  killed = []
+  monkeypatch.setattr(module.os, "killpg", lambda *a: killed.append(a))
+  module._write_status({"pid": 999999, "running": False, "state": "complete"})
+  assert module.stop_background_analysis() is False and killed == []
+  module._write_status({"pid": 999999, "running": True, "state": "analyzing"})   # pid is not alive
+  assert module.stop_background_analysis() is False and killed == []
+  assert module.read_status()["state"] == "cancelled"
+
+
+def test_public_status_reports_a_dead_worker_as_failed(tmp_path):
+  module = _load(tmp_path)
+  module._write_status({"pid": 999999, "running": True, "state": "analyzing"})
+  st = module.public_status()
+  assert st["running"] is False and st["state"] == "failed"
+
+
+def test_start_refuses_while_an_orphaned_worker_runs(tmp_path, monkeypatch):
+  import os
+  import pytest
+  module = _load(tmp_path)
+  module._write_status({"pid": os.getpid(), "running": True, "state": "analyzing"})
+  with pytest.raises(RuntimeError, match="already running"):
+    module.start_background_analysis(["r1"], ["/x"])
+
+
+def test_applied_trial_stays_listed_past_the_newest_20(tmp_path):
+  module = _load(tmp_path)
+  t = _trial(module, "lt-old", fingerprint=module.current_fingerprint())
+  module.apply_trial("lt-old")
+  for i in range(25):
+    x = _trial(module, f"lt-n{i}")
+    x["createdAt"] = 100.0 + i
+    module._write_json(module.get_workspace_root() / "trials" / f"lt-n{i}.json", x)
+  ids = [s["trialId"] for s in module.list_workspace()["trials"]]
+  assert len(ids) == 21 and "lt-old" in ids and t["createdAt"] == 1.0

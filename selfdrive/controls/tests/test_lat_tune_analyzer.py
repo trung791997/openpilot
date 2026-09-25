@@ -308,3 +308,15 @@ class TestFrames:
     trial = lat.analyze_sources([lat.RouteLog("r", "1", "a", _fake_log(msgs))])
     assert trial["baseline"]["scheduleTerms"] == ["p"]
     assert any("LatGainSchedule overrides P" in w for w in trial["warnings"])
+
+
+def test_fingerprint_matches_between_initdata_bytes_and_typed_device_params():
+  # initData stores the raw bytes; Params.get() on the device returns typed values. Both must hash alike,
+  # or every trial needs force once a BOOL tuning key is set.
+  raw = {"HondaTorqueLowPassFilter": b"0", "NrdrLatUseFirmwareVgr": "1", "HondaCenterScale": "0.5", "LatPScaleStandard": "105"}
+  typed = {"HondaTorqueLowPassFilter": False, "NrdrLatUseFirmwareVgr": True, "HondaCenterScale": 0.5, "LatPScaleStandard": 105}
+  assert lat.tuning_fingerprint(raw) == lat.tuning_fingerprint(typed)
+  assert lat.tuning_fingerprint({"HondaCenterScale": "0.5"}) != lat.tuning_fingerprint({"HondaCenterScale": 0.55})
+  assert lat.tuning_fingerprint({"LatPScaleStandard": 105}) != lat.tuning_fingerprint({"LatPScaleStandard": 110})
+  sched = '{"v_mph":[20,50],"p":[100,110]}'
+  assert lat.tuning_fingerprint({"LatGainSchedule": sched}) == lat.tuning_fingerprint({"LatGainSchedule": sched.encode()})

@@ -83,14 +83,31 @@ def band_label(i):
   return f"{name} {lo:g}-{hi:g} mph" if hi is not None else f"{name} {lo:g}+ mph"
 
 
+def _fingerprint_value(v):
+  """One canonical text per value, whichever side it came from. initData carries the raw stored bytes
+  ("0", "0.5") but Params.get() on the device returns typed values (False, 0.5), so an un-normalised
+  hash made every trial mismatch once a BOOL key such as HondaTorqueLowPassFilter was set, and force
+  became the routine path. Bools and numbers become repr(float); anything else (LatGainSchedule JSON)
+  stays as the stripped text."""
+  if isinstance(v, bytes):
+    v = v.decode("utf-8", "replace")
+  if v is None:
+    return ""
+  if isinstance(v, bool):
+    return repr(float(v))
+  s = str(v).strip()
+  if s.lower() in ("true", "false"):
+    return repr(float(s.lower() == "true"))
+  try:
+    f = float(s)
+  except ValueError:
+    return s
+  return repr(f) if math.isfinite(f) else s
+
+
 def tuning_fingerprint(values):
-  """Short hash of the manual tuning. `values` maps key -> raw param value (str/bytes/None)."""
-  parts = []
-  for k in TUNING_KEYS:
-    v = values.get(k)
-    if isinstance(v, bytes):
-      v = v.decode("utf-8", "replace")
-    parts.append(f"{k}={'' if v is None else str(v).strip()}")
+  """Short hash of the manual tuning. `values` maps key -> param value (raw str/bytes, typed, or None)."""
+  parts = [f"{k}={_fingerprint_value(values.get(k))}" for k in TUNING_KEYS]
   return f"{zlib.crc32(';'.join(parts).encode()):08x}"
 
 

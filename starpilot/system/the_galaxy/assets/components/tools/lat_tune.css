@@ -1,26 +1,254 @@
-.latTunePage { display: grid; gap: 16px; padding: 16px; color: var(--text-color, #e8e8f0); }
-.latTuneCard { background: var(--card-bg, #1c1f26); color: var(--text-color, #e8e8f0); border-radius: 12px; padding: 16px; }
-.latTuneCardHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-.latTuneActions { display: flex; flex-wrap: wrap; gap: 8px; }
-.latTuneButton { padding: 8px 14px; border-radius: 8px; border: 1px solid #3a3f4b; background: #2a2f3a; color: inherit; cursor: pointer; }
-.latTuneButton:disabled { opacity: 0.45; cursor: not-allowed; }
-.latTuneButton.danger { border-color: #7a2e2e; background: #4a1f1f; }
-.latTuneButton.primary { border-color: #2e5a7a; background: #1f3a4a; }
-.latTuneStatusGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-.latTuneStatusGrid div span { display: block; opacity: 0.7; font-size: 12px; }
-.latTuneError { color: #ff8a8a; margin-top: 8px; }
-.latTuneMuted { opacity: 0.7; font-size: 13px; }
-.latTuneRouteList { max-height: 360px; overflow-y: auto; display: grid; gap: 4px; }
-.latTuneRouteRow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; }
-.latTuneRouteRow.selected { background: #26303d; }
-.latTuneTrial { border-top: 1px solid #2f3440; padding: 12px 0; }
-.latTuneTrial.applied { border-left: 3px solid #4caf50; padding-left: 10px; }
-.latTuneKnots { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-.latTuneKnots th, .latTuneKnots td { text-align: right; padding: 4px 6px; border-bottom: 1px solid #2f3440; }
-.latTuneKnots th:first-child, .latTuneKnots td:first-child { text-align: left; }
-.latTuneKnots td.reason { text-align: left; white-space: normal; }
-.latTuneReady { color: #7fd48a; }
-.latTuneNotReady { color: #e0b060; }
-.latTuneWarning { color: #e0b060; font-size: 13px; }
-.latTuneCode { font-family: monospace; font-size: 12px; word-break: break-all; opacity: 0.85; }
-@media (max-width: 720px) { .latTunePage { padding: 8px; } .latTuneKnots { font-size: 12px; } }
+/* NRDR PID Tuning. Layout comes from the shared longManeuver* / flm* classes (longitudinal_maneuvers.css,
+   tuning.css); this file only adds the pieces FLM has no equivalent for. */
+
+.latTunePage h3,
+.latTunePage h4 {
+  margin: 0 0 var(--margin-xs);
+}
+
+.latTuneEvidence {
+  border-left: 2px solid var(--warning-bg);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--margin-sm) 0 0;
+  padding: var(--padding-xs) var(--padding-sm);
+}
+
+.latTuneWarning {
+  color: var(--warning-bg);
+  font-size: var(--font-size-sm);
+}
+
+.latTuneWarning code {
+  overflow-wrap: anywhere;
+}
+
+.latTunePage .flmCardHeader {
+  flex-wrap: wrap;
+}
+
+.latTunePage .flmCardHeader > div:first-child {
+  flex: 1 1 14rem;
+}
+
+.latTuneHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--gap-xs);
+}
+
+.latTuneProgress {
+  background: var(--input-bg);
+  border-radius: 999px;
+  height: 0.4rem;
+  margin-top: var(--margin-sm);
+  overflow: hidden;
+}
+
+.latTuneProgress div {
+  background: var(--main-fg);
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.flmRouteItem.latTuneSelected {
+  background: var(--sidebar-active-bg);
+  border-color: var(--main-fg);
+}
+
+/* current gains */
+.latTuneBandGrid {
+  display: grid;
+  gap: var(--gap-sm);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: var(--margin-sm);
+}
+
+.latTuneBandTile {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--border-radius-sm);
+  padding: var(--padding-sm);
+}
+
+.latTuneBandTileHead {
+  display: flex;
+  flex-direction: column;
+}
+
+.latTuneBandTileHead span {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.latTuneGains {
+  display: grid;
+  gap: var(--gap-xs);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: var(--margin-xs);
+}
+
+.latTuneGains div {
+  background: var(--input-bg);
+  border-radius: var(--border-radius-sm);
+  display: flex;
+  flex-direction: column;
+  padding: var(--padding-xs);
+  text-align: center;
+}
+
+.latTuneGains span {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.latTuneGains b {
+  font-size: 1.1rem;
+}
+
+/* trials */
+.latTuneTrialItem {
+  gap: var(--gap-xs);
+}
+
+.latTuneTrialItem.applied {
+  border-left: 3px solid var(--success-bg);
+}
+
+.latTuneTrialItem.open {
+  border-color: var(--main-fg);
+}
+
+.latTuneBadge {
+  background: var(--input-bg);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-style: normal;
+  font-weight: var(--font-weight-demi-bold);
+  margin-left: var(--margin-xs);
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+}
+
+.latTuneBadge.applied,
+.latTuneBadge.ready {
+  background: rgba(94, 200, 200, 0.15);
+  color: var(--success-fg);
+}
+
+.latTuneBadge.notReady {
+  background: rgba(212, 160, 96, 0.15);
+  color: var(--warning-bg);
+}
+
+.latTunePills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
+}
+
+.latTunePill {
+  background: var(--input-bg);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 0.15rem 0.5rem;
+}
+
+.latTunePill.changed {
+  box-shadow: inset 0 0 0 1px var(--main-fg);
+  color: var(--text-color);
+}
+
+.latTunePill b {
+  color: var(--main-fg);
+}
+
+/* trial detail */
+.latTuneBandCard.changed {
+  border-color: var(--main-fg);
+}
+
+.latTuneBandCard .flmTrackingCardHeader > div span {
+  color: var(--text-muted);
+}
+
+.latTunePChange {
+  align-items: baseline;
+  display: flex;
+  gap: var(--gap-xs);
+  margin-top: var(--margin-sm);
+}
+
+.latTunePChange > span {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.latTunePChange b {
+  font-size: 1.6rem;
+}
+
+.latTunePChange .latTuneArrow {
+  font-size: 1.1rem;
+}
+
+.latTunePChange small {
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.latTuneChanged.up {
+  color: var(--success-fg);
+}
+
+.latTuneChanged.down {
+  color: var(--warning-bg);
+}
+
+.latTuneReason {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--margin-xs) 0 0;
+}
+
+.latTuneCode {
+  font-family: monospace;
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.latTuneWarnings {
+  color: var(--warning-bg);
+  font-size: var(--font-size-sm);
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.latTuneRoutes {
+  font-size: var(--font-size-xs);
+  margin-top: var(--margin-sm);
+  overflow-wrap: anywhere;
+}
+
+@media only screen and (max-width: 900px) {
+  .latTuneBandGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .latTuneBandTile {
+    align-items: center;
+    display: flex;
+    gap: var(--gap-sm);
+  }
+
+  .latTuneBandTileHead {
+    flex: 0 0 6.5rem;
+  }
+
+  .latTuneGains {
+    flex: 1 1 auto;
+    margin-top: 0;
+  }
+}

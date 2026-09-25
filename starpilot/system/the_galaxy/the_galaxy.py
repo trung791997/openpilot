@@ -8758,7 +8758,7 @@ def setup(app):
 
     return jsonify(result), 200
 
-  # ---- Lateral Tune (item 117): FLM-style trials for the modified-EPS Honda P trim. Offroad only.
+  # ---- NRDR PID Tuning (item 117): FLM-style trials for the modified-EPS Honda P trim. Offroad only.
   def _lat_tune_error(e):
     if isinstance(e, FileNotFoundError):
       return jsonify({"error": str(e)}), 404
@@ -8780,12 +8780,12 @@ def setup(app):
     is_onroad = params.get_bool("IsOnroad")
     if is_onroad:
       lat_tune_workspace.cancel_if_onroad()
-    return jsonify({"isOnroad": is_onroad, "status": lat_tune_workspace.read_status()})
+    return jsonify({"isOnroad": is_onroad, "status": lat_tune_workspace.public_status()})
 
   @app.route("/api/lat_tune/analyze", methods=["POST"])
   def start_lat_tune_analysis():
     if params.get_bool("IsOnroad"):
-      return jsonify({"error": "Lateral Tune analysis is offroad only; park the car first."}), 409
+      return jsonify({"error": "NRDR PID Tuning analysis is offroad only; park the car first."}), 409
     body = request.get_json(silent=True) or {}
     routes = [str(r) for r in (body.get("routes") or []) if r]
     if not routes:
@@ -8796,7 +8796,7 @@ def setup(app):
       return _lat_tune_error(e)
     if not started:
       return jsonify({"error": "Could not start the analysis (onroad, or the worker failed to launch)."}), 409
-    return jsonify({"message": f"Started Lateral Tune analysis for {len(routes)} route(s).",
+    return jsonify({"message": f"Started NRDR PID Tuning analysis for {len(routes)} route(s).",
                     "status": lat_tune_workspace.read_status()})
 
   @app.route("/api/lat_tune/analyze/stop", methods=["POST"])

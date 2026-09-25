@@ -6669,3 +6669,28 @@ committed.
 - Why: HumanFollowing needs `model_lead.prob` above the threshold, and on Bosch-A `candidate_is_established` only lets a low-speed-override track replace the lead when there is no valid lead or it matches vision. The matched-vision case would publish modelProb 0 and be gated (switching HumanFollowing off for a correct lead); it did not occur on these routes.
 
 **Decision.** Nothing to adopt for Bosch-A: inert on this data. It could matter on non-Bosch-A cars, where `candidate_is_established` always passes; if ported, the low-speed override should carry `filtered_lead_prob` when the candidate matches vision. It does not touch the 262/25e late brakes (STATUS 120), which are on vision-confirmed leads.
+
+## 123. Galaxy NRDR PID Tuning page redesigned and audited (item 117 follow-up). Static render check and unit tests only; not seen on device, not driven.
+
+- **Rename.** The classic-UI tab `Lateral Tune` (`/lat_tune`) is now **NRDR PID Tuning**, so it is not confused with FLM (`Lateral Tuning`, `/tuning`). The URL is unchanged. User-facing text says "NRDR PID" instead of "StarPilot PID" on both the classic page and the mobile panel.
+- **Redesign.** `lat_tune.js` / `lat_tune.css` now use FLM's `longManeuver*` / `flm*` classes, so both lateral tools share one look. The page has:
+  - an intro and an evidence notice;
+  - the actions and a status grid, plus a progress bar while analyzing;
+  - the current P/I/F gains as three band tiles, with a warning when `LatGainSchedule` is set;
+  - FLM's two columns: local routes (newest first, readable dates, length, Connect link, Latest 8 / Clear) and trials (P now → proposed pills, Applied / No change badges, Apply or Revert, Delete);
+  - a full-width trial detail with one card per band (P now → new, factor, metrics, reason), an applied before/written table and the warnings.
+
+  Apply is disabled on a trial that proposes no change. Checked in headless Chromium at 412 px and 1280 px against mocked `/api/lat_tune/*` and `/api/routes`, with no console errors. This was not the real Galaxy server.
+- **Audit fixes.** Unit tests only: analyzer 49, workspace 17, CLI 6, test_ui_vue_frontend 31, frontend_module_graph 11. `test_lat_tune_api.py` was not run because `.venv` has no flask. Five of the six new tests fail on the pre-fix code; the Stop test also passes on it.
+  1. **The fingerprint never matched once a BOOL tuning key was set.** initData holds raw bytes (`"0"`), while `Params.get()` returns `False`, so every apply returned 409 and force became the routine path. `tuning_fingerprint` now normalises bools and numbers to `repr(float)`. Trials made before this change carry the old hash: re-analyze them rather than forcing.
+  2. **Removing a key was undone at the next boot.** When apply or revert removed a key (a stripped `LatGainSchedule`, or a band P that was unset before), `manager_init` restored it from the params cache. Removals are now mirrored into `Paths.params_cache_root()`.
+  3. **Apply, revert and delete now run under a lock.** A double-click could snapshot the first apply's writes as the "prior" values, or drop a stack entry.
+  4. **Stop only signals a live worker that is still running and leads its own process group.** Before, it could `killpg` a stale pid from an old status file.
+  5. **Start refuses while a worker left over from before a Galaxy restart is still alive.**
+  6. **The UI status shows a worker that died without reporting as `failed`.** Before, it stayed `running` for up to an hour.
+  7. **Trial ids now carry the worker pid.**
+  8. **Applied trials stay listed past the newest 20.**
+- **Open, not changed:**
+  - A forced apply writes the logged baseline × factor as absolute values for all three bands, including held ones. This discards any newer manual change to the band P. Owner decision needed.
+  - `strip_schedule_p` does not validate the schedule first. A schedule the controller was rejecting (for example a `p` knot over 300) can become valid once `p` is stripped, which would enable its `i`/`f` terms.
+  - `band_gains` shows unset keys as 100. The real defaults for LowSpeed I (20) and Highway I (0) differ. Display only.

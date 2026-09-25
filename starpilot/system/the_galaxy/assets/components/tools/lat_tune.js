@@ -1,8 +1,14 @@
 import { html, reactive } from "/assets/vendor/arrow-core.js";
 
+// NRDR PID Tuning (item 117): per-speed-band P trim for the NRDR PID lateral controller on the
+// modified-EPS Honda. Same trial workflow as FLM (routes -> offroad analysis -> apply / revert) but a
+// separate tool: it only ever proposes LatPScaleLowSpeed/Standard/Highway. Styling reuses the FLM
+// (flm*) and long-maneuver (longManeuver*) classes so both lateral tools look like one family.
+
 const STATUS_POLL_MS = 3000;
 const MAX_ROUTES = 8;
 const MAX_RENDERED_ROUTES = 250;
+const DONE_STATES = ["complete", "failed", "cancelled_onroad", "cancelled"];
 
 const state = reactive({
   loadingRoutes: false,
@@ -12,9 +18,11 @@ const state = reactive({
   selectedRoutes: [],
   routeProgress: 0,
   routeTotal: 0,
+  connectDongleId: "",
   workspace: { trials: [], activeStack: [], currentSchedule: "", currentFingerprint: "", currentBands: [], status: {} },
   status: { isOnroad: false, running: false, state: "" },
-  expanded: {},
+  detailId: "",
+  detail: null,
 });
 
 let pollTimer = null;
@@ -41,9 +49,67 @@ async function requestJson(url, opts = {}) {
   return payload;
 }
 
+// ---------------------------------------------------------------- formatting
+
+const safeCount = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const fmt = (v, d = 2) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "–");
+const when = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "");
+const bandRange = (b) => (b.highMph == null ? `${b.lowMph}+ mph` : `${b.lowMph}–${b.highMph} mph`);
+const isBandTrial = (t) => t.schemaVersion === 2;
+const shortBand = (name) => ({ LowSpeed: "Low", Standard: "Std", Highway: "Hwy" }[name] || name);
+const BAND_NAMES = ["LowSpeed", "Standard", "Highway"];
+
+function formatTimestamp(value) {
+  if (!value) return "Unknown route";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function formatRouteLength(route) {
+  const segments = Math.max(0, Math.round(safeCount(route?.segmentCount)));
+  if (!segments) return "Length unavailable";
+  const minutes = Math.max(1, Math.round(safeCount(route?.approxDurationSeconds) / 60) || segments);
+  const duration = minutes >= 60 ? `~${Math.floor(minutes / 60)}h ${minutes % 60}m` : `~${minutes} min`;
+  return `${segments} segment${segments === 1 ? "" : "s"} (${duration})`;
+}
+
+function formatStatusAge(updatedAt) {
+  const updated = Number(updatedAt);
+  if (!Number.isFinite(updated) || updated <= 0) return "unknown";
+  const age = Math.max(0, Math.round(Date.now() / 1000 - updated));
+  if (age < 5) return "just now";
+  if (age < 60) return `${age}s ago`;
+  if (age < 3600) return `${Math.round(age / 60)}m ago`;
+  return `${Math.round(age / 3600)}h ago`;
+}
+
+function connectRouteUrl(routeName) {
+  const dongleId = String(state.connectDongleId || "").trim();
+  return dongleId && routeName ? `https://connect.comma.ai/${encodeURIComponent(dongleId)}/${encodeURIComponent(routeName)}` : "";
+}
+
+function sortedRoutes() {
+  return [...state.routes].sort((a, b) => {
+    const at = Date.parse(a.timestamp);
+    const bt = Date.parse(b.timestamp);
+    if (Number.isFinite(at) && Number.isFinite(bt)) return bt - at;
+    return String(b.timestamp || "").localeCompare(String(a.timestamp || ""));
+  });
+}
+
+function stateLabel(st) {
+  return ({ queued: "Queued", starting: "Starting", analyzing: "Analyzing", complete: "Complete", failed: "Failed",
+            cancelled: "Cancelled", cancelled_onroad: "Cancelled (went onroad)" }[st] || "Idle");
+}
+
+// ---------------------------------------------------------------- data
+
 async function fetchRoutes() {
   state.loadingRoutes = true;
   state.routes = [];
+  state.routeProgress = 0;
+  state.routeTotal = 0;
+  const seen = new Set();
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const res = await fetch(`/api/routes?timezone=${encodeURIComponent(tz)}`);
@@ -61,8 +127,11 @@ async function fetchRoutes() {
         if (!line) continue;
         let data = {};
         try { data = JSON.parse(line.slice(5)); } catch (_) { continue; }
+        if (typeof data.connectDongleId === "string") state.connectDongleId = data.connectDongleId;
         if (Array.isArray(data.routes) && data.routes.length) {
-          state.routes = [...state.routes, ...data.routes].slice(0, MAX_RENDERED_ROUTES);
+          const fresh = data.routes.filter((r) => r && r.name && !seen.has(r.name));
+          fresh.forEach((r) => seen.add(r.name));
+          state.routes = [...state.routes, ...fresh].slice(0, MAX_RENDERED_ROUTES);
         }
         state.routeProgress = data.progress || 0;
         state.routeTotal = data.total || 0;
@@ -88,8 +157,9 @@ async function fetchStatus() {
     const payload = await requestJson("/api/lat_tune/status");
     const prev = state.status.state;
     state.status = { ...payload.status, isOnroad: !!payload.isOnroad, running: !!payload.status.running };
-    if (prev !== state.status.state && ["complete", "failed", "cancelled_onroad", "cancelled"].includes(state.status.state)) {
+    if (prev !== state.status.state && DONE_STATES.includes(state.status.state)) {
       await fetchWorkspace();
+      if (state.status.state === "complete" && state.status.trialId) openDetail(state.status.trialId);
     }
   } catch (e) {
     state.error = e.message;
@@ -116,6 +186,16 @@ async function initialize() {
   fetchRoutes();
 }
 
+function refreshAll() {
+  state.error = "";
+  fetchRoutes();
+  fetchWorkspace();
+  fetchStatus();
+  if (state.detailId) openDetail(state.detailId);
+}
+
+// ---------------------------------------------------------------- actions
+
 function toggleRoute(name) {
   if (state.selectedRoutes.includes(name)) {
     state.selectedRoutes = state.selectedRoutes.filter((r) => r !== name);
@@ -128,8 +208,8 @@ function toggleRoute(name) {
   state.selectedRoutes = [...state.selectedRoutes, name];
 }
 
-function selectLatest(n) {
-  state.selectedRoutes = state.routes.slice(0, Math.min(n, MAX_ROUTES)).map((r) => r.name);
+function selectLatest() {
+  state.selectedRoutes = sortedRoutes().slice(0, MAX_ROUTES).map((r) => r.name);
 }
 
 async function runAction(label, fn, okMessage) {
@@ -140,6 +220,7 @@ async function runAction(label, fn, okMessage) {
     notify(payload.message || okMessage);
     await fetchWorkspace();
     await fetchStatus();
+    if (state.detailId) await openDetail(state.detailId);
     return payload;
   } catch (e) {
     state.error = e.message;
@@ -159,146 +240,292 @@ function stopAnalyze() {
 }
 
 async function applyTrial(trialId) {
-  if (!window.confirm(`Apply trial ${trialId}? This writes the PID band P scales LatPScaleLowSpeed/Standard/Highway (I and F unchanged) and drops any P term from LatGainSchedule. You can revert it here.`)) return;
+  if (!window.confirm(`Apply trial ${trialId}?\n\nThis writes the NRDR PID band P scales (LatPScaleLowSpeed / Standard / Highway) and drops any P term from LatGainSchedule. I and F are not changed. You can revert it here.`)) return;
   try {
-    await runAction("apply", () => requestJson(`/api/lat_tune/trial/${trialId}/apply`, { method: "POST", body: JSON.stringify({}) }));
+    await runAction("apply", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}/apply`, { method: "POST", body: JSON.stringify({}) }));
   } catch (e) {
     if (e.status === 409 && /fingerprint/i.test(e.message) &&
-        window.confirm("Your manual lateral tuning changed since these routes were driven. Apply anyway (force)?")) {
-      await runAction("apply", () => requestJson(`/api/lat_tune/trial/${trialId}/apply`, { method: "POST", body: JSON.stringify({ force: true }) })).catch(() => {});
+        window.confirm("Your manual lateral tuning changed since these routes were driven, so the proposal was measured on a different tune.\n\nApply anyway (force)?")) {
+      await runAction("apply", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}/apply`, { method: "POST", body: JSON.stringify({ force: true }) })).catch(() => {});
     }
   }
 }
 
 function revertTrial(trialId) {
   if (!window.confirm(`Revert trial ${trialId}? The previous P band scales and LatGainSchedule are restored.`)) return;
-  return runAction("revert", () => requestJson(`/api/lat_tune/trial/${trialId}/revert`, { method: "POST" })).catch(() => {});
+  return runAction("revert", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}/revert`, { method: "POST" })).catch(() => {});
 }
 
 function deleteTrial(trialId) {
   if (!window.confirm(`Delete trial ${trialId}?`)) return;
-  return runAction("delete", () => requestJson(`/api/lat_tune/trial/${trialId}`, { method: "DELETE" })).catch(() => {});
+  if (state.detailId === trialId) closeDetail();
+  return runAction("delete", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}`, { method: "DELETE" })).catch(() => {});
 }
 
-async function toggleExpanded(trialId) {
-  if (state.expanded[trialId]) {
-    state.expanded = { ...state.expanded, [trialId]: null };
-    return;
-  }
+async function openDetail(trialId) {
+  state.detailId = trialId;
   try {
-    const trial = await requestJson(`/api/lat_tune/trial/${trialId}`);
-    state.expanded = { ...state.expanded, [trialId]: trial };
+    const trial = await requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}`);
+    if (state.detailId === trialId) state.detail = trial;
   } catch (e) {
     state.error = e.message;
   }
 }
 
-const fmt = (v, d = 2) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "–");
-const when = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "");
-
-const bandRange = (b) => (b.highMph == null ? `${b.lowMph}+ mph` : `${b.lowMph}–${b.highMph} mph`);
-const pif = (g) => (g ? `${g.p} / ${g.i} / ${g.f}` : "–");
-const isBandTrial = (t) => t.schemaVersion === 2;
-
-function renderBands(trial) {
-  if (!Array.isArray(trial.bands)) return html`<div class="latTuneWarning">⚠ This trial predates the StarPilot speed bands; re-analyze the routes.</div>`;
-  return html`
-    <table class="latTuneKnots">
-      <thead><tr><th>Band</th><th>Minutes</th><th>Ready</th><th>Sign/s</th><th>Curve ratio</th><th>Overrides/min</th><th>Factor</th><th>P / I / F now</th><th>P new</th><th>Why</th></tr></thead>
-      <tbody>
-        ${() => trial.bands.map((b) => html`
-          <tr>
-            <td>${b.name}<br/><span class="latTuneMuted">${bandRange(b)}</span></td><td>${fmt(b.minutes, 1)}</td>
-            <td class="${b.ready ? "latTuneReady" : "latTuneNotReady"}">${b.ready ? "yes" : "need 3 min"}</td>
-            <td>${fmt(b.signRate)}</td><td>${fmt(b.curveRatio, 3)}</td><td>${fmt(b.pressRate)}</td>
-            <td>${fmt(b.factor)}</td><td>${pif(b.current)}</td>
-            <td class="${b.proposed.p !== b.current.p ? "latTuneReady" : ""}">${b.proposed.p}</td><td class="reason">${b.reason}</td>
-          </tr>`)}
-      </tbody>
-    </table>`;
+function closeDetail() {
+  state.detailId = "";
+  state.detail = null;
 }
 
-function renderTrial(t) {
+function toggleDetail(trialId) {
+  if (state.detailId === trialId) closeDetail();
+  else openDetail(trialId);
+}
+
+// ---------------------------------------------------------------- rendering
+
+function renderCurrentGains() {
+  const bands = state.workspace.currentBands || [];
+  if (!bands.length) return html`<p class="longManeuverMuted">Current band gains unavailable.</p>`;
+  return html`
+    <div class="latTuneBandGrid">
+      ${bands.map((b) => html`
+        <div class="latTuneBandTile">
+          <div class="latTuneBandTileHead"><strong>${b.name}</strong><span>${bandRange(b)}</span></div>
+          <div class="latTuneGains">
+            <div><span>P</span><b>${b.p}</b></div>
+            <div><span>I</span><b>${b.i}</b></div>
+            <div><span>F</span><b>${b.f}</b></div>
+          </div>
+        </div>`)}
+    </div>`;
+}
+
+function proposalSummary(t) {
+  const now = t.currentP || [];
+  const next = t.proposedP || [];
+  return BAND_NAMES.map((name, i) => {
+    const changed = next[i] !== undefined && next[i] !== now[i];
+    return html`<span class="latTunePill ${changed ? "changed" : ""}">${shortBand(name)} ${now[i] ?? "–"}${changed ? html` → <b>${next[i]}</b>` : ""}</span>`;
+  });
+}
+
+function renderTrialRow(t) {
   const stack = state.workspace.activeStack || [];
   const isTop = stack.length > 0 && stack[stack.length - 1] === t.trialId;
-  const busy = () => !!state.runningAction || state.status.isOnroad;
-  const full = () => state.expanded[t.trialId];
+  const busy = () => !!state.runningAction || !!state.status.isOnroad;
+  const ready = (t.readyBands || []).length > 0;
+  const anyChange = (t.proposedP || []).some((p, i) => p !== (t.currentP || [])[i]);
   return html`
-    <div class="latTuneTrial ${t.applied ? "applied" : ""}">
-      <div class="latTuneCardHeader">
-        <div>
-          <strong>${t.trialId}</strong> <span class="latTuneMuted">${when(t.createdAt)}</span>
-          ${t.applied ? html`<span class="latTuneReady"> · applied ${when(t.applied.at)}</span>` : ""}
-          <div class="latTuneMuted">${t.routeNames.length} route(s): ${t.routeNames.join(", ")}</div>
-          ${isBandTrial(t)
-            ? html`<div>Ready bands: ${(t.readyBands || []).join(", ") || "none"} · P (low / standard / highway) ${(t.currentP || []).join(" / ")} → ${(t.proposedP || []).join(" / ")}</div>`
-            : html`<div class="latTuneWarning">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze to get StarPilot band values.</div>`}
-          ${() => (t.warnings || []).map((w) => html`<div class="latTuneWarning">⚠ ${w}</div>`)}
-        </div>
-        <div class="latTuneActions">
-          <button class="latTuneButton" @click="${() => toggleExpanded(t.trialId)}">${() => (full() ? "Hide" : "Details")}</button>
-          <button class="latTuneButton primary" disabled="${() => busy() || !!t.applied || !isBandTrial(t) || (t.readyBands || []).length === 0}" @click="${() => applyTrial(t.trialId)}">Apply</button>
-          <button class="latTuneButton danger" disabled="${() => busy() || !t.applied || !isTop}" @click="${() => revertTrial(t.trialId)}">Revert</button>
-          <button class="latTuneButton" disabled="${() => !!state.runningAction || !!t.applied}" @click="${() => deleteTrial(t.trialId)}">Delete</button>
-        </div>
+    <div class="flmWorkspaceRow">
+      <div class="${() => `flmWorkspaceItem latTuneTrialItem ${t.applied ? "applied" : ""} ${state.detailId === t.trialId ? "open" : ""}`}">
+        <strong>${when(t.createdAt) || t.trialId}
+          ${t.applied ? html`<em class="latTuneBadge applied">Applied</em>` : ""}
+          ${isBandTrial(t) && !anyChange ? html`<em class="latTuneBadge">No change</em>` : ""}
+        </strong>
+        <small>${t.trialId} · ${t.routeNames.length} route${t.routeNames.length === 1 ? "" : "s"}</small>
+        ${isBandTrial(t)
+          ? html`<div class="latTunePills">${proposalSummary(t)}</div>
+                 <small>${ready ? `Ready bands: ${t.readyBands.join(", ")}` : "No band has 3 min of data yet"}</small>`
+          : html`<small class="latTuneWarning">Pre-band trial (20/30/40/50 mph knots). Re-analyze for NRDR PID band values.</small>`}
+        ${(t.warnings || []).length ? html`<small class="latTuneWarning">${t.warnings.length} warning${t.warnings.length === 1 ? "" : "s"} — see details</small>` : ""}
       </div>
-      ${() => (full() ? html`
-        ${renderBands(full())}
-        <div class="latTuneMuted">Band values from the newest route's logs (fingerprint ${full().baseline.fingerprint || "–"}). Only P is proposed; I and F stay as they are.</div>
-        ${full().applied && full().applied.writtenParams ? html`<div class="latTuneCode">written: ${Object.entries(full().applied.writtenParams).map(([k, v]) => `${k}=${v}`).join(", ")}<br/>prior: ${Object.entries(full().applied.priorParams || {}).map(([k, v]) => `${k}=${v || "(unset)"}`).join(", ")}<br/>LatGainSchedule prior: ${full().applied.priorSchedule || "(none)"}</div>` : ""}
-      ` : "")}
+      <div class="flmSavedTuneActions">
+        <button class="longManeuverButton" @click="${() => toggleDetail(t.trialId)}">${() => (state.detailId === t.trialId ? "Hide" : "Details")}</button>
+        ${t.applied
+          ? html`<button class="longManeuverButton danger" disabled="${() => busy() || !isTop}"
+                   title="${isTop ? "" : "Only the most recently applied trial can be reverted"}"
+                   @click="${() => revertTrial(t.trialId)}">Revert</button>`
+          : html`<button class="longManeuverButton" disabled="${() => busy() || !isBandTrial(t) || !ready || !anyChange}"
+                   @click="${() => applyTrial(t.trialId)}">Apply</button>`}
+        <button class="longManeuverButton danger" disabled="${() => !!state.runningAction || !!t.applied}" @click="${() => deleteTrial(t.trialId)}">Delete</button>
+      </div>
     </div>`;
+}
+
+function renderBandCard(b) {
+  const changed = b.proposed.p !== b.current.p;
+  const direction = b.proposed.p > b.current.p ? "up" : "down";
+  return html`
+    <article class="flmTrackingCard latTuneBandCard ${changed ? "changed" : ""}">
+      <div class="flmTrackingCardHeader">
+        <div><strong>${b.name}</strong><span>${bandRange(b)}</span></div>
+        <em class="latTuneBadge ${b.ready ? "ready" : "notReady"}">${b.ready ? "Ready" : "Needs 3 min"}</em>
+      </div>
+      <div class="latTunePChange">
+        <span>P</span><b>${b.current.p}</b>
+        <span class="latTuneArrow">→</span>
+        <b class="${changed ? `latTuneChanged ${direction}` : ""}">${b.proposed.p}</b>
+        <small>×${fmt(b.factor)}</small>
+      </div>
+      <div class="flmTrackingMeta">
+        <span>${fmt(b.minutes, 1)} min</span>
+        <span>sign ${fmt(b.signRate)}/s</span>
+        <span>curve ${fmt(b.curveRatio, 3)}</span>
+        <span>overrides ${fmt(b.pressRate)}/min</span>
+        <span>I ${b.current.i} · F ${b.current.f}</span>
+      </div>
+      <p class="latTuneReason">${b.reason || ""}</p>
+    </article>`;
+}
+
+function renderApplied(applied) {
+  if (!applied || !applied.writtenParams) return "";
+  const keys = Object.keys(applied.writtenParams);
+  return html`
+    <div class="flmCardSubsection flmTuneComparison">
+      <h4>Applied ${when(applied.at)}${applied.forced ? " (forced past a tuning change)" : ""}</h4>
+      <div class="flmTuneComparisonTable">
+        <div class="flmTuneComparisonHeader">Param</div>
+        <div class="flmTuneComparisonHeader">Before</div>
+        <div class="flmTuneComparisonArrow"></div>
+        <div class="flmTuneComparisonHeader">Written</div>
+        ${keys.map((k) => {
+          const prior = (applied.priorParams || {})[k];
+          const written = applied.writtenParams[k];
+          return html`
+            <div class="flmTuneComparisonLabel">${k}</div>
+            <div>${prior === "" || prior == null ? "(unset)" : prior}</div>
+            <div class="flmTuneComparisonArrow">&gt;</div>
+            <div class="${String(prior) !== String(written) ? "flmTuneComparisonChanged" : ""}">${written}</div>`;
+        })}
+        <div class="flmTuneComparisonLabel">LatGainSchedule</div>
+        <div class="latTuneCode">${applied.priorSchedule || "(none)"}</div>
+        <div class="flmTuneComparisonArrow">&gt;</div>
+        <div class="latTuneCode">${applied.writtenSchedule || "(none)"}</div>
+      </div>
+    </div>`;
+}
+
+function renderDetail() {
+  const t = state.detail;
+  if (!state.detailId) return "";
+  if (!t || t.trialId !== state.detailId) {
+    return html`<section class="flmCard"><p class="longManeuverMuted">Loading trial ${state.detailId}…</p></section>`;
+  }
+  return html`
+    <section class="flmCard">
+      <div class="flmCardHeader">
+        <div>
+          <h3>Trial ${t.trialId}</h3>
+          <p class="longManeuverMuted">${when(t.createdAt)} · ${(t.routeNames || []).length} route(s), ${safeCount(t.segmentCount)} segment(s) · baseline fingerprint ${t.baseline?.fingerprint || "–"}
+            ${t.baseline?.fingerprint && t.baseline.fingerprint !== state.workspace.currentFingerprint
+              ? html`<span class="latTuneWarning"> (differs from the device's current tuning)</span>` : ""}</p>
+        </div>
+        <button class="longManeuverButton" @click="${closeDetail}">Close</button>
+      </div>
+      ${Array.isArray(t.bands)
+        ? html`<div class="flmTrackingGrid">${t.bands.map(renderBandCard)}</div>`
+        : html`<p class="latTuneWarning">This trial predates the NRDR PID speed bands; re-analyze the routes.</p>`}
+      <div class="flmTrackingNotice">P now is the value logged on the newest route. Only P is proposed; I and F stay as they are.
+        Steps are bounded to a factor of 0.85–1.15 and written on the 5 % grid.</div>
+      ${renderApplied(t.applied)}
+      ${(t.warnings || []).length ? html`
+        <div class="flmCardSubsection">
+          <h4>Warnings</h4>
+          <ul class="latTuneWarnings">${t.warnings.map((w) => html`<li>${w}</li>`)}</ul>
+        </div>` : ""}
+      <p class="longManeuverMuted latTuneRoutes">Routes: ${(t.routeNames || []).join(", ")}</p>
+    </section>`;
 }
 
 export function LatTune() {
   initialize();
   const s = () => state.status;
+  const stack = () => state.workspace.activeStack || [];
   const canAnalyze = () => !state.runningAction && state.selectedRoutes.length > 0 && !s().isOnroad && !s().running;
   return html`
-    <div class="latTunePage">
-      <div class="latTuneCard">
-        <div class="latTuneCardHeader">
-          <h2>Lateral Tune (Honda modified-EPS P trim)</h2>
-          <div class="latTuneActions">
-            <button class="latTuneButton primary" disabled="${() => !canAnalyze()}" @click="${runAnalyze}">Analyze ${() => state.selectedRoutes.length} route(s)</button>
-            <button class="latTuneButton danger" disabled="${() => !s().running}" @click="${stopAnalyze}">Stop</button>
-            <button class="latTuneButton" @click="${() => { fetchWorkspace(); fetchStatus(); }}">Refresh</button>
-          </div>
-        </div>
-        <p class="latTuneMuted">Pick up to ${MAX_ROUTES} routes. The analysis runs on the device while parked and proposes one P step per StarPilot PID speed band (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Each run is a trial you can apply and revert. Unit-test/replay evidence only; nothing here is road-validated.</p>
-        <div class="latTuneStatusGrid">
-          <div><span>State</span>${() => s().state || "idle"}</div>
-          <div><span>Onroad</span>${() => (s().isOnroad ? "yes (parked only)" : "no")}</div>
-          <div><span>Progress</span>${() => (s().total ? `${s().progress}/${s().total}` : "–")}</div>
-          <div><span>Segment</span>${() => s().currentSegment || "–"}</div>
-          <div><span>Applied stack</span>${() => (state.workspace.activeStack || []).join(" → ") || "none"}</div>
-        </div>
-        ${() => (s().state === "failed" ? html`<div class="latTuneError">${s().error}</div>` : "")}
-        ${() => (state.error ? html`<div class="latTuneError">${state.error}</div>` : "")}
-        <div class="latTuneCode">current P / I / F: ${() => (state.workspace.currentBands || []).map((b) => `${b.name} ${pif(b)}`).join(" · ") || "–"}<br/>current LatGainSchedule: ${() => state.workspace.currentSchedule || "(none)"}</div>
-      </div>
+    <div class="longManeuverPage latTunePage">
+      <h2>NRDR PID Tuning</h2>
 
-      <div class="latTuneCard">
-        <div class="latTuneCardHeader">
-          <h3>Local routes ${() => (state.loadingRoutes ? `(loading ${state.routeProgress}/${state.routeTotal})` : `(${state.routes.length})`)}</h3>
-          <div class="latTuneActions">
-            <button class="latTuneButton" @click="${() => selectLatest(MAX_ROUTES)}">Select latest ${MAX_ROUTES}</button>
-            <button class="latTuneButton" @click="${() => { state.selectedRoutes = []; }}">Clear</button>
-          </div>
-        </div>
-        <div class="latTuneRouteList">
-          ${() => state.routes.map((r) => html`
-            <label class="latTuneRouteRow ${state.selectedRoutes.includes(r.name) ? "selected" : ""}">
-              <input type="checkbox" checked="${() => state.selectedRoutes.includes(r.name)}" @change="${() => toggleRoute(r.name)}" />
-              <span>${r.timestamp || r.startedAt || ""}</span>
-              <span class="latTuneMuted">${r.name} · ${r.segmentCount} seg</span>
-            </label>`)}
-        </div>
-      </div>
+      <div class="longManeuverCard">
+        <p class="longManeuverIntro">
+          Trims the NRDR PID lateral controller's P gain per speed band (Low 0–25, Standard 25–50, Highway 50+ mph) from your own drives on the modified-EPS Honda.
+          Pick routes, analyze while parked, then apply one bounded P step, drive, and keep or revert it.
+          This is separate from FLM (Lateral Tuning) and never touches I, F or the torque tune.
+        </p>
+        <p class="latTuneEvidence">Unit-test and log-replay evidence only; nothing here is road-validated. Change one step at a time.</p>
 
-      <div class="latTuneCard">
-        <h3>Trials</h3>
-        ${() => (state.workspace.trials.length ? state.workspace.trials.map(renderTrial) : html`<div class="latTuneMuted">No trials yet.</div>`)}
+        <div class="longManeuverActions">
+          <button class="longManeuverButton" disabled="${() => !canAnalyze()}" @click="${runAnalyze}">
+            Analyze Selected Routes${() => (state.selectedRoutes.length ? ` (${state.selectedRoutes.length})` : "")}
+          </button>
+          <button class="longManeuverButton danger" disabled="${() => !!state.runningAction || !s().running}" @click="${stopAnalyze}">Stop Analysis</button>
+          <button class="longManeuverButton" disabled="${() => !!state.runningAction}" @click="${refreshAll}">Refresh</button>
+        </div>
+
+        ${() => (state.error ? html`<p class="longManeuverError">${state.error}</p>` : "")}
+        ${() => (s().state === "failed" && s().error ? html`<p class="longManeuverError">Analysis failed: ${s().error}</p>` : "")}
+        ${() => (s().isOnroad ? html`<p class="longManeuverError">Analysis, apply and revert are offroad only. Park and go offroad first.</p>` : "")}
+
+        <div class="longManeuverStatusGrid">
+          <p><strong>Status:</strong> ${() => stateLabel(s().state)}</p>
+          <p><strong>Onroad:</strong> ${() => (s().isOnroad ? "Yes" : "No")}</p>
+          <p><strong>Updated:</strong> ${() => formatStatusAge(s().updatedAt)}</p>
+          <p><strong>Selected Routes:</strong> ${() => `${state.selectedRoutes.length}/${MAX_ROUTES}`}</p>
+          <p><strong>Progress:</strong> ${() => (s().total ? `${safeCount(s().progress)}/${safeCount(s().total)} segments` : "–")}</p>
+          <p><strong>Applied Trial:</strong> ${() => stack()[stack().length - 1] || "None"}${() => (stack().length > 1 ? ` (+${stack().length - 1} below)` : "")}</p>
+        </div>
+
+        ${() => (s().running ? html`
+          <div class="latTuneProgress"><div style="${`width: ${s().total ? Math.round(100 * safeCount(s().progress) / s().total) : 0}%`}"></div></div>` : "")}
+        ${() => (s().currentSegment && s().running ? html`
+          <div class="longManeuverCurrent"><p><strong>Current Segment:</strong> ${s().currentSegment}</p></div>` : "")}
+
+        <div class="flmCardSubsection">
+          <h3>Current NRDR PID gains</h3>
+          ${renderCurrentGains}
+          ${() => (state.workspace.currentSchedule ? html`
+            <p class="latTuneWarning">LatGainSchedule is set and overrides the bands for the terms it names: <code>${state.workspace.currentSchedule}</code>. Apply removes its P term.</p>` : "")}
+        </div>
+
+        <div class="flmTwoColumn">
+          <section class="flmCard">
+            <div class="flmCardHeader">
+              <div>
+                <h3>Local Routes</h3>
+                <p class="longManeuverMuted">Pick up to ${MAX_ROUTES} routes driven on the same tuning. rlogs are preferred; qlogs are used as a fallback.</p>
+              </div>
+              <div class="latTuneHeaderActions">
+                <button class="longManeuverButton" disabled="${() => !state.routes.length}" @click="${selectLatest}">Latest ${MAX_ROUTES}</button>
+                <button class="longManeuverButton" disabled="${() => !state.selectedRoutes.length}" @click="${() => { state.selectedRoutes = []; }}">Clear</button>
+              </div>
+            </div>
+            ${() => (state.loadingRoutes ? html`<p class="longManeuverMuted">Loading local routes… ${state.routeTotal ? `${state.routeProgress}/${state.routeTotal}` : ""}</p>` : "")}
+            ${() => (!state.loadingRoutes && !state.routes.length ? html`<p class="longManeuverMuted">No local routes found.</p>` : "")}
+            <div class="flmRouteList">
+              ${() => sortedRoutes().map((r) => html`
+                <div class="flmRouteRow">
+                  <label class="${() => `flmRouteItem ${state.selectedRoutes.includes(r.name) ? "latTuneSelected" : ""}`}">
+                    <input type="checkbox" checked="${() => state.selectedRoutes.includes(r.name)}" @change="${() => toggleRoute(r.name)}" />
+                    <span>
+                      <strong>${formatTimestamp(r.timestamp)}</strong>
+                      <small>${r.name}</small>
+                      <small>${formatRouteLength(r)}</small>
+                    </span>
+                  </label>
+                  ${() => (connectRouteUrl(r.name) ? html`
+                    <a class="flmConnectLink" href="${connectRouteUrl(r.name)}" target="_blank" rel="noopener noreferrer">Connect</a>` : "")}
+                </div>`)}
+            </div>
+          </section>
+
+          <section class="flmCard">
+            <div class="flmCardHeader">
+              <div>
+                <h3>Trials</h3>
+                <p class="longManeuverMuted">Each analysis is a trial. Applied trials stack; only the top one can be reverted.</p>
+              </div>
+            </div>
+            <div class="flmWorkspaceList">
+              ${() => ((state.workspace.trials || []).length
+                ? state.workspace.trials.map(renderTrialRow)
+                : html`<p class="longManeuverMuted">No trials yet. Select routes and analyze.</p>`)}
+            </div>
+          </section>
+        </div>
+
+        ${renderDetail}
       </div>
     </div>`;
 }
