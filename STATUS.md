@@ -6858,3 +6858,15 @@ committed.
 - **271 seg 25, id 26, 2.0 s** (the longest parser loss today) was traced through the real parser. Just before it stopped being published, the track moved from y −3.4 to −7.5 m and opened at +3.6 m/s. That looks like a car leaving the path, not a lockout. Why the parser stopped publishing it was not checked against the raw slots.
 - `bosch_a_lifecycle_report.py` on 26c/26f/270/271 (current parser): 5 single-sweep breaks in total, 0 on the device lead, 0 within 2 s of a hard brake, and 0 chronic.
 - **Limits:** different traffic on each side, and about 1.25 engaged hours per side. No loss fell inside a hard brake, so this says nothing about braking authority.
+
+## 128. ICBM far-lead slowdown is baked in on Honda (owner request); the `ICBMFarLead` toggle is gone. Static only.
+
+- **Why:** `ICBMFarLead` already defaulted on (`params_keys.h` "1"), and the owner's ICBM drives ran with it on, 00000271 included. The owner asked for no more toggles where a feature is good enough.
+- **Change:**
+  - `starpilot/common/starpilot_variables.py`: `icbm_far_lead` is now `car_make == "honda" and redneck_cruise`. The param is no longer read.
+  - `starpilot/common/assets/device_settings_layout.json`: the Galaxy toggle entry is removed.
+  - Comments are updated in `selfdrive/car/card.py` and `selfdrive/car/redneck_cruise.py`.
+  - The key stays in `params_keys.h`, so there is no binary rebuild. It is unused.
+- **Effect:** a car that had the toggle turned off now gets the far-lead set-speed target too, including the STATUS 126 corroborated 0.8 m/s^2 decel. That STATUS 126 behaviour is replay only and not yet driven.
+- **Tests:** `test_redneck_cruise.py` 81 pass, the_galaxy `test_device_settings_layout.py` 29 pass and `test_device_settings_frontend.py` 9 pass.
+- **Numbering:** the radar agent's pending drafts shift to 129/130.

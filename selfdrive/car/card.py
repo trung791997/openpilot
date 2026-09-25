@@ -512,7 +512,7 @@ class Car:
     lead_present = False
     lead_distance_m = 0.0
     lead_rel_speed_ms = 0.0
-    lead_speed_ms = None  # ICBMFarLead: leadOne.vLead, only when the toggle is on
+    lead_speed_ms = None  # far lead: leadOne.vLead (always on for Honda ICBM, STATUS 128)
     lead_corroborated = False  # radar-backed or modelProb >= 0.7: the far-lead target uses the lower decel
     lookahead_points = REDNECK_DECREASE_LOOKAHEAD_POINTS
 

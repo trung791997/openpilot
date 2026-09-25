@@ -60,7 +60,7 @@ LEAD_DEPARTURE_BOOST_MAX_MS = 3.0 * CV.MPH_TO_MS
 LEAD_DEPARTURE_BOOST_FACTOR = 0.50
 LEAD_DEPARTURE_PLAN_POINTS = 3
 
-# Far lead (stock ACC only, behind ICBMFarLead): the chill planner's speeds are ICBM's only lead input
+# Far lead (stock ACC only; always on for Honda ICBM since STATUS 128): the chill planner's speeds are ICBM's only lead input
 # and they do not come down for a slow or stopped lead 100 m out (route 25e 723-727 s, replay: the plan
 # stayed at the set speed until the lead was 83 m away, then wanted 22 -> 8 m/s in 3 s and the car's own
 # ACC braked -3.5). This target is the speed from which a constant FAR_LEAD_DECEL_MS2 stop reaches the

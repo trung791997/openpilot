@@ -742,7 +742,8 @@ class StarPilotVariables:
     # Counter sync is baked in on Honda ICBM (owner, 2026-09-25; D-065, STATUS 127). The ICBMCounterSync param is
     # no longer read or shown.
     toggle.icbm_counter_sync = bool(toggle.car_make == "honda" and toggle.redneck_cruise)
-    toggle.icbm_far_lead = self.get_value("ICBMFarLead", condition=toggle.car_make == "honda" and toggle.redneck_cruise)
+    # Far-lead slowdown is baked in on Honda ICBM too (owner, 2026-09-25; STATUS 128). ICBMFarLead is no longer read.
+    toggle.icbm_far_lead = bool(toggle.car_make == "honda" and toggle.redneck_cruise)
     toggle.set_speed_on_gas_release = self.get_value("SetSpeedOnGasRelease", condition=toggle.redneck_cruise)
     pcm_cruise = CP.pcmCruise
     prohibited_main_aol = not toggle.openpilot_longitudinal and hyundai_can_use_lkas_for_aol

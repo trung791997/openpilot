@@ -5591,16 +5591,6 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "ICBMFarLead",
-        "label": "ICBM Far-Lead Slowdown (Honda, experimental)",
-        "description": "Stock ACC with ICBM only. Today the set speed only comes down when the planner's speeds do, and on a recorded drive the planner held the set speed until a slow lead was 83 m away, so the car's own ACC had to brake hard. With this on, ICBM also computes the speed from which a gentle 1.5 m/s^2 slowdown would reach the lead's speed at a 1.5 s gap, and walks the set speed down to the lower of the two while the lead is closing. It never raises the set speed. Replayed on logs only, not yet driven; turn it off here if the set speed comes down too early.",
-        "picker_description": "Starts lowering the ICBM set speed for a slow or stopped lead from about 100 m.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "GalaxyDeveloperMode",
-        "settings_tier": "advanced"
-      },
-      {
         "key": "SetSpeedOnGasRelease",
         "label": "ICBM Set Speed on Gas Release",
         "description": "When you speed up past the set speed with the gas pedal and let go, the set speed becomes the speed you let go at (rounded to a whole mph or km/h). ICBM then walks the car's set speed up to it. Not yet driven.",
