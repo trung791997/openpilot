@@ -165,3 +165,37 @@ def test_other_devices_untouched(mocker, tmp_path, device):
   hardware.configure_modem()
 
   assert _nmcli_calls(call) == []
+
+
+def test_watchdog_fixes_session_that_lost_echo(mocker, tmp_path):
+  # seen on a comma 4 (2026-09-25): pppd with echo off hours after boot, link silently dead
+  hardware = _eg916_hardware(mocker, tmp_path, profile=APPLIED_PROFILE, ppp_args=PPP_OFF)
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.check_modem_config()
+  modify, up = _nmcli_calls(call)
+  assert _value(modify, "ppp.lcp-echo-interval") == "10"
+  assert up[-3:] == ["connection", "up", "lte"]
+
+  # rate limited: a carrier that rejects the echo must not cause a restart loop
+  hardware.check_modem_config()
+  assert len(_nmcli_calls(call)) == 2
+
+
+@pytest.mark.parametrize("ppp_args", [PPP_ON, None])
+def test_watchdog_leaves_good_or_absent_session(mocker, tmp_path, ppp_args):
+  hardware = _eg916_hardware(mocker, tmp_path, profile=APPLIED_PROFILE, ppp_args=ppp_args)
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.check_modem_config()
+
+  assert _nmcli_calls(call) == []
+
+
+def test_watchdog_other_devices(mocker, tmp_path):
+  hardware = _eg916_hardware(mocker, tmp_path, ppp_args=PPP_OFF, device="tizi")
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.check_modem_config()
+
+  assert _nmcli_calls(call) == []

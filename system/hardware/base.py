@@ -216,6 +216,9 @@ class HardwareBase(ABC):
   def configure_modem(self):
     pass
 
+  def check_modem_config(self):
+    pass
+
   def reboot_modem(self):
     pass
 

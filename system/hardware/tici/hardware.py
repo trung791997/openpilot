@@ -577,19 +577,40 @@ class Tici(HardwareBase):
     # pppd and the bearer read these only when the session starts, so restart a running session
     # once if it came up with anything else. NM always passes the LCP options to pppd, as
     # "lcp-echo-interval 0" when off, so compare the values, not just their presence.
-    try:
-      pid = subprocess.check_output(["pgrep", "-x", "pppd"], encoding='utf8').split()[0]
-      with open(f"/proc/{pid}/cmdline", "rb") as f:
-        args = f.read().decode(errors='replace').split('\0')
-    except (subprocess.CalledProcessError, IndexError, OSError):
+    running = self._running_ppp_lcp()
+    if running is None:
       cloudlog.event("lte profile configured", apn=apn, running_lcp=None, restart=False)
-      return  # no session yet, the first activation picks the settings up
-    running = {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
+      return  # no session yet; check_modem_config catches one that was already being set up
     session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only", "ipv4.dns")
     restart = running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys)
     cloudlog.event("lte profile configured", apn=apn, running_lcp=running, restart=restart)
     if restart:
       subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
+
+  def _running_ppp_lcp(self) -> dict[str, str] | None:
+    try:
+      pid = subprocess.check_output(["pgrep", "-x", "pppd"], encoding='utf8').split()[0]
+      with open(f"/proc/{pid}/cmdline", "rb") as f:
+        args = f.read().decode(errors='replace').split('\0')
+    except (subprocess.CalledProcessError, IndexError, OSError):
+      return None
+    return {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
+
+  def check_modem_config(self):
+    # Called periodically by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
+    # "lcp-echo-interval 0" hours later and the link died silently: likely NM had already started
+    # the session with the old profile when configure_modem found no pppd yet. Re-apply whenever
+    # a running pppd lacks the echo, at most every 5 min so a carrier that rejects it can't loop.
+    if self.get_device_type() != "mici":
+      return
+    running = self._running_ppp_lcp()
+    if running is None or running == {"lcp-echo-interval": "10", "lcp-echo-failure": "3"}:
+      return
+    now = time.monotonic()
+    if now - getattr(self, "_last_ppp_fix", -float("inf")) < 300:
+      return
+    self._last_ppp_fix = now
+    self.configure_ppp_keepalive()
 
   def reboot_modem(self):
     modem = self.get_modem()
