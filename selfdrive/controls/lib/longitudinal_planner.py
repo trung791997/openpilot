@@ -122,6 +122,26 @@ RAW_LEAD_LOW_SPEED_HOLD_MAX_LEAD_SPEED = 3.5
 RAW_LEAD_LOW_SPEED_HOLD_MAX_DISTANCE = 10.0
 RAW_LEAD_LOW_SPEED_HOLD_MAX_LATERAL_OFFSET = 1.75
 RAW_LEAD_LOW_SPEED_HOLD_MIN_CLOSING_SPEED = 0.15
+# Stopped/slow radar lead approach hold (26c 4:26 surge). lead_control_active is tracking_lead (radar dRel <
+# model plan length + 6 m, starpilot_planner/should_track_lead) OR raw_close_lead_needs_control (TTC < 7 s or
+# aLeadK < -0.5, inside max(40 m, 3 v; 5 v for a stopped radar lead)). Approaching a stopped car, the model plans to stop short of it, so its plan length
+# sits at or below dRel - 6 m and tracking_lead drops; and the braking that the lead caused lengthens the TTC
+# past 7 s and lets aLeadK settle, so the raw path drops too. The lead is still there and ego still closes on it,
+# but the MPC loses it (source `cruise`) and plans acceleration toward it: route 0000026c--10bec2e200 replay
+# 270.2-271.5, command -1.00 -> +1.24 at 2.4 m/s with a stopped radar+vision lead 22 m ahead; 758.9-761.4, three
+# release/re-engage cycles between -0.3 and -1.2 on a stopped lead 60-75 m ahead at 8 m/s. The hold keeps a lead
+# that was ALREADY controlling in control while it stays the same radar track, vision-matched, in lane, slow and
+# not pulling away. It never admits a lead that was not controlling, so it cannot create a far stopped-lead
+# brake on its own (phantom stationary returns are the reason the entry gates are strict), and it only preserves
+# the authority the lead already had (D-048: vision corroboration is required to keep it).
+# Ego speed cap: without it, replay on 22 routes added 6 new <= -1.5 clusters at 8.6-11.5 m/s approaching stopped
+# queues 47-72 m ahead (00000232 1232.9, 00000236 416.2, 00000239 206.5, 0000026c 758.8). Below 5 m/s the hold
+# keeps the 4:26 fix; the 12:28 pumping at 8 m/s is left to the normal gates.
+STOPPED_RADAR_LEAD_HOLD_MAX_EGO_SPEED = 5.0
+STOPPED_RADAR_LEAD_HOLD_MAX_LEAD_SPEED = 3.5
+STOPPED_RADAR_LEAD_HOLD_MIN_CLOSING_SPEED = -0.5
+STOPPED_RADAR_LEAD_HOLD_MAX_LATERAL_OFFSET = 1.75
+STOPPED_RADAR_LEAD_HOLD_MIN_MODEL_PROB = 0.5
 STANDSTILL_LEAD_NUDGE_ACCEL = 0.05
 STANDSTILL_LEAD_NUDGE_MIN_SPEED = 0.0
 STANDSTILL_LEAD_NUDGE_MIN_LEAD_ACCEL = 0.2
@@ -785,6 +805,8 @@ class LongitudinalPlanner:
     self.v_model_error = 0.0
     self.output_a_target = 0.0
     self.mpc_lead_demand_hist = []
+    self.stopped_radar_lead_hold_track = None
+    self.stopped_radar_lead_hold_active = False
     # The MPC's own solution, kept separately from the arbitrated output_a_target.
     self.last_mpc_a_target = 0.0
     self.output_should_stop = False
@@ -2096,6 +2118,34 @@ class LongitudinalPlanner:
     ttc = d_rel / max(closing_speed, 0.1) if closing_speed > 0.1 else float("inf")
     return d_rel < dynamic_distance and (ttc < RAW_LEAD_SAFETY_TTC or lead_braking)
 
+  @staticmethod
+  def stopped_radar_lead_hold_qualifies(lead, v_ego):
+    if lead is None or not lead.status or not bool(getattr(lead, "radar", False)):
+      return False
+    if float(getattr(lead, "modelProb", 0.0)) < STOPPED_RADAR_LEAD_HOLD_MIN_MODEL_PROB:
+      return False
+    if abs(float(getattr(lead, "yRel", 0.0))) > STOPPED_RADAR_LEAD_HOLD_MAX_LATERAL_OFFSET:
+      return False
+    if float(v_ego) >= STOPPED_RADAR_LEAD_HOLD_MAX_EGO_SPEED:
+      return False
+    return (float(lead.vLead) <= STOPPED_RADAR_LEAD_HOLD_MAX_LEAD_SPEED and
+            float(v_ego) - float(lead.vLead) >= STOPPED_RADAR_LEAD_HOLD_MIN_CLOSING_SPEED)
+
+  def update_stopped_radar_lead_hold(self, lead, v_ego, base_lead_control_active):
+    # Arms on a qualifying lead one while lead control is already active; holds lead control only for that
+    # same radar track. See STOPPED_RADAR_LEAD_HOLD_*.
+    if not self.stopped_radar_lead_hold_qualifies(lead, v_ego):
+      self.stopped_radar_lead_hold_track = None
+      return False
+    track_id = int(getattr(lead, "radarTrackId", -1))
+    if base_lead_control_active:
+      self.stopped_radar_lead_hold_track = track_id
+      return False
+    if self.stopped_radar_lead_hold_track != track_id:
+      self.stopped_radar_lead_hold_track = None
+      return False
+    return True
+
   def get_mpc_lead_brake_accel_min(self, accel_min, mpc_target):
     # Output floor for the final clip: accel_min, lowered to a persistent MPC lead-brake demand.
     lead_demand = None
@@ -2291,6 +2341,8 @@ class LongitudinalPlanner:
       tracking_lead or raw_close_lead_control or early_truck_follow or rav4_radar_follow or
       lightning_stopped_radar_follow
     )
+    self.stopped_radar_lead_hold_active = self.update_stopped_radar_lead_hold(self.lead_one, scene_v_ego, lead_control_active)
+    lead_control_active = lead_control_active or self.stopped_radar_lead_hold_active
     lead_one_active = bool(self.lead_one.status and lead_control_active)
     effective_t_follow = self.get_dynamic_t_follow(sm['starpilotPlan'].tFollow, self.lead_one if lead_one_active else None, v_ego)
 

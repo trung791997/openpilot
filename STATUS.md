@@ -6754,3 +6754,24 @@ committed.
   - about 8 % of the car's SCM frames modelled as dropped by counter sync;
   - no pause on the ACC_CONTROL byte-6 stall flag (item 94);
   - the item 96 `vCruise` resync.
+
+## 125. Stopped/slow radar lead hold below 5 m/s (26c 4:26 surge). Unit tests and replay only; not driven.
+
+- **Problem:** route `…0000026c--10bec2e200` 4:26 (replay 270.2-271.5): at 2.4 m/s behind a stopped radar+vision lead 22 m ahead, the command went -1.00 -> +1.24.
+- **Mechanism (replay):**
+  - `lead_control_active` = `tracking_lead` OR `raw_close_lead_needs_control`.
+  - Approaching a stopped car, the model plans to stop short of it, so `tracking_lead` drops (dRel > plan length + 6 m).
+  - The braking the lead caused pushes TTC past 7 s and lets aLeadK settle, so the raw gate drops too.
+  - The MPC then loses the lead (source `cruise`) and plans acceleration toward it.
+- **Change** (`selfdrive/controls/lib/longitudinal_planner.py`, `STOPPED_RADAR_LEAD_HOLD_*`, `update_stopped_radar_lead_hold`):
+  - Arming: a lead that is already controlling arms the hold on its radar track id.
+  - The hold then keeps lead control while all of these stay true: same track, `modelProb >= 0.5` (D-048), `|yRel| <= 1.75`, `vLead <= 3.5`, not pulling away (`vEgo - vLead >= -0.5`), and `vEgo < 5 m/s`.
+  - It never admits a lead that was not controlling, and it does not re-arm without the normal gates.
+- **Replay, 26 routes (`tools/longitudinal/alpha_closed_loop_replay.py`, harness `/tmp/g1`):**
+  - Episodes: 0 softer by > 0.3 or later by > 0.2 s, and 0 new <= -1.5 crossings or clusters.
+  - Surges toward a slow radar lead: 17 -> 12. 4:26 peak output: +1.24 -> about -0.1.
+  - Pumps: 266 -> 262.
+  - 5 mild deeper-than-base clusters (-0.51 to -0.86), all at 1.9-4.5 m/s. The logged command was as deep or deeper in every one.
+- **Rejected variant, no speed limit:** fixed the 12:28 pumping (8 m/s), but added 6 new <= -1.5 clusters at 8.6-11.5 m/s approaching stopped queues 47-72 m ahead (00000232 1232.9, 00000236 416.2, 00000239 206.5, 0000026c 758.8). 12:28 is therefore not fixed.
+- **Tests:** planner 512 (8 new), longcontrol 89, leads 6, tools/longitudinal/tests 9.
+- **Road check to do:** creep up to a stopped car at < 5 m/s with alpha long. There should be no surge after the initial brake.

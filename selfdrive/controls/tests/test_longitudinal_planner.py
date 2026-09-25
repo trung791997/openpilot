@@ -4332,3 +4332,83 @@ def test_lane_change_merge_floor_releases_on_hard_mpc_lead_brake(mpc_demand, exp
   floor = planner.get_lane_change_merge_accel_floor(_merge_sm(), toggles, 22.0, 30.0, 0.3, blocked=False,
                                                     mpc_demand=mpc_demand)
   assert (floor is not None) == expected_floor
+
+
+def _stopped_radar_lead(*, a_lead: float, d_rel: float = 22.9, v_lead: float = -0.3, model_prob: float = 0.97,
+                        y_rel: float = 0.4, radar: bool = True, track_id: int = 27):
+  lead = make_lead(status=True, d_rel=d_rel, v_lead=v_lead, a_lead=a_lead, radar=radar, model_prob=model_prob, y_rel=y_rel)
+  lead.radarTrackId = track_id
+  return lead
+
+
+def _stopped_lead_sm(v_ego, lead):
+  sm = make_sm(v_ego, desired_accel=0.4, min_accel=-1.0, experimental_mode=False, tracking_lead=False, lead_one=lead)
+  sm["starpilotPlan"].vCruise = v_ego + 10.0
+  return sm
+
+
+def test_stopped_radar_lead_hold_keeps_controlling_lead_when_raw_and_tracking_drop():
+  # Route 0000026c--10bec2e200 replay 270.3: the lead that held the -1.0 close-lead cap settles (aLeadK -1.5 -> +0.3),
+  # TTC passes 7 s, tracking_lead is off; without the hold the MPC loses the lead and plans +1.24 toward it.
+  v_ego = 2.6
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  held = LongitudinalPlanner(CP, init_v=v_ego)
+  fresh = LongitudinalPlanner(CP, init_v=v_ego)
+  braking_lead = _stopped_radar_lead(a_lead=-1.5)
+  settled_lead = _stopped_radar_lead(a_lead=0.3)
+  assert LongitudinalPlanner.raw_close_lead_needs_control(braking_lead, v_ego)
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(settled_lead, v_ego)
+
+  for _ in range(5):
+    held.update(_stopped_lead_sm(v_ego, braking_lead), make_toggles())
+  assert not held.stopped_radar_lead_hold_active  # armed only; the ordinary gates are in control
+
+  held_out, fresh_out = [], []
+  for _ in range(20):
+    held.update(_stopped_lead_sm(v_ego, settled_lead), make_toggles())
+    fresh.update(_stopped_lead_sm(v_ego, settled_lead), make_toggles())
+    held_out.append(held.output_a_target)
+    fresh_out.append(fresh.output_a_target)
+
+  assert held.stopped_radar_lead_hold_active
+  assert not fresh.stopped_radar_lead_hold_active  # never admits a lead that was not already controlling
+  assert max(held_out) <= 0.0
+  assert max(fresh_out) > 0.3  # the pre-change behaviour: acceleration toward the stopped car
+
+
+@pytest.mark.parametrize("kwargs", [
+  {"model_prob": 0.3},     # no vision corroboration (D-048)
+  {"radar": False},        # vision-only lead
+  {"y_rel": 2.0},          # out of lane
+  {"v_lead": 4.0},         # not a slow lead
+  {"track_id": 31},        # a different radar object took lead one
+])
+def test_stopped_radar_lead_hold_releases_without_the_same_corroborated_slow_in_lane_lead(kwargs):
+  v_ego = 2.6
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=-1.5)), make_toggles())
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=0.3, **kwargs)), make_toggles())
+  assert not planner.stopped_radar_lead_hold_active
+
+
+def test_stopped_radar_lead_hold_releases_when_lead_pulls_away_and_does_not_rearm():
+  v_ego = 2.6
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=-1.5)), make_toggles())
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=0.3)), make_toggles())
+  assert planner.stopped_radar_lead_hold_active
+  # Lead departing: ego no longer closing (v_ego - vLead < -0.5).
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=0.3, v_lead=3.2)), make_toggles())
+  assert not planner.stopped_radar_lead_hold_active
+  # The same slow lead again, but nothing re-armed the hold while it was not controlling.
+  planner.update(_stopped_lead_sm(v_ego, _stopped_radar_lead(a_lead=0.3)), make_toggles())
+  assert not planner.stopped_radar_lead_hold_active
+
+
+def test_stopped_radar_lead_hold_is_limited_to_low_ego_speed():
+  # Replay at 8.6-11.5 m/s approaching stopped queues 47-72 m ahead: the hold added new <= -1.5 brakes.
+  v_ego = 8.0
+  assert not LongitudinalPlanner.stopped_radar_lead_hold_qualifies(_stopped_radar_lead(a_lead=0.3, d_rel=60.0), v_ego)
+  assert LongitudinalPlanner.stopped_radar_lead_hold_qualifies(_stopped_radar_lead(a_lead=0.3, d_rel=60.0), 4.0)
