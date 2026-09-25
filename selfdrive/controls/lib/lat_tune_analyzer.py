@@ -494,35 +494,65 @@ class FrameSource:
         yield v_ego, float(lcs.pidState.steeringAngleDesiredDeg), angle, pressed, lane_change, steer_limited
 
 
-def analyze_sources(sources, should_continue=None, on_progress=None, baseline_overrides=None):
+def _merge_stats(dst, src):
+  for a, b in zip(dst.acc, src.acc, strict=True):
+    for k in _FIELDS:
+      a[k] += b[k]
+
+
+def analyze_sources(sources, should_continue=None, on_progress=None, baseline_overrides=None, mixed_tuning=False):
   """sources: RouteLog list in analysis order (oldest first). Returns a trial dict (build_trial).
+
+  The newest route's logged lateral tuning is the baseline, and only routes driven on that same tuning
+  (tuning_fingerprint) are pooled into the metrics. The others are listed in the warnings and in perRoute
+  with used=False: their metrics describe gains the proposal is not relative to (123b: the 4 newest routes
+  ran on 4 tunings, and pooling them mixed Standard I 25 and 75). mixed_tuning=True pools every route anyway.
 
   baseline_overrides: {param: value} replacing the logged Lat*Scale* values the proposal starts from (what-if).
   The metrics still come from the logs, i.e. from the gains the routes were actually driven with."""
-  stats = DriveStats()
-  per_route = {}
   warnings = []
   tuning_by_route = {}
+  stats_by_route = {}
+  minutes_by_route = {}
   for idx, src in enumerate(sources):
     if on_progress is not None:
       on_progress(idx, len(sources), src)
     fs = FrameSource(src.log_path, log_reader=src.log_reader, should_continue=should_continue)
-    route_stats = DriveStats()
+    seg_stats = DriveStats()
+    # One DriveStats per route keeps the sign-change and press-merge state continuous across its segments.
+    route_stats = stats_by_route.setdefault(src.route, DriveStats())
     for frame in fs.frames():
-      stats.observe(*frame)
       route_stats.observe(*frame)
+      seg_stats.observe(*frame)
     if fs.n == 0:
       warnings.append(f"{src.route}--{src.segment}: no engaged pidState frames (not modified-EPS PID, or never engaged)")
     if fs.tuning:
       tuning_by_route[src.route] = fs.tuning
-    per_route.setdefault(src.route, [0.0] * len(BANDS))
+    mins = minutes_by_route.setdefault(src.route, [0.0] * len(BANDS))
     for i in range(len(BANDS)):
-      per_route[src.route][i] = round(per_route[src.route][i] + band_metrics(route_stats.acc[i])["min"], 2)
+      mins[i] = round(mins[i] + band_metrics(seg_stats.acc[i])["min"], 2)
   route_names = list(dict.fromkeys(s.route for s in sources))
   latest = next((tuning_by_route[r] for r in reversed(route_names) if r in tuning_by_route), {})
+  base_fp = tuning_fingerprint(latest) if latest else None
   fps = {r: tuning_fingerprint(t) for r, t in tuning_by_route.items()}
-  if len(set(fps.values())) > 1:
-    warnings.append("routes were driven with different lateral tuning (fingerprint mismatch); the newest route's tuning is the baseline")
+  if base_fp is None or mixed_tuning:
+    used = set(route_names)
+  else:
+    used = {r for r in route_names if fps.get(r) == base_fp}
+  if mixed_tuning and len(set(fps.values())) > 1:
+    warnings.append("routes were driven with different lateral tuning (fingerprint mismatch) and were pooled anyway "
+                    "(mixed tuning); the newest route's tuning is the baseline")
+  for r in route_names:
+    if r in used:
+      continue
+    diff = sorted(k for k in TUNING_KEYS
+                  if _fingerprint_value(tuning_by_route.get(r, {}).get(k)) != _fingerprint_value(latest.get(k)))
+    why = f"differs in {', '.join(diff)}" if r in tuning_by_route else "no logged tuning (initData)"
+    warnings.append(f"{r}: left out, driven on different lateral tuning than the newest route ({why})")
+  stats = DriveStats()
+  for r in route_names:
+    if r in used and r in stats_by_route:
+      _merge_stats(stats, stats_by_route[r])
   if baseline_overrides:
     logged = dict(latest)
     latest = {**latest, **{k: _param_str(v) for k, v in baseline_overrides.items()}}
@@ -533,4 +563,5 @@ def analyze_sources(sources, should_continue=None, on_progress=None, baseline_ov
     warnings.append("LatGainSchedule overrides P on these routes; the proposal is relative to the LatPScale* bands, "
                     "and applying removes the schedule's p term")
   baseline = {"fingerprint": tuning_fingerprint(latest) if latest else None, "gains": band_gains(latest), "raw": latest}
-  return build_trial(stats, baseline, route_names, [{"route": r, "minutes": m} for r, m in per_route.items()], warnings)
+  per_route = [{"route": r, "minutes": minutes_by_route[r], "tuning": fps.get(r), "used": r in used} for r in route_names]
+  return build_trial(stats, baseline, route_names, per_route, warnings)

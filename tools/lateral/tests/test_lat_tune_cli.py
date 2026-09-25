@@ -77,3 +77,14 @@ def test_main_passes_baseline_overrides_and_rejects_bad_keys(tmp_path, monkeypat
 def test_main_rejects_more_than_eight(tmp_path, capsys):
   assert cli.main(["--routes-root", str(tmp_path), "--latest", "9"]) == 2
   assert "at most 8" in capsys.readouterr().err
+
+
+def test_main_passes_mixed_tuning_flag(tmp_path, monkeypatch):
+  _mk(tmp_path, "2026-09-22--08-30-00", [0])
+  seen = {}
+  monkeypatch.setattr(cli.lat, "analyze_sources", lambda sources, **kw: seen.update(kw) or (_ for _ in ()).throw(SystemExit(0)))
+  import pytest
+  for argv, want in (([], False), (["--mixed-tuning"], True)):
+    with pytest.raises(SystemExit):
+      cli.main(["--routes-root", str(tmp_path), "--latest", "1", *argv])
+    assert seen["mixed_tuning"] is want

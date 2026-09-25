@@ -80,6 +80,8 @@ def main(argv=None):
   ap.add_argument("--json", help="write the trial JSON here")
   ap.add_argument("--baseline", action="append", default=[], metavar="KEY=N",
                   help="what-if: start the proposal from this band value instead of the logged one, e.g. LatPScaleStandard=115")
+  ap.add_argument("--mixed-tuning", action="store_true",
+                  help="pool routes driven on different lateral tuning (default: only routes on the newest route's tuning)")
   args = ap.parse_args(argv)
   if not 1 <= args.latest <= MAX_ROUTES:
     print(f"--latest must be at most {MAX_ROUTES}", file=sys.stderr)
@@ -99,7 +101,11 @@ def main(argv=None):
   sources = [lat.RouteLog(name, str(i), str(p)) for name, logs in routes for i, p in enumerate(logs)]
   print(f"analyzing {len(routes)} route(s), {len(sources)} segment(s): " + ", ".join(n for n, _ in routes))
   trial = lat.analyze_sources(sources, on_progress=lambda i, n, s: print(f"  [{i + 1}/{n}] {s.route}--{s.segment}", flush=True),
-                              baseline_overrides=overrides or None)
+                              baseline_overrides=overrides or None, mixed_tuning=args.mixed_tuning)
+  for r in trial["perRoute"]:
+    if "used" in r:
+      print(f"  {r['route']}: {'used' if r['used'] else 'left out'}  tuning {r.get('tuning') or '-'}  "
+            f"min low/std/hwy {'/'.join(f'{m:.1f}' for m in r['minutes'])}")
   print(_table(trial))
   for w in trial["warnings"]:
     print(f"warning: {w}")

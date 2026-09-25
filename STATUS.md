@@ -6870,3 +6870,52 @@ committed.
 - **Effect:** a car that had the toggle turned off now gets the far-lead set-speed target too, including the STATUS 126 corroborated 0.8 m/s^2 decel. That STATUS 126 behaviour is replay only and not yet driven.
 - **Tests:** `test_redneck_cruise.py` 81 pass, the_galaxy `test_device_settings_layout.py` 29 pass and `test_device_settings_frontend.py` 9 pass.
 - **Numbering:** the radar agent's pending drafts shift to 129/130.
+
+## 131. `HondaLateralPidKpScale` / `HondaLateralPidKiScale` never reached the controller; NRDR PID tuner now pools only routes on the newest route's tuning. Unit tests, open-loop replay and sim only; not driven.
+
+**The bug (item 113's open question, answered).** `StarPilotVariables.update()` rewrites every non-torque car's
+`CP.lateralTuning` to torque (`configure_torque_tune`) before the toggles are read. `honda_pid_lateral` then checked
+`CP.lateralTuning.which() == "pid"`, which was therefore always False, so `get_value` returned the 1.0 default for
+both scales on every drive. The Galaxy sliders did nothing.
+- **Replay proof on `0000026c--10bec2e200`** (`lat_pid_sim.py replay`, logged freeze): with the logged Ki 3.07 the torque
+  error median is 4.6e-2 (logged |out| median 0.036); with `--set HondaLateralPidKiScale=1.0` it is 1.6e-3. The car ran
+  Ki 1.0, just as 268 ran Kp 1.0 with 0.65 set.
+- **Fix:** `is_pid_car` is read before the rewrite and used for `honda_pid_lateral`. Regression test
+  `test_honda_pid_gain_scales_reach_the_toggles` fails on the old code (1.0 != 0.65) and passes on the new;
+  `test_starpilot_variables.py` 36 pass. `lat_pid_sim` already applied the logged scales directly, so it was right and
+  the car was not.
+- **Effect on the next build — read before driving it.** Routes 26c, 26f, 270 and 271 all logged
+  `HondaLateralPidKiScale = 3.07` (Kp 1.0). With the fix that value takes effect: I becomes 3.07x in the LowSpeed and
+  Standard bands (Highway I is 0, so no change there). **Ki 3.07 has never been driven.** Sim sweep (plant refit on
+  260–263, `/tmp` only, same recipe as item 113), 25–50 mph band:
+
+  | Ki scale | 271 curve ratio / straight rms / sign | 26c curve ratio / straight rms / sign |
+  |---|---|---|
+  | 1.0 (what was driven) | 0.963 / 0.71° / 0.6 /s | 0.950 / 0.80° / 0.6 /s |
+  | 2.0 | 0.989 / 0.67° / 0.7 /s | 0.971 / 0.77° / 0.6 /s |
+  | 3.07 | 0.998 / 0.62° / 0.7 /s | 0.985 / 0.72° / 0.7 /s |
+
+  Below 25 mph the curve ratio goes 0.864 → 0.928 (271) and 0.927 → 0.973 (26c). The sim under-predicts oscillation, does
+  not model driver-override trips, and holds the integrator exactly as the car does only approximately (item 113). More I
+  also means more wound-up I frozen through an override, the 26b 32:40 exit mechanism (item 114). Recommendation: set Ki
+  back to 1.0 (or 2.0) before the first drive on this build and step up from there, rather than jumping to 3.07.
+- Older trials' fingerprints include Kp/Ki values that were not in effect; they over-split routes that actually ran
+  identically, which is conservative.
+
+**Tuner: routes on other tuning are left out (STATUS 123b follow-up).** `analyze_sources` now keeps one `DriveStats` per
+route, takes the newest route's logged tuning as the baseline, and pools only routes with the same
+`tuning_fingerprint`. Every other route is listed in the warnings with the keys that differ (or "no logged tuning") and in
+`perRoute` with `used: false`; its minutes are still reported. `mixed_tuning=True` / CLI `--mixed-tuning` restores the
+old pooling with the old warning. Galaxy calls the default (filtered). The CLI prints a used/left-out line per route.
+- Tests: analyzer 53 (3 new, 1 moved to `mixed_tuning=True`), CLI 7 (1 new), workspace 20, API 3 pass.
+- **Offline run, 4 newest routes** (`0000026c--10bec2e200`, `0000026f--896ba35291`, `00000270--56a94f62cd`,
+  `00000271--4e9b9502db`, 89 segments): all four on fingerprint `e5615f03`, all pooled.
+
+  | band | min | sign/s | curve ratio | override episodes/min | P/I/F now | P new |
+  |---|---|---|---|---|---|---|
+  | LowSpeed | 8.2 | 0.38 | 0.91 | 3.40 (veto) | 100 / 50 / 50 | 100 |
+  | Standard | 38.8 | 0.81 | 0.97 | 0.80 | 105 / 75 / 100 | 105 |
+  | Highway | 3.8 | 0.85 | – (no curve data) | 0.99 | 105 / 0 / 100 | 105 |
+
+  No change proposed. These metrics describe Ki 1.0 (what ran), so once the fix ships, the first routes on the new
+  build carry a new effective I and should be analysed on their own.

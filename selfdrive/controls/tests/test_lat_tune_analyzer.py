@@ -304,13 +304,43 @@ class TestFrames:
     a = [_init_msg({"LatPScaleStandard": "100"}), _cs(13.4, 0.5)] + [_pid(0.4 if i % 100 < 50 else -0.4) for i in range(n)]
     b = [_init_msg({"LatPScaleStandard": "120"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(600)]
     sources = [lat.RouteLog("r-old", "1", "a", _fake_log(a)), lat.RouteLog("r-new", "1", "b", _fake_log(b))]
-    trial = lat.analyze_sources(sources)
+    trial = lat.analyze_sources(sources, mixed_tuning=True)
     assert trial["routeNames"] == ["r-old", "r-new"]
     assert trial["baseline"]["gains"][1]["p"] == 120             # latest route's initData wins
     assert trial["bands"][1]["current"]["p"] == 120
     assert any("fingerprint" in w for w in trial["warnings"])     # routes disagree
     assert trial["perRoute"][0]["route"] == "r-old" and trial["perRoute"][0]["minutes"][1] >= 3.9
+    assert all(r["used"] for r in trial["perRoute"])
     assert trial["bands"][1]["ready"] is True
+
+  def test_analyze_sources_leaves_out_routes_on_other_tuning(self):
+    n = 6000 * 4
+    a = [_init_msg({"LatPScaleStandard": "100"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(n)]
+    b = [_init_msg({"LatPScaleStandard": "120"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(600)]
+    sources = [lat.RouteLog("r-old", "1", "a", _fake_log(a)), lat.RouteLog("r-new", "1", "b", _fake_log(b))]
+    trial = lat.analyze_sources(sources)
+    assert [(r["route"], r["used"]) for r in trial["perRoute"]] == [("r-old", False), ("r-new", True)]
+    assert trial["perRoute"][0]["minutes"][1] >= 3.9                # still reported, just not pooled
+    assert trial["bands"][1]["minutes"] < 1.0 and trial["bands"][1]["ready"] is False
+    assert any(w.startswith("r-old: left out") and "LatPScaleStandard" in w for w in trial["warnings"])
+    assert not any("pooled anyway" in w for w in trial["warnings"])
+
+  def test_analyze_sources_pools_routes_on_the_same_tuning(self):
+    n = 6000 * 2
+    msgs = [_init_msg({"LatPScaleStandard": "105"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(n)]
+    sources = [lat.RouteLog("r1", "0", "a", _fake_log(msgs)), lat.RouteLog("r2", "0", "b", _fake_log(msgs))]
+    trial = lat.analyze_sources(sources)
+    assert all(r["used"] for r in trial["perRoute"])
+    assert trial["bands"][1]["minutes"] >= 3.9 and trial["bands"][1]["ready"] is True
+    assert not any("left out" in w for w in trial["warnings"])
+
+  def test_analyze_sources_leaves_out_a_route_without_logged_tuning(self):
+    tuned = [_init_msg({"LatPScaleStandard": "105"}), _cs(13.4, 0.5)] + [_pid(0.4) for _ in range(600)]
+    bare = [_cs(13.4, 0.5)] + [_pid(0.4) for _ in range(600)]
+    trial = lat.analyze_sources([lat.RouteLog("r-bare", "0", "a", _fake_log(bare)),
+                                 lat.RouteLog("r-new", "0", "b", _fake_log(tuned))])
+    assert [r["used"] for r in trial["perRoute"]] == [False, True]
+    assert any(w.startswith("r-bare: left out") and "no logged tuning" in w for w in trial["warnings"])
 
   def test_analyze_sources_baseline_override_changes_start_value_not_metrics(self):
     n = 6000 * 4

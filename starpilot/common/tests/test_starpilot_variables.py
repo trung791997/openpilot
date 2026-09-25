@@ -374,3 +374,29 @@ def test_honda_icbm_active_only_on_stock_long_with_the_toggle_on():
   assert spv.honda_icbm_active(True, pcm_cruise_speed=True, openpilot_longitudinal=False) is False
   assert spv.honda_icbm_active(True, pcm_cruise_speed=False, openpilot_longitudinal=True) is False
   assert spv.honda_icbm_active(False, pcm_cruise_speed=False, openpilot_longitudinal=False) is False
+
+
+def test_honda_pid_gain_scales_reach_the_toggles(monkeypatch, tmp_path):
+  # update() rewrites a PID car's lateralTuning to torque, and this check used to run after it, so both
+  # scales always read 1.0 on the car (00000268 ran Kp 1.0 with 0.65 set, 0000026c Ki 1.0 with 3.07 set).
+  from cereal import car
+  from opendbc.car.honda.values import CAR as HONDA
+
+  params_cls = spv.Params
+
+  def isolated_params(_path=None, memory=False, return_defaults=False):
+    return params_cls(str(tmp_path / ("memory" if memory else "params")), return_defaults=return_defaults)
+
+  monkeypatch.setattr(spv, "Params", isolated_params)
+  CP = car.CarParams.new_message(brand="honda", carFingerprint=HONDA.HONDA_CIVIC_BOSCH.value)
+  CP.lateralTuning.init("pid")
+  params = isolated_params()
+  params.put("CarParamsPersistent", CP.to_bytes())
+  params.put_float("HondaLateralPidKpScale", 0.65)
+  params.put_float("HondaLateralPidKiScale", 3.07)
+
+  toggles = spv.StarPilotVariables().starpilot_toggles
+
+  assert toggles.car_make == "honda"
+  assert toggles.honda_lateral_pid_kp_scale == 0.65
+  assert toggles.honda_lateral_pid_ki_scale == 3.07
