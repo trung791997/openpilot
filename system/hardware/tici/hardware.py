@@ -516,6 +516,13 @@ class Tici(HardwareBase):
       except Exception:
         pass
 
+    try:
+      model = str(modem.Get(MM_MODEM, 'Model', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
+    except Exception:
+      model = ''
+    if model.startswith('EG916'):
+      self.configure_ppp_keepalive()
+
     # eSIM prime
     dest = "/etc/NetworkManager/system-connections/esim.nmconnection"
     if LPABase.is_comma_profile(sim_id) and not os.path.exists(dest):
@@ -528,6 +535,29 @@ class Tici(HardwareBase):
         # needs to be root
         os.system(f"sudo cp {tf.name} {dest}")
       os.system(f"sudo nmcli con load {dest}")
+
+  def configure_ppp_keepalive(self):
+    # The Quectel EG916 (comma 4) carries data over PPP on its only AT port (ttyUSB3), so
+    # ModemManager logs "connection monitoring is unsupported by the device" and cannot see a
+    # data session die: the modem stays "connected", the signal bars stay cached, and there is
+    # no internet until reboot. LCP echo lets pppd detect the dead link itself (3 missed echoes
+    # at 10 s), and unlimited autoconnect retries let NetworkManager bring it back.
+    # Checked on one device (T-Mobile, 2026-09-25): pppd ran with these values and the link held
+    # with no LCP drops for >3 min. A carrier that ignores LCP echo would drop every ~30 s.
+    subprocess.call(["sudo", "nmcli", "connection", "modify", "--temporary", "lte",
+                     "connection.autoconnect-retries", "0",
+                     "ppp.lcp-echo-interval", "10",
+                     "ppp.lcp-echo-failure", "3"])
+
+    # pppd reads these only when it starts, so restart an already-running session once
+    try:
+      pid = subprocess.check_output(["pgrep", "-x", "pppd"], encoding='utf8').split()[0]
+      with open(f"/proc/{pid}/cmdline", "rb") as f:
+        running_with_echo = b"lcp-echo-interval" in f.read()
+    except (subprocess.CalledProcessError, IndexError, OSError):
+      return  # no session yet, the first activation picks the settings up
+    if not running_with_echo:
+      subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
 
   def reboot_modem(self):
     modem = self.get_modem()
