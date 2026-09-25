@@ -6465,3 +6465,49 @@ Replaces the reverted on-road tuner (116/116b) with the FLM workflow the owner a
   - `HondaOverrideFadeUpSecs` 1.0, `HondaOverrideFadeDownSecs` 0.0.
 
   It overwrites the keys unconditionally, and on any device running this branch. Later slider changes persist. Evidence: unit test only; the 105 is not driven yet.
+
+## 118. HumanAcceleration and HumanFollowing built in (FrogPilot logic, no toggles), keeping StarPilot's 3 s closing-TTC fallback. Unit-test and replay evidence only; not driven.
+
+*What changed.*
+- **HumanAcceleration** (owner approved; `starpilot_acceleration.py`, `longcontrol.py`): FrogPilot-Testing 728f65472's
+  `get_max_accel_low_speeds` and `get_max_accel_ramp_off` are always applied (throttle side only; braking untouched).
+  The longcontrol starting state now outputs `a_target` instead of the `startAccel` shove, as FrogPilot does. Honda has
+  no `CP.startingState`, so the Civic goes stopping → pid and the launch half has no effect on it.
+- **HumanFollowing** (`long_mpc.py build_model_lead_trajectory`, `longitudinal_planner.py`): the model lead path is always
+  on and follows FrogPilot: radar dRel/vLead anchor plus the model's future x/v deltas, gated on model lead prob >
+  `LeadDetectionThreshold` (default 0.35, was a fixed 0.5), clipped by `min_x_lead`, and bounded by `x_lead_max` (the
+  distance the lead's speed can cover). `human_following_model()` is gone.
+- **Kept, StarPilot only:** the 3 s closing-TTC fallback (closing > 0.75 m/s and dRel/closing < 3 s → raw aLeadK
+  extrapolation). FrogPilot has none.
+- `starpilot_variables.py` sets `human_acceleration`/`human_following` True; the params are no longer read.
+- **Left for the owner:** the HumanAcceleration/HumanFollowing rows in `selfdrive/ui/layouts/settings/starpilot/longitudinal.py`,
+  `starpilot/common/assets/device_settings_layout.json` and `starpilot/common/safe_mode.py`. The agent's edit to remove them
+  was blocked by the permission classifier. The toggles are visible but inert.
+
+*Why the fallback stays (replay; `tools/longitudinal/alpha_closed_loop_replay.py --human-ab [--vision-only]`, variants
+`human_off`, `frog` = FrogPilot without fallback, `frog_guard` = with it; 22 routes 20c-26b, fused and radar dropped).*
+- HumanFollowing itself: with fusion it takes the big brakes off (26b 1605.4 −3.45 → −1.72, 1709.7 −3.45 → −1.73; 268
+  595.0 −3.47 → −2.16). With radar dropped it matters little (26b 1798.6 −3.42 vs −2.85). FrogPilot's path is the same
+  as or firmer than StarPilot's old one and never softer or later on a protected brake.
+- Fallback trip frames: 1023 fused, 725 radar-dropped. Brake episodes: 234 and 241. Changed by the fallback (min > 0.3 or
+  −1.5 crossing > 0.2 s): 4, all fused, all real in-lane leads, each firmer, none later: 236 557.1 −2.65 → −3.03,
+  23e 670.1 −2.89 → −3.29, 23e 2639.4 −3.11 → −3.49, 25f 483.1 −3.03 → −3.45 (a near-stopped car at 60 m, radar
+  and vision agree, closing 10-13 m/s; the checker's `genuine` flag missed it). Radar-dropped: 0 changed.
+- Against stock ACC (the owner's Honda Sensing check). 25b is the only stock-long rlog, 281 s engaged.
+  - At 25b 2658-2661 (replay time 1339), stock ACC_CONTROL.ACCEL_COMMAND began braking at TTC ≈ 6.5 s. It reached −1.1
+    at 5.5 s and −3.0 (its maximum) at 4.1 s; the lowest TTC was 2.5 s, and there was no stock FCW. The fallback trips
+    once on this drive, at TTC 2.76, while stock is already at −3.0.
+  - Owner-supplied Honda CMBS stages, unverified (Honda publishes no numbers): FCW about 2.0-2.4 s, light brake
+    1.4-1.6 s, full AEB 0.8-1.0 s. 3 s sits between stock ACC's onset and CMBS stage 1.
+  - Alpha long silences the Bosch radar ECU (`honda/interface.py:475`), so CMBS cannot back it up.
+  - At that 25b event every variant plans −3.47 but crosses −1.5 about 0.9 s after stock's command. This is the known
+    item 74 onset gap, not the fallback's doing. It is open-loop (the log is stock braking), so not conclusive.
+
+*Tests.* `test_longitudinal_planner.py`, `test_leads.py`, `test_longcontrol.py`, `test_starpilot_acceleration.py`: 617 pass.
+- Toggle and startAccel tests were rewritten: the launch follows `a_target`, and the limits apply with the toggle on or off.
+- New: `test_model_lead_trajectory_follows_lead_detection_threshold`.
+- The two urgent-raw-lead fallback tests pass unchanged.
+- The full-directory xdist run hung on a worker (`test_leads::test_radar_fault`); that file passes alone in 3 s.
+
+*Open.* A staged alpha-side warning or brake mirroring CMBS stage 1 (about 2.4 s) was raised, not built. It needs its own
+replay study and the owner's go-ahead.
