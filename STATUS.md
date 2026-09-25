@@ -6569,3 +6569,44 @@ committed.
 **Tests.** Eight new unit tests: the pass after persistence (on and off), spike, not-closing and cruise-source cases held, and the merge-floor release. Results: test_longitudinal_planner 504, test_longcontrol 89, test_leads 6, test_starpilot_acceleration 26, tools/longitudinal/tests 9, all passing.
 
 **Not verified.** Not driven. Needs a drive with a braking lead ahead and one with a lane change behind a braking car; watch for any brake on a far vision lead at a source switch. Replay variants `late_off` / `late_A` / `late_B` (`--late-ab`) reproduce this.
+
+## 120. The 4 brakes still late after 119: cause traced; two planner fixes tried and rejected. Replay evidence only; no code change.
+
+**Cause (open-loop replay, HEAD d2cd56e2, preceding segment included for warm-up).** It is not T_FOLLOW. When stock ACC crosses -1.5, the gap is already 2-17 m inside the desired distance in all four episodes, so the MPC knows it is too close.
+- **0262 379.4 (+1.05 s) and 25e 1002.0 (+0.35 s): HumanFollowing.** The model's lead path has the lead speeding up by 2-3.5 m/s over its horizon, while radar aLeadK reads -1 to -2.
+  - The 3 s TTC hand-back never trips at TTC 9-45 s.
+  - With the raw aLeadK path, 262 is +0.15 s and 25e is level with stock.
+  - On 25e the close-lead brake cap is also held at the -1.0 comfort floor (`get_close_lead_brake_cap(..., output_accel_min)`).
+- **25f 55.8 (+0.70 s) and 25b 1353.2 (+0.55 s): radard aLeadK lag.** aLeadK reads -0.6 to -1.0 while the lead is actually braking at about -1.4 to -1.5. HumanFollowing adds only 0.1-0.15 s here. This is an input problem, not a planner term.
+- All four lose about 0.1 s to 119's mildest-of-3-ticks filter, as designed.
+
+**Fixes tried** (both behind switches, replayed on the same 22 routes, then reverted; patch kept off-repo):
+- **F1a:** while aLeadK < -0.5, the model lead path may not speed up past radar vLead.
+- **F1b:** under the same condition, hand back to the aLeadK extrapolation (the pre-63 guard).
+- **F2:** the close-lead cap is built against the vehicle minimum and passes the comfort floor through 119's persistence filter.
+- **F2L:** F2 with the pass limited to -2.0.
+
+| | frames < -1.5 | frames < -2.5 | 0.5 s drops < -1.5 | new -1.5 crossings | deeper > 0.3 | later > 0.2 s | vs stock (23 brakes): median / late > 0.3 s |
+|---|---|---|---|---|---|---|---|
+| HEAD | 8853 | 2510 | 76 | - | - | - | -0.70 / 2 |
+| F1a | 8978 | 2542 | 76 | 1 | 2 | 0 | -0.70 / 2 |
+| F1b | 10050 | 3914 | 131 | 51 | 133 | 19 | -0.65 / 3 |
+| F2 | 10443 | 3692 | 140 | 39 | 104 | 1 | -1.20 / 2 |
+| F2L | 10443 | 3658 | 137 | 39 | 101 | 1 | -1.20 / 2 |
+
+**Reading (replay).**
+- **F1a** is nearly inert: 262 is only 0.05 s earlier.
+- **F1b** brings back the STATUS 62/63 harshness.
+  - On 262 it brakes 2 s before stock on a brief aLeadK dip, peaking at -2.51 where stock reached -1.61.
+  - Across the routes it adds brakes stock never made, e.g. 0239 707.0 at -3.88 where stock reached -1.38.
+- **F2/F2L** start every brake earlier, not just the late ones.
+  - They still leave 25b 1353.2 and 25f 55.8 late (+0.50 / +0.45 s).
+  - They add hard brakes where stock barely braked: 0266 147.8 at -3.42 vs stock -0.99; 0260 541.0 at -2.73 vs -0.3.
+  - Unlimited, the cap's physical-gap geometry asked -3.5 on 262 312-315, where stock held -1.3 to -2.3.
+  - The -2.0 limit does not hold because the cap also lowers `self.a_desired`, which seeds the next MPC solve, so the deeper plan returns through 119's MPC-demand pass.
+
+**Decision: ship neither.** The remaining late starts come from radard's aLeadK lag (25f, 25b) and the model path's optimism (262, 25e). Every planner-side correction tested costs more hard braking than it saves.
+- The stock-referenced set in this run is 23 brakes, of which HEAD is late on 2.
+- 262 379.4 and 25e 1002.0 are not stock-labelled here, so they do not appear in that column.
+
+**Next, if pursued:** aLeadK responsiveness in radard, weighed against the noise that 62/63 removed. Not started.
