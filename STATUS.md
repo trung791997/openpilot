@@ -6775,3 +6775,59 @@ committed.
 - **Rejected variant, no speed limit:** fixed the 12:28 pumping (8 m/s), but added 6 new <= -1.5 clusters at 8.6-11.5 m/s approaching stopped queues 47-72 m ahead (00000232 1232.9, 00000236 416.2, 00000239 206.5, 0000026c 758.8). 12:28 is therefore not fixed.
 - **Tests:** planner 512 (8 new), longcontrol 89, leads 6, tools/longitudinal/tests 9.
 - **Road check to do:** creep up to a stopped car at < 5 m/s with alpha long. There should be no surge after the initial brake.
+
+## 126. ICBM: gas-release floor limits, corroborated far-lead decel 0.8, set-speed hunting (hold rounding, last-step pacing, increase lockout). Unit tests and replay only; not driven.
+
+- **Problem (route `…00000271--4e9b9502db`, segs 7+, 5 far-lead bookmarks; /tmp/i271/report.md), limited road evidence:**
+  - The gas-release floor had no expiry and no lead exit. It held BM4 29:52 at 33.6 mph from a release 94.6 s earlier while the plan wanted 18-25 mph, and it held BM2 22:01 at 50 mph so no press went out.
+  - `FAR_LEAD_DECEL_MS2 = 1.5` assumed a decel the set-speed channel does not deliver. With set-speed-only decel on 271, stock ACCEL_COMMAND median/p10 was -0.39/-0.59 at 3-5 mph over the set, -0.59/-0.73 at 5-8, and -0.83/-0.89 at 8-12. aEgo median was -0.18..-0.27.
+  - Hunting: 214 direction reversals within 1.5 s; the longest ran 45 s at seg28+36.7.
+- **Hunting causes (logged reversals, classified against replayed targets; 271 / 26f / 270):**
+
+  | Cause | 271 | 26f | 270 |
+  |---|---|---|---|
+  | Press-to-cluster lag overshoot | 82 | 25 | 33 |
+  | Lead target moved | 49 | 33 | 27 |
+  | CSC controlling toggles | 44 | 4 | 13 |
+  | Hold-rounding mismatch | 21 | 11 | 3 |
+  | hasLead flips | 13 | 2 | 23 |
+
+  - Measured lag from first press frame to first cluster change: median 0.235 s, p90 0.39-0.42 s.
+  - Hold rounding: 49 mph shows as 78 km/h = 48.47 mph. The hold branch returned that value, it rounded to 48 against the corrected 49, and ICBM pressed DECEL (the 45 s seg28 episode is this plus CSC).
+- **Change** (`selfdrive/car/redneck_cruise.py`, `selfdrive/car/card.py`):
+  - **Floor.** `GAS_RELEASE_FLOOR_MAX_S = 15.0` after each release. The floor is also dropped (until the next release) when a lead that is closing and more than `GAS_RELEASE_FLOOR_LEAD_HEADWAY_S = 4.0` s ahead wants the set below the floor (`gas_release_floor_expired`).
+    - A nearer lead does not clear it. Stock ACC follows that lead itself (item 84), and a closing-only rule cleared the floor's own case, 262 1:29 (radar lead 43.6 m, 2.6 s, closing 2.2 m/s), one frame after the release.
+  - **Far lead.** `FAR_LEAD_DECEL_MS2 = 0.8` only for a corroborated lead (radar, or modelProb >= 0.7, `is_far_lead_corroborated`). Uncorroborated leads keep 1.5 (`FAR_LEAD_UNCORROBORATED_DECEL_MS2`), because vision vRel at 85-105 m was wrong in BM3/BM4.
+  - **Hold.** When the target equals `cruiseState.speedCluster`, `v_target` is the corrected cluster, so a hold sends nothing.
+  - **Pacing (counter sync only).** Within 1 mph of the target, one `PRESS_PULSE_S = 0.1` s pulse then a `PRESS_SETTLE_S = 0.45` s wait for the cluster. Larger gaps press as before.
+    - `INCREASE_AFTER_DECREASE_LOCKOUT_S = 1.0`: no INCREASE within 1 s of a DECREASE. It never delays a decrease.
+- **Replay** (`/tmp/icbm2/sim.py`: logged inputs, simulated counter-synced presses with a 0.15 s ECU delay calibrated to the measured lag, 10 Hz truncated-km/h cluster; open loop in vEgo; it overstates hunting vs the log, e.g. 271 base 352 vs logged 214, so compare base vs fix only):
+
+  | Route | Reversals < 1.5 s, base -> fix | Longest episode | Phantom lead drops mph | Open-road s > 2 mph below cruise target |
+  |---|---|---|---|---|
+  | 271 (seg 7+) | 352 -> 110 | 46 -> 21 | 252 -> 247 | 485.2 -> 479.6 |
+  | 26f | 174 -> 34 | 52 -> 5 | 63 -> 51 | 164.3 -> 160.9 |
+  | 270 | 100 -> 31 | 18 -> 6 | 71 -> 58 | 124.3 -> 125.3 |
+  | 266 | 309 -> 83 | 37 -> 7 | 201 -> 198 | 227.0 -> 240.9 |
+  | 267 | 267 -> 49 | 37 -> 7 | 83 -> 70 | 134.0 -> 133.8 |
+  | 262 | 72 -> 20 | | 63 -> 47 | 148.0 -> 148.7 |
+  | 263 | 299 -> 83 | | 191 -> 165 | 337.4 -> 335.4 |
+
+  - Most of the reversal cut comes from pacing; the lockout adds the rest (271 150 -> 120 in the pre-headway run).
+  - 271 bookmarks, set at -2 s (base -> fix): BM0 34.8 -> 31.7; BM2 49.7 (floor 50, no press) -> 41.6 (press from -4.66 s); BM4 33.6 (floor 34) -> 24.9. BM1, BM3 and 32:01 are unchanged at -2 s.
+  - 262 1:29 replays identically to base (floor held, set walks 24.9 -> 37.9).
+- **Beep (271 segs 7+), log decode only:**
+  - ACC_HUD CHIME is always 0. The 0x1FA byte-5 "CHIME" value 64 pulses 13 times, and all 13 coincide within 0.1 s with a stock ACC HUD_LEAD 1<->2 transition. 5 of those have no ICBM frame within 3 s.
+  - Reading [INFERRED]: the audible beep follows stock ACC target acquire/loss, not ICBM presses. No cheap ICBM-only beep class was found.
+- **Tests:**
+  - `test_redneck_cruise.py`: 81 pass (12 new).
+  - gas_override 2, cruise_speed 42, honda `test_icbm_counter_sync` 5, starpilot_vcruise 94, speed_limit_controller 52 and `test_longitudinal_planner.py` 512 pass.
+  - Each new test group fails with its fix reverted.
+- **Road check to do:**
+  - Re-drive 271-style far-lead approaches: the set should drop from a radar-corroborated lead at 80-100 m.
+  - After a gas release on an open road, the set should hold the release speed for up to 15 s, and it must not fall behind a nearby lead.
+  - Cruise at a steady target: expect no 1-mph DECEL/ACCEL alternation on the cluster.
+- **Open:**
+  - CSC controlling-flag toggles still move the target (44 reversals on 271).
+  - 1-mph approaches are up to ~0.55 s slower, and an increase waits 1 s after a decrease.
+  - No pause on the ACC_CONTROL byte-6 stall flag (item 94).

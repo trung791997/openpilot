@@ -26,7 +26,8 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, is_speed_button_press, select_redneck_target_speed,
+from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, gas_release_floor_expired, is_far_lead_corroborated,
+                                                    is_speed_button_press, select_redneck_target_speed,
                                                     update_gas_release_floor, update_launch_state, want_gas_snap)
 from openpilot.selfdrive.car.car_specific import MockCarState
 
@@ -480,10 +481,12 @@ class Car:
       return
 
     v_target_ms, lead_present = self._get_redneck_target_speed(CS, CC)
+    counter_sync = bool(getattr(self.starpilot_toggles, "icbm_counter_sync", False))
     send_button, v_target = self.redneck_cruise.run(CS, CC, v_target_ms, self.is_metric, lead_present=lead_present,
-                                                    gas_snap=getattr(self, "redneck_gas_snap", False))
+                                                    gas_snap=getattr(self, "redneck_gas_snap", False),
+                                                    counter_sync=counter_sync)
     self.CI.CS.redneck_send_button = send_button
-    self.CI.CS.redneck_counter_sync = bool(getattr(self.starpilot_toggles, "icbm_counter_sync", False))
+    self.CI.CS.redneck_counter_sync = counter_sync
     self.CI.CS.redneck_v_target = v_target
 
   def _get_redneck_target_speed(self, CS: car.CarState, CC: car.CarControl) -> tuple[float, bool]:
@@ -510,6 +513,7 @@ class Car:
     lead_distance_m = 0.0
     lead_rel_speed_ms = 0.0
     lead_speed_ms = None  # ICBMFarLead: leadOne.vLead, only when the toggle is on
+    lead_corroborated = False  # radar-backed or modelProb >= 0.7: the far-lead target uses the lower decel
     lookahead_points = REDNECK_DECREASE_LOOKAHEAD_POINTS
 
     plan_speeds = []
@@ -528,6 +532,7 @@ class Car:
             lead_rel_speed_ms = float(lead.vRel)
             if getattr(self.starpilot_toggles, "icbm_far_lead", False):
               lead_speed_ms = float(lead.vLead)
+              lead_corroborated = is_far_lead_corroborated(getattr(lead, "radar", False), getattr(lead, "modelProb", 0.0))
 
     # Launch: the cruise target (SLC and CSC limits still apply) with no plan or lead hold.
     launch_target_speed = select_redneck_target_speed(
@@ -553,6 +558,7 @@ class Car:
       lead_speed_ms=lead_speed_ms,
       slc_target_speed_ms=slc_target_speed,
       csc_target_speed_ms=csc_target_speed,
+      lead_corroborated=lead_corroborated,
     )
     driver_button = is_speed_button_press(getattr(CS, "buttonEvents", []))
     enabled = bool(getattr(CC, "enabled", True))
@@ -594,6 +600,15 @@ class Car:
         snapped=getattr(self, "redneck_gas_snapped", False),
       )
       self.redneck_gas_snapped = gas_snapped
+      # A new release (re)starts the floor's clock; a far closing lead that wants the set lower, or
+      # GAS_RELEASE_FLOOR_MAX_S, drops the floor until the next release (route 271 BM2/BM4, STATUS 126).
+      if gas_release_floor > 0.0:
+        new_release = getattr(self, "redneck_gas_pressed_prev", False) and not gas_pressed
+        age_s = 0.0 if new_release else getattr(self, "redneck_gas_release_floor_age", 0.0) + DT_CTRL
+        self.redneck_gas_release_floor_age = age_s
+        if gas_release_floor_expired(age_s, lead_present, lead_rel_speed_ms, normal_target_speed,
+                                     min(gas_release_floor, launch_target_speed), lead_distance_m, v_ego):
+          gas_release_floor = 0.0
     self.redneck_gas_release_floor = gas_release_floor
     self.redneck_gas_pressed_prev = gas_pressed
 

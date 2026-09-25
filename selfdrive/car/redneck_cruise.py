@@ -28,6 +28,21 @@ MANUAL_BUTTON_HELD_MAX_S = 10.0
 # (270 2:36-2:45, six presses in 8 s for one gap step). Repeat presses came 0.69-0.71 s after the
 # previous release, so a 0.5 s window would let a burst land between them; 1.0 s covers them.
 SETTING_BUTTON_INACTIVE_TIMER = 1.0
+# Press pacing near the target (counter sync only). A counter-synced press lands on the cluster 0.15-0.42 s
+# after its first frame (p10-p90, median 0.235 s; routes 271, 26f, 270, log decode) while pairs go out every
+# 0.16 s (decel) / 0.2 s (accel), so pressing until the cluster shows the target leaves one step in flight
+# and overshoots by 1 mph, and the next run reverses it. That was the largest single cause of the direction
+# reversals in the 271 replay (153 of 352 simulated). With one step (1 mph/km/h) left, ICBM now waits
+# PRESS_SETTLE_S after its last press frame (>= the p90 lag, so an in-flight step shows first) and then sends
+# one PRESS_PULSE_S pulse (one pressed pair: 2 car frames at 25 Hz). Runs with more than one step left are
+# unchanged, so a large lead-driven drop runs at the full rate down to the last mph.
+PRESS_SETTLE_S = 0.45
+PRESS_PULSE_S = 0.1
+# After a decrease press, ICBM does not start an increase for INCREASE_AFTER_DECREASE_LOCKOUT_S. Only the
+# increase is held (never a decrease), so it cannot delay a lead-driven drop. 271 replay: the curve-speed
+# target switching on and off every ~1 s (seg 24-25) and lead targets moving by 1-3 mph drove the rest of
+# the reversals.
+INCREASE_AFTER_DECREASE_LOCKOUT_S = 1.0
 LEAD_RECOVERY_LOOKAHEAD_POINTS = 4
 LEAD_RECOVERY_HOLD_BUFFER_MS = 1.5 * CV.MPH_TO_MS
 LEAD_COAST_BUFFER_MS = 1.0 * CV.MPH_TO_MS
@@ -50,10 +65,18 @@ LEAD_DEPARTURE_PLAN_POINTS = 3
 # stayed at the set speed until the lead was 83 m away, then wanted 22 -> 8 m/s in 3 s and the car's own
 # ACC braked -3.5). This target is the speed from which a constant FAR_LEAD_DECEL_MS2 stop reaches the
 # lead's speed with FAR_LEAD_HEADWAY_S of headway (never under FAR_LEAD_MIN_GAP_M). It is taken as the
-# minimum with the plan-derived target, so it only ever lowers the set speed. 1.5 m/s^2 is what the
-# set speed can follow at ~2 steps/s (1 mph/step) without the stock ACC having to brake hard. Replay
-# evidence only, never driven.
-FAR_LEAD_DECEL_MS2 = 1.5
+# minimum with the plan-derived target, so it only ever lowers the set speed.
+# Was 1.5 m/s^2 for every lead (STATUS 94, 25e replay: "what the set speed can follow at ~2 steps/s").
+# Route 271 (log decode, limited road evidence) measured what a lowered set speed actually buys from
+# stock ACC with no closing lead: ACCEL_COMMAND median -0.39 / -0.59 / -0.83 m/s^2 at 3-5 / 5-8 / 8-12 mph
+# over the set (p10 -0.89), aEgo only -0.18..-0.27. So 1.5 assumed a decel the set-speed channel cannot
+# deliver and started the walk late (BM0 9:26, BM4 29:52). 0.8 is what the channel reaches at 8-12 mph
+# over the set. It applies only to a corroborated lead (radar-backed, or modelProb >= 0.7): vision-only
+# range and closing speed at 85-105 m were wrong in 271 BM3 (+35-45 m) and BM4 (vRel about half of radar),
+# so an uncorroborated lead keeps the old 1.5. Replay evidence only (STATUS 126), never driven.
+FAR_LEAD_DECEL_MS2 = 0.8
+FAR_LEAD_UNCORROBORATED_DECEL_MS2 = 1.5
+FAR_LEAD_CORROBORATED_MODEL_PROB = 0.7
 FAR_LEAD_MIN_GAP_M = 6.0
 FAR_LEAD_HEADWAY_S = 1.5
 
@@ -75,6 +98,21 @@ LAUNCH_CAUGHT_UP_MARGIN_MS = 2.0 * CV.MPH_TO_MS
 # disengage. Route 262 1:29 and 2:25: the old path moved openpilot's v_cruise (the 55 mph ICBM max), not
 # the dash set speed, so a release at 37 mph over a 24.9 mph set speed changed nothing.
 GAS_RELEASE_SET_MARGIN_MS = 1.0 * CV.MPH_TO_MS
+# The floor is for the moments right after a release on an open road. It used to last until a button, the
+# brake, a stop or a disengage, so it also held the set speed up against a lead the car was closing on:
+# route 271 (replay of the floor on logged inputs) had it block lead-driven set drops for ~35 s in 5 episodes;
+# BM4 29:52 held 33.6 mph from a release 94.6 s earlier while the plan wanted 18-25 mph, and BM2 22:01 held
+# 50 mph so no press went out at all. The floor now expires GAS_RELEASE_FLOOR_MAX_S after the release, and is
+# dropped for good earlier once a lead that is closing (vRel < -LEAD_CLOSING_REL_SPEED_MIN_MS) and still more
+# than GAS_RELEASE_FLOOR_LEAD_HEADWAY_S ahead wants the set lower than the floor (BM4: radar lead at 87-91 m,
+# ~5 s at 40 mph). A nearer lead does not clear it: stock ACC follows that lead on its own radar whatever the
+# set speed (STATUS 84), and the floor's own motivating case, route 262 1:29 (release at 37 mph behind a radar
+# lead at 43.6 m, 2.6 s, closing 2.2 m/s), was cleared on the frame after the release by a closing-only rule.
+# 4.0 s is LEAD_PROACTIVE_COAST_HEADWAY_MAX_S, the headway ICBM already treats as the lead's own range.
+# On an open road the target is the cruise target, which already caps the floor, so neither limit changes
+# what the floor does there. Replay evidence only (STATUS 126).
+GAS_RELEASE_FLOOR_MAX_S = 15.0
+GAS_RELEASE_FLOOR_LEAD_HEADWAY_S = 4.0
 # Gas snap: the floor alone ramps the set speed at 1 mph per press after the release (route 263 13:44:
 # 26 -> 41 mph took 3.1 s while the car slowed 42.4 -> 40.4 mph), so while the gas is still held ICBM
 # pulses DECEL_SET, which on a Honda snaps the set speed to vEgo under gas (route 260 seg 9: 29 -> 32 mph).
@@ -113,7 +151,8 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
                                 lead_rel_speed_ms: float = 0.0,
                                 lead_speed_ms: float | None = None,
                                 slc_target_speed_ms: float = 0.0,
-                                csc_target_speed_ms: float = 0.0) -> float:
+                                csc_target_speed_ms: float = 0.0,
+                                lead_corroborated: bool = False) -> float:
   target_speed_ms = float(speed_cluster_ms)
   if slc_target_speed_ms > 0:
     target_speed_ms = float(slc_target_speed_ms)
@@ -135,7 +174,7 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
   # ICBMFarLead: inf (no effect) unless card.py passed the lead speed and the lead is closing.
   far_lead_target_ms = float("inf")
   if lead_closing and lead_speed_ms is not None:
-    far_lead_target_ms = get_far_lead_target_ms(lead_distance_m, lead_speed_ms)
+    far_lead_target_ms = get_far_lead_target_ms(lead_distance_m, lead_speed_ms, lead_corroborated)
 
   if allow_plan_decrease and len(plan_speeds_ms) > 0:
     if lead_present and not lead_closing and target_speed_ms > speed_cluster_ms and plan_speeds_ms[0] > speed_cluster_ms:
@@ -194,13 +233,21 @@ def get_lead_coast_buffer_ms(speed_cluster_ms: float, lead_distance_m: float, le
   return LEAD_COAST_BUFFER_MS + extra_buffer_ms * (0.5 + (0.5 * headway_factor))
 
 
-def get_far_lead_target_ms(lead_distance_m: float, lead_speed_ms: float) -> float:
-  """Speed from which a FAR_LEAD_DECEL_MS2 decel reaches lead_speed_ms at the desired gap. inf if no lead."""
+def is_far_lead_corroborated(radar: bool, model_prob: float) -> bool:
+  """A lead whose range and closing speed are trusted for the lower far-lead decel: radar-backed, or a
+  confident vision lead."""
+  return bool(radar) or float(model_prob) >= FAR_LEAD_CORROBORATED_MODEL_PROB
+
+
+def get_far_lead_target_ms(lead_distance_m: float, lead_speed_ms: float, corroborated: bool = False) -> float:
+  """Speed from which a constant decel (FAR_LEAD_DECEL_MS2 for a corroborated lead, else
+  FAR_LEAD_UNCORROBORATED_DECEL_MS2) reaches lead_speed_ms at the desired gap. inf if no lead."""
   if lead_distance_m <= 0.0:
     return float("inf")
+  decel_ms2 = FAR_LEAD_DECEL_MS2 if corroborated else FAR_LEAD_UNCORROBORATED_DECEL_MS2
   lead_speed_ms = max(float(lead_speed_ms), 0.0)
   gap_m = max(FAR_LEAD_MIN_GAP_M, FAR_LEAD_HEADWAY_S * lead_speed_ms)
-  return math.sqrt(max(0.0, lead_speed_ms ** 2 + 2.0 * FAR_LEAD_DECEL_MS2 * (lead_distance_m - gap_m)))
+  return math.sqrt(max(0.0, lead_speed_ms ** 2 + 2.0 * decel_ms2 * (lead_distance_m - gap_m)))
 
 
 def get_lead_departure_boost_ms(speed_cluster_ms: float, lead_distance_m: float, lead_rel_speed_ms: float,
@@ -266,6 +313,17 @@ def update_gas_release_floor(floor_ms: float, gas_pressed_prev: bool, gas_presse
       return round(v_ego * CV.MS_TO_KPH) * CV.KPH_TO_MS
     return round(v_ego * CV.MS_TO_MPH) * CV.MPH_TO_MS
   return floor_ms
+
+
+def gas_release_floor_expired(age_s: float, lead_present: bool, lead_rel_speed_ms: float, normal_target_ms: float,
+                              floored_target_ms: float, lead_distance_m: float = 0.0, v_ego: float = 0.0) -> bool:
+  """True once the gas-release floor should be dropped: GAS_RELEASE_FLOOR_MAX_S after the release, or when
+  a closing lead beyond GAS_RELEASE_FLOOR_LEAD_HEADWAY_S wants the set speed below the floored target."""
+  if age_s > GAS_RELEASE_FLOOR_MAX_S:
+    return True
+  lead_closing = lead_present and lead_rel_speed_ms < -LEAD_CLOSING_REL_SPEED_MIN_MS
+  lead_far = lead_distance_m > GAS_RELEASE_FLOOR_LEAD_HEADWAY_S * max(v_ego, 1.0)
+  return lead_closing and lead_far and normal_target_ms < floored_target_ms
 
 
 def want_gas_snap(enabled: bool, gas_pressed: bool, driver_button: bool, brake_pressed: bool, v_ego: float,
@@ -335,6 +393,9 @@ class RedneckCruise:
     self.cruise_button_held = dict(CRUISE_BUTTON_TIMERS)
     self.manual_button_pressed = False
     self.gas_snap_frame = 0
+    self.press_frames = 0
+    self.idle_frames = int(PRESS_SETTLE_S / DT_CTRL)
+    self.frames_since_decrease = int(INCREASE_AFTER_DECREASE_LOCKOUT_S / DT_CTRL)
 
   @staticmethod
   def _send_button_for_state(state: str) -> int:
@@ -361,6 +422,14 @@ class RedneckCruise:
     if not is_metric and getattr(self.CP, "brand", "") == "honda":
       cluster += HONDA_KPH_TRUNCATION_MPH
     self.v_cruise_cluster = round(cluster)
+    # The hold branches of select_redneck_target_speed return the cluster speed itself. On a Honda in mph
+    # that is the truncated km/h value, which rounds one mph lower than the truncation-corrected cluster
+    # for about a third of set speeds (49 mph -> 78 km/h -> 48.47 mph: target 48, cluster 49), so "hold"
+    # pressed DECEL, the next branch pressed RES+ and the pair repeated. Route 271 seg28+36.7 (replay):
+    # 34 reversals in 45 s cycling 48 <-> 49 mph behind a lead pulling away. A target equal to the cluster
+    # is a hold.
+    if abs(v_target_ms - CS.cruiseState.speedCluster) < 1e-3:
+      self.v_target = self.v_cruise_cluster
 
   def _update_readiness(self, CS: car.CarState, CC: car.CarControl) -> None:
     update_manual_button_timers(CS, self.cruise_button_timers, self.cruise_button_held)
@@ -437,8 +506,29 @@ class RedneckCruise:
     self.gas_snap_frame += 1
     return SEND_BUTTON_DECREASE if phase < int(GAS_SNAP_PRESS_S / DT_CTRL) else SEND_BUTTON_NONE
 
+  def _pace_presses(self, send_button: int) -> int:
+    """Counter sync only: settle-then-pulse for the last step, and no increase right after a decrease."""
+    self.frames_since_decrease += 1
+    if send_button == SEND_BUTTON_INCREASE and self.frames_since_decrease < int(INCREASE_AFTER_DECREASE_LOCKOUT_S / DT_CTRL):
+      send_button = SEND_BUTTON_NONE
+    if send_button != SEND_BUTTON_NONE and abs(self.v_target - self.v_cruise_cluster) <= 1:
+      if self.press_frames == 0 and self.idle_frames < int(PRESS_SETTLE_S / DT_CTRL):
+        send_button = SEND_BUTTON_NONE
+      elif self.press_frames >= int(PRESS_PULSE_S / DT_CTRL):
+        self.press_frames = 0
+        send_button = SEND_BUTTON_NONE
+    if send_button == SEND_BUTTON_NONE:
+      self.press_frames = 0
+      self.idle_frames += 1
+    else:
+      self.press_frames += 1
+      self.idle_frames = 0
+      if send_button == SEND_BUTTON_DECREASE:
+        self.frames_since_decrease = 0
+    return send_button
+
   def run(self, CS: car.CarState, CC: car.CarControl, v_target_ms: float, is_metric: bool,
-          lead_present: bool = False, gas_snap: bool = False) -> tuple[int, int]:
+          lead_present: bool = False, gas_snap: bool = False, counter_sync: bool = False) -> tuple[int, int]:
     if self.FPCP.pcmCruiseSpeed or not self.FPCP.redneckCruiseAvailable:
       self._reset()
       return SEND_BUTTON_NONE, 0
@@ -446,6 +536,8 @@ class RedneckCruise:
     self._update_calculations(CS, v_target_ms, is_metric)
     self._update_readiness(CS, CC)
     send_button = self._update_state_machine(lead_present)
+    if counter_sync:
+      send_button = self._pace_presses(send_button)
     snap_button = self._gas_snap_button(CS, CC, gas_snap)
     if snap_button != SEND_BUTTON_NONE:
       send_button = snap_button

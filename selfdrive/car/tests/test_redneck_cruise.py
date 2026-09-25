@@ -8,6 +8,12 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.card import Car
 from openpilot.selfdrive.car.redneck_cruise import (
   DECREASE_INACTIVE_TIMER,
+  FAR_LEAD_DECEL_MS2,
+  FAR_LEAD_UNCORROBORATED_DECEL_MS2,
+  GAS_RELEASE_FLOOR_MAX_S,
+  INCREASE_AFTER_DECREASE_LOCKOUT_S,
+  PRESS_PULSE_S,
+  PRESS_SETTLE_S,
   GAS_SNAP_INTERVAL_S,
   GAS_SNAP_PRESS_S,
   INCREASE_INACTIVE_TIMER,
@@ -22,6 +28,7 @@ from openpilot.selfdrive.car.redneck_cruise import (
   get_far_lead_target_ms,
   get_lead_coast_buffer_ms,
   get_lead_departure_boost_ms,
+  is_far_lead_corroborated,
   is_speed_button_press,
   select_redneck_target_speed,
   update_gas_release_floor,
@@ -928,3 +935,174 @@ class TestHondaClusterTruncation(unittest.TestCase):
   def test_metric_and_other_brands_unchanged(self):
     self.assertEqual(86, self._cluster(86, metric=True))
     self.assertEqual(53, self._cluster(86, brand="hyundai"))
+
+
+class TestFarLeadCorroboration(unittest.TestCase):
+  """STATUS 126: the lower far-lead decel only for a radar-backed or confident vision lead."""
+
+  def test_corroboration_gate(self):
+    self.assertTrue(is_far_lead_corroborated(True, 0.0))
+    self.assertTrue(is_far_lead_corroborated(False, 0.7))
+    self.assertFalse(is_far_lead_corroborated(False, 0.69))
+
+  def test_corroborated_lead_uses_lower_decel(self):
+    # stopped lead 100 m ahead: d_min = 6 m -> sqrt(2 * decel * 94)
+    self.assertAlmostEqual(get_far_lead_target_ms(100.0, 0.0, corroborated=True), (2 * FAR_LEAD_DECEL_MS2 * 94.0) ** 0.5, places=6)
+    self.assertAlmostEqual(get_far_lead_target_ms(100.0, 0.0), (2 * FAR_LEAD_UNCORROBORATED_DECEL_MS2 * 94.0) ** 0.5, places=6)
+    self.assertLess(get_far_lead_target_ms(100.0, 0.0, corroborated=True), get_far_lead_target_ms(100.0, 0.0))
+
+  def _card_target(self, radar, model_prob):
+    # Route 271 BM4 (29:52.9 - 4.5 s, replay): 41.6 mph set, radar lead 82 m closing 12.5 m/s, chill plan still at cruise.
+    t = TestRedneckCruise()
+    card = t._make_card_with_lead(v_cruise_kph=80.0, cluster_ms=18.6, plan=[19.9] * 5, d_rel=82.1, v_rel=-12.5, v_lead=6.3)
+    lead = card.sm["radarState"].leadOne
+    lead.radar, lead.modelProb = radar, model_prob
+    card.starpilot_toggles.icbm_far_lead = True
+    return Car._get_redneck_target_speed(card, card.CS, card.CC)[0]
+
+  def test_card_passes_corroboration(self):
+    lower = get_far_lead_target_ms(82.1, 6.3, corroborated=True)
+    self.assertAlmostEqual(self._card_target(True, 0.3), lower, places=6)
+    self.assertAlmostEqual(self._card_target(False, 0.77), lower, places=6)
+    self.assertAlmostEqual(self._card_target(False, 0.5), get_far_lead_target_ms(82.1, 6.3), places=6)
+
+
+class TestGasReleaseFloorLimits(unittest.TestCase):
+  """STATUS 126: the gas-release floor no longer holds the set speed up against a closing lead, and expires."""
+
+  def _card(self):
+    starpilot_plan = SimpleNamespace(vCruise=55.0 * CV.MPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), is_metric=False,
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False, set_speed_on_gas_release=True))
+    return card, starpilot_plan
+
+  def _run(self, card, starpilot_plan, v_mph, gas, set_mph, plan_mph, v_rel=None, d_rel=90.0):
+    plan = plan_mph * CV.MPH_TO_MS
+    longitudinal_plan = SimpleNamespace(speeds=[plan] * 10, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+    radar_state = SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=d_rel, vRel=v_rel if v_rel is not None else 0.0,
+                                                          vLead=v_mph * CV.MPH_TO_MS, radar=True, modelProb=0.9))
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": v_rel is not None}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan,
+                                  "radarState": radar_state}.__getitem__
+    card.sm = sm
+    car_state = SimpleNamespace(vEgo=v_mph * CV.MPH_TO_MS, standstill=False, gasPressed=gas, brakePressed=False, buttonEvents=[],
+                                vCruise=55.0 * CV.MPH_TO_KPH, cruiseState=SimpleNamespace(speedCluster=set_mph * CV.MPH_TO_MS))
+    car_control = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    return Car._get_redneck_target_speed(card, car_state, car_control)[0]
+
+  def _release(self, card, plan):
+    self._run(card, plan, 37.0, True, 24.9, 32.0)
+    return self._run(card, plan, 37.0, False, 24.9, 32.0)
+
+  def test_closing_lead_clears_floor_for_good(self):
+    # 271 BM4: a slower car revealed after a release; the lead-driven drop must not be held at the floor.
+    card, plan = self._card()
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, self._release(card, plan), places=2)
+    self.assertLess(self._run(card, plan, 37.0, False, 37.0, 25.0, v_rel=-5.0), 30.0 * CV.MPH_TO_MS)
+    self.assertEqual(0.0, card.redneck_gas_release_floor)
+    # The lead stops closing (or leaves): the floor does not come back until the next release.
+    self.assertLess(self._run(card, plan, 30.0, False, 30.0, 25.0, v_rel=0.0), 30.0 * CV.MPH_TO_MS)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, self._release(card, plan), places=2)
+
+  def test_lead_not_closing_keeps_floor(self):
+    card, plan = self._card()
+    self._release(card, plan)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, self._run(card, plan, 37.0, False, 37.0, 32.0, v_rel=0.0), places=2)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, self._run(card, plan, 37.0, False, 37.0, 32.0, v_rel=1.0), places=2)
+
+  def test_near_closing_lead_keeps_floor(self):
+    # Route 262 1:29, the floor's own case: release at 37 mph over a 24.9 set behind a radar lead at 43.6 m
+    # (2.6 s) closing 2.2 m/s. Stock ACC follows that lead itself; the floor must hold the release speed.
+    card, plan = self._card()
+    self._release(card, plan)
+    for _ in range(50):
+      target = self._run(card, plan, 37.0, False, 30.0, 25.0, v_rel=-2.2, d_rel=43.6)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, target, places=2)
+    self.assertGreater(card.redneck_gas_release_floor, 0.0)
+
+  def test_floor_expires(self):
+    card, plan = self._card()
+    self._release(card, plan)
+    frames = int(GAS_RELEASE_FLOOR_MAX_S / DT_CTRL)
+    for _ in range(frames - 2):
+      target = self._run(card, plan, 37.0, False, 37.0, 32.0)
+    self.assertAlmostEqual(37.0 * CV.MPH_TO_MS, target, places=2)
+    for _ in range(3):
+      target = self._run(card, plan, 37.0, False, 37.0, 32.0)
+    self.assertLess(target, 37.0 * CV.MPH_TO_MS)
+    self.assertEqual(0.0, card.redneck_gas_release_floor)
+
+
+class TestHoldAtTruncatedCluster(unittest.TestCase):
+  def test_target_equal_to_cluster_holds(self):
+    # Route 271 seg28+36.7: 49 mph shows as 78 km/h = 48.47 mph. The hold branch returns that value; it used to
+    # round to 48 against a corrected cluster of 49 and press DECEL.
+    redneck = RedneckCruise(SimpleNamespace(brand="honda"), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+    cluster_ms = 78 * CV.KPH_TO_MS
+    cs = SimpleNamespace(cruiseState=SimpleNamespace(speedCluster=cluster_ms), buttonEvents=[], gasPressed=False)
+    cc = SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False))
+    buttons = [redneck.run(cs, cc, cluster_ms, False)[0] for _ in range(50)]
+    self.assertEqual([SEND_BUTTON_NONE] * 50, buttons)
+    self.assertEqual(49, redneck.v_target)
+    # One mph below the held value is still a decrease.
+    self.assertEqual(SEND_BUTTON_DECREASE, [redneck.run(cs, cc, 48.0 * CV.MPH_TO_MS, False)[0] for _ in range(20)][-1])
+
+
+class TestPressPacing(unittest.TestCase):
+  """STATUS 126: with counter sync, the last step is settle-then-pulse and an increase waits after a decrease."""
+  CC = SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False))
+
+  def setUp(self):
+    self.redneck = RedneckCruise(SimpleNamespace(), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+
+  def _buttons(self, target_mph, cluster_mph, seconds, counter_sync=True):
+    cs = SimpleNamespace(cruiseState=SimpleNamespace(speedCluster=cluster_mph * CV.MPH_TO_MS), buttonEvents=[], gasPressed=False)
+    return [self.redneck.run(cs, self.CC, target_mph * CV.MPH_TO_MS, False, counter_sync=counter_sync)[0]
+            for _ in range(int(seconds / DT_CTRL))]
+
+  @staticmethod
+  def _runs(buttons, button):
+    runs, gaps, n, gap = [], [], 0, 0
+    for b in buttons:
+      if b == button:
+        if n == 0 and runs:
+          gaps.append(gap)
+        n += 1
+        gap = 0
+      else:
+        if n:
+          runs.append(n)
+        n = 0
+        gap += 1
+    if n:
+      runs.append(n)
+    return runs, gaps
+
+  def test_last_step_is_a_pulse_then_settle(self):
+    runs, gaps = self._runs(self._buttons(49.0, 50.0, 2.0), SEND_BUTTON_DECREASE)
+    self.assertGreaterEqual(len(runs), 2)
+    self.assertTrue(all(r == int(PRESS_PULSE_S / DT_CTRL) for r in runs), runs)
+    self.assertTrue(all(g >= int(PRESS_SETTLE_S / DT_CTRL) for g in gaps), gaps)
+
+  def test_without_counter_sync_unchanged(self):
+    buttons = self._buttons(49.0, 50.0, 1.0, counter_sync=False)
+    runs, _ = self._runs(buttons, SEND_BUTTON_DECREASE)
+    self.assertEqual(1, len(runs))
+    self.assertEqual(SEND_BUTTON_DECREASE, buttons[-1])
+
+  def test_large_drop_not_delayed(self):
+    synced = self._buttons(30.0, 50.0, 1.0)
+    self.redneck = RedneckCruise(SimpleNamespace(), SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True))
+    legacy = self._buttons(30.0, 50.0, 1.0, counter_sync=False)
+    self.assertEqual(synced, legacy)
+    self.assertEqual(SEND_BUTTON_DECREASE, synced[-1])
+
+  def test_increase_waits_after_decrease_but_decrease_never_waits(self):
+    self._buttons(40.0, 50.0, 0.5)  # decreasing
+    buttons = self._buttons(55.0, 45.0, 2.0)
+    first_increase = buttons.index(SEND_BUTTON_INCREASE)
+    self.assertGreaterEqual(first_increase, int(INCREASE_AFTER_DECREASE_LOCKOUT_S / DT_CTRL) - 1)
+    buttons = self._buttons(40.0, 50.0, 0.5)
+    self.assertLessEqual(buttons.index(SEND_BUTTON_DECREASE), int(DECREASE_INACTIVE_TIMER / DT_CTRL) + 1)
