@@ -50,16 +50,20 @@ Usage
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
 import sys
 from pathlib import Path
 
+import numpy as np
+
 os.environ.setdefault("DEBUG", "0")
 
 from openpilot.selfdrive.controls import radard as RDM
 from openpilot.selfdrive.controls.lib import longitudinal_planner as LP
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc as LM
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.tools.lib.logreader import LogReader
 from openpilot.tools.longitudinal.alpha_open_loop_replay import (
@@ -101,6 +105,42 @@ FIX_VIS_X_ABS = 5.0
 FIX_VIS_X_REL = 0.15
 FIX_VIS_DV = 5.0
 FIX_VARIANTS = ("hold", "visdis")
+# --human-ab: HumanFollowing/HumanAcceleration both off, FrogPilot's HumanFollowing path
+# (FrogPilot-Testing 728f65472 long_mpc.py process_lead), and that path with StarPilot's former
+# 3 s closing-TTC fallback kept ('frog_guard', STATUS 63). Trips of the fallback are counted per frame.
+HUMAN_VARIANTS = ("human_off", "frog", "frog_guard")
+GUARD_TTC = 3.0
+GUARD_MIN_CLOSING = 0.75
+
+
+def frogpilot_model_lead_trajectory(lead_detection_probability, guard=False, trips=None):
+  """FrogPilot's HumanFollowing lead path: radar anchor + model deltas; `guard` adds the 3 s TTC fallback."""
+  def build(model_lead, radar_lead, v_ego, *_):
+    if model_lead is None or radar_lead is None or not bool(getattr(radar_lead, "status", False)):
+      return None
+    if not float(model_lead.prob) > lead_detection_probability:
+      return None
+    if guard:
+      closing = max(0.0, float(v_ego) - float(radar_lead.vLead))
+      if closing > GUARD_MIN_CLOSING and float(radar_lead.dRel) / closing < GUARD_TTC:
+        if trips is not None:
+          trips.append(1)
+        return None
+    model_x = np.asarray(model_lead.x, dtype=np.float64)
+    model_v = np.asarray(model_lead.v, dtype=np.float64)
+    x_lead_traj = float(radar_lead.dRel) + (model_x - model_x[0])
+    v_lead_traj = float(radar_lead.vLead) + (model_v - model_v[0])
+    v_ego = float(v_ego)
+    v_lead_0 = v_lead_traj[0]
+    min_x_lead = 0.5 * (v_ego + v_lead_0) * (v_ego - v_lead_0) / (-LM.ACCEL_MIN * 2)
+    x_lead_traj[0] = max(x_lead_traj[0], min_x_lead)
+    v_lead_traj = np.clip(v_lead_traj, 0.0, 1e8)
+    x_lead_mpc = np.maximum.accumulate(np.interp(LM.T_IDXS, LM.LEAD_T_IDXS_MODEL, x_lead_traj))
+    v_lead_mpc = np.interp(LM.T_IDXS, LM.LEAD_T_IDXS_MODEL, v_lead_traj)
+    x_lead_max = x_lead_mpc[0] + np.cumsum(LM.T_DIFFS[1:] * (v_lead_mpc[:-1] + v_lead_mpc[1:]) / 2)
+    x_lead_mpc[1:] = np.minimum(x_lead_mpc[1:], x_lead_max)
+    return np.column_stack((x_lead_mpc, v_lead_mpc))
+  return build
 
 
 class FixBound:
@@ -217,12 +257,15 @@ def vision_view(model, v_ego: float) -> dict | None:
   return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
-def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False):
+def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False,
+           human_ab: bool = False, vision_only: bool = False):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
 
-  variants = [f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) + ["nobound", "logged"]
+  variants = ([f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) +
+              (list(HUMAN_VARIANTS) if human_ab else []) + ["nobound", "logged"])
+  original_builder = LM.build_model_lead_trajectory
   fix_bounds = {k: FixBound(k) for k in FIX_VARIANTS} if fixes else {}
   original_bound = LP.off_axis_lead_a_lead
   state: dict = {}
@@ -236,6 +279,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
   accel_cmd = float("nan")
   t0 = None
   meta: dict = {"route_dir": str(route_dir), "segments": [int(p.parent.name) for p in files], "bearings": bearings,
+                "human_ab": human_ab, "vision_only": vision_only,
                 "shipped_bearing": LP.OFF_AXIS_LEAD_MIN_BEARING}
   agree = {"both": 0, "radar": 0, "d1m": 0, "track": 0, "status_eq": 0, "ticks": 0}
   frames: list[dict] = []
@@ -280,6 +324,8 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
           if bosch:
             rr = ri.update([(msg.logMonoTime, bosch)])
             if rr is not None:
+              if vision_only:
+                rr.init("points", 0)
               rr_latest = rr
               rsm.recv_frame["liveTracks"] += 1
               rsm.logMonoTime["liveTracks"] = msg.logMonoTime
@@ -337,6 +383,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
 
       out = {}
       src = {}
+      guard_trip = False
       fix_fired = {}
       saved = LP.OFF_AXIS_LEAD_MIN_BEARING
       t_now = (msg.logMonoTime - t0) / 1e9
@@ -355,15 +402,31 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
           if v in fix_bounds:
             fix_bounds[v].observe(rs, t_now, float(cs.vEgo))
             LP.off_axis_lead_a_lead = fix_bounds[v]
-          p.update(sm, toggles)
+          if v in HUMAN_VARIANTS:
+            vt = copy.copy(toggles)
+            vt.human_following = v != "human_off"
+            vt.human_acceleration = v != "human_off"
+            if v == "human_off":
+              LM.build_model_lead_trajectory = lambda *a, **k: None
+            else:
+              trips = []
+              LM.build_model_lead_trajectory = frogpilot_model_lead_trajectory(
+                float(getattr(toggles, "lead_detection_probability", 0.35)), v == "frog_guard", trips)
+            p.update(sm, vt)
+            LM.build_model_lead_trajectory = original_builder
+          else:
+            p.update(sm, toggles)
           LP.off_axis_lead_a_lead = original_bound
           if v in fix_bounds:
             fix_fired[v] = fix_bounds[v].fired
           out[v] = float(p.output_a_target)
+          if v == "frog_guard":
+            guard_trip = bool(trips)
           src[v] = str(p.mpc.source)
       finally:
         LP.OFF_AXIS_LEAD_MIN_BEARING = saved
         LP.off_axis_lead_a_lead = original_bound
+        LM.build_model_lead_trajectory = original_builder
 
       lg = state["radarState_logged"].leadOne
       lr = rs.leadOne
@@ -378,7 +441,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
       frames.append({
         "t": (msg.logMonoTime - t0) / 1e9, "engaged": engaged, "v_ego": float(cs.vEgo), "a_ego": float(cs.aEgo),
         "accel_cmd": accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel),
-        "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed), "fix": fix_fired,
+        "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed), "fix": fix_fired, "guard_trip": guard_trip,
         "vis": vision_view(model, float(cs.vEgo)),
         "lead": lead_view(lr, model, bearings), "lead_logged_bearing":
           abs(float(lg.yRel)) / max(float(lg.dRel), 1.0) if lg.status and lg.radar else None,
@@ -521,11 +584,14 @@ def main() -> int:
   ap.add_argument("--fixes", action="store_true", help="add the replay-only 'hold' and 'visdis' bound variants (STATUS 107)")
   ap.add_argument("--coast-bound", action="store_true",
                   help="bound Bosch-A coasts by their fresh range fit, as RangeDerivedVrel does on the car (STATUS 111)")
+  ap.add_argument("--human-ab", action="store_true",
+                  help="add HumanFollowing/HumanAcceleration variants: 'human_off' (both off) and 'frog' (FrogPilot path)")
+  ap.add_argument("--vision-only", action="store_true", help="drop every radar point, so radard publishes vision leads only")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
-  frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound)
+  frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound, args.human_ab, args.vision_only)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)

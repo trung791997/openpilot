@@ -613,15 +613,6 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
   return a_target, should_stop
 
 
-def human_following_model(model_v2, starpilot_toggles):
-  """HumanFollowing gate: the MPC gets the model lead path only while the toggle is on.
-
-  Off hands the MPC no modelV2, so every lead falls back to the aLeadK extrapolation.
-  Defaults on when a toggle set predates the param, which keeps the behaviour of STATUS 62/63.
-  """
-  return model_v2 if getattr(starpilot_toggles, "human_following", True) else None
-
-
 def off_axis_lead_a_lead(lead, model_msg, held=False):
   """aLeadK bounded for an off-axis radar lead (STATUS 74e); None when the lead is left as is.
   held: the track was off-axis within OFF_AXIS_LEAD_HOLD_FRAMES (STATUS 108), so the bearing test is waived."""
@@ -2529,14 +2520,15 @@ class LongitudinalPlanner:
                     smooth_duplicate_vision=nonurgent_duplicate_vision_follow and not panic_bypass,
                     stop_x=force_stop_x,
                     silverado_early_follow=early_truck_follow,
-                    modelV2=human_following_model(sm['modelV2'], starpilot_toggles),
+                    modelV2=sm['modelV2'],  # HumanFollowing, always on (STATUS 118)
                     lead_obstacle_bias=stopped_lead_obstacle_bias,
                     tracked_lead_catchup_headway_margins=self.tracked_lead_catchup_headway_margins,
                     tracked_lead_catchup_bias_gain=self.tracked_lead_catchup_bias_gain,
                     tracked_lead_catchup_bias_cap=self.tracked_lead_catchup_bias_cap,
                     tracked_lead_catchup_speed_range=self.tracked_lead_catchup_speed_range,
                     tracked_lead_catchup_fade_margins=self.tracked_lead_catchup_fade_margins,
-                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full)
+                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full,
+                    lead_detection_probability=float(getattr(starpilot_toggles, "lead_detection_probability", 0.35)))
 
     self.a_desired_trajectory_full = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

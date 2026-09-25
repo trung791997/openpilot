@@ -616,11 +616,19 @@ def test_model_lead_trajectory_uses_raw_current_anchor_and_future_deltas():
   assert trajectory[-1, 1] < trajectory[0, 1]
 
 
-@pytest.mark.parametrize("prob", [0.0, 0.5])
+@pytest.mark.parametrize("prob", [0.0, 0.35])
 def test_model_lead_trajectory_falls_back_for_low_confidence(prob):
+  # FrogPilot's gate: model lead prob must exceed LeadDetectionThreshold (default 0.35).
   lead = make_lead(status=True, d_rel=42.0, v_lead=18.0, model_prob=prob)
   _, model_lead = make_model_lead(prob=prob)
   assert build_model_lead_trajectory(model_lead, lead, 20.0) is None
+
+
+def test_model_lead_trajectory_follows_lead_detection_threshold():
+  lead = make_lead(status=True, d_rel=42.0, v_lead=18.0, model_prob=0.5)
+  _, model_lead = make_model_lead(prob=0.5)
+  assert build_model_lead_trajectory(model_lead, lead, 20.0) is not None
+  assert build_model_lead_trajectory(model_lead, lead, 20.0, lead_detection_probability=0.6) is None
 
 
 def test_model_lead_trajectory_falls_back_without_raw_lead_or_valid_shape():
@@ -4108,16 +4116,6 @@ def test_near_duplicate_lead_source_hysteresis_skips_distinct_leads():
 
   assert lead_0_bias == 0.0
   assert lead_1_bias == 0.0
-
-
-def test_human_following_gates_the_model_lead_path():
-  from types import SimpleNamespace
-  from openpilot.selfdrive.controls.lib.longitudinal_planner import human_following_model
-  model = object()
-  assert human_following_model(model, SimpleNamespace(human_following=True)) is model
-  assert human_following_model(model, SimpleNamespace(human_following=False)) is None
-  # A toggle set without the attribute keeps the pre-toggle behaviour (model path on).
-  assert human_following_model(model, SimpleNamespace()) is model
 
 
 # STATUS 74e: off-axis radar leads get aLeadK bounded once, at planner input.
