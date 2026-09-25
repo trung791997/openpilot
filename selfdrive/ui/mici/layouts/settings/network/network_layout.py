@@ -97,8 +97,12 @@ class NetworkLayoutMici(NavScroller):
     super()._update_state()
 
     # If not using prime SIM, show GSM settings and enable IPv4 forwarding
-    show_cell_settings = ui_state.prime_state.get_type() in (PrimeType.NONE, PrimeType.LITE)
-    self._wifi_manager.set_ipv4_forward(show_cell_settings)
+    prime_type = ui_state.prime_state.get_type()
+    show_cell_settings = prime_type in (PrimeType.NONE, PrimeType.LITE)
+    # Forwarding is off only for prime plans that come with comma's SIM. UNKNOWN/UNPAIRED (no
+    # API reply yet, or an unpaired device on its own SIM) used to count as prime too, and
+    # set_tethering_active then set ip_forward back to 0 five seconds after the hotspot came up.
+    self._wifi_manager.set_ipv4_forward(show_cell_settings or prime_type in (PrimeType.UNKNOWN, PrimeType.UNPAIRED))
     self._roaming_btn.set_visible(show_cell_settings)
     self._apn_btn.set_visible(show_cell_settings)
     self._cellular_metered_btn.set_visible(show_cell_settings)

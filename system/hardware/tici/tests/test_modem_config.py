@@ -25,8 +25,8 @@ def test_comma_profile_detection_without_lpa(mocker):
 
 
 # on-disk profile at boot on a comma 4 (2026-09-25): blank APN, NM defaults
-BOOT_PROFILE = "\nyes\nno\nunknown\n-1\n0\n0\n"
-APPLIED_PROFILE = "fast.t-mobile.com\nno\nno\nunknown\n0\n10\n3\n"
+BOOT_PROFILE = "\nyes\nno\nunknown\n-1\n0\n0\n\n"
+APPLIED_PROFILE = "fast.t-mobile.com\nno\nno\nunknown\n0\n10\n3\n8.8.8.8,1.1.1.1\n"
 PPP_OFF = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x000\0lcp-echo-interval\x000\0"
 PPP_ON = b"/usr/sbin/pppd\0nodetach\0ttyUSB3\0lcp-echo-failure\x003\0lcp-echo-interval\x0010\0"
 
@@ -97,6 +97,19 @@ def test_eg916_applies_saved_apn_at_boot(mocker, tmp_path):
   assert _value(modify, "gsm.auto-config") == "no"
   assert _value(modify, "gsm.home-only") == "no"  # GsmRoaming on
   assert _value(modify, "connection.metered") == "unknown"  # GsmMetered on
+  assert up[-3:] == ["connection", "up", "lte"]
+
+
+def test_eg916_restarts_session_without_dns(mocker, tmp_path):
+  # T-Mobile's PPP session gave no DNS servers: route up, no name resolution (2026-09-25)
+  profile = APPLIED_PROFILE.replace("8.8.8.8,1.1.1.1", "")
+  hardware = _eg916_hardware(mocker, tmp_path, profile=profile, ppp_args=PPP_ON)
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+
+  hardware.configure_modem()
+
+  modify, up = _nmcli_calls(call)
+  assert _value(modify, "ipv4.dns") == "8.8.8.8,1.1.1.1"
   assert up[-3:] == ["connection", "up", "lte"]
 
 

@@ -546,6 +546,9 @@ class Tici(HardwareBase):
     # The saved APN/roaming/metered settings are applied here too: the mici UI only pushes them
     # when its Settings screen is first opened, so after a plain boot the profile kept the
     # on-disk blank APN. Same mapping as WifiManager.update_gsm_settings.
+    # The PPP session hands out no DNS servers on T-Mobile (resolvectl empty on ppp0, 2026-09-25),
+    # which left the device and hotspot clients with a route but no name resolution. Static
+    # servers are merged with any the carrier does send.
     # Imported here: at module level these close a cycle through openpilot.system.hardware,
     # and common.params then silently falls back to non-persistent in-process params.
     from openpilot.common.params import Params
@@ -560,6 +563,7 @@ class Tici(HardwareBase):
       "connection.autoconnect-retries": "0",
       "ppp.lcp-echo-interval": "10",
       "ppp.lcp-echo-failure": "3",
+      "ipv4.dns": "8.8.8.8,1.1.1.1",
     }
     try:
       out = subprocess.check_output(["nmcli", "-g", ",".join(want), "connection", "show", "lte"], encoding='utf8')
@@ -580,7 +584,7 @@ class Tici(HardwareBase):
       cloudlog.event("lte profile configured", apn=apn, running_lcp=None, restart=False)
       return  # no session yet, the first activation picks the settings up
     running = {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
-    session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only")
+    session_keys = ("gsm.apn", "gsm.auto-config", "gsm.home-only", "ipv4.dns")
     restart = running != {"lcp-echo-interval": "10", "lcp-echo-failure": "3"} or any(current.get(k) != want[k] for k in session_keys)
     cloudlog.event("lte profile configured", apn=apn, running_lcp=running, restart=restart)
     if restart:
