@@ -548,7 +548,8 @@ class Tici(HardwareBase):
     # on-disk blank APN. Same mapping as WifiManager.update_gsm_settings.
     # The PPP session hands out no DNS servers on T-Mobile (resolvectl empty on ppp0, 2026-09-25),
     # which left the device and hotspot clients with a route but no name resolution. Static
-    # servers are merged with any the carrier does send.
+    # servers are merged with any the carrier does send. AdGuard DNS (blocks ads and trackers)
+    # at the owner's request.
     # Imported here: at module level these close a cycle through openpilot.system.hardware,
     # and common.params then silently falls back to non-persistent in-process params.
     from openpilot.common.params import Params
@@ -563,7 +564,7 @@ class Tici(HardwareBase):
       "connection.autoconnect-retries": "0",
       "ppp.lcp-echo-interval": "10",
       "ppp.lcp-echo-failure": "3",
-      "ipv4.dns": "8.8.8.8,1.1.1.1",
+      "ipv4.dns": "94.140.14.14,94.140.15.15",
     }
     try:
       out = subprocess.check_output(["nmcli", "-g", ",".join(want), "connection", "show", "lte"], encoding='utf8')
