@@ -7373,3 +7373,54 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 **Evidence.** `test_drive_plots.py` passes 18 tests: a planted lag, gain, bias and oscillation are recovered, disengaged time is excluded, and recorder/auto-stop/endpoints round-trip. It includes a fix for numpy scalars being written to CSV as `np.float64(...)`. `test_ui_vue_frontend.py` and `test_frontend_module_graph.py` pass. I rendered both pages in headless Chromium against the real Flask app with a synthetic 14-minute drive: live charts, recording, stop, drive detail, zoom and delete-confirm all rendered. The analysis recovered the planted 0.9 lateral gain, 0.3 s lag, wobble and left pull.
 
 **Not verified.** No car, no real route. The heuristic thresholds in the notes (e.g. "oscillation" above ratio 1.5) are guesses and are unvalidated against real drives. The sampler's CPU cost on the device is unmeasured.
+
+## 142. Step 2 toward a torque controller: comma's torque controller (2a) and StarPilot's (2b, NNFF off) against the NRDR PID in the closed-loop sim, with and without the firmware VGR map. Sim only; nothing on the car changed.
+
+**What was added.**
+- `selfdrive/controls/lib/latcontrol_torque_upstream.py`: comma's `LatControlTorque`, vendored verbatim from commaai/openpilot master `49bbba371c29c5612e69b8ea9f906e151410e8bc`. Three changes, each marked `# nrdr`: the `log` import, an optional `angle_to_linear` argument, and that hook applied to the measured angle before `VM.calc_curvature`. Nothing imports it outside the sim. In a real port the hook belongs in opendbc (the VehicleModel angle-to-curvature path, and paramsd later), not in a controller.
+- `tools/lateral/lat_pid_sim.py`:
+  - `Controller(kind=...)` accepts `pid | torque_upstream | torque_starpilot`.
+  - The torque kinds use the logged CarParams with the tuning switched to torque. Defaults come from the STATUS 140 study: LAF 11.5, friction 0.025, lat_delay 0.2 s.
+  - `vgr=1` feeds the firmware map (C020) into the measured curvature and sets sR 15.27 (the M1 pooled fit).
+  - `friction_low` sets the friction used below 20 mph, blended into `friction` by 25 mph.
+  - StarPilot's kind uses its Civic-modified B branch (ff scale, fixed 0.30 friction threshold, friction scale). Its internal ×1.2 LAF is divided out, so both torque kinds get the same car model. NNFF is a separate class that controlsd swaps in, so it is never built here.
+  - A new `compare` subcommand and a delivered-command rate metric.
+  - Every variant runs through the same `CarControllerSteer` stage (min steer speed, override torque scale, fade up/down).
+- `tools/lateral/tests/test_lat_pid_sim_torque.py`: 8 tests. Both torque kinds, with and without VGR, close the loop on a synthetic step. The VGR target is the map applied to the linear angle. VGR without the firmware flag is refused. The testing-ground hooks are restored. The variant parser is covered.
+
+**Sim result.**
+- Routes: 263, 268, 271, 276, 277.
+- Plant: plant_d5, with `HondaLateralPidKpScale=1.0` and `HondaLateralPidKiScale=1.0`.
+- Figures are minute-weighted. Error and lag are measured against each controller's own unshaped target.
+
+| band | variant | err rms (deg) | lag (s) | curve entry | straight rms | sign chg/s @0.15 | cmd rate rms /s |
+|---|---|---|---|---|---|---|---|
+| 25-50 | PID | 1.25 | 0.39 | 0.69 | 0.69 | 0.30 | 0.20 |
+| 25-50 | PID + NrdrLatRateFF 0.5 | **1.13** | **0.31** | **0.73** | **0.61** | 0.30 | 0.21 |
+| 25-50 | 2a | 1.63 | 0.54 | 0.59 | 1.01 | 0.31 | 0.11 |
+| 25-50 | 2a + VGR | 1.59 | 0.54 | 0.60 | 1.00 | 0.32 | 0.11 |
+| 25-50 | 2b | 1.31 | 0.39 | 0.68 | 0.86 | 0.33 | 0.12 |
+| 25-50 | 2b + VGR | 1.27 | 0.39 | 0.69 | 0.85 | 0.33 | 0.13 |
+| >50 | PID | 0.79 | 0.36 | - | 0.58 | 0.12 | 0.14 |
+| >50 | PID + RFF | 0.76 | 0.35 | - | 0.55 | 0.12 | 0.16 |
+| >50 | 2a + VGR | 0.80 | 0.51 | - | 0.65 | 0.25 | 0.09 |
+| >50 | 2b + VGR | **0.73** | 0.38 | - | 0.60 | 0.24 | 0.09 |
+| <25 | PID | 15.0 | 0.39 | 0.58 | 2.48 | 0.32 | 0.37 |
+| <25 | PID + RFF | **13.4** | **0.30** | **0.71** | **1.97** | 0.35 | 1.05 |
+| <25 | 2a + VGR | 16.9 | 0.47 | 0.48 | 3.97 | 0.34 | 0.42 |
+| <25 | 2a + VGR + friction_low 0.08 | 16.3 | 0.45 | 0.55 | 3.55 | 0.40 | 0.45 |
+| <25 | 2b + VGR | 14.4 | 0.37 | 0.66 | 2.81 | 0.46 | 0.53 |
+
+- **2b (StarPilot, NNFF off) + VGR is level with the plain PID** on curves and error at every speed, with a smoother command. It is worse on straights: straight rms 0.85 vs 0.69, and twice the sign changes above 50 mph.
+- **PID + rate FF is still the best tracker** in the sim.
+- **2a (comma stock) lags** by about 0.15 s more.
+- **VGR helps both torque kinds** at every speed, most below 25 mph.
+- lat_delay 0.1 / 0.3 s (routes 271 and 276 only): 2b does not care. 2a is best at 0.1 s: 25-50 err 1.48, lag 0.45.
+
+**Limits.**
+- The plant was fitted on PID-driven data.
+- The torque tunes are the study's fixed values: no torqued live learning, no liveDelay.
+- Desired curvature is exogenous, so lane position is not scored.
+- The "own target" differs between the kinematic models only above about 15 deg of wheel angle, which in practice means below 25 mph.
+
+**Not verified.** No road drive of any torque variant. Road use would need a param (for example `ForceTorqueController`) plumbed to the new controller, which is an artifact rebuild and needs owner approval.

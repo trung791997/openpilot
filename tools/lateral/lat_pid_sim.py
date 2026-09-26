@@ -174,32 +174,94 @@ def _truthy(v, default=True):
   return str(v).strip().lower() in ("1", "true")
 
 
+KINDS = ("pid", "torque_upstream", "torque_starpilot")
+# Torque-controller defaults from the lat-accel study (STATUS 140): LAF ~11-12 m/s^2 per unit command and
+# friction ~0.02-0.03 (command units) above 25 mph, several times that below. SR 15.27 is the pooled fit
+# after the firmware VGR map (model M1), used in place of paramsd's scalar when the map is on.
+TORQUE_DEFAULTS = {"laf": 11.5, "friction": 0.025, "friction_low": None, "vgr": False, "lat_delay": 0.2}
+VGR_SR = 15.27
+
+
+class _VgrVM:
+  """VehicleModel whose angle -> curvature first maps the published (physical) angle to the centre-equivalent
+  one through the firmware VGR map. Lets a controller without a hook (StarPilot's torque) use the map."""
+  def __init__(self, VM, inverse):
+    self.VM = VM
+    self.inverse = inverse
+
+  def calc_curvature(self, sa, u, roll):
+    from opendbc.car.honda.steer_ratio import vgr_physical_to_linear
+    return self.VM.calc_curvature(np.radians(vgr_physical_to_linear(float(np.degrees(sa)), self.inverse)), u, roll)
+
+  def __getattr__(self, name):
+    return getattr(self.VM, name)
+
+
 class Controller:
-  """The real LatControlPID plus the VehicleModel update controlsd does before calling it."""
-  def __init__(self, cp_bytes, params, testing_ground=False):
+  """The real lateral controller plus the VehicleModel update controlsd does before calling it.
+  kind "pid" is the car's LatControlPID; "torque_upstream" is comma's LatControlTorque (vendored in
+  latcontrol_torque_upstream.py); "torque_starpilot" is StarPilot's LatControlTorque with NNFF off (NNFF is a
+  different class that controlsd swaps in; it is never built here). The torque kinds are built on the logged
+  CarParams with the lateral tuning switched to torque and the TORQUE_DEFAULTS values (overridable)."""
+  def __init__(self, cp_bytes, params, testing_ground=False, kind="pid", torque=None):
     from cereal import car, custom
     from opendbc.car.car_helpers import interfaces
     from opendbc.car.vehicle_model import VehicleModel
     from openpilot.selfdrive.controls.lib import latcontrol_pid
     from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 
+    assert kind in KINDS, kind
+    self.kind = kind
+    self.tq = {**TORQUE_DEFAULTS, **(torque or {})}
     with car.CarParams.from_bytes(cp_bytes) as r:
-      self.CP = r.as_builder().as_reader()
+      cpb = r.as_builder()
+    if kind != "pid":
+      cpb.lateralTuning.init("torque")
+      t = cpb.lateralTuning.torque
+      t.latAccelFactor = float(self.tq["laf"])
+      t.friction = float(self.tq["friction"])
+      t.latAccelOffset = 0.0
+      t.steeringAngleDeadzoneDeg = 0.0
+    self.CP = cpb.as_reader()
     fpcp = custom.StarPilotCarParams.new_message().as_reader()
     self.CI = interfaces[self.CP.carFingerprint](self.CP, fpcp)
     self.VM = VehicleModel(self.CP)
     self.params = dict(params)
-    # The Civic Bosch "testing ground" slot is chosen by a file on the device that the log does not
-    # record. The replay stage shows whether forcing it off reproduces the logged output.
-    self._lp = latcontrol_pid
-    self._saved = (latcontrol_pid.civic_bosch_modified_lateral_testing_ground_active, latcontrol_pid.Params)
-    latcontrol_pid.civic_bosch_modified_lateral_testing_ground_active = lambda *a, **kw: testing_ground
-    latcontrol_pid.Params = lambda: _DictParams(self.params)
-    try:
-      self.lac = LatControlPID(self.CP, self.CI, DT)
-    finally:
-      latcontrol_pid.Params = self._saved[1]
-    self.lac.params = _DictParams(self.params)
+    self.vgr = None
+    self.target = 0.0
+    self._friction = None
+    self._restore = []
+    if kind == "pid":
+      # The Civic Bosch "testing ground" slot is chosen by a file on the device that the log does not
+      # record. The replay stage shows whether forcing it off reproduces the logged output.
+      self._patch(latcontrol_pid, "civic_bosch_modified_lateral_testing_ground_active", lambda *a, **kw: testing_ground)
+      saved_params = latcontrol_pid.Params
+      latcontrol_pid.Params = lambda: _DictParams(self.params)
+      try:
+        self.lac = LatControlPID(self.CP, self.CI, DT)
+      finally:
+        latcontrol_pid.Params = saved_params
+      self.lac.params = _DictParams(self.params)
+    else:
+      from opendbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_physical_to_linear
+      if self.tq["vgr"]:
+        self.vgr = get_honda_vgr_inverse(self.CP.flags)
+        if self.vgr is None:
+          raise ValueError("vgr requested but the logged CarParams carry no firmware VGR flag")
+      if kind == "torque_upstream":
+        from openpilot.selfdrive.controls.lib.latcontrol_torque_upstream import LatControlTorque
+        a2l = None if self.vgr is None else (lambda a, inv=self.vgr: vgr_physical_to_linear(a, inv))
+        self.lac = LatControlTorque(self.CP, self.CI, DT, angle_to_linear=a2l)
+      else:
+        from openpilot.selfdrive.controls.lib import latcontrol_torque
+        # Both Civic testing-ground slots are device files the log does not record; the base (B) branch is used.
+        self._patch(latcontrol_torque, "civic_bosch_modified_lateral_testing_ground_active", lambda *a, **kw: False)
+        self._patch(latcontrol_torque, "civic_bosch_modified_a_lateral_testing_ground_active", lambda *a, **kw: False)
+        # Its Civic-modified branch multiplies LAF by CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT; divide it out
+        # so both torque kinds see the same car model and differ only in control law.
+        self.laf_mult = latcontrol_torque.CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT
+        self.lac = latcontrol_torque.LatControlTorque(self.CP, self.CI, DT)
+        self.lac.update_live_torque_params(self.tq["laf"] / self.laf_mult, 0.0, self.tq["friction"])
     self.toggles = SimpleNamespace(
       honda_lateral_pid_kp_scale=float(self.params.get("HondaLateralPidKpScale", 1.0)),
       honda_lateral_pid_ki_scale=float(self.params.get("HondaLateralPidKiScale", 1.0)),
@@ -208,12 +270,37 @@ class Controller:
     self.learn_x = _truthy(self.params.get("NrdrLearnStiffness"))
     self.learn_offset = _truthy(self.params.get("NrdrLearnAngleOffset"))
 
+  def _patch(self, mod, name, fn):
+    self._restore.append((mod, name, getattr(mod, name)))
+    setattr(mod, name, fn)
+
   def close(self):
-    self._lp.civic_bosch_modified_lateral_testing_ground_active = self._saved[0]
+    for mod, name, fn in reversed(self._restore):
+      setattr(mod, name, fn)
+    self._restore = []
+
+  def raw_target(self):
+    """The unshaped target angle (deg, physical): the PID's before the slew clip and smoothing, or for the torque
+    kinds the angle the controller's own kinematics (VGR map or not, its sR) give for the desired curvature."""
+    return self.lac.raw_angle_steers_des if self.kind == "pid" else self.target
+
+  def _set_friction(self, v):
+    fr = self.tq["friction"]
+    if self.tq["friction_low"] is not None:
+      fr = float(np.interp(v, [20 * MPH, 25 * MPH], [self.tq["friction_low"], self.tq["friction"]]))
+    if fr != self._friction:
+      self._friction = fr
+      if self.kind == "torque_upstream":
+        self.lac.update_torque_parameters(self.tq["laf"], 0.0, fr)
+      else:
+        self.lac.update_live_torque_params(self.tq["laf"] / self.laf_mult, 0.0, fr)
 
   def step(self, d, k, angle, rate, steer_limited):
     x = max(d["stiff"][k] if self.learn_x else 1.0, 0.1)
-    sr = max(d["sr"][k] if self.learn_sr else self.CP.steerRatio, 0.1)
+    if self.vgr is not None:
+      sr = VGR_SR
+    else:
+      sr = max(d["sr"][k] if self.learn_sr else self.CP.steerRatio, 0.1)
     self.VM.update_params(x, sr)
     lp = SimpleNamespace(angleOffsetDeg=float(d["offset"][k]) if self.learn_offset else 0.0, roll=float(d["roll"][k]))
     CS = SimpleNamespace(
@@ -221,9 +308,22 @@ class Controller:
       steeringPressed=bool(d["pressed"][k]), steeringTorque=float(d["eps_torque"][k]),
       leftBlinker=bool(d["lblink"][k]), rightBlinker=bool(d["rblink"][k]), standstill=d["v"][k] < 0.1,
     )
-    out, des, self.last_log = self.lac.update(bool(d["active"][k]), CS, self.VM, lp, bool(steer_limited), float(d["des_curv"][k]),
-                                  False, 0.0, None, None, self.toggles)
-    return float(out), float(des)
+    active, curv = bool(d["active"][k]), float(d["des_curv"][k])
+    if self.kind == "pid":
+      out, des, self.last_log = self.lac.update(active, CS, self.VM, lp, bool(steer_limited), curv,
+                                                False, 0.0, None, None, self.toggles)
+      return float(out), float(des)
+    from opendbc.car.honda.steer_ratio import vgr_linear_to_physical
+    lin = float(np.degrees(self.VM.get_steer_from_curvature(-curv, CS.vEgo, lp.roll)))
+    self.target = vgr_linear_to_physical(lin, self.vgr) + lp.angleOffsetDeg
+    self._set_friction(CS.vEgo)
+    if self.kind == "torque_upstream":
+      out, _, self.last_log = self.lac.update(active, CS, self.VM, lp, bool(steer_limited), curv, False, self.tq["lat_delay"])
+    else:
+      VM = self.VM if self.vgr is None else _VgrVM(self.VM, self.vgr)
+      out, _, self.last_log = self.lac.update(active, CS, VM, lp, bool(steer_limited), curv, False, self.tq["lat_delay"],
+                                              None, None, SimpleNamespace())
+    return float(out), self.target
 
 
 # ----------------------------------------------------------------------------------------------
@@ -467,13 +567,13 @@ class CarControllerSteer:
     return cmd
 
 
-def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False):
+def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False, kind="pid", torque=None):
   """Closed loop. While engaged, hands off and above 4 m/s the plant integrates the delivered command;
   everywhere else the state is re-synced to the log (the driver, or nobody, is steering). with_raw adds
   the target before the slew clip and smoothing, which the logged desired angle already includes."""
   params = dict(d["params"])
   params.update(overrides or {})
-  ctl = Controller(d["cp_bytes"], params, testing_ground)
+  ctl = Controller(d["cp_bytes"], params, testing_ground, kind=kind, torque=torque)
   ccs = CarControllerSteer(params)
   n = len(d["t"])
   ang = np.zeros(n)
@@ -491,7 +591,7 @@ def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False):
         th, r = d["angle"][k], d["rate"][k]
       ang[k] = plant.measure(th) if sim_on[k] else th
       out[k], des[k] = ctl.step(d, k, ang[k], r, steer_limited)
-      raw[k] = ctl.lac.raw_angle_steers_des
+      raw[k] = ctl.raw_target()
       deliv[k] = ccs.step(out[k], d["active"][k] > 0.5, d["v"][k], d["pressed"][k] > 0.5)
       steer_limited = (d["active"][k] > 0.5) and abs(out[k] - deliv[k]) > 1e-2
       if sim_on[k]:
@@ -503,9 +603,10 @@ def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False):
   return (ang, des, out, deliv, raw) if with_raw else (ang, des, out, deliv)
 
 
-def metrics(d, ang, des, mask=None, raw=None):
+def metrics(d, ang, des, mask=None, raw=None, cmd=None):
   """Same definitions as the owner-facing lateral report: per speed band, engaged and hands off. With raw
-  (the unshaped target) also the error, lag and curve-entry ratio against it, so target smoothing shows."""
+  (the unshaped target) also the error, lag and curve-entry ratio against it, so target smoothing shows.
+  With cmd (the delivered torque command) also its frame-to-frame rms change, x100 (command units per s)."""
   m0 = _hands_off(d) if mask is None else mask
   v = d["v"]
   res = {}
@@ -537,6 +638,9 @@ def metrics(d, ang, des, mask=None, raw=None):
         "lag_raw_s": tracking_lag(raw, ang, rcur),
         "entry_ratio_raw": float(np.median(ang[en] / raw[en])) if en.sum() > 300 else None,
       })
+    if cmd is not None:
+      dm = m[1:] & m[:-1]
+      res[name]["cmd_jitter"] = float(np.sqrt(np.mean((np.diff(cmd)[dm] / DT) ** 2)))
   return res
 
 
@@ -590,8 +694,9 @@ def print_metrics(label, res):
           f"  sign changes {_fmt(r['zero_cross'], '.1f')}/s ({_fmt(r['sign_hyst'], '.2f')}/s at {SIGN_HYST_DEG} deg)" +
           f" | lag {_fmt(r['lag_s'], '.2f')} s")
     if "err_rms_raw" in r:
+      jit = f"  cmd rate rms {r['cmd_jitter']:.2f}/s" if "cmd_jitter" in r else ""
       print(f"    {'':15s} vs unshaped target: err rms {r['err_rms_raw']:5.2f} deg  lag {_fmt(r['lag_raw_s'], '.2f')} s" +
-            f"  entry actual/target {_fmt(r['entry_ratio_raw'], '.3f')}")
+            f"  entry actual/target {_fmt(r['entry_ratio_raw'], '.3f')}{jit}")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -608,6 +713,24 @@ def _overrides(pairs):
   return out
 
 
+def parse_variant(spec):
+  """NAME=KIND[,key=value...]. Keys in TORQUE_DEFAULTS tune the torque kinds (vgr=1 turns the firmware map on);
+  any other key is a param override (e.g. pid+rff=pid,NrdrLatRateFF=0.5)."""
+  name, _, rest = spec.partition("=")
+  kind, *kvs = rest.split(",")
+  if kind not in KINDS:
+    raise ValueError(f"{spec}: kind must be one of {KINDS}")
+  torque, over = {}, {}
+  for kv in kvs:
+    k, _, v = kv.partition("=")
+    k, v = k.strip(), v.strip()
+    if k in TORQUE_DEFAULTS:
+      torque[k] = _truthy(v) if k == "vgr" else float(v)
+    else:
+      over[k] = v
+  return name, kind, torque, over
+
+
 def main(argv=None):
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = ap.add_subparsers(dest="cmd", required=True)
@@ -617,7 +740,7 @@ def main(argv=None):
   p = sub.add_parser("fit", help="fit the steering plant")
   p.add_argument("routes", nargs="+")
   p.add_argument("--out", required=True)
-  p.add_argument("--delay", type=int, help="fit at this command delay (frames) instead of picking from FIT_DELAYS; "
+  p.add_argument("--delay", type=int, help="fit at this command delay (frames) instead of picking from FIT_DELAYS; " +
                  "on 263/268/271 the free-run picks 0 but 5 matches the closed-loop sign changes best (STATUS 132)")
   p = sub.add_parser("validate", help="plant free-run and closed-loop-at-logged-settings vs the log")
   p.add_argument("routes", nargs="+")
@@ -634,6 +757,13 @@ def main(argv=None):
   p.add_argument("--base", action="append")
   p.add_argument("--param", required=True)
   p.add_argument("--values", required=True)
+  p = sub.add_parser("compare", help="closed loop, several controllers on the same routes")
+  p.add_argument("routes", nargs="+")
+  p.add_argument("--plant", required=True)
+  p.add_argument("--base", action="append", help="param override applied to every variant")
+  p.add_argument("--variant", action="append", required=True,
+                 help="NAME=KIND[,key=value...], KIND in " + "|".join(KINDS) +
+                 f"; torque keys {sorted(TORQUE_DEFAULTS)} (defaults {TORQUE_DEFAULTS}), others are param overrides")
   args = ap.parse_args(argv)
 
   if args.cmd == "replay":
@@ -669,6 +799,14 @@ def main(argv=None):
     return
 
   base = _overrides(args.base)
+  if args.cmd == "compare":
+    vs = [parse_variant(v) for v in args.variant]
+    for d in ds:
+      print(f"== {d['route']}  (plant-simulated; desired curvature held to the log; each scored against its own target)")
+      for name, kind, torque, over in vs:
+        ang, des, _, deliv, raw = simulate(d, plant, {**base, **over}, with_raw=True, kind=kind, torque=torque)
+        print_metrics(f"{name} [{kind} {torque or ''} {over or ''}]", metrics(d, ang, des, raw=raw, cmd=deliv))
+    return
   if args.cmd == "sim":
     variants = [("baseline " + str(base or "logged"), base), ("with " + str(_overrides(args.set)), {**base, **_overrides(args.set)})]
   else:
