@@ -7066,3 +7066,4 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 - **Open:**
   - 8:27.9-type approaches at about 28 mph cannot be helped by the set speed (25 mph floor).
   - A far lead that radar publishes late (cause A) is not addressed here.
+- **Params artifacts (follow-up):** Galaxy returned "not editable" for `NrdrLatRateFF` because the checked-in `common/params_pyx.so` lacked the key (item 12). `libcommon.a` and `params_pyx.so` rebuilt with item 4's pinned toolchain natively on an aarch64 Ubuntu 24.04 host (clang 18.1.3, system Python 3.12.3 + `python3.12-dev`, Cython 3.1.4, `SP_FORCE_TICI=1`, bind-mounted at `/work`, sconsign cleared). `params_pyx.cpp` came out byte-identical to the committed one; keys 854 → 855, the only addition `NrdrLatRateFF` (put/get round-trips). Static only.
