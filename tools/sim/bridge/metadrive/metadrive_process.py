@@ -191,7 +191,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       # when the desktop cannot be screen-captured.
       if record_dir and rk.frame % 20 == 0:
         speed = float(np.linalg.norm(env.vehicle.velocity))
-        frame = cv2.cvtColor(road_image, cv2.COLOR_RGB2BGR)
+        frame = road_image.copy()  # MetaDrive's buffer is BGR despite the name (camerad's kernel reads it as BGR)
         label = f"t={rk.frame / 100:6.1f}s  v={speed:4.1f} m/s  {'ENGAGED' if is_engaged else 'disengaged'}"
         cv2.putText(frame, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0) if is_engaged else (0, 0, 255), 3)
         cv2.imwrite(os.path.join(record_dir, f"{rk.frame:08d}.jpg"), frame)
