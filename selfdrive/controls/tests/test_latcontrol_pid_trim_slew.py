@@ -38,3 +38,18 @@ def test_band_changes_slew_instead_of_stepping(monkeypatch):
   assert 0.0 < i_applied <= 300 * latcontrol_pid.NRDR_TRIM_SLEW_PER_S * lac.dt + 1e-9
   assert f_applied == 0.5   # 0.5 away, reached at 0.5/s in 1 s
   assert np.abs(np.diff(outs[edge - 5:])).max() < 0.01
+
+
+def test_crossing_the_25mph_base_gain_step_does_not_step_p(monkeypatch):
+  """kpBP doubles kp at 25 mph. With a steady error the P term must ramp, not jump."""
+  lac, VM, params = _build(monkeypatch, {})
+  CS = car.CarState.new_message()
+  CS.steeringAngleDeg = -3.0
+  outs = []
+  for k in range(400):
+    CS.vEgo = 25.05 * MPH if k < 200 else 24.98 * MPH
+    out, _, _ = lac.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, SimpleNamespace())
+    outs.append(out)
+  steps = np.abs(np.diff(outs[195:]))
+  assert steps.max() < 0.01
+  assert lac.applied_kp == lac.pid.k_p   # settled on the tuned gain within 2 s

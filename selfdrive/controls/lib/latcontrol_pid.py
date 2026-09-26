@@ -203,6 +203,10 @@ NRDR_RATE_FF_DEFAULT = 0.0
 # The applied trims now slew, and while the applied I trim is 0 the integrator is frozen and bled out.
 NRDR_TRIM_SLEW_PER_S = 0.5
 NRDR_HIDDEN_I_BLEED_TAU = 2.0
+# nrdr: the base kpBP in interface.py doubles kp at 25 mph (0.024 -> 0.048), so P stepped by the whole
+# error x 0.024 there (route 277 replay: -0.11 in one frame at 3.7 deg of error, STATUS 139). The
+# applied kp now slews at up to 100 %/s of the larger gain; every steady-speed gain is unchanged.
+NRDR_KP_SLEW_REL_PER_S = 1.0
 
 def rate_limit_desired_angle(angle_deg: float, prev_angle_deg: float, max_rate_deg_s: float, dt: float) -> float:
   if max_rate_deg_s <= 0.0 or not math.isfinite(angle_deg):
@@ -521,6 +525,7 @@ class LatControlPID(LatControl):
     self.lpf_tau_highway = NRDR_TARGET_SMOOTH_TAU
     self.rate_ff = NRDR_RATE_FF_DEFAULT
     self.applied_scales = None   # (p, i, f) trims as applied, slewed toward the banded/scheduled ones
+    self.applied_kp = None       # base kp as applied, slewed toward kpBP/kpV at this speed
     # The target before slew clip and smoothing, for offline tools scoring the shaping lag.
     self.raw_angle_steers_des = 0.0
 
@@ -646,6 +651,7 @@ class LatControlPID(LatControl):
       self.center_taper_scale.x = 1.0
       self.prev_output_torque = 0.0
       self.applied_scales = None
+      self.applied_kp = None
 
     else:
       self.frame += 1
@@ -732,6 +738,14 @@ class LatControlPID(LatControl):
         p_scale, i_scale, f_scale = self.applied_scales
         if hidden_i:
           self.pid.i *= math.exp(-self.dt / NRDR_HIDDEN_I_BLEED_TAU)
+        kp_target = float(self.pid.k_p)
+        if self.applied_kp is None:
+          self.applied_kp = kp_target
+        else:
+          step = NRDR_KP_SLEW_REL_PER_S * max(kp_target, self.applied_kp) * self.dt
+          self.applied_kp = float(np.clip(kp_target, self.applied_kp - step, self.applied_kp + step))
+        if kp_target > 0.0:
+          self.pid.p *= self.applied_kp / kp_target
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
         if self.rate_ff > 0.0:
           output_torque += self.rate_ff * desired_angle_delta / (100.0 * self.dt)

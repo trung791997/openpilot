@@ -7231,3 +7231,49 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 - The typical PR-case press is a vision lead 50–100 m ahead pulling away at +1–3 m/s, e2e +0.0…+0.5 while the MPC allows +0.7…+0.9 (e.g. 0000006d--4715a1d4cc 4:22.5 e2e 0.23 vs MPC 0.75; 000000cb--2506619877 11:36.3 0.15 vs 0.88). The gap is ~0.5 m/s², more than the PR's 0.2 cap, which also needs 4 presses to reach.
 - The PR's trigger would still take about as many inputs from model over-braking (105) as from slow acceleration (110), and it softens light braking for the rest of the drive.
 - **Open, owner decision:** a stateless lead-departure rule in the exp-mode arbitration (lead present and pulling away, MPC higher than e2e → move toward the MPC, braking untouched) would address the 57/110 directly. Not implemented.
+
+## 139. The base kp step at 25 mph no longer jumps the output: the applied kp slews. Also answers "can the target low-pass filter go?" (not while `NrdrLatRateFF` is on). Unit tests, open-loop replay and sim only; not driven.
+
+**Base gain slew.**
+- In `interface.py`, every modified-EPS Honda has kpBP/kiBP of `[0, 25 mph − 1e-3, 25 mph, 50 mph]`, so kp doubles at 25 mph (0.024 → 0.048).
+- P is the gain times the current error, so the output stepped by error × 0.024 at the crossing. Route 277 open-loop replay: −0.11 in one frame at 318.39 s, with a 3.7° error (STATUS 137).
+- On the modified-EPS path `latcontrol_pid.py` now slews the applied kp toward `pid.k_p` at `NRDR_KP_SLEW_REL_PER_S = 1.0`, which is 100 %/s of the larger gain, so the doubling takes about 0.5 s. The state resets when lateral control is inactive.
+- The tune in `interface.py` is unchanged, so every steady-speed gain is the one that was road-tuned.
+- The ki step needs nothing: the integrator stores ki × error already accumulated, so a ki step only changes its future rate.
+
+**Evidence.**
+- Unit test `test_crossing_the_25mph_base_gain_step_does_not_step_p`: a 3° error held across 25 mph. The largest step is under 0.01, and kp settles on the tuned value. The test fails on HEAD.
+- Route 277 open-loop replay:
+
+  | | STATUS 137 code | kp slew |
+  |---|---|---|
+  | step at 318.39 s | −0.108 | −0.007 |
+  | largest step within ±1 s | 0.108 | 0.020 |
+  | frames with a step > 0.1 | 2 | 1 |
+  | frames with a step > 0.05 | 9 | 8 |
+
+- Sim (plant_d5, 263/268/271/276): unchanged to ±0.01° error rms. Low-speed sign changes 0.34/0.32 → 0.31/0.30 on 263/268.
+
+**Target low-pass filter (`HondaTorqueLowPassFilter`, tau 0.1 s): keep it while `NrdrLatRateFF` is used.**
+- Sim, same routes. Error rms is against the unshaped target; sign changes are per second at the 0.15° deadband.
+
+  | band | metric | LPF on | LPF off |
+  |---|---|---|---|
+  | 25–50 mph | error rms ° | 1.23 / 1.27 / 1.36 / 1.10 | 1.12 / 1.16 / 1.12 / 0.91 |
+  | 25–50 mph | lag s | 0.43 / 0.47 / 0.38 / 0.33 | 0.34 / 0.33 / 0.28 / 0.25 |
+  | 25–50 mph | sign changes | 0.28 / 0.24 / 0.32 / 0.33 | 0.33 / 0.28 / 0.40 / 0.35 |
+  | < 25 mph | sign changes | 0.31 / 0.30 / 0.33 / 0.33 | 0.45 / 0.36 / 0.45 / 0.55 |
+
+  Low-speed error still falls with the filter off (11.1 / 20.4 / 12.8 / 18.6 → 10.5 / 19.8 / 11.5 / 18.3).
+- Frame-to-frame torque change (rms, % of max, near-straight):
+  - LPF alone off: up 5–45 %. For example 25–50 mph goes 0.16–0.17 → 0.17–0.19; the wheel angle high-pass is flat to 3 %.
+  - `NrdrLatRateFF 0.5` with the LPF on: low speed 0.10–0.34 → 0.33–0.49.
+  - Rate FF 0.5 with the LPF off: 2.5–3.9 % below 25 mph, 0.67–0.94 % at 25–50 mph, and 0.39–0.54 % above 50 mph. That is 3–8× the filtered case.
+- Reason: the rate feedforward is a derivative of the target. The LPF is what keeps the model's frame-to-frame target noise out of it.
+- The sim plant is a linear fit, so the wheel barely shows this torque buzz. On the car it would be felt as rack buzz or chatter. That is inferred, not measured.
+- `NrdrLatAngleRateLimit` 0 (300 °/s limit off): identical to the LPF-off case on every metric. The limit never binds on these routes.
+- **If the LPF is to go:**
+  1. Give the rate feedforward its own filtered derivative first.
+  2. Then drop the LPF.
+  3. Expect about 5–15 % more low-speed weave (sign changes).
+  Not done.
