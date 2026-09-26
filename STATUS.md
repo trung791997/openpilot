@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-24**
+**As of: 2026-09-26**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -7105,6 +7105,27 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - 26c 4:08 needs the `|yRel| <= 1.5` geometry gate revisited. At 80 m, 9 m of y is only about 6 deg of azimuth, and the gate is a lane proxy, not the 10.8 deg bound its comment describes. The long span and residual also block that case. Not changed here.
   - The 1.07 s dark time at 271 BM0 is D-042 (u10 511); not changed.
 - **Recommendation:** replay supports it (0 lost points, 0 spurious brakes, 0 protected regressions) for a watched drive. The gain is small (about 0.15 s and 0.07 m/s^2 at 271 BM0) until the -1.0 comfort floor is revisited. Road check: a railed lead closing well past 13.5 m/s at 60-120 m should show a corrected vRel about 0.6 s after publication.
+
+## 136. Gas-override census for commaai/openpilot PR 39015 ("gas override boost"): not worth porting. Offline log analysis only; nothing changed in the controls.
+
+**Question.** PR 39015 raises the e2e target (`modelV2.action.desiredAcceleration`) by up to 0.2 m/s² after the driver presses gas while the e2e target is below the MPC target in Experimental Mode (≥10 mph, 0.05 per press, held for the drive, also softens e2e braking between −1.0 and −0.5). Would it have anything to fix here, in particular a lead pulling away?
+
+**Tool.** `tools/longitudinal/gas_override_census.py ROUTE_DIR...`: every rising edge of `gasPressed` while engaged at ≥4.5 m/s (presses within 3 s merged), the median of the 1 s before it. The MPC target is estimated with `get_accel_from_plan` on `longitudinalPlan.speeds/accels` at 0.5 s (it tracks `aTarget` on the MPC-limited rows). Classes: `e2e_slow_accel` (exp mode, e2e < MPC − 0.15 and e2e ≥ 0, the PR's case), `e2e_brake` (same but e2e < 0), `mpc_brake` / `mpc_slow`. "Lead pulling away" = lead status and (aLeadK > 0.3 or vRel > 0.5).
+
+**Result, 28 local Civic Bosch routes (0000020c … 00000277), 177 presses; the 13 alpha-long routes (`openpilotLongitudinalControl` = 1: 20c 232 236 237 239 23a 23b 23e 241 245 268 26b 26c) carry 109.** On the stock-ACC routes `aTarget` is not actuated, so only the alpha-long numbers matter:
+
+| class | exp mode | ACC mode | of which lead pulling away |
+|---|---|---|---|
+| e2e_slow_accel (PR target) | 4 | — | 1 (236 22:22.3, vision lead 79 m, e2e 0.37 vs MPC 0.93) |
+| e2e_brake | 12 | — | 2 |
+| mpc_brake | 26 | 44 | 17 |
+| mpc_slow | 8 | 15 | 12 |
+
+- The PR's trigger does not check the sign of the e2e target, so on these routes it would have grown from 16 presses, 12 of them the model braking harder than the MPC. Its main input here is model over-braking, and it would then soften the model's light braking for the rest of the drive.
+- A lead pulling away with the driver pressing gas is almost always MPC-limited (29 of 32), and 17 of those have the MPC still braking (e.g. 236 17:19.4, MPC −0.59 with vRel +3.88 at 34 m; 236 35:00.4, −1.62 with vRel +6.23 at 16.7 m). The e2e target is not what is slow to respond to a departing lead; the lead/follow path is.
+- In this fork the model's stop plans reach the MPC through the cruise speed (`spVCruise`, item 31, route 00000241 1:59.6), not through `desiredAcceleration`, so the PR's `model_limited` test misses them.
+
+**Decision.** Do not port PR 39015. Its `accelBoost @40` would also collide with `leadTrajectoryX0 @40` in our `LongitudinalPlan`. **Open:** MPC response to a lead pulling away (the 17 `mpc_brake` rows above) is the lead to follow for "more responsive to lead accelerating".
 
 ## 137. Lateral jerk at the 50 mph band edge (route 277): the Lat*Scale trims now slew, and a band with an I trim of 0 no longer hides a live integrator. Unit tests, open-loop replay and sim only; not driven.
 
