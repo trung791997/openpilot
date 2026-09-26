@@ -26,7 +26,7 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import (IncreaseBlock, RedneckCruise, closing_target_in_path,
+from openpilot.selfdrive.car.redneck_cruise import (IncreaseBlock, RedneckCruise, close_lead_cap_ms, closing_target_in_path,
                                                     gas_release_floor_expired, get_model_only_far_lead_target_ms,
                                                     is_far_lead_corroborated, is_speed_button_press,
                                                     select_redneck_target_speed, update_gas_release_floor,
@@ -569,6 +569,7 @@ class Car:
     # target, and increases are held after a lead change and while a path-relative target is closing
     # (route 276 8:27.9, 14:36.7, 17:22.5; redneck_cruise FAR_LEAD_MODEL_ONLY_* and INCREASE_BLOCK_*).
     increase_blocked = False
+    close_lead_cap = float("inf")  # launch-target cap behind a close lead (route 277 16:34.1)
     if getattr(self.starpilot_toggles, "icbm_far_lead", False):
       radar_state = self.sm['radarState'] if self.sm.seen['radarState'] and self.sm.valid['radarState'] else None
       lead_one = radar_state.leadOne if radar_state is not None else None
@@ -582,7 +583,9 @@ class Car:
       closing = closing_target_in_path((lead_one, lead_two), model_leads, float(getattr(CS, "vEgo", 0.0)), model_v_ego)
       if not hasattr(self, "redneck_increase_block"):
         self.redneck_increase_block = IncreaseBlock()
-      increase_blocked = self.redneck_increase_block.update(lead_one, lead_present, closing)
+      increase_blocked = self.redneck_increase_block.update(lead_one, lead_present, closing,
+                                                                 float(getattr(CS, "vEgo", 0.0)))
+      close_lead_cap = close_lead_cap_ms(lead_one, float(getattr(CS, "vEgo", 0.0)), normal_target_speed)
     self.redneck_increase_blocked = increase_blocked
 
     driver_button = is_speed_button_press(getattr(CS, "buttonEvents", []))
@@ -602,6 +605,7 @@ class Car:
       launch_target_speed,
       set_speed_ms=set_speed,
       hold_target_ms=normal_target_speed,
+      lead_cap_ms=close_lead_cap,
     )
 
     gas_release_floor = 0.0
@@ -637,8 +641,11 @@ class Car:
     self.redneck_gas_release_floor = gas_release_floor
     self.redneck_gas_pressed_prev = gas_pressed
 
+    # The launch bypasses the lead-driven target, so a close lead caps it (close_lead_cap_ms, route 277 16:34.1).
+    # The gas-release floor is not capped: the driver set it, and at 277 38:26.4 the cap cut it 46.0 -> 41.6 mph
+    # while the driver was passing the lead (replay).
     if self.redneck_launch_active:
-      target_speed = launch_target_speed
+      target_speed = min(launch_target_speed, close_lead_cap)
     elif gas_release_floor > 0.0:
       # The floor never raises the target above the cruise target (vCruise, SLC and CSC still cap it).
       target_speed = max(normal_target_speed, min(gas_release_floor, launch_target_speed))

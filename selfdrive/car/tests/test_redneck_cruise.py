@@ -17,6 +17,12 @@ from openpilot.selfdrive.car.redneck_cruise import (
   INCREASE_BLOCK_RANGE_M,
   IncreaseBlock,
   LEAD_CHANGE_RANGE_JUMP_M,
+  LAUNCH_LEAD_CAP_HEADWAY_S,
+  LAUNCH_LEAD_CAP_RANGE_M,
+  LAUNCH_LEAD_SPEED_MARGIN_MS,
+  LEAD_SOURCE_FLIP_CLOSING_MS,
+  LEAD_SOURCE_FLIP_MIN_HEADWAY_S,
+  close_lead_cap_ms,
   closing_target_in_path,
   get_model_only_far_lead_target_ms,
   lead_changed,
@@ -801,6 +807,81 @@ class TestRedneckLaunch(unittest.TestCase):
     self.assertLess(target, 36.0 * CV.MPH_TO_MS)
 
 
+class TestLaunchCloseLead(unittest.TestCase):
+  """Route 277 16:34.1: a launch behind a radar lead 7-38 m ahead raised the set 24.9 -> 48.5 mph."""
+
+  def test_cap_gate(self):
+    normal = 10.0 * CV.MPH_TO_MS
+    lead = _lead(d_rel=12.0, v_lead=12.0 * CV.MPH_TO_MS)
+    self.assertAlmostEqual(close_lead_cap_ms(lead, 2.0, normal), 12.0 * CV.MPH_TO_MS + LAUNCH_LEAD_SPEED_MARGIN_MS)
+    self.assertAlmostEqual(close_lead_cap_ms(lead, 2.0, 40.0), 40.0)  # never below the normal target
+    self.assertEqual(close_lead_cap_ms(None, 2.0, normal), float("inf"))
+    self.assertEqual(close_lead_cap_ms(_lead(status=False), 2.0, normal), float("inf"))
+    self.assertEqual(close_lead_cap_ms(_lead(d_rel=LAUNCH_LEAD_CAP_RANGE_M + 1.0), 2.0, normal), float("inf"))
+    # within LAUNCH_LEAD_CAP_HEADWAY_S beyond the range gate
+    d = LAUNCH_LEAD_CAP_HEADWAY_S * 13.0 - 1.0
+    self.assertLess(close_lead_cap_ms(_lead(d_rel=d), 13.0, normal), float("inf"))
+    # an uncorroborated vision-only lead does not cap
+    self.assertEqual(close_lead_cap_ms(_lead(radar=False, model_prob=0.5), 2.0, normal), float("inf"))
+
+  def test_launch_ends_once_caught_up_with_a_lead_above_the_floor(self):
+    target = 50.0 * CV.MPH_TO_MS
+    def step(v, s, cap):
+      return update_launch_state(True, False, True, v * CV.MPH_TO_MS, False, False, False, target,
+                                 set_speed_ms=s * CV.MPH_TO_MS, lead_cap_ms=cap * CV.MPH_TO_MS)
+    lead_mph = LAUNCH_LEAD_SPEED_MARGIN_MS * CV.MS_TO_MPH
+    self.assertFalse(step(29.0, 34.8, 30.0 + lead_mph)[0])
+    self.assertTrue(step(25.0, 34.8, 30.0 + lead_mph)[0])  # still behind the lead's speed
+    self.assertTrue(step(29.0, 25.0, 30.0 + lead_mph)[0])  # set not raised to the cap yet
+    self.assertTrue(step(12.0, 24.9, 12.0 + lead_mph)[0])  # slow lead: the launch keeps the set off the floor
+    self.assertTrue(step(29.0, 34.8, float("inf"))[0])  # no close lead: unchanged
+
+  def _card(self, lead_one, v_mph, standstill=False, cluster_mph=24.9, active=False, was_stopped=False):
+    starpilot_plan = SimpleNamespace(vCruise=50.0 * CV.MPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    v = v_mph * CV.MPH_TO_MS
+    longitudinal_plan = SimpleNamespace(speeds=[v] * 10, hasLead=True, shouldStop=False, longitudinalPlanSource="lead0")
+    msgs = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan,
+            "radarState": SimpleNamespace(leadOne=lead_one, leadTwo=_lead(status=False))}
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True, "modelV2": False}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = msgs.__getitem__
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), sm=sm,
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False, icbm_far_lead=True),
+                           redneck_launch_active=active, redneck_was_stopped=was_stopped)
+    CS = SimpleNamespace(vEgo=v, standstill=standstill, gasPressed=False, buttonEvents=[], vCruise=50.0 * CV.MPH_TO_KPH,
+                         cruiseState=SimpleNamespace(speedCluster=cluster_mph * CV.MPH_TO_MS))
+    CC = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=True))
+    return card, CS, CC
+
+  def test_card_launch_capped_behind_close_lead(self):
+    lead = _lead(d_rel=11.4, v_rel=4.2, v_lead=12.2 * CV.MPH_TO_MS)
+    card, CS, CC = self._card(lead, 0.0, standstill=True)
+    Car._get_redneck_target_speed(card, CS, CC)
+    self.assertTrue(card.redneck_was_stopped)
+    moving, CS, CC = self._card(lead, 3.2, was_stopped=True)
+    target, _ = Car._get_redneck_target_speed(moving, CS, CC)
+    self.assertTrue(moving.redneck_launch_active)
+    self.assertLess(target, 20.0 * CV.MPH_TO_MS)
+    self.assertGreater(target, 12.2 * CV.MPH_TO_MS)
+    # the same launch with the lead far away goes to the cruise target
+    far, CS, CC = self._card(_lead(d_rel=80.0, v_lead=12.2 * CV.MPH_TO_MS), 3.2, was_stopped=True)
+    self.assertAlmostEqual(Car._get_redneck_target_speed(far, CS, CC)[0], 50.0 * CV.MPH_TO_MS, places=2)
+    # and with no lead at all
+    none, CS, CC = self._card(_lead(status=False), 3.2, was_stopped=True)
+    self.assertAlmostEqual(Car._get_redneck_target_speed(none, CS, CC)[0], 50.0 * CV.MPH_TO_MS, places=2)
+
+  def test_card_gas_release_floor_not_capped(self):
+    # Route 277 38:26.4: the driver was passing a lead at 47-61 m; the floor they set is kept.
+    card, CS, CC = self._card(_lead(d_rel=20.0, v_lead=30.0 * CV.MPH_TO_MS), 40.0, cluster_mph=40.0)
+    card.starpilot_toggles.set_speed_on_gas_release = True
+    card.redneck_gas_release_floor = 46.0 * CV.MPH_TO_MS
+    card.redneck_gas_release_floor_age = 1.0
+    CS.brakePressed = False
+    target, _ = Car._get_redneck_target_speed(card, CS, CC)
+    self.assertAlmostEqual(target, 46.0 * CV.MPH_TO_MS, places=2)
+
+
 class TestRedneckGasReleaseFloor(unittest.TestCase):
   SET = 25.0 * CV.MPH_TO_MS
 
@@ -1139,9 +1220,37 @@ class TestIncreaseBlock(unittest.TestCase):
     self.assertFalse(lead_changed(None, radar5))  # a lead appearing can only lower the target
     self.assertTrue(lead_changed(radar5, None))  # lost
     self.assertTrue(lead_changed(radar5, lead_key(_lead(track_id=6))))
-    self.assertTrue(lead_changed(radar5, lead_key(_lead(radar=False, track_id=-1))))  # radar -> vision
+    # radar -> vision within LEAD_SOURCE_FLIP_MIN_HEADWAY_S (60 m at 30 m/s) is a change
+    self.assertTrue(lead_changed(radar5, lead_key(_lead(radar=False, track_id=-1)), 30.0))
     self.assertTrue(lead_changed(lead_key(_lead(d_rel=70.0)), lead_key(_lead(d_rel=70.0 + LEAD_CHANGE_RANGE_JUMP_M + 1.0))))
     self.assertFalse(lead_changed(radar5, lead_key(_lead(d_rel=62.0))))
+
+  def test_source_flip_of_same_departing_car_is_not_a_change(self):
+    # Route 277 3:51.5: a departing lead at 77-94 m flickering radar <-> vision at 52-57 mph (23-25 m/s).
+    v_ego = 24.0
+    radar = lead_key(_lead(d_rel=88.7, v_rel=1.5))
+    vision = lead_key(_lead(d_rel=94.5, v_rel=-0.2, radar=False, track_id=-1))
+    self.assertFalse(lead_changed(radar, vision, v_ego))
+    self.assertFalse(lead_changed(vision, radar, v_ego))
+    # closing faster than LEAD_SOURCE_FLIP_CLOSING_MS on either side: still a change
+    closing = lead_key(_lead(d_rel=94.5, v_rel=-LEAD_SOURCE_FLIP_CLOSING_MS - 0.2, radar=False, track_id=-1))
+    self.assertTrue(lead_changed(radar, closing, v_ego))
+    self.assertTrue(lead_changed(lead_key(_lead(d_rel=88.7, v_rel=-LEAD_SOURCE_FLIP_CLOSING_MS - 0.2)), vision, v_ego))
+    # a range jump beyond LEAD_CHANGE_RANGE_JUMP_M: still a change (276 17:22.5, radar 70 m <-> vision 95 m)
+    self.assertTrue(lead_changed(lead_key(_lead(d_rel=70.0)), lead_key(_lead(d_rel=95.0, radar=False, track_id=-1)), v_ego))
+    # nearer than LEAD_SOURCE_FLIP_MIN_HEADWAY_S: still a change (277 11:07, 37-45 m at 38 mph)
+    near = LEAD_SOURCE_FLIP_MIN_HEADWAY_S * v_ego - 1.0
+    self.assertTrue(lead_changed(lead_key(_lead(d_rel=near)), lead_key(_lead(d_rel=near, radar=False, track_id=-1)), v_ego))
+    # a radar track id change is still a change
+    self.assertTrue(lead_changed(radar, lead_key(_lead(d_rel=88.7, v_rel=1.5, track_id=9)), v_ego))
+
+  def test_hold_not_rearmed_by_same_car_source_flip(self):
+    block = IncreaseBlock()
+    for i in range(300):
+      lead = _lead(d_rel=90.0, v_rel=1.0, radar=(i // 20) % 2 == 0, track_id=5 if (i // 20) % 2 == 0 else -1)
+      blocked = block.update(lead, True, False, 24.0)
+    self.assertFalse(blocked)
+    self.assertTrue(block.update(_lead(d_rel=90.0, v_rel=-3.0, radar=False, track_id=-1), True, False, 24.0))
 
   def test_closing_target_in_path(self):
     v_ego = 18.0

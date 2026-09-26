@@ -111,10 +111,19 @@ FAR_LEAD_MODEL_ONLY_CLOSING_MS = 8.0
 # bookmarks and 276 6:58.1 unchanged (6:58.1 loses a 46.6 -> 48.5 bounce mid-drop). Cost: open-road seconds
 # > 2 mph below target +9 / +29 / +4 / +14 s (276/271/26f/270), mostly the loss hold under a flickering
 # vision lead. The loss/range/track-id hold does most of the work; the closing test alone changes little.
-# Radar<->vision flips of the same car count as a change on purpose (dropping them: 26f reversals 22 -> 31).
-# Not driven.
+# Radar<->vision flips count as a change (dropping them all: 26f reversals 22 -> 31), except a flip of the
+# same car: range within LEAD_CHANGE_RANGE_JUMP_M and neither side closing faster than
+# LEAD_SOURCE_FLIP_CLOSING_MS, at least LEAD_SOURCE_FLIP_MIN_HEADWAY_S ahead. Route 277 3:51.5 (replay, open
+# loop): a departing lead at 77-94 m flickering radar<->vision at 52-57 mph re-armed the hold and left the set up
+# to 5 mph low for 12.6 s; with the exemption the hold there drops 16.6 -> 8.1 s and the set sits at 53.4-55.9
+# instead of 51.0-52.8. A flip onto a closing car (vRel < -1 m/s) still holds, as does any flip with a larger
+# range jump (276 17:22.5: radar 70 m <-> vision 95 m). The headway gate keeps the hold as hysteresis close in:
+# without it 277 11:07 (lead at 37-45 m, 2.3 s) gained 5 reversals (route 32 -> 38); 2.0 s changed nothing,
+# 2.5 s gave 34, 3.0 s 35 and lost 271's open-road gain (502.7 -> 507.5 s). Not driven.
 INCREASE_BLOCK_AFTER_LEAD_CHANGE_S = 2.0
 LEAD_CHANGE_RANGE_JUMP_M = 15.0
+LEAD_SOURCE_FLIP_CLOSING_MS = 1.0
+LEAD_SOURCE_FLIP_MIN_HEADWAY_S = 2.5
 INCREASE_BLOCK_RANGE_M = 110.0
 INCREASE_BLOCK_CLOSING_MS = 5.0
 INCREASE_BLOCK_MODEL_PROB = 0.25
@@ -128,6 +137,21 @@ MODEL_LEAD_RADAR_TO_CAMERA_M = 1.52  # radard.RADAR_TO_CAMERA
 LAUNCH_STOPPED_SPEED_MS = 0.3
 LAUNCH_MOVING_SPEED_MS = 2.0 * CV.MPH_TO_MS
 LAUNCH_CAUGHT_UP_MARGIN_MS = 2.0 * CV.MPH_TO_MS
+# Close lead: route 277 16:34.1 (log decode, limited road evidence): launching behind a radar lead 7-38 m ahead
+# (vLead 12 -> 30 mph), the launch raised the set 24.9 -> 48.5 mph, the lead-driven target then cut it to 28.6
+# and the driver braked. While a radar-backed (or modelProb >= FAR_LEAD_CORROBORATED_MODEL_PROB) leadOne is
+# within LAUNCH_LEAD_CAP_RANGE_M or LAUNCH_LEAD_CAP_HEADWAY_S of vEgo, the launch target is capped at
+# max(normal target, vLead + LAUNCH_LEAD_SPEED_MARGIN_MS). The lead-speed term keeps the set off the 25 mph
+# floor while the lead pulls away (route 260 8:39). The launch also ends once the set has reached the cap and
+# vEgo is within LAUNCH_CAUGHT_UP_MARGIN_MS of a lead doing >= 25 mph, so ICBM follows the lead-driven target;
+# ending it behind a slower lead put the set back on the floor behind a faster lead for up to 2.3 s per launch.
+# 277 had the lead at 2.7-2.9 s from -3 s to the brake, so 2.5 s would have released the cap there. Replay
+# (/tmp/icbm4, open loop): 16:34.1 peaks at 35.4 instead of 48.5 mph; 11 of 15 launches on 5 routes changed.
+# The gas-release floor, the other path around the lead-driven target, is not capped: that cut 277 38:26.4
+# from 46.0 to 41.6 mph while the driver was passing a lead at 47-61 m. Launch with no lead is unchanged.
+LAUNCH_LEAD_CAP_RANGE_M = 30.0
+LAUNCH_LEAD_CAP_HEADWAY_S = 3.0
+LAUNCH_LEAD_SPEED_MARGIN_MS = 5.0 * CV.MPH_TO_MS
 # Route 262 3:43-4:26: the launch raised the set speed to 49.7 mph by 3:50, then held it for 36 s while
 # the lead drove 30-45 mph, because it only ended at vEgo >= target - 2 mph. It now also ends once the set
 # speed has been raised and the car has caught up to the normal (lead or plan) target, so ICBM follows the
@@ -303,21 +327,28 @@ def get_model_only_far_lead_target_ms(lead) -> float:
 
 
 def lead_key(lead) -> tuple | None:
-  """(radar, track id, dRel) of a published lead, None if there is none."""
+  """(radar, track id, dRel, vRel) of a published lead, None if there is none."""
   if lead is None or not getattr(lead, "status", False):
     return None
   radar = bool(getattr(lead, "radar", False))
-  return radar, int(getattr(lead, "radarTrackId", -1)) if radar else -1, float(lead.dRel)
+  return radar, int(getattr(lead, "radarTrackId", -1)) if radar else -1, float(lead.dRel), float(getattr(lead, "vRel", 0.0))
 
 
-def lead_changed(prev_key: tuple | None, key: tuple | None) -> bool:
+def lead_changed(prev_key: tuple | None, key: tuple | None, v_ego: float = 0.0) -> bool:
   """True when a lead was lost, or changed source (radar/vision), radar track id, or range by more than
-  LEAD_CHANGE_RANGE_JUMP_M. A new lead appearing is not a change: it can only lower the target."""
+  LEAD_CHANGE_RANGE_JUMP_M. A new lead appearing is not a change: it can only lower the target. A source flip
+  within the range jump with neither side closing faster than LEAD_SOURCE_FLIP_CLOSING_MS is the same car
+  (route 277 3:51.5), not a change."""
   if prev_key is None:
     return False
   if key is None:
     return True
-  return prev_key[0] != key[0] or prev_key[1] != key[1] or abs(prev_key[2] - key[2]) > LEAD_CHANGE_RANGE_JUMP_M
+  if abs(prev_key[2] - key[2]) > LEAD_CHANGE_RANGE_JUMP_M:
+    return True
+  if prev_key[0] != key[0]:
+    near = min(prev_key[2], key[2]) < LEAD_SOURCE_FLIP_MIN_HEADWAY_S * max(float(v_ego), 1.0)
+    return near or min(prev_key[3], key[3]) < -LEAD_SOURCE_FLIP_CLOSING_MS
+  return prev_key[1] != key[1]
 
 
 def closing_target_in_path(radar_leads, model_leads, v_ego: float, model_v_ego: float | None = None) -> bool:
@@ -346,9 +377,9 @@ class IncreaseBlock:
     self.prev_has_lead = False
     self.frames = 0
 
-  def update(self, lead, has_lead: bool, closing: bool) -> bool:
+  def update(self, lead, has_lead: bool, closing: bool, v_ego: float = 0.0) -> bool:
     key = lead_key(lead)
-    if lead_changed(self.prev_key, key) or (self.prev_has_lead and not has_lead):
+    if lead_changed(self.prev_key, key, v_ego) or (self.prev_has_lead and not has_lead):
       self.frames = int(INCREASE_BLOCK_AFTER_LEAD_CHANGE_S / DT_CTRL)
     elif self.frames > 0:
       self.frames -= 1
@@ -396,9 +427,12 @@ def get_minimum_set_speed(is_metric: bool, brand: str = "") -> int:
 
 def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v_ego: float, standstill: bool,
                         gas_pressed: bool, driver_button: bool, launch_target_ms: float,
-                        set_speed_ms: float | None = None, hold_target_ms: float | None = None) -> tuple[bool, bool]:
+                        set_speed_ms: float | None = None, hold_target_ms: float | None = None,
+                        lead_cap_ms: float = float("inf")) -> tuple[bool, bool]:
   """Returns (launch_active, was_stopped). A launch never starts while the car is stopped, so ICBM does
-  not press RES+ at standstill (on a Honda that resumes the car by itself)."""
+  not press RES+ at standstill (on a Honda that resumes the car by itself). lead_cap_ms: close_lead_cap_ms;
+  once the set has reached it and the car has caught up with the lead's speed, the launch ends and ICBM
+  follows the lead-driven target (route 277 16:34.1)."""
   if not enabled or driver_button:
     return False, False
   if standstill or v_ego < LAUNCH_STOPPED_SPEED_MS:
@@ -411,7 +445,25 @@ def update_launch_state(launch_active: bool, was_stopped: bool, enabled: bool, v
       set_speed_ms >= launch_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS and \
       v_ego >= hold_target_ms - LAUNCH_CAUGHT_UP_MARGIN_MS:
     launch_active = False
+  if launch_active and set_speed_ms is not None and lead_cap_ms < launch_target_ms and \
+      lead_cap_ms - LAUNCH_LEAD_SPEED_MARGIN_MS >= HONDA_MINIMUM_SET_SPEED_MPH * CV.MPH_TO_MS and \
+      set_speed_ms >= lead_cap_ms - LAUNCH_CAUGHT_UP_MARGIN_MS and \
+      v_ego >= lead_cap_ms - LAUNCH_LEAD_SPEED_MARGIN_MS - LAUNCH_CAUGHT_UP_MARGIN_MS:
+    launch_active = False
   return launch_active, was_stopped
+
+
+def close_lead_cap_ms(lead, v_ego: float, normal_target_ms: float) -> float:
+  """Cap for the launch target behind a close lead (route 277 16:34.1): max(normal
+  target, vLead + LAUNCH_LEAD_SPEED_MARGIN_MS) while a corroborated leadOne is within LAUNCH_LEAD_CAP_RANGE_M
+  or LAUNCH_LEAD_CAP_HEADWAY_S; inf otherwise."""
+  if lead is None or not getattr(lead, "status", False) or \
+      not is_far_lead_corroborated(getattr(lead, "radar", False), getattr(lead, "modelProb", 0.0)):
+    return float("inf")
+  d_rel = float(lead.dRel)
+  if d_rel > max(LAUNCH_LEAD_CAP_RANGE_M, LAUNCH_LEAD_CAP_HEADWAY_S * max(float(v_ego), 0.0)):
+    return float("inf")
+  return max(float(normal_target_ms), max(float(lead.vLead), 0.0) + LAUNCH_LEAD_SPEED_MARGIN_MS)
 
 
 def update_gas_release_floor(floor_ms: float, gas_pressed_prev: bool, gas_pressed: bool, enabled: bool, v_ego: float,

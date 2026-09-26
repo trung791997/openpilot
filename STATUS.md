@@ -7165,3 +7165,56 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - 268 highway lag falls from 0.60 s to 0.42 s.
 
 **Not fixed, noted.** The base gains in `interface.py` step as well: kpBP/kiBP are `[0, 11.18, 11.18, 22.35]`, so kp goes 0.024 → 0.048 at 25 mph. In the replay this gives a −0.11 step at 318.39 s, with a 3.7° error at the crossing. It is P only (no hidden state), so its size scales with the error at that moment. Making it continuous is a base-tune change and needs its own sim pass. Not done.
+
+## 138. ICBM: close-lead cap on the launch target; a radar<->vision flip of the same departing car no longer re-arms the increase hold. Unit tests and replay only; not driven.
+
+- **Problem (route `…00000277--2f5fd64a58`, segs 17-34 parking lot excluded; /tmp/r277), limited road evidence plus replay:**
+  - 16:34.1: launching from a stop behind a radar lead 7-38 m ahead (vLead 12 -> 30 mph), ICBM raised the set 24.9 -> 48.5 mph, then cut it to 28.6 once the launch ended. The driver braked.
+  - 3:51.5 (sim with STATUS 134): a departing lead at 77-94 m flickered radar<->vision at 52-57 mph. Every flip re-armed the 2 s increase hold, and the set sat up to 5 mph low for 12.6 s.
+- **Change** (`selfdrive/car/redneck_cruise.py`, `selfdrive/car/card.py`; Honda ICBM only, same gate as STATUS 128/134):
+  - **Launch cap** (`close_lead_cap_ms`). While a corroborated leadOne (radar, or modelProb >= 0.7) is within `LAUNCH_LEAD_CAP_RANGE_M = 30` m or `LAUNCH_LEAD_CAP_HEADWAY_S = 3.0` s, the launch target is capped at max(normal target, vLead + `LAUNCH_LEAD_SPEED_MARGIN_MS = 5 mph`).
+    - The vLead term keeps the set off the 25 mph floor while the lead pulls away (route 260 8:39).
+    - The launch also ends once the set has reached the cap and vEgo is within 2 mph of a lead doing >= 25 mph. Ending it behind a slower lead put the set back on the floor behind a faster lead for up to 2.3 s per launch.
+    - 3.0 s rather than 2.5 s: at 16:34.1 the lead sat at 2.7-2.9 s from -3 s to the brake.
+    - The gas-release floor is not capped. Capping it cut 277 38:26.4 from 46.0 to 41.6 mph while the driver was passing a lead at 47-61 m.
+    - A launch with no lead, or with the lead beyond both gates, is unchanged.
+  - **Source flip** (`lead_changed`). A radar<->vision flip is no longer a lead change when all three hold:
+    - the range stays within `LEAD_CHANGE_RANGE_JUMP_M = 15` m;
+    - neither side is closing faster than `LEAD_SOURCE_FLIP_CLOSING_MS = 1.0` m/s;
+    - the lead is at least `LEAD_SOURCE_FLIP_MIN_HEADWAY_S = 2.5` s ahead.
+    - Track-id changes, losses and range jumps still re-arm the hold.
+    - Without the headway gate, 277 11:07 (lead at 37-45 m, 2.3 s) gained 5 reversals. Sweep: 2.0 s no change, 2.5 s best, 3.0 s lost 271's open-road gain.
+- **Replay** (`/tmp/icbm4/sim.py`, base = HEAD with 134; open loop in vEgo, so compare base vs fix only):
+
+  | Route | Reversals < 1.5 s | Longest episode | Lead drops kept mph | Phantom mph | Open-road s > 2 mph below target |
+  |---|---|---|---|---|---|
+  | 277 (excl. 17-34) | 32 -> 36 | 5 -> 5 | 200 -> 191 | 181 -> 172 | 249.5 -> 249.1 |
+  | 276 | 27 -> 29 | 5 -> 5 | 121 -> 121 | 109 -> 109 | 278.4 -> 278.4 |
+  | 271 (seg 7+) | 88 -> 91 | 14 -> 14 | 368 -> 311 | 250 -> 211 | 508.9 -> 502.7 |
+  | 26f | 22 -> 25 | 5 -> 5 | 173 -> 121 | 50 -> 33 | 165.2 -> 165.7 |
+  | 270 | 19 -> 23 | 4 -> 6 | 116 -> 103 | 53 -> 40 | 139.6 -> 139.1 |
+
+  - Attribution of the reversals:
+    - flip only: 277 +2, 276 +2, 271 +3, 26f +1, 270 +3;
+    - launch only: 277 +2, 26f +3, 270 -2.
+    - STATUS 134 measured 26f 22 -> 31 for dropping all flips; this change gives +1 on 26f.
+    - The fewer drops and phantom mph are the launch cap: fewer launch overshoots to undo.
+  - 277 16:34.1, set from -8 to +1 s: base 46.0, 47.8, 41.6, 35.4, 29.8, 28.6, 30.4, 31.7, 32.9, 32.9; fix 28.6, 26.7, 29.8, 34.8, 31.7, 29.8, 30.4, 31.7, 32.9, 32.9. The peak is 35.4 instead of 48.5.
+  - 277 3:51.5, -8..+16 s: the hold drops 16.6 -> 8.1 s, and the time with the set > 2 mph below vEgo drops 12.7 -> 6.2 s. From +0 s the set is 53.4-55.9, where base had 51.0-52.8. The open-road metric does not move, because the lead is within the planner's lead target.
+  - Unchanged (set -8..+1 s, first decel press):
+    - 276 14:36.7 (held at 37.9, no INCREASE);
+    - 276 6:58.1;
+    - 277 4:23.1 and 6:46.1 (increases still blocked);
+    - 277 38:26.4.
+  - 271 BM0-BM4 and 32:01: first press, first drop and set at -2 s are identical.
+  - Launches: 11 of 15 changed across the 5 routes. Max set in 20 s fell at 277 16:21 (49.7 -> 35.4), 271 14:34/20:39/28:04, and 26f 1:50/3:11/8:07.
+    - Set on the floor behind a faster lead: 26f 1:50 0 -> 1.1 s and 271 14:34 0 -> 0.5 s.
+    - 26f 8:07 and 270 2:12 improved (1.5 -> 0, 1.4 -> 0 s).
+- **Tests:**
+  - `test_redneck_cruise.py`: 96 pass (6 new; the flip assertion in `test_lead_changed` now passes vEgo). `test_card_launch_capped_behind_close_lead` fails with the card change reverted.
+  - gas_override 2, cruise_speed 42, honda `test_icbm_counter_sync` 5 and `test_longitudinal_planner.py` 512 pass.
+- **Road check to do:**
+  - Launching behind a close lead, the set should track the lead's speed plus about 5 mph instead of jumping to the cruise target.
+  - Behind a departing lead at 80+ m that flickers radar/vision, the set should keep rising.
+  - Watch for 1-2 mph hunting behind a lead at 2.5-3 s that flips source.
+- **Open:** the reversal cost is small but consistent (+2..+4 per route). The sim is open loop in vEgo, so it cannot say whether stock ACC would close on the lead less at 16:34.1.
