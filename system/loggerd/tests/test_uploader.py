@@ -44,6 +44,8 @@ class TestUploader(UploaderTestCase):
   def setup_method(self):
     super().setup_method()
     log_handler.reset()
+    # UploadRlogs defaults on in StarPilot; the upstream tests cover qlog-only uploading
+    self.params.put_bool("UploadRlogs", False)
 
   def start_thread(self):
     self.end_event = threading.Event()
@@ -189,9 +191,9 @@ class TestUploader(UploaderTestCase):
       assert not lock_path.is_file(), "File lock not cleared on startup"
 
   # StarPilot variables
-  def test_rlogs_not_uploaded_by_default(self):
+  def test_rlogs_not_uploaded_when_off(self):
     self.gen_files(lock=False, boot=False)
-    self.params.remove("UploadRlogs")
+    self.params.put_bool("UploadRlogs", False)
     self.start_thread()
     time.sleep(1)
     self.join_thread()
