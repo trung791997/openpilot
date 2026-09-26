@@ -1,6 +1,6 @@
 ---
 name: auto-compact
-description: Checkpoint state and execute a lossless compaction in Claude Code Desktop or CLI. Use when context usage is high (>120k tokens), before /compact, or after completing major phases.
+description: Checkpoint state and execute a lossless compaction in a cloud, Remote Control, Desktop, or CLI session. Use when context usage is high (>120k tokens), before /compact, or after completing major phases.
 argument-hint: "[optional next-phase focus]"
 ---
 
@@ -57,6 +57,11 @@ Ensure `.claude/compact-state-<session-id>.md` is successfully written to disk.
 
 ## Step 3: Trigger Compaction
 
+### Cloud or Remote Control session (built-in auto-compact):
+`autoCompactWindow` is 218000 (`.claude/settings.json`), so Claude Code compacts the session by
+itself at ~185k tokens (window minus a 33k buffer). With the manifest written, **keep working**.
+After compaction a SessionStart(compact) hook names your own manifest if it exists; resume from it.
+
 ### In Terminal / Tmux:
 If running inside tmux (`$TMUX` set) **and not a Remote Control session**
 (`$CLAUDE_CODE_CHILD_SESSION` is not `1` and `$CLAUDE_CODE_ENVIRONMENT_KIND` is not `bridge`).
@@ -65,7 +70,7 @@ host screen and nothing compacts; follow the Desktop path below instead.
 Invoke `~/.claude/bin/auto-compact.sh "Restoring from .claude/compact-state-<session-id>.md" "<optional continuation>"`.
 
 ### In Claude Code Desktop:
-If running inside Claude Code Desktop (no tmux), or in a Remote Control session:
+If running inside Claude Code Desktop (no tmux), or auto-compact is disabled:
 1. Confirm that `.claude/compact-state-<session-id>.md` has been saved to disk.
 2. Present a clear, actionable directive to the user:
    ```text

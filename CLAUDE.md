@@ -72,6 +72,10 @@ everywhere, including cloud sessions and other accounts.
 > "detached", and nothing compacts (2026-09-26: 73 compacts across three rc sessions, all
 > `manual`). There, keep the manifest current and let built-in auto-compact or the user's
 > `/compact` do it.
+>
+> Built-in auto-compact fires at ~185k in every session (`autoCompactWindow` 218000 in
+> `.claude/settings.json`), and in cloud sessions `.claude/hooks/cloud-only.sh` runs the
+> same `<context-usage>` sensor. On a reminder there, write your manifest and keep working.
 
 Compact strictly based on volume ceilings and major phase shifts. Do NOT compact
 based on arbitrary task counts. Compacting too early destroys cache economics.
