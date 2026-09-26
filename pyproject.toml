@@ -140,6 +140,9 @@ speedvision = [
   "torchvision>=0.19",
   "ultralytics>=8.3,<9",
 ]
+simulation-coreml = [
+    "onnxruntime>=1.22 ; sys_platform == 'darwin'",
+]
 
 [project.urls]
 Homepage = "https://github.com/commaai/openpilot"
@@ -250,6 +253,7 @@ lint.ignore = [
   "NPY002",  # new numpy random syntax is worse
   "UP045", "UP007",  # these don't play nice with raylib atm
 ]
+lint.flake8-implicit-str-concat.allow-multiline = false
 line-length = 160
 target-version ="py311"
 exclude = [
@@ -266,7 +270,6 @@ exclude = [
   "*.ipynb",
   "generated",
 ]
-lint.flake8-implicit-str-concat.allow-multiline = false
 
 [tool.ruff.lint.per-file-ignores]
 # ruff targets py311 for the repo, but these three scripts are run by a user on a laptop with

@@ -634,6 +634,14 @@ class ModelState:
         )
       else:
         self.input_queues, self.npy = make_supercombo_input_queues(input_shapes, self.frame_skip, self.QUEUE_DEV)
+        if 'SIMULATION' in os.environ and os.getenv('SIMULATION_ONNX_MODEL'):
+          # Mac sim: the artifact supplies metadata and the warp; the network runs in ONNX Runtime.
+          from openpilot.selfdrive.modeld.sim_ort_runner import OrtModelRunner, make_numpy_run_supercombo
+          assert self.image_history_pipeline == IMAGE_HISTORY_IN_POLICY
+          self.run_policy, numpy_queues = make_numpy_run_supercombo(
+            OrtModelRunner(os.environ['SIMULATION_ONNX_MODEL']), self.metadata, self.frame_skip, self.input_queues,
+          )
+          self.input_queues.update(numpy_queues)
     else:
       if self.fused:
         raise ValueError("Fused artifacts currently require a supercombo model")
@@ -758,6 +766,9 @@ class ModelState:
         self.input_queues, self.npy = make_supercombo_input_queues(
           self.policy_input_shapes, self.frame_skip, self.QUEUE_DEV,
         )
+        if 'SIMULATION' in os.environ and os.getenv('SIMULATION_ONNX_MODEL'):
+          from openpilot.selfdrive.modeld.sim_ort_runner import numpy_queues
+          self.input_queues.update(numpy_queues(self.input_queues))
     else:
       vision_shapes = self.metadata["vision"]["input_shapes"]
       self.input_queues, self.npy = make_split_input_queues(

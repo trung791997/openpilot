@@ -28,6 +28,24 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.tools.sim.lib.common import vec3
 from openpilot.tools.sim.lib.camerad import W, H
 
+# MetaDrive's terrain.frag.glsl samples the shadow atlas with texture2D, which the macOS
+# GL 4.1 core profile rejects. The shader then fails silently and the ground draws flat
+# grey with no road surface or lane lines, so the driving model sees no road and stops.
+if sys.platform == "darwin":
+  from panda3d.core import NodePath, Shader
+  from metadrive.engine.asset_loader import AssetLoader
+  from metadrive.engine.core.terrain import Terrain
+
+  def _core_profile_render_state(engine, vert, frag):
+    def read(name):
+      with open(AssetLoader.file_path("../shaders", name)) as f:
+        return f.read().replace("texture2D(", "texture(")
+    dummy_np = NodePath("Dummy")
+    dummy_np.setShader(Shader.make(Shader.SL_GLSL, vertex=read(vert), fragment=read(frag)))
+    return dummy_np.getState()
+
+  Terrain.make_render_state = staticmethod(_core_profile_render_state)
+
 C3_POSITION = Vec3(0.0, 0, 1.22)
 C3_HPR = Vec3(0, 0,0)
 

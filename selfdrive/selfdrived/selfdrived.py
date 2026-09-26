@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import sys
 import time
 import threading
 
@@ -46,6 +47,8 @@ from openpilot.starpilot.system.wheel_controls import (
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
+# Mac MetaDrive sim: non-realtime scheduling on a laptop misses the 100 Hz deadline, which soft-disables mid-drive.
+MAC_SIMULATION = SIMULATION and sys.platform == "darwin"
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
 
@@ -679,7 +682,7 @@ class SelfdriveD:
           self.events.add(EventName.cameraMalfunction)
         elif not self.sm.all_freq_ok(self.camera_packets):
           self.events.add(EventName.cameraFrameRate)
-    if not REPLAY and self.rk.lagging:
+    if not REPLAY and not MAC_SIMULATION and self.rk.lagging:
       self.events.add(EventName.selfdrivedLagging)
     if self.sm['radarState'].radarErrors.canError:
       self.events.add(EventName.canError)
