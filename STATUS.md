@@ -7475,3 +7475,23 @@ Sim with plant_d5 on 27a / 26b / 271, low band (< 25 mph), the logged settings a
 - `LatIScaleLowSpeed` 50 → 25 → 0: unwind is faster, but the mid-corner ratio falls (26b 0.906 → 0.880 → 0.858; 271 0.931 → 0.892 → 0.844), and low speed already under-steers mid-corner (132). Error rms is flat. Rejected in favour of P.
 - **Given to the owner: `LatPScaleLowSpeed` 115. Everything else unchanged** (low I 50 / F 50; standard and highway 105 / 75 / 100; `NrdrLatRateFF` 0). 130 is the next step if unwind is still slow and low-speed weave has not risen.
 - **`NrdrDriverOverrideThreshold`: keep 2000.** Lowering it adds threshold grazes, which are already 62–71 % of presses and cut the torque (132). At 27a 12:34 the cut had already fired at 1998–2105.
+
+### 143b. Owner follow-up: override fade-up/down and the target LPF taus. Sim only; nothing changed on the car.
+
+Sim plant_d5 on 27a / 26b / 271, base = the logged settings + `LatPScaleLowSpeed` 115. The sim has no driver: logged press frames are re-synced to the log, so fade settings are scored only on how fast tracking recovers after a press, not on how the returning torque feels under a hand that is still on the wheel.
+
+| setting | low < 25 mph error rms ° (27a / 26b / 271) | lag s | 25–50 mph error rms |
+|---|---|---|---|
+| fade-up 1.0 (as driven) | 15.48 / 13.43 / 10.69 | 0.34 / 0.32 / 0.21 | 0.85 / 1.21 / 0.91 |
+| fade-up 0.5 | 13.79 / 12.32 / 9.76 | 0.30 / 0.29 / 0.20 | 0.84 / 1.15 / 0.85 |
+| fade-up 0.25 | 12.71 / 11.66 / 9.32 | 0.28 / 0.27 / 0.20 | 0.84 / 1.11 / 0.82 |
+| fade-down 0 → 0.2 | 15.48 → 14.57 / 13.43 → 12.01 / 10.69 → 9.66 | 0.34 → 0.32 / 0.32 → 0.29 / 0.21 → 0.20 | ≈ / 1.16 / 0.82 |
+
+Sign changes are unchanged by either setting.
+- **Given to the owner: `HondaOverrideFadeUpSecs` 0.5 and `HondaOverrideFadeDownSecs` 0.2.**
+  - Fade-up 0.25 scores best, but it returns torque 4× faster under a hand that may still be on the wheel. The sim cannot see that, and 132 kept 1 s for real fights.
+  - Fade-down 0.2 was already in use on 278 before the rate FF was switched off. With the rate FF off afterwards, no stutter was attributed to it.
+- **LPF tau: keep 0.09 / 0.1 / 0.1.** With the rate FF off, the taus barely matter in the sim.
+  - Low 0.06 vs 0.09 vs 0.12: 15.96 vs 15.48 vs 15.01 on 27a, and within 2 % on the other two routes.
+  - Standard and highway 0.07 to 0.13: within 0.02°.
+  - A longer tau also delays the request itself, which these numbers, scored against the shaped target, do not charge. 133 showed tau 0 at low speed was worse.
