@@ -24,7 +24,7 @@ The network runs in ONNX Runtime with the CoreML provider on CPU+GPU (`selfdrive
 | ORT CoreML ALL (Neural Engine) | 11 | 0.63 |
 | ORT CPU | 24 | 0 |
 | tinygrad CPU | ~320 | — |
-| tinygrad METAL JIT | ~15 | wrong: up to 58 on ~1000 of 2580 outputs |
+| tinygrad METAL JIT | ~15 | wrong before the fix below: up to 58 on ~1000 of 2580 outputs; passes the compile self-check after it |
 
 ## Fixes needed to get here
 
@@ -36,8 +36,14 @@ The network runs in ONNX Runtime with the CoreML provider on CPU+GPU (`selfdrive
 ## Open
 
 - **TSFDO barely sees MetaDrive lanes.** laneLineProbs stay at or below 0.05. It pulls away under engagement but does not steer into the first curve, and MetaDrive ends the episode with `out_of_road` after about 15 s. The rendered frame and the model input look right, so this is probably domain gap (MetaDrive's flat, untextured look). A pipeline fault is not excluded: the check that separates them is feeding a real comma frame through this exact ORT path.
-- **tinygrad METAL JIT.** The fault is in the Metal graph (ICB) replay, not the pickle:
-  - `JIT=2`, which runs kernels individually, matches eager exactly at ~26 ms.
-  - A per-command-buffer test rules out barrier races.
-  - Bisection puts it in the last 19 kernels of the output head.
-  - Suspect: the kernel that binds 31 buffers, the ICB maximum (`setMaxKernelBufferBindCount(31)`). Not yet confirmed.
+- **Recording.** `SIM_RECORD_DIR=/tmp/simrec tools/sim/run_mac_tsfdo.sh` saves the road camera at 5 fps with speed and engagement drawn on it, for when the desktop cannot be screen-captured. `ffmpeg -framerate 5 -pattern_type glob -i '/tmp/simrec/*.jpg' -c:v libx264 -pix_fmt yuv420p out.mp4`. A 68 s run on 2026-09-26 stayed engaged at 2-3 m/s, took the first gentle bend, then left the road onto the grass.
+
+## tinygrad METAL JIT bug (fixed locally, static)
+
+One kernel in TSFDO's output head, `r_215_3_4_128_4_...`, binds 31 buffers, which is the ICB maximum (`setMaxKernelBufferBindCount(31)`). Replayed from the Metal indirect command buffer on this M1 (Apple7), its output is wrong. Run by itself, it is correct.
+
+- Bisection: graph batches that include this kernel fail. `[304,320)`, which excludes it, passes.
+- Fix: `MetalGraph.supports_uop` in `tinygrad_repo/tinygrad/runtime/graph/metal.py` keeps kernels with 31 or more buffers out of the graph.
+- With the fix, the full compile passes the self-check. With the fix reverted, it fails with `outputs differ from baseline`.
+- No upstream issue or PR was found for this. Searches covered tinygrad #6313, #10170, #15129, #15156 and #17685.
+- The sim still uses ORT CoreML. Switching modeld back to the Metal pickle is untested.

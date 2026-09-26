@@ -115,4 +115,7 @@ class MetalGraph(GraphRunner):
     # Metal ICB replay encodes offsets as uint32; reject if any Metal buffer offset exceeds 32-bit range.
     for shrink in [s for src in new_call.src[1:] if (s:=src.src[0] if src.op is Ops.BITCAST else src).op is Ops.SHRINK]:
       if shrink.src[1].val * shrink.src[0].dtype.itemsize > 0xFFFFFFFF: return False
+    # A kernel binding 31 or more buffers replays wrong from the ICB on M1 (Apple7), even though the ICB allows 31:
+    # TSFDO's output-head reduction (31 buffers) differed by up to 58 from eager. It runs fine outside the graph.
+    if len(new_call.src) - 1 >= 31: return False
     return GraphRunner.supports_uop(batch_devs, new_call)

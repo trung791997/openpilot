@@ -1,4 +1,5 @@
 import math
+import os
 import sys
 import time
 
@@ -128,6 +129,11 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
   steer_ratio = 8
   vc = [0,0]
 
+  record_dir = os.getenv("SIM_RECORD_DIR")
+  if record_dir:
+    import cv2
+    os.makedirs(record_dir, exist_ok=True)
+
   while not exit_event.is_set():
     vehicle_state = metadrive_vehicle_state(
       velocity=vec3(x=float(env.vehicle.velocity[0]), y=float(env.vehicle.velocity[1]), z=0),
@@ -180,5 +186,14 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
         wide_road_image[...] = get_cam_as_rgb("rgb_wide")
       road_image[...] = get_cam_as_rgb("rgb_road")
       image_lock.release()
+
+      # SIM_RECORD_DIR: save every 4th road frame (5 fps) with speed and engagement, for a video
+      # when the desktop cannot be screen-captured.
+      if record_dir and rk.frame % 20 == 0:
+        speed = float(np.linalg.norm(env.vehicle.velocity))
+        frame = cv2.cvtColor(road_image, cv2.COLOR_RGB2BGR)
+        label = f"t={rk.frame / 100:6.1f}s  v={speed:4.1f} m/s  {'ENGAGED' if is_engaged else 'disengaged'}"
+        cv2.putText(frame, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0) if is_engaged else (0, 0, 255), 3)
+        cv2.imwrite(os.path.join(record_dir, f"{rk.frame:08d}.jpg"), frame)
 
     rk.keep_time()
