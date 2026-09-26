@@ -23,8 +23,8 @@ def test_weight_full_for_lead_pulling_away_beyond_follow_distance():
 
 
 def test_weight_ramps_with_pull_away_speed():
-  assert get_exp_lead_departure_weight(lead(v_rel=0.5), V_EGO, T_FOLLOW) == 0.0
-  assert 0.0 < get_exp_lead_departure_weight(lead(v_rel=1.25), V_EGO, T_FOLLOW) < 1.0
+  assert get_exp_lead_departure_weight(lead(v_rel=0.3), V_EGO, T_FOLLOW) == 0.0
+  assert 0.0 < get_exp_lead_departure_weight(lead(v_rel=0.65), V_EGO, T_FOLLOW) < 1.0
 
 
 @pytest.mark.parametrize("kwargs, v_ego", [
@@ -47,6 +47,7 @@ def test_lift_closes_part_of_gap_and_is_capped():
   # 0000006d--4715a1d4cc 4:22.5: e2e 0.23, MPC 0.75 -> 0.23 + 0.6 * 0.52
   assert apply_exp_lead_departure(0.23, 0.23, 0.75, 1.0) == pytest.approx(0.23 + 0.6 * 0.52)
   assert apply_exp_lead_departure(0.0, 0.0, 2.0, 1.0) == pytest.approx(EXP_LEAD_DEPARTURE_MAX_LIFT)
+  assert apply_exp_lead_departure(0.2, 0.2, 2.0, 1.0) == pytest.approx(0.2 + EXP_LEAD_DEPARTURE_MAX_LIFT)
   assert apply_exp_lead_departure(0.23, 0.23, 0.75, 0.5) == pytest.approx(0.23 + 0.5 * 0.6 * 0.52)
 
 
@@ -61,7 +62,7 @@ def test_never_touches_e2e_braking_or_exceeds_mpc_or_lowers_target():
 
 
 def _planner(lead_one):
-  return SimpleNamespace(lead_one=lead_one, dt=0.05, exp_lead_departure_weight=0.0)
+  return SimpleNamespace(lead_one=lead_one, dt=0.05, exp_lead_departure_weight=0.0, exp_lead_departure_lift=0.0)
 
 
 def _step(p, toggle=True, hold=False, e2e=0.2, mpc=0.9):
@@ -96,3 +97,28 @@ def test_planned_stop_disarms():
   for _ in range(20):
     out = _step(p, hold=True)
   assert out < 0.205
+
+
+@pytest.mark.parametrize("closing", [lead(v_rel=-0.2), lead(a_lead=-0.5)])
+def test_drops_at_once_when_lead_closes_or_brakes(closing):
+  p = _planner(lead())
+  for _ in range(60):
+    _step(p)
+  p.lead_one = closing
+  assert _step(p) == 0.2
+  assert p.exp_lead_departure_weight == 0.0
+
+
+def test_brake_threshold_fades_instead_of_stepping():
+  just_above = apply_exp_lead_departure(-0.14, -0.14, 0.8, 1.0) - (-0.14)
+  assert 0.0 < just_above < 0.05
+
+
+def test_lift_rise_is_rate_limited():
+  p = _planner(lead())
+  p.exp_lead_departure_weight = 1.0  # weight already up; a sudden MPC jump must not step the output
+  prev = _step(p, mpc=0.3)
+  for _ in range(5):
+    out = _step(p, mpc=2.0)
+    assert out - prev <= 0.05 + 1e-9
+    prev = out

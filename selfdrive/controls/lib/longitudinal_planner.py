@@ -363,13 +363,14 @@ EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE = -0.15
 # target part of the way toward the MPC. Stateless apart from a weight filter; e2e braking below
 # EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE is never touched, and the result never exceeds the MPC target.
 EXP_LEAD_DEPARTURE_MIN_SPEED = 4.5  # m/s, ~10 mph
-EXP_LEAD_DEPARTURE_VREL_BP = [0.5, 2.0]  # m/s lead pulling away -> weight 0..1
+EXP_LEAD_DEPARTURE_VREL_BP = [0.3, 1.0]  # m/s lead pulling away -> weight 0..1 (replay, STATUS 136b)
 EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL = -0.2  # m/s^2, a lead braking harder than this disarms
 EXP_LEAD_DEPARTURE_MIN_MODEL_PROB = 0.5  # vision leads only; radar leads pass
 EXP_LEAD_DEPARTURE_GAP_FRACTION = 0.6  # share of the e2e -> MPC gap closed at full weight
 EXP_LEAD_DEPARTURE_MAX_LIFT = 0.5  # m/s^2 added to e2e at most
 EXP_LEAD_DEPARTURE_RISE_TAU = 0.5  # s, weight filter going up
 EXP_LEAD_DEPARTURE_FALL_TAU = 0.15  # s, and going down
+EXP_LEAD_DEPARTURE_MAX_LIFT_RISE = 1.0  # m/s^3, the lift itself never rises faster (drops are not limited)
 
 TRACKED_VISION_MODEL_FLOOR_MIN_SPEED = 10.0
 TRACKED_VISION_MODEL_FLOOR_MIN_MODEL_PROB = 0.95
@@ -625,7 +626,9 @@ def apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_targ
   """Lift the arbitrated target toward the MPC while e2e is the limit and not braking. Never lowers it."""
   if weight <= 0.0 or output_a_target_e2e < EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE or output_a_target_mpc <= output_a_target_e2e:
     return output_a_target
-  lift = min(EXP_LEAD_DEPARTURE_MAX_LIFT, EXP_LEAD_DEPARTURE_GAP_FRACTION * (output_a_target_mpc - output_a_target_e2e))
+  # Fade out toward the e2e brake threshold instead of switching off at it, so the lift never steps.
+  brake_fade = float(np.interp(output_a_target_e2e, [EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE, 0.0], [0.0, 1.0]))
+  lift = brake_fade * min(EXP_LEAD_DEPARTURE_MAX_LIFT, EXP_LEAD_DEPARTURE_GAP_FRACTION * (output_a_target_mpc - output_a_target_e2e))
   return max(output_a_target, min(output_a_target_mpc, output_a_target_e2e + weight * lift))
 
 
@@ -899,6 +902,7 @@ class LongitudinalPlanner:
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
     self.exp_lead_departure_weight = 0.0
+    self.exp_lead_departure_lift = 0.0
     self.experimental_release_accel_until = 0.0
 
     if self.is_preap:
@@ -2004,11 +2008,22 @@ class LongitudinalPlanner:
   def update_exp_lead_departure(self, output_a_target, output_a_target_e2e, output_a_target_mpc, v_ego, t_follow,
                                 starpilot_toggles, hold_experimental):
     raw = 0.0
-    if bool(getattr(starpilot_toggles, "exp_lead_departure_assist", False)) and not hold_experimental:
+    enabled = bool(getattr(starpilot_toggles, "exp_lead_departure_assist", False))
+    if enabled and not hold_experimental:
       raw = get_exp_lead_departure_weight(self.lead_one, v_ego, t_follow)
-    tau = EXP_LEAD_DEPARTURE_RISE_TAU if raw > self.exp_lead_departure_weight else EXP_LEAD_DEPARTURE_FALL_TAU
-    self.exp_lead_departure_weight += (raw - self.exp_lead_departure_weight) * self.dt / (tau + self.dt)
-    return apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_target_mpc, self.exp_lead_departure_weight)
+    lead = self.lead_one
+    lead_closing = lead is not None and lead.status and (
+      float(lead.vRel) < 0.0 or float(getattr(lead, "aLeadK", 0.0)) < EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL)
+    if not enabled or hold_experimental or lead_closing:
+      # Drop at once when the lead closes or brakes or a stop is planned: a step toward braking is the safe side.
+      self.exp_lead_departure_weight = 0.0
+    else:
+      tau = EXP_LEAD_DEPARTURE_RISE_TAU if raw > self.exp_lead_departure_weight else EXP_LEAD_DEPARTURE_FALL_TAU
+      self.exp_lead_departure_weight += (raw - self.exp_lead_departure_weight) * self.dt / (tau + self.dt)
+    lift = apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_target_mpc, self.exp_lead_departure_weight)
+    lift = min(lift - output_a_target, self.exp_lead_departure_lift + EXP_LEAD_DEPARTURE_MAX_LIFT_RISE * self.dt)
+    self.exp_lead_departure_lift = lift
+    return output_a_target + lift
 
   @staticmethod
   def apply_experimental_speed_handoff(output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff):
@@ -2715,6 +2730,7 @@ class LongitudinalPlanner:
     output_a_target_mpc = None
     if self.mode == 'acc':
       self.exp_lead_departure_weight = 0.0
+      self.exp_lead_departure_lift = 0.0
     if classic_model:
       output_a_target, output_should_stop = get_accel_from_plan_classic(
         self.CP, self.v_desired_trajectory, self.a_desired_trajectory, starpilot_toggles.vEgoStopping,

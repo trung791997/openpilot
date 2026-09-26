@@ -7341,3 +7341,23 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 - Below 25 mph it needs speed-dependent friction. Upstream's torque controller does not have that; it would be a small, principled addition, not a band.
 - The firmware VGR belongs in opendbc as one angle → centre-equivalent-angle conversion used before `VehicleModel.calc_curvature`, by both the torque controller's measurement and paramsd. It should not go in StarPilot's `latcontrol_torque`.
 - StarPilot's Civic-modified torque branch already layers its own patches: LAF ×1.2, `get_civic_bosch_modified_b_ff_scale` side/phase/low-speed shaping, a fixed friction threshold of 0.30, a friction scale, and the centre deadzone. A clean trial should bypass them.
+
+## 136b. `ExpLeadDepartureAssist` (new, default off): Experimental Mode lifts the e2e target toward the MPC behind a lead pulling away. Unit tests and open-loop replay only; not driven.
+
+**Rule** (`longitudinal_planner.py`, `get_exp_lead_departure_weight` / `apply_exp_lead_departure` / `update_exp_lead_departure`, called right after the speed handoff in the e2e/MPC arbitration):
+- Arms on a lead (radar, or vision with modelProb ≥ 0.5) at or beyond `tFollow · vEgo`, pulling away (weight ramps over vRel 0.3–1.0 m/s), aLeadK ≥ −0.2, vEgo ≥ 4.5 m/s, no e2e stop / forcingStop / redLight.
+- Lift = weight · min(0.5, 0.6 · (MPC − e2e)), faded to 0 as e2e falls from 0 to −0.15 (below −0.15 untouched). Never above the MPC target, never lowers the target, applies before the planner's later caps.
+- Weight rises with τ 0.5 s, falls with τ 0.15 s, and drops to 0 at once when the lead closes (vRel < 0) or brakes, or a stop is planned. The lift rises at most 1 m/s³; drops are not limited (toward braking is the safe side).
+- Works with radar or vision leads; the owner asked about vision-only and kept it for both.
+
+**Evidence.**
+- Unit tests: `test_exp_lead_departure.py` 18 new; with `test_longitudinal_planner.py` and `test_starpilot_variables.py`, 566 pass.
+- Open-loop replay: `tools/longitudinal/exp_lead_departure_replay.py ROUTE_DIR... [--presses FILE]` runs the planner's own method on every engaged Experimental Mode `longitudinalPlan` frame from rlogs (baseline = min(e2e, MPC estimate), later caps not replayed; the car does not respond). 24 routes, 96.9 exp-mode engaged minutes: 12 vision-only Konik routes with rlogs (0000000f, 00000012, 0000003f, 00000044, 00000063, 00000066, 0000006d, 00000073, 00000091, 000000c7, 000000cb, 00000150) + 0000020c (vision-only) + 11 radar alpha routes (232 236 237 239 23a 23e 241 245 268 26b 26c).
+  - Acts 7.4 % of exp-mode time, 292 episodes: vision-only 13.4 %, radar 2.3 %. Lift p50 0.09–0.24, p95 ≤ 0.48, max 0.50 m/s². Largest one-frame rise 0.050 m/s² (1 m/s³).
+  - 0 frames lifting while e2e < −0.15; 0 frames lifting > 0.05 while the lead closes faster than 0.5 m/s or brakes harder than −1.0.
+  - Covers 15/15 rlog gas presses of class `e2e_slow_accel` with a lead pulling away (item 136a): lifting in the 1.5 s before each.
+- Tuning from the replay: the vRel ramp started at 0.5–2.0 m/s and covered 1/15 (e.g. 0000006d 4:22.5 had the lead at +1.0–1.4 m/s and lifted only 0.05–0.11); 0.3–1.0 covers 15/15. The immediate drop and the rise limit were added after the first replay showed decay tails over closing leads and 0.24 m/s² one-frame rises from MPC jumps.
+
+**Params.** Key `ExpLeadDepartureAssist` (BOOL, default 0). `common/params_pyx.so` and `libcommon.a` rebuilt natively on an aarch64 Ubuntu 24.04 host with the pinned toolchain (clang 18.1.3, system Python 3.12.3, Cython 3.1.4, `SP_FORCE_TICI=1`, repo bind-mounted at `/work`, sconsign cleared): keys 855 → 856 against the committed blob, the only addition `ExpLeadDepartureAssist`; `params_pyx.cpp` byte-identical; put/get round-trips. Commit e995fdbd. Galaxy: Advanced Longitudinal Tune → "Follow Departing Leads (Experimental)".
+
+**Road check to do.** Behind a car pulling away from a light or merging ahead, Experimental Mode should pick up without a gas press; it should let go at once when that car brakes or a slower car cuts in. Watch vision-only drives at 50–100 m leads.
