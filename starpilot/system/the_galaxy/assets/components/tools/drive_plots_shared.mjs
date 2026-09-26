@@ -45,6 +45,23 @@ export function fmtDate(epochSeconds) {
   return new Date(v * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
+// Speed display unit from the device's IsMetric setting; samples are stored in m/s.
+export function speedUnit(isMetric) {
+  return isMetric ? { factor: 3.6, unit: "km/h", floor: 20 } : { factor: 2.23694, unit: "mph", floor: 10 }
+}
+export const DEFAULT_SPEED = speedUnit(false)
+
+export function fmtSpeed(ms, speed = DEFAULT_SPEED, digits = 0) {
+  return `${fmtNum(toNumber(ms) * speed.factor, digits)} ${speed.unit}`
+}
+
+export function bandLabel(b, speed = DEFAULT_SPEED) {
+  const lo = Math.round(toNumber(b.lo_ms) * speed.factor)
+  if (b.hi_ms == null) return `${lo}+ ${speed.unit}`
+  const hi = Math.round(toNumber(b.hi_ms) * speed.factor)
+  return lo === 0 ? `under ${hi} ${speed.unit}` : `${lo}–${hi} ${speed.unit}`
+}
+
 export function longStateName(value) {
   return LONG_STATE_NAMES[Math.round(toNumber(value))] || "?"
 }
@@ -223,13 +240,14 @@ const LONG_LINES = (s) => [
 ]
 
 // Charts for a column-major series (live view or a zoomed window of a saved drive).
-export function buildTrackingCharts(s, { advanced = false, tMin, tMax } = {}) {
+export function buildTrackingCharts(s, { advanced = false, tMin, tMax, speed = DEFAULT_SPEED } = {}) {
   if (!s || !s.t || s.t.length < 2) return []
+  const v = (s.v || []).map((x) => toNumber(x) * speed.factor)
   const charts = [
     { id: "lat", title: "Lateral acceleration", unit: "m/s²", lines: LAT_LINES(s), active: s.lat_active, floor: 0.5 },
     { id: "long", title: "Longitudinal acceleration", unit: "m/s²", lines: LONG_LINES(s), active: s.long_active, floor: 0.5 },
-    { id: "v", title: "Speed", unit: "m/s", lines: [{ key: "v", values: s.v, color: LINE_COLORS.speed, cls: "speed", label: "Speed" }],
-      active: s.enabled, floor: 5, zeroBased: true },
+    { id: "v", title: "Speed", unit: speed.unit, lines: [{ key: "v", values: v, color: LINE_COLORS.speed, cls: "speed", label: "Speed" }],
+      active: s.enabled, floor: speed.floor, zeroBased: true },
   ]
   if (advanced) {
     charts.push(
@@ -248,19 +266,21 @@ export function buildTrackingCharts(s, { advanced = false, tMin, tMax } = {}) {
   }
   return charts.map((c) => ({
     ...c,
-    legend: c.lines.map((l) => ({ label: l.label, cls: l.cls, color: l.color, value: fmtNum(l.values[l.values.length - 1], 2) })),
+    legend: c.lines.map((l) => ({ label: l.label, cls: l.cls, color: l.color,
+                                  value: fmtNum(l.values[l.values.length - 1], c.id === "v" ? 0 : 2) })),
     geo: buildChart(s.t, c.lines, c.active, { floor: c.floor, zeroBased: c.zeroBased, unit: c.unit, tMin, tMax }),
   }))
 }
 
 // Whole-drive overview charts from analysis.overview (bucket averages).
-export function buildOverviewCharts(ov) {
+export function buildOverviewCharts(ov, { speed = DEFAULT_SPEED } = {}) {
   if (!ov || !Array.isArray(ov.t) || ov.t.length < 2) return []
+  const v = (ov.v || []).map((x) => toNumber(x) * speed.factor)
   const charts = [
     { id: "lat", title: "Lateral acceleration (whole drive)", unit: "m/s²", lines: LAT_LINES(ov), active: ov.lat_active, floor: 0.5 },
     { id: "long", title: "Longitudinal acceleration (whole drive)", unit: "m/s²", lines: LONG_LINES(ov), active: ov.long_active, floor: 0.5 },
-    { id: "v", title: "Speed", unit: "m/s", lines: [{ key: "v", values: ov.v, color: LINE_COLORS.speed, cls: "speed", label: "Speed" }],
-      active: null, floor: 5, zeroBased: true },
+    { id: "v", title: "Speed (whole drive)", unit: speed.unit, lines: [{ key: "v", values: v, color: LINE_COLORS.speed, cls: "speed", label: "Speed" }],
+      active: null, floor: speed.floor, zeroBased: true },
   ]
   return charts.map((c) => ({
     ...c,
@@ -270,32 +290,70 @@ export function buildOverviewCharts(ov) {
 }
 
 // Key numbers for one axis of an analysis result, in display order.
-export function keyNumbers(axis, m) {
+// Plain "less/more than planned" wording for a measured-minus-requested bias.
+function biasText(b, lessWord, moreWord) {
+  if (b == null) return "—"
+  const v = Math.abs(toNumber(b))
+  if (v < 0.005) return "matched the plan"
+  return `${fmtNum(v)} m/s² ${b > 0 ? moreWord : lessWord}`
+}
+
+export function keyNumbers(axis, m, speed = DEFAULT_SPEED) {
   if (!m) return []
+  const pct = (g) => (g == null ? "—" : `${Math.round(g * 100)}%`)
   const rows = [["Engaged time", m.engaged_s == null ? "—" : fmtDuration(m.engaged_s)]]
   if (m.status === "ok") {
-    rows.push(["Typical error (RMS)", `${fmtNum(m.rmse)} m/s²`])
-    rows.push(["95% of samples within", `${fmtNum(m.p95_abs_error)} m/s²`])
-    rows.push(["Response lag", `${fmtNum(m.lag_s)} s`])
+    rows.push(["Typical error", `${fmtNum(m.rmse)} m/s²`])
+    rows.push(["Worst 5% of the time", `${fmtNum(m.p95_abs_error)} m/s² or more`])
+    rows.push(["Reaction delay", `${fmtNum(m.lag_s)} s`])
   }
   if (axis === "lateral") {
     if (m.status === "ok") {
-      rows.push(["Curve response", m.curve_gain == null ? "no sustained curves" : `${Math.round(m.curve_gain * 100)}%`])
-      rows.push(["Oscillation ratio", fmtNum(m.wobble_ratio)])
-      rows.push(["Straight-road bias", m.straight_bias == null ? "—" : `${fmtNum(m.straight_bias)} m/s²`])
+      rows.push(["Curve response", m.curve_gain == null ? "no sustained curves" : `${pct(m.curve_gain)} of what was asked`])
+      rows.push(["Wobble ratio", `${fmtNum(m.wobble_ratio)} (about 1 is steady)`])
+      rows.push(["Straight-road lean", m.straight_bias == null ? "—" : Math.abs(m.straight_bias) < 0.005 ? "none"
+        : `${fmtNum(Math.abs(m.straight_bias))} m/s² to the ${m.straight_bias > 0 ? "left" : "right"}`])
+      rows.push(["Time at steering limit (curves)", m.saturated_curve_frac == null ? "—" : pct(m.saturated_curve_frac)])
     }
-    rows.push(["Steering takeovers", String(m.steer_overrides ?? 0)])
+    rows.push(["Times you took the wheel", String(m.steer_overrides ?? 0)])
   } else {
     if (m.status === "ok") {
-      rows.push(["Overall response", m.gain == null ? "—" : `${Math.round(m.gain * 100)}%`])
-      rows.push(["Braking bias", m.brake_bias == null ? "—" : `${fmtNum(m.brake_bias)} m/s²`])
-      rows.push(["Acceleration bias", m.accel_bias == null ? "—" : `${fmtNum(m.accel_bias)} m/s²`])
-      rows.push(["Jerk (95th pct)", m.jerk_p95 == null ? "—" : `${fmtNum(m.jerk_p95)} m/s³`])
+      rows.push(["Overall response", m.gain == null ? "—" : `${pct(m.gain)} of what was asked`])
+      // Bias is measured minus requested: while braking (negative request) a positive value means less braking.
+      rows.push(["Braking", biasText(m.brake_bias, "more than planned", "less than planned")])
+      rows.push(["Acceleration", biasText(m.accel_bias, "less than planned", "more than planned")])
+      rows.push(["Smoothness (peak jerk)", m.jerk_p95 == null ? "—" : `${fmtNum(m.jerk_p95)} m/s³`])
     }
     rows.push(["Hard brakes", String(m.hard_brakes ?? 0)])
-    rows.push(["Gas presses", String(m.gas_overrides ?? 0)])
+    rows.push(["Times you pressed the gas", String(m.gas_overrides ?? 0)])
   }
   return rows.map(([label, value]) => ({ label, value }))
+}
+
+// Per-speed-band rows: [{label, gain, rmse, bias, time}] for a small table under the key numbers.
+export function speedBandRows(m, speed = DEFAULT_SPEED) {
+  if (!m || !Array.isArray(m.speed_bands)) return []
+  return m.speed_bands.map((b) => ({
+    label: bandLabel(b, speed),
+    time: fmtDuration(b.engaged_s),
+    gain: b.gain == null ? "—" : `${Math.round(b.gain * 100)}%`,
+    rmse: fmtNum(b.rmse),
+    bias: b.bias == null ? "—" : `${b.bias > 0 ? "+" : ""}${fmtNum(b.bias)}`,
+  }))
+}
+
+// The tune snapshot stored with a recording, as label/value rows (empty values dropped).
+export function tuneRows(meta) {
+  const rows = []
+  if (!meta) return rows
+  if (meta.lateral_tuning) rows.push({ label: "Lateral controller", value: String(meta.lateral_tuning) })
+  if (meta.openpilot_longitudinal != null) rows.push({ label: "openpilot longitudinal", value: meta.openpilot_longitudinal ? "on" : "off" })
+  const tune = meta.tune && typeof meta.tune === "object" ? meta.tune : {}
+  for (const [k, v] of Object.entries(tune)) {
+    if (v === null || v === undefined || v === "") continue
+    rows.push({ label: k, value: String(v) })
+  }
+  return rows
 }
 
 export function statusLabel(status) {
@@ -309,3 +367,16 @@ export function sessionUrl(id, suffix = "") {
 export const HELP_TEXT = "'Requested' is what openpilot asked for, 'Measured' is what the car did. Shaded areas are where openpilot " +
   "was not in control (disengaged, you were steering or pressing the gas); they are left out of the analysis. " +
   "Lateral 'measured' is computed from the steering angle through the vehicle model, so a wrong steer ratio shows up as a gain error."
+
+// How to read the numbers, for the drive detail.
+export const READING_GUIDE = [
+  "Requested vs measured: openpilot asks for a certain side-to-side (steering) or forward (speed) acceleration; the car delivers some of it. The analysis compares the two.",
+  "Typical error: how far the car was from what was asked, on average. Under 0.2 m/s² you will hardly feel it; over 0.4 m/s² you will.",
+  "Reaction delay: how long the car takes to start following a change. It comes from the car and the actuator-delay setting; it is not something to chase to zero.",
+  "Curve response: 100% means the car turned exactly as much as asked. Below about 90% it runs wide in curves (feedforward or steer ratio a little low); above about 110% it cuts in.",
+  "Wobble ratio: quick back-and-forth steering compared with what the road needed. Around 1 is steady; above 1.5 is the ping-pong you can feel on straights (gain a little high, or friction/damping a little low).",
+  "Straight-road lean: a constant lean to one side on straight roads. A small steering-offset change fixes this, not the gains.",
+  "Braking and acceleration vs plan: whether the car did less or more than openpilot asked. 'Less braking than planned' means it arrives a little hot behind a slowing car.",
+  "Speed table: the same numbers split by speed. A tune that is right at one speed and off at another shows up here.",
+  "One drive is a hint, not a verdict. Look for the same finding across a few drives before changing anything.",
+]

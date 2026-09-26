@@ -8271,6 +8271,7 @@ def setup(app):
       since = 0
     payload = _get_drive_plots().live(since)
     payload["isOnroad"] = params.get_bool("IsOnroad")
+    payload["isMetric"] = _safe_params_get_bool("IsMetric")
     return jsonify(payload), 200
 
   @app.route("/api/plots/recording/start", methods=["POST"])

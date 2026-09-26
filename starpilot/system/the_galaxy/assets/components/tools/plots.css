@@ -368,3 +368,85 @@ a.plotButton {
     gap: var(--gap-xs);
   }
 }
+
+/* Axis labels are HTML overlaid on the SVG (text inside the SVG would not scale with preserveAspectRatio none). */
+.plotSvgWrap {
+  position: relative;
+}
+
+.plotYLabel {
+  color: var(--text-muted);
+  font-size: calc(var(--font-size-sm) * 0.85);
+  left: 6px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.plotXAxis {
+  height: 1.3em;
+  margin-top: var(--margin-xs);
+  position: relative;
+}
+
+.plotXAxis span {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  position: absolute;
+  white-space: nowrap;
+}
+
+/* Nested reactive slots: transparent to the surrounding flex/grid layout. */
+.plotInline {
+  display: contents;
+}
+
+.plotBandTable {
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+  margin-top: var(--margin-sm);
+}
+
+.plotBandTable th,
+.plotBandTable td {
+  padding: 0.15em 0.9em 0.15em 0;
+  text-align: left;
+}
+
+.plotBandTable th {
+  color: var(--text-muted);
+  font-weight: var(--font-weight-demi-bold);
+}
+
+.plotDetails {
+  margin-top: var(--margin-sm);
+}
+
+.plotDetails summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.plotDetails .plotKeyGrid {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.plotDetails .plotKeyValue {
+  overflow-wrap: anywhere;
+}
+
+@media only screen and (max-width: 768px) and (orientation: portrait) {
+  .plotBandTable th,
+  .plotBandTable td {
+    padding-right: 0.5em;
+  }
+}
+
+.plotTakeaways {
+  border-color: var(--main-fg);
+  margin-top: var(--margin-base);
+}
+
+.plotTakeawayList {
+  color: var(--text-color);
+}

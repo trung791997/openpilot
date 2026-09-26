@@ -7374,6 +7374,16 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 
 **Not verified.** No car, no real route. The heuristic thresholds in the notes (e.g. "oscillation" above ratio 1.5) are guesses and are unvalidated against real drives. The sampler's CPU cost on the device is unmeasured.
 
+## 141a. Galaxy Plots audited on desktop and phone: swallowed taps, misaligned axes and an out-of-view detail fixed; plain-language findings, speed bands, steering-limit time and the tune snapshot added. Headless render and unit tests only; not used on a car.
+
+**Bugs fixed.** (1) The classic page re-rendered every block on each 500 ms poll, so a tap that spanned a re-render landed on a detached button. Buttons now live in blocks that read only slow-changing state; the poll-fed text and charts render in nested slots (`inline()` in `plots.js`). Verified headless: all five buttons stay attached across polls, charts keep updating, Pause works. (2) Classic x-axis labels were laid out edge-to-edge instead of under their grid lines; both pages now overlay HTML labels at the tick positions, with y labels on the chart. (3) Mobile y labels were positioned against the SVG plus the tick row, drifting ~16 px at the bottom. (4) Tapping a saved drive at the bottom opened the detail at the top, out of view: the list now sits above the detail (5 most recent, "Show all"), and the page scrolls to the detail and to the zoom. (5) Stopping a recording that captured nothing saved an empty drive; it is now discarded and the page says so. (6) Speed was in m/s; it now follows `IsMetric` (mph / km/h). The live route returns `isMetric`.
+
+**Analysis.** Findings are written for a driver: each note says what happened, whether you would feel it, and what to try; a "What stands out" list (max 4) tops the drive; a collapsible reading guide explains each number; the technical values stay in the key grid. New per-drive facts: curve response and error per speed band (under 30 / 30-50 / 50-70 / 70+ mph), fraction of curve time the steering was saturated (new `lat_sat` column from `lateralControlState.*.saturated`), and the tune snapshot that was already recorded (`meta.tune`, controller type, openpilot longitudinal) is now shown. `read_rows` maps by header, so older recordings without `lat_sat` still analyze.
+
+**Evidence.** `test_drive_plots.py` 22 tests (bands recover a planted 0.75 gain above 50 mph, saturation fraction, header-tolerant read, empty discard); frontend suites pass (69 total). Both pages rendered in headless Chromium against the real Flask app with a synthetic drive: takeaways, band tables, tune list, zoom and axis alignment checked visually on 1400 px and 412 px viewports.
+
+**Not verified.** Still no car. The swallowed-tap fix is verified by node identity across polls, not by a human tap. Band edges and the 5 % saturation threshold are guesses. `ruff` reports the same implicit-string-concatenation and `time.time` classes as the committed version; not changed.
+
 ## 142. Step 2 toward a torque controller: comma's torque controller (2a) and StarPilot's (2b, NNFF off) against the NRDR PID in the closed-loop sim, with and without the firmware VGR map. Sim only; nothing on the car changed.
 
 **What was added.**

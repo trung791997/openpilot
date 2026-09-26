@@ -59,13 +59,13 @@ def test_lag_is_recovered_and_aligned_error_is_small():
 def test_under_turning_is_reported():
   a = dp.analyze(_drive(lat_gain=0.7))
   assert a["lateral"]["curve_gain"] == pytest.approx(0.7, abs=0.03)
-  assert any("under-turning" in n for n in a["lateral"]["notes"])
+  assert any("less than asked" in n for n in a["lateral"]["notes"])
 
 
 def test_drift_direction():
   a = dp.analyze(_drive(lat_bias=-0.1))
   assert a["lateral"]["straight_bias"] == pytest.approx(-0.1, abs=0.01)
-  assert any("drifted right" in n for n in a["lateral"]["notes"])
+  assert any("to the right" in n for n in a["lateral"]["notes"])
 
 
 def test_oscillation_is_flagged_and_clean_drive_is_not():
@@ -78,8 +78,8 @@ def test_oscillation_is_flagged_and_clean_drive_is_not():
 def test_braking_less_than_asked():
   a = dp.analyze(_drive(long_gain=0.6))
   assert a["longitudinal"]["brake_bias"] > dp.LONG_BIAS_NOTABLE
-  assert any("Braked less" in n for n in a["longitudinal"]["notes"])
-  assert "under-responded" in a["longitudinal"]["summary"]
+  assert any("slowed" in n and "less than planned" in n for n in a["longitudinal"]["notes"])
+  assert "delivered less than asked" in a["longitudinal"]["summary"]
 
 
 def test_disengaged_driving_is_not_scored():
@@ -193,6 +193,9 @@ def test_autostop_when_drive_ends(tmp_path):
   plots = dp.DrivePlots(tmp_path, is_onroad=lambda: onroad[0], clock=lambda: now[0])
   plots._ensure_thread_locked = lambda: None
   status = plots.start_recording()
+  sm = _engaged_sm()
+  for _ in range(5):
+    plots.step(sm)
   plots._check_autostop(now[0])
   onroad[0] = False
   now[0] = 1.0
@@ -293,3 +296,49 @@ def test_endpoints_round_trip(monkeypatch, tmp_path):
   assert client.get("/api/plots/sessions/..%2Fx").status_code in (400, 404)
   assert client.delete(f"/api/plots/sessions/{started['id']}").status_code == 200
   assert client.get(f"/api/plots/sessions/{started['id']}").status_code == 404
+
+
+def test_speed_bands_report_gain_per_band():
+  # Under-turning only above 50 mph (22.35 m/s): two bands, gains differ, and the note says so.
+  rows = _drive(n_s=240.0, v=18.0)
+  fast = np.zeros(len(rows), dtype=bool)
+  fast[len(rows) // 2:] = True
+  rows[fast, dp.COL["v"]] = 27.0
+  rows[fast, dp.COL["lat_act"]] *= 0.75
+  lat = dp.analyze(rows)["lateral"]
+  bands = {b["lo_ms"]: b for b in lat["speed_bands"]}
+  assert set(bands) == {13.41, 22.35}
+  assert bands[13.41]["gain"] == pytest.approx(1.0, abs=0.03)
+  assert bands[22.35]["gain"] == pytest.approx(0.75, abs=0.03)
+  assert any("By speed" in n and "30-50 mph 100%" in n and "50-70 mph 75%" in n for n in lat["notes"])
+  assert any("changes with speed" in x for x in dp.analyze(rows)["takeaways"])
+  assert dp.analyze(rows)["longitudinal"]["speed_bands"][0]["engaged_s"] > 100
+
+
+def test_saturation_in_curves_is_reported():
+  rows = _drive(n_s=120.0)
+  curve = np.abs(rows[:, dp.COL["lat_des"]]) > dp.LAT_CURVE_DEMAND
+  rows[curve, dp.COL["lat_sat"]] = 1
+  lat = dp.analyze(rows)["lateral"]
+  assert lat["saturated_curve_frac"] == pytest.approx(1.0, abs=0.02)
+  assert any("at its limit" in n for n in lat["notes"])
+  assert dp.analyze(_drive(n_s=120.0))["lateral"]["saturated_curve_frac"] == 0.0
+
+
+def test_read_rows_by_header_tolerates_older_column_sets(tmp_path):
+  old = [c for c in dp.COLUMNS if c != "lat_sat"]
+  rows = _drive(n_s=5.0)
+  lines = [",".join(old)] + [",".join(dp._fmt(x) for x in r[:len(old)]) for r in rows]
+  (tmp_path / "samples.csv").write_text("\n".join(lines) + "\n")
+  data = dp.read_rows(tmp_path)
+  assert data.shape == (len(rows), len(dp.COLUMNS))
+  assert np.all(data[:, dp.COL["lat_sat"]] == 0) and np.allclose(data[:, dp.COL["lat_des"]], rows[:, dp.COL["lat_des"]])
+
+
+def test_empty_recording_is_discarded(tmp_path):
+  plots = dp.DrivePlots(tmp_path, is_onroad=lambda: False, submaster_factory=lambda s: None)
+  plots._ensure_thread_locked = lambda: None
+  status = plots.start_recording({"car": "HONDA_TEST"})
+  stopped = plots.stop_recording(background=False)
+  assert stopped["discarded"] is True and stopped["rows"] == 0
+  assert not (tmp_path / status["id"]).exists() and plots.list_sessions() == []

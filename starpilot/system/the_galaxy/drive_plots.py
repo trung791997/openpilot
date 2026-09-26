@@ -30,10 +30,10 @@ import numpy as np
 COLUMNS = [
   "t", "v", "a_ego", "enabled", "lat_active", "long_active", "steer_pressed", "gas_pressed", "brake_pressed",
   "lat_des", "lat_act", "long_des", "long_act", "long_state",
-  "lat_p", "lat_i", "lat_d", "lat_f", "long_up", "long_ui", "long_uf",
+  "lat_p", "lat_i", "lat_d", "lat_f", "long_up", "long_ui", "long_uf", "lat_sat",
 ]
 COL = {name: i for i, name in enumerate(COLUMNS)}
-BOOL_COLUMNS = {"enabled", "lat_active", "long_active", "steer_pressed", "gas_pressed", "brake_pressed"}
+BOOL_COLUMNS = {"enabled", "lat_active", "long_active", "steer_pressed", "gas_pressed", "brake_pressed", "lat_sat"}
 
 LONG_STATES = {"off": 0, "pid": 1, "stopping": 2, "starting": 3}
 
@@ -62,6 +62,12 @@ LONG_BIAS_NOTABLE = 0.15
 JERK_HIGH = 2.5              # m/s^3, p95 of engaged actual jerk
 LAT_RMSE_GOOD, LAT_RMSE_FAIR = 0.20, 0.40
 LONG_RMSE_GOOD, LONG_RMSE_FAIR = 0.25, 0.45
+SATURATION_NOTABLE = 0.05    # fraction of curve samples at the steering limit
+BAND_MIN_S = 10.0            # a speed band needs this much engaged time to be reported
+BAND_GAIN_SPREAD = 0.15      # gain difference between bands worth a sentence
+MPH = 2.23694
+# Speed bands for the per-band breakdown, in m/s (edges are round in mph: 30 / 50 / 70).
+SPEED_BANDS = [(0.0, 13.41), (13.41, 22.35), (22.35, 31.29), (31.29, float("inf"))]
 
 
 # =====================================================================================================
@@ -137,11 +143,11 @@ def _best_lag(des, act, mask, seg, dt):
     if k == 0:
       rmse0 = rmse
     if best is None or rmse < best[1] - 1e-9:
-      best = (k, rmse, d, a)
+      best = (k, rmse, d, a, i[ok])
   if best is None:
     return None
-  k, rmse, d, a = best
-  return {"lag_s": k * dt, "rmse": rmse, "rmse_no_lag": rmse0 if rmse0 is not None else rmse, "des": d, "act": a}
+  k, rmse, d, a, idx = best
+  return {"lag_s": k * dt, "rmse": rmse, "rmse_no_lag": rmse0 if rmse0 is not None else rmse, "des": d, "act": a, "idx": idx}
 
 
 def _gain(d, a, demand):
@@ -159,6 +165,34 @@ def _mean_where(x, sel, min_count=40):
 
 def _r(x, digits=3):
   return None if x is None else round(float(x), digits)
+
+
+def _speed_bands(v, d, a, dt, gain_demand):
+  """Tracking error and gain per speed band, on lag-aligned pairs. Bands with little data are left out."""
+  out = []
+  err = a - d
+  for lo, hi in SPEED_BANDS:
+    sel = (v >= lo) & (v < hi)
+    n = int(np.count_nonzero(sel))
+    if n * dt < BAND_MIN_S:
+      continue
+    out.append({
+      "lo_ms": lo, "hi_ms": None if hi == float("inf") else hi,
+      "engaged_s": round(n * dt, 1),
+      "rmse": _r(np.sqrt(np.mean(err[sel] ** 2))),
+      "gain": _r(_gain(d[sel], a[sel], gain_demand)),
+      "bias": _r(np.mean(err[sel])),
+    })
+  return out
+
+
+def _band_label(b):
+  lo, hi = b["lo_ms"] * MPH, None if b["hi_ms"] is None else b["hi_ms"] * MPH
+  if hi is None:
+    return f"{lo:.0f}+ mph"
+  if lo == 0:
+    return f"under {hi:.0f} mph"
+  return f"{lo:.0f}-{hi:.0f} mph"
 
 
 def _analyze_lateral(c, seg, dt, min_engaged_s):
@@ -189,6 +223,9 @@ def _analyze_lateral(c, seg, dt, min_engaged_s):
     ra = float(np.sqrt(np.mean(np.concatenate(hp_act) ** 2)))
     rd = float(np.sqrt(np.mean(np.concatenate(hp_des) ** 2)))
     wobble = ra / max(rd, WOBBLE_FLOOR)
+  in_curve = np.abs(d) > LAT_CURVE_DEMAND
+  sat = c["lat_sat"][fit["idx"]] > 0.5
+  saturated_curve = float(np.mean(sat[in_curve])) if np.count_nonzero(in_curve) >= 40 else None
   out.update({
     "status": "ok",
     "lag_s": _r(fit["lag_s"], 2),
@@ -199,6 +236,8 @@ def _analyze_lateral(c, seg, dt, min_engaged_s):
     "straight_bias": _r(_mean_where(err, np.abs(d) < LAT_STRAIGHT_DEMAND, 100)),
     "wobble_ratio": _r(wobble, 2),
     "peak_demand": _r(np.max(np.abs(d))),
+    "saturated_curve_frac": _r(saturated_curve),
+    "speed_bands": _speed_bands(c["v"][fit["idx"]], d, a, dt, LAT_CURVE_DEMAND),
   })
   return out
 
@@ -239,95 +278,156 @@ def _analyze_longitudinal(c, seg, dt, min_engaged_s):
     "accel_bias": _r(_mean_where(err, d > LONG_REGIME_DEMAND)),
     "brake_bias": _r(_mean_where(err, d < -LONG_REGIME_DEMAND)),
     "jerk_p95": _r(np.percentile(np.concatenate(jerks), 95), 2) if jerks else None,
+    "speed_bands": _speed_bands(c["v"][fit["idx"]], d, a, dt, LONG_GAIN_DEMAND),
   })
   return out
 
 
+def _fmt_time(seconds):
+  seconds = int(round(seconds or 0))
+  if seconds < 60:
+    return f"{seconds} s"
+  m, sec = divmod(seconds, 60)
+  if m < 60:
+    return f"{m} min {sec:02d} s"
+  h, m = divmod(m, 60)
+  return f"{h} h {m:02d} min"
+
+
+def _feel(rmse, good, fair):
+  if rmse <= good:
+    return "small enough that you would hardly feel it"
+  if rmse <= fair:
+    return "enough that you would notice it in places"
+  return "large enough to feel most of the time"
+
+
+def _band_notes(bands, what, takeaways):
+  known = [b for b in (bands or []) if b.get("gain") is not None]
+  if len(known) < 2:
+    return []
+  parts = ", ".join(f"{_band_label(b)} {round(b['gain'] * 100)}%" for b in known)
+  gains = [b["gain"] for b in known]
+  if max(gains) - min(gains) > BAND_GAIN_SPREAD:
+    takeaways.append(f"{what} changes with speed ({parts}). The tune is right at one speed and off at another; "
+                     "the speed breakpoints are the place to look.")
+    return [f"By speed: {parts}. The response is not the same at every speed, which points at the speed breakpoints "
+            "rather than a single gain."]
+  return [f"By speed: {parts}. The response was consistent across speeds."]
+
+
 def _band(rmse, good, fair):
   if rmse <= good:
-    return "tracked its target closely"
+    return "closely"
   if rmse <= fair:
-    return "tracked its target reasonably, with visible error"
-  return "tracked its target loosely"
+    return "with some visible error"
+  return "loosely"
 
 
-def _lateral_findings(m):
+def _lateral_findings(m, takeaways):
+  """Plain-language summary and notes for steering. Numbers stay in the metrics; the words say what it felt like."""
   if m.get("status") != "ok":
-    return f"Not enough engaged steering above {LAT_MIN_SPEED:.0f} m/s to judge ({m.get('engaged_s', 0)} s).", []
-  notes = [f"Typical error {m['rmse']} m/s² (95% of samples within {m['p95_abs_error']}) after aligning for a "
-           f"{m['lag_s']} s response lag."]
+    return (f"Not enough engaged steering above {LAT_MIN_SPEED * MPH:.0f} mph ({LAT_MIN_SPEED * 3.6:.0f} km/h) to judge "
+            f"({_fmt_time(m.get('engaged_s', 0))} counted)."), []
+  notes = [f"The car starts reacting about {m['lag_s']} s after openpilot asks. After allowing for that, it typically stayed "
+           f"within {m['rmse']} m/s² of the planned path, {_feel(m['rmse'], LAT_RMSE_GOOD, LAT_RMSE_FAIR)}."]
   g = m.get("curve_gain")
   if g is not None:
+    pct = round(g * 100)
     if g < GAIN_LOW:
-      notes.append(f"In curves the car turned about {round(g * 100)}% of what was asked (under-turning). "
-                   "Possible causes: feedforward too low, or a steer ratio that does not match the car.")
+      notes.append(f"In curves the car turned about {100 - pct}% less than asked, so it tends to run wide. If this repeats "
+                   "across drives, the steering feedforward (or the steer ratio) is a little low.")
+      takeaways.append(f"Under-turning in curves ({pct}% of the request): consider a slightly higher feedforward or check the steer ratio.")
     elif g > GAIN_HIGH:
-      notes.append(f"In curves the car turned about {round(g * 100)}% of what was asked (over-turning). "
-                   "Possible causes: feedforward too high, or a steer ratio that does not match the car.")
+      notes.append(f"In curves the car turned about {pct - 100}% more than asked, so it tends to cut in. If this repeats "
+                   "across drives, the steering feedforward (or the steer ratio) is a little high.")
+      takeaways.append(f"Over-turning in curves ({pct}% of the request): consider a slightly lower feedforward or check the steer ratio.")
     else:
-      notes.append(f"Curve response matched the request ({round(g * 100)}%).")
+      notes.append(f"In curves the car turned almost exactly as much as asked ({pct}%).")
   else:
-    notes.append(f"No sustained curves above {LAT_CURVE_DEMAND} m/s², so curve response was not measured.")
+    notes.append("There were no sustained curves, so curve response could not be measured this drive.")
+  notes.extend(_band_notes(m.get("speed_bands"), "Curve response", takeaways))
+  sat = m.get("saturated_curve_frac")
+  if sat is not None and sat > SATURATION_NOTABLE:
+    notes.append(f"Steering was at its limit for {round(sat * 100)}% of the time in curves, meaning the car could not turn as hard "
+                 "as openpilot wanted. Expect to take over in the sharpest curves; the steering limit is a car-specific setting.")
+    takeaways.append(f"Steering hit its limit {round(sat * 100)}% of curve time: the sharpest curves are beyond what the car will do on its own.")
   w = m.get("wobble_ratio")
   if w is not None:
     if w > WOBBLE_RATIO_HIGH:
-      notes.append(f"Fast back-and-forth steering was {w}x what the path asked for — a sign of ping-pong "
-                   "(too much proportional gain or too little damping).")
+      notes.append(f"The wheel made quick back-and-forth corrections about {w}× stronger than the road called for. That is the "
+                   "wobble or ping-pong you can feel on straights; it usually means the gain is a little high or the friction/damping a little low.")
+      takeaways.append(f"Steering wobble ({w}× the road's demand): try a little less gain or a little more friction/damping.")
     else:
-      notes.append(f"No excess steering oscillation (fast-motion ratio {w}).")
+      notes.append(f"Steering was steady, with no unnecessary back-and-forth (ratio {w}, where about 1 is ideal).")
   b = m.get("straight_bias")
   if b is not None and abs(b) > LAT_BIAS_NOTABLE:
-    notes.append(f"On straights the car drifted {'left' if b > 0 else 'right'} of the requested path "
-                 f"({abs(b)} m/s² average) — check the steering offset.")
+    side = "left" if b > 0 else "right"
+    notes.append(f"On straight roads the car sat slightly to the {side} of the planned line ({abs(b)} m/s² on average). "
+                 "If it feels like a constant pull, a small steering-offset change fixes this, not the gains.")
+    takeaways.append(f"Constant {side} lean on straights: adjust the steering offset slightly.")
   if m.get("steer_overrides"):
-    notes.append(f"You took over steering {m['steer_overrides']} time(s).")
-  quality = _band(m["rmse"], LAT_RMSE_GOOD, LAT_RMSE_FAIR)
+    notes.append(f"You took the wheel {m['steer_overrides']} time(s) while engaged.")
+  quality = f"Steering followed the planned path {_band(m['rmse'], LAT_RMSE_GOOD, LAT_RMSE_FAIR)}"
   if w is not None and w > WOBBLE_RATIO_HIGH:
-    quality += " but oscillated"
-  return f"Steering {quality} over {m['engaged_s']} s engaged.", notes
+    quality += ", but with some wobble"
+  return f"{quality} over {_fmt_time(m['engaged_s'])} of engaged driving.", notes
 
 
-def _longitudinal_findings(m):
+def _longitudinal_findings(m, takeaways):
   if m.get("status") != "ok":
-    return f"Not enough engaged openpilot longitudinal control to judge ({m.get('engaged_s', 0)} s).", []
-  notes = [f"Typical error {m['rmse']} m/s² (95% of samples within {m['p95_abs_error']}) after aligning for a "
-           f"{m['lag_s']} s response lag."]
+    return f"Not enough engaged openpilot speed control to judge ({_fmt_time(m.get('engaged_s', 0))} counted).", []
+  notes = [f"The car starts reacting about {m['lag_s']} s after openpilot asks. After allowing for that, it typically stayed "
+           f"within {m['rmse']} m/s² of the planned acceleration, {_feel(m['rmse'], LONG_RMSE_GOOD, LONG_RMSE_FAIR)}."]
   g = m.get("gain")
-  if g is not None and not (GAIN_LOW <= g <= GAIN_HIGH):
-    notes.append(f"Overall the car delivered about {round(g * 100)}% of the acceleration and braking the planner "
-                 f"asked for ({'under' if g < GAIN_LOW else 'over'}-responding).")
+  gain_off = g is not None and not (GAIN_LOW <= g <= GAIN_HIGH)
+  if gain_off:
+    pct = round(g * 100)
+    if g < GAIN_LOW:
+      notes.append(f"Overall the car delivered about {pct}% of the acceleration and braking openpilot asked for, so it feels lazier than planned.")
+      takeaways.append(f"Speed control under-delivers ({pct}% of the request): the car does less than the planner asks.")
+    else:
+      notes.append(f"Overall the car delivered about {pct}% of the acceleration and braking openpilot asked for, so it feels sharper than planned.")
+      takeaways.append(f"Speed control over-delivers ({pct}% of the request): the car does more than the planner asks.")
+  notes.extend(_band_notes(m.get("speed_bands"), "Speed-control response", takeaways))
   bb = m.get("brake_bias")
   if bb is not None:
     if bb > LONG_BIAS_NOTABLE:
-      notes.append(f"Braked less than the planner asked by {bb} m/s² on average (the car arrives hotter than planned).")
+      notes.append(f"When braking, the car slowed {bb} m/s² less than planned on average, so it closes on traffic a little more than intended.")
+      takeaways.append(f"Braking is lighter than planned by {bb} m/s²: the car arrives a bit hot behind a slowing lead.")
     elif bb < -LONG_BIAS_NOTABLE:
-      notes.append(f"Braked harder than the planner asked by {abs(bb)} m/s² on average.")
+      notes.append(f"When braking, the car slowed {abs(bb)} m/s² more than planned on average, so braking can feel early or strong.")
+      takeaways.append(f"Braking is stronger than planned by {abs(bb)} m/s²: stops may feel abrupt.")
     else:
-      notes.append("Braking matched the planner's request.")
+      notes.append("Braking matched the plan.")
   ab = m.get("accel_bias")
   if ab is not None:
     if ab < -LONG_BIAS_NOTABLE:
-      notes.append(f"Accelerated less than asked by {abs(ab)} m/s² on average (sluggish pull-away).")
+      notes.append(f"When accelerating, the car pulled away {abs(ab)} m/s² less than planned on average (sluggish).")
+      takeaways.append(f"Acceleration is weaker than planned by {abs(ab)} m/s²: pull-away feels sluggish.")
     elif ab > LONG_BIAS_NOTABLE:
-      notes.append(f"Accelerated more than asked by {ab} m/s² on average (surging).")
+      notes.append(f"When accelerating, the car pulled away {ab} m/s² more than planned on average (a surge).")
+      takeaways.append(f"Acceleration is stronger than planned by {ab} m/s²: pull-away can surge.")
     else:
-      notes.append("Acceleration matched the planner's request.")
+      notes.append("Acceleration matched the plan.")
   j = m.get("jerk_p95")
   if j is not None:
     if j > JERK_HIGH:
-      notes.append(f"Jerky: 95th-percentile jerk {j} m/s³ (above {JERK_HIGH}).")
+      notes.append(f"Speed changes were abrupt (peak jerk {j} m/s³, above {JERK_HIGH}). Look at the acceleration profile or the actuator delay.")
+      takeaways.append(f"Abrupt speed changes (jerk {j} m/s³): smooth the acceleration profile or check the actuator delay.")
     else:
-      notes.append(f"Smooth: 95th-percentile jerk {j} m/s³.")
+      notes.append(f"Speed changes were smooth (peak jerk {j} m/s³).")
   if m.get("hard_brakes"):
-    notes.append(f"{m['hard_brakes']} hard braking event(s) below {HARD_BRAKE} m/s² while engaged.")
+    notes.append(f"{m['hard_brakes']} hard braking event(s) (harder than {abs(HARD_BRAKE)} m/s²) while engaged; worth a look at those "
+                 "moments in the charts.")
   if m.get("gas_overrides"):
-    notes.append(f"You pressed the gas {m['gas_overrides']} time(s) while engaged.")
-  quality = _band(m["rmse"], LONG_RMSE_GOOD, LONG_RMSE_FAIR)
-  if g is not None and not (GAIN_LOW <= g <= GAIN_HIGH):
-    quality += f" but {'under' if g < GAIN_LOW else 'over'}-responded to requests"
+    notes.append(f"You pressed the gas {m['gas_overrides']} time(s) while engaged, usually a sign the car felt slow to you.")
+  quality = f"Speed control followed the plan {_band(m['rmse'], LONG_RMSE_GOOD, LONG_RMSE_FAIR)}"
+  if gain_off:
+    quality += f", but delivered {'less' if g < GAIN_LOW else 'more'} than asked"
   elif j is not None and j > JERK_HIGH:
-    quality += " but was jerky"
-  return f"Speed control {quality} over {m['engaged_s']} s engaged.", notes
+    quality += ", but felt jerky"
+  return f"{quality} over {_fmt_time(m['engaged_s'])} of engaged driving.", notes
 
 
 def analyze(rows, min_engaged_s=20.0):
@@ -337,20 +437,25 @@ def analyze(rows, min_engaged_s=20.0):
   dt = _dt(t)
   lat = _analyze_lateral(c, seg, dt, min_engaged_s)
   lon = _analyze_longitudinal(c, seg, dt, min_engaged_s)
-  lat_summary, lat_notes = _lateral_findings(lat)
-  lon_summary, lon_notes = _longitudinal_findings(lon)
+  takeaways = []
+  lat_summary, lat_notes = _lateral_findings(lat, takeaways)
+  lon_summary, lon_notes = _longitudinal_findings(lon, takeaways)
+  if not takeaways and (lat.get("status") == "ok" or lon.get("status") == "ok"):
+    takeaways.append("Nothing stood out this drive. Small errors are normal; compare a few drives before changing the tune.")
   duration = float(t[-1] - t[0]) if len(t) > 1 else 0.0
   return {
     "duration_s": round(duration, 1),
     "samples": int(len(t)),
     "sample_dt_s": round(dt, 3),
     "disengagements": _rising_edges(~(c["enabled"] > 0.5)) if len(t) else 0,
+    "takeaways": takeaways[:4],
     "lateral": {**lat, "summary": lat_summary, "notes": lat_notes},
     "longitudinal": {**lon, "summary": lon_summary, "notes": lon_notes},
-    "method": ("Heuristic summary. Scored only while openpilot was in control (steering: latActive, no wheel touch, "
-               f">{LAT_MIN_SPEED:.0f} m/s; speed: longActive, no gas, not stopping). Errors are measured after shifting "
-               "the measured signal by the best-fit response lag. Lateral 'measured' comes from the steering angle "
-               "through the vehicle model, so it depends on the steer ratio."),
+    "method": ("How this was scored: only moments when openpilot was steering (no hands on the wheel, above "
+               f"{LAT_MIN_SPEED * MPH:.0f} mph) or controlling speed (no gas, not stopped) count. The car's response is shifted "
+               "by its measured reaction delay before it is compared with the request. Steering 'measured' comes from the "
+               "steering angle through the vehicle model, so a wrong steer ratio shows up as a curve-response error. "
+               "These are heuristics from one drive, not a verdict on the tune."),
   }
 
 
@@ -411,11 +516,13 @@ def build_row(sm):
   v = max(0.0, _f(getattr(car_state, "vEgo", 0.0)))
   have_cc = sm.recv_frame["carControl"] > 0
   lat_p = lat_i = lat_d = lat_f = 0.0
+  lat_sat = 0
   try:
     lcs = cs.lateralControlState
     which = lcs.which()
+    st = getattr(lcs, which)
+    lat_sat = int(bool(getattr(st, "saturated", False)))
     if which in ("pidState", "torqueState"):
-      st = getattr(lcs, which)
       lat_p, lat_i, lat_f = _f(st.p), _f(st.i), _f(st.f)
       lat_d = _f(getattr(st, "d", 0.0)) if which == "torqueState" else 0.0
   except Exception:
@@ -433,7 +540,7 @@ def build_row(sm):
     round(_f(cs.desiredCurvature) * v * v, 4), round(_f(cs.curvature) * v * v, 4),
     round(_f(getattr(plan, "aTarget", 0.0)), 4), round(_f(getattr(car_state, "aEgo", 0.0)), 4), long_state,
     round(lat_p, 4), round(lat_i, 4), round(lat_d, 4), round(lat_f, 4),
-    round(_f(cs.upAccelCmd), 4), round(_f(cs.uiAccelCmd), 4), round(_f(cs.ufAccelCmd), 4),
+    round(_f(cs.upAccelCmd), 4), round(_f(cs.uiAccelCmd), 4), round(_f(cs.ufAccelCmd), 4), lat_sat,
   ]
 
 
@@ -590,6 +697,10 @@ class DrivePlots:
       rec["file"].close()
     except Exception:
       pass
+    if rec["rows"] == 0:
+      # Nothing arrived (openpilot was not running); an empty session would only clutter the list.
+      shutil.rmtree(rec["dir"], ignore_errors=True)
+      return {"id": rec["id"], "rows": 0, "reason": reason, "discarded": True}
     self._update_meta(rec["dir"], {"status": "analyzing", "stopped_at": time.time(), "stop_reason": reason})
     if background:
       threading.Thread(target=self.finalize, args=(rec["dir"],), daemon=True).start()
@@ -743,12 +854,18 @@ def read_rows(d):
     text = (d / "samples.csv").read_text()
   else:
     return np.zeros((0, len(COLUMNS)))
+  # Older sessions may lack columns added later; they are read by header name and missing ones are zero.
+  reader = csv.reader(io.StringIO(text))
+  header = next(reader, None)
+  if not header or header[0] != "t":
+    return np.zeros((0, len(COLUMNS)))
+  order = [header.index(name) if name in header else None for name in COLUMNS]
   rows = []
-  for rec in csv.reader(io.StringIO(text)):
-    if len(rec) != len(COLUMNS) or rec[0] == "t":
+  for rec in reader:
+    if len(rec) != len(header):
       continue
     try:
-      rows.append([float(x) for x in rec])
+      rows.append([0.0 if i is None else float(rec[i]) for i in order])
     except ValueError:
       continue
   return np.asarray(rows, dtype=float).reshape(-1, len(COLUMNS))
