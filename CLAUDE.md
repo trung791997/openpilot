@@ -64,6 +64,14 @@ everywhere, including cloud sessions and other accounts.
 > `CLAUDE_COMPACT_*` env in `~/.claude/settings.json`, and Claude running inside
 > tmux). **Elsewhere, including cloud sessions and other accounts, ignore this
 > section and the Context-aware compact section below.**
+>
+> **Also ignore both sections in a Remote Control session** (`$CLAUDE_CODE_CHILD_SESSION`
+> is `1` or `$CLAUDE_CODE_ENVIRONMENT_KIND` is `bridge`, which covers every session driven
+> from the app or claude.ai). Those are headless children of `claude rc`: they inherit
+> the rc host's `TMUX_PANE`, so the script types `/compact` into the rc host screen, prints
+> "detached", and nothing compacts (2026-09-26: 73 compacts across three rc sessions, all
+> `manual`). There, keep the manifest current and let built-in auto-compact or the user's
+> `/compact` do it.
 
 Compact strictly based on volume ceilings and major phase shifts. Do NOT compact
 based on arbitrary task counts. Compacting too early destroys cache economics.

@@ -58,11 +58,14 @@ Ensure `.claude/compact-state-<session-id>.md` is successfully written to disk.
 ## Step 3: Trigger Compaction
 
 ### In Terminal / Tmux:
-If running inside tmux (`$TMUX` set):
+If running inside tmux (`$TMUX` set) **and not a Remote Control session**
+(`$CLAUDE_CODE_CHILD_SESSION` is not `1` and `$CLAUDE_CODE_ENVIRONMENT_KIND` is not `bridge`).
+A Remote Control session inherits the rc host's `TMUX_PANE`, so the script types into the rc
+host screen and nothing compacts; follow the Desktop path below instead.
 Invoke `~/.claude/bin/auto-compact.sh "Restoring from .claude/compact-state-<session-id>.md" "<optional continuation>"`.
 
 ### In Claude Code Desktop:
-If running inside Claude Code Desktop (no tmux):
+If running inside Claude Code Desktop (no tmux), or in a Remote Control session:
 1. Confirm that `.claude/compact-state-<session-id>.md` has been saved to disk.
 2. Present a clear, actionable directive to the user:
    ```text

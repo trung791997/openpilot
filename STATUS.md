@@ -7434,3 +7434,36 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 - The "own target" differs between the kinematic models only above about 15 deg of wheel angle, which in practice means below 25 mph.
 
 **Not verified.** No road drive of any torque variant. Road use would need a param (for example `ForceTorqueController`) plumbed to the new controller, which is an artifact rebuild and needs owner approval.
+
+## 143. Routes 00000278 / 0000027a (owner report: low-speed stutter with `NrdrLatRateFF`, slow unwind at 27a 12:34). Log decode, open-loop replay and sim only; no controller or setting change.
+
+Routes `11c8fa231c0499ed/00000278--8f101d683e` (24 segs) and `0000027a--4eae257c95` (15 segs), both device build `a0940b9f`. Tool: `tools/lateral/lat_route_check.py` (new; `chatter`, `unwind`, `rateff`).
+
+**Settings.** 278 starts with `NrdrLatRateFF` 0.5, `HondaOverrideFadeDownSecs` 0.2; 27a has rate FF 0 and fade-down 0. Both: P/I/F low 100/50/50, standard 105/75/100, highway 105/75/100, LPF tau 0.09/0.1/0.1, firmware VGR on, fade-up 1.0 s, override torque scale 0. Against 277 (`28d4eda8`) the only lateral code in the build is the trim slew (137) and kp slew (139).
+
+**When rate FF was live in 278** (`rateff`, open-loop replay against the logged output, 30 s windows): 0.5 matches from 0:00 to 17:30 (|sim−log| median 1e-4–4e-3 against 2e-3–0.17 at 0); 0 matches from 18:00 on. So it was switched off at about 17:45.
+
+**Stutter: caused by the rate feedforward below 25 mph. `[CONFIRMED, log decode + replay]`**
+- Chatter, engaged hands-off (`chatter`):
+
+  | window | 2–10 mph d(torque) rms / reversals / wheel jitter | 10–25 mph |
+  |---|---|---|
+  | 278 0:00–2:00, rate FF 0.5 | 3.71 %/frame / 19.6 /s / 1.07° | 2.24 / 18.0 / 0.61 |
+  | 278 18:00–end, rate FF off | 1.09 / 5.4 / 0.81 | 0.96 / 6.1 / 0.62 |
+  | 27a, off | 0.86 / 4.6 / 0.63 | 0.39 / 3.1 / 0.33 |
+  | 270, 271, 276, 277 (never on) | 0.56–0.95 / 2.7–5.2 | 0.46–0.62 / 2.7–6.9 |
+
+- The FF term itself (replay on − off), 278 first 2 min: below 10 mph median |FF| 0.134 of full torque, p95 0.57, frame-to-frame rms 3.4 % against 1.05 % for the whole rest of the PID. 10–25 mph: median 0.045, p95 0.39. Above 25 mph it is small (frame-to-frame 0.05–0.22 %), which is why the sim (133) and the highway drive did not show it.
+- Mechanism: the term is `k × target slew / 100 °/s`, not speed-scaled. At low speed the model's curvature, as a wheel angle, moves hundreds of deg/s and jitters frame to frame; the 0.09 s LPF does not remove enough. Item 139 predicted the low-speed torque noise (0.10–0.34 → 0.33–0.49 %) on the linear plant but could not show the feel; on the car it is 3–4× the off level.
+- **Recommendation: keep `NrdrLatRateFF` 0.** If it is revisited, it needs a speed gate (off below ~25 mph) and its own filtered derivative (139). Not done.
+
+**Unwind: no route-level regression; the 27a 12:34 event is a chain. `[INFERRED from log decode]`**
+- `unwind` over engaged low-speed turns (peak ≥ 45°, < 5 % pressed; small n): unwind lag 27a 0.19 s (n = 4) against 0.14–0.28 s on 262–278. Unwind error scales with unwind rate (27a 87 °/s → 16.6°; 262 106 °/s → 14.5°; 271 97 °/s → 15.3°). Turn-in lags more than unwind on every route (0.33–0.60 s).
+- 27a 12:34 (t ≈ 753–760 s, 13–15 mph, left turn to −176°):
+  1. The desired held its peak until about 757.3 s. The driver was already pushing the unwind from 757.1 (driver torque 1000–2100); the controller was pulling back into the turn (P −0.47 at 757.4).
+  2. The push tripped the override twice (757.2, 757.7): delivered torque went to ≈0 and faded back over 1 s, and the integrator froze (steer-limited) from 757.2 to 758.9 **at −0.19, the into-turn value**.
+  3. During the real unwind (758.4–760.0, desired −111° → −8°, ~70 °/s) the wheel trailed by 13–20°. P gave +0.3 to +0.43; the frozen, then slowly bleeding I (−0.19 → −0.08) cancelled 35–45 % of it.
+- Nothing here changed between 277 and 27a: the low-band gains, fade and freeze are the same, and 27a had no rate FF.
+- Sim (plant_d5, no driver, 27a and 26b), unwind error / lag: `LatIScaleLowSpeed` 50 → 25 → 0 gives 4.2 → 3.4 → 2.1° on 27a and 0.26 → 0.20 → 0.14 s on 26b, turn-in unchanged. Rate FF 0.5 cuts unwind lag to 0.04 s in the same sim, but the sim cannot show the chatter above. Sim only; a lower low-speed I is the thing to try if unwind stays a complaint. No setting changed.
+
+**Not covered.** The model's late unwind request (step 1) is not a controller issue and is not scored. Episode counts are small because turns with driver presses are excluded. The sim plant is linear, with no driver and no curb.
