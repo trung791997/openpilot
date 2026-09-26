@@ -3016,6 +3016,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "ExpLeadDepartureAssist",
+        "label": "Follow Departing Leads (Experimental)",
+        "description": "TEST, default off. Experimental Mode only. When the lead ahead is at or beyond your follow distance and pulling away, and the driving model is asking for less acceleration than the lead-following planner allows, this lifts the model's target part of the way toward the planner's: up to 60% of the gap, at most +0.5 m/s2, fading in as the lead pulls away faster (0.5 to 2 m/s). It never lowers the target, never softens the model's braking, never exceeds what the lead-following planner allows, and switches off when the lead brakes, when the model plans a stop or red light, and below 10 mph. Found on 100 vision-only drives, where the model was the slow side in 57 of 518 gas presses with a lead pulling away. Replayed on logs only, never driven, which is why it ships off.",
+        "picker_description": "In Experimental Mode, accelerates more readily behind a lead that is pulling away.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLongitudinalTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "RangeDerivedVrel",
         "label": "Range-Derived Closing Speed",
         "description": "TEST, default off. Bosch-A radar only. The radar reports closing speed directly, but that channel lags a lead that starts braking by around a second and pins at 13.5 m/s. This lets the closing speed measured from how the DISTANCE is changing correct it, in one direction only: it may report MORE closing, never less. It applies to the lead only and is capped at 8 m/s. It needs about a second of distance history, and a short and a long distance fit must BOTH show the extra closing for 5 consecutive radar updates before it engages. It clears when the distance behaves implausibly, below 5 m/s, or when the lead would read as driving backwards, and fades out as the two agree. It does not change which object is picked as the lead or the lead acceleration estimate. Replayed on logs only, never validated on the road, which is why it ships off.",

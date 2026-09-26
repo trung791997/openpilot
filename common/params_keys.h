@@ -390,6 +390,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // U11 closing speed as a bound, not an exact value, for tracks in our lane, so a lead closing
     // faster than 13.5 m/s is not dropped. Read once at startup in honda/radar_interface.py.
     {"BoschARailInterval", {PERSISTENT, BOOL, "0", "0", 3}},
+    // TEST, default OFF. Experimental Mode only. STATUS 136b: when a lead at or beyond the follow
+    // distance pulls away and the e2e target is the limit, lift it part of the way toward the MPC
+    // target. Never lowers the target, never touches e2e braking. Read in longitudinal_planner.py.
+    {"ExpLeadDepartureAssist", {PERSISTENT, BOOL, "0", "0", 3}},
     {"RemoteStartBootsComma", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"TeslaWakeOnCAN", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"RemapCancelToDistance", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},

@@ -356,6 +356,20 @@ EXPERIMENTAL_RELEASE_ACCEL_MIN_DELTA_A = 0.12
 EXPERIMENTAL_RELEASE_ACCEL_STEP = 0.06
 EXPERIMENTAL_SPEED_HANDOFF_BAND = 5.0 * CV.MPH_TO_MS
 EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE = -0.15
+# Experimental-mode lead-departure assist (TEST, default OFF, param ExpLeadDepartureAssist; STATUS 136b).
+# 518 exp-mode gas presses on 100 vision-only alpha-long routes: 110 had the e2e target below the MPC
+# while asking for accel >= 0, 57 of them with a lead pulling away (e2e +0.0..+0.5 while the MPC
+# allowed +0.7..+0.9). When a lead is at or beyond the follow distance and pulling away, lift the e2e
+# target part of the way toward the MPC. Stateless apart from a weight filter; e2e braking below
+# EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE is never touched, and the result never exceeds the MPC target.
+EXP_LEAD_DEPARTURE_MIN_SPEED = 4.5  # m/s, ~10 mph
+EXP_LEAD_DEPARTURE_VREL_BP = [0.5, 2.0]  # m/s lead pulling away -> weight 0..1
+EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL = -0.2  # m/s^2, a lead braking harder than this disarms
+EXP_LEAD_DEPARTURE_MIN_MODEL_PROB = 0.5  # vision leads only; radar leads pass
+EXP_LEAD_DEPARTURE_GAP_FRACTION = 0.6  # share of the e2e -> MPC gap closed at full weight
+EXP_LEAD_DEPARTURE_MAX_LIFT = 0.5  # m/s^2 added to e2e at most
+EXP_LEAD_DEPARTURE_RISE_TAU = 0.5  # s, weight filter going up
+EXP_LEAD_DEPARTURE_FALL_TAU = 0.15  # s, and going down
 
 TRACKED_VISION_MODEL_FLOOR_MIN_SPEED = 10.0
 TRACKED_VISION_MODEL_FLOOR_MIN_MODEL_PROB = 0.95
@@ -593,6 +607,27 @@ VISION_CLOSE_RELEASE_HOLD_MAX_BRAKE = 0.40
 # prediction before the stop request is allowed to reassert.
 MANUAL_STOP_RESUME_OVERRIDE_TIME = 6.0
 MANUAL_STOP_RESUME_OVERRIDE_MAX_SPEED = 2.0
+
+def get_exp_lead_departure_weight(lead, v_ego, t_follow):
+  """0..1: how clearly the lead is pulling away from at or beyond the follow distance."""
+  if lead is None or not lead.status or float(v_ego) < EXP_LEAD_DEPARTURE_MIN_SPEED:
+    return 0.0
+  if not bool(getattr(lead, "radar", False)) and float(getattr(lead, "modelProb", 0.0)) < EXP_LEAD_DEPARTURE_MIN_MODEL_PROB:
+    return 0.0
+  if float(getattr(lead, "aLeadK", 0.0)) < EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL:
+    return 0.0
+  if float(lead.dRel) < float(t_follow) * float(v_ego):
+    return 0.0
+  return float(np.interp(float(lead.vRel), EXP_LEAD_DEPARTURE_VREL_BP, [0.0, 1.0]))
+
+
+def apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_target_mpc, weight):
+  """Lift the arbitrated target toward the MPC while e2e is the limit and not braking. Never lowers it."""
+  if weight <= 0.0 or output_a_target_e2e < EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE or output_a_target_mpc <= output_a_target_e2e:
+    return output_a_target
+  lift = min(EXP_LEAD_DEPARTURE_MAX_LIFT, EXP_LEAD_DEPARTURE_GAP_FRACTION * (output_a_target_mpc - output_a_target_e2e))
+  return max(output_a_target, min(output_a_target_mpc, output_a_target_e2e + weight * lift))
+
 
 def get_planner_v_ego(CP, car_state):
   v_ego = max(car_state.vEgo, car_state.vEgoCluster)
@@ -863,6 +898,7 @@ class LongitudinalPlanner:
     self.post_departure_follow_settle_until = 0.0
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
+    self.exp_lead_departure_weight = 0.0
     self.experimental_release_accel_until = 0.0
 
     if self.is_preap:
@@ -1965,6 +2001,15 @@ class LongitudinalPlanner:
   def is_cem_following_lead(tracking_lead, d_rel, t_follow, v_ego):
     return bool(tracking_lead and float(d_rel) < (float(t_follow) * 2.0) * float(v_ego))
 
+  def update_exp_lead_departure(self, output_a_target, output_a_target_e2e, output_a_target_mpc, v_ego, t_follow,
+                                starpilot_toggles, hold_experimental):
+    raw = 0.0
+    if bool(getattr(starpilot_toggles, "exp_lead_departure_assist", False)) and not hold_experimental:
+      raw = get_exp_lead_departure_weight(self.lead_one, v_ego, t_follow)
+    tau = EXP_LEAD_DEPARTURE_RISE_TAU if raw > self.exp_lead_departure_weight else EXP_LEAD_DEPARTURE_FALL_TAU
+    self.exp_lead_departure_weight += (raw - self.exp_lead_departure_weight) * self.dt / (tau + self.dt)
+    return apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_target_mpc, self.exp_lead_departure_weight)
+
   @staticmethod
   def apply_experimental_speed_handoff(output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff):
     if speed_handoff <= 0.0:
@@ -2668,6 +2713,8 @@ class LongitudinalPlanner:
       model_launch_accel = self.get_model_launch_accel(model_launch_v, model_launch_a, action_t, scene_v_ego)
 
     output_a_target_mpc = None
+    if self.mode == 'acc':
+      self.exp_lead_departure_weight = 0.0
     if classic_model:
       output_a_target, output_should_stop = get_accel_from_plan_classic(
         self.CP, self.v_desired_trajectory, self.a_desired_trajectory, starpilot_toggles.vEgoStopping,
@@ -2704,6 +2751,15 @@ class LongitudinalPlanner:
         )
         output_a_target = self.apply_experimental_speed_handoff(
           output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff,
+        )
+        output_a_target = self.update_exp_lead_departure(
+          output_a_target, output_a_target_e2e, output_a_target_mpc, scene_v_ego,
+          sm['starpilotPlan'].tFollow, starpilot_toggles,
+          bool(
+            output_should_stop_e2e or
+            getattr(sm['starpilotPlan'], 'forcingStop', False) or
+            getattr(sm['starpilotPlan'], 'redLight', False)
+          ),
         )
     else:
       output_a_target, output_should_stop = get_accel_from_plan(
