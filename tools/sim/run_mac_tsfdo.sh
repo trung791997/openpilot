@@ -12,6 +12,8 @@ export PATH="$ROOT/.venv/bin:$PATH" PYTHONPATH="$ROOT" PYTHONUNBUFFERED=1
 export OPENPILOT_PREFIX="${OPENPILOT_PREFIX:-tsfdo-mac}" OPENPILOT_ZMQ_NAMESPACE="${OPENPILOT_ZMQ_NAMESPACE:-tsfdo-mac}"
 export SIMULATION_MODEL_ARTIFACT="$TSFDO_DIR/tsfdo_cpu.pkl" SIMULATION_ONNX_MODEL="$TSFDO_DIR/driving_supercombo.onnx"
 export SIMULATION_TINYGRAD_DEV=CPU SIMULATION_WARP_DEV=CPU
+# Set speed the bridge raises cruise to after engaging (km/h); engagement alone leaves ~9 km/h.
+export SIM_CRUISE_KPH="${SIM_CRUISE_KPH:-25}"
 
 "$ROOT/tools/sim/launch_openpilot.sh" > /tmp/tsfdo-mac-manager.log 2>&1 &
 MANAGER=$!

@@ -1,3 +1,4 @@
+import os
 import signal
 import threading
 import functools
@@ -59,6 +60,9 @@ class SimulatorBridge(ABC):
 
     self.past_startup_engaged = False
     self.startup_button_prev = True
+    # SIM_CRUISE_KPH: after engaging, tap RES_ACCEL until the set speed reaches this (km/h).
+    # Engagement leaves it near 9 km/h, where the driving model crawls and loses the lanes in curves.
+    self.target_cruise_kph = float(os.getenv("SIM_CRUISE_KPH", "0"))
 
     self.test_run = False
 
@@ -182,6 +186,8 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
         steer_op = self.simulated_car.sm['carControl'].actuators.steeringAngleDeg
 
         self.past_startup_engaged = True
+        if self.simulated_car.sm['carState'].vCruise < self.target_cruise_kph - 1 and self.rk.frame % 30 == 0:
+          self.simulator_state.cruise_button = CruiseButtons.RES_ACCEL
       elif not self.past_startup_engaged and self.simulated_car.sm['selfdriveState'].engageable:
         self.simulator_state.cruise_button = CruiseButtons.DECEL_SET if self.startup_button_prev else CruiseButtons.MAIN # force engagement on startup
         self.startup_button_prev = not self.startup_button_prev
