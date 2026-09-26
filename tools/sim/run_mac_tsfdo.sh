@@ -10,7 +10,17 @@ TSFDO_DIR="${TSFDO_DIR:-$HOME/Downloads/tsfdo}"
 
 export PATH="$ROOT/.venv/bin:$PATH" PYTHONPATH="$ROOT" PYTHONUNBUFFERED=1
 export OPENPILOT_PREFIX="${OPENPILOT_PREFIX:-tsfdo-mac}" OPENPILOT_ZMQ_NAMESPACE="${OPENPILOT_ZMQ_NAMESPACE:-tsfdo-mac}"
-export SIMULATION_MODEL_ARTIFACT="$TSFDO_DIR/tsfdo_cpu.pkl" SIMULATION_ONNX_MODEL="$TSFDO_DIR/driving_supercombo.onnx"
+# SIM_MODEL=stock runs the tree's own split driving model (selfdrive/modeld/models/driving_{vision,policy}.onnx)
+# instead of TSFDO. STOCK_DIR holds its CPU artifact (metadata + warp), built with the same compile_modeld
+# recipe as tsfdo_cpu.pkl but --model-type vision_policy --vision-onnx ... --policy-onnx ... (see TSFDO.md).
+if [[ "${SIM_MODEL:-tsfdo}" == "stock" ]]; then
+  STOCK_DIR="${STOCK_DIR:-$HOME/Downloads/stock}"
+  export SIMULATION_MODEL_ARTIFACT="$STOCK_DIR/stock_cpu.pkl"
+  export SIMULATION_VISION_ONNX="$ROOT/selfdrive/modeld/models/driving_vision.onnx" SIMULATION_POLICY_ONNX="$ROOT/selfdrive/modeld/models/driving_policy.onnx"
+  export SIMULATION_MODEL_VERSION=v8  # plan-based policy (plan + desire_state, no action head); the car's param says v15
+else
+  export SIMULATION_MODEL_ARTIFACT="$TSFDO_DIR/tsfdo_cpu.pkl" SIMULATION_ONNX_MODEL="$TSFDO_DIR/driving_supercombo.onnx"
+fi
 export SIMULATION_TINYGRAD_DEV=CPU SIMULATION_WARP_DEV=CPU
 # Set speed the bridge raises cruise to after engaging (km/h); engagement alone leaves ~9 km/h.
 export SIM_CRUISE_KPH="${SIM_CRUISE_KPH:-25}"

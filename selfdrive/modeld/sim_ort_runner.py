@@ -118,3 +118,49 @@ def make_numpy_run_supercombo(runner: OrtModelRunner, metadata, frame_skip, inpu
     return Tensor(output.astype(np.float32)),
 
   return run_policy, numpy_queues(input_queues)
+
+
+def make_numpy_run_split(vision_runner: OrtModelRunner, policy_runner: OrtModelRunner, metadata, frame_skip, input_queues):
+  """Split vision + policy model (the stock openpilot model) on ONNX Runtime, queues in numpy.
+
+  Mirrors compile_modeld.make_run_split_policy (IMAGE_HISTORY_IN_POLICY): vision on the shifted image
+  queues, its hidden state pushed into the feature queue, then the policy. Returns (vision, policy) outputs.
+  """
+  from openpilot.selfdrive.modeld.compile_modeld import _detect_desire_key, _detect_vision_keys, _packed_policy_shapes
+
+  vision_shapes = metadata["vision"]["input_shapes"]
+  policy_shapes = metadata["policy"]["input_shapes"]
+  features_slice = metadata["vision"]["output_slices"]["hidden_state"]
+  desire_key = _detect_desire_key(policy_shapes)
+  road_key, wide_key = _detect_vision_keys(vision_shapes)
+  packed_shapes, packed_sizes = _packed_policy_shapes(policy_shapes)
+  split_at = np.cumsum(packed_sizes[:-1])
+  vision_dtypes = {i.name: ORT_TO_NUMPY[i.type] for i in vision_runner.session.get_inputs()}
+  policy_dtypes = {i.name: ORT_TO_NUMPY[i.type] for i in policy_runner.session.get_inputs()}
+
+  def sample_skip(array):
+    sampled = array[::frame_skip]
+    return sampled.reshape(1, sampled.shape[0] * sampled.shape[1], *sampled.shape[2:])
+
+  def sample_desire(array):
+    pooled = array.reshape(-1, frame_skip, *array.shape[1:]).max(1)
+    return pooled.reshape(1, pooled.shape[0] * pooled.shape[1], *pooled.shape[2:])
+
+  def run_policy(warped, img_q, big_img_q, feat_q, desire_q, packed_npy_inputs):
+    warped = warped.numpy()
+    packed = packed_npy_inputs.numpy()
+    unpacked = {key: value.reshape(shape) for (key, shape), value in zip(packed_shapes.items(), np.split(packed, split_at), strict=True)}
+    vision_inputs = {road_key: sample_skip(_shift(img_q, warped[0:1])), wide_key: sample_skip(_shift(big_img_q, warped[1:2]))}
+    feed = {name: np.ascontiguousarray(value, dtype=vision_dtypes[name]) for name, value in vision_inputs.items()}
+    vision_output = vision_runner.session.run(vision_runner.output_names[:1], feed)[0].astype(np.float32)
+    new_feature = vision_output[:, features_slice].reshape(1, 1, -1)
+    policy_inputs = {
+      "features_buffer": sample_skip(_shift(feat_q, new_feature)).reshape(policy_shapes["features_buffer"]),
+      desire_key: sample_desire(_shift(desire_q, unpacked.pop("desire").reshape(1, 1, -1))),
+      **unpacked,
+    }
+    feed = {name: np.ascontiguousarray(value, dtype=policy_dtypes[name]) for name, value in policy_inputs.items()}
+    policy_output = policy_runner.session.run(policy_runner.output_names[:1], feed)[0].astype(np.float32)
+    return Tensor(vision_output), Tensor(policy_output)
+
+  return run_policy, numpy_queues(input_queues)

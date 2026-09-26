@@ -1,3 +1,4 @@
+import math
 import os
 import signal
 import threading
@@ -11,6 +12,7 @@ from multiprocessing import Process, Queue, Value
 from abc import ABC, abstractmethod
 
 from opendbc.car.honda.values import CruiseButtons
+from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.selfdrive.test.helpers import set_params_enabled
@@ -19,7 +21,7 @@ from openpilot.tools.sim.lib.simulated_car import SimulatedCar
 from openpilot.tools.sim.lib.simulated_sensors import SimulatedSensors
 from openpilot.tools.sim.lib.steer_model import SteerModel
 
-METADRIVE_WHEELBASE = 1.05234 + 1.4166  # DefaultVehicle FRONT_WHEELBASE + REAR_WHEELBASE
+METADRIVE_CURV_PER_DEG = 0.00055  # measured road curvature per degree sent to MetaDrive (steer_ratio 8 in metadrive_process)
 
 QueueMessage = namedtuple("QueueMessage", ["type", "info"], defaults=[None])
 
@@ -70,6 +72,7 @@ class SimulatorBridge(ABC):
     # rlogs (tools/sim/eps_fit.py), so the lateral tune and EPS are in the loop. Needs SIM_CAR_CONFIG.
     steer_model = os.getenv("SIM_STEER_MODEL")
     self.steer_model = SteerModel(steer_model) if steer_model else None
+    self.vehicle_model = None  # built from carParams on first use (torque mode)
 
     self.test_run = False
 
@@ -192,11 +195,17 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
         brake_op = np.clip(-self.simulated_car.sm['carControl'].actuators.accel / 4.0, 0.0, 1.0)
         steer_op = self.simulated_car.sm['carControl'].actuators.steeringAngleDeg
         if self.steer_model is not None:
-          cp = self.simulated_car.sm['carParams']
-          self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, self.simulated_car.sm['carState'].vEgo)
-          # MetaDrive turns its wheels by the sent angle / 8 (metadrive_process steer_ratio). Scale so its car
-          # (2.47 m wheelbase) turns on the curvature this car's wheel angle gives on the road.
-          steer_op = self.steer_model.angle * 8.0 / cp.steerRatio * METADRIVE_WHEELBASE / cp.wheelbase
+          v_ego = self.simulated_car.sm['carState'].vEgo
+          self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, v_ego)
+          # Send MetaDrive the angle that gives the curvature this car's controller believes its steering-wheel angle
+          # gives: the car's own VehicleModel (steer ratio and understeer), which is what latcontrol_torque measures
+          # against (for the owner's Civic it is within 10% of kinematic tan(angle / steer ratio) / wheelbase).
+          # MetaDrive's Bullet car does not steer kinematically: measured 0.00055 curvature per sent degree from 10 to
+          # 30 deg at 8, 12 and 16 m/s, about 60% of kinematic for its 2.47 m wheelbase, with a dead band under 5 deg.
+          if self.vehicle_model is None:
+            self.vehicle_model = VehicleModel(self.simulated_car.sm['carParams'])
+          curvature = self.vehicle_model.calc_curvature(math.radians(self.steer_model.angle), v_ego, 0.0)
+          steer_op = curvature / METADRIVE_CURV_PER_DEG
 
         self.past_startup_engaged = True
         if self.simulated_car.sm['carState'].vCruise < self.target_cruise_kph - 1 and self.rk.frame % 30 == 0:
@@ -214,7 +223,10 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       self.world.read_sensors(self.simulator_state)
       if self.steer_model is not None:
         if not self.simulator_state.is_engaged:
-          self.steer_model.reset(steer_manual * self.simulated_car.sm['carParams'].steerRatio / 8.0)
+          angle = 0.0
+          if self.vehicle_model is not None:
+            angle = self.vehicle_model.get_steer_from_curvature(steer_manual * METADRIVE_CURV_PER_DEG, self.simulated_car.sm['carState'].vEgo, 0.0)
+          self.steer_model.reset(math.degrees(angle))
         self.simulator_state.steering_angle = self.steer_model.angle
 
       if self.world.exit_event.is_set():

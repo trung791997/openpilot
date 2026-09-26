@@ -651,6 +651,15 @@ class ModelState:
       self.input_queues, self.npy = make_split_input_queues(
         vision_shapes, self.policy_input_shapes, self.frame_skip, self.QUEUE_DEV,
       )
+      if 'SIMULATION' in os.environ and os.getenv('SIMULATION_VISION_ONNX'):
+        # Mac sim, split model: the artifact supplies metadata and the warp; both networks run in ONNX Runtime.
+        from openpilot.selfdrive.modeld.sim_ort_runner import OrtModelRunner, make_numpy_run_split
+        assert self.image_history_pipeline == IMAGE_HISTORY_IN_POLICY and self.policy_order == ["policy"]
+        self.run_policy, numpy_queues = make_numpy_run_split(
+          OrtModelRunner(os.environ['SIMULATION_VISION_ONNX']), OrtModelRunner(os.environ['SIMULATION_POLICY_ONNX']),
+          self.metadata, self.frame_skip, self.input_queues,
+        )
+        self.input_queues.update(numpy_queues)
       input_shapes = vision_shapes
 
     self.road_key, self.wide_key = _detect_vision_keys(input_shapes)
@@ -669,6 +678,8 @@ class ModelState:
     self._blob_cache: dict[tuple[str, int], Tensor] = {}
 
     model_version = str(model_version_override or "").strip()
+    if 'SIMULATION' in os.environ and os.getenv('SIMULATION_MODEL_VERSION'):
+      model_version = os.environ['SIMULATION_MODEL_VERSION']  # sim: the model may not match the car's ModelVersion param
     if not model_version:
       model_version = _resolve_mirrored_param(params, "ModelVersion", "DrivingModelVersion")
     if not model_version:
@@ -774,6 +785,9 @@ class ModelState:
       self.input_queues, self.npy = make_split_input_queues(
         vision_shapes, self.policy_input_shapes, self.frame_skip, self.QUEUE_DEV,
       )
+      if 'SIMULATION' in os.environ and os.getenv('SIMULATION_VISION_ONNX'):
+        from openpilot.selfdrive.modeld.sim_ort_runner import numpy_queues
+        self.input_queues.update(numpy_queues(self.input_queues))
 
     for value in self.numpy_inputs.values():
       value.fill(0)
