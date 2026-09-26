@@ -73,6 +73,31 @@ def get_eps_modified_steering_pressed(
   return filter_s, filter_s >= 0.28
 
 
+# Release hysteresis on the raw override flag (STATUS 157/158). Route 00000283 seg 33: with hands holding
+# the wheel, the car's own push read 1400-2480 on the torque sensor against a 2000 threshold. The raw flag
+# set for ~3 frames, the fade cut the output ~25%, the sensor unloaded below 2000 in 30 ms, the flag
+# cleared, the fade-up rebuilt the torque, and it set again -- a ~9 Hz stutter through the turn. Once
+# set, the flag now stays set until no raw press has been seen for OVERRIDE_RELEASE_HOLD_S AND the
+# sensor is below OVERRIDE_RELEASE_FRAC of the active threshold. This can only make the override
+# stickier; the threshold itself is untouched. Replay evidence only; not yet driven.
+OVERRIDE_RELEASE_HOLD_S = 0.3
+OVERRIDE_RELEASE_FRAC = 0.75
+
+
+def hold_steering_pressed(raw_pressed: bool, steering_torque: float, threshold,
+                          held: bool, hold_s: float) -> tuple[bool, float]:
+  """One control frame of the override latch. Returns (pressed, seconds left before a release is allowed)."""
+  if raw_pressed:
+    return True, OVERRIDE_RELEASE_HOLD_S
+  if not held:
+    return False, 0.0
+  hold_s = max(0.0, hold_s - DT_CTRL)
+  below = threshold is None or abs(float(steering_torque)) < OVERRIDE_RELEASE_FRAC * float(threshold)
+  if hold_s <= 0.0 and below:
+    return False, 0.0
+  return True, hold_s
+
+
 def get_honda_bosch_wind_brake_mps2(v_ego: float) -> float:
   return float(np.interp(v_ego, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
 
@@ -578,6 +603,8 @@ class CarController(CarControllerBase):
     self.lat_active_prev = False
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_robust_prev = False
+    self.override_held = False
+    self.override_hold_s = 0.0
     self.bosch_last_gas = 0.0
     self.bosch_braking = False
     if self.CP.carFingerprint in HONDA_BOSCH:
@@ -660,7 +687,10 @@ class CarController(CarControllerBase):
       if live["increase_override_tolerance"]:
         steering_pressed = self._filtered_steering_pressed(CS, torque_cmd)
       else:
-        steering_pressed = bool(CS.out.steeringPressed)
+        self.override_held, self.override_hold_s = hold_steering_pressed(
+          bool(CS.out.steeringPressed), float(getattr(CS.out, "steeringTorque", 0.0)),
+          getattr(CS, "steer_threshold", None), self.override_held, self.override_hold_s)
+        steering_pressed = self.override_held
 
       if not self.lat_active_prev:
         self.override_ramp = 0.0
@@ -698,6 +728,8 @@ class CarController(CarControllerBase):
     else:
       self.override_ramp = 0.0
       self.steering_pressed_filter_s = 0.0
+      self.override_held = False
+      self.override_hold_s = 0.0
       self.steering_pressed_robust_prev = False
 
     # Opt-in slew limit on the delivered command. Unlike a low-pass filter this genuinely

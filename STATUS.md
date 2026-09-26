@@ -8225,3 +8225,46 @@ Route 283 has about twice the rate, but it also has more turns, so the 1.0 → 0
 **Not a lateral-gain problem.** The flag is reading the car's own torque reacting against the hands. The sim has no hands model and cannot reproduce this.
 
 **Candidate fix (not implemented; the owner decides):** add release hysteresis on the override flag in the command path. Hold "pressed" until the torque sensor falls below about 0.75× the threshold, or for at least about 0.3 s. The override would then fade once and stay faded while the hands hold, instead of chopping at 9 Hz. That only makes the override stickier, never weaker. Raising the threshold, or turning on `NrdrIncreaseOverrideTolerance` (which doubles it), is excluded by the owner's standing rule.
+
+## 158. Release hysteresis on the driver-override flag (the STATUS 157 fix). Implemented; static tests and an open-loop replay only. Not driven.
+
+The owner asked for it ("Yeah lets test it").
+
+**Change** (`opendbc_repo/opendbc/car/honda/carcontroller.py`, `hold_steering_pressed`, used in `_update_steering_torque`):
+- It only applies on the raw-flag path, with `NrdrIncreaseOverrideTolerance` off. The filtered path is unchanged.
+- A raw `steeringPressed` sets the latch. The latch clears only when both of these are true:
+  - no raw press for `OVERRIDE_RELEASE_HOLD_S` = 0.3 s;
+  - |`steeringTorque`| is below `OVERRIDE_RELEASE_FRAC` = 0.75 × the active threshold. `carstate` now stores that threshold as `CS.steer_threshold`, including the centre boost and doubling rules.
+- The latch resets whenever lateral control is inactive.
+- The constants are hardcoded with an evidence comment. There are no new params, and no threshold changes.
+- The change can only extend an override, never start one.
+- `CS.out.steeringPressed` itself, and everything else that reads it, is unchanged.
+
+**Static.** Four new tests in `test_honda.py` (`TestHondaSteeringCommandFidelity`):
+- A 3-frames-on / 8-frames-off flicker at 2300/1600 no longer rebuilds the ramp.
+- The latch releases after the hold once the sensor unloads.
+- The latch stays held at 0.8× the threshold and releases at 0.7×.
+- Without a threshold, the release is time-only.
+
+The Honda test directory passes (312) and `test_py39_compat` passes.
+
+**Replay (open loop).** The logged raw flag and sensor drive the real `_update_steering_torque`, using each route's fade params and threshold 2000. "Old" is the raw flag.
+
+| route | engaged min | flicker episodes old → new | press onsets old → new | ramp travel/min old → new | time ramp<1 old → new | longest hold past last raw press |
+|---|---|---|---|---|---|---|
+| 277 | 19.1 | 8 → 0 | 97 → 46 | 4.6 → 3.3 | 7.0% → 7.8% | 0.80 s |
+| 278 | 15.2 | 4 → 0 | 78 → 31 | 2.6 → 2.2 | 3.6% → 4.9% | 0.94 s |
+| 27a | 9.9 | 3 → 0 | 52 → 25 | 4.3 → 3.5 | 6.2% → 7.1% | 1.20 s |
+| 280 | 24.9 | 10 → 0 | 113 → 27 | 2.0 → 1.8 | 1.3% → 2.3% | 0.89 s |
+| 283 | 27.3 | 23 → 0 | 216 → 36 | 3.3 → 2.3 | 2.2% → 3.5% | 0.96 s |
+
+**What the owner will feel at the 283 bookmark.** This is the turn-in, 2000.0–2001.7 s in extract time. The sensor reads +1800 to +2300 while the command goes −0.3 to −1.0.
+- Old: the ramp chops between 0.6 and 1.0 at about 9 Hz.
+- New: the ramp fades to 0 once, in 0.2 s, because `HondaOverrideTorqueScale` is 0. The hands own the wheel for about 2 s. The latch releases at 2002.0 s, and the ramp fades back to full by 2002.5 s with the turn about −90° in.
+
+So the stutter becomes one clean handback followed by a 0.5 s re-take mid-turn.
+
+**Caveats.**
+- Open loop: in the car, the sensor partly reads the car's own push. With the push faded out, the sensor would unload sooner, so the real hold is likely shorter than the replay shows.
+- A slower cycle is possible if the hands keep resisting after the re-take: 0.2 s fade, then at least 0.3 s hold, then 0.5 s rebuild, or about 1 Hz. Replay cannot rule that out.
+- If a full handback feels too abrupt, `HondaOverrideTorqueScale` > 0 keeps partial assist while held. That is an owner param; it was not changed.

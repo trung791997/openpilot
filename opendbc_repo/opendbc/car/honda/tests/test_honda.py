@@ -7,6 +7,7 @@ from opendbc.car.structs import CarParams
 from opendbc.car import gen_empty_fingerprint
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.honda.interface import CarInterface
+from opendbc.car.honda import carcontroller as cc_mod
 from opendbc.car.honda.carcontroller import (
   BOSCH_BRAKE_FORCE_ON,
   BOSCH_BRAKE_FORCE_RELEASE,
@@ -480,8 +481,11 @@ class TestHondaSteeringCommandFidelity:
     return CC
 
   @staticmethod
-  def _cs(v_ego=20.0, steering_pressed=False):
-    return SimpleNamespace(out=SimpleNamespace(vEgo=v_ego, steeringPressed=steering_pressed, steeringTorque=0.0))
+  def _cs(v_ego=20.0, steering_pressed=False, steering_torque=0.0, steer_threshold=None):
+    cs = SimpleNamespace(out=SimpleNamespace(vEgo=v_ego, steeringPressed=steering_pressed, steeringTorque=steering_torque))
+    if steer_threshold is not None:
+      cs.steer_threshold = steer_threshold
+    return cs
 
   def _drive(self, controller, torques, live=None, **cs_kwargs):
     live = {**self.LIVE_DEFAULTS, **(live or {})}
@@ -519,6 +523,57 @@ class TestHondaSteeringCommandFidelity:
     self._drive(controller, [0.0] * 200)
     delivered = self._drive(controller, [0.5], steering_pressed=True)
     assert abs(0.5 - delivered[0]) > 1e-2
+
+  # Route 283's fade settings (HondaOverrideFadeDownSecs 0.2, HondaOverrideFadeUpSecs 0.5).
+  LIVE_283 = {"override_fade_down_s": 0.2, "override_fade_up_s": 0.5}
+
+  def _drive_frames(self, controller, frames, torque=0.5, threshold=2000.0):
+    # frames: (raw_pressed, sensor_torque) per control frame; returns the override ramp after each.
+    live = {**self.LIVE_DEFAULTS, **self.LIVE_283}
+    ramps = []
+    for pressed, sensor in frames:
+      controller._update_steering_torque(self._cc(torque), self._cs(steering_pressed=pressed, steering_torque=sensor,
+                                                                    steer_threshold=threshold), live)
+      ramps.append(controller.override_ramp)
+    return ramps
+
+  def test_hands_holding_flicker_no_longer_pumps_the_ramp(self):
+    # Route 283 seg 33 pattern: sensor 1600-2400 around a 2000 threshold, raw flag 3 frames on / 8 off.
+    controller = self._controller()
+    self._drive(controller, [0.0] * 200)
+    cycle = [(True, 2300.0)] * 3 + [(False, 1600.0)] * 8
+    ramps = self._drive_frames(controller, cycle * 10, threshold=2000.0)
+    assert all(b <= a + 1e-9 for a, b in zip(ramps, ramps[1:], strict=False))  # never rebuilds mid-grip
+    assert ramps[-1] == pytest.approx(0.0)  # the grip is honoured as a full override, not a 9 Hz pump
+
+  def test_override_releases_after_hold_once_sensor_unloads(self):
+    controller = self._controller()
+    self._drive(controller, [0.0] * 200)
+    self._drive_frames(controller, [(True, 2500.0)] * 5)
+    assert controller.override_held
+    hold_frames = round(cc_mod.OVERRIDE_RELEASE_HOLD_S / cc_mod.DT_CTRL)
+    ramps = self._drive_frames(controller, [(False, 200.0)] * (hold_frames + 20))
+    assert all(b <= a + 1e-9 for a, b in zip(ramps[:hold_frames - 1], ramps[1:hold_frames - 1], strict=False))  # held: no fade-up
+    assert ramps[-1] > ramps[hold_frames]                      # then fades back up
+    assert not controller.override_held
+
+  def test_override_stays_held_while_sensor_is_above_release_level(self):
+    controller = self._controller()
+    self._drive(controller, [0.0] * 200)
+    self._drive_frames(controller, [(True, 2500.0)] * 5)
+    self._drive_frames(controller, [(False, 1600.0)] * 200)  # 2 s at 0.8 x threshold
+    assert controller.override_held
+    self._drive_frames(controller, [(False, 1400.0)])        # below 0.75 x threshold
+    assert not controller.override_held
+
+  def test_hold_steering_pressed_without_a_threshold_uses_time_only(self):
+    held, hold_s = cc_mod.hold_steering_pressed(True, 0.0, None, False, 0.0)
+    assert held and hold_s == pytest.approx(cc_mod.OVERRIDE_RELEASE_HOLD_S)
+    n = 0
+    while held:
+      held, hold_s = cc_mod.hold_steering_pressed(False, 5000.0, None, held, hold_s)
+      n += 1
+    assert n == round(cc_mod.OVERRIDE_RELEASE_HOLD_S / cc_mod.DT_CTRL)
 
   def test_steer_delta_limiter_is_reported_as_limited(self):
     controller = self._controller()
