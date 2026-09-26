@@ -7067,3 +7067,41 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - 8:27.9-type approaches at about 28 mph cannot be helped by the set speed (25 mph floor).
   - A far lead that radar publishes late (cause A) is not addressed here.
 - **Params artifacts (follow-up):** Galaxy returned "not editable" for `NrdrLatRateFF` because the checked-in `common/params_pyx.so` lacked the key (item 12). `libcommon.a` and `params_pyx.so` rebuilt with item 4's pinned toolchain natively on an aarch64 Ubuntu 24.04 host (clang 18.1.3, system Python 3.12.3 + `python3.12-dev`, Cython 3.1.4, `SP_FORCE_TICI=1`, bind-mounted at `/work`, sconsign cleared). `params_pyx.cpp` came out byte-identical to the committed one; keys 854 → 855, the only addition `NrdrLatRateFF` (put/get round-trips). Static only.
+
+## 135. D-053 rail fast path: a railed in-path lead that both range fits show closing faster than the rail arms after 3 corroborated updates from an 8-sample long fit, and is sized by the mean of the two fits. Rides `RangeDerivedVrel`, with the module constant `RANGE_VREL_RAIL_FAST = True`. Unit tests and open-loop replay only; not driven.
+
+- **Problem (route `…00000271--4e9b9502db` BM0 9:26, seg9+28.4; limited road evidence plus replay):**
+  - A near-stopped car was published at 118.8 m (-3.82 s relative to the bookmark). U11 was on its -13.5 rail while the range closed at about -21 to -23 m/s. The driver braked at -1.69 s.
+  - Three things delayed D-053 (replay trace /tmp/rs/r271_t24.txt):
+    - The track was dark for 1.07 s before publication, because u10 865 -> 546 was above 511. This is D-042 and is not changed here.
+    - Arming came 1.22 s after publication: 1 not_lead cycle, then the short fit not fresh for 3 sweeps, then 10 sweeps waiting for the 15-sample long history, then 5 arm updates. The short and long fits already read -28 from the 5th sample on.
+    - Once armed, min(short, long) sizing followed the short fit's dips. It published -15.4 to -16.3 at -1.8 to -1.6 while the trailing 1 s range fit read -18.1 to -19.9.
+  - **26c 4:08** is not a rail case. U11 lagged rather than railed, and the assist was blocked by `|yRel| > 1.5` on a curve (y 1.5 -> 9.3 m), by D-043 coasts and by the long residual. Left open; see below.
+  - **26c 12:27:** the rail was close to true (range fit -11.5 to -14.6), so there was nothing to correct.
+- **Change** (`selfdrive/controls/radard.py`, `Track._update_range_assist` and `_fit_long_range`; constants in a commented block above `BOSCH_A_U11_LOW_RAIL_MPS`). It applies only while U11 is on the rail:
+  - The long fit may be taken over `RANGE_VREL_RAIL_LONG_MIN_SAMPLES = 8` samples, clamped to `RANGE_VREL_LONG_SAMPLES`. Its span floor is `RANGE_VREL_RAIL_LONG_MIN_SPAN_S = 0.45` s. The residual, backward-lead and span-ceiling guards are unchanged.
+  - `RANGE_VREL_RAIL_ARM_UPDATES = 3` consecutive measured updates, each with the smaller of the short and long disagreements >= 2.0 m/s, arm it. Both fits must corroborate, which is stricter than the existing long-only rail decision. The 5-update rule is unchanged off the rail and for the old path.
+  - While railed, the correction is sized by the mean of the two disagreements (`RANGE_VREL_RAIL_SIZE_MEAN`). That is never beyond the more-closing range fit. It stays under the 8 m/s cap and the vLead >= 0 bound. It publishes a bound and deletes nothing.
+  - With `RANGE_VREL_RAIL_FAST = False` the behaviour is the pre-change behaviour.
+- **Replay, 27 routes, fix vs current** (both with `RangeDerivedVrel` on and `BoschARailInterval` off; 271 from seg 7, open-loop radar; harness /tmp/rs/ab130/):
+  - 271 BM0: the first corrected vRel moves from -2.59 to -3.19 s (0.60 s after publication, not 1.22). It publishes -20.0, bound by vLead >= 0, against range fits of -19.6/-23.4. At -1.8 to -1.6 it publishes -17.9 to -16.8, where it was -16.3 to -15.4.
+  - 271 BM0 planner: the -1.5 crossing moves -2.34 -> -2.49 s, the -2.0 crossing -2.04 -> -2.19 s, and the minimum before the driver brake -2.43 -> -2.50. There is still no -3.0 before the driver.
+    - The corrected lead sits on the -1.0 ACC comfort floor (item 93) from -3.14 to -2.84 s. That floor, not the radar vRel, is now the bottleneck.
+  - 26c 4:08, 26c 12:27, 25e 12:03 and 26f 516.9: 0 differing lead frames and no fast arms.
+  - 25e 6:43 (403 s, track 48, the range-walk trap): identical (min -0.51).
+  - 276 13:46.6 (flat-range rail, negative control): tid 5 was published at -13.5 at 56.4 -> 55.1 m, and was coasted there. Fix and current are identical: no correction, no fast arm, and the same planner output (+0.50..+0.78). All of 276 has 0 differing frames.
+  - Points lost 0, lead points lost 0. Protected brakes softer by > 0.3 or later by > 0.2 s: 0. Spurious new <= -1.5 / <= -3.0 crossings: 0.
+  - 19 fast arms fleet-wide (17 on the lead), all on the rail at 57-105 m. Corrected lead time 212.5 -> 219.7 s.
+  - Moved episodes, both with vision-confirmed leads:
+    - 236 771.9: -1.5 crossing 0.25 s earlier.
+    - 268 700.9: -1.5 crossing 0.15 s earlier; -3.0 crossing 0.70 s earlier.
+  - Variants replayed:
+    - min sizing (V1): tracks the fits worse.
+    - arm 4 (V2): one MPC solver-error artifact at 260 446.9.
+    - 10 samples / 0.6 s (V3): later.
+    - None gave a benefit over the shipped constants.
+- **Tests:** test_bosch_a_radar 134, honda 116, leads 6, range_vrel_assist 92 (a `pre130` fixture pins the old-mechanism tests to `RANGE_VREL_RAIL_FAST=False`; new TestRailFastPath: fast arm with the correction between the fits, the 276 flat-range rail gives no correction, a 1.5 m step does not arm, and the cap/vLead bound), longitudinal_planner 512.
+- **Open:**
+  - 26c 4:08 needs the `|yRel| <= 1.5` geometry gate revisited. At 80 m, 9 m of y is only about 6 deg of azimuth, and the gate is a lane proxy, not the 10.8 deg bound its comment describes. The long span and residual also block that case. Not changed here.
+  - The 1.07 s dark time at 271 BM0 is D-042 (u10 511); not changed.
+- **Recommendation:** replay supports it (0 lost points, 0 spurious brakes, 0 protected regressions) for a watched drive. The gain is small (about 0.15 s and 0.07 m/s^2 at 271 BM0) until the -1.0 comfort floor is revisited. Road check: a railed lead closing well past 13.5 m/s at 60-120 m should show a corrected vRel about 0.6 s after publication.

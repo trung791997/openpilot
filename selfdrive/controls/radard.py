@@ -173,6 +173,27 @@ RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS = 5.0
 # rail was.
 BOSCH_A_U11_LOW_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
 
+# --- Rail fast path (2026-09-26, STATUS 130; extends D-053, rides the RangeDerivedVrel toggle).
+# REPLAY evidence only, open loop. 00000271 9:26 (BM0): a near-stopped car published at 118.8 m
+# with U11 on the rail from before publication; true closing about -21..-23. Both range fits read
+# -21..-28 from the 5th sample on, but the assist could not arm until the 15-sample long history
+# filled (1.0 s) plus 5 arm updates: first correction 1.22 s after publication, 0.9 s before the
+# driver braked. Once armed, the min(short, long) sizing followed the short fit's dips and
+# published -15.4..-16.3 while the trailing 1 s range fit read -18.1..-19.9.
+# ON the rail only (U11 is a bound there, D-041), and only when BOTH fits corroborate:
+#   * the long fit may be taken over RAIL_LONG_MIN_SAMPLES (span floor RAIL_LONG_MIN_SPAN_S),
+#     with the same residual, backward-lead and span-ceiling guards;
+#   * RAIL_ARM_UPDATES consecutive measured updates on which the SMALLER of the short and long
+#     disagreements clears MIN_DISAGREEMENT arm it (off the rail the 5-update rule is unchanged);
+#   * while railed the correction is sized by the MEAN of the two disagreements, which is never
+#     beyond the more-closing range fit, and stays under MAX_CORRECTION and the vLead >= 0 bound.
+# Set RANGE_VREL_RAIL_FAST to False to restore the pre-130 rail behaviour exactly.
+RANGE_VREL_RAIL_FAST = True
+RANGE_VREL_RAIL_LONG_MIN_SAMPLES = 8
+RANGE_VREL_RAIL_LONG_MIN_SPAN_S = 0.45
+RANGE_VREL_RAIL_ARM_UPDATES = 3
+RANGE_VREL_RAIL_SIZE_MEAN = True
+
 # Last, the correction is capped at the native lead speed, so a corrected vLead is never published
 # below zero. A physical bound like MAX_CORRECTION, not a tuned value: on the replay it bound only
 # at 236 12:51, where it trimmed 0.2 m/s*s.
@@ -272,6 +293,8 @@ class Track:
     # cycle. range_assist_correction is m/s of EXTRA closing and is never negative.
     self.range_assist_active = False
     self.range_assist_arm_count = 0
+    self._range_long_min_samples = RANGE_VREL_LONG_SAMPLES  # lowered per update on the rail fast path
+    self.range_assist_rail_count = 0
     self.range_assist_correction = 0.0
     # Last liveTracks timestamp this track was updated with, used to tell a DUPLICATE radard
     # cycle (no new message; t_now unchanged) from a COAST (new message, measured False).
@@ -361,6 +384,7 @@ class Track:
   def _clear_range_assist(self) -> None:
     self.range_assist_active = False
     self.range_assist_arm_count = 0
+    self.range_assist_rail_count = 0
     self.range_assist_correction = 0.0
 
   def _update_range_assist(self, enabled: bool, measurement_update: bool, t_now: float) -> None:
@@ -420,10 +444,19 @@ class Track:
       self._clear_range_assist()
       return
 
+    # Quantized U11 sits exactly on the rail value, so half a step of tolerance is exact.
+    on_rail = self.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_DIRECT_VREL_SCALE_MPS / 2
+    rail_fast = RANGE_VREL_RAIL_FAST and on_rail
+    # Clamped: a rail minimum above the deque length could never be reached.
+    self._range_long_min_samples = (min(RANGE_VREL_RAIL_LONG_MIN_SAMPLES, RANGE_VREL_LONG_SAMPLES)
+                                    if rail_fast else RANGE_VREL_LONG_SAMPLES)
+    min_span = RANGE_VREL_RAIL_LONG_MIN_SPAN_S if rail_fast else RANGE_VREL_LONG_MIN_SPAN_S
+    # Short long-history: only the corroborated rail arm may count (see below).
+    short_long_hist = len(self.range_hist_long) < RANGE_VREL_LONG_SAMPLES
     if not self._fit_long_range():
       self._clear_range_assist()
       return
-    if not (RANGE_VREL_LONG_MIN_SPAN_S <= self.vRelRangeLongSpan <= RANGE_VREL_LONG_MAX_SPAN_S):
+    if not (min_span <= self.vRelRangeLongSpan <= RANGE_VREL_LONG_MAX_SPAN_S):
       self._clear_range_assist()
       return
     if self.vRelRangeLongResidual > RANGE_VREL_ASSIST_MAX_LONG_RESIDUAL_M:
@@ -438,9 +471,16 @@ class Track:
     # must agree, so the smaller disagreement is the one that counts.
     disagreement = min(self.vRel - self.vRelRange, self.vRel - self.vRelRangeLong)
     # On the U11 rail only the long fit decides arming and holding; the size below stays the smaller.
-    # Quantized U11 sits exactly on the rail value, so half a step of tolerance is exact.
-    on_rail = self.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_DIRECT_VREL_SCALE_MPS / 2
     decision = self.vRel - self.vRelRangeLong if on_rail else disagreement
+    size = disagreement
+    if rail_fast:
+      # Rail fast path: sized by the mean of the two fits (never beyond the more-closing one).
+      if RANGE_VREL_RAIL_SIZE_MEAN:
+        size = 0.5 * ((self.vRel - self.vRelRange) + (self.vRel - self.vRelRangeLong))
+      if disagreement >= RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
+        self.range_assist_rail_count += 1
+      else:
+        self.range_assist_rail_count = 0
 
     if self.range_assist_active:
       # Hysteresis: hold while ANY closing disagreement remains, so the correction decays
@@ -453,15 +493,17 @@ class Track:
         self.range_assist_arm_count = 0
         self.range_assist_correction = 0.0
         return
-      self.range_assist_arm_count += 1
-      if self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES:
+      if not short_long_hist:
+        self.range_assist_arm_count += 1
+      rail_armed = rail_fast and self.range_assist_rail_count >= RANGE_VREL_RAIL_ARM_UPDATES
+      if self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES and not rail_armed:
         self.range_assist_correction = 0.0
         return
       self.range_assist_active = True
 
     # Active with a negative smaller disagreement (only possible on the rail) publishes zero while
     # staying armed. The last bound keeps a corrected vLead from being published below zero.
-    self.range_assist_correction = float(min(max(disagreement, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS,
+    self.range_assist_correction = float(min(max(size, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS,
                                              max(self.vLead, 0.0)))
 
   def _fit_long_range(self) -> bool:
@@ -469,7 +511,7 @@ class Track:
     m) and vRelRangeLongSpan (s) and returns True, or sets all three to NaN and returns False when
     the history is not full or its timestamps are degenerate."""
     self.vRelRangeLong = self.vRelRangeLongResidual = self.vRelRangeLongSpan = float('nan')
-    if len(self.range_hist_long) < RANGE_VREL_LONG_SAMPLES:
+    if len(self.range_hist_long) < self._range_long_min_samples:
       return False
     hist = np.array(self.range_hist_long, dtype=np.float64)
     ts = hist[:, 0] - hist[-1, 0]

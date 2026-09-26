@@ -96,6 +96,13 @@ def feed_radard_cadence(track, n_cycles, *, d0, range_rate, v_rel, y_rel=0.0, v_
   return trace
 
 
+@pytest.fixture
+def pre130(monkeypatch):
+  """Pin the pre-130 rail behaviour (no rail fast path) for tests written against the original
+  15-sample long window and 5-update arm rule; the fast path has its own tests (TestRailFastPath)."""
+  monkeypatch.setattr(radard, "RANGE_VREL_RAIL_FAST", False)
+
+
 def settle(track, **kwargs):
   """Feed exactly enough sweeps to fill the long window and then arm: the long fit needs
   RANGE_VREL_LONG_SAMPLES samples before it exists, and arming needs RANGE_VREL_ASSIST_ARM_UPDATES
@@ -429,6 +436,7 @@ class TestLongResidual:
     assert track.range_assist_correction == pytest.approx(5.9, abs=0.1)
 
 
+@pytest.mark.usefixtures("pre130")
 class TestLongHistoryRequirement:
   def test_no_long_fit_before_the_window_fills(self):
     track = new_track()
@@ -467,6 +475,7 @@ def run_span_gap(gap, n_after=22):
   return None
 
 
+@pytest.mark.usefixtures("pre130")
 class TestLongSpanGap:
   """The long window counts samples, not time. A coast gap stretches its span; past
   LONG_MAX_SPAN the fit is straddling two different stretches of road."""
@@ -504,6 +513,7 @@ class TestRailRule:
     assert RAIL == -13.5
     assert -13.49 > RAIL + Q / 2, "-13.49 is OFF the rail; tests that mean the rail must use RAIL"
 
+  @pytest.mark.usefixtures("pre130")   # original rail rule; fast-path timing/size: TestRailFastPath
   def test_on_rail_the_long_fit_alone_arms(self):
     best, _, first = rail_glitch_series(new_track(), 60, u11=RAIL, rate=-16.0)
     assert best == pytest.approx(2.577, abs=0.05)
@@ -903,6 +913,7 @@ class TestNegativeControlOfTheTestsThemselves:
   """D-009: a test suite that passes against a broken mechanism is not evidence. Each of these
   breaks one guard on purpose and asserts that the property it defends actually fails."""
 
+  @pytest.mark.usefixtures("pre130")   # the rail fast path arms inside the duplicate gaps; see D-009 note
   def test_without_the_duplicate_hold_the_assist_never_arms(self, monkeypatch):
     """The negative control for the duplicate-cycle hold, and the one that found a real defect.
     Defeating the t_now comparison the hold rests on reproduces exactly the pre-fix behaviour --
@@ -956,3 +967,81 @@ class TestNegativeControlOfTheTestsThemselves:
     feed(corrected, 25, range_assist=True, **RAIL_CASE)
     feed(native, 25, range_assist=False, **RAIL_CASE)
     assert corrected.aLeadK != native.aLeadK
+
+
+# ---------------------------------------------------------------------------------------------
+# Rail fast path (STATUS 130): on the U11 rail an 8-sample long fit and 3 corroborated updates arm
+# ---------------------------------------------------------------------------------------------
+
+def rail_series(track, n, d_of, v_ego=30.0):
+  """Railed U11 against an arbitrary range function d_of(i, t). Returns per-sweep
+  (short disagreement, long disagreement, correction); NaN where a fit does not exist."""
+  out = []
+  for i in range(n):
+    t = i * DT
+    track.update(d_of(i, t), 0.0, RAIL, v_ego + RAIL, True, True, t_now=t, range_assist=True)
+    ds = track.vRel - track.vRelRange if track.vRelRangeFresh else float('nan')
+    out.append((ds, track.vRel - track.vRelRangeLong, track.range_assist_correction))
+  return out
+
+
+class TestRailFastPath:
+  def test_corroborated_rail_arms_early_and_sized_between_the_fits(self, monkeypatch):
+    # Range closes ~7 m/s faster than the rail, easing (+1.2 m/s^2) so the two fits differ.
+    def closing(i, t):
+      return 90.0 - 20.5 * t + 1.2 * t * t
+    out = rail_series(new_track(v_lead=30.0 + RAIL), 20, closing)
+    first = next(i for i, (_, _, c) in enumerate(out) if c > 0.0)
+    assert first == radard.RANGE_VREL_RAIL_LONG_MIN_SAMPLES + radard.RANGE_VREL_RAIL_ARM_UPDATES - 2
+    for ds, dl, c in out[first:]:
+      assert min(ds, dl) - 1e-9 <= c <= max(ds, dl) + 1e-9, "never beyond the more-closing fit"
+    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_FAST", False)   # control: the pre-130 timing
+    old = rail_series(new_track(v_lead=30.0 + RAIL), 30, closing)
+    assert next(i for i, (_, _, c) in enumerate(old) if c > 0.0) > first + 5
+
+  def test_flat_range_on_the_rail_never_corrects(self):
+    # 00000276 13:46.6, lead tid 5: U11 on -13.5 for 0.8 s while the range sat at 56 then 55 m.
+    track = new_track(v_lead=30.0 + RAIL)
+    out = rail_series(track, 30, lambda i, t: 56.0 if i < 6 else 55.0)
+    assert all(c == 0.0 for _, _, c in out)
+    assert track.range_assist_rail_count == 0
+
+  def test_single_range_step_does_not_arm(self):
+    # Range consistent with the rail, then one persistent 1.5 m step: the short fit spikes, the
+    # 8-sample long fit does not corroborate for 3 updates.
+    track = new_track(v_lead=30.0 + RAIL)
+    out = rail_series(track, 40, lambda i, t: 80.0 + RAIL * t - (1.5 if i >= 10 else 0.0))
+    assert max(ds for ds, _, _ in out if ds == ds) > RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS, "the step must reach the short fit"
+    assert all(c == 0.0 for _, _, c in out)
+
+  def test_rail_fast_correction_respects_the_cap_and_the_zero_speed_bound(self):
+    # Range closing 35 m/s against the -13.5 rail: ~21.5 m/s of disagreement, capped at 8.0.
+    out = rail_series(new_track(v_lead=40.0 + RAIL), 25, lambda i, t: 100.0 - 35.0 * t, v_ego=40.0)
+    assert any(c > 0.0 for _, _, c in out), "the case must arm, or the cap is untested"
+    assert max(c for _, _, c in out) == RANGE_VREL_ASSIST_MAX_CORRECTION_MPS
+    # Slow ego: native vLead = 16 - 13.5 = 2.5 m/s, range closing 20 m/s (inside the backward-lead
+    # guard). The correction may never publish vLead below zero.
+    track = new_track(v_lead=16.0 + RAIL)
+    out = rail_series(track, 25, lambda i, t: 60.0 - 20.0 * t, v_ego=16.0)
+    assert any(c > 0.0 for _, _, c in out), "the case must arm, or the bound is untested"
+    assert all(c <= 16.0 + RAIL + 1e-9 for _, _, c in out)
+    assert track.vLead - track.range_assist_correction >= -1e-9
+
+  def test_off_the_rail_the_fast_path_changes_nothing(self, monkeypatch):
+    # U11 one quantum above the rail, the same 20 m/s closing range: the 15-sample/5-update rule
+    # must decide, bit for bit the same as with the fast path switched off.
+    def run():
+      track = new_track(v_lead=30.0 + RAIL + Q)
+      res = []
+      for i in range(30):
+        t = i * DT
+        track.update(90.0 - 20.0 * t, 0.0, RAIL + Q, 30.0 + RAIL + Q, True, True, t_now=t, range_assist=True)
+        res.append(track.range_assist_correction)
+      return res, track.range_assist_rail_count
+    on, rail_count = run()
+    assert rail_count == 0
+    first = next(i for i, c in enumerate(on) if c > 0.0)
+    assert first == SETTLE - 1, "off the rail the pre-130 timing must hold"
+    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_FAST", False)
+    off, _ = run()
+    assert on == off
