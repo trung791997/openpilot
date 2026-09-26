@@ -4493,3 +4493,76 @@ def test_stopped_radar_lead_hold_is_limited_to_low_ego_speed():
   v_ego = 8.0
   assert not LongitudinalPlanner.stopped_radar_lead_hold_qualifies(_stopped_radar_lead(a_lead=0.3, d_rel=60.0), v_ego)
   assert LongitudinalPlanner.stopped_radar_lead_hold_qualifies(_stopped_radar_lead(a_lead=0.3, d_rel=60.0), 4.0)
+
+
+# REASSOC_LEAD_BOUND (route 00000278 ~6:23, BM1): a radar track slides from 66 m onto a steady vision lead at ~49 m.
+def _reassoc_frame(d_rel, v_rel, a_lead, *, vis_x=49.0, vis_vrel=-1.0, vis_a=0.0, vis_prob=0.99, v_ego=21.8, tid=21):
+  lead = make_lead(status=True, d_rel=d_rel, v_lead=v_ego + v_rel, a_lead=a_lead, radar=True, model_prob=vis_prob)
+  lead.vRel = v_rel
+  lead.radarTrackId = tid
+  sm = make_sm(v_ego, 0.0, -3.5, experimental_mode=False, tracking_lead=True, lead_one=lead)
+  model = sm["modelV2"]
+  model.init('leadsV3', 3)
+  model.leadsV3[0].prob = vis_prob
+  model.leadsV3[0].x = [vis_x] * 6
+  model.leadsV3[0].v = [v_ego + vis_vrel] * 6
+  model.leadsV3[0].a = [vis_a] * 6
+  return sm
+
+
+def _run_reassoc(slide, **vis):
+  hold = longitudinal_planner_module.ReassociationHold()
+  out = []
+  for d, v_rel, a_lead in slide:
+    out.append(longitudinal_planner_module.bound_reassociated_leads(_reassoc_frame(d, v_rel, a_lead, **vis), hold))
+  return out
+
+
+ROUTE_278_TRACK_21 = [(66.0, -0.4, 0.0)] * 5 + [(66.0 - 1.0 * i, -6.6, -2.0) for i in range(1, 11)] + \
+                     [(51.6, -13.2, -5.5)] * 5
+
+
+def test_reassociation_bound_covers_route_278_track_21():
+  out = _run_reassoc(ROUTE_278_TRACK_21)
+  last = out[-1]['radarState'].leadOne
+  assert last.vRel >= -1.0 - longitudinal_planner_module.REASSOC_LEAD_VREL_MARGIN - 1e-6
+  assert last.aLeadK == pytest.approx(-longitudinal_planner_module.REASSOC_LEAD_MIN_BRAKE)
+  assert last.vLead - last.vRel == pytest.approx(21.8)   # vLead moves with vRel
+  assert last.dRel == pytest.approx(51.6)                # range untouched
+
+
+def test_reassociation_bound_keeps_vision_corroborated_closing():
+  # Vision itself brakes hard: the slide is a real approach, nothing is bounded.
+  out = _run_reassoc(ROUTE_278_TRACK_21, vis_a=-3.0)
+  assert all(o['radarState'].leadOne.vRel == pytest.approx(-13.2) for o in out[-5:])
+  out = _run_reassoc(ROUTE_278_TRACK_21, vis_vrel=-6.0)
+  assert out[-1]['radarState'].leadOne.aLeadK == pytest.approx(-5.5)
+
+
+def test_reassociation_bound_needs_a_slide_onto_confident_vision():
+  # Track that was always at the vision range: no re-association, no bound.
+  steady = [(51.6, -0.5, 0.0)] * 10 + [(51.6, -13.2, -5.5)] * 5
+  assert _run_reassoc(steady)[-1]['radarState'].leadOne.vRel == pytest.approx(-13.2)
+  # Low-confidence vision, or vision far beyond the radar range, cannot arm it.
+  assert _run_reassoc(ROUTE_278_TRACK_21, vis_prob=0.5)[-1]['radarState'].leadOne.vRel == pytest.approx(-13.2)
+  assert _run_reassoc(ROUTE_278_TRACK_21, vis_x=70.0)[-1]['radarState'].leadOne.vRel == pytest.approx(-13.2)
+
+
+def test_reassociation_bound_expires():
+  slide = ROUTE_278_TRACK_21 + [(51.6, -13.2, -5.5)] * (longitudinal_planner_module.REASSOC_LEAD_HOLD_FRAMES + 5)
+  assert _run_reassoc(slide)[-1]['radarState'].leadOne.vRel == pytest.approx(-13.2)
+
+
+# SLOW_RADAR_LEAD_STOP_GATE (route 00000278 ~4:33, BM0): a 2.5 m/s radar lead 93 m ahead at 16 m/s.
+def test_slow_radar_lead_stop_gate(monkeypatch):
+  lead = make_lead(status=True, d_rel=93.0, v_lead=2.5, radar=True, model_prob=0.95)
+  monkeypatch.setattr(longitudinal_planner_module, "SLOW_RADAR_LEAD_STOP_GATE", False)
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(lead, 16.0)
+  monkeypatch.setattr(longitudinal_planner_module, "SLOW_RADAR_LEAD_STOP_GATE", True)
+  assert LongitudinalPlanner.raw_close_lead_needs_control(lead, 16.0)
+  unsure = make_lead(status=True, d_rel=93.0, v_lead=2.5, radar=True, model_prob=0.5)
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(unsure, 16.0)
+  moving = make_lead(status=True, d_rel=93.0, v_lead=8.0, radar=True, model_prob=0.95)
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(moving, 16.0)
+  far = make_lead(status=True, d_rel=125.0, v_lead=2.5, radar=True, model_prob=0.95)
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(far, 16.0)

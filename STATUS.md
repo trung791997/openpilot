@@ -7808,3 +7808,45 @@ A flat 0.35 ceiling from 25 mph would clip the real curves. A speed-scheduled ce
 - **Less-closing correction for a railed lead with slowly shrinking range (277 38:17.4, track 55).** The motivating lead was in a D-043 coast, with a range burst at the rail value; vision was at prob 0.15-0.46 at 104-118 m. The strict gate never fired there. On the fleet it softened real closings: 266 484.2 (a vision-confirmed brake) -2.28 -> -2.18, and 263 358.6 released -2.00 -> -1.30. This is the same failure as fix 1 and STATUS 111/129. Patch: /tmp/rl/rail_slow.patch.
 - **Path-relative replacement for radard's `|yRel| <= 1.5` D-053 gate (26c 4:08).** At 4:08 it corrected on one cycle only (-2.0 crossing 0.05 s earlier); the long fit's span/residual across D-043 coasts is the real limiter. It added spurious -1.5 crossings on curve range wobble at 70-95 m (26c 649.9, 237 942.8), and 236 2211.4 went -3.16 -> -3.50. The lateral gate was filtering the curve range walk. Patch: /tmp/yg/pathgate.patch.
 - **Held, not rejected: the close-lead cap built against the vehicle minimum for a vision-corroborated radar lead closing >= 10 m/s at TTC <= 6 s (271 BM0).** -1.5 crossing -2.49 -> -3.19 s. Costs: frames < -3.0 1387 -> 1894, 0.5 s drops 73 -> 88, a one-tick step, and 025f 483.0 min -3.88 -> -3.50 (a single-tick artifact). Held because the owner reported rough braking; it would combine with this item's bound, and that combination is unreplayed. Patch: /tmp/cf/fastclose_floor.patch.
+
+## 149. Two planner fixes for the remaining exp-mode bookmarks on 00000278 (BM1 reassociation, BM0 slow-lead gate). Open- and closed-loop replay plus unit tests only; nothing has been driven. A third fix (radard, 27a BM2) is held uncommitted for the owner's OK.
+
+Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 32 routes of /tmp/cap/out2 (179 brake episodes), replayed open loop through the Bosch-A RadarInterface, RadarD and the planner. In closed loop, ego accel follows the output with tau 0.35 and the lead is shifted by the ego position difference (vision is not shifted).
+
+1. **`REASSOC_LEAD_BOUND`** (planner input, `bound_reassociated_leads`, next to the off-axis bound). Covers 278 BM1.
+   - What happened: radar track 21 slid from a car at 66 m onto a nearer car that vision had at 48-50 m (p >= 0.96, not closing).
+     - U11 -0.4 -> -6.6; D-053 -13.2; aLeadK -5.5.
+     - Alpha commanded -3.50 (aEgo -4.4) for a car doing ego's speed.
+   - Arming conditions: the radar lead started at least 10 m beyond a confident vision lead (p >= 0.9) and has since dropped at least 6 m. Vision is at or nearer the radar range (+3 m), closing <= 2 m/s, and a >= -1.5.
+   - Bound while armed: vRel/vLead/vLeadK are bounded to vision's closing minus 1.5 m/s, and aLeadK to -max(1.0, vision brake), for up to 3 s.
+   - What is not touched: dRel, the track, radarState and radard. No point is removed (D-041/D-042).
+   - Replay results: open loop -3.50 -> -1.22; closed loop -3.50 -> -1.49, min gap 45.9 -> 44.2 m.
+2. **`SLOW_RADAR_LEAD_STOP_GATE`** (`raw_close_lead_needs_control`). Covers 278 BM0.
+   - What happened: after an exp -> chill switch 93 m behind a 1.8-2.5 m/s radar lead at 16 m/s, chill's raw gate admitted the slow (not stopped) lead only inside max(40, 3v). The close cap first bit at 73 m.
+   - Change: a radar lead at or below 3 m/s with modelProb >= 0.9 is now admitted inside closing^2/2 + 10 m, capped at the stopped-lead limit.
+   - Replay results: open loop -2.65 -> -2.53; closed loop -2.87 -> -2.41, min gap 7.10 -> 6.72 m.
+   - The remaining -2.4 is chill's ACC MPC approach profile. BM0 is softened, not made comfortable.
+   - Three episodes brake 0.25-1.0 s earlier: 232 1232.8, 278 278.2 and 278 737.0. In all three, vision has the lead at 2.4-3.7 m/s at the radar range, so they are real approaches.
+
+**Fleet, both fixes together (replay, open loop):**
+- Protected list: every case unchanged. This covers 232 1147.2, 236 771.9, 237 764.7, 25b 1338.8, 25e 318.1/723.0, 25f 483.1, 263 358.6/374.3, 266 484.2/560.0/795.4, 268 700.9 and 26f 516.9.
+- New -1.5 crossings: 0.
+- Softer brakes: only 278 BM1.
+- Earlier brakes: only the three above.
+- Frames below -3.0: 1376 -> 1363.
+
+**Closed loop:** 24f B-F and 258 63:50 are identical to HEAD.
+
+**Rejected:**
+- Exp -> chill handoff ceiling hold: costs 1.0 m of closed-loop gap on BM0.
+- Vision non-contradiction before the STATUS 119 pass: softens protected 26f 516.9 from -2.14 to -1.62.
+
+**Held, not committed (radard; needs the owner's OK):**
+- What it is: `YOUNG_TRACK_FLAT_RANGE_BOUND` + `YOUNG_TRACK_VISION_GATE`, covering 27a BM2. A track at most 1 s old has its published vRel raised to (fitted fresh-sweep range rate - 3).
+- When it applies: >= 6 sweeps over >= 0.35 s, residual <= 0.6 m, |rate| <= 6, and a confident vision lead at or beyond range - 5 m that is neither closing nor braking.
+- Why 27a BM2 needs it: track 15 was born at 64 m with U11 -11.1 and coasted at -10.7 while its range stayed flat. Vision had the lead at 73-85 m doing ego's speed.
+- Replay results: -2.02 -> -1.38 open loop, -1.88 -> -1.28 closed loop.
+- Lead publication: 0 leads lost or gained. vRel was raised on 164 lead frames and never lowered.
+- Fleet (32 routes, with F1+G): no other episode changes.
+
+**Tests:** test_longitudinal_planner, test_longcontrol and test_range_vrel_assist pass (620). ruff has no new findings versus HEAD.

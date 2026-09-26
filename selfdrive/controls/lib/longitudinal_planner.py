@@ -222,6 +222,39 @@ OFF_AXIS_LEAD_HOLD_FRAMES = 20
 OFF_AXIS_LEAD_MAX_BRAKE = 1.5
 OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 
+# Radar track re-association onto a nearer vision lead (route 00000278 ~6:19, track 21). The track slid from a car at
+# 65-69 m onto a nearer car that vision had at 48-50 m with p >= 0.96, doing ~20.5 m/s against ego 21.8 (not closing).
+# The range walked 66 -> 51.6 m in ~1 s, U11 -0.4 -> -6.6, D-053 took it to -13.2/-10.0, aLeadK -5.5 on a "16 m/s" lead,
+# and alpha commanded -3.5 (aEgo -4.4) for a car vision saw doing its speed. A genuine hard brake has radar and vision
+# on the same range throughout; here radar started >= 10 m beyond vision and converged onto it. While that holds and
+# vision stays confident, at or nearer the radar range, and not closing, the radar lead's vRel/vLead/vLeadK are bounded
+# to vision's closing less a margin and aLeadK to vision's accel with a floor. Planner input only, like the off-axis
+# bound: radarState and radard are untouched, the point stays published and its range is kept (D-041/D-042).
+REASSOC_LEAD_BOUND = True
+REASSOC_LEAD_WINDOW_FRAMES = 30         # 1.5 s of history per radar track
+REASSOC_LEAD_MIN_OFFSET_M = 10.0        # track was this far beyond the vision lead ...
+REASSOC_LEAD_MIN_DROP_M = 6.0           # ... and its range has since dropped this much
+REASSOC_LEAD_VISION_MIN_PROB = 0.9
+REASSOC_LEAD_VISION_NEAR_MARGIN_M = 3.0 # vision lead at or nearer the radar range (plus this)
+REASSOC_LEAD_VISION_MAX_CLOSING = 2.0   # vision closing speed (m/s) at or under this: "not closing"
+REASSOC_LEAD_VISION_MIN_ACCEL = -1.5
+REASSOC_LEAD_HOLD_FRAMES = 60           # armed for at most 3.0 s
+REASSOC_LEAD_VREL_MARGIN = 1.5          # published closing may exceed vision's by this much
+REASSOC_LEAD_MIN_BRAKE = 1.0            # aLeadK floor: -max(this, vision brake)
+
+
+# Slow radar lead stop-distance gate (route 00000278 ~4:33, BM0). After an experimental -> chill switch 93 m behind a
+# 1.8-2.5 m/s radar lead at 16 m/s, chill's raw close-lead gate admitted the slow (not stopped) lead only inside
+# max(40 m, 3 v), shorter than the distance a -1.0 comfort brake needs to shed 14 m/s of closing, so the close cap
+# first bit at 73 m and the ACC MPC braked late to -2.65. A slow radar lead the model also sees (modelProb) is admitted
+# inside closing^2 / (2 * SLOW_RADAR_LEAD_GATE_DECEL) + standoff (capped at the stopped-lead limit) instead.
+SLOW_RADAR_LEAD_STOP_GATE = True
+SLOW_RADAR_LEAD_GATE_MAX_SPEED = 3.0
+SLOW_RADAR_LEAD_GATE_MIN_PROB = 0.9
+SLOW_RADAR_LEAD_GATE_DECEL = 1.0
+SLOW_RADAR_LEAD_GATE_STANDOFF = 10.0
+
+
 VISION_LEAD_APPROACH_MIN_MODEL_PROB = 0.85
 VISION_LEAD_APPROACH_FULL_MODEL_PROB = 0.98
 PLANNER_SAFETY_WARNING_INTERVAL = 5.0
@@ -706,6 +739,99 @@ def off_axis_lead_a_lead(lead, model_msg, held=False):
   return bounded if bounded > a_lead else None
 
 
+class _OverrideLead:
+  """Read-only view of a radarState lead with some fields replaced; every other field is the original."""
+  def __init__(self, lead, **fields):
+    self._lead = lead
+    for k, v in fields.items():
+      setattr(self, k, v)
+
+  def __getattr__(self, name):
+    return getattr(self._lead, name)
+
+
+class ReassociationHold:
+  """REASSOC_LEAD_BOUND: per radar track, recent (frame, dRel, vision x) and the armed window."""
+  def __init__(self):
+    self.frame = 0
+    self.hist: dict[int, list] = {}
+    self.armed: dict[int, int] = {}
+    self.bound_frames = 0
+
+  @staticmethod
+  def _vision(model_msg, v_ego):
+    leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
+    if leads is None or not len(leads) or float(leads[0].prob) < REASSOC_LEAD_VISION_MIN_PROB or \
+       not len(leads[0].x) or not len(leads[0].v) or not len(leads[0].a):
+      return None
+    v = leads[0]
+    return float(v.x[0]), float(v.v[0]) - float(v_ego), float(v.a[0])
+
+  def bound(self, lead, model_msg, v_ego):
+    """Bounded view of `lead`, or None when it is left as is. Call once per lead per frame, after tick()."""
+    if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
+      return None
+    tid = int(getattr(lead, "radarTrackId", -1))
+    d_rel = float(lead.dRel)
+    vis = self._vision(model_msg, v_ego)
+    h = self.hist.setdefault(tid, [])
+    h.append((self.frame, d_rel, None if vis is None else vis[0]))
+    while h and self.frame - h[0][0] > REASSOC_LEAD_WINDOW_FRAMES:
+      h.pop(0)
+    if vis is None:
+      self.armed.pop(tid, None)
+      return None
+    vis_x, vis_vrel, vis_a = vis
+    agrees = (vis_x <= d_rel + REASSOC_LEAD_VISION_NEAR_MARGIN_M and vis_vrel >= -REASSOC_LEAD_VISION_MAX_CLOSING and
+              vis_a >= REASSOC_LEAD_VISION_MIN_ACCEL)
+    if not agrees:
+      self.armed.pop(tid, None)
+      return None
+    if tid not in self.armed:
+      slid = any(x is not None and d - x >= REASSOC_LEAD_MIN_OFFSET_M and d - d_rel >= REASSOC_LEAD_MIN_DROP_M
+                 for _, d, x in h)
+      if not slid:
+        return None
+      self.armed[tid] = self.frame
+    elif self.frame - self.armed[tid] > REASSOC_LEAD_HOLD_FRAMES:
+      return None
+    v_rel = float(lead.vRel)
+    v_rel_bound = vis_vrel - REASSOC_LEAD_VREL_MARGIN
+    a_bound = -max(REASSOC_LEAD_MIN_BRAKE, -vis_a)
+    a_lead = float(lead.aLeadK)
+    if v_rel >= v_rel_bound and a_lead >= a_bound:
+      return None
+    dv = max(0.0, v_rel_bound - v_rel)
+    self.bound_frames += 1
+    return _OverrideLead(lead, vRel=v_rel + dv, vLead=float(lead.vLead) + dv, vLeadK=float(lead.vLeadK) + dv,
+                         aLeadK=max(a_lead, a_bound))
+
+  def tick(self):
+    self.frame += 1
+    if len(self.hist) > 64:
+      self.hist = {k: h for k, h in self.hist.items() if h and self.frame - h[-1][0] <= REASSOC_LEAD_WINDOW_FRAMES}
+      self.armed = {k: f for k, f in self.armed.items() if k in self.hist}
+
+
+def bound_reassociated_leads(sm, hold):
+  try:
+    radar_state = sm['radarState']
+    model_msg = sm['modelV2']
+    v_ego = float(sm['carState'].vEgo)
+  except (KeyError, AttributeError):
+    return sm
+  hold.tick()
+  leads = []
+  changed = False
+  for lead in (radar_state.leadOne, radar_state.leadTwo):
+    b = hold.bound(lead, model_msg, v_ego)
+    leads.append(lead if b is None else b)
+    changed |= b is not None
+  if not changed:
+    return sm
+  return _BoundedSubMaster(sm, _BoundedRadarState(radar_state, leads[0], leads[1]))
+
+
 class _BoundedLead:
   """Read-only view of a radarState lead with aLeadK replaced; every other field is the original."""
   def __init__(self, lead, a_lead):
@@ -808,6 +934,7 @@ class LongitudinalPlanner:
     self.CP = CP
     self.bound_off_axis_radar_leads = uses_off_axis_lead_bound(CP)
     self.off_axis_lead_hold = OffAxisLeadHold()
+    self.reassociation_hold = ReassociationHold()
     self.longitudinal_actuator_delay = max(DT_MDL, float(CP.longitudinalActuatorDelay))
     self.close_lead_brake_cap_value = 0.0
     self.lead_geometry_required_accel = 0.0
@@ -2195,6 +2322,12 @@ class LongitudinalPlanner:
         dynamic_distance,
         min(RAW_RADAR_STOPPED_LEAD_MAX_DISTANCE, 5.0 * float(v_ego)),
       )
+    if (SLOW_RADAR_LEAD_STOP_GATE and bool(getattr(lead, "radar", False)) and
+        lead_speed <= SLOW_RADAR_LEAD_GATE_MAX_SPEED and
+        float(getattr(lead, "modelProb", 0.0)) >= SLOW_RADAR_LEAD_GATE_MIN_PROB and closing_speed > 0.0):
+      dynamic_distance = max(dynamic_distance, min(
+        RAW_RADAR_STOPPED_LEAD_MAX_DISTANCE,
+        closing_speed ** 2 / (2.0 * SLOW_RADAR_LEAD_GATE_DECEL) + SLOW_RADAR_LEAD_GATE_STANDOFF))
     ttc = d_rel / max(closing_speed, 0.1) if closing_speed > 0.1 else float("inf")
     return d_rel < dynamic_distance and (ttc < RAW_LEAD_SAFETY_TTC or lead_braking)
 
@@ -2284,6 +2417,8 @@ class LongitudinalPlanner:
 
   def update(self, sm, starpilot_toggles):
     if self.bound_off_axis_radar_leads:
+      if REASSOC_LEAD_BOUND:
+        sm = bound_reassociated_leads(sm, self.reassociation_hold)
       sm = bound_off_axis_leads(sm, self.off_axis_lead_hold)
     if self.is_preap:
       self._preap_param_frame += 1
