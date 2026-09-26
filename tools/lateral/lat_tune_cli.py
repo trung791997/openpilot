@@ -61,14 +61,16 @@ def _band_range(b):
 
 
 def _table(trial):
-  lines = [f"{'band':<9} {'mph':>6} {'min':>6} {'ready':>5} {'sign/s':>7} {'curve':>6} {'ovr/min':>7} {'factor':>6} "
+  lines = [f"{'band':<9} {'mph':>6} {'min':>6} {'ready':>5} {'sign/s':>7} {'curve':>6} {'entry':>6} {'steady':>6} {'exit':>6} {'ovr/min':>7} {'factor':>6} "
            f"{'P/I/F now':>12} {'P new':>5}  decision"]
   for b in trial["bands"]:
     f = lambda x, w: f"{x:{w}.2f}" if isinstance(x, (int, float)) else f"{'-':>{w}}"
     cur = b["current"]
     pif = f"{cur['p']}/{cur['i']}/{cur['f']}"
     lines.append(f"{b['name']:<9} {_band_range(b):>6} {b['minutes']:>6.1f} {'yes' if b['ready'] else 'no':>5} "
-                 f"{f(b['signRate'], 7)} {f(b['curveRatio'], 6)} {f(b['pressRate'], 7)} {b['factor']:>6.2f} "
+                 f"{f(b['signRate'], 7)} {f(b['curveRatio'], 6)} "
+                 f"{f(b.get('curveRatioEntry'), 6)} {f(b.get('curveRatioSteady'), 6)} {f(b.get('curveRatioExit'), 6)} "
+                 f"{f(b['pressRate'], 7)} {b['factor']:>6.2f} "
                  f"{pif:>12} {b['proposed']['p']:>5}  {b['reason']}")
   return "\n".join(lines)
 

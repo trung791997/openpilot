@@ -6919,3 +6919,43 @@ old pooling with the old warning. Galaxy calls the default (filtered). The CLI p
 
   No change proposed. These metrics describe Ki 1.0 (what ran), so once the fix ships, the first routes on the new
   build carry a new effective I and should be analysed on their own.
+
+## 132. Lateral accuracy pass: tuner sign-change deadband, curve entry/steady/exit split, sim plant delay + angle quantisation; override-reaction and stutter studies (owner request, items 2/3/4/6 + stutter). Unit tests, replay and sim only; not driven.
+
+Routes: `00000262`, `263`, `268`, `26b`, `26c`, `26f`, `270`, `271` (per-frame arrays in `/tmp` only).
+
+**Item 4: tuner sign changes now need a 0.15° swing (`SIGN_HYST_DEG`).** A straight-frame error sign change counts only once the error has gone from ≥ +0.15° to ≤ −0.15° (or back); inside the band the last sign is kept.
+- Replay, 25–50 mph: 0.76–0.92 /s with no deadband → 0.24–0.30 /s at 0.15° on all 8 routes; highway 0.64–1.58 → 0.10–0.29. The old count was mostly the angle sensor's 0.1° steps, not weave.
+- Limits restated in deadband units: `SIGN_RATE_MAX` 1.0 → **0.6** (2× the worst 25–50 mph route), `SIGN_RATE_UP_MAX` 0.8 → **0.45** (1.5×). A revert after an up-step now also needs +0.05 /s absolute (`SIGN_SLACK`), because 3 min at 0.3 /s is only ~50 changes. Set on these 8 routes only, not on closed-loop outcomes.
+- 4-route trial (26c/26f/270/271, same pool as 131): same decisions (hold 100/105/105). Sign changes Low 0.30, Standard 0.28, Highway 0.19 /s.
+
+**Item 3: curve ratio split into entry / steady / exit** (`curveRatioEntry/Steady/Exit` in the trial, CLI columns, both Galaxy tuner views). Curve frames are split by how fast |desired| moves over 0.1 s (±5 °/s). Reported only; the rules still use the whole-curve ratio.
+- Replay, every route: **the angle trails the desired by 0.15–0.25 s** (best-shift curve error 25–50 mph 1.27 → 0.81° on 26b). Entry reads 0.72–0.86, exit 1.00–1.21.
+- 25–50 mph steady ≈ whole curve (26c–271 pool: entry 0.84 / steady 0.973 / exit 1.10). Below 25 mph the steady ratio is the *low* one (0.68–0.90; pool 0.83): real under-steer mid-corner, still vetoed by the override rate (3.4 /min).
+- So the largest remaining tracking error at 25–50 mph is lag, not gain. More P only partly fixes lag. Not tried yet: a desired-rate feedforward, or less target smoothing (`HondaLpfTau*` delays the request before it reaches the logged desired, so its cost is not in these numbers).
+
+**Item 6: `lat_pid_sim` plant has a command delay and 0.1° angle quantisation.**
+- `Plant(coef, delay, quant)`; old plant JSONs load undelayed/unquantised. `fit` grids `FIT_DELAYS` or takes `--delay`. `validate`/`sweep` print the deadband sign-change rate and the tracking lag. `lat_autotune` loads plants the same way.
+- Fit on 260–263: the free-run residual picks delay 0 (1.43° vs 1.54° at 6 frames; weakly identified).
+- Closed loop at logged settings (Kp/Ki 1.0), 25–50 mph, logged vs sim:
+
+  | route | logged raw / deadband | sim raw / deadband, delay 0 no quant (old) | delay 0 + quant | delay 5 + quant |
+  |---|---|---|---|---|
+  | 263 | 0.8 / 0.29 | 0.6 / 0.28 | 1.1 / 0.28 | 0.8 / 0.28 |
+  | 268 | 0.8 / 0.25 | 0.5 / 0.23 | 0.9 / 0.23 | 0.6 / 0.25 |
+  | 271 | 0.8 / 0.30 | 0.6 / 0.30 | 1.1 / 0.31 | 0.8 / 0.31 |
+
+  **The old "sim under-predicts oscillation" gap (item 113) was the sensor quantisation, not missing dynamics.** On the deadband metric the undelayed plant already matched within 0.02 /s. So item 113/131 Kp/Ki sweeps stand on that metric. Delay 5 matches both counts best; err rms and lag change little (sim lag 0.26–0.33 s vs logged 0.14–0.31 s).
+
+**Item 2: reaction-compensated override detection. Replay does not support it; no param added, threshold stays 2000.**
+- Hands-off frames: driver torque ≈ −1000…−1500 × delivered command, R² 0.11–0.21 (26b/26c/268/26f/270/271). Subtracting it changes override onsets by −7 % to +5 %; only 2–17 onsets per route were reaction-only.
+
+**Stutter: the override cut-and-fade, triggered by threshold grazes.**
+- 62–71 % of `steeringPressed` episodes last ≤ 0.1 s, and 23–42 % last ≤ 0.03 s. Isolated short presses peak at median |torque| 2058–2140, just over the threshold. 33–48 % are within ±3° (the 1200 centre threshold).
+- Each one cuts the torque to 0 in one frame (`HondaOverrideTorqueScale` 0, fade-down 0), then fades it back over 1 s with the integrator frozen (steer_limited). That is 2.9–7.2 % of engaged time in fade, plus 1.3–3.4 % pressed.
+- Open-loop replay of the ramp only (no plant response):
+  - `HondaOverrideFadeDownSecs` 0.2 s cuts the torque withheld after short presses by 20–40 %, and keeps ≤ 0.01 u·s on real (> 0.3 s) presses.
+  - A fast fade-up (0.25 s) after presses ≤ 0.1 s cuts it 35–46 % and halves the time in fade.
+- **Proposed, not implemented:** a fast recovery after an isolated graze (no other press within 1.5 s, so a real fight keeps the 1 s fade), as a default-off carcontroller param. `HondaOverrideFadeDownSecs` 0.2 is an existing setting the owner can try. Both change override feel and need a drive to judge.
+
+Tests: analyzer 62 (was 53; 9 new cases, 3 adjusted to deadband units), `test_lat_pid_sim.py` 5 new, CLI 7, workspace, UI frontend and py39-compat pass. Galaxy test files collected together with `-k` hit pre-existing module-stub import errors (`accel_profile`, `testing_grounds`); each file passes alone.

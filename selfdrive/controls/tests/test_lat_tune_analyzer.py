@@ -22,10 +22,11 @@ class FakeParams:
   put_nonblocking = put
 
 
-def drive(minutes, v_mph, *, straight_err=0.5, flip_every=100, curve_des=None, curve_ratio=1.0, press_every=None, carry=None):
+def drive(minutes, v_mph, *, straight_err=0.5, flip_every=150, curve_des=None, curve_ratio=1.0, press_every=None, carry=None):
   """Synthetic engaged drive at one speed. The straight-frame error alternates sign every
   `flip_every` straight frames; with curve_des, one second in four is a curve, so straight runs
-  are 300 frames and a flip that lands on a run boundary is not counted (the learner resets there)."""
+  are 300 frames and a flip that lands on a run boundary is not counted (the learner resets there).
+  The default, one counted flip per run, is 0.33 /s: under SIGN_RATE_UP_MAX."""
   st = lat.DriveStats(carry)
   n = int(minutes * 6000)
   j = 0
@@ -80,6 +81,39 @@ class TestMetrics:
     assert m["straight_rms"] == pytest.approx(0.5)
     assert m["sign_rate"] == pytest.approx(2 / 3, rel=0.01)
     assert m["curve_ratio"] == pytest.approx(0.9)
+
+  @pytest.mark.parametrize("amp,counted", [(0.1, 0), (0.14, 0), (0.15, 1), (0.3, 1)])
+  def test_sign_change_needs_the_full_deadband_swing(self, amp, counted):
+    st = lat.DriveStats()
+    for k in range(2000):
+      st.observe(30 * MPH, 0.0, -amp if (k // 10) % 2 == 0 else amp, False, False, False)   # flips every 0.1 s
+    assert st.acc[band_of(30)]["sc"] == pytest.approx(199 * counted)
+
+  def test_error_returning_inside_the_deadband_is_not_a_sign_change(self):
+    st = lat.DriveStats()
+    for err in [0.5] * 50 + [-0.1] * 50 + [0.5] * 50 + [0.0] * 50 + [-0.5] * 50:
+      st.observe(30 * MPH, 0.0, -err, False, False, False)
+    assert st.acc[band_of(30)]["sc"] == pytest.approx(1.0)   # only the final +0.5 -> -0.5
+
+  def test_curve_split_into_entry_steady_and_exit(self):
+    # 2 s wind-up to 20 deg at 10 deg/s, 40 s hold, 2 s unwind; the angle trails the desired by 0.2 s.
+    des = [0.0] * 100 + [k * 0.1 for k in range(200)] + [20.0] * 4000 + [20.0 - k * 0.1 for k in range(200)] + [0.0] * 100
+    st = lat.DriveStats()
+    for _ in range(4):   # entry and exit above CURVE_DEG: 1.5 s each per curve
+      for k, d in enumerate(des):
+        st.observe(30 * MPH, d, 0.98 * des[max(k - 20, 0)], False, False, False)
+    m = lat.band_metrics(st.acc[band_of(30)])
+    assert m["curve_ratio_ss"] == pytest.approx(0.98, abs=0.005)
+    assert m["curve_ratio_en"] < 0.9 < 1.05 < m["curve_ratio_ex"]
+    assert m["curve_ratio_en"] < m["curve_ratio"] < m["curve_ratio_ss"]
+
+  def test_curve_split_needs_enough_transient_time(self):
+    a = drive(4, 30, curve_des=10, curve_ratio=0.9).acc[band_of(30)]   # 60 step curves, no unwinding inside a curve
+    assert a["n_en"] == pytest.approx(60 * lat.CURVE_RATE_FRAMES)   # the step is a wind-up until it leaves the rate window
+    m = lat.band_metrics(a)
+    assert m["curve_ratio_ss"] == pytest.approx(0.9) and m["curve_ratio_en"] == pytest.approx(0.9)
+    assert m["curve_ratio_ex"] is None
+    assert lat.band_metrics(drive(2, 30, curve_des=10, curve_ratio=0.9).acc[band_of(30)])["curve_ratio_en"] is None   # 3 s < MIN_TRANSIENT_S
 
   def test_excluded_frames_do_not_count(self):
     st = lat.DriveStats()
@@ -153,16 +187,23 @@ class TestRules:
     assert st.acc[band_of(20)]["press"] == pytest.approx(2.0)   # the chatter burst, then a separate press 4 s later
 
   def test_no_step_up_when_already_near_oscillation_limit(self, monkeypatch):
-    monkeypatch.setattr(lat, "SIGN_RATE_UP_MAX", 0.5)  # 0.67 /s: above the step-up limit, below SIGN_RATE_MAX
-    s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.85), lat.APPLY_MODE)
+    monkeypatch.setattr(lat, "SIGN_RATE_UP_MAX", 0.3)  # 0.33 /s: above the step-up limit, below SIGN_RATE_MAX
+    s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=150, curve_des=10, curve_ratio=0.85), lat.APPLY_MODE)
     assert s["factor"][band_of(30)] == pytest.approx(1.0)
 
   def test_revert_after_increase_that_raised_oscillation_only_in_apply(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, flip_every=150, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
     assert s["factor"][band_of(30)] == pytest.approx(1.10)
-    worse = drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.9)  # 0.33 -> 0.67 /s, still under the limits
-    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][band_of(30)] == pytest.approx(1.0)
-    assert lat.update_state(s, worse, 0)["factor"][band_of(30)] == pytest.approx(1.15)   # 1.10 + 0.10, held to 0.15 of the 1.0 neighbours
+    worse = drive(4, 30, flip_every=100, curve_des=10, curve_ratio=0.9)  # 0.33 -> 0.67 /s
+    assert lat.update_state(s, worse, lat.APPLY_MODE)["factor"][band_of(30)] == pytest.approx(1.0)   # undo the +0.10
+    assert lat.update_state(s, worse, 0)["factor"][band_of(30)] == pytest.approx(1.05)   # no revert: one step down, 0.67 > SIGN_RATE_MAX
+
+  @pytest.mark.parametrize("prev_rate,reverted", [(0.25, True), (0.286, False)])
+  def test_revert_needs_an_absolute_rise_too(self, prev_rate, reverted):
+    s = lat.update_state(lat.default_state(), drive(4, 30, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)
+    s["prev"][band_of(30)]["sign_rate"] = prev_rate   # -> 0.333 /s: +33 % / +0.083, or +16 % but only +0.047
+    f = lat.update_state(s, drive(4, 30, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)["factor"][band_of(30)]
+    assert (f == pytest.approx(1.0)) == reverted
 
   def test_revert_after_increase_that_raised_override_onsets(self):
     s = lat.update_state(lat.default_state(), drive(4, 30, curve_des=10, curve_ratio=0.9), lat.APPLY_MODE)

@@ -362,6 +362,7 @@ function renderBandCard(b) {
         <span>${fmt(b.minutes, 1)} min</span>
         <span>sign ${fmt(b.signRate)}/s</span>
         <span>curve ${fmt(b.curveRatio, 3)}</span>
+        <span>entry ${fmt(b.curveRatioEntry, 2)} · steady ${fmt(b.curveRatioSteady, 2)} · exit ${fmt(b.curveRatioExit, 2)}</span>
         <span>overrides ${fmt(b.pressRate)}/min</span>
         <span>I ${b.current.i} · F ${b.current.f}</span>
       </div>

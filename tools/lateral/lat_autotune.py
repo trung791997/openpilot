@@ -284,7 +284,7 @@ def main(argv=None):
 
   _DS = sim.load(args.routes)
   with open(args.plant) as f:
-    _PLANT = sim.Plant(json.load(f)["coef"])
+    _PLANT = sim.Plant.from_json(json.load(f))
   user = sim._overrides(args.set)
   for d in _DS:
     if "LatGainSchedule" in d["params"] and "LatGainSchedule" not in user:

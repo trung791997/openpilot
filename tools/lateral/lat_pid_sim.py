@@ -15,7 +15,8 @@ Three stages, each checked against the log before the next one is trusted:
                controller only.
 
 The plant is fitted from logs (see fit_plant). It is a speed-scheduled second-order rack model with
-a command delay. Its validity is judged by `validate`: a free-run of the plant on the logged command,
+a command delay (fitted or --delay) and 0.1 deg angle quantisation. Its validity is judged by `validate`:
+a free-run of the plant on the logged command,
 and a closed-loop run at the logged settings whose tracking metrics must match the logged ones.
 
 Limits (read before trusting a number):
@@ -295,9 +296,31 @@ PLANT_WIN = 100
 PLANT_STRIDE = 50
 
 
+# The command reaches the rack DELAY frames late. Without it the fitted plant answered the command in the
+# same frame, the closed loop had more phase margin than the car, and the sim under-predicted weave
+# (sign changes 0.5-0.6 /s against 0.8 logged, item 113). fit_plant picks the delay from FIT_DELAYS by
+# free-run residual. The angle sensor reports 0.1 deg steps (STEER_ANGLE factor), so the controller and
+# the metrics see the quantised angle, as on the car. STATUS 132: most of that gap was the quantisation
+# (raw zero crossings count sensor steps); with the analyzer's deadband the undelayed plant already matched
+# the logs, and 5 frames of delay matches both counts best.
+FIT_DELAYS = (0, 2, 4, 6, 8, 10, 12, 15, 20)
+ANGLE_QUANT_DEG = 0.1
+SIGN_HYST_DEG = 0.15   # lat_tune_analyzer.SIGN_HYST_DEG
+
+
 class Plant:
-  def __init__(self, coef):
+  def __init__(self, coef, delay=0, quant=0.0):
     self.c = np.asarray(coef, dtype=float)
+    self.delay = int(delay)
+    self.quant = float(quant)
+
+  @staticmethod
+  def from_json(j):
+    # Plants fitted before the delay existed carry neither key and keep their old, undelayed behaviour.
+    return Plant(j["coef"], j.get("delay_frames", 0), j.get("angle_quant_deg", 0.0))
+
+  def measure(self, theta):
+    return float(np.round(theta / self.quant) * self.quant) if self.quant > 0 else theta
 
   def accel(self, theta, rate, u, v):
     c = self.c
@@ -305,7 +328,8 @@ class Plant:
             + (c[4] + c[5] * v + c[6] * v * v / 100) * u + c[7] + c[8] * np.tanh(rate / 2.0))
 
   def to_json(self):
-    return {"coef": self.c.tolist(), "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u + c7 + c8 tanh(r/2)"}
+    return {"coef": self.c.tolist(), "delay_frames": self.delay, "angle_quant_deg": self.quant,
+            "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2)"}
 
 
 def _hands_off(d):
@@ -320,13 +344,17 @@ def _windows(d, win, stride):
 
 
 def _pack(ds, win, stride):
+  """Windows of `win` frames; "u" also holds the max(FIT_DELAYS) delivered commands before each window."""
+  pre = max(FIT_DELAYS)
   parts = []
   for d in ds:
     st = _windows(d, win, stride)
+    st = st[st >= pre]
     if len(st) == 0:
       continue
     idx = st[:, None] + np.arange(win + 1)[None, :]
-    parts.append({"v": d["v"][idx], "u": d["co_torque"][idx], "th": d["angle"][idx] - d["offset"][idx], "r": d["rate"][idx]})
+    uidx = st[:, None] + np.arange(-pre, win + 1)[None, :]
+    parts.append({"v": d["v"][idx], "u": d["co_torque"][uidx], "th": d["angle"][idx] - d["offset"][idx], "r": d["rate"][idx]})
   return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
 
 
@@ -335,18 +363,31 @@ def _plant_freerun(p, plant):
   r = p["r"][:, 0].copy()
   out = np.zeros_like(p["th"])
   out[:, 0] = th
+  u0 = max(FIT_DELAYS) - plant.delay
   for j in range(p["th"].shape[1] - 1):
-    r = r + plant.accel(th, r, p["u"][:, j], p["v"][:, j]) * DT
+    r = r + plant.accel(th, r, p["u"][:, u0 + j], p["v"][:, j]) * DT
     th = th + r * DT
     out[:, j + 1] = th
   return out
 
 
-def fit_plant(ds, iters=60, verbose=True):
+def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS):
+  """Fits the coefficients at each candidate delay and keeps the delay with the lowest free-run residual."""
   p = _pack(ds, PLANT_WIN, PLANT_STRIDE)
+  best = None
+  for delay in delays:
+    plant, cost = _fit_coef(p, delay, iters, verbose)
+    if verbose:
+      print(f"  delay {delay:2d} frames: window rms {np.sqrt(cost):.3f} deg")
+    if best is None or cost < best[1]:
+      best = (plant, cost)
+  best[0].quant = ANGLE_QUANT_DEG
+  return best[0], p["v"].shape[0]
 
+
+def _fit_coef(p, delay, iters, verbose):
   def resid(c):
-    return (_plant_freerun(p, Plant(c)) - p["th"])[:, 10::10].ravel()
+    return (_plant_freerun(p, Plant(c, delay)) - p["th"])[:, 10::10].ravel()
 
   c = np.array([-8.0, 0.0, -2.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0])
   lam = 1e-2
@@ -369,11 +410,11 @@ def fit_plant(ds, iters=60, verbose=True):
         c, r0, lam, improved = cn, rn, max(lam / 3, 1e-6), True
         break
       lam *= 5
-    if verbose:
+    if verbose > 1:
       print(f"  fit it {it:2d}  window rms {np.sqrt(np.mean(r0 ** 2)):.3f} deg")
     if not improved or rel < 1e-6:
       break
-  return Plant(c), p["v"].shape[0]
+  return Plant(c, delay), float(np.mean(r0 ** 2))
 
 
 def plant_holdout(ds, plant, win=300, stride=100):
@@ -446,13 +487,13 @@ def simulate(d, plant, overrides=None, testing_ground=False):
     for k in range(n):
       if not sim_on[k]:
         th, r = d["angle"][k], d["rate"][k]
-      ang[k] = th
-      out[k], des[k] = ctl.step(d, k, th, r, steer_limited)
+      ang[k] = plant.measure(th) if sim_on[k] else th
+      out[k], des[k] = ctl.step(d, k, ang[k], r, steer_limited)
       deliv[k] = ccs.step(out[k], d["active"][k] > 0.5, d["v"][k], d["pressed"][k] > 0.5)
       steer_limited = (d["active"][k] > 0.5) and abs(out[k] - deliv[k]) > 1e-2
       if sim_on[k]:
         th_rel = th - d["offset"][k]
-        r = r + plant.accel(th_rel, r, deliv[k], d["v"][k]) * DT
+        r = r + plant.accel(th_rel, r, deliv[max(k - plant.delay, 0)], d["v"][k]) * DT
         th = th + r * DT
   finally:
     ctl.close()
@@ -481,8 +522,37 @@ def metrics(d, ang, des, mask=None):
       "curve_s": cur.sum() / 100,
       "straight_rms": float(np.sqrt(np.mean(es ** 2))) if st.sum() else None,
       "zero_cross": float(np.sum(np.diff(np.sign(es)) != 0) / (st.sum() / 100)) if st.sum() else None,
+      "sign_hyst": sign_changes(des - ang, st) / (st.sum() / 100) if st.sum() else None,
+      "lag_s": tracking_lag(des, ang, cur),
     }
   return res
+
+
+def sign_changes(err, straight):
+  """Straight-frame error sign changes with the analyzer's deadband: a change needs a swing from >= +h to <= -h
+  (or back), and the count restarts at every frame that is not straight, as DriveStats.observe does."""
+  prev = 0
+  n = 0
+  for e, s in zip(err, straight, strict=True):
+    if not s:
+      prev = 0
+      continue
+    sign = 1 if e >= SIGN_HYST_DEG else -1 if e <= -SIGN_HYST_DEG else 0
+    if sign and prev and sign != prev:
+      n += 1
+    if sign:
+      prev = sign
+  return n
+
+
+def tracking_lag(des, ang, mask, max_frames=60):
+  """Shift (s) of the angle behind the desired that minimises the curve-frame error, or None."""
+  idx = np.where(mask)[0]
+  idx = idx[idx + max_frames < len(ang)]
+  if len(idx) < 300:
+    return None
+  costs = [np.mean((des[idx] - ang[idx + k]) ** 2) for k in range(max_frames + 1)]
+  return int(np.argmin(costs)) * DT
 
 
 def _fmt(x, f):
@@ -497,7 +567,8 @@ def print_metrics(label, res):
       continue
     print(f"    {name:15s} {r['min']:4.1f} min | err rms {r['err_rms']:5.2f} deg  bias {r['bias']:+.2f} | curve actual/des " +
           f"{_fmt(r['curve_ratio'], '.3f')} ({r['curve_s']:.0f} s) | straight rms {_fmt(r['straight_rms'], '.2f')}" +
-          f"  sign changes {_fmt(r['zero_cross'], '.1f')}/s")
+          f"  sign changes {_fmt(r['zero_cross'], '.1f')}/s ({_fmt(r['sign_hyst'], '.2f')}/s at {SIGN_HYST_DEG} deg)" +
+          f" | lag {_fmt(r['lag_s'], '.2f')} s")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -523,6 +594,8 @@ def main(argv=None):
   p = sub.add_parser("fit", help="fit the steering plant")
   p.add_argument("routes", nargs="+")
   p.add_argument("--out", required=True)
+  p.add_argument("--delay", type=int, help="fit at this command delay (frames) instead of picking from FIT_DELAYS; "
+                 "on 263/268/271 the free-run picks 0 but 5 matches the closed-loop sign changes best (STATUS 132)")
   p = sub.add_parser("validate", help="plant free-run and closed-loop-at-logged-settings vs the log")
   p.add_argument("routes", nargs="+")
   p.add_argument("--plant", required=True)
@@ -547,22 +620,22 @@ def main(argv=None):
 
   if args.cmd == "fit":
     ds = load(args.routes)
-    plant, nwin = fit_plant(ds)
+    plant, nwin = fit_plant(ds, delays=FIT_DELAYS if args.delay is None else (args.delay,))
     j = plant.to_json()
     j.update({"routes": [d["route"] for d in ds], "windows": int(nwin), "window_s": PLANT_WIN * DT})
     with open(args.out, "w") as f:
       json.dump(j, f, indent=1)
-    print(f"plant written to {args.out}: {np.round(plant.c, 3).tolist()}")
+    print(f"plant written to {args.out}: delay {plant.delay} frames, {np.round(plant.c, 3).tolist()}")
     return
 
   with open(args.plant) as f:
     pj = json.load(f)
-  plant = Plant(pj["coef"])
+  plant = Plant.from_json(pj)
   ds = load(args.routes)
 
   if args.cmd == "validate":
     ov = _overrides(args.set)
-    print(f"plant fitted on {pj.get('routes')}")
+    print(f"plant fitted on {pj.get('routes')}, delay {plant.delay} frames, angle step {plant.quant} deg")
     for d in ds:
       e, hold, n = plant_holdout([d], plant)
       held = "" if d["route"] in pj.get("routes", []) else "  (held out)"

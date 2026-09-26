@@ -8,6 +8,7 @@ each with its own LatPScale*/LatIScale*/LatFScale* percent. Only P is proposed (
 import json
 import math
 import zlib
+from collections import deque
 
 MPH_TO_MS = 0.44704
 # (name, low mph, high mph); v < 25 mph -> LowSpeed, v < 50 mph -> Standard, else Highway.
@@ -27,9 +28,24 @@ MIN_SPEED = 4.0
 STRAIGHT_DEG = 3.0
 CURVE_DEG = 5.0
 MIN_CURVE_S = 30.0
+# Curve frames split by how fast |desired| moves (over CURVE_RATE_FRAMES): >= +CURVE_RATE_DEG_S is entry
+# (winding up), <= -CURVE_RATE_DEG_S is exit, the rest is steady. The angle trails the desired by
+# 0.15-0.25 s on every route 262-271, so entry reads 0.72-0.86 and exit 1.00-1.21 while steady sits near
+# the whole-curve ratio at 25-50 mph; below 25 mph the steady ratio is the lower one (0.68-0.90). Reported,
+# not used by the rules: a low entry ratio with a good steady ratio is lag, which more P only partly fixes.
+CURVE_RATE_DEG_S = 5.0
+CURVE_RATE_FRAMES = 10
+MIN_TRANSIENT_S = 5.0
 
-SIGN_RATE_MAX = 1.0        # /s, straight error sign changes
-SIGN_RATE_UP_MAX = 0.8     # /s, no step up above this
+# A straight-frame error sign change only counts once the error has crossed from >= +SIGN_HYST_DEG to
+# <= -SIGN_HYST_DEG (or back). Counting every zero crossing measured the angle sensor's 0.1 deg steps, not
+# weave: on 262-271 (8 routes) the 25-50 mph rate was 0.76-0.92 /s with no deadband and 0.24-0.30 /s at
+# 0.15 deg; on the highway 0.64-1.58 -> 0.10-0.29. The limits below are in deadband units: 0.6 /s is twice
+# the worst 25-50 mph route, 0.45 /s is 1.5x. Replay-set on those 8 routes, not on closed-loop outcomes.
+SIGN_HYST_DEG = 0.15
+SIGN_RATE_MAX = 0.6        # /s, straight error sign changes
+SIGN_RATE_UP_MAX = 0.45    # /s, no step up above this
+SIGN_SLACK = 0.05          # /s, a revert also needs this absolute rise (3 min at 0.3 /s is only ~50 changes)
 CURVE_RATIO_LOW = 0.95
 CURVE_RATIO_HIGH = 1.03
 PRESS_RATE_UP_MAX = 1.5    # override onsets per engaged minute; no step up above this
@@ -63,7 +79,9 @@ TUNING_KEYS = (
   "NrdrLatUseFirmwareVgr",
 )
 
-_FIELDS = ("n", "n_act", "n_st", "e2_st", "sc", "n_cur", "ang_cur", "des_cur", "press")
+_FIELDS = ("n", "n_act", "n_st", "e2_st", "sc", "n_cur", "ang_cur", "des_cur", "press",
+           "n_ss", "ang_ss", "des_ss", "n_en", "ang_en", "des_en", "n_ex", "ang_ex", "des_ex")
+_CURVE_PARTS = ("ss", "en", "ex")
 
 
 def band_index(v_ego):
@@ -162,6 +180,7 @@ class DriveStats:
     self.prev_sign = 0.0
     self.prev_pressed = False
     self.since_press = PRESS_MERGE_FRAMES
+    self.des_hist = deque(maxlen=CURVE_RATE_FRAMES + 1)
 
   def observe(self, v_ego, desired_deg, angle_deg, pressed, lane_change, steer_limited):
     """Call once per engaged frame."""
@@ -170,7 +189,9 @@ class DriveStats:
     self.since_press = 0 if pressed else self.since_press + 1
     if v_ego < MIN_SPEED:
       self.prev_sign = 0.0
+      self.des_hist.clear()
       return
+    self.des_hist.append(desired_deg)
     ws = band_weights(v_ego)
     for i, w in ws:
       a = self.acc[i]
@@ -183,8 +204,13 @@ class DriveStats:
     err = desired_deg - angle_deg
     straight = abs(desired_deg) < STRAIGHT_DEG
     curve = abs(desired_deg) > CURVE_DEG
-    sign = (1.0 if err > 0.0 else -1.0 if err < 0.0 else 0.0) if straight else 0.0
+    # Inside the deadband the last sign is kept, so a crossing needs the full 2 x SIGN_HYST_DEG swing.
+    sign = (1.0 if err >= SIGN_HYST_DEG else -1.0 if err <= -SIGN_HYST_DEG else 0.0) if straight else 0.0
     changed = straight and self.prev_sign != 0.0 and sign != 0.0 and sign != self.prev_sign
+    part = "ss"
+    if curve and len(self.des_hist) > CURVE_RATE_FRAMES:
+      rate = (abs(desired_deg) - abs(self.des_hist[0])) / (CURVE_RATE_FRAMES * 0.01)
+      part = "en" if rate >= CURVE_RATE_DEG_S else "ex" if rate <= -CURVE_RATE_DEG_S else "ss"
     for i, w in ws:
       a = self.acc[i]
       a["n"] += w
@@ -198,6 +224,9 @@ class DriveStats:
         s = 1.0 if desired_deg > 0.0 else -1.0
         a["ang_cur"] += w * angle_deg * s
         a["des_cur"] += w * abs(desired_deg)
+        a["n_" + part] += w
+        a["ang_" + part] += w * angle_deg * s
+        a["des_" + part] += w * abs(desired_deg)
     if sign != 0.0:
       self.prev_sign = sign
     elif not straight:
@@ -240,7 +269,13 @@ def band_metrics(a, dt=0.01):
     "sign_rate": a["sc"] / (a["n_st"] * dt) if a["n_st"] * dt >= 10.0 else None,
     "curve_ratio": a["ang_cur"] / a["des_cur"] if a["n_cur"] * dt >= MIN_CURVE_S and a["des_cur"] > 0 else None,
     "press_rate": a["press"] / act_min if act_min > 0 else None,
+    **{f"curve_ratio_{k}": _ratio(a, k, MIN_CURVE_S if k == "ss" else MIN_TRANSIENT_S, dt) for k in _CURVE_PARTS},
   }
+
+
+def _ratio(a, part, min_s, dt):
+  n, des = a.get("n_" + part, 0.0), a.get("des_" + part, 0.0)
+  return a["ang_" + part] / des if n * dt >= min_s and des > 0 else None
 
 
 def curve_step(curve_ratio):
@@ -270,7 +305,7 @@ def update_state(state, stats, mode):
     stepped_up = p is not None and p.get("stepped", 0.0) > 0 and mode == APPLY_MODE
     press_now = m["press_rate"] or 0.0
     undo = -p["stepped"] if stepped_up else 0.0
-    if stepped_up and p.get("sign_rate") and m["sign_rate"] > p["sign_rate"] * OSC_GROWTH:
+    if stepped_up and p.get("sign_rate") and m["sign_rate"] > max(p["sign_rate"] * OSC_GROWTH, p["sign_rate"] + SIGN_SLACK):
       step, why = undo, f"revert: sign changes {p['sign_rate']:.2f} -> {m['sign_rate']:.2f}/s after the last increase"
     elif stepped_up and p.get("press_rate") is not None and press_now > p["press_rate"] * PRESS_GROWTH + PRESS_SLACK:
       step, why = undo, f"revert: override onsets {p['press_rate']:.2f} -> {press_now:.2f}/min after the last increase"
@@ -388,15 +423,17 @@ def build_trial(stats, baseline, route_names, per_route, warnings):
   gains = baseline.get("gains") or band_gains({})
   bands = []
   for i, (name, lo, hi) in enumerate(BANDS):
-    m = band_metrics(stats.acc[i]) if stats.acc[i]["n"] > 0 else {"min": 0.0, "straight_rms": None, "sign_rate": None,
-                                                                   "curve_ratio": None, "press_rate": None}
+    m = band_metrics(stats.acc[i]) if stats.acc[i]["n"] > 0 else {
+      "min": 0.0, "straight_rms": None, "sign_rate": None, "curve_ratio": None, "press_rate": None,
+      "curve_ratio_ss": None, "curve_ratio_en": None, "curve_ratio_ex": None}
     reason = state["last"][i] if i < len(state["last"]) else ""
     decision = reason.split(":", 2)[1].strip().split(" ")[0] if reason.count(":") >= 1 else "hold"
     cur = {k: int(gains[i][k]) for k in ("p", "i", "f")}
     bands.append({"name": name, "lowMph": lo, "highMph": hi, "pKey": P_KEYS[i],
                   "minutes": round(m["min"], 2), "ready": m["min"] >= MIN_MINUTES,
                   "signRate": m["sign_rate"], "curveRatio": m["curve_ratio"], "straightRms": m["straight_rms"],
-                  "pressRate": m["press_rate"], "factor": state["factor"][i], "decision": decision, "reason": reason,
+                  "curveRatioSteady": m["curve_ratio_ss"], "curveRatioEntry": m["curve_ratio_en"],
+                  "curveRatioExit": m["curve_ratio_ex"], "pressRate": m["press_rate"], "factor": state["factor"][i], "decision": decision, "reason": reason,
                   "current": cur, "proposed": {"p": propose_p(cur["p"], state["factor"][i]), "i": cur["i"], "f": cur["f"]}})
   raw = {k: _param_str(v) for k, v in baseline.get("raw", {}).items()}
   return {"schemaVersion": SCHEMA_VERSION, "bandNames": list(BAND_NAMES), "routeNames": list(route_names),

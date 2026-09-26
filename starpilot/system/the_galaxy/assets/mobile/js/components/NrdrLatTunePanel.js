@@ -296,7 +296,7 @@ export const NrdrLatTunePanel = {
                 </tbody>
               </table>
               <div v-for="b in expanded[t.trialId].bands" :key="'r' + b.name" class="gx-row__desc">
-                sign {{ fmt(b.signRate) }}/s · curve {{ fmt(b.curveRatio, 3) }} · overrides {{ fmt(b.pressRate) }}/min · factor {{ fmt(b.factor) }} — {{ b.reason }}
+                sign {{ fmt(b.signRate) }}/s · curve {{ fmt(b.curveRatio, 3) }} (entry {{ fmt(b.curveRatioEntry, 2) }} · steady {{ fmt(b.curveRatioSteady, 2) }} · exit {{ fmt(b.curveRatioExit, 2) }}) · overrides {{ fmt(b.pressRate) }}/min · factor {{ fmt(b.factor) }} — {{ b.reason }}
               </div>
               <div class="gx-row__desc">Band values from the newest route's logs (fingerprint {{ (expanded[t.trialId].baseline || {}).fingerprint || '–' }}).</div>
               </template>
