@@ -7,8 +7,8 @@ from pathlib import Path
 from openpilot.system.hardware.hw import Paths
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.loggerd.uploader import clear_locks, main, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE
-from openpilot.system.loggerd.xattr_cache import getxattr
+from openpilot.system.loggerd.uploader import Uploader, clear_locks, main, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE
+from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
 
@@ -187,3 +187,38 @@ class TestUploader(UploaderTestCase):
     for f_path in f_paths:
       lock_path = f_path.with_suffix(f_path.suffix + ".lock")
       assert not lock_path.is_file(), "File lock not cleared on startup"
+
+  # StarPilot variables
+  def test_rlogs_not_uploaded_by_default(self):
+    self.gen_files(lock=False, boot=False)
+    self.params.remove("UploadRlogs")
+    self.start_thread()
+    time.sleep(1)
+    self.join_thread()
+
+    assert log_handler.upload_order == [f"{self.seg_dir}/qlog.zst"]
+
+  def test_upload_rlogs_after_qlogs(self):
+    seg2_dir = self.seg_format2.format(self.seg_num)
+    self.gen_files(lock=False, boot=False)
+    for t in ["qlog", "rlog", "fcamera.hevc"]:
+      self.make_file_with_data(seg2_dir, t, 1)
+    self.params.put_bool("UploadRlogs", True)
+    self.start_thread()
+    time.sleep(1)
+    self.join_thread()
+
+    assert log_handler.upload_order == [f"{self.seg_dir}/qlog.zst", f"{seg2_dir}/qlog.zst",
+                                        f"{self.seg_dir}/rlog.zst", f"{seg2_dir}/rlog.zst"]
+
+  def test_upload_rlogs_skips_locked_and_metered(self):
+    self.gen_files(lock=True, boot=False)
+    self.params.put_bool("UploadRlogs", True)
+    up = Uploader("0000000000000000", Paths.log_root())
+    assert up.next_file_to_upload(metered=False) is None, "locked (in-progress) segment uploaded"
+
+    clear_locks(Paths.log_root())
+    assert up.next_file_to_upload(metered=False)[0] == "qlog"
+    setxattr(str(Path(Paths.log_root()) / self.seg_dir / "qlog"), UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE)
+    assert up.next_file_to_upload(metered=True) is None, "rlog uploaded on a metered connection"
+    assert up.next_file_to_upload(metered=False)[0] == "rlog"

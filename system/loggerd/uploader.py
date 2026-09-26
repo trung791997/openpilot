@@ -90,6 +90,10 @@ class Uploader:
     self.immediate_folders = ["crash/", "boot/"]
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.ts": 1}
 
+    # StarPilot variables
+    # rlogs go after every pending qlog/qcamera, and never on a metered connection
+    self.rlog_names = ("rlog", "rlog.zst")
+
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
     r = self.params.get("AthenadRecentlyViewedRoutes")
     requested_routes = [] if r is None else [route for route in r.split(",") if route]
@@ -140,6 +144,11 @@ class Uploader:
     for name, key, fn in upload_files:
       if name in self.immediate_priority:
         return name, key, fn
+
+    if not metered and self.params.get_bool("UploadRlogs"):
+      for name, key, fn in upload_files:
+        if name in self.rlog_names:
+          return name, key, fn
 
     return None
 

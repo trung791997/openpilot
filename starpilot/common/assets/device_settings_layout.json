@@ -5205,6 +5205,16 @@
         "settings_tier": "simple"
       },
       {
+        "key": "UploadRlogs",
+        "label": "Upload rlogs",
+        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. rlogs are uploaded after all pending qlogs and only on Wi-Fi or other unmetered connections (\"Always Allow Uploads\" lifts the metered limit). rlogs are much larger than qlogs.",
+        "picker_description": "Uploads full rlogs with qlogs on unmetered connections.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "DeviceManagement",
+        "settings_tier": "simple"
+      },
+      {
         "key": "HigherBitrate",
         "label": "High-Quality Recording",
         "description": "Save drive footage in higher video quality.",

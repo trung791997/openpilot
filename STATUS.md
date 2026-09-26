@@ -8160,3 +8160,30 @@ Logged hands-off tracking, leaving out the first 5 s and ±3 s around lane chang
 - **Standard:** best on every measure. Sign changes per second are unchanged (0.33 against 0.30–0.33). Standard driver presses were 1.85/min against 0.09–2.98.
 - **LowSpeed and Highway:** too few minutes to judge. Highway sign rate 0.34 is at the top of the earlier range (0.15–0.30), on 1.7 minutes.
 - **Sim step on 280 alone:** proposes Standard 140/120 (fit 0.943, holdout 0.867) and holds LowSpeed. Not recommended yet: one route, and Standard is already the best measured. Collect two or three more drives on the current values first.
+
+## 156. `UploadRlogs` toggle: rlogs upload alongside qlogs, including while driving (default off). Static tests and a params round-trip only; nothing has run on the device.
+
+Owner: "make a toggle to enable uploading rlogs alongside with qlogs during a drive so that I dont have to manually go in and do it on konik stable. You can put the toggle in the data area that has the onroad upload option".
+
+- **Behaviour** (`system/loggerd/uploader.py`, `next_file_to_upload`).
+  - With the toggle on, `rlog`/`rlog.zst` becomes an automatic upload candidate. The key gets the `.zst` suffix that `step()` already appended for `rlog`.
+  - Ordering: crash/boot first, then every pending qlog/qcamera, then rlogs oldest segment first. An rlog therefore never delays a qlog.
+  - rlogs never go on a metered connection. The metered flag `main()` passes already folds in `AlwaysAllowUploads`, so that toggle lifts the limit.
+  - The segment being recorded carries a `.lock` and is skipped, as for qlogs. Each finished segment's rlog uploads during the drive, and the last one uploads once it closes.
+  - `DisableOnroadUploads` still stops the uploader process onroad (`process_config.py`), rlogs included.
+- **Key:** `{"UploadRlogs", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}}`, placed next to `DisableOnroadUploads`.
+  - Galaxy: Device Management, entry before `HigherBitrate`.
+  - Device: system settings toggles, between "Disable Onroad Uploads" and "Disable Logging".
+  - The key is also listed in `tools/StarPilot/feasibleparams.txt`.
+- **Artifacts:** `params_pyx.so` and `libcommon.a` were rebuilt with the STATUS build recipe (larch64, pinned Cython 3.1.4).
+  - Key count went 857 -> 858, and the only new key is `UploadRlogs`.
+  - `params_pyx.cpp` is byte-identical, and in `libcommon.a` only `params.o` changed.
+  - Default and stock values are both False. put/get round-trips.
+  - `libcommon.a` shrank by 8.6 KB even though a key was added. The whole difference is in `params.o`'s static keys-map initializer (`__cxx_global_var_init`, -8,892 bytes, same clang 18.1.3); every other symbol is the same size. Loading both `.so` files, all 857 existing keys have identical default, stock, type and flag.
+- **Tests (static):**
+  - `test_uploader.py`: 11 passed, including 3 new tests: off by default, rlogs after qlogs, and locked-segment/metered skip. The new tests fail against HEAD's uploader (negative control: 2 of the 3 fail; the off-by-default test passes on both, as it should).
+  - Other suites: `test_device_settings_layout.py` 29 passed, `test_device_settings_frontend.py` 9, `test_process_config.py` 27, `test_py39_compat.py` 14.
+  - ruff finds nothing new; the 13 findings in `system_settings.py` are all present at HEAD.
+- **Not verified:**
+  - Konik's `v1.4/upload_url` has not been seen accepting an `rlog.zst` key from the automatic path. It is the same key the manual request path uses.
+  - rlogs are much larger than qlogs, so a long Wi-Fi-less drive builds up a backlog that drains at the next Wi-Fi connection.

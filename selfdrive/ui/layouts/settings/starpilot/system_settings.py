@@ -284,6 +284,12 @@ class SystemSettingsManagerView(PanelManagerView):
         "disabled_label": tr("Turn off Disable Uploads first"),
       },
       {
+        "title": tr("Upload rlogs"),
+        "subtitle": "",
+        "get_state": lambda: self._controller._params.get_bool("UploadRlogs"),
+        "set_state": lambda v: self._controller._params.put_bool("UploadRlogs", v),
+      },
+      {
         "title": tr("Disable Logging"),
         "subtitle": "",
         "get_state": lambda: self._controller._params.get_bool("NoLogging"),
