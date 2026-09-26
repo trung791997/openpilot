@@ -26,9 +26,11 @@ from openpilot.selfdrive.car.cruise import (
   VCruiseHelper, IMPERIAL_INCREMENT, V_CRUISE_MAX, V_CRUISE_MIN,
   is_speed_limit_confirmation_pending,
 )
-from openpilot.selfdrive.car.redneck_cruise import (RedneckCruise, gas_release_floor_expired, is_far_lead_corroborated,
-                                                    is_speed_button_press, select_redneck_target_speed,
-                                                    update_gas_release_floor, update_launch_state, want_gas_snap)
+from openpilot.selfdrive.car.redneck_cruise import (IncreaseBlock, RedneckCruise, closing_target_in_path,
+                                                    gas_release_floor_expired, get_model_only_far_lead_target_ms,
+                                                    is_far_lead_corroborated, is_speed_button_press,
+                                                    select_redneck_target_speed, update_gas_release_floor,
+                                                    update_launch_state, want_gas_snap)
 from openpilot.selfdrive.car.car_specific import MockCarState
 
 from openpilot.starpilot.common.favorite_slots import (
@@ -244,6 +246,9 @@ class Car:
     starpilot_services = ['starpilotOnroadEvents', 'starpilotPlan', 'starpilotSelfdriveState', 'liveCalibration', 'selfdriveState']
     if self.CP.brand == "rivian":
       starpilot_services.append('liveParameters')
+    if self.CP.brand == "honda" and self.redneck_cruise is not None:
+      # ICBM increase block: the model's lead below radard's publish threshold (route 276 14:36.7).
+      starpilot_services.append('modelV2')
     self.sm = self.sm.extend(starpilot_services)
     self.pm = self.pm.extend(['starpilotCarState'])
 
@@ -560,6 +565,26 @@ class Car:
       csc_target_speed_ms=csc_target_speed,
       lead_corroborated=lead_corroborated,
     )
+    # Honda ICBM (STATUS 128 far lead): a confident vision-only lead the planner ignores lowers the far-lead
+    # target, and increases are held after a lead change and while a path-relative target is closing
+    # (route 276 8:27.9, 14:36.7, 17:22.5; redneck_cruise FAR_LEAD_MODEL_ONLY_* and INCREASE_BLOCK_*).
+    increase_blocked = False
+    if getattr(self.starpilot_toggles, "icbm_far_lead", False):
+      radar_state = self.sm['radarState'] if self.sm.seen['radarState'] and self.sm.valid['radarState'] else None
+      lead_one = radar_state.leadOne if radar_state is not None else None
+      lead_two = getattr(radar_state, "leadTwo", None)
+      normal_target_speed = min(normal_target_speed, get_model_only_far_lead_target_ms(lead_one))
+      model_leads, model_v_ego = None, None
+      if self.sm.seen.get('modelV2', False) and self.sm.valid.get('modelV2', False):
+        model = self.sm['modelV2']
+        model_leads = model.leadsV3
+        model_v_ego = float(model.velocity.x[0]) if len(model.velocity.x) else None
+      closing = closing_target_in_path((lead_one, lead_two), model_leads, float(getattr(CS, "vEgo", 0.0)), model_v_ego)
+      if not hasattr(self, "redneck_increase_block"):
+        self.redneck_increase_block = IncreaseBlock()
+      increase_blocked = self.redneck_increase_block.update(lead_one, lead_present, closing)
+    self.redneck_increase_blocked = increase_blocked
+
     driver_button = is_speed_button_press(getattr(CS, "buttonEvents", []))
     enabled = bool(getattr(CC, "enabled", True))
     v_ego = float(getattr(CS, "vEgo", 0.0))
@@ -613,12 +638,13 @@ class Car:
     self.redneck_gas_pressed_prev = gas_pressed
 
     if self.redneck_launch_active:
-      return launch_target_speed, lead_present
-
-    # The floor never raises the target above the cruise target (vCruise, SLC and CSC still cap it).
-    if gas_release_floor > 0.0:
-      return max(normal_target_speed, min(gas_release_floor, launch_target_speed)), lead_present
-    return normal_target_speed, lead_present
+      target_speed = launch_target_speed
+    elif gas_release_floor > 0.0:
+      # The floor never raises the target above the cruise target (vCruise, SLC and CSC still cap it).
+      target_speed = max(normal_target_speed, min(gas_release_floor, launch_target_speed))
+    else:
+      target_speed = normal_target_speed
+    return IncreaseBlock.apply(target_speed, set_speed, increase_blocked), lead_present
 
   def step(self):
     CS, RD, FPCS = self.state_update()

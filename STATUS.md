@@ -7018,3 +7018,51 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 
 - **Fix 1 retested, not shipped:** the parked coast-rise patch (/tmp/f1/fix1.patch) was rebased onto this and replayed on the 26 routes. It only ever makes a coasted vRel less closing, so it cannot brake earlier at 271 BM0 (0 differing frames there). 26c 12:28.8: planner -1.21 -> -0.94. It had one unprotected effect: 237 1188.2 -1.51 -> -1.37. It fixes nothing the owner reported, so it was reverted from the tree; the patch and notes stay in /tmp/f1 and /tmp/ri3.
 - **Existing behaviour, unchanged:** with the toggle off, 26f 516.9 still dips to -1.95 from a stale -13.5 coast.
+
+## 134. ICBM: no set-speed increase right after a lead change or toward a closing in-path target; model-only far-lead backstop; lead-change hysteresis. Unit tests and replay only; not driven.
+
+- **Problem (route `…00000276--4be5263f89`, build 51964cb6, same ICBM code as HEAD; /tmp/r276/report.md), limited road evidence:**
+  - 14:36.7: radar lead tid 5 left the path at 51.6 m. A slower car on a curve at 87-102 m showed only as a flickering vision lead (p 0.23-0.40, yRel +4..+8.5). ICBM raised the set 37.9 -> 43.5 mph toward it. Radar published it 0.2 s before the driver braked (-2.52).
+  - 17:22.5: 13 reversals in 24 s. leadOne flipped between radar at 70 m and vision at 95 m.
+  - 8:27.9: vision-only lead from 114 m slowing 25 -> 3 mph; the driver cancelled 3.3 s after engaging at 28.6 mph.
+- **Change** (`selfdrive/car/redneck_cruise.py`, `selfdrive/car/card.py`; Honda ICBM only, same gate as the STATUS 128 far lead):
+  - **Increase block** (`IncreaseBlock`). The target is capped at the cluster set speed, so a hold sends nothing and a decrease is never delayed. The cap applies:
+    - for `INCREASE_BLOCK_AFTER_LEAD_CHANGE_S = 2.0` after leadOne is lost, after plan.hasLead drops, or after leadOne changes source (radar/vision), radar track id, or range by more than `LEAD_CHANGE_RANGE_JUMP_M = 15`;
+    - while radarState leadOne/leadTwo, or modelV2.leadsV3[0] with prob >= `INCREASE_BLOCK_MODEL_PROB = 0.25`, is within `INCREASE_BLOCK_RANGE_M = 110` and closing faster than `INCREASE_BLOCK_CLOSING_MS = 5`.
+    - Both sources are path-relative by construction: the model's lead is the lead on its path, and radard publishes only tracks matched to it. There is no raw-yRel gate (the 14:36.7 lead sat at y +8).
+    - Raw liveTracks are not used, because there is no path-gated clutter filter for them.
+  - card subscribes to `modelV2` on Honda ICBM only.
+  - **Model-only far lead** (`get_model_only_far_lead_target_ms`). A vision-only leadOne with modelProb >= 0.5 that is closing faster than 8 m/s feeds the far-lead target even when plan.hasLead is False.
+    - It always uses the uncorroborated 1.5 m/s^2. 271 BM3/BM4 vision errors (range +35-45 m, vRel about half) put the target too high, so on such a lead it only helps partly.
+    - The planner (MPC) is unchanged.
+  - **Hysteresis:** the lead-change hold is the lead-source hysteresis. A nearer lead lowers the set at once; the farther one can raise it only after 2 s of a stable lead.
+- **Replay** (`/tmp/icbm3/sim.py`, the STATUS 126 sim plus modelV2 and leadTwo; open loop in vEgo, overstates hunting; compare base vs fix only):
+
+  | Route | Reversals < 1.5 s | Longest episode | Lead drops kept mph | Phantom mph | Open-road s > 2 mph below target |
+  |---|---|---|---|---|---|
+  | 276 | 50 -> 27 | 5 -> 5 | 134 -> 121 | 121 -> 109 | 269.5 -> 278.4 |
+  | 271 (seg 7+) | 110 -> 88 | 21 -> 14 | 363 -> 368 | 247 -> 250 | 479.6 -> 508.9 |
+  | 26f | 34 -> 22 | 5 -> 5 | 177 -> 173 | 51 -> 50 | 160.9 -> 165.2 |
+  | 270 | 31 -> 19 | 6 -> 4 | 117 -> 116 | 58 -> 53 | 125.3 -> 139.6 |
+
+  - 276 14:36.7, set from -8 s to -1 s (base / fix):
+    - base: 42.9, 42.9, 40.4, 38.5, 37.9, 37.9, 37.9, 41.6 (INCREASE from -2.2 s);
+    - fix: the same down to 37.9, then held at 37.9 with no INCREASE (blocked from -3 s).
+  - 276 6:58.1: first decel press -5.95 s and set 43.5 at -2 s in both. The fix drops base's 46.6 -> 48.5 bounce in the middle of the drop.
+  - 276 8:27.9: unchanged (first decel press -0.75, set 28.6 at -2 s). hasLead was already True, and the existing far-lead path gave 27.9 at -0.5 (0.8 decel at p 0.74). The model-only path never binds on any of the four routes, so it is a backstop only.
+  - 271 BM0-BM4 and 32:01: first press, first drop and set at -2 s are identical.
+  - 276 17:15-17:50: reversals 10 -> 5.
+  - Attribution, lead-change hold removed: reversals and open-road time equal base, and 14:36.7 still rises to 39.8 at -1 s.
+  - Attribution, closing test removed: the route metrics equal the full fix, and 14:36.7 is still fully held. The closing test is kept as the guard for a slow car with no preceding lead change. Dropping the radar<->vision source trigger: 26f 22 -> 31 reversals, and it saves only about 6 s open-road on 271.
+- **Cost:** open-road time below target rises by +9, +29, +4 and +14 s. Most of it is the 2 s loss hold re-armed by a flickering vision lead (271 22:19 7.6 s at 46 vs 47.8 mph).
+- **20:25.8 (no lead, set 33.6 -> 49.7 after a CSC curve dip):** no recovery rate limit. There was no lead or closing target, and the driver braked 21 s before a stop. Nothing shows that the rise caused the brake.
+- **Tests:**
+  - `test_redneck_cruise.py`: 90 pass (9 new). The 3 new card tests fail with the card change reverted.
+  - gas_override 2, cruise_speed 42, honda `test_icbm_counter_sync` 5 and `test_longitudinal_planner.py` 512 pass.
+- **Road check to do:**
+  - Behind a lead that turns off or leaves on a curve, the set should not rise for about 2 s, and not at all while a slower car is visible ahead.
+  - Large lead-driven drops should keep their pace.
+  - Watch for sluggish set recovery under a flickering vision lead.
+- **Open:**
+  - 8:27.9-type approaches at about 28 mph cannot be helped by the set speed (25 mph floor).
+  - A far lead that radar publishes late (cause A) is not addressed here.

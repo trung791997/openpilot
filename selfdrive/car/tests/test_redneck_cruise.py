@@ -9,6 +9,18 @@ from openpilot.selfdrive.car.card import Car
 from openpilot.selfdrive.car.redneck_cruise import (
   DECREASE_INACTIVE_TIMER,
   FAR_LEAD_DECEL_MS2,
+  FAR_LEAD_MODEL_ONLY_CLOSING_MS,
+  FAR_LEAD_MODEL_ONLY_PROB,
+  INCREASE_BLOCK_AFTER_LEAD_CHANGE_S,
+  INCREASE_BLOCK_CLOSING_MS,
+  INCREASE_BLOCK_MODEL_PROB,
+  INCREASE_BLOCK_RANGE_M,
+  IncreaseBlock,
+  LEAD_CHANGE_RANGE_JUMP_M,
+  closing_target_in_path,
+  get_model_only_far_lead_target_ms,
+  lead_changed,
+  lead_key,
   FAR_LEAD_UNCORROBORATED_DECEL_MS2,
   GAS_RELEASE_FLOOR_MAX_S,
   INCREASE_AFTER_DECREASE_LOCKOUT_S,
@@ -1106,3 +1118,137 @@ class TestPressPacing(unittest.TestCase):
     self.assertGreaterEqual(first_increase, int(INCREASE_AFTER_DECREASE_LOCKOUT_S / DT_CTRL) - 1)
     buttons = self._buttons(40.0, 50.0, 0.5)
     self.assertLessEqual(buttons.index(SEND_BUTTON_DECREASE), int(DECREASE_INACTIVE_TIMER / DT_CTRL) + 1)
+
+
+def _lead(status=True, d_rel=60.0, v_rel=0.0, v_lead=20.0, radar=True, track_id=5, model_prob=0.9, y_rel=0.0):
+  return SimpleNamespace(status=status, dRel=d_rel, vRel=v_rel, vLead=v_lead, radar=radar, radarTrackId=track_id,
+                         modelProb=model_prob, yRel=y_rel)
+
+
+def _model_lead(prob, x, v, y=0.0):
+  return SimpleNamespace(prob=prob, x=[x], v=[v], y=[y])
+
+
+class TestIncreaseBlock(unittest.TestCase):
+  """Route 276 14:36.7 (radar lead left the path, slower car revealed on a curve) and 17:22.5 (radar 70 m <->
+  vision 95 m flips)."""
+
+  def test_lead_changed(self):
+    radar5 = lead_key(_lead())
+    self.assertIsNone(lead_key(_lead(status=False)))
+    self.assertFalse(lead_changed(None, radar5))  # a lead appearing can only lower the target
+    self.assertTrue(lead_changed(radar5, None))  # lost
+    self.assertTrue(lead_changed(radar5, lead_key(_lead(track_id=6))))
+    self.assertTrue(lead_changed(radar5, lead_key(_lead(radar=False, track_id=-1))))  # radar -> vision
+    self.assertTrue(lead_changed(lead_key(_lead(d_rel=70.0)), lead_key(_lead(d_rel=70.0 + LEAD_CHANGE_RANGE_JUMP_M + 1.0))))
+    self.assertFalse(lead_changed(radar5, lead_key(_lead(d_rel=62.0))))
+
+  def test_closing_target_in_path(self):
+    v_ego = 18.0
+    self.assertTrue(closing_target_in_path((_lead(d_rel=98.8, v_rel=-5.2), None), None, v_ego))
+    self.assertFalse(closing_target_in_path((_lead(d_rel=INCREASE_BLOCK_RANGE_M + 5.0, v_rel=-9.0), None), None, v_ego))
+    self.assertFalse(closing_target_in_path((_lead(d_rel=80.0, v_rel=-INCREASE_BLOCK_CLOSING_MS + 0.5), None), None, v_ego))
+    self.assertFalse(closing_target_in_path((_lead(status=False, d_rel=80.0, v_rel=-9.0), None), None, v_ego))
+    # leadTwo counts too
+    self.assertTrue(closing_target_in_path((_lead(status=False), _lead(d_rel=90.0, v_rel=-6.0)), None, v_ego))
+    # The model's lead below radard's publish threshold, at 14:36.7-like geometry: y +8 on a curve is still in path
+    # (no raw-y gate), p 0.26, 102.5 m, 26 mph against 40 mph.
+    model = [_model_lead(0.26, 102.5, 26.0 * CV.MPH_TO_MS, y=-8.0)]
+    self.assertTrue(closing_target_in_path((None, None), model, 40.2 * CV.MPH_TO_MS))
+    self.assertFalse(closing_target_in_path((None, None), [_model_lead(INCREASE_BLOCK_MODEL_PROB - 0.05, 102.5, 11.6)], 18.0))
+    self.assertFalse(closing_target_in_path((None, None), [_model_lead(0.9, 130.0, 5.0)], 18.0))
+
+  def test_hold_after_change_then_release(self):
+    block = IncreaseBlock()
+    self.assertFalse(block.update(_lead(), True, False))
+    self.assertTrue(block.update(None, False, False))  # lead lost
+    frames = int(INCREASE_BLOCK_AFTER_LEAD_CHANGE_S / DT_CTRL)
+    held = [block.update(None, False, False) for _ in range(frames + 5)]
+    self.assertTrue(all(held[:frames - 1]))
+    self.assertFalse(held[-1])
+    self.assertTrue(block.update(None, False, True))  # closing target blocks on its own
+
+  def test_apply_never_lowers_or_delays_a_decrease(self):
+    self.assertEqual(IncreaseBlock.apply(20.0, 18.0, True), 18.0)
+    self.assertEqual(IncreaseBlock.apply(15.0, 18.0, True), 15.0)
+    self.assertEqual(IncreaseBlock.apply(20.0, 18.0, False), 20.0)
+    self.assertEqual(IncreaseBlock.apply(20.0, 0.0, True), 20.0)
+
+  @staticmethod
+  def _card(lead_one, has_lead, cluster_ms, model=None, v_cruise_kph=80.0, plan=None):
+    starpilot_plan = SimpleNamespace(vCruise=v_cruise_kph * CV.KPH_TO_MS, cscControllingSpeed=False, cscSpeed=0.0)
+    plan = plan or [cluster_ms + 3.0] * 5
+    longitudinal_plan = SimpleNamespace(speeds=plan, hasLead=has_lead, shouldStop=False,
+                                        longitudinalPlanSource="lead0" if has_lead else "cruise")
+    msgs = {"starpilotPlan": starpilot_plan, "longitudinalPlan": longitudinal_plan,
+            "radarState": SimpleNamespace(leadOne=lead_one, leadTwo=_lead(status=False))}
+    if model is not None:
+      msgs["modelV2"] = SimpleNamespace(leadsV3=model, velocity=SimpleNamespace(x=[cluster_ms]))
+    sm = MagicMock()
+    sm.seen = dict.fromkeys(("starpilotPlan", "longitudinalPlan", "radarState"), True)
+    sm.seen["modelV2"] = model is not None
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = msgs.__getitem__
+    card = SimpleNamespace(CP=SimpleNamespace(openpilotLongitudinalControl=False), sm=sm,
+                           starpilot_toggles=SimpleNamespace(speed_limit_controller=False, icbm_far_lead=True))
+    CS = SimpleNamespace(vEgo=cluster_ms, standstill=False, gasPressed=False, buttonEvents=[], vCruise=v_cruise_kph,
+                         cruiseState=SimpleNamespace(speedCluster=cluster_ms))
+    CC = SimpleNamespace(enabled=True, actuators=SimpleNamespace(accel=0.0), hudControl=SimpleNamespace(leadVisible=has_lead))
+    return card, CS, CC
+
+  def test_card_no_increase_after_lead_leaves(self):
+    # 276 14:36.7: following radar tid 5 at 51.6 m, set 37.9 mph; the lead leaves and the plan goes back to cruise.
+    cluster = 37.9 * CV.MPH_TO_MS
+    card, CS, CC = self._card(_lead(d_rel=51.6, v_rel=-3.6, v_lead=15.6), True, cluster, plan=[cluster] * 5)
+    Car._get_redneck_target_speed(card, CS, CC)
+    gone, CS, CC = self._card(_lead(status=False), False, cluster)
+    gone.redneck_increase_block = card.redneck_increase_block
+    first, _ = Car._get_redneck_target_speed(gone, CS, CC)
+    self.assertAlmostEqual(first, cluster, places=6)
+    for _ in range(int(INCREASE_BLOCK_AFTER_LEAD_CHANGE_S / DT_CTRL) + 1):
+      target, _ = Car._get_redneck_target_speed(gone, CS, CC)
+    self.assertGreater(target, cluster + 1.0)
+    # With the toggle off (non-Honda) nothing is held.
+    card, CS, CC = self._card(_lead(status=False), False, cluster)
+    card.starpilot_toggles.icbm_far_lead = False
+    card.redneck_increase_block = gone.redneck_increase_block
+    self.assertGreater(Car._get_redneck_target_speed(card, CS, CC)[0], cluster + 1.0)
+
+  def test_card_model_lead_closing_blocks_increase(self):
+    cluster = 37.9 * CV.MPH_TO_MS
+    model = [_model_lead(0.26, 102.5, 26.0 * CV.MPH_TO_MS, y=-8.0)]
+    card, CS, CC = self._card(_lead(status=False), False, cluster, model=model)
+    self.assertAlmostEqual(Car._get_redneck_target_speed(card, CS, CC)[0], cluster, places=6)
+    card, CS, CC = self._card(_lead(status=False), False, cluster, model=[_model_lead(0.05, 102.5, 11.6)])
+    self.assertGreater(Car._get_redneck_target_speed(card, CS, CC)[0], cluster + 1.0)
+
+  def test_card_decrease_not_delayed_by_block(self):
+    cluster = 45.0 * CV.MPH_TO_MS
+    card, CS, CC = self._card(_lead(d_rel=60.0, v_rel=-8.0, v_lead=12.0), True, cluster, plan=[14.0] * 5)
+    held = IncreaseBlock()
+    held.frames = 1000
+    card.redneck_increase_block = held
+    target, _ = Car._get_redneck_target_speed(card, CS, CC)
+    self.assertLess(target, 14.0 + 0.01)
+
+
+class TestModelOnlyFarLead(unittest.TestCase):
+  """Route 276 8:27.9: vision-only lead from 114 m slowing to 3 mph, plan.hasLead False."""
+
+  def test_gate(self):
+    lead = _lead(d_rel=100.0, v_rel=-10.0, v_lead=3.0, radar=False, track_id=-1, model_prob=0.6)
+    self.assertAlmostEqual(get_model_only_far_lead_target_ms(lead), get_far_lead_target_ms(100.0, 3.0, corroborated=False))
+    self.assertEqual(get_model_only_far_lead_target_ms(_lead(d_rel=100.0, v_rel=-10.0, v_lead=3.0)), float("inf"))  # radar
+    for kw in ({"model_prob": FAR_LEAD_MODEL_ONLY_PROB - 0.05}, {"v_rel": -FAR_LEAD_MODEL_ONLY_CLOSING_MS + 0.5},
+               {"status": False}):
+      args = dict(d_rel=100.0, v_rel=-10.0, v_lead=3.0, radar=False, track_id=-1, model_prob=0.6) | kw
+      self.assertEqual(get_model_only_far_lead_target_ms(_lead(**args)), float("inf"), kw)
+    self.assertEqual(get_model_only_far_lead_target_ms(None), float("inf"))
+
+  def test_card_uses_it_without_plan_lead(self):
+    cluster = 45.0 * CV.MPH_TO_MS
+    lead = _lead(d_rel=80.0, v_rel=-12.0, v_lead=8.0, radar=False, track_id=-1, model_prob=0.6)
+    card, CS, CC = TestIncreaseBlock._card(lead, False, cluster, plan=[cluster] * 5)
+    target, _ = Car._get_redneck_target_speed(card, CS, CC)
+    self.assertAlmostEqual(target, get_far_lead_target_ms(80.0, 8.0, corroborated=False), places=6)
+    self.assertLess(target, cluster)

@@ -79,6 +79,46 @@ FAR_LEAD_UNCORROBORATED_DECEL_MS2 = 1.5
 FAR_LEAD_CORROBORATED_MODEL_PROB = 0.7
 FAR_LEAD_MIN_GAP_M = 6.0
 FAR_LEAD_HEADWAY_S = 1.5
+# Model-only far lead. The planner drops a vision-only lead beyond its vision limit, so plan.hasLead stays False
+# and the far-lead target above never saw it. Route 276 8:27.9 (log decode, limited road evidence): a vision
+# lead from 114 m slowing 25 -> 3 mph, vRel -3.8 -> -11.3, hasLead False to the end, in-lane radar only at 52 m;
+# the driver cancelled. The far-lead target (never the planner) now also takes radarState.leadOne when it is
+# vision-only with modelProb >= FAR_LEAD_MODEL_ONLY_PROB and closing faster than FAR_LEAD_MODEL_ONLY_CLOSING_MS.
+# It always uses FAR_LEAD_UNCORROBORATED_DECEL_MS2: vision range and closing speed at 85-105 m were wrong in
+# route 271 BM3 (range +35-45 m) and BM4 (vRel about half of radar), both errors put the target too high, so
+# this helps only partly on such a lead. 8 m/s is above the 5-7 m/s vision vRel that 271/276 vision leads
+# showed on cars that turned out to hold speed. Replay (/tmp/icbm3, routes 276/271/26f/270): it never binds,
+# because on all four routes such a lead already had plan.hasLead and took the path above (8:27.9 included, where
+# the car was engaged at 28.6 mph, 3.6 mph above the Honda floor, so no set-speed target could do much). It is a
+# backstop for a hasLead dropout on a confident closing vision lead. Not driven.
+FAR_LEAD_MODEL_ONLY_PROB = 0.5
+FAR_LEAD_MODEL_ONLY_CLOSING_MS = 8.0
+
+# Increase block. Route 276 14:36.7 (log decode, limited road evidence): the radar lead (tid 5) left the path, a
+# slower car on a curve at 87-102 m showed only as a flickering vision lead (p 0.26-0.43), and ICBM raised the
+# set 37.9 -> 43.5 mph toward it; radar published it 0.2 s before the driver braked -2.52. ICBM now holds the
+# set (target capped at the cluster, so a decrease is never delayed):
+# - for INCREASE_BLOCK_AFTER_LEAD_CHANGE_S after leadOne (or plan.hasLead) is lost or changes source, track id
+#   or range by more than LEAD_CHANGE_RANGE_JUMP_M. This is also the lead-source hysteresis: 276 17:22.5 hunted
+#   13 reversals in 24 s with leadOne flipping radar 70 m <-> vision 95 m; a nearer lead still lowers the set at
+#   once, the farther one can only raise it after the lead has been stable for this long.
+# - while a target within INCREASE_BLOCK_RANGE_M is closing faster than INCREASE_BLOCK_CLOSING_MS: radarState
+#   leadOne/leadTwo, or the model's lead with prob >= INCREASE_BLOCK_MODEL_PROB. Both are path-relative by
+#   construction (the model's lead is the lead on its path; radard only publishes tracks matched to it), so
+#   there is no raw-yRel gate: the real lead at 14:36.7 sat at yRel +8 on the curve.
+# Replay (/tmp/icbm3 sim, base -> fix; open loop in vEgo): 14:36.7 no INCREASE from -8 s to the brake (base
+# pressed 37.9 -> 42.9 from -2.2 s); reversals 276 50 -> 27, 271 110 -> 88, 26f 34 -> 22, 270 31 -> 19; 271
+# bookmarks and 276 6:58.1 unchanged (6:58.1 loses a 46.6 -> 48.5 bounce mid-drop). Cost: open-road seconds
+# > 2 mph below target +9 / +29 / +4 / +14 s (276/271/26f/270), mostly the loss hold under a flickering
+# vision lead. The loss/range/track-id hold does most of the work; the closing test alone changes little.
+# Radar<->vision flips of the same car count as a change on purpose (dropping them: 26f reversals 22 -> 31).
+# Not driven.
+INCREASE_BLOCK_AFTER_LEAD_CHANGE_S = 2.0
+LEAD_CHANGE_RANGE_JUMP_M = 15.0
+INCREASE_BLOCK_RANGE_M = 110.0
+INCREASE_BLOCK_CLOSING_MS = 5.0
+INCREASE_BLOCK_MODEL_PROB = 0.25
+MODEL_LEAD_RADAR_TO_CAMERA_M = 1.52  # radard.RADAR_TO_CAMERA
 
 # Launch (stock ACC only): after a full stop, raise the set speed straight to the cruise target once the
 # car is moving again, instead of holding at the 25 mph floor until vEgo passes it. Route 260 8:39-8:51:
@@ -248,6 +288,79 @@ def get_far_lead_target_ms(lead_distance_m: float, lead_speed_ms: float, corrobo
   lead_speed_ms = max(float(lead_speed_ms), 0.0)
   gap_m = max(FAR_LEAD_MIN_GAP_M, FAR_LEAD_HEADWAY_S * lead_speed_ms)
   return math.sqrt(max(0.0, lead_speed_ms ** 2 + 2.0 * decel_ms2 * (lead_distance_m - gap_m)))
+
+
+def get_model_only_far_lead_target_ms(lead) -> float:
+  """Far-lead target for a vision-only radarState lead the planner ignores (route 276 8:27.9). inf unless the
+  lead is vision-only, confident (modelProb >= FAR_LEAD_MODEL_ONLY_PROB) and closing faster than
+  FAR_LEAD_MODEL_ONLY_CLOSING_MS. Always the uncorroborated decel."""
+  if lead is None or not getattr(lead, "status", False) or getattr(lead, "radar", False):
+    return float("inf")
+  if float(getattr(lead, "modelProb", 0.0)) < FAR_LEAD_MODEL_ONLY_PROB or \
+      float(lead.vRel) >= -FAR_LEAD_MODEL_ONLY_CLOSING_MS:
+    return float("inf")
+  return get_far_lead_target_ms(max(float(lead.dRel), 0.0), float(lead.vLead), corroborated=False)
+
+
+def lead_key(lead) -> tuple | None:
+  """(radar, track id, dRel) of a published lead, None if there is none."""
+  if lead is None or not getattr(lead, "status", False):
+    return None
+  radar = bool(getattr(lead, "radar", False))
+  return radar, int(getattr(lead, "radarTrackId", -1)) if radar else -1, float(lead.dRel)
+
+
+def lead_changed(prev_key: tuple | None, key: tuple | None) -> bool:
+  """True when a lead was lost, or changed source (radar/vision), radar track id, or range by more than
+  LEAD_CHANGE_RANGE_JUMP_M. A new lead appearing is not a change: it can only lower the target."""
+  if prev_key is None:
+    return False
+  if key is None:
+    return True
+  return prev_key[0] != key[0] or prev_key[1] != key[1] or abs(prev_key[2] - key[2]) > LEAD_CHANGE_RANGE_JUMP_M
+
+
+def closing_target_in_path(radar_leads, model_leads, v_ego: float, model_v_ego: float | None = None) -> bool:
+  """A path-relative target within INCREASE_BLOCK_RANGE_M closing faster than INCREASE_BLOCK_CLOSING_MS:
+  a published radarState lead, or the model's current lead (modelV2.leadsV3[0]) with prob >=
+  INCREASE_BLOCK_MODEL_PROB."""
+  for lead in radar_leads:
+    if lead is not None and getattr(lead, "status", False) and 0.0 < float(lead.dRel) <= INCREASE_BLOCK_RANGE_M and \
+        float(lead.vRel) < -INCREASE_BLOCK_CLOSING_MS:
+      return True
+  if model_leads is not None and len(model_leads) > 0:
+    lead = model_leads[0]
+    if float(lead.prob) >= INCREASE_BLOCK_MODEL_PROB and len(lead.x) and len(lead.v):
+      d_rel = float(lead.x[0]) - MODEL_LEAD_RADAR_TO_CAMERA_M
+      v_ref = float(v_ego if model_v_ego is None else model_v_ego)
+      if 0.0 < d_rel <= INCREASE_BLOCK_RANGE_M and float(lead.v[0]) - v_ref < -INCREASE_BLOCK_CLOSING_MS:
+        return True
+  return False
+
+
+class IncreaseBlock:
+  """Caps the ICBM target at the cluster set speed for INCREASE_BLOCK_AFTER_LEAD_CHANGE_S after a lead change
+  and while a path-relative target is closing (route 276 14:36.7, 17:22.5). Never lowers a target."""
+  def __init__(self):
+    self.prev_key = None
+    self.prev_has_lead = False
+    self.frames = 0
+
+  def update(self, lead, has_lead: bool, closing: bool) -> bool:
+    key = lead_key(lead)
+    if lead_changed(self.prev_key, key) or (self.prev_has_lead and not has_lead):
+      self.frames = int(INCREASE_BLOCK_AFTER_LEAD_CHANGE_S / DT_CTRL)
+    elif self.frames > 0:
+      self.frames -= 1
+    self.prev_key = key
+    self.prev_has_lead = bool(has_lead)
+    return closing or self.frames > 0
+
+  @staticmethod
+  def apply(target_ms: float, speed_cluster_ms: float, blocked: bool) -> float:
+    if not blocked or speed_cluster_ms <= 0.0:
+      return float(target_ms)
+    return min(float(target_ms), float(speed_cluster_ms))
 
 
 def get_lead_departure_boost_ms(speed_cluster_ms: float, lead_distance_m: float, lead_rel_speed_ms: float,
