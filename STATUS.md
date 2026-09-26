@@ -7903,3 +7903,23 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
     - **I 0: 0.457 with bias +0.21 deg. I 0 plus C 0, as driven on 271–277: 0.563 with bias +0.28.** The +0.3–0.5 deg highway bias noted above is, in the sim, the missing integrator.
   - **Road evidence** (confounded by road and traffic): 1b8's logged highway err rms is 0.33–0.35 at I100/C0.5, against 0.46–0.67 logged on 271–278 at I 0–75/C0.
   - **Suggested highway settings** (sim, straight-line only): LatIScaleHighway 100, HondaCenterScale 0.5, LatPScaleHighway 100–115. Watch highway curves, which the sim cannot score yet.
+
+## 150. Fast-closing lead pass (the held 271 BM0 fix from STATUS 148), now capped at -2.0. Open- and closed-loop replay plus unit tests only; nothing has been driven.
+
+- **What it is.** For a radar lead that the MPC is braking for, closing >= 10 m/s at TTC <= 6 s, and seen closing by vision too, the close-lead cap may pass the -1.0 comfort floor. It is held on the same track while closing stays >= 5 m/s. This is the held patch /tmp/cf/fastclose_floor.patch, whose reasoning is in the code comment.
+- **What is new.** The pass is built against max(vehicle min, -`FAST_CLOSING_LEAD_MAX_BRAKE`) = -2.0 (`fast_closing_accel_min`), not the vehicle minimum.
+- **Why capped.** The uncapped version was held for the owner's rough-braking report. Re-replayed on the current tree (32 routes, 178 episodes), it deepened 22 approaches, many to -3.5, took frames < -3.0 from 1363 to 1626, and made 025e 318.1 go -2.48 -> -3.38.
+- **Capped at -2.0 (fleet, open loop):**
+  - Frames below -3.0: 1363 -> 1328. Below -2.5: 2772 -> 2704. 0.5 s drops: 77 -> 84.
+  - 11 approaches start braking 0.1-0.8 s earlier. Their peaks are mostly softer (271 567.2 -2.50 -> -2.33, 270 516.6 -2.85 -> -2.63, 026f 81.9 -2.96 -> -2.81).
+  - One new -1.5 crossing: 241 218.7 at -1.83. That is a real slowdown to a lead doing 5 m/s at 70 m, where the driver braked to -4.4.
+  - 266 29.2 goes -1.88 -> -2.34. That is an approach to a 1-2.5 m/s lead.
+  - Protected list: nothing softer or later.
+  - A cap of 1.5 was a no-op.
+- **Closed loop (tau 0.35, non-reactive lead):**
+  - 271 BM0 (559-575): peak -5.68 -> -3.05, min gap 8.99 -> 13.51 m, TTC 1.95 -> 2.74, -1.5 crossing 0.9 s earlier.
+  - 270 516: -4.87 -> -3.26, gap 13.6 -> 18.3 m, TTC 2.18 -> 3.37.
+  - 271 1793: -3.84 -> -3.74, gap 9.27 -> 9.21.
+  - 24f B-F and 258 63:50: identical.
+- **Tests:** test_longitudinal_planner + test_longcontrol pass (623); 11 new tests are the held patch's plus a cap test. ruff: no new findings.
+- **Road check:** on a fast approach to a stopped or slow car, braking should begin earlier and hold around -2 rather than arriving late and hard. Watch for early braking on a car that is turning off.

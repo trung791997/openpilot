@@ -93,6 +93,42 @@ MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR = True
 # consecutive ticks from a closing or braking lead (the LEAD_CLOSING_FLOOR test) passes, and
 # only its mildest value over those ticks.
 MPC_LEAD_BRAKE_PERSIST_TICKS = 3
+# Fast-closing pass (STATUS 150; open- and closed-loop replay only, not driven). 271 BM0 (route
+# 00000271 seg9+28.4, a near-stopped car at 105 m closing 20 m/s): after the D-053 rail fast
+# path corrected vRel, the output sat at the -1.0 comfort floor from -3.19 to -2.79 s before
+# the bookmark. A per-line trace shows what held it: the close-lead brake cap asked about -2.3
+# but is built against the comfort floor (`get_close_lead_brake_cap(..., output_accel_min)`),
+# while the MPC itself was still ramping from its cruise-to-lead source switch (-0.13 ... -0.97)
+# and so was above -1.0 the whole time; the persistence pass above never had anything to pass.
+# Opening the floor for every closing lead (STATUS 120 F2/F2L) added ~39 new hard brakes, so
+# the cap may pass the comfort floor only for a lead that is closing fast, is short on time, is
+# the lead the MPC is braking for, and that vision sees closing too:
+#   radar lead, -vRel >= FAST_CLOSING_LEAD_MIN_CLOSING, dRel / -vRel <= FAST_CLOSING_LEAD_MAX_TTC,
+#   mpc.source is this lead, and the model lead (prob >= FAST_CLOSING_LEAD_MIN_VISION_PROB,
+#   x within FAST_CLOSING_LEAD_VISION_MATCH of dRel) closes at >= FAST_CLOSING_LEAD_MIN_VISION_CLOSING.
+# The vision test is what keeps a U11 rail phantom (-13.5 m/s published on a flat range, 276
+# 13:46.6) out: vision sees no closing there. Replayed without it (28 routes) the pass made 4 more
+# new -1.5 crossings, e.g. 0261 413.7 -2.72 and 025f 43.5 -2.73 where stock ACC held 0.09 / -0.50.
+# 10 m/s and 6 s: every entry on the 28 routes is a lead at 31-105 m closing 10-21 m/s; 8 m/s /
+# 7 s moved 2 more brakes earlier and deepened 3 more, with the same new crossings. The floor
+# then opens to the cap's own value, not to the vehicle minimum. Once fired it stays for the same track while it still closes at
+# >= FAST_CLOSING_LEAD_HOLD_CLOSING, so the brake does not snap back to -1.0 as soon as the
+# closing speed dips under the entry value. A first version held while the lead was closing at
+# all (LEAD_CLOSING_FLOOR test): on 0237 it kept the pass 8 s after entry and made a new -1.56
+# at 1201.6 on a lead closing 4.7 m/s at 28 m, where the logged alpha build commanded -0.65.
+FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR = True
+FAST_CLOSING_LEAD_MIN_CLOSING = 10.0
+FAST_CLOSING_LEAD_HOLD_CLOSING = 5.0
+FAST_CLOSING_LEAD_MAX_TTC = 6.0
+FAST_CLOSING_LEAD_MIN_VISION_PROB = 0.5
+FAST_CLOSING_LEAD_MIN_VISION_CLOSING = 6.0
+FAST_CLOSING_LEAD_VISION_MATCH = 0.15
+# The pass is built against max(vehicle minimum, -FAST_CLOSING_LEAD_MAX_BRAKE), not the vehicle minimum (STATUS 150).
+# Uncapped, the pass was held because the owner reported rough braking, and on the current tree it still deepened 22
+# approaches (frames < -3.0 1363 -> 1626 over 32 routes). Capped at -2.0 it brakes earlier and softer instead: fleet
+# frames < -3.0 1363 -> 1328, and in closed loop 271 BM0 peaks at -3.05 with a 13.5 m gap instead of -5.68 / 9.0 m.
+# 0 restores the uncapped pass; 1.5 changed nothing on the fleet.
+FAST_CLOSING_LEAD_MAX_BRAKE = 2.0
 # The merge floor (-0.4) let go only under a 4 s TTC at the current closing speed; on 25b
 # 1338.6 it held -0.4 for 1.3 s while the MPC asked -1.5..-4.2 and the lead braked 3-5 m/s^2,
 # 0.85 s behind stock ACC. It now lets go when the MPC asks this much inside LC_MERGE_TTC_ACCEL.
@@ -739,6 +775,13 @@ def off_axis_lead_a_lead(lead, model_msg, held=False):
   return bounded if bounded > a_lead else None
 
 
+def fast_closing_accel_min(vehicle_accel_min):
+  """Floor the close-lead cap is built against while FAST_CLOSING_LEAD_* passes the comfort floor."""
+  if FAST_CLOSING_LEAD_MAX_BRAKE <= 0.0:
+    return vehicle_accel_min
+  return max(vehicle_accel_min, -FAST_CLOSING_LEAD_MAX_BRAKE)
+
+
 class _OverrideLead:
   """Read-only view of a radarState lead with some fields replaced; every other field is the original."""
   def __init__(self, lead, **fields):
@@ -970,6 +1013,7 @@ class LongitudinalPlanner:
     self.v_model_error = 0.0
     self.output_a_target = 0.0
     self.mpc_lead_demand_hist = []
+    self.fast_closing_lead_track = None
     self.stopped_radar_lead_hold_track = None
     self.stopped_radar_lead_hold_active = False
     # The MPC's own solution, kept separately from the arbitrated output_a_target.
@@ -2372,6 +2416,31 @@ class LongitudinalPlanner:
       return accel_min
     return min(accel_min, max(self.mpc_lead_demand_hist))
 
+  def fast_closing_lead_passes_floor(self, lead, lead_source, v_ego, model_msg):
+    # True when this lead's close-lead brake cap may pass the comfort floor (FAST_CLOSING_LEAD_*).
+    if not FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR or lead is None or not lead.status or not bool(getattr(lead, "radar", False)):
+      return False
+    track = int(getattr(lead, "radarTrackId", -1))
+    if self.fast_closing_lead_track is not None and track == self.fast_closing_lead_track:
+      if -float(lead.vRel) >= FAST_CLOSING_LEAD_HOLD_CLOSING:
+        return True
+      self.fast_closing_lead_track = None
+      return False
+    closing = -float(lead.vRel)
+    d_rel = float(lead.dRel)
+    if self.mpc.source != lead_source or closing < FAST_CLOSING_LEAD_MIN_CLOSING or d_rel > FAST_CLOSING_LEAD_MAX_TTC * closing:
+      return False
+    leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
+    if not leads or len(leads[0].x) == 0 or len(leads[0].v) == 0:
+      return False
+    vision = leads[0]
+    if (float(vision.prob) < FAST_CLOSING_LEAD_MIN_VISION_PROB or
+        abs(float(vision.x[0]) - d_rel) > FAST_CLOSING_LEAD_VISION_MATCH * d_rel or
+        v_ego - float(vision.v[0]) < FAST_CLOSING_LEAD_MIN_VISION_CLOSING):
+      return False
+    self.fast_closing_lead_track = track
+    return True
+
   def get_lane_change_merge_accel_floor(self, sm, starpilot_toggles, scene_v_ego, v_cruise, action_t, blocked,
                                         mpc_demand=None):
     # Accel floor (m/s^2) to apply as max(output_a_target, floor) while merging out, else None.
@@ -3049,17 +3118,26 @@ class LongitudinalPlanner:
       self.get_lead_geometry_required_accel(self.lead_one, v_ego),
       self.get_lead_geometry_required_accel(self.lead_two, v_ego),
     )
+    fast_closing_cap = None
+    if not lead_control_active or not any(
+        lead.status and bool(getattr(lead, "radar", False)) and int(getattr(lead, "radarTrackId", -1)) == self.fast_closing_lead_track
+        for lead in (self.lead_one, self.lead_two)):
+      self.fast_closing_lead_track = None
     if lead_control_active:
-      for lead in (self.lead_one, self.lead_two):
+      for lead, lead_source in ((self.lead_one, 'lead0'), (self.lead_two, 'lead1')):
         rav4_early_lead_cap = get_toyota_rav4_tss2_early_lead_cap(
           self.CP, lead, v_ego, output_accel_min,
         )
         if rav4_early_lead_cap is not None:
           rav4_early_lead_caps.append(rav4_early_lead_cap)
-        cap = self.get_close_lead_brake_cap(lead, v_ego, output_accel_min)
+        fast_closing = self.fast_closing_lead_passes_floor(lead, lead_source, v_ego, sm['modelV2'])
+        cap = self.get_close_lead_brake_cap(lead, v_ego, fast_closing_accel_min(vision_cap_accel_min) if fast_closing
+                                           else output_accel_min)
         if cap is not None:
           close_lead_caps.append(cap)
           self.close_lead_brake_cap_value = min(self.close_lead_brake_cap_value, cap)
+          if fast_closing:
+            fast_closing_cap = cap if fast_closing_cap is None else min(fast_closing_cap, cap)
         cap = get_honda_crv_5g_low_speed_stopped_lead_cap(
           self.CP, lead, v_ego, vision_cap_accel_min,
         )
@@ -3074,6 +3152,9 @@ class LongitudinalPlanner:
           close_lead_caps.append(low_speed_stop_cap)
           vision_brake_cap_active = True
         vision_low_speed_stop_active |= low_speed_stop_active
+    if fast_closing_cap is not None:
+      # The floor opens to the fast-closing cap's own value only (FAST_CLOSING_LEAD_*).
+      output_accel_min = min(output_accel_min, fast_closing_cap)
     if close_lead_caps:
       close_lead_brake_cap = min(close_lead_caps)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
