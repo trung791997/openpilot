@@ -17,6 +17,14 @@ HKG_CANFD_BASE_FRICTION_THRESHOLD = 0.39
 FLM_SCHEMA_VERSION = 1
 FLM_FRICTION_SPEED_KNOTS = [0.0, 5.0, 10.0, 15.0, 25.0]
 CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT = 1.20
+# Modified-EPS Civic Bosch on the torque controller: the stiffness the driver feels scales as 1/LAF, and friction
+# adds a fixed push on any error. The measured tune is LAF 11.5 / friction 0.025 (STATUS 140); the stock-EPS table
+# (LAF 1.69, friction 0.25) was 3-6x stiffer than the PID and made overriding hard (STATUS 144, lat_pid_sim stiffness).
+# These bound the offline, learned (torqued) and custom-toggle values before the Civic LAF multipliers. The floor is
+# torqued's own lower bound around 11.5 (1 - FACTOR_SANITY). At the floor, friction 0.05 (2x the fit) holds the
+# 5 deg push-back at or under the PID's from 34 mph up and within 1.2x of it at 22 mph; 0.10 was 1.55x at 22 mph.
+CIVIC_BOSCH_MODIFIED_MIN_LAT_ACCEL_FACTOR = 8.0
+CIVIC_BOSCH_MODIFIED_MAX_FRICTION = 0.05
 CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT = 1.00
 CIVIC_BOSCH_MODIFIED_B_VARIANT_LAT_ACCEL_FACTOR_MULT = 1.75
 CIVIC_BOSCH_MODIFIED_B_TRANSITION_SPEED = 12.0

@@ -261,6 +261,30 @@ class TestHondaFingerprint:
 
     assert CP.lateralTuning.which() == "torque"
 
+  @pytest.mark.parametrize("toggle", ["force_torque_controller", "nnff", "nnff_lite"])
+  def test_torque_conversion_uses_the_measured_modified_civic_bosch_tune(self, toggle):
+    # The params.toml row is the stock EPS (LAF 1.69, friction 0.25): 3-6x stiffer than the PID on the modified rack.
+    toggles = SimpleNamespace(**{**dict(force_torque_controller=False, nnff=False, nnff_lite=False), toggle: True})
+    modified_fw = [CarParams.CarFw(ecu=CarParams.Ecu.eps, fwVersion=b'39990-TGG,A020\x00\x00', address=0x18DA30F1, subAddress=0)]
+    stock_fw = [CarParams.CarFw(ecu=CarParams.Ecu.eps, fwVersion=b'39990-TGG-A120\x00\x00', address=0x18DA30F1, subAddress=0)]
+
+    CP = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), modified_fw, False, False, False, toggles)
+    assert CP.lateralTuning.which() == "torque"
+    assert CP.lateralTuning.torque.latAccelFactor == pytest.approx(11.5)
+    assert CP.lateralTuning.torque.friction == pytest.approx(0.025)
+    assert CP.lateralTuning.torque.latAccelOffset == 0.0
+
+    stock_cp = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), stock_fw, False, False, False, toggles)
+    assert not stock_cp.flags & HondaFlags.EPS_MODIFIED
+    assert stock_cp.lateralTuning.torque.latAccelFactor == pytest.approx(1.6917, abs=1e-3)
+    assert stock_cp.lateralTuning.torque.friction == pytest.approx(0.2546, abs=1e-3)
+
+    # unmeasured modified-EPS Hondas keep the table
+    accord_fw = [CarParams.CarFw(ecu=CarParams.Ecu.eps, fwVersion=b'39990-TVA,A150\x00\x00', address=0x18DA30F1, subAddress=0)]
+    accord_cp = CarInterface.get_params(CAR.HONDA_ACCORD, gen_empty_fingerprint(), accord_fw, False, False, False, toggles)
+    assert accord_cp.flags & HondaFlags.EPS_MODIFIED
+    assert accord_cp.lateralTuning.torque.latAccelFactor != pytest.approx(11.5)
+
   def test_honda_clarity_supports_pid_and_torque_paths(self):
     pid_toggles = SimpleNamespace(force_torque_controller=False, nnff=False, nnff_lite=False)
     car_fw = [CarParams.CarFw(ecu=CarParams.Ecu.eps, fwVersion=b'39990-TRW,A020\x00\x00', address=0x18DA30F1, subAddress=0)]

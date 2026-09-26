@@ -713,6 +713,34 @@ def _overrides(pairs):
   return out
 
 
+def stiffness(cp_bytes, params, kind="pid", torque=None, speeds=(5, 10, 15, 20, 25, 30), disps=(2.0, 5.0, 10.0),
+              settle=300, hold=100):
+  """How hard the controller pushes back on a driver who has not (yet) tripped steeringPressed: engaged on a
+  straight (desired curvature 0) with the wheel held at 0, then held at +disp deg (the driver's hand) for hold
+  frames. Returns {speed: {disp: (command after 0.1 s, command after hold)}}. The command is what the car would
+  deliver before the override ramp; the growth between the two columns is the integrator winding against the hand."""
+  res = {}
+  for v in speeds:
+    res[v] = {}
+    for disp in disps:
+      n = settle + hold
+      d = {k: np.zeros(n) for k in FIELDS}
+      d["v"][:] = v
+      d["active"][:] = 1.0
+      d["sr"][:] = 16.0
+      d["stiff"][:] = 1.0
+      ctl = Controller(cp_bytes, params, kind=kind, torque=torque)
+      try:
+        outs = []
+        for k in range(n):
+          out, _ = ctl.step(d, k, 0.0 if k < settle else disp, 0.0, False)
+          outs.append(out)
+      finally:
+        ctl.close()
+      res[v][disp] = (outs[settle + 10], outs[-1])
+  return res
+
+
 def parse_variant(spec):
   """NAME=KIND[,key=value...]. Keys in TORQUE_DEFAULTS tune the torque kinds (vgr=1 turns the firmware map on);
   any other key is a param override (e.g. pid+rff=pid,NrdrLatRateFF=0.5)."""
@@ -764,6 +792,10 @@ def main(argv=None):
   p.add_argument("--variant", action="append", required=True,
                  help="NAME=KIND[,key=value...], KIND in " + "|".join(KINDS) +
                  f"; torque keys {sorted(TORQUE_DEFAULTS)} (defaults {TORQUE_DEFAULTS}), others are param overrides")
+  p = sub.add_parser("stiffness", help="push-back on a held wheel before an override is detected (no plant)")
+  p.add_argument("routes", nargs="+", help="CarParams and logged params are taken from the first route")
+  p.add_argument("--base", action="append")
+  p.add_argument("--variant", action="append", required=True, help="as for compare")
   args = ap.parse_args(argv)
 
   if args.cmd == "replay":
@@ -779,6 +811,19 @@ def main(argv=None):
     with open(args.out, "w") as f:
       json.dump(j, f, indent=1)
     print(f"plant written to {args.out}: delay {plant.delay} frames, {np.round(plant.c, 3).tolist()}")
+    return
+
+  if args.cmd == "stiffness":
+    d = load(args.routes[:1])[0]
+    base = _overrides(args.base)
+    print(f"{d['route']} CarParams; command (1.0 = full) against a wheel held off-centre on a straight, " +
+          "at 0.1 s / after 1 s; no plant, no override ramp")
+    for spec in args.variant:
+      name, kind, torque, over = parse_variant(spec)
+      print(f"  {name} [{kind} {torque or ''} {over or ''}]")
+      for v, row in stiffness(d["cp_bytes"], {**d["params"], **base, **over}, kind, torque).items():
+        cells = "  ".join(f"{disp:4.0f} deg {a:+.3f}/{b:+.3f}" for disp, (a, b) in row.items())
+        print(f"    {v:4.0f} m/s ({v / MPH:3.0f} mph)  {cells}")
     return
 
   with open(args.plant) as f:

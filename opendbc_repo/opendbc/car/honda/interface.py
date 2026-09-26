@@ -15,6 +15,10 @@ from opendbc.car.interfaces import CarInterfaceBase
 
 TransmissionType = structs.CarParams.TransmissionType
 
+CIVIC_BOSCH_MODIFIED_TORQUE_LAF = 11.5
+CIVIC_BOSCH_MODIFIED_TORQUE_FRICTION = 0.025
+
+
 class CarInterface(CarInterfaceBase):
   CarState = CarState
   CarController = CarController
@@ -457,6 +461,18 @@ class CarInterface(CarInterfaceBase):
     ret.radarDelay = 0.1
 
     return ret
+
+  @classmethod
+  def _converted_torque_tune(cls, CP: structs.CarParams, candidate: str) -> None:
+    # ForceTorqueController on a modified-EPS Civic Bosch. The params.toml row (LAF 1.69, friction 0.25) is the
+    # stock EPS: against the modified rack it asks 3-6x the torque per degree of error the PID does, and 10 deg of
+    # error is a full 1.0 command from 34 mph up, so the driver ends up fighting it (lat_pid_sim stiffness, STATUS 144).
+    # The values below are the fit on this car's own drives (STATUS 140: LAF 11.5 m/s^2 per unit command, friction
+    # 0.025 above 25 mph). torqued bounds its learned LAF to a band around this offline value, so it also sets what
+    # the live learner can reach. Other modified-EPS Hondas are unmeasured and keep the table.
+    if candidate == CAR.HONDA_CIVIC_BOSCH and CP.flags & HondaFlags.EPS_MODIFIED:
+      CP.lateralTuning.torque.latAccelFactor = CIVIC_BOSCH_MODIFIED_TORQUE_LAF
+      CP.lateralTuning.torque.friction = CIVIC_BOSCH_MODIFIED_TORQUE_FRICTION
 
   @staticmethod
   def init(CP, can_recv, can_send, communication_control=None):

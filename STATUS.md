@@ -7545,3 +7545,36 @@ Both changes are in `selfdrive/controls/lib/latcontrol_pid.py`.
 - **Tests.** `selfdrive/controls/tests/test_latcontrol_pid_override_fade.py`: 3 of its 4 fail on HEAD; the fourth is the no-press freeze control. The other lateral tests still pass. The two failures in `test_latcontrol.py` (Bolt center limit, Palisade taper) fail on HEAD too and are not related.
 - **Not validated.** Road feel after a press and release in a turn, especially short touches, which now lose some I. Owner: check turn exits after a nudge, and the first second after re-engaging.
 - **Upstream.** Ported onto JamesL787/openpilot `ns-bosch-radar-testing` (`3a257065`) as PR JamesL787/openpilot#14 (branch `lateral/integrator-reset-and-fade-bleed`, one commit, the same two files). His tree lacks the rate-FF, trim-slew and kp-slew work, so the patch was rebuilt on his file. The tests were run against his patched file in this tree, since every module it imports is identical: 4 pass, and 3 fail on his unpatched file.
+
+## 144. Torque controller on the modified-EPS Civic Bosch: why it fought the driver, and the fix (owner: "the controller is often too strong that override becomes somewhat of a safety issue"). Static reading, unit tests and sim only; not driven.
+- **Override handling already applies.** The Honda carcontroller's `_update_steering_torque` scales the lateral command during a driver press for any controller: `HondaOverrideTorqueScale`, `HondaOverrideFadeUpSecs`, `HondaOverrideFadeDownSecs` and `NrdrIncreaseOverrideTolerance`. The torque controller gets the same override torque and fade up/down as the PID. No new setting is needed.
+- **Cause: the torque tune, not the override logic.**
+  - `ForceTorqueController` (and NNFF / NNFF-lite) call `configure_torque_tune`, which loads the params.toml row for `HONDA_CIVIC_BOSCH`: LAF 1.69 and friction 0.25. Those are fitted on the **stock** EPS.
+  - The modified rack needs about 7x less command per m/s² (STATUS 140: LAF 11.5, friction 0.025 above 25 mph).
+  - torqued keeps its learned LAF within ±30 % of the offline value, so starting from 1.69 it can never learn its way out.
+- **New tool: `lat_pid_sim.py stiffness`.** It holds the wheel 5 deg off-centre on a straight and reads the command 0.1 s later (1.0 = full). This is the push-back the driver feels before any override ramp.
+
+  | Controller and tune | 11 mph | 22 mph | 34 mph | 45 mph | 56 mph | 67 mph |
+  |---|---|---|---|---|---|---|
+  | PID | 0.105 | 0.119 | 0.281 | 0.310 | 0.315 | 0.315 |
+  | Torque, stock table | 0.355 | 0.459 | 0.576 | 0.719 | 0.755 | 0.663 |
+  | 2b, measured tune (the new road path, effective LAF 13.8) | 0.069 | 0.089 | 0.098 | 0.110 | 0.106 | 0.084 |
+  | 2b at the backstop floor (LAF 9.6, friction 0.05) | 0.103 | 0.140 | 0.156 | 0.173 | 0.167 | 0.135 |
+
+  - The PID row uses route 276's CarParams. The new test uses the fingerprinted C020 CarParams, whose PID row is 0.45 above 50 mph.
+  - On the stock table, 10 deg of error is a full 1.0 command from 34 mph up.
+- **Fix.**
+  1. **Measured values.** A new hook, `CarInterfaceBase._converted_torque_tune` (no-op by default), runs after the torque conversion. The Honda override sets LAF 11.5 and friction 0.025 for `HONDA_CIVIC_BOSCH` with `EPS_MODIFIED`. Other modified-EPS Hondas are unmeasured and keep the table.
+  2. **Backstop.** `LatControlTorque` bounds the modified Civic's offline, learned and custom-toggle values before its multipliers, both at init and in `update_live_torque_params`. LAF is floored at 8.0 and friction capped at 0.05 (`CIVIC_BOSCH_MODIFIED_MIN_LAT_ACCEL_FACTOR` and `_MAX_FRICTION`). A custom LAF or friction toggle can no longer make it stiff again.
+- **Kept StarPilot's ×1.2 multiplier.** The effective LAF is 13.8, which is softer. In the 25–50 mph band on 263/268/271/276/277 it costs tracking: err rms rises from the 11.5 case by 0.09–0.23 deg per route (263 1.28 → 1.37, 268 1.36 → 1.49, 271 1.37 → 1.60, 276 1.07 → 1.22, 277 1.17 → 1.29), and the PID is 0.88–1.11 deg. So the torque path still tracks worse than the PID in sim (STATUS 142). Dropping the ×1.2 for the measured tune is a follow-up if the owner wants tracking over softness.
+- **Tests.**
+  - `test_honda.py`: the conversion gives 11.5/0.025 through all three toggles. Stock EPS and the modified Accord keep the table.
+  - `test_lat_pid_sim_torque.py`:
+    - Torque push-back is at or under the PID at every speed.
+    - The floor case is within 1.25x of the PID.
+    - The stock table is at least 1.5x the PID.
+    - The bounds hold on the init and live paths.
+  - `test_latcontrol.py`: the Civic multiplier test moved from LAF 3.0 to 10.0, since 3.0 is now floored.
+  - The Bolt/Palisade and `test_straight_road_roll_bias` failures predate this (see 143d) and are not on the Civic path.
+- **What changes on the car.** Nothing on the default PID path. Only with `ForceTorqueController`, NNFF or NNFF-lite on. NNFF uses its own stock-EPS model for the feedforward, which this does not fix; keep NNFF off on the modified rack.
+- **Not validated.** Road feel and override effort on the torque path. Owner: if you try it, start with `ForceTorqueController` on and NNFF off, and push against it on a straight at 30–45 mph first.

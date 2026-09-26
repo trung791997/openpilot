@@ -56,6 +56,11 @@ CENTER_CHATTER_JERK_DEADZONE_LAT_ACCEL_BP = [0.0, 0.18, 0.35]  # m/s^2
 CENTER_CHATTER_JERK_DEADZONE_LAT_ACCEL_V = [1.0, 1.0, 0.0]
 
 
+def bound_civic_bosch_modified_torque_params(lat_accel_factor, friction):
+  """Keep a modified-EPS Civic from running a torque tune stiff enough to fight the driver."""
+  return max(float(lat_accel_factor), CIVIC_BOSCH_MODIFIED_MIN_LAT_ACCEL_FACTOR), min(float(friction), CIVIC_BOSCH_MODIFIED_MAX_FRICTION)
+
+
 def get_center_chatter_friction_jerk_deadzone(v_ego, setpoint, vehicle_deadzone=0.0):
   """Return the small-signal jerk deadzone without changing turn commands."""
   speed_deadzone = np.interp(max(v_ego, 0.0), CENTER_CHATTER_JERK_DEADZONE_SPEED_BP,
@@ -167,6 +172,8 @@ class LatControlTorque(LatControl):
       self.torque_params.latAccelFactor *= RAM_1500_BASE_LAT_ACCEL_FACTOR_MULT
       self.update_limits()
     if self.is_civic_bosch_modified:
+      self.torque_params.latAccelFactor, self.torque_params.friction = bound_civic_bosch_modified_torque_params(
+        self.torque_params.latAccelFactor, self.torque_params.friction)
       self.torque_params.latAccelFactor *= CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT
       if civic_bosch_modified_a_lateral_testing_ground_active():
         self.torque_params.latAccelFactor *= CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT
@@ -208,6 +215,7 @@ class LatControlTorque(LatControl):
     if self.is_ram_1500:
       latAccelFactor *= RAM_1500_BASE_LAT_ACCEL_FACTOR_MULT
     if self.is_civic_bosch_modified:
+      latAccelFactor, friction = bound_civic_bosch_modified_torque_params(latAccelFactor, friction)
       latAccelFactor *= CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT
       if civic_bosch_modified_a_lateral_testing_ground_active():
         latAccelFactor *= CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT

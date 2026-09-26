@@ -200,8 +200,14 @@ class CarInterfaceBase(ABC):
       any(getattr(starpilot_toggles, toggle, False) for toggle in toggles_to_check)
     ):
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
+      cls._converted_torque_tune(ret, candidate)
 
     return ret
+
+  @classmethod
+  def _converted_torque_tune(cls, CP: structs.CarParams, candidate: str) -> None:
+    """Brand hook, run after a PID car was converted to torque from the per-platform table. The table is fit on
+    stock hardware; a brand may replace the values for hardware it has measured."""
 
   @classmethod
   def get_starpilot_params(cls, candidate: str, fingerprint: dict[int, dict[int, int]], car_fw: list[structs.CarParams.CarFw], CP: structs.CarParams, starpilot_toggles: SimpleNamespace):
