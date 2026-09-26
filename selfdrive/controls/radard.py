@@ -216,6 +216,8 @@ RANGE_VREL_RAIL_SIZE_MEAN = True
 # 5 m/s removed all three and kept 26c 4:08 (vision closing 5.3-6.5). MIN_PROB 0.7, not 0.9: the 26c
 # lead is at p 0.74-0.82 during the onset. The 26c gain is small (0.25 s earlier at -1.5, 0.15 s at
 # -1.0, the same at -2.0): past 257.0 the MPC, not the radar, limits the response.
+# Switched on by the RangeVisionAssist param (Galaxy / device settings, default OFF, needs RangeDerivedVrel
+# on too). VISION_ASSIST_GEOMETRY forces it on in code for replay harnesses; it stays False here.
 VISION_ASSIST_GEOMETRY = False
 VISION_ASSIST_MIN_PROB = 0.7
 VISION_ASSIST_RANGE_TOL = 0.15
@@ -395,7 +397,7 @@ class Track:
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
              measurement_update: bool | None = None, t_now: float = 0.0,
-             range_assist: bool = False, vision_closing: float | None = None):
+             range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -441,7 +443,7 @@ class Track:
     # fed the NATIVE speed, and get_RadarState applies the correction to vRel, vLead and vLeadK at
     # publish time. The first version fed the corrected speed here, and aLeadK absorbed every
     # arming step as a hard acceleration (see the rework note at the top of this file).
-    self._update_range_assist(range_assist, measurement_update, t_now, vision_closing)
+    self._update_range_assist(range_assist, measurement_update, t_now, vision_closing, vision_assist)
 
     if measurement_update and self.cnt > 0:
       self.kf.update(self.vLead)
@@ -482,7 +484,7 @@ class Track:
     self.range_assist_correction = 0.0
 
   def _update_range_assist(self, enabled: bool, measurement_update: bool, t_now: float,
-                           vision_closing: float | None = None) -> None:
+                           vision_closing: float | None = None, vision_assist: bool = False) -> None:
     """One-sided correction of the native vRel toward the range-derived rate. D-053, TEST.
 
     Sets self.range_assist_correction to m/s of EXTRA closing, always >= 0: this may only make the
@@ -529,7 +531,7 @@ class Track:
       self._clear_range_assist()
       return
 
-    vis_ok = VISION_ASSIST_GEOMETRY and vision_closing is not None
+    vis_ok = (VISION_ASSIST_GEOMETRY or vision_assist) and vision_closing is not None
     bypass = False
     if self.dRel < RANGE_VREL_ASSIST_MIN_D_REL_M:
       self._clear_range_assist()
@@ -1033,6 +1035,7 @@ class RadarD:
     self._range_assist_params = None
     self._range_assist_frame = 0
     self._range_assist_enabled = False
+    self._vision_assist_enabled = False
 
   def _range_vrel_assist_enabled(self) -> bool:
     """Param read for the D-053 assist. Off unless explicitly enabled. Default OFF.
@@ -1056,6 +1059,11 @@ class RadarD:
         self._range_assist_enabled = self._range_assist_params.get_bool("RangeDerivedVrel")
       except Exception:
         self._range_assist_enabled = False
+      # Same cadence, own try: a .so without the RangeVisionAssist key must not take D-053 down with it.
+      try:
+        self._vision_assist_enabled = self._range_assist_enabled and self._range_assist_params.get_bool("RangeVisionAssist")
+      except Exception:
+        self._vision_assist_enabled = False
     return self._range_assist_enabled
 
   def _reset_preferred_stale_evidence(self, lead_index: int, track_id: int = -1) -> None:
@@ -1139,6 +1147,7 @@ class RadarD:
     # else, which is what makes this a reporting change rather than an association change.
     range_assist_enabled = self.honda_bosch_a_radar and self._range_vrel_assist_enabled()
     lead_track_ids = {i for i in self.prev_lead_track_ids if i >= 0} if range_assist_enabled else set()
+    vision_assist = range_assist_enabled and (VISION_ASSIST_GEOMETRY or self._vision_assist_enabled)
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -1158,11 +1167,12 @@ class RadarD:
       # suppresses duplicate measurement updates when liveTracks has not advanced.
       measurement_update = True if not self.honda_bosch_a_radar else measured
       vis_closing = None
-      if VISION_ASSIST_GEOMETRY and ids in lead_track_ids and len(sm['modelV2'].leadsV3):
+      if vision_assist and ids in lead_track_ids and len(sm['modelV2'].leadsV3):
         vis_closing = vision_assist_closing(rpt[0], rpt[1], sm['modelV2'].leadsV3[0], self.v_ego)
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
-                              range_assist=ids in lead_track_ids, vision_closing=vis_closing)
+                              range_assist=ids in lead_track_ids, vision_closing=vis_closing,
+                              vision_assist=vision_assist)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()

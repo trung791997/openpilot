@@ -50,7 +50,7 @@ def new_track(track_id: int = 1, v_lead: float = V_EGO) -> radard.Track:
 
 
 def feed(track, n, *, d0, range_rate, v_rel, y_rel=0.0, t0=0.0, dt=DT, v_ego=V_EGO,
-         range_assist=True, measured=True, d_offsets=None, vision_closing=None):
+         range_assist=True, measured=True, d_offsets=None, vision_closing=None, vision_assist=False):
   """Drive `track` through n Bosch-A sweeps of a constant-rate range series.
 
   `range_rate` is d(dRel)/dt in m/s -- negative closes. `v_rel` is what U11 claims, independently,
@@ -64,7 +64,7 @@ def feed(track, n, *, d0, range_rate, v_rel, y_rel=0.0, t0=0.0, dt=DT, v_ego=V_E
     if d_offsets is not None:
       d += d_offsets.get(i, 0.0)
     track.update(d, y_rel, v_rel, v_ego + v_rel, measured, measured,
-                 t_now=t, range_assist=range_assist, vision_closing=vision_closing)
+                 t_now=t, range_assist=range_assist, vision_closing=vision_closing, vision_assist=vision_assist)
     fed.append((t, d))
   return fed
 
@@ -747,6 +747,31 @@ class TestVisionAssistGeometry:
     settle(track, d0=30.0, range_rate=-19.4, v_rel=RAIL, y_rel=9.3, vision_closing=18.0)
     assert track.range_assist_correction == 0.0
 
+  def test_param_switch_matches_code_flag(self):
+    """The RangeVisionAssist param reaches Track as vision_assist=True: same result as the code flag."""
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=18.0, vision_assist=True)
+    assert track.range_assist_active
+    assert track.range_assist_correction == pytest.approx(5.9, abs=0.05)
+
+  @pytest.mark.parametrize("values, expected", [
+    ({"RangeDerivedVrel": True, "RangeVisionAssist": True}, (True, True)),
+    ({"RangeDerivedVrel": True, "RangeVisionAssist": False}, (True, False)),
+    ({"RangeDerivedVrel": False, "RangeVisionAssist": True}, (False, False)),   # needs the parent toggle
+    ({"RangeDerivedVrel": True}, (True, False)),                                # .so without the key: D-053 survives
+  ])
+  def test_param_read(self, values, expected):
+    class FakeParams:
+      def get_bool(self, key):
+        if key not in values:
+          raise KeyError(key)
+        return values[key]
+    rd = radard.RadarD.__new__(radard.RadarD)
+    rd._range_assist_params, rd._range_assist_frame = FakeParams(), 99
+    rd._range_assist_enabled = rd._vision_assist_enabled = False
+    assert rd._range_vrel_assist_enabled() is expected[0]
+    assert rd._vision_assist_enabled is expected[1]
+
   def test_helper_gates(self, monkeypatch):
     f = radard.vision_assist_closing
     assert f(76.0, 1.7, FakeVisionLead(), 20.0) == pytest.approx(14.0)
@@ -1004,7 +1029,7 @@ class TestNegativeControlOfTheTestsThemselves:
     stopped doing anything and TestRadardLoopCadence is no longer evidence."""
     original = radard.Track._update_range_assist
 
-    def never_holds(self, enabled, measurement_update, t_now, vision_closing=None):
+    def never_holds(self, enabled, measurement_update, t_now, vision_closing=None, vision_assist=False):
       # NaN never compares equal, so the duplicate branch falls through to the clear.
       self._range_assist_last_t = float('nan')
       return original(self, enabled, measurement_update, t_now, vision_closing)
@@ -1040,7 +1065,7 @@ class TestNegativeControlOfTheTestsThemselves:
     """If the KF did see the correction, TestKalmanPath must notice."""
     original = radard.Track._update_range_assist
 
-    def leaks_into_kf(self, enabled, measurement_update, t_now, vision_closing=None):
+    def leaks_into_kf(self, enabled, measurement_update, t_now, vision_closing=None, vision_assist=False):
       original(self, enabled, measurement_update, t_now, vision_closing)
       self.vLead -= self.range_assist_correction
 

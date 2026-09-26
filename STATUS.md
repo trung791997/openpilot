@@ -8072,3 +8072,23 @@ Commands and results:
 
 Routes 0000023e and 00000258 lost their rlogs mid-run to a lateral cache job and were re-fetched
 from konik before the final fleet. The final numbers above cover all 32 routes.
+
+## 153. The STATUS 152 vision-corroborated range assist is now a toggle, `RangeVisionAssist` (default off, editable in Galaxy and on the device). Static tests and a params round-trip only; nothing has been driven.
+
+Owner: "make it a toggle for me in starpilot. Make sure it's editable".
+
+- **Key.** `RangeVisionAssist` (PERSISTENT, BOOL, default 0) in `common/params_keys.h`.
+- **Galaxy and device.** The row is labelled "Camera-Confirmed Curve Closing Speed". It sits under Advanced Longitudinal Tune, right after Range-Derived Closing Speed, and like that row it can only be changed while the car is parked (`requires_offroad`). It is in both `device_settings_layout.json` and `longitudinal.py`.
+- **radard.** radard reads the key on the same 100-frame cadence as `RangeDerivedVrel`.
+  - It only counts when `RangeDerivedVrel` is also on, since the assist is an extension of D-053.
+  - It is read in its own `try`, so a `.so` without this key reads it as off and leaves D-053 running.
+  - `Track.update` gets `vision_assist=`. The code constant `VISION_ASSIST_GEOMETRY` stays `False` and still forces the assist on for replay harnesses, so the STATUS 152 numbers apply unchanged when the toggle is on.
+- **Params artifacts.** `common/params_pyx.so` and `libcommon.a` were rebuilt natively on this aarch64 Ubuntu 24.04 host with the pinned toolchain: clang 18.1.3, system Python 3.12.3, Cython 3.1.4, `SP_FORCE_TICI=1`, the repo bind-mounted at `/work`, sconsign and both targets cleared first.
+  - Keys went from 856 to 857. The only addition is `RangeVisionAssist`, and nothing was dropped.
+  - `params_pyx.cpp` came out byte-identical.
+  - On the new `.so`, `RangeVisionAssist` reads False by default, put_bool/get_bool round-trips, and it reads False again after remove.
+- **Tests.** `test_range_vrel_assist.py` has 5 new cases: the param switch gives the same result as the code flag, plus a parametrised param read (both on, child off, parent off, key missing).
+  - `test_range_vrel_assist.py`, `test_radard_bosch.py`, `test_py39_compat.py` and `test_longitudinal_planner.py`: 686 passed on the rebuilt `.so`.
+  - ruff is clean on radard and the test file.
+  - The settings row adds 7 ISC002 findings in `longitudinal.py`. They come from the same multi-line subtitle pattern the neighbouring rows use; that file had 104 findings at HEAD.
+- **Not verified.** The toggle has not been exercised in the Galaxy UI on the device. Once it has, `initData.params` on the next route should carry `RangeVisionAssist`.
