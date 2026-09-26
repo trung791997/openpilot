@@ -56,7 +56,7 @@ TUNING_KEYS = (
   "LatFScaleLowSpeed", "LatFScaleStandard", "LatFScaleHighway", "LatGainSchedule",
   "HondaCenterScale", "HondaCenterBoostThreshold", "HondaCenterBoostMinSpeed",
   "NrdrLatAngleRateLimit", "HondaTorqueLowPassFilter",
-  "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway", "NrdrLatUseFirmwareVgr",
+  "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway", "NrdrLatUseFirmwareVgr", "NrdrLatRateFF",
   "HondaLateralPidKpScale", "HondaLateralPidKiScale",
   "NrdrLearnSteerRatio", "NrdrLearnStiffness", "NrdrLearnAngleOffset",
   # carcontroller steering path (opendbc_repo/opendbc/car/honda/carcontroller.py _update_steering_torque)
@@ -467,9 +467,10 @@ class CarControllerSteer:
     return cmd
 
 
-def simulate(d, plant, overrides=None, testing_ground=False):
+def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False):
   """Closed loop. While engaged, hands off and above 4 m/s the plant integrates the delivered command;
-  everywhere else the state is re-synced to the log (the driver, or nobody, is steering)."""
+  everywhere else the state is re-synced to the log (the driver, or nobody, is steering). with_raw adds
+  the target before the slew clip and smoothing, which the logged desired angle already includes."""
   params = dict(d["params"])
   params.update(overrides or {})
   ctl = Controller(d["cp_bytes"], params, testing_ground)
@@ -479,6 +480,7 @@ def simulate(d, plant, overrides=None, testing_ground=False):
   des = np.zeros(n)
   out = np.zeros(n)
   deliv = np.zeros(n)
+  raw = np.zeros(n)
   sim_on = _hands_off(d)
   th = d["angle"][0]
   r = d["rate"][0]
@@ -489,6 +491,7 @@ def simulate(d, plant, overrides=None, testing_ground=False):
         th, r = d["angle"][k], d["rate"][k]
       ang[k] = plant.measure(th) if sim_on[k] else th
       out[k], des[k] = ctl.step(d, k, ang[k], r, steer_limited)
+      raw[k] = ctl.lac.raw_angle_steers_des
       deliv[k] = ccs.step(out[k], d["active"][k] > 0.5, d["v"][k], d["pressed"][k] > 0.5)
       steer_limited = (d["active"][k] > 0.5) and abs(out[k] - deliv[k]) > 1e-2
       if sim_on[k]:
@@ -497,11 +500,12 @@ def simulate(d, plant, overrides=None, testing_ground=False):
         th = th + r * DT
   finally:
     ctl.close()
-  return ang, des, out, deliv
+  return (ang, des, out, deliv, raw) if with_raw else (ang, des, out, deliv)
 
 
-def metrics(d, ang, des, mask=None):
-  """Same definitions as the owner-facing lateral report: per speed band, engaged and hands off."""
+def metrics(d, ang, des, mask=None, raw=None):
+  """Same definitions as the owner-facing lateral report: per speed band, engaged and hands off. With raw
+  (the unshaped target) also the error, lag and curve-entry ratio against it, so target smoothing shows."""
   m0 = _hands_off(d) if mask is None else mask
   v = d["v"]
   res = {}
@@ -525,7 +529,23 @@ def metrics(d, ang, des, mask=None):
       "sign_hyst": sign_changes(des - ang, st) / (st.sum() / 100) if st.sum() else None,
       "lag_s": tracking_lag(des, ang, cur),
     }
+    if raw is not None:
+      rcur = m & (np.abs(raw) > 5)
+      en = rcur & curve_entry(raw)
+      res[name].update({
+        "err_rms_raw": float(np.sqrt(np.mean((raw[m] - ang[m]) ** 2))),
+        "lag_raw_s": tracking_lag(raw, ang, rcur),
+        "entry_ratio_raw": float(np.median(ang[en] / raw[en])) if en.sum() > 300 else None,
+      })
   return res
+
+
+def curve_entry(des, frames=10, rate=5.0):
+  """Frames where |des| grows faster than rate deg/s over the last frames (lat_tune_analyzer's entry part)."""
+  a = np.abs(des)
+  grow = np.zeros(len(a))
+  grow[frames:] = (a[frames:] - a[:-frames]) / (frames * DT)
+  return grow > rate
 
 
 def sign_changes(err, straight):
@@ -569,6 +589,9 @@ def print_metrics(label, res):
           f"{_fmt(r['curve_ratio'], '.3f')} ({r['curve_s']:.0f} s) | straight rms {_fmt(r['straight_rms'], '.2f')}" +
           f"  sign changes {_fmt(r['zero_cross'], '.1f')}/s ({_fmt(r['sign_hyst'], '.2f')}/s at {SIGN_HYST_DEG} deg)" +
           f" | lag {_fmt(r['lag_s'], '.2f')} s")
+    if "err_rms_raw" in r:
+      print(f"    {'':15s} vs unshaped target: err rms {r['err_rms_raw']:5.2f} deg  lag {_fmt(r['lag_raw_s'], '.2f')} s" +
+            f"  entry actual/target {_fmt(r['entry_ratio_raw'], '.3f')}")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -653,8 +676,8 @@ def main(argv=None):
   for d in ds:
     print(f"== {d['route']}  (plant-simulated; desired curvature held to the log)")
     for label, ov in variants:
-      ang, des, _, _ = simulate(d, plant, ov)
-      print_metrics(label, metrics(d, ang, des))
+      ang, des, _, _, raw = simulate(d, plant, ov, with_raw=True)
+      print_metrics(label, metrics(d, ang, des, raw=raw))
 
 
 if __name__ == "__main__":

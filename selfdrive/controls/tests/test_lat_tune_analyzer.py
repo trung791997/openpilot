@@ -411,3 +411,11 @@ def test_fingerprint_matches_between_initdata_bytes_and_typed_device_params():
   assert lat.tuning_fingerprint({"LatPScaleStandard": 105}) != lat.tuning_fingerprint({"LatPScaleStandard": 110})
   sched = '{"v_mph":[20,50],"p":[100,110]}'
   assert lat.tuning_fingerprint({"LatGainSchedule": sched}) == lat.tuning_fingerprint({"LatGainSchedule": sched.encode()})
+
+
+def test_added_tuning_key_leaves_earlier_fingerprints_alone_until_it_is_used():
+  # A route logged before NrdrLatRateFF existed and one logged after with it at its off value pool together.
+  before = {"LatPScaleStandard": "105"}
+  assert lat.tuning_fingerprint({**before, "NrdrLatRateFF": "0.0"}) == lat.tuning_fingerprint(before)
+  assert lat.tuning_fingerprint({**before, "NrdrLatRateFF": 0}) == lat.tuning_fingerprint(before)
+  assert lat.tuning_fingerprint({**before, "NrdrLatRateFF": "0.5"}) != lat.tuning_fingerprint(before)

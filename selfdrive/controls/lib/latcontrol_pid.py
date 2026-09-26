@@ -190,6 +190,12 @@ NRDR_ANGLE_RATE_LIMIT_DEG_S = 300.0  # 0 disables
 # road tune carries over verbatim.
 NRDR_TARGET_SMOOTH_TAU = 0.1
 
+# nrdr: desired-rate feedforward, torque fraction per 100 deg/s of (shaped) target slew. The rack
+# damps angle rate, so P alone only moves the wheel once an error has built up: replay and sim
+# put the angle 0.15-0.25 s behind the target on every logged route (STATUS 132). This term pays
+# for the slew as it is asked for. Default 0 = off (STATUS 133 has the sim sweep).
+NRDR_RATE_FF_DEFAULT = 0.0
+
 def rate_limit_desired_angle(angle_deg: float, prev_angle_deg: float, max_rate_deg_s: float, dt: float) -> float:
   if max_rate_deg_s <= 0.0 or not math.isfinite(angle_deg):
     return angle_deg
@@ -505,6 +511,9 @@ class LatControlPID(LatControl):
     self.lpf_tau_low = NRDR_TARGET_SMOOTH_TAU
     self.lpf_tau_standard = NRDR_TARGET_SMOOTH_TAU
     self.lpf_tau_highway = NRDR_TARGET_SMOOTH_TAU
+    self.rate_ff = NRDR_RATE_FF_DEFAULT
+    # The target before slew clip and smoothing, for offline tools scoring the shaping lag.
+    self.raw_angle_steers_des = 0.0
 
   def update_honda_lateral_pid_gain_scale(self, starpilot_toggles):
     if not self.is_honda_pid_lateral:
@@ -600,6 +609,7 @@ class LatControlPID(LatControl):
     #
     # Only while active: while disengaged both states track the raw target below, so
     # re-engagement snaps to the current command instead of slewing in from a stale value.
+    self.raw_angle_steers_des = angle_steers_des_no_offset + params.angleOffsetDeg
     if active and self.is_eps_modified:
       angle_steers_des_no_offset = rate_limit_desired_angle(
         angle_steers_des_no_offset, self.prev_rate_limited_angle, self.angle_rate_limit_deg_s, self.dt,
@@ -693,6 +703,7 @@ class LatControlPID(LatControl):
           self.lpf_tau_standard = _get_param_float(self.params, "HondaLpfTauStandard", NRDR_TARGET_SMOOTH_TAU, 0.0, 5.0)
           self.lpf_tau_highway = _get_param_float(self.params, "HondaLpfTauHighway", NRDR_TARGET_SMOOTH_TAU, 0.0, 5.0)
           self.use_firmware_vgr = _get_param_bool(self.params, "NrdrLatUseFirmwareVgr")
+          self.rate_ff = _get_param_float(self.params, "NrdrLatRateFF", NRDR_RATE_FF_DEFAULT, 0.0, 2.0)
 
         p_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_p_scale_low, self.lat_p_scale_standard, self.lat_p_scale_highway)
         i_scale = _lat_pid_scale_banded(CS.vEgo, self.lat_i_scale_low, self.lat_i_scale_standard, self.lat_i_scale_highway)
@@ -701,6 +712,8 @@ class LatControlPID(LatControl):
         i_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "i", CS.vEgo, i_scale)
         f_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "f", CS.vEgo, f_scale)
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
+        if self.rate_ff > 0.0:
+          output_torque += self.rate_ff * desired_angle_delta / (100.0 * self.dt)
 
         lane_change = bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False))
         if lane_change:

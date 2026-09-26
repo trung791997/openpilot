@@ -70,7 +70,7 @@ TUNING_KEYS = (
   "LatFScaleLowSpeed", "LatFScaleStandard", "LatFScaleHighway", "LatGainSchedule",
   "HondaLateralPidKpScale", "HondaLateralPidKiScale",
   "HondaCenterScale", "HondaCenterBoostThreshold", "HondaCenterBoostMinSpeed",
-  "HondaTorqueLowPassFilter", "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway",
+  "HondaTorqueLowPassFilter", "HondaLpfTauLowSpeed", "HondaLpfTauStandard", "HondaLpfTauHighway", "NrdrLatRateFF",
   "HondaOverrideTorqueScale", "HondaOverrideFadeUpSecs", "HondaOverrideFadeDownSecs",
   # Selects the rack map that turns curvature into the target wheel angle (firmware VGR table vs
   # the road-measured curve). Switching moves the centre gain ~10 % and the taper, so every angle
@@ -123,9 +123,16 @@ def _fingerprint_value(v):
   return repr(f) if math.isfinite(f) else s
 
 
+# Keys added to TUNING_KEYS after routes were already hashed, with the value at which they leave the controller
+# unchanged. Unset or at that value they stay out of the hash, so adding one does not re-hash every earlier route
+# (which would split the pool and reset the learned state on update).
+FINGERPRINT_ADDED_OFF = {"NrdrLatRateFF": repr(0.0)}
+
+
 def tuning_fingerprint(values):
   """Short hash of the manual tuning. `values` maps key -> param value (raw str/bytes, typed, or None)."""
-  parts = [f"{k}={_fingerprint_value(values.get(k))}" for k in TUNING_KEYS]
+  norm = {k: _fingerprint_value(values.get(k)) for k in TUNING_KEYS}
+  parts = [f"{k}={v}" for k, v in norm.items() if not (k in FINGERPRINT_ADDED_OFF and v in ("", FINGERPRINT_ADDED_OFF[k]))]
   return f"{zlib.crc32(';'.join(parts).encode()):08x}"
 
 

@@ -6959,3 +6959,36 @@ Routes: `00000262`, `263`, `268`, `26b`, `26c`, `26f`, `270`, `271` (per-frame a
 - **Proposed, not implemented:** a fast recovery after an isolated graze (no other press within 1.5 s, so a real fight keeps the 1 s fade), as a default-off carcontroller param. `HondaOverrideFadeDownSecs` 0.2 is an existing setting the owner can try. Both change override feel and need a drive to judge.
 
 Tests: analyzer 62 (was 53; 9 new cases, 3 adjusted to deadband units), `test_lat_pid_sim.py` 5 new, CLI 7, workspace, UI frontend and py39-compat pass. Galaxy test files collected together with `-k` hit pre-existing module-stub import errors (`accel_profile`, `testing_grounds`); each file passes alone.
+
+## 133. Tracking lag: `NrdrLatRateFF` desired-rate feedforward (new, default off), target smoothing scored against the unshaped target. Unit tests and sim only; not driven.
+
+Owner request: cut the 0.15–0.25 s lag found in 132. Sim: `lat_pid_sim` closed loop on `263`/`268`/`271`, plant fitted on 260–263 at delay 5 + 0.1° quantisation (the best closed-loop match in 132), Kp/Ki 1.0 as logged. Cross-checked on the undelayed plant. **The sim runs more lag than the logs (0.23–0.38 s vs 0.15–0.25 s), so read the numbers as relative.**
+
+**Sim change: score against the target before shaping.** The logged desired angle is after the 300 °/s slew clip and the `HondaLpfTau*` smoothing, so every earlier lag number hid the smoothing's own delay. `LatControlPID.raw_angle_steers_des` now keeps the unshaped target (offline use only), `simulate(..., with_raw=True)` returns it, and `sweep`/`sim` print error rms, lag and curve-entry ratio (|target| growing > 5 °/s, as in the tuner) against it. Against the unshaped target the lag is 0.31–0.48 s at 25–50 mph.
+
+**New param `NrdrLatRateFF` (float, 0–2, default 0 = off).**
+- Adds `k × (shaped target slew) / 100 °/s` to the NRDR PID output, before the center-taper/phase scales. The rack damps rate, so P only moves the wheel once an error has built up; this pays for the slew as it is asked for.
+- Plumbing: `params_keys.h`, device settings (NRDR tuning), Galaxy layout, and both tuner `TUNING_KEYS`. The tuner fingerprint leaves it out while unset or 0, so earlier routes still pool and the learned state does not reset on update (`FINGERPRINT_ADDED_OFF`).
+- Sim, 25–50 mph (263 / 268 / 271):
+
+  | k | err rms ° | lag s (vs logged-style target) | entry ratio vs unshaped | straight rms ° | sign changes /s at 0.15° |
+  |---|---|---|---|---|---|
+  | 0 | 0.96 / 1.17 / 1.13 | 0.30 / 0.30 / 0.29 | 0.62 / – / 0.72 | 0.56 / 0.90 / 0.72 | 0.28 / 0.25 / 0.31 |
+  | 0.25 | 0.91 / 1.11 / 1.07 | 0.25 / 0.28 / 0.25 | 0.64 / – / 0.74 | 0.51 / 0.85 / 0.68 | 0.28 / 0.25 / 0.31 |
+  | **0.5** | 0.87 / 1.06 / 1.01 | 0.21 / 0.26 / 0.22 | 0.67 / – / 0.76 | 0.47 / 0.80 / 0.65 | 0.28 / 0.24 / 0.29 |
+  | 0.75 | 0.85 / 1.03 / 0.97 | 0.18 / 0.24 / 0.18 | 0.69 / – / 0.78 | 0.43 / 0.76 / 0.63 | 0.29 / 0.24 / 0.29 |
+  | 1.0 | 0.84 / 1.02 / 0.94 | 0.14 / 0.22 / 0.14 | 0.73 / – / 0.80 | 0.40 / 0.74 / 0.62 | 0.29 / 0.24 / 0.29 |
+  | 1.5 | 0.86 / 1.04 / 0.92 | 0.09 / 0.23 / 0.07 | 0.78 / – / 0.84 | 0.38 / 0.71 / 0.60 | 0.26 / 0.24 / 0.28 |
+
+- Below 25 mph: err rms 9.96 / 18.6 / 11.4 → 9.06 / 17.7 / 9.48 at 0.5, curve ratio 0.86–0.91 → 0.89–0.93. Weave rises from about 0.75: sign changes 0.38 / 0.32 / 0.35 → 0.36 / 0.44 / 0.35 at 0.5, 0.43 / 0.42 / 0.44 at 0.75, and 0.30 / 0.64 / 0.51 at 1.5, where 271 err rms gets worse than off (11.8).
+- Undelayed plant, same routes: the same picture (25–50 mph err rms 0.93 / 1.15 / 1.11 → 0.85 / 1.05 / 1.00 at 0.5; low-speed sign changes 0.33 / 0.28 / 0.31 at 0.5).
+- **Default stays 0.** Sim-only and plant-dependent, and it adds torque on every target slew. **Recommendation to try on the road: 0.5.** In the sim it takes 0.04–0.09 s off the lag and 9–11 % off the 25–50 mph error, with no rise in weave there. Watch the tuner's low-speed sign-change rate and the override rate.
+
+**Target smoothing (`HondaLpfTau*`): no change.**
+- 25–50 mph, `HondaLpfTauStandard` 0.1 → 0.05 → 0 against the unshaped target: err rms 1.24 / 1.30 / 1.36 → 1.13 / 1.19 / 1.12 at 0. Lag against the unshaped target 0.43 / 0.48 / 0.38 → 0.34 / 0.31 / 0.28.
+- But sign changes 0.28 / 0.25 / 0.31 → 0.32 / 0.29 / 0.39, and error against the shaped target is flat or worse.
+- With `NrdrLatRateFF` 0.5, tau 0 still adds weave (271: 0.29 → 0.37).
+- `HondaLpfTauLowSpeed` 0 is worse outright below 25 mph (err rms up 1–6 %, sign changes up to 0.47).
+- The smoothing is paying for itself in weave; the rate feedforward is the cheaper lag fix.
+
+Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torque follows target slew, raw target is pre-shaping); analyzer 63 (1 new: fingerprint unchanged by an unset or zero added key); `tools/lateral/tests` and py39 compat pass. `test_latcontrol.py` has 4 failures that predate this change: bolt/palisade taper, planner jerk scale, torqued roll bias (same with the HEAD controller).
