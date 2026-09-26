@@ -7703,3 +7703,108 @@ A flat 0.35 ceiling from 25 mph would clip the real curves. A speed-scheduled ce
 - **Per-route plant fits are not identifiable:** gain 190–2800 with delay pinned at the grid minimum, so they were not used.
 
 **Tool change.** `lat_pid_sim.py` variant keys `kp`, `ki`, `kf` and `rate_damp` apply to the pid kind only. They run another fork's flat gains and rate damping through this repo's PID; `kf` bypasses the banded modified-EPS kf. Tests are in `tools/lateral/tests/test_lat_pid_sim_torque.py`.
+
+## 148. Close-lead brake cap: in experimental mode the 0.7*aLeadK term is bounded by the lead's stop geometry (routes 00000278 / 0000027a). Evidence is open- and closed-loop replay plus unit tests only; nothing has been driven.
+
+- **Finding.** In experimental mode `get_close_lead_brake_cap` is built against the vehicle minimum (-3.5). Its `0.7*lead_brake` term set the peak brake in 8 of the 9 exp-mode bookmarks on 00000278 / 0000027a. It counted a stopped or crawling lead's aLeadK as "braking" and pulsed with it.
+- **Change (`longitudinal_planner.py`, function body only).** When the cap's `accel_min` is below A_CRUISE_MIN (experimental mode; in chill only once `accel_limits_turns[0]` has followed a_desired below -1.0), the demand becomes `max(match, min(match + 0.7*b, stop))`, where `stop = vEgo^2 / (2*(gap + vLead^2/(2b)))`: ego stops inside the usable gap plus the lead's own stopping distance.
+  - This is the same stop term `get_lead_geometry_required_accel` uses.
+  - The change only softens, and never below the match term.
+  - A moving lead that brakes normally keeps the full demand.
+  - At the comfort floor (chill) the cap is unchanged from HEAD.
+  - The change adds no new state.
+- **Variants tried for the bound:**
+  - V2g applies it in both modes.
+  - V2b measures the stop to max(STOP_DISTANCE, target_gap) instead of target_gap.
+  - V2a applies it only below the comfort floor. **V2a was chosen.**
+- **Replay.** 30 routes in ~/routes, open loop, both modes as logged (271 from seg 7; 277 without segs 17-34), HEAD 3b5134d9 planner and radard. Variants tried:
+  - V0 HEAD
+  - V1 drop the term
+  - V2g stop-geometry bound (chosen)
+  - V2s drop the term below vLead 1.5
+  - V3g / V3a V2g / V1 plus mildest-of-3 persistence
+  - V4 no cap (reference only)
+
+  | var | <-1.5 | <-2.5 | <-3.0 | exp <-1.5 | 0.5 s drops | pulses | new -1.5 | softer >0.3 | later >0.2 s | stock-ACC late >0.3 s (of 54) |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | V0 | 11171 | 2914 | 1432 | 1439 | 80 | 33 | - | - | - | 16 |
+  | V1 | 11003 | 2795 | 1368 | 1198 | 53 | 24 | 7 | 14 | 12 | 14 |
+  | V2g | 11018 | 2809 | 1376 | 1280 | 75 | 25 | 1 | 9 | 5 | 16 |
+  | V2s | 11072 | 2844 | 1402 | 1335 | 78 | 33 | 0 | 5 | 2 | 16 |
+  | V3g | 11029 | 2815 | 1387 | 1250 | 70 | 21 | 2 | 10 | 6 | 15 |
+  | V3a | 11089 | 2815 | 1384 | 1187 | 53 | 21 | 8 | 15 | 13 | 14 |
+  | V4 | 11143 | 2854 | 1424 | 1122 | 50 | 19 | 10 | 14 | 14 | 14 |
+
+- **Bookmarks (min output, V0 -> V2g; V2a is identical on all 11).**
+  - 278 BM2 -3.50 -> -1.69 (2 pulses -> 0).
+  - 278 BM3 -3.25 -> -1.74.
+  - 278 BM4 -2.73 -> -1.89.
+  - 278 BM5 -2.71 -> -1.77.
+  - 27a BM0 -1.97 -> -1.37.
+  - 27a BM1 -3.02 -> -1.37; the +1 s pulse -2.97 -> -0.53.
+  - 27a BM4 -2.39 -> -1.20.
+  - 278 BM1 stays at -3.50. It is a radar range jump (64 -> 55 m, vRel -6.1, aLeadK -5.5 on a 15.7 m/s lead, vision 20.2 m/s): an input glitch that geometry cannot tell from a hard brake.
+  - 278 BM0 and 27a BM2/BM3 are chill mode, the cap is not involved, and they are unchanged.
+- **Protected cases: V2g, V2b and V2a are identical to V0.**
+  - 25b 1338.8, 25e 318.1, 25f 483.1 and 0263 374.3: same minimum and same -1.5 crossing.
+  - 271 BM0: min -6.29, -1.5 crossing at -2.50 s.
+- **Softer or later brakes under V2g (9 softer, 5 later), all exp mode.** V2a has the same list; its fleet rerun (32 routes with 24f and 258, 182 episodes) is below. Each was checked against the stop need from radar (physR) and vision (physV):
+  - 0232 1233.8: stopped lead at 51 m; -2.51 -> -2.04, crossing unchanged; need 1.25 / 1.55.
+  - 0236 858.0: radar aLeadK -4.46 while vision a -0.07; -3.50 -> -2.04; need 0.23 / 0.92.
+  - 026c 756.6: stopped lead at 96 m, railed vRel -13.5; -3.32 -> -1.91, +0.25 s; V2g -1.40..-1.75 against a need of ≤1.24 / ≤1.10.
+  - 278 390.5 (BM2): -3.50 -> -1.69, +0.5 s; need 0.87 / 1.47.
+  - 278 447.0 (BM3): stopped lead at 85 m; -3.25 -> -1.74, +3.65 s; need about 0.9-1.1.
+  - 278 737.7 (BM4): stopped lead at 73 m; -2.73 -> -1.89; need 1.25 / 1.64.
+  - 278 854.9 (BM5): lead at 40 m doing 11 m/s; -2.71 -> -1.77; need 1.55 / 0.97.
+  - 27a 324.1: slow lead at 60 m; -3.02 -> -1.26, never crosses -1.5; need ≤0.93.
+  - 27a 607.8: lead at 17.7 m doing 0.3 m/s, vEgo 4.3; -2.39 -> -1.20; need 0.66 / 1.02.
+  - The one new crossing, 0245 46.7 (-1.50 -> -1.51), is threshold noise.
+  - Every softer brake is a phantom, a stopped or slow lead far enough away, or still at least the stop need.
+- **Why not the others.**
+  - V1 is later on real closings (0268 326.1 +0.25 s with a need of 1.8; 026c 257.1 +0.2 s with a need of 2.1) and adds 7 new crossings.
+  - V3 adds state and onset delay (0232 +0.2 s, 026c +0.35 s) with no pulse gain at the bookmarks.
+  - V2s leaves 278 BM2/BM3 and 27a BM1 mostly unfixed.
+  - Fix (5), the exp->chill release, was not taken: it would add a guard.
+- **Fleet rerun (32 routes, 182 episodes).**
+
+  | var | <-1.5 | <-2.5 | <-3.0 | exp <-1.5 | drops | pulses | new -1.5 | softer | later | stock late (of 54) |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | V0 | 11473 | 2914 | 1432 | 1506 | 82 | 33 | - | - | - | 16 |
+  | V2g | 11317 | 2809 | 1376 | 1347 | 77 | 25 | 1 | 10 | 5 | 16 |
+  | V2b | 11322 | 2810 | 1377 | 1352 | 77 | 25 | 0 | 9 | 5 | 16 |
+  | V2a | 11253 | 2809 | 1376 | 1347 | 77 | 25 | 0 | 10 | 5 | 16 |
+
+  - The softer lists of V2g and V2a add one chill entry, 0236 2096.9: min -2.14 -> -1.79 (V2a -1.79 as well). The lead is 10.4 m ahead at vRel -1.0 with aLeadK +0.8, and the need is 0.10 / 0.48.
+  - At 2096.9 the close-lead cap is inactive (0.0) in every variant, and the frame is the first one after engagement. The difference is therefore per-variant planner state carried across the disengaged stretch, not the cap law. The same effect produces V2a's lower chill <-1.5 count (66 frames on 0236). The state was not traced further.
+- **Tests.**
+  - New cases in `test_longitudinal_planner.py`, run against the vehicle minimum:
+    - a stopped lead's aLeadK is ignored;
+    - a slow lead is bounded by the stop geometry, milder than HEAD;
+    - a fast braking lead keeps the full demand.
+  - A further new case covers the comfort floor: at A_CRUISE_MIN the cap equals HEAD's full demand, and at -3.5 it is milder.
+  - `test_off_axis_lead_keeps_vision_corroborated_brake` now asserts < -2.75, the stop need of 2.77 for aLeadK -7.8 at 17.1 m/s over its 43.8 m gap (was < -3.0; output -2.94).
+  - 607 pass with longcontrol. Ruff reports no new findings.
+- **Held patch.** /tmp/cf/fastclose_floor.patch still applies cleanly (`git apply --check`). It builds the cap against the vehicle minimum for fast-closing leads in chill, so V2a's bound would also apply to those leads once it lands. Its own test lead has aLeadK 0, so that test is unaffected. The combination has not been replayed.
+- **Closed loop, STATUS 61/64 method** (from pk-6, ego accel follows `output_a_target` through a lag with tau 0.35, lead replayed and not reactive, dRel/vRel recomputed against the simulated ego, model and aLeadK as logged, HEAD radard re-run from CAN, metrics pk-6..pk+8). The V0 column reproduces STATUS 64's base within 0.8 m.
+
+  | Event | V0 minGap m / minTTC s / peak | V2g | V2b | V2a | V4 (no cap) |
+  |---|---|---|---|---|---|
+  | 24f B 170.2 | 13.99 / 4.22 / -1.99 | = | = | = | 14.23 / 4.31 / -1.95 |
+  | 24f C 272.7 | 17.42 / 5.93 / -2.10 | 17.36 / 5.93 | 17.38 / 5.93 | = | 17.42 / 5.94 |
+  | 24f D 367.4 | 28.45 / 4.27 / -2.28 | = | = | = | 27.29 / 3.87 / -2.12 |
+  | 24f E 449.1 | 9.04 / 4.28 / -1.00 | **7.77 / 3.58** | **8.19 / 3.84** | = | 7.60 / 3.61 |
+  | 24f E to 468 (stop) | 5.16 / 4.25 | **4.75 / 2.89** | 5.31 / **3.44** | = | 4.75 / 2.95 |
+  | 24f F 595.7 | 38.61 / 9.02 / -1.00 | = | = | = | 36.56 / 7.94 |
+  | 258 63:50, 3831.9-3860 (seg 64 added, through the 2nd stop) | 7.97 / 4.25 / -1.47 | **4.80** / 4.24 | **5.50** / 4.25 | = | 5.13 / 4.13 / -1.66 |
+
+  - E and 258's second stop are chill-mode, low-speed stops (comfort floor -1.0) behind a lead slowing to a stop with aLeadK around -1.
+  - There the `0.7*aLeadK` term holds the cap near -1.0. The stop-geometry bound relaxes it to the cap's own 2-3 m standoff, and ego closes in.
+  - At the E stop, V0 stops 6.16 m back and V2g 5.13 m back.
+  - V2b fails both E (0.9 m / 0.4 s, and 0.8 s TTC through the stop) and 258 (2.5 m).
+  - V2a leaves chill untouched and equals V0 on every closed-loop event.
+- **Not verified.** There has been no road drive. The 278 BM1 glitch is not addressed. In chill the cap still counts a crawling lead's aLeadK (by design, per E and 258). Interaction with the held fast-closing patch has not been replayed.
+
+**Rejected the same day (replay only; nothing committed):**
+- **Less-closing correction for a railed lead with slowly shrinking range (277 38:17.4, track 55).** The motivating lead was in a D-043 coast, with a range burst at the rail value; vision was at prob 0.15-0.46 at 104-118 m. The strict gate never fired there. On the fleet it softened real closings: 266 484.2 (a vision-confirmed brake) -2.28 -> -2.18, and 263 358.6 released -2.00 -> -1.30. This is the same failure as fix 1 and STATUS 111/129. Patch: /tmp/rl/rail_slow.patch.
+- **Path-relative replacement for radard's `|yRel| <= 1.5` D-053 gate (26c 4:08).** At 4:08 it corrected on one cycle only (-2.0 crossing 0.05 s earlier); the long fit's span/residual across D-043 coasts is the real limiter. It added spurious -1.5 crossings on curve range wobble at 70-95 m (26c 649.9, 237 942.8), and 236 2211.4 went -3.16 -> -3.50. The lateral gate was filtering the curve range walk. Patch: /tmp/yg/pathgate.patch.
+- **Held, not rejected: the close-lead cap built against the vehicle minimum for a vision-corroborated radar lead closing >= 10 m/s at TTC <= 6 s (271 BM0).** -1.5 crossing -2.49 -> -3.19 s. Costs: frames < -3.0 1387 -> 1894, 0.5 s drops 73 -> 88, a one-tick step, and 025f 483.0 min -3.88 -> -3.50 (a single-tick artifact). Held because the owner reported rough braking; it would combine with this item's bound, and that combination is unreplayed. Patch: /tmp/cf/fastclose_floor.patch.

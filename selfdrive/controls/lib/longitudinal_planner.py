@@ -1049,7 +1049,27 @@ class LongitudinalPlanner:
     # smaller one either way -- at that sample aLeadK supplied 85% of the total -- so this makes the
     # cap correct, not gentle. A spurious aLeadK still dominates it; that is an input problem, and
     # deliberately not something this function pretends to solve.
-    required_decel = (closing_speed ** 2) / (2.0 * available_gap) + 0.7 * lead_brake
+    match_decel = (closing_speed ** 2) / (2.0 * available_gap)
+    required_decel = match_decel + 0.7 * lead_brake
+    # A lead cannot shed more speed than it has. When the cap is built below the cruise comfort floor
+    # (experimental mode, where accel_min is the vehicle minimum; or chill once accel_limits_turns[0]
+    # has followed a_desired below -1.0), the lead-brake term is bounded by the stop geometry -- ego stops within the
+    # usable gap plus the lead's own stopping distance at aLeadK, the same stop term
+    # get_lead_geometry_required_accel uses -- and never taken below the match term. It bites only
+    # when the lead would stop well inside the gap (a slow or stopped lead, or an extreme aLeadK).
+    # Routes 00000278 / 0000027a: the 0.7*aLeadK term set the peak brake in 8 of the 9 exp-mode
+    # bookmarks, counting a stopped or crawling lead's "braking" and pulsing with aLeadK. Open-loop
+    # replay, 30 routes (STATUS 148): 7 of those 8 peaks -3.50..-1.97 -> -1.20..-1.89, the 27a 327 s
+    # pulse -2.97 -> -0.53; every softer brake still meets this stop geometry. 278 379 s stays at
+    # -3.5: a radar range jump reporting aLeadK -5.5 on a 16 m/s lead.
+    # Not below the comfort floor: there the cap is at most -1.0 and the aLeadK term is what buys the
+    # standstill gap. Closed loop (STATUS 64 method), bounding it in chill lost 1.3 m / 0.7 s TTC on 24f
+    # E (stopping 1.0 m closer) and ended 258 63:50's second stop 3.2 m closer; measuring the
+    # stop to STOP_DISTANCE instead of target_gap still lost 0.9 m on E and 2.5 m on 258.
+    if lead_brake > 0.0 and accel_min < A_CRUISE_MIN:
+      v_lead = max(float(lead.vLead), 0.0)
+      stop_decel = v_ego ** 2 / (2.0 * (available_gap + v_lead ** 2 / (2.0 * lead_brake)))
+      required_decel = max(match_decel, min(required_decel, stop_decel))
 
     ramp = float(np.clip((required_decel - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN) /
                          (CLOSE_LEAD_BRAKE_CAP_RAMP_FULL - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN), 0.0, 1.0))

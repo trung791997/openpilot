@@ -812,6 +812,84 @@ def test_acc_mode_uses_close_raw_lead_when_tracking_lead_is_debounced(model_vers
   )
 
 
+def _close_cap_geometry(planner, lead, v_ego):
+  # Mirrors get_close_lead_brake_cap's gap arithmetic so the tests can state the bound it must respect.
+  lead_brake = max(0.0, -float(lead.aLeadK))
+  reaction_t = max(planner.longitudinal_actuator_delay, planner.dt)
+  closing = max(0.0, v_ego - lead.vLead)
+  projected = closing + lead_brake * reaction_t
+  gap = max(float(lead.dRel) - float(np.clip(2.0 + 0.2 * v_ego, 2.0, 6.0)) - projected * reaction_t, 0.5)
+  match = closing ** 2 / (2.0 * gap)
+  stop = v_ego ** 2 / (2.0 * (gap + lead.vLead ** 2 / (2.0 * lead_brake))) if lead_brake > 0.0 else float("inf")
+  return match, stop, lead_brake
+
+
+def test_close_lead_brake_cap_ignores_stopped_lead_braking():
+  # 00000278 / 0000027a: a stopped lead with a spurious aLeadK drove the exp-mode cap to -3.5. A lead at
+  # vLead 0 has no speed left to shed, so its aLeadK must not change the cap at all.
+  v_ego = 12.0
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=v_ego)
+  braking = make_lead(status=True, d_rel=40.0, v_lead=0.0, a_lead=-4.0, radar=True)
+  still = make_lead(status=True, d_rel=40.0, v_lead=0.0, a_lead=0.0, radar=True)
+  cap_braking = planner.get_close_lead_brake_cap(braking, v_ego, -3.5)
+  cap_still = planner.get_close_lead_brake_cap(still, v_ego, -3.5)
+  assert cap_still is not None
+  match, stop, _ = _close_cap_geometry(planner, braking, v_ego)
+  assert stop == pytest.approx(match)
+  # Only the reaction-time delay buffer still sees aLeadK (a few cm of gap); the 0.7*aLeadK term is gone.
+  assert cap_braking == pytest.approx(-match)
+  assert cap_braking == pytest.approx(cap_still, abs=0.02)
+
+
+@pytest.mark.parametrize("d_rel,v_lead,a_lead", [(30.0, 2.0, -3.0), (45.0, 4.0, -2.5), (35.0, 1.0, -5.0)])
+def test_close_lead_brake_cap_slow_lead_is_bounded_by_stop_geometry(d_rel, v_lead, a_lead):
+  # A slow braking lead: the cap is milder than match + 0.7*aLeadK but never milder than stopping behind
+  # the lead's own stopping point, and never milder than the match term.
+  v_ego = 12.0
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=v_ego)
+  lead = make_lead(status=True, d_rel=d_rel, v_lead=v_lead, a_lead=a_lead, radar=True)
+  cap = planner.get_close_lead_brake_cap(lead, v_ego, -3.5)
+  match, stop, lead_brake = _close_cap_geometry(planner, lead, v_ego)
+  old_demand = match + 0.7 * lead_brake
+  assert stop < old_demand
+  assert cap is not None
+  assert max(match, stop) < 3.5
+  assert cap <= -max(match, stop) + 1e-6
+  assert cap > max(-3.5, -old_demand)
+
+
+def test_close_lead_brake_cap_keeps_lead_brake_term_at_comfort_floor():
+  # 0000024f E / 00000258 63:50 (STATUS 146, closed-loop replay): against the -1.0 comfort floor the
+  # 0.7*aLeadK term is what buys the standstill gap, so the stop-geometry bound is not applied there.
+  v_ego = 5.0
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=v_ego)
+  lead = make_lead(status=True, d_rel=22.0, v_lead=2.7, a_lead=-1.0, radar=True)
+  match, stop, lead_brake = _close_cap_geometry(planner, lead, v_ego)
+  demand = match + 0.7 * lead_brake
+  assert max(match, stop) < demand < 1.0
+  ramp = float(np.clip((demand - longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_MIN) /
+                       (longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_FULL -
+                        longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_MIN), 0.0, 1.0))
+  assert planner.get_close_lead_brake_cap(lead, v_ego, longitudinal_planner_module.A_CRUISE_MIN) == pytest.approx(-demand * ramp)
+  assert planner.get_close_lead_brake_cap(lead, v_ego, -3.5) > -demand * ramp
+
+
+def test_close_lead_brake_cap_keeps_full_demand_for_fast_braking_lead():
+  # A highway lead braking hard: its stopping distance is long, so the stop term exceeds the demand and
+  # the cap is the unbounded match + 0.7*aLeadK exactly.
+  v_ego = 25.0
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=v_ego)
+  lead = make_lead(status=True, d_rel=40.0, v_lead=20.0, a_lead=-3.0, radar=True)
+  cap = planner.get_close_lead_brake_cap(lead, v_ego, -3.5)
+  match, stop, lead_brake = _close_cap_geometry(planner, lead, v_ego)
+  demand = match + 0.7 * lead_brake
+  assert stop > demand
+  ramp = float(np.clip((demand - longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_MIN) /
+                       (longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_FULL -
+                        longitudinal_planner_module.CLOSE_LEAD_BRAKE_CAP_RAMP_MIN), 0.0, 1.0))
+  assert cap == pytest.approx(max(-3.5, -demand * ramp))
+
+
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_acc_mode_matches_no_lead_baseline_for_far_vision_only_lead_without_tracking(model_version):
   v_ego = 29.0
@@ -4192,7 +4270,10 @@ def test_off_axis_lead_keeps_vision_corroborated_brake():
   sm = _off_axis_sm(y_rel=-11.7, vision_a=-4.0)
   bounded = longitudinal_planner_module.bound_off_axis_leads(sm)
   assert bounded['radarState'].leadOne.aLeadK == pytest.approx(-4.0)
-  assert _run_off_axis_planner(_off_axis_sm(y_rel=-11.7, vision_a=-6.0)) < -3.0
+  # Unbounded aLeadK -7.8 at 17.1 m/s stops that lead in 18.7 m; stopping ego behind it inside the
+  # close-lead cap's usable gap needs 2.77 m/s^2 (the cap's lead-brake term is bounded by that stop
+  # geometry, STATUS 146). The bounded 25b case above stays milder than -2.5.
+  assert _run_off_axis_planner(_off_axis_sm(y_rel=-11.7, vision_a=-6.0)) < -2.75
 
 
 def test_off_axis_lead_ignores_low_confidence_vision():
