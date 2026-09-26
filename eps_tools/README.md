@@ -20,6 +20,9 @@ eps_tools/
   check_rwd.py      offline .rwd checksum validator (stdlib only)
   eps-diag.py       EPS CAN liveness/diagnostic (sniff, UDS ping, part number)
   rwd_format/       vendored Python-3 .rwd container parser (0x5A/0x31)
+  rwd_xray/         cfranyota/rwd-xray @ 8d8e1ff (MIT), reference copy: eps_tool.py patch offsets and
+                    table values per EPS, table/checksum search tools. Its format/ is the Python-2 original
+                    of rwd_format/, which is the one to run.
   rwd/              checksum-validated firmware images + upstreaming guidelines
 ```
 

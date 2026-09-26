@@ -1393,3 +1393,6 @@ decel against the driver's held RES+ (264 at 101.5 s, 265 at 156.5 s); with sync
 
 The yield is measured by unit tests only. Whether a held button on the road produces a clean press
 and release edge pair in `buttonEvents` on every hold is the bench question in STATUS 96.
+
+## D-066 — `eps_tools/rwd_format/` is canonical; `eps_tools/rwd_xray/format/` is reference only
+`eps_tools/rwd_xray/` is cfranyota/rwd-xray at 8d8e1ff3 (MIT), folded in on the owner's request for EPS firmware analysis. Content-hash compare against the tracked tree: `header.py` and `header_value.py` are identical to `rwd_format/`; `base.py`, `x31.py` and `x5a.py` differ only by the Python-3 port (relative imports, bytes indexing instead of `ord`). Run `rwd_format/`; keep `rwd_xray/` unedited as the source of the per-EPS patch offsets and stock/modified table values in `tools/eps_tool.py`.
