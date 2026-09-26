@@ -6992,3 +6992,29 @@ Owner request: cut the 0.15–0.25 s lag found in 132. Sim: `lat_pid_sim` closed
 - The smoothing is paying for itself in weave; the rate feedforward is the cheaper lag fix.
 
 Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torque follows target slew, raw target is pre-shaping); analyzer 63 (1 new: fingerprint unchanged by an unset or zero added key); `tools/lateral/tests` and py39 compat pass. `test_latcontrol.py` has 4 failures that predate this change: bolt/palisade taper, planner jerk scale, torqued roll bias (same with the HEAD controller).
+
+## 129. `BoschARailInterval` finished: degraded sweeps need range corroboration, and the coast's less-closing side only acts inside a rail-admission hold. Still default off. Unit tests and replay only; not driven.
+
+- **Problem (item 92 open item):** the rail interval admitted range walks on degraded sweeps. Route `…0000025e--919b58ab81` 6:43 (403 s), track 48: a 47.9 -> 35.3 m walk was admitted against a 0.53 s old baseline, and -13.5 was coasted at 35 m (planner -3.23; vision and toggle-off -0.5).
+- **Rejected variants (replay):**
+  - Exact gate on every degraded sweep (item 92's suggestion): kills the D-063 case itself. 25e 12:03 track 59 is degraded on every sweep, admitted at 724.233 against a 2.16 s old baseline, and went dark again until 32 m.
+  - Baseline-age floor 0.31 s: kept 12:03 and still admitted the 6:43 walk.
+  - Corroboration fit over the last 8 sweeps: averaged the finished walk in (about -20 m/s) and still admitted 6:43.
+- **Change** (`opendbc_repo/opendbc/car/honda/radar_interface.py`):
+  - `BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED`, `_bosch_a_trailing_fit_window`: on a degraded sweep the interval applies only if the shortest D-043 tail of the rejected run plus this sweep (4 samples over >= 0.25 s) fits within 3 m/s of the rail interval. At 6:43 the fit is about -2 m/s, so the sweep is not admitted. At 12:03 it is -16..-18 m/s, so the sweep is admitted. No new number.
+  - `BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD`, `_BoschATrackState.rail_hold`: item 92's two-sided coast clamp now makes a coast less closing only inside a hold that a rail admission started. Every other coast keeps the one-sided item 111 bound. Applied to every coast, it had softened three protected brakes: 232 1147.2 (-2.25 -> -1.88), 266 560.0 (-1.79 -> -1.38) and 266 795.4 (-1.5 crossing 3.75 s later).
+  - With the toggle off both gates run `exact`. Byte-identical: 0 differing sweeps and 0 differing lead frames on all 26 routes.
+- **Replay, 26 routes, toggle on vs off** (harness `/tmp/ri3/ab.py`, `RangeDerivedVrel` and the D-053 assist on in both chains):
+  - Routes: alpha-long 20c 232 236 237 239 23a 23b 23e 241 245 268 26b 26c; stock ACC 25b 25d 25e 25f 260 261 262 263 266 267; ICBM/stock 26f 270 271 (271 from seg 7). 266 and 267 are stock ACC, not alpha. 246, 24d, 251 and 258 from item 91 are no longer on disk.
+  - Points lost 0 and lead points lost 0 on every route. New measured points on 237, 23e, 25e, 26b, 26f and 271.
+  - Protected episodes softer by > 0.3 or later by > 0.2 s: 0.
+  - New <= -1.5 or <= -3.0 crossings: none. 237 764.7 (not protected) crosses -3.0 1.25 s earlier, on track 31 taken as lead at 53 m on the rail. The range closed 53.3 -> 44.1 m in 0.5 s (about -18 m/s) and the logged alpha car reached -3.50 at 766.2. This is the same as item 91's "earlier on a real closing lead". Its 10 over-closers (765.1-766.2, rail -13.5 vs range -5..-10 while ego braked) are the raw rail, which toggle off also publishes from 765.9.
+  - 26f 516.9 (not protected): -2.14 -> +0.12. The toggle-off parser coasts -13.5 on track 30 at 58-60 m while the range opens 58.4 -> 60.3 m; the next measured U11 is -1.5 and the stock command is -0.20. The hold's clamp removes a stale-rail brake.
+  - 25e 12:03 (item 90 dark lead, protected): track 59 published from 78 m at 724.36. -1.5 at 725.26 vs 725.66, -3.0 at 725.66 vs 726.06.
+  - 25e 6:43: identical to toggle off (min -0.51).
+  - 271 BM0 9:26, 27:33 and 29:52 (and all of 270, 271): lead publication identical to toggle off (0 differing lead frames). The pass-1 one-frame coast difference at 29:52 is gone.
+- **Tests:** test_bosch_a_radar 144 (11 new for 129), honda 116, leads 6, range_vrel_assist 87, longitudinal_planner 512.
+- **Recommendation:** the toggle can be offered for a watched drive, still default off. Road check: a lead closing past 13.5 m/s at 80-120 m should appear on radar about 0.4 s earlier than with the toggle off. No brake on an in-lane rail point whose range is flat.
+
+- **Fix 1 retested, not shipped:** the parked coast-rise patch (/tmp/f1/fix1.patch) was rebased onto this and replayed on the 26 routes. It only ever makes a coasted vRel less closing, so it cannot brake earlier at 271 BM0 (0 differing frames there). 26c 12:28.8: planner -1.21 -> -0.94. It had one unprotected effect: 237 1188.2 -1.51 -> -1.37. It fixes nothing the owner reported, so it was reverted from the tree; the patch and notes stay in /tmp/f1 and /tmp/ri3.
+- **Existing behaviour, unchanged:** with the toggle off, 26f 516.9 still dips to -1.95 from a stale -13.5 coast.

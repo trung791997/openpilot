@@ -1858,3 +1858,193 @@ class TestRailIntervalBoundsTheCoast:
         pulled_at = i
         assert p.vRel == pytest.approx(-5.0 + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS, abs=0.2)
     assert pulled_at is not None and pulled_at - 12 <= 5
+
+
+class TestRailIntervalExactOnDegradedSweeps:
+  """STATUS 129 (item 92's next step). With BoschARailInterval on, a DEGRADED sweep reads a railed U11 exactly in
+  the D-054 gate unless the range itself (a fit over the rejected run plus this sweep) moves at a railed speed.
+  Modelled on 0000025e 402.912 s, track 48: a degraded sweep one sweep after its baseline, exact residual 2.32 m
+  (over the degraded 2.0 m limit), interval residual 1.93 m, no rejected run to fit. The interval admitted it,
+  and the walk it started coasted a stale -13.5 rail on an opening range."""
+  DT_NANOS = 70_000_000
+  RAIL_RAW = 0
+
+  def _drive(self, ri, i, d, range_sigma_raw):
+    return ri.update(sweep(0, i & 0xF, 0x7, round((d - BOSCH_A_RANGE_OFFSET_M) / BOSCH_A_RANGE_SCALE_M), 1024,
+                           (1 + 2 * i) & 0xFFF, i * self.DT_NANOS, with_aux=True, direct_vrel_raw=self.RAIL_RAW,
+                           direct_vrel_uncertainty_raw=0, range_sigma_raw=range_sigma_raw, existence_raw=126))
+
+  def _step(self, ri, range_sigma_raw):
+    """6 sweeps at the rail rate, then one sweep 2.3 m short of the rail's prediction (exact residual 2.3 m;
+    interval residual 2.3 - 6.5 * 0.07 = 1.85 m). Returns (published point, stepped range, previous range)."""
+    dt = self.DT_NANOS * 1e-9
+    d = 60.0
+    for i in range(6):
+      d += -13.5 * dt
+      rr = self._drive(ri, i, d, 1)
+    assert rr.points[0].measured is True
+    d_prev = rr.points[0].dRel
+    d_step = d_prev - 13.5 * dt - 2.3
+    rr = self._drive(ri, 6, d_step, range_sigma_raw)
+    assert len(rr.points) == 1, "the point must be kept either way (D-041)"
+    return rr.points[0], rr.points[0].dRel, d_step, d_prev
+
+  @pytest.mark.parametrize("rail_interval", [False, True], ids=["off", "on"])
+  def test_degraded_sweep_is_gated_on_the_exact_rail(self, rail_interval):
+    ri = make_radar_interface()
+    ri.rail_interval = rail_interval
+    ri.coast_range_bound = False
+    p, published, d_step, d_prev = self._step(ri, range_sigma_raw=7)
+    # Rejected: the point coasts at the last accepted range, and nothing starts a rail-admitted hold.
+    assert p.measured is False
+    assert published == pytest.approx(d_prev, abs=0.07)
+    assert ri._tracks[1].rejoin_samples is None
+
+  def test_clean_sweep_still_uses_the_interval(self):
+    """The same step on a clean sweep: under the 5 m hard limit, so it passes either way (the exact gate
+    has headroom there); the interval never tightens anything."""
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    ri.coast_range_bound = False
+    p, published, d_step, _ = self._step(ri, range_sigma_raw=1)
+    assert published == pytest.approx(d_step, abs=0.07)
+
+  def test_without_the_degraded_rule_the_interval_admits_it(self, monkeypatch):
+    """Negative control: the item 92 behaviour. The degraded step is admitted through the interval."""
+    from opendbc.car.honda import radar_interface as HRI
+    monkeypatch.setattr(HRI, "BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED", False)
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    ri.coast_range_bound = False
+    p, published, d_step, _ = self._step(ri, range_sigma_raw=7)
+    assert published == pytest.approx(d_step, abs=0.07)
+    assert p.measured is False
+    assert ri._tracks[1].rejoin_samples is not None
+
+
+class TestRailIntervalDownSideOnlyInsideARailHold:
+  """STATUS 129. With BoschARailInterval on, the coast bound's LESS-closing side acts only inside a hold that a
+  rail-interval admission started. Modelled on 00000266 795.4: a stale over-closing coast (-8.2 held while the
+  range sat still) on a track the interval never touched. Applied to every coast, the down side softened that
+  protected brake; now it gets the one-sided bound, as with RangeDerivedVrel alone."""
+  DT_NANOS = 70_000_000
+
+  def _drive(self, ri, i, d, u11_mps):
+    return ri.update(sweep(0, i & 0xF, 0x7, round((d - BOSCH_A_RANGE_OFFSET_M) / BOSCH_A_RANGE_SCALE_M), 1024,
+                           (1 + 2 * i) & 0xFFF, i * self.DT_NANOS, with_aux=True, direct_vrel_raw=864 + round(u11_mps * 64),
+                           direct_vrel_uncertainty_raw=0, range_sigma_raw=1, existence_raw=126))
+
+  def _coasts(self, ri):
+    dt = self.DT_NANOS * 1e-9
+    d = 70.0
+    for i in range(12):
+      d += -8.0 * dt
+      rr = self._drive(ri, i, d, -8.0)
+    assert rr.points[0].measured is True
+    out = []
+    for i in range(12, 24):
+      d += -1.0 * dt
+      rr = self._drive(ri, i, d, -8.0)
+      assert len(rr.points) == 1
+      if not rr.points[0].measured:
+        out.append(rr.points[0].vRel)
+    return out
+
+  def test_over_closing_coast_outside_a_rail_hold_is_not_softened(self):
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    ri.coast_range_bound = False
+    coasts = self._coasts(ri)
+    assert coasts and all(v == pytest.approx(-8.0, abs=0.05) for v in coasts)
+    assert ri._tracks[1].rail_hold is False
+
+  def test_negative_control_the_item_92_two_sided_clamp_softens_it(self, monkeypatch):
+    from opendbc.car.honda import radar_interface as HRI
+    monkeypatch.setattr(HRI, "BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD", False)
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    ri.coast_range_bound = False
+    coasts = self._coasts(ri)
+    assert any(v > -8.0 + 1.0 for v in coasts)
+
+
+class TestDegradedRailAdmissionNeedsRangeCorroboration:
+  """STATUS 129. A degraded, railed track re-acquired after a rejected run: admitted through the interval only when
+  the rejected run's own ranges close at a railed speed. Modelled on 0000025e 12:03 track 59 (degraded on every
+  sweep, closing ~16-18 m/s: admitted) against 0000025e 6:43 track 48 (a walk 47.9 -> 35.3 m, then the range sat
+  still while U11 stayed on the rail: not admitted)."""
+  DT_NANOS = 70_000_000
+
+  def _drive(self, ri, i, d, sigma):
+    return ri.update(sweep(0, i & 0xF, 0x7, round((d - BOSCH_A_RANGE_OFFSET_M) / BOSCH_A_RANGE_SCALE_M), 1024,
+                           (1 + 2 * i) & 0xFFF, i * self.DT_NANOS, with_aux=True, direct_vrel_raw=0,
+                           direct_vrel_uncertainty_raw=0, range_sigma_raw=sigma, existence_raw=126))
+
+  def _run(self, step_m, after_step_rate):
+    """Measured at the rail rate, then a step of `step_m` closer, then degraded sweeps moving at `after_step_rate`.
+    Each geometry is chosen so the exact -13.5 prediction rejects every degraded sweep and the [-20, -13.5]
+    interval admits some of them; only the rejected run's own range rate separates the two."""
+    ri = make_radar_interface()
+    ri.rail_interval = True
+    ri.coast_range_bound = False
+    dt = self.DT_NANOS * 1e-9
+    d = 100.0
+    for i in range(6):
+      d += -13.5 * dt
+      rr = self._drive(ri, i, d, 1)
+    assert rr.points[0].measured is True
+    d -= step_m
+    admitted_at, rail_hold_at_admission = None, None
+    for i in range(6, 6 + 12):
+      d += after_step_rate * dt
+      rr = self._drive(ri, i, d, 7)
+      # A range-rejected run older than BOSCH_A_STALE_S is withheld with the toggle on or off (the dark lead).
+      if admitted_at is None and len(rr.points) == 1 and rr.points[0].dRel == pytest.approx(d, abs=0.07):
+        admitted_at, rail_hold_at_admission = i, ri._tracks[1].rail_hold
+    return rail_hold_at_admission, admitted_at
+
+  def test_a_range_closing_at_a_railed_speed_is_admitted(self):
+    # 12:03-like: a 2.5 m step, then the range keeps closing at 17 m/s (fit on the rail interval)
+    rail_hold, admitted_at = self._run(2.5, -17.0)
+    assert admitted_at is not None
+    assert rail_hold is True
+
+  def test_a_range_that_stopped_closing_is_not_admitted(self):
+    # 6:43-like: a 15 m walk, then the range sits still while U11 stays on the rail
+    _, admitted_at = self._run(15.0, 0.0)
+    assert admitted_at is None
+
+  def test_negative_control_without_the_rule_the_stopped_range_is_admitted(self, monkeypatch):
+    from opendbc.car.honda import radar_interface as HRI
+    monkeypatch.setattr(HRI, "BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED", False)
+    _, admitted_at = self._run(15.0, 0.0)
+    assert admitted_at is not None
+
+
+def test_rail_interval_still_admits_a_degraded_railed_lead_across_a_long_gap():
+  """STATUS 129, the case D-063 exists for: 0000025e 12:03 track 59, degraded on every sweep, re-acquired against
+  a baseline 2.16 s old (121.3 m) at 79.5 m while U11 sat on the rail. The exact prediction is 92.1 m; the interval
+  [-20, -13.5] m/s reaches 78.0 m."""
+  from opendbc.car.honda.radar_interface import (_bosch_a_range_innovation_rejected, _bosch_a_direct_vrel,
+                                                 BOSCH_A_DIRECT_VREL_MIN_RAW)
+  low_rail = _bosch_a_direct_vrel(BOSCH_A_DIRECT_VREL_MIN_RAW)
+  baseline, now_s, d = (722.069, 121.31), 724.233, 79.50
+  assert _bosch_a_range_innovation_rejected(baseline, now_s, d, low_rail, None, True, exact=True)
+  assert not _bosch_a_range_innovation_rejected(baseline, now_s, d, low_rail, None, True, exact=False)
+
+
+def test_degraded_rail_corroboration_fits_the_tail_of_the_run_not_the_finished_walk():
+  """STATUS 129, 0000025e 6:43 track 48 at 403.383 s: the rejected run walked 44.8 -> 35.3 m and then sat still.
+  The shortest D-043 tail reads the range as stopped (far off the rail interval); an 8-sweep fit averages the walk
+  in, reads a railed speed and would have admitted it (negative control)."""
+  from opendbc.car.honda.radar_interface import (_bosch_a_trailing_fit_window, _bosch_a_fresh_range_rate,
+                                                 _bosch_a_distance_to_interval, _bosch_a_direct_vrel_interval,
+                                                 _bosch_a_direct_vrel, BOSCH_A_DIRECT_VREL_MIN_RAW,
+                                                 BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
+  run = [(402.912, 44.75), (402.973, 42.56), (403.044, 39.12), (403.113, 36.12), (403.173, 35.31),
+         (403.243, 34.94), (403.313, 35.12), (403.383, 35.31)]
+  interval = _bosch_a_direct_vrel_interval(_bosch_a_direct_vrel(BOSCH_A_DIRECT_VREL_MIN_RAW))
+  tail = _bosch_a_trailing_fit_window(run)
+  assert len(tail) == 5
+  assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(tail), interval) > BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+  assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(run), interval) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS

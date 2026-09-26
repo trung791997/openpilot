@@ -166,6 +166,31 @@ BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS = 20.0
 # whose range closed at 7-10 m/s. A 4 m gate kept the lead gains and lost 0 points; 2 m also cleared
 # the adjacent-lane over-closers. Off-path tracks keep the exact (pre-D-063) gate.
 BOSCH_A_RAIL_INTERVAL_MAX_Y_M = 2.0
+# On a DEGRADED sweep (range sigma, existence or u10 flagged) the interval applies only when the RANGE corroborates
+# the rail: a least-squares fit over the TAIL of the rejected run plus this sweep (the shortest tail meeting the D-043
+# minimum window, 4 samples over 0.25 s) must lie within 3 m/s (the D-043 tolerance) of the rail interval. Otherwise the gate reads the rail
+# exactly, as with the toggle off. A degraded sweep is gated at the tight 2.0 m limit because the sweep is
+# suspect; the interval must not widen that on the rail's word alone. Replay evidence (STATUS 129):
+# - Route 0000025e 6:43 (403 s), track 48: a range walk 47.9 -> 35.3 m admitted through the interval against a
+#   0.53 s old baseline, all sweeps degraded, while the rejected run's last five ranges sat at 34.9-36.1 m (fit
+#   about -2 m/s, 11 m/s off the rail) and U11 left the rail on the next sweep. A fit over the last 8 sweeps still
+#   averaged the finished walk in (about -20 m/s) and admitted it; hence the shortest tail. The admitted rail was coasted for 0.25 s at 35 m
+#   and the planner went to -3.23 (vision and toggle-off lead at 42 m, -0.03). With the fit test it is not admitted.
+#   (Item 92's 402.912 s single-sweep admission has no run to fit and is read exactly too.)
+# - Route 0000025e 12:03, track 59, the case D-063 exists for: degraded on EVERY sweep from 87 m in, admitted at
+#   724.233 s against a baseline 2.16 s old. Its rejected run closes at about 16-18 m/s, inside the interval, so it
+#   is still admitted. Item 92's first suggestion (exact on every degraded sweep) kept it dark until 32 m, as with
+#   the toggle off; a baseline-age floor (0.31 s) kept 12:03 but still admitted the 6:43 walk.
+# The D-057 re-anchor already refuses any window holding a degraded sweep, so this only changes the D-054 gate.
+# No new number: the window and tolerance are D-043's. A bool so the replay can A/B it.
+BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED = True
+# The item 92 coast bound is two-sided with the rail interval on. Its LESS-closing side exists to undo a
+# rail-interval admission (a rail coasted on a range the interval let in), so it now acts only inside a hold such
+# an admission started (`rail_hold`); every other coast keeps the one-sided STATUS 111 bound. Applied to every
+# coast it softened three protected brakes in the 26-route replay, each a stale over-closing coast on a track the
+# interval never touched: 00000232 1147.2 (-2.25 -> -1.88), 00000266 560.0 (-1.79 -> -1.38) and 00000266 795.4
+# (-1.5 crossing 3.75 s later). Replay evidence only (STATUS 129); a bool so the replay can A/B it.
+BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD = True
 # D-063 ships behind this toggle, default off: replay and static evidence only, never driven. With it
 # off both gate calls below run `exact`, which is the pre-D-063 gate unchanged.
 BOSCH_A_RAIL_INTERVAL_PARAM = "BoschARailInterval"
@@ -296,6 +321,9 @@ class _BoschATrackState:
   # Cleared by any rate-consistent sweep, any range rejection and a lifecycle discontinuity.
   inconsistent_run: list = field(default_factory=list)
   rejoin_samples: list | None = None  # D-059: gated ranges since a join, until a fresh rate fit agrees with vRel
+  # D-063: the current D-059 hold was started (or joined) by a rail-interval admission. Only such a hold's coast
+  # may be pulled LESS closing toward its fresh fit (_bosch_a_coast_vrel); cleared whenever the hold ends.
+  rail_hold: bool = False
   last_trusted_vrel: float | None = None
   last_trusted_vrel_nanos: int | None = None
 
@@ -424,6 +452,16 @@ def _bosch_a_fresh_range_rate(run: list) -> float | None:
   return sum((t - t_mean) * (d - d_mean) for t, d in zip(ts, ds, strict=True)) / denom
 
 
+def _bosch_a_trailing_fit_window(run: list) -> list:
+  """The shortest tail of `run` that meets the D-043 minimum window (BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES samples
+  over BOSCH_A_VREL_RATE_CHECK_MIN_SPAN_S), or the whole run when it is shorter. The rate the range has NOW, not
+  the average over a step that is already over (STATUS 129, 0000025e 6:43)."""
+  for start in range(len(run) - BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES, -1, -1):
+    if run[-1][0] - run[start][0] >= BOSCH_A_VREL_RATE_CHECK_MIN_SPAN_S:
+      return run[start:]
+  return run
+
+
 def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False) -> float:
   """The vRel a coast publishes. Off (pre-D-063): the last trusted vRel, verbatim. With BoschARailInterval on
   (D-063 addendum, STATUS 92): the same value bounded to within BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS of
@@ -442,7 +480,12 @@ def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False) -
   With only RangeDerivedVrel on (`range_bound`, STATUS 111) the bound is ONE-SIDED, D-053's rule: a coast may
   be made more closing, never less. The two-sided clamp without the rail interval softened 6 protected
   brakes on the 20-route replay (237 9:58.5 -3.10 -> -2.38, 266 8:04 -1.98 -> -1.48, 266 9:20.9 -1.66 ->
-  -1.11, ...): the down side exists to undo a rail-interval admission, which this path never makes."""
+  -1.11, ...): the down side exists to undo a rail-interval admission, which this path never makes.
+
+  With the rail interval on, the down side is likewise limited to a coast inside a hold that a rail-interval
+  admission started (`track.rail_hold`, STATUS 129); every other coast gets the one-sided bound. Applied to every
+  coast, the down side softened three protected brakes in the 26-route replay (00000232 1147.2 -2.25 -> -1.88,
+  00000266 560.0 -1.79 -> -1.38, 00000266 795.4 -1.5 crossing 3.75 s later), none of them near a rail admission."""
   vrel = track.last_trusted_vrel
   if not (rail_interval or range_bound):
     return vrel
@@ -454,7 +497,7 @@ def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False) -
   if rate is None:
     return vrel
   vrel = min(vrel, rate + BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
-  if rail_interval:
+  if rail_interval and (track.rail_hold or not BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD):
     vrel = max(vrel, rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
   return vrel
 
@@ -722,6 +765,7 @@ class RadarInterface(RadarInterfaceBase):
         track.rejected_run.clear()
         track.inconsistent_run.clear()
         track.rejoin_samples = None
+        track.rail_hold = False
         track.last_trusted_vrel = None
         track.last_trusted_vrel_nanos = None
         self.pts.pop(track_id, None)
@@ -798,6 +842,13 @@ class RadarInterface(RadarInterfaceBase):
         # D-063: a railed U11 vouches for an interval of range, but only with the toggle on and only
         # for a track in our lane; otherwise the gate reads the rail as the exact value, as before.
         exact_gate = not self.rail_interval or abs(yRel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M
+        if not exact_gate and degraded and BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED:
+          # A DEGRADED sweep gets the interval only when the range corroborates the rail: a fit over the recent
+          # rejected run plus this sweep moves at a railed speed (BOSCH_A_RAIL_INTERVAL_EXACT_WHEN_DEGRADED).
+          run_rate = _bosch_a_fresh_range_rate(_bosch_a_trailing_fit_window(track.rejected_run + [(now_s, dRel)]))
+          exact_gate = (run_rate is None or direct_vrel is None or
+                        _bosch_a_distance_to_interval(run_rate, _bosch_a_direct_vrel_interval(direct_vrel)) >
+                        BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS)
         range_rejected = all(_bosch_a_range_innovation_rejected(baseline, now_s, dRel, direct_vrel, ratio, degraded, exact=exact_gate)
                              for baseline in baselines)
         rail_admitted = not exact_gate and not range_rejected and all(
@@ -823,9 +874,12 @@ class RadarInterface(RadarInterfaceBase):
         if track.rejected_run:
           # D-059: a join. The range passed only after a rejection run, so `samples` straddle the gap.
           track.rejoin_samples = []
+          track.rail_hold = False
         track.rejected_run.clear()
-      if rail_admitted and track.rejoin_samples is None:
-        track.rejoin_samples = []
+      if rail_admitted:
+        if track.rejoin_samples is None:
+          track.rejoin_samples = []
+        track.rail_hold = True
 
       if range_rejected:
         # Keep the last trusted point briefly as an unmeasured coast. The rejected geometry is not
@@ -927,6 +981,7 @@ class RadarInterface(RadarInterfaceBase):
               fresh_ok = vrel_candidate >= rate - BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
         if fresh_ok:
           track.rejoin_samples = None
+          track.rail_hold = False
         else:
           rejoin_hold = track.last_trusted_vrel is not None and not (high_u10_live_vrel or vrel_inconsistent)
       if rejoin_hold:
