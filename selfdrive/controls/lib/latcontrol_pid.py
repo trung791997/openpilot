@@ -196,6 +196,14 @@ NRDR_TARGET_SMOOTH_TAU = 0.1
 # for the slew as it is asked for. Default 0 = off (STATUS 133 has the sim sweep).
 NRDR_RATE_FF_DEFAULT = 0.0
 
+# nrdr: the Lat*Scale bands switch hard at 25 and 50 mph, and PIDController integrates at the
+# unscaled gain, so a band with an I trim of 0 hid a live integrator. Route 277 (STATUS 136):
+# at 50 mph, straight, target flat, vEgo 50.00 -> 49.98 mph stepped the I trim 0 -> 0.75 while
+# the hidden i was 0.514, and the output went -0.00 -> +0.39 in one frame, the wheel +160 deg/s left.
+# The applied trims now slew, and while the applied I trim is 0 the integrator is frozen and bled out.
+NRDR_TRIM_SLEW_PER_S = 0.5
+NRDR_HIDDEN_I_BLEED_TAU = 2.0
+
 def rate_limit_desired_angle(angle_deg: float, prev_angle_deg: float, max_rate_deg_s: float, dt: float) -> float:
   if max_rate_deg_s <= 0.0 or not math.isfinite(angle_deg):
     return angle_deg
@@ -512,6 +520,7 @@ class LatControlPID(LatControl):
     self.lpf_tau_standard = NRDR_TARGET_SMOOTH_TAU
     self.lpf_tau_highway = NRDR_TARGET_SMOOTH_TAU
     self.rate_ff = NRDR_RATE_FF_DEFAULT
+    self.applied_scales = None   # (p, i, f) trims as applied, slewed toward the banded/scheduled ones
     # The target before slew clip and smoothing, for offline tools scoring the shaping lag.
     self.raw_angle_steers_des = 0.0
 
@@ -636,6 +645,7 @@ class LatControlPID(LatControl):
       self.eps_modified_steering_pressed_prev = False
       self.center_taper_scale.x = 1.0
       self.prev_output_torque = 0.0
+      self.applied_scales = None
 
     else:
       self.frame += 1
@@ -665,6 +675,8 @@ class LatControlPID(LatControl):
 
       freeze_threshold = 2.0 if self.is_eps_modified else 5.0
       freeze_integrator = steer_limited_by_safety or steering_pressed or CS.vEgo < freeze_threshold
+      hidden_i = self.is_eps_modified and self.applied_scales is not None and self.applied_scales[1] <= 0.0
+      freeze_integrator = freeze_integrator or hidden_i
 
       output_torque = self.pid.update(error,
                                 feedforward=ff,
@@ -711,6 +723,15 @@ class LatControlPID(LatControl):
         p_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "p", CS.vEgo, p_scale)
         i_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "i", CS.vEgo, i_scale)
         f_scale = lat_gain_schedule_scale(self.lat_gain_schedule, "f", CS.vEgo, f_scale)
+        if self.applied_scales is None:
+          self.applied_scales = (p_scale, i_scale, f_scale)
+        else:
+          step = NRDR_TRIM_SLEW_PER_S * self.dt
+          self.applied_scales = tuple(float(np.clip(want, have - step, have + step))
+                                      for want, have in zip((p_scale, i_scale, f_scale), self.applied_scales, strict=True))
+        p_scale, i_scale, f_scale = self.applied_scales
+        if hidden_i:
+          self.pid.i *= math.exp(-self.dt / NRDR_HIDDEN_I_BLEED_TAU)
         output_torque = self.pid.p * p_scale + self.pid.i * i_scale + self.pid.d + self.pid.f * f_scale
         if self.rate_ff > 0.0:
           output_torque += self.rate_ff * desired_angle_delta / (100.0 * self.dt)

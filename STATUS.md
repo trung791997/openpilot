@@ -7105,3 +7105,42 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - 26c 4:08 needs the `|yRel| <= 1.5` geometry gate revisited. At 80 m, 9 m of y is only about 6 deg of azimuth, and the gate is a lane proxy, not the 10.8 deg bound its comment describes. The long span and residual also block that case. Not changed here.
   - The 1.07 s dark time at 271 BM0 is D-042 (u10 511); not changed.
 - **Recommendation:** replay supports it (0 lost points, 0 spurious brakes, 0 protected regressions) for a watched drive. The gain is small (about 0.15 s and 0.07 m/s^2 at 271 BM0) until the -1.0 comfort floor is revisited. Road check: a railed lead closing well past 13.5 m/s at 60-120 m should show a corrected vRel about 0.6 s after publication.
+
+## 137. Lateral jerk at the 50 mph band edge (route 277): the Lat*Scale trims now slew, and a band with an I trim of 0 no longer hides a live integrator. Unit tests, open-loop replay and sim only; not driven.
+
+**What the owner saw.** Route `11c8fa231c0499ed/00000277--2f5fd64a58`, around 5:00–5:15. At 50 mph on a straight, with a flat target and no press, the wheel went left at +160 °/s, from −0.4° to +5.3° in 120 ms. The driver took over and braked. Route tuning: LatIScale 50/75/0 (low/standard/highway), commit 28d4eda8.
+
+**Cause (log).**
+- `_lat_pid_scale_banded` switches the P/I/F trims hard at 25 and 50 mph.
+- `PIDController` integrates at the unscaled gain, and it froze only on a safety limit, a press, or v < 2 m/s. So while the highway I trim was 0, `pid.i` kept winding where nothing could see it (0.514).
+- As vEgo went 50.00 → 49.98 mph, the trim stepped 0 → 0.75. The output jumped −0.00 → +0.39 in one frame.
+- The same happened twice more in that minute, as speed flapped across 50 mph: a +0.37 step, and a −0.21 step to the right.
+- The default trims (highway I = 0) have the same exposure.
+
+**Fix (`latcontrol_pid.py`, modified-EPS path).**
+- The applied P/I/F trims move toward the banded (or `LatGainSchedule`) value at `NRDR_TRIM_SLEW_PER_S = 0.5` per second, instead of stepping.
+- While the applied I trim is 0, the integrator is frozen and bled out with `NRDR_HIDDEN_I_BLEED_TAU = 2.0` s. Coming back into an I band therefore ramps in from about zero.
+- The state resets when lateral control is inactive.
+- No new params.
+
+**Evidence.**
+- Unit (`test_latcontrol_pid_trim_slew.py`): a steady 0.3° error held above 50 mph, then 49.98 mph.
+  - HEAD: hidden i reaches 0.65, and the output steps 0.485 in one frame.
+  - Fix: hidden i is 0.00, and the largest step is 0.0012.
+  - Both tests fail on HEAD.
+- Open-loop replay, 277 segs 3–6 (logged tuning):
+
+  | | HEAD | fix |
+  |---|---|---|
+  | step at 311.26 s (the jerk) | 0.266 | 0.000 |
+  | step at 282.78 s | 0.214 | 0.018 |
+  | frames with a step > 0.1 | 8 | 2 |
+  | frames with a step > 0.05 | 23 | 9 |
+
+  The two steps > 0.1 left with the fix are target changes, apart from the 25 mph one below.
+- Sim (plant_d5, routes 263/268/271/276, Kp/Ki scale 1.0, with and without `NrdrLatRateFF=0.5`): no regression.
+  - Standard-band error rms is equal or 0.01–0.04° lower.
+  - Straight-line bias moves toward 0: for example, 263 goes −0.03 → +0.00 and low speed −0.25 → −0.15.
+  - 268 highway lag falls from 0.60 s to 0.42 s.
+
+**Not fixed, noted.** The base gains in `interface.py` step as well: kpBP/kiBP are `[0, 11.18, 11.18, 22.35]`, so kp goes 0.024 → 0.048 at 25 mph. In the replay this gives a −0.11 step at 318.39 s, with a 3.7° error at the crossing. It is P only (no hidden state), so its size scales with the error at that moment. Making it continuous is a base-tune change and needs its own sim pass. Not done.
