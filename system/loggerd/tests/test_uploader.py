@@ -211,7 +211,7 @@ class TestUploader(UploaderTestCase):
     assert log_handler.upload_order == [f"{self.seg_dir}/qlog.zst", f"{seg2_dir}/qlog.zst",
                                         f"{self.seg_dir}/rlog.zst", f"{seg2_dir}/rlog.zst"]
 
-  def test_upload_rlogs_skips_locked_and_metered(self):
+  def test_upload_rlogs_skips_locked_uploads_metered(self):
     self.gen_files(lock=True, boot=False)
     self.params.put_bool("UploadRlogs", True)
     up = Uploader("0000000000000000", Paths.log_root())
@@ -220,5 +220,6 @@ class TestUploader(UploaderTestCase):
     clear_locks(Paths.log_root())
     assert up.next_file_to_upload(metered=False)[0] == "qlog"
     setxattr(str(Path(Paths.log_root()) / self.seg_dir / "qlog"), UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE)
-    assert up.next_file_to_upload(metered=True) is None, "rlog uploaded on a metered connection"
+    # phone hotspots report metered; the owner uploads rlogs over one
+    assert up.next_file_to_upload(metered=True)[0] == "rlog"
     assert up.next_file_to_upload(metered=False)[0] == "rlog"

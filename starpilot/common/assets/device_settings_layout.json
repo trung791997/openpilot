@@ -5207,8 +5207,8 @@
       {
         "key": "UploadRlogs",
         "label": "Upload rlogs",
-        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. rlogs are uploaded after all pending qlogs and only on Wi-Fi or other unmetered connections (\"Always Allow Uploads\" lifts the metered limit). rlogs are much larger than qlogs.",
-        "picker_description": "Uploads full rlogs with qlogs on unmetered connections.",
+        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. rlogs are uploaded after all pending qlogs, on any connection including a phone hotspot or other metered link. rlogs are much larger than qlogs, so this uses a lot of data.",
+        "picker_description": "Uploads full rlogs after qlogs on any connection, including hotspots.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "DeviceManagement",

@@ -91,7 +91,7 @@ class Uploader:
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.ts": 1}
 
     # StarPilot variables
-    # rlogs go after every pending qlog/qcamera, and never on a metered connection
+    # rlogs go after every pending qlog/qcamera; metered is ignored because phone hotspots report metered
     self.rlog_names = ("rlog", "rlog.zst")
 
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
@@ -145,7 +145,7 @@ class Uploader:
       if name in self.immediate_priority:
         return name, key, fn
 
-    if not metered and self.params.get_bool("UploadRlogs"):
+    if self.params.get_bool("UploadRlogs"):
       for name, key, fn in upload_files:
         if name in self.rlog_names:
           return name, key, fn

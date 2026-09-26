@@ -8168,7 +8168,7 @@ Owner: "make a toggle to enable uploading rlogs alongside with qlogs during a dr
 - **Behaviour** (`system/loggerd/uploader.py`, `next_file_to_upload`).
   - With the toggle on, `rlog`/`rlog.zst` becomes an automatic upload candidate. The key gets the `.zst` suffix that `step()` already appended for `rlog`.
   - Ordering: crash/boot first, then every pending qlog/qcamera, then rlogs oldest segment first. An rlog therefore never delays a qlog.
-  - rlogs never go on a metered connection. The metered flag `main()` passes already folds in `AlwaysAllowUploads`, so that toggle lifts the limit.
+  - ~~rlogs never go on a metered connection.~~ Changed in the follow-up below: rlogs upload on any connection.
   - The segment being recorded carries a `.lock` and is skipped, as for qlogs. Each finished segment's rlog uploads during the drive, and the last one uploads once it closes.
   - `DisableOnroadUploads` still stops the uploader process onroad (`process_config.py`), rlogs included.
 - **Key:** `{"UploadRlogs", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}}`, placed next to `DisableOnroadUploads`.
@@ -8181,9 +8181,14 @@ Owner: "make a toggle to enable uploading rlogs alongside with qlogs during a dr
   - Default and stock values are both False. put/get round-trips.
   - `libcommon.a` shrank by 8.6 KB even though a key was added. The whole difference is in `params.o`'s static keys-map initializer (`__cxx_global_var_init`, -8,892 bytes, same clang 18.1.3); every other symbol is the same size. Loading both `.so` files, all 857 existing keys have identical default, stock, type and flag.
 - **Tests (static):**
-  - `test_uploader.py`: 11 passed, including 3 new tests: off by default, rlogs after qlogs, and locked-segment/metered skip. The new tests fail against HEAD's uploader (negative control: 2 of the 3 fail; the off-by-default test passes on both, as it should).
+  - `test_uploader.py`: 11 passed, including 3 new tests: off by default, rlogs after qlogs, and locked-segment skip plus metered handling (inverted in the follow-up). The new tests fail against HEAD's uploader (negative control: 2 of the 3 fail; the off-by-default test passes on both, as it should).
   - Other suites: `test_device_settings_layout.py` 29 passed, `test_device_settings_frontend.py` 9, `test_process_config.py` 27, `test_py39_compat.py` 14.
   - ruff finds nothing new; the 13 findings in `system_settings.py` are all present at HEAD.
 - **Not verified:**
   - Konik's `v1.4/upload_url` has not been seen accepting an `rlog.zst` key from the automatic path. It is the same key the manual request path uses.
-  - rlogs are much larger than qlogs, so a long Wi-Fi-less drive builds up a backlog that drains at the next Wi-Fi connection.
+  - rlogs are much larger than qlogs, and they now go over the owner's hotspot, so this costs phone data.
+- **Follow-up: hotspot, and editability** (owner: "make sure the toggle editable. I will upload through my phone hotspot so internet speed isn't the issue").
+  - **Metered limit removed for rlogs.** `get_network_metered` (`system/hardware/tici/hardware.py`) reports Wi-Fi as metered when NetworkManager says `METERED_YES` or `GUESS_YES`. NetworkManager guesses yes for phone hotspots. So with the first version, rlogs would never have gone up over the owner's hotspot unless `AlwaysAllowUploads` was on. `UploadRlogs` is already an explicit opt-in, so rlogs now upload whatever the metered flag says. Ordering is unchanged: qlogs and qcameras first. qcamera's own metered rule is untouched.
+  - The test now asserts that the rlog is returned on both metered and unmetered connections. 49 passed across `test_uploader.py` and the two device-settings suites.
+  - **Galaxy editability, checked statically.** `PUT /api/params` accepts any key in the params library that is not in `EXCLUDED_KEYS`. Against the rebuilt `.so`, `UploadRlogs` is present and not excluded. Its default is a bool and the layout says `data_type: bool`. Tuning level is 2, the same as `DisableOnroadUploads`, and put/get round-trips. The entry shows under the **Device Settings** (`DeviceManagement`) parent toggle once that parent is on and expanded, or through search.
+  - **On the device,** the toggle has no `is_enabled` gate, so it is always tappable. "Disable Uploads", and "Disable Onroad Uploads" while driving, still stop the uploader process and so override it.
