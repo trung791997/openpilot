@@ -60,3 +60,11 @@ On macOS MetaDrive loads `#version 120` skybox shaders, which the GL 4.1 core pr
 | real sky | 2% (one stop of ~4 s) | 5.5 m/s | .33 .49 .48 .01 |
 
 The remaining stop came after the car drifted onto the right road edge in a curve. Sim evidence only.
+
+## Driving as your own car (2026-09-26)
+
+`tools/sim/sim_car_config.py extract --log <qlog or rlog> --out ~/.openpilot-sim/civic` reads one segment from the car. It keeps the logged CarParams (firmware and VIN included) and the car's settings params from initData: the PERSISTENT bool/int/float keys and every key with a default, but not calibration, learned state or device identity. Then run `SIM_CAR_CONFIG=~/.openpilot-sim/civic tools/sim/run_mac_tsfdo.sh`. That sets `FINGERPRINT` from the CarParams and applies the params after `set_params_enabled`. The bridge seeds `CarParamsCache`, so card takes the car's firmware from the cache and the interface picks the car's own branch (for this Civic: the NRDR C020 modified-EPS PID tune, steer at standstill, alpha long). The simulated car packs its CAN with that car's DBC. For a Bosch car with a radar, powertrain goes on bus 1, and a second copy of `CAMERA_MESSAGES` goes on the powertrain bus (with its own counter). `BoschARadar` is forced off because MetaDrive has no radar.
+
+Checked 2026-09-26 with route `00000283--fe4e75f88b` segment 0 (log deleted after extracting): fingerprint `HONDA_CIVIC_BOSCH` from the cache (22 firmware versions), CAN valid, engaged with no alerts. The car's own cruise toggles took the set speed to 64 km/h. It drove 58 s at a mean 14 m/s (lane-line probs .25 .77 .64 .31) and then left the road in a curve at about 50 km/h. `SIM_CRUISE_KPH` does not cap a set speed that the toggles overshoot.
+
+What carries over: the vehicle model (steer ratio, wheelbase), longitudinal planning and the toggles. What does not: the bridge steers MetaDrive with `actuators.steeringAngleDeg`, so the lateral PID/torque tune and EPS behaviour are not exercised, and the radar is absent. Sim evidence only.
