@@ -45,7 +45,7 @@ class SimulatedCar:
     self.pt_camera_packer = CANPacker(dbc_name)  # own rolling counter for the second copy of CAMERA_MESSAGES
     self.dbc_msgs = {m.name for m in DBCDefinition(dbc_name).msgs.values()}
     self.pm = messaging.PubMaster(['can', 'pandaStates'])
-    self.sm = messaging.SubMaster(['carControl', 'controlsState', 'carParams', 'selfdriveState', 'carState'])
+    self.sm = messaging.SubMaster(['carControl', 'controlsState', 'carParams', 'selfdriveState', 'carState', 'carOutput'])
     self.cp = CANParser(dbc_name, [], 0)
     self.idx = 0
     self.params = Params()

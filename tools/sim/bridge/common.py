@@ -17,6 +17,9 @@ from openpilot.selfdrive.test.helpers import set_params_enabled
 from openpilot.tools.sim.lib.common import SimulatorState, World
 from openpilot.tools.sim.lib.simulated_car import SimulatedCar
 from openpilot.tools.sim.lib.simulated_sensors import SimulatedSensors
+from openpilot.tools.sim.lib.steer_model import SteerModel
+
+METADRIVE_WHEELBASE = 1.05234 + 1.4166  # DefaultVehicle FRONT_WHEELBASE + REAR_WHEELBASE
 
 QueueMessage = namedtuple("QueueMessage", ["type", "info"], defaults=[None])
 
@@ -63,6 +66,10 @@ class SimulatorBridge(ABC):
     # SIM_CRUISE_KPH: after engaging, tap RES_ACCEL until the set speed reaches this (km/h).
     # Engagement leaves it near 9 km/h, where the driving model crawls and loses the lanes in curves.
     self.target_cruise_kph = float(os.getenv("SIM_CRUISE_KPH", "0"))
+    # SIM_STEER_MODEL: steer through the car's own torque command and a steering response fitted from its
+    # rlogs (tools/sim/eps_fit.py), so the lateral tune and EPS are in the loop. Needs SIM_CAR_CONFIG.
+    steer_model = os.getenv("SIM_STEER_MODEL")
+    self.steer_model = SteerModel(steer_model) if steer_model else None
 
     self.test_run = False
 
@@ -184,6 +191,12 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
         throttle_op = np.clip(self.simulated_car.sm['carControl'].actuators.accel / 1.6, 0.0, 1.0)
         brake_op = np.clip(-self.simulated_car.sm['carControl'].actuators.accel / 4.0, 0.0, 1.0)
         steer_op = self.simulated_car.sm['carControl'].actuators.steeringAngleDeg
+        if self.steer_model is not None:
+          cp = self.simulated_car.sm['carParams']
+          self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, self.simulated_car.sm['carState'].vEgo)
+          # MetaDrive turns its wheels by the sent angle / 8 (metadrive_process steer_ratio). Scale so its car
+          # (2.47 m wheelbase) turns on the curvature this car's wheel angle gives on the road.
+          steer_op = self.steer_model.angle * 8.0 / cp.steerRatio * METADRIVE_WHEELBASE / cp.wheelbase
 
         self.past_startup_engaged = True
         if self.simulated_car.sm['carState'].vCruise < self.target_cruise_kph - 1 and self.rk.frame % 30 == 0:
@@ -199,6 +212,10 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       self.world.apply_controls(steer_out, throttle_out, brake_out)
       self.world.read_state()
       self.world.read_sensors(self.simulator_state)
+      if self.steer_model is not None:
+        if not self.simulator_state.is_engaged:
+          self.steer_model.reset(steer_manual * self.simulated_car.sm['carParams'].steerRatio / 8.0)
+        self.simulator_state.steering_angle = self.steer_model.angle
 
       if self.world.exit_event.is_set():
         self.shutdown()
