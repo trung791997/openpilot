@@ -7873,3 +7873,17 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
   - Across a whole route, what moves this number is speed and command amplitude. 64 and 69 are high, with the lowest speed and the largest commands; 62, 68 and 6d are low.
   - **Correction to 147:** the 2–5 Hz grouping above, which singled out 6d, was that confound, not the image.
   - The logs cannot tell trackers 3200, 4000 and 4500 apart, in either the response or high-frequency content.
+- **The same result in the owner's band parameters** (owner: "I don't do the 20/30/40/50 speed band. It's below 25 / 25-50 / 50 and above"). Standard-band grid run with `compare --variant ...LatPScaleStandard=P,LatIScaleStandard=I` on the same 5 routes. LowSpeed and Highway are untouched. Values are 25–50 mph, minutes-weighted over 60.8 min:
+
+  | Standard P / I | err rms | straight rms | sign changes/s |
+  |---|---|---|---|
+  | 105 / 75 (driven) | 0.839 | 0.559 | 0.74 |
+  | 115 / 85 | 0.788 (−6%) | 0.527 | 0.83 |
+  | 125 / 95 | 0.745 (−11%) | 0.498 | 0.87 |
+  | 135 / 95 | 0.720 (−14%) | 0.475 | 0.93 |
+
+  - Error falls monotonically with both gains on every route, and there is no optimum inside the grid.
+  - The fitted plant does not reproduce the high-frequency EPS dynamics that eventually limit gain on the car. So the sim cannot say where to stop, and the rising sign-change rate is the only warning it gives.
+  - Suggested next drive: `LatPScaleStandard 125`, `LatIScaleStandard 95`. That is within the autotuner's 25-point trust region and matches its 30/40 mph knots.
+  - Revert if the car hunts on straights at 25–50 mph.
+  - Sim evidence only; nothing written to params.
