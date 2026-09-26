@@ -10,6 +10,8 @@ const QUALITY_MIN_SAMPLES = 8
 const LATERAL_QUALITY_CONFIG = {
   desiredKey: "desiredLateralAccel",
   actualKey: "actualLateralAccel",
+  // Rate openpilot, not the driver: only samples where openpilot is steering.
+  activeKey: "controlsActive",
   minSpeedMps: 0.5,
   minDemand: 0.008,
   allowLowDemandFallback: true,
@@ -23,6 +25,8 @@ const LATERAL_QUALITY_CONFIG = {
 const LONGITUDINAL_QUALITY_CONFIG = {
   desiredKey: "desiredLongitudinalAccel",
   actualKey: "actualLongitudinalAccel",
+  // Only samples where openpilot is in charge of accel (not disengaged, not gas override).
+  activeKey: "longitudinalControlActive",
   minSpeedMps: 0.0,
   minDemand: 0.05,
   allowLowDemandFallback: true,
@@ -130,7 +134,11 @@ function computeQuality(samples, config) {
 
   const latestTs = toNumber(safeSamples[safeSamples.length - 1]?.timestamp, 0)
   const cutoffTs = latestTs > 0 ? latestTs - QUALITY_WINDOW_SECONDS : 0
-  const recentSamples = safeSamples.filter((sample) => toNumber(sample?.timestamp, 0) >= cutoffTs)
+  const windowSamples = safeSamples.filter((sample) => toNumber(sample?.timestamp, 0) >= cutoffTs)
+  const recentSamples = config.activeKey ? windowSamples.filter((sample) => !!sample?.[config.activeKey]) : windowSamples
+  if (config.activeKey && windowSamples.length >= QUALITY_MIN_SAMPLES && recentSamples.length < QUALITY_MIN_SAMPLES) {
+    return { label: "na", value: null, detail: `Not engaged (${recentSamples.length} engaged / ${windowSamples.length} total)` }
+  }
 
   const eligibleSignalSamples = recentSamples.filter((sample) => {
     const speed = Math.abs(toNumber(sample?.speed, 0))
@@ -369,6 +377,8 @@ export const Plots = {
       const sample = {
         timestamp,
         speed: toNumber(payload.speed),
+        controlsActive: !!payload.controlsActive,
+        longitudinalControlActive: !!payload.longitudinalControlActive,
         desiredLateralAccel: toNumber(payload.desiredLateralAccel),
         actualLateralAccel: toNumber(payload.actualLateralAccel),
         desiredLongitudinalAccel: toNumber(payload.desiredLongitudinalAccel),
@@ -564,7 +574,7 @@ export const Plots = {
             </div>
 
             <p style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); margin: var(--sp-3) 0 0; line-height:1.6;">
-              Match rating uses a 30-second rolling window. Strong steering or accel moments are preferred, but gentler
+              Match rating uses a 30-second rolling window of engaged driving only. Strong steering or accel moments are preferred, but gentler
               windows can still earn a rating. Longitudinal also checks how much of the window stays above error limits.
             </p>
 

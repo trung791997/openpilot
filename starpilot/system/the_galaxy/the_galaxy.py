@@ -1847,7 +1847,7 @@ _plots_state = {
   "longitudinalUfAccelCmd": 0.0,
   "speed": 0.0,
   "lateralSource": "curvature",
-  "longitudinalSource": "controlsState + livePose",
+  "longitudinalSource": "longitudinalPlan.aTarget + livePose",
   "lateralTermsSource": "unknown",
   "longitudinalTermsSource": "controlsState",
   "sampleIndex": 0,
@@ -2055,9 +2055,14 @@ def _extract_lateral_accel_values(controls_state, speed_mps):
   actual_curvature = _safe_float(getattr(controls_state, "curvature", 0.0))
   return desired_curvature * speed_sq, actual_curvature * speed_sq, "curvature"
 
-def _extract_longitudinal_accel_values(controls_state, live_pose):
-  desired = _safe_float(getattr(controls_state, "aTarget", 0.0))
-  source = "controlsState.aTarget + livePose"
+def _extract_longitudinal_accel_values(controls_state, live_pose, longitudinal_plan=None):
+  # aTarget lives on longitudinalPlan; controlsState has no such field, so reading it
+  # there always returned 0 and the plot silently fell through to the PID output below.
+  desired = 0.0
+  source = "longitudinalPlan.aTarget + livePose"
+  has_plan = longitudinal_plan is not None
+  if has_plan:
+    desired = _safe_float(getattr(longitudinal_plan, "aTarget", 0.0))
 
   actual = 0.0
   try:
@@ -2065,10 +2070,10 @@ def _extract_longitudinal_accel_values(controls_state, live_pose):
     if acceleration_device and getattr(acceleration_device, "valid", False):
       actual = _safe_float(getattr(acceleration_device, "x", 0.0), 0.0)
   except Exception:
-    source = "controlsState.aTarget"
+    source = "longitudinalPlan.aTarget"
 
-  # Fallback only if aTarget is unavailable/legacy-zero while PID terms are present.
-  if abs(desired) < 1e-6:
+  # Fallback only if no plan has been received. aTarget == 0 is a legitimate target at cruise.
+  if not has_plan:
     up = _safe_float(getattr(controls_state, "upAccelCmd", 0.0))
     ui = _safe_float(getattr(controls_state, "uiAccelCmd", 0.0))
     uf = _safe_float(getattr(controls_state, "ufAccelCmd", 0.0))
@@ -2123,7 +2128,7 @@ def _plots_worker():
   global _plots_worker_thread
 
   try:
-    sm = messaging.SubMaster(["controlsState", "livePose"], poll="controlsState")
+    sm = messaging.SubMaster(["controlsState", "livePose", "carControl", "longitudinalPlan"], poll="controlsState")
   except Exception as exception:
     with _plots_lock:
       _plots_state["lastError"] = str(exception)
@@ -2143,12 +2148,17 @@ def _plots_worker():
       controls_state = sm["controlsState"]
       live_pose = sm["livePose"]
       speed = _extract_plots_speed_mps(controls_state, live_pose)
-      controls_active = bool(getattr(controls_state, "active", False))
-      long_control_state = int(_safe_float(getattr(controls_state, "longControlState", 0)))
-      longitudinal_control_active = controls_active and long_control_state != 0
+      # controlsState.active is deprecated (always reads False). carControl carries what
+      # controlsd actually acted on: latActive (openpilot steering) and longActive
+      # (openpilot in charge of accel; False during a gas override).
+      car_control = sm["carControl"]
+      has_car_control = sm.recv_frame["carControl"] > 0
+      controls_active = has_car_control and bool(getattr(car_control, "latActive", False))
+      longitudinal_control_active = has_car_control and bool(getattr(car_control, "longActive", False))
+      longitudinal_plan = sm["longitudinalPlan"] if sm.recv_frame["longitudinalPlan"] > 0 else None
 
       desired_lateral, actual_lateral, lateral_source = _extract_lateral_accel_values(controls_state, speed)
-      desired_longitudinal, actual_longitudinal, longitudinal_source = _extract_longitudinal_accel_values(controls_state, live_pose)
+      desired_longitudinal, actual_longitudinal, longitudinal_source = _extract_longitudinal_accel_values(controls_state, live_pose, longitudinal_plan)
       lateral_terms, lateral_terms_source = _extract_lateral_controller_terms(controls_state)
       longitudinal_terms, longitudinal_terms_source = _extract_longitudinal_controller_terms(controls_state)
 
