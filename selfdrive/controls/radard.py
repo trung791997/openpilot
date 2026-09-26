@@ -216,7 +216,7 @@ RANGE_VREL_RAIL_SIZE_MEAN = True
 # 5 m/s removed all three and kept 26c 4:08 (vision closing 5.3-6.5). MIN_PROB 0.7, not 0.9: the 26c
 # lead is at p 0.74-0.82 during the onset. The 26c gain is small (0.25 s earlier at -1.5, 0.15 s at
 # -1.0, the same at -2.0): past 257.0 the MPC, not the radar, limits the response.
-# Switched on by the RangeVisionAssist param (Galaxy / device settings, default OFF, needs RangeDerivedVrel
+# Switched on by the RangeVisionAssist param (Galaxy / device settings, default ON, needs RangeDerivedVrel
 # on too). VISION_ASSIST_GEOMETRY forces it on in code for replay harnesses; it stays False here.
 VISION_ASSIST_GEOMETRY = False
 VISION_ASSIST_MIN_PROB = 0.7

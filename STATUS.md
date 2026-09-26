@@ -8073,7 +8073,7 @@ Commands and results:
 Routes 0000023e and 00000258 lost their rlogs mid-run to a lateral cache job and were re-fetched
 from konik before the final fleet. The final numbers above cover all 32 routes.
 
-## 153. The STATUS 152 vision-corroborated range assist is now a toggle, `RangeVisionAssist` (default off, editable in Galaxy and on the device). Static tests and a params round-trip only; nothing has been driven.
+## 153. The STATUS 152 vision-corroborated range assist is now a toggle, `RangeVisionAssist` (default ON at the owner's request, stock value off; editable in Galaxy and on the device). Static tests and a params round-trip only; nothing has been driven.
 
 Owner: "make it a toggle for me in starpilot. Make sure it's editable".
 
@@ -8092,3 +8092,11 @@ Owner: "make it a toggle for me in starpilot. Make sure it's editable".
   - ruff is clean on radard and the test file.
   - The settings row adds 7 ISC002 findings in `longitudinal.py`. They come from the same multi-line subtitle pattern the neighbouring rows use; that file had 104 findings at HEAD.
 - **Not verified.** The toggle has not been exercised in the Galaxy UI on the device. Once it has, `initData.params` on the next route should carry `RangeVisionAssist`.
+- **Default on (follow-up, owner: "Make it on by default for me").**
+  - The key is now `{PERSISTENT, BOOL, "1", "0", 3}`: default on, stock value off. The manager writes defaults for missing keys at startup, so the first boot on this build turns it on. It then does something only because `RangeDerivedVrel` is also on; route 0000027e's `initData` has `RangeDerivedVrel` = 1 and `BoschARailInterval` = 1.
+  - The params artifacts were rebuilt again with the same recipe.
+    - `get_default_value("RangeVisionAssist")` is True and `get_stock_value` is False.
+    - Still 857 keys, and `params_pyx.cpp` is byte-identical.
+  - The rows now read "default on ... not yet driven".
+  - The fallback in radard is unchanged: a missing key or a read error means off.
+  - **This puts replay-only behaviour on the road by default.** Everything behind it is open-/closed-loop replay (STATUS 152). The first drives are its first road evidence. Check them with `vision_assist` in mind: an earlier onset on a curve lead, and no vision-unconfirmed dips.

@@ -650,14 +650,14 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_state=lambda: self._params.get_bool("RangeDerivedVrel"),
                  set_state=lambda v: self._params.put_bool("RangeDerivedVrel", v)),
       SettingRow("RangeVisionAssist", "toggle", tr_noop("Camera-Confirmed Curve Closing Speed"),
-                 subtitle=tr_noop("TEST, default off. Bosch-A radar only, and only works with Range-Derived Closing Speed also on. On a curve, a "
+                 subtitle=tr_noop("TEST, default on. Bosch-A radar only, and only works with Range-Derived Closing Speed also on. On a curve, a "
                                   "braking car ahead can sit outside the straight-ahead lane the range correction trusts, so the radar's lagging "
                                   "closing speed was published as-is (route 26c at 4:08). With this on, the range correction may also apply "
                                   "there, but only while the camera sees the same car at the same distance and position and itself sees it "
                                   "closing at 5 m/s or more. Then the published closing speed may claim at most 3 m/s more closing than the "
                                   "camera sees, and the correction drops the moment the camera stops agreeing. It never reports less closing than "
                                   "Range-Derived Closing Speed alone. Replayed on 32 logged drives only (firm braking began 0.25 s earlier at 26c "
-                                  "4:08, no new hard brakes elsewhere), never driven, which is why it ships off."),
+                                  "4:08, no new hard brakes elsewhere), not yet driven."),
                  get_state=lambda: self._params.get_bool("RangeVisionAssist"),
                  set_state=lambda v: self._params.put_bool("RangeVisionAssist", v)),
       SettingRow("BoschARailInterval", "toggle", tr_noop("Keep Fast-Closing Leads"),
