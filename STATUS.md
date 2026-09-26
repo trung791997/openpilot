@@ -7887,3 +7887,19 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
   - Suggested next drive: `LatPScaleStandard 125`, `LatIScaleStandard 95`. That is within the autotuner's 25-point trust region and matches its 30/40 mph knots.
   - Revert if the car hunts on straights at 25–50 mph.
   - Sim evidence only; nothing written to params.
+- **Highway band, from route 1b8** (owner: "I do have a long highway route with rlogs: 11c8fa231c0499ed/000001b8--6098496d3c").
+  - **The route:** driven 29 Aug, 68 mi. 52.1 min engaged hands-off above 50 mph, against 0.6–2.2 min on each of 271–27a. Driven with LatP/I/FScaleHighway 100/100/100 and HondaCenterScale 0.5. It is assumed to be on the owner's Trk4500 image, which is dated 5 Aug.
+  - **Current plant (260–263 only)** at the driven tuning on 1b8: highway err rms 0.39 vs log 0.33, straight 0.37 vs 0.32, lag 0.52 vs 0.27 s, zero crossings 0.8 vs 1.1/s. That is inside the gate but slow and calm, a bias toward over-gaining.
+  - **Refit plant:** 260–263 plus the first half of 1b8, delay 5, same table: coef [-12.18, -0.023, -2.229, -7.273, 854.8, -9.005, -17.38, -20.20, -150.5]. The command gain at 30 m/s rises from about 275 to about 428 (per table-torque unit). It lives in /tmp/plant_d5_hwy.json and is not committed; refit with `fit_plant(... delays=(5,), eps=owner table)`.
+  - **On the held-out second half of 1b8** (22.6 min highway, log / old / new):
+    - err rms 0.35 / 0.43 / 0.37;
+    - straight 0.34 / 0.41 / 0.36;
+    - sign changes at 0.15 deg 0.38 / 0.35 / 0.36 per second.
+  - The 25–50 mph band is unchanged on all 6 routes (within 0.01 deg).
+  - **Still failing: highway curves.** On 271 and 277 the sim follows 0.71–0.74 of the desired curvature against 0.83–0.86 logged. That rests on about 10 s of highway-curve data in total, and 1b8 has 3 s, so the gate still marks the highway band untrusted on curve ratio. The gate was not relaxed. A highway drive with sustained curves (interchanges, curvy freeway) would settle it.
+  - **Highway grid on the held-out half** (straight-line figures only; new plant). Driven P100/I100/C0.5 scored err 0.370 and straight 0.355:
+    - P 85 / 115 / 130: 0.405 / 0.341 / 0.317; zero crossings 0.84 / 1.05 / 1.14 per second against 0.95.
+    - HondaCenterScale 0 / 1.0: 0.443 / 0.322.
+    - **I 0: 0.457 with bias +0.21 deg. I 0 plus C 0, as driven on 271–277: 0.563 with bias +0.28.** The +0.3–0.5 deg highway bias noted above is, in the sim, the missing integrator.
+  - **Road evidence** (confounded by road and traffic): 1b8's logged highway err rms is 0.33–0.35 at I100/C0.5, against 0.46–0.67 logged on 271–278 at I 0–75/C0.
+  - **Suggested highway settings** (sim, straight-line only): LatIScaleHighway 100, HondaCenterScale 0.5, LatPScaleHighway 100–115. Watch highway curves, which the sim cannot score yet.
