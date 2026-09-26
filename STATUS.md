@@ -7277,3 +7277,67 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   2. Then drop the LPF.
   3. Expect about 5–15 % more low-speed weave (sign changes).
   Not done.
+
+## 140. Lateral-acceleration-space study (owner request, step 1 toward replacing the angle-space PID with a torque controller + live learning + firmware VGR). Offline log analysis only; nothing in the controls changed.
+
+**Tool.** `tools/lateral/lat_accel_space_study.py` (tests in `tools/lateral/tests/test_lat_accel_space_study.py`; they need `PARAMS_ROOT` set). It runs on 28 HONDA_CIVIC_BOSCH routes (`000002*`), all EPS `39990-TBA,C020`, all on the PID tune, at 20 Hz.
+- It fits the plain upstream model form only, with no StarPilot controller code, so the answer holds for upstream as well.
+- Log facts:
+  - `carState.yawRate` and `steeringTorqueEps` are 0 on every frame on this port.
+  - Measured curvature is therefore −(calibrated livePose yaw)/v.
+  - Torque is `-carOutput.actuatorsOutput.torque`, as torqued uses it.
+  - liveDelay is about 0.48 s.
+
+**A. Angle → curvature, three models.** M0 is a constant SR, M1 is James's firmware VGR (`vgr_physical_to_linear`) then a constant SR, and M2 is `NRDR_SR_CURVE_BY_FP`.
+- Pooled fits:
+
+  | Model | SR | K | per-route SR std |
+  |---|---|---|---|
+  | M0 | 14.81 | 6.6e-4 | 0.52 |
+  | M1 | 15.27 | 5.9e-4 | 0.29 |
+  | M2 | 15.13 | 6.1e-4 | 0.31 |
+
+  With driver-pressed frames kept, the per-route SR std is 0.34 / 0.12 / 0.09.
+- Lat-accel residual rms (m/s², M0 / M1 / M2), pressed frames kept:
+
+  | \|angle\| | residual rms |
+  |---|---|
+  | 0–5° | .062 / .052 / .052 |
+  | 15–45° | .092 / .063 / .065 |
+  | 45–90° | .109 / .053 / .048 |
+  | 90°+ | .073 / .045 / .043 |
+
+  M0 also pulls K up to 9.5e-4 and carries a +0.03–0.05 bias near centre. At small angles and at speed all three are equal: the ~0.05 floor is noise, not the rack model.
+- **Result:** VGR correction (M1, or M2 about equally) is needed for a constant-SR torque path at large angles and low speed. It halves the per-route SR scatter. Neither `latcontrol_torque`'s `measured_curvature` nor `paramsd` uses VGR today.
+
+**B. Torque → lateral accel**, fitting torque = la/LAF + friction·clip(jerk/0.3) + offset.
+- Study fit (±1 s press margin, torqued-style delay):
+
+  | band | LAF | friction | R² |
+  |---|---|---|---|
+  | pooled | 11.1 | .033 | .49 |
+  | < 25 mph | 9.7 | .095 | .38 |
+  | 25–50 mph | 11.5 | .025 | .65 |
+  | > 50 mph | 11.1 | .019 | .61 |
+
+  Using the pooled fit instead of the band fit costs ≤ 0.005 rms above 25 mph.
+- Audit refit (cruder: 0.5 s shift, no press margin, gradient jerk): LAF 11.8 / 12.1 / 11.9 across the three bands and friction 0.069 / 0.008 / 0.003.
+- **Robust across both fits:**
+  - LAF is about 11–12 and near speed-independent above 25 mph.
+  - Friction is several times higher below 25 mph.
+- **Not robust:** the low-speed LAF drop. It moves with the frame filtering.
+- VGR does not change the torque map: M0/M1 angle-derived lat accel gives the same LAF and R².
+- The map is near-linear to ±2 m/s² at 25+ mph, with no centre deadzone at 0.2 m/s² resolution. Below 25 mph it steepens above 1 m/s².
+- **Scale:** upstream `params.toml` has HONDA_CIVIC_BOSCH LAF 1.69. The modified EPS is about 6–7× that, so stock values, fleet values and the `HONDA_CIVIC_BOSCH` NNFF model (stock EPS, presumably) do not apply.
+- liveTorqueParameters is logged but invalid (LAF 0) on every route, because torqued does not use its params under a PID tune.
+
+**Caveats.**
+- The torque here is the PID's closed-loop command, not a measured EPS torque. Hence R² 0.35–0.65; the low-speed numbers partly reflect PID behaviour.
+- Roll is constant at about 0.046 rad on every route. That looks like mount roll, not road roll, and the fit's offset absorbs it (zero-torque point ≈ −0.2 m/s²).
+- The large-angle bins are thin without pressed frames (256–595 samples).
+
+**What this means for the plan.**
+- One lateral-accel model does cover 25 mph and up: one LAF, low friction.
+- Below 25 mph it needs speed-dependent friction. Upstream's torque controller does not have that; it would be a small, principled addition, not a band.
+- The firmware VGR belongs in opendbc as one angle → centre-equivalent-angle conversion used before `VehicleModel.calc_curvature`, by both the torque controller's measurement and paramsd. It should not go in StarPilot's `latcontrol_torque`.
+- StarPilot's Civic-modified torque branch already layers its own patches: LAF ×1.2, `get_civic_bosch_modified_b_ff_scale` side/phase/low-speed shaping, a fixed friction threshold of 0.30, a friction scale, and the centre deadzone. A clean trial should bypass them.
