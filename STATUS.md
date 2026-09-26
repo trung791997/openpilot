@@ -7809,7 +7809,7 @@ A flat 0.35 ceiling from 25 mph would clip the real curves. A speed-scheduled ce
 - **Path-relative replacement for radard's `|yRel| <= 1.5` D-053 gate (26c 4:08).** At 4:08 it corrected on one cycle only (-2.0 crossing 0.05 s earlier); the long fit's span/residual across D-043 coasts is the real limiter. It added spurious -1.5 crossings on curve range wobble at 70-95 m (26c 649.9, 237 942.8), and 236 2211.4 went -3.16 -> -3.50. The lateral gate was filtering the curve range walk. Patch: /tmp/yg/pathgate.patch.
 - **Held, not rejected: the close-lead cap built against the vehicle minimum for a vision-corroborated radar lead closing >= 10 m/s at TTC <= 6 s (271 BM0).** -1.5 crossing -2.49 -> -3.19 s. Costs: frames < -3.0 1387 -> 1894, 0.5 s drops 73 -> 88, a one-tick step, and 025f 483.0 min -3.88 -> -3.50 (a single-tick artifact). Held because the owner reported rough braking; it would combine with this item's bound, and that combination is unreplayed. Patch: /tmp/cf/fastclose_floor.patch.
 
-## 149. Two planner fixes for the remaining exp-mode bookmarks on 00000278 (BM1 reassociation, BM0 slow-lead gate). Open- and closed-loop replay plus unit tests only; nothing has been driven. A third fix (radard, 27a BM2) is held uncommitted for the owner's OK.
+## 149. Two planner fixes for the remaining exp-mode bookmarks on 00000278 (BM1 reassociation, BM0 slow-lead gate), and a radard young-track bound for 27a BM2 (committed separately after the owner's OK). Open- and closed-loop replay plus unit tests only; nothing has been driven.
 
 Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 32 routes of /tmp/cap/out2 (179 brake episodes), replayed open loop through the Bosch-A RadarInterface, RadarD and the planner. In closed loop, ego accel follows the output with tau 0.35 and the lead is shifted by the ego position difference (vision is not shifted).
 
@@ -7841,7 +7841,7 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
 - Exp -> chill handoff ceiling hold: costs 1.0 m of closed-loop gap on BM0.
 - Vision non-contradiction before the STATUS 119 pass: softens protected 26f 516.9 from -2.14 to -1.62.
 
-**Held, not committed (radard; needs the owner's OK):**
+**Committed after the owner's OK (radard, follow-up commit the same day):**
 - What it is: `YOUNG_TRACK_FLAT_RANGE_BOUND` + `YOUNG_TRACK_VISION_GATE`, covering 27a BM2. A track at most 1 s old has its published vRel raised to (fitted fresh-sweep range rate - 3).
 - When it applies: >= 6 sweeps over >= 0.35 s, residual <= 0.6 m, |rate| <= 6, and a confident vision lead at or beyond range - 5 m that is neither closing nor braking.
 - Why 27a BM2 needs it: track 15 was born at 64 m with U11 -11.1 and coasted at -10.7 while its range stayed flat. Vision had the lead at 73-85 m doing ego's speed.
@@ -7850,3 +7850,4 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
 - Fleet (32 routes, with F1+G): no other episode changes.
 
 **Tests:** test_longitudinal_planner, test_longcontrol and test_range_vrel_assist pass (620). ruff has no new findings versus HEAD.
+  radard tests: test_range_vrel_assist, test_radard_bosch and test_leads pass; test_leads::test_radar_fault errors at teardown on `/data/params` (errno 13, sandbox only).

@@ -201,6 +201,32 @@ RANGE_VREL_RAIL_SIZE_MEAN = True
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
 
+# Young-track range bound (route 0000027a ~8:33, BM2). Track 15 was born at 64 m with U11 -11.1 and was then held
+# at -10.7 by the D-043 coast for 0.9 s while its own range stayed at 62.6-63.6 m; vision (p 0.95, 73-81 m, own speed)
+# said not closing, and chill braked to -2.0 (aEgo -2.7). For a Bosch-A lead track under YOUNG_TRACK_MAX_AGE_S old
+# whose range history since birth (every fresh sweep, coasted ones included: a coast holds vRel, not the range) fits
+# a line of |slope| <= YOUNG_TRACK_FLAT_MAX_RATE with a small residual, and whose model lead contradicts the closing
+# (YOUNG_TRACK_VISION_GATE), the published vRel may claim at most YOUNG_TRACK_FLAT_MARGIN more closing than that
+# slope. Reporting only: the point is published, the KF, the D-053 assist and the association are untouched, and a
+# track whose range falls faster than the rate cap is never bounded. The one-sided coast bound (STATUS 111/129) is
+# unchanged; this acts on radarState leads only, for their first second. Replay evidence only (STATUS 149).
+YOUNG_TRACK_FLAT_RANGE_BOUND = True
+YOUNG_TRACK_MAX_AGE_S = 1.0
+YOUNG_TRACK_MIN_SAMPLES = 6
+YOUNG_TRACK_MIN_SPAN_S = 0.35
+YOUNG_TRACK_MAX_RESIDUAL_M = 0.6
+YOUNG_TRACK_FLAT_MAX_RATE = 6.0   # 3.0 opened only at 0.61 s on 27a (the first 0.4 s fit is -4.6)
+YOUNG_TRACK_FLAT_MARGIN = 3.0
+# Only when the matching model lead (leadsV3[i]) is confident, not nearer than the radar lead, and itself not closing:
+# the bound needs the camera to contradict the coast as well as the track's own range. Without this gate the bound
+# also softened two real approaches whose young track sat on a flat stretch of range (00000266 795.4, -1.5 crossing
+# 0.35 s later; 00000237 1188.2), both with vision closing 7-8.5 m/s.
+YOUNG_TRACK_VISION_GATE = True
+YOUNG_TRACK_VISION_MIN_PROB = 0.9
+YOUNG_TRACK_VISION_MAX_CLOSING = 2.0
+YOUNG_TRACK_VISION_MIN_ACCEL = -1.0
+YOUNG_TRACK_VISION_RANGE_MARGIN_M = 5.0
+
 # stationary qualification parameters
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
@@ -253,6 +279,15 @@ class KalmanParams:
     self.K = [[np.interp(dt, dts, K0)], [np.interp(dt, dts, K1)]]
 
 
+def young_track_vision_contradicts(lead, vis, v_ego: float) -> bool:
+  """YOUNG_TRACK_VISION_GATE: a confident model lead at or beyond the radar lead's range that is not closing."""
+  if float(vis.prob) < YOUNG_TRACK_VISION_MIN_PROB or not len(vis.x) or not len(vis.v) or not len(vis.a):
+    return False
+  return (float(vis.x[0]) >= float(lead.dRel) - YOUNG_TRACK_VISION_RANGE_MARGIN_M and
+          float(vis.v[0]) - float(v_ego) >= -YOUNG_TRACK_VISION_MAX_CLOSING and
+          float(vis.a[0]) >= YOUNG_TRACK_VISION_MIN_ACCEL)
+
+
 class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
@@ -301,6 +336,10 @@ class Track:
     # measurement_update is False for both and they need opposite handling -- see
     # _update_range_assist.
     self._range_assist_last_t = float('nan')
+    # YOUNG_TRACK_FLAT_RANGE_BOUND: first update time and every fresh-sweep (t, dRel) of the track's first
+    # YOUNG_TRACK_MAX_AGE_S. Coasted sweeps count: a Bosch-A coast holds vRel but publishes the live gated range.
+    self.t_first = float('nan')
+    self.young_range_hist: list = []
 
     # deceleration history for the adjacent-lane stopped-vehicle detector
     self.moving_frames = 0
@@ -327,6 +366,12 @@ class Track:
 
     # computed velocity and accelerations
     # Shadow estimator: real measurements only -- a duplicate payload would forge a zero-dt sample.
+    if not self.t_first == self.t_first:
+      self.t_first = float(t_now)
+    if float(t_now) - self.t_first <= YOUNG_TRACK_MAX_AGE_S and \
+       (not self.young_range_hist or float(t_now) > self.young_range_hist[-1][0]):
+      self.young_range_hist.append((float(t_now), float(d_rel)))
+
     if measurement_update:
       self.vRelRangeFresh = False
       self.range_hist.append((float(t_now), float(d_rel)))
@@ -527,6 +572,21 @@ class Track:
     self.vRelRangeLongResidual = float(np.sqrt((residual ** 2).mean()))
     self.vRelRangeLongSpan = float(ts[-1] - ts[0])
     return True
+
+  def young_flat_range_vrel_floor(self, t_now: float) -> float | None:
+    """YOUNG_TRACK_FLAT_RANGE_BOUND: the least vRel (most closing) this young track's flat range supports, else None."""
+    if not (t_now - self.t_first <= YOUNG_TRACK_MAX_AGE_S) or len(self.young_range_hist) < YOUNG_TRACK_MIN_SAMPLES:
+      return None
+    a = np.array(self.young_range_hist, dtype=np.float64)
+    ts = a[:, 0] - a[-1, 0]
+    if ts[-1] - ts[0] < YOUNG_TRACK_MIN_SPAN_S:
+      return None
+    slope, icpt = np.polyfit(ts, a[:, 1], 1)
+    if abs(slope) > YOUNG_TRACK_FLAT_MAX_RATE:
+      return None
+    if float(np.sqrt(((a[:, 1] - (icpt + slope * ts)) ** 2).mean())) > YOUNG_TRACK_MAX_RESIDUAL_M:
+      return None
+    return float(slope) - YOUNG_TRACK_FLAT_MARGIN
 
   def get_RadarState(self, model_prob: float = 0.0, shadow_telemetry: bool = False):
     """`shadow_telemetry` is opt-in because this dict is assigned to TWO different capnp structs:
@@ -856,6 +916,7 @@ class RadarD:
 
     self.tracks: dict[int, Track] = {}
     self.honda_bosch_a_radar = honda_bosch_a_radar
+    self.young_flat_bound_count = 0
     # The lead KF consumes Bosch measurements at the physical radar cadence. Lead probability
     # filters, however, consume modelV2 leads every model cycle and must retain model-loop timing.
     kf_dt = HONDA_BOSCH_A_RADAR_TS if self.honda_bosch_a_radar else radar_ts
@@ -1049,6 +1110,20 @@ class RadarD:
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
                                           preferred_track_id=self.prev_lead_track_ids[1],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
+
+      if YOUNG_TRACK_FLAT_RANGE_BOUND and self.honda_bosch_a_radar:
+        t_live = sm.logMonoTime['liveTracks'] * 1e-9
+        for lead, vis in ((self.radar_state.leadOne, leads_v3[0]), (self.radar_state.leadTwo, leads_v3[1])):
+          track = self.tracks.get(int(lead.radarTrackId)) if lead.status and lead.radar else None
+          if track is not None and YOUNG_TRACK_VISION_GATE and not young_track_vision_contradicts(lead, vis, self.v_ego):
+            track = None
+          floor = track.young_flat_range_vrel_floor(t_live) if track is not None else None
+          if floor is not None and lead.vRel < floor:
+            dv = floor - lead.vRel
+            lead.vRel = floor
+            lead.vLead = lead.vLead + dv
+            lead.vLeadK = lead.vLeadK + dv
+            self.young_flat_bound_count += 1
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):

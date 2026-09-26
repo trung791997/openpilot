@@ -1045,3 +1045,66 @@ class TestRailFastPath:
     monkeypatch.setattr(radard, "RANGE_VREL_RAIL_FAST", False)
     off, _ = run()
     assert on == off
+
+
+# YOUNG_TRACK_FLAT_RANGE_BOUND (route 0000027a ~8:33, BM2): a newborn track coasted at -10.7 on a flat range.
+def _young_coast(track, ranges, v_rel=-10.7, measured_first=3, t0=0.0):
+  for i, d in enumerate(ranges):
+    measured = i < measured_first
+    track.update(d, 0.0, v_rel, V_EGO + v_rel, measured, measured, t_now=t0 + i * DT, range_assist=True)
+  return t0 + (len(ranges) - 1) * DT
+
+
+ROUTE_27A_TRACK_15 = [64.375, 64.0, 63.5625, 62.5625, 62.5625, 62.875, 62.5625, 62.9375, 63.1875, 63.25, 63.5625,
+                      63.5, 63.5625]
+
+
+def test_young_flat_range_bound_covers_route_27a_track_15():
+  track = new_track(15)
+  t = _young_coast(track, ROUTE_27A_TRACK_15)
+  floor = track.young_flat_range_vrel_floor(t)
+  assert floor is not None
+  assert -4.0 < floor < -2.0   # the range fit is ~-0.2 m/s; the coast claims -10.7
+  # Coasted sweeps count (a coast holds vRel, not the range) and the bound only ever reads the range.
+  assert len(track.young_range_hist) == len(ROUTE_27A_TRACK_15)
+
+
+def test_young_flat_range_bound_needs_samples_and_expires():
+  track = new_track(15)
+  t = _young_coast(track, ROUTE_27A_TRACK_15[:4])
+  assert track.young_flat_range_vrel_floor(t) is None          # too few sweeps
+  track = new_track(15)
+  t = _young_coast(track, ROUTE_27A_TRACK_15)
+  assert track.young_flat_range_vrel_floor(t + radard.YOUNG_TRACK_MAX_AGE_S) is None   # no longer young
+
+
+def test_young_flat_range_bound_leaves_closing_range_alone():
+  # A real newborn closer: the range itself falls at 10 m/s, so the fit is outside the flat band.
+  track = new_track(16)
+  t = _young_coast(track, [64.0 - 10.0 * DT * i for i in range(13)], v_rel=-10.5)
+  assert track.young_flat_range_vrel_floor(t) is None
+
+
+def test_young_flat_range_bound_ignores_duplicate_cycles_and_noisy_range():
+  track = new_track(17)
+  for i in range(12):
+    t = (i // 2) * DT   # every sweep delivered twice, as a 20 Hz loop over a 14 Hz radar does
+    track.update(63.0, 0.0, -10.7, V_EGO - 10.7, i % 2 == 0, i % 2 == 0, t_now=t, range_assist=True)
+  assert len(track.young_range_hist) == 6
+  noisy = new_track(18)
+  t = _young_coast(noisy, [63.0 + (1.5 if i % 2 else -1.5) for i in range(13)])
+  assert noisy.young_flat_range_vrel_floor(t) is None   # residual too large to call the range flat
+
+
+def test_young_track_vision_gate():
+  from types import SimpleNamespace
+  lead = SimpleNamespace(dRel=62.9)
+
+  def vis(x=77.0, v=22.5, a=0.0, p=0.97):
+    return SimpleNamespace(prob=p, x=[x], v=[v], a=[a])
+
+  assert radard.young_track_vision_contradicts(lead, vis(), 22.2)              # route 27a BM2: camera not closing
+  assert not radard.young_track_vision_contradicts(lead, vis(v=13.1), 21.6)    # camera closing 8.5 m/s (237 1188.2)
+  assert not radard.young_track_vision_contradicts(lead, vis(x=50.0), 22.2)    # camera lead nearer than the radar one
+  assert not radard.young_track_vision_contradicts(lead, vis(p=0.5), 22.2)
+  assert not radard.young_track_vision_contradicts(lead, vis(a=-2.0), 22.2)
