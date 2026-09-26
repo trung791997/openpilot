@@ -13,6 +13,9 @@ const PANDA_FIRMWARE_TOGGLE_KEYS = new Set(["IgnoreIgnitionLine", "RemoteStartBo
 const FINE_SCRUB_HOLD_MS = 300
 const FINE_SCRUB_FACTOR = 5
 const FINE_SCRUB_JITTER_PX = 4
+// A touch only moves a slider after a clear sideways drag. Before this, a vertical swipe or a tap to stop a
+// fling that landed on a slider jumped it to the finger and saved the value (owner report, 2026-09-26).
+const TOUCH_DRAG_PX = 10
 
 export const GalaxyToggleCard = {
   name: "GalaxyToggleCard",
@@ -152,13 +155,32 @@ export const GalaxyToggleCard = {
     },
     activateFineScrub() {
       if (!this.fineScrub || this.fineScrub.active) return
+      const gate = this._touchGate
+      if (gate?.flinging) return
+      if (gate) gate.open = true   // holding still for FINE_SCRUB_HOLD_MS is deliberate
       this.fineScrub.active = true
       this.fineScrub.baseValue = this.snap(this.currentValue) ?? Number(this.bounds.min)
       this.fineScrub.baseX = this.fineScrub.lastX
       this.isFineScrubbing = true
       try { navigator.vibrate?.(15) } catch (_) {}
     },
+    onSliderKeydown() {
+      this._rejectChange = false
+      this._touchGate = null
+      this.beginInteract()
+    },
+    touchGateClosed() {
+      return this._rejectChange || (this._touchGate && !this._touchGate.open)
+    },
+    restoreSlider() {
+      this.preview = undefined
+      if (this.$refs.slider) this.$refs.slider.value = this.value
+    },
     onSliderInput(e) {
+      if (this.touchGateClosed()) {
+        this.restoreSlider()
+        return
+      }
       if (this.fineScrub?.active) {
         if (this.$refs.slider) this.$refs.slider.value = this.currentValue
         return
@@ -168,6 +190,11 @@ export const GalaxyToggleCard = {
       this.startHoldTimer()
     },
     onSliderCommit(e) {
+      if (this.touchGateClosed()) {
+        this.restoreSlider()
+        this.interacting = false
+        return
+      }
       if (this.fineScrub?.active) return
       this.interacting = false
       this.flushSlider(e.target.value)
@@ -176,6 +203,12 @@ export const GalaxyToggleCard = {
       if (this.interacting && !this.fineScrub) this.onSliderCommit(e)
     },
     onSliderPointerDown(e) {
+      this._rejectChange = false
+      const touch = e.pointerType === "touch" || e.pointerType === "pen"
+      // A touch that lands while the page is still coasting from a fling is a tap to stop it, never an edit.
+      this._touchGate = touch
+        ? { x: e.clientX, y: e.clientY, open: false, flinging: document.body.classList.contains("is-scrolling") }
+        : null
       this.beginInteract()
       try { e.target.setPointerCapture?.(e.pointerId) } catch (err) {}
       const rect = e.target.getBoundingClientRect()
@@ -194,6 +227,11 @@ export const GalaxyToggleCard = {
     onSliderPointerMove(e) {
       const scrub = this.fineScrub
       if (!scrub) return
+      const gate = this._touchGate
+      if (gate && !gate.open && !gate.flinging) {
+        const dx = Math.abs(e.clientX - gate.x)
+        if (dx >= TOUCH_DRAG_PX && dx > Math.abs(e.clientY - gate.y)) gate.open = true
+      }
 
       if (!scrub.active) {
         if (Math.abs(e.clientX - scrub.lastX) > FINE_SCRUB_JITTER_PX) {
@@ -213,8 +251,25 @@ export const GalaxyToggleCard = {
       this.preview = next
       if (this.$refs.slider) this.$refs.slider.value = next
     },
+    onSliderPointerCancel(e) {
+      // The browser took the gesture (a vertical scroll, since touch-action is pan-y): put the value back.
+      this._touchGate = { open: false }
+      this.onSliderPointerEnd(e)
+    },
     onSliderPointerEnd(e) {
       this.clearHoldTimer()
+      if (this._touchGate && !this._touchGate.open) {
+        // change can fire after pointerup; keep rejecting it until the next pointerdown.
+        this._rejectChange = true
+        this._touchGate = null
+        this.fineScrub = null
+        this.isFineScrubbing = false
+        try { (e?.target || this.$refs.slider)?.releasePointerCapture?.(e?.pointerId) } catch (_) {}
+        this.interacting = false
+        this.restoreSlider()
+        return
+      }
+      this._touchGate = null
       const wasFine = this.isFineScrubbing
       const pid = e?.pointerId ?? this.fineScrub?.pointerId
       this.fineScrub = null
@@ -307,8 +362,8 @@ export const GalaxyToggleCard = {
             :value="currentValue" :disabled="locked"
             @input="onSliderInput" @change="onSliderCommit" @blur="onSliderBlur"
             @pointerdown="onSliderPointerDown" @pointermove="onSliderPointerMove"
-            @pointerup="onSliderPointerEnd" @pointercancel="onSliderPointerEnd"
-            @touchstart="beginInteract" @mousedown="beginInteract" @keydown="beginInteract" />
+            @pointerup="onSliderPointerEnd" @pointercancel="onSliderPointerCancel"
+            @touchstart="beginInteract" @mousedown="beginInteract" @keydown="onSliderKeydown" />
           <div v-if="displayParam.unit_type" class="gx-slider-meta">
             <span>{{ sliderRangeDisplay }}</span>
             <span>{{ tr("Step:") }} {{ sliderStepDisplay }}</span>

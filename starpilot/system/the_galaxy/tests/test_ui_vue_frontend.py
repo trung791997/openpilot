@@ -909,3 +909,20 @@ def test_ui_nrdr_pid_lateral_tune_tab_uses_lat_tune_api():
   # StarPilot's three PID speed bands, P only: no knot schedule left in the panel
   assert "LatPScaleLowSpeed/Standard/Highway" in panel and "readyBands" in panel and "currentBands" in panel
   assert "readyKnots" not in panel and "proposedPPct" not in panel and "20/30/40/50 mph)" not in panel
+
+
+def test_ui_slider_does_not_trap_scroll_or_take_stray_touches():
+  # Owner, 2026-09-26: scrolling the settings kept moving sliders. A vertical swipe or a fling-stopping tap on a
+  # slider must scroll (pan-y) and must never commit a value; only a clear sideways drag or a hold edits it.
+  card = _read("js/components/GalaxyToggleCard.js")
+  css = _read("css/material.css")
+  slider_css = css[css.index('input[type="range"].gx-slider {'):]
+  slider_css = slider_css[:slider_css.index("}")]
+  assert "touch-action: pan-y" in slider_css and "touch-action: none" not in slider_css
+  assert "TOUCH_DRAG_PX" in card
+  assert '@pointercancel="onSliderPointerCancel"' in card
+  assert 'classList.contains("is-scrolling")' in card
+  commit = card[card.index("    onSliderCommit(e) {"):card.index("    onSliderBlur(")]
+  assert "touchGateClosed()" in commit and "restoreSlider()" in commit
+  end = card[card.index("    onSliderPointerEnd(e) {"):card.index("    async resetToDefault(")]
+  assert end.index("restoreSlider()") < end.index("flushSlider(")
