@@ -59,6 +59,7 @@ from opendbc.car.honda.carcontroller import (  # noqa: E402
   _FACTOR_FILTER_ALPHA,
   _PITCH_DEADBAND,
   LEARN_VERSION,
+  bosch_gas_lookup_accel,
 )
 
 # Verify tick cadence assumptions that test design relies on
@@ -520,6 +521,35 @@ class TestLearnVersion(unittest.TestCase):
 
   def test_version(self):
     self.assertEqual(LEARN_VERSION, 2)
+
+
+class TestHillTermOutsideGasfactor(unittest.TestCase):
+  """Route 280 segs 29-31: gasfactor must not amplify the hill feed-forward."""
+
+  def test_flat_road_unchanged(self):
+    # With no hill term the lookup input is the old anchored form exactly.
+    for gf in (0.8, 1.0, 1.248):
+      for f in (0.0, 0.3, 1.2):
+        self.assertAlmostEqual(bosch_gas_lookup_accel(f, 0.0, gf, 0.0), f * gf)
+
+  def test_hill_added_unscaled(self):
+    accel, hill, gf = 0.05, 0.69, 1.248  # route 280 29:38: aTarget ~0 on a 4 deg climb
+    out = bosch_gas_lookup_accel(accel + hill, hill, gf, 0.0)
+    self.assertAlmostEqual(out, accel * gf + hill)
+    old = (accel + hill) * gf
+    self.assertAlmostEqual(old - out, (gf - 1.0) * hill)
+
+  def test_nominal_gasfactor_identical_to_old(self):
+    for hill in (-0.5, 0.0, 0.9):
+      f = 0.4 + hill
+      self.assertAlmostEqual(bosch_gas_lookup_accel(f, hill, 1.0, 0.0), f)
+
+  def test_downhill_not_shrunk_by_low_gasfactor(self):
+    # Symmetric: a sub-1 gasfactor no longer shrinks a downhill (negative) hill term either.
+    self.assertAlmostEqual(bosch_gas_lookup_accel(1.0 - 0.4, -0.4, 0.8, 0.0), 1.0 * 0.8 - 0.4)
+
+  def test_min_gas_anchor(self):
+    self.assertAlmostEqual(bosch_gas_lookup_accel(0.5, 0.2, 1.2, 0.1), (0.5 - 0.2 - 0.1) * 1.2 + 0.1 + 0.2)
 
 
 if __name__ == "__main__":

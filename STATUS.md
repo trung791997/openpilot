@@ -8100,3 +8100,47 @@ Owner: "make it a toggle for me in starpilot. Make sure it's editable".
   - The rows now read "default on ... not yet driven".
   - The fallback in radard is unchanged: a missing key or a read error means off.
   - **This puts replay-only behaviour on the road by default.** Everything behind it is open-/closed-loop replay (STATUS 152). The first drives are its first road evidence. Check them with `vision_assist` in mind: an earlier onset on a curve lead, and no vision-unconfirmed dips.
+
+## 154. Honda Bosch gas: the learned `gasfactor` no longer multiplies the hill feed-forward. Static tests and log statistics from one route only; not yet driven.
+
+Owner, route 00000280 (the first drive on 63827356, with `RangeDerivedVrel` = 1 and `RangeVisionAssist` = 1): "When going up hill, specifically from segment 29 to 32, it makes the accel too aggressive which ends up overshooting, esp when it is coming up to a slower lead that got obscured by the hill."
+
+- **Mechanism.** `carcontroller.py` computed the gas lookup input as `(accel + wind*windfactor + hill_brake - min_gas) * gasfactor + min_gas`, so the pitch feed-forward was scaled by `gasfactor` too.
+  - `LongGasLearner` freezes above |pitch| 0.02 rad, so `gasfactor` is fitted on flat road only. The value on this route was 1.248, sitting at the 1.25 soft cap.
+  - Extrapolating that factor to the hill term had never been checked.
+- **Log evidence (route 280, segments 29–31, engaged, gas > 0 and unsaturated, no pedals, > 20 mph, |cmd| < 0.6, 0.25 s samples).** Mean aEgo − cmd, binned by the hill term:
+
+  | Hill term (m/s²) | n | Mean aEgo − cmd (m/s²) |
+  |---|---|---|
+  | below 0.1 | 92 | −0.01 |
+  | 0.1–0.3 | 131 | +0.04 |
+  | 0.3–0.5 | 17 | +0.27 |
+  | 0.5–0.7 | 32 | +0.10 |
+  | 0.7–1.0 | 20 | +0.13 |
+
+  The model `(gasfactor − 1) × hill` predicts +0.10 to +0.22 of that overshoot.
+  - At 30:53–30:55 the car accelerated at +0.5 to +1.0 m/s² against an aTarget of about 0 and went to 51.4 mph on a 50 set. A slower lead then appeared at 80 m over the crest.
+  - At 30:46 the error was about 0.58 at a 5.3° pitch. This change explains only about 0.23 of it; the rest is probably lag in the pitch estimate at the climb onset. That part is **not** addressed.
+- **Change.** A new pure helper, `bosch_gas_lookup_accel(gas_pedal_force, hill_brake, gasfactor, min_gas)`, returns `(gas_pedal_force − hill_brake − min_gas) * gasfactor + min_gas + hill_brake`.
+  - The flat-road request stays scaled and anchored at `min_gas` exactly as before. The hill term is added unscaled.
+  - It is symmetric: a gasfactor below 1 no longer shrinks a downhill term either.
+  - The learner is unchanged. It still sees the full `gas_pedal_force`, and it is frozen on real hills anyway.
+- **Effect.** With `gasfactor` at 1.0 the output is identical to before. On flat road it is identical at any `gasfactor`. At 1.248 on a 4° climb (hill 0.69) the lookup input drops by 0.17 m/s², which is about 137 gas units on the Civic's linear 0–1600 table.
+- **Tests.** `TestHillTermOutsideGasfactor` in `test_carcontroller_learners.py` covers flat road unchanged, hill added unscaled, nominal factor identical, downhill symmetric, and the `min_gas` anchor.
+  - `opendbc/car/honda/tests`: 294 passed. `test_py39_compat.py` plus `test_longitudinal_planner.py`: 548 passed.
+  - ruff shows 8 pre-existing findings in the two files and none on the changed lines.
+- **Check on the next drive over the same hills (segments 29–32 of route 280).**
+  - Uphill aEgo − cmd should sit near 0 rather than +0.1 to +0.3.
+  - Watch for a small **under**shoot on steep climbs (the estimate is −0.05 to −0.08), which the planner should absorb.
+  - Watch for no change on flat road.
+
+Other route-280 bookmarks, reported to the owner with no change made:
+- **4:29.** Stop-and-go creep of about 1 m.
+- **7:29.** The lead slowed to turn; −3.8 m/s² briefly.
+- **15:31 and 21:07.** A stopped car was revealed after the lead moved out.
+  - The camera had it at about 100 m but estimated it at 15–30 mph.
+  - No in-lane radar point existed until 67 and 75 m. At 21:06 track #49 appeared already railed at −13.5.
+  - The result was a gentle-then-firm brake to −2.3 and −3.3 m/s².
+  - No radar point was deleted. Collect more cases before designing anything.
+- **24:35.** Cut-in at 30 m; the first-frame vRel of −6.6 gave a one-second tap.
+- **26:11.** The lead braked hard (9 m of gap lost in 1 s); −3.2 m/s², with the radar lag about 1 s.

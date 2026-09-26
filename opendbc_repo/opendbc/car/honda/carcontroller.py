@@ -77,6 +77,19 @@ def get_honda_bosch_wind_brake_mps2(v_ego: float) -> float:
   return float(np.interp(v_ego, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
 
 
+def bosch_gas_lookup_accel(gas_pedal_force: float, hill_brake: float, gasfactor: float, min_gas: float) -> float:
+  # The learned gasfactor scales the flat-road part of the request only; the hill feed-forward is
+  # added on top unscaled. LongGasLearner freezes above |pitch| 0.02 rad, so gasfactor is fitted on
+  # flat road and was never checked against the hill term. Route 280 segs 29-31 (gasfactor 1.248,
+  # at the soft cap): flat-road aEgo - cmd was -0.01..+0.04, but with a hill term of 0.3-1.0 m/s^2
+  # the car ran +0.10..+0.27 over the command (30:53, +0.5..+1.0 vs aTarget ~0, 51.4 mph on a
+  # 50 set, then a slower lead over the crest). Scaling the hill term by gasfactor predicts
+  # (gasfactor - 1) * hill = +0.10..+0.22 of that. Static/log evidence only; not yet driven.
+  # Anchored at min_gas so gasfactor scales the offset from the pedal-on threshold rather than
+  # shifting where gas starts.
+  return (gas_pedal_force - hill_brake - min_gas) * gasfactor + min_gas + hill_brake
+
+
 def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
   """Select Bosch brake mode from the same road-load-adjusted force used for gas."""
   if not long_active:
@@ -902,10 +915,10 @@ class CarController(CarControllerBase):
               at_accel_max=(gas_pedal_force >= self.params.BOSCH_ACCEL_MAX),
             )
 
-          # Anchor the learned gain at min_gas so gasfactor scales the offset from the pedal-on
-          # threshold rather than shifting where gas starts.
+          # gasfactor scales the flat-road request only; the hill term is added unscaled (see
+          # bosch_gas_lookup_accel).
           min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
-          self.gas = float(np.interp((gas_pedal_force - min_gas) * self._learner.gasfactor + min_gas,
+          self.gas = float(np.interp(bosch_gas_lookup_accel(gas_pedal_force, hill_brake, self._learner.gasfactor, min_gas),
                                      self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
           # limit gas ramp to 60 units per frame, matches stock. Higher sometimes causes powertrain
           # to ignore gas command.
