@@ -55,6 +55,12 @@ TIMEOUT = 0.1
 
 # comma 4 (EG916) pppd link check, see configure_ppp_keepalive
 PPP_LCP_ECHO = {"lcp-echo-interval": "5", "lcp-echo-failure": "4"}
+# comma 4 internet probe over ppp0, see check_modem_config. One ping per 30 s is ~10 KB/hour.
+LTE_PROBE_TARGETS = ("94.140.14.14", "1.1.1.1")
+LTE_PROBE_INTERVAL = 30  # s between probes while pppd is up
+LTE_PROBE_FAILURES = 3  # consecutive failed probes before restarting the session (~90 s)
+LTE_DOWN_RESTART = 60  # s without pppd (after it ran once) before bringing lte up again
+LTE_RESTART_BACKOFF = 120  # s between restarts
 REFRESH_RATE_MS = 1000
 
 NetworkType = log.DeviceState.NetworkType
@@ -603,20 +609,64 @@ class Tici(HardwareBase):
     return {k: v for k, v in zip(args, args[1:], strict=False) if k in ("lcp-echo-interval", "lcp-echo-failure")}
 
   def check_modem_config(self):
-    # Called every 10 s by hardwared. On one comma 4 boot (2026-09-25) pppd still ran with
-    # "lcp-echo-interval 0" hours later and the link died silently: likely NM had already started
-    # the session with the old profile when configure_modem found no pppd yet. Re-apply whenever
-    # a running pppd lacks the echo, at most every 5 min so a carrier that rejects it can't loop.
+    # Called every 10 s by hardwared on the comma 4.
+    # 1. On one boot (2026-09-25) pppd still ran with "lcp-echo-interval 0" hours later: likely NM
+    #    had already started the session with the old profile when configure_modem found no pppd
+    #    yet. Re-apply whenever a running pppd lacks the echo (at most every 5 min).
+    # 2. With echo on, the device still went offline and stayed offline (2026-09-26). The PPP peer
+    #    is the modem, not the network, so LCP echo can keep passing after the data bearer behind
+    #    it has died. So also probe the internet over ppp0 and restart the session when it fails
+    #    LTE_PROBE_FAILURES times in a row, or when pppd has been gone for LTE_DOWN_RESTART s.
     if self.get_device_type() != "mici":
       return
-    running = self._running_ppp_lcp()
-    if running is None or running == PPP_LCP_ECHO:
-      return
     now = time.monotonic()
-    if now - getattr(self, "_last_ppp_fix", -float("inf")) < 300:
+    running = self._running_ppp_lcp()
+    if running is None:
+      self._ppp_probe_failures = 0
+      if getattr(self, "_ppp_seen", False):  # never seen: no SIM or no lte profile, leave it
+        down_since = getattr(self, "_ppp_down_since", None) or now
+        self._ppp_down_since = down_since
+        if now - down_since >= LTE_DOWN_RESTART:
+          self._restart_lte(now, "no pppd")
       return
-    self._last_ppp_fix = now
-    self.configure_ppp_keepalive()
+    self._ppp_seen = True
+    self._ppp_down_since = None
+
+    if running != PPP_LCP_ECHO:
+      if now - getattr(self, "_last_ppp_fix", -float("inf")) >= 300:
+        self._last_ppp_fix = now
+        self.configure_ppp_keepalive()
+      return
+
+    if now - getattr(self, "_last_ppp_probe", -float("inf")) < LTE_PROBE_INTERVAL:
+      return
+    self._last_ppp_probe = now
+    if self._lte_reachable():
+      self._ppp_probe_failures = 0
+      return
+    self._ppp_probe_failures = getattr(self, "_ppp_probe_failures", 0) + 1
+    if self._ppp_probe_failures >= LTE_PROBE_FAILURES:
+      self._restart_lte(now, "no internet over ppp0")
+
+  def _lte_reachable(self) -> bool:
+    for target in LTE_PROBE_TARGETS:
+      try:
+        cmd = ["sudo", "-n", "ping", "-I", "ppp0", "-c", "1", "-W", "3", target]
+        if subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5) == 0:
+          return True
+      except (subprocess.TimeoutExpired, OSError):
+        pass
+    return False
+
+  def _restart_lte(self, now: float, reason: str):
+    if now - getattr(self, "_last_lte_restart", -float("inf")) < LTE_RESTART_BACKOFF:
+      return
+    self._last_lte_restart = now
+    self._ppp_probe_failures = 0
+    self._ppp_down_since = None
+    from openpilot.common.swaglog import cloudlog  # see configure_ppp_keepalive for why it's here
+    cloudlog.event("lte restart", reason=reason)
+    subprocess.call(["sudo", "nmcli", "--wait", "0", "connection", "up", "lte"])
 
   def reboot_modem(self):
     modem = self.get_modem()

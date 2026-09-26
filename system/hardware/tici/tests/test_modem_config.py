@@ -3,7 +3,7 @@ import subprocess
 import pytest
 
 from openpilot.system.hardware.base import LPABase
-from openpilot.system.hardware.tici.hardware import Tici
+from openpilot.system.hardware.tici.hardware import (LTE_DOWN_RESTART, LTE_PROBE_INTERVAL, LTE_RESTART_BACKOFF, PPP_LCP_ECHO, Tici)
 
 
 def test_comma_profile_detection_without_lpa(mocker):
@@ -210,3 +210,84 @@ def test_watchdog_other_devices(mocker, tmp_path):
   hardware.check_modem_config()
 
   assert _nmcli_calls(call) == []
+
+
+class _Clock:
+  def __init__(self, mocker):
+    self.t = 1000.0
+    mocker.patch("openpilot.system.hardware.tici.hardware.time.monotonic", side_effect=lambda: self.t)
+
+
+def _probe_hardware(mocker, reachable):
+  hardware = Tici()
+  mocker.patch.object(hardware, "get_device_type", return_value="mici")
+  mocker.patch.object(hardware, "_running_ppp_lcp", return_value=dict(PPP_LCP_ECHO))
+  mocker.patch.object(hardware, "_lte_reachable", side_effect=reachable)
+  call = mocker.patch("openpilot.system.hardware.tici.hardware.subprocess.call")
+  return hardware, call
+
+
+def _ups(call):
+  return [c for c in _nmcli_calls(call) if c[-3:] == ["connection", "up", "lte"]]
+
+
+def test_probe_restarts_session_with_echo_on_but_no_internet(mocker):
+  # 2026-09-26: offline and staying offline with echo on; the modem answers LCP itself
+  clock = _Clock(mocker)
+  hardware, call = _probe_hardware(mocker, lambda: False)
+  for _ in range(2):
+    hardware.check_modem_config()
+    clock.t += 10
+    hardware.check_modem_config()  # within the probe interval: no probe
+    clock.t += LTE_PROBE_INTERVAL
+  assert _ups(call) == []
+  hardware.check_modem_config()  # third failed probe
+  assert len(_ups(call)) == 1
+
+
+def test_probe_leaves_working_session(mocker):
+  clock = _Clock(mocker)
+  hardware, call = _probe_hardware(mocker, lambda: True)
+  for _ in range(10):
+    hardware.check_modem_config()
+    clock.t += LTE_PROBE_INTERVAL
+  assert _ups(call) == []
+
+
+def test_probe_restart_backoff(mocker):
+  clock = _Clock(mocker)
+  hardware, call = _probe_hardware(mocker, lambda: False)
+  for _ in range(6):  # 6 failed probes in 150 s: one restart, the second is held by the backoff
+    hardware.check_modem_config()
+    clock.t += LTE_PROBE_INTERVAL
+  assert len(_ups(call)) == 1
+  clock.t += LTE_RESTART_BACKOFF
+  for _ in range(3):
+    hardware.check_modem_config()
+    clock.t += LTE_PROBE_INTERVAL
+  assert len(_ups(call)) == 2
+
+
+def test_brings_lte_back_when_pppd_stays_gone(mocker):
+  clock = _Clock(mocker)
+  hardware, call = _probe_hardware(mocker, lambda: True)
+  hardware.check_modem_config()  # pppd seen once
+  hardware._running_ppp_lcp.return_value = None
+  hardware.check_modem_config()
+  clock.t += LTE_DOWN_RESTART - 10
+  hardware.check_modem_config()
+  assert _ups(call) == []
+  clock.t += 10
+  hardware.check_modem_config()
+  assert len(_ups(call)) == 1
+
+
+def test_no_restart_when_pppd_never_ran(mocker):
+  # no SIM / no lte profile: nothing to bring back
+  clock = _Clock(mocker)
+  hardware, call = _probe_hardware(mocker, lambda: True)
+  hardware._running_ppp_lcp.return_value = None
+  for _ in range(10):
+    hardware.check_modem_config()
+    clock.t += LTE_DOWN_RESTART
+  assert _ups(call) == []
