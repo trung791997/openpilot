@@ -7522,3 +7522,25 @@ PR #8 (`armin/lateral-fixes`, open, unmerged) has three lateral pieces: (1) a re
   - 277: 76, median 0.030, max 0.323.
 - (2) is not relevant to this report; not evaluated.
 - Not done: any code change. Candidates are a port of (3), and a bleed toward zero (instead of a hold) while the override fade is ramping. Both need tests and a drive.
+
+### 143d. Owner-approved: PR #8's disengage reset ported, and the integrator bleeds through the override fade instead of holding. Unit tests, open-loop replay and closed-loop sim only; not driven.
+
+Both changes are in `selfdrive/controls/lib/latcontrol_pid.py`.
+- **Reset (PR #8 piece 3).** `LatControlPID.reset()` now clears `pid` state as well as `sat_time`, and the inactive branch calls `pid.reset()`. Open-loop replay, integrator on the first engaged frame:
+  - HEAD: 277 max 0.304 (64/76 re-engagements above 0.05); 278 max 0.197 (16/28); 27a max 0.095 (7/13).
+  - Now: 0 on every re-engagement.
+- **Fade bleed.** Applies on modified-EPS cars only. It runs on frames where `steer_limited_by_safety` holds, the press detector is off, and the last press was within `HondaOverrideFadeUpSecs` (refreshed with the other params, default 1.5 like the carcontroller).
+  - On those frames `pid.i *= exp(-dt / NRDR_OVERRIDE_FADE_I_BLEED_TAU)`, with tau 0.5 s.
+  - Unchanged: the integrator stays frozen while pressed, and a limit with no recent press still freezes.
+- **27a 12:34, closed-loop sim** (`plant_d5`, recorded pressed frames and carcontroller fade), wheel behind desired during the unwind:
+  - 759.0 s: 21.4 → 16.3 deg.
+  - 759.5 s: 17.7 → 12.8 deg.
+  - 760.5 s: 4.4 → 0.6 deg.
+  - No overshoot through 763 s.
+  - Open loop, I at 758.5 s is −0.021 against HEAD's −0.204 (into the turn).
+- **Whole-route closed-loop sim, 277/278/27a.**
+  - RMS error is equal or lower in every band (<25, 25–50 and >50 mph), within 3 s of an engage and within 3 s of a release. The largest gain is 27a <25 mph: 15.90 → 15.72 deg.
+  - p99 |err| is unchanged except 27a 25–50 mph: 3.1 → 3.2 deg.
+  - Output chatter (rms d(out)) is unchanged.
+- **Tests.** `selfdrive/controls/tests/test_latcontrol_pid_override_fade.py`: 3 of its 4 fail on HEAD; the fourth is the no-press freeze control. The other lateral tests still pass. The two failures in `test_latcontrol.py` (Bolt center limit, Palisade taper) fail on HEAD too and are not related.
+- **Not validated.** Road feel after a press and release in a turn, especially short touches, which now lose some I. Owner: check turn exits after a nudge, and the first second after re-engaging.
