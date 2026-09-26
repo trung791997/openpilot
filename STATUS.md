@@ -8144,3 +8144,19 @@ Other route-280 bookmarks, reported to the owner with no change made:
   - No radar point was deleted. Collect more cases before designing anything.
 - **24:35.** Cut-in at 30 m; the first-frame vRel of −6.6 gave a one-second tap.
 - **26:11.** The lead braked hard (9 m of gap lost in 1 s); −3.2 m/s², with the radar lag about 1 s.
+
+## 155. First drive on the STATUS 147/151 lateral values: route 00000280--d02d9c2f8e (owner: "I drove it with your latest fix and recommendation"). Limited road evidence: one drive, compared against five earlier routes on different roads.
+
+The drive ran LowSpeed 115/50/50, Standard 125/95/100 and Highway 115/100/100 (P/I/F). Before, it was 100/50/50, 105/75/100 and 105/75/100 on 278 and 27a (Highway I 0 on 271–277). `HondaOverrideFadeUpSecs` also went from 1.0 to 0.5 on the same drive, so driver-press numbers are not a clean comparison.
+
+Logged hands-off tracking, leaving out the first 5 s and ±3 s around lane changes and blinkers. Without that, a log-start artifact (a −66° target at t=0 while moving at 38 mph) and lane changes make up 75% of 280's Standard squared error:
+
+| band | 280 | 271 / 276 / 277 / 278 / 27a |
+|---|---|---|
+| Standard: min / err / straight / curve \|e\|/\|des\| median | 18.5 / 0.45 / 0.39 / 0.045 | err 0.52–1.01, straight 0.45–0.63, curve 0.058–0.078 |
+| LowSpeed: min / err / straight | 2.4 / 1.74 / 1.15 | err 3.0–16.7, straight 1.49–2.16 |
+| Highway: min / err / straight | 1.7 / 0.28 / 0.28 | err 0.44–0.62, straight 0.39–0.53 |
+
+- **Standard:** best on every measure. Sign changes per second are unchanged (0.33 against 0.30–0.33). Standard driver presses were 1.85/min against 0.09–2.98.
+- **LowSpeed and Highway:** too few minutes to judge. Highway sign rate 0.34 is at the top of the earlier range (0.15–0.30), on 1.7 minutes.
+- **Sim step on 280 alone:** proposes Standard 140/120 (fit 0.943, holdout 0.867) and holds LowSpeed. Not recommended yet: one route, and Standard is already the best measured. Collect two or three more drives on the current values first.
