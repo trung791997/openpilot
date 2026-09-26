@@ -7218,3 +7218,16 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - Behind a departing lead at 80+ m that flickers radar/vision, the set should keep rising.
   - Watch for 1-2 mph hunting behind a lead at 2.5-3 s that flips source.
 - **Open:** the reversal cost is small but consistent (+2..+4 per route). The sim is open loop in vEgo, so it cannot say whether stock ACC would close on the lead less at 16:34.1.
+
+**136a. Vision-only e2e (radar off) changes the answer: the PR's case is real there, the PR's mechanism is still the wrong fix.** Konik route list for `11c8fa231c0499ed`: 192 Civic routes over 1 mile; segment-0 `carParams` shows **100** with `openpilotLongitudinalControl` = 1 and `radarUnavailable` = 1 (65 on `night-star-testing`, 17 `night-star-bosch-radar`, 11 `ns-bosch-radar-testing`, 6 `night-star-sp-08.08.2026`, 1 `peter`), ~23 h engaged, ~15 h of it in Experimental Mode. Full qlogs for all 100; rlogs exist for only 63 of the 363 press segments (13 routes; the rest were never uploaded), so most presses are classified from qlogs, which have no `modelV2`. Proxy: exp mode and `aTarget` < MPC estimate − 0.15 = "something other than the MPC is lower". Against the 90 rlog presses where e2e is known it agrees 87/90 (3 over-counts, no misses).
+
+| exp-mode presses | rlog, e2e known (90) | qlog proxy, all (518) |
+|---|---|---|
+| model lower, asking for accel ≥ 0 (PR case) | 23, **15 with a lead pulling away** | 110, 57 with a lead pulling away |
+| model lower, braking | 12 | 105 |
+| MPC lower, braking | 42 | 224 |
+| MPC lower, accel ≥ 0 | 13 | 79 |
+
+- The typical PR-case press is a vision lead 50–100 m ahead pulling away at +1–3 m/s, e2e +0.0…+0.5 while the MPC allows +0.7…+0.9 (e.g. 0000006d--4715a1d4cc 4:22.5 e2e 0.23 vs MPC 0.75; 000000cb--2506619877 11:36.3 0.15 vs 0.88). The gap is ~0.5 m/s², more than the PR's 0.2 cap, which also needs 4 presses to reach.
+- The PR's trigger would still take about as many inputs from model over-braking (105) as from slow acceleration (110), and it softens light braking for the rest of the drive.
+- **Open, owner decision:** a stateless lead-departure rule in the exp-mode arbitration (lead present and pulling away, MPC higher than e2e → move toward the MPC, braking untouched) would address the 57/110 directly. Not implemented.

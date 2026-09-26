@@ -42,8 +42,14 @@ REARM = 3.0          # s, presses closer than this to the previous one merge int
 
 
 def segments(route_dir):
-  segs = [s for s in os.listdir(route_dir) if s.isdigit() and os.path.exists(os.path.join(route_dir, s, "rlog.zst"))]
-  return [os.path.join(route_dir, s, "rlog.zst") for s in sorted(segs, key=int)]
+  """rlog per segment, else qlog (qlogs carry no modelV2, so e2e reads NaN and nothing classes as e2e-limited)."""
+  out = []
+  for s in sorted((s for s in os.listdir(route_dir) if s.isdigit()), key=int):
+    for name in ("rlog.zst", "qlog.zst"):
+      if os.path.exists(os.path.join(route_dir, s, name)):
+        out.append(os.path.join(route_dir, s, name))
+        break
+  return out
 
 
 def scan_route(route_dir):
@@ -90,6 +96,39 @@ def scan_route(route_dir):
   return events
 
 
+def profile_route(route_dir):
+  """Engaged-time mix for one route: openpilot long, Experimental Mode share, radar share of lead time."""
+  op_long, radar_unavail, enabled, exp, last_t = None, None, False, False, None
+  n = Counter()
+  eng_s = 0.0
+  for path in segments(route_dir):
+    try:
+      for m in _LogFileReader(path):
+        w = m.which()
+        if w == "carParams" and op_long is None:
+          op_long, radar_unavail = m.carParams.openpilotLongitudinalControl, m.carParams.radarUnavailable
+        elif w == "selfdriveState":
+          enabled, exp = m.selfdriveState.enabled, m.selfdriveState.experimentalMode
+          if not enabled:
+            last_t = None
+        elif w == "radarState" and enabled:
+          t = m.logMonoTime / 1e9
+          eng_s += min(t - last_t, 1.0) if last_t is not None else 0.0
+          last_t = t
+          l = m.radarState.leadOne
+          n["eng"] += 1
+          n["exp"] += exp
+          n["lead"] += l.status
+          n["radar"] += l.status and l.radar
+          n["exp_lead"] += exp and l.status
+          n["exp_radar"] += exp and l.status and l.radar
+    except Exception as e:  # truncated segment
+      print(f"  warn {path}: {e}", file=sys.stderr)
+  pct = lambda a, b: 100.0 * n[a] / n[b] if n[b] else float("nan")  # noqa: E731
+  return dict(op_long=op_long, radar_unavail=radar_unavail, eng_min=eng_s / 60, exp_pct=pct("exp", "eng"),
+              radar_pct=pct("radar", "lead"), exp_radar_pct=pct("exp_radar", "exp_lead"))
+
+
 def summarize(pre):
   def med(k):
     return float(np.nanmedian([h[k] for h in pre]))
@@ -111,7 +150,15 @@ def summarize(pre):
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("routes", nargs="+")
+  ap.add_argument("--profile", action="store_true", help="print the per-route engaged-time mix instead of the census")
   args = ap.parse_args()
+  if args.profile:
+    print(f"{'route':22} opLong radarUnavail eng_min exp%  radar%_of_lead  radar%_of_lead_in_exp")
+    for r in args.routes:
+      p = profile_route(r)
+      print(f"{os.path.basename(os.path.normpath(r)):22} {int(bool(p['op_long'])):6d} {int(bool(p['radar_unavail'])):12d} "
+            f"{p['eng_min']:7.1f} {p['exp_pct']:5.1f} {p['radar_pct']:14.1f} {p['exp_radar_pct']:21.1f}")
+    return
   total, by_cls, by_cls_lead = Counter(), Counter(), Counter()
   rows = []
   for r in args.routes:
