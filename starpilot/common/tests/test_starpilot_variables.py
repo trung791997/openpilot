@@ -188,6 +188,16 @@ def test_sync_reboot_marker_uses_manager_guard(tmp_path):
   assert params.get_bool("DoReboot") is True
 
 
+def test_sync_reboot_marker_is_disabled_in_simulation(tmp_path, monkeypatch):
+  params = _FakeParams()
+  marker = tmp_path / "cache" / "use_HD"
+  monkeypatch.setenv("SIMULATION", "1")
+
+  assert spv.sync_reboot_marker(marker, True, params) is False
+  assert not marker.exists()
+  assert params.get_bool("DoReboot") is False
+
+
 def test_sync_stock_param_does_not_stomp_existing_custom_value_when_stock_missing():
   params = _FakeParams({"SteerDelay": 0.35, "SteerDelayStock": 0.0})
   variables = object.__new__(spv.StarPilotVariables)

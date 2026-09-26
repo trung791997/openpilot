@@ -1,8 +1,20 @@
 import math
+import sys
 import time
+
 import numpy as np
 
 from collections import namedtuple
+
+# Panda3D's Cocoa graphics pipe pumps AppKit events while creating its window.
+# If this command-line Python process has a previous crash record, AppKit may
+# show its "restore windows" modal alert and block that pump indefinitely.
+# Register this only in the simulator process; unlike `defaults write`, this
+# does not change the user's persistent macOS preferences.
+if sys.platform == "darwin":
+  from Foundation import NSArgumentDomain, NSUserDefaults
+  NSUserDefaults.standardUserDefaults().setVolatileDomain_forName_({"ApplePersistence": False}, NSArgumentDomain)
+
 from panda3d.core import Vec3
 from multiprocessing.connection import Connection
 

@@ -76,6 +76,7 @@ class SimulatedCar:
     msg.append(self.packer.make_can_msg("STEERING_CONTROL", 2, {}))
     msg.append(self.packer.make_can_msg("ACC_HUD", 2, {}))
     msg.append(self.packer.make_can_msg("LKAS_HUD", 2, {}))
+    msg.append(self.packer.make_can_msg("CAMERA_MESSAGES", 2, {}))
 
     self.pm.send('can', can_list_to_can_capnp(msg))
 

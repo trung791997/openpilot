@@ -1,6 +1,7 @@
 import signal
 import threading
 import functools
+import traceback
 import numpy as np
 
 from collections import namedtuple
@@ -39,8 +40,8 @@ class SimulatorBridge(ABC):
 
   def __init__(self, dual_camera, high_quality):
     set_params_enabled()
-    self.params = Params()
-    self.params.put_bool("AlphaLongitudinalEnabled", True)
+    params = Params()
+    params.put_bool("AlphaLongitudinalEnabled", True)
 
     self.rk = Ratekeeper(100, None)
 
@@ -70,6 +71,9 @@ class SimulatorBridge(ABC):
   def bridge_keep_alive(self, q: Queue, retries: int):
     try:
       self._run(q)
+    except Exception:
+      q.put(QueueMessage(QueueMessageType.CLOSE_STATUS, traceback.format_exc()))
+      raise
     finally:
       self.close("bridge terminated")
 

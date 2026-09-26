@@ -9,6 +9,8 @@ import usb1
 from openpilot.system.hardware import HARDWARE, TICI
 os.environ['GMMU'] = '0'
 os.environ['DEV'] = 'QCOM' if TICI else 'LLVM'
+if 'SIMULATION' in os.environ:
+  os.environ['DEV'] = os.environ.get('SIMULATION_TINYGRAD_DEV', os.environ['DEV'])
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
 import time
@@ -568,6 +570,8 @@ class ModelState:
     if requires_external_gpu and not external_gpu_active:
       cloudlog.error(f"Model {model_id} requires an external GPU; falling back to {BUILTIN_MODEL_KEY}")
       model_id = BUILTIN_MODEL_KEY
+    if 'SIMULATION' in os.environ and os.getenv('SIMULATION_MODEL_ARTIFACT'):
+      model_path_override = Path(os.environ['SIMULATION_MODEL_ARTIFACT'])
     use_builtin = model_id == BUILTIN_MODEL_KEY and model_path_override is None
     loaded_builtin = use_builtin
     if model_path_override is not None:
@@ -697,6 +701,10 @@ class ModelState:
       devices = get_tg_input_devices(PROCESS_NAME, usbgpu=self.uses_external_gpu)
       self._warp_dev = devices["WARP_DEV"]
       self._queue_dev = devices["QUEUE_DEV"]
+      if 'SIMULATION' in os.environ:
+        # Mac sim: VisionIPC hands modeld host pointers, so the warp stays on CPU.
+        self._warp_dev = os.getenv('SIMULATION_WARP_DEV', self._warp_dev)
+        self._queue_dev = os.getenv('SIMULATION_TINYGRAD_DEV', self._queue_dev)
     return self._queue_dev
 
   @property

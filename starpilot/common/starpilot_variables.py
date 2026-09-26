@@ -215,6 +215,9 @@ FORD_LKAS_MIGRATION_KEY = "FordLKASButtonControlMigrated"
 
 def sync_reboot_marker(marker_path: Path, enabled: bool, params: Params) -> bool:
   """Synchronize a boot-time marker and ask manager for a guarded reboot."""
+  if "SIMULATION" in os.environ:
+    return False
+
   if marker_path.is_file() == enabled:
     return False
 

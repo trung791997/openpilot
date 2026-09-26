@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import dataclasses
 import json
+import os
 import requests
 import tempfile
 import threading
@@ -86,7 +87,8 @@ def starpilot_boot_functions(build_metadata, params):
   StarPilotVariables()
   ThemeManager(params, params_memory, boot_run=True).update_active_theme(time_validated=system_time_valid(), starpilot_toggles=get_starpilot_toggles(), boot_run=True)
 
-  sync_konik_dongle_id(params)
+  if "SIMULATION" not in os.environ:
+    sync_konik_dongle_id(params)
 
   def boot_thread():
     while not system_time_valid():

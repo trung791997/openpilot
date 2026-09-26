@@ -111,7 +111,7 @@ def run_speed_limit_filler(started: bool, params: Params, CP: car.CarParams, sta
   return starpilot_toggles.speed_limit_filler
 
 def run_speed_limit_vision(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return starpilot_toggles.vision_speed_limit_detection
+  return starpilot_toggles.vision_speed_limit_detection and "SIMULATION" not in os.environ
 
 def run_navigationd(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and params.get("NavDestination") is not None

@@ -6,8 +6,14 @@
 #include <unistd.h>
 #include <string>
 #include <vector>
+#include <iterator>
 
 #include "msgq/impl_zmq.h"
+
+#if __has_include("../../cereal/services.h")
+#include "../../cereal/services.h"
+#define OPENPILOT_HAS_SERVICE_PORT_MAP
+#endif
 
 static size_t fnv1a_hash(const std::string &str) {
     const size_t fnv_prime = 0x100000001b3;
@@ -32,6 +38,21 @@ static std::string namespaced_endpoint(std::string endpoint) {
 
 //FIXME: This is a hack to get the port number from the socket name, might have collisions
 static int get_port(std::string endpoint) {
+    const char *namespace_env = std::getenv("OPENPILOT_ZMQ_NAMESPACE");
+#ifdef OPENPILOT_HAS_SERVICE_PORT_MAP
+    if (namespace_env != nullptr && namespace_env[0] != '\0') {
+        auto service_it = services.find(endpoint);
+        if (service_it != services.end()) {
+            constexpr int start_port = 8023;
+            constexpr int service_port_stride = 128;
+            constexpr int max_port = 65535;
+            constexpr int namespace_slots = (max_port - start_port) / service_port_stride;
+            const size_t namespace_slot = fnv1a_hash(namespace_env) % namespace_slots;
+            const size_t service_index = std::distance(services.begin(), service_it);
+            return start_port + namespace_slot * service_port_stride + service_index;
+        }
+    }
+#endif
     size_t hash_value = fnv1a_hash(namespaced_endpoint(std::move(endpoint)));
     int start_port = 8023;
     int max_port = 65535;
