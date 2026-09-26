@@ -192,12 +192,12 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       road_image[...] = get_cam_as_rgb("rgb_road")
       image_lock.release()
 
-      # SIM_RECORD_DIR: save every 4th road frame (5 fps) with speed and engagement, for a video
-      # when the desktop cannot be screen-captured.
-      if record_dir and rk.frame % 20 == 0:
+      # SIM_RECORD_DIR: save every 4th road frame (5 fps) with speed, for a video when the desktop cannot be
+      # screen-captured. Recording starts at the first engagement, so the video skips the ~20 s of startup.
+      if record_dir and start_time is not None and rk.frame % 20 == 0:
         speed = float(np.linalg.norm(env.vehicle.velocity))
         frame = road_image.copy()  # MetaDrive's buffer is BGR despite the name (camerad's kernel reads it as BGR)
-        label = f"t={rk.frame / 100:6.1f}s  v={speed:4.1f} m/s  {'ENGAGED' if is_engaged else 'disengaged'}"
+        label = f"t={time.monotonic() - start_time:5.1f}s  v={speed:4.1f} m/s  {'ENGAGED' if is_engaged else 'disengaged'}"
         cv2.putText(frame, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0) if is_engaged else (0, 0, 255), 3)
         cv2.imwrite(os.path.join(record_dir, f"{rk.frame:08d}.jpg"), frame)
 
