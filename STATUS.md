@@ -7851,3 +7851,25 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
 
 **Tests:** test_longitudinal_planner, test_longcontrol and test_range_vrel_assist pass (620). ruff has no new findings versus HEAD.
   radard tests: test_range_vrel_assist, test_radard_bosch and test_leads pass; test_leads::test_radar_fault errors at teardown on `/data/params` (errno 13, sandbox only).
+
+**147 addendum: autotune, and the 2 August flash order** (owner: "3200 I believe then 4000").
+- **Autotune result.** Command: `lat_autotune.py --plant plant_d5_fw` on 271/276/277/278/27a. Only the 25–50 mph band is trusted, so the low and highway knots stayed frozen. It proposes `LatGainSchedule {"v_mph":[20,30,40,50],"p":[100,130,125,105],"i":[50,95,75,75],"f":[50,100,100,100]}` against the driven p 105/105 and i 75/75 at 30/40 mph.
+  - 25–50 mph err rms 0.848 → 0.771 (−9%); straight rms 0.570 → 0.524.
+  - Sign changes 0.75 → 0.79/s.
+  - Holdout cost on alternate 2-minute blocks: 0.924 against the seed.
+  - This is sim evidence only; nothing was written to params. Drive it and compare it with the driven schedule before keeping it.
+- **When the flash happened, from the route list.** Konik lists short parked sessions between the drives:
+  - 61, 17:48 UTC, before 62;
+  - 65, 18:46, after 66;
+  - 67, 20:20, before 68;
+  - 6a, 21:02;
+  - 6c, 00:52, 0.5 mi.
+  - The longest break, with a parked session at each end, is 66 → 68 (18:49 → 20:19 UTC). If 3200 went on first, the most likely split is **3200: 62/63/64/66; 4000: 68/69/6b/6c/6d**.
+  - The EPS reports `39990-TBA,C020` on every route, so the flash itself leaves no trace in the logs.
+- **The tracker leaves no mark on the closed-loop response.** 68, 69 and 6b have qlogs only, so every route was redone from qlogs at 10 Hz. Values are |steering rate / command| at 0.7–1.5 Hz, hands off, lateral active, 35–45 mph:
+  - 3200 group: 38 / 34 / 44 / 48.
+  - 4000 group: 33 / 62 / 42 / 34 (6d 34).
+  - Later Trk4500 drives 271 / 277: 36 / 37.
+  - Across a whole route, what moves this number is speed and command amplitude. 64 and 69 are high, with the lowest speed and the largest commands; 62, 68 and 6d are low.
+  - **Correction to 147:** the 2–5 Hz grouping above, which singled out 6d, was that confound, not the image.
+  - The logs cannot tell trackers 3200, 4000 and 4500 apart, in either the response or high-frequency content.
