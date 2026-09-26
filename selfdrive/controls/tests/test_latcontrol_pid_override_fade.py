@@ -1,8 +1,6 @@
-import math
 from types import SimpleNamespace
 
 from cereal import car
-import openpilot.selfdrive.controls.lib.latcontrol_pid as latcontrol_pid
 from openpilot.selfdrive.controls.tests.test_latcontrol_pid_rate_ff import _build
 
 MPH = 0.44704
@@ -47,18 +45,17 @@ def test_reset_clears_the_integrator(monkeypatch):
 
 def test_integrator_bleeds_through_the_override_fade(monkeypatch):
   lac, VM, params, CS = _wound_up(monkeypatch, {"HondaOverrideFadeUpSecs": "0.5"})
-  lac.override_fade_up_s = 0.5   # the param refresh runs every 300 frames
+  assert lac.override_fade_up_s == 0.5
   _press(lac, VM, params, CS)
   held = lac.pid.i
   assert held > 0.02            # frozen, not bled, while the driver holds the wheel
   for _ in range(50):
     _step(lac, VM, params, CS, limited=True)
-  assert lac.pid.i < held * 0.45
-  assert lac.pid.i > 0.0        # a bleed, not a reset
+  assert 0.0 < lac.pid.i < held * 0.45   # a bleed, not a reset
   after = lac.pid.i
   for _ in range(100):          # past the fade: a limit with no recent press still just freezes
     _step(lac, VM, params, CS, limited=True)
-  assert abs(lac.pid.i - after) < held * math.exp(-1.0 / latcontrol_pid.NRDR_OVERRIDE_FADE_I_BLEED_TAU) * 0.2
+  assert lac.pid.i == after
 
 
 def test_limit_without_a_press_still_freezes(monkeypatch):
