@@ -47,6 +47,11 @@ if sys.platform == "darwin":
 
   Terrain.make_render_state = staticmethod(_core_profile_render_state)
 
+  # The skybox has the same problem: on macOS MetaDrive picks #version 120 shaders, which the core profile
+  # rejects, so the sky draws flat grey with the skybox texture on a stray panel. Its #version 150 shaders work.
+  import metadrive.engine.core.sky_box as sky_box
+  sky_box.is_mac = lambda: False
+
 C3_POSITION = Vec3(0.0, 0, 1.22)
 C3_HPR = Vec3(0, 0,0)
 

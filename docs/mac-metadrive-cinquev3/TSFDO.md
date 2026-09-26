@@ -49,3 +49,14 @@ One kernel in TSFDO's output head, `r_215_3_4_128_4_...`, binds 31 buffers, whic
 - With the fix, the full compile passes the self-check. With the fix reverted, it fails with `outputs differ from baseline`.
 - No upstream issue or PR was found for this. Searches covered tinygrad #6313, #10170, #15129, #15156 and #17685.
 - The sim still uses ORT CoreML. Switching modeld back to the Metal pickle is untested.
+
+## Sky fix (2026-09-26)
+
+On macOS MetaDrive loads `#version 120` skybox shaders, which the GL 4.1 core profile rejects. The sky then rendered flat grey, with the skybox texture on a stray tilted panel beside the road. `metadrive_process.py` now makes the skybox use MetaDrive's `#version 150` shaders. In two otherwise identical 120 s engaged runs at `SIM_CRUISE_KPH=25`:
+
+| | stopped (v < 0.5 m/s) | mean speed | mean lane-line probs |
+|---|---|---|---|
+| grey sky | 18% (five stops of ~7 s) | 4.1 m/s | .28 .45 .46 .03 |
+| real sky | 2% (one stop of ~4 s) | 5.5 m/s | .33 .49 .48 .01 |
+
+The remaining stop came after the car drifted onto the right road edge in a curve. Sim evidence only.
