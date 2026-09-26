@@ -7467,3 +7467,11 @@ Routes `11c8fa231c0499ed/00000278--8f101d683e` (24 segs) and `0000027a--4eae257c
 - Sim (plant_d5, no driver, 27a and 26b), unwind error / lag: `LatIScaleLowSpeed` 50 → 25 → 0 gives 4.2 → 3.4 → 2.1° on 27a and 0.26 → 0.20 → 0.14 s on 26b, turn-in unchanged. Rate FF 0.5 cuts unwind lag to 0.04 s in the same sim, but the sim cannot show the chatter above. Sim only; a lower low-speed I is the thing to try if unwind stays a complaint. No setting changed.
 
 **Not covered.** The model's late unwind request (step 1) is not a controller issue and is not scored. Episode counts are small because turns with driver presses are excluded. The sim plant is linear, with no driver and no curb.
+
+### 143a. Owner follow-up: which band trims to change, and the override threshold. Sim only; nothing changed on the car.
+
+Sim with plant_d5 on 27a / 26b / 271, low band (< 25 mph), the logged settings as the base:
+- `LatPScaleLowSpeed` 100 → 115 → 130: error rms 15.90/13.84/11.11 → 15.48/13.43/10.69 → 15.17/13.14/10.37°. Lag 0.36/0.35/0.23 → 0.34/0.32/0.21 → 0.32/0.30/0.20 s. Unwind error (`lat_route_check` episodes) 4.2/0.5/0.9 → 3.4/0.2/0.5 → 2.5/0.0/0.2°. Mid-corner ratio up slightly. Sign changes at 0.15° 0.37/0.23/0.36 → 0.40/0.23/0.37 → 0.42/0.25/0.39.
+- `LatIScaleLowSpeed` 50 → 25 → 0: unwind is faster, but the mid-corner ratio falls (26b 0.906 → 0.880 → 0.858; 271 0.931 → 0.892 → 0.844), and low speed already under-steers mid-corner (132). Error rms is flat. Rejected in favour of P.
+- **Given to the owner: `LatPScaleLowSpeed` 115. Everything else unchanged** (low I 50 / F 50; standard and highway 105 / 75 / 100; `NrdrLatRateFF` 0). 130 is the next step if unwind is still slow and low-speed weave has not risen.
+- **`NrdrDriverOverrideThreshold`: keep 2000.** Lowering it adds threshold grazes, which are already 62–71 % of presses and cut the torque (132). At 27a 12:34 the cut had already fired at 1998–2105.
