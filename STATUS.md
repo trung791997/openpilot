@@ -7495,3 +7495,17 @@ Sign changes are unchanged by either setting.
   - Low 0.06 vs 0.09 vs 0.12: 15.96 vs 15.48 vs 15.01 on 27a, and within 2 % on the other two routes.
   - Standard and highway 0.07 to 0.13: within 0.02°.
   - A longer tau also delays the request itself, which these numbers, scored against the shaped target, do not charge. 133 showed tau 0 at low speed was worse.
+
+### 143c. Is the frozen-integrator problem fixed? Partly. JamesL787/openpilot PR #8 checked against this tree. Log decode and static read only.
+
+PR #8 (`armin/lateral-fixes`, open, unmerged) has three lateral pieces: (1) a relative freeze rule, (2) the Clarity left/right split knobs, (3) a PID reset on disengage.
+- **(1) Freeze rule: the main cause is fixed, but by a different route.** James's `02163421` and `6fe70e09` (both in HEAD) moved the torque LPF off the output and onto the target. So on the straight and at speed the flag no longer trips: frozen 0.8–2.4 % of engaged frames above 25 mph on 271/278/27a, against PR #8's 81–87 %.
+  - **The override fade was left in the carcontroller, and it still freezes the integrator.** Below 25 mph (v > 2 m/s) the integrator is frozen 36 % of frames on 27a, 46 % on 278 and 27 % on 271.
+  - Pressed frames are 9–16 %. Commanded ≠ delivered while not pressed is 17–28 %, and 60–70 % of those frames fall within fade-up + 0.1 s after a press.
+  - That is the 27a 12:34 mechanism (143): I held at the into-turn −0.19 through the fade. PR #8's relative rule would still freeze early fade (its own note: "early override fade still ~100 %"), so porting it would not fix this case either.
+- **(3) Stale I across a disengage: not in this tree.** `LatControlPID` has no `reset()` override, and its inactive branch does not touch `pid.i`. The first active frame after re-engaging carries the old integrator:
+  - 27a: 13 re-engagements, median |i| 0.056, max 0.078.
+  - 278: 28, median 0.042, max 0.175.
+  - 277: 76, median 0.030, max 0.323.
+- (2) is not relevant to this report; not evaluated.
+- Not done: any code change. Candidates are a port of (3), and a bleed toward zero (instead of a hold) while the override fade is ramping. Both need tests and a drive.
