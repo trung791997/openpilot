@@ -7362,6 +7362,19 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 
 **Road check to do.** Behind a car pulling away from a light or merging ahead, Experimental Mode should pick up without a gas press; it should let go at once when that car brakes or a slower car cuts in. Watch vision-only drives at 50–100 m leads.
 
+### 136c. First drive with the toggle, route 11c8fa231c0499ed|00000278--8f101d683e (owner: "more eager to speed but also brakes faster in exp mode"). Log decode and replay only; nothing changed.
+
+- Build a0940b9f: it contains the first assist version 38676190 (vRel ramp 0.5–2.0 m/s, no immediate drop, no rise limit, no brake fade), not the tuned 65d42a95. Radar alpha long (`radarUnavailable` 0, 88 % of exp-mode lead time radar); 13.6 engaged min, 9.4 in Experimental Mode.
+- `initData` params carry `ExpLeadDepartureAssist` = 0 (loggerd records them once at route start). The logged aTarget matches a replay of 38676190 to ±0.01 from 5:39 to 6:49 and shows no lift at 4:59–5:08 or 13:20–14:41, where the replay would lift up to 0.36. So the toggle was switched on after 5:08 and was off again by 13:20.
+- While it was on, it lifted > 0.03 m/s² for about 6 s in total: 5:58 (up to 0.08, lead +1.2 m/s) and 6:47 (up to 0.24 for ~1.5 s, lead accelerating at +2–3.7 m/s²; followed by aTarget ≥ −0.44).
+- The hard brakes in that window were not preceded by the assist: lift ≤ 0.01 in the 8 s before each. They were:
+  - 5:53, −1.20, lead closing at 4.2 m/s and braking at −1.2;
+  - 6:20.8, −3.50, lead braking at −3.6;
+  - 6:29.6, −3.50;
+  - 6:33.8.
+- The drive's other hard targets were also outside the window and made with the toggle off (7:28 −3.22, 12:15 −2.59, 14:14 −2.72). The launch at 13:03 (aTarget 0.35 above min(e2e, MPC) from standstill) is another planner path; the assist is disarmed below 4.5 m/s.
+- Verdict: this drive does not show the assist causing either feel. Its effect was too small and too short, and the braking came from real closing/braking leads. The device should update to 65d42a95 before a second trial.
+
 ## 141. Galaxy Plots rebuilt: recorded drives with a lateral/longitudinal analysis. Unit tests and a headless render against a synthetic drive only; not used on a car.
 
 **What changed.** The Plots page (classic `/plots` and mobile `#/plots`) no longer grades a 30 s window with client-side "Great/Good/Fair/Poor" scores. A backend module `starpilot/system/the_galaxy/drive_plots.py` (commit 57cca03c) samples `controlsState`, `carControl`, `carState`, `longitudinalPlan` at ~20 Hz. Requested lateral is `desiredCurvature·v²`, measured is `curvature·v²`; requested longitudinal is `longitudinalPlan.aTarget`, measured is `aEgo`. Only engaged, non-override samples count (`latActive`/`longActive`, no steer/gas press).
