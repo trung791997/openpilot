@@ -9,7 +9,7 @@ from multiprocessing import Pipe, Array
 from openpilot.tools.sim.bridge.common import QueueMessage, QueueMessageType
 from openpilot.tools.sim.bridge.metadrive.metadrive_process import (metadrive_process, metadrive_simulation_state,
                                                                     metadrive_vehicle_state)
-from openpilot.tools.sim.lib.common import SimulatorState, World
+from openpilot.tools.sim.lib.common import SimulatorState, World, vec3
 from openpilot.tools.sim.lib.camerad import W, H
 
 
@@ -88,6 +88,14 @@ class MetaDriveWorld(World):
       state.velocity = md_vehicle.velocity
       state.bearing = md_vehicle.bearing
       state.steering_angle = md_vehicle.steering_angle
+      # locationd reads the raw gyro as device [-v[2], -v[1], -v[0]], so the yaw rate goes in v[0]. MetaDrive's heading
+      # is clockwise-positive against openpilot's counter-clockwise device z, so the two negations cancel.
+      state.imu.gyroscope = vec3(md_vehicle.yaw_rate, 0.0, 0.0)
+      # Same axis order for the accelerometer: device z (gravity reaction, up) in -v[0], device y (left, the
+      # centripetal term) in -v[1], device x (forward) in -v[2]. Without gravity locationd's orientation is
+      # unobservable and its yaw rate came out a third low.
+      lateral_accel = -md_vehicle.yaw_rate * float(np.linalg.norm([md_vehicle.velocity.x, md_vehicle.velocity.y]))
+      state.imu.accelerometer = vec3(-9.81, -lateral_accel, -md_vehicle.accel)
       state.gps.from_xy(curr_pos)
       state.valid = True
 
