@@ -3,7 +3,8 @@
 Pure module: no Params, no Flask. Callers are the Galaxy workspace, the CLI and tests.
 Frames come from rlogs (frames_from_log). One trial = one step per speed band, bounded 0.85..1.15.
 The bands are StarPilot's PID bands (LatControlPID._lat_pid_scale_banded): hard steps at 25 and 50 mph,
-each with its own LatPScale*/LatIScale*/LatFScale* percent. Only P is proposed (item 116); I/F are carried.
+each with its own LatPScale*/LatIScale*/LatFScale* percent. The rules propose only P (item 116); I/F are carried.
+The closed-loop sim step (tools/lateral/lat_tune_sim.py) may replace a band's proposal with a P/I pair.
 """
 import json
 import math
@@ -450,19 +451,24 @@ def build_trial(stats, baseline, route_names, per_route, warnings):
 
 
 def build_band_params(trial, device_gains=None):
-  """{"LatPScaleStandard": int, ...}: the P band params a trial writes. I/F are never written.
+  """{"LatPScaleStandard": int, "LatIScaleStandard": int, ...}: the band params a trial writes. F is never written.
 
-  Only bands whose factor moved are written; a held band keeps whatever the device has. The step is
+  Only bands whose factor moved are written for P; a held band keeps whatever the device has. The step is
   applied to the device's current P (device_gains, as band_gains returns), not the P logged on the routes:
   the two differ only on a forced apply, and there writing the logged value x factor would silently undo a
-  manual change made since the drive. Without device_gains the logged value is used."""
+  manual change made since the drive. Without device_gains the logged value is used.
+  I is written only for a band the closed-loop sim step moved (tools/lateral/lat_tune_sim.py sets "iDelta");
+  the rules never propose I. It is likewise a step from the device's current I, in points, clamped to 0..500."""
   out = {}
   for n, b in enumerate(trial["bands"]):
     factor = float(b.get("factor", 1.0))
-    if abs(factor - 1.0) < 1e-9:
-      continue
-    base = device_gains[n]["p"] if device_gains is not None else b["current"]["p"]
-    out[b["pKey"]] = int(propose_p(int(base), factor))
+    if abs(factor - 1.0) >= 1e-9:
+      base = device_gains[n]["p"] if device_gains is not None else b["current"]["p"]
+      out[b["pKey"]] = int(propose_p(int(base), factor))
+    i_delta = int(b.get("iDelta") or 0)
+    if i_delta:
+      base_i = device_gains[n]["i"] if device_gains is not None else b["current"]["i"]
+      out[I_KEYS[n]] = int(min(max(int(base_i) + i_delta, PCT_MIN), PCT_MAX))
   return out
 
 

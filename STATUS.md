@@ -7923,3 +7923,37 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
   - 24f B-F and 258 63:50: identical.
 - **Tests:** test_longitudinal_planner + test_longcontrol pass (623); 11 new tests are the held patch's plus a cap test. ruff: no new findings.
 - **Road check:** on a fast approach to a stopped or slow car, braking should begin earlier and hold around -2 rather than arriving late and hard. Watch for early braking on a car that is turning off.
+
+## 151. Low-speed plant trained on the post-3-August routes, and the Galaxy NRDR lateral tuner now runs the sim (owner: "train the sim on the low speed routes, on anything past august 3"; "redo the nrdr lateral tuner on galaxy to reflect these new changes given the better sim"). Sim, replay and log statistics only; nothing on the car changed and no params were written.
+
+**Plant.** `tools/lateral/plants/civic_bosch_c020.json` is a two-band plant (`BandedPlant` in `lat_pid_sim.py`): a low band below 22 mph, the STATUS 147 highway band (route 000001b8) above 28 mph, and a linear blend between them. Both bands send the command through the C020 torque table (STATUS 146). The low band adds a centring term `c9·tanh(θ/2)`. It was fitted on 36 routes after 2026-08-03 (163 hands-off minutes below 25 mph, delay 5 frames) and scored on held-out routes 271/276/277/278/27a (12.2 low-speed minutes):
+
+| | err rms | straight rms | curve ratio | sign/s |
+|---|---|---|---|---|
+| log | 14.31 | 2.80 | 0.869 | 0.37 |
+| sim, first fit (12 routes) | 14.04 | 2.36 | 0.914 | 0.42 |
+| sim, shipped fit (36 routes) | 14.03 | 2.36 | 0.915 | 0.41 |
+
+The sim reads the straight-line error about 16% low. Doubling the training data changed nothing held out, so the gap is in the model form, not the amount of data.
+
+**LowSpeed grid** (first low fit, same held-out routes; the shipped fit matches it held out). At the current 100/50, the sim straight-line rms is 2.36:
+
+| P/I | straight rms | curve ratio |
+|---|---|---|
+| 115/75 | 2.27 | 0.941 |
+| 130/75 | 2.19 | 0.948 |
+
+F has no effect below 25 mph. The provisional LowSpeed suggestion is P 115, I 75: the smallest step, because the sim's error is larger than the gain.
+
+**Galaxy tuner.** `lat_tune_workspace.run_worker` now runs `tools/lateral/lat_tune_sim.refine_trial` after the rule analysis:
+- It uses the same trust gate as lat_autotune: err and straight rms within 25% of the log, curve ratio within 0.05, at least 3 minutes per band, and a fit/holdout split in alternating 120 s blocks.
+- For each trusted band it replaces the rule P step with the best sim cell of a 3×3 grid of P ±0.10 and I ±25, vetoed on sign rate and driver-press rate. An untrusted band keeps the rule result.
+- The plant is only used when carParams shows `HONDA_CIVIC_BOSCH` with EPS `39990-TBA,C020`.
+- Extracts are cached in `workspace/sim_cache`; the job is cancellable; if the sim fails, the rule result stands.
+- Apply now writes `LatIScale<band>` as well as `LatPScale<band>` when the sim moves I. Both frontends show P and I, the source (rules or sim), and the trust line.
+- The CLI `tools/lateral/lat_tune_cli.py` does the same; `--no-sim` gives rules only.
+- On the newest 8 routes the CLI kept only 00000278 (tuning changed across the others). That left 7.5 trusted Standard minutes, and the sim proposed Standard P 105→115, I 75→100. LowSpeed and Highway had 0 minutes, so the rules held them. 7.5 minutes is thin.
+
+**Not known:** the worker's runtime on the device. On this x86 box it takes about 0.7 s per route-minute with 2 workers, and the device will be slower. Whether any sim step helps on the road is also unknown.
+
+**Incident:** this session's fetch script deleted each route's raw segment dirs after extraction without checking whether they predated the session. That removed the raw rlogs of radar-fleet routes 0000023e and 00000258 (the radar session is re-fetching them). The script was stopped at 17:04 UTC. Any script that frees disk must delete only the files it downloaded itself.

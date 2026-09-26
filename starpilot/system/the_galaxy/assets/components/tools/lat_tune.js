@@ -240,7 +240,7 @@ function stopAnalyze() {
 }
 
 async function applyTrial(trialId) {
-  if (!window.confirm(`Apply trial ${trialId}?\n\nEach band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed / Standard / Highway); held bands are not written. A P term in a valid LatGainSchedule is dropped. I and F are not changed. You can revert it here.`)) return;
+  if (!window.confirm(`Apply trial ${trialId}?\n\nEach band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed / Standard / Highway), and a band the sim moved gets its I step applied to the device's current I (LatIScale*); held bands are not written. A P term in a valid LatGainSchedule is dropped. F is not changed. You can revert it here.`)) return;
   try {
     await runAction("apply", () => requestJson(`/api/lat_tune/trial/${encodeURIComponent(trialId)}/apply`, { method: "POST", body: JSON.stringify({}) }));
   } catch (e) {
@@ -301,12 +301,22 @@ function renderCurrentGains() {
     </div>`;
 }
 
+function trialChanges(t) {
+  const moved = (now, next, i) => next !== undefined && next[i] !== undefined && next[i] !== (now || [])[i];
+  return BAND_NAMES.map((_, i) => ({ p: moved(t.currentP, t.proposedP, i), i: moved(t.currentI, t.proposedI, i) }));
+}
+
 function proposalSummary(t) {
-  const now = t.currentP || [];
-  const next = t.proposedP || [];
+  const nowP = t.currentP || [];
+  const nextP = t.proposedP || [];
+  const nowI = t.currentI || [];
+  const nextI = t.proposedI || [];
+  const changes = trialChanges(t);
   return BAND_NAMES.map((name, i) => {
-    const changed = next[i] !== undefined && next[i] !== now[i];
-    return html`<span class="latTunePill ${changed ? "changed" : ""}">${shortBand(name)} ${now[i] ?? "–"}${changed ? html` → <b>${next[i]}</b>` : ""}</span>`;
+    const c = changes[i];
+    const sim = (t.sources || [])[i] === "sim";
+    return html`<span class="latTunePill ${c.p || c.i ? "changed" : ""}" title="${sim ? "closed-loop sim" : "log rules"}">${shortBand(name)}${sim ? "·sim" : ""}
+      P ${nowP[i] ?? "–"}${c.p ? html` → <b>${nextP[i]}</b>` : ""}${c.i ? html` · I ${nowI[i]} → <b>${nextI[i]}</b>` : ""}</span>`;
   });
 }
 
@@ -315,7 +325,7 @@ function renderTrialRow(t) {
   const isTop = stack.length > 0 && stack[stack.length - 1] === t.trialId;
   const busy = () => !!state.runningAction || !!state.status.isOnroad;
   const ready = (t.readyBands || []).length > 0;
-  const anyChange = (t.proposedP || []).some((p, i) => p !== (t.currentP || [])[i]);
+  const anyChange = trialChanges(t).some((c) => c.p || c.i);
   return html`
     <div class="flmWorkspaceRow">
       <div class="${() => `flmWorkspaceItem latTuneTrialItem ${t.applied ? "applied" : ""} ${state.detailId === t.trialId ? "open" : ""}`}">
@@ -343,11 +353,26 @@ function renderTrialRow(t) {
     </div>`;
 }
 
+function renderSim(b) {
+  const s = b.sim;
+  if (!s) return "";
+  const row = (label, m) => (m ? html`<span>${label}: err ${fmt(m.err_rms)} · straight ${fmt(m.straight_rms)} · curve ${fmt(m.curve_ratio, 3)} · sign ${fmt(m.sign_hyst)}/s</span>` : "");
+  return html`
+    <div class="flmTrackingMeta latTuneSim">
+      <span><em class="latTuneBadge ${s.trusted ? "ready" : "notReady"}">${s.trusted ? "Sim trusted" : "Sim untrusted"}</em> ${s.trust}</span>
+      ${row("log", s.log)}
+      ${row("sim, driven", s.simDriven)}
+      ${row("sim, proposed", s.simProposed)}
+    </div>`;
+}
+
 function renderBandCard(b) {
   const changed = b.proposed.p !== b.current.p;
   const direction = b.proposed.p > b.current.p ? "up" : "down";
+  const iChanged = b.proposed.i !== b.current.i;
+  const iDirection = b.proposed.i > b.current.i ? "up" : "down";
   return html`
-    <article class="flmTrackingCard latTuneBandCard ${changed ? "changed" : ""}">
+    <article class="flmTrackingCard latTuneBandCard ${changed || iChanged ? "changed" : ""}">
       <div class="flmTrackingCardHeader">
         <div><strong>${b.name}</strong><span>${bandRange(b)}</span></div>
         <em class="latTuneBadge ${b.ready ? "ready" : "notReady"}">${b.ready ? "Ready" : "Needs 3 min"}</em>
@@ -358,14 +383,21 @@ function renderBandCard(b) {
         <b class="${changed ? `latTuneChanged ${direction}` : ""}">${b.proposed.p}</b>
         <small>×${fmt(b.factor)}</small>
       </div>
+      <div class="latTunePChange">
+        <span>I</span><b>${b.current.i}</b>
+        <span class="latTuneArrow">→</span>
+        <b class="${iChanged ? `latTuneChanged ${iDirection}` : ""}">${b.proposed.i}</b>
+        <small>${b.source === "sim" ? "sim" : "rules"}</small>
+      </div>
       <div class="flmTrackingMeta">
         <span>${fmt(b.minutes, 1)} min</span>
         <span>sign ${fmt(b.signRate)}/s</span>
         <span>curve ${fmt(b.curveRatio, 3)}</span>
         <span>entry ${fmt(b.curveRatioEntry, 2)} · steady ${fmt(b.curveRatioSteady, 2)} · exit ${fmt(b.curveRatioExit, 2)}</span>
         <span>overrides ${fmt(b.pressRate)}/min</span>
-        <span>I ${b.current.i} · F ${b.current.f}</span>
+        <span>F ${b.current.f}</span>
       </div>
+      ${renderSim(b)}
       <p class="latTuneReason">${b.reason || ""}</p>
     </article>`;
 }
@@ -418,8 +450,10 @@ function renderDetail() {
       ${Array.isArray(t.bands)
         ? html`<div class="flmTrackingGrid">${t.bands.map(renderBandCard)}</div>`
         : html`<p class="latTuneWarning">This trial predates the NRDR PID speed bands; re-analyze the routes.</p>`}
-      <div class="flmTrackingNotice">P now is the value logged on the newest route. On apply, each moving band's step is applied to the device's current P, so a forced apply keeps any manual change made since. Only P is proposed; I and F stay as they are.
-        Steps are bounded to a factor of 0.85–1.15 and written on the 5 % grid.</div>
+      <div class="flmTrackingNotice">Now is the value logged on the newest route. The log rules step P only, bounded to a factor of 0.85–1.15.
+        Where the closed-loop sim (plant fitted to this car's EPS image) reproduces a band's logged tracking, it replaces that band's step with the best P/I pair within ±10 % P and ±25 I of the driven values.
+        On apply, each moving band's step is applied to the device's current P and I, so a forced apply keeps any manual change made since. F is never written. Sim evidence only: drive it and compare.
+        ${t.sim ? html`<br>Sim step: ${t.sim.status || "–"}${t.sim.minutes ? ` · ${t.sim.minutes} min simulated` : ""}${t.sim.image ? ` · plant image ${t.sim.image}` : ""}` : ""}</div>
       ${renderApplied(t.applied)}
       ${(t.warnings || []).length ? html`
         <div class="flmCardSubsection">

@@ -1,0 +1,161 @@
+{
+ "car": "HONDA_CIVIC_BOSCH",
+ "eps_fw": [
+  "39990-TBA,C020"
+ ],
+ "image": "39990-TBA,C020-20260805-ClarityPminus5-P117to265-D737-KFF45-Norm1650-Trk4500-TargetMapD-Telem-SpeedClamp0-Pclamp7373.rwd",
+ "fitted_on_summary": "low band: 36 routes after 2026-08-03, 163 hands-off min below 25 mph, centring term; highway band: route 000001b8 (held-out straight-line match, curve ratio untrusted). Sim evidence only, not road-validated.",
+ "blend_mph": [
+  22.0,
+  28.0
+ ],
+ "bands": [
+  {
+   "coef": [
+    -35.809966555886085,
+    -1.1786606502240624,
+    -2.070466267236296,
+    -25.54694672263077,
+    1643.1004375076077,
+    259.5649824864398,
+    -1425.7381436952214,
+    -76.54860756506692,
+    -444.5883395798561,
+    -308.632029150945
+   ],
+   "delay_frames": 5,
+   "angle_quant_deg": 0.1,
+   "eps": {
+    "source": "39990-TBA,C020-20260805-ClarityPminus5-P117to265-D737-KFF45-Norm1650-Trk4500-TargetMapD-Telem-SpeedClamp0-Pclamp7373.rwd",
+    "sha1": "08072ed1b6cb658a228ddd2a8ab490bc8d30dd2d",
+    "row": 0,
+    "axis": [
+     0.0,
+     99.0,
+     258.0,
+     447.0,
+     643.0,
+     862.0,
+     1111.0,
+     1549.0,
+     1774.0
+    ],
+    "torque": [
+     0.0,
+     1926.0,
+     4938.0,
+     8455.0,
+     12036.0,
+     15926.0,
+     20138.0,
+     26955.0,
+     30000.0
+    ],
+    "words": {
+     "tracker": 4500,
+     "norm": 1650,
+     "speed_clamp": 0,
+     "p_row0": [
+      117,
+      148,
+      184,
+      220,
+      245,
+      257,
+      263,
+      265,
+      265
+     ],
+     "d_row0": [
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737
+     ]
+    },
+    "axis_scale": 1.0,
+    "torque_unit": 10000.0
+   },
+   "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2) + c9 tanh(th/2)",
+   "band": "low <25mph only",
+   "fitted_on": "36 routes after 2026-08-03 (00000091..00000270), 163.4 hands-off min below 25 mph, delay 5, centring term; held out 271/276/277/278/27a: straight 2.36 vs log 2.80, curve ratio 0.915 vs 0.869"
+  },
+  {
+   "coef": [
+    -12.176303681476673,
+    -0.02304136150200683,
+    -2.228853562151006,
+    -7.272815825637977,
+    854.8235974751462,
+    -9.004759850878244,
+    -17.38392192969651,
+    -20.199274307299273,
+    -150.46288755607736
+   ],
+   "delay_frames": 5,
+   "angle_quant_deg": 0.1,
+   "eps": {
+    "source": "39990-TBA,C020-20260805-ClarityPminus5-P117to265-D737-KFF45-Norm1650-Trk4500-TargetMapD-Telem-SpeedClamp0-Pclamp7373.rwd",
+    "sha1": "08072ed1b6cb658a228ddd2a8ab490bc8d30dd2d",
+    "row": 0,
+    "axis": [
+     0.0,
+     99.0,
+     258.0,
+     447.0,
+     643.0,
+     862.0,
+     1111.0,
+     1549.0,
+     1774.0
+    ],
+    "torque": [
+     0.0,
+     1926.0,
+     4938.0,
+     8455.0,
+     12036.0,
+     15926.0,
+     20138.0,
+     26955.0,
+     30000.0
+    ],
+    "words": {
+     "tracker": 4500,
+     "norm": 1650,
+     "speed_clamp": 0,
+     "p_row0": [
+      117,
+      148,
+      184,
+      220,
+      245,
+      257,
+      263,
+      265,
+      265
+     ],
+     "d_row0": [
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737,
+      737
+     ]
+    },
+    "axis_scale": 1.0,
+    "torque_unit": 10000.0
+   },
+   "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2)"
+  }
+ ]
+}

@@ -253,6 +253,14 @@ class TestTrialAndBandParams:
     device = [{"p": 90, "i": 20, "f": 100}, {"p": 120, "i": 75, "f": 100}, {"p": 130, "i": 0, "f": 100}]
     assert lat.build_band_params(trial, device) == {"LatPScaleStandard": 130}
 
+  def test_build_band_params_writes_i_only_for_a_sim_step(self):
+    trial = lat.build_trial(drive(4, 30, curve_des=8.0, curve_ratio=0.9), self.BASELINE, ["r1"], [], [])
+    trial["bands"][0].update(iDelta=25)       # the sim moved LowSpeed I only
+    trial["bands"][2].update(iDelta=-25)      # Highway I 100 -> 75; I is clamped at 0 on a device already at 0
+    assert lat.build_band_params(trial) == {"LatPScaleStandard": 110, "LatIScaleLowSpeed": 125, "LatIScaleHighway": 75}
+    device = [{"p": 90, "i": 20, "f": 100}, {"p": 120, "i": 75, "f": 100}, {"p": 130, "i": 0, "f": 100}]
+    assert lat.build_band_params(trial, device) == {"LatPScaleStandard": 130, "LatIScaleLowSpeed": 45, "LatIScaleHighway": 0}
+
   @pytest.mark.parametrize("cur,factor,want", [(100, 1.0, 100), (100, 1.05, 105), (100, 0.95, 95), (135, 1.05, 140),
                                                (200, 0.95, 190), (20, 1.05, 25), (20, 0.95, 15), (3, 0.95, 0),
                                                (498, 1.05, 500), (100, 1.10, 110)])

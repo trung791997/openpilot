@@ -2,9 +2,11 @@
 
 Storage: <galaxy dir>/lat_tune/trials/<trialId>.json, active.json (applied stack), status in /tmp.
 Analysis runs in a detached worker (`python lat_tune_workspace.py worker <json>`), offroad only.
-Apply writes the NRDR PID band params LatPScaleLowSpeed/Standard/Highway (P only; I/F are never touched) and
-drops a "p" term from LatGainSchedule so the bands drive P. Revert restores all four exactly. Offroad only.
-Unit-test/replay evidence only, not driven.
+After the log rules, the worker re-scores each band on the closed-loop sim (tools/lateral/lat_tune_sim.py) with the
+plant fitted to the car's EPS image; a band the sim reproduces gets the sim's P/I pair instead of the rule step.
+Apply writes the NRDR PID band params LatPScale* (and LatIScale* for a band the sim moved; F is never touched) and
+drops a "p" term from LatGainSchedule so the bands drive P. Revert restores them exactly. Offroad only.
+Unit-test/replay/sim evidence only, not driven.
 """
 import json
 import os
@@ -120,6 +122,8 @@ def _summary(trial):
   return {"trialId": trial["trialId"], "createdAt": trial.get("createdAt"), "routeNames": trial.get("routeNames", []),
           "factors": trial.get("factors"), "schemaVersion": trial.get("schemaVersion"),
           "currentP": [b["current"]["p"] for b in bands], "proposedP": [b["proposed"]["p"] for b in bands],
+          "currentI": [b["current"]["i"] for b in bands], "proposedI": [b["proposed"]["i"] for b in bands],
+          "sources": [b.get("source", "rules") for b in bands], "simStatus": (trial.get("sim") or {}).get("status"),
           "readyBands": [b["name"] for b in bands if b.get("ready")],
           "applied": trial.get("applied"), "warnings": trial.get("warnings", [])}
 
@@ -368,6 +372,9 @@ def run_worker(payload_json):
     trial = lat.analyze_sources(sources, should_continue=should_continue, on_progress=on_progress)
     if params.get_bool("IsOnroad"):
       raise AnalysisCancelled("vehicle went onroad")
+    _sim_step(trial, sources, base, should_continue)
+    if params.get_bool("IsOnroad"):
+      raise AnalysisCancelled("vehicle went onroad")
     trial["trialId"] = f"lt-{int(time.time())}-{os.getpid()}"
     trial["createdAt"] = time.time()
     trial["warnings"] = list(warnings) + list(trial.get("warnings", []))
@@ -380,6 +387,51 @@ def run_worker(payload_json):
   except Exception as e:  # noqa: BLE001 - the state file is the only channel back to Galaxy
     _write_status({**base, "running": False, "state": "failed", "error": f"{type(e).__name__}: {e}"})
     raise
+
+
+SIM_WORKERS = 2   # of the device's cores, at nice 19, offroad only
+
+
+def _sim_step(trial, sources, base, should_continue):
+  """The closed-loop sim step on the routes the rules pooled. Any failure leaves the rule trial as it was, with a
+  warning: the sim refines a trial, it is never needed for one."""
+  used = [r["route"] for r in trial.get("perRoute", []) if r.get("used")]
+  try:
+    from openpilot.tools.lateral import lat_pid_sim as sim
+    from openpilot.tools.lateral import lat_tune_sim as lts
+    plant, meta = lts.load_plant()
+    cache = ensure_workspace() / "sim_cache"
+    cache.mkdir(exist_ok=True)
+    ds = []
+    for i, route in enumerate(used):
+      logs = [s.log_path for s in sources if s.route == route and "rlog" in Path(s.log_path).name]
+      if not logs:
+        trial["warnings"].append(f"{route}: sim step needs rlogs (qlog only); left out of the sim")
+        continue
+      _write_status({**base, "state": "reading logs for the sim", "progress": i, "total": len(used), "currentSegment": route})
+      ds.append(sim.extract_logs(logs, route, str(cache / f"{route}-{len(logs)}.npz"), should_continue=should_continue))
+
+    def on_progress(done, total):
+      _write_status({**base, "state": "simulating", "progress": done, "total": total})
+
+    lts.refine_trial(trial, ds, plant, meta, workers=SIM_WORKERS, should_continue=should_continue, on_progress=on_progress)
+  except InterruptedError as e:
+    raise AnalysisCancelled("vehicle went onroad") from e
+  except Exception as e:
+    trial["sim"] = {"status": f"failed: {type(e).__name__}: {e}"}
+    trial["warnings"].append(f"sim step failed ({type(e).__name__}: {e}); the rule result stands")
+  for b in trial["bands"]:
+    b.setdefault("source", "rules")
+  _prune_sim_cache(keep=set(used))
+
+
+def _prune_sim_cache(keep, max_files=24):
+  """The per-route sim caches (~6 MB each) are kept for re-analysis; the oldest go past max_files."""
+  cache = get_workspace_root() / "sim_cache"
+  files = sorted(cache.glob("*.npz"), key=lambda p: p.stat().st_mtime) if cache.is_dir() else []
+  for p in files[:max(0, len(files) - max_files)]:
+    if p.name.rsplit("-", 1)[0] not in keep:
+      p.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- apply / revert
@@ -405,7 +457,7 @@ def _apply_trial(trial_id, force):
   written = lat.build_band_params(trial, current_band_gains(params))
   written_schedule = lat.strip_schedule_p(prior_schedule)
   if not written and written_schedule == prior_schedule:
-    raise RuntimeError("this trial proposes no P change; nothing to apply")
+    raise RuntimeError("this trial proposes no P or I change; nothing to apply")
   prior = {k: lat._param_str(params.get(k)) for k in written}
   trial["applied"] = {"at": time.time(), "priorParams": prior, "writtenParams": written, "priorSchedule": prior_schedule,
                       "writtenSchedule": written_schedule, "priorFingerprint": fp_now, "forced": bool(force)}
