@@ -8197,3 +8197,31 @@ Owner: "make a toggle to enable uploading rlogs alongside with qlogs during a dr
   - On a device, an unset key reads True. `openpilot.common.params.Params.get_bool` asks the library with `return_default=True`, and that is the wrapper the uploader and the settings UI use. This was checked on an empty params dir: `UploadRlogs` True, `RangeVisionAssist` True, `DisableOnroadUploads` False. The raw `params_pyx` `get_bool` still returns False for an unset key. The manager's startup loop does not write defaults (`manager.py:1270`); it only restores keys from the params cache. So a device that has explicitly stored `0` keeps it off.
   - Artifacts were rebuilt with the same recipe. There are still 858 keys, and the only metadata change is `UploadRlogs` default False -> True (stock False). `params_pyx.cpp` is byte-identical. In `libcommon.a` only `params.o` changed.
   - Tests: the upstream uploader tests go through the wrapper, so the new default made them upload rlogs (4 failed). `TestUploader.setup_method` now pins `UploadRlogs` off for them. The off-state test is renamed `test_rlogs_not_uploaded_when_off` and sets False explicitly. 90 passed across the uploader, device-settings, process-config and py39 suites. Static only.
+
+## 157. Turn stutter at the last bookmark on 00000283--fe4e75f88b (segment 33, about 2003–2008 s from the start of the route): a limit cycle between the driver-override flag and the torque fade. Log statistics only; no change has been made.
+
+Owner: "I marked some bad stuttering while turning." The car was at about 25 → 14 mph at the start of a hard right turn (target angle 0 → −168°).
+
+**Mechanism.** For about 2 s the wheel stayed near 0° while the command grew from −0.2 to −0.45. `STEER_TORQUE_SENSOR` read +1400 to +2480, opposing the command: hands holding the wheel against the push. Both the `NrdrDriverOverrideThreshold` and `NrdrOverrideThresholdCenterBoost` thresholds were 2000, and `NrdrIncreaseOverrideTolerance` was off, so the raw flag drove the ramp in `carcontroller._update_steering_torque`. The cycle:
+1. The torque sensor crosses 2000, and `steeringPressed` is set for about 3 frames.
+2. `HondaOverrideFadeDownSecs` 0.2 lowers the ramp by 0.05 per frame, so output falls about 25%.
+3. The sensor unloads to about 1400 within 30 ms, and the flag clears.
+4. `HondaOverrideFadeUpSecs` 0.5 raises the ramp by 0.02 per frame, torque rebuilds past 2000, and the flag sets again.
+
+The period is about 0.11 s (about 9 Hz), and the ramp swings between 0.6 and 1.0 on each cycle.
+
+**How common.** An episode is at least 4 press onsets within 1 s while engaged. Most are in low-speed turns.
+
+| route | thresholds (driver/centre) | fade down / up (s) | episodes / engaged min |
+|---|---|---|---|
+| 277 | 2000/2000 | 0 / 1.0 | 8 / 19 |
+| 278 | 2000/2000 | 0.2 / 1.0 | 4 / 15 |
+| 27a | 2000/2000 | 0 / 1.0 | 3 / 10 |
+| 280 | 2000/2000 | 0.2 / 0.5 | 10 / 25 |
+| 283 | 2000/2000 | 0.2 / 0.5 | 23 / 27 |
+
+Route 283 has about twice the rate, but it also has more turns, so the 1.0 → 0.5 fade-up change is not shown to be the cause.
+
+**Not a lateral-gain problem.** The flag is reading the car's own torque reacting against the hands. The sim has no hands model and cannot reproduce this.
+
+**Candidate fix (not implemented; the owner decides):** add release hysteresis on the override flag in the command path. Hold "pressed" until the torque sensor falls below about 0.75× the threshold, or for at least about 0.3 s. The override would then fade once and stay faded while the hands hold, instead of chopping at 9 Hz. That only makes the override stickier, never weaker. Raising the threshold, or turning on `NrdrIncreaseOverrideTolerance` (which doubles it), is excluded by the owner's standing rule.
