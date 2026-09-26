@@ -438,7 +438,10 @@ def build_row(sm):
 
 
 def _fmt(x):
-  return str(int(x)) if isinstance(x, int) else repr(x)
+  # Numpy scalars repr as "np.float64(...)", which read_rows cannot parse back.
+  if isinstance(x, (bool, np.bool_, int, np.integer)):
+    return str(int(x))
+  return repr(float(x))
 
 
 class DrivePlots:

@@ -320,7 +320,15 @@ export const api = {
   deleteModel(modelKey) { return request("/api/models/delete", { method: "POST", data: { model: modelKey } }) },
   saveModelPreferences(prefs = {}) { return request("/api/models/preferences", { method: "PUT", data: prefs }) },
 
-  getPlotsLive() { return request("/api/plots/live") },
+  getPlotsLive(since = 0) { return request(`/api/plots/live?since=${encodeURIComponent(since)}`) },
+  startPlotsRecording() { return request("/api/plots/recording/start", { method: "POST" }) },
+  stopPlotsRecording() { return request("/api/plots/recording/stop", { method: "POST" }) },
+  getPlotsSessions() { return request("/api/plots/sessions", { cache: "no-store" }) },
+  getPlotsSession(id) { return request(`/api/plots/sessions/${encodeURIComponent(id)}`, { cache: "no-store" }) },
+  getPlotsSessionWindow(id, start, end) {
+    return request(`/api/plots/sessions/${encodeURIComponent(id)}/window?start=${Number(start).toFixed(1)}&end=${Number(end).toFixed(1)}`)
+  },
+  deletePlotsSession(id) { return request(`/api/plots/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }) },
   getGalaxySession() { return request("/api/galaxy/session") },
 
   getTailscaleInstalled() { return request("/api/tailscale/installed", { cache: "no-store" }) },

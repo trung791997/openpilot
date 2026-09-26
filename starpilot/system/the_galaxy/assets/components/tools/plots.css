@@ -187,11 +187,6 @@
   margin-top: var(--margin-sm);
 }
 
-.qualityDetail {
-  color: var(--text-muted);
-  font-size: calc(var(--font-size-sm) * 0.95);
-}
-
 .qualitySummaryGrid {
   display: grid;
   gap: var(--gap-sm);
@@ -216,43 +211,138 @@
   margin: 0;
 }
 
-.qualityTone {
-  font-size: calc(var(--font-size-xl) * 1.05);
-  font-weight: var(--font-weight-extra-bold);
-  letter-spacing: 0.01em;
-  text-transform: uppercase;
-}
-
-.qualityTone-great {
-  color: #66e3ad;
-}
-
-.qualityTone-good {
-  color: #7fc2ff;
-}
-
-.qualityTone-fair {
-  color: #f8c36d;
-}
-
-.qualityTone-poor {
-  color: #ff8ca5;
-}
-
-.qualityTone-na {
-  color: #d7dcec;
-}
-
 .qualityMethodNote {
   color: var(--text-muted);
   font-size: calc(var(--font-size-sm) * 0.92);
   margin-top: var(--margin-sm);
 }
 
-.qualityUserGuidance {
+.plotSvg path.plotShade {
+  fill: rgba(255, 255, 255, 0.07);
+}
+
+.plotLine.speed,
+.plotLegendLine.speed {
+  background-color: #e0af68;
+  stroke: #e0af68;
+}
+
+.plotSvg path {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.plotSvg path.plotLine {
+  stroke-width: 2;
+}
+
+.plotBlock {
+  margin-bottom: var(--margin-base);
+}
+
+.plotSvgClickable {
+  cursor: zoom-in;
+}
+
+.plotYRange {
   color: var(--text-muted);
-  font-size: calc(var(--font-size-sm) * 0.95);
-  margin: var(--margin-sm) 0 0 0;
+}
+
+.plotActionsInline {
+  margin-top: 0;
+}
+
+.plotButton:disabled {
+  opacity: 0.5;
+}
+
+.plotButtonStop {
+  background: var(--danger-fg);
+}
+
+a.plotButton {
+  text-decoration: none;
+}
+
+.plotRecording {
+  align-items: center;
+  display: inline-flex;
+  font-weight: var(--font-weight-demi-bold);
+  gap: var(--gap-xs);
+}
+
+.plotRecDot {
+  animation: plotRecPulse 1.2s ease-in-out infinite;
+  background: #e05577;
+  border-radius: 50%;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+@keyframes plotRecPulse {
+  50% { opacity: 0.3; }
+}
+
+.plotMuted {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.plotSummary {
+  margin: var(--margin-xs) 0 0 0;
+}
+
+.plotNotes {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--margin-xs) 0 0 0;
+  padding-left: 1.2em;
+}
+
+.plotKeyGrid {
+  display: grid;
+  font-size: var(--font-size-sm);
+  gap: 0.2em 1em;
+  grid-template-columns: max-content max-content;
+  margin-top: var(--margin-sm);
+}
+
+.plotKeyLabel {
+  color: var(--text-muted);
+}
+
+.plotSessionList {
+  display: grid;
+  gap: var(--gap-xs);
+  margin-top: var(--margin-sm);
+}
+
+.plotSessionRow {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--track-color);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-color);
+  cursor: pointer;
+  display: grid;
+  gap: 0.2em;
+  padding: var(--padding-sm) var(--padding-base);
+  text-align: left;
+}
+
+.plotSessionRow.selected {
+  border-color: var(--main-fg);
+}
+
+.plotSessionHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+  justify-content: space-between;
+}
+
+.plotSessionSummary {
+  font-size: var(--font-size-sm);
 }
 
 @media only screen and (max-width: 768px) and (orientation: portrait) {

@@ -154,6 +154,10 @@ def _engaged_sm():
   return sm
 
 
+def test_csv_values_round_trip_from_numpy_and_bool():
+  assert [dp._fmt(x) for x in (np.float64(1.5), np.float32(0.25), True, np.int64(3), 2)] == ["1.5", "0.25", "1", "3", "2"]
+
+
 def test_build_row_reads_the_right_fields():
   sm = _engaged_sm()
   sm.update()

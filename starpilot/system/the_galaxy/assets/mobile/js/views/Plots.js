@@ -1,296 +1,71 @@
 import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
+import { GalaxyConfirm } from "../components/GalaxyModal.js"
+import {
+  HELP_TEXT, LIVE_POLL_MS, LiveBuffer, ZOOM_HALF_WINDOW_S,
+  buildOverviewCharts, buildTrackingCharts, fmtDate, fmtDuration, fmtNum, keyNumbers,
+  longStateName, sessionUrl, statusLabel, timeAtClick, toSeries,
+} from "/assets/components/tools/drive_plots_shared.mjs"
 
-const MAX_POINTS = 240
-const POLL_INTERVAL_MS = 750
 const ADVANCED_TERMS_KEY = "plotsShowAdvancedTerms"
-const QUALITY_WINDOW_SECONDS = 30
-const QUALITY_MIN_SAMPLES = 8
+const SESSIONS_POLL_MS = 5000
 
-const LATERAL_QUALITY_CONFIG = {
-  desiredKey: "desiredLateralAccel",
-  actualKey: "actualLateralAccel",
-  // Rate openpilot, not the driver: only samples where openpilot is steering.
-  activeKey: "controlsActive",
-  minSpeedMps: 0.5,
-  minDemand: 0.008,
-  allowLowDemandFallback: true,
-  fallbackMinSpeedMps: 0.5,
-  fallbackMinPeakDemand: 0.01,
-  great: 0.15,
-  good: 0.30,
-  fair: 0.50,
-}
-
-const LONGITUDINAL_QUALITY_CONFIG = {
-  desiredKey: "desiredLongitudinalAccel",
-  actualKey: "actualLongitudinalAccel",
-  // Only samples where openpilot is in charge of accel (not disengaged, not gas override).
-  activeKey: "longitudinalControlActive",
-  minSpeedMps: 0.0,
-  minDemand: 0.05,
-  allowLowDemandFallback: true,
-  fallbackMinSpeedMps: 1.5,
-  fallbackMinPeakDemand: 0.04,
-  applyPersistenceRules: true,
-  warnError: 0.50,
-  severeError: 0.90,
-  great: 0.32,
-  good: 0.52,
-  fair: 0.78,
-}
-
-const LINE_COLORS = {
-  desired: "#7aa2f7",
-  actual: "#9ece6a",
-  p: "#5ec8c8",
-  i: "#d4a060",
-  d: "#e05577",
-  f: "#bb9af7",
-}
-
-const TONE_COLORS = {
-  great: "#6cc56e",
-  good: "#5ec8c8",
-  fair: "#d4a060",
-  poor: "#e05577",
-  na: "var(--text-muted)",
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : fallback
-}
-
-// Canvas 2D cannot interpret CSS custom properties ("var(--x)"), so it silently
-// keeps the previous colour (default black) when assigned one -> invisible text
-// in dark mode. Resolve the token to a concrete colour from the live theme.
-function cssColor(name, fallback) {
-  try {
-    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-    if (value && !value.startsWith("var(")) return value
-  } catch (e) {}
-  return fallback
-}
-
-function fmtNum(value, digits = 2) {
-  return toNumber(value).toFixed(digits)
-}
-
-function formatAge(seconds) {
-  const value = Math.max(0, toNumber(seconds))
-  if (value < 1) return `${Math.round(value * 1000)} ms`
-  return `${value.toFixed(1)} s`
-}
-
-function formatSourceLabel(kind, source) {
-  const normalizedKind = String(kind || "").toLowerCase()
-  const normalizedSource = String(source || "").toLowerCase()
-
-  if (normalizedKind === "lateral") {
-    if (normalizedSource === "torquestate") return "Steering controller output"
-    if (normalizedSource === "curvature") return "Path model estimate"
-  }
-  if (normalizedKind === "longitudinal") {
-    if (normalizedSource.includes("atarget")) return "Planner target acceleration + measured acceleration"
-    if (normalizedSource.includes("pid sum")) return "PID term sum + measured acceleration"
-    if (normalizedSource.includes("caroutput")) return "Final accel command + measured acceleration"
-    if (normalizedSource.includes("livelocationkalman")) return "Control output + calibrated acceleration"
-    if (normalizedSource === "controlsstate") return "Planner target output"
-  }
-  if (normalizedKind === "lateralterms") {
-    if (normalizedSource === "torquestate") return "Steering torque controller"
-    if (normalizedSource === "pidstate") return "Steering angle PID controller"
-  }
-  if (normalizedKind === "longitudinalterms") {
-    if (normalizedSource === "controlsstate") return "Longitudinal controller terms"
-  }
-  return "Live control signal"
-}
-
-function percentile(sortedValues, percentileValue) {
-  const values = Array.isArray(sortedValues) ? sortedValues : []
-  if (!values.length) return 0
-  const p = Math.max(0, Math.min(1, Number(percentileValue)))
-  const index = (values.length - 1) * p
-  const lower = Math.floor(index)
-  const upper = Math.ceil(index)
-  if (lower === upper) return values[lower]
-  const weight = index - lower
-  return values[lower] * (1 - weight) + values[upper] * weight
-}
-
-function signalMagnitude(sample, config) {
-  const desired = Math.abs(toNumber(sample?.[config.desiredKey], 0))
-  const actual = Math.abs(toNumber(sample?.[config.actualKey], 0))
-  return Math.max(desired, actual)
-}
-
-function computeQuality(samples, config) {
-  const safeSamples = Array.isArray(samples) ? samples : []
-  if (safeSamples.length < 2) {
-    return { label: "na", value: null, detail: "Waiting for data" }
-  }
-
-  const latestTs = toNumber(safeSamples[safeSamples.length - 1]?.timestamp, 0)
-  const cutoffTs = latestTs > 0 ? latestTs - QUALITY_WINDOW_SECONDS : 0
-  const windowSamples = safeSamples.filter((sample) => toNumber(sample?.timestamp, 0) >= cutoffTs)
-  const recentSamples = config.activeKey ? windowSamples.filter((sample) => !!sample?.[config.activeKey]) : windowSamples
-  if (config.activeKey && windowSamples.length >= QUALITY_MIN_SAMPLES && recentSamples.length < QUALITY_MIN_SAMPLES) {
-    return { label: "na", value: null, detail: `Not engaged (${recentSamples.length} engaged / ${windowSamples.length} total)` }
-  }
-
-  const eligibleSignalSamples = recentSamples.filter((sample) => {
-    const speed = Math.abs(toNumber(sample?.speed, 0))
-    const signal = signalMagnitude(sample, config)
-    const speedOk = config.minSpeedMps <= 0 ? true : speed >= config.minSpeedMps
-    const demandOk = config.minDemand <= 0 ? true : signal >= config.minDemand
-    return speedOk && demandOk
-  })
-
-  let eligibleSamples = eligibleSignalSamples
-  let usedLowDemandFallback = false
-  const allowLowDemandFallback = config.allowLowDemandFallback !== false
-  if (allowLowDemandFallback && eligibleSamples.length < QUALITY_MIN_SAMPLES && recentSamples.length >= QUALITY_MIN_SAMPLES) {
-    const totalSpeed = recentSamples.reduce((sum, sample) => sum + Math.abs(toNumber(sample?.speed, 0)), 0)
-    const avgSpeed = recentSamples.length > 0 ? totalSpeed / recentSamples.length : 0
-    const peakDemand = recentSamples.reduce((peak, sample) => Math.max(peak, signalMagnitude(sample, config)), 0)
-    const fallbackMinSpeed = Math.max(0, toNumber(config.fallbackMinSpeedMps, 0))
-    const fallbackMinPeakDemand = Math.max(0, toNumber(config.fallbackMinPeakDemand, 0))
-    if (avgSpeed >= fallbackMinSpeed && peakDemand >= fallbackMinPeakDemand) {
-      eligibleSamples = recentSamples
-      usedLowDemandFallback = true
-    }
-  }
-
-  if (eligibleSamples.length < QUALITY_MIN_SAMPLES) {
-    const qualifier = allowLowDemandFallback ? "eligible" : "signal"
-    return {
-      label: "na",
-      value: null,
-      detail: `Need ${QUALITY_MIN_SAMPLES} samples (${eligibleSamples.length} ${qualifier} / ${recentSamples.length} total)`,
-    }
-  }
-
-  const errors = eligibleSamples
-    .map((sample) => Math.abs(toNumber(sample?.[config.desiredKey], 0) - toNumber(sample?.[config.actualKey], 0)))
-    .sort((a, b) => a - b)
-
-  if (!errors.length) {
-    return { label: "na", value: null, detail: "No eligible samples" }
-  }
-
-  const p50 = percentile(errors, 0.50)
-  const p90 = percentile(errors, 0.90)
-  const robustError = 0.7 * p50 + 0.3 * p90
-  const sampleSummary = `${eligibleSamples.length} samples / ${QUALITY_WINDOW_SECONDS}s${usedLowDemandFallback ? ", low-demand fallback" : ""}`
-
-  if (config.applyPersistenceRules) {
-    const warnThreshold = Math.max(config.warnError || 0.35, config.good || 0.35)
-    const severeThreshold = Math.max(config.severeError || 0.70, config.fair || 0.55)
-    const warnFrac = errors.filter((value) => value > warnThreshold).length / errors.length
-    const severeFrac = errors.filter((value) => value > severeThreshold).length / errors.length
-
-    let label = "poor"
-    if (robustError <= config.great && warnFrac <= 0.18 && severeFrac <= 0.05) label = "great"
-    else if (robustError <= config.good && warnFrac <= 0.34 && severeFrac <= 0.12) label = "good"
-    else if (robustError <= config.fair && warnFrac <= 0.55 && severeFrac <= 0.24) label = "fair"
-
-    const warnPct = Math.round(warnFrac * 100)
-    const severePct = Math.round(severeFrac * 100)
-    return {
-      label,
-      value: robustError,
-      detail: `${sampleSummary}, ${warnPct}% > ${fmtNum(warnThreshold)} and ${severePct}% > ${fmtNum(severeThreshold)}`,
-    }
-  }
-
-  let label = "poor"
-  if (robustError <= config.great) label = "great"
-  else if (robustError <= config.good) label = "good"
-  else if (robustError <= config.fair) label = "fair"
-
-  return { label, value: robustError, detail: sampleSummary }
-}
-
-function buildChartConfigs() {
-  return [
-    {
-      id: "lateral",
-      advanced: false,
-      title: "Lateral Response",
-      unit: "m/s²",
-      legendDigits: 2,
-      rangeDigits: 2,
-      rangeFloor: 1.5,
-      rangeMult: 1.25,
-      roundDiv: 10,
-      sourceKind: "lateral",
-      sourceKey: "lateralSource",
-      series: [
-        { key: "desiredLateralAccel", label: "Target", legendClass: "desired", lineKey: "desired" },
-        { key: "actualLateralAccel", label: "Measured", legendClass: "actual", lineKey: "actual" },
-      ],
+// One chart: SVG geometry from drive_plots_shared.buildChart, drawn without a canvas so it scales with the card.
+const PlotChart = {
+  name: "PlotChart",
+  props: { chart: { type: Object, required: true }, clickable: { type: Boolean, default: false } },
+  emits: ["pick"],
+  methods: {
+    onClick(e) {
+      if (!this.clickable) return
+      const t = timeAtClick(e, this.chart.geo)
+      if (t !== null) this.$emit("pick", t)
     },
-    {
-      id: "longitudinal",
-      advanced: false,
-      title: "Longitudinal Response",
-      unit: "m/s²",
-      legendDigits: 2,
-      rangeDigits: 2,
-      rangeFloor: 1.5,
-      rangeMult: 1.25,
-      roundDiv: 10,
-      sourceKind: "longitudinal",
-      sourceKey: "longitudinalSource",
-      series: [
-        { key: "desiredLongitudinalAccel", label: "Target", legendClass: "desired", lineKey: "desired" },
-        { key: "actualLongitudinalAccel", label: "Measured", legendClass: "actual", lineKey: "actual" },
-      ],
-    },
-    {
-      id: "lateralTerms",
-      advanced: true,
-      title: "Lateral Controller Terms",
-      unit: "",
-      legendDigits: 3,
-      rangeDigits: 3,
-      rangeFloor: 0.15,
-      rangeMult: 1.35,
-      roundDiv: 1000,
-      sourceKind: "lateralterms",
-      sourceKey: "lateralTermsSource",
-      series: [
-        { key: "lateralP", label: "P", legendClass: "p", lineKey: "p" },
-        { key: "lateralI", label: "I", legendClass: "i", lineKey: "i" },
-        { key: "lateralD", label: "D", legendClass: "d", lineKey: "d" },
-        { key: "lateralF", label: "F", legendClass: "f", lineKey: "f" },
-      ],
-    },
-    {
-      id: "longitudinalTerms",
-      advanced: true,
-      title: "Longitudinal Accel Cmd Terms",
-      unit: "",
-      legendDigits: 3,
-      rangeDigits: 3,
-      rangeFloor: 0.15,
-      rangeMult: 1.35,
-      roundDiv: 1000,
-      sourceKind: "longitudinalterms",
-      sourceKey: "longitudinalTermsSource",
-      series: [
-        { key: "longitudinalUpAccelCmd", label: "Up", legendClass: "p", lineKey: "p" },
-        { key: "longitudinalUiAccelCmd", label: "Ui", legendClass: "i", lineKey: "i" },
-        { key: "longitudinalUfAccelCmd", label: "Uf", legendClass: "f", lineKey: "f" },
-      ],
-    },
-  ]
+  },
+  template: `
+    <section class="gx-card" style="overflow:hidden;">
+      <div class="gx-section__header">
+        <i class="bi bi-activity"></i>
+        <span class="gx-section__title">{{ chart.title }}</span>
+        <span v-if="chart.unit" style="margin-left:auto; color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">{{ chart.unit }}</span>
+      </div>
+      <div style="padding: var(--sp-2) var(--sp-3) var(--sp-3);">
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: var(--sp-2);">
+          <span v-for="item in chart.legend" :key="item.label" style="display:inline-flex; align-items:center; gap:4px; font-size: var(--fs-xs, 0.8rem);">
+            <i :style="{ width: '12px', height: '3px', borderRadius: '2px', display: 'inline-block', background: item.color }"></i>
+            {{ item.label }}<template v-if="item.value">: {{ item.value }}</template>
+          </span>
+        </div>
+        <div v-if="chart.geo.empty" class="gx-empty">Waiting for data...</div>
+        <div v-else style="position:relative;">
+          <svg :viewBox="'0 0 ' + chart.geo.width + ' ' + chart.geo.height" preserveAspectRatio="none"
+               :style="{ width: '100%', height: '180px', display: 'block', cursor: clickable ? 'zoom-in' : 'default',
+                         background: 'rgba(0,0,0,0.25)', borderRadius: '6px' }"
+               role="img" :aria-label="chart.title" @click="onClick">
+            <rect v-for="(s, i) in chart.geo.shade" :key="'s' + i" :x="s.x" y="0" :width="s.w" :height="chart.geo.height" fill="rgba(255,255,255,0.08)"></rect>
+            <line v-for="(l, i) in chart.geo.grid" :key="'g' + i" x1="0" :y1="l.y" :x2="chart.geo.width" :y2="l.y"
+                  :stroke="l.zero ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.08)'" :stroke-dasharray="l.zero ? '6 6' : null"
+                  vector-effect="non-scaling-stroke"></line>
+            <line v-for="(x, i) in chart.geo.xTicks" :key="'x' + i" :x1="x.x" y1="0" :x2="x.x" :y2="chart.geo.height"
+                  stroke="rgba(255,255,255,0.08)" vector-effect="non-scaling-stroke"></line>
+            <path v-for="p in chart.geo.paths" :key="p.key" :d="p.d" fill="none" :stroke="p.color" stroke-width="2"
+                  stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+          </svg>
+          <span v-for="(l, i) in chart.geo.grid.filter((g, j) => j % 2 === 0)" :key="'yl' + i"
+                :style="{ position: 'absolute', left: '4px', top: 'calc(' + l.pct + '% - 7px)', fontSize: '10px', color: 'var(--text-muted)' }">{{ l.label }}</span>
+          <div style="position:relative; height:14px; margin-top:2px;">
+            <span v-for="(x, i) in chart.geo.xTicks" :key="'xl' + i"
+                  :style="{ position: 'absolute', left: x.pct + '%', transform: 'translateX(-50%)', fontSize: '10px', color: 'var(--text-muted)' }">{{ x.label }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  `,
 }
 
 export const Plots = {
   name: "Plots",
+  components: { PlotChart },
   props: { embedded: { type: Boolean, default: false } },
   data() {
     return {
@@ -298,201 +73,159 @@ export const Plots = {
       error: "",
       paused: false,
       showAdvancedTerms: false,
+      busy: false,
       live: null,
-      samples: [],
+      latest: null,
+      liveCharts: [],
+      sessions: [],
+      selectedId: "",
+      detail: null,
+      detailError: "",
+      zoom: null,
     }
   },
   created() {
-    this.charts = buildChartConfigs()
-    this.lastTs = 0
+    this.buffer = new LiveBuffer(60)
+    this.lastSessionsFetch = 0
+    this.helpText = HELP_TEXT
+    this.zoomSeconds = 2 * ZOOM_HALF_WINDOW_S
     try {
       this.showAdvancedTerms = localStorage.getItem(ADVANCED_TERMS_KEY) === "1"
     } catch (e) { this.showAdvancedTerms = false }
-    this.poll = usePolling(() => this.load(), { interval: POLL_INTERVAL_MS, enabled: () => !this.paused })
+    this.poll = usePolling(() => this.load(), { interval: LIVE_POLL_MS, enabled: () => !this.paused })
     this.poll.start()
+    this.loadSessions().catch(() => {})
   },
   beforeUnmount() { this.poll?.destroy() },
   computed: {
-    shownCharts() {
-      return this.charts.filter((c) => !c.advanced || this.showAdvancedTerms)
-    },
-    sourceLabelMap() {
+    recording() { return this.live?.recording || null },
+    statusRows() {
       const live = this.live || {}
-      return this.charts.reduce((map, c) => {
-        map[c.id] = formatSourceLabel(c.sourceKind, live[c.sourceKey])
-        return map
-      }, {})
+      const s = this.latest
+      return [
+        { label: "Onroad", value: live.isOnroad ? "Yes" : "No" },
+        { label: "Last sample", value: live.sampleAgeSeconds == null ? "none yet" : `${fmtNum(live.sampleAgeSeconds, 1)} s ago` },
+        { label: "Speed", value: s ? `${fmtNum(s.v, 1)} m/s` : "—" },
+        { label: "openpilot", value: !s ? "—" : s.enabled ? `engaged (steer ${s.lat_active ? "on" : "off"}, long ${longStateName(s.long_state)})` : "not engaged" },
+      ]
     },
-    statusCard() {
-      const live = this.live || {}
-      return {
-        onroad: live.isOnroad ? "Yes" : "No",
-        age: formatAge(live.sampleAgeSeconds),
-        speed: fmtNum(live.speed),
-        count: this.samples.length,
-        bootStabilizing: !!live.bootStabilizing,
-        lastError: live.lastError || "",
-      }
+    liveBlocks() {
+      const la = this.live?.liveAnalysis
+      if (!la) return []
+      return [
+        { title: "Steering", m: la.lateral },
+        { title: "Speed control", m: la.longitudinal },
+      ]
     },
-    qualities() {
-      return {
-        lateral: computeQuality(this.samples, LATERAL_QUALITY_CONFIG),
-        longitudinal: computeQuality(this.samples, LONGITUDINAL_QUALITY_CONFIG),
-      }
+    detailMeta() { return this.detail?.meta || {} },
+    analysis() { return this.detail?.analysis || null },
+    detailBlocks() {
+      const a = this.analysis
+      if (!a) return []
+      return [
+        { title: "Steering", m: a.lateral, numbers: keyNumbers("lateral", a.lateral) },
+        { title: "Speed control", m: a.longitudinal, numbers: keyNumbers("longitudinal", a.longitudinal) },
+      ]
     },
-    empty() {
-      return this.samples.length <= 1
-    },
+    overviewCharts() { return this.analysis ? buildOverviewCharts(this.analysis.overview) : [] },
+    downloadUrl() { return this.selectedId ? sessionUrl(this.selectedId, "/download") : "" },
   },
   methods: {
-    setChartRef(chart, el) {
-      if (chart) chart.el = el || null
-    },
-    latestValue(key) {
-      const latest = this.samples[this.samples.length - 1]
-      if (latest) return latest[key]
-      return toNumber(this.live?.[key])
-    },
-    chartLegend(chart) {
-      return chart.series.map((s) => ({
-        color: LINE_COLORS[s.lineKey],
-        label: s.label,
-        value: fmtNum(this.latestValue(s.key), chart.legendDigits),
-      }))
-    },
-    toneStyle(label) {
-      return { color: TONE_COLORS[label] || TONE_COLORS.na }
-    },
-    qualitySentence(kind) {
-      const q = this.qualities[kind]
-      const toneLabel = q.label === "na" ? "N/A" : q.label[0].toUpperCase() + q.label.slice(1)
-      const base = kind === "lateral" ? "Your lateral tuning is" : "Your longitudinal tuning is"
-      const error = q.value === null ? q.detail : `${fmtNum(q.value)} m/s² error (${q.detail})`
-      return { base, toneLabel, error, label: q.label }
-    },
-    pushSample(payload) {
-      const timestamp = toNumber(payload.timestamp, 0)
-      if (!timestamp || timestamp <= 0 || timestamp === this.lastTs) return
-      this.lastTs = timestamp
-      const sample = {
-        timestamp,
-        speed: toNumber(payload.speed),
-        controlsActive: !!payload.controlsActive,
-        longitudinalControlActive: !!payload.longitudinalControlActive,
-        desiredLateralAccel: toNumber(payload.desiredLateralAccel),
-        actualLateralAccel: toNumber(payload.actualLateralAccel),
-        desiredLongitudinalAccel: toNumber(payload.desiredLongitudinalAccel),
-        actualLongitudinalAccel: toNumber(payload.actualLongitudinalAccel),
-        lateralP: toNumber(payload.lateralP),
-        lateralI: toNumber(payload.lateralI),
-        lateralD: toNumber(payload.lateralD),
-        lateralF: toNumber(payload.lateralF),
-        longitudinalUpAccelCmd: toNumber(payload.longitudinalUpAccelCmd),
-        longitudinalUiAccelCmd: toNumber(payload.longitudinalUiAccelCmd),
-        longitudinalUfAccelCmd: toNumber(payload.longitudinalUfAccelCmd),
-      }
-      this.samples.push(sample)
-      if (this.samples.length > MAX_POINTS) {
-        this.samples.splice(0, this.samples.length - MAX_POINTS)
-      }
+    fmtDate,
+    fmtDuration,
+    statusLabel,
+    rebuildLive() {
+      this.liveCharts = buildTrackingCharts(this.buffer.view(), { advanced: this.showAdvancedTerms })
+      this.latest = this.buffer.latest()
     },
     async load() {
       try {
-        const payload = await api.getPlotsLive()
+        const payload = await api.getPlotsLive(this.buffer.seq)
+        const hadRecording = !!this.live?.recording
         this.live = payload && typeof payload === "object" ? payload : this.live
         this.error = ""
         this.loading = false
-        if (payload && !payload.stale) this.pushSample(payload)
-        this.$nextTick(() => this.redraw())
+        if (this.buffer.ingest(payload)) this.rebuildLive()
+        if (hadRecording !== !!payload?.recording || Date.now() - this.lastSessionsFetch > SESSIONS_POLL_MS) {
+          this.loadSessions().catch(() => {})
+        }
       } catch (e) {
         this.error = e?.message || "Failed to load live plot data"
         this.loading = false
         throw e
       }
     },
-    redraw() {
-      for (const chart of this.charts) {
-        if (chart.el) this.drawChart(chart)
+    async loadSessions() {
+      this.lastSessionsFetch = Date.now()
+      const payload = await api.getPlotsSessions()
+      this.sessions = Array.isArray(payload?.sessions) ? payload.sessions : []
+      const selected = this.sessions.find((s) => s.id === this.selectedId)
+      if (selected && this.detail && this.detail.meta?.status !== selected.status) this.openSession(selected.id)
+    },
+    async startRecording() {
+      this.busy = true
+      try {
+        await api.startPlotsRecording()
+        showSnackbar("Recording started.")
+        await this.load()
+      } catch (e) {
+        showSnackbar(e?.message || "Could not start recording", "error")
+      } finally {
+        this.busy = false
       }
     },
-    computeHalf(samples, keys, floor, mult, roundDiv) {
-      let maxAbs = 0
-      for (const sample of samples) {
-        for (const key of keys) {
-          const v = Math.abs(toNumber(sample?.[key]))
-          if (v > maxAbs) maxAbs = v
-        }
+    async stopRecording() {
+      this.busy = true
+      try {
+        const payload = await api.stopPlotsRecording()
+        showSnackbar("Recording stopped. Analyzing the drive...")
+        await this.load()
+        await this.loadSessions()
+        if (payload?.stopped?.id) this.openSession(payload.stopped.id)
+      } catch (e) {
+        showSnackbar(e?.message || "Could not stop recording", "error")
+      } finally {
+        this.busy = false
       }
-      return Math.max(floor, Math.ceil(maxAbs * mult * roundDiv) / roundDiv)
     },
-    drawChart(chart) {
-      const cv = chart.el
-      const ctx = cv.getContext("2d")
-      const dpr = window.devicePixelRatio || 1
-      const W = cv.clientWidth || 360
-      const H = cv.clientHeight || 240
-      cv.width = Math.round(W * dpr)
-      cv.height = Math.round(H * dpr)
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, W, H)
-
-      const samples = this.samples
-      const n = samples.length
-      const pad = 8
-
-      if (n <= 1) {
-        ctx.fillStyle = cssColor("--text-muted", "#999999")
-        ctx.font = "12px system-ui, sans-serif"
-        ctx.textAlign = "center"
-        ctx.fillText("Waiting for enough live samples...", W / 2, H / 2)
-        return
+    async openSession(id) {
+      this.selectedId = id
+      this.detailError = ""
+      this.zoom = null
+      try {
+        this.detail = await api.getPlotsSession(id)
+      } catch (e) {
+        this.detail = null
+        this.detailError = e?.message || String(e)
       }
-
-      const keys = chart.series.map((s) => s.key)
-      const half = this.computeHalf(samples, keys, chart.rangeFloor, chart.rangeMult, chart.roundDiv)
-      const min = -half
-      const max = half
-      const span = Math.max(1e-6, max - min)
-      const clampVal = (v) => Math.max(min, Math.min(max, toNumber(v)))
-      const yFor = (v) => pad + ((max - clampVal(v)) / span) * (H - 2 * pad)
-
-      const gridStyle = cssColor("--glass-border", "rgba(128,128,128,0.25)")
-      const axisStyle = cssColor("--text-muted", "#aaaaaa")
-      ctx.lineWidth = 1
-      for (const gv of [max * 0.5, 0, min * 0.5]) {
-        ctx.strokeStyle = gv === 0 ? axisStyle : gridStyle
-        ctx.beginPath()
-        ctx.moveTo(0, yFor(gv))
-        ctx.lineTo(W, yFor(gv))
-        ctx.stroke()
+    },
+    closeSession() {
+      this.selectedId = ""
+      this.detail = null
+      this.zoom = null
+    },
+    async deleteSession(id) {
+      const ok = await GalaxyConfirm({ title: "Delete saved drive?", message: "This cannot be undone.", confirmLabel: "Delete", danger: true })
+      if (!ok) return
+      try {
+        await api.deletePlotsSession(id)
+        if (this.selectedId === id) this.closeSession()
+        await this.loadSessions()
+        showSnackbar("Drive deleted.")
+      } catch (e) {
+        showSnackbar(e?.message || "Delete failed", "error")
       }
-
-      ctx.font = "10px system-ui, sans-serif"
-      ctx.fillStyle = cssColor("--text-muted", "#999999")
-      ctx.textAlign = "left"
-      const unitSuffix = chart.unit ? ` ${chart.unit}` : ""
-      ctx.fillText(fmtNum(max, chart.rangeDigits) + unitSuffix, 3, pad + 6)
-      ctx.fillText("0", 3, yFor(0) + 3)
-      ctx.fillText(fmtNum(min, chart.rangeDigits) + unitSuffix, 3, H - 4)
-
-      const last = samples[samples.length - 1]
-      if (last) {
-        ctx.textAlign = "right"
-        ctx.fillText(`-${formatAge(toNumber(Date.now() / 1000, 0) - toNumber(last.timestamp, 0))}`, W - 3, pad + 6)
-      }
-
-      ctx.lineWidth = 1.5
-      ctx.lineJoin = "round"
-      for (const s of chart.series) {
-        ctx.strokeStyle = LINE_COLORS[s.lineKey]
-        ctx.beginPath()
-        for (let i = 0; i < n; i++) {
-          const x = (i / (n - 1)) * W
-          const y = yFor(samples[i][s.key])
-          if (i === 0) ctx.moveTo(x, y)
-          else ctx.lineTo(x, y)
-        }
-        ctx.stroke()
+    },
+    async zoomAt(t) {
+      if (!this.selectedId) return
+      const start = Math.max(0, t - ZOOM_HALF_WINDOW_S)
+      const end = start + 2 * ZOOM_HALF_WINDOW_S
+      try {
+        const payload = await api.getPlotsSessionWindow(this.selectedId, start, end)
+        const series = toSeries(payload.columns, payload.rows)
+        this.zoom = { start, end, charts: buildTrackingCharts(series, { advanced: this.showAdvancedTerms, tMin: start, tMax: end }) }
+      } catch (e) {
+        this.detailError = e?.message || String(e)
       }
     },
     togglePaused() {
@@ -503,26 +236,12 @@ export const Plots = {
       })
       if (this.poll) this.poll.start()
     },
-    async clearHistory() {
-      this.samples = []
-      this.lastTs = 0
-      this.$nextTick(() => this.redraw())
-      showSnackbar("Plot history cleared.")
-    },
     toggleAdvancedTerms() {
       this.showAdvancedTerms = !this.showAdvancedTerms
       try {
         localStorage.setItem(ADVANCED_TERMS_KEY, this.showAdvancedTerms ? "1" : "0")
       } catch (e) { console.warn("Failed to persist plots advanced terms preference", e) }
-      this.$nextTick(() => this.redraw())
-    },
-    retry() {
-      this.loading = true
-      this.error = ""
-      this.load().catch((e) => {
-        this.error = e?.message || String(e)
-        this.loading = false
-      })
+      this.rebuildLive()
     },
   },
   template: `
@@ -531,122 +250,160 @@ export const Plots = {
 
       <section class="gx-card">
         <div class="gx-section__header">
-          <i class="bi bi-graph-up-arrow"></i>
-          <span class="gx-section__title">Live tuning status</span>
+          <i class="bi bi-record-circle"></i>
+          <span class="gx-section__title">Drive recording</span>
         </div>
         <div style="padding: var(--sp-3);">
           <p style="color: var(--text-muted); line-height:1.6; margin:0 0 var(--sp-3);">
-            Live comparison view for tuning diagnostics. These scores are a quick health check, not a final verdict.
-            Short spikes from bumps, lane changes, traffic transitions, and manual inputs can temporarily lower a score.
+            Press Start recording before a drive. What openpilot asks for and what the car does is saved at 20 Hz until
+            you press Stop (or 30 s after the car goes offroad), then analyzed. Recordings stay on the device.
           </p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button v-if="recording" type="button" class="gx-btn gx-btn--danger" :disabled="busy" @click="stopRecording">
+              <i class="bi bi-stop-fill"></i> Stop recording
+            </button>
+            <button v-else type="button" class="gx-btn" :disabled="busy" @click="startRecording">
+              <i class="bi bi-record-fill"></i> Start recording
+            </button>
+            <span v-if="recording" style="display:inline-flex; align-items:center; gap:6px; font-weight: var(--fw-bold, 600);">
+              <i class="bi bi-circle-fill" style="color:#e05577; font-size:10px;"></i>
+              {{ fmtDuration(recording.elapsed_s) }} · {{ recording.rows }} samples
+            </span>
+            <span v-else-if="live && !live.isOnroad" style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">
+              Offroad; recording picks up once the car is onroad.
+            </span>
+          </div>
 
-          <div v-if="loading" class="gx-loading">Loading live data...</div>
-
-          <div v-if="error" class="gx-alert gx-alert--warn" style="border:none; margin:0 0 var(--sp-2);">
+          <div v-if="loading" class="gx-loading" style="margin-top: var(--sp-3);">Loading live data...</div>
+          <div v-if="error" class="gx-alert gx-alert--warn" style="border:none; margin: var(--sp-3) 0 0;">
             <i class="bi bi-exclamation-triangle-fill gx-alert__icon"></i>
             <div class="gx-alert__body"><strong>Error:</strong> <span>{{ error }}</span></div>
           </div>
+          <div v-if="live?.lastError" class="gx-alert gx-alert--warn" style="margin: var(--sp-3) 0 0;">
+            <i class="bi bi-exclamation-triangle gx-alert__icon"></i>
+            <div class="gx-alert__body"><strong>Source error:</strong> <span>{{ live.lastError }}</span></div>
+          </div>
 
-          <div v-if="!loading || live">
-            <div class="gx-row" style="border-top:none;"><span class="gx-row__label">Onroad</span><span class="gx-row__value">{{ statusCard.onroad }}</span></div>
-            <div class="gx-row"><span class="gx-row__label">Sample Age</span><span class="gx-row__value">{{ statusCard.age }}</span></div>
-            <div class="gx-row"><span class="gx-row__label">Vehicle Speed</span><span class="gx-row__value">{{ statusCard.speed }} m/s</span></div>
-            <div class="gx-row"><span class="gx-row__label">Samples</span><span class="gx-row__value">{{ statusCard.count }}</span></div>
-
-            <template v-if="statusCard.bootStabilizing">
-              <div class="gx-alert gx-alert--warn" style="margin: var(--sp-3) 0 0;">
-                <i class="bi bi-hourglass-split gx-alert__icon"></i>
-                <div class="gx-alert__body"><strong>Boot stabilizing</strong><span>Plots are warming up after startup.</span></div>
-              </div>
-            </template>
-            <div v-if="statusCard.lastError" class="gx-alert gx-alert--warn" style="margin: var(--sp-3) 0 0;">
-              <i class="bi bi-exclamation-triangle gx-alert__icon"></i>
-              <div class="gx-alert__body"><strong>Source Error:</strong> <span>{{ statusCard.lastError }}</span></div>
-            </div>
-
-            <div style="display:grid; gap: var(--sp-2); margin-top: var(--sp-3);">
-              <div v-for="q in [qualitySentence('lateral'), qualitySentence('longitudinal')]" :key="q.base">
-                <p style="margin:0; font-weight: var(--fw-bold, 600);">
-                  {{ q.base }} <span :style="toneStyle(q.label)">{{ q.toneLabel }}</span>
-                </p>
-                <p style="margin:2px 0 0; color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">{{ q.error }}</p>
-              </div>
-            </div>
-
-            <p style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); margin: var(--sp-3) 0 0; line-height:1.6;">
-              Match rating uses a 30-second rolling window of engaged driving only. Strong steering or accel moments are preferred, but gentler
-              windows can still earn a rating. Longitudinal also checks how much of the window stays above error limits.
-            </p>
-
-            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top: var(--sp-3);">
-              <button type="button" class="gx-btn gx-btn--tonal" @click="togglePaused">
-                <i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'"></i> {{ paused ? 'Resume Live' : 'Pause Live' }}
-              </button>
-              <button type="button" class="gx-btn gx-btn--tonal" @click="clearHistory">
-                <i class="bi bi-trash"></i> Clear History
-              </button>
-              <button type="button" class="gx-btn gx-btn--tonal" @click="retry">
-                <i class="bi bi-arrow-clockwise"></i> Refresh
-              </button>
+          <div style="margin-top: var(--sp-3);">
+            <div v-for="(row, i) in statusRows" :key="row.label" class="gx-row" :style="i === 0 ? 'border-top:none;' : ''">
+              <span class="gx-row__label">{{ row.label }}</span><span class="gx-row__value">{{ row.value }}</span>
             </div>
           </div>
         </div>
       </section>
 
+      <section v-if="selectedId" class="gx-card" style="margin-top: var(--sp-3);">
+        <div class="gx-section__header">
+          <i class="bi bi-clipboard-data"></i>
+          <span class="gx-section__title">Drive {{ fmtDate(detailMeta.started_at) }}</span>
+        </div>
+        <div style="padding: var(--sp-3);">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom: var(--sp-3);">
+            <a v-if="detailMeta.status === 'done'" class="gx-btn gx-btn--tonal" :href="downloadUrl"><i class="bi bi-download"></i> CSV</a>
+            <button v-if="detailMeta.status && detailMeta.status !== 'recording'" type="button" class="gx-btn gx-btn--tonal" @click="deleteSession(selectedId)">
+              <i class="bi bi-trash"></i> Delete
+            </button>
+            <button type="button" class="gx-btn gx-btn--tonal" @click="closeSession"><i class="bi bi-x-lg"></i> Close</button>
+          </div>
+          <div v-if="detailError" class="gx-alert gx-alert--warn" style="margin:0 0 var(--sp-2);">
+            <i class="bi bi-exclamation-triangle gx-alert__icon"></i>
+            <div class="gx-alert__body"><span>{{ detailError }}</span></div>
+          </div>
+          <div v-if="!detail && !detailError" class="gx-loading">Loading...</div>
+          <p v-else-if="detail && !analysis" style="color: var(--text-muted); margin:0;">
+            {{ detailMeta.status === 'recording' ? 'Still recording.' : detailMeta.status === 'error' ? 'Analysis failed: ' + (detailMeta.error || '') : 'Analyzing...' }}
+          </p>
+          <template v-if="analysis">
+            <div class="gx-row" style="border-top:none;"><span class="gx-row__label">Duration</span><span class="gx-row__value">{{ fmtDuration(analysis.duration_s) }}</span></div>
+            <div class="gx-row"><span class="gx-row__label">Disengagements</span><span class="gx-row__value">{{ analysis.disengagements }}</span></div>
+            <div class="gx-row"><span class="gx-row__label">Car</span><span class="gx-row__value">{{ detailMeta.car || '—' }}</span></div>
+            <div v-for="b in detailBlocks" :key="b.title" style="margin-top: var(--sp-3);">
+              <p style="margin:0; font-weight: var(--fw-bold, 600);">{{ b.title }}</p>
+              <p style="margin:2px 0 0;">{{ b.m.summary }}</p>
+              <ul v-if="b.m.notes && b.m.notes.length" style="margin: 4px 0 0; padding-left: 1.2em; color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); line-height:1.5;">
+                <li v-for="n in b.m.notes" :key="n">{{ n }}</li>
+              </ul>
+              <div v-for="k in b.numbers" :key="k.label" class="gx-row">
+                <span class="gx-row__label">{{ k.label }}</span><span class="gx-row__value">{{ k.value }}</span>
+              </div>
+            </div>
+            <p style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); margin: var(--sp-3) 0 0; line-height:1.6;">{{ analysis.method }}</p>
+          </template>
+        </div>
+      </section>
+
+      <template v-if="selectedId && overviewCharts.length">
+        <p style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); margin: var(--sp-3) 0 0;">
+          Tap a chart to zoom into {{ zoomSeconds }} s at full resolution.
+        </p>
+        <div style="display:grid; gap: var(--sp-3); margin-top: var(--sp-2);">
+          <PlotChart v-for="c in overviewCharts" :key="'o' + c.id" :chart="c" clickable @pick="zoomAt"></PlotChart>
+        </div>
+      </template>
+
+      <template v-if="zoom">
+        <div style="display:flex; align-items:center; gap:8px; margin-top: var(--sp-3);">
+          <strong>Zoom {{ fmtDuration(zoom.start) }} – {{ fmtDuration(zoom.end) }}</strong>
+          <button type="button" class="gx-btn gx-btn--tonal" @click="zoom = null"><i class="bi bi-x-lg"></i> Close zoom</button>
+        </div>
+        <div style="display:grid; gap: var(--sp-3); margin-top: var(--sp-2);">
+          <PlotChart v-for="c in zoom.charts" :key="'z' + c.id" :chart="c"></PlotChart>
+        </div>
+      </template>
+
+      <section class="gx-card" style="margin-top: var(--sp-3);">
+        <div class="gx-section__header">
+          <i class="bi bi-graph-up-arrow"></i>
+          <span class="gx-section__title">Live (last {{ live?.liveWindowSeconds || 30 }} s)</span>
+        </div>
+        <div style="padding: var(--sp-3);">
+          <p v-if="live?.stale && !loading" style="color: var(--text-muted); margin:0 0 var(--sp-2);">
+            No live data — openpilot is not running or the car is offroad.
+          </p>
+          <div v-for="b in liveBlocks" :key="b.title" style="margin-bottom: var(--sp-2);">
+            <p style="margin:0; font-weight: var(--fw-bold, 600);">{{ b.title }}</p>
+            <p style="margin:2px 0 0;">{{ b.m.summary }}</p>
+            <ul v-if="b.m.notes && b.m.notes.length" style="margin: 4px 0 0; padding-left: 1.2em; color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); line-height:1.5;">
+              <li v-for="n in b.m.notes" :key="n">{{ n }}</li>
+            </ul>
+          </div>
+          <p style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem); margin: var(--sp-2) 0 0; line-height:1.6;">{{ helpText }}</p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top: var(--sp-3);">
+            <button type="button" class="gx-btn gx-btn--tonal" @click="togglePaused">
+              <i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'"></i> {{ paused ? 'Resume' : 'Pause' }}
+            </button>
+            <button type="button" class="gx-btn gx-btn--tonal" @click="toggleAdvancedTerms">
+              <i class="bi" :class="showAdvancedTerms ? 'bi-eye-slash' : 'bi-sliders'"></i>
+              {{ showAdvancedTerms ? 'Hide controller terms' : 'Show controller terms' }}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <div style="display:grid; gap: var(--sp-3); margin-top: var(--sp-3);">
-        <section v-for="chart in shownCharts.filter(c => !c.advanced)" :key="chart.id" class="gx-card" style="overflow:hidden;">
-          <div class="gx-section__header">
-            <i class="bi bi-activity"></i>
-            <span class="gx-section__title">{{ chart.title }}</span>
-          </div>
-          <div style="padding: var(--sp-3);">
-            <p style="margin:0 0 var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">
-              Source: {{ sourceLabelMap[chart.id] }}
-            </p>
-            <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: var(--sp-2);">
-              <span v-for="item in chartLegend(chart)" :key="item.label" style="display:inline-flex; align-items:center; gap:4px; font-size: var(--fs-xs, 0.8rem);">
-                <i style="width:10px; height:3px; border-radius:2px; display:inline-block; background: item.color;"></i>
-                {{ item.label }}: {{ item.value }}
-              </span>
-            </div>
-            <div v-if="!empty" style="width:100%; position:relative;">
-              <canvas :ref="(el) => setChartRef(chart, el)" style="width:100%; height:220px; display:block;"></canvas>
-            </div>
-            <div v-else class="gx-empty">Waiting for enough live samples...</div>
-          </div>
-        </section>
+        <PlotChart v-for="c in liveCharts" :key="'l' + c.id" :chart="c"></PlotChart>
       </div>
 
-      <div style="margin-top: var(--sp-3);">
-        <button type="button" class="gx-btn gx-btn--tonal" @click="toggleAdvancedTerms">
-          <i class="bi" :class="showAdvancedTerms ? 'bi-eye-slash' : 'bi-sliders'"></i>
-          {{ showAdvancedTerms ? 'Hide Advanced Controller Terms' : 'Show Advanced Controller Terms' }}
+      <section class="gx-card" style="margin-top: var(--sp-3);">
+        <div class="gx-section__header">
+          <i class="bi bi-collection"></i>
+          <span class="gx-section__title">Saved drives</span>
+        </div>
+        <div v-if="!sessions.length" class="gx-empty">No saved drives yet.</div>
+        <button v-for="s in sessions" :key="s.id" type="button" class="gx-row"
+                :style="{ display: 'block', width: '100%', textAlign: 'left', background: s.id === selectedId ? 'rgba(122,162,247,0.12)' : 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }"
+                @click="openSession(s.id)">
+          <span style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+            <strong>{{ fmtDate(s.started_at) }}</strong>
+            <span style="color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">
+              {{ s.duration_s == null ? '' : fmtDuration(s.duration_s) + ' · ' }}{{ statusLabel(s.status) }}
+            </span>
+          </span>
+          <span v-if="s.lateral_summary" style="display:block; font-size: var(--fs-xs, 0.8rem); margin-top:2px;">{{ s.lateral_summary }}</span>
+          <span v-if="s.longitudinal_summary" style="display:block; font-size: var(--fs-xs, 0.8rem);">{{ s.longitudinal_summary }}</span>
+          <span v-if="s.error" style="display:block; font-size: var(--fs-xs, 0.8rem); color:#e05577;">{{ s.error }}</span>
         </button>
-      </div>
-
-      <div v-if="showAdvancedTerms" style="display:grid; gap: var(--sp-3); margin-top: var(--sp-3);">
-        <section v-for="chart in shownCharts.filter(c => c.advanced)" :key="chart.id" class="gx-card" style="overflow:hidden;">
-          <div class="gx-section__header">
-            <i class="bi bi-sliders"></i>
-            <span class="gx-section__title">{{ chart.title }}</span>
-          </div>
-          <div style="padding: var(--sp-3);">
-            <p style="margin:0 0 var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs, 0.8rem);">
-              Source: {{ sourceLabelMap[chart.id] }}
-            </p>
-            <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: var(--sp-2);">
-              <span v-for="item in chartLegend(chart)" :key="item.label" style="display:inline-flex; align-items:center; gap:4px; font-size: var(--fs-xs, 0.8rem);">
-                <i style="width:10px; height:3px; border-radius:2px; display:inline-block; background: item.color;"></i>
-                {{ item.label }}: {{ item.value }}
-              </span>
-            </div>
-            <div v-if="!empty" style="width:100%; position:relative;">
-              <canvas :ref="(el) => setChartRef(chart, el)" style="width:100%; height:220px; display:block;"></canvas>
-            </div>
-            <div v-else class="gx-empty">Waiting for enough live samples...</div>
-          </div>
-        </section>
-      </div>
+      </section>
     </div>
   `,
 }
