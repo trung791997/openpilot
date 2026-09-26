@@ -185,6 +185,11 @@ KINDS = ("pid", "torque_upstream", "torque_starpilot")
 # after the firmware VGR map (model M1), used in place of paramsd's scalar when the map is on.
 TORQUE_DEFAULTS = {"laf": 11.5, "friction": 0.025, "friction_low": None, "vgr": False, "lat_delay": 0.2}
 VGR_SR = 15.27
+# PID-kind gain overrides, for running another fork's gains through this repo's PID. kp/ki/kf replace CarParams'
+# gains flat across speed (kf also bypasses the banded modified-EPS kf); rate_damp subtracts
+# rate_damp * 0.010 * steeringRateDeg, faded out linearly to 30 mph (nrdr-nightly's NrdrLatControlPID, without its
+# unwind-phase weighting). nrdr-nightly's Civic Bosch modified-EPS defaults: kp 0.03, ki 0.01, kf 1.2e-5, rate_damp 0.3.
+PID_GAIN_KEYS = ("kp", "ki", "kf", "rate_damp")
 
 
 class _VgrVM:
@@ -220,6 +225,15 @@ class Controller:
     self.tq = {**TORQUE_DEFAULTS, **(torque or {})}
     with car.CarParams.from_bytes(cp_bytes) as r:
       cpb = r.as_builder()
+    self.gains = {k: v for k, v in (torque or {}).items() if k in PID_GAIN_KEYS}
+    if self.gains and kind != "pid":
+      raise ValueError(f"{sorted(self.gains)} apply to the pid kind only")
+    for k in ("kp", "ki"):
+      if k in self.gains:
+        setattr(cpb.lateralTuning.pid, k + "BP", [0.0])
+        setattr(cpb.lateralTuning.pid, k + "V", [float(self.gains[k])])
+    if "kf" in self.gains:
+      cpb.lateralTuning.pid.kf = float(self.gains["kf"])
     if kind != "pid":
       cpb.lateralTuning.init("torque")
       t = cpb.lateralTuning.torque
@@ -247,6 +261,8 @@ class Controller:
       finally:
         latcontrol_pid.Params = saved_params
       self.lac.params = _DictParams(self.params)
+      if "kf" in self.gains:
+        self.lac.is_modified_eps_kf_car = False
     else:
       from opendbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_physical_to_linear
       if self.tq["vgr"]:
@@ -317,6 +333,9 @@ class Controller:
     if self.kind == "pid":
       out, des, self.last_log = self.lac.update(active, CS, self.VM, lp, bool(steer_limited), curv,
                                                 False, 0.0, None, None, self.toggles)
+      if self.gains.get("rate_damp") and active:
+        fade = float(np.clip((30 * MPH - CS.vEgo) / (30 * MPH), 0.0, 1.0))
+        out = float(np.clip(out - self.gains["rate_damp"] * 0.010 * CS.steeringRateDeg * fade, -1.0, 1.0))
       return float(out), float(des)
     from opendbc.car.honda.steer_ratio import vgr_linear_to_physical
     lin = float(np.degrees(self.VM.get_steer_from_curvature(-curv, CS.vEgo, lp.roll)))
@@ -781,7 +800,7 @@ def parse_variant(spec):
   for kv in kvs:
     k, _, v = kv.partition("=")
     k, v = k.strip(), v.strip()
-    if k in TORQUE_DEFAULTS:
+    if k in TORQUE_DEFAULTS or k in PID_GAIN_KEYS:
       torque[k] = _truthy(v) if k == "vgr" else float(v)
     else:
       over[k] = v

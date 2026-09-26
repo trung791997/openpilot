@@ -135,3 +135,35 @@ def test_civic_modified_torque_params_are_bounded_on_every_path():
     assert (tp.latAccelFactor, tp.friction) == pytest.approx((11.5 * MULT, 0.025))
   finally:
     ctl.close()
+
+
+def test_pid_gain_overrides_replace_the_tune_and_refuse_the_torque_kinds():
+  assert sim.parse_variant("nrdr=pid,kp=0.03,ki=0.01,kf=1.2e-5,rate_damp=0.3,HondaCenterScale=0.5") == \
+    ("nrdr", "pid", {"kp": 0.03, "ki": 0.01, "kf": 1.2e-5, "rate_damp": 0.3}, {"HondaCenterScale": "0.5"})
+  d = _route(0.0, n=10)
+  d["cp_bytes"] = _modified_cp_bytes()
+  with pytest.raises(ValueError):
+    sim.Controller(d["cp_bytes"], d["params"], kind="torque_upstream", torque={"kp": 0.03})
+  ctl = sim.Controller(d["cp_bytes"], d["params"], torque={"kp": 0.03, "ki": 0.01, "kf": 1.2e-5})
+  try:
+    assert list(ctl.CP.lateralTuning.pid.kpV) == [pytest.approx(0.03)] and list(ctl.CP.lateralTuning.pid.kiV) == [pytest.approx(0.01)]
+    assert ctl.lac.ff_factor == pytest.approx(1.2e-5) and not ctl.lac.is_modified_eps_kf_car
+  finally:
+    ctl.close()
+
+
+def test_rate_damping_opposes_the_wheel_rate_below_30_mph_only():
+  d = _route(0.0, n=10)
+  d["cp_bytes"] = _modified_cp_bytes()
+  outs = {}
+  for v in (5.0, 20.0):
+    d["v"][:] = v
+    for damp in (0.0, 0.3):
+      ctl = sim.Controller(d["cp_bytes"], d["params"], torque={"rate_damp": damp} if damp else None)
+      try:
+        outs[(v, damp)] = [ctl.step(d, k, 0.0, 20.0, False)[0] for k in range(5)][-1]
+      finally:
+        ctl.close()
+  # 5 m/s: fade (13.4 - 5) / 13.4 = 0.63, so 0.3 * 0.010 * 20 deg/s * 0.63 less command
+  assert outs[(5.0, 0.3)] == pytest.approx(outs[(5.0, 0.0)] - 0.3 * 0.010 * 20.0 * (30 * sim.MPH - 5.0) / (30 * sim.MPH), abs=1e-6)
+  assert outs[(20.0, 0.3)] == pytest.approx(outs[(20.0, 0.0)])

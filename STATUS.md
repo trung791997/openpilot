@@ -7648,3 +7648,58 @@ A flat 0.35 ceiling from 25 mph would clip the real curves. A speed-scheduled ce
   - the table is odd and monotone;
   - the plant json round-trips;
   - the owner table reproduces the raw plant within 5%, and a 0.3× table tracks at least 1.4× worse.
+
+## 147. This repo's NRDR PID vs nrdr-nightly's lateral controller on the owner's Civic, a centre-boost sweep, and the 2 August tracker drives (owner: "which one is better suited for me"; "on august 2 … I tried 2 files with 2 different trackers: 3200 and 4000"). Sim and log statistics only; nothing on the car changed.
+
+**What nrdr-nightly runs on this car** (fetched as `refs/remotes/nrdr/nrdr-nightly`, v2026.003.000 prebuilt; static reading):
+- `LatControlClarityHybrid` (PID below ~27 mph handing to NNLC/torque above ~33 mph) is selected only for `HONDA_CLARITY` (`sunnypilot/selfdrive/controls/controlsd_ext.py`). **A Civic Bosch cannot get it.**
+- A modified-EPS Civic Bosch runs `NrdrLatControlPID`, the same family as this repo's PID. `configure_modified_eps` overrides the Civic tune to flat kp 0.03 / ki 0.01 / kf 1.2e-5, torqueBP/V [0,4096]. It also has:
+  - rate damping 0.3 × 0.010 × steeringRateDeg, faded out by 30 mph;
+  - centre boost `HondaCenterScale` 0.5 above 50 mph;
+  - TuneLearner on by default.
+- Its "hybrid steer ratio" is geometry only, blending two angle maps. The default mode 0 is manual 15.38→10.93. It is not a controller.
+- nrdr's `STEER_RATIO_MODES.md` says the hybrid ratio is opt-in with no road validation. No Civic C020 validation is documented.
+
+**Sim comparison.** Plant fitted through the owner's C020 table (STATUS 146), delay 5, on 260–263. Err rms in deg, with straight rms in brackets:
+- `james` is the logged tuning (firmware VGR on, the owner's Lat* trims, `HondaCenterScale` 0).
+- `nrdr` is `lat_pid_sim.py compare --variant nrdr=pid,kp=0.03,ki=0.01,kf=1.2e-5,rate_damp=0.3,NrdrLatUseFirmwareVgr=1,HondaCenterScale=0.5,Lat*Scale*=100`.
+
+| route | band | james | nrdr |
+|---|---|---|---|
+| 276 | 25–50 | 0.88 (0.62) | 1.24 (0.87) |
+| 277 | 25–50 | 0.93 (0.55) | 1.21 (0.78) |
+| 271 | 25–50 | 0.91 (0.57) | 1.21 (0.79) |
+| 27a | 25–50 | 0.81 (0.62) | 1.09 (0.85) |
+| 268 | 25–50 | 1.29 (0.95) | 1.61 (1.22) |
+| 278 | 25–50 | 0.55 (0.43) | 0.78 (0.62) |
+
+- **25–50 mph, the band the sim is trusted in:** nrdr's gains track 25–45% worse on every route.
+- **Below 25 mph:** within ±5%, either way.
+- **Above 50 mph:** mixed; nrdr is better only on 268 (0.60 vs 1.10), from its I trim of 100 against the owner's 0.
+- The repo's road-measured ratio curve (`NrdrLatUseFirmwareVgr=0`) scored 1–7% lower than the firmware map in most bands. Each variant is scored against its own target, so this is not a like-for-like comparison.
+- **Not modelled:**
+  - nrdr's TuneLearner (a learned bias);
+  - its default manual steer-ratio mode;
+  - the unwind-phase weighting of its rate damping.
+- **Recommendation (sim evidence only):** stay on this repo's PID. nrdr's Clarity hybrid does not apply to this car, and its Civic gains track worse here.
+
+**Centre boost** (`sweep --param HondaCenterScale`, 6 routes). Above 50 mph, going from 0 to 0.5 lowers err rms by 1–13% on every route, and 0 to 1.0 by 2–25%. Straight sign changes rise by 0–0.2/s on 3 of 6 routes. Below 50 mph it has no effect, since the boost only acts above 50 mph. There are only 0.6–2.2 highway minutes per route, and the autotuner's trust gate marks the highway band untrusted (sim 0.73 vs log 0.57 deg). So this is a candidate for a drive, not a setting.
+
+**2 August drives** (device `11c8fa231c0499ed`, night-star-testing @ 96604b6c):
+- **Available:** rlogs for 62, 63, 64, 66 and 6d. 68, 69 and 6b are not uploaded (qlogs only).
+- **Command-to-wheel-rate coherence is ~0 above 10 Hz** on every route, including the later ones. The 20–35 Hz rate content is not driven by the command, so it cannot show a tracker difference. The only earlier sign of a tracker problem was the CR-V's ~29 Hz limit cycle (eps_tools/rwd/README.md), which would show as a rate peak. None of these routes has one: 20–35 Hz rate rms at 25–50 mph is 0.31–0.47 deg/s, below the later 271–27a (0.45–0.61).
+- **Loop gain at 2–5 Hz** (|rate / command|, 25–50 mph, hands off; coherence 0.16–0.5), with values for each third of a route in brackets:
+  - 6d: 44 (38 / 33 / 47)
+  - 66: 57
+  - 62: 72
+  - 63: 76
+  - 64: 98 (121 / 101 / 93)
+  - later 271 / 277: 175 / 188
+- **What that leaves:**
+  - The spread is too wide and too continuous to split the routes into two images from the logs alone. Speed mix, temperature and the controller's command content all move this number.
+  - Route 64 started one minute after 63 ended, which makes a flash between them unlikely.
+  - The routes run 17:53–01:19 UTC. 6d, after the three missing routes, is the only candidate for a second image.
+  - The owner's flash order, or the missing rlogs, would settle it.
+- **Per-route plant fits are not identifiable:** gain 190–2800 with delay pinned at the grid minimum, so they were not used.
+
+**Tool change.** `lat_pid_sim.py` variant keys `kp`, `ki`, `kf` and `rate_damp` apply to the pid kind only. They run another fork's flat gains and rate damping through this repo's PID; `kf` bypasses the banded modified-EPS kf. Tests are in `tools/lateral/tests/test_lat_pid_sim_torque.py`.
