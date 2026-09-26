@@ -175,6 +175,7 @@ from openpilot.starpilot.common.testing_grounds import (
 from openpilot.starpilot.navigation.destination_store import normalize_destination_payload, routing_configured, update_recent_destinations
 from openpilot.starpilot.system.the_galaxy.factory_reset import remove_path as _run_factory_reset_delete
 from openpilot.starpilot.system.the_galaxy import flm_workspace, lat_tune_workspace, utilities
+from openpilot.starpilot.system.the_galaxy import drive_plots
 from openpilot.starpilot.system.the_galaxy.update_recovery import inspect_interrupted_update, public_recovery_status, recover_interrupted_update
 from openpilot.starpilot.system.bluetooth import BluetoothClient
 from openpilot.starpilot.system.wheel_controls import (
@@ -1821,39 +1822,6 @@ _FACTORY_RESET_WIPE_PATHS = [
   "/cache/use_konik",
 ]
 
-_PLOTS_POLL_INTERVAL_S = 0.75
-_PLOTS_BOOT_STABILIZATION_WINDOW_S = 45.0
-_PLOTS_BOOT_POLL_INTERVAL_S = 1.0
-_PLOTS_CLIENT_IDLE_TIMEOUT_S = 6.0
-_PLOTS_SAMPLE_STALE_AFTER_S = 1.5
-
-_plots_lock = threading.Lock()
-_plots_worker_thread = None
-_plots_last_client_request_ts = 0.0
-_plots_state = {
-  "timestamp": 0.0,
-  "desiredLateralAccel": 0.0,
-  "actualLateralAccel": 0.0,
-  "desiredLongitudinalAccel": 0.0,
-  "actualLongitudinalAccel": 0.0,
-  "controlsActive": False,
-  "longitudinalControlActive": False,
-  "lateralP": 0.0,
-  "lateralI": 0.0,
-  "lateralD": 0.0,
-  "lateralF": 0.0,
-  "longitudinalUpAccelCmd": 0.0,
-  "longitudinalUiAccelCmd": 0.0,
-  "longitudinalUfAccelCmd": 0.0,
-  "speed": 0.0,
-  "lateralSource": "curvature",
-  "longitudinalSource": "longitudinalPlan.aTarget + livePose",
-  "lateralTermsSource": "unknown",
-  "longitudinalTermsSource": "controlsState",
-  "sampleIndex": 0,
-  "lastError": "",
-}
-
 _TROUBLESHOOT_PERSONALITY_KEYS = [
   "CustomPersonalities",
   "TrafficPersonalityProfile",
@@ -2013,200 +1981,45 @@ def _get_param_int_value(key, default=0):
   except Exception:
     return int(default)
 
-def _get_system_uptime_seconds():
-  try:
-    with open("/proc/uptime", "r", encoding="utf-8") as uptime_file:
-      return _safe_float((uptime_file.read().split() or ["0"])[0], 0.0)
-  except Exception:
-    return 0.0
-
-def _is_plots_boot_stabilizing():
-  if not params.get_bool("IsOnroad"):
-    return False
-  return _get_system_uptime_seconds() < _PLOTS_BOOT_STABILIZATION_WINDOW_S
-
-def _extract_plots_speed_mps(controls_state, live_pose):
-  try:
-    velocity_device = getattr(live_pose, "velocityDevice", None)
-    if velocity_device and getattr(velocity_device, "valid", False):
-      # Use forward device-frame velocity for plot gating without adding any new subscriptions.
-      return abs(_safe_float(getattr(velocity_device, "x", 0.0), 0.0))
-  except Exception:
-    pass
-
-  return abs(_safe_float(getattr(controls_state, "vPid", 0.0), 0.0))
-
-def _extract_lateral_accel_values(controls_state, speed_mps):
-  v_ego = max(0.0, _safe_float(speed_mps))
-  speed_sq = v_ego * v_ego
-
-  try:
-    lateral_state = controls_state.lateralControlState
-    if lateral_state.which() == "torqueState":
-      torque_state = lateral_state.torqueState
-      desired = _safe_float(getattr(torque_state, "desiredLateralAccel", 0.0))
-      actual = _safe_float(getattr(torque_state, "actualLateralAccel", 0.0))
-      if abs(desired) > 1e-3 or abs(actual) > 1e-3:
-        return desired, actual, "torqueState"
-  except Exception:
-    pass
-
-  desired_curvature = _safe_float(getattr(controls_state, "desiredCurvature", 0.0))
-  actual_curvature = _safe_float(getattr(controls_state, "curvature", 0.0))
-  return desired_curvature * speed_sq, actual_curvature * speed_sq, "curvature"
-
-def _extract_longitudinal_accel_values(controls_state, live_pose, longitudinal_plan=None):
-  # aTarget lives on longitudinalPlan; controlsState has no such field, so reading it
-  # there always returned 0 and the plot silently fell through to the PID output below.
-  desired = 0.0
-  source = "longitudinalPlan.aTarget + livePose"
-  has_plan = longitudinal_plan is not None
-  if has_plan:
-    desired = _safe_float(getattr(longitudinal_plan, "aTarget", 0.0))
-
-  actual = 0.0
-  try:
-    acceleration_device = getattr(live_pose, "accelerationDevice", None)
-    if acceleration_device and getattr(acceleration_device, "valid", False):
-      actual = _safe_float(getattr(acceleration_device, "x", 0.0), 0.0)
-  except Exception:
-    source = "longitudinalPlan.aTarget"
-
-  # Fallback only if no plan has been received. aTarget == 0 is a legitimate target at cruise.
-  if not has_plan:
-    up = _safe_float(getattr(controls_state, "upAccelCmd", 0.0))
-    ui = _safe_float(getattr(controls_state, "uiAccelCmd", 0.0))
-    uf = _safe_float(getattr(controls_state, "ufAccelCmd", 0.0))
-    pid_sum = up + ui + uf
-    if abs(pid_sum) > 1e-6:
-      desired = pid_sum
-      source = "controlsState PID sum + livePose"
-
-  return desired, actual, source
-
-def _extract_lateral_controller_terms(controls_state):
-  terms = {
-    "lateralP": 0.0,
-    "lateralI": 0.0,
-    "lateralD": 0.0,
-    "lateralF": 0.0,
-  }
-  source = "unknown"
-
-  try:
-    lateral_state = controls_state.lateralControlState
-    which = lateral_state.which()
-    if which == "torqueState":
-      torque_state = lateral_state.torqueState
-      terms["lateralP"] = _safe_float(getattr(torque_state, "p", 0.0))
-      terms["lateralI"] = _safe_float(getattr(torque_state, "i", 0.0))
-      terms["lateralD"] = _safe_float(getattr(torque_state, "d", 0.0))
-      terms["lateralF"] = _safe_float(getattr(torque_state, "f", 0.0))
-      source = "torqueState"
-    elif which == "pidState":
-      pid_state = lateral_state.pidState
-      terms["lateralP"] = _safe_float(getattr(pid_state, "p", 0.0))
-      terms["lateralI"] = _safe_float(getattr(pid_state, "i", 0.0))
-      terms["lateralF"] = _safe_float(getattr(pid_state, "f", 0.0))
-      source = "pidState"
-    elif which:
-      source = which
-  except Exception:
-    pass
-
-  return terms, source
-
-def _extract_longitudinal_controller_terms(controls_state):
-  terms = {
-    "longitudinalUpAccelCmd": _safe_float(getattr(controls_state, "upAccelCmd", 0.0)),
-    "longitudinalUiAccelCmd": _safe_float(getattr(controls_state, "uiAccelCmd", 0.0)),
-    "longitudinalUfAccelCmd": _safe_float(getattr(controls_state, "ufAccelCmd", 0.0)),
-  }
-  return terms, "controlsState"
-
-def _plots_worker():
-  global _plots_worker_thread
-
-  try:
-    sm = messaging.SubMaster(["controlsState", "livePose", "carControl", "longitudinalPlan"], poll="controlsState")
-  except Exception as exception:
-    with _plots_lock:
-      _plots_state["lastError"] = str(exception)
-      _plots_worker_thread = None
-    return
-
-  while True:
-    with _plots_lock:
-      idle_for = time.monotonic() - _plots_last_client_request_ts
-
-    if idle_for >= _PLOTS_CLIENT_IDLE_TIMEOUT_S:
-      break
-
+def _drive_plots_meta():
+  """Snapshot what a recorded drive is being judged against: the car and the tune."""
+  meta = {"car": None, "git_commit": None, "tune": {}}
+  cp_bytes = _safe_params_get_live_raw("CarParamsPersistent")
+  if cp_bytes:
     try:
-      sm.update(0)
+      with car.CarParams.from_bytes(cp_bytes) as cp:
+        meta["car"] = str(cp.carFingerprint)
+        meta["openpilot_longitudinal"] = bool(cp.openpilotLongitudinalControl)
+        meta["lateral_tuning"] = str(cp.lateralTuning.which())
+    except Exception:
+      pass
+  for key, target in (("GitCommit", "git_commit"), ("GitBranch", "git_branch")):
+    try:
+      value = params.get(key)
+      meta[target] = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+    except Exception:
+      pass
+  for key in [*_TROUBLESHOOT_ADVANCED_LATERAL_KEYS, *_TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS]:
+    try:
+      value = params.get(key)
+      if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+      if value is not None:
+        meta["tune"][key] = value if isinstance(value, (str, int, float, bool)) else str(value)
+    except Exception:
+      pass
+  return meta
 
-      controls_state = sm["controlsState"]
-      live_pose = sm["livePose"]
-      speed = _extract_plots_speed_mps(controls_state, live_pose)
-      # controlsState.active is deprecated (always reads False). carControl carries what
-      # controlsd actually acted on: latActive (openpilot steering) and longActive
-      # (openpilot in charge of accel; False during a gas override).
-      car_control = sm["carControl"]
-      has_car_control = sm.recv_frame["carControl"] > 0
-      controls_active = has_car_control and bool(getattr(car_control, "latActive", False))
-      longitudinal_control_active = has_car_control and bool(getattr(car_control, "longActive", False))
-      longitudinal_plan = sm["longitudinalPlan"] if sm.recv_frame["longitudinalPlan"] > 0 else None
+_drive_plots = None
+_drive_plots_init_lock = threading.Lock()
 
-      desired_lateral, actual_lateral, lateral_source = _extract_lateral_accel_values(controls_state, speed)
-      desired_longitudinal, actual_longitudinal, longitudinal_source = _extract_longitudinal_accel_values(controls_state, live_pose, longitudinal_plan)
-      lateral_terms, lateral_terms_source = _extract_lateral_controller_terms(controls_state)
-      longitudinal_terms, longitudinal_terms_source = _extract_longitudinal_controller_terms(controls_state)
-
-      with _plots_lock:
-        _plots_state.update({
-          "timestamp": time.time(),
-          "desiredLateralAccel": round(desired_lateral, 4),
-          "actualLateralAccel": round(actual_lateral, 4),
-          "desiredLongitudinalAccel": round(desired_longitudinal, 4),
-          "actualLongitudinalAccel": round(actual_longitudinal, 4),
-          "controlsActive": controls_active,
-          "longitudinalControlActive": longitudinal_control_active,
-          "lateralP": round(lateral_terms["lateralP"], 4),
-          "lateralI": round(lateral_terms["lateralI"], 4),
-          "lateralD": round(lateral_terms["lateralD"], 4),
-          "lateralF": round(lateral_terms["lateralF"], 4),
-          "longitudinalUpAccelCmd": round(longitudinal_terms["longitudinalUpAccelCmd"], 4),
-          "longitudinalUiAccelCmd": round(longitudinal_terms["longitudinalUiAccelCmd"], 4),
-          "longitudinalUfAccelCmd": round(longitudinal_terms["longitudinalUfAccelCmd"], 4),
-          "speed": round(speed, 4),
-          "lateralSource": lateral_source,
-          "longitudinalSource": longitudinal_source,
-          "lateralTermsSource": lateral_terms_source,
-          "longitudinalTermsSource": longitudinal_terms_source,
-          "sampleIndex": int(_plots_state.get("sampleIndex", 0)) + 1,
-          "lastError": "",
-        })
-    except Exception as exception:
-      with _plots_lock:
-        _plots_state["lastError"] = str(exception)
-
-    sleep_interval = _PLOTS_POLL_INTERVAL_S
-    if _is_plots_boot_stabilizing():
-      sleep_interval = max(_PLOTS_POLL_INTERVAL_S, _PLOTS_BOOT_POLL_INTERVAL_S)
-    time.sleep(sleep_interval)
-
-  with _plots_lock:
-    _plots_worker_thread = None
-
-def _ensure_plots_worker():
-  global _plots_worker_thread, _plots_last_client_request_ts
-
-  with _plots_lock:
-    _plots_last_client_request_ts = time.monotonic()
-    if _plots_worker_thread and _plots_worker_thread.is_alive():
-      return
-    _plots_worker_thread = threading.Thread(target=_plots_worker, daemon=True)
-    _plots_worker_thread.start()
+def _get_drive_plots():
+  global _drive_plots
+  with _drive_plots_init_lock:
+    if _drive_plots is None:
+      _drive_plots = drive_plots.DrivePlots(_get_galaxy_dir() / "drive_plots", is_onroad=lambda: params.get_bool("IsOnroad"))
+      threading.Thread(target=_drive_plots.recover_interrupted, daemon=True).start()
+    return _drive_plots
 
 def _set_fast_update_state(**kwargs):
   with _fast_update_lock:
@@ -8452,20 +8265,64 @@ def setup(app):
 
   @app.route("/api/plots/live", methods=["GET"])
   def get_live_plots():
-    _ensure_plots_worker()
-    with _plots_lock:
-      payload = dict(_plots_state)
+    try:
+      since = int(request.args.get("since", 0))
+    except (TypeError, ValueError):
+      since = 0
+    payload = _get_drive_plots().live(since)
+    payload["isOnroad"] = params.get_bool("IsOnroad")
+    return jsonify(payload), 200
 
-    timestamp = _safe_float(payload.get("timestamp", 0.0), 0.0)
-    age_seconds = max(0.0, time.time() - timestamp) if timestamp else 999.0
+  @app.route("/api/plots/recording/start", methods=["POST"])
+  def start_plots_recording():
+    return jsonify({"recording": _get_drive_plots().start_recording(_drive_plots_meta())}), 200
 
-    return jsonify({
-      **payload,
-      "isOnroad": params.get_bool("IsOnroad"),
-      "bootStabilizing": _is_plots_boot_stabilizing(),
-      "sampleAgeSeconds": round(age_seconds, 3),
-      "stale": age_seconds > _PLOTS_SAMPLE_STALE_AFTER_S,
-    }), 200
+  @app.route("/api/plots/recording/stop", methods=["POST"])
+  def stop_plots_recording():
+    return jsonify({"stopped": _get_drive_plots().stop_recording(reason="stopped by user")}), 200
+
+  @app.route("/api/plots/sessions", methods=["GET"])
+  def list_plots_sessions():
+    return jsonify({"sessions": _get_drive_plots().list_sessions()}), 200
+
+  @app.route("/api/plots/sessions/<session_id>", methods=["GET"])
+  def get_plots_session(session_id):
+    try:
+      session = _get_drive_plots().get_session(session_id)
+    except ValueError:
+      return jsonify({"error": "Invalid session id"}), 400
+    if session is None:
+      return jsonify({"error": "Session not found"}), 404
+    return jsonify(session), 200
+
+  @app.route("/api/plots/sessions/<session_id>/window", methods=["GET"])
+  def get_plots_session_window(session_id):
+    try:
+      start_s = float(request.args.get("start", 0))
+      end_s = float(request.args.get("end", start_s + 60))
+      return jsonify(_get_drive_plots().get_window(session_id, start_s, end_s)), 200
+    except ValueError:
+      return jsonify({"error": "Invalid request"}), 400
+
+  @app.route("/api/plots/sessions/<session_id>/download", methods=["GET"])
+  def download_plots_session(session_id):
+    try:
+      path = _get_drive_plots().csv_path(session_id)
+    except ValueError:
+      return jsonify({"error": "Invalid session id"}), 400
+    if path is None:
+      return jsonify({"error": "Session not found"}), 404
+    return send_file(str(path), as_attachment=True, download_name=f"drive-plots-{session_id}{''.join(path.suffixes)}")
+
+  @app.route("/api/plots/sessions/<session_id>", methods=["DELETE"])
+  def delete_plots_session(session_id):
+    try:
+      deleted = _get_drive_plots().delete_session(session_id)
+    except ValueError:
+      return jsonify({"error": "Invalid session id"}), 400
+    if not deleted:
+      return jsonify({"error": "Session not found or still recording"}), 404
+    return jsonify({"deleted": session_id}), 200
 
   @app.route("/api/testing_grounds", methods=["GET"])
   def get_testing_grounds():
