@@ -56,6 +56,44 @@ has risen with every authority increase; openpilot corner-exit reversals rose
 ⚠ **Raising `tracker alpha` on top of this D value produced a sustained ~29 Hz
 hands-off limit cycle** (±150 deg/s, 83% of steering-rate power). Alpha stays stock.
 
+### Civic Bosch modified-EPS images, 39990-TBA,C020 (owner's car; rule 4, testing fork only)
+
+Static decode, 2026-09-26 (STATUS 145). The owner supplied all three files, and all pass `check_rwd.py`.
+
+- `39990-TBA-C020-stock.rwd` is the factory image and the baseline. Flash it to go back. *Held locally, not committed.*
+- `39990-TBA,C020-20260805-ClarityPminus5-P117to265-D737-KFF45-Norm1650-Trk4500-TargetMapD-Telem-SpeedClamp0-Pclamp7373.rwd`
+  differs from stock in 664 bytes over 25 runs. These are listed below.
+- `39990-TBA,C020-Trk4000-PTM.rwd` is the image above with only the tracker changed, 4500 to 4000. *Held locally, not committed.*
+  It differs in six bytes: the tracker word and the two firmware checksums.
+
+| name tag | address | stock C020 | owner |
+|---|---|---|---|
+| Trk | `0x137ee` | 1996 | 4500, or 4000 in `-Trk4000-PTM` |
+| Norm | `0x29efe` | 3429 | 1650 (same word and stock value as CR-V `0x429A0`): ~2.08× rate authority |
+| P117to265 | `0x13bc0`, 7 rows | 0,74,123,151,166,179,179… up to 38,95,136,143,151… | 117,148,184,220,245,257,263,265,265 in every row |
+| D737 | `0x13ac4`, 7 rows | 159, then 264 ×8 | 737 flat: 2.8× stock, 4.6× at the first point |
+| SpeedClamp0 | `0x1361c` | 10 | 0 |
+| torque rows | `0x13872`, 7 rows (stride 0x12) | max 4147–4608; e.g. row 0 is 0,698,1722,2816,3763,4286,4608…, row 3 is 0,1862,2820,3295,3609,4104,4608… | 0,1926,4938,8455,12036,15926,20138,26955,30000 in every row |
+| (unnamed) | `0x4a1a4`–`0x4a1de` | 2047, and 0,0,0,2047 ×3 | 1696, and 512,0,0,1697–1699 |
+
+**Torque table gain against stock** depends on the row, because the owner uses one table at every
+row. Which row maps to which speed is not decoded.
+- Rows 0–2: 2.2–2.8× at the first breakpoint, 6.5–7.2× at the top.
+- Rows 3–6: 1.0–1.1× at the first breakpoint, 1.7× at the second, 6.5× at the top.
+
+**Code changes** (not decoded):
+- 310 bytes of new code at `0x4c2d4`, which was blank (0xFFFF) flash, hooked from `0x1d8f8`.
+- Word changes at `0x29006` and `0x4b156`–`0x4b41e` (11587 to 11331, 16685 to 16684).
+
+These are probably the Telem / ClarityPminus5 / KFF45 / TargetMapD features, and they have no confirmed
+meaning. **Pclamp 7373, the 1774 / 9000 words after the torque rows, and the 30000 torque cap are all
+stock values in C020.**
+
+⚠ The tracker is 2.25× stock at 4500 and 2.0× at 4000, on top of a D row 2.8–4.6× stock. The CR-V note
+above is the relevant evidence: raising tracker alpha on a high-D tune gave a ~29 Hz hands-off limit
+cycle. So 4000 is the conservative direction. Check its 20–35 Hz steering-rate power on a drive before
+keeping it.
+
 ## Upstreaming guidelines
 
 Rules for adding `.rwd` files to this branch / upstreaming them:

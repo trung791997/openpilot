@@ -33,6 +33,11 @@ Usage:
   python tools/lateral/lat_pid_sim.py validate --plant plant.json ROUTE_DIR [...]
   python tools/lateral/lat_pid_sim.py sim --plant plant.json ROUTE_DIR [...] --set LatIScaleStandard=75 [--set K=V ...]
   python tools/lateral/lat_pid_sim.py sweep --plant plant.json ROUTE_DIR [...] --param LatIScaleStandard --values 25,50,75,100
+
+EPS firmware (tools/lateral/eps_fw.py): fit through the torque table of the image the drives ran on, then swap in
+another image's table. Only the table is modelled; the EPS's tracker / Norm / P / D stay as fitted (warned):
+  python tools/lateral/lat_pid_sim.py fit ROUTE_DIR [...] --delay 5 --eps-rwd eps_tools/rwd/<image>.rwd --out plant.json
+  python tools/lateral/lat_pid_sim.py compare --plant plant.json ROUTE_DIR --variant pid=pid --eps-rwd A.rwd --eps-rwd B.rwd
 """
 from __future__ import annotations
 
@@ -409,15 +414,32 @@ SIGN_HYST_DEG = 0.15   # lat_tune_analyzer.SIGN_HYST_DEG
 
 
 class Plant:
-  def __init__(self, coef, delay=0, quant=0.0):
+  """eps: an eps_fw.EpsTable. With one, u in accel() is the table torque (EpsTable.drive of the delivered command)
+  rather than the command itself, and the table can be swapped for another image's (with_eps) at sim time."""
+  def __init__(self, coef, delay=0, quant=0.0, eps=None):
     self.c = np.asarray(coef, dtype=float)
     self.delay = int(delay)
     self.quant = float(quant)
+    self.eps = eps
 
   @staticmethod
   def from_json(j):
     # Plants fitted before the delay existed carry neither key and keep their old, undelayed behaviour.
-    return Plant(j["coef"], j.get("delay_frames", 0), j.get("angle_quant_deg", 0.0))
+    eps = None
+    if j.get("eps"):
+      from openpilot.tools.lateral.eps_fw import EpsTable
+      eps = EpsTable.from_json(j["eps"])
+    return Plant(j["coef"], j.get("delay_frames", 0), j.get("angle_quant_deg", 0.0), eps)
+
+  def drive(self, u):
+    """Plant input for a delivered command."""
+    return u if self.eps is None else self.eps.drive(u)
+
+  def with_eps(self, eps):
+    """This plant with another image's torque table. Only a plant fitted through a table has the units for it."""
+    if self.eps is None:
+      raise ValueError("plant was fitted on the raw command; refit it with --eps-rwd before swapping the table")
+    return Plant(self.c, self.delay, self.quant, eps)
 
   def measure(self, theta):
     return float(np.round(theta / self.quant) * self.quant) if self.quant > 0 else theta
@@ -429,6 +451,7 @@ class Plant:
 
   def to_json(self):
     return {"coef": self.c.tolist(), "delay_frames": self.delay, "angle_quant_deg": self.quant,
+            "eps": self.eps.to_json() if self.eps is not None else None,
             "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2)"}
 
 
@@ -459,6 +482,7 @@ def _pack(ds, win, stride):
 
 
 def _plant_freerun(p, plant):
+  """p["u"] is the plant input: already through plant.drive."""
   th = p["th"][:, 0].copy()
   r = p["r"][:, 0].copy()
   out = np.zeros_like(p["th"])
@@ -471,9 +495,12 @@ def _plant_freerun(p, plant):
   return out
 
 
-def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS):
-  """Fits the coefficients at each candidate delay and keeps the delay with the lowest free-run residual."""
+def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS, eps=None):
+  """Fits the coefficients at each candidate delay and keeps the delay with the lowest free-run residual.
+  With eps (an EpsTable) the command goes through that firmware table first; use the image the drives ran on."""
   p = _pack(ds, PLANT_WIN, PLANT_STRIDE)
+  if eps is not None:
+    p["u"] = eps.drive(p["u"])
   best = None
   for delay in delays:
     plant, cost = _fit_coef(p, delay, iters, verbose)
@@ -482,6 +509,7 @@ def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS):
     if best is None or cost < best[1]:
       best = (plant, cost)
   best[0].quant = ANGLE_QUANT_DEG
+  best[0].eps = eps
   return best[0], p["v"].shape[0]
 
 
@@ -520,6 +548,7 @@ def _fit_coef(p, delay, iters, verbose):
 def plant_holdout(ds, plant, win=300, stride=100):
   """Free-run error at the end of `win`-frame windows, and the error of just holding the start angle."""
   p = _pack(ds, win, stride)
+  p["u"] = plant.drive(p["u"])
   s = _plant_freerun(p, plant)
   return (float(np.sqrt(np.mean((s[:, -1] - p["th"][:, -1]) ** 2))),
           float(np.sqrt(np.mean((p["th"][:, 0] - p["th"][:, -1]) ** 2))), p["v"].shape[0])
@@ -596,7 +625,7 @@ def simulate(d, plant, overrides=None, testing_ground=False, with_raw=False, kin
       steer_limited = (d["active"][k] > 0.5) and abs(out[k] - deliv[k]) > 1e-2
       if sim_on[k]:
         th_rel = th - d["offset"][k]
-        r = r + plant.accel(th_rel, r, deliv[max(k - plant.delay, 0)], d["v"][k]) * DT
+        r = r + plant.accel(th_rel, r, plant.drive(deliv[max(k - plant.delay, 0)]), d["v"][k]) * DT
         th = th + r * DT
   finally:
     ctl.close()
@@ -770,6 +799,8 @@ def main(argv=None):
   p.add_argument("--out", required=True)
   p.add_argument("--delay", type=int, help="fit at this command delay (frames) instead of picking from FIT_DELAYS; " +
                  "on 263/268/271 the free-run picks 0 but 5 matches the closed-loop sign changes best (STATUS 132)")
+  p.add_argument("--eps-rwd", help="fit through this C020 image's torque table (the image the drives ran on)")
+  p.add_argument("--eps-row", type=int, default=0, help="table row (default 0, STATUS 146)")
   p = sub.add_parser("validate", help="plant free-run and closed-loop-at-logged-settings vs the log")
   p.add_argument("routes", nargs="+")
   p.add_argument("--plant", required=True)
@@ -792,6 +823,11 @@ def main(argv=None):
   p.add_argument("--variant", action="append", required=True,
                  help="NAME=KIND[,key=value...], KIND in " + "|".join(KINDS) +
                  f"; torque keys {sorted(TORQUE_DEFAULTS)} (defaults {TORQUE_DEFAULTS}), others are param overrides")
+  for name in ("validate", "sim", "sweep", "compare"):
+    sp = sub.choices[name]
+    sp.add_argument("--eps-rwd", action="append", help="run through this C020 image's torque table instead of the one the " +
+                    "plant was fitted with (repeat to compare images); needs a plant fitted with --eps-rwd")
+    sp.add_argument("--eps-row", type=int, default=0)
   p = sub.add_parser("stiffness", help="push-back on a held wheel before an override is detected (no plant)")
   p.add_argument("routes", nargs="+", help="CarParams and logged params are taken from the first route")
   p.add_argument("--base", action="append")
@@ -805,7 +841,11 @@ def main(argv=None):
 
   if args.cmd == "fit":
     ds = load(args.routes)
-    plant, nwin = fit_plant(ds, delays=FIT_DELAYS if args.delay is None else (args.delay,))
+    eps = None
+    if args.eps_rwd:
+      from openpilot.tools.lateral.eps_fw import EpsTable
+      eps = EpsTable.from_rwd(args.eps_rwd, args.eps_row)
+    plant, nwin = fit_plant(ds, delays=FIT_DELAYS if args.delay is None else (args.delay,), eps=eps)
     j = plant.to_json()
     j.update({"routes": [d["route"] for d in ds], "windows": int(nwin), "window_s": PLANT_WIN * DT})
     with open(args.out, "w") as f:
@@ -828,9 +868,32 @@ def main(argv=None):
 
   with open(args.plant) as f:
     pj = json.load(f)
-  plant = Plant.from_json(pj)
+  fitted = Plant.from_json(pj)
   ds = load(args.routes)
+  for plant, label in eps_plants(fitted, args.eps_rwd, args.eps_row):
+    if label:
+      print(f"#### EPS table: {label}")
+    _run(args, pj, plant, ds)
 
+
+def eps_plants(plant, rwds, row=0):
+  """[(plant, label)]: the fitted plant as is, or once per image with that image's torque table swapped in."""
+  if not rwds:
+    return [(plant, plant.eps.source + " (fitted)" if plant.eps is not None else "")]
+  from openpilot.tools.lateral.eps_fw import EpsTable
+  out = []
+  for path in rwds:
+    eps = EpsTable.from_rwd(path, row)
+    label = f"{eps.source} row {eps.row}"
+    diff = plant.eps.controller_diff(eps) if plant.eps is not None else {}
+    if diff:
+      label += ("\n  WARNING: controller words differ from the fitted image and are NOT modelled (only the table is): " +
+                ", ".join(f"{k} {a} -> {b}" for k, (a, b) in diff.items()))
+    out.append((plant.with_eps(eps), label))
+  return out
+
+
+def _run(args, pj, plant, ds):
   if args.cmd == "validate":
     ov = _overrides(args.set)
     print(f"plant fitted on {pj.get('routes')}, delay {plant.delay} frames, angle step {plant.quant} deg")

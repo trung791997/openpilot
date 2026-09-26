@@ -7578,3 +7578,73 @@ Both changes are in `selfdrive/controls/lib/latcontrol_pid.py`.
   - The Bolt/Palisade and `test_straight_road_roll_bias` failures predate this (see 143d) and are not on the Civic path.
 - **What changes on the car.** Nothing on the default PID path. Only with `ForceTorqueController`, NNFF or NNFF-lite on. NNFF uses its own stock-EPS model for the feedforward, which this does not fix; keep NNFF off on the modified rack.
 - **Not validated.** Road feel and override effort on the torque path. Owner: if you try it, start with `ForceTorqueController` on and NNFF off, and push against it on a straight at 30–45 mph first.
+
+## 145. The owner's C020 EPS firmware, and how often the PID asks for more than 0.35. Static decode against the owner's stock C020 image, and logged-route statistics; nothing on the car changed.
+
+**Firmware.** Three images are in `eps_tools/rwd/`, all passing `check_rwd.py`: stock C020, the 2026-08-05 Trk4500 tune, and `-Trk4000-PTM`. The decode is in `eps_tools/rwd/README.md`. Changes from stock:
+- tracker 1996 → 4500 (or 4000; this is the only difference between the two tunes);
+- Norm 3429 → 1650;
+- P row 0–179 → 117–265, the same in every row;
+- D row 159/264 → 737;
+- speed clamp 10 → 0;
+- torque rows max 4147–4608 → one table to 30000;
+- 310 bytes of new code, plus a few changed code words, not decoded.
+
+The P clamp 7373 and the 1774 / 9000 words are stock.
+
+**Does LAF 11.5 fit the firmware?** Roughly.
+- The table gives 1.0–2.8× stock at the first breakpoint, depending on the row, and 6.5–7.2× at the top.
+- Times Norm's ~2.08× that is roughly 2–6× the stock small-signal gain.
+- Stock LAF is 1.69, so the prediction is about 3.5–10 against the 11.5 fitted on the road (STATUS 140). The P row raise may account for the rest.
+
+This is a consistency check, not a derivation.
+
+**PID |actuators.torque| distribution.** Routes 263, 268, 271, 276 and 277, engaged, not pressed, no lane change, from the `/tmp/latstudy` cache:
+
+| speed | engaged time | >0.25 | >0.35 | >0.5 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|---|
+| <25 mph | 45 min | 24.6% | 22.4% | 19.0% | 1.00 | 1.00 | 1.00 |
+| 25–50 mph | 59 min | 0.69% | 0.33% | 0.11% | 0.22 | 0.51 | 1.00 |
+| >50 mph | 7 min | 0 | 0 | 0 | 0.10 | 0.14 | 0.23 |
+
+Above 25 mph there are 15 episodes over 0.35, of two kinds:
+- **Real curves at 26–31 mph.** 0.80 at 1.84 m/s² (271), 0.88 at 2.04 m/s² with 41° of wheel (276), 0.58–0.64 at 1.4 m/s² (277).
+- **Near-straight transients.** 0.4–0.5 at ≤0.5 m/s². This includes a 2.65 s run of 0.51 at 46 mph on 277 (t≈302 s) that is not explained.
+
+A flat 0.35 ceiling from 25 mph would clip the real curves. A speed-scheduled ceiling (no limit to ~35 mph, ~0.5 by 45 mph, ~0.3 from 55 mph) would touch nothing in these logs. However, the evidence above 50 mph is only 7 minutes. Not implemented.
+
+## 146. The lateral sim now runs the command through the EPS firmware's torque table (owner: "improve the current lateral sim to account for my current eps fw value"). Sim and fit evidence only; nothing on the car changed.
+
+**What it does.** `tools/lateral/eps_fw.py` reads one row of the C020 torque table from an `.rwd`:
+- the input axis 0–1774 at `0x137f4`, and the torque at `0x13872`, 7 rows;
+- it refuses images that are not C020.
+
+`lat_pid_sim.py fit --eps-rwd IMAGE` fits the plant on table torque instead of the raw command. The table travels in the plant json. `validate`, `sim`, `sweep` and `compare --eps-rwd OTHER` (repeatable) swap in another image's table.
+
+**What it does not model.** The EPS's own controller words (tracker, Norm, P row, D row, speed clamp) stay as they were on the fitted drives. When the swapped image differs in them, the sim prints a warning listing them. The sim therefore **cannot tell Trk4000 from Trk4500**: the two images share a table and differ only in the tracker. That needs a plant fitted on drives made with Trk4000.
+
+**How the choices were made.** Plant fits at delay 5, window rms in degrees:
+
+| routes | linear | owner row 0 | owner best row | stock row 0 | stock row 3 |
+|---|---|---|---|---|---|
+| 260–263 | 1.521 | 1.529 | 1.477 (row 3) | 1.800 | 1.996 |
+| 268 / 271 | 1.274 | 1.275 | 1.275 (row 0) | 1.526 | 1.725 |
+| 276 / 277 | 1.088 | 1.085 | 1.085 (row 0) | 1.231 | 1.348 |
+| 278 / 27a | 1.426 | 1.404 | 1.388 (row 2) | 1.703 | 1.878 |
+
+- **The stock table fits 15–25% worse on every group.** The logs agree those drives ran a modified table. The owner has not confirmed which image was flashed for each drive; every modified image reports `39990-TBA,C020`.
+- **Row 0 is the default.** It is within 1% of linear on all four groups. What selects a row is not decoded. No speed schedule consistently beat row 0 (rows 0/3 either way at 11 m/s, rows 0/6 at 20 m/s).
+- **A full command maps to axis 1774.** The stock table saturates at axis 1111/1774 = 0.626, which matches comma's stock-Civic 2560/4096 cap. The owner's table is near-linear, so the logs cannot pin the scale: rms moves under 1% for scales 0.6–1.2.
+
+**Checks.**
+- Plant fitted through the owner table on 260–263 at delay 5, validated on held-out 276 / 277 at the logged settings: the same metrics as the raw-command plant, within 0.03 deg err rms per band.
+- Swap on 277, PID at logged settings (err rms deg, low / standard / highway):
+  - owner table: 12.9 / 0.93 / 0.90;
+  - Trk4000: identical, with a tracker warning;
+  - stock table with the owner's controller kept: 30.5 / 2.10 / 1.56, with warnings for norm, P, D, speed clamp and tracker.
+- Tests: `tools/lateral/tests/test_eps_fw.py`:
+  - decode against the documented words;
+  - non-C020 images are refused;
+  - the table is odd and monotone;
+  - the plant json round-trips;
+  - the owner table reproduces the raw plant within 5%, and a 0.3× table tracks at least 1.4× worse.
