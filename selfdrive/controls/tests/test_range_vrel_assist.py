@@ -50,7 +50,7 @@ def new_track(track_id: int = 1, v_lead: float = V_EGO) -> radard.Track:
 
 
 def feed(track, n, *, d0, range_rate, v_rel, y_rel=0.0, t0=0.0, dt=DT, v_ego=V_EGO,
-         range_assist=True, measured=True, d_offsets=None):
+         range_assist=True, measured=True, d_offsets=None, vision_closing=None):
   """Drive `track` through n Bosch-A sweeps of a constant-rate range series.
 
   `range_rate` is d(dRel)/dt in m/s -- negative closes. `v_rel` is what U11 claims, independently,
@@ -64,7 +64,7 @@ def feed(track, n, *, d0, range_rate, v_rel, y_rel=0.0, t0=0.0, dt=DT, v_ego=V_E
     if d_offsets is not None:
       d += d_offsets.get(i, 0.0)
     track.update(d, y_rel, v_rel, v_ego + v_rel, measured, measured,
-                 t_now=t, range_assist=range_assist)
+                 t_now=t, range_assist=range_assist, vision_closing=vision_closing)
     fed.append((t, d))
   return fed
 
@@ -675,6 +675,88 @@ class TestGeometryGates:
       assert track.range_assist_active is expect_active, y_rel
 
 
+class FakeVisionLead:
+  """The four leadsV3[0] fields vision_assist_closing reads."""
+  def __init__(self, prob=0.95, x=77.52, y=-1.7, v=6.0):
+    self.prob, self.x, self.y, self.v = prob, [x], [y], [v]
+
+
+class TestVisionAssistGeometry:
+  """VISION_ASSIST_GEOMETRY (default OFF): the |yRel| lane gate is lifted only while a confident
+  model lead at the same range and lateral position is itself closing. 0000026c--10bec2e200 4:08
+  is the case it was written for; STATUS 148 is why the lateral gate is not simply removed. Static
+  tests only; the open-loop replay numbers are in the constant block."""
+
+  def test_default_is_off(self):
+    assert radard.VISION_ASSIST_GEOMETRY is False
+
+  def test_off_ignores_vision(self):
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=18.0)
+    assert track.range_assist_correction == 0.0
+
+  def test_on_with_corroboration_arms_off_lane(self, monkeypatch):
+    monkeypatch.setattr(radard, "VISION_ASSIST_GEOMETRY", True)
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=18.0)
+    assert track.range_assist_active
+    assert track.range_assist_correction == pytest.approx(5.9, abs=0.05)
+
+  def test_control_on_without_vision_stays_inert(self, monkeypatch):
+    monkeypatch.setattr(radard, "VISION_ASSIST_GEOMETRY", True)
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=None)
+    assert track.range_assist_correction == 0.0
+
+  def test_bypassed_correction_is_bounded_by_vision_closing(self, monkeypatch):
+    """Published vRel may claim at most VISION_ASSIST_CLOSING_MARGIN_MPS more closing than vision."""
+    monkeypatch.setattr(radard, "VISION_ASSIST_GEOMETRY", True)
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=12.0)
+    bound = RAIL + 12.0 + radard.VISION_ASSIST_CLOSING_MARGIN_MPS
+    assert track.range_assist_correction == pytest.approx(bound, abs=1e-6)
+    track = new_track()
+    settle(track, d0=76.0, range_rate=-19.4, v_rel=RAIL, y_rel=1.7, vision_closing=5.0)
+    assert track.range_assist_correction == 0.0
+
+  @pytest.mark.parametrize("vision_closing", [4.0, 9.0, 18.0])
+  def test_in_lane_never_below_the_plain_rule(self, monkeypatch, vision_closing):
+    """In lane the vision path may arm earlier, bounded by vision, but once the plain rule would
+    have armed the correction is exactly the plain one: never less closing than with the flag off."""
+    def run(on):
+      monkeypatch.setattr(radard, "VISION_ASSIST_GEOMETRY", on)
+      track, out = new_track(), []
+      for i in range(SETTLE + 10):
+        t = i * DT
+        track.update(76.0 - 19.4 * t, 0.0, -9.0, V_EGO - 9.0, True, True, t_now=t, range_assist=True,
+                     vision_closing=vision_closing)
+        out.append(track.range_assist_correction)
+      return out
+    monkeypatch.setattr(radard, "VISION_ASSIST_ARM_UPDATES", 3)
+    off, on = run(False), run(True)
+    assert any(b > a for a, b in zip(off, on, strict=True)) == (vision_closing > 9.0 - radard.VISION_ASSIST_CLOSING_MARGIN_MPS)
+    assert all(b >= a - 1e-9 for a, b in zip(off, on, strict=True))
+    assert on[-1] == pytest.approx(off[-1])
+    bound = -9.0 + vision_closing + radard.VISION_ASSIST_CLOSING_MARGIN_MPS
+    assert all(b <= max(bound, 0.0) + 1e-9 for a, b in zip(off, on, strict=True) if a == 0.0)
+
+  def test_azimuth_limit_still_applies(self, monkeypatch):
+    """The 26c curve track at 9.3 m lateral and 30 m would be 17 deg off-axis: still inert."""
+    monkeypatch.setattr(radard, "VISION_ASSIST_GEOMETRY", True)
+    track = new_track()
+    settle(track, d0=30.0, range_rate=-19.4, v_rel=RAIL, y_rel=9.3, vision_closing=18.0)
+    assert track.range_assist_correction == 0.0
+
+  def test_helper_gates(self, monkeypatch):
+    f = radard.vision_assist_closing
+    assert f(76.0, 1.7, FakeVisionLead(), 20.0) == pytest.approx(14.0)
+    assert f(76.0, 1.7, None, 20.0) is None
+    assert f(76.0, 1.7, FakeVisionLead(prob=0.5), 20.0) is None       # not confident
+    assert f(76.0, 1.7, FakeVisionLead(x=100.0), 20.0) is None        # range mismatch
+    assert f(76.0, 1.7, FakeVisionLead(y=2.0), 20.0) is None          # lateral mismatch (sign flip)
+    assert f(76.0, 1.7, FakeVisionLead(v=18.0), 20.0) is None         # vision not closing enough
+
+
 # ---------------------------------------------------------------------------------------------
 # Disarming
 # ---------------------------------------------------------------------------------------------
@@ -922,10 +1004,10 @@ class TestNegativeControlOfTheTestsThemselves:
     stopped doing anything and TestRadardLoopCadence is no longer evidence."""
     original = radard.Track._update_range_assist
 
-    def never_holds(self, enabled, measurement_update, t_now):
+    def never_holds(self, enabled, measurement_update, t_now, vision_closing=None):
       # NaN never compares equal, so the duplicate branch falls through to the clear.
       self._range_assist_last_t = float('nan')
-      return original(self, enabled, measurement_update, t_now)
+      return original(self, enabled, measurement_update, t_now, vision_closing)
 
     monkeypatch.setattr(radard.Track, "_update_range_assist", never_holds)
     trace = feed_radard_cadence(new_track(), 60, **RAIL_CASE)
@@ -958,8 +1040,8 @@ class TestNegativeControlOfTheTestsThemselves:
     """If the KF did see the correction, TestKalmanPath must notice."""
     original = radard.Track._update_range_assist
 
-    def leaks_into_kf(self, enabled, measurement_update, t_now):
-      original(self, enabled, measurement_update, t_now)
+    def leaks_into_kf(self, enabled, measurement_update, t_now, vision_closing=None):
+      original(self, enabled, measurement_update, t_now, vision_closing)
       self.vLead -= self.range_assist_correction
 
     monkeypatch.setattr(radard.Track, "_update_range_assist", leaks_into_kf)

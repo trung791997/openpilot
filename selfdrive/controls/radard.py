@@ -194,6 +194,38 @@ RANGE_VREL_RAIL_LONG_MIN_SPAN_S = 0.45
 RANGE_VREL_RAIL_ARM_UPDATES = 3
 RANGE_VREL_RAIL_SIZE_MEAN = True
 
+# --- Vision-corroborated range assist (2026-09-26, extends D-053, rides the RangeDerivedVrel toggle).
+# REPLAY evidence only (open- and closed-loop), nothing driven; default OFF. 0000026c--10bec2e200 4:08:
+# a lead braking on a curve at 80 -> 60 m. U11 lagged (-2.7 -> -13.5 over 1.3 s) while the range closed
+# at -7 .. -23, but the track sat at yRel 9.3 -> 6.3 m, so the |yRel| <= 1.5 lane proxy blocked D-053.
+# A path-relative replacement for that gate was rejected (STATUS 148): without the lateral gate the
+# curve range WALK at 70-95 m (26c 649.9, 237 942.8, 236 2211.4) armed the assist.
+# Here three D-053 blocks are relaxed ONLY while the camera corroborates the closing itself, i.e. a
+# model lead with prob >= VISION_ASSIST_MIN_PROB whose range matches the track within
+# VISION_ASSIST_RANGE_TOL of dRel, whose lateral position matches within VISION_ASSIST_MAX_DY_M, and
+# whose own closing speed (vEgo - v) is >= VISION_ASSIST_MIN_CLOSING_MPS:
+#   * the |yRel| lane gate (the 10.8 deg azimuth bound still applies),
+#   * a long fit that fails span/residual (the short fit decides instead, VISION_ASSIST_SHORT_ONLY),
+#   * the 5-update arm count (VISION_ASSIST_ARM_UPDATES).
+# Whenever the correction exists only because of one of these (the plain rule would publish zero), it
+# is bounded so the published vRel claims at most VISION_ASSIST_CLOSING_MARGIN_MPS more closing than
+# vision, and it is zero on any update vision stops corroborating. Once the plain rule would have armed
+# on its own, the correction is exactly the plain one: this can never publish LESS closing than D-053.
+# Numbers, from the 32-route open-loop replay (STATUS 152): MIN_CLOSING 3 m/s let a slow real closing
+# (vision 3-4 m/s, 0245 773.9, 025e 313.6, 0271 1434.3) arm early to a vision-unconfirmed -1.0 dip;
+# 5 m/s removed all three and kept 26c 4:08 (vision closing 5.3-6.5). MIN_PROB 0.7, not 0.9: the 26c
+# lead is at p 0.74-0.82 during the onset. The 26c gain is small (0.25 s earlier at -1.5, 0.15 s at
+# -1.0, the same at -2.0): past 257.0 the MPC, not the radar, limits the response.
+VISION_ASSIST_GEOMETRY = False
+VISION_ASSIST_MIN_PROB = 0.7
+VISION_ASSIST_RANGE_TOL = 0.15
+VISION_ASSIST_MAX_DY_M = 3.0
+VISION_ASSIST_MIN_CLOSING_MPS = 5.0
+VISION_ASSIST_CLOSING_MARGIN_MPS = 3.0
+VISION_ASSIST_MAX_AZIMUTH_DEG = 10.8
+VISION_ASSIST_ARM_UPDATES = 3          # arm updates needed while corroborated on every one of them
+VISION_ASSIST_SHORT_ONLY = True        # corroborated: a long fit failing span/residual falls back to the short fit
+
 # Last, the correction is capped at the native lead speed, so a corrected vLead is never published
 # below zero. A physical bound like MAX_CORRECTION, not a tuned value: on the replay it bound only
 # at 236 12:51, where it trimmed 0.2 m/s*s.
@@ -288,6 +320,19 @@ def young_track_vision_contradicts(lead, vis, v_ego: float) -> bool:
           float(vis.a[0]) >= YOUNG_TRACK_VISION_MIN_ACCEL)
 
 
+def vision_assist_closing(d_rel: float, y_rel: float, vis, v_ego: float) -> float | None:
+  """VISION_ASSIST_GEOMETRY: the model lead's closing speed (m/s, > 0) when it corroborates this track closing, else None."""
+  if vis is None or float(vis.prob) < VISION_ASSIST_MIN_PROB or not len(vis.x) or not len(vis.v) or not len(vis.y):
+    return None
+  vx = float(vis.x[0]) - RADAR_TO_CAMERA
+  if abs(vx - float(d_rel)) > VISION_ASSIST_RANGE_TOL * max(float(d_rel), 1.0):
+    return None
+  if abs(float(y_rel) + float(vis.y[0])) > VISION_ASSIST_MAX_DY_M:
+    return None
+  closing = float(v_ego) - float(vis.v[0])
+  return closing if closing >= VISION_ASSIST_MIN_CLOSING_MPS else None
+
+
 class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
@@ -331,6 +376,8 @@ class Track:
     self._range_long_min_samples = RANGE_VREL_LONG_SAMPLES  # lowered per update on the rail fast path
     self.range_assist_rail_count = 0
     self.range_assist_correction = 0.0
+    self.vision_assist_count = 0
+    self.vision_assist_early = False  # armed only through the vision path; see _update_range_assist
     # Last liveTracks timestamp this track was updated with, used to tell a DUPLICATE radard
     # cycle (no new message; t_now unchanged) from a COAST (new message, measured False).
     # measurement_update is False for both and they need opposite handling -- see
@@ -348,7 +395,7 @@ class Track:
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
              measurement_update: bool | None = None, t_now: float = 0.0,
-             range_assist: bool = False):
+             range_assist: bool = False, vision_closing: float | None = None):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -394,7 +441,7 @@ class Track:
     # fed the NATIVE speed, and get_RadarState applies the correction to vRel, vLead and vLeadK at
     # publish time. The first version fed the corrected speed here, and aLeadK absorbed every
     # arming step as a hard acceleration (see the rework note at the top of this file).
-    self._update_range_assist(range_assist, measurement_update, t_now)
+    self._update_range_assist(range_assist, measurement_update, t_now, vision_closing)
 
     if measurement_update and self.cnt > 0:
       self.kf.update(self.vLead)
@@ -428,11 +475,14 @@ class Track:
 
   def _clear_range_assist(self) -> None:
     self.range_assist_active = False
+    self.vision_assist_count = 0
+    self.vision_assist_early = False
     self.range_assist_arm_count = 0
     self.range_assist_rail_count = 0
     self.range_assist_correction = 0.0
 
-  def _update_range_assist(self, enabled: bool, measurement_update: bool, t_now: float) -> None:
+  def _update_range_assist(self, enabled: bool, measurement_update: bool, t_now: float,
+                           vision_closing: float | None = None) -> None:
     """One-sided correction of the native vRel toward the range-derived rate. D-053, TEST.
 
     Sets self.range_assist_correction to m/s of EXTRA closing, always >= 0: this may only make the
@@ -479,9 +529,16 @@ class Track:
       self._clear_range_assist()
       return
 
-    if self.dRel < RANGE_VREL_ASSIST_MIN_D_REL_M or abs(self.yRel) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M:
+    vis_ok = VISION_ASSIST_GEOMETRY and vision_closing is not None
+    bypass = False
+    if self.dRel < RANGE_VREL_ASSIST_MIN_D_REL_M:
       self._clear_range_assist()
       return
+    if abs(self.yRel) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M:
+      if not (vis_ok and np.degrees(np.arctan2(abs(self.yRel), self.dRel)) <= VISION_ASSIST_MAX_AZIMUTH_DEG):
+        self._clear_range_assist()
+        return
+      bypass = True
 
     # Inside Track, vLead is vRel plus the delay-aligned ego speed, so this recovers that ego speed.
     v_ego_aligned = self.vLead - self.vRel
@@ -498,30 +555,30 @@ class Track:
     min_span = RANGE_VREL_RAIL_LONG_MIN_SPAN_S if rail_fast else RANGE_VREL_LONG_MIN_SPAN_S
     # Short long-history: only the corroborated rail arm may count (see below).
     short_long_hist = len(self.range_hist_long) < RANGE_VREL_LONG_SAMPLES
-    if not self._fit_long_range():
-      self._clear_range_assist()
-      return
-    if not (min_span <= self.vRelRangeLongSpan <= RANGE_VREL_LONG_MAX_SPAN_S):
-      self._clear_range_assist()
-      return
-    if self.vRelRangeLongResidual > RANGE_VREL_ASSIST_MAX_LONG_RESIDUAL_M:
-      self._clear_range_assist()
-      return
-    if v_ego_aligned + self.vRelRangeLong < -RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS:
+    long_ok = (self._fit_long_range() and min_span <= self.vRelRangeLongSpan <= RANGE_VREL_LONG_MAX_SPAN_S and
+               self.vRelRangeLongResidual <= RANGE_VREL_ASSIST_MAX_LONG_RESIDUAL_M)
+    short_only = False
+    if not long_ok:
+      if not (vis_ok and VISION_ASSIST_SHORT_ONLY):
+        self._clear_range_assist()
+        return
+      short_only = True
+    long_rate = self.vRelRange if short_only else self.vRelRangeLong
+    if v_ego_aligned + long_rate < -RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS:
       self._clear_range_assist()
       return
 
     # Positive means the range says MORE closing than U11 -- the only direction acted on, and the
     # same sign convention as "understatement" in tools/bosch_a_vrel_shadow_report.py. Both fits
     # must agree, so the smaller disagreement is the one that counts.
-    disagreement = min(self.vRel - self.vRelRange, self.vRel - self.vRelRangeLong)
+    disagreement = min(self.vRel - self.vRelRange, self.vRel - long_rate)
     # On the U11 rail only the long fit decides arming and holding; the size below stays the smaller.
-    decision = self.vRel - self.vRelRangeLong if on_rail else disagreement
+    decision = self.vRel - long_rate if on_rail else disagreement
     size = disagreement
     if rail_fast:
       # Rail fast path: sized by the mean of the two fits (never beyond the more-closing one).
       if RANGE_VREL_RAIL_SIZE_MEAN:
-        size = 0.5 * ((self.vRel - self.vRelRange) + (self.vRel - self.vRelRangeLong))
+        size = 0.5 * ((self.vRel - self.vRelRange) + (self.vRel - long_rate))
       if disagreement >= RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
         self.range_assist_rail_count += 1
       else:
@@ -533,23 +590,52 @@ class Track:
       if decision <= 0.0:
         self._clear_range_assist()
         return
+      if bypass or short_only:
+        # Held only because vision corroborates: the plain gates would have cleared on this update.
+        self.vision_assist_early = True
+      if self.vision_assist_early:
+        # Armed only because vision corroborated. Keep running the plain arm rule; until it would
+        # have armed on its own the correction is vision-bounded, and it is zero whenever vision
+        # stops corroborating, which is what the plain rule would publish at that moment.
+        if bypass or short_only or decision < RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
+          self.range_assist_arm_count = 0
+        elif not short_long_hist:
+          self.range_assist_arm_count += 1
+        if not (bypass or short_only) and (self.range_assist_arm_count >= RANGE_VREL_ASSIST_ARM_UPDATES or
+                                           (rail_fast and self.range_assist_rail_count >= RANGE_VREL_RAIL_ARM_UPDATES)):
+          self.vision_assist_early = False
+        elif not vis_ok:
+          self.range_assist_correction = 0.0
+          return
     else:
       if decision < RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
         self.range_assist_arm_count = 0
         self.range_assist_correction = 0.0
         return
-      if not short_long_hist:
+      if not short_long_hist or short_only:
         self.range_assist_arm_count += 1
       rail_armed = rail_fast and self.range_assist_rail_count >= RANGE_VREL_RAIL_ARM_UPDATES
-      if self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES and not rail_armed:
+      arm_needed = RANGE_VREL_ASSIST_ARM_UPDATES
+      if vis_ok:
+        self.vision_assist_count += 1
+        if self.vision_assist_count >= self.range_assist_arm_count:
+          arm_needed = min(arm_needed, VISION_ASSIST_ARM_UPDATES)
+      else:
+        self.vision_assist_count = 0
+      if self.range_assist_arm_count < arm_needed and not rail_armed:
         self.range_assist_correction = 0.0
         return
       self.range_assist_active = True
+      self.vision_assist_early = bypass or short_only or (self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES and
+                                                          not rail_armed)
 
     # Active with a negative smaller disagreement (only possible on the rail) publishes zero while
     # staying armed. The last bound keeps a corrected vLead from being published below zero.
-    self.range_assist_correction = float(min(max(size, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS,
-                                             max(self.vLead, 0.0)))
+    correction = float(min(max(size, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS, max(self.vLead, 0.0)))
+    if self.vision_assist_early:
+      # Never claim more closing than vision corroborates plus the margin: published vRel >= -(closing + margin).
+      correction = min(correction, max(self.vRel + vision_closing + VISION_ASSIST_CLOSING_MARGIN_MPS, 0.0))
+    self.range_assist_correction = correction
 
   def _fit_long_range(self) -> bool:
     """Plain LSQ over range_hist_long. Sets vRelRangeLong (slope, m/s), vRelRangeLongResidual (RMS,
@@ -1071,9 +1157,12 @@ class RadarD:
       # Non-Bosch sources retain the historical per-model-cycle update semantics. Only Civic Bosch
       # suppresses duplicate measurement updates when liveTracks has not advanced.
       measurement_update = True if not self.honda_bosch_a_radar else measured
+      vis_closing = None
+      if VISION_ASSIST_GEOMETRY and ids in lead_track_ids and len(sm['modelV2'].leadsV3):
+        vis_closing = vision_assist_closing(rpt[0], rpt[1], sm['modelV2'].leadsV3[0], self.v_ego)
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
-                              range_assist=ids in lead_track_ids)
+                              range_assist=ids in lead_track_ids, vision_closing=vis_closing)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()

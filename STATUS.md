@@ -7957,3 +7957,118 @@ F has no effect below 25 mph. The provisional LowSpeed suggestion is P 115, I 75
 **Not known:** the worker's runtime on the device. On this x86 box it takes about 0.7 s per route-minute with 2 workers, and the device will be slower. Whether any sim step helps on the road is also unknown.
 
 **Incident:** this session's fetch script deleted each route's raw segment dirs after extraction without checking whether they predated the session. That removed the raw rlogs of radar-fleet routes 0000023e and 00000258 (the radar session is re-fetching them). The script was stopped at 17:04 UTC. Any script that frees disk must delete only the files it downloaded itself.
+
+## 152. Vision-corroborated range assist for 26c 4:08 (late brake on a curve), default OFF. Open- and closed-loop replay plus unit tests only; nothing has been driven.
+
+**What it is.** A module constant `VISION_ASSIST_GEOMETRY` (radard.py, default `False`, rides the
+`RangeDerivedVrel` toggle) extends D-053. On 0000026c--10bec2e200 at 4:08, D-053 never engaged for
+three reasons:
+- the |yRel| <= 1.5 lane gate (the track sat at yRel 9.3 -> 6.3 m),
+- the long-fit span/residual guards,
+- the 5-update arm count.
+
+The path-relative replacement for the lane gate was rejected (STATUS 148, /tmp/yg/pathgate.patch).
+This change relaxes those three blocks only on updates where `modelV2.leadsV3[0]` corroborates the
+closing itself. That means all of the following:
+- prob >= 0.7,
+- x - 1.52 within 15 % of dRel,
+- |yRel + y| <= 3 m,
+- vision closing speed vEgo - v >= 5 m/s.
+
+When relaxed:
+- the lane gate is lifted up to the existing 10.8 deg azimuth bound;
+- a long fit failing span/residual falls back to the short fit;
+- arming takes 3 updates instead of 5, provided vision corroborated every one of them.
+
+The correction may exist only because of one of these relaxations, i.e. the plain D-053 rule would
+publish zero on that update. In that case:
+- the published vRel is bounded at -(vision closing + 3 m/s);
+- it drops to zero on any update where vision stops corroborating.
+
+Once the plain rule would have armed on its own, the correction is exactly the plain D-053 one. The
+replay shows 0 frames where the published vRel is less closing than H, over 32 routes. No point is
+deleted or hidden: lead lost/gained 0 and lead id/d changed 0 over the fleet.
+
+**26c 4:08, open loop, H -> E5 (shipped constants):**
+
+| Metric | H | E5 | Change |
+|---|---|---|---|
+| -1.0 crossing | 256.90 | 256.75 | 0.15 s earlier |
+| -1.5 crossing | 257.05 | 256.80 | 0.25 s earlier |
+| -2.0 crossing | 257.15 | 257.15 | same |
+| -3.0 crossing | 257.35 | 257.35 | same |
+| Minimum | -3.35 | -3.29 | 0.06 softer |
+
+Vision closing during the onset was 5.3-6.5 m/s at p 0.74-0.82. The published vRel was about -9 from
+256.70, where H had -4.3. Past about 257.0 the MPC, not the radar, limits the response. That is why
+the gain is small and should not be read as "fixed".
+
+**26c 4:08, closed loop (clrb.py, 250-264):**
+- min gap 32.85 -> 33.15 m
+- min TTC 4.36 -> 4.43 s
+- peak -3.41 -> -3.33
+- -1.5 crossing 0.25 s earlier
+
+**Wobble cases (STATUS 148):** 26c 649.9, 237 942.8 and 236 2211.4 are identical to H, including
+the vRel minimum.
+
+**Fleet, 32 routes, open loop, H vs E5:**
+- new -1.5 crossings: 0
+- softer > 0.3 or later > 0.2: 0
+- deeper: 0
+
+Protected cases:
+- 025e 318.1: -2.48/318.82 -> -2.46/318.87, i.e. 0.02 softer and 0.05 s later at -1.5. It arms
+  0.2 s earlier, and the open-loop planner then asks slightly less afterwards. Vision closing there is
+  9.6 m/s.
+- 0266 484.2: 0.05 s earlier.
+- 0268 700.9: 0.03 deeper.
+- All other protected cases: identical.
+
+Five earlier episodes. All are vision-confirmed (vision closing 6-14 m/s, p >= 0.70) and all are
+real brakes that stock also braked for where stock was driving:
+- 025d 105.7: 0.26 s earlier
+- 025e 369.0: 0.21 s earlier
+- 025e 529.6: 0.55 s earlier
+- 0261 132.2: 0.75 s earlier, min -3.11 -> -2.97
+- 26c 256.8
+
+24f B-F closed loop: identical. 258: open loop changes at most 0.01. In closed loop, 3831.9 is
+identical and at 3320 min gap goes 22.36 -> 22.82 m and peak -3.64 -> -3.62.
+
+**Iterations that failed, kept for the record:**
+- Bypass-only (margin 3, p 0.5-0.9): no change at 26c. Vision closing (5-6 m/s) bounded U11
+  (-9 .. -13.5) to zero.
+- V70s3, i.e. vision closing >= 3 m/s with the bound applied only to bypass/short-fit corrections.
+  It produced -1.0 dips that vision did not confirm, because early arming was unbounded:
+  - 0245 773.9: -0.58 -> -1.00
+  - 025e 313.6: -0.65 -> -1.00, published -9.65 against a vision closing of 3.4
+  - 0271 1434.3 (margin 5): -0.21 -> -1.00
+- Applying the vision bound to every corroborated correction (CAP_ALL) softened existing D-053
+  brakes. 588 frames were less closing than H, e.g. 0261 -3.11 -> -2.84 and 26c 1127 -2.14 -> -1.93.
+  Replaced by the "bound only what the plain rule would not publish" rule.
+
+**Verdict.** Passes the stated gates on replay:
+- 0 new crossings
+- 0 softer/later outside tolerance
+- no vision-unconfirmed episode
+- 3 wobble cases unchanged
+
+The 26c improvement is modest: 0.25 s at -1.5, and nothing at -2.0 or deeper. Default stays OFF;
+turning it on is an owner call.
+
+Tests (static): `test_range_vrel_assist.py::TestVisionAssistGeometry` (8 cases) covers:
+- off by default,
+- inert without vision,
+- the azimuth bound,
+- the vision-closing bound,
+- the helper gates,
+- in lane, never less closing than plain D-053.
+
+Commands and results:
+- `test_range_vrel_assist.py` + `test_radard_bosch.py`: 133 passed.
+- `test_py39_compat.py`: passes.
+- `test_leads.py`: 6 passed, 1 teardown error (/data/params). HEAD has the same error.
+
+Routes 0000023e and 00000258 lost their rlogs mid-run to a lateral cache job and were re-fetched
+from konik before the final fleet. The final numbers above cover all 32 routes.
