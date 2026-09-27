@@ -197,6 +197,8 @@ KINDS = ("pid", "torque_upstream", "torque_starpilot", "clarity_eps")
 # friction ~0.02-0.03 (command units) above 25 mph, several times that below. SR 15.27 is the pooled fit
 # after the firmware VGR map (model M1), used in place of paramsd's scalar when the map is on.
 TORQUE_DEFAULTS = {"laf": 11.5, "friction": 0.025, "friction_low": None, "vgr": False, "lat_delay": 0.2}
+# clarity_eps kind only: override ClarityEpsLateralCore's fixed per-band trims (<25 / 25-50 / >50 mph), sim-only
+CLARITY_TRIM_KEYS = {"p_scale": "p_scale", "i_scale": "i_scale", "out_tau": "output_lpf_tau"}
 VGR_SR = 15.27
 # PID-kind gain overrides, for running another fork's gains through this repo's PID. kp/ki/kf replace CarParams'
 # gains flat across speed (kf also bypasses the banded modified-EPS kf); rate_damp subtracts
@@ -285,6 +287,13 @@ class Controller:
         raise ValueError(f"clarity_eps needs a modified-EPS Clarity or Civic Bosch on pid tuning, not {self.CP.carFingerprint}")
       self._patch(latcontrol_clarity_eps, "Params", lambda: _DictParams(self.params))
       self.lac = latcontrol_clarity_eps.LatControlClarityEps(self.CP, self.CI, DT)
+      # sim-only trims for the gain search (the car has no keys for these): 3 per-band values each, as on the core
+      for key, attr in CLARITY_TRIM_KEYS.items():
+        if self.tq.get(key) is not None:
+          vals = self.tq[key]
+          vals = tuple(float(x) for x in (vals.split(",") if isinstance(vals, str) else vals))
+          assert len(vals) == 3, (key, vals)
+          setattr(self.lac.core, attr, vals)
     else:
       from opendbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_physical_to_linear
       if self.tq["vgr"]:

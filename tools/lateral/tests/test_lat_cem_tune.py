@@ -152,3 +152,37 @@ def test_lat_cem_tune_runs(monkeypatch):
 
         assert np.array_equal(p1.c, p2.c)
         assert p1.delay == p2.delay
+
+
+def test_lat_cem_tune_clarity_kind(monkeypatch):
+    """--kind clarity_eps searches James's controller's per-band trims (sim-only) instead of LatGainSchedule."""
+    from openpilot.selfdrive.controls.lib import nrdr_eps_firmware_ff as ff
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plant_path = os.path.join(tmpdir, "plant.json")
+        out_path = os.path.join(tmpdir, "results.json")
+        with open(plant_path, "w") as f:
+            json.dump(sim.Plant([-8.0, 0.0, -2.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0], 5, 0.1).to_json(), f)
+        monkeypatch.setattr(sim, "extract", lambda path: _route(v=30.0))
+        band = {"min": 5.0, "err_rms": 1.0, "straight_rms": 0.5, "curve_ratio": 1.0, "curve_s": 1.0,
+                "zero_cross": 0.3, "sign_hyst": 0.0, "bias": 0.0, "lag_s": 0.0}
+        monkeypatch.setattr(sim, "metrics", lambda *a, **kw: {name: band for name, _, _ in sim.BANDS})
+        monkeypatch.setattr(at, "trust_gate", lambda *a, **kw: {"highway >50": (True, "mocked")})
+        ret = cem.main(["--plant", plant_path, os.path.join(tmpdir, "r"), "--kind", "clarity_eps", "--pop", "3", "--elites", "1",
+                        "--gens", "1", "--plants", "1", "--rng", "1", "--out", out_path])
+        assert ret == 0
+        with open(out_path) as f:
+            res = json.load(f)
+        assert res["kind"] == "clarity_eps" and len(res["best_theta"]) == 9
+        seed = json.loads(res["seed"])
+        assert tuple(seed["p_scale"]) == ff.CIVIC_P_SCALE and tuple(seed["out_tau"]) == ff.OUTPUT_LPF_TAU
+        # the trims reach the controller core (the pool workers are forked, so check the constructor directly)
+        d = _route(v=30.0)
+        c = sim.Controller(d["cp_bytes"], d["params"], kind="clarity_eps", torque={"p_scale": [1.0, 1.1, 1.2], "i_scale": "0.5,0.6,0.7",
+                                                                                    "out_tau": [0.1, 0.05, 0.02]})
+        assert (c.lac.core.p_scale, c.lac.core.i_scale, c.lac.core.output_lpf_tau) == ((1.0, 1.1, 1.2), (0.5, 0.6, 0.7), (0.1, 0.05, 0.02))
+        c0 = sim.Controller(d["cp_bytes"], d["params"], kind="clarity_eps")
+        assert (c0.lac.core.p_scale, c0.lac.core.i_scale, c0.lac.core.output_lpf_tau) == (ff.CIVIC_P_SCALE, ff.CIVIC_I_SCALE, ff.OUTPUT_LPF_TAU)
+        for j, (t, s) in enumerate(zip(res["best_theta"], [100 * v for v in ff.CIVIC_P_SCALE + ff.CIVIC_I_SCALE]
+                                       + [1000 * v for v in ff.OUTPUT_LPF_TAU], strict=True)):
+            assert s - 40 <= t <= s + 40 and (t >= 1.0 if j >= 6 else True)
+

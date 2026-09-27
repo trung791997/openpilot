@@ -35,13 +35,13 @@ def perturb_plant(base_plant, rng):
     return sim.Plant(c, delay, base_plant.quant, base_plant.eps)
 
 def evaluate_plants(args):
-    overrides, plants_json = args
+    overrides, plants_json, kind, torque = args
     plants = [sim.Plant.from_json(pj) for pj in plants_json]
     res_list = []
     for p in plants:
         res = []
         for d in at._DS:
-            ang, des, _, _ = sim.simulate(d, p, overrides)
+            ang, des, _, _ = sim.simulate(d, p, overrides, kind=kind, torque=torque)
             res.append({name: sim.metrics(d, ang, des, m) for name, m in at._masks(d).items()})
             res[-1]["is_sim_route"] = d.get("is_sim_route", False)
             res[-1]["offroad"] = d.get("offroad", False)
@@ -133,6 +133,9 @@ def main(argv=None):
     ap.add_argument("--rng", type=int, default=0)
     ap.add_argument("--plants", type=int, default=6)
     ap.add_argument("-j", "--jobs", type=int, default=1)
+    ap.add_argument("--kind", choices=("pid", "clarity_eps"), default="pid",
+                    help="pid: theta = LatGainSchedule p,i at 4 knots (percent); clarity_eps: theta = James's controller's "
+                    + "per-band P trim x3, I trim x3 (percent) and output LPF tau x3 (ms), sim-only trims")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
 
@@ -156,7 +159,7 @@ def main(argv=None):
             with open(ep_path) as f:
                 ep = json.load(f)
             d["offroad"] = bool(ep.get("offroad", False))
-            if d["offroad"] and len(ep.get("theta", [])) == 8:
+            if d["offroad"] and len(ep.get("theta", [])) == (8 if args.kind == "pid" else 9):
                 fail_thetas.append(ep["theta"])
         at._DS.append(d)
 
@@ -177,13 +180,30 @@ def main(argv=None):
         print("No trusted bands.")
         return 1
 
-    seed_p = at.seed_values(seed_params, knots, "p")
-    seed_i = at.seed_values(seed_params, knots, "i")
-    seed_f = at.seed_values(seed_params, knots, "f")
-    x_seed = np.array(seed_p + seed_i, dtype=float)
+    if args.kind == "pid":
+        seed_p = at.seed_values(seed_params, knots, "p")
+        seed_i = at.seed_values(seed_params, knots, "i")
+        seed_f = at.seed_values(seed_params, knots, "f")
+        x_seed = np.array(seed_p + seed_i, dtype=float)
+        lim_lo = [at.LIMITS["p"][0]] * 4 + [at.LIMITS["i"][0]] * 4
+        lim_hi = [at.LIMITS["p"][1]] * 4 + [at.LIMITS["i"][1]] * 4
 
-    bounds_lo = np.array([max(at.LIMITS["p"][0], v - args.trust) for v in seed_p] + [max(at.LIMITS["i"][0], v - args.trust) for v in seed_i])
-    bounds_hi = np.array([min(at.LIMITS["p"][1], v + args.trust) for v in seed_p] + [min(at.LIMITS["i"][1], v + args.trust) for v in seed_i])
+        def make_job(x):
+            return {"LatGainSchedule": at.schedule_json(knots, ["p", "i", "f"], list(x) + seed_f)}, None
+    else:
+        from openpilot.selfdrive.controls.lib import nrdr_eps_firmware_ff as ff
+        x_seed = np.array([100.0 * v for v in ff.CIVIC_P_SCALE] + [100.0 * v for v in ff.CIVIC_I_SCALE]
+                          + [1000.0 * v for v in ff.OUTPUT_LPF_TAU], dtype=float)
+        lim_lo = [at.LIMITS["p"][0]] * 3 + [at.LIMITS["i"][0]] * 3 + [1.0] * 3
+        lim_hi = [at.LIMITS["p"][1]] * 3 + [at.LIMITS["i"][1]] * 3 + [300.0] * 3
+
+        def make_job(x):
+            x = [float(v) for v in x]
+            return {}, {"p_scale": [v / 100.0 for v in x[0:3]], "i_scale": [v / 100.0 for v in x[3:6]],
+                        "out_tau": [v / 1000.0 for v in x[6:9]]}
+
+    bounds_lo = np.array([max(lo, v - args.trust) for lo, v in zip(lim_lo, x_seed, strict=True)])
+    bounds_hi = np.array([min(hi, v + args.trust) for hi, v in zip(lim_hi, x_seed, strict=True)])
 
     rng = np.random.default_rng(args.rng)
 
@@ -198,7 +218,7 @@ def main(argv=None):
             plants = [perturb_plant(base_plant, rng) for _ in range(args.plants)]
             plants_json = [p.to_json() for p in plants]
 
-            seed_overrides = {"LatGainSchedule": at.schedule_json(knots, ["p", "i", "f"], list(x_seed) + seed_f)}
+            seed_overrides, seed_torque = make_job(x_seed)
 
             cand_xs = []
             for _ in range(args.pop):
@@ -206,10 +226,10 @@ def main(argv=None):
                 x = np.clip(x, bounds_lo, bounds_hi)
                 cand_xs.append(x)
 
-            jobs = [(seed_overrides, plants_json)]
+            jobs = [(seed_overrides, plants_json, args.kind, seed_torque)]
             for x in cand_xs:
-                o = {"LatGainSchedule": at.schedule_json(knots, ["p", "i", "f"], list(x) + seed_f)}
-                jobs.append((o, plants_json))
+                o, tq = make_job(x)
+                jobs.append((o, plants_json, args.kind, tq))
 
             results = pool.map(evaluate_plants, jobs)
             seed_res_list = results[0]
@@ -242,7 +262,8 @@ def main(argv=None):
         best_res_list = cand_res_lists[elites_idx[0]]
         verdict = check_verdict(best_res_list, seed_res_list, trusted_bands)
 
-        final_sched = at.schedule_json(knots, ["p", "i", "f"], list(best_x) + seed_f)
+        best_over, best_tq = make_job(best_x)
+        final_sched = best_over["LatGainSchedule"] if args.kind == "pid" else json.dumps(best_tq)
 
         holdout_out = {
             "seed_cost": 1.0,
@@ -263,7 +284,8 @@ def main(argv=None):
             holdout_out["per_band"][b] = c_tot / s_tot if s_tot > 0 else 1.0
 
     res_json = {
-        "seed": seed_overrides["LatGainSchedule"],
+        "kind": args.kind,
+        "seed": seed_overrides["LatGainSchedule"] if args.kind == "pid" else json.dumps(seed_torque),
         "generations": generations_out,
         "best_theta": best_x.tolist(),
         "holdout": holdout_out,
