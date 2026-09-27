@@ -59,7 +59,7 @@ C3_HPR = Vec3(0, 0,0)
 metadrive_simulation_state = namedtuple("metadrive_simulation_state", ["running", "done", "done_info"])
 metadrive_vehicle_state = namedtuple("metadrive_vehicle_state", ["velocity", "position", "bearing", "steering_angle", "yaw_rate", "accel"])
 
-def apply_metadrive_patches(arrive_dest_done=True):
+def apply_metadrive_patches(arrive_dest_done=True, out_of_road_done=True):
   # By default, metadrive won't try to use cuda images unless it's used as a sensor for vehicles, so patch that in
   def add_image_sensor_patched(self, name: str, cls, args):
     if self.global_config["image_on_cuda"]:# and name == self.global_config["vehicle_config"]["image_source"]:
@@ -84,11 +84,21 @@ def apply_metadrive_patches(arrive_dest_done=True):
   if not arrive_dest_done:
     MetaDriveEnv._is_arrive_destination = arrive_destination_patch
 
+  # sim-lat-training: MetaDriveEnv.done_function ends the episode on out_of_road unconditionally (there is no config key
+  # for it), which froze the world at the first departure. Report "never out of road" to done_function instead; road
+  # departures are still detected and logged from the vehicle's lane state in the step loop below.
+  def not_out_of_road_patch(self, *args, **kwargs):
+    return False
+
+  if not out_of_road_done:
+    MetaDriveEnv._is_out_of_road = not_out_of_road_patch
+
 def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera_array, image_lock,
                       controls_recv: Connection, simulation_state_send: Connection, vehicle_state_send: Connection,
                       exit_event, op_engaged, test_duration, test_run):
   arrive_dest_done = config.pop("arrive_dest_done", True)
-  apply_metadrive_patches(arrive_dest_done)
+  out_of_road_done = config.pop("out_of_road_done", True)
+  apply_metadrive_patches(arrive_dest_done, out_of_road_done)
 
   road_image = np.frombuffer(camera_array.get_obj(), dtype=np.uint8).reshape((H, W, 3))
   if dual_camera:
@@ -117,6 +127,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
     return lane_idx_prev
 
   lane_idx_prev = reset()
+  on_lane_prev = True
   start_time = None
 
   def get_cam_as_rgb(cam):
@@ -185,6 +196,12 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       lane_idx_curr, on_lane = get_current_lane_info(env.vehicle)
       out_of_lane = lane_idx_curr != lane_idx_prev or not on_lane
       lane_idx_prev = lane_idx_curr
+      # sim-lat-training: log road departures and returns (out_of_road_done is off, so the world keeps stepping); the
+      # episode recorder (tools/sim/sim_lat_record.py check_offroad) reads these lines from the bridge log
+      if on_lane != on_lane_prev:
+        pos = tuple(round(float(x), 1) for x in env.vehicle.position)
+        print(f"metadrive: {'back_on_road' if on_lane else 'out_of_road'} at frame {rk.frame} pos {pos}", flush=True)
+        on_lane_prev = on_lane
 
       if terminated or ((out_of_lane or timeout) and test_run):
         if terminated:
