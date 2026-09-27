@@ -9,6 +9,10 @@ MetaDrive episodes (--sim-route) enter the replay pool at weight 0.25. An episod
 change the replay cost (every candidate would pay the same constant); instead its episode.json "theta" (the 8
 schedule values it was driven with) becomes a mistake memory: mistake_penalty adds 5.0 * exp(-|x - theta|^2 / (2 * 10^2))
 to every candidate near it, so the search moves away from gains that failed on-policy.
+Tight turns below 25 mph enter as the pseudo-band TURN_BAND, with cost = trailing + PAST_WEIGHT * past-desired
+error (lat_score.py's turn_trail/turn_past definitions). Without it the search can buy trailing error with
+overshoot (route 278's PidFF pattern; Peter's "too wild" note on 285). The band is always trusted and is
+held to the same holdout per-band rule (no more than 2% worse than the seed) as the speed bands.
 """
 import argparse
 import json
@@ -34,6 +38,28 @@ def perturb_plant(base_plant, rng):
     delay = max(0, base_plant.delay + delay_delta)
     return sim.Plant(c, delay, base_plant.quant, base_plant.eps)
 
+TURN_BAND = "turn <25mph"
+TURN_DES_DEG = 45.0  # lat_score.py: tight-turn frames are |desired| > 45 deg
+TURN_V_MAX = 11.2    # m/s, top of lat_score.py's 12-25 mph turn bin
+PAST_WEIGHT = 1.5    # past-desired costs more than trailing: a wheel past the line is what reads as "too wild"
+
+def turn_band(d, ang, des, mask):
+    """Pseudo-band in band_cost's shape: err_rms carries trail + PAST_WEIGHT * past on tight low-speed turns."""
+    t = mask & (d["v"] < TURN_V_MAX) & (np.abs(des) > TURN_DES_DEG)
+    if t.sum() <= 50:
+        return None
+    e = ((des - ang) * np.sign(des))[t]  # > 0: the wheel trails the desired angle; < 0: it is past it
+    trail, past = float(np.mean(np.clip(e, 0, None))), float(np.mean(np.clip(-e, 0, None)))
+    return {"err_rms": trail + PAST_WEIGHT * past, "straight_rms": 0.0, "curve_ratio": None, "zero_cross": None,
+            "min": float(t.sum()) * sim.DT / 60.0, "trail": trail, "past": past}
+
+def route_metrics(d, ang, des):
+    out = {}
+    for name, m in at._masks(d).items():
+        out[name] = sim.metrics(d, ang, des, m)
+        out[name][TURN_BAND] = turn_band(d, ang, des, m)
+    return out
+
 def evaluate_plants(args):
     overrides, plants_json, kind, torque = args
     plants = [sim.Plant.from_json(pj) for pj in plants_json]
@@ -42,7 +68,7 @@ def evaluate_plants(args):
         res = []
         for d in at._DS:
             ang, des, _, _ = sim.simulate(d, p, overrides, kind=kind, torque=torque)
-            res.append({name: sim.metrics(d, ang, des, m) for name, m in at._masks(d).items()})
+            res.append(route_metrics(d, ang, des))
             res[-1]["is_sim_route"] = d.get("is_sim_route", False)
             res[-1]["offroad"] = d.get("offroad", False)
             res[-1]["route"] = d["route"]
@@ -136,6 +162,10 @@ def main(argv=None):
     ap.add_argument("--kind", choices=("pid", "clarity_eps"), default="pid",
                     help="pid: theta = LatGainSchedule p,i at 4 knots (percent); clarity_eps: theta = James's controller's "
                     + "per-band P trim x3, I trim x3 (percent) and output LPF tau x3 (ms), sim-only trims")
+    ap.add_argument("--pid-ff", choices=("on", "off"), default="off",
+                    help=("NrdrLatPidFirmwareFF forced for seed and every candidate (--kind pid). Above ~30 deg desired the "
+                          + "firmware term replaces kf and rate FF, so P/I tuned with it off over-drive turns with it on, and "
+                          + "the reverse; tune for the setting the car will run."))
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
 
@@ -179,6 +209,7 @@ def main(argv=None):
     if not trusted_bands:
         print("No trusted bands.")
         return 1
+    trusted_bands.append(TURN_BAND)
 
     if args.kind == "pid":
         seed_p = at.seed_values(seed_params, knots, "p")
@@ -189,7 +220,8 @@ def main(argv=None):
         lim_hi = [at.LIMITS["p"][1]] * 4 + [at.LIMITS["i"][1]] * 4
 
         def make_job(x):
-            return {"LatGainSchedule": at.schedule_json(knots, ["p", "i", "f"], list(x) + seed_f)}, None
+            return {"LatGainSchedule": at.schedule_json(knots, ["p", "i", "f"], list(x) + seed_f),
+                    "NrdrLatPidFirmwareFF": "1" if args.pid_ff == "on" else "0"}, None
     else:
         from openpilot.selfdrive.controls.lib import nrdr_eps_firmware_ff as ff
         x_seed = np.array([100.0 * v for v in ff.CIVIC_P_SCALE] + [100.0 * v for v in ff.CIVIC_I_SCALE]
@@ -282,9 +314,22 @@ def main(argv=None):
                         c_tot += at.band_cost(r, s) * w
                         s_tot += at.band_cost(s, s) * w
             holdout_out["per_band"][b] = c_tot / s_tot if s_tot > 0 else 1.0
+        # trailing and past-desired separately (holdout, minutes-weighted, replay routes only), so a reader sees which moved
+        for tag, rl in (("seed", seed_res_list), ("best", best_res_list)):
+            tw = {"trail": 0.0, "past": 0.0, "min": 0.0}
+            for p in range(args.plants):
+                for route in rl[p]:
+                    r = route["holdout"][TURN_BAND]
+                    if r and not route.get("is_sim_route"):
+                        tw["trail"] += r["trail"] * r["min"]
+                        tw["past"] += r["past"] * r["min"]
+                        tw["min"] += r["min"]
+            if tw["min"] > 0:
+                holdout_out[f"turn_{tag}"] = {"trail": tw["trail"] / tw["min"], "past": tw["past"] / tw["min"]}
 
     res_json = {
         "kind": args.kind,
+        "pid_ff": args.pid_ff if args.kind == "pid" else None,
         "seed": seed_overrides["LatGainSchedule"] if args.kind == "pid" else json.dumps(seed_torque),
         "generations": generations_out,
         "best_theta": best_x.tolist(),
@@ -299,6 +344,12 @@ def main(argv=None):
     with open(args.out, "w") as f:
         json.dump(res_json, f, indent=2)
 
+    print("\nholdout per band (best/seed cost):", {b: round(v, 3) for b, v in holdout_out.get("per_band", {}).items()})
+    for tag in ("seed", "best"):
+        if f"turn_{tag}" in holdout_out:
+            print(f"turn <25mph {tag}: trail {holdout_out[f'turn_{tag}']['trail']:.2f} past {holdout_out[f'turn_{tag}']['past']:.2f} deg")
+    if args.kind == "pid":
+        print(f"NrdrLatPidFirmwareFF forced {args.pid_ff} for seed and candidates")
     print("\nVerdict:", "RECOMMENDED" if verdict else "REJECTED")
     print(final_sched)
     return 0

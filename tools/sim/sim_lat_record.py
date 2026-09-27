@@ -225,8 +225,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()
     else:
-      from cereal import car
-      cp_bytes = car.CarParams.new_message().as_builder().to_bytes()
+      # an episode without carParams cannot be replayed (no car, no tune); fail loudly instead of writing an empty CP
+      raise RuntimeError("no carParams received: is the sim up and controlsd running? (see the bridge log)")
 
   p = Params()
   params = {}

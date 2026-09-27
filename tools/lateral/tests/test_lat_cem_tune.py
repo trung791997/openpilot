@@ -100,6 +100,7 @@ def test_lat_cem_tune_runs(monkeypatch):
             res = json.load(f)
 
         assert "seed" in res
+        assert res["pid_ff"] == "off"  # forced for seed and candidates, recorded
         assert "generations" in res
         assert len(res["generations"]) == 1
         assert "best_theta" in res
@@ -186,3 +187,21 @@ def test_lat_cem_tune_clarity_kind(monkeypatch):
                                        + [1000 * v for v in ff.OUTPUT_LPF_TAU], strict=True)):
             assert s - 40 <= t <= s + 40 and (t >= 1.0 if j >= 6 else True)
 
+
+
+def test_turn_band_weights_past_over_trail():
+  n = 2000
+  d = {"v": np.full(n, 6.0)}
+  mask = np.ones(n, dtype=bool)
+  des = np.full(n, 90.0)
+  trailing = cem.turn_band(d, np.full(n, 86.0), des, mask)  # 4 deg short of desired
+  past = cem.turn_band(d, np.full(n, 94.0), des, mask)      # 4 deg past desired
+  assert trailing["trail"] == 4.0 and trailing["past"] == 0.0
+  assert past["past"] == 4.0 and past["trail"] == 0.0
+  assert at.band_cost(past, past) > at.band_cost(trailing, trailing)
+  # sign follows des: a left turn past desired is still "past"
+  left = cem.turn_band(d, np.full(n, -94.0), -des, mask)
+  assert left["past"] == 4.0
+  # too few tight-turn frames, or too fast: no band
+  assert cem.turn_band(d, np.full(n, 86.0), des, np.arange(n) < 40) is None
+  assert cem.turn_band({"v": np.full(n, 15.0)}, np.full(n, 86.0), des, mask) is None

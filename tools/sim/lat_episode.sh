@@ -22,7 +22,14 @@ tmux kill-session -t tsfdo-sim 2>/dev/null; sleep 3
 if [ $# -gt 0 ]; then
   OPENPILOT_PREFIX=$prefix python tools/sim/sim_set_overrides.py --prefix $prefix "$@"
 fi
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=stock SIM_STEER_MODEL=$PWD/tools/sim/eps_models/honda_civic_bosch_c020.json \
+# selfdrived persists Offroad_ExcessiveActuation when a sim episode brakes/crashes hard (e.g. a road departure), and
+# hardwared then blocks onroad (startup_conditions no_excessive_actuation) for every later episode: bridge runs, card and
+# controlsd never start, sim_lat_record sees no carParams. Sim prefix params only; never touches a device.
+OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; Params().remove('Offroad_ExcessiveActuation')"
+# SIM_MAP (default / intersection / gentle, metadrive_bridge.MAP_PRESETS) and SIM_CRUISE_KPH are forwarded explicitly: a fresh
+# tmux server does not inherit this shell's environment.
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=stock SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} \
+  SIM_STEER_MODEL=$PWD/tools/sim/eps_models/honda_civic_bosch_c020.json \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
 sleep 30
 if [ -n "$sched" ]; then
@@ -31,7 +38,15 @@ elif [ $# -gt 0 ]; then
   OPENPILOT_PREFIX=$prefix python tools/sim/sim_set_overrides.py --prefix $prefix "$@"
 fi
 sleep 10
+# SIM_KEYS="30:3,50:1": bridge keyboard keys sent at those seconds after recording starts (3 = cruise cancel, 1 = cruise
+# up / resume, s = brake, z/x = blinkers; tools/sim/lib/keyboard_ctrl.py). "30:3,50:1" is a stop-and-resume scenario.
+if [ -n "${SIM_KEYS:-}" ]; then
+  ( IFS=,; last=0; for kv in $SIM_KEYS; do at=${kv%%:*}; key=${kv#*:}; sleep $((at - last)); last=$at
+      tmux send-keys -t tsfdo-sim "$key"; echo "lat_episode: key $key at ${at}s" >> "$out/bridge.log"; done ) &
+  keys_pid=$!
+fi
 OPENPILOT_PREFIX=$prefix OPENPILOT_ZMQ_NAMESPACE=$prefix timeout $((secs + 60)) python tools/sim/sim_lat_record.py "$out" "$secs" --bridge-log "$out/bridge.log"
+[ -n "${keys_pid:-}" ] && kill $keys_pid 2>/dev/null
 tmux send-keys -t tsfdo-sim q; sleep 5; tmux kill-session -t tsfdo-sim 2>/dev/null
 python - "$out" "$sched" "$@" <<'PY'
 import json, sys
