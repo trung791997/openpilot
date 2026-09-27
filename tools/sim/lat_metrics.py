@@ -12,7 +12,8 @@ with no driver torque, by speed band around the tune's 25 mph handoff:
   rate_rms            steering rate RMS, deg/s (activity)
   sat_frac            fraction of samples with the output saturated
   mean_abs_out        mean |output torque| (0..1)
-The sim log is the jsonl written by the sim telemetry script: records with "pid": {...} at 20 Hz.
+Inputs: an rlog, a lat_pid_sim route cache (.npz, e.g. from tools/sim/sim_lat_record.py), or the sim telemetry jsonl
+(records with "pid": {...} at 20 Hz).
 """
 import json
 import sys
@@ -50,8 +51,20 @@ def from_jsonl(path):
   return np.array(rows, dtype=np.float64)
 
 
+def from_npz(path):
+  """A lat_pid_sim route cache (tools/sim/sim_lat_record.py output or lat_pid_sim.extract cache); no saturation flag."""
+  z = np.load(path, allow_pickle=False)
+  ok = (z["active"] > 0.5) & (z["pressed"] < 0.5)
+  return np.stack([z["t"], z["v"], z["des_angle"], z["angle"], z["des_angle"] - z["angle"], z["out"],
+                   np.zeros_like(z["t"]), ok.astype(np.float64)], axis=1)
+
+
 def load(path):
-  return from_jsonl(path) if path.endswith(".jsonl") else from_rlog(path)
+  if path.endswith(".jsonl"):
+    return from_jsonl(path)
+  if path.endswith(".npz"):
+    return from_npz(path)
+  return from_rlog(path)
 
 
 def resample(rows):
