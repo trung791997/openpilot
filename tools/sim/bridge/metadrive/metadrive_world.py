@@ -88,6 +88,7 @@ class MetaDriveWorld(World):
       state.velocity = md_vehicle.velocity
       state.bearing = md_vehicle.bearing
       state.steering_angle = md_vehicle.steering_angle
+      self.blinker = md_vehicle.blinker
       # locationd reads the raw gyro as device [-v[2], -v[1], -v[0]], so the yaw rate goes in v[0]. MetaDrive's heading
       # is clockwise-positive against openpilot's counter-clockwise device z, so the two negations cancel.
       state.imu.gyroscope = vec3(md_vehicle.yaw_rate, 0.0, 0.0)

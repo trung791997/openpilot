@@ -147,8 +147,8 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       # the 100 Hz CAN thread (simulated_car) can sample around it and card never sees the press.
       self.simulator_state.cruise_button = self.cruise_key if self.cruise_key_frames > 0 else 0
       self.cruise_key_frames = max(self.cruise_key_frames - 1, 0)
-      self.simulator_state.left_blinker = False
-      self.simulator_state.right_blinker = False
+      self.simulator_state.left_blinker = self.world.blinker > 0
+      self.simulator_state.right_blinker = self.world.blinker < 0
 
       throttle_manual = steer_manual = brake_manual = 0.
 

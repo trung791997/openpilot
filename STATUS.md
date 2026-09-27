@@ -9139,3 +9139,21 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
   - R 40 m at 25 km/h is past the torque limit for every controller, so it is a stress case only.
   - A keyboard cruise press is now held for 100 ms (6f90fcae); one-frame presses were missed and resumes failed.
 - **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane confidence is low on tight loops; MetaDrive's chassis is not the Civic's.
+
+## 178. Mac MetaDrive sim, TSFDO + mici: Clarity gated vs ungated n=3, SPEED_BP closed, an 85 Hz validity gate, and an opt-in turn-signal / stop-before-turn harness. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+
+- **James's controller, ungated (HEAD) vs gated (`0f27431d`, `FF_ANGLE_GATE_DEG=[10,30]`), n=3 each** (12 episodes, 87–99 Hz):
+  - Pull-away wobble: ungated 1.99 / 1.71 / 2.32 (mean 2.01), gated 1.11 / 1.24 / 1.32 (mean 1.22). The gap is larger than the seed spread.
+  - Std-band err rms after the stop: 5.50 vs 3.67 (gated n=2; one gated run had only 12 s at ≥ 25 mph). Curve ratio: 1.11 vs 0.99.
+  - R 60 m turn err / trail / past (means): ungated 6.87 / 4.99 / 1.89, gated 7.26 / 4.50 / 2.77. err is within noise; gated `past` is higher in every seed.
+  - Departures: ungated 2 in one R 60 run, gated 0. Results sent to James's session; the decision is theirs and Peter's.
+- **`NRDR_PID_EPS_FF_SPEED_BP`, closed by the NRDR PID session.** Pull-away wobble (3,5) n=4: 0.64 / 0.73 / 0.70 / 0.41 (mean 0.62) vs (2,4) 0.68, (4,6) 0.51, PID alone 0.43. The PID session keeps (2,4) and parks (4,6) pending an owner drive; its own replay table (routes 278/280/284/285/286 × off/(2,4)/(3,5)/(4,6)) is replay only.
+- **Earlier sim results, recorded here:** CEM round 3 was rejected. `LatPScaleLowSpeed` 130 vs 115 on R 60 m (PID + FF, n=3): 6.96 / 4.76 / 2.20 vs 7.12 / 5.27 / 1.85 — noise.
+- **Validity gate.** On the 8 GB Mac, swap thrash dropped some episodes to 9–80 Hz. Chains now require rows/seconds ≥ 85 Hz, retry up to 5 times, and move a failed run to `NAME_lowhz_HHMMSS`. The Colima VM (4 GiB reserved, idle) was stopped with the owner's OK; Docker work goes to the Oracle machine sessions.
+- **Turn harness (opt-in, default off).** `SIM_BLINKER=auto` sets the turn signal `SIM_BLINKER_LEAD_M` (40 m) before a navigation-lane turn of ≥ 20°. `SIM_STOP_BEFORE_TURN=S` brakes to a stop `SIM_STOP_M` (12 m) before the turn at ~2 m/s² (closed loop; a full brake tripped excessive actuation and disengaged) and holds S seconds. The keyboard blinker still works.
+- **Pilot findings (James's `clarity-turn-shaping` request):**
+  - A rolling R 12 m turn is out of reach in this plant: TSFDO asked for ~0.02 /m of the ~0.083 needed and left the road at the first corner; the auto-blinker then stayed on because navigation was lost.
+  - At a stop before the turn, `latActive` is 0 (Honda `steerAtStandstill=False`, as on the car), so turn shaping cannot act while stopped.
+  - No flip-flop: three steps to the hold level (0.0258 /m); the 20 sign flips were model noise at |k| ≈ 1e-4.
+  - James's session chose to skip the full turn-shaping set. James's session also reports that the route 287 near-miss (2:43) came from `TurnDesires`: the blinker below 20 mph forced a turn desire and the model asked for +80°; the controller was not at fault (their finding, not verified here).
+- **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane probs fall to ~0.1 on tight curves; MetaDrive's chassis is not the Civic's; the turn-hold level is not logged.

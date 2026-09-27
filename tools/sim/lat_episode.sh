@@ -30,7 +30,7 @@ OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; 
 # (tici; mici = the comma 4's os04c10 geometry, tools/sim/lib/common.py) are forwarded too.
 # SIM_MAP (default / intersection / gentle, metadrive_bridge.MAP_PRESETS), SIM_MAP_RADIUS / SIM_MAP_STRAIGHT and SIM_CRUISE_KPH are forwarded explicitly: a fresh
 # tmux server does not inherit this shell's environment.
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} \
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} \
   SIM_STEER_MODEL=$PWD/tools/sim/eps_models/honda_civic_bosch_c020.json \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
 sleep 30

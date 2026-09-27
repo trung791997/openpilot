@@ -139,7 +139,47 @@ C3_HPR = Vec3(0, 0,0)
 
 
 metadrive_simulation_state = namedtuple("metadrive_simulation_state", ["running", "done", "done_info"])
-metadrive_vehicle_state = namedtuple("metadrive_vehicle_state", ["velocity", "position", "bearing", "steering_angle", "yaw_rate", "accel"])
+metadrive_vehicle_state = namedtuple("metadrive_vehicle_state", ["velocity", "position", "bearing", "steering_angle", "yaw_rate", "accel",
+                                                                    "blinker"], defaults=[0])
+
+# SIM_BLINKER=auto (sim-lat-training): hold the turn signal toward the next corner from SIM_BLINKER_LEAD_M metres before it
+# until the car leaves it, like a driver signalling an intersection turn (controlsd's turn hold / turn-lead shaping only
+# acts with a blinker on). +1 left, -1 right, 0 off. Unset: always 0, so earlier episodes stay comparable.
+BLINKER_AUTO = os.getenv("SIM_BLINKER") == "auto"
+BLINKER_LEAD_M = float(os.getenv("SIM_BLINKER_LEAD_M", "40"))
+# SIM_STOP_BEFORE_TURN=S (seconds): brake the car to a standstill SIM_STOP_M metres before each corner and hold it there S
+# seconds, then let openpilot pull away into the turn. The brake is applied here, not as a driver pedal, so openpilot stays
+# engaged and steering through the stop (the standstill turn-hold case). 0/unset: never.
+STOP_BEFORE_TURN_S = float(os.getenv("SIM_STOP_BEFORE_TURN", "0"))
+STOP_M = float(os.getenv("SIM_STOP_M", "12"))
+STOP_DECEL = 2.0  # m/s^2
+
+def _lane_turn(lane) -> int:
+  # MetaDrive headings are clockwise-positive (metadrive_world), so a heading gain along the lane is a right turn
+  d = (lane.heading_theta_at(lane.length) - lane.heading_theta_at(0.0) + math.pi) % (2 * math.pi) - math.pi
+  return 0 if abs(d) < math.radians(20) else (-1 if d > 0 else 1)
+
+def dist_to_turn(vehicle) -> float:
+  # metres left on a straight lane before the next corner starts; inf when not approaching one
+  nav = vehicle.navigation
+  cur = nav.current_ref_lanes[0] if nav.current_ref_lanes else None
+  nxt = nav.next_ref_lanes[0] if nav.next_ref_lanes else None
+  if cur is None or nxt is None or _lane_turn(cur) or not _lane_turn(nxt):
+    return math.inf
+  return cur.length - cur.local_coordinates(vehicle.position)[0]
+
+def auto_blinker(vehicle) -> int:
+  nav = vehicle.navigation
+  cur = nav.current_ref_lanes[0] if nav.current_ref_lanes else None
+  if cur is None:
+    return 0
+  turn = _lane_turn(cur)
+  if turn:
+    return turn
+  nxt = nav.next_ref_lanes[0] if nav.next_ref_lanes else None
+  if nxt is not None and cur.length - cur.local_coordinates(vehicle.position)[0] < BLINKER_LEAD_M:
+    return _lane_turn(nxt)
+  return 0
 
 def apply_metadrive_patches(arrive_dest_done=True, out_of_road_done=True):
   # By default, metadrive won't try to use cuda images unless it's used as a sensor for vehicles, so patch that in
@@ -228,6 +268,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
   vc = [0,0]
   heading_prev, yaw_rate = env.vehicle.heading_theta, 0.0
   speed_prev, accel = 0.0, 0.0
+  stop_hold, stopped_lane, stop_brake = None, None, 0.2
 
   record_dir = os.getenv("SIM_RECORD_DIR")
   if record_dir:
@@ -242,6 +283,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       steering_angle=env.vehicle.steering * env.vehicle.MAX_STEERING,
       yaw_rate=yaw_rate,
       accel=accel,
+      blinker=auto_blinker(env.vehicle) if BLINKER_AUTO else 0,
     )
     vehicle_state_send.send(vehicle_state)
 
@@ -263,7 +305,24 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       start_time = time.monotonic()
 
     if rk.frame % 5 == 0:
-      _, _, terminated, _, _ = env.step(vc)
+      step_vc = vc
+      if STOP_BEFORE_TURN_S > 0:
+        nav_lane = id(env.vehicle.navigation.current_ref_lanes[0])
+        if stop_hold is None and nav_lane != stopped_lane and dist_to_turn(env.vehicle) < STOP_M:
+          stop_hold, stopped_lane = math.inf, nav_lane
+          stop_brake = 0.2
+          print(f"metadrive: stop_before_turn brake at frame {rk.frame}", flush=True)
+        if stop_hold is not None:
+          # Closed-loop brake to STOP_DECEL: a full MetaDrive brake passes selfdrived's excessive-actuation limit
+          # (2 x ACCEL_MIN) and disengages openpilot, which the standstill case needs engaged.
+          stop_brake = float(np.clip(stop_brake + 0.05 * (accel + STOP_DECEL), 0.05, 1.0))
+          step_vc = [vc[0], -stop_brake]
+          if stop_hold == math.inf and np.linalg.norm(env.vehicle.velocity) < 0.1:
+            stop_hold = time.monotonic() + STOP_BEFORE_TURN_S
+          elif time.monotonic() > stop_hold:
+            stop_hold = None
+            print(f"metadrive: stop_before_turn release at frame {rk.frame}", flush=True)
+      _, _, terminated, _, _ = env.step(step_vc)
       # Yaw rate over the 50 ms physics step, in MetaDrive's heading sense (metadrive_world maps it to the device gyro).
       # Without it the sim's gyro read zero, paramsd learned a runaway steering angle offset (36 deg in 17 s of
       # torque-mode driving) and the lateral controller believed a wound wheel was straight.

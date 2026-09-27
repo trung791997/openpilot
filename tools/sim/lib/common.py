@@ -84,6 +84,7 @@ class World(ABC):
     self.wide_road_image = np.zeros((H, W, 3), dtype=np.uint8)
 
     self.exit_event = multiprocessing.Event()
+    self.blinker = 0  # turn signal the world asks for (+1 left, -1 right; metadrive SIM_BLINKER=auto)
 
   @abstractmethod
   def apply_controls(self, steer_sim, throttle_out, brake_out):
