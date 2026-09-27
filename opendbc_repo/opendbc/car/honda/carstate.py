@@ -235,6 +235,7 @@ class CarState(CarStateBase):
     if self.params.get_bool("NrdrIncreaseOverrideTolerance") and self.CP.carFingerprint in (CAR.HONDA_CLARITY, CAR.HONDA_CIVIC, CAR.HONDA_CIVIC_BOSCH):
       steer_threshold *= 2
 
+    self.steer_threshold = steer_threshold  # read by the override release hysteresis in carcontroller
     ret.steeringPressed = abs(ret.steeringTorque) > steer_threshold
 
     if self.CP.carFingerprint in HONDA_BOSCH:

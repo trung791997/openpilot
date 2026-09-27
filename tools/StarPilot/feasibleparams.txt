@@ -444,6 +444,7 @@ TuningLevelConfirmed
 TurnDesires
 UnlockDoors
 UpdaterAvailableBranches
+UploadRlogs
 UseAutoSteerDelay
 UseKonikServer
 UsePrebuilt

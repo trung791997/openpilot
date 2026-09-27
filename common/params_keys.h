@@ -329,6 +329,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DeviceManagement", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"DeviceShutdown", {PERSISTENT, INT, "6", "6", 1, SETTINGS_SIMPLE}},
     {"DisableOnroadUploads", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
+    {"UploadRlogs", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
     {"DisableOpenpilotLongitudinal", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"DisableSeatbeltCheck", {PERSISTENT, BOOL, "0", "0", 2}},
     {"DiscordUsername", {PERSISTENT, STRING, "", "", 0}},
@@ -386,6 +387,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // channel) correct the native U11 vRel for the lead track, in one direction only: toward
     // MORE closing, never less. See RANGE_VREL_ASSIST_* in radard.py and D-053.
     {"RangeDerivedVrel", {PERSISTENT, BOOL, "0", "0", 3}},
+    // TEST, default ON at the owner's request (stock value off). Bosch-A only, needs RangeDerivedVrel on. Lets
+    // D-053 correct a lead outside the |yRel| lane gate (curves) while the model lead corroborates the closing.
+    // See VISION_ASSIST_* in radard.py.
+    {"RangeVisionAssist", {PERSISTENT, BOOL, "1", "0", 3}},
     // TEST, default OFF. Bosch-A only. D-063: the parser's range gates read a pinned (railed)
     // U11 closing speed as a bound, not an exact value, for tracks in our lane, so a lead closing
     // faster than 13.5 m/s is not dropped. Read once at startup in honda/radar_interface.py.
@@ -420,6 +425,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NrdrLatAngleRateLimit", {PERSISTENT, INT, "300", "300", 2}},     // deg/s ceiling on desired wheel-angle slew; 0 disables. Backstops clip_curvature, whose ISO jerk limit is ~1/v^2 in angle space and so does not bind below ~20 mph
     {"NrdrLatModelActionInterp", {PERSISTENT, BOOL, "1", "1", 2}},   // ramp modeld's 20 Hz action across the model frame instead of holding it; removes the 20 Hz staircase in the lateral target
     {"NrdrLatUseFirmwareVgr", {PERSISTENT, BOOL, "0", "0", 2}},      // use the EPS firmware A (position) VGR table instead of the road-measured effective-ratio curve
+    {"NrdrLatEpsFirmwareFF", {PERSISTENT, BOOL, "0", "0", 2}},       // modified-EPS Clarity/Civic Bosch: steer with LatControlClarityEps, James's controller (read when controlsd starts; STATUS 166)
     {"ForceFingerprint", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"ForceOffroad", {CLEAR_ON_MANAGER_START, BOOL, "0", "0"}},
     {"ForceOnroad", {CLEAR_ON_MANAGER_START, BOOL, "0", "0"}},

@@ -734,6 +734,15 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "NrdrLatEpsFirmwareFF",
+        "label": "EPS Firmware Feedforward (Test)",
+        "description": "Modified-EPS Civic Bosch/Clarity: steer with James's controller, a feedforward that inverts the EPS firmware's own control law plus a PID on fixed per-band trims. The Lat P/I/F sliders and the other lateral shaping do not apply while it is on. Takes effect on the next drive. Off: the feedforward is only logged.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LateralTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "NrdrLatModelActionInterp",
         "label": "Model Action Interpolation",
         "description": "Ramp the model's 20 Hz steering action across the model frame instead of holding it to remove target stair-stepping.",
@@ -3036,6 +3045,17 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "RangeVisionAssist",
+        "label": "Camera-Confirmed Curve Closing Speed",
+        "description": "TEST, default on. Bosch-A radar only, and only works with Range-Derived Closing Speed also on. On a curve, a braking car ahead can sit outside the straight-ahead lane the range correction trusts, so the radar's lagging closing speed was published as-is (route 26c at 4:08). With this on, the range correction may also apply there, but only while the camera sees the same car at the same distance and position and itself sees it closing at 5 m/s or more. Then the published closing speed may claim at most 3 m/s more closing than the camera sees, and the correction drops the moment the camera stops agreeing. It never reports less closing than Range-Derived Closing Speed alone. Replayed on 32 logged drives only (firm braking began 0.25 s earlier at 26c 4:08, no new hard brakes elsewhere), not yet driven.",
+        "picker_description": "Lets the radar's closing-speed correction work on curves when the camera confirms the car ahead is closing.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLongitudinalTune",
+        "requires_offroad": true,
+        "settings_tier": "advanced"
+      },
+      {
         "key": "BoschARailInterval",
         "label": "Keep Fast-Closing Leads",
         "description": "TEST, default off. Bosch-A radar only. The radar's closing-speed channel pins at 13.5 m/s. The parser checks each new distance against the closing speed it expects, and with the channel pinned it expected exactly 13.5 m/s, so a car closing faster (15-17 m/s on one recorded route) failed the check and the lead went dark from 100 m until 41 m. With this on, a pinned reading counts as 'at least 13.5 m/s' (up to 20) in those checks, for objects within 2 m of straight ahead only. It does not change the closing speed that is published, only whether the lead is kept. Replayed on logs only (7 routes: no lead points lost, the dark lead recovered), never driven, which is why it ships off. Restart required to take effect.",
@@ -5191,6 +5211,16 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "NoUploads",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "UploadRlogs",
+        "label": "Upload rlogs",
+        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. rlogs are uploaded after all pending qlogs, on any connection including a phone hotspot or other metered link. rlogs are much larger than qlogs, so this uses a lot of data.",
+        "picker_description": "Uploads full rlogs after qlogs on any connection, including hotspots.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "DeviceManagement",
         "settings_tier": "simple"
       },
       {

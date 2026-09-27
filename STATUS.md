@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-26**
+**As of: 2026-09-27**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -7873,3 +7873,930 @@ Harness times: analyst + 4.115 s on 278 and + 1.672 s on 27a. The fleet is the 3
   - Across a whole route, what moves this number is speed and command amplitude. 64 and 69 are high, with the lowest speed and the largest commands; 62, 68 and 6d are low.
   - **Correction to 147:** the 2–5 Hz grouping above, which singled out 6d, was that confound, not the image.
   - The logs cannot tell trackers 3200, 4000 and 4500 apart, in either the response or high-frequency content.
+- **The same result in the owner's band parameters** (owner: "I don't do the 20/30/40/50 speed band. It's below 25 / 25-50 / 50 and above"). Standard-band grid run with `compare --variant ...LatPScaleStandard=P,LatIScaleStandard=I` on the same 5 routes. LowSpeed and Highway are untouched. Values are 25–50 mph, minutes-weighted over 60.8 min:
+
+  | Standard P / I | err rms | straight rms | sign changes/s |
+  |---|---|---|---|
+  | 105 / 75 (driven) | 0.839 | 0.559 | 0.74 |
+  | 115 / 85 | 0.788 (−6%) | 0.527 | 0.83 |
+  | 125 / 95 | 0.745 (−11%) | 0.498 | 0.87 |
+  | 135 / 95 | 0.720 (−14%) | 0.475 | 0.93 |
+
+  - Error falls monotonically with both gains on every route, and there is no optimum inside the grid.
+  - The fitted plant does not reproduce the high-frequency EPS dynamics that eventually limit gain on the car. So the sim cannot say where to stop, and the rising sign-change rate is the only warning it gives.
+  - Suggested next drive: `LatPScaleStandard 125`, `LatIScaleStandard 95`. That is within the autotuner's 25-point trust region and matches its 30/40 mph knots.
+  - Revert if the car hunts on straights at 25–50 mph.
+  - Sim evidence only; nothing written to params.
+- **Highway band, from route 1b8** (owner: "I do have a long highway route with rlogs: 11c8fa231c0499ed/000001b8--6098496d3c").
+  - **The route:** driven 29 Aug, 68 mi. 52.1 min engaged hands-off above 50 mph, against 0.6–2.2 min on each of 271–27a. Driven with LatP/I/FScaleHighway 100/100/100 and HondaCenterScale 0.5. It is assumed to be on the owner's Trk4500 image, which is dated 5 Aug.
+  - **Current plant (260–263 only)** at the driven tuning on 1b8: highway err rms 0.39 vs log 0.33, straight 0.37 vs 0.32, lag 0.52 vs 0.27 s, zero crossings 0.8 vs 1.1/s. That is inside the gate but slow and calm, a bias toward over-gaining.
+  - **Refit plant:** 260–263 plus the first half of 1b8, delay 5, same table: coef [-12.18, -0.023, -2.229, -7.273, 854.8, -9.005, -17.38, -20.20, -150.5]. The command gain at 30 m/s rises from about 275 to about 428 (per table-torque unit). It lives in /tmp/plant_d5_hwy.json and is not committed; refit with `fit_plant(... delays=(5,), eps=owner table)`.
+  - **On the held-out second half of 1b8** (22.6 min highway, log / old / new):
+    - err rms 0.35 / 0.43 / 0.37;
+    - straight 0.34 / 0.41 / 0.36;
+    - sign changes at 0.15 deg 0.38 / 0.35 / 0.36 per second.
+  - The 25–50 mph band is unchanged on all 6 routes (within 0.01 deg).
+  - **Still failing: highway curves.** On 271 and 277 the sim follows 0.71–0.74 of the desired curvature against 0.83–0.86 logged. That rests on about 10 s of highway-curve data in total, and 1b8 has 3 s, so the gate still marks the highway band untrusted on curve ratio. The gate was not relaxed. A highway drive with sustained curves (interchanges, curvy freeway) would settle it.
+  - **Highway grid on the held-out half** (straight-line figures only; new plant). Driven P100/I100/C0.5 scored err 0.370 and straight 0.355:
+    - P 85 / 115 / 130: 0.405 / 0.341 / 0.317; zero crossings 0.84 / 1.05 / 1.14 per second against 0.95.
+    - HondaCenterScale 0 / 1.0: 0.443 / 0.322.
+    - **I 0: 0.457 with bias +0.21 deg. I 0 plus C 0, as driven on 271–277: 0.563 with bias +0.28.** The +0.3–0.5 deg highway bias noted above is, in the sim, the missing integrator.
+  - **Road evidence** (confounded by road and traffic): 1b8's logged highway err rms is 0.33–0.35 at I100/C0.5, against 0.46–0.67 logged on 271–278 at I 0–75/C0.
+  - **Suggested highway settings** (sim, straight-line only): LatIScaleHighway 100, HondaCenterScale 0.5, LatPScaleHighway 100–115. Watch highway curves, which the sim cannot score yet.
+
+## 150. Fast-closing lead pass (the held 271 BM0 fix from STATUS 148), now capped at -2.0. Open- and closed-loop replay plus unit tests only; nothing has been driven.
+
+- **What it is.** For a radar lead that the MPC is braking for, closing >= 10 m/s at TTC <= 6 s, and seen closing by vision too, the close-lead cap may pass the -1.0 comfort floor. It is held on the same track while closing stays >= 5 m/s. This is the held patch /tmp/cf/fastclose_floor.patch, whose reasoning is in the code comment.
+- **What is new.** The pass is built against max(vehicle min, -`FAST_CLOSING_LEAD_MAX_BRAKE`) = -2.0 (`fast_closing_accel_min`), not the vehicle minimum.
+- **Why capped.** The uncapped version was held for the owner's rough-braking report. Re-replayed on the current tree (32 routes, 178 episodes), it deepened 22 approaches, many to -3.5, took frames < -3.0 from 1363 to 1626, and made 025e 318.1 go -2.48 -> -3.38.
+- **Capped at -2.0 (fleet, open loop):**
+  - Frames below -3.0: 1363 -> 1328. Below -2.5: 2772 -> 2704. 0.5 s drops: 77 -> 84.
+  - 11 approaches start braking 0.1-0.8 s earlier. Their peaks are mostly softer (271 567.2 -2.50 -> -2.33, 270 516.6 -2.85 -> -2.63, 026f 81.9 -2.96 -> -2.81).
+  - One new -1.5 crossing: 241 218.7 at -1.83. That is a real slowdown to a lead doing 5 m/s at 70 m, where the driver braked to -4.4.
+  - 266 29.2 goes -1.88 -> -2.34. That is an approach to a 1-2.5 m/s lead.
+  - Protected list: nothing softer or later.
+  - A cap of 1.5 was a no-op.
+- **Closed loop (tau 0.35, non-reactive lead):**
+  - 271 BM0 (559-575): peak -5.68 -> -3.05, min gap 8.99 -> 13.51 m, TTC 1.95 -> 2.74, -1.5 crossing 0.9 s earlier.
+  - 270 516: -4.87 -> -3.26, gap 13.6 -> 18.3 m, TTC 2.18 -> 3.37.
+  - 271 1793: -3.84 -> -3.74, gap 9.27 -> 9.21.
+  - 24f B-F and 258 63:50: identical.
+- **Tests:** test_longitudinal_planner + test_longcontrol pass (623); 11 new tests are the held patch's plus a cap test. ruff: no new findings.
+- **Road check:** on a fast approach to a stopped or slow car, braking should begin earlier and hold around -2 rather than arriving late and hard. Watch for early braking on a car that is turning off.
+
+## 151. Low-speed plant trained on the post-3-August routes, and the Galaxy NRDR lateral tuner now runs the sim (owner: "train the sim on the low speed routes, on anything past august 3"; "redo the nrdr lateral tuner on galaxy to reflect these new changes given the better sim"). Sim, replay and log statistics only; nothing on the car changed and no params were written.
+
+**Plant.** `tools/lateral/plants/civic_bosch_c020.json` is a two-band plant (`BandedPlant` in `lat_pid_sim.py`): a low band below 22 mph, the STATUS 147 highway band (route 000001b8) above 28 mph, and a linear blend between them. Both bands send the command through the C020 torque table (STATUS 146). The low band adds a centring term `c9·tanh(θ/2)`. It was fitted on 36 routes after 2026-08-03 (163 hands-off minutes below 25 mph, delay 5 frames) and scored on held-out routes 271/276/277/278/27a (12.2 low-speed minutes):
+
+| | err rms | straight rms | curve ratio | sign/s |
+|---|---|---|---|---|
+| log | 14.31 | 2.80 | 0.869 | 0.37 |
+| sim, first fit (12 routes) | 14.04 | 2.36 | 0.914 | 0.42 |
+| sim, shipped fit (36 routes) | 14.03 | 2.36 | 0.915 | 0.41 |
+
+The sim reads the straight-line error about 16% low. Doubling the training data changed nothing held out, so the gap is in the model form, not the amount of data.
+
+**LowSpeed grid** (first low fit, same held-out routes; the shipped fit matches it held out). At the current 100/50, the sim straight-line rms is 2.36:
+
+| P/I | straight rms | curve ratio |
+|---|---|---|
+| 115/75 | 2.27 | 0.941 |
+| 130/75 | 2.19 | 0.948 |
+
+F has no effect below 25 mph. The provisional LowSpeed suggestion is P 115, I 75: the smallest step, because the sim's error is larger than the gain.
+
+**Galaxy tuner.** `lat_tune_workspace.run_worker` now runs `tools/lateral/lat_tune_sim.refine_trial` after the rule analysis:
+- It uses the same trust gate as lat_autotune: err and straight rms within 25% of the log, curve ratio within 0.05, at least 3 minutes per band, and a fit/holdout split in alternating 120 s blocks.
+- For each trusted band it replaces the rule P step with the best sim cell of a 3×3 grid of P ±0.10 and I ±25, vetoed on sign rate and driver-press rate. An untrusted band keeps the rule result.
+- The plant is only used when carParams shows `HONDA_CIVIC_BOSCH` with EPS `39990-TBA,C020`.
+- Extracts are cached in `workspace/sim_cache`; the job is cancellable; if the sim fails, the rule result stands.
+- Apply now writes `LatIScale<band>` as well as `LatPScale<band>` when the sim moves I. Both frontends show P and I, the source (rules or sim), and the trust line.
+- The CLI `tools/lateral/lat_tune_cli.py` does the same; `--no-sim` gives rules only.
+- On the newest 8 routes the CLI kept only 00000278 (tuning changed across the others). That left 7.5 trusted Standard minutes, and the sim proposed Standard P 105→115, I 75→100. LowSpeed and Highway had 0 minutes, so the rules held them. 7.5 minutes is thin.
+
+**Not known:** the worker's runtime on the device. On this x86 box it takes about 0.7 s per route-minute with 2 workers, and the device will be slower. Whether any sim step helps on the road is also unknown.
+
+**Incident:** this session's fetch script deleted each route's raw segment dirs after extraction without checking whether they predated the session. That removed the raw rlogs of radar-fleet routes 0000023e and 00000258 (the radar session is re-fetching them). The script was stopped at 17:04 UTC. Any script that frees disk must delete only the files it downloaded itself.
+
+## 152. Vision-corroborated range assist for 26c 4:08 (late brake on a curve), default OFF. Open- and closed-loop replay plus unit tests only; nothing has been driven.
+
+**What it is.** A module constant `VISION_ASSIST_GEOMETRY` (radard.py, default `False`, rides the
+`RangeDerivedVrel` toggle) extends D-053. On 0000026c--10bec2e200 at 4:08, D-053 never engaged for
+three reasons:
+- the |yRel| <= 1.5 lane gate (the track sat at yRel 9.3 -> 6.3 m),
+- the long-fit span/residual guards,
+- the 5-update arm count.
+
+The path-relative replacement for the lane gate was rejected (STATUS 148, /tmp/yg/pathgate.patch).
+This change relaxes those three blocks only on updates where `modelV2.leadsV3[0]` corroborates the
+closing itself. That means all of the following:
+- prob >= 0.7,
+- x - 1.52 within 15 % of dRel,
+- |yRel + y| <= 3 m,
+- vision closing speed vEgo - v >= 5 m/s.
+
+When relaxed:
+- the lane gate is lifted up to the existing 10.8 deg azimuth bound;
+- a long fit failing span/residual falls back to the short fit;
+- arming takes 3 updates instead of 5, provided vision corroborated every one of them.
+
+The correction may exist only because of one of these relaxations, i.e. the plain D-053 rule would
+publish zero on that update. In that case:
+- the published vRel is bounded at -(vision closing + 3 m/s);
+- it drops to zero on any update where vision stops corroborating.
+
+Once the plain rule would have armed on its own, the correction is exactly the plain D-053 one. The
+replay shows 0 frames where the published vRel is less closing than H, over 32 routes. No point is
+deleted or hidden: lead lost/gained 0 and lead id/d changed 0 over the fleet.
+
+**26c 4:08, open loop, H -> E5 (shipped constants):**
+
+| Metric | H | E5 | Change |
+|---|---|---|---|
+| -1.0 crossing | 256.90 | 256.75 | 0.15 s earlier |
+| -1.5 crossing | 257.05 | 256.80 | 0.25 s earlier |
+| -2.0 crossing | 257.15 | 257.15 | same |
+| -3.0 crossing | 257.35 | 257.35 | same |
+| Minimum | -3.35 | -3.29 | 0.06 softer |
+
+Vision closing during the onset was 5.3-6.5 m/s at p 0.74-0.82. The published vRel was about -9 from
+256.70, where H had -4.3. Past about 257.0 the MPC, not the radar, limits the response. That is why
+the gain is small and should not be read as "fixed".
+
+**26c 4:08, closed loop (clrb.py, 250-264):**
+- min gap 32.85 -> 33.15 m
+- min TTC 4.36 -> 4.43 s
+- peak -3.41 -> -3.33
+- -1.5 crossing 0.25 s earlier
+
+**Wobble cases (STATUS 148):** 26c 649.9, 237 942.8 and 236 2211.4 are identical to H, including
+the vRel minimum.
+
+**Fleet, 32 routes, open loop, H vs E5:**
+- new -1.5 crossings: 0
+- softer > 0.3 or later > 0.2: 0
+- deeper: 0
+
+Protected cases:
+- 025e 318.1: -2.48/318.82 -> -2.46/318.87, i.e. 0.02 softer and 0.05 s later at -1.5. It arms
+  0.2 s earlier, and the open-loop planner then asks slightly less afterwards. Vision closing there is
+  9.6 m/s.
+- 0266 484.2: 0.05 s earlier.
+- 0268 700.9: 0.03 deeper.
+- All other protected cases: identical.
+
+Five earlier episodes. All are vision-confirmed (vision closing 6-14 m/s, p >= 0.70) and all are
+real brakes that stock also braked for where stock was driving:
+- 025d 105.7: 0.26 s earlier
+- 025e 369.0: 0.21 s earlier
+- 025e 529.6: 0.55 s earlier
+- 0261 132.2: 0.75 s earlier, min -3.11 -> -2.97
+- 26c 256.8
+
+24f B-F closed loop: identical. 258: open loop changes at most 0.01. In closed loop, 3831.9 is
+identical and at 3320 min gap goes 22.36 -> 22.82 m and peak -3.64 -> -3.62.
+
+**Iterations that failed, kept for the record:**
+- Bypass-only (margin 3, p 0.5-0.9): no change at 26c. Vision closing (5-6 m/s) bounded U11
+  (-9 .. -13.5) to zero.
+- V70s3, i.e. vision closing >= 3 m/s with the bound applied only to bypass/short-fit corrections.
+  It produced -1.0 dips that vision did not confirm, because early arming was unbounded:
+  - 0245 773.9: -0.58 -> -1.00
+  - 025e 313.6: -0.65 -> -1.00, published -9.65 against a vision closing of 3.4
+  - 0271 1434.3 (margin 5): -0.21 -> -1.00
+- Applying the vision bound to every corroborated correction (CAP_ALL) softened existing D-053
+  brakes. 588 frames were less closing than H, e.g. 0261 -3.11 -> -2.84 and 26c 1127 -2.14 -> -1.93.
+  Replaced by the "bound only what the plain rule would not publish" rule.
+
+**Verdict.** Passes the stated gates on replay:
+- 0 new crossings
+- 0 softer/later outside tolerance
+- no vision-unconfirmed episode
+- 3 wobble cases unchanged
+
+The 26c improvement is modest: 0.25 s at -1.5, and nothing at -2.0 or deeper. Default stays OFF;
+turning it on is an owner call.
+
+Tests (static): `test_range_vrel_assist.py::TestVisionAssistGeometry` (8 cases) covers:
+- off by default,
+- inert without vision,
+- the azimuth bound,
+- the vision-closing bound,
+- the helper gates,
+- in lane, never less closing than plain D-053.
+
+Commands and results:
+- `test_range_vrel_assist.py` + `test_radard_bosch.py`: 133 passed.
+- `test_py39_compat.py`: passes.
+- `test_leads.py`: 6 passed, 1 teardown error (/data/params). HEAD has the same error.
+
+Routes 0000023e and 00000258 lost their rlogs mid-run to a lateral cache job and were re-fetched
+from konik before the final fleet. The final numbers above cover all 32 routes.
+
+## 153. The STATUS 152 vision-corroborated range assist is now a toggle, `RangeVisionAssist` (default ON at the owner's request, stock value off; editable in Galaxy and on the device). Static tests and a params round-trip only; nothing has been driven.
+
+Owner: "make it a toggle for me in starpilot. Make sure it's editable".
+
+- **Key.** `RangeVisionAssist` (PERSISTENT, BOOL, default 0) in `common/params_keys.h`.
+- **Galaxy and device.** The row is labelled "Camera-Confirmed Curve Closing Speed". It sits under Advanced Longitudinal Tune, right after Range-Derived Closing Speed, and like that row it can only be changed while the car is parked (`requires_offroad`). It is in both `device_settings_layout.json` and `longitudinal.py`.
+- **radard.** radard reads the key on the same 100-frame cadence as `RangeDerivedVrel`.
+  - It only counts when `RangeDerivedVrel` is also on, since the assist is an extension of D-053.
+  - It is read in its own `try`, so a `.so` without this key reads it as off and leaves D-053 running.
+  - `Track.update` gets `vision_assist=`. The code constant `VISION_ASSIST_GEOMETRY` stays `False` and still forces the assist on for replay harnesses, so the STATUS 152 numbers apply unchanged when the toggle is on.
+- **Params artifacts.** `common/params_pyx.so` and `libcommon.a` were rebuilt natively on this aarch64 Ubuntu 24.04 host with the pinned toolchain: clang 18.1.3, system Python 3.12.3, Cython 3.1.4, `SP_FORCE_TICI=1`, the repo bind-mounted at `/work`, sconsign and both targets cleared first.
+  - Keys went from 856 to 857. The only addition is `RangeVisionAssist`, and nothing was dropped.
+  - `params_pyx.cpp` came out byte-identical.
+  - On the new `.so`, `RangeVisionAssist` reads False by default, put_bool/get_bool round-trips, and it reads False again after remove.
+- **Tests.** `test_range_vrel_assist.py` has 5 new cases: the param switch gives the same result as the code flag, plus a parametrised param read (both on, child off, parent off, key missing).
+  - `test_range_vrel_assist.py`, `test_radard_bosch.py`, `test_py39_compat.py` and `test_longitudinal_planner.py`: 686 passed on the rebuilt `.so`.
+  - ruff is clean on radard and the test file.
+  - The settings row adds 7 ISC002 findings in `longitudinal.py`. They come from the same multi-line subtitle pattern the neighbouring rows use; that file had 104 findings at HEAD.
+- **Not verified.** The toggle has not been exercised in the Galaxy UI on the device. Once it has, `initData.params` on the next route should carry `RangeVisionAssist`.
+- **Default on (follow-up, owner: "Make it on by default for me").**
+  - The key is now `{PERSISTENT, BOOL, "1", "0", 3}`: default on, stock value off. The manager writes defaults for missing keys at startup, so the first boot on this build turns it on. It then does something only because `RangeDerivedVrel` is also on; route 0000027e's `initData` has `RangeDerivedVrel` = 1 and `BoschARailInterval` = 1.
+  - The params artifacts were rebuilt again with the same recipe.
+    - `get_default_value("RangeVisionAssist")` is True and `get_stock_value` is False.
+    - Still 857 keys, and `params_pyx.cpp` is byte-identical.
+  - The rows now read "default on ... not yet driven".
+  - The fallback in radard is unchanged: a missing key or a read error means off.
+  - **This puts replay-only behaviour on the road by default.** Everything behind it is open-/closed-loop replay (STATUS 152). The first drives are its first road evidence. Check them with `vision_assist` in mind: an earlier onset on a curve lead, and no vision-unconfirmed dips.
+
+## 154. Honda Bosch gas: the learned `gasfactor` no longer multiplies the hill feed-forward. Static tests and log statistics from one route only; not yet driven.
+
+Owner, route 00000280 (the first drive on 63827356, with `RangeDerivedVrel` = 1 and `RangeVisionAssist` = 1): "When going up hill, specifically from segment 29 to 32, it makes the accel too aggressive which ends up overshooting, esp when it is coming up to a slower lead that got obscured by the hill."
+
+- **Mechanism.** `carcontroller.py` computed the gas lookup input as `(accel + wind*windfactor + hill_brake - min_gas) * gasfactor + min_gas`, so the pitch feed-forward was scaled by `gasfactor` too.
+  - `LongGasLearner` freezes above |pitch| 0.02 rad, so `gasfactor` is fitted on flat road only. The value on this route was 1.248, sitting at the 1.25 soft cap.
+  - Extrapolating that factor to the hill term had never been checked.
+- **Log evidence (route 280, segments 29–31, engaged, gas > 0 and unsaturated, no pedals, > 20 mph, |cmd| < 0.6, 0.25 s samples).** Mean aEgo − cmd, binned by the hill term:
+
+  | Hill term (m/s²) | n | Mean aEgo − cmd (m/s²) |
+  |---|---|---|
+  | below 0.1 | 92 | −0.01 |
+  | 0.1–0.3 | 131 | +0.04 |
+  | 0.3–0.5 | 17 | +0.27 |
+  | 0.5–0.7 | 32 | +0.10 |
+  | 0.7–1.0 | 20 | +0.13 |
+
+  The model `(gasfactor − 1) × hill` predicts +0.10 to +0.22 of that overshoot.
+  - At 30:53–30:55 the car accelerated at +0.5 to +1.0 m/s² against an aTarget of about 0 and went to 51.4 mph on a 50 set. A slower lead then appeared at 80 m over the crest.
+  - At 30:46 the error was about 0.58 at a 5.3° pitch. This change explains only about 0.23 of it; the rest is probably lag in the pitch estimate at the climb onset. That part is **not** addressed.
+- **Change.** A new pure helper, `bosch_gas_lookup_accel(gas_pedal_force, hill_brake, gasfactor, min_gas)`, returns `(gas_pedal_force − hill_brake − min_gas) * gasfactor + min_gas + hill_brake`.
+  - The flat-road request stays scaled and anchored at `min_gas` exactly as before. The hill term is added unscaled.
+  - It is symmetric: a gasfactor below 1 no longer shrinks a downhill term either.
+  - The learner is unchanged. It still sees the full `gas_pedal_force`, and it is frozen on real hills anyway.
+- **Effect.** With `gasfactor` at 1.0 the output is identical to before. On flat road it is identical at any `gasfactor`. At 1.248 on a 4° climb (hill 0.69) the lookup input drops by 0.17 m/s², which is about 137 gas units on the Civic's linear 0–1600 table.
+- **Tests.** `TestHillTermOutsideGasfactor` in `test_carcontroller_learners.py` covers flat road unchanged, hill added unscaled, nominal factor identical, downhill symmetric, and the `min_gas` anchor.
+  - `opendbc/car/honda/tests`: 294 passed. `test_py39_compat.py` plus `test_longitudinal_planner.py`: 548 passed.
+  - ruff shows 8 pre-existing findings in the two files and none on the changed lines.
+- **Check on the next drive over the same hills (segments 29–32 of route 280).**
+  - Uphill aEgo − cmd should sit near 0 rather than +0.1 to +0.3.
+  - Watch for a small **under**shoot on steep climbs (the estimate is −0.05 to −0.08), which the planner should absorb.
+  - Watch for no change on flat road.
+
+Other route-280 bookmarks, reported to the owner with no change made:
+- **4:29.** Stop-and-go creep of about 1 m.
+- **7:29.** The lead slowed to turn; −3.8 m/s² briefly.
+- **15:31 and 21:07.** A stopped car was revealed after the lead moved out.
+  - The camera had it at about 100 m but estimated it at 15–30 mph.
+  - No in-lane radar point existed until 67 and 75 m. At 21:06 track #49 appeared already railed at −13.5.
+  - The result was a gentle-then-firm brake to −2.3 and −3.3 m/s².
+  - No radar point was deleted. Collect more cases before designing anything.
+- **24:35.** Cut-in at 30 m; the first-frame vRel of −6.6 gave a one-second tap.
+- **26:11.** The lead braked hard (9 m of gap lost in 1 s); −3.2 m/s², with the radar lag about 1 s.
+
+## 155. First drive on the STATUS 147/151 lateral values: route 00000280--d02d9c2f8e (owner: "I drove it with your latest fix and recommendation"). Limited road evidence: one drive, compared against five earlier routes on different roads.
+
+The drive ran LowSpeed 115/50/50, Standard 125/95/100 and Highway 115/100/100 (P/I/F). Before, it was 100/50/50, 105/75/100 and 105/75/100 on 278 and 27a (Highway I 0 on 271–277). `HondaOverrideFadeUpSecs` also went from 1.0 to 0.5 on the same drive, so driver-press numbers are not a clean comparison.
+
+Logged hands-off tracking, leaving out the first 5 s and ±3 s around lane changes and blinkers. Without that, a log-start artifact (a −66° target at t=0 while moving at 38 mph) and lane changes make up 75% of 280's Standard squared error:
+
+| band | 280 | 271 / 276 / 277 / 278 / 27a |
+|---|---|---|
+| Standard: min / err / straight / curve \|e\|/\|des\| median | 18.5 / 0.45 / 0.39 / 0.045 | err 0.52–1.01, straight 0.45–0.63, curve 0.058–0.078 |
+| LowSpeed: min / err / straight | 2.4 / 1.74 / 1.15 | err 3.0–16.7, straight 1.49–2.16 |
+| Highway: min / err / straight | 1.7 / 0.28 / 0.28 | err 0.44–0.62, straight 0.39–0.53 |
+
+- **Standard:** best on every measure. Sign changes per second are unchanged (0.33 against 0.30–0.33). Standard driver presses were 1.85/min against 0.09–2.98.
+- **LowSpeed and Highway:** too few minutes to judge. Highway sign rate 0.34 is at the top of the earlier range (0.15–0.30), on 1.7 minutes.
+- **Sim step on 280 alone:** proposes Standard 140/120 (fit 0.943, holdout 0.867) and holds LowSpeed. Not recommended yet: one route, and Standard is already the best measured. Collect two or three more drives on the current values first.
+
+## 156. `UploadRlogs` toggle: rlogs upload alongside qlogs, including while driving (default off). Static tests and a params round-trip only; nothing has run on the device.
+
+Owner: "make a toggle to enable uploading rlogs alongside with qlogs during a drive so that I dont have to manually go in and do it on konik stable. You can put the toggle in the data area that has the onroad upload option".
+
+- **Behaviour** (`system/loggerd/uploader.py`, `next_file_to_upload`).
+  - With the toggle on, `rlog`/`rlog.zst` becomes an automatic upload candidate. The key gets the `.zst` suffix that `step()` already appended for `rlog`.
+  - Ordering: crash/boot first, then every pending qlog/qcamera, then rlogs oldest segment first. An rlog therefore never delays a qlog.
+  - ~~rlogs never go on a metered connection.~~ Changed in the follow-up below: rlogs upload on any connection.
+  - The segment being recorded carries a `.lock` and is skipped, as for qlogs. Each finished segment's rlog uploads during the drive, and the last one uploads once it closes.
+  - `DisableOnroadUploads` still stops the uploader process onroad (`process_config.py`), rlogs included.
+- **Key:** `{"UploadRlogs", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}}`, placed next to `DisableOnroadUploads`.
+  - Galaxy: Device Management, entry before `HigherBitrate`.
+  - Device: system settings toggles, between "Disable Onroad Uploads" and "Disable Logging".
+  - The key is also listed in `tools/StarPilot/feasibleparams.txt`.
+- **Artifacts:** `params_pyx.so` and `libcommon.a` were rebuilt with the STATUS build recipe (larch64, pinned Cython 3.1.4).
+  - Key count went 857 -> 858, and the only new key is `UploadRlogs`.
+  - `params_pyx.cpp` is byte-identical, and in `libcommon.a` only `params.o` changed.
+  - Default and stock values are both False. put/get round-trips.
+  - `libcommon.a` shrank by 8.6 KB even though a key was added. The whole difference is in `params.o`'s static keys-map initializer (`__cxx_global_var_init`, -8,892 bytes, same clang 18.1.3); every other symbol is the same size. Loading both `.so` files, all 857 existing keys have identical default, stock, type and flag.
+- **Tests (static):**
+  - `test_uploader.py`: 11 passed, including 3 new tests: off by default, rlogs after qlogs, and locked-segment skip plus metered handling (inverted in the follow-up). The new tests fail against HEAD's uploader (negative control: 2 of the 3 fail; the off-by-default test passes on both, as it should).
+  - Other suites: `test_device_settings_layout.py` 29 passed, `test_device_settings_frontend.py` 9, `test_process_config.py` 27, `test_py39_compat.py` 14.
+  - ruff finds nothing new; the 13 findings in `system_settings.py` are all present at HEAD.
+- **Not verified:**
+  - Konik's `v1.4/upload_url` has not been seen accepting an `rlog.zst` key from the automatic path. It is the same key the manual request path uses.
+  - rlogs are much larger than qlogs, and they now go over the owner's hotspot, so this costs phone data.
+- **Follow-up: hotspot, and editability** (owner: "make sure the toggle editable. I will upload through my phone hotspot so internet speed isn't the issue").
+  - **Metered limit removed for rlogs.** `get_network_metered` (`system/hardware/tici/hardware.py`) reports Wi-Fi as metered when NetworkManager says `METERED_YES` or `GUESS_YES`. NetworkManager guesses yes for phone hotspots. So with the first version, rlogs would never have gone up over the owner's hotspot unless `AlwaysAllowUploads` was on. `UploadRlogs` is already an explicit opt-in, so rlogs now upload whatever the metered flag says. Ordering is unchanged: qlogs and qcameras first. qcamera's own metered rule is untouched.
+  - The test now asserts that the rlog is returned on both metered and unmetered connections. 49 passed across `test_uploader.py` and the two device-settings suites.
+  - **Galaxy editability, checked statically.** `PUT /api/params` accepts any key in the params library that is not in `EXCLUDED_KEYS`. Against the rebuilt `.so`, `UploadRlogs` is present and not excluded. Its default is a bool and the layout says `data_type: bool`. Tuning level is 2, the same as `DisableOnroadUploads`, and put/get round-trips. The entry shows under the **Device Settings** (`DeviceManagement`) parent toggle once that parent is on and expanded, or through search.
+  - **On the device,** the toggle has no `is_enabled` gate, so it is always tappable. "Disable Uploads", and "Disable Onroad Uploads" while driving, still stop the uploader process and so override it.
+- **Follow-up: default ON** (owner: "Ship with it on for me for now").
+  - The key is now `{PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}`: default on, stock value off.
+  - On a device, an unset key reads True. `openpilot.common.params.Params.get_bool` asks the library with `return_default=True`, and that is the wrapper the uploader and the settings UI use. This was checked on an empty params dir: `UploadRlogs` True, `RangeVisionAssist` True, `DisableOnroadUploads` False. The raw `params_pyx` `get_bool` still returns False for an unset key. The manager's startup loop does not write defaults (`manager.py:1270`); it only restores keys from the params cache. So a device that has explicitly stored `0` keeps it off.
+  - Artifacts were rebuilt with the same recipe. There are still 858 keys, and the only metadata change is `UploadRlogs` default False -> True (stock False). `params_pyx.cpp` is byte-identical. In `libcommon.a` only `params.o` changed.
+  - Tests: the upstream uploader tests go through the wrapper, so the new default made them upload rlogs (4 failed). `TestUploader.setup_method` now pins `UploadRlogs` off for them. The off-state test is renamed `test_rlogs_not_uploaded_when_off` and sets False explicitly. 90 passed across the uploader, device-settings, process-config and py39 suites. Static only.
+- **Follow-up, route `00000284--1109db7c4c` (owner: "i dont think it uploaded, i had to upload manually"). Log statistics only.**
+  - The device ran `90487307` with `UploadRlogs=1`, `AlwaysAllowUploads=1` and the hotspot link, so the uploader saw `metered: false`. The toggle worked: rlogs went up the whole drive at 0.4–0.9 MB/s.
+  - They were the wrong rlogs. `list_upload_files` walks routes oldest first, and the first toggle-on drive had a backlog of never-uploaded rlogs from older routes. The rlogs of segments 20 and 29 (fetched from Konik after the manual upload) show `upload_success` for `00000266--f766f599f0--16..19` and then `00000267--e83a1fa671--5`. That is about ten backlog rlogs in 9 min, and none were from 284. Each 284 qlog and qcamera still went up as its segment closed.
+  - First fix (`3de45706`): newest route first. Superseded the same day on owner request: "limit to only rlogs of the current drive", "if the car turns off … keep going until it's finished", "if i start a new drive immediately after … continue the previous drive, then move on to the current drive".
+  - Now (`system/loggerd/rlog_upload.py`): the route in progress when the uploader first sees the toggle on becomes the anchor, stored as xattr `user.rlog_upload_from` on the log root. rlogs from the anchor route onward go up oldest first, so an unfinished previous drive completes before the next one. Older routes (the pre-toggle backlog) are never sent. Toggle off clears the anchor, and turning it back on re-anchors at the newest drive. Without xattr support, it falls back to the newest drive only. qlogs and qcameras still go first.
+  - Shutdown hold (`power_monitoring.py`): when `offroad_timeout` fires, `UploadRlogs` is on, and rlogs in the window are still unmarked, the timer is held. The check is uncached and runs every 30 s, and the hold is capped at `RLOG_UPLOAD_HOLD_MAX_S` = 2 h past the timer. Low voltage and battery-exhausted are never held. The owner's timer is 30 h (`DeviceShutdown`=30 on 284), so this is a guard for shorter settings. The uploader only makes progress while the device has a link: a phone hotspot that leaves with the driver stops it until the next drive, and the drive then resumes at the unfinished route.
+  - Tests: `test_upload_rlogs_previous_drive_then_current_never_backlog`, `test_upload_rlogs_off_clears_anchor`, and 5 hold cases in `test_power_monitoring.py`. Uploader, power-monitoring and deleter suites: 40 passed. `hardwared`, `deleter`, `process_config` and `starpilot_variables` import cleanly; a first draft had imported the uploader into `power_monitoring` and made a cycle through `starpilot_variables`. Static only, not run on the device.
+  - Separate and not fixed: after each qlog upload, Konik calls athena `uploadFilesToUrls` for `<segment>/rlog`. A "whole route" request asks for `rlog.bz2`. The device file is `rlog.zst`, and athena only tries the name as given and with `.zst` stripped, so every one of these requests fails (`athena.uploadFilesToUrls.failed`, about once a minute on 284). This is a server-side naming mismatch. It does not block the uploader path above.
+
+## 157. Turn stutter at the last bookmark on 00000283--fe4e75f88b (segment 33, about 2003–2008 s from the start of the route): a limit cycle between the driver-override flag and the torque fade. Log statistics only; no change has been made.
+
+Owner: "I marked some bad stuttering while turning." The car was at about 25 → 14 mph at the start of a hard right turn (target angle 0 → −168°).
+
+**Mechanism.** For about 2 s the wheel stayed near 0° while the command grew from −0.2 to −0.45. `STEER_TORQUE_SENSOR` read +1400 to +2480, opposing the command: hands holding the wheel against the push. Both the `NrdrDriverOverrideThreshold` and `NrdrOverrideThresholdCenterBoost` thresholds were 2000, and `NrdrIncreaseOverrideTolerance` was off, so the raw flag drove the ramp in `carcontroller._update_steering_torque`. The cycle:
+1. The torque sensor crosses 2000, and `steeringPressed` is set for about 3 frames.
+2. `HondaOverrideFadeDownSecs` 0.2 lowers the ramp by 0.05 per frame, so output falls about 25%.
+3. The sensor unloads to about 1400 within 30 ms, and the flag clears.
+4. `HondaOverrideFadeUpSecs` 0.5 raises the ramp by 0.02 per frame, torque rebuilds past 2000, and the flag sets again.
+
+The period is about 0.11 s (about 9 Hz), and the ramp swings between 0.6 and 1.0 on each cycle.
+
+**How common.** An episode is at least 4 press onsets within 1 s while engaged. Most are in low-speed turns.
+
+| route | thresholds (driver/centre) | fade down / up (s) | episodes / engaged min |
+|---|---|---|---|
+| 277 | 2000/2000 | 0 / 1.0 | 8 / 19 |
+| 278 | 2000/2000 | 0.2 / 1.0 | 4 / 15 |
+| 27a | 2000/2000 | 0 / 1.0 | 3 / 10 |
+| 280 | 2000/2000 | 0.2 / 0.5 | 10 / 25 |
+| 283 | 2000/2000 | 0.2 / 0.5 | 23 / 27 |
+
+Route 283 has about twice the rate, but it also has more turns, so the 1.0 → 0.5 fade-up change is not shown to be the cause.
+
+**Not a lateral-gain problem.** The flag is reading the car's own torque reacting against the hands. The sim has no hands model and cannot reproduce this.
+
+**Candidate fix (not implemented; the owner decides):** add release hysteresis on the override flag in the command path. Hold "pressed" until the torque sensor falls below about 0.75× the threshold, or for at least about 0.3 s. The override would then fade once and stay faded while the hands hold, instead of chopping at 9 Hz. That only makes the override stickier, never weaker. Raising the threshold, or turning on `NrdrIncreaseOverrideTolerance` (which doubles it), is excluded by the owner's standing rule.
+
+## 158. Release hysteresis on the driver-override flag (the STATUS 157 fix). Implemented; static tests and an open-loop replay only. Not driven.
+
+The owner asked for it ("Yeah lets test it").
+
+**Change** (`opendbc_repo/opendbc/car/honda/carcontroller.py`, `hold_steering_pressed`, used in `_update_steering_torque`):
+- It only applies on the raw-flag path, with `NrdrIncreaseOverrideTolerance` off. The filtered path is unchanged.
+- A raw `steeringPressed` sets the latch. The latch clears only when both of these are true:
+  - no raw press for `OVERRIDE_RELEASE_HOLD_S` = 0.3 s;
+  - |`steeringTorque`| is below `OVERRIDE_RELEASE_FRAC` = 0.75 × the active threshold. `carstate` now stores that threshold as `CS.steer_threshold`, including the centre boost and doubling rules.
+- The latch resets whenever lateral control is inactive.
+- The constants are hardcoded with an evidence comment. There are no new params, and no threshold changes.
+- The change can only extend an override, never start one.
+- `CS.out.steeringPressed` itself, and everything else that reads it, is unchanged.
+
+**Static.** Four new tests in `test_honda.py` (`TestHondaSteeringCommandFidelity`):
+- A 3-frames-on / 8-frames-off flicker at 2300/1600 no longer rebuilds the ramp.
+- The latch releases after the hold once the sensor unloads.
+- The latch stays held at 0.8× the threshold and releases at 0.7×.
+- Without a threshold, the release is time-only.
+
+The Honda test directory passes (312) and `test_py39_compat` passes.
+
+**Replay (open loop).** The logged raw flag and sensor drive the real `_update_steering_torque`, using each route's fade params and threshold 2000. "Old" is the raw flag.
+
+| route | engaged min | flicker episodes old → new | press onsets old → new | ramp travel/min old → new | time ramp<1 old → new | longest hold past last raw press |
+|---|---|---|---|---|---|---|
+| 277 | 19.1 | 8 → 0 | 97 → 46 | 4.6 → 3.3 | 7.0% → 7.8% | 0.80 s |
+| 278 | 15.2 | 4 → 0 | 78 → 31 | 2.6 → 2.2 | 3.6% → 4.9% | 0.94 s |
+| 27a | 9.9 | 3 → 0 | 52 → 25 | 4.3 → 3.5 | 6.2% → 7.1% | 1.20 s |
+| 280 | 24.9 | 10 → 0 | 113 → 27 | 2.0 → 1.8 | 1.3% → 2.3% | 0.89 s |
+| 283 | 27.3 | 23 → 0 | 216 → 36 | 3.3 → 2.3 | 2.2% → 3.5% | 0.96 s |
+
+**What the owner will feel at the 283 bookmark.** This is the turn-in, 2000.0–2001.7 s in extract time. The sensor reads +1800 to +2300 while the command goes −0.3 to −1.0.
+- Old: the ramp chops between 0.6 and 1.0 at about 9 Hz.
+- New: the ramp fades to 0 once, in 0.2 s, because `HondaOverrideTorqueScale` is 0. The hands own the wheel for about 2 s. The latch releases at 2002.0 s, and the ramp fades back to full by 2002.5 s with the turn about −90° in.
+
+So the stutter becomes one clean handback followed by a 0.5 s re-take mid-turn.
+
+**Caveats.**
+- Open loop: in the car, the sensor partly reads the car's own push. With the push faded out, the sensor would unload sooner, so the real hold is likely shorter than the replay shows.
+- A slower cycle is possible if the hands keep resisting after the re-take: 0.2 s fade, then at least 0.3 s hold, then 0.5 s rebuild, or about 1 Hz. Replay cannot rule that out.
+- If a full handback feels too abrupt, `HondaOverrideTorqueScale` > 0 keeps partial assist while held. That is an owner param; it was not changed.
+
+## 159. First drive with the STATUS 158 override hysteresis: route 00000284--1109db7c4c. Limited road evidence: one drive, 11.6 engaged minutes. The 9 Hz chop is gone, but a slower, deeper pump appeared in one right turn.
+
+The device ran `90487307` (clean): hysteresis on, fade down/up 0.2/0.5 s, `HondaOverrideTorqueScale` 0, threshold 2000.
+
+**The four bookmarks** (1360, 1495, 1531, 1598 s) are not steering events: straight road (|angle| ≤ 4°), no presses, two hard stops. These are radar/longitudinal bookmarks.
+
+**Override behaviour**, from the logs. Out/cmd is the delivered ratio; a "dip" is a fall below 0.8.
+
+| route | engaged min | min in turns >30° | raw flicker episodes | fast chop (≥3 dips/1 s) | slow pump (≥3 dips/4 s) |
+|---|---|---|---|---|---|
+| 277 | 19.1 | 0.81 | 8 | 8 | 17 |
+| 280 | 24.9 | 0.30 | 10 | 7 | 8 |
+| 283 | 27.3 | 0.44 | 23 | 17 | 16 |
+| 284 | 11.6 | 0.77 | 1 | 2 | 10 |
+
+**The slow pump, 1629–1636 s.** A right turn at about 13 mph with the blinker on, wheel 0 → −149°.
+- The command sits saturated at −1.0. The torque sensor reads +1300 to +2000 against it, while the wheel moves *with* the command: hands damping, not steering against the car.
+- Each brief raw press lets the latch take the output to 0. The latch releases after 0.3 s and the output rebuilds (fade-up 0.5 s). At about 0.5 of the command the sensor crosses 2000 again.
+- Result: 8 cuts to zero in about 6.5 s, roughly 1.2 Hz, output swinging 0 ↔ 0.55. This is the cycle STATUS 158 flagged as possible. The old cycle was 9 Hz at 0.6 ↔ 1.0; this one is slower but deeper.
+- 1117–1120 s (right turn, 13 mph) shows two such cycles.
+- Genuine overrides are clean: at 1637–1642 s the hands turn the wheel against the command to +164° and the output stays at 0 throughout; 1681 s is similar.
+
+**Levers, none applied:**
+- `HondaOverrideFadeUpSecs` 1.0 halves the rebuild rate. That probably slows the cycle to under 1 Hz, but the crossing still happens at the same torque.
+- `HondaOverrideTorqueScale` > 0 (e.g. 0.3–0.5) floors the cut. The pump in this turn would shrink to roughly scale ↔ 0.55. The cost: during genuine overrides like 1637 s, the car keeps pushing at that fraction.
+- Code: stop counting "opposing torque while the wheel moves with the command" as an override (a damping signature). This changes when the override fires, so it needs the owner's decision.
+
+**Addendum, owner feedback.** "The stuttering is at 27:56. Turns at 21:49 was pretty smooth overall."
+- **27:56** (1676 s): a right turn at about 20 mph. The model's desired angle leads to −45° while the hands hold the wheel near +2°, and the torque sensor rises to +1800–2000 against the command.
+  - Two raw presses of 3 and 2 frames (30 and 20 ms), peaking at 2039 and 2029, each cut the output to 0: −0.23 → 0 → −0.50 → 0 → −0.94 within 1.4 s, while the command ramped to −1.0.
+  - The genuine override that follows (1680.93 s: 98 frames, peak 2853) is clean.
+- **21:49** (1309 s): the hands were light (sensor −350 at most), there were no presses, and delivered = command throughout.
+- **Press lengths.** Every cut in the 27:09–27:16 and 27:56 turns was triggered by a 1–5 frame blip peaking at 2005–2300. On 283 and 280, the median press is also 3 frames.
+- **Candidate** (not implemented; it relaxes the override, so it's the owner's decision): debounce the press onset. Require the raw flag for about 8 consecutive frames, or fire instantly above about 1.25× the threshold.
+
+## 160. Onset debounce on the driver-override flag (the STATUS 159 candidate, owner-approved). Implemented; static tests and an open-loop replay only. Not driven.
+
+**Change** (`carcontroller.py`, raw `steeringPressed` path only, `debounce_steering_pressed`):
+- A press counts only after `OVERRIDE_ONSET_FRAMES` = 6 frames (60 ms) on a leaky counter (+1 per raw frame, −1 per frame without one, so a one-frame dropout does not restart it).
+- It counts on the first frame when |steeringTorque| ≥ `OVERRIDE_INSTANT_FRAC` = 1.25 × the threshold (2500 at 2000).
+- Once the override is held, any raw frame refreshes the STATUS 158 release hold.
+- No params were added or changed. The `NrdrIncreaseOverrideTolerance` path is untouched.
+
+**Choosing N and the instant level.** Replay over routes 277, 278, 27a, 280, 283 and 284: 447 blips of ≤ 5 frames and 84 genuine presses of ≥ 0.2 s. The owner asked that the car not fight a takeover, so detection delay was weighted over filtering.
+
+| frames | instant | blips still triggering | takeover delay median / p90 / max | takeovers instant |
+|---|---|---|---|---|
+| 8 | 1.25× | 6% | 60 / 70 / 70 ms | 14% |
+| **6** | **1.25×** | **7%** | **50 / 50 / 50 ms** | **14%** |
+| 6 | 1.15× | 13% | 25 / 50 / 50 ms | 23% |
+| 5 | 1.10× | 35% | 10 / 40 ms | 32% |
+
+**Open-loop replay of 284** (logged torque and press drive the real `_update_steering_torque`; the hands do not react, so this cannot show the closed loop). "Fight" is the time from the raw press onset to delivered < 10% of the command.
+
+| config | cuts < 0.8 (whole route) | 27:09–27:16 turn | 27:56 turn | fight at 18:37 / 28:01 takeovers |
+|---|---|---|---|---|
+| as driven (fade-down 0.2) | 25 | 5 | 1 | 178 / 182 ms |
+| debounce, fade-down 0.2 | 14 | 0 | 0 | 228 / 234 ms |
+| debounce, fade-down 0 | 14 | 0 | 0 | 70 / 58 ms |
+
+- Most of the time the car spends pushing against a takeover comes from `HondaOverrideFadeDownSecs` 0.2, not from the debounce. With the blips filtered, an instant cut (fade-down 0) no longer produces the chop it did on 283. That setting is the owner's to make; this commit does not write it.
+- Keep `HondaOverrideTorqueScale` at 0: any floor means the car keeps pushing through a takeover.
+- **Risk:** a takeover at 2000–2500 now waits 60 ms before the fade begins. A blip that lasts 6 frames or more, or peaks above 2500, still cuts (7% of blips on these routes).
+
+**Correction (same day), from the logged `STEERING_CONTROL` frames on 284.** The owner runs `HondaDriverAssistDuringOverride` = 0. With it off, `lkas_active` drops as soon as the override is held, and `create_steering_control` sends `STEER_TORQUE` 0 with `STEER_TORQUE_REQUEST` 0 from that frame on.
+- On 284 the car sent 0 torque on the very frame of each raw press (1676.19 s, 1676.86 s), and ramped back in over the fade-up (0.5 s) once the hold released. `HondaOverrideFadeDownSecs` never reaches the EPS on this configuration.
+- The "fight" column above therefore overstates what was sent. Only the 6-frame onset window (0 ms for presses at 2500 or more) is added pushing time. Driven 284 had none.
+- Retract the fade-down 0 recommendation: it is moot while the toggle is off.
+- Turning the toggle on would keep the request bit set through a takeover, shaping torque only by the fade-down (0.2 s) and `HondaOverrideTorqueScale`. That adds pushing against the driver.
+
+## 161. EPS telemetry is on the owner's CAN (for porting James's firmware-inversion feedforward). Log statistics only; nothing changed.
+
+James's branch `JamesL787/openpilot` `vfn-controller-shadow` (fd815ef3) adds `LatControlClarityEps`: a feedforward that inverts the EPS firmware law (P + D + KFF45 on target R5 minus filtered rate R6), plus vfn's angle PID on the residual. It is Clarity-only, and its constants come from a Clarity Tracker3200 build. The owner's C020 image has the same P row, KFF45 and Norm1650, but a different torque table, tracker and E4 scale. James says he wrote the C020 telemetry and that the calibration is "close to clarity but not 100% identical". The owner believes the flashed tracker is 4500.
+
+Route 00000284, segments 27–28, bus 1:
+- 0x6A0–0x6A3 arrive at 50 Hz with live data. These IDs are not in the Honda DBCs; they match "Telem6A3" in the Clarity image names.
+- **0x6A2 bytes 0–1** (signed, big-endian) = −169.9 counts per deg/s of `steeringRateDeg`, corr −0.994 at 0 lag. This is the R6 rate term; the Clarity constant is −138.6. If R6 scales with the tracker from 3200, −170 points nearer 4000 (−173) than 4500 (−195). That is unconfirmed; James knows the scaling.
+- 0x6A3 bytes 5–6 track driver torque (corr −0.88).
+- The R5 target word is **not** found. No 16- or 32-bit field correlates above 0.61 with the sent E4, either raw or mapped through the owner's torque table. The layout may differ from the Clarity's.
+- The Civic sends E4 up to ±4096; the Clarity code assumes 3840.
+
+**Needed before a port:** James's C020 telemetry layout (which word is R5), the E4→key scaling on C020, and the R6 scale at the flashed tracker. Then refit the column load model on the owner's routes. Run it in shadow (logged, not applied) and score it against the telemetry R5 before it steers.
+
+**Addendum: telemetry decoded from the firmware** (owner: "use the xray rwd"). Static disassembly of the Trk4500 image (SH-2A, big-endian, capstone 5; the Trk4000 image differs only in the tracker word and checksums), checked against route 284 segments 27–28.
+- **The hook.** 0x1d8f8 jumps to new code at 0x4c2d4. That code copies 16 RAM words, 4 per frame, into 0x6A0–0x6A3 (mailboxes 51–54), then returns to 0x1d900.
+- **The control law.** The patched call at 0x29006 runs the stock law at 0x292a0 and then new code at 0x4c3c4, which adds `45 * R5 >> 10` (KFF45).
+  - R5 is read from `*(gbr+300)+6`. R6 is at gbr+100 = 0xfff88a28 (gbr 0xfff889c4).
+  - The law stores X (clamped to ±65536) at 0xfff8a970, and `err = R5 - R6 - X` at 0xfff8a974 (and clamped at 0xfff8a978).
+
+| frame | bytes | RAM | meaning |
+|---|---|---|---|
+| 0x6A0 | 0–1 | 0xfff801b2 | not identified |
+| 0x6A0 | 2–3 | 0xfff8a97e | not identified |
+| 0x6A0 | 4–7 | 0xfff8a978 | err, clamped (s32) |
+| 0x6A1 | 0–3 | 0xfff8a970 | X (s32) |
+| 0x6A1 | 4–7 | 0xfff8a974 | err (s32) |
+| 0x6A2 | 0–1 | 0xfff88a28 | **R6** (s16): −169.9 counts per deg/s, corr −0.994 |
+| 0x6A2 | 2–7 | 0xfff887c0, 0xfff8701a, 0xfff8aac4 | not identified |
+| 0x6A3 | 0–7 | 0xfff801d8, 0xfff898ae, 0xfff898b0, 0xfff898c6 | 898b0 (bytes 4–5) tracks driver torque; the rest not identified |
+
+- **R5 = err + X + R6** (all from 0x6A1 and 0x6A2 in the same frame). Against the E4 we sent: corr **0.997**, R5 ≈ **7.4 × E4** at a 0–20 ms lag. The Clarity value is 7.7. The fit is linear over the logged range (E4 up to ±4096).
+- The tracker value cannot be read from this data.
+
+**Addendum: what the tracker word does** (owner: James says tracker differences don't matter; why?). Static disassembly of the C020 Trk4500 image.
+- **0x3a080 is a first-order low-pass**, state in Q15: `s += alpha * (x - (s >> 15))`, where alpha is the constant passed in, per 32768. Its DC gain is 1.
+- **R6 is built at 0x28e82:**
+  - x = `1650 * raw_rate >> 8`, where raw_rate is at 0xfff89850 and 1650 is the Norm word inside 0x29ef8.
+  - x is filtered by 0x3a080 with alpha = the tracker word 0x137ee, clamped to ±32765 (0x137f0), and stored at 0xfff88a28. That is R6, the word telemetry sends in 0x6A2 bytes 0–1.
+- The tracker is therefore **the bandwidth of the rate filter, not a gain.** R6 per deg/s in steady state is the same at any tracker.
+- At the 1 kHz loop James reports (not verified here), the filter time constant is about 15.4 ms at stock 1996, 7.2 ms at 4000 and 6.3 ms at 4500. So 4000 vs 4500 is about 1 ms of extra lag in the firmware's own damping path. That is invisible at openpilot's 100 Hz and under the feedforward's 100–150 ms smoothing. **James is right for the feedforward.**
+- **Retracted** from this entry: "−170 points nearer 4000 than 4500". The tracker does not scale R6. The Clarity −138.6 vs Civic −169.9 difference must come from raw_rate scaling on the column, so the Civic port uses the measured −169.9 rather than a scaled Clarity constant.
+- **The tracker still matters for the EPS's own stability.** A faster rate filter adds phase margin to the firmware's damping loop, and the eps_tools README records a ~29 Hz hands-off limit cycle when tracker alpha was raised on a high-D CR-V tune. That concerns hands-off buzz, not the feedforward calibration.
+
+## 162. Longitudinal on 00000284--1109db7c4c (chill, RangeDerivedVrel and RangeVisionAssist on): the 22:38 false brake, and a wider young-track range bound. Implemented; static tests and replay only. Not driven.
+
+**Bookmarks (log statistics).**
+- **22:38 (false brake).** At 22:35.4 the lead became a new track 17 at ~79 m. It was born with U11 -10.5, and the D-043 coast held that value for ~1.5 s, while its own range went 79 -> 83 -> 80 m. Vision (p 1.00) was at own speed. Chill aTarget reached -1.47 and aEgo -1.77. D-053 played no part: the replay with RangeDerivedVrel off is identical. The STATUS 149 young-track bound missed it twice:
+  - the fit residual was 0.56-1.28 m against a cap of 0.6 (range noise at 80 m);
+  - the hold outlasted the 1.0 s age window.
+- **25:29 (real).** The lead braked hard: the camera showed it going from 32 to 12 mph in about 2 s. Radar vRel lagged the camera by ~1 s. aTarget reached -3.5 and aEgo -3.86, and the car stopped 23.7 m behind.
+- **26:36 (over-delivery).** A real lead at 40 m, closing about 3 m/s. aTarget was -0.51 but aEgo reached -1.10. This is the known brake over-delivery (option C, open).
+- **24:52 (not a brake).** A cut-in at 22 m, opening at +3.9 m/s. aTarget stayed at +0.6.
+
+**Change.** In `Track.young_flat_range_vrel_floor`:
+- A fit with residual <= `YOUNG_TRACK_MAX_RESIDUAL_M` (0.6) keeps the original floor exactly: slope - 3.
+- A fit with residual up to `YOUNG_TRACK_NOISY_MAX_RESIDUAL_M` (2.0) now also bounds. Its floor is lowered by `YOUNG_TRACK_NOISY_SE_K` (2) standard errors of the slope, so noise allows more closing rather than removing it.
+- `YOUNG_TRACK_MAX_AGE_S` goes from 1.0 to 2.0.
+- The vision gate, the rate cap (|slope| <= 6) and reporting-only publication are unchanged. No point is deleted and the KF is untouched.
+
+**Replay** (35 routes: the 32-route fleet plus 280, 283 and 284, rb283 harness, old rule vs new):
+- 113 frames publish less closing, and 0 publish more.
+- The only output change over 0.3 m/s² is 284 1357.4, where the minimum aTarget goes -1.46 -> -0.88.
+- The other 11 changed runs move out by <= 0.02. This includes 27a 514 (the STATUS 149 case), which stays at -1.38.
+- No -1.5 crossing is later.
+
+**Vision bound on the D-053 correction (tried and dropped, not committed).** The idea was to cap the D-053 correction at vision closing + 3 m/s when a p >= 0.9 model lead matches the track. It fixes 283 9:12 (-3.15 -> -2.30), but it also softened real approaches, so it was dropped:
+
+| rule | softened real approaches |
+|---|---|
+| model range 0.85-1.35 x dRel | 258 3383 (-2.10 -> -1.62; range really fell 12 m in 2 s), 026b 1709 (-2.34 -> -1.88, 0.25 s later), 280 1503 (-2.02 -> -1.62) |
+| model range >= 1.13 x dRel | 280 1503 (-1.95 -> -1.54) |
+
+At 280 1503 the radar range fell 107 -> 64 m in 5 s and the camera's own range fell too, but the model's speed said closing was only 2-4 m/s. The model's lead speed understates real closing often enough that it cannot bound radar closing on its own.
+
+## 163. The other 00000284--1109db7c4c longitudinal bookmarks (26:36, 25:29, 24:52): nothing changed in code. Log decode and replay evidence only.
+
+Follows item 162. Peter asked for the remaining 284 items to be addressed.
+
+**1. 26:36, a gentle brake that felt too firm: the car, not the command, and not systematic.**
+- The lead was a new radar track, #3 at 44.8 m, against the camera's 54 m. The radar closing speed was −3, against the camera's ~2.1.
+- `aTarget` and `carControl.actuators.accel` were both −0.51, and the command went out unchanged (item 71 point 1).
+- Pitch was ~0, yet `aEgo` went from −0.76 to −1.16 over 1594.1-1595.1 s. The onset was gas-to-brake: the previous command was +0.55, at 21.6 m/s.
+- Census of all 575 brake onsets on the 35-route set (fleet_routes.txt plus 280, 283 and 284):
+  - An onset is the command crossing −0.2 from above −0.05 within 1 s, followed by 3 s of long control with no pedal.
+  - Plateau is the mean of `aEgo(t+0.35)` minus the command while the command is within 80% of its minimum.
+  - Peak is min `aEgo(t+0.35)` minus min command.
+  - Negative means the car braked harder than asked.
+
+| command min | n | plateau median | peak median |
+|---|---|---|---|
+| −0.2 to −0.4 | 163 | +0.05 | −0.21 |
+| −0.4 to −0.7 | 204 | +0.02 | −0.28 |
+| −0.7 to −1.0 | 76 | −0.17 | −0.44 |
+| −1.0 to −1.5 | 75 | −0.14 | −0.41 |
+| −1.5 and deeper | 57 | −0.34 | −0.73 |
+
+- Mild commands are tracked on average. A −0.4 to −0.7 command settles within +0.02 of the request, and gas-to-brake onsets are no worse (+0.06, n = 43).
+- 26:36 (onset 26:32.9) is a transient dip: plateau −0.34, peak −0.64. That is about the worst quarter of mild gas-to-brake onsets (26% have a peak at or below −0.64), and 8% of all mild onsets.
+- Scaling mild commands down would make the typical mild brake too weak in order to trim an occasional ~0.5 s dip, so no compensation was added.
+- The deep bins agree with item 72: over-brake grows with depth. Item 71 option 3 and the 2026-09-23 decision stand.
+
+**2. 25:29, a hard brake for a real lead.**
+- The camera lead dropped from 32 to 12 mph in about 2 s. `aTarget` reached −3.5 and `aEgo` −3.86, and the car stopped 23.7 m behind.
+- The radar vRel trailed the camera by about 1 s. That is filter lag on a real deceleration. Shortening it means changing lead arbitration (D-048), and the stop here still left a 23.7 m margin. No change.
+
+**3. 24:52, a cut-in at 22 m that the car did not brake for.**
+- The cut-in car was opening at +3.9 m/s, so the planner kept +0.6. This is expected: a faster car merging ahead needs no braking.
+- Left as is unless Peter says it felt wrong.
+
+Scripts (in /tmp, not committed): `/tmp/ob/mild.py` builds the time series, and `/tmp/ob/ana.py` runs the census.
+
+## 164. James's firmware-inversion feedforward ported in SHADOW for the Civic Bosch C020 (owner's image, tracker 4500). Logs only, never steers. Static tests, telemetry statistics and an open-loop replay on 00000284--1109db7c4c only. Not driven.
+
+**What it is.** Upstream is JamesL787/openpilot `vfn-controller-shadow`. The shadow commit is 52618f42; the feedforward is as of fd815ef3.
+- `selfdrive/controls/lib/nrdr_eps_firmware_ff.py` is upstream's feedforward line for line. The firmware tables moved into an `EpsFirmwareCalibration`; `CLARITY_A020` reproduces upstream exactly.
+- Upstream's applied controller (`ClarityEpsLateralCore`, `LatControlClarityEps`) is not ported.
+- `LatControlPID` runs the feedforward every frame on a modified-EPS Clarity or Civic Bosch, as 52618f42 did. It is logged on `starpilotLateralState` (100 Hz, rlog) and never added to the output.
+- Fields use upstream's final names and ordinals: `epsFfActive` @8, `epsFfFeedforward` @9, `epsFfR5` @10, `epsFfLoad` @11, `epsFfDesiredRate` @12, `epsFfWeight` @13. `epsFfWeight` is always 0 here.
+- Any exception in the shadow is caught and logged once. A test checks the command is bit-identical with the shadow on, off, or raising.
+
+**C020 calibration.** Read from the flashed `.rwd` and checked against the bus-1 telemetry (R5 = err + X + R6, STATUS 161) on segments 0-29 of 284.
+
+| Item | Value | Evidence |
+|---|---|---|
+| E4 per unit output | 4096 | `torqueBP/V` = [0, 4096] identity |
+| Command map | row 1: axis 0x13806, R5 0x13872 | The seven rows share the R5 row [0 ... 30000] and differ only in the key axis. Row 1 matches R5 at E4 + 10 ms to 385 / 94 / 31 counts RMS at 5-11, 11-20 and >20 m/s. Row 0: 417 / 200 / 179. Rows 2-6: 119-1987. What selects a row is not decoded. |
+| Key clamp | 1663 (0x137F2) | The largest R5 on 284 is 28497, which is row 1 at key 1663. |
+| P row, KFF, Norm | Clarity's (117..265 at 0x13BC0, KFF45, 1650) | Image name and dump |
+| R6 | -173 counts per deg/s | Fit over all engaged frames of 284 (-169.9 on segments 27-28 alone). The tracker does not enter (STATUS 161). |
+| Speed envelope | 1774 to 100 km/h, 1552 at 120, 1219 at 150, 1108 from 160 (axis 0x13644, values 0x136C2) | **Not checked.** 284 never passed 89 km/h, and what `SpeedClamp0` disables is not decoded. |
+
+- New fact: on the Civic, E4 4096 is key 1773, past the 1663 clamp. Commands above |0.938| all land on the same R5. On the Clarity, 3840 is key 1662, so the clamp is never reached.
+- Kp is still indexed by the command key. Row 1 is not linear (19.5 R5 per key at the bottom, 17.4 at the top), so for the C020 Kp is built piecewise over |R5| through the map rather than upstream's constant 18.04 per key. The quadratic solve is unchanged; the tests cover the round trip and inversion.
+
+**The load model is still the Clarity's (route 352 fit).**
+- A refit on 284 lost to it in leave-one-segment-out: R² 0.49-0.52 against 0.51-0.56. It won only above 11 m/s (0.49 vs 0.37).
+- 284 is one drive, mostly straight. Two parking-lot segments (0 and 9, |angle| up to 338°) fit badly under either model.
+- The shadow logs are what a Civic refit needs.
+
+**Open-loop replay on 284.** Feed the logged desired angle (minus `angleOffsetDeg`), vEgo and roll through the shadow, then compare its R5 with the R5 the car ran. Engaged frames only, no driver press, v > 2 m/s.
+
+| | All | Turning (\|angle\| > 2°) | Turning < 25 mph | Turning > 25 mph |
+|---|---|---|---|---|
+| C020 calibration | 0.52 | 0.53 | 0.52 | 0.74 |
+| Clarity calibration | 0.54 | 0.56 | 0.54 | 0.75 |
+
+- James's Clarity figure is 0.79 on turning frames of held-out route 353.
+- The Clarity calibration scores slightly higher here only because the Clarity load model was fitted together with the Clarity damping scale. The firmware constants are the C020's by telemetry.
+- The gap is the load model, which is the reason to log before any apply.
+
+**Not done.** Applying it (upstream's core, fade-in and join gate), a Civic load refit, and the >100 km/h envelope. No param keys and no params artifact were added.
+
+Pre-existing failures, not touched: `test_latcontrol` Bolt/Palisade taper (2), `test_torqued_lat_accel_offset` (1), `test_starpilot_planner` (1). The collection errors in `test_controlsd`, `test_turn_lead`, `test_longitudinal_planner` and `test_nissan_leaf_fallback` are DeprecationWarnings.
+
+Scripts (in /tmp, not committed): `/tmp/c020_rows.py`, `/tmp/c020_loadfit*.py`, `/tmp/c020_shadow_replay.py`, `/tmp/c020_score.py`.
+
+## 165. The STATUS 164 firmware-inversion feedforward can now steer, behind a toggle (owner-requested, default off). Static tests and an open-loop replay on 00000284--1109db7c4c only. Not driven.
+
+**Toggle.** `NrdrLatEpsFirmwareFF` is "EPS Firmware Feedforward (Test)" under Lateral Tune (advanced) in the Galaxy and the device's NRDR tuning page. It is a bool, default off, and applies to the modified-EPS Clarity and Civic Bosch.
+- The params artifacts were rebuilt: larch64, pinned Cython 3.1.4, 858 → 859 keys.
+- The key is in `lat_tune_analyzer.TUNING_KEYS`. At off it stays out of the fingerprint (`FINGERPRINT_ADDED_OFF`), so earlier routes do not re-hash.
+
+**What it does (`LatControlPID`, modified EPS only).**
+- **Join gate.** The gate is upstream's `ClarityEpsLateralCore`: `FF_JOIN_ERROR_DEG` 10, `FF_FADE_IN_S` 0.5, `FF_SPEED_BP` [2, 4] m/s.
+  - It joins once |angle error| < 10°, then ramps to full over 0.5 s.
+  - A driver press drops the weight to 0 at once, and so does v < 2 m/s. The press is the modified-EPS override detector, with its onset debounce.
+  - After that, it rejoins through the same gate.
+- **Output.** `output = P·p + I·i + D + (1−w)·F·f_scale + w·eps_ff + (1−w)·rate_ff·slew`.
+  - The firmware feedforward replaces the kf feedforward and the desired-rate feedforward. As upstream, it is not trimmed by `LatFScale*`.
+  - P, I, the center taper, the testing-ground scale and alpha, and the clip are unchanged.
+- **Shadow.** It is now updated before the active check, so the log is identical either way. `epsFfWeight` records the weight actually applied.
+- **Failure.** Any exception in the feedforward, or a non-finite output, gives weight 0. The command is then bit-identical to toggle-off (tested).
+
+**Replay: the size of the term it adds (284, engaged, no press, v > 2 m/s).** `F` is the logged kf feedforward before `f_scale`; `eff` is the C020 firmware feedforward at full weight.
+
+| | rms F | rms eff | rms command | corr(eff, command) |
+|---|---|---|---|---|
+| Turning, < 25 mph | 0.004 | 0.236 | 0.439 | 0.50 |
+| Turning, > 25 mph | 0.010 | 0.078 | 0.067 | 0.86 |
+| Straight (\|des\| ≤ 2°) | 0.002 | 0.049 | 0.044 | 0.65 |
+
+- **On the Civic the kf feedforward is almost nothing.** The owner's command is carried by P and I. The toggle therefore **adds** a term about the size of today's whole command in turns. It does not swap like for like.
+- **Expect the P/I loop to rebalance.** I will unwind and P will see a smaller or reversed error. Until it does, expect more turn-in torque and a chance of overshoot on the first turns.
+- **Below 25 mph the load model tracks the command least** (corr 0.50; R² 0.52 in STATUS 164). That is where it is most likely to feel wrong.
+- **Frame-to-frame roughness is not the problem.** The rms step of eff is 0.0020, against 0.0036 for the logged command.
+- **Not scaled by LatF.** `LatFScale*` does not trim this term. If it is too strong, the knobs are LatP/I, or turn it off.
+
+**Tests.** `test_nrdr_eps_firmware_ff.py`: 102 pass, 7 of them new.
+- The gate: join, fade, press, speed.
+- Applied on both cars: the command changes and the weight reaches 1.
+- A press takes the weight to 0, and it rejoins afterwards.
+- An applied failure gives the toggle-off command exactly.
+
+`test_lat_tune_analyzer`, `test_py39_compat` and the Galaxy layout/frontend tests pass. `test_latcontrol` has the 2 pre-existing Bolt/Palisade failures and nothing new.
+
+**Not done.** A Civic load refit, the >100 km/h envelope, and any closed-loop simulation of the PI rebalancing.
+
+Scripts (in /tmp, not committed): `/tmp/epsff/ffmag.py`, `/tmp/epsff/ffcmp.py`.
+
+## 166. `NrdrLatEpsFirmwareFF` now runs James's controller itself, `LatControlClarityEps`, generalized to the Civic Bosch C020. This supersedes the 165 crossfade (owner: "match exactly how James had it, but for the Civic"). Static tests and an open-loop replay on 00000284--1109db7c4c only. Not driven.
+
+**What changed.**
+- **Controller selection.** With the toggle on, `controlsd` builds `LatControlClarityEps` (upstream JamesL787 8c3a3fd8 / fd815ef3) instead of `LatControlPID`.
+  - This applies on the modified-EPS Clarity and Civic Bosch when the lateral tune is `pid`.
+  - The toggle is read once, when controlsd starts, so a change applies on the next drive.
+  - Upstream selects it unconditionally on the Clarity. Here the toggle gates both cars.
+- **`common/pid.py`** is upstream's. `update()` gains `integrator_gain_scale` and `reset_integrator`, and both defaults leave every other caller unchanged.
+- **`LatControlPID` is back to STATUS 164.** It logs the firmware feedforward in shadow and never applies it. The 165 crossfade and `eps_ff_weight` are gone.
+- **`ClarityEpsLateralCore` and `speed_band`** are in `nrdr_eps_firmware_ff.py`, verbatim, except:
+  - the calibration and the P/I trims are constructor arguments;
+  - the Civic gets `CIVIC_BOSCH_C020` (STATUS 164) and its own trims.
+
+**The controller, as upstream.**
+- **Error:** `error = des + offset − angle`.
+- **Gains:** a PID on CP's kp/ki, with limits ±1.
+- **Feedforward:** the firmware-inversion feedforward, through the join gate (10°, 0.5 s fade, 2–4 m/s; a press or v < 2 sets it to 0).
+- **Integrator:** frozen on steer-limited, a press, or v < 2. Its rate is scaled per band by I_SCALE, and it is reset below 2 m/s.
+- **Output:** `clip(p·P_SCALE[band] + i + d + ff)`, then a per-band output low-pass (τ 0.07 / 0.05 / 0.01 s), then clip. Bands split at 25 and 50 mph.
+- **Desired angle:** the shell computes it from the firmware VGR or the sr curve (`NrdrLatUseFirmwareVgr`), rate-limits it by `NrdrLatAngleRateLimit`, and uses the modified-EPS press detector.
+
+**Civic specifics.**
+- **Trims.** The trims are fixed at what the owner drove on 284 (initData):
+  - P (1.15, 1.25, 1.15)
+  - I (0.75, 0.95, 1.00)
+  - Clarity's upstream trims (P 1.25/1.00/1.25, I 0.70/0.95/0.35) stay for the Clarity.
+- **Gains.** The Civic Bosch modified gains are the same numbers as James's (kpV 0.018/0.024/0.048/0.060, kiV 0.006/0.008/0.016/0.020).
+- **Output low-pass.** It uses upstream's constant τ. The `HondaTorqueOutput*` keys do not exist on this branch, and `HondaLpfTau*` (a target filter here) is not used by this controller.
+
+**What does not apply while it is on.** This is upstream's behaviour, not a port gap:
+- `LatP/I/FScale*` and `HondaLateralPidKp/KiScale`
+- the kf and rate feedforward
+- the center taper
+- target smoothing
+- the override fade
+- the testing-ground scale
+- every other `LatControlPID` shaping
+
+The carcontroller does not filter modified-EPS torque, on this branch as upstream.
+
+**Open-loop replay (284, engaged, no press, v > 2 m/s; logged inputs, so the error is the one the old controller left).**
+
+| | rms James | rms logged | corr | James ff / p / i | logged p / i |
+|---|---|---|---|---|---|
+| Turning, < 25 mph | 0.539 | 0.439 | 0.91 | 0.121 / 0.638 / 0.230 | 0.556 / 0.056 |
+| Turning, > 25 mph | 0.136 | 0.067 | 0.83 | 0.078 / 0.046 / 0.070 | 0.036 / 0.043 |
+| Straight | 0.126 | 0.044 | 0.52 | 0.05 / 0.03–0.08 / 0.09–0.16 | 0.03–0.07 / 0.02–0.04 |
+
+- **The excess is mostly the integrator,** integrating error that closed-loop feedforward would have removed.
+- **Open loop cannot size the closed-loop command.** The replay shows the terms have the expected shape and scale, nothing more.
+- **Feedforward weight.** The mean is 0.91, and it is at full weight 88 % of the time.
+- **Roughness.** The rms step is 0.0030 against 0.0036 logged, and the 5–8 Hz energy ratio is 0.92.
+
+**Tests.** `test_nrdr_eps_firmware_ff.py`: 121 pass.
+- James's core tests are included verbatim.
+- A Civic core test checks the banded PID on the Civic trims.
+- Toggle selection on both cars; off, stock, and other Hondas keep `LatControlPID`.
+- The Civic uses its own calibration and trims.
+- Settings are read.
+- It steers, logs and rests.
+- The rate limit holds.
+
+With `test_lat_tune_analyzer` and `test_py39_compat`, 199 pass. `test_latcontrol` has only the 2 pre-existing Bolt/Palisade failures. Ruff is clean on the new files.
+
+**Not done.** A Civic load refit, the >100 km/h envelope, and a closed-loop simulation. The first drive should expect more turn-in torque below 25 mph than today.
+
+Script (in /tmp, not committed): `/tmp/epsff/core_replay.py`.
+
+## 167. Closed-loop simulation of `LatControlClarityEps` on the Civic C020 plant, six routes. It tracks better at 25 mph and above, the same below 25 mph, and dithers about twice as much everywhere. Sim evidence only. Not driven.
+
+**What was added.** `tools/lateral/lat_pid_sim.py` has a new controller kind, `clarity_eps`.
+- It builds the car's `LatControlClarityEps` through `use_clarity_eps_controller` with `NrdrLatEpsFirmwareFF` = 1, so the Civic gets `CIVIC_BOSCH_C020` and its trims exactly as on the car.
+- It runs through the same `CarControllerSteer` stage and fitted plant (`tools/lateral/plants/civic_bosch_c020.json`) as the `pid` kind.
+- It refuses a stock EPS or a non-pid tune.
+- As on the car, `LatP/I/FScale*` and `HondaLateralPidKp/KiScale` do not reach it. A test checks this: the output is bit-identical when they change, and the `pid` output moves.
+- Tests: 3 new tests in `test_lat_pid_sim_torque.py`.
+  - The wiring test checks the controller, the calibration, the FF joining to weight 1.0, the log and the target.
+  - The slider-isolation test.
+  - The refusal test, which also checks that params are restored.
+- The synthetic-step convergence check was dropped. On the synthetic step, **both** `pid` and `clarity_eps` limit-cycle at ±1, with the test plant and with the C020 plant, at 6, 15 and 25 m/s. The synthetic harness is not representative; it was not investigated further. Convergence is scored on routes instead.
+
+**How the sim is read.**
+- The plant integrates the delivered command only while the car is engaged and hands-off, and resyncs to the log elsewhere.
+- Metrics use the owner-facing report's definitions, per band.
+- `pid` in the sim is the regular path on each route's logged tuning. It is the check that the plant is credible.
+  - At 25–50 mph it reproduces the logged err rms within ~0.1° on 5 of 6 routes (280: 0.73 sim vs 0.97 logged).
+  - Below 25 mph it reproduces within ~1.5° on 5 of 6 routes. On 284 it does not (9.0° sim vs 16.3° logged), so 284's low band is weak evidence.
+
+**Err rms, degrees (sign changes per second on straights, 0.15° hysteresis).**
+
+| route | < 25 mph logged / pid / clarity | 25–50 logged / pid / clarity | > 50 logged / pid / clarity |
+|---|---|---|---|
+| 284 | 16.31 / 9.04 / 9.65 (0.38 / 0.49 / 1.16) | 0.70 / 0.64 / 0.44 (0.30 / 0.38 / 0.54) | 0.39 / 0.50 / 0.30 (0.28 / 0.26 / 0.32) |
+| 280 | 6.09 / 6.14 / 6.10 (0.41 / 0.46 / 1.01) | 0.97 / 0.73 / 0.61 (0.33 / 0.38 / 0.62) | 0.28 / 0.29 / 0.22 (0.34 / 0.34 / 0.45) |
+| 277 | 11.98 / 12.85 / 13.24 (0.43 / 0.31 / 1.10) | 0.94 / 0.95 / 0.72 (0.32 / 0.33 / 0.57) | 0.67 / 0.83 / 0.47 (0.23 / 0.21 / 0.43) |
+| 276 | 16.71 / 16.79 / 18.17 (0.29 / 0.46 / 0.81) | 0.88 / 0.89 / 0.50 (0.33 / 0.32 / 0.57) | 0.52 / 0.62 / 0.30 (0.15 / 0.14 / 0.30) |
+| 278 | 18.22 / 16.91 / 18.36 (0.45 / 0.53 / 1.17) | 0.54 / 0.56 / 0.35 (0.30 / 0.31 / 0.51) | 0.46 / 0.56 / 0.36 (0.30 / 0.25 / 0.32) |
+| 27a | 16.30 / 16.55 / 17.14 (0.25 / 0.38 / 1.02) | 0.77 / 0.82 / 0.50 (0.30 / 0.28 / 0.45) | too little data |
+
+**Findings.**
+- **25–50 mph: better.**
+  - Err rms is 17–44 % lower than sim `pid` on all six routes.
+  - The curve actual/desired ratio is 1.01–1.06, against 0.94–0.98.
+  - Lag is 0.00–0.24 s, against 0.15–0.33 s.
+  - The ratio is slightly above 1 on 284 (1.064, 8 s of curve), which is mild overshoot.
+- **> 50 mph: better.** Err rms is 25–45 % lower on five routes, and the curve ratio is 1.00 on 284 and 0.94 on 277, against 0.93 and 0.71.
+- **Below 25 mph: not better on err rms** (−0.04 to +1.45° against `pid`). It is better on turn entry: entry actual/target is 0.69–0.87 against 0.45–0.71, and the curve ratio is 0.93–1.01 against 0.83–0.97. Low-speed err rms is dominated by large transients the plant only roughly reproduces.
+- **Dither is the thing to watch.** On straights, sign changes are about 2× `pid` at 25–50 mph and 2–3× below 25 mph.
+  - The 1 s high-passed error on near-straights (|des| < 5°) is 40–90 % higher below 25 mph (for example 284: 1.24° against 0.88°) and ~40–100 % higher at 25–50 mph.
+  - The rms step of the delivered command is ~1.7× below 25 mph (0.22–0.30 against 0.13–0.17 /s), and the same or lower above.
+  - p95 |err| on straights is still lower at 25–50 mph (0.62–0.81° against 0.93–1.49°). So above 25 mph this is small, fast wandering around a tighter mean. Below 25 mph it is a real increase in wheel activity.
+  - Whether the car shows it depends on what the fitted plant leaves out: friction and the tracker. Read it as a prediction to check, not a result.
+
+**Limits.**
+- The plant was fitted on PID-driven data (the regular path).
+- It is a black box. It cannot represent the EPS tracker (Trk4000 vs Trk4500), and it has no driver.
+- Desired curvature is exogenous: the model does not react to the controller's path.
+- The FF load constants are still James's Clarity fit. Nothing here refits them.
+
+**First drive with the toggle on: what to check.**
+- **Below 25 mph:** wheel dither on straights and after turn exit, and the turn-in amount (the sim expects more entry and less lag).
+- **25–50 mph:** overshoot on curves (ratio > 1).
+- **Logs:** `epsFfWeight` and the P/I/FF split, against 284.
+
+**Tests.** 192 pass (`tools/lateral/tests/`, `test_nrdr_eps_firmware_ff.py`, `test_py39_compat`). Ruff is clean on the new lines. The one UP031 at `lat_pid_sim.py:511` pre-exists at HEAD.
+
+**Scripts** (in /tmp, not committed):
+- `/tmp/epsff/cl_sim.py` runs the six-route comparison.
+- `/tmp/epsff/dither.py` computes the high-pass and command-step figures.
+- 284 was extracted to `/tmp/epsff/00000284--1109db7c4c.npz`. No routes were fetched.
+
+## 167. First drive with the STATUS 160 onset debounce: route 00000285--1cd7a85309. Limited road evidence: one short drive, 7.0 engaged minutes, mostly intersection turns. No code change.
+
+**Setup.** The device ran `f71648c5` (clean) with `NrdrLatEpsFirmwareFF` off, so this is the NRDR PID.
+- Threshold 2000 with centre boost 2000.
+- `HondaOverrideFadeDownSecs` 0.0 (moot, see 160's correction), fade-up 0.5.
+- Torque scale 0, `HondaDriverAssistDuringOverride` 0.
+- LatP 115/125/115, LatI 75/95/100, LatF 50/115/115.
+- The drive has no bookmarks.
+
+**The debounce runs as built.** Replaying `_update_steering_torque` on the logged inputs with the debounce matches the delivered/command ratio on 94.6 % of frames, against 92.5 % without it.
+- Only 2 blips of ≤ 5 frames started from full output (403.5 s, 643.5 s), and both still cut, probably via the leaky counter.
+- On 284 the same test finds 3.
+
+**What still cuts: 60–190 ms presses just over threshold.** Raw presses by length, 285 vs 284:
+
+| raw press length | 285 | 284 |
+|---|---|---|
+| 1–5 frames | 27 | 34 |
+| 6–19 frames | 37 | 8 |
+| ≥ 20 frames | 18 | 13 |
+
+- The 6–19 frame presses peak at 2020–2200.
+- In 27 of the 37, the torque opposes the command. In 14, the wheel is still moving with the command.
+- Most sit at |angle| < 10° while the target leads by 10–30°. That is hands holding against turn-in or unwind, not blips.
+- There are 85 dips below 0.8 in 7.0 min (12.1/min). On 284 it was 53 in 11.6 min (4.6/min). This drive has more turning: 1.25 min above 30° against 0.77.
+
+Clusters of three or more cuts:
+
+| route time | cuts | notes |
+|---|---|---|
+| 0:39 | 5 | 9 mph |
+| 1:21 | 4 | |
+| 3:41–3:54 | 11 | 17 mph, turn to 123° |
+| 6:19 | 9 | |
+| 6:30–6:44 | 12 | |
+| 7:52 | 3 | |
+| 9:06–9:20 | 11 | 20 mph, turn to 58° |
+| 9:58 | 3 | |
+| 10:44–10:51 | 7 | |
+
+Most of the clusters are with the blinker on.
+
+**Levers, none applied (the owner's call; the threshold is not to be raised):**
+- **Longer onset window for torque between 2000 and 2500, instant above 2500.** At about 20 frames it would filter most of these. The cost: a light takeover waits up to 200 ms before the cut.
+- **A damping signature.** Opposing torque while the wheel still moves with the command does not count as a press. This changes when an override fires.
+- **Slower fade-up.** This softens the rebuild, but does not change how often the car cuts.
+
+Scripts (in /tmp, not committed): `/tmp/r285.py`, `/tmp/r285b.py`, `/tmp/r285c.py`.
+
+## 168. First drive with `LatControlClarityEps` on: 00000286--ba543e3a3e (build f71648c5, `NrdrLatEpsFirmwareFF` 1). It tracks tighter than any PID drive, with 2–3× the straight-line dither the STATUS 167 sim predicted, and a feedforward roll offset the integrator cancels. Limited road evidence (one drive) and log decode; nothing changed in code.
+
+**The drive.** 12.9 min engaged, 10.9 min hands-off.
+- initData confirms build f71648c5 with `NrdrLatEpsFirmwareFF` = 1 and `NrdrLatUseFirmwareVgr` = 1, and the controller logged `epsFf*` all drive.
+- Feedforward weight: mean 0.92 below 25 mph (0.89 of frames at full weight), 1.00 above.
+- 7 bookmarks: 5:58.2, 6:27.1, 6:38.1, 6:43.6, 10:05.7, 12:14.3 and 12:52.4. Across ±10 s of each, the error is under 1°, with no press and no saturation.
+  - 5:58 is a lane change.
+  - 10:05, 12:14 and 12:52 are decelerations from ~50 mph.
+  - What the owner marked them for is not known yet.
+
+**Tracking (logged, hands-off; STATUS 167 definitions).**
+
+| band | 286 err rms | 284 (PID) err rms | 286 straight rms | 284 straight rms | 286 curve ratio | 284 curve ratio | 286 sign changes /s (0.15°) | 284 sign changes /s (0.15°) |
+|---|---|---|---|---|---|---|---|---|
+| < 25 mph | 11.33 | 16.31 | 2.46 | 2.07 | 0.951 | 0.785 | 2.3 (0.95) | 0.7 (0.38) |
+| 25–50 | 0.73 | 0.70 | 0.27 | 0.61 | 0.985 (4 s) | 1.007 | 2.0 (0.54) | 0.9 (0.30) |
+| > 50 | 0.19 | 0.39 | 0.19 | 0.39 | – | 0.943 | 2.9 (0.46) | 1.0 (0.28) |
+
+- On straights at 25 mph and above, 286 has the lowest error of any logged route on this car. The 25–50 band has only 4 s of curve.
+- Below 25 mph it follows turns much better (curve ratio 0.95 against 0.79 on 284, lag 0.14 s against 0.24 s).
+
+**The sim prediction held.** The STATUS 167 `clarity_eps` sim, run on 286's own inputs, matches the logged drive:
+- Sign changes: 2.2 / 1.9 / 1.8 per s simulated, against 2.3 / 2.0 / 2.9 logged.
+- 1 s high-passed error below 25 mph: 1.39° simulated, 1.37° logged.
+- Command step rms below 25 mph: 0.35 simulated, 0.38 logged.
+- So the dither is real, and it is the controller, not the plant model. On the highway it is fast and small (straight rms 0.19°). Below 25 mph the command moves about twice as fast as on PID drives (0.38 against 0.14–0.41 /s).
+
+**Driver presses while engaged.**
+
+| band | 286 | PID routes (276, 277, 278, 27a, 280, 284) |
+|---|---|---|
+| < 25 mph | 10.0 /min | 7.9–27 /min |
+| 25–50 | 0.6 /min | 0.1–3.0 /min |
+| > 50 | 0 | 0 on five routes, 6.9 /min on 277 |
+
+286 is inside the PID range in every band.
+
+**Feedforward roll offset.**
+- On highway near-straights (|des| < 1.5°), the feedforward averages +0.057 while the integrator holds −0.027 and P is ~0. The net +0.029 is what PID drives settle at (+0.02–0.03 on 30 routes).
+- A least-squares fit puts the offset on roll, at 1.01 command per rad.
+- liveParameters roll on this car is +0.03–0.05 rad on every route since 1ba, far more than road crown. The mount or roll estimate is biased, and James's Clarity `LOAD_KROLL` turns that bias into ~2× the torque the Civic needs.
+- The integrator absorbs it. It will lag wherever roll changes (ramps, crowned turns). This belongs to the Civic load refit: a Civic `LOAD_KROLL` / `LOAD_BIAS`, not a change to the Clarity's.
+
+**Not changed.** No code, no params.
+- Candidates, owner's call:
+  - the Civic roll/bias refit above;
+  - a longer low-speed output τ or lower low-speed P trim for the dither;
+  - making those tunable.
+- Each needs another drive to judge.
+
+Scripts (in /tmp, not committed): `/tmp/epsff/r286_*.py`, `roll_all.py`, `press.py`.
+
+## 169. Longitudinal on 00000286--ba543e3a3e (build f71648c5, chill 89%), the first drive with the item 162 young-track bound: it never fired, and none of the 7 bookmarks is a false brake. Nothing changed in code. Log decode and replay only.
+
+- **Item 162 bound.** A radard replay of the whole route, with the bound off against on, differs on 0 frames. This drive neither tests nor exercises the fix.
+- **10:03 and 12:09: −3.0 brakes for real slow traffic.**
+  - Radar first held each lead at 95-116 m, closing on the −13.5 U11 rail (tracks 50 and 15). Radar and camera ranges both fell 13-18 m/s, so the rail under-read the closing.
+  - The camera under-read the lead's closing too (it read 29-41 mph at 12:06).
+  - Braking began within 0.5 s of the radar pick-up.
+  - At 10:08 the car was 25 m behind a ~9 mph lead. By 12:13 it was 43 m back, level with a 24 mph lead.
+  - At 9:57.7 the lead was a 126 m radar-only leadTwo (−15.5) with modelProb 0.1, not taken as leadOne, which is by design.
+  - Bookmarks 10:05.7 and 12:14.3 fall at the ends of these brakes.
+- **12:47-12:53: −2.2 on a vision-only lead.**
+  - liveTracks had no point in path from 35 to 100 m, with only 1-4 points per sweep. The model's range jumped 54-78 m.
+  - There were real slow cars: the adjacent-lane radar points closed at −8.
+  - Radar misses of this kind also occur on 284 (segment 20 has a point near the vision lead on only 11% of frames). They are not new.
+  - Bookmark 12:52.4.
+- **6:15-6:43, the speed wobble following track 36 at ~55 mph and 47-75 m.** Bookmarks 6:27.1, 6:38.1 and 6:43.6.
+  - Radar and camera are on the same car. The yRel magnitude matches, 4.5 m on a curve converging to 0.
+  - Radar range and vRel agree with each other: +4.5 m/s opening at 6:33, then −4.5 m/s closing at 6:35 (54.4 to 47.0 m). The camera range dipped 53.4 to 49.6 m at the same moment.
+  - aLeadK went from +3.4 to −5.8 in 1.5 s, while the model's lead accel stayed −0.1. The MPC hit the chill floor of −1.0 twice, at 6:22.5 and 6:35.0.
+  - At 6:35 the command flipped from +0.70 to −1.00 in 1 s. The car delivered −1.78 for about 1 s, 0.8 beyond the command (the item 163 gas-to-brake transient), and speed fell from 56.9 to 50.7 mph.
+  - Bounding aLeadK by the model's accel (a camera cross-check, proposed in conversation and not implemented) would have removed this. It would also remove real lead brakes, because the model's lead accel sits near 0 even when the lead slows (12:08: model −0.0 while range fell 16 m/s). One event is not enough to tune on (rule 5).
+- **5:58.2**: a lane change, with the lead dropped and +0.8 acceleration. Nothing longitudinal.

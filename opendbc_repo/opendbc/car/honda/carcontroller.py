@@ -73,8 +73,64 @@ def get_eps_modified_steering_pressed(
   return filter_s, filter_s >= 0.28
 
 
+# Release hysteresis on the raw override flag (STATUS 157/158). Route 00000283 seg 33: with hands holding
+# the wheel, the car's own push read 1400-2480 on the torque sensor against a 2000 threshold. The raw flag
+# set for ~3 frames, the fade cut the output ~25%, the sensor unloaded below 2000 in 30 ms, the flag
+# cleared, the fade-up rebuilt the torque, and it set again -- a ~9 Hz stutter through the turn. Once
+# set, the flag now stays set until no raw press has been seen for OVERRIDE_RELEASE_HOLD_S AND the
+# sensor is below OVERRIDE_RELEASE_FRAC of the active threshold. This can only make the override
+# stickier; the threshold itself is untouched. Replay evidence only; not yet driven.
+OVERRIDE_RELEASE_HOLD_S = 0.3
+OVERRIDE_RELEASE_FRAC = 0.75
+
+# Onset debounce on the same flag (STATUS 159/160). Route 00000284 (first drive on the latch above): every
+# cut in the 27:09-27:16 and 27:56 turn-ins came from a 1-5 frame blip peaking at 2005-2300 against a 2000
+# threshold (hands holding while the car turns in), and each blip cost ~0.5 s at zero output. Genuine
+# takeovers ran 29-98 frames and peaked at 2250-2850. A press now counts once the raw flag has built up
+# OVERRIDE_ONSET_FRAMES (leaky: -1 per frame without it), or at once above OVERRIDE_INSTANT_FRAC x threshold.
+# Once held, any raw frame refreshes the hold. Replay over 277-284: 6 frames / 1.25x filters 93% of the 447
+# presses of <= 5 frames and detects all 84 presses of >= 0.2 s within 50 ms (14% instantly); 8 frames bought
+# 1% more filtering for 20 ms more delay. Owner-approved trade. Replay evidence only.
+OVERRIDE_ONSET_FRAMES = 6
+OVERRIDE_INSTANT_FRAC = 1.25
+
+
+def debounce_steering_pressed(raw_pressed: bool, steering_torque: float, threshold, onset_frames: int) -> tuple[bool, int]:
+  """One control frame of the onset debounce. Returns (confirmed press, updated onset counter)."""
+  onset_frames = min(onset_frames + 1, OVERRIDE_ONSET_FRAMES) if raw_pressed else max(onset_frames - 1, 0)
+  instant = threshold is not None and abs(float(steering_torque)) >= OVERRIDE_INSTANT_FRAC * float(threshold)
+  return raw_pressed and (onset_frames >= OVERRIDE_ONSET_FRAMES or instant), onset_frames
+
+
+def hold_steering_pressed(raw_pressed: bool, steering_torque: float, threshold,
+                          held: bool, hold_s: float) -> tuple[bool, float]:
+  """One control frame of the override latch. Returns (pressed, seconds left before a release is allowed)."""
+  if raw_pressed:
+    return True, OVERRIDE_RELEASE_HOLD_S
+  if not held:
+    return False, 0.0
+  hold_s = max(0.0, hold_s - DT_CTRL)
+  below = threshold is None or abs(float(steering_torque)) < OVERRIDE_RELEASE_FRAC * float(threshold)
+  if hold_s <= 0.0 and below:
+    return False, 0.0
+  return True, hold_s
+
+
 def get_honda_bosch_wind_brake_mps2(v_ego: float) -> float:
   return float(np.interp(v_ego, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
+
+
+def bosch_gas_lookup_accel(gas_pedal_force: float, hill_brake: float, gasfactor: float, min_gas: float) -> float:
+  # The learned gasfactor scales the flat-road part of the request only; the hill feed-forward is
+  # added on top unscaled. LongGasLearner freezes above |pitch| 0.02 rad, so gasfactor is fitted on
+  # flat road and was never checked against the hill term. Route 280 segs 29-31 (gasfactor 1.248,
+  # at the soft cap): flat-road aEgo - cmd was -0.01..+0.04, but with a hill term of 0.3-1.0 m/s^2
+  # the car ran +0.10..+0.27 over the command (30:53, +0.5..+1.0 vs aTarget ~0, 51.4 mph on a
+  # 50 set, then a slower lead over the crest). Scaling the hill term by gasfactor predicts
+  # (gasfactor - 1) * hill = +0.10..+0.22 of that. Static/log evidence only; not yet driven.
+  # Anchored at min_gas so gasfactor scales the offset from the pedal-on threshold rather than
+  # shifting where gas starts.
+  return (gas_pedal_force - hill_brake - min_gas) * gasfactor + min_gas + hill_brake
 
 
 def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
@@ -565,6 +621,9 @@ class CarController(CarControllerBase):
     self.lat_active_prev = False
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_robust_prev = False
+    self.override_held = False
+    self.override_hold_s = 0.0
+    self.override_onset_frames = 0
     self.bosch_last_gas = 0.0
     self.bosch_braking = False
     if self.CP.carFingerprint in HONDA_BOSCH:
@@ -647,7 +706,15 @@ class CarController(CarControllerBase):
       if live["increase_override_tolerance"]:
         steering_pressed = self._filtered_steering_pressed(CS, torque_cmd)
       else:
-        steering_pressed = bool(CS.out.steeringPressed)
+        raw_pressed = bool(CS.out.steeringPressed)
+        sensor_torque = float(getattr(CS.out, "steeringTorque", 0.0))
+        threshold = getattr(CS, "steer_threshold", None)
+        confirmed, self.override_onset_frames = debounce_steering_pressed(raw_pressed, sensor_torque, threshold,
+                                                                          self.override_onset_frames)
+        self.override_held, self.override_hold_s = hold_steering_pressed(
+          confirmed or (raw_pressed and self.override_held), sensor_torque, threshold,
+          self.override_held, self.override_hold_s)
+        steering_pressed = self.override_held
 
       if not self.lat_active_prev:
         self.override_ramp = 0.0
@@ -685,6 +752,9 @@ class CarController(CarControllerBase):
     else:
       self.override_ramp = 0.0
       self.steering_pressed_filter_s = 0.0
+      self.override_held = False
+      self.override_hold_s = 0.0
+      self.override_onset_frames = 0
       self.steering_pressed_robust_prev = False
 
     # Opt-in slew limit on the delivered command. Unlike a low-pass filter this genuinely
@@ -902,10 +972,10 @@ class CarController(CarControllerBase):
               at_accel_max=(gas_pedal_force >= self.params.BOSCH_ACCEL_MAX),
             )
 
-          # Anchor the learned gain at min_gas so gasfactor scales the offset from the pedal-on
-          # threshold rather than shifting where gas starts.
+          # gasfactor scales the flat-road request only; the hill term is added unscaled (see
+          # bosch_gas_lookup_accel).
           min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
-          self.gas = float(np.interp((gas_pedal_force - min_gas) * self._learner.gasfactor + min_gas,
+          self.gas = float(np.interp(bosch_gas_lookup_accel(gas_pedal_force, hill_brake, self._learner.gasfactor, min_gas),
                                      self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
           # limit gas ramp to 60 units per frame, matches stock. Higher sometimes causes powertrain
           # to ignore gas command.

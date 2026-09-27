@@ -51,11 +51,12 @@ def test_main_prints_band_params(tmp_path, monkeypatch, capsys):
                 "baseline": {"fingerprint": "x", "gains": cur, "raw": {}, "scheduleTerms": []},
                 "factors": [1.0, 1.05, 1.0], "perRoute": [], "applied": None, "schemaVersion": 2}
   monkeypatch.setattr(cli.lat, "analyze_sources", lambda sources, **kw: fake_trial)
-  rc = cli.main(["--routes-root", str(tmp_path), "--latest", "1", "--json", str(tmp_path / "trial.json")])
+  rc = cli.main(["--routes-root", str(tmp_path), "--latest", "1", "--json", str(tmp_path / "trial.json"), "--no-sim"])
   out = capsys.readouterr().out
   assert rc == 0
   assert "LatPScaleLowSpeed = 100\n" in out
-  assert "LatPScaleStandard = 105   (was 100)" in out
+  assert "LatPScaleStandard = 105   (was 100; rules)" in out
+  assert "LatIScale" not in out and "sim step" not in out
   assert "LatPScaleHighway = 105\n" in out
   assert "100/75/100" in out and "50+" in out and "25-50" in out
   assert "LatGainSchedule =" not in out

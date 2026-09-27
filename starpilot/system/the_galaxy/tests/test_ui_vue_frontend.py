@@ -906,7 +906,7 @@ def test_ui_nrdr_pid_lateral_tune_tab_uses_lat_tune_api():
   # Revert only the top of the applied stack; apply retries with force only after a fingerprint refusal.
   assert "stackTop !== t.trialId" in panel
   assert "/fingerprint/i.test(" in panel and "latTuneApplyTrial(trial.trialId, true)" in panel
-  # StarPilot's three PID speed bands, P only: no knot schedule left in the panel
+  # StarPilot's three PID speed bands (P, plus I where the sim moved a band): no knot schedule left in the panel
   assert "LatPScaleLowSpeed/Standard/Highway" in panel and "readyBands" in panel and "currentBands" in panel
   assert "readyKnots" not in panel and "proposedPPct" not in panel and "20/30/40/50 mph)" not in panel
 

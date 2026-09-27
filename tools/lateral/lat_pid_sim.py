@@ -84,12 +84,19 @@ def _segments(route_dir):
 
 def extract(route_dir, cache=True):
   cache_path = os.path.join(route_dir, "lat_pid_sim.npz")
-  if cache and os.path.exists(cache_path):
+  return extract_logs(_segments(route_dir), os.path.basename(os.path.normpath(route_dir)), cache_path if cache else None)
+
+
+def extract_logs(log_paths, route, cache_path=None, should_continue=None):
+  """extract() from an explicit list of segment logs in order (the device keeps segments as <route>--<n>/ dirs,
+  not under one route dir). cache_path: an .npz read if present, written otherwise. should_continue() -> False
+  stops the read and raises InterruptedError."""
+  if cache_path and os.path.exists(cache_path):
     z = np.load(cache_path, allow_pickle=False)
     data = {k: z[k] for k in FIELDS}
     data["cp_bytes"] = z["cp_bytes"].tobytes()
     data["params"] = json.loads(str(z["params"]))
-    data["route"] = os.path.basename(os.path.normpath(route_dir))
+    data["route"] = route
     return data
 
   from openpilot.tools.lib.logreader import LogReader
@@ -99,10 +106,14 @@ def extract(route_dir, cache=True):
   cs = lp = cc = co = None
   lcs = 0
   t0 = None
-  for seg in _segments(route_dir):
+  n_msg = 0
+  for seg in log_paths:
     try:
       lr = LogReader(seg)
       for m in lr:
+        n_msg += 1
+        if should_continue is not None and n_msg % 20000 == 0 and not should_continue():
+          raise InterruptedError("stopped")
         w = m.which()
         if t0 is None:
           t0 = m.logMonoTime
@@ -139,16 +150,18 @@ def extract(route_dir, cache=True):
             cc.actuators.torque if cc is not None else 0.0,
             co.actuatorsOutput.torque if co is not None else 0.0, float(lcs), p.p, p.i, p.f,
           ))
+    except InterruptedError:
+      raise
     except Exception as e:  # a truncated final segment is common; keep what was read
       print(f"warning: {seg}: {e}", file=sys.stderr)
   if cp_bytes is None:
-    raise RuntimeError(f"{route_dir}: no carParams in log")
+    raise RuntimeError(f"{route}: no carParams in log")
   arr = np.array(rows, dtype=np.float64)
   data = {k: arr[:, i] for i, k in enumerate(FIELDS)}
   data["cp_bytes"] = cp_bytes
   data["params"] = params
-  data["route"] = os.path.basename(os.path.normpath(route_dir))
-  if cache:
+  data["route"] = route
+  if cache_path:
     np.savez_compressed(cache_path, **{k: data[k] for k in FIELDS},
                         cp_bytes=np.frombuffer(cp_bytes, dtype=np.uint8), params=json.dumps(params))
   return data
@@ -179,7 +192,7 @@ def _truthy(v, default=True):
   return str(v).strip().lower() in ("1", "true")
 
 
-KINDS = ("pid", "torque_upstream", "torque_starpilot")
+KINDS = ("pid", "torque_upstream", "torque_starpilot", "clarity_eps")
 # Torque-controller defaults from the lat-accel study (STATUS 140): LAF ~11-12 m/s^2 per unit command and
 # friction ~0.02-0.03 (command units) above 25 mph, several times that below. SR 15.27 is the pooled fit
 # after the firmware VGR map (model M1), used in place of paramsd's scalar when the map is on.
@@ -212,7 +225,10 @@ class Controller:
   kind "pid" is the car's LatControlPID; "torque_upstream" is comma's LatControlTorque (vendored in
   latcontrol_torque_upstream.py); "torque_starpilot" is StarPilot's LatControlTorque with NNFF off (NNFF is a
   different class that controlsd swaps in; it is never built here). The torque kinds are built on the logged
-  CarParams with the lateral tuning switched to torque and the TORQUE_DEFAULTS values (overridable)."""
+  CarParams with the lateral tuning switched to torque and the TORQUE_DEFAULTS values (overridable).
+  "clarity_eps" is LatControlClarityEps, what controlsd builds on a modified-EPS Clarity / Civic Bosch when
+  NrdrLatEpsFirmwareFF is on (STATUS 166), on the logged CarParams' pid gains; LatP/I/F and the Honda Kp/Ki scales
+  do not reach it, as on the car."""
   def __init__(self, cp_bytes, params, testing_ground=False, kind="pid", torque=None):
     from cereal import car, custom
     from opendbc.car.car_helpers import interfaces
@@ -234,7 +250,7 @@ class Controller:
         setattr(cpb.lateralTuning.pid, k + "V", [float(self.gains[k])])
     if "kf" in self.gains:
       cpb.lateralTuning.pid.kf = float(self.gains["kf"])
-    if kind != "pid":
+    if kind not in ("pid", "clarity_eps"):
       cpb.lateralTuning.init("torque")
       t = cpb.lateralTuning.torque
       t.latAccelFactor = float(self.tq["laf"])
@@ -263,6 +279,12 @@ class Controller:
       self.lac.params = _DictParams(self.params)
       if "kf" in self.gains:
         self.lac.is_modified_eps_kf_car = False
+    elif kind == "clarity_eps":
+      from openpilot.selfdrive.controls.lib import latcontrol_clarity_eps
+      if not latcontrol_clarity_eps.use_clarity_eps_controller(self.CP, _DictParams({"NrdrLatEpsFirmwareFF": "1"})):
+        raise ValueError(f"clarity_eps needs a modified-EPS Clarity or Civic Bosch on pid tuning, not {self.CP.carFingerprint}")
+      self._patch(latcontrol_clarity_eps, "Params", lambda: _DictParams(self.params))
+      self.lac = latcontrol_clarity_eps.LatControlClarityEps(self.CP, self.CI, DT)
     else:
       from opendbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_physical_to_linear
       if self.tq["vgr"]:
@@ -303,7 +325,7 @@ class Controller:
   def raw_target(self):
     """The unshaped target angle (deg, physical): the PID's before the slew clip and smoothing, or for the torque
     kinds the angle the controller's own kinematics (VGR map or not, its sR) give for the desired curvature."""
-    return self.lac.raw_angle_steers_des if self.kind == "pid" else self.target
+    return self.lac.raw_angle_steers_des if self.kind == "pid" else self.target  # clarity_eps: before its rate limit
 
   def _set_friction(self, v):
     fr = self.tq["friction"]
@@ -336,6 +358,12 @@ class Controller:
       if self.gains.get("rate_damp") and active:
         fade = float(np.clip((30 * MPH - CS.vEgo) / (30 * MPH), 0.0, 1.0))
         out = float(np.clip(out - self.gains["rate_damp"] * 0.010 * CS.steeringRateDeg * fade, -1.0, 1.0))
+      return float(out), float(des)
+    if self.kind == "clarity_eps":
+      # the shell's own map (firmware VGR or sr curve) before its rate limit; it recomputes the same value in update
+      self.target = self.lac._desired_angle_no_offset(self.VM, CS.vEgo, lp.roll, curv) + lp.angleOffsetDeg
+      out, des, self.last_log = self.lac.update(active, CS, self.VM, lp, bool(steer_limited), curv,
+                                                False, 0.0, None, None, self.toggles)
       return float(out), float(des)
     from opendbc.car.honda.steer_ratio import vgr_linear_to_physical
     lin = float(np.degrees(self.VM.get_steer_from_curvature(-curv, CS.vEgo, lp.roll)))
@@ -428,6 +456,11 @@ PLANT_STRIDE = 50
 # (raw zero crossings count sensor steps); with the analyzer's deadband the undelayed plant already matched
 # the logs, and 5 frames of delay matches both counts best.
 FIT_DELAYS = (0, 2, 4, 6, 8, 10, 12, 15, 20)
+# Optional tenth coefficient: a centring pull that is about the same at any angle past a few degrees (c9 tanh(th /
+# CENTRING_DEG)). Below 25 mph the logged hold command is ~0.14 of table torque plus ~0.003 per degree (routes
+# after 6 Aug, quasi-steady, hands off), which the linear spring alone cannot give; without it the sim holds
+# low-speed curves at 0.94-0.95 of the desired angle against 0.87 logged (STATUS 147). Fit with centring=True.
+CENTRING_DEG = 2.0
 ANGLE_QUANT_DEG = 0.1
 SIGN_HYST_DEG = 0.15   # lat_tune_analyzer.SIGN_HYST_DEG
 
@@ -443,6 +476,8 @@ class Plant:
 
   @staticmethod
   def from_json(j):
+    if j.get("bands"):
+      return BandedPlant.from_json(j)
     # Plants fitted before the delay existed carry neither key and keep their old, undelayed behaviour.
     eps = None
     if j.get("eps"):
@@ -466,12 +501,54 @@ class Plant:
   def accel(self, theta, rate, u, v):
     c = self.c
     return ((c[0] + c[1] * v) * rate + (c[2] + c[3] * v * v / 100) * theta
-            + (c[4] + c[5] * v + c[6] * v * v / 100) * u + c[7] + c[8] * np.tanh(rate / 2.0))
+            + (c[4] + c[5] * v + c[6] * v * v / 100) * u + c[7] + c[8] * np.tanh(rate / 2.0)
+            + (c[9] * np.tanh(theta / CENTRING_DEG) if len(c) > 9 else 0.0))
 
   def to_json(self):
     return {"coef": self.c.tolist(), "delay_frames": self.delay, "angle_quant_deg": self.quant,
             "eps": self.eps.to_json() if self.eps is not None else None,
-            "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2)"}
+            "model": "rate' = (c0+c1 v) r + (c2+c3 v^2/100) th + (c4+c5 v+c6 v^2/100) u(t - delay) + c7 + c8 tanh(r/2)" +
+                     (" + c9 tanh(th/%g)" % CENTRING_DEG if len(self.c) > 9 else "")}
+
+
+class BandedPlant(Plant):
+  """Two plants fitted on separate speed ranges, blended linearly between blend_mph[0] and blend_mph[1]: `low`
+  below, `high` above. STATUS 147: one plant fitted on every speed held low-speed curves at 0.94 of the desired
+  angle against 0.87 logged; a plant fitted below 25 mph only (with the centring term) reads 0.91. Both must share
+  the delay, quantisation and torque table, which the delivered command passes through once, outside accel()."""
+  def __init__(self, low, high, blend_mph=(22.0, 28.0)):
+    if (low.delay, low.quant) != (high.delay, high.quant) or (low.eps is None) != (high.eps is None) or \
+       (low.eps is not None and low.eps.sha1 != high.eps.sha1):
+      raise ValueError("banded plant halves differ in delay, quantisation or torque table")
+    super().__init__(high.c, high.delay, high.quant, high.eps)
+    self.low, self.high = low, high
+    self.blend_mph = (float(blend_mph[0]), float(blend_mph[1]))
+
+  @staticmethod
+  def from_json(j):
+    low, high = (Plant.from_json(b) for b in j["bands"])
+    return BandedPlant(low, high, j.get("blend_mph", (22.0, 28.0)))
+
+  def with_eps(self, eps):
+    return BandedPlant(self.low.with_eps(eps), self.high.with_eps(eps), self.blend_mph)
+
+  def accel(self, theta, rate, u, v):
+    lo, hi = self.blend_mph[0] * MPH, self.blend_mph[1] * MPH
+    w = min(max((v - lo) / (hi - lo), 0.0), 1.0)
+    if w <= 0.0:
+      return self.low.accel(theta, rate, u, v)
+    if w >= 1.0:
+      return self.high.accel(theta, rate, u, v)
+    return (1.0 - w) * self.low.accel(theta, rate, u, v) + w * self.high.accel(theta, rate, u, v)
+
+  def to_json(self):
+    return {"bands": [self.low.to_json(), self.high.to_json()], "blend_mph": list(self.blend_mph)}
+
+
+def load_plant(path):
+  """A plant JSON (single or banded) with its metadata keys ("car", "eps_fw", ...) ignored."""
+  with open(path) as f:
+    return Plant.from_json(json.load(f))
 
 
 def _hands_off(d):
@@ -514,7 +591,7 @@ def _plant_freerun(p, plant):
   return out
 
 
-def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS, eps=None):
+def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS, eps=None, centring=False):
   """Fits the coefficients at each candidate delay and keeps the delay with the lowest free-run residual.
   With eps (an EpsTable) the command goes through that firmware table first; use the image the drives ran on."""
   p = _pack(ds, PLANT_WIN, PLANT_STRIDE)
@@ -522,7 +599,7 @@ def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS, eps=None):
     p["u"] = eps.drive(p["u"])
   best = None
   for delay in delays:
-    plant, cost = _fit_coef(p, delay, iters, verbose)
+    plant, cost = _fit_coef(p, delay, iters, verbose, centring)
     if verbose:
       print(f"  delay {delay:2d} frames: window rms {np.sqrt(cost):.3f} deg")
     if best is None or cost < best[1]:
@@ -532,11 +609,11 @@ def fit_plant(ds, iters=60, verbose=True, delays=FIT_DELAYS, eps=None):
   return best[0], p["v"].shape[0]
 
 
-def _fit_coef(p, delay, iters, verbose):
+def _fit_coef(p, delay, iters, verbose, centring=False):
   def resid(c):
     return (_plant_freerun(p, Plant(c, delay)) - p["th"])[:, 10::10].ravel()
 
-  c = np.array([-8.0, 0.0, -2.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0])
+  c = np.array([-8.0, 0.0, -2.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0] + ([0.0] if centring else []))
   lam = 1e-2
   r0 = resid(c)
   for it in range(iters):

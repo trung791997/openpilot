@@ -147,7 +147,7 @@ export const NrdrLatTunePanel = {
     async applyTrial(trial) {
       const ok = await GalaxyConfirm({
         title: "Apply Trial",
-        message: `Apply trial ${trial.trialId}? Each band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed/Standard/Highway); held bands are not written. A P term in a valid LatGainSchedule is dropped. I and F are unchanged. You can revert it here.`,
+        message: `Apply trial ${trial.trialId}? Each band that moves gets its P step applied to the device's current P (LatPScaleLowSpeed/Standard/Highway), and a band the sim moved gets its I step applied to the device's current I (LatIScale*); held bands are not written. A P term in a valid LatGainSchedule is dropped. F is unchanged. You can revert it here.`,
         confirmLabel: "Apply",
       })
       if (!ok) return
@@ -167,7 +167,7 @@ export const NrdrLatTunePanel = {
     async revertTrial(trial) {
       const ok = await GalaxyConfirm({
         title: "Revert Trial",
-        message: `Revert trial ${trial.trialId}? The previous P band scales and LatGainSchedule are restored.`,
+        message: `Revert trial ${trial.trialId}? The previous P/I band scales and LatGainSchedule are restored.`,
         confirmLabel: "Revert",
       })
       if (ok) await this.runWith(() => api.latTuneRevertTrial(trial.trialId), "Trial reverted.").catch(() => {})
@@ -199,8 +199,9 @@ export const NrdrLatTunePanel = {
         <div style="padding: var(--sp-4);">
           <p style="color: var(--text-muted); line-height:1.6; margin:0 0 var(--sp-3);">
             Pick up to {{ maxRoutes }} routes. The device analyzes them while parked and proposes one P step per NRDR PID speed band
-            (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Only P changes; I and F are shown and kept. Each run is a trial you can apply and revert.
-            Unit-test/replay evidence only; nothing here is road-validated.
+            (0–25, 25–50, 50+ mph; factor 0.85–1.15, written on the 5 % grid). Where the closed-loop sim (plant fitted to this car's EPS image)
+            reproduces a band's logged tracking, it replaces that band's step with the best P/I pair within ±10 % P and ±25 I. F is shown and kept.
+            Each run is a trial you can apply and revert. Unit-test/replay/sim evidence only; nothing here is road-validated.
           </p>
           <GxNotice v-if="isOnroad" text="Analyze, apply and revert are offroad-only. Park and go offroad first." style="margin:0 0 var(--sp-3);" />
           <GxNotice v-if="status.state === 'failed' && status.error" tone="danger" :text="status.error" style="margin:0 0 var(--sp-3);" />
@@ -272,6 +273,8 @@ export const NrdrLatTunePanel = {
             <template v-if="isBandTrial(t)">
               <div class="gx-row__desc">Ready: {{ (t.readyBands || []).join(', ') || 'none' }}</div>
               <div class="gx-row__desc">P low / std / hwy: {{ (t.currentP || []).join(' / ') }} → {{ (t.proposedP || []).join(' / ') }}</div>
+              <div v-if="t.proposedI" class="gx-row__desc">I low / std / hwy: {{ (t.currentI || []).join(' / ') }} → {{ (t.proposedI || []).join(' / ') }}</div>
+              <div v-if="t.sources" class="gx-row__desc">Source: {{ t.sources.join(' / ') }}<span v-if="t.simStatus"> · sim {{ t.simStatus }}</span></div>
             </template>
             <div v-else class="gx-row__desc" style="color:var(--error);">⚠ Pre-band trial (20/30/40/50 mph knots); re-analyze for NRDR PID band values.</div>
             <div v-for="w in (t.warnings || [])" :key="w" class="gx-row__desc" style="color:var(--error);">⚠ {{ w }}</div>
@@ -285,19 +288,22 @@ export const NrdrLatTunePanel = {
               <div v-if="!Array.isArray(expanded[t.trialId].bands)" class="gx-row__desc" style="color:var(--error);">⚠ This trial predates the speed bands; re-analyze the routes.</div>
               <template v-else>
               <table style="width:100%; border-collapse:collapse; font-size:var(--fs-xs);">
-                <thead><tr style="text-align:left; color:var(--text-muted);"><th>Band</th><th>Min</th><th>Ready</th><th>P/I/F now</th><th>P new</th></tr></thead>
+                <thead><tr style="text-align:left; color:var(--text-muted);"><th>Band</th><th>Min</th><th>Ready</th><th>P/I/F now</th><th>P/I new</th><th>Source</th></tr></thead>
                 <tbody>
                   <tr v-for="b in expanded[t.trialId].bands" :key="b.name" style="border-top:1px solid var(--glass-border);">
                     <td>{{ b.name }}<br /><span style="color:var(--text-muted);">{{ bandRange(b) }}</span></td><td>{{ fmt(b.minutes, 1) }}</td>
                     <td :style="b.ready ? 'color:var(--primary);' : 'color:var(--text-muted);'">{{ b.ready ? 'yes' : 'need 3 min' }}</td>
                     <td>{{ pif(b.current) }}</td>
-                    <td :style="b.proposed.p !== b.current.p ? 'color:var(--primary); font-weight:600;' : ''">{{ b.proposed.p }}</td>
+                    <td :style="b.proposed.p !== b.current.p || b.proposed.i !== b.current.i ? 'color:var(--primary); font-weight:600;' : ''">{{ b.proposed.p }} / {{ b.proposed.i }}</td>
+                    <td>{{ b.source || 'rules' }}</td>
                   </tr>
                 </tbody>
               </table>
               <div v-for="b in expanded[t.trialId].bands" :key="'r' + b.name" class="gx-row__desc">
                 sign {{ fmt(b.signRate) }}/s · curve {{ fmt(b.curveRatio, 3) }} (entry {{ fmt(b.curveRatioEntry, 2) }} · steady {{ fmt(b.curveRatioSteady, 2) }} · exit {{ fmt(b.curveRatioExit, 2) }}) · overrides {{ fmt(b.pressRate) }}/min · factor {{ fmt(b.factor) }} — {{ b.reason }}
+                <span v-if="b.sim"><br />sim {{ b.sim.trusted ? 'trusted' : 'untrusted' }}: {{ b.sim.trust }}<span v-if="b.sim.log && b.sim.simDriven"> · err log/sim {{ fmt(b.sim.log.err_rms) }}/{{ fmt(b.sim.simDriven.err_rms) }}<span v-if="b.sim.simProposed"> → {{ fmt(b.sim.simProposed.err_rms) }}</span></span></span>
               </div>
+              <div v-if="expanded[t.trialId].sim" class="gx-row__desc">Sim step: {{ expanded[t.trialId].sim.status }}<span v-if="expanded[t.trialId].sim.minutes"> · {{ expanded[t.trialId].sim.minutes }} min</span></div>
               <div class="gx-row__desc">Band values from the newest route's logs (fingerprint {{ (expanded[t.trialId].baseline || {}).fingerprint || '–' }}).</div>
               </template>
               <div v-if="expanded[t.trialId].applied" class="gx-row__desc" style="word-break:break-all; font-family:monospace;">

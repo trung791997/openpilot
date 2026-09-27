@@ -305,7 +305,7 @@ def test_apply_refuses_a_trial_with_nothing_to_change(tmp_path):
   import pytest
   module = _load(tmp_path)
   _trial(module, "lt-1", fingerprint=module.current_fingerprint(), p=(100, 100, 105))
-  with pytest.raises(RuntimeError, match="no P change"):
+  with pytest.raises(RuntimeError, match="no P or I change"):
     module.apply_trial("lt-1")
   assert module.list_workspace()["activeStack"] == []
 

@@ -4566,3 +4566,81 @@ def test_slow_radar_lead_stop_gate(monkeypatch):
   assert not LongitudinalPlanner.raw_close_lead_needs_control(moving, 16.0)
   far = make_lead(status=True, d_rel=125.0, v_lead=2.5, radar=True, model_prob=0.95)
   assert not LongitudinalPlanner.raw_close_lead_needs_control(far, 16.0)
+
+
+
+
+def _fast_closing_setup(*, d_rel=104.7, v_rel=-20.0, v_ego=20.0, radar=True, track=24, source='lead0',
+                        vis_prob=0.78, vis_x=102.7, vis_v=4.5):
+  # 271 BM0 at -3.19 s (STATUS 150): radar track 24 at 104.7 m closing 20 m/s, model lead at
+  # 102.7 m doing 4.5 m/s with prob 0.78, MPC braking for lead0.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  lead = make_lead(status=True, d_rel=d_rel, v_lead=max(v_ego + v_rel, 0.0), radar=radar, model_prob=vis_prob)
+  lead.vRel = v_rel
+  lead.radarTrackId = track if radar else -1
+  planner.lead_one = lead
+  planner.mpc.source = source
+  model, vis = make_model_lead(prob=vis_prob, x=[vis_x], v=[vis_v])
+  return planner, lead, model
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_fast_closing_lead_passes_comfort_floor(enabled, monkeypatch):
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR", enabled)
+  planner, lead, model = _fast_closing_setup()
+  assert planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model) is enabled
+  # The close-lead cap then builds against the vehicle minimum instead of the -1.0 comfort floor.
+  cap = planner.get_close_lead_brake_cap(lead, 20.0, -3.5)
+  assert cap is not None and cap < -2.0
+
+
+@pytest.mark.parametrize("case, kwargs", [
+  # STATUS 119 phantom spikes: 25f 634.9 a vision lead at 89 m closing 0.2 m/s; 0237 796.0 likewise not fast-closing.
+  ("vision_lead_spike", dict(d_rel=89.0, v_rel=-0.2, radar=False, vis_x=89.0, vis_v=19.8)),
+  ("slow_closing", dict(d_rel=25.0, v_rel=-5.0, vis_x=25.0, vis_v=15.0)),
+  ("long_ttc", dict(d_rel=150.0, v_rel=-20.0, vis_x=150.0, vis_v=0.0)),
+  # 276 13:46.6: U11 rail -13.5 published on a flat range; vision sees the lead at ego speed.
+  ("rail_phantom_vision_not_closing", dict(d_rel=56.0, v_rel=-13.5, vis_x=56.0, vis_v=19.5)),
+  ("vision_other_object", dict(vis_x=60.0)),
+  ("vision_low_prob", dict(vis_prob=0.3)),
+  ("mpc_not_braking_for_it", dict(source='cruise')),
+])
+def test_fast_closing_lead_holds_comfort_floor(case, kwargs, monkeypatch):
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR", True)
+  planner, lead, model = _fast_closing_setup(**kwargs)
+  assert not planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  assert planner.fast_closing_lead_track is None
+
+
+def test_fast_closing_lead_latch_holds_while_closing_and_releases(monkeypatch):
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR", True)
+  planner, lead, model = _fast_closing_setup()
+  assert planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  # Same track, closing speed below the entry value but above the hold value, MPC source switched: still passes.
+  lead.vRel = -6.0
+  planner.mpc.source = 'cruise'
+  assert planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  # 0237 1201.6: closing under the hold value releases the latch, and it does not re-arm on a slow lead.
+  lead.vRel = -4.7
+  assert not planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  assert planner.fast_closing_lead_track is None
+  lead.vRel = -4.0
+  assert not planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  # A different track needs the full entry test.
+  planner2, lead2, model2 = _fast_closing_setup()
+  assert planner2.fast_closing_lead_passes_floor(lead2, 'lead0', 20.0, model2)
+  lead2.radarTrackId = 25
+  lead2.vRel = -6.0
+  assert not planner2.fast_closing_lead_passes_floor(lead2, 'lead0', 20.0, model2)
+
+
+def test_fast_closing_pass_is_capped_at_max_brake(monkeypatch):
+  # STATUS 150: the pass opens the comfort floor only to -FAST_CLOSING_LEAD_MAX_BRAKE, not the vehicle minimum.
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_MAX_BRAKE", 2.0)
+  assert longitudinal_planner_module.fast_closing_accel_min(-3.5) == -2.0
+  assert longitudinal_planner_module.fast_closing_accel_min(-1.2) == -1.2
+  planner, lead, _ = _fast_closing_setup()
+  cap = planner.get_close_lead_brake_cap(lead, 20.0, longitudinal_planner_module.fast_closing_accel_min(-3.5))
+  assert cap is not None and -2.0 - 1e-6 <= cap < -1.0
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_MAX_BRAKE", 0.0)
+  assert longitudinal_planner_module.fast_closing_accel_min(-3.5) == -3.5
