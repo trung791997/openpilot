@@ -9115,3 +9115,18 @@ How it is wired:
     - 285: identity 0.00 → PID.
     - 280 and 284 → PID (build predates the controller).
   - **Not yet measured on a drive:** a gated-James drive and a PidFF-on drive. Those two cases rest on the code (static) and the synthetic tests.
+
+## 177. Mac MetaDrive sim: TSFDO (the owner's daily model) now drives reliably with the comma 4 (mici) camera, and is the default episode model. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+
+Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim model".
+
+- **Causes fixed (none were the model):**
+  - A libzmq assertion from two threads updating the same SubMaster froze about half of all episodes (2b2001f3). This also explains the Clarity runs that ended at ~40 s.
+  - MetaDrive paints road only in a 1024 m square around the origin, so the old gentle map ran off the paint. The region is now centred on the map, and gentle is a closed 945 m loop (0646d64f).
+  - Lane lines were aliased; they are now drawn anti-aliased.
+- **Measured (TSFDO + mici, 120 s each):**
+  - Gentle loop: 2/2 with no departure, lane probs 0.8–0.96.
+  - Default map: 1/1 with no departure.
+  - R 60 m and R 40 m loops at 25 km/h: 1/1 each with no departure, lane probs 0.13–0.5, up to ~95° desired.
+- **Intersection preset:** invalid under TSFDO. Its r20 corner looks like a T-junction and the model drives straight on. R 40 m replaces it for turn scoring.
+- **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane confidence is low on tight loops; MetaDrive's chassis is not the Civic's.

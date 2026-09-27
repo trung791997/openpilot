@@ -132,3 +132,30 @@ The gate (no departure, rms and osc within +10 % of the baseline) FAILS for the 
 **CEM round 2 (PID kind, pool + the four PID MetaDrive episodes at weight 0.25, mistake penalty around base1 and pidbest2).** REJECTED on holdout: overall 0.959 but highway 1.065 (fails the every-band ≤ 1.02 rule; low band 0.945). Best theta p [138, 132, 126.8, 140.9], i [60.5, 83.9, 75.9, 96.3] at 20/30/40/50 mph. Not a recommendation. Its cost had no past-desired term, so it could also hide overshoot; `lat_cem_tune.py` now adds a `turn <25mph` band (trailing + 1.5 × past-desired error, |des| > 45°, v < 11.2 m/s) and `--pid-ff on|off` for round 3, and any winner must also pass `lat_score gate`. Episodes from ~02:12 to 02:57 on 2026-09-27 were lost to a persisted sim `Offroad_ExcessiveActuation` param (hardwared blocked onroad); `lat_episode.sh` now clears it before each episode.
 
 **Verdict and recommendation.** No `LatGainSchedule` is recommended for the car from this work. The off-policy search finds a consistent but small (~6 %) improvement that is concentrated at 20–40 mph and does not survive the on-policy gate; the highway band cannot be tuned on this data (~8 minutes, no curves). What would change this: more highway minutes with curves in the pool, MetaDrive episodes long enough to hold ≥25 mph for the full 120 s, and the Clarity disengagement explained. If the owner wants to try a candidate anyway, the round-1 best is the one to try, at 25–50 mph only, on a drive that can be compared to 00000280/00000283 with `lat_pid_sim.py validate`. Sim evidence only; no device behaviour change.
+
+## TSFDO as the default sim model (2026-09-27)
+
+Episodes now run TSFDO, the owner's daily model, by default (`SIM_MODEL=stock` for comparison), and `SIM_CAMERA=mici` renders the comma 4's os04c10 geometry (1344x760, road hfov 61.0°, wide 115.4°). Three causes had made TSFDO look unreliable in MetaDrive. None of them was the model:
+
+- **Bridge freeze (commit 2b2001f3).** The main loop and the 100 Hz `simulated_car` thread both called `SubMaster.update` on the same ZMQ sockets. On macOS that tripped libzmq's `fq.cpp:56` assertion and froze about half of all episodes ~30 s before their end, including clar1/clar2's ~40 s ends in the table above. Only the thread updates now.
+- **Paint region (commit 0646d64f).** MetaDrive paints road and lane-line texture only in a 1024 m square around the origin. The old gentle S-road ran 1.5 km along x, and every gentle episode (4/4) left the road at x 539–590 m where the paint ended, with TSFDO's lane probs still ~0.9. The terrain region is now centred on the built map (darwin only), and `gentle` is a closed S-loop at R 250 m (3.1 km in a 945 m square). A 2048 m region drew the whole ground white on this Mac, so **maps must fit in 1024 m**.
+- **Line rendering (same commit).** Lane lines were 1 px lines from truncated points, thresholded by the shader: curves came out as staircase blobs and the centre line zigzagged. They are now drawn anti-aliased at 0.15 m from sub-pixel points, with the `terrain.frag` thresholds at 50 % coverage.
+
+Results, TSFDO + mici camera, owner's car config, torque mode through the fitted C020 EPS, 120 s episodes:
+
+| Map | Speed | Episodes | Departures | Lane-line probs | Frame drop |
+|---|---|---|---|---|---|
+| gentle loop (R 250 m S-bends) | 25 mph set | 2 | 0 | 0.8–0.96 | 1–8 % |
+| default (R 120 m, 90° curves) | 25 mph set | 1 | 0 | 0.4–0.87 | ≤ 9 % |
+| default, `SIM_MAP_RADIUS=60` | 25 km/h | 1 | 0 | 0.13–0.5 | ≤ 9 % |
+| default, `SIM_MAP_RADIUS=40` | 25 km/h | 1 | 0 | 0.15–0.33 | ≤ 9 % |
+
+At R 40 m the wheel reached ~95° |desired|, so it replaces `intersection` as the low-speed turn scenario. The `intersection` preset's r20 corner reads to TSFDO as a T-junction (lane probs ~0.05 on the approach), and it drives straight on, as openpilot does at real intersections. Turn metrics from that preset are not valid under TSFDO.
+
+**Remaining gaps versus the owner's car:**
+- The wide camera is a rectilinear 115° render, not the real fisheye.
+- Camera height and pitch are fixed rather than taken from the car's liveCalibration.
+- MetaDrive's look: lane confidence is low on tight loops (R ≤ 60 m).
+- MetaDrive's Bullet car stands in for the Civic's chassis. Only the EPS response is fitted from its rlogs.
+
+Sim evidence only; no device behaviour change.
