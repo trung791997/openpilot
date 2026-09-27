@@ -9129,4 +9129,13 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
   - Default map: 1/1 with no departure.
   - R 60 m and R 40 m loops at 25 km/h: 1/1 each with no departure, lane probs 0.13–0.5, up to ~95° desired.
 - **Intersection preset:** invalid under TSFDO. Its r20 corner looks like a T-junction and the model drives straight on. R 40 m replaces it for turn scoring.
+- **Scenario set (one episode each).**
+  - R 60 m loop at 25 km/h, turn err / trail / past in degrees:
+    - PID: 10.65 / 9.72 / 0.92, 1 departure.
+    - PID + FirmwareFF: 7.31 / 5.12 / 2.19.
+    - James ungated: 7.94 / 6.06 / 1.89.
+    - James gated: 9.41 / 6.75 / 2.66.
+  - Pull-away wobble after a stop: PID 0.48, PID + FF 0.65, James ungated 1.99, gated 1.11.
+  - R 40 m at 25 km/h is past the torque limit for every controller, so it is a stress case only.
+  - A keyboard cruise press is now held for 100 ms (6f90fcae); one-frame presses were missed and resumes failed.
 - **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane confidence is low on tight loops; MetaDrive's chassis is not the Civic's.

@@ -152,6 +152,20 @@ Results, TSFDO + mici camera, owner's car config, torque mode through the fitted
 
 At R 40 m the wheel reached ~95° |desired|, so it replaces `intersection` as the low-speed turn scenario. The `intersection` preset's r20 corner reads to TSFDO as a T-junction (lane probs ~0.05 on the approach), and it drives straight on, as openpilot does at real intersections. Turn metrics from that preset are not valid under TSFDO.
 
+**Scenario set under TSFDO + mici (2026-09-27, one episode per cell, `LatPScaleLowSpeed=115`).** The R 60 m loop at 25 km/h is scored in the 12–25 mph band. Stop-and-resume runs on the gentle loop at 40 km/h: cancel and brake to 0 at 40 s, resume at 60 s.
+
+| Controller | R60 turn err / trail / past (°) | R60 departures | R40 departures | Pull-away wobble | Std-band err rms after the stop |
+|---|---|---|---|---|---|
+| PID | 10.65 / 9.72 / 0.92 | 1 | 2 | 0.48 | — |
+| PID + `NrdrLatPidFirmwareFF` | 7.31 / 5.12 / 2.19 | 0 | 1 | 0.65 | — |
+| James, ungated (HEAD) | 7.94 / 6.06 / 1.89 | 0 | 6 (each recovered) | 1.99 | 4.68 |
+| James, gated (0f27431d) | 9.41 / 6.75 / 2.66 | 0 | 1 | 1.11 | 3.28 |
+
+- **R60 curves.** In every one, TSFDO's lane probs fall to about 0.1, it asks for up to ~50°, the output saturates, and the wheel lags 8–10° and then overshoots on the exit. The owner's car saturates in sharp slow turns too (STATUS 172), and trails more than the plant, so this matches the car's own authority limit.
+- **R40.** At 25 km/h it is past that limit for every controller, so it is a stress case, not a ranking.
+- **Resume fix.** The first PID stop-and-resume never resumed: a one-frame keyboard cruise press was sampled around by the 100 Hz CAN thread. The bridge now holds key presses for 100 ms, and the rerun is the one scored.
+- **Discarded run.** The first gated R60 run disengaged at 4 s at 1 m/s, a startup glitch rather than lateral, and was rerun.
+
 **Remaining gaps versus the owner's car:**
 - The wide camera is a rectilinear 115° render, not the real fisheye.
 - Camera height and pitch are fixed rather than taken from the car's liveCalibration.
