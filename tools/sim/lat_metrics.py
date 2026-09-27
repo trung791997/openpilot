@@ -66,17 +66,20 @@ def lag_seconds(des, meas):
   if d.std() < 1e-3 or m.std() < 1e-3:
     return float("nan")
   best, best_lag = -np.inf, 0
-  for lag in range(0, int(RATE) + 1):  # measured lags desired by `lag` samples
+  for lag in range(int(RATE) + 1):  # measured lags desired by `lag` samples
     c = np.dot(d[:len(d) - lag], m[lag:]) / (len(d) - lag)
     if c > best:
       best, best_lag = c, lag
   return best_lag / RATE
 
 
-def metrics(rows):
-  t, x, ok = resample(rows)
+def metrics(rows_list):
+  """rows_list: one rows array per file; each is resampled on its own so pooling never interpolates across files."""
+  parts = [resample(r) for r in rows_list]
+  x = np.concatenate([p[1] for p in parts])
+  ok = np.concatenate([p[2] for p in parts])
+  rate = np.concatenate([np.gradient(p[1][:, 2], 1 / RATE) for p in parts])
   v, des, meas, err, out, sat = (x[:, i] for i in range(6))
-  rate = np.gradient(meas, 1 / RATE)
   result = {}
   for name, (lo, hi) in BANDS.items():
     s = ok & (v >= lo) & (v < hi)
@@ -101,8 +104,9 @@ def metrics(rows):
 
 def table(name, m):
   for band, r in m.items():
-    print(f"{name[-40:]:40s} {band:8s} {r['seconds']:6.0f}s  rms {r['rms_err']:5.2f}  p90 {r['p90_err']:5.2f}  lag {r['lag_s']:4.2f}"
-          f"  osc {r['osc_hz']:4.2f}/s  rate {r['rate_rms']:5.1f}  sat {r['sat_frac']:.2f}  |out| {r['mean_abs_out']:.2f}  |des| {r['mean_abs_des']:5.1f}")
+    head = f"{name[-40:]:40s} {band:8s} {r['seconds']:6.0f}s  rms {r['rms_err']:5.2f}  p90 {r['p90_err']:5.2f}  lag {r['lag_s']:4.2f}"
+    tail = f"  osc {r['osc_hz']:4.2f}/s  rate {r['rate_rms']:5.1f}  sat {r['sat_frac']:.2f}  |out| {r['mean_abs_out']:.2f}  |des| {r['mean_abs_des']:5.1f}"
+    print(head + tail)
 
 
 def main():
@@ -113,12 +117,10 @@ def main():
     if len(rows) < 100:
       print(f"{p}: no pid samples")
       continue
-    table(p, metrics(rows))
-    rows = rows.copy()
-    rows[:, 0] += 1e6 * len(allrows)  # keep files apart in time when pooled
+    table(p, metrics([rows]))
     allrows.append(rows)
   if len(allrows) > 1:
-    table("POOLED", metrics(np.concatenate(allrows)))
+    table("POOLED", metrics(allrows))
 
 
 if __name__ == "__main__":
