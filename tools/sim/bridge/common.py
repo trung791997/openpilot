@@ -43,6 +43,7 @@ def rk_loop(function, hz, exit_event: threading.Event):
 
 class SimulatorBridge(ABC):
   TICKS_PER_FRAME = 5
+  CRUISE_KEY_FRAMES = 10
 
   def __init__(self, dual_camera, high_quality):
     set_params_enabled()
@@ -63,6 +64,8 @@ class SimulatorBridge(ABC):
 
     self.world: World | None = None
 
+    self.cruise_key = 0
+    self.cruise_key_frames = 0
     self.past_startup_engaged = False
     self.startup_button_prev = True
     # SIM_CRUISE_KPH: after engaging, tap RES_ACCEL until the set speed reaches this (km/h).
@@ -140,7 +143,10 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       throttle_out = steer_out = brake_out = 0.0
       throttle_op = steer_op = brake_op = 0.0
 
-      self.simulator_state.cruise_button = 0
+      # A key press is held for CRUISE_KEY_FRAMES loops, like a real button press (~100 ms). Held for one 10 ms loop,
+      # the 100 Hz CAN thread (simulated_car) can sample around it and card never sees the press.
+      self.simulator_state.cruise_button = self.cruise_key if self.cruise_key_frames > 0 else 0
+      self.cruise_key_frames = max(self.cruise_key_frames - 1, 0)
       self.simulator_state.left_blinker = False
       self.simulator_state.right_blinker = False
 
@@ -158,14 +164,10 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
           elif m[0] == "brake":
             brake_manual = float(m[1])
           elif m[0] == "cruise":
-            if m[1] == "down":
-              self.simulator_state.cruise_button = CruiseButtons.DECEL_SET
-            elif m[1] == "up":
-              self.simulator_state.cruise_button = CruiseButtons.RES_ACCEL
-            elif m[1] == "cancel":
-              self.simulator_state.cruise_button = CruiseButtons.CANCEL
-            elif m[1] == "main":
-              self.simulator_state.cruise_button = CruiseButtons.MAIN
+            self.cruise_key = {"down": CruiseButtons.DECEL_SET, "up": CruiseButtons.RES_ACCEL,
+                               "cancel": CruiseButtons.CANCEL, "main": CruiseButtons.MAIN}.get(m[1], 0)
+            self.cruise_key_frames = self.CRUISE_KEY_FRAMES
+            self.simulator_state.cruise_button = self.cruise_key
           elif m[0] == "blinker":
             if m[1] == "left":
               self.simulator_state.left_blinker = True
