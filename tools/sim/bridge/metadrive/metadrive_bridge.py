@@ -44,8 +44,22 @@ MAP_PRESETS = {
   "gentle": dict(straight=80, radius=250, tail=20, turns=((120, 0), (30, 1))),
 }
 
+def route_map_blocks(path):
+  # SIM_MAP=route, SIM_MAP_FILE=JSON list of ["S", length_m] and ["C", radius_m, angle_deg, dir (0/1)] rebuilt from the
+  # driver's own corners. A curve block appends a 1 m straight. Keep the layout inside MetaDrive's 1024 m painted square.
+  import json
+  with open(path) as f:
+    spec = json.load(f)
+  return [straight_block(b[1]) if b[0] == "S" else curve_block(1, b[2], int(b[3]), radius=b[1]) for b in spec]
+
+
 def create_map(preset=None, track_size=None):
   preset = preset or os.getenv("SIM_MAP", "default")
+  # SIM_LANE_WIDTH: 4.5 m is upstream's; US lanes are ~3.6 m
+  lane_width = float(os.getenv("SIM_LANE_WIDTH", "4.5"))
+  if preset == "route":
+    return dict(type=MapGenerateMethod.PG_MAP_FILE, lane_num=2, lane_width=lane_width,
+                config=[None] + route_map_blocks(os.environ["SIM_MAP_FILE"]))
   cfg = dict(MAP_PRESETS[preset])
   if track_size is not None:
     cfg["straight"] = track_size
@@ -62,7 +76,7 @@ def create_map(preset=None, track_size=None):
   return dict(
     type=MapGenerateMethod.PG_MAP_FILE,
     lane_num=2,
-    lane_width=4.5,
+    lane_width=lane_width,
     config=blocks,
   )
 

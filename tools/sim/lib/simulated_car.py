@@ -113,7 +113,6 @@ class SimulatedCar:
     self.pm.send('can', can_list_to_can_capnp([m for m in msg if m is not None]))
 
   def send_panda_state(self, simulator_state):
-    self.sm.update(0)
 
     if self.params.get_bool("ObdMultiplexingEnabled") != self.obd_multiplexing:
       self.obd_multiplexing = not self.obd_multiplexing
@@ -133,6 +132,10 @@ class SimulatedCar:
 
   def update(self, simulator_state: SimulatorState):
     try:
+      # Every loop: the bridge steers from sm['carOutput'] and engages from sm['selfdriveState']. Updated only in
+      # send_panda_state (2 Hz) until 2026-09-27, the torque command reached the steering model up to 500 ms late
+      # (250 ms on average), which put a ~1.8 s limit cycle of +/-40 deg into every torque-steered episode.
+      self.sm.update(0)
       self.send_can_messages(simulator_state)
 
       if self.idx % 50 == 0: # only send panda states at 2hz

@@ -10,6 +10,16 @@ from collections import deque
 
 
 class SteerModel:
+  def __new__(cls, path: str | None = None):  # path is None when multiprocessing unpickles an instance
+    # A tools/lateral plant (lat_pid_sim.Plant / BandedPlant JSON: "coef" or "bands") is the replay's own C020 plant,
+    # with its firmware torque table, delay, rate/centring terms and angle quantisation; use that instead of this fit.
+    if cls is SteerModel and path is not None:
+      with open(path) as f:
+        m = json.load(f)
+      if "bands" in m or "coef" in m:
+        return object.__new__(ReplayPlantSteerModel)
+    return object.__new__(cls)
+
   def __init__(self, path: str):
     with open(path) as f:
       m = json.load(f)
@@ -29,4 +39,26 @@ class SteerModel:
     u_delayed = self.u[0]
     self.rate = self.a * self.rate + (self.b0 + self.b1 * v_ego) * u_delayed + (self.c0 + self.c1 * v_ego * v_ego) * self.angle + self.bias
     self.angle += self.rate * self.dt
+    return self.angle
+
+
+class ReplayPlantSteerModel(SteerModel):
+  """The lateral replay's plant (tools/lateral/lat_pid_sim.py), stepped exactly as its closed-loop replay steps it:
+  rate += accel(theta, rate, drive(u[k - delay]), v) * DT; theta += rate * DT; the car reads measure(theta)."""
+  def __init__(self, path: str):
+    from openpilot.tools.lateral.lat_pid_sim import DT, load_plant
+    self.plant = load_plant(path)
+    self.dt = DT
+    self.reset(0.0)
+
+  def reset(self, angle: float) -> None:
+    self.theta, self.rate = angle, 0.0
+    self.angle = self.plant.measure(angle)
+    self.u = deque([0.0] * (self.plant.delay + 1), maxlen=self.plant.delay + 1)
+
+  def update(self, torque: float, v_ego: float) -> float:
+    self.u.append(torque)
+    self.rate += self.plant.accel(self.theta, self.rate, self.plant.drive(self.u[0]), v_ego) * self.dt
+    self.theta += self.rate * self.dt
+    self.angle = self.plant.measure(self.theta)
     return self.angle

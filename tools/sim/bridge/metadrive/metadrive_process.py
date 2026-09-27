@@ -134,8 +134,12 @@ _Terrain.reset = _terrain_reset_map_centred
 TerrainProperty.point_in_map = classmethod(lambda cls, point: True)
 TerrainProperty.clip_polygon = classmethod(lambda cls, polygon: [list(polygon)])
 
-C3_POSITION = Vec3(0.0, 0, 1.22)
-C3_HPR = Vec3(0, 0,0)
+# Camera mount: height above the road (m) and the driver's liveCalibration rpyCalib (rad, device frame: x forward, y right,
+# z down). Panda3D HPR is degrees with H counter-clockwise, so H = -yaw, P = pitch, R = roll.
+CAM_HEIGHT = float(os.getenv("SIM_CAM_HEIGHT", "1.22"))
+CAM_RPY = [float(x) for x in os.getenv("SIM_CAM_RPY", "0,0,0").split(",")]
+C3_POSITION = Vec3(0.0, 0, CAM_HEIGHT)
+C3_HPR = Vec3(-math.degrees(CAM_RPY[2]), math.degrees(CAM_RPY[1]), math.degrees(CAM_RPY[0]))
 
 
 metadrive_simulation_state = namedtuple("metadrive_simulation_state", ["running", "done", "done_info"])
@@ -190,6 +194,17 @@ def auto_blinker(vehicle) -> int:
 CIVIC_PLANT = os.getenv("SIM_PLANT", "metadrive") == "civic"
 PLANT_ACCEL_TAU = 0.3  # s
 PLANT_DYN_MIN_SPEED = 3.0  # m/s; below it the lateral state sits at its steady state (the dynamics settle in < 20 ms)
+# The car as it really is rather than as its CarParams say: paramsd's learned steer ratio, tyre-stiffness factor and
+# angle offset from the driver's own route (liveParameters). The measured wheel angle is the true angle plus the offset.
+# Unset = CarParams values, no offset.
+PLANT_SR = float(os.getenv("SIM_PLANT_SR", "0")) or None
+PLANT_STIFFNESS = float(os.getenv("SIM_PLANT_STIFFNESS", "1"))
+PLANT_OFFSET_DEG = float(os.getenv("SIM_PLANT_OFFSET_DEG", "0"))
+# SIM_PLANT_VGR=c020: the Civic's EPS publishes its wheel angle through the C020 variable ratio (opendbc steer_ratio.py).
+# The bicycle model takes the linear angle (centre ratio), so the published angle goes through the inverse map first:
+# the effective ratio falls from 14.85 at centre to ~14.2 at 90 deg and ~13.4 at 180 deg. Routes 286/287/289 measured
+# the same ~13% drop to 300 deg (James, 2026-09-27, limited road evidence).
+PLANT_VGR = os.getenv("SIM_PLANT_VGR", "")
 
 
 class CivicPlant:
@@ -207,6 +222,7 @@ class CivicPlant:
       cp = SimpleNamespace(mass=m, rotationalInertia=j, wheelbase=l, centerToFront=aF, steerRatioRear=0.0,
                            tireStiffnessFront=cF, tireStiffnessRear=cR, steerRatio=sR)
       self.vm, self.vm_params = VehicleModel(cp), p
+      self.vm.update_params(PLANT_STIFFNESS, PLANT_SR or sR)
     return self.vm
 
   def update(self, wheel_deg, accel_cmd, params, dt):
@@ -216,7 +232,12 @@ class CivicPlant:
     if self.u <= 0.0 and self.a < 0.0:
       self.a = 0.0
     self.u = max(self.u + self.a * dt, 0.0)
-    sa = math.radians(wheel_deg)
+    published = wheel_deg - PLANT_OFFSET_DEG
+    if PLANT_VGR == "c020":
+      from opendbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_physical_to_linear
+      from opendbc.car.honda.values import HondaFlags
+      published = vgr_physical_to_linear(published, get_honda_vgr_inverse(HondaFlags.VGR_CIVIC_TBA_C020))
+    sa = math.radians(published)
     if self.u > PLANT_DYN_MIN_SPEED:
       A, B = create_dyn_state_matrices(self.u, vm)
       self.x = self.x + (A @ self.x + B[:, 0] * sa) * dt

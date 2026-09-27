@@ -30,9 +30,13 @@ OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; 
 # (tici; mici = the comma 4's os04c10 geometry, tools/sim/lib/common.py) are forwarded too.
 # SIM_MAP (default / intersection / gentle, metadrive_bridge.MAP_PRESETS), SIM_MAP_RADIUS / SIM_MAP_STRAIGHT and SIM_CRUISE_KPH are forwarded explicitly: a fresh
 # tmux server does not inherit this shell's environment. SIM_PLANT (civic = the car's own bicycle model moves the car, default;
-# metadrive = MetaDrive's Bullet chassis, the pre-2026-09-27 plant) too.
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} SIM_PLANT=${SIM_PLANT:-civic} SIM_PLANT=${SIM_PLANT:-civic} \
-  SIM_STEER_MODEL=$PWD/tools/sim/eps_models/honda_civic_bosch_c020.json \
+# metadrive = MetaDrive's Bullet chassis, the pre-2026-09-27 plant) too, and the car-as-driven settings: SIM_PLANT_SR /
+# SIM_PLANT_STIFFNESS / SIM_PLANT_OFFSET_DEG, SIM_CAM_HEIGHT / SIM_CAM_RPY, SIM_MAP=route + SIM_MAP_FILE, SIM_LANE_WIDTH.
+# The car as driven: $HOME/.openpilot-sim/civic/sim.env (not in the repo) sets the learned steer ratio, stiffness and angle
+# offset, the camera height and calibration, and the lane width from the owner's routes. SIM_AS_DRIVEN=0 skips it.
+[ "${SIM_AS_DRIVEN:-1}" = 1 ] && [ -f "$HOME/.openpilot-sim/civic/sim.env" ] && . "$HOME/.openpilot-sim/civic/sim.env"
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} SIM_PLANT=${SIM_PLANT:-civic} ${SIM_PLANT_SR:+SIM_PLANT_SR=$SIM_PLANT_SR} ${SIM_PLANT_STIFFNESS:+SIM_PLANT_STIFFNESS=$SIM_PLANT_STIFFNESS} ${SIM_PLANT_VGR:+SIM_PLANT_VGR=$SIM_PLANT_VGR} ${SIM_PLANT_OFFSET_DEG:+SIM_PLANT_OFFSET_DEG=$SIM_PLANT_OFFSET_DEG} ${SIM_CAM_HEIGHT:+SIM_CAM_HEIGHT=$SIM_CAM_HEIGHT} ${SIM_CAM_RPY:+SIM_CAM_RPY=$SIM_CAM_RPY} ${SIM_MAP_FILE:+SIM_MAP_FILE=$SIM_MAP_FILE} ${SIM_LANE_WIDTH:+SIM_LANE_WIDTH=$SIM_LANE_WIDTH} \
+  SIM_STEER_MODEL=${SIM_STEER_MODEL:-$PWD/tools/lateral/plants/civic_bosch_c020.json} \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
 sleep 30
 if [ -n "$sched" ]; then

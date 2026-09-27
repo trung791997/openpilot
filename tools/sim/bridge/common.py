@@ -68,6 +68,7 @@ class SimulatorBridge(ABC):
     self.cruise_key = 0
     self.cruise_key_frames = 0
     self.past_startup_engaged = False
+    self.moved_once = False
     self.startup_button_prev = True
     # SIM_CRUISE_KPH: after engaging, tap RES_ACCEL until the set speed reaches this (km/h).
     # Engagement leaves it near 9 km/h, where the driving model crawls and loses the lanes in curves.
@@ -122,6 +123,7 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
 
   def _run(self, q: Queue):
     self.world = self.spawn_world(q)
+    self.world.external_steer = self.steer_model is not None
 
     self.simulated_car = SimulatedCar()
     self.simulated_sensors = SimulatedSensors(self.dual_camera)
@@ -213,6 +215,13 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
           steer_op = curvature / METADRIVE_CURV_PER_DEG
 
         self.past_startup_engaged = True
+        # Engaged at standstill, the planner holds the car stopped until the driver presses resume (as on the car).
+        # Until the car first moves, press RES once a second, held like a real press. Before 2026-09-27 the set-speed
+        # taps below did this by accident: they read a 2 Hz stale vCruise and kept tapping after engagement.
+        if self.simulated_car.sm['carState'].vEgo > 1.0:
+          self.moved_once = True
+        if not self.moved_once and self.rk.frame % 100 == 0:
+          self.cruise_key, self.cruise_key_frames = CruiseButtons.RES_ACCEL, self.CRUISE_KEY_FRAMES
         if self.simulated_car.sm['carState'].vCruise < self.target_cruise_kph - 1 and self.rk.frame % 30 == 0:
           self.simulator_state.cruise_button = CruiseButtons.RES_ACCEL
       elif not self.past_startup_engaged and self.simulated_car.sm['selfdriveState'].engageable:

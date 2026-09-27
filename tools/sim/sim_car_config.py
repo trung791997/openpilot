@@ -66,6 +66,48 @@ def apply(config_dir: str) -> None:
   for key, value in SIM_OVERRIDES.items():
     params.put_bool(key, value)
   print(f"applied {len(kept)} params from {config_dir}; sim overrides {SIM_OVERRIDES}")
+  seed_learned(params, config_dir)
+
+
+def seed_learned(params: Params, config_dir: str) -> None:
+  # DIR/learned.json (optional, hand-written from the car's own route): {"steerRatio", "angleOffsetAverageDeg",
+  # "stiffnessFactor", "rpyCalib": [r, p, y],
+  # "wideFromDeviceEuler", "height": [m], "lateralDelay": s}. Seeds paramsd and calibrationd the way the car starts a drive, from its
+  # last learned values, instead of from CarParams and an uncalibrated camera. Pair it with SIM_PLANT_SR /
+  # SIM_PLANT_OFFSET_DEG / SIM_CAM_RPY so the plant and the camera are the car the learners describe.
+  path = os.path.join(config_dir, "learned.json")
+  if not os.path.exists(path):
+    return
+  import cereal.messaging as messaging
+  with open(path) as f:
+    learned = json.load(f)
+  with open(os.path.join(config_dir, "carParams.bin"), "rb") as f:
+    cp = f.read()
+  params.put("CarParamsPersistent", cp)
+  params.put("CarParamsPrevRoute", cp)
+  msg = messaging.new_message("liveParameters")
+  lp = msg.liveParameters
+  lp.valid = True
+  lp.steerRatio = float(learned["steerRatio"])
+  lp.stiffnessFactor = float(learned.get("stiffnessFactor", 1.0))
+  lp.angleOffsetAverageDeg = float(learned.get("angleOffsetAverageDeg", 0.0))
+  params.put("LiveParametersV2", msg.to_bytes())
+  if "rpyCalib" in learned:
+    msg = messaging.new_message("liveCalibration")
+    msg.liveCalibration.rpyCalib = [float(x) for x in learned["rpyCalib"]]
+    msg.liveCalibration.calStatus = 1  # calibrated
+    msg.liveCalibration.validBlocks = 20
+    msg.liveCalibration.wideFromDeviceEuler = [float(x) for x in learned.get("wideFromDeviceEuler", [0.0, 0.0, 0.0])]
+    msg.liveCalibration.height = [float(x) for x in learned.get("height", [1.22])]
+    params.put("CalibrationParams", msg.to_bytes())
+  if "lateralDelay" in learned:
+    msg = messaging.new_message("liveDelay")
+    ld = msg.liveDelay
+    ld.lateralDelay = ld.lateralDelayEstimate = float(learned["lateralDelay"])
+    ld.status = "estimated"
+    ld.validBlocks = 20
+    params.put("LiveDelay", msg.to_bytes())
+  print(f"seeded learned state from {path}: {learned}")
 
 
 def main():

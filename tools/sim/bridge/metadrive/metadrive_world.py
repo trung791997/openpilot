@@ -54,6 +54,7 @@ class MetaDriveWorld(World):
     self.status_q.put(QueueMessage(QueueMessageType.START_STATUS, "started"))
 
     self.steer_ratio = 15
+    self.external_steer = False  # the bridge's SteerModel owns state.steering_angle (set by SimulatorBridge._run)
     self.vc = [0.0,0.0]
     self.reset_time = 0
     self.should_reset = False
@@ -90,17 +91,23 @@ class MetaDriveWorld(World):
 
       state.velocity = md_vehicle.velocity
       state.bearing = md_vehicle.bearing
-      state.steering_angle = md_vehicle.steering_angle
+      # With a SteerModel the bridge sets the angle itself after this call. Writing MetaDrive's angle here first (0 under
+      # SIM_PLANT=civic, Bullet held still) let the 100 Hz CAN thread sample it between the two writes: carState read
+      # 0 deg for one frame 90-280 times per 120 s episode, kicking the controller (found 2026-09-27).
+      if not self.external_steer:
+        state.steering_angle = md_vehicle.steering_angle
       self.blinker = md_vehicle.blinker
       # locationd reads the raw gyro as device [-v[2], -v[1], -v[0]], so the yaw rate goes in v[0]. MetaDrive's heading
       # is counter-clockwise (a positive steer, openpilot's left, raises it) and the device z axis points down, so the
       # device yaw rate is -v[0].
       state.imu.gyroscope = vec3(md_vehicle.yaw_rate, 0.0, 0.0)
-      # Same axis order for the accelerometer: device z (gravity reaction, up) in -v[0], device y (left, the
-      # centripetal term) in -v[1], device x (forward) in -v[2]. Without gravity locationd's orientation is
-      # unobservable and its yaw rate came out a third low.
+      # Same axis order for the accelerometer. locationd's pose model expects device_from_ned * [0, 0, -g] + a + w x v
+      # (pose_kf.py h_acc_sym, device frame x forward, y right, z down): at rest device z reads -9.81, so v[0] = +9.81.
+      # It was -9.81 until 2026-09-27: locationd saw gravity upside down and paramsd turned the cornering force into a
+      # spurious roll of up to +/-8.7 deg (its clamp) on a flat road, which dragged the learned angle offset to -19 deg.
+      # Device y (right) = w_z * u in -v[1]; device x (forward) in -v[2].
       lateral_accel = -md_vehicle.yaw_rate * float(np.linalg.norm([md_vehicle.velocity.x, md_vehicle.velocity.y]))
-      state.imu.accelerometer = vec3(-9.81, -lateral_accel, -md_vehicle.accel)
+      state.imu.accelerometer = vec3(9.81, -lateral_accel, -md_vehicle.accel)
       state.gps.from_xy(curr_pos)
       state.valid = True
 
