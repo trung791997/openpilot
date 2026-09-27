@@ -40,7 +40,12 @@ if sys.platform == "darwin":
   def _core_profile_render_state(engine, vert, frag):
     def read(name):
       with open(AssetLoader.file_path("../shaders", name)) as f:
-        return f.read().replace("texture2D(", "texture(")
+        src = f.read().replace("texture2D(", "texture(")
+      if name == "terrain.frag.glsl":  # 50 % coverage thresholds for the anti-aliased lane lines (see get_semantic_map below)
+        for a, b in (("attri.r > 0.01", "attri.r > 0.09"), ("value < 0.11", "value < 0.15"), ("value < 0.21", "value < 0.25")):
+          assert a in src, a
+          src = src.replace(a, b)
+      return src
     dummy_np = NodePath("Dummy")
     dummy_np.setShader(Shader.make(Shader.SL_GLSL, vertex=read(vert), fragment=read(frag)))
     return dummy_np.getState()
@@ -51,6 +56,83 @@ if sys.platform == "darwin":
   # rejects, so the sky draws flat grey with the skybox texture on a stray panel. Its #version 150 shaders work.
   import metadrive.engine.core.sky_box as sky_box
   sky_box.is_mac = lambda: False
+
+# sim-lat-training: MetaDrive paints lane lines into the terrain's semantic texture (22 px/m, one float category per
+# texel: 0 ground, 0.1 yellow, 0.2 road, 0.3 white) with cv2.polylines at 1 px (4.5 cm; yellow 2 px) from integer-truncated
+# points, and terrain.frag thresholds the bilinearly filtered value (yellow < 0.11 < road < 0.21 < white). Every line edge
+# snaps to the texel grid: straights along an axis look fine, but on curves the dashes render as wobbly blobs and the
+# centre line as a zigzag, and TSFDO loses the lanes (gentle-map lane probs ~0.2-0.3 vs ~0.55 on the straight map).
+# Draw the lines anti-aliased at a real 0.15 m width from sub-pixel points, encoding coverage c as road + c * (line - road),
+# and move the shader's yellow/road/white thresholds to the 50 % coverage points (0.15, 0.25) so the edge is sub-texel.
+# Same dash pattern and colours; lines are only blended over road/ground texels, never crosswalks.
+import cv2
+from metadrive.component.map.base_map import BaseMap
+from metadrive.constants import MapTerrainSemanticColor, PGDrivableAreaProperty
+from metadrive.type import MetaDriveType
+
+_LANE_LINE_WIDTH_M = 0.15
+_ROAD = MapTerrainSemanticColor.get_color(MetaDriveType.LANE_SURFACE_STREET)
+_get_semantic_map_orig = BaseMap.get_semantic_map
+
+def _get_semantic_map_smooth_lines(self, center_point, size=512, pixels_per_meter=8, color_setting=MapTerrainSemanticColor,
+                                   line_sample_interval=2, polyline_thickness=1, layer=("lane_line", "lane")):
+  mask = _get_semantic_map_orig(self, center_point, size, pixels_per_meter, color_setting, line_sample_interval,
+                                polyline_thickness, tuple(l for l in layer if l != "lane_line"))
+  if "lane_line" not in layer:
+    return mask
+  px = size * pixels_per_meter
+  shift = 4
+  thickness = max(1, round(_LANE_LINE_WIDTH_M * pixels_per_meter))
+  skip = math.floor(PGDrivableAreaProperty.STRIPE_LENGTH * 2 / line_sample_interval)
+  for obj in self.get_map_features(interval=line_sample_interval).values():
+    if not (MetaDriveType.is_road_line(obj["type"]) or MetaDriveType.is_road_boundary_line(obj["type"])):
+      continue
+    line = np.asarray(obj["polyline"])[:, :2]
+    pts = np.round(((line - np.asarray(center_point[:2])) * pixels_per_meter + px / 2) * (1 << shift)).astype(np.int32)
+    if MetaDriveType.is_broken_line(obj["type"]):
+      segs = [pts[i:i + skip + 1] for i in range(0, len(pts) - 1, skip * 2) if i + skip < len(pts)]
+    else:
+      segs = [pts]
+    # rasterise this line's coverage in its own bounding box only (the full texture is ~11k x 11k)
+    x0, y0 = np.maximum((pts.min(0) >> shift) - thickness - 2, 0)
+    x1, y1 = np.minimum((pts.max(0) >> shift) + thickness + 3, px)
+    if x1 <= x0 or y1 <= y0:
+      continue
+    cov = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    off = np.array([x0, y0], np.int32) << shift
+    cv2.polylines(cov, [s - off for s in segs], False, 255, thickness, cv2.LINE_AA, shift)
+    c = cov.astype(np.float32) / 255.0
+    sub = mask[y0:y1, x0:x1, 0]
+    color = MapTerrainSemanticColor.get_color(obj["type"])
+    blended = _ROAD + c * (color - _ROAD)
+    ground = sub < 0.001  # boundary lines straddle the road edge
+    lane = (sub > 0.09) & (sub < 0.31)  # road or another line (keep the stronger one where two overlap); never crosswalk
+    on = (c > 0) & (ground | (lane & (np.abs(blended - _ROAD) >= np.abs(sub - _ROAD))))
+    sub[on] = blended[on]
+  return mask
+
+if sys.platform == "darwin":  # the matching shader thresholds are patched in _core_profile_render_state above
+  BaseMap.get_semantic_map = _get_semantic_map_smooth_lines
+
+# sim-lat-training: MetaDrive paints road and lane-line texture only inside a map_region_size square centred on the origin
+# (1024 m by default) and clips sidewalks and lane-line bodies to it. The gentle preset runs ~1.5 km along x, so every
+# gentle episode reached painted grass at x ~540 m and left the road there (ts/lx/lz1/lz2 departures at x 539-590) while
+# TSFDO's lane probs were still 0.9. Centre the painted region on the built map instead (Terrain.reset runs after the map
+# is built; it positions the terrain mesh at the same centre), drop the origin clips (sidewalks are 3D meshes and draw
+# fine anywhere). map_region_size 2048 (11 px/m) drew the whole ground white on this Mac, so maps must fit in 1024 m.
+from metadrive.constants import TerrainProperty
+from metadrive.engine.core.terrain import Terrain as _Terrain
+
+_terrain_reset_orig = _Terrain.reset
+
+def _terrain_reset_map_centred(self, center_point):
+  if self.engine.current_map is not None:
+    center_point = list(self.engine.current_map.get_center_point())
+  return _terrain_reset_orig(self, center_point)
+
+_Terrain.reset = _terrain_reset_map_centred
+TerrainProperty.point_in_map = classmethod(lambda cls, point: True)
+TerrainProperty.clip_polygon = classmethod(lambda cls, polygon: [list(polygon)])
 
 C3_POSITION = Vec3(0.0, 0, 1.22)
 C3_HPR = Vec3(0, 0,0)

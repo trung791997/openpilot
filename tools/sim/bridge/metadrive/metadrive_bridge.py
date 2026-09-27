@@ -36,7 +36,12 @@ def curve_block(length, angle=45, direction=0, radius=None):
 MAP_PRESETS = {
   "default": dict(straight=60, radius=120, angle=90, alternate=False),
   "intersection": dict(straight=80, radius=20, angle=90, alternate=True),
-  "gentle": dict(straight=200, radius=400, angle=30, alternate=True),
+  # Large-radius S-curves (curvature 0.004 each way) on a closed loop: 4 x [80 m straight, 120 deg one way, 30 deg back]
+  # at R 250 m (MetaDrive's curve block appends a straight of its length, 20 m here), 3.1 km of road inside a 945 m
+  # square. MetaDrive paints road and lane lines only inside a 1024 m square (metadrive_process centres it on the map);
+  # the earlier open S-road (straight 200, R 400, 30 deg alternating) ran 1.5 km along x and every gentle episode left
+  # the road where the paint ended, at x ~540 m.
+  "gentle": dict(straight=80, radius=250, tail=20, turns=((120, 0), (30, 1))),
 }
 
 def create_map(preset=None, track_size=None):
@@ -50,7 +55,10 @@ def create_map(preset=None, track_size=None):
   blocks = [None]
   for i in range(4):
     blocks.append(straight_block(straight))
-    blocks.append(curve_block(radius, cfg["angle"], (i % 2) if cfg["alternate"] else 0, radius=radius))
+    if "turns" in cfg:
+      blocks += [curve_block(cfg["tail"], angle, direction, radius=radius) for angle, direction in cfg["turns"]]
+    else:
+      blocks.append(curve_block(radius, cfg["angle"], (i % 2) if cfg["alternate"] else 0, radius=radius))
   return dict(
     type=MapGenerateMethod.PG_MAP_FILE,
     lane_num=2,
