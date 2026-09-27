@@ -70,7 +70,10 @@ class MetaDriveWorld(World):
       self.vc[0] = 0
       self.vc[1] = 0
 
-    self.controls_send.send([*self.vc, self.should_reset])
+    plant_cmd = self.plant_cmd
+    if plant_cmd is not None and (time.monotonic() - self.reset_time) <= 2:
+      plant_cmd = (0.0, 0.0, plant_cmd[2])
+    self.controls_send.send([*self.vc, self.should_reset, plant_cmd])
     self.should_reset = False
 
   def read_state(self):
@@ -90,7 +93,8 @@ class MetaDriveWorld(World):
       state.steering_angle = md_vehicle.steering_angle
       self.blinker = md_vehicle.blinker
       # locationd reads the raw gyro as device [-v[2], -v[1], -v[0]], so the yaw rate goes in v[0]. MetaDrive's heading
-      # is clockwise-positive against openpilot's counter-clockwise device z, so the two negations cancel.
+      # is counter-clockwise (a positive steer, openpilot's left, raises it) and the device z axis points down, so the
+      # device yaw rate is -v[0].
       state.imu.gyroscope = vec3(md_vehicle.yaw_rate, 0.0, 0.0)
       # Same axis order for the accelerometer: device z (gravity reaction, up) in -v[0], device y (left, the
       # centripetal term) in -v[1], device x (forward) in -v[2]. Without gravity locationd's orientation is

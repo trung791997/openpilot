@@ -85,6 +85,7 @@ class World(ABC):
 
     self.exit_event = multiprocessing.Event()
     self.blinker = 0  # turn signal the world asks for (+1 left, -1 right; metadrive SIM_BLINKER=auto)
+    self.plant_cmd = None  # SIM_PLANT=civic: (wheel angle deg, accel request, vehicle model params)
 
   @abstractmethod
   def apply_controls(self, steer_sim, throttle_out, brake_out):

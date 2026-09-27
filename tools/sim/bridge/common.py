@@ -21,6 +21,7 @@ from openpilot.tools.sim.lib.simulated_car import SimulatedCar
 from openpilot.tools.sim.lib.simulated_sensors import SimulatedSensors
 from openpilot.tools.sim.lib.steer_model import SteerModel
 
+CIVIC_PLANT = os.getenv("SIM_PLANT", "metadrive") == "civic"
 METADRIVE_CURV_PER_DEG = 0.00055  # measured road curvature per degree sent to MetaDrive (steer_ratio 8 in metadrive_process)
 
 QueueMessage = namedtuple("QueueMessage", ["type", "info"], defaults=[None])
@@ -221,6 +222,22 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       throttle_out = throttle_op if self.simulator_state.is_engaged else throttle_manual
       brake_out = brake_op if self.simulator_state.is_engaged else brake_manual
       steer_out = steer_op if self.simulator_state.is_engaged else steer_manual
+
+      # SIM_PLANT=civic: the Civic's own bicycle model moves the car (metadrive_process.CivicPlant); send it the
+      # steering-wheel angle and the accel request instead of a MetaDrive steer/pedal
+      if CIVIC_PLANT:
+        if self.vehicle_model is None and self.simulated_car.sm['carParams'].mass > 0:
+          self.vehicle_model = VehicleModel(self.simulated_car.sm['carParams'])
+        if self.vehicle_model is not None:
+          v_ego = self.simulated_car.sm['carState'].vEgo
+          if self.simulator_state.is_engaged:
+            wheel_deg = self.steer_model.angle if self.steer_model is not None else steer_op
+            accel = self.simulated_car.sm['carControl'].actuators.accel
+          else:
+            wheel_deg = math.degrees(self.vehicle_model.get_steer_from_curvature(steer_manual * METADRIVE_CURV_PER_DEG, v_ego, 0.0))
+            accel = throttle_manual * 1.6 - brake_manual * 4.0
+          vm = self.vehicle_model
+          self.world.plant_cmd = (wheel_deg, accel, (vm.m, vm.j, vm.l, vm.aF, vm.cF, vm.cR, vm.sR))
 
       self.world.apply_controls(steer_out, throttle_out, brake_out)
       self.world.read_state()

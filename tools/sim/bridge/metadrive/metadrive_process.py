@@ -155,9 +155,10 @@ STOP_M = float(os.getenv("SIM_STOP_M", "12"))
 STOP_DECEL = 2.0  # m/s^2
 
 def _lane_turn(lane) -> int:
-  # MetaDrive headings are clockwise-positive (metadrive_world), so a heading gain along the lane is a right turn
+  # MetaDrive headings are counter-clockwise (a positive steer, openpilot's left, raises the heading), so a heading gain
+  # along the lane is a left turn. Before 2026-09-27 this sign was inverted and SIM_BLINKER=auto signalled the wrong way.
   d = (lane.heading_theta_at(lane.length) - lane.heading_theta_at(0.0) + math.pi) % (2 * math.pi) - math.pi
-  return 0 if abs(d) < math.radians(20) else (-1 if d > 0 else 1)
+  return 0 if abs(d) < math.radians(20) else (1 if d > 0 else -1)
 
 def dist_to_turn(vehicle) -> float:
   # metres left on a straight lane before the next corner starts; inf when not approaching one
@@ -180,6 +181,61 @@ def auto_blinker(vehicle) -> int:
   if nxt is not None and cur.length - cur.local_coordinates(vehicle.position)[0] < BLINKER_LEAD_M:
     return _lane_turn(nxt)
   return 0
+
+# SIM_PLANT=civic: the car's own dynamic bicycle model (opendbc VehicleModel from the car's CarParams: mass, inertia,
+# wheelbase, centre of gravity, tyre stiffness, steer ratio) moves the car, in real time at 100 Hz, from the steering-wheel
+# angle and accel request the bridge sends. MetaDrive only places the car and renders; its Bullet chassis (1.1 t, 2.47 m
+# wheelbase, a 5 deg steering dead band, ~60 % of kinematic curvature, 20 ms of physics per 50 ms of wall time) no
+# longer decides how the car moves. Longitudinal: a first-order lag on the accel request (not a Civic powertrain model).
+CIVIC_PLANT = os.getenv("SIM_PLANT", "metadrive") == "civic"
+PLANT_ACCEL_TAU = 0.3  # s
+PLANT_DYN_MIN_SPEED = 3.0  # m/s; below it the lateral state sits at its steady state (the dynamics settle in < 20 ms)
+
+
+class CivicPlant:
+  def __init__(self, position, heading, speed):
+    self.pos = np.array(position[:2], dtype=float)
+    self.heading = float(heading)  # MetaDrive sense: counter-clockwise
+    self.u, self.a, self.x = float(speed), 0.0, np.zeros(2)  # x = [lateral velocity (left), yaw rate (left)]
+    self.vm = None
+
+  def _model(self, p):
+    from types import SimpleNamespace
+    from opendbc.car.vehicle_model import VehicleModel
+    if self.vm is None or self.vm_params != p:
+      m, j, l, aF, cF, cR, sR = p
+      cp = SimpleNamespace(mass=m, rotationalInertia=j, wheelbase=l, centerToFront=aF, steerRatioRear=0.0,
+                           tireStiffnessFront=cF, tireStiffnessRear=cR, steerRatio=sR)
+      self.vm, self.vm_params = VehicleModel(cp), p
+    return self.vm
+
+  def update(self, wheel_deg, accel_cmd, params, dt):
+    from opendbc.car.vehicle_model import create_dyn_state_matrices, dyn_ss_sol
+    vm = self._model(params)
+    self.a += (accel_cmd - self.a) * min(dt / PLANT_ACCEL_TAU, 1.0)
+    if self.u <= 0.0 and self.a < 0.0:
+      self.a = 0.0
+    self.u = max(self.u + self.a * dt, 0.0)
+    sa = math.radians(wheel_deg)
+    if self.u > PLANT_DYN_MIN_SPEED:
+      A, B = create_dyn_state_matrices(self.u, vm)
+      self.x = self.x + (A @ self.x + B[:, 0] * sa) * dt
+    else:
+      us = max(self.u, 0.1)
+      self.x = dyn_ss_sol(sa, us, 0.0, vm)[:, 0] * (self.u / us)
+    self.heading += self.x[1] * dt
+    self.pos += self.velocity() * dt
+
+  def velocity(self):
+    c, s = math.cos(self.heading), math.sin(self.heading)
+    return np.array([self.u * c - self.x[0] * s, self.u * s + self.x[0] * c])
+
+  def place(self, vehicle):
+    vehicle.set_position(self.pos)
+    vehicle.set_heading_theta(self.heading)
+    vehicle.set_velocity([1.0, 0.0], 0.0)
+    vehicle.set_angular_velocity(0.0)
+
 
 def apply_metadrive_patches(arrive_dest_done=True, out_of_road_done=True):
   # By default, metadrive won't try to use cuda images unless it's used as a sensor for vehicles, so patch that in
@@ -249,6 +305,8 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
     return lane_idx_prev
 
   lane_idx_prev = reset()
+  plant = CivicPlant(env.vehicle.position, env.vehicle.heading_theta, 0.0) if CIVIC_PLANT else None
+  plant_cmd = None
   on_lane_prev = True
   start_time = None
 
@@ -275,9 +333,13 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
     import cv2
     os.makedirs(record_dir, exist_ok=True)
 
+  def cur_speed():
+    return plant.u if plant is not None else float(np.linalg.norm(env.vehicle.velocity))
+
   while not exit_event.is_set():
+    vel = plant.velocity() if plant is not None else env.vehicle.velocity
     vehicle_state = metadrive_vehicle_state(
-      velocity=vec3(x=float(env.vehicle.velocity[0]), y=float(env.vehicle.velocity[1]), z=0),
+      velocity=vec3(x=float(vel[0]), y=float(vel[1]), z=0),
       position=env.vehicle.position,
       bearing=float(math.degrees(env.vehicle.heading_theta)),
       steering_angle=env.vehicle.steering * env.vehicle.MAX_STEERING,
@@ -289,7 +351,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
 
     if controls_recv.poll(0):
       while controls_recv.poll(0):
-        steer_angle, gas, should_reset = controls_recv.recv()
+        steer_angle, gas, should_reset, plant_cmd = controls_recv.recv()
 
       steer_metadrive = steer_angle * 1 / (env.vehicle.MAX_STEERING * steer_ratio)
       steer_metadrive = np.clip(steer_metadrive, -1, 1)
@@ -299,10 +361,18 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       if should_reset:
         lane_idx_prev = reset()
         start_time = None
+        if plant is not None:
+          plant = CivicPlant(env.vehicle.position, env.vehicle.heading_theta, 0.0)
 
     is_engaged = op_engaged.is_set()
     if is_engaged and start_time is None:
       start_time = time.monotonic()
+
+    if plant is not None and plant_cmd is not None:
+      accel_cmd = -STOP_DECEL if stop_hold is not None else plant_cmd[1]
+      plant.update(plant_cmd[0], accel_cmd, plant_cmd[2], 1 / 100)
+    if plant is not None and rk.frame % 1000 == 0:
+      print(f"metadrive: plant frame {rk.frame} u {plant.u:.2f} a {plant.a:.2f} cmd {None if plant_cmd is None else plant_cmd[:2]}", flush=True)
 
     if rk.frame % 5 == 0:
       step_vc = vc
@@ -317,11 +387,14 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
           # (2 x ACCEL_MIN) and disengages openpilot, which the standstill case needs engaged.
           stop_brake = float(np.clip(stop_brake + 0.05 * (accel + STOP_DECEL), 0.05, 1.0))
           step_vc = [vc[0], -stop_brake]
-          if stop_hold == math.inf and np.linalg.norm(env.vehicle.velocity) < 0.1:
+          if stop_hold == math.inf and cur_speed() < 0.1:
             stop_hold = time.monotonic() + STOP_BEFORE_TURN_S
           elif time.monotonic() > stop_hold:
             stop_hold = None
             print(f"metadrive: stop_before_turn release at frame {rk.frame}", flush=True)
+      if plant is not None:
+        plant.place(env.vehicle)  # the plant decides the pose; Bullet holds the car still (full brake, zero velocity)
+        step_vc = [0.0, -1.0]
       _, _, terminated, _, _ = env.step(step_vc)
       # Yaw rate over the 50 ms physics step, in MetaDrive's heading sense (metadrive_world maps it to the device gyro).
       # Without it the sim's gyro read zero, paramsd learned a runaway steering angle offset (36 deg in 17 s of
@@ -330,9 +403,11 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       yaw_rate = (heading - heading_prev + math.pi) % (2 * math.pi) - math.pi
       yaw_rate /= 5 / 100
       heading_prev = heading
-      speed = float(np.linalg.norm(env.vehicle.velocity))
+      speed = cur_speed()
       accel = (speed - speed_prev) / (5 / 100)
       speed_prev = speed
+      if plant is not None:
+        yaw_rate, accel = float(plant.x[1]), plant.a
       timeout = True if start_time is not None and time.monotonic() - start_time >= test_duration else False
       lane_idx_curr, on_lane = get_current_lane_info(env.vehicle)
       out_of_lane = lane_idx_curr != lane_idx_prev or not on_lane
@@ -367,7 +442,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       # SIM_RECORD_DIR: save every 4th road frame (5 fps) with speed, for a video when the desktop cannot be
       # screen-captured. Recording starts at the first engagement, so the video skips the ~20 s of startup.
       if record_dir and start_time is not None and rk.frame % 20 == 0:
-        speed = float(np.linalg.norm(env.vehicle.velocity))
+        speed = cur_speed()
         frame = road_image.copy()  # MetaDrive's buffer is BGR despite the name (camerad's kernel reads it as BGR)
         label = f"t={time.monotonic() - start_time:5.1f}s  v={speed:4.1f} m/s  {'ENGAGED' if is_engaged else 'disengaged'}"
         cv2.putText(frame, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0) if is_engaged else (0, 0, 255), 3)

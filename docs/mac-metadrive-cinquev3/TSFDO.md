@@ -176,6 +176,6 @@ Sim evidence only; no device behaviour change.
 
 ## Clarity n=3, validity gate, turn harness (2026-09-27, later)
 
-See STATUS 178 for the numbers. In short: James's gated controller (`0f27431d`) roughly halves pull-away wobble against ungated HEAD (mean 1.22 vs 2.01, n=3 each) and had no departures, at the cost of more overshoot past the R 60 m apex (`past` 2.77 vs 1.89). Episodes below 85 Hz (swap thrash on the 8 GB Mac) are discarded and retried. `SIM_BLINKER=auto` and `SIM_STOP_BEFORE_TURN=S` add a turn signal and a stop before navigation turns. At a stop `latActive` is 0 (Honda steerAtStandstill=False), and a rolling R 12 m turn is beyond the sim plant.
+See STATUS 178 for the numbers. In short: James's gated controller (`0f27431d`) roughly halves pull-away wobble against ungated HEAD (mean 1.22 vs 2.01, n=3 each) and had no departures, at the cost of more overshoot past the R 60 m apex (`past` 2.77 vs 1.89). Episodes below 85 Hz (swap thrash on the 8 GB Mac) are discarded and retried. `SIM_BLINKER=auto` and `SIM_STOP_BEFORE_TURN=S` add a turn signal and a stop before navigation turns. The first turn-harness pilots are withdrawn: the auto-blinker signalled the wrong way (fixed; see STATUS 178).
 
 Sim evidence only; no device behaviour change.
