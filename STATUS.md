@@ -9421,3 +9421,47 @@ Every step above 0.1 is also present with the toggle off: it is the existing deb
 - An EPS steer fault during a help press. Combined same-sign torque above 2000 has only 0.1 s of history in the logs, max 2371.
 - The closed-loop PID response when torque returns mid-press.
 - `lat_pid_sim.py`'s CarControllerSteer does not mirror the assist.
+
+## 186. NRDR PID output scale simplified: no turn-in / unwind / centre-boost terms (owner, 2026-09-27). Sim and static evidence only; not driven.
+
+**What changed.** `_clarity_eps_pid_output_scale` (latcontrol_pid.py) is now James's version from
+`clarity-eps-testing` (e3de63be / 66293384 / a08a1bf0). It adds up to +0.0675 through 10–20 deg and
++0.0847 more through 16–28 deg, faded in over 4–14 m/s, and it is the same for left and right. The owner
+removed these terms, which came from starpilot's first Honda PID:
+- the left/right-asymmetric coefficients;
+- the turn-in and unwind (phase) terms;
+- the centre boost (`HondaCenterScale`, `HondaCenterBoostMinSpeed`) and its lane-change fade.
+
+The Center Scale and Center Boost Min Speed sliders are gone from both settings UIs. Their param keys
+stay in params_keys.h, because the sim tools and the tune analyzer still list them. `HondaCenterBoostThreshold`
+stays: carstate uses it for the centre override threshold (`NrdrOverrideThresholdCenterBoost`), not the scale.
+`phase` is still computed, because the Civic testing-ground scale uses it.
+
+**On the owner's car today.** 28a/28b ran with `HondaCenterScale` 0.0, so the centre boost was already off.
+Nothing near centre changes. The change acts only in turns deeper than 10 deg above 9 mph.
+
+**Evidence (sim, `lat_score gate`, C020 plant; routes 280, 284, 285, 286, 27a, 277, 278, 289, 28a, 28b).**
+- Verdict **pass**: 4 routes improve and none regress.
+  - 280: turn_err 12–25 mph 13.96 → 13.16.
+  - 28b: turn_err 12–25 mph 11.93 → 10.58.
+  - 27a: err_rms 25–50 mph 0.82 → 0.75.
+  - 278: err_rms 25–50 mph 0.56 → 0.51.
+- Every other figure is inside the gate margins. The real code reproduces the monkeypatched gate run
+  exactly: max difference 0 over all metrics.
+- Keeping our asymmetry and centre boost and dropping only the phase terms scored the same, and
+  also improved 284 slightly (0.64 → 0.62).
+- 28a/28b open-loop A/B on a plant fitted to those two drives: 25–50 mph rms fell by up to 0.1 deg
+  (28b left 0.77 → 0.66). That plant reads 28b left error 0.77 against 0.48 logged, so the size of the
+  gain is uncertain.
+
+**Not ported from James.** He moved the low-pass filter from the target to the final torque (target
+filter off, output tau 0.1). It fails the gate on all 10 routes: turn_err up 1–10 deg, wobble up at
+5–20 m/s. His integrator reset at low speed and his stop flip-flop hold were not needed; our code already
+handles both cases.
+
+**Tests (static).** `selfdrive/controls/tests/test_latcontrol_pid_output_scale.py` checks that the scale is
+the same both ways, is 1.0 near centre and below 4 m/s, and has the right values in a full turn. The
+latcontrol_pid, analyzer, settings-layout, lateral-tools and py39 suites pass (243).
+
+**Still open.** MetaDrive closed-loop A/B against the parent commit is pending (group rule). First drive:
+watch mid-speed turns, both directions, for over- or under-steer at the apex.
