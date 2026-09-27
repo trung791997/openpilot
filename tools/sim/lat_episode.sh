@@ -26,9 +26,11 @@ fi
 # hardwared then blocks onroad (startup_conditions no_excessive_actuation) for every later episode: bridge runs, card and
 # controlsd never start, sim_lat_record sees no carParams. Sim prefix params only; never touches a device.
 OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; Params().remove('Offroad_ExcessiveActuation')"
+# SIM_MODEL (tsfdo = the owner's daily model, default; stock = the tree's split model, for comparison) and SIM_CAMERA
+# (tici; mici = the comma 4's os04c10 geometry, tools/sim/lib/common.py) are forwarded too.
 # SIM_MAP (default / intersection / gentle, metadrive_bridge.MAP_PRESETS) and SIM_CRUISE_KPH are forwarded explicitly: a fresh
 # tmux server does not inherit this shell's environment.
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=stock SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} \
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} \
   SIM_STEER_MODEL=$PWD/tools/sim/eps_models/honda_civic_bosch_c020.json \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
 sleep 30
@@ -49,10 +51,12 @@ OPENPILOT_PREFIX=$prefix OPENPILOT_ZMQ_NAMESPACE=$prefix timeout $((secs + 60)) 
 [ -n "${keys_pid:-}" ] && kill $keys_pid 2>/dev/null
 tmux send-keys -t tsfdo-sim q; sleep 5; tmux kill-session -t tsfdo-sim 2>/dev/null
 python - "$out" "$sched" "$@" <<'PY'
-import json, sys
+import json, os, sys
 out, sched, overrides = sys.argv[1], sys.argv[2], sys.argv[3:]
 ep = json.load(open(f"{out}/episode.json"))
 ep["overrides"] = overrides
+ep["model"] = os.environ.get("SIM_MODEL", "tsfdo")
+ep["camera"] = os.environ.get("SIM_CAMERA", "tici")
 if "NrdrLatEpsFirmwareFF=true" in overrides:
   # James's controller runs on its fixed trims; theta is those 9 values (lat_cem_tune --kind clarity_eps units)
   from openpilot.selfdrive.controls.lib import nrdr_eps_firmware_ff as ff

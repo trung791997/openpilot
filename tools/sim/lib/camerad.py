@@ -9,7 +9,7 @@ from cereal import messaging
 
 from openpilot.common.basedir import BASEDIR
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
-from openpilot.tools.sim.lib.common import W, H
+from openpilot.tools.sim.lib.common import W, H, CAMERA_SENSOR
 
 STRIDE, Y_HEIGHT, UV_HEIGHT, BUF_SIZE = get_nv12_info(W, H)
 UV_OFFSET = STRIDE * Y_HEIGHT
@@ -85,5 +85,7 @@ class Camerad:
                     0.0, 1.0, 0.0,
                     0.0, 0.0, 1.0]
     }
+    if CAMERA_SENSOR is not None:
+      msg["sensor"] = CAMERA_SENSOR
     setattr(dat, pub_type, msg)
     self.pm.send(pub_type, dat)

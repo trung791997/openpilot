@@ -1,11 +1,25 @@
 import math
 import multiprocessing
+import os
 import numpy as np
 
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
-W, H = 1928, 1208
+# SIM_CAMERA=mici renders the comma 4's os04c10 cameras (1344x760; road f=1141.5, wide pinhole f=425.25) and publishes
+# sensor os04c10, so modeld/calibrationd use the comma 4's intrinsics; default (tici) keeps upstream's AR0231 geometry.
+# Both are pinhole renders: the real wide lens is a fisheye, which MetaDrive does not model.
+SIM_CAMERA = os.environ.get("SIM_CAMERA", "tici")
+if SIM_CAMERA == "mici":
+  W, H = 1344, 760
+  ROAD_FOCAL, WIDE_FOCAL, CAMERA_SENSOR = 1522.0 * 3 / 4, 567.0 / 4 * 3, "os04c10"
+else:
+  W, H = 1928, 1208
+  ROAD_FOCAL, WIDE_FOCAL, CAMERA_SENSOR = 2648.0, 567.0, None
+ROAD_HFOV = 2 * math.degrees(math.atan(W / 2 / ROAD_FOCAL))
+WIDE_HFOV = 2 * math.degrees(math.atan(W / 2 / WIDE_FOCAL))
+if SIM_CAMERA != "mici":
+  ROAD_HFOV, WIDE_HFOV = 40.0, 120.0  # upstream's lens values (f=567 gives 119.1); kept so earlier episodes stay comparable
 
 
 vec3 = namedtuple("vec3", ["x", "y", "z"])

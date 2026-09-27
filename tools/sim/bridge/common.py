@@ -187,7 +187,9 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       # Update openpilot on current sensor state
       self.simulated_sensors.update(self.simulator_state, self.world)
 
-      self.simulated_car.sm.update(0)
+      # simulated_car_thread already runs self.simulated_car.sm.update() at 100 Hz (SimulatedCar.update). Updating it here
+      # too read the same ZMQ sockets from two threads; on macOS (ZMQ backend, not msgq shared memory) that tripped
+      # libzmq's "Bad address (src/fq.cpp:56)" assertion and killed the bridge mid-episode in about half the runs.
       self.simulator_state.is_engaged = self.simulated_car.sm['selfdriveState'].active
 
       if self.simulator_state.is_engaged:

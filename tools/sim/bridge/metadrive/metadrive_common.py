@@ -3,6 +3,8 @@ import numpy as np
 from metadrive.component.sensors.rgb_camera import RGBCamera
 from panda3d.core import Texture, GraphicsOutput
 
+from openpilot.tools.sim.lib.common import ROAD_HFOV, WIDE_HFOV
+
 
 class CopyRamRGBCamera(RGBCamera):
   """Camera which copies its content into RAM during the render process, for faster image grabbing."""
@@ -25,7 +27,7 @@ class RGBCameraWide(CopyRamRGBCamera):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     lens = self.get_lens()
-    lens.setFov(120)
+    lens.setFov(WIDE_HFOV)
     lens.setNear(0.1)
 
 
@@ -33,5 +35,5 @@ class RGBCameraRoad(CopyRamRGBCamera):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     lens = self.get_lens()
-    lens.setFov(40)
+    lens.setFov(ROAD_HFOV)
     lens.setNear(0.1)

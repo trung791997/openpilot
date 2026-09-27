@@ -185,9 +185,11 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "carOutput",
     "liveParameters",
     "carParams",
+    "modelV2",
   ], poll="controlsState")
 
   rows = []
+  lanes = []  # per row: modelV2 laneLineProbs (4) + roadEdgeStds (2), saved to lanes.npz (perception of the sim's roads)
   t0 = None
   start_mono = time.monotonic()
   cp_bytes = None
@@ -219,8 +221,12 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
 
     row = build_row(sm, t0=t0)
     rows.append(row)
+    mv = sm["modelV2"]
+    lanes.append(list(mv.laneLineProbs)[:4] + list(mv.roadEdgeStds)[:2] if sm.seen["modelV2"] else [np.nan] * 6)
 
   elapsed = time.monotonic() - start_mono
+  lane_arr = np.array([(l + [np.nan] * 6)[:6] for l in lanes], dtype=np.float64).reshape(-1, 6)
+  np.savez_compressed(os.path.join(outdir, "lanes.npz"), lane_probs=lane_arr[:, :4], edge_stds=lane_arr[:, 4:])
   if cp_bytes is None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()
