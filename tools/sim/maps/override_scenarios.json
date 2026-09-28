@@ -214,6 +214,27 @@
   },
   "note": "resting hand"
  },
+ "handsoff_12": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "note": "turn_12 map, no driver: A/C delivered compared (James's closed-loop hands-off twin)"
+ },
  "turn_6": {
   "cruise_kph": 10,
   "blocks": [
@@ -469,12 +490,12 @@
   "press": {
    "kind": "push",
    "amp_tq": 700,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
  },
  "push_22.4_-700": {
   "cruise_kph": 81,
@@ -487,12 +508,12 @@
   "press": {
    "kind": "push",
    "amp_tq": -700,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
  },
  "push_22.4_1000": {
   "cruise_kph": 81,
@@ -505,12 +526,12 @@
   "press": {
    "kind": "push",
    "amp_tq": 1000,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
  },
  "push_22.4_-1000": {
   "cruise_kph": 81,
@@ -523,12 +544,12 @@
   "press": {
    "kind": "push",
    "amp_tq": -1000,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
  },
  "push_22.4_1500": {
   "cruise_kph": 81,
@@ -541,12 +562,12 @@
   "press": {
    "kind": "push",
    "amp_tq": 1500,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
  },
  "push_22.4_-1500": {
   "cruise_kph": 81,
@@ -559,11 +580,195 @@
   "press": {
    "kind": "push",
    "amp_tq": -1500,
-   "trigger_v": 21.279999999999998,
+   "trigger_v": 20.0,
    "dwell": 3.0,
    "dur": 10.0,
    "r": 0.3
   },
-  "note": "constant push on a straight; worst wheel change over last 2 s"
+  "note": "constant push on a straight; worst wheel change over last 2 s (trigger 20.0 m/s: the car holds 20.8 at cruise 81 kph)"
+ },
+ "blip_30": {
+  "cruise_kph": 48,
+  "blocks": [
+   [
+    "S",
+    433
+   ],
+   [
+    "C",
+    98.0,
+    109.1,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "trigger_deg": 20,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  },
+  "note": "hug_30 + raw sensor blip max(|tq|,2100), 3 frames, 2 s into the hold (284 27:09 case)",
+  "blips": [
+   {
+    "after_press_s": 2.0,
+    "n": 3,
+    "tq": 2100
+   }
+  ]
+ },
+ "blip_45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    78.6,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 3,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  },
+  "note": "hug_45 + raw sensor blip, 2 s into the hold",
+  "blips": [
+   {
+    "after_press_s": 2.0,
+    "n": 3,
+    "tq": 2100
+   }
+  ]
+ },
+ "blipho_30": {
+  "cruise_kph": 48,
+  "blocks": [
+   [
+    "S",
+    433
+   ],
+   [
+    "C",
+    98.0,
+    109.1,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "note": "hands-off in the hug_30 corner + blip 2100 in the plan's sign, 3 frames",
+  "blips": [
+   {
+    "trigger_deg": 20,
+    "dwell": 4.0,
+    "n": 3,
+    "tq": 2100
+   }
+  ]
+ },
+ "blipho_45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    78.6,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "note": "hands-off in the hug_45 corner + blip",
+  "blips": [
+   {
+    "trigger_deg": 9.6,
+    "dwell": 4.0,
+    "n": 3,
+    "tq": 2100
+   }
+  ]
+ },
+ "grab_45_0.3": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    67.3,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 0.3,
+   "r": 0.1
+  },
+  "note": "grab: want = plan - 10 window(r 0.1) for 0.3 s (Kevin/James)"
+ },
+ "grab_45_0.4": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    67.3,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 0.4,
+   "r": 0.1
+  },
+  "note": "grab: want = plan - 10 window(r 0.1) for 0.4 s (Kevin/James)"
  }
 }

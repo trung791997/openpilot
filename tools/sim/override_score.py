@@ -11,6 +11,8 @@ t_mono (lanes.npz); the press shape (kind, offset/scale, dur, r) from the episod
   resist = hold & delivered * sign(want - plan) < -0.02 (s, peak, integral)   (delivered = carOutput torque, -1..1)
   cut = rising edges of carState.steeringPressed within hold, and seconds pressed (the carcontroller latch is not logged)
   release: overshoot past the plan, peak |rate|, back_on_plan_s (|ang - plan| < 1 deg for 0.5 s; 3.0 if never)
+  after release (lane_gt.csv, to 6 s): post_lat_peak_m from lane centre, post_back_0p3m_s, post_hdg_peak_deg
+blip*: blip_step_max = max |per-frame change in delivered| over [blip - 0.1, blip + 0.6) (blip_step_before: the second before)
 push_* scenarios (no hand loop): worst wheel change over the last 2 s of the push. Sim evidence only.
 """
 import json
@@ -54,6 +56,14 @@ def score(run):
   ang, plan, deliv, tq, pressed = z["angle"], z["des_angle"], z["co_torque"], z["eps_torque"], z["pressed"] > 0
   starts = [float(m) for m in re.findall(r"sim_driver: press \d+ start ([\d.]+)", open(f"{run}/bridge.log", errors="ignore").read())]
   out = {"run": name}
+  if SCEN[scen].get("blips") and len(starts) > (1 if press else 0):
+    # raw sensor blip (driver_model "blips"; the bridge prints it as the next press): delivered-torque steps around it
+    tb = tm - starts[1 if press else 0]
+    wb = (tb >= -0.1) & (tb < 0.6)
+    step = np.abs(np.diff(deliv))
+    out["blip_step_max"] = float(step[wb[1:]].max())
+    out["blip_step_before"] = float(step[((tb >= -1.1) & (tb < -0.1))[1:]].max())
+    out["blip_pressed_frames"] = int(pressed[wb].sum())
   if press is None:
     out["note"] = "hands-off"
     out["max_abs_ang_minus_plan"] = float(np.max(np.abs(ang - plan)[z["active"] > 0]))
@@ -94,8 +104,8 @@ def score(run):
   out["resist_peak"] = float(np.max(np.abs(deliv[opp]))) if opp.any() else 0.0
   out["resist_int"] = float(np.sum(np.abs(deliv[opp])) * dt)
   ph = pressed & hold
-  out["cut_edges"] = int(np.sum(ph[1:] & ~ph[:-1]) + (1 if ph[np.argmax(hold)] else 0))
-  out["cut_s"] = float(ph.sum() * dt)
+  out["raw_press_edges"] = int(np.sum(ph[1:] & ~ph[:-1]) + (1 if ph[np.argmax(hold)] else 0))
+  out["raw_press_s"] = float(ph.sum() * dt)
   e = ang - plan
   out["release_overshoot_deg"] = float(np.max(-d * e[after])) if after.any() else float("nan")
   rate = np.gradient(ang, tm)  # the npz rate column is not filled by the recorder
@@ -105,6 +115,21 @@ def score(run):
   n = int(round(0.5 / dt))
   back = next((t[ia[k]] - dur for k in range(len(ia) - n) if ok[k:k + n].all()), 3.0)
   out["back_on_plan_s"] = float(back)
+  # James (2026-09-28): the car after release, which only this sim can show (the model re-plans here). MetaDrive ground
+  # truth, lane_gt.csv: lat_m from lane centre, heading_err in rad; to 6 s after release or the map end.
+  gt = np.genfromtxt(f"{run}/frames/lane_gt.csv", delimiter=",", names=True, dtype=None, encoding=None)
+  gt_t = gt["t_mono"] - starts[0]
+  ga = (gt_t >= dur) & (gt_t < dur + 6)
+  lat = np.asarray(gt["lat_m"], dtype=float)
+  li = np.array([str(x) for x in gt["lane_idx"]])
+  gp = (gt_t >= 0) & (gt_t < dur + 6)
+  # lat_m is measured from the current lane's centre, so a lane change breaks the drift numbers: flag it
+  out["lane_changed"] = bool(gp.any() and len(set(li[gp])) > 1)
+  if ga.any():
+    out["post_lat_peak_m"] = float(np.max(np.abs(lat[ga])))
+    far = np.where(ga & (np.abs(lat) >= 0.3))[0]
+    out["post_back_0p3m_s"] = float(gt_t[far[-1]] - dur) if len(far) else 0.0  # last time outside 0.3 m (6.0 = never back)
+    out["post_hdg_peak_deg"] = float(np.degrees(np.max(np.abs(np.asarray(gt["heading_err"], dtype=float)[ga]))))
   out["plan_mean_hold"] = float(np.mean(plan[hold]))
   out["v_mean_hold"] = float(np.mean(z["v"][hold]))
   return out

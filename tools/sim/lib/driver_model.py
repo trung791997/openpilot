@@ -20,6 +20,11 @@ A press starts on the plan trigger, once v_ego >= "trigger_v" for dwell s, or at
 "version": "v2" (Kevin's low-speed driver, 2026-09-28): the loop through the assist is capped near 7 rad/s with zeta ~0.8:
 s = min(1, 49000 / g(v) / kd), kd and ki scaled by s, bd = max(bd, 11200 / g(v)) where s < 1. At 45 mph s = 1 (v1).
 
+"blips" (James/Kevin 2026-09-28, the 284 27:09 raw sensor spikes): each {"n": 3, "tq": 2100} plus either
+"after_press_s" (s after the first press starts) or "trigger_deg" + "dwell" (hands-off, in the corner). For n frames the
+torque becomes max(|tq|, tq_blip) in the driver's sign (the plan's when hands-off); it reaches the sensor and, for those
+frames, the plant.
+
 SIM_DRIVER is JSON: {"version": "v2", "ki": 800, "presses": [{"kind": "offset", "offset_deg": 3, "trigger_deg": 8,
 "dwell": 1.0, "dur": 4.0, "r": 0.4}]}. Each press fires once, in order. Sim evidence only.
 """
@@ -58,6 +63,10 @@ class DriverModel:
     self.ki = KI[ki] if isinstance(ki, str) else float(ki)
     self.version = s.get("version", "v1")
     self.presses = list(s.get("presses", []))
+    self.blips = list(s.get("blips", []))
+    self.blip_above_s = 0.0
+    self.blip_left = 0
+    self.blip_tq = 0.0
     self.t = 0.0
     self.tq = 0.0
     self.tqi = 0.0
@@ -126,4 +135,21 @@ class DriverModel:
       self.tqi = float(np.clip(self.tqi + ki * e * DT, -TQ_MAX, TQ_MAX))
       tq_target = float(np.clip(kd * e - bd * rate + self.tqi, -TQ_MAX, TQ_MAX))
     self.tq += DT / LAG_S * (tq_target - self.tq)
-    return self.tq + self.tq_extra()
+    return self.blip(self.tq + self.tq_extra(), plan)
+
+  def blip(self, tq: float, plan: float) -> float:
+    if self.blip_left == 0 and self.blips:
+      b = self.blips[0]
+      if "after_press_s" in b:
+        go = bool(self.log) and self.t >= self.log[0][0] + b["after_press_s"]
+      else:
+        self.blip_above_s = self.blip_above_s + DT if abs(plan) >= b["trigger_deg"] else 0.0
+        go = self.blip_above_s >= b.get("dwell", 1.0)
+      if go:
+        self.blips.pop(0)
+        self.blip_left, self.blip_tq = int(b.get("n", 3)), float(b.get("tq", 2100.0))
+        self.log.append((self.t, self.t + self.blip_left * DT))  # the bridge prints it as the next "press"
+    if self.blip_left > 0:
+      self.blip_left -= 1
+      return math.copysign(max(abs(tq), self.blip_tq), tq if tq else (plan or 1.0))
+    return tq
