@@ -20,6 +20,12 @@ python3 -c "from openpilot.selfdrive.test.helpers import set_params_enabled; set
 if [[ -n "$SIM_CAR_CONFIG" ]]; then
   python3 "$(dirname "$0")/sim_car_config.py" apply "$SIM_CAR_CONFIG"
 fi
+# SIM_PARAM_OVERRIDES (lat_episode.sh: the run's KEY=VALUE args): applied after the car config so a run's start-read
+# toggles win. Before 2026-09-28 the car config's NrdrLatEpsFirmwareFF=1 overwrote them and controlsd (up at ~+25 s)
+# read it before lat_episode re-applied the run's args at +30 s, so "PID" arms ran LatControlClarityEps.
+if [[ -n "$SIM_PARAM_OVERRIDES" ]]; then
+  python3 "$(dirname "$0")/sim_set_overrides.py" --prefix "${OPENPILOT_PREFIX:-tsfdo-mac}" $SIM_PARAM_OVERRIDES
+fi
 
 SCRIPT_DIR=$(dirname "$0")
 OPENPILOT_DIR=$SCRIPT_DIR/../../

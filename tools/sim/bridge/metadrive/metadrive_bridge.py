@@ -50,7 +50,16 @@ def route_map_blocks(path):
   import json
   with open(path) as f:
     spec = json.load(f)
-  return [straight_block(b[1]) if b[0] == "S" else curve_block(1, b[2], int(b[3]), radius=b[1]) for b in spec]
+  # Straights longer than 100 m are split: on 450 m blocks the lane lookup lost the car 100-200 m in (lane None,
+  # out_of_road logged at 0.03-0.13 m from the centre line; drive maps 2026-09-28).
+  blocks = []
+  for b in spec:
+    if b[0] == "S":
+      n = max(1, math.ceil(b[1] / 100.0))
+      blocks += [straight_block(b[1] / n) for _ in range(n)]
+    else:
+      blocks.append(curve_block(1, b[2], int(b[3]), radius=b[1]))
+  return blocks
 
 
 def create_map(preset=None, track_size=None):

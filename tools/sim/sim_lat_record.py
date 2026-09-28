@@ -203,6 +203,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   t_mono = []  # per row: host time.monotonic() at the row, the clock metadrive_process writes into frames/lane_gt.csv t_mono, so
   # the two files align exactly. Before 2026-09-27 they shared no clock and the npz begins ~16 s after the world starts
   # (the car is already at 7-8 m/s), so distance-from-npz-start windows landed 30-38 m off the map (varying per run).
+  cs_mono = []  # per row: controlsState logMonoTime (s). Its steps vs t_mono steps separate a slow controlsd from a slow
+  #              recorder loop that drops messages, which the row rate alone cannot (2026-09-28).
   t0 = None
   start_mono = time.monotonic()
   cp_bytes = None
@@ -246,6 +248,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     plan.append([mv.action.desiredCurvature if sm.seen["modelV2"] else np.nan] +
                 ([float(sp.cscControllingSpeed), sp.cscSpeed, sp.vCruise] if sm.seen["starpilotPlan"] else [np.nan] * 3))
     t_mono.append(time.monotonic())
+    cs_mono.append(sm.logMonoTime["controlsState"] * 1e-9)
 
   elapsed = time.monotonic() - start_mono
   lane_arr = np.array([(l + [np.nan] * 6)[:6] for l in lanes], dtype=np.float64).reshape(-1, 6)
@@ -254,7 +257,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                       eps_ff=np.array(eps_ff, dtype=np.float64).reshape(-1, 2),
                       calib=np.array(calib, dtype=np.float64).reshape(-1, 6),
                       plan=np.array(plan, dtype=np.float64).reshape(-1, 4),
-                      t_mono=np.array(t_mono, dtype=np.float64))
+                      t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64))
   if cp_bytes is None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()
