@@ -134,12 +134,18 @@ _Terrain.reset = _terrain_reset_map_centred
 TerrainProperty.point_in_map = classmethod(lambda cls, point: True)
 TerrainProperty.clip_polygon = classmethod(lambda cls, polygon: [list(polygon)])
 
-# Camera mount: height above the road (m) and the driver's liveCalibration rpyCalib (rad, device frame: x forward, y right,
-# z down). Panda3D HPR is degrees with H counter-clockwise, so H = -yaw, P = pitch, R = roll.
+# Camera mount: height above the road (m) and the driver's liveCalibration rpyCalib (rad). rpyCalib is device_from_calib
+# (common/transformations/camera.py get_view_frame_from_calib_frame): rot_from_euler(rpy) applied to road-forward gives it
+# in device coordinates (x forward, y right, z down). Checked numerically 2026-09-27 against Panda3D LRotationf.setHpr
+# (camera +y forward, +x right, +z up; H counter-clockwise, P nose up, R clockwise): a positive rpy pitch puts road-forward
+# ABOVE the device nose (device pitched down) and a positive yaw puts it LEFT of the nose (device yawed right), so
+# H = +yaw, P = -pitch, R = +roll. Until 2026-09-27 the sign of H and P was inverted: with the owner's rpyCalib
+# (pitch 0.02045, yaw -0.01075) the render looked 1.17 deg up and 0.62 deg left while calibrationd was seeded with the
+# opposite, a 2.3 deg pitch / 1.2 deg yaw mismatch between the image and the calibration the model was given.
 CAM_HEIGHT = float(os.getenv("SIM_CAM_HEIGHT", "1.22"))
 CAM_RPY = [float(x) for x in os.getenv("SIM_CAM_RPY", "0,0,0").split(",")]
 C3_POSITION = Vec3(0.0, 0, CAM_HEIGHT)
-C3_HPR = Vec3(-math.degrees(CAM_RPY[2]), math.degrees(CAM_RPY[1]), math.degrees(CAM_RPY[0]))
+C3_HPR = Vec3(math.degrees(CAM_RPY[2]), -math.degrees(CAM_RPY[1]), math.degrees(CAM_RPY[0]))
 
 
 metadrive_simulation_state = namedtuple("metadrive_simulation_state", ["running", "done", "done_info"])
@@ -350,15 +356,26 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
   stop_hold, stopped_lane, stop_brake = None, None, 0.2
 
   record_dir = os.getenv("SIM_RECORD_DIR")
+  gt_file = None
   if record_dir:
     import cv2
     os.makedirs(record_dir, exist_ok=True)
+    # Ground-truth pose against the lane the car is on, per physics step (20 Hz): lateral offset from lane centre (m, + = right,
+    # MetaDrive lane frame) and heading error (rad, car minus lane, + = left). Line error cannot be read from the model's lane lines. time.monotonic()
+    # and speed are logged so the rows can be matched to the recorder by the speed trace.
+    gt_file = open(os.path.join(record_dir, "lane_gt.csv"), "w")
+    gt_file.write("t_mono,frame,speed,lane_idx,long_m,lat_m,heading_err,yaw_rate,lane_curv\n")  # yaw_rate rad/s (plant, + left), lane_curv 1/m (+ left)
 
   def cur_speed():
     return plant.u if plant is not None else float(np.linalg.norm(env.vehicle.velocity))
 
   while not exit_event.is_set():
     vel = plant.velocity() if plant is not None else env.vehicle.velocity
+    if plant is not None:
+      # 100 Hz, from the plant state just integrated. Until 2026-09-27 these were refreshed only on the 20 Hz physics step
+      # below, so the gyro and the forward accel reached locationd 0-50 ms (25 ms mean) behind the steering angle: an
+      # extra 25 ms in lagd's lateralDelay estimate and in every lag measured from carState vs the plant.
+      yaw_rate, accel = float(plant.x[1]), plant.a
     vehicle_state = metadrive_vehicle_state(
       velocity=vec3(x=float(vel[0]), y=float(vel[1]), z=0),
       position=env.vehicle.position,
@@ -431,6 +448,19 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
         yaw_rate, accel = float(plant.x[1]), plant.a
       timeout = True if start_time is not None and time.monotonic() - start_time >= test_duration else False
       lane_idx_curr, on_lane = get_current_lane_info(env.vehicle)
+      if gt_file is not None:
+        try:
+          lane = env.vehicle.lane
+          lon, lat = lane.local_coordinates(env.vehicle.position)
+          herr = (heading - lane.heading_theta_at(lon) + math.pi) % (2 * math.pi) - math.pi
+          # lane curvature from the lane's own heading 1 m either side; car curvature is yaw_rate / speed
+          lcurv = ((lane.heading_theta_at(lon + 0.5) - lane.heading_theta_at(lon - 0.5) + math.pi) % (2 * math.pi) - math.pi) / 1.0
+          yr = float(plant.x[1]) if plant is not None else float("nan")
+          gt_file.write(f"{time.monotonic():.4f},{rk.frame},{speed:.3f},{lane_idx_curr},{lon:.2f},{lat:.3f},{herr:.5f},{yr:.5f},{lcurv:.6f}\n")
+          if rk.frame % 100 == 0:
+            gt_file.flush()
+        except Exception:
+          pass
       out_of_lane = lane_idx_curr != lane_idx_prev or not on_lane
       lane_idx_prev = lane_idx_curr
       # sim-lat-training: log road departures and returns (out_of_road_done is off, so the world keeps stepping); the

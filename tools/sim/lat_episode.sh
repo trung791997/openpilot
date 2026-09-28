@@ -35,7 +35,7 @@ OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; 
 # The car as driven: $HOME/.openpilot-sim/civic/sim.env (not in the repo) sets the learned steer ratio, stiffness and angle
 # offset, the camera height and calibration, and the lane width from the owner's routes. SIM_AS_DRIVEN=0 skips it.
 [ "${SIM_AS_DRIVEN:-1}" = 1 ] && [ -f "$HOME/.openpilot-sim/civic/sim.env" ] && . "$HOME/.openpilot-sim/civic/sim.env"
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} SIM_PLANT=${SIM_PLANT:-civic} ${SIM_PLANT_SR:+SIM_PLANT_SR=$SIM_PLANT_SR} ${SIM_PLANT_STIFFNESS:+SIM_PLANT_STIFFNESS=$SIM_PLANT_STIFFNESS} ${SIM_PLANT_VGR:+SIM_PLANT_VGR=$SIM_PLANT_VGR} ${SIM_PLANT_OFFSET_DEG:+SIM_PLANT_OFFSET_DEG=$SIM_PLANT_OFFSET_DEG} ${SIM_CAM_HEIGHT:+SIM_CAM_HEIGHT=$SIM_CAM_HEIGHT} ${SIM_CAM_RPY:+SIM_CAM_RPY=$SIM_CAM_RPY} ${SIM_MAP_FILE:+SIM_MAP_FILE=$SIM_MAP_FILE} ${SIM_LANE_WIDTH:+SIM_LANE_WIDTH=$SIM_LANE_WIDTH} \
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} ${SIM_KEYS:+SIM_KEYS=$SIM_KEYS} SIM_PLANT=${SIM_PLANT:-civic} ${SIM_PLANT_SR:+SIM_PLANT_SR=$SIM_PLANT_SR} ${SIM_PLANT_STIFFNESS:+SIM_PLANT_STIFFNESS=$SIM_PLANT_STIFFNESS} ${SIM_PLANT_VGR:+SIM_PLANT_VGR=$SIM_PLANT_VGR} ${SIM_PLANT_OFFSET_DEG:+SIM_PLANT_OFFSET_DEG=$SIM_PLANT_OFFSET_DEG} ${SIM_CAM_HEIGHT:+SIM_CAM_HEIGHT=$SIM_CAM_HEIGHT} ${SIM_CAM_RPY:+SIM_CAM_RPY=$SIM_CAM_RPY} ${SIM_MAP_FILE:+SIM_MAP_FILE=$SIM_MAP_FILE} ${SIM_LANE_WIDTH:+SIM_LANE_WIDTH=$SIM_LANE_WIDTH} \
   SIM_STEER_MODEL=${SIM_STEER_MODEL:-$PWD/tools/lateral/plants/civic_bosch_c020.json} \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
 sleep 30
@@ -47,6 +47,7 @@ fi
 sleep 10
 # SIM_KEYS="30:3,50:1": bridge keyboard keys sent at those seconds after recording starts (3 = cruise cancel, 1 = cruise
 # up / resume, s = brake, z/x = blinkers; tools/sim/lib/keyboard_ctrl.py). "30:3,50:1" is a stop-and-resume scenario.
+# SIM_KEYS is also forwarded into the bridge env above (SCRIPTED_KEYS in bridge/common.py hands the resume to the keys).
 if [ -n "${SIM_KEYS:-}" ]; then
   ( IFS=,; last=0; for kv in $SIM_KEYS; do at=${kv%%:*}; key=${kv#*:}; sleep $((at - last)); last=$at
       tmux send-keys -t tsfdo-sim "$key"; echo "lat_episode: key $key at ${at}s" >> "$out/bridge.log"; done ) &

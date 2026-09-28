@@ -22,6 +22,7 @@ from openpilot.tools.sim.lib.simulated_sensors import SimulatedSensors
 from openpilot.tools.sim.lib.steer_model import SteerModel
 
 CIVIC_PLANT = os.getenv("SIM_PLANT", "metadrive") == "civic"
+SCRIPTED_KEYS = bool(os.getenv("SIM_KEYS"))  # lat_episode.sh feeds these keys; set for the scripted stop-and-resume runs
 METADRIVE_CURV_PER_DEG = 0.00055  # measured road curvature per degree sent to MetaDrive (steer_ratio 8 in metadrive_process)
 
 QueueMessage = namedtuple("QueueMessage", ["type", "info"], defaults=[None])
@@ -69,6 +70,8 @@ class SimulatorBridge(ABC):
     self.cruise_key_frames = 0
     self.past_startup_engaged = False
     self.moved_once = False
+    self.stop_frames = 0  # engaged standstill frames after the first move, off the brake
+    self.keys_driven = False  # a keyboard brake press means the stops are driver-keyed (SIM_KEYS), not SIM_STOP_BEFORE_TURN
     self.startup_button_prev = True
     # SIM_CRUISE_KPH: after engaging, tap RES_ACCEL until the set speed reaches this (km/h).
     # Engagement leaves it near 9 km/h, where the driving model crawls and loses the lanes in curves.
@@ -166,6 +169,7 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
             throttle_manual = float(m[1])
           elif m[0] == "brake":
             brake_manual = float(m[1])
+            self.keys_driven = True  # lat_episode.sh does not forward SIM_KEYS into the bridge env, so SCRIPTED_KEYS alone misses these
           elif m[0] == "cruise":
             self.cruise_key = {"down": CruiseButtons.DECEL_SET, "up": CruiseButtons.RES_ACCEL,
                                "cancel": CruiseButtons.CANCEL, "main": CruiseButtons.MAIN}.get(m[1], 0)
@@ -220,10 +224,30 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
         # taps below did this by accident: they read a 2 Hz stale vCruise and kept tapping after engagement.
         if self.simulated_car.sm['carState'].vEgo > 1.0:
           self.moved_once = True
-        if not self.moved_once and self.rk.frame % 100 == 0:
+        # After a stop mid-episode (SIM_STOP_BEFORE_TURN) the driver presses RES once, 1 s into the standstill, and again
+        # 6 s later only if the car is still stopped. Every RES with the car moving (the sim's ACC_HUD never reports cruise
+        # standstill) steps the set speed up, so a press a second would have raised it per stop. Until 2026-09-27 only the
+        # first start was pressed, so every stop-and-go run sat at standstill after its first stop. Scripted keys
+        # (SIM_KEYS) own the resume in the stop-and-resume runs.
+        v_ego = self.simulated_car.sm['carState'].vEgo
+        if self.moved_once and not (SCRIPTED_KEYS or self.keys_driven) and brake_manual == 0 and v_ego < 0.1:
+          self.stop_frames += 1
+        elif v_ego > 1.0:
+          if self.stop_frames:
+            print(f"bridge: moving after stop, vCruise {self.simulated_car.sm['carState'].vCruise:.1f}", flush=True)
+          self.stop_frames = 0
+        resume_after_stop = self.stop_frames in (100, 700)
+        if resume_after_stop:
+          print(f"bridge: RES after stop ({self.stop_frames / 100:.0f} s), vCruise {self.simulated_car.sm['carState'].vCruise:.1f}", flush=True)
+        if (not self.moved_once and self.rk.frame % 100 == 0) or resume_after_stop:
           self.cruise_key, self.cruise_key_frames = CruiseButtons.RES_ACCEL, self.CRUISE_KEY_FRAMES
         if self.simulated_car.sm['carState'].vCruise < self.target_cruise_kph - 1 and self.rk.frame % 30 == 0:
           self.simulator_state.cruise_button = CruiseButtons.RES_ACCEL
+        # The sim's ACC_HUD never reports cruise standstill, so each RES above (startup presses included) also raises the
+        # set speed, by 8 km/h a press: pidStrA_1 on 2026-09-27 went 72 -> 80 -> 88 km/h against a 40 km/h target. Tap
+        # SET/- back down to the target once moving, as a driver would.
+        elif v_ego > 1.0 and self.simulated_car.sm['carState'].vCruise > self.target_cruise_kph + 1 and self.rk.frame % 30 == 0:
+          self.simulator_state.cruise_button = CruiseButtons.DECEL_SET
       elif not self.past_startup_engaged and self.simulated_car.sm['selfdriveState'].engageable:
         self.simulator_state.cruise_button = CruiseButtons.DECEL_SET if self.startup_button_prev else CruiseButtons.MAIN # force engagement on startup
         self.startup_button_prev = not self.startup_button_prev
@@ -242,6 +266,11 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
           if self.simulator_state.is_engaged:
             wheel_deg = self.steer_model.angle if self.steer_model is not None else steer_op
             accel = self.simulated_car.sm['carControl'].actuators.accel
+            # The driver's brake wins while engaged, as on the car (user_brake also reaches carState as brakePressed).
+            # A cancel key cannot stand in for it: the owner's CancelButtonControl=1 makes a short cancel press a
+            # personality change, so until 2026-09-27 the scripted stop-and-resume never stopped (held 3.5-4 m/s).
+            if brake_manual > 0:
+              accel = min(accel, -brake_manual * 4.0)
           else:
             wheel_deg = math.degrees(self.vehicle_model.get_steer_from_curvature(steer_manual * METADRIVE_CURV_PER_DEG, v_ego, 0.0))
             accel = throttle_manual * 1.6 - brake_manual * 4.0

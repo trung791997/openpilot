@@ -193,6 +193,9 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   lanes = []  # per row: modelV2 laneLineProbs (4) + roadEdgeStds (2), saved to lanes.npz (perception of the sim's roads)
   model_rt = []  # per row: modelV2 frameDropPerc, modelExecutionTime (s): whether modeld keeps up on this machine
   eps_ff = []  # per row: starpilotLateralState epsFfWeight, epsFfFeedforward (pidState.f under the PID is the raw kf term)
+  t_mono = []  # per row: host time.monotonic() at the row, the clock metadrive_process writes into frames/lane_gt.csv t_mono, so
+  # the two files align exactly. Before 2026-09-27 they shared no clock and the npz begins ~16 s after the world starts
+  # (the car is already at 7-8 m/s), so distance-from-npz-start windows landed 30-38 m off the map (varying per run).
   t0 = None
   start_mono = time.monotonic()
   cp_bytes = None
@@ -229,12 +232,14 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     model_rt.append([mv.frameDropPerc, mv.modelExecutionTime] if sm.seen["modelV2"] else [np.nan] * 2)
     sl = sm["starpilotLateralState"]
     eps_ff.append([sl.epsFfWeight, sl.epsFfFeedforward] if sm.seen["starpilotLateralState"] else [np.nan] * 2)
+    t_mono.append(time.monotonic())
 
   elapsed = time.monotonic() - start_mono
   lane_arr = np.array([(l + [np.nan] * 6)[:6] for l in lanes], dtype=np.float64).reshape(-1, 6)
   np.savez_compressed(os.path.join(outdir, "lanes.npz"), lane_probs=lane_arr[:, :4], edge_stds=lane_arr[:, 4:],
                       model_rt=np.array(model_rt, dtype=np.float64).reshape(-1, 2),
-                      eps_ff=np.array(eps_ff, dtype=np.float64).reshape(-1, 2))
+                      eps_ff=np.array(eps_ff, dtype=np.float64).reshape(-1, 2),
+                      t_mono=np.array(t_mono, dtype=np.float64))
   if cp_bytes is None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()
