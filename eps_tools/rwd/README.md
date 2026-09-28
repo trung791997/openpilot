@@ -63,8 +63,12 @@ Static decode, 2026-09-26 (STATUS 145). The owner supplied all three files, and 
 - `39990-TBA-C020-stock.rwd` is the factory image and the baseline. Flash it to go back. *Held locally, not committed.*
 - `39990-TBA,C020-20260805-ClarityPminus5-P117to265-D737-KFF45-Norm1650-Trk4500-TargetMapD-Telem-SpeedClamp0-Pclamp7373.rwd`
   differs from stock in 664 bytes over 25 runs. These are listed below.
-- `39990-TBA,C020-Trk4000-PTM.rwd` is the image above with only the tracker changed, 4500 to 4000. *Held locally, not committed.*
-  It differs in six bytes: the tracker word and the two firmware checksums.
+- `39990-TBA,C020-Trk4000-PTM.rwd` is the image above with only the tracker changed, 4500 to 4000. Committed 2026-09-28
+  (owner-supplied; passes `check_rwd.py`). Decrypted, it differs from the Trk4500 image in six bytes: the tracker word
+  (firmware offset `0xf7ee`, flash `0x137ee`, 4500 → 4000) and the two firmware checksums (`0x4bf80` 1523 → 1023,
+  `0x4bffe` 39999 → 40999). Every other table, including the torque rows the lateral controllers' C020 calibration
+  reads, is byte-identical, so `nrdr_eps_firmware_ff.CIVIC_BOSCH_C020` applies to it unchanged. The tracker is the R6
+  rate low-pass (unity DC gain), so it does not enter the feedforward's steady-state math.
 
 | name tag | address | stock C020 | owner |
 |---|---|---|---|
