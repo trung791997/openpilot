@@ -4311,7 +4311,7 @@ def test_off_axis_lead_bound_is_not_applied_off_bosch_a(monkeypatch):
   planner.update(_off_axis_sm(y_rel=-11.7, vision_a=-0.08), make_toggles())
 
 
-# Far-lead coast cap (Dom 79c61f479a), parked behind FarLeadCoastCap, default off (STATUS 85).
+# Far-lead coast cap (Dom 79c61f479a), built in (was FarLeadCoastCap).
 def test_far_lead_coast_cap_delays_nonurgent_deceleration():
   lead = make_lead(status=True, d_rel=128.0, v_lead=16.7, a_lead=0.2, radar=True)
 
@@ -4330,11 +4330,10 @@ def test_far_lead_coast_cap_preserves_urgent_or_close_deceleration(d_rel, v_lead
   assert get_far_lead_coast_cap(lead, 26.6, desired_gap, -0.43) == pytest.approx(-0.43)
 
 
-def test_far_lead_coast_cap_param_defaults_off():
+def test_far_lead_coast_cap_has_no_toggle():
   from openpilot.common.basedir import BASEDIR
   with open(f"{BASEDIR}/common/params_keys.h") as f:
-    keys = f.read()
-  assert '{"FarLeadCoastCap", {PERSISTENT, BOOL, "0", "0", 3}}' in keys
+    assert '"FarLeadCoastCap"' not in f.read()
 
 
 def test_off_axis_lead_hold_covers_route_267_1513_curve_exit():
@@ -4644,3 +4643,25 @@ def test_fast_closing_pass_is_capped_at_max_brake(monkeypatch):
   assert cap is not None and -2.0 - 1e-6 <= cap < -1.0
   monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_MAX_BRAKE", 0.0)
   assert longitudinal_planner_module.fast_closing_accel_min(-3.5) == -3.5
+
+
+def _far_lead_cap_case(model_a=None, model_prob=0.9):
+  # Route 0000028f 11:29.5 shape: lead 60 m ahead, closing ~5 m/s, radar aLeadK reads no braking.
+  lead = SimpleNamespace(status=True, dRel=60.0, vLead=20.0, aLeadK=0.2)
+  model = None
+  if model_a is not None:
+    model = SimpleNamespace(leadsV3=[SimpleNamespace(prob=model_prob, a=[model_a])])
+  return longitudinal_planner_module.get_far_lead_coast_cap(lead, 25.0, 30.0, -1.3, model)
+
+
+def test_far_lead_coast_cap_holds_when_camera_sees_no_brake():
+  assert _far_lead_cap_case() == pytest.approx(-longitudinal_planner_module.FAR_LEAD_COAST_MAX_DECEL)
+  assert _far_lead_cap_case(model_a=-0.1) == pytest.approx(-longitudinal_planner_module.FAR_LEAD_COAST_MAX_DECEL)
+
+
+def test_far_lead_coast_cap_stands_down_when_camera_sees_lead_braking():
+  assert _far_lead_cap_case(model_a=-1.4) == pytest.approx(-1.3)
+
+
+def test_far_lead_coast_cap_ignores_low_confidence_camera_brake():
+  assert _far_lead_cap_case(model_a=-1.4, model_prob=0.3) == pytest.approx(-longitudinal_planner_module.FAR_LEAD_COAST_MAX_DECEL)
