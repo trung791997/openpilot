@@ -4,7 +4,8 @@ Ported from JamesL787/openpilot vfn-controller-shadow (shadow 52618f42, controll
 The feedforward and ClarityEpsLateralCore below are upstream's, line for line, with the firmware constants moved
 into a calibration and the fixed P/I trims into arguments, so the Civic Bosch C020 image can use its own. The
 feedforward is logged in shadow by LatControlPID; NrdrLatEpsFirmwareFF hands the car to LatControlClarityEps,
-which runs ClarityEpsLateralCore exactly as upstream does on the Clarity (STATUS 164-166).
+which runs ClarityEpsLateralCore exactly as upstream does on the Clarity (STATUS 164-166). On the Civic, from
+25 mph, both controllers' feedforward uses the Civic's own column-load fit, CIVIC_C020_LOAD (STATUS 190, 191).
 
 The Clarity's LKAS path is not a torque command. The firmware turns our 0xE4 value into a target R5,
 compares it with R6 -- a filtered steering RATE (R6 = -138.6 counts per deg/s, corr 0.98 against
@@ -165,7 +166,11 @@ CLARITY_A020 = EpsFirmwareCalibration(E4_PER_OUTPUT, R5_KEY_BP, R5_V, ENVELOPE_B
 #     (4500) is the R6 low-pass alpha, unity DC gain, so it does not enter here (STATUS 161).
 #   - Speed envelope (axis 0x13644, values 0x136C2): 1552 from 120 km/h, 1108 from 160. NOT checked, 284 never
 #     passed 89 km/h, and what SpeedClamp0 disables is not decoded.
-# The column load model is still the Clarity's: refitting it on 284 alone did not beat it on held-out segments.
+# The same calibration holds for 39990-TBA,C020-Trk4000-PTM.rwd: decrypted, it differs from the Trk4500 image
+# only in the tracker word (0x137EE 4500 -> 4000) and the two firmware checksums (verified byte diff; eps_fw
+# EpsTable.from_rwd reads identical tables and norm/P/D/speed-clamp words), and the tracker does not enter here.
+# Column load: refitting on 284 alone did not beat the Clarity's; the 7-route fit CIVIC_C020_LOAD below did, and
+# both controllers use it from 25 mph (STATUS 190, 191).
 CIVIC_BOSCH_C020 = EpsFirmwareCalibration(
   e4_per_output=4096.0,
   r5_key_bp=[0, 115, 254, 449, 654, 862, 1111, 1549, 1774],
@@ -175,18 +180,22 @@ CIVIC_BOSCH_C020 = EpsFirmwareCalibration(
   r6_per_deg_s=-173.0,
 )
 
-# Civic column load for the PID's firmware feedforward only (NrdrLatPidFirmwareFF). latcontrol_clarity_eps
-# keeps the Clarity fit above. Same model and sign as LOAD_*, fitted on the owner's C020 PID drives 284, 285,
+# Civic Bosch C020 column load. Used on the Civic by both controllers' firmware feedforward: LatControlPID's
+# (NrdrLatPidFirmwareFF, STATUS 190) and LatControlClarityEps (James's controller, STATUS 191). The Clarity keeps
+# the Clarity fit above. Same model and sign as LOAD_*, fitted on the owner's C020 PID drives 284, 285,
 # 286, 287, 289, 28a, 28b (engaged, no press or lane change for 1 s, |command| < 0.9). Target: the firmware
 # output the car's own command implies, firmware_output(r5_from_output(command), rate). Held out one route at
 # a time, R^2 beats the Clarity fit on 7 of 8 routes (e.g. 28f 0.75 vs 0.66, 284 0.49 vs 0.20). On 28f's sharp
 # corners at 25-50 mph (|angle| >= 25 deg) the Clarity fit asks about 1.5x the load the car used; this set ~1.2x.
 # Against the Clarity fit: similar angle terms, far less rate damping (C) and roll (KROLL, cf. STATUS 168),
 # and a negative bias. Refit after any reflash.
-# Closed loop (lat_pid_sim gate, 11 routes) at all speeds it slowed low-speed turns on 27a (turn_err <12 mph
+# Closed loop (lat_pid_sim gate, 11 routes, PID) at all speeds it slowed low-speed turns on 27a (turn_err <12 mph
 # 35.4 -> 36.1), so it applies from 25 mph only: gate neutral, 28f sharp-corner overshoot +3.3 -> +3.0 deg (sim).
-CIVIC_PID_LOAD = (-6.2586, -0.16199, -1.6872, -303.29443, -78.01171, -0.57818)
-CIVIC_PID_LOAD_MIN_V = 11.18  # m/s, 25 mph
+# LatControlClarityEps takes the same 25 mph floor; it has no closed-loop evidence of its own (STATUS 191).
+CIVIC_C020_LOAD = (-6.2586, -0.16199, -1.6872, -303.29443, -78.01171, -0.57818)
+CIVIC_C020_LOAD_MIN_V = 11.18  # m/s, 25 mph
+CIVIC_PID_LOAD = CIVIC_C020_LOAD  # the STATUS 190 names, kept as aliases
+CIVIC_PID_LOAD_MIN_V = CIVIC_C020_LOAD_MIN_V
 LOAD_BLEND_V = 1.8  # m/s: blend from the Clarity fit to the car's own over 25-29 mph (a hard switch stepped up to 0.026)
 
 
@@ -262,7 +271,7 @@ class ClarityEpsFirmwareFeedforward:
                output_tau: float = FF_OUTPUT_TAU, friction_width: float = FRICTION_WIDTH_DEG_S,
                cal: EpsFirmwareCalibration = CLARITY_A020, load=None, load_min_v: float = 0.0):
     self.dt = dt
-    self.load_coef = load  # None: the Clarity fit (LOAD_*); see CIVIC_PID_LOAD
+    self.load_coef = load  # None: the Clarity fit (LOAD_*); see CIVIC_C020_LOAD
     self.load_min_v = load_min_v  # below this speed the Clarity fit is used; LOAD_BLEND_V above it
     self.alpha = dt / (rate_tau + dt)
     self.output_alpha = dt / (output_tau + dt)

@@ -9728,3 +9728,60 @@ Per-turn replay overshoot on 28f sharp corners (n=8): +3.3 -> +3.0 deg (logged d
 - Refit after any EPS reflash.
 
 **This is the last planned NRDR PID change.** Per the owner, the lateral focus moves to LatControlClarityEps.
+
+## 191. LatControlClarityEps (James's controller) on the Civic: from 25 mph its firmware feedforward uses the STATUS 190 Civic column-load fit too (owner, 2026-09-28). Static tests and an open-loop feedforward recompute on one drive only; not driven, no closed-loop sim.
+
+**Why.** Owner request, after STATUS 190 gave NRDR PID's feedforward the Civic's own fit. On the 2026-09-28 11:02 drive
+(drive-plots CSV; LatControlClarityEps driving) the car sat 0.2-0.4 m inside curves at 25-50 mph while the wheel
+was 0.97x its target and P/I pushed toward the curve. So the wheel was near its target and the inside bias is in the
+path, not the feedforward: **this change is not expected to fix it.** The owner was told to try a lower Actuator
+Delay (desired->actual lag measured 0.2 s against the pinned 0.32 s). Below 25 mph the wheel ran a median +1.2 deg
+(p90 +7 deg) past target; this change does not touch that band.
+
+**What.**
+- `latcontrol_clarity_eps.py`: the Civic branch builds `ClarityEpsFirmwareFeedforward(dt, cal=CIVIC_BOSCH_C020,
+  load=CIVIC_C020_LOAD, load_min_v=CIVIC_C020_LOAD_MIN_V)`, the same wiring as LatControlPID's. Clarity fit (`LOAD_*`)
+  below 25 mph, blend over `LOAD_BLEND_V` (25-29 mph), Civic fit above. The 25 mph floor is kept from STATUS 190
+  (at all speeds that fit slowed low-speed turns in the PID replay). The Clarity branch is untouched.
+- `nrdr_eps_firmware_ff.py`: `CIVIC_PID_LOAD` / `CIVIC_PID_LOAD_MIN_V` are renamed `CIVIC_C020_LOAD` /
+  `CIVIC_C020_LOAD_MIN_V`, with the old names kept as aliases (latcontrol_pid.py still uses them). Same values. The
+  comments that said LatControlClarityEps keeps the Clarity fit now say both controllers use it.
+- The CIVIC_BOSCH_C020 comment now says the calibration holds for `39990-TBA,C020-Trk4000-PTM.rwd`. Decrypted, it
+  differs from the Trk4500 image only in the tracker word (0x137EE 4500 -> 4000) and the two firmware checksums
+  (verified byte diff; `eps_fw.EpsTable.from_rwd` reads identical tables and norm/P/D/speed-clamp words). The
+  tracker is the R6 low-pass and does not enter the feedforward, so neither the calibration nor the load fit changes.
+- `tools/lateral/lat_pid_sim.py`'s `clarity_eps` kind builds the real controller, so it uses the fit with no change.
+
+**Open-loop recompute** (drive-plots 2026-09-28 11:02, 7 engaged stretches, 16440 frames after a 1 s warm-up).
+`ang_des` and `v` were interpolated from 20 Hz to 0.01 s and the C020 feedforward run at DT_CTRL twice, old config
+and new. Roll is not in the CSV and was taken as 0. Median |ff| (full weight, before ff_w):
+
+| band | frames | median abs ff, old | new | new/old |
+|---|---|---|---|---|
+| <25 mph, curves (abs ang_des > 5 deg) | 2857 | 0.1339 | 0.1339 | 1.000 |
+| <25 mph, straights | 2051 | 0.0260 | 0.0259 | 0.998 |
+| 25-50 mph, curves | 3303 | 0.0989 | 0.0850 | 0.859 |
+| 25-50 mph, straights | 7950 | 0.0179 | 0.0216 | 1.205 |
+| >50 mph, straights (no curves) | 279 | 0.0163 | 0.0176 | 1.078 |
+
+- In 25-50 mph curves the median per-frame new/old is 0.876: about 12-14 % less feedforward. The angle PID closes on
+  the same wheel target, so the closed-loop effect on the line is unknown (not simulated). It does not address the
+  inside bias, which is in the target, not the wheel. On straights the Civic fit's negative bias shows as a slightly
+  larger |ff|. Below 25 mph it is identical: the <25 straight 0.998 is 25-29 mph blend frames.
+- Sanity check: the old recompute against the logged `ff` has corr 0.990 (by band <25 / 25-50 / >50: 0.9985 / 0.982 /
+  0.976), RMS 0.029 against a logged RMS of 0.129. The residual is mostly a constant offset (logged - recompute mean
+  +0.005 / +0.030 / +0.052 by band; demeaned RMS 0.011 / 0.013 / 0.005). That fits the roll term missing here.
+  Demeaned, the old config matches the log better than the new one (0.013 vs 0.014 at 25-50), consistent with the car
+  having run the old config.
+
+**Tests** (static). `pytest selfdrive/controls/tests/test_nrdr_eps_firmware_ff.py selfdrive/controls/tests/test_latcontrol_pid*.py
+tools/lateral/tests/ -q`: 269 pass. `tools/lib/tests/test_py39_compat.py`: 14 pass. ruff clean on the changed files.
+`test_civic_load_fit_stays_out_of_the_clarity_eps_controller` becomes
+`test_clarity_eps_controller_uses_the_cars_own_load_fit` (both cars). New tests:
+`test_civic_clarity_eps_feedforward_is_the_clarity_fit_below_25_mph_and_its_own_above_29` (the controller's
+feedforward equals the bare Clarity-fit feedforward exactly below 25 mph and the Civic-fit one above 29 mph, and lies
+between them in the blend) and `test_clarity_car_clarity_eps_feedforward_is_unchanged` (bit-identical to the default
+feedforward on the Clarity).
+
+- No closed-loop sim or lat_score gate was run for this controller with the new fit, and it has not been driven.
+- Refit after any EPS reflash (the Trk4000-PTM image does not need one; see above).
