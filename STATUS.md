@@ -9522,7 +9522,53 @@ What arrives:
 **Not verified.** No test run on the merged tree; each side's tests passed on its own branch. Next drive: check
 liveDelay reads 0.32 from the start, lateralControlState is the ClarityEps one, and turn-in/unwind timing against 290.
 
-## 189. (sim-lat-training STATUS 177, renumbered at the 2026-09-28 merge of ns-bosch-radar-testing, whose 177–188 were written in parallel) Mac MetaDrive sim: TSFDO (the owner's daily model) now drives reliably with the comma 4 (mici) camera, and is the default episode model. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+## 189. STATUS 187's MetaDrive evidence is withdrawn pending re-run, and a stronger standard-band angle feedforward does not cut PID corner overshoot. Replay/sim only; docs only.
+
+**MetaDrive PID arms may have run the wrong controller.** Per MetaDrive Sim (John) (2026-09-28), the car-config
+`params.json` from the car's initData carries `NrdrLatEpsFirmwareFF=1`. `launch_openpilot.sh` applies it at launch,
+over the run's `false`, and the run's overrides are only re-applied at +30 s. controlsd can start before that (+25 s in
+one logged episode), so the "PID" arms may have driven LatControlClarityEps. max|f| per run is bimodal within
+arms. **Treat as withdrawn until re-run:** chains 43/44 (Base vs Simple, the ">= 8 m/s" bullet in 187) and chain 49
+(steer delay 0.30 vs 0.47: "no corner benefit, more hunting").
+- The output scale in 187 stays on the branch. Its remaining evidence is the lat_score gate (pass, 3 routes better,
+  wobble flat) plus the owner's call. Its MetaDrive support is pending.
+- The steer-delay question is open again. See 188 for the owner's pinned 0.32 s on James's controller.
+
+**Std-band angle feedforward (replay, lat_score gate, d07dee21 PID, `NrdrLatPidFirmwareFF` 1, 11 routes).**
+Route 28f logs show the angle FF supplies ~0.015 of ~0.09 output in steady 6-25 deg turns at 25-50 mph. The
+integrator carries ~0.068. The test raised `LatFScaleStandard` from 115 to 200 / 300 / 450:
+- The gate verdict goes neutral / pass / pass. err_rms_standard drops 3-6 % (28f 0.77 -> 0.73 at 300) and
+  curve_ratio_standard moves to ~1.0. 12-20 mph dither is up 0.01-0.03 at 450.
+- Per-turn overshoot at 25-50 mph is not reduced. On 28f sharp turns (n=8) it is +3.08 / +3.08 / +3.06 / +3.02 deg
+  (log +2.26). Mild turns are flat to worse (28a n=21: +1.66 -> +1.78 at 450).
+- The replay plant overshoots more than the car does on sharp turns, so it may not resolve this.
+- No change is made. The owner can try `LatFScaleStandard` 300 on a PID drive (param only).
+
+**Civic load constants (`CIVIC_PID_LOAD`, >= 25 mph) are uncommitted in the PID session's working tree.** Replay gate:
+neutral. 28f sharp overshoot: +3.32 -> +2.99. Not shipped.
+
+## 190. NRDR PID on the Civic: from 25 mph the firmware feedforward uses the car's own column-load fit instead of the Clarity's (owner, 2026-09-28). Replay and static evidence only; not driven.
+
+**Why.** On route 28f, sharp corners at 25-50 mph overshoot by ~2-4 deg (the owner's "oversteer"). In those corners the
+PID's firmware feedforward (`NrdrLatPidFirmwareFF`) carries the turn. It used the Clarity column-load fit (`LOAD_*`),
+which on 28f's sharp corners asks ~1.5x the load the Civic used.
+
+**What.** `CIVIC_PID_LOAD` in `nrdr_eps_firmware_ff.py` is fitted on 284, 285, 286, 287, 289, 28a, 28b. Held out one
+route at a time, it beats the Clarity fit on 7 of 8. It is used only by LatControlPID's feedforward on the Civic
+Bosch (C020 cal). LatControlClarityEps and the Clarity keep `LOAD_*`.
+- It applies from 25 mph (`CIVIC_PID_LOAD_MIN_V`) and blends in over ~4 mph (`LOAD_BLEND_V`); a hard switch stepped the
+  output by up to 0.026.
+- At all speeds it slowed low-speed turns in replay (27a turn_err <12 mph 35.4 -> 36.1), hence the 25 mph floor.
+
+**Evidence.** lat_score gate (11 routes, d07dee21 PID, `NrdrLatPidFirmwareFF` 1): neutral, no route better or worse.
+Per-turn replay overshoot on 28f sharp corners (n=8): +3.3 -> +3.0 deg (logged drive +2.3). Tests: 166 pass in
+`test_nrdr_eps_firmware_ff.py` + `test_latcontrol_pid_output_scale.py`.
+- Not yet run in MetaDrive (its PID arms are being re-run; STATUS 189).
+- Refit after any EPS reflash.
+
+**This is the last planned NRDR PID change.** Per the owner, the lateral focus moves to LatControlClarityEps.
+
+## 191. (sim-lat-training STATUS 177, renumbered at the 2026-09-28 merges of ns-bosch-radar-testing, whose 177–190 were written in parallel) Mac MetaDrive sim: TSFDO (the owner's daily model) now drives reliably with the comma 4 (mici) camera, and is the default episode model. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
 
 Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim model".
 
@@ -9546,7 +9592,7 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
   - A keyboard cruise press is now held for 100 ms (6f90fcae); one-frame presses were missed and resumes failed.
 - **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane confidence is low on tight loops; MetaDrive's chassis is not the Civic's.
 
-## 190. (sim-lat-training STATUS 178, renumbered at the 2026-09-28 merge of ns-bosch-radar-testing, whose 177–188 were written in parallel) Mac MetaDrive sim, TSFDO + mici: Clarity gated vs ungated n=3, SPEED_BP closed, an 85 Hz validity gate, and an opt-in turn-signal / stop-before-turn harness. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+## 192. (sim-lat-training STATUS 178, renumbered at the 2026-09-28 merges of ns-bosch-radar-testing, whose 177–190 were written in parallel) Mac MetaDrive sim, TSFDO + mici: Clarity gated vs ungated n=3, SPEED_BP closed, an 85 Hz validity gate, and an opt-in turn-signal / stop-before-turn harness. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
 
 - **James's controller, ungated (HEAD) vs gated (`0f27431d`, `FF_ANGLE_GATE_DEG=[10,30]`), n=3 each** (12 episodes, 87–99 Hz):
   - Pull-away wobble: ungated 1.99 / 1.71 / 2.32 (mean 2.01), gated 1.11 / 1.24 / 1.32 (mean 1.22). The gap is larger than the seed spread.
@@ -9560,7 +9606,7 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
 - **Pilot findings (James's `clarity-turn-shaping` request): WITHDRAWN.** `SIM_BLINKER=auto` had the turn sign inverted, so in all three pilots (tsRollPilot, tsStopPilot, tsStopPilot2) the right blinker was on while the road turned left. With `TurnDesires` on (it is on in the sim, as on the owner's car), that forced a wrong-way turn desire, so the R 12 m, hold-level and flip-flop results are invalid. The sign is fixed (MetaDrive's heading is counter-clockwise, measured with a headless steer probe), and the pilot is being re-run. James's session withdrew its "skip". Its route 287 finding stands on its own: the near-miss at 2:43 came from `TurnDesires` (blinker below 20 mph forced a turn desire, the model asked for +80 deg); the controller was not at fault (their finding, not verified here).
 - **Remaining gaps versus the car:** the wide camera is not fisheye; camera height and pitch are fixed; lane probs fall to ~0.1 on tight curves; MetaDrive's chassis is not the Civic's; the turn-hold level is not logged.
 
-## 191. (sim-lat-training STATUS 179, renumbered at the 2026-09-28 merge of ns-bosch-radar-testing, whose 177–188 were written in parallel) Mac MetaDrive sim: the car as driven (C020 EPS plant with the VGR map, learned sR/stiffness/offset/delay, camera calibration, 3.6 m lanes, the owner's corners), and three sim bugs that contaminated every earlier torque-steered result. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+## 193. (sim-lat-training STATUS 179, renumbered at the 2026-09-28 merges of ns-bosch-radar-testing, whose 177–190 were written in parallel) Mac MetaDrive sim: the car as driven (C020 EPS plant with the VGR map, learned sR/stiffness/offset/delay, camera calibration, 3.6 m lanes, the owner's corners), and three sim bugs that contaminated every earlier torque-steered result. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
 
 - **Withdrawn: every torque-steered sim number before this entry, including STATUS 177 and 178.** Three bugs, all fixed here:
   1. **Stale torque (the big one).** `simulated_car.py` updated its SubMaster only inside `send_panda_state`, at 2 Hz. The bridge steered from `carOutput` torque up to 500 ms old (250 ms on average). Offline replay of the logged torque through the sim's own plant fits +24 frames of extra lag before the fix, +2 after (`cpFix_3` vs `cpFix_6` / `cpFix_7pid`). The stale torque put a ±35–44° limit cycle with a ~1.8 s period into every episode. James's lat_pid_sim kick test reproduces that cycle at +300 ms with both ClarityEps and PID, and neither cycles at +2 frames (5–10 m/s). At 15 m/s ClarityEps starts cycling at +6 frames and PID at +8. `sm.update(0)` now runs every 100 Hz loop.
@@ -9579,7 +9625,7 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
 - **Drive maps** (`tools/sim/route_maps.py`): the owner's most frequent trips from the Konik route list. Path dead-reckoned from qlog carState speed and livePose yaw rate, fitted to straights and constant-radius arcs in pieces of ≤ 0.9 km (MetaDrive paints lanes in a 1024 m square). Coordinates stay in `~/.openpilot-sim/civic/routes`.
 - **Gaps:** intersection turns (R ≤ 21) need a turn signal or are driven by hand on the car; no grade or bank; a simple longitudinal lag; MetaDrive visuals; driver hand torque does not act on the plant.
 
-## 192. (sim-lat-training STATUS 180, renumbered at the 2026-09-28 merge of ns-bosch-radar-testing, whose 177–188 were written in parallel) Mac MetaDrive sim audit: camera pitch/yaw sign inverted, 20 Hz gyro, no shared clock between recorder and lane truth, SIM_KEYS not forwarded; plus RES after a mid-episode stop. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+## 194. (sim-lat-training STATUS 180, renumbered at the 2026-09-28 merges of ns-bosch-radar-testing, whose 177–190 were written in parallel) Mac MetaDrive sim audit: camera pitch/yaw sign inverted, 20 Hz gyro, no shared clock between recorder and lane truth, SIM_KEYS not forwarded; plus RES after a mid-episode stop. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
 
 - **Camera pitch and yaw signs were inverted (fixed).** `metadrive_process.py` built the camera HPR as (−yaw, +pitch, +roll). openpilot's rpyCalib is device_from_calib, so the seeded calibration (pitch 0.0205, yaw −0.0108 rad) means the device looks 1.17° down and 0.62° right. Checked numerically with `orient.rot_from_euler` and Panda3D `LRotationf.setHpr`: the render looked 1.17° up and 0.62° left, about 47 px of horizon at the mici focal length, until calibrationd relearned. Roll was right. Now (+yaw, −pitch, +roll). Every episode since the camera calibration was added (all STATUS 179 chains and chains 38–40) had it, in both arms equally: **within-chain A/B deltas stand, absolute sim numbers from those chains do not.**
 - **Gyro and accelerometer to locationd were refreshed at 20 Hz but sent at 100 Hz (fixed).** They were set only inside the 20 Hz physics block, so lagd and paramsd saw a gyro 0–50 ms (mean 25 ms) older than the 100 Hz steering angle. Now taken from the Civic plant state every 100 Hz frame.
@@ -9590,7 +9636,7 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
 - **Seam:** the patch went in at 17:23:58 on 2026-09-27, between chain39 and chain41. Chains 41–44 ran on the corrected sim; chain39 and earlier did not. Do not pool across the seam.
 - **lagd does not move inside a 120 s episode:** in all 25 runs of chains 41–44 the sim's LiveDelay after the run equalled its seed (0.475, 0.37 or 0.30, 20 blocks). Seeded-delay arms therefore stay separated for the whole episode, and "the delay lagd settles at" cannot be measured in this episode length.
 
-## 193. (sim-lat-training STATUS 181, renumbered at the 2026-09-28 merge of ns-bosch-radar-testing, whose 177–188 were written in parallel) Mac MetaDrive sim: the bridge overwrote the car's seeded calibration with rpy 0, and the ~80 s corner departures on the 40 kph route are controlsd's lateral-accel clip at the entry speed CSC cannot lower, not the lateral controller. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+## 195. (sim-lat-training STATUS 181, renumbered at the 2026-09-28 merges of ns-bosch-radar-testing, whose 177–190 were written in parallel) Mac MetaDrive sim: the bridge overwrote the car's seeded calibration with rpy 0, and the ~80 s corner departures on the 40 kph route are controlsd's lateral-accel clip at the entry speed CSC cannot lower, not the lateral controller. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
 
 - **Calibration seed overwritten (fixed, `tools/sim/bridge/common.py`).** `SimulatorBridge.__init__` calls `set_params_enabled()` (selfdrive/test/helpers.py), which writes a test CalibrationParams (rpy 0, 20 valid blocks). It ran after `sim_car_config.py apply` had seeded the car's calibration, so every seeded episode since the camera calibration was added (STATUS 179, chains 38–46) started calibrationd at rpy 0 instead of pitch 0.0205 / yaw −0.0108 rad, and relearned slowly (pitch ~0.005–0.012 after 120 s). The bridge now keeps the seed. Found by logging liveCalibration per row (`lanes.npz calib`). Amends STATUS 180: its absolute numbers carry this caveat as well; within-chain deltas stand (both arms equally).
 - **The STATUS 180 camera sign fix is right.** Horizon row on saved 1344×760 frames: fixed render 360 px, legacy 407 px, either side of ~383 by ~23 px ≈ 0.0205 rad, and a device pitched down must see the horizon above centre. With the seed restored, calibrationd holds the seed under the fixed render (0.0205 → 0.0214 over 120 s).
@@ -9599,7 +9645,7 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
 - **Gate A/B with clamp-bound departures split out** (departure clusters, clamp-bound = max |des|·v² ≥ 2.9 in the 2 s before): chain42 [5,30] 5 clamp-bound / 3 controller, [10,30] 1 / 3. Controller-attributable departures tie; [10,30] held the clipped corner 2/3, [5,30] 0/3. The gate stays [10,30] (James's call, agreed). chain42's [10,30] control reused chain38's run names (`cpRteClarGated_7-9`), so chain38's gated raw data is gone; only its summaries remain.
 - **Recorder (`tools/sim/sim_lat_record.py`):** `lanes.npz` adds `calib` (N×6: calStatus, calPerc, validBlocks, rpyCalib) and `plan` (N×4: modelV2 action.desiredCurvature, starpilotPlan cscControllingSpeed, cscSpeed, vCruise). controlsd does not publish its curvature-limited flag; compare `plan[:,0]` with `des_curv`.
 
-## 194. Mac MetaDrive sim: "PID" arms were running James's controller (override order), false road departures on long straights, episodes longer than their maps, and the Mac's Low Power Mode behind the late-evening rate collapse. Sim evidence only; no device behaviour change. Branch `sim-lat-training`. (Numbered on sim-lat-training; ns-bosch-radar-testing has its own 189–190, so 189–194 here are renumbered at the next merge.)
+## 196. Mac MetaDrive sim: "PID" arms were running James's controller (override order), false road departures on long straights, episodes longer than their maps, and the Mac's Low Power Mode behind the late-evening rate collapse. Sim evidence only; no device behaviour change. Branch `sim-lat-training`. (sim-lat-training STATUS 194, renumbered at the second 2026-09-28 merge of ns-bosch-radar-testing.)
 
 - **Override order (fixed, `launch_openpilot.sh`, `lat_episode.sh`).** `launch_openpilot.sh` applies the car config (`sim_car_config.py apply`) at launch, and the car's config has `NrdrLatEpsFirmwareFF=1`. That overwrote a run's pre-launch toggles, and controlsd (up at ~+25 s) read it before `lat_episode.sh` re-applied the run's KEY=VALUE args at +30 s. Since the ClarityEps merge (2c00f4d9) every "PID" arm may have run `LatControlClarityEps`; both publish the same pidState fields, and max|f| per run is bimodal (~0.5–0.75 vs ~0.01). The run's args now travel as `SIM_PARAM_OVERRIDES` and are applied after the car config, before controlsd starts. `OUTDIR/controller_check.log` records controlsd's start time and the two toggles. Chains 43/44 (Base vs Simple) and 49 (delay) are withdrawn (STATUS 189 on ns).
 - **False out_of_road on long straights (fixed, `metadrive_bridge.route_map_blocks`).** On 450 m straight blocks MetaDrive's lane lookup returned no lane 100–200 m in and logged out_of_road with the car 0.03–0.13 m from the centre line. Route-map straights are now split into blocks of ≤100 m.
