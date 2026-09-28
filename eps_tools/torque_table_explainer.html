@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How the C020 EPS torque tables work — interactive explainer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:#f9f9f7; --surface:#ffffff; --text:#0b0b0b; --text-2:#46453f; --muted:#6b6a64;
+    --grid:#e1e0d9; --axis:#9c9b92; --border:rgba(11,11,11,.14);
+    --stock:#1f6fd1; --tuned:#c2410c; --out:#0f7a55; --focus:#7c3aed; --warn:#8a5a00; --warn-bg:#fff6df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#d2d1c8; --muted:#a3a29a;
+      --grid:#2c2c2a; --axis:#5a5953; --border:rgba(255,255,255,.14);
+      --stock:#6aa8f5; --tuned:#f08a55; --out:#3fcf9a; --focus:#b794ff; --warn:#ffd27a; --warn-bg:#2a2212;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#d2d1c8; --muted:#a3a29a;
+    --grid:#2c2c2a; --axis:#5a5953; --border:rgba(255,255,255,.14);
+    --stock:#6aa8f5; --tuned:#f08a55; --out:#3fcf9a; --focus:#b794ff; --warn:#ffd27a; --warn-bg:#2a2212;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--page); color:var(--text);
+         font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .skip { position:absolute; left:-999px; top:8px; background:var(--surface); padding:8px 12px; border-radius:8px; }
+  .skip:focus { left:8px; }
+  main { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  header.top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+  h1 { font-size:1.5rem; margin:0 0 4px; }
+  h2 { font-size:1.15rem; margin:0 0 4px; }
+  h3 { font-size:1rem; margin:16px 0 4px; }
+  p { margin:0 0 12px; }
+  .lede { color:var(--text-2); }
+  code { font-size:.9em; }
+  :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+  button, select, input { font:inherit; }
+  .btn { border:1px solid var(--border); background:var(--surface); color:var(--text);
+         border-radius:8px; padding:8px 14px; min-height:44px; cursor:pointer; }
+  .btn.primary { background:var(--stock); border-color:var(--stock); color:#fff; }
+  .note { background:var(--warn-bg); color:var(--text); border-left:4px solid var(--warn);
+          padding:12px 14px; border-radius:8px; margin:16px 0 24px; }
+  section.card { background:var(--surface); border:1px solid var(--border); border-radius:14px;
+                 padding:20px; margin-bottom:24px; }
+  .step-tag { display:inline-block; font-size:.8rem; font-weight:600; letter-spacing:.04em;
+              text-transform:uppercase; color:var(--muted); }
+
+  /* pipeline */
+  ol.pipe { list-style:none; padding:0; margin:12px 0 0; display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  ol.pipe li { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--page); }
+  ol.pipe li b { display:block; }
+  ol.pipe li span { font-size:.88rem; color:var(--text-2); }
+  ol.pipe .val { font-variant-numeric:tabular-nums; font-size:1.1rem; margin-top:4px; }
+
+  /* controls */
+  fieldset { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:0 0 12px; }
+  legend { font-weight:600; padding:0 6px; font-size:.95rem; }
+  .radios { display:flex; flex-wrap:wrap; gap:6px; }
+  .radios label { display:flex; align-items:center; gap:6px; border:1px solid var(--border);
+                  border-radius:999px; padding:6px 12px; min-height:40px; cursor:pointer; }
+  .radios input:checked + span { font-weight:700; }
+  .radios label:has(input:checked) { border-color:var(--text); }
+  .ctl { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:8px 0 12px; }
+  .ctl label { display:flex; flex-direction:column; gap:4px; font-size:.95rem; }
+  input[type=range] { width:min(320px,80vw); accent-color:var(--stock); height:32px; }
+
+  /* charts */
+  .legend { display:flex; flex-wrap:wrap; gap:16px; font-size:.9rem; color:var(--text-2); margin:4px 0 6px; }
+  .legend svg { vertical-align:middle; }
+  svg.chart { width:100%; height:auto; display:block; }
+  .gl { stroke:var(--grid); } .ax { stroke:var(--axis); }
+  .tick { fill:var(--muted); font-size:11px; }
+  .axt { fill:var(--text-2); font-size:12px; }
+  .cursor { stroke:var(--text); stroke-width:1.5; stroke-dasharray:3 3; }
+  .readout { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:12px; }
+  .readout div { border:1px solid var(--border); border-radius:10px; padding:8px 12px; }
+  .readout dt { font-size:.8rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+  .readout dd { margin:2px 0 0; font-size:1.15rem; font-variant-numeric:tabular-nums; }
+  .stock-c { color:var(--stock); } .tuned-c { color:var(--tuned); } .out-c { color:var(--out); }
+  details { margin-top:12px; }
+  summary { cursor:pointer; min-height:32px; color:var(--text-2); }
+  table { border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:.9rem; margin-top:8px; }
+  th, td { border:1px solid var(--border); padding:4px 8px; text-align:right; }
+  th { background:var(--page); }
+  .tablewrap { overflow-x:auto; }
+  .explain { background:var(--page); border-radius:10px; padding:10px 12px; margin-top:12px; font-size:.95rem; }
+  .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .tile { border:1px solid var(--border); border-radius:10px; padding:12px; background:var(--page); }
+  .tile .big { font-size:1.3rem; font-variant-numeric:tabular-nums; }
+  .tile p { font-size:.9rem; color:var(--text-2); margin:6px 0 0; }
+  footer { text-align:center; color:var(--muted); font-size:.85rem; margin-top:24px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#s-lookup">Skip to the interactive lookup</a>
+<main>
+<header class="top">
+  <div>
+    <h1>How the EPS torque tables work</h1>
+    <p class="lede">Honda Civic <code>39990-TBA-C020</code> power-steering firmware, stock vs. the owner's tune. Follow one steering request through the three tables, then see why a hotter table can make the wheel stutter.</p>
+  </div>
+  <button class="btn" id="themeBtn" type="button" aria-pressed="false">Dark mode</button>
+</header>
+
+<p class="note" role="note"><b>Static firmware decode, not road-validated.</b> The numbers were decoded from the <code>.rwd</code> images in <code>eps_tools/rwd/</code>. What each table <i>physically</i> does (including "torque-rate attenuation") is inferred from firmware behaviour and discussion, not measured on the car. The table input axis is shown as breakpoints 0–8 because the physical units of the breakpoints are not decoded. The last section is a toy model, not the EPS control code.</p>
+
+<!-- ============ 1. BIG PICTURE ============ -->
+<section class="card" aria-labelledby="h-big">
+  <span class="step-tag">Start here</span>
+  <h2 id="h-big">What a lookup table is</h2>
+  <p>The EPS doesn't compute torque from a formula. It stores short lists of numbers (9 points each) and <b>looks up</b> a value for the current input, drawing a straight line between the two nearest points. The firmware stores values as whole numbers; a gain of <code>256</code> means ×1.0.</p>
+  <p>A request passes through three stages. The live values below follow the lookup section.</p>
+  <ol class="pipe" aria-label="Signal chain">
+    <li><b>1. P table</b><span>How strongly to push for a given input</span><div class="val" id="pipeP">–</div></li>
+    <li><b>2. D table</b><span>Scales the push by how fast torque is changing (value ÷ 256)</span><div class="val" id="pipeD">–</div></li>
+    <li><b>3. Torque ceiling</b><span>The most torque the motor may deliver</span><div class="val" id="pipeT">–</div></li>
+    <li><b>Motor</b><span>What the driver feels</span><div class="val out-c" id="pipeOut">–</div></li>
+  </ol>
+</section>
+
+<!-- ============ 2. LOOKUP ============ -->
+<section class="card" id="s-lookup" aria-labelledby="h-look">
+  <span class="step-tag">Try it</span>
+  <h2 id="h-look">Look up a value yourself</h2>
+  <p>Pick a table and move the input. The dashed line marks where you are; the readout shows the two surrounding points and the interpolated result for stock and tune.</p>
+
+  <fieldset>
+    <legend>Table</legend>
+    <div class="radios" id="tableRadios">
+      <label><input type="radio" name="tbl" value="P" checked><span>P — gain</span></label>
+      <label><input type="radio" name="tbl" value="D"><span>D — rate attenuation</span></label>
+      <label><input type="radio" name="tbl" value="T"><span>Torque ceiling</span></label>
+    </div>
+  </fieldset>
+  <fieldset id="rowField">
+    <legend>Stock row <span class="sr">(the tune uses the same curve on every row)</span></legend>
+    <div class="radios" id="rowRadios"></div>
+  </fieldset>
+
+  <div class="ctl">
+    <label for="xin">Input position: <output id="xout" for="xin">0.00</output>
+      <input type="range" id="xin" min="0" max="8" step="0.05" value="3" aria-describedby="xhelp">
+    </label>
+    <span id="xhelp" class="sr">Arrow keys move by 0.05, Page Up and Page Down by one breakpoint.</span>
+  </div>
+
+  <div class="legend" aria-hidden="true">
+    <span><svg width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="var(--stock)" stroke-width="3"/><circle cx="14" cy="5" r="3.5" fill="var(--stock)"/></svg> Stock (solid, circles)</span>
+    <span><svg width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="var(--tuned)" stroke-width="3" stroke-dasharray="6 3"/><rect x="10.5" y="1.5" width="7" height="7" fill="var(--tuned)"/></svg> Tune (dashed, squares)</span>
+  </div>
+  <figure style="margin:0">
+    <svg class="chart" id="lookChart" viewBox="0 0 640 260" role="img" aria-labelledby="lookTitle lookDesc">
+      <title id="lookTitle">Lookup chart</title><desc id="lookDesc"></desc>
+    </svg>
+  </figure>
+
+  <dl class="readout" aria-live="polite" id="lookReadout"></dl>
+  <p class="explain" id="lookExplain"></p>
+
+  <details>
+    <summary>Show this table's raw numbers</summary>
+    <div class="tablewrap" id="lookTable"></div>
+  </details>
+</section>
+
+<!-- ============ 3. SCALARS ============ -->
+<section class="card" aria-labelledby="h-knobs">
+  <span class="step-tag">Context</span>
+  <h2 id="h-knobs">Three single-value knobs the tune also changed</h2>
+  <div class="tiles">
+    <div class="tile"><h3>Tracker <code>0x137ee</code></h3><div class="big">1996 → <b class="tuned-c">4500</b></div><p>How fast the EPS's internal model chases the command (2.25× stock). The -PTM file uses 4000. Raised on top of a hot D table, this caused a ~29 Hz hands-off limit cycle on a CR-V.</p></div>
+    <div class="tile"><h3>Feedback normalization <code>0x29efe</code></h3><div class="big">3429 → <b class="tuned-c">1650</b></div><p>A divisor on the measured feedback. Smaller divisor means the feedback reads about 2.08× louder going into P and D.</p></div>
+    <div class="tile"><h3>Low-speed clamp <code>0x1361c</code></h3><div class="big">10 → <b class="tuned-c">0</b></div><p>Speed floor below which assist is not allowed. Zeroed, like the "0 mph steering" patches on other Hondas.</p></div>
+  </div>
+</section>
+
+<!-- ============ 4. SIM ============ -->
+<section class="card" aria-labelledby="h-sim">
+  <span class="step-tag">The stutter, step by step</span>
+  <h2 id="h-sim">Why turning in fast makes the wheel stutter (toy model)</h2>
+  <p>The attenuation table's input is <b>column torque rate</b> (how fast torque is changing), not column torque. When torque rises fast, the table scales the command down, as low as 156/256 ≈ 60%.</p>
+  <ol>
+    <li><b>Fast turn-in.</b> A higher P gain makes the torque rise sharply, so the rate is high.</li>
+    <li><b>Attenuation kicks in.</b> High rate means the table cuts the delivered torque to about 60%.</li>
+    <li><b>Error grows.</b> The car turns less than asked, so the controller asks for more.</li>
+    <li><b>Release.</b> Once the rate falls, attenuation lets go, the larger request passes through in full, and torque overshoots.</li>
+    <li><b>Repeat.</b> The controller pulls back, the rate spikes again, and the cycle repeats. The driver feels a damp-push stutter.</li>
+  </ol>
+  <p>The fix your friend described is <b>moving the table's x-axis breakpoints up</b>: attenuation then starts only at a higher rate, so a normal turn-in never triggers it. Try it below.</p>
+
+  <div class="ctl">
+    <label for="gin">Turn-in aggressiveness (P): <output id="gout" for="gin">0.80</output>
+      <input type="range" id="gin" min="0.3" max="1" step="0.05" value="0.8">
+    </label>
+    <label for="thin">Attenuation x-axis (rate where cut begins): <output id="thout" for="thin">300</output>
+      <input type="range" id="thin" min="200" max="1500" step="50" value="300">
+    </label>
+    <button class="btn primary" id="playBtn" type="button">Replay animation</button>
+  </div>
+
+  <div class="legend" aria-hidden="true">
+    <span><svg width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="var(--muted)" stroke-width="2" stroke-dasharray="2 3"/></svg> Wanted torque</span>
+    <span><svg width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="var(--out)" stroke-width="3"/></svg> Delivered torque</span>
+    <span><svg width="28" height="10"><rect x="2" y="1" width="24" height="8" fill="var(--tuned)" opacity=".25"/></svg> Step where attenuation is cutting</span>
+  </div>
+  <svg class="chart" id="simChart" viewBox="0 0 640 240" role="img" aria-labelledby="simTitle simDesc">
+    <title id="simTitle">Toy turn-in response</title><desc id="simDesc"></desc>
+  </svg>
+  <p class="explain" id="simVerdict" aria-live="polite"></p>
+  <p class="explain"><b>Open question:</b> the D table decoded from the <code>.rwd</code> above (stock 159 then 264; tune 737 flat) doesn't obviously match "drops to 156 at high rate". It may be a different table, or the axis may run the other way. Before relying on this page, check with your friend which offset holds the rate table and its x-axis.</p>
+</section>
+
+<footer>Decoded from <code>eps_tools/rwd</code>: 39990-TBA-C020 stock vs. the owner's 2026-08-05 tune. Static decode; not driven.</footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- theme ----------
+  const themeBtn = $("themeBtn");
+  const isDark = () => {
+    const t = document.documentElement.dataset.theme;
+    return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  };
+  const syncTheme = () => { themeBtn.textContent = isDark() ? "Light mode" : "Dark mode"; themeBtn.setAttribute("aria-pressed", String(isDark())); };
+  themeBtn.onclick = () => { document.documentElement.dataset.theme = isDark() ? "light" : "dark"; syncTheme(); };
+  syncTheme();
+
+  // ---------- data (decoded from the .rwd files) ----------
+  const TABLES = {
+    P: { name:"P table (0x13bc0)", unit:"gain", fmt:v=>v.toFixed(0),
+         stock:[[0,74,123,151,166,179,179,179,179],[0,74,133,151,166,179,179,179,179],[26,56,90,115,154,169,179,179,179],
+                [23,49,128,143,151,159,166,179,179],[23,49,128,143,151,159,166,179,179],[23,49,128,143,151,159,166,179,179],
+                [38,95,136,143,151,151,151,151,151]],
+         tuned:[117,148,184,220,245,257,263,265,265] },
+    D: { name:"D table (0x13ac4)", unit:"× multiplier", fmt:v=>(v/256).toFixed(2)+"×",
+         stock:Array(7).fill([159,264,264,264,264,264,264,264,264]),
+         tuned:[737,737,737,737,737,737,737,737,737] },
+    T: { name:"Torque ceiling (0x13872)", unit:"torque units", fmt:v=>Math.round(v).toLocaleString(),
+         stock:[[0,698,1722,2816,3763,4286,4608,4608,4608],[0,714,1629,2746,3522,3968,4147,4147,4147],[0,768,1664,2432,3149,3712,3840,3968,4147],
+                [0,1862,2820,3295,3609,4104,4608,4608,4608],[0,1862,2820,3295,3609,4104,4608,4608,4608],[0,1862,2820,3295,3609,4104,4608,4608,4608],
+                [0,1715,2842,3277,3738,4173,4506,4570,4570]],
+         tuned:[0,1926,4938,8455,12036,15926,20138,26955,30000] },
+  };
+  const EXPLAIN = {
+    P: "The P table sets how hard the controller pushes. The tune raises every point and makes all 7 rows identical, so the push is stronger everywhere — especially near 0, where stock starts at 0–38 and the tune starts at 117.",
+    D: "The D table multiplies the command by value ÷ 256 depending on how fast torque is changing. Stock is ×0.62 at the first breakpoint and ×1.03 after that — roughly pass-through. The tune is ×2.88 flat: every fast change is amplified almost 3× instead of left alone. All 7 rows are identical, so the row picker doesn't apply.",
+    T: "The ceiling caps the final torque. Stock rows top out at 4,147–4,608. The tune climbs to 30,000 on every row — about 6.5× headroom — so the ceiling essentially stops limiting anything.",
+  };
+
+  const lerp = (arr, x) => { const i = Math.min(7, Math.floor(x)), f = x - i; return arr[i] + (arr[i+1]-arr[i]) * f; };
+
+  // ---------- lookup ----------
+  let tbl = "P", row = 0;
+  const rowRadios = $("rowRadios");
+  for (let r = 0; r < 7; r++) {
+    rowRadios.insertAdjacentHTML("beforeend",
+      `<label><input type="radio" name="row" value="${r}" ${r===0?"checked":""}><span>Row ${r+1}</span></label>`);
+  }
+  rowRadios.addEventListener("change", e => { row = +e.target.value; renderLookup(); });
+  $("tableRadios").addEventListener("change", e => { tbl = e.target.value; renderLookup(); renderTable(); });
+  const xin = $("xin");
+  xin.addEventListener("input", renderLookup);
+  xin.addEventListener("keydown", e => {
+    if (e.key === "PageUp" || e.key === "PageDown") {
+      e.preventDefault();
+      const v = +xin.value, n = e.key === "PageUp" ? Math.min(8, Math.floor(v)+1) : Math.max(0, Math.ceil(v)-1);
+      xin.value = n; renderLookup();
+    }
+  });
+
+  function el(tag, attrs, parent, text) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    parent.appendChild(e); return e;
+  }
+  function clearSvg(svg) { [...svg.children].forEach(c => { if (c.tagName !== "title" && c.tagName !== "desc") c.remove(); }); }
+
+  const L = { W:640, H:260, l:64, r:16, t:14, b:40 };
+  function renderLookup() {
+    const T = TABLES[tbl], s = T.stock[row], t = T.tuned, x = +xin.value;
+    $("xout").textContent = x.toFixed(2);
+    $("rowField").disabled = tbl === "D";
+    const svg = $("lookChart"); clearSvg(svg);
+    const pw = L.W-L.l-L.r, ph = L.H-L.t-L.b;
+    const ymax = Math.max(...T.stock.flat(), ...t) * 1.08;
+    const X = i => L.l + i/8*pw, Y = v => L.t + ph - v/ymax*ph;
+    for (let g = 0; g <= 4; g++) {
+      const v = ymax*g/4;
+      el("line",{x1:L.l,x2:L.W-L.r,y1:Y(v),y2:Y(v),class:"gl"},svg);
+      el("text",{x:L.l-8,y:Y(v)+4,"text-anchor":"end",class:"tick"},svg, tbl==="D" ? (v/256).toFixed(1)+"×" : Math.round(v).toLocaleString());
+    }
+    for (let i = 0; i <= 8; i++) el("text",{x:X(i),y:L.H-L.b+16,"text-anchor":"middle",class:"tick"},svg,i);
+    el("text",{x:L.l+pw/2,y:L.H-4,"text-anchor":"middle",class:"axt"},svg,"Input breakpoint");
+    el("line",{x1:L.l,x2:L.W-L.r,y1:Y(0),y2:Y(0),class:"ax"},svg);
+    const line = (d, color, dash) => el("path",{d:d.map((v,i)=>(i?"L":"M")+X(i)+" "+Y(v)).join(" "),fill:"none",stroke:color,"stroke-width":2.5,"stroke-dasharray":dash||"none"},svg);
+    line(s,"var(--stock)"); line(t,"var(--tuned)","7 4");
+    s.forEach((v,i)=>el("circle",{cx:X(i),cy:Y(v),r:4,fill:"var(--stock)"},svg));
+    t.forEach((v,i)=>el("rect",{x:X(i)-4,y:Y(v)-4,width:8,height:8,fill:"var(--tuned)"},svg));
+    const sv = lerp(s,x), tv = lerp(t,x);
+    el("line",{x1:X(x),x2:X(x),y1:L.t,y2:L.t+ph,class:"cursor"},svg);
+    el("circle",{cx:X(x),cy:Y(sv),r:7,fill:"none",stroke:"var(--stock)","stroke-width":2.5},svg);
+    el("circle",{cx:X(x),cy:Y(tv),r:7,fill:"none",stroke:"var(--tuned)","stroke-width":2.5},svg);
+
+    $("lookTitle").textContent = `${T.name}: stock row ${tbl==="D"?"(all identical)":row+1} vs tune`;
+    $("lookDesc").textContent = `Stock values ${s.join(", ")}. Tuned values ${t.join(", ")}. At input ${x.toFixed(2)}: stock ${T.fmt(sv)}, tune ${T.fmt(tv)}.`;
+
+    const i = Math.min(7, Math.floor(x)), f = x - i;
+    const ratio = sv ? (tv/sv).toFixed(2)+"× stock" : "stock is 0 here";
+    $("lookReadout").innerHTML =
+      `<div><dt>Between points</dt><dd>${i} and ${i+1} (${Math.round(f*100)}% of the way)</dd></div>
+       <div><dt>Stock</dt><dd class="stock-c">${T.fmt(sv)}</dd></div>
+       <div><dt>Tune</dt><dd class="tuned-c">${T.fmt(tv)}</dd></div>
+       <div><dt>Tune vs stock</dt><dd>${ratio}</dd></div>`;
+    $("lookExplain").textContent = EXPLAIN[tbl];
+    renderPipeline(x);
+  }
+
+  function renderTable() {
+    const T = TABLES[tbl];
+    let h = `<table><caption class="sr">${T.name} raw values</caption><thead><tr><th scope="col">Row</th>${[...Array(9)].map((_,i)=>`<th scope="col">${i}</th>`).join("")}</tr></thead><tbody>`;
+    T.stock.forEach((r,k)=>{ h += `<tr><th scope="row">Stock ${k+1}</th>${r.map(v=>`<td>${v}</td>`).join("")}</tr>`; });
+    h += `<tr><th scope="row" class="tuned-c">Tune (all rows)</th>${T.tuned.map(v=>`<td>${v}</td>`).join("")}</tr></tbody></table>`;
+    $("lookTable").innerHTML = h;
+  }
+
+  // Illustrative only: chain the three lookups at one input position. Units don't compose physically.
+  function renderPipeline(x) {
+    const r = TABLES.P.stock[row] ? row : 0;
+    const p = [lerp(TABLES.P.stock[r],x), lerp(TABLES.P.tuned,x)];
+    const d = [lerp(TABLES.D.stock[0],x)/256, lerp(TABLES.D.tuned,x)/256];
+    const c = [lerp(TABLES.T.stock[r],x), lerp(TABLES.T.tuned,x)];
+    const out = [0,1].map(k => Math.min(p[k]*d[k]*20, c[k]));
+    const pair = (a,b,f) => `<span class="stock-c">${f(a)}</span> / <span class="tuned-c">${f(b)}</span>`;
+    $("pipeP").innerHTML = pair(p[0],p[1],v=>v.toFixed(0));
+    $("pipeD").innerHTML = pair(d[0],d[1],v=>"×"+v.toFixed(2));
+    $("pipeT").innerHTML = pair(c[0],c[1],v=>Math.round(v).toLocaleString());
+    $("pipeOut").innerHTML = pair(out[0],out[1],v=>Math.round(v).toLocaleString()) + '<br><span style="font-size:.8rem;color:var(--muted)">stock / tune, illustrative scale</span>';
+  }
+
+  // ---------- toy sim: rate-dependent attenuation loop ----------
+  const gin = $("gin"), thin = $("thin"); let anim = 0;
+  const simRun = (g, thr) => {
+    const TARGET = 3000; let u = 0, up = 0; const ys = [], cut = [];
+    for (let n = 0; n < 40; n++) {
+      const rate = Math.abs(u - up);
+      const f = Math.min(1, Math.max(0, (rate - thr) / thr));   // ramps in above the breakpoint
+      const a = 1 - f * (1 - 156/256);                           // down to 156/256 ≈ 60%
+      const d = u * a; ys.push(d); cut.push(a < 0.97);
+      up = u; u += g * (TARGET - d);
+    }
+    return { ys, cut };
+  };
+  function renderSim(animate) {
+    const g = +gin.value, thr = +thin.value;
+    $("gout").textContent = g.toFixed(2); $("thout").textContent = thr;
+    const { ys, cut } = simRun(g, thr), svg = $("simChart"); clearSvg(svg);
+    const W=640,H=240,l=56,r=16,t=12,b=36, pw=W-l-r, ph=H-t-b, ymax=6000;
+    const X=i=>l+i/39*pw, Y=v=>t+ph-Math.max(0,Math.min(ymax,v))/ymax*ph;
+    cut.forEach((c,i)=>{ if(c) el("rect",{x:X(i)-pw/78,y:t,width:pw/39,height:ph,fill:"var(--tuned)",opacity:.18},svg); });
+    for (let q=0;q<=4;q++){ const v=ymax*q/4; el("line",{x1:l,x2:W-r,y1:Y(v),y2:Y(v),class:"gl"},svg); el("text",{x:l-8,y:Y(v)+4,"text-anchor":"end",class:"tick"},svg,v.toLocaleString()); }
+    el("text",{x:l+pw/2,y:H-4,"text-anchor":"middle",class:"axt"},svg,"Control step");
+    el("line",{x1:l,x2:W-r,y1:Y(3000),y2:Y(3000),stroke:"var(--muted)","stroke-width":2,"stroke-dasharray":"2 3"},svg);
+    const path = el("path",{fill:"none",stroke:"var(--out)","stroke-width":2.5},svg);
+    const draw = n => path.setAttribute("d", ys.slice(0,n).map((v,i)=>(i?"L":"M")+X(i)+" "+Y(v)).join(" "));
+    cancelAnimationFrame(anim);
+    if (animate && !reduced) { let n=1; const tick=()=>{ draw(++n); if(n<ys.length) anim=requestAnimationFrame(()=>setTimeout(tick,60)); }; tick(); }
+    else draw(ys.length);
+    const tail = ys.slice(-10), swing = Math.max(...tail)-Math.min(...tail), nCut = cut.filter(Boolean).length;
+    const settle = ys.findIndex((v,i)=>ys.slice(i).every(w=>Math.abs(w-3000)<60));
+    const verdict = swing > 200
+      ? `Stutter: attenuation cuts in on ${nCut} of 40 steps and torque keeps swinging by about ${Math.round(swing).toLocaleString()} units. Raise the x-axis or soften P.`
+      : `Smooth: settles by step ${settle} with attenuation active on ${nCut} step${nCut===1?"":"s"}.`;
+    $("simVerdict").textContent = verdict; $("simDesc").textContent = verdict;
+  }
+  gin.addEventListener("input", () => renderSim(false));
+  thin.addEventListener("input", () => renderSim(false));
+  $("playBtn").onclick = () => renderSim(true);
+
+  renderLookup(); renderTable(); renderSim(false);
+})();
+</script>
+</body>
+</html>
