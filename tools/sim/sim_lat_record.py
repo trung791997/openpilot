@@ -187,12 +187,19 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "carParams",
     "modelV2",
     "starpilotLateralState",
+    "liveCalibration",
+    "starpilotPlan",
   ], poll="controlsState")
 
   rows = []
   lanes = []  # per row: modelV2 laneLineProbs (4) + roadEdgeStds (2), saved to lanes.npz (perception of the sim's roads)
   model_rt = []  # per row: modelV2 frameDropPerc, modelExecutionTime (s): whether modeld keeps up on this machine
   eps_ff = []  # per row: starpilotLateralState epsFfWeight, epsFfFeedforward (pidState.f under the PID is the raw kf term)
+  calib = []  # per row: liveCalibration calStatus, calPerc, validBlocks, rpyCalib (3); saved to lanes.npz calib (N x 6), the live
+  #             calibration modeld warps with, which is not what CalibrationParams holds at episode end
+  plan = []  # per row: modelV2 action.desiredCurvature (the model's request before controlsd's clip_curvature; compare with
+  #            des_curv to see the ISO lateral-accel clip, which controlsState does not publish), starpilotPlan
+  #            cscControllingSpeed, cscSpeed, vCruise (m/s); saved to lanes.npz plan (N x 4)
   t_mono = []  # per row: host time.monotonic() at the row, the clock metadrive_process writes into frames/lane_gt.csv t_mono, so
   # the two files align exactly. Before 2026-09-27 they shared no clock and the npz begins ~16 s after the world starts
   # (the car is already at 7-8 m/s), so distance-from-npz-start windows landed 30-38 m off the map (varying per run).
@@ -232,6 +239,12 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     model_rt.append([mv.frameDropPerc, mv.modelExecutionTime] if sm.seen["modelV2"] else [np.nan] * 2)
     sl = sm["starpilotLateralState"]
     eps_ff.append([sl.epsFfWeight, sl.epsFfFeedforward] if sm.seen["starpilotLateralState"] else [np.nan] * 2)
+    lc = sm["liveCalibration"]
+    calib.append([float(lc.calStatus.raw), lc.calPerc, lc.validBlocks] + (list(lc.rpyCalib) + [np.nan] * 3)[:3]
+                 if sm.seen["liveCalibration"] else [np.nan] * 6)
+    sp = sm["starpilotPlan"]
+    plan.append([mv.action.desiredCurvature if sm.seen["modelV2"] else np.nan] +
+                ([float(sp.cscControllingSpeed), sp.cscSpeed, sp.vCruise] if sm.seen["starpilotPlan"] else [np.nan] * 3))
     t_mono.append(time.monotonic())
 
   elapsed = time.monotonic() - start_mono
@@ -239,6 +252,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   np.savez_compressed(os.path.join(outdir, "lanes.npz"), lane_probs=lane_arr[:, :4], edge_stds=lane_arr[:, 4:],
                       model_rt=np.array(model_rt, dtype=np.float64).reshape(-1, 2),
                       eps_ff=np.array(eps_ff, dtype=np.float64).reshape(-1, 2),
+                      calib=np.array(calib, dtype=np.float64).reshape(-1, 6),
+                      plan=np.array(plan, dtype=np.float64).reshape(-1, 4),
                       t_mono=np.array(t_mono, dtype=np.float64))
   if cp_bytes is None:
     if sm.seen["carParams"]:

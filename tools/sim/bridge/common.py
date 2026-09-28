@@ -48,8 +48,14 @@ class SimulatorBridge(ABC):
   CRUISE_KEY_FRAMES = 10
 
   def __init__(self, dual_camera, high_quality):
-    set_params_enabled()
+    # set_params_enabled() writes a test CalibrationParams (rpy 0, 20 valid blocks). The bridge starts after
+    # sim_car_config has seeded the car's own calibration, so until 2026-09-27 every seeded episode drove at rpy 0,
+    # not the car's calibration (found with liveCalibration logged per row, chain46). Keep the seed.
     params = Params()
+    seeded_calib = params.get("CalibrationParams") if os.getenv("SIM_CAR_CONFIG") else None
+    set_params_enabled()
+    if seeded_calib is not None:
+      params.put("CalibrationParams", seeded_calib)
     params.put_bool("AlphaLongitudinalEnabled", True)
 
     self.rk = Ratekeeper(100, None)
