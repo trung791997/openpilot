@@ -4,6 +4,7 @@
   list   OUT_DIR                 route listing from Konik -> OUT_DIR/routes.json; prints the most frequent trips
   track  QLOG_ROUTE_DIR OUT.npz  speed, yaw rate and engagement from a route's qlogs
   blocks TRACK.npz OUT.json      straights and constant-radius curves for metadrive_bridge.route_map_blocks
+  eased  TRACK.npz OUT.json      straights and short arcs following the driven curvature (corners ease in and out)
 
 Coordinates are home/work locations: keep routes.json and the tracks outside the repo (~/.openpilot-sim/civic/routes).
 Only the block files (lengths, radii, angles; no position) belong in tools/sim/maps. Places print as P1, P2, ...
@@ -144,7 +145,39 @@ def track_to_blocks(x, y, straight_curv=1 / 1500, min_angle_deg=5.0, step_m=2.0,
   return blocks
 
 
-def cmd_blocks(track, out, max_km=0.9):
+def eased_blocks(sd, hd, seg_m=8.0, straight_curv=1 / 1500, merge_tol=0.15):
+  """Straights and short arcs that follow the driven curvature, so corners ease in and out as the road did.
+  track_to_blocks makes each corner one constant-radius arc butted onto straights, a curvature step the model sees
+  coming (the car turned in ~5 m early at R17, 2026-09-28). sd: distance (m), hd: heading (rad, + left) from the
+  dead-reckoned yaw rate. Every seg_m the heading change becomes an arc (R = seg_m / |dh|) or, under straight_curv, a
+  straight; neighbouring arcs of one sign within merge_tol in curvature are merged. Returns blocks as track_to_blocks."""
+  import numpy as np
+  s = np.arange(0, sd[-1], 1.0)
+  h = np.interp(s, sd, hd)
+  h = np.convolve(h, np.ones(5) / 5, "same")  # 5 m: gyro noise, not road shape
+  segs = []
+  for a in np.arange(0, len(s) - seg_m, seg_m):
+    i, j = int(a), int(a + seg_m)
+    dh = float(h[j] - h[i])
+    segs.append(["S", seg_m] if abs(dh) / seg_m < straight_curv else ["C", seg_m / abs(dh), abs(dh), 0 if dh > 0 else 1])
+  out = []
+  for b in segs:
+    if out and b[0] == "S" and out[-1][0] == "S":
+      out[-1][1] += b[1]
+    elif out and b[0] == "C" and out[-1][0] == "C" and out[-1][3] == b[3] and abs(1 / b[1] - 1 / out[-1][1]) <= \
+        (0.5 if out[-1][1] > 300 else merge_tol) / out[-1][1]:  # gentle arcs (R > 300 m) merge more: gyro noise
+      p = out[-1]; ln = p[1] * p[2] + b[1] * b[2]; ang = p[2] + b[2]
+      out[-1] = ["C", ln / ang, ang, b[3]]
+    else:
+      out.append(list(b))
+  # 5th element: the straight metadrive_bridge.route_map_blocks appends to the arc; 0.1 m between arcs so a corner's
+  # curvature does not dip to 0 every few metres (the default 1 m tail is for arcs that meet straights).
+  return [["S", round(b[1])] if b[0] == "S" else
+          ["C", round(b[1], 1), round(math.degrees(b[2]), 2), b[3]] + ([0.1] if k + 1 < len(out) and out[k + 1][0] == "C" else [])
+          for k, b in enumerate(out)]
+
+
+def cmd_blocks(track, out, max_km=0.9, eased=False):
   """Blocks for a trip, split into pieces of at most max_km (MetaDrive paints a bounded area and cannot overlap
   blocks: its lane lines are painted inside a 1024 m square). Each piece's typical engaged speed goes to OUT_DIR/drives.json for SIM_CRUISE_KPH."""
   import numpy as np
@@ -157,7 +190,7 @@ def cmd_blocks(track, out, max_km=0.9):
   hd = np.cumsum(np.where(mv, yaw, 0.0) * 0.1)
   x, y, sdist = np.cumsum(v * np.cos(hd) * 0.1)[mv], np.cumsum(v * np.sin(hd) * 0.1)[mv], np.cumsum(v * 0.1)[mv]
   vm, em = v[mv], eng[mv]
-  blocks = track_to_blocks(x, y)
+  blocks = eased_blocks(sdist - sdist[0], hd[mv]) if eased else track_to_blocks(x, y)
   pieces, cur, dist, bounds = [], [], 0.0, [0.0]
   split = []
   for b in blocks:  # a straight longer than a piece is cut so every piece stays under max_km
@@ -198,5 +231,7 @@ if __name__ == "__main__":
     cmd_track(sys.argv[2], sys.argv[3])
   elif cmd == "blocks":
     cmd_blocks(sys.argv[2], sys.argv[3])
+  elif cmd == "eased":  # blocks with corners that ease in and out (eased_blocks)
+    cmd_blocks(sys.argv[2], sys.argv[3], eased=True)
   else:
     print(__doc__)

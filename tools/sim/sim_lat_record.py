@@ -136,6 +136,8 @@ def check_offroad(bridge_log_path: str | None) -> bool:
   with open(bridge_log_path, encoding="utf-8", errors="ignore") as f:
     for line in f:
       line_lower = line.lower()
+      if "metadrive: map_end" in line_lower:
+        break  # past the route's end the car runs off the map; not a road departure
       if "out_of_road" in line_lower or "out_of_lane" in line_lower or "crash" in line_lower:
         return True
   return False
@@ -209,7 +211,18 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   start_mono = time.monotonic()
   cp_bytes = None
 
+  # the bridge prints "metadrive: map_end" 40 m before the route's end (SIM_MAP=route); recording stops there
+  log_pos, next_log_check = 0, 0.0
   while time.monotonic() - start_mono < secs:
+    if bridge_log and time.monotonic() >= next_log_check and os.path.exists(bridge_log):
+      next_log_check = time.monotonic() + 0.5
+      with open(bridge_log, encoding="utf-8", errors="ignore") as f:
+        f.seek(log_pos)
+        chunk = f.read()
+        log_pos = f.tell()
+      if "metadrive: map_end" in chunk and len(rows) >= 500:  # a map_end before 5 s of rows is a map too short for the pre-roll
+        print(f"sim_lat_record: map_end, stopping at {time.monotonic() - start_mono:.1f} s", flush=True)
+        break
     sm.update(100)
     if not sm.updated["controlsState"]:
       continue

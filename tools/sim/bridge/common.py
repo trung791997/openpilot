@@ -1,6 +1,7 @@
 import math
 import os
 import signal
+import time
 import threading
 import functools
 import traceback
@@ -86,6 +87,15 @@ class SimulatorBridge(ABC):
     # rlogs (tools/sim/eps_fit.py), so the lateral tune and EPS are in the loop. Needs SIM_CAR_CONFIG.
     steer_model = os.getenv("SIM_STEER_MODEL")
     self.steer_model = SteerModel(steer_model) if steer_model else None
+    # SIM_DRIVER (JSON, tools/sim/lib/driver_model.py): a scripted hand on the wheel. Its torque goes to the plant
+    # (steer_model.update driver_tq) and to STEER_TORQUE_SENSOR, so carState sees the press as on the car.
+    driver = os.getenv("SIM_DRIVER")
+    if driver and hasattr(self.steer_model, "theta"):  # the replay plant (ReplayPlantSteerModel) only
+      from openpilot.tools.sim.lib.driver_model import DriverModel
+      self.driver = DriverModel(driver)
+    else:
+      self.driver = None
+    self.driver_tq = 0.0
     self.vehicle_model = None  # built from carParams on first use (torque mode)
 
     self.test_run = False
@@ -195,7 +205,7 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
 
       self.simulator_state.user_brake = brake_manual
       self.simulator_state.user_gas = throttle_manual
-      self.simulator_state.user_torque = steer_manual * -10000
+      self.simulator_state.user_torque = steer_manual * -10000 if self.driver is None else self.driver_tq
 
       steer_manual = steer_manual * -40
 
@@ -213,7 +223,17 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
         steer_op = self.simulated_car.sm['carControl'].actuators.steeringAngleDeg
         if self.steer_model is not None:
           v_ego = self.simulated_car.sm['carState'].vEgo
-          self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, v_ego)
+          if self.driver is None:
+            self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, v_ego)
+          else:
+            n_press = len(self.driver.log)
+            lcs = self.simulated_car.sm['controlsState'].lateralControlState
+            plan = float(getattr(getattr(lcs, lcs.which()), "steeringAngleDesiredDeg", 0.0))  # the recorder's des_angle
+            self.driver_tq = self.driver.update(plan, self.steer_model.theta, self.steer_model.rate, v_ego)
+            if len(self.driver.log) > n_press:
+              print(f"sim_driver: press {n_press} start {time.monotonic():.3f} dur {self.driver.log[-1][1] - self.driver.log[-1][0]:.2f}",
+                    flush=True)
+            self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, v_ego, driver_tq=self.driver_tq)
           # Send MetaDrive the angle that gives the curvature this car's controller believes its steering-wheel angle
           # gives: the car's own VehicleModel (steer ratio and understeer), which is what latcontrol_torque measures
           # against (for the owner's Civic it is within 10% of kinematic tan(angle / steer ratio) / wheelbase).

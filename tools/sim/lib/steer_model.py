@@ -55,10 +55,21 @@ class ReplayPlantSteerModel(SteerModel):
     self.theta, self.rate = angle, 0.0
     self.angle = self.plant.measure(angle)
     self.u = deque([0.0] * (self.plant.delay + 1), maxlen=self.plant.delay + 1)
+    self.tq = deque([0.0] * (self.plant.delay + 1), maxlen=self.plant.delay + 1)
 
-  def update(self, torque: float, v_ego: float) -> float:
+  def update(self, torque: float, v_ego: float, driver_tq: float = 0.0) -> float:
+    """driver_tq (SIM_DRIVER, tools/sim/lib/driver_model.py): the hand moves the wheel undelayed through driver_gain(v),
+    and the EPS input yields to it as lat_pid_sim's hands_yield of the torque delay steps ago. With no hand on the
+    wheel this is the unchanged replay step."""
     self.u.append(torque)
-    self.rate += self.plant.accel(self.theta, self.rate, self.plant.drive(self.u[0]), v_ego) * self.dt
+    self.tq.append(driver_tq)
+    if driver_tq == 0.0 and not any(self.tq):
+      self.rate += self.plant.accel(self.theta, self.rate, self.plant.drive(self.u[0]), v_ego) * self.dt
+    else:
+      from openpilot.tools.lateral.lat_pid_sim import hands_yield
+      from openpilot.tools.sim.lib.driver_model import driver_gain
+      drive = self.plant.drive(self.u[0]) * float(hands_yield(self.tq[0]))
+      self.rate += (self.plant.accel(self.theta, self.rate, drive, v_ego) + driver_gain(v_ego) * driver_tq / 1000.0) * self.dt
     self.theta += self.rate * self.dt
     self.angle = self.plant.measure(self.theta)
     return self.angle

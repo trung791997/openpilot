@@ -9654,3 +9654,28 @@ Full write-up: `docs/mac-metadrive-cinquev3/TSFDO.md`, "TSFDO as the default sim
 - **Recorder:** `lanes.npz` adds `cs_mono` (controlsState logMonoTime per row), to separate a slow controlsd from recorder drops.
 - **R17 departure at ~81 s on the 40 kph route (plFixed_1 / clFixed) is real:** the car turns in ~5 m early to −1.1 m, heading error −0.38 to −0.45 rad, exits at +2.3 m. Early turn-in is an open fidelity question. Scoring rule for route runs: centre >1.75 m off with a valid lane lookup in the preceding 1 s.
 - **Open:** priority is sim fidelity before any controller A/B (owner, 2026-09-28). The car's static delay 0.32 (owner) is seeded through learned.json. On diag53d, ≥25 mph lane-centre rms is 0.11 m with 2.5 oscillations/s at small amplitude; corner following against the car's logs is not yet checked.
+
+## 197. Mac MetaDrive sim is ready for driver-override testing: a scripted driver's hand (Driver override (Kevin)'s v1/v2 model) moves the sim's wheel and reaches carState, episodes stop at the map's end, and the first override run agrees with Kevin's offline sim. Sim evidence only; no device behaviour change. Branch `sim-lat-training`.
+
+What changed (2026-09-28, on the merged ns tree 99bd19ef, James's controller confirmed at controlsd start in every run):
+- `tools/sim/lib/driver_model.py` (new). The driver is a PI hand toward a wanted wheel angle relative to the controller's plan, with a 0.15 s lag, kd 300, bd 8 and ki 800/1500/3000, clipped ±3500. Its torque moves the wheel through g(v) = interp(v, [8, 14], [800, 120]), undelayed. `"version": "v2"` is Kevin's low-speed driver: the loop is capped near 7 rad/s, s = min(1, 49000 / g / kd), and at 45 mph it is the same as v1. There are six kinds of press:
+  - offset (hug or nudge);
+  - widen;
+  - scale (turns);
+  - push (constant torque);
+  - rest (a resting-hand tremor);
+  - plan-, speed- or time-triggered.
+- `steer_model.ReplayPlantSteerModel.update(torque, v, driver_tq)`: the EPS input yields to the hand (lat_pid_sim `hands_yield`) and the hand's torque drives the wheel. With no hand on the wheel it is bit-identical to before (offline, max difference 0.0).
+- `tools/sim/bridge/common.py`: `SIM_DRIVER` (JSON) runs the hand on the plan from `controlsState.lateralControlState`, feeds the plant and STEER_TORQUE_SENSOR, and logs `sim_driver: press N start <monotonic>`. `lat_episode.sh` forwards `SIM_DRIVER` and `NRDR_OVERRIDE_MODE`, which is read only by a temporarily patched controller and never committed.
+- Map end: the bridge prints `metadrive: map_end` 40 m before the route's end, and `sim_lat_record.py` stops there. Road departures after that point are not counted. Checked on drive-map piece 3: the recording stopped at 65 s with no departure, and lane rms was 0.16 m against 0.14 m in chain53.
+- Scenarios: `tools/sim/maps/override_scenarios.json` covers hug_45/30, nudge_45, widen_45, turn_12/6, resting_45/12, handsoff_30, and constant push at 4.5/11.2/22.4 m/s × 700/1000/1500 × ±. Each scenario is a straight run-in (long enough for the 40 s pre-roll) followed by one constant arc sized for Kevin's plan angle; the sim fits 2450° of wheel angle per 1/m of curvature at 8–14 m/s.
+- `tools/sim/override_score.py` computes Kevin's metric set. Cut-outs use the raw steeringPressed, because the carcontroller latch is not logged. `tools/sim/override_plot.py` draws one picture per run: angle, plan and want; driver and delivered torque; lane offset; pressed; and three camera frames. Pictures go in `docs/sim_override/<date>/` so the peers on the VM can see them.
+
+First override run: hug_30, A (today's controller), thresholds 1800/1800, driver v2 ki 1500. Sim, car as driven, n=1.
+- Driver torque peaked at 1957 and the override tripped twice (cut_s 0.26). Kevin's offline A gives 1914 and 2, so the two sims agree.
+- The car pushed against the driver for 3.3 s of the 4 s hold (peak delivered 0.83). After release the wheel swung 8.1° past the plan at up to 137°/s and was not back within 1° after 3 s. See `docs/sim_override/2026-09-28/hug_30_A_1800_ki1500.png`.
+- handsoff_30 ran clean (max |angle − plan| 2.9°).
+
+Also found:
+- Drive maps (chain53, 15 pieces × 2, all 98–100 Hz): mean lane rms 0.19 m, and the two passes repeat within 0.015 m. At a sharp corner entry the car turns in late: on piece 1 its curvature reaches the corner's about 2 s after the corner starts, and it runs 1.7 m wide at radius 25 m and 9 m/s. The maps start corners abruptly with no transition curve, which real roads don't do; this is a map artefact, not something to tune a controller on.
+- Eased maps (`route_maps.py eased`, corners as 8 m arcs) are parked. Their short blocks make MetaDrive's lane lookup flip lanes, and they keep a single cruise speed through corners (radius 11–15 m) the owner took much slower.

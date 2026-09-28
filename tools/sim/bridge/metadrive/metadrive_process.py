@@ -335,6 +335,7 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
   plant = CivicPlant(env.vehicle.position, env.vehicle.heading_theta, 0.0) if CIVIC_PLANT else None
   plant_cmd = None
   on_lane_prev = True
+  map_end_seen = False
   start_time = None
 
   def get_cam_as_rgb(cam):
@@ -465,6 +466,16 @@ def metadrive_process(dual_camera: bool, config: dict, camera_array, wide_camera
       lane_idx_prev = lane_idx_curr
       # sim-lat-training: log road departures and returns (out_of_road_done is off, so the world keeps stepping); the
       # episode recorder (tools/sim/sim_lat_record.py check_offroad) reads these lines from the bridge log
+      # map_end: printed once when the car is within 40 m of the route's end; sim_lat_record.py stops recording there
+      # (the drive maps' +12 s margin ran pieces off the end of the map, 2026-09-28)
+      if not map_end_seen:
+        nav = getattr(env.vehicle, "navigation", None)
+        try:
+          if nav is not None and nav.total_length > 0 and nav.total_length - nav.travelled_length < 40.0:
+            print(f"metadrive: map_end at frame {rk.frame}", flush=True)
+            map_end_seen = True
+        except Exception:
+          pass
       if on_lane != on_lane_prev:
         pos = tuple(round(float(x), 1) for x in env.vehicle.position)
         print(f"metadrive: {'back_on_road' if on_lane else 'out_of_road'} at frame {rk.frame} pos {pos}", flush=True)

@@ -46,7 +46,7 @@ MAP_PRESETS = {
 
 def route_map_blocks(path):
   # SIM_MAP=route, SIM_MAP_FILE=JSON list of ["S", length_m] and ["C", radius_m, angle_deg, dir (0/1)] rebuilt from the
-  # driver's own corners. A curve block appends a 1 m straight. Keep the layout inside MetaDrive's 1024 m painted square.
+  # driver's own corners. A curve block appends a 1 m straight (or ["C", ..., tail_m]). Keep the layout inside MetaDrive's 1024 m painted square.
   import json
   with open(path) as f:
     spec = json.load(f)
@@ -58,7 +58,8 @@ def route_map_blocks(path):
       n = max(1, math.ceil(b[1] / 100.0))
       blocks += [straight_block(b[1] / n) for _ in range(n)]
     else:
-      blocks.append(curve_block(1, b[2], int(b[3]), radius=b[1]))
+      # an optional 5th element is the straight after the arc (eased maps: 0.1 m between consecutive arcs)
+      blocks.append(curve_block(b[4] if len(b) > 4 else 1, b[2], int(b[3]), radius=b[1]))
   return blocks
 
 
