@@ -190,9 +190,42 @@ def test_pid_feedforward_uses_the_cars_own_load_fit(monkeypatch, candidate, load
   assert lac.eps_shadow_ff.load_coef == load
 
 
-def test_civic_load_fit_stays_out_of_the_clarity_eps_controller(monkeypatch):
+@pytest.mark.parametrize("candidate,cal,load,min_v", [(HONDA.HONDA_CLARITY, eps_ff.CLARITY_A020, None, 0.0),
+                                                      (HONDA.HONDA_CIVIC_BOSCH, C020, eps_ff.CIVIC_C020_LOAD,
+                                                       eps_ff.CIVIC_C020_LOAD_MIN_V)])
+def test_clarity_eps_controller_uses_the_cars_own_load_fit(monkeypatch, candidate, cal, load, min_v):
+  # STATUS 191: the Civic takes the PID's C020 fit from 25 mph (STATUS 190); the Clarity keeps LOAD_*
+  lac, _, _ = _controller(monkeypatch, candidate, {"NrdrLatEpsFirmwareFF": "1"})
+  assert lac.core.ff.cal is cal and lac.core.ff.load_coef == load and lac.core.ff.load_min_v == min_v
+  assert eps_ff.CIVIC_PID_LOAD is eps_ff.CIVIC_C020_LOAD and eps_ff.CIVIC_PID_LOAD_MIN_V == eps_ff.CIVIC_C020_LOAD_MIN_V
+
+
+def _ff_trace(ff, v, n=300):
+  # a turn-in and hold, so the rate, lead and output-filter state all take part
+  return [ff.update(float(min(k, 150)) * 0.2, v, 0.02) for k in range(n)]
+
+
+@pytest.mark.parametrize("v", [5.0, 10.0, 11.0, 13.5, 20.0, 30.0])
+def test_civic_clarity_eps_feedforward_is_the_clarity_fit_below_25_mph_and_its_own_above_29(monkeypatch, v):
   lac, _, _ = _controller(monkeypatch, HONDA.HONDA_CIVIC_BOSCH, {"NrdrLatEpsFirmwareFF": "1"})
-  assert lac.core.ff.cal is C020 and lac.core.ff.load_coef is None
+  got = _ff_trace(lac.core.ff, v)
+  clarity_fit = _ff_trace(eps_ff.ClarityEpsFirmwareFeedforward(DT_CTRL, cal=C020), v)
+  own_fit = _ff_trace(eps_ff.ClarityEpsFirmwareFeedforward(DT_CTRL, cal=C020, load=eps_ff.CIVIC_C020_LOAD), v)
+  assert clarity_fit != own_fit
+  if v < eps_ff.CIVIC_C020_LOAD_MIN_V:
+    assert got == clarity_fit
+  elif v > eps_ff.CIVIC_C020_LOAD_MIN_V + eps_ff.LOAD_BLEND_V:
+    assert got == own_fit
+  else:   # 25-29 mph: between the two
+    g, a, b = np.array(got), np.array(clarity_fit), np.array(own_fit)
+    assert np.all((g >= np.minimum(a, b) - 1e-12) & (g <= np.maximum(a, b) + 1e-12))
+
+
+@pytest.mark.parametrize("v", [5.0, 11.0, 13.5, 30.0])
+def test_clarity_car_clarity_eps_feedforward_is_unchanged(monkeypatch, v):
+  # the Clarity's controller runs upstream's default feedforward, bit for bit, at every speed
+  lac, _, _ = _controller(monkeypatch, HONDA.HONDA_CLARITY, {"NrdrLatEpsFirmwareFF": "1"})
+  assert _ff_trace(lac.core.ff, v) == _ff_trace(eps_ff.ClarityEpsFirmwareFeedforward(DT_CTRL), v)
 
 
 def test_load_fit_defaults_to_the_clarity_constants():

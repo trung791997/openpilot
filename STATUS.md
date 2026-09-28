@@ -9770,3 +9770,166 @@ Per-turn replay overshoot on 28f sharp corners (n=8): +3.3 -> +3.0 deg (logged d
 - Refit after any EPS reflash.
 
 **This is the last planned NRDR PID change.** Per the owner, the lateral focus moves to LatControlClarityEps.
+
+## 191. LatControlClarityEps (James's controller) on the Civic: from 25 mph its firmware feedforward uses the STATUS 190 Civic column-load fit too (owner, 2026-09-28). Static tests and an open-loop feedforward recompute on one drive only; not driven, no closed-loop sim.
+
+**Why.** Owner request, after STATUS 190 gave NRDR PID's feedforward the Civic's own fit. On the 2026-09-28 11:02 drive
+(drive-plots CSV; LatControlClarityEps driving) the car sat 0.2-0.4 m inside curves at 25-50 mph while the wheel
+was 0.97x its target and P/I pushed toward the curve. So the wheel was near its target and the inside bias is in the
+path, not the feedforward: **this change is not expected to fix it.** The owner was told to try a lower Actuator
+Delay (desired->actual lag measured 0.2 s against the pinned 0.32 s). Below 25 mph the wheel ran a median +1.2 deg
+(p90 +7 deg) past target; this change does not touch that band.
+
+**What.**
+- `latcontrol_clarity_eps.py`: the Civic branch builds `ClarityEpsFirmwareFeedforward(dt, cal=CIVIC_BOSCH_C020,
+  load=CIVIC_C020_LOAD, load_min_v=CIVIC_C020_LOAD_MIN_V)`, the same wiring as LatControlPID's. Clarity fit (`LOAD_*`)
+  below 25 mph, blend over `LOAD_BLEND_V` (25-29 mph), Civic fit above. The 25 mph floor is kept from STATUS 190
+  (at all speeds that fit slowed low-speed turns in the PID replay). The Clarity branch is untouched.
+- `nrdr_eps_firmware_ff.py`: `CIVIC_PID_LOAD` / `CIVIC_PID_LOAD_MIN_V` are renamed `CIVIC_C020_LOAD` /
+  `CIVIC_C020_LOAD_MIN_V`, with the old names kept as aliases (latcontrol_pid.py still uses them). Same values. The
+  comments that said LatControlClarityEps keeps the Clarity fit now say both controllers use it.
+- The CIVIC_BOSCH_C020 comment now says the calibration holds for `39990-TBA,C020-Trk4000-PTM.rwd`. Decrypted, it
+  differs from the Trk4500 image only in the tracker word (0x137EE 4500 -> 4000) and the two firmware checksums
+  (verified byte diff; `eps_fw.EpsTable.from_rwd` reads identical tables and norm/P/D/speed-clamp words). The
+  tracker is the R6 low-pass and does not enter the feedforward, so neither the calibration nor the load fit changes.
+- `tools/lateral/lat_pid_sim.py`'s `clarity_eps` kind builds the real controller, so it uses the fit with no change.
+
+**Open-loop recompute** (drive-plots 2026-09-28 11:02, 7 engaged stretches, 16440 frames after a 1 s warm-up).
+`ang_des` and `v` were interpolated from 20 Hz to 0.01 s and the C020 feedforward run at DT_CTRL twice, old config
+and new. Roll is not in the CSV and was taken as 0. Median |ff| (full weight, before ff_w):
+
+| band | frames | median abs ff, old | new | new/old |
+|---|---|---|---|---|
+| <25 mph, curves (abs ang_des > 5 deg) | 2857 | 0.1339 | 0.1339 | 1.000 |
+| <25 mph, straights | 2051 | 0.0260 | 0.0259 | 0.998 |
+| 25-50 mph, curves | 3303 | 0.0989 | 0.0850 | 0.859 |
+| 25-50 mph, straights | 7950 | 0.0179 | 0.0216 | 1.205 |
+| >50 mph, straights (no curves) | 279 | 0.0163 | 0.0176 | 1.078 |
+
+- In 25-50 mph curves the median per-frame new/old is 0.876: about 12-14 % less feedforward. The angle PID closes on
+  the same wheel target, so the closed-loop effect on the line is unknown (not simulated). It does not address the
+  inside bias, which is in the target, not the wheel. On straights the Civic fit's negative bias shows as a slightly
+  larger |ff|. Below 25 mph it is identical: the <25 straight 0.998 is 25-29 mph blend frames.
+- Sanity check: the old recompute against the logged `ff` has corr 0.990 (by band <25 / 25-50 / >50: 0.9985 / 0.982 /
+  0.976), RMS 0.029 against a logged RMS of 0.129. The residual is mostly a constant offset (logged - recompute mean
+  +0.005 / +0.030 / +0.052 by band; demeaned RMS 0.011 / 0.013 / 0.005). That fits the roll term missing here.
+  Demeaned, the old config matches the log better than the new one (0.013 vs 0.014 at 25-50), consistent with the car
+  having run the old config.
+
+**Tests** (static). `pytest selfdrive/controls/tests/test_nrdr_eps_firmware_ff.py selfdrive/controls/tests/test_latcontrol_pid*.py
+tools/lateral/tests/ -q`: 269 pass. `tools/lib/tests/test_py39_compat.py`: 14 pass. ruff clean on the changed files.
+`test_civic_load_fit_stays_out_of_the_clarity_eps_controller` becomes
+`test_clarity_eps_controller_uses_the_cars_own_load_fit` (both cars). New tests:
+`test_civic_clarity_eps_feedforward_is_the_clarity_fit_below_25_mph_and_its_own_above_29` (the controller's
+feedforward equals the bare Clarity-fit feedforward exactly below 25 mph and the Civic-fit one above 29 mph, and lies
+between them in the blend) and `test_clarity_car_clarity_eps_feedforward_is_unchanged` (bit-identical to the default
+feedforward on the Clarity).
+
+- No closed-loop sim or lat_score gate was run for this controller with the new fit when this entry was written (STATUS 192 has them since), and it has not been driven.
+- Refit after any EPS reflash (the Trk4000-PTM image does not need one; see above).
+
+## 192. STATUS 191 on real drives: closed-loop lat_score A/B, open-loop feedforward, sharp corners, and the sim plant's actuator delay (owner: "run it against actual route data"; "try a lower actuator delay in the sim on 294"; "refit the plant at 3 frames and rerun 294"). Replay/sim only; docs only; nothing driven, no params or plants changed.
+
+**Data.** Konik routes 277, 278, 27a, 280, 284, 285, 286, 28f, 292, 293 and 294 (the three newest are
+`00000292--72e364dd62`, `00000293--9d152a3cdc`, `00000294--c1589bcb53`), extracted to `lat_pid_sim.npz` outside the
+repo. Plant `tools/lateral/plants/civic_bosch_c020.json` unless stated. "Old" is the base branch wiring (Clarity fit at
+all speeds: `core.ff.load_coef = None` after construction); "PR" is STATUS 191. Scripts were one-off and are not
+committed; each step below says how it was run.
+
+**PR tests** (static). The STATUS 191 test set passes (216 in this run). The Trk4000-PTM rwd differs from the Trk4500
+image in exactly 6 bytes: 0xf7ee 4500 -> 4000, 0x4bf80 1523 -> 1023 and 0x4bffe 39999 -> 40999 (tracker word and the two
+checksums), as STATUS 191 says.
+
+**Open loop** (`lat_pid_sim.Controller(kind="clarity_eps")` stepped on the logged angle and rate; the applied ff is
+`lac.core.pid.f`). On 292/293/294 the old config reproduces the logged output better than the PR does (the car ran the
+old config), as STATUS 191's recompute found. The change is small where it matters:
+- 29-50 mph: only 6-8 % of frames have |des| > 10 deg, so the angle gate (`FF_ANGLE_GATE_DEG` 10-30) keeps the applied
+  ff tiny: mean |ff| 0.002 (log and old alike); PR changes it by a mean 0.0004 (p99 0.005-0.014, max 0.042). Median
+  |out| on curves moves about 1 % (294: 0.0869 -> 0.0861; log 0.0878).
+- 25-29 mph (blend): mean applied ff 0.0023 -> 0.0020 on 294; |new-old out| p99 0.005-0.012.
+- < 25 mph and > 50 mph: identical (|new-old| p99 0.0000).
+
+**Closed loop, lat_score A/B** (`lat_score._run(route, DEFAULT_PLANT, "clarity_eps", {}, {})`, old vs PR, then
+`compare` / `verdict`). Verdict **neutral** on all 11 routes; no gated figure left its margin.
+- Gate routes 280/284/285/286/27a/277/278 and 28f: every figure equal to two decimals except 27a wobble2-5
+  0.236 -> 0.234, dither12-20 0.317 -> 0.308, and lag_s_standard 0.12 -> 0.13 on 27a and 278.
+- 292/293/294: err_rms_standard within 0.01 deg (294 1.22 -> 1.23, 292 0.92 both); curve_ratio_standard unchanged
+  except 293 0.98 -> 0.97.
+
+**Sharp corners, closed loop** (engaged, hands off, 25-50 mph; err = (des - ang)·sign(des); "past" = the part beyond the
+target). The PR lowers sim overshoot a little on every route with enough frames. The sim overshoots more than the car
+did in both configs, so the size of the gain is not trustworthy:
+
+| route, abs des > 25 deg | n | past mean: log / old / PR | past p95: log / old / PR |
+|---|---|---|---|
+| 27a | 803 | 0.06 / 0.96 / 0.77 | 0.61 / 3.02 / 2.62 |
+| 277 | 633 | 0.18 / 0.60 / 0.56 | 1.20 / 2.68 / 2.58 |
+| 278 | 588 | 0.02 / 1.03 / 0.78 | 0.17 / 2.33 / 2.11 |
+| 28f | 1272 | 0.86 / 1.28 / 1.13 | 3.06 / 4.58 / 4.27 |
+| 292 | 733 | 0.81 / 1.12 / 1.07 | 3.40 / 4.40 / 4.31 |
+| 293 | 1024 | 0.61 / 0.71 / 0.61 | 1.51 / 2.15 / 2.12 |
+
+At abs des > 15 deg (adds 280 and 294) the picture is the same: 294 past mean 0.21 / 0.39 / 0.35, p95 0.95 / 2.08 / 1.98.
+280, 284, 285, 286 have < 50 such frames; 294 has none above 25 deg.
+
+**Verdict on STATUS 191** (posted on PR 9; replay/sim evidence only): harmless and close to a no-op, with a small cut
+in sim overshoot in sharp 25-50 mph corners. OK to merge on that basis. It will not move the 0.2-0.4 m inside bias at
+25-50 mph: after the angle gate the feedforward is about 2 % of the command there. STATUS 191's "0.86x feedforward in
+25-50 mph curves" is measured before `ff_weight`; after it the curve command moves about 1 %.
+
+**Actuator delay: what can and cannot be simulated.** `LatControlClarityEps.update()` takes `lat_delay` but does not use
+it, and has no `update_live_delay`. On the car the Actuator Delay param (`liveDelay.lateralDelay`, pinned 0.32 s against
+about 0.2 s measured) acts through modeld (`lateral_control_params`, `lat_action_t`) and so changes the desired
+curvature itself. lat_pid_sim replays the desired curvature from the log, so **that effect cannot be simulated**. The
+only delay the sim has is the plant's command delay, `delay_frames` 5 (50 ms) in both bands.
+
+**Plant delay sweep on 294, coefficients unchanged** (base branch config; `plant.delay` overwritten after
+`load_plant`). A what-if on the lag alone:
+
+| metric | log | 5 (shipped) | 3 | 1 | 0 |
+|---|---|---|---|---|---|
+| wobble5-8 | 0.391 | 0.350 | 0.335 | 0.321 | 0.315 |
+| wobble12-20 | 0.224 | 0.218 | 0.202 | 0.191 | 0.187 |
+| turn_err <12 mph | 20.33 | 15.97 | 15.25 | 14.55 | 14.22 |
+| turn_err 12-25 mph | 17.14 | 12.60 | 12.25 | 11.91 | 11.75 |
+| err_rms_standard | 1.644 | 1.225 | 1.188 | 1.155 | 1.139 |
+| lag_s_standard | 0.31 | 0.23 | 0.22 | 0.21 | 0.20 |
+| 25-50 mph, abs des > 15: past mean / p95 | 0.21 / 0.95 | 0.39 / 2.08 | 0.34 / 1.83 | 0.31 / 1.73 | 0.29 / 1.63 |
+
+Every 10 ms removed improves the figures by 2-4 %; dither and curve_ratio do not move. Even at 0 the sim overshoots
+corners more than the log while tracking better than the log everywhere else (turn_err 12-25 mph 11.75 vs 17.14, lag
+0.20 vs 0.31 s), so less delay moves it further from the log on tracking.
+
+**Plant refit at 3 frames vs 5 on the same data** (`fit_plant(..., delays=(N,), eps=<shipped C020 table>)`; low band
+v < 25 mph with the centring term, high band v >= 25 mph, blend 22-28 mph as shipped). Trained on the other 10 routes
+(277-293, 294 held out): low band 2498 windows (about 28 hands-off min, against 163 min for the shipped fit), high band
+15048 windows (about 129 min, against route 000001b8 alone). Converged: 300 LM iterations give the same cost as 60. The
+free-run window cost alone prefers delay 0, as on 263/268/271 (STATUS 132): low band rms 3.55 / 3.71 / 3.82 deg at 0 / 3 / 5,
+high band 0.566 / 0.578 / 0.587. On 294 at the base branch config:
+
+| metric | log | shipped (5) | refit 5 | refit 3 |
+|---|---|---|---|---|
+| wobble5-8 | 0.391 | 0.350 | 0.353 | 0.346 |
+| wobble12-20 | 0.224 | 0.218 | 0.254 | 0.236 |
+| turn_err <12 / 12-25 mph | 20.33 / 17.14 | 15.97 / 12.60 | 15.80 / 12.51 | 15.77 / 12.43 |
+| turn_trail 12-25 mph | 14.69 | 8.56 | 9.09 | 9.04 |
+| err_rms_standard | 1.644 | 1.225 | 1.267 | 1.247 |
+| curve_ratio low / standard | 0.985 / 0.972 | 1.015 / 0.975 | 1.003 / 0.981 | 1.003 / 0.981 |
+| lag_s_standard | 0.31 | 0.23 | 0.25 | 0.25 |
+| straight sign changes/s, 25-50 mph | 0.43 | 0.31 | 0.32 | 0.31 |
+| 25-50 mph, abs des > 15: past mean / p95 | 0.21 / 0.95 | 0.39 / 2.08 | 0.41 / 1.91 | 0.39 / 1.83 |
+| plant free-run 3 s rms, < 25 mph (hold-still 27.2) | | 3.10 | 3.61 | 3.57 |
+| plant free-run 3 s rms, >= 25 mph (hold-still 4.14) | | 1.32 | 1.23 | 1.22 |
+
+- Refit 3 is equal to or slightly better than refit 5 on almost every figure; the refit absorbs the shorter delay
+  mostly by halving the low band's command gain (c4 394 -> 179).
+- The training data moved the results more than the delay did: refit 5 vs shipped trades low-speed overshoot (turn_past
+  12-25 mph 4.05 -> 3.42) for more highway wobble (0.218 -> 0.254) and a worse low-band free-run on 294 (3.10 -> 3.61),
+  probably from a sixth of the low-speed data.
+- **Neither delay closes the sim/log gap.** The car trails the target far more at low speed (turn_trail 12-25 mph 14.7
+  vs about 9) and overshoots corners less. That points at the plant's gain or its mid-corner holding, not the lag.
+  **The shipped plant stays at 5 frames**; one route is not grounds to change it.
+
+**Not done.** A refit at 3 frames on the shipped fit's 36 training routes (00000091..00000270), scored on its held-out
+routes 271/276/277/278/27a, is the fair test; it needs those routes fetched (about 12 GB). The model-side effect of a
+lower Actuator Delay can only be judged on a drive.

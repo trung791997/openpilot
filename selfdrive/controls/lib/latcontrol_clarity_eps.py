@@ -3,7 +3,8 @@ LatControlPID when NrdrLatEpsFirmwareFF is on (read once, when controlsd starts)
 
 Upstream JamesL787/openpilot vfn-controller-shadow 8c3a3fd8 / fd815ef3, which selects it for the Clarity
 unconditionally. Here it is behind the toggle, and the Civic Bosch C020 runs it with its own firmware calibration
-(nrdr_eps_firmware_ff.CIVIC_BOSCH_C020) and its own fixed P/I trims (CIVIC_P_SCALE / CIVIC_I_SCALE); everything
+(nrdr_eps_firmware_ff.CIVIC_BOSCH_C020), its own fixed P/I trims (CIVIC_P_SCALE / CIVIC_I_SCALE) and, from 25 mph,
+its own column-load fit (CIVIC_C020_LOAD, the one LatControlPID's feedforward uses; STATUS 190, 191); everything
 else is upstream's. Upstream's HondaTorqueOutputLowPassFilter / HondaTorqueOutputLpfTau* keys do not exist on this
 branch, so the output LPF runs on upstream's values (OUTPUT_LPF_TAU) and HondaLpfTau* (this branch's target
 filter) is not used here.
@@ -41,6 +42,8 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import (
 )
 from openpilot.selfdrive.controls.lib.nrdr_eps_firmware_ff import (
   CIVIC_BOSCH_C020,
+  CIVIC_C020_LOAD,
+  CIVIC_C020_LOAD_MIN_V,
   CIVIC_I_SCALE,
   CIVIC_P_SCALE,
   ClarityEpsFirmwareFeedforward,
@@ -63,8 +66,9 @@ class LatControlClarityEps(LatControl):
     pid = CP.lateralTuning.pid
     gains = ([float(x) for x in pid.kpBP], [float(x) for x in pid.kpV], [float(x) for x in pid.kiBP], [float(x) for x in pid.kiV])
     if CP.carFingerprint == HONDA.HONDA_CIVIC_BOSCH:
-      self.core = ClarityEpsLateralCore(*gains, dt, ff=ClarityEpsFirmwareFeedforward(dt, cal=CIVIC_BOSCH_C020),
-                                        p_scale=CIVIC_P_SCALE, i_scale=CIVIC_I_SCALE)
+      # The Clarity column-load fit below 25 mph, the Civic's own above (blended over LOAD_BLEND_V), as LatControlPID
+      ff = ClarityEpsFirmwareFeedforward(dt, cal=CIVIC_BOSCH_C020, load=CIVIC_C020_LOAD, load_min_v=CIVIC_C020_LOAD_MIN_V)
+      self.core = ClarityEpsLateralCore(*gains, dt, ff=ff, p_scale=CIVIC_P_SCALE, i_scale=CIVIC_I_SCALE)
     else:
       self.core = ClarityEpsLateralCore(*gains, dt)
     self.sr_curve = NRDR_SR_CURVE_BY_FP.get(str(CP.carFingerprint))
