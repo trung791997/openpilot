@@ -251,6 +251,9 @@ class NRDRTuningLayout(_SettingsPage):
 
     override_rows = [
       toggle("NrdrIncreaseOverrideTolerance", "Override Hysteresis", "Double the override tolerance after steering input leaves center."),
+      toggle("NrdrSameDirectionAssist", "Keep Steering When Helping a Turn (Test)",
+             "Pushing the wheel the same way openpilot is steering no longer cuts torque, below 25 mph, "
+             "for up to 8 s. Pushing against it, or very hard, still takes over."),
       value(
         "NrdrDriverOverrideThreshold", "Driver Override Threshold", "Raw torque-sensor threshold outside the center boost angle band.",
         lambda: str(p.get_int("NrdrDriverOverrideThreshold")),
@@ -301,13 +304,6 @@ class NRDRTuningLayout(_SettingsPage):
         "which does not bind below about 20 mph. 0 disables.",
         lambda: f"{p.get_int('NrdrLatAngleRateLimit')} deg/s",
         lambda: self._show_slider("NrdrLatAngleRateLimit", 0, 2000, unit=" deg/s", title="Desired Angle Rate Limit"),
-      ),
-      value(
-        "NrdrLatRateFF", "Desired Rate Feedforward",
-        "Extra torque in proportion to how fast the desired steering angle is moving, per 100 deg/s. "
-        "Pays for the rack's damping as a turn is asked for, so the wheel follows with less lag. 0 disables.",
-        lambda: f"{p.get_float('NrdrLatRateFF'):.2f}",
-        lambda: self._show_slider("NrdrLatRateFF", 0.0, 2.0, step=0.05, value_type="float", title="Desired Rate Feedforward"),
       ),
       toggle("HondaTorqueLowPassFilter", "Steering Target Smoothing", "Smooth the desired steering angle using speed-banded time constants."),
       value(
