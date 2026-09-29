@@ -24,11 +24,52 @@ class _InputSpec:
     self.dtype = dtype
 
 
+class _OrtInput:
+  def __init__(self, name, type_):
+    self.name, self.type = name, type_
+
+
+class _TinygradMetalSession:
+  """ORT-session stand-in that runs the network in tinygrad on METAL (SIMULATION_ORT_PROVIDER=metal).
+
+  The CoreML provider spawns ANECompilerService at each sim launch; on 2026-09-28 copies of it stuck at 100% CPU for
+  30+ min and pulled the controls loop to 63-84 Hz. This path never calls CoreML. Needs the MetalGraph 31-buffer fix
+  (98e76d32). Offline bench on the owner's M1, 20 random inputs: max |diff| 0.25 vs ORT CPU (fp16 outputs up to 172),
+  19 ms median call, no ANECompilerService CPU. The rest of modeld keeps its own DEV; only this network runs on METAL.
+  """
+  def __init__(self, onnx_path: str | Path):
+    from tinygrad import Context, TinyJit
+    from tinygrad.dtype import _to_np_dtype
+    from tinygrad.nn.onnx import OnnxRunner
+
+    self._context = lambda: Context(DEV="METAL")
+    with self._context():
+      self._runner = OnnxRunner(onnx_path)
+    np_to_ort = {v: k for k, v in ORT_TO_NUMPY.items()}
+    self._inputs = [_OrtInput(n, np_to_ort[_to_np_dtype(s.dtype)]) for n, s in self._runner.graph_inputs.items()]
+    self.output_names = list(self._runner.graph_outputs)
+    self._jit = TinyJit(lambda **kw: self._runner(kw)[self.output_names[0]].realize())
+
+  def get_inputs(self):
+    return self._inputs
+
+  def run(self, output_names, feed):
+    assert list(output_names) == self.output_names[:1], output_names
+    with self._context():
+      return [self._jit(**{k: Tensor(v, device="METAL") for k, v in feed.items()}).numpy()]
+
+
 class OrtModelRunner:
   def __init__(self, onnx_path: str | Path, provider: str | None = None, compute_units: str | None = None):
+    provider = provider or os.getenv("SIMULATION_ORT_PROVIDER", "coreml")
+    if provider == "metal":
+      # Returns before onnxruntime is imported, so the sim process never loads CoreML (no ANECompilerService).
+      self.session = _TinygradMetalSession(onnx_path)
+      self.graph_inputs = {i.name: _InputSpec(ORT_TO_TINYGRAD[i.type]) for i in self.session.get_inputs()}
+      self.output_names = self.session.output_names
+      return
     import onnxruntime as ort
 
-    provider = provider or os.getenv("SIMULATION_ORT_PROVIDER", "coreml")
     if provider == "coreml":
       cache = Path(os.getenv("SIMULATION_ORT_CACHE", Path.home() / "Library/Caches/openpilot-coreml"))
       cache.mkdir(parents=True, exist_ok=True)

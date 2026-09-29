@@ -11,7 +11,9 @@ if [[ -z "$SIM_CAR_CONFIG" ]]; then
 fi
 
 export BLOCK="${BLOCK},camerad,loggerd,encoderd,micd,logmessaged"
-if [[ "$CI" ]]; then
+# The raylib UI segfaults in InitWindow on the Mac sim host (50 crash reports on 2026-09-28) and each crash costs CPU
+# that the controls loop needs. It drives nothing, so it is off unless SIM_UI=1 (e.g. to watch a run).
+if [[ "$CI" || "${SIM_UI:-0}" != "1" ]]; then
   # TODO: offscreen UI should work
   export BLOCK="${BLOCK},ui"
 fi

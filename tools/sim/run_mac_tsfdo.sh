@@ -22,6 +22,9 @@ else
   export SIMULATION_MODEL_ARTIFACT="$TSFDO_DIR/tsfdo_cpu.pkl" SIMULATION_ONNX_MODEL="$TSFDO_DIR/driving_supercombo.onnx"
 fi
 export SIMULATION_TINYGRAD_DEV=CPU SIMULATION_WARP_DEV=CPU
+# The network runs in tinygrad on METAL, not ORT CoreML: CoreML's ANECompilerService stuck at 100% CPU for 30+ min on
+# 2026-09-28 and pulled the controls loop to 63-84 Hz. SIMULATION_ORT_PROVIDER=coreml restores the old path.
+export SIMULATION_ORT_PROVIDER="${SIMULATION_ORT_PROVIDER:-metal}"
 # Set speed the bridge raises cruise to after engaging (km/h); engagement alone leaves ~9 km/h.
 export SIM_CRUISE_KPH="${SIM_CRUISE_KPH:-25}"
 # SIM_CAR_CONFIG=DIR from tools/sim/sim_car_config.py extract: drive as that car (fingerprint, firmware, tune, toggles).
