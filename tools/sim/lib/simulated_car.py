@@ -78,7 +78,8 @@ class SimulatedCar:
     msg.append(self.make_msg("GEARBOX_AUTO", 0, {"GEAR_SHIFTER": 4}))
     msg.append(self.make_msg("GAS_PEDAL_2", 0, {}))
     msg.append(self.make_msg("SEATBELT_STATUS", 0, {"SEATBELT_DRIVER_LATCHED": 1}))
-    msg.append(self.make_msg("STEER_STATUS", 0, {"STEER_TORQUE_SENSOR": simulator_state.user_torque}))
+    msg.append(self.make_msg("STEER_STATUS", 0, {"STEER_TORQUE_SENSOR": simulator_state.user_torque,
+                                                     "STEER_STATUS": simulator_state.steer_status}))
     msg.append(self.make_msg("STEERING_SENSORS", 0, {"STEER_ANGLE": simulator_state.steering_angle}))
     msg.append(self.make_msg("VSA_STATUS", 0, {}))
     msg.append(self.make_msg("STANDSTILL", 0, {"WHEELS_MOVING": 1 if simulator_state.speed >= 1.0 else 0}))

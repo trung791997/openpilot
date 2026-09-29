@@ -1380,5 +1380,311 @@
   ],
   "press": null,
   "note": "handsoff_12 map at ~4 m/s (14 km/h): PR 10 R4/R5b-4 check whether the sim can hold the crawl-gate speed"
+ },
+ "gapturn_12_25": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 25,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road"
+  },
+  "note": "crawl turn, plan tighter than the wheel: want = plan - sign min(25, |plan|) w, 5 s (turn-fight cause a); twin handsoff_12"
+ },
+ "gapturn_12_50": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road"
+  },
+  "note": "as gapturn_12_25 with a 50 deg gap; twin handsoff_12"
+ },
+ "handsoff_16": {
+  "cruise_kph": 26,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "note": "turn_12 map at 16 mph, no driver: twin for gapturn_16_*"
+ },
+ "gapturn_16_25": {
+  "cruise_kph": 26,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 25,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road"
+  },
+  "note": "as gapturn_12_25 at 16 mph; twin handsoff_16"
+ },
+ "gapturn_16_50": {
+  "cruise_kph": 26,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road"
+  },
+  "note": "as gapturn_12_50 at 16 mph; twin handsoff_16"
+ },
+ "gapturn_12_50_cut": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 1750
+  },
+  "note": "50 deg gap, hand capped at 1750 (just under the 1800 cut): the driver who never trips steeringPressed"
+ },
+ "gapturn_12_50_fault": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 3400
+  },
+  "eps_status": {
+   "threshold": true
+  },
+  "note": "50 deg gap, hand up to 3400 with the EPS fault model on (SIM_EPS_STATUS threshold): turn-fight cause b"
+ },
+ "flicker_12_294s14": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road"
+  },
+  "eps_status": {
+   "events": [
+    {
+     "template": "294s14"
+    }
+   ]
+  },
+  "note": "50 deg gap with route 294 seg 14's fault pattern injected 2.06 s into the press, whatever the torque"
+ },
+ "repress_30": {
+  "cruise_kph": 48,
+  "blocks": [
+   [
+    "S",
+    433
+   ],
+   [
+    "C",
+    98.0,
+    109.1,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "trigger_deg": 20,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4,
+   "r_out": "road",
+   "repress": {
+    "snap_deg": 1.0,
+    "after": [
+     0.3,
+     0.8
+    ],
+    "dur": 1.5
+   }
+  },
+  "note": "hug_30 with the road release ramp and a re-press if the wheel moves >= 1 deg 0.3-0.8 s after release (snap_deg set in Phase 1); twin handsoff_30"
+ },
+ "gapturn_6_50_fault": {
+  "cruise_kph": 10,
+  "blocks": [
+   [
+    "S",
+    137
+   ],
+   [
+    "C",
+    13.6,
+    140.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 3400
+  },
+  "eps_status": {
+   "threshold": true
+  },
+  "note": "2b fallback: gapturn_12_50_fault on the turn_6 map at 10 kph (road faults are mostly below 4.5 m/s)"
  }
 }
