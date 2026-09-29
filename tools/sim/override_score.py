@@ -23,7 +23,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from openpilot.tools.sim.lib.driver_model import window  # noqa: E402
+from openpilot.tools.sim.lib.driver_model import ROAD_R_OUT, ROAD_R_OUT_BP, window  # noqa: E402
 
 SCEN = json.load(open(os.path.join(os.path.dirname(__file__), "maps", "override_scenarios.json")))
 
@@ -36,12 +36,18 @@ def press_start(run):
   return scen, SCEN[scen]["press"], (float(starts[0]) if starts else None)
 
 
-def want_trace(press, t, plan):
-  if press is None or press["kind"] not in ("offset", "widen", "scale"):
+def want_trace(press, t, plan, v0=None):
+  """v0: speed at press start (m/s), for r_out "road" (driver_model.ROAD_R_OUT); without it the ramp-in r is used."""
+  if press is None or press["kind"] not in ("offset", "widen", "scale", "gap"):
     return None
-  w = np.array([window(x, 0.0, press["dur"], press.get("r", 0.4)) for x in t])
+  r_out = press.get("r_out")
+  if r_out == "road":
+    r_out = float(np.interp(v0, ROAD_R_OUT_BP, ROAD_R_OUT)) if v0 is not None else None
+  w = np.array([window(x, 0.0, press["dur"], press.get("r", 0.4), r_out) for x in t])
   if press["kind"] == "offset":
     return plan - np.copysign(press["offset_deg"], plan) * w
+  if press["kind"] == "gap":
+    return plan - np.copysign(np.minimum(press["gap_deg"], np.abs(plan)), plan) * w
   if press["kind"] == "widen":
     return plan + np.copysign(press["offset_deg"], plan) * w
   return plan * (1 - press["scale"] * w)
@@ -82,14 +88,8 @@ def score(run):
     out["mean_ang_last2s"] = float(np.mean(ang[last]))
     out["driver_tq_peak"] = float(np.max(np.abs(tq[hold])))
     return out
-  w = np.array([window(x, 0.0, dur, press.get("r", 0.4)) for x in t])
-  if press["kind"] == "offset":
-    want = plan - np.copysign(press["offset_deg"], plan) * w
-  elif press["kind"] == "widen":
-    want = plan + np.copysign(press["offset_deg"], plan) * w
-  elif press["kind"] == "scale":
-    want = plan * (1 - press["scale"] * w)
-  else:  # rest: no want; report excursions
+  want = want_trace(press, t, plan, float(np.interp(0.0, t, z["v"])))
+  if want is None:  # rest: no want; report excursions
     out["max_abs_ang_minus_plan"] = float(np.max(np.abs(ang - plan)[hold]))
     out["driver_tq_peak"] = float(np.max(np.abs(tq[hold])))
     return out

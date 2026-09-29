@@ -64,6 +64,7 @@ class SimulatorState:
     self.user_gas: float = 0
     self.user_brake: float = 0
     self.user_torque: float = 0
+    self.steer_status: int = 0  # STEER_STATUS: 0 normal, 2 NO_TORQUE_ALERT_1 (SIM_EPS_STATUS, lib/eps_status.py)
 
     self.cruise_button = 0
 

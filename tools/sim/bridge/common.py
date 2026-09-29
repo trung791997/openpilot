@@ -96,6 +96,14 @@ class SimulatorBridge(ABC):
     else:
       self.driver = None
     self.driver_tq = 0.0
+    # SIM_EPS_STATUS (JSON, tools/sim/lib/eps_status.py): the EPS's no-torque fault (STEER_STATUS 2 -> steerFaultTemporary)
+    # from the driver's torque or a scripted road pattern. Unset: STEER_STATUS stays 0 as before.
+    eps = os.getenv("SIM_EPS_STATUS")
+    if eps and self.steer_model is not None:
+      from openpilot.tools.sim.lib.eps_status import EpsStatus
+      self.eps = EpsStatus(eps)
+    else:
+      self.eps = None
     self.vehicle_model = None  # built from carParams on first use (torque mode)
 
     self.test_run = False
@@ -216,6 +224,8 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       # too read the same ZMQ sockets from two threads; on macOS (ZMQ backend, not msgq shared memory) that tripped
       # libzmq's "Bad address (src/fq.cpp:56)" assertion and killed the bridge mid-episode in about half the runs.
       self.simulator_state.is_engaged = self.simulated_car.sm['selfdriveState'].active
+      if not self.simulator_state.is_engaged:
+        self.simulator_state.steer_status = 0  # the EPS model (SIM_EPS_STATUS) steps only while engaged, with SIM_DRIVER
 
       if self.simulator_state.is_engaged:
         throttle_op = np.clip(self.simulated_car.sm['carControl'].actuators.accel / 1.6, 0.0, 1.0)
@@ -233,7 +243,15 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
             if len(self.driver.log) > n_press:
               print(f"sim_driver: press {n_press} start {time.monotonic():.3f} dur {self.driver.log[-1][1] - self.driver.log[-1][0]:.2f}",
                     flush=True)
-            self.steer_model.update(self.simulated_car.sm['carOutput'].actuatorsOutput.torque, v_ego, driver_tq=self.driver_tq)
+            op_tq = self.simulated_car.sm['carOutput'].actuatorsOutput.torque
+            if self.eps is not None:
+              prev = self.eps.status
+              self.simulator_state.steer_status = self.eps.update(self.driver_tq, v_ego, bool(self.driver.log))
+              if self.eps.status != prev:
+                print(f"sim_eps: status {self.eps.status} at {time.monotonic():.3f} tq {self.driver_tq:.0f}", flush=True)
+              if self.eps.cut_assist and self.eps.status:
+                op_tq = 0.0
+            self.steer_model.update(op_tq, v_ego, driver_tq=self.driver_tq)
           # Send MetaDrive the angle that gives the curvature this car's controller believes its steering-wheel angle
           # gives: the car's own VehicleModel (steer ratio and understeer), which is what latcontrol_torque measures
           # against (for the owner's Civic it is within 10% of kinematic tan(angle / steer ratio) / wheelbase).
