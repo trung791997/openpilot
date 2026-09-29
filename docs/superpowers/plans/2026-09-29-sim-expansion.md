@@ -62,6 +62,12 @@ Magnitudes from liveParameters, 294/296/297, one segment in three (James; Kevin 
 - angleOffset average -0.66 to -0.90 deg, fast value +-0.5 deg around it (p5 -1.34, p95 -0.18): a 0.5 deg step in
   the plant's offset; check that the learner and integrator absorb it.
 - Wind: no direct measure; side force sized to the lateral accel of 1-2 % crown.
+- 297 full pull (Kevin; 58 segments, moving > 5 m/s): roll p1/50/99 -0.20 / +2.36 / +3.52 deg (crown -0.3 / 4.1 /
+  6.2 %), so 0/2/4/6 % covers p1-p99. Fast angleOffset p5-p95 -1.44 to -0.39 (1.05 deg span): 0.5 deg step is
+  inside the real swing, 1.0 deg is the edge. Average offset wanders only ~0.3 deg.
+- Rates: 1 s changes are mostly estimator noise (not a plant change). Realistic slow offset drift ~0.02 deg/s
+  (60 s p99); real bank transitions ~0.2-0.3 deg/s of roll over 10 s. An in-run roll ramp at 0.2 deg/s to 4 % is
+  p95-p99, not extreme.
 
 Goal: test angle-offset and roll handling, which the flat, calm sim never exercises.
 
