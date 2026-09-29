@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from openpilot.tools.sim.lib.driver_model import DriverModel, window
-from openpilot.tools.sim.lib.eps_status import GAP_DECILES, NO_TORQUE_ALERT_1, NORMAL, TEMPLATES, EpsStatus
+from openpilot.tools.sim.lib.eps_status import GAP_FRAMES, NO_TORQUE_ALERT_1, NORMAL, ON_FRAMES, TEMPLATES, EpsStatus
 from openpilot.tools.sim.override_score import SCEN, want_trace
 from openpilot.tools.sim.twin_align import align, load
 
@@ -28,7 +28,16 @@ def test_eps_threshold_flickers_and_repeats():
   assert s1[0] == NO_TORQUE_ALERT_1
   assert len(e1.log) > 1  # the EPS clears and re-raises it while the torque stays high
   gaps = [b[0] - a[1] for a, b in zip(e1.log[:-1], e1.log[1:], strict=True)]
-  assert min(gaps) >= GAP_DECILES[0] - 0.011 and max(gaps) <= GAP_DECILES[-1] + 0.011
+  assert min(gaps) >= GAP_FRAMES[0] * 0.01 - 0.011 and max(gaps) <= GAP_FRAMES[-1] * 0.01 + 0.011
+
+
+def test_eps_on_lengths_follow_road():
+  e, _ = run_eps({"threshold": True, "seed": 1}, [3400.0] * 200000)
+  on = np.array([b - a for a, b in e.log if b is not None])
+  road = np.array(ON_FRAMES) * 0.01
+  for q in (50, 90):  # draws come straight from the EPS-ended road runs
+    lo, hi = np.percentile(road, q, method="lower"), np.percentile(road, q, method="higher")
+    assert lo - 0.011 <= np.percentile(on, q, method="lower") <= hi + 0.011
 
 
 def test_eps_hysteresis_and_speed_gate():
