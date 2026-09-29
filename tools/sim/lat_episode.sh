@@ -15,7 +15,12 @@ out=$1; secs=$2; sched=${3:-}; shift 2; [ $# -gt 0 ] && shift
 prefix=tsfdo-mac
 export PATH=$PWD/.venv/bin:$PATH PYTHONPATH=$PWD
 mkdir -p "$out"
-tmux kill-session -t tsfdo-sim 2>/dev/null; sleep 3
+# SIM_FAST_TEARDOWN=1: instead of the fixed 3 s / 5 s sleeps around a run, wait until the previous run's sim processes have
+# exited (polled every 0.5 s, max 15 s). The launch -> record timing, and so the recorded window, is unchanged.
+sim_gone() { if [ "${SIM_FAST_TEARDOWN:-0}" = 1 ]; then for _ in $(seq 1 30); do
+    pgrep -f "run_bridge\.py|system/manager/manager\.py|selfdrive\.|run_mac_tsfdo" > /dev/null || return 0; sleep 0.5; done
+    echo "lat_episode: sim processes still up after 15 s" >&2; else sleep "$1"; fi; }
+tmux kill-session -t tsfdo-sim 2>/dev/null; sim_gone 3
 # start-read toggles (NrdrLatEpsFirmwareFF picks LatControlPID vs LatControlClarityEps when controlsd starts) must be set
 # before launch; launch_openpilot.sh only re-applies the car config's own keys, so these survive. Applied again after
 # launch below for the live-read keys.
@@ -37,10 +42,18 @@ OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; 
 # The car as driven: $HOME/.openpilot-sim/civic/sim.env (not in the repo) sets the learned steer ratio, stiffness and angle
 # offset, the camera height and calibration, and the lane width from the owner's routes. SIM_AS_DRIVEN=0 skips it.
 [ "${SIM_AS_DRIVEN:-1}" = 1 ] && [ -f "$HOME/.openpilot-sim/civic/sim.env" ] && . "$HOME/.openpilot-sim/civic/sim.env"
-tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} ${SIM_KEYS:+SIM_KEYS=$SIM_KEYS} ${*:+SIM_PARAM_OVERRIDES='$*'} SIM_PLANT=${SIM_PLANT:-civic} ${SIM_PLANT_SR:+SIM_PLANT_SR=$SIM_PLANT_SR} ${SIM_PLANT_STIFFNESS:+SIM_PLANT_STIFFNESS=$SIM_PLANT_STIFFNESS} ${SIM_PLANT_VGR:+SIM_PLANT_VGR=$SIM_PLANT_VGR} ${SIM_PLANT_OFFSET_DEG:+SIM_PLANT_OFFSET_DEG=$SIM_PLANT_OFFSET_DEG} ${SIM_CAM_HEIGHT:+SIM_CAM_HEIGHT=$SIM_CAM_HEIGHT} ${SIM_CAM_RPY:+SIM_CAM_RPY=$SIM_CAM_RPY} ${SIM_MAP_FILE:+SIM_MAP_FILE=$SIM_MAP_FILE} ${SIM_LANE_WIDTH:+SIM_LANE_WIDTH=$SIM_LANE_WIDTH} ${SIM_DRIVER:+SIM_DRIVER='$SIM_DRIVER'} ${NRDR_OVERRIDE_MODE:+NRDR_OVERRIDE_MODE=$NRDR_OVERRIDE_MODE} \
+tmux new-session -d -s tsfdo-sim -x 200 -y 50 "cd $PWD && env SIM_MODEL=${SIM_MODEL:-tsfdo} SIM_CAMERA=${SIM_CAMERA:-tici} SIM_MAP=${SIM_MAP:-default} SIM_CRUISE_KPH=${SIM_CRUISE_KPH:-25} ${SIM_MAP_RADIUS:+SIM_MAP_RADIUS=$SIM_MAP_RADIUS} ${SIM_MAP_STRAIGHT:+SIM_MAP_STRAIGHT=$SIM_MAP_STRAIGHT} ${SIM_BLINKER:+SIM_BLINKER=$SIM_BLINKER} ${SIM_STOP_BEFORE_TURN:+SIM_STOP_BEFORE_TURN=$SIM_STOP_BEFORE_TURN} ${SIM_STOP_M:+SIM_STOP_M=$SIM_STOP_M} ${SIM_KEYS:+SIM_KEYS=$SIM_KEYS} ${*:+SIM_PARAM_OVERRIDES='$*'} SIM_PLANT=${SIM_PLANT:-civic} ${SIM_PLANT_SR:+SIM_PLANT_SR=$SIM_PLANT_SR} ${SIM_PLANT_STIFFNESS:+SIM_PLANT_STIFFNESS=$SIM_PLANT_STIFFNESS} ${SIM_PLANT_VGR:+SIM_PLANT_VGR=$SIM_PLANT_VGR} ${SIM_PLANT_OFFSET_DEG:+SIM_PLANT_OFFSET_DEG=$SIM_PLANT_OFFSET_DEG} ${SIM_CAM_HEIGHT:+SIM_CAM_HEIGHT=$SIM_CAM_HEIGHT} ${SIM_CAM_RPY:+SIM_CAM_RPY=$SIM_CAM_RPY} ${SIM_MAP_FILE:+SIM_MAP_FILE=$SIM_MAP_FILE} ${SIM_LANE_WIDTH:+SIM_LANE_WIDTH=$SIM_LANE_WIDTH} ${SIM_DRIVER:+SIM_DRIVER='$SIM_DRIVER'} ${NRDR_OVERRIDE_MODE:+NRDR_OVERRIDE_MODE=$NRDR_OVERRIDE_MODE} ${SIM_FAST_LAUNCH:+SIM_FAST_LAUNCH=$SIM_FAST_LAUNCH} \
   SIM_STEER_MODEL=${SIM_STEER_MODEL:-$PWD/tools/lateral/plants/civic_bosch_c020.json} \
   SIM_CAR_CONFIG=$HOME/.openpilot-sim/civic SIM_RECORD_DIR=$out/frames tools/sim/run_mac_tsfdo.sh 2>&1 | tee $out/bridge.log"
-sleep 30
+# SIM_FAST_LAUNCH=1: run_mac_tsfdo.sh starts the bridge 2 s after the manager instead of 15 s, and this script waits for
+# controlsd to be up (max 60 s) instead of a fixed 30 s, then starts recording after 1 s instead of 10 s. The car stands
+# still until openpilot engages on its own; the recorder logs no rows until then, so episode.json seconds runs ~10 s longer than
+# rows/100 Hz (rate checks must use the rows' own time span). The start-read
+# toggles are in place before launch either way (SIM_PARAM_OVERRIDES). Changes when recording starts, so do not mix runs with
+# and without it in one comparison.
+if [ "${SIM_FAST_LAUNCH:-0}" = 1 ]; then
+  for _ in $(seq 1 120); do pgrep -f selfdrive.controls.controlsd > /dev/null && break; sleep 0.5; done; sleep 1
+else sleep 30; fi
 if [ -n "$sched" ]; then
   OPENPILOT_PREFIX=$prefix python tools/sim/sim_set_overrides.py --prefix $prefix "LatGainSchedule=$sched" "$@"
 elif [ $# -gt 0 ]; then
@@ -49,7 +62,9 @@ fi
 # controller check: the start-read toggles against controlsd's start time (SIM_PARAM_OVERRIDES applies them before it).
 { echo "lat_episode: controlsd started $(ps -o lstart= -p "$(pgrep -f selfdrive.controls.controlsd | head -1)" 2>/dev/null) now $(date)"
   OPENPILOT_PREFIX=$prefix python -c "from openpilot.common.params import Params; p=Params(); print('lat_episode: toggles', {k: p.get(k) for k in ('NrdrLatEpsFirmwareFF', 'NrdrLatPidFirmwareFF')})"; } > "$out/controller_check.log" 2>&1
-sleep 10
+if [ "${SIM_FAST_LAUNCH:-0}" = 1 ]; then sleep 1
+  grep -q "Engaged: True" "$out/bridge.log" && echo "lat_episode: WARNING engaged before recording started" | tee -a "$out/controller_check.log"
+else sleep 10; fi
 # SIM_KEYS="30:3,50:1": bridge keyboard keys sent at those seconds after recording starts (3 = cruise cancel, 1 = cruise
 # up / resume, s = brake, z/x = blinkers; tools/sim/lib/keyboard_ctrl.py). "30:3,50:1" is a stop-and-resume scenario.
 # SIM_KEYS is also forwarded into the bridge env above (SCRIPTED_KEYS in bridge/common.py hands the resume to the keys).
@@ -60,7 +75,7 @@ if [ -n "${SIM_KEYS:-}" ]; then
 fi
 OPENPILOT_PREFIX=$prefix OPENPILOT_ZMQ_NAMESPACE=$prefix timeout $((secs + 60)) python tools/sim/sim_lat_record.py "$out" "$secs" --bridge-log "$out/bridge.log"
 [ -n "${keys_pid:-}" ] && kill $keys_pid 2>/dev/null
-tmux send-keys -t tsfdo-sim q; sleep 5; tmux kill-session -t tsfdo-sim 2>/dev/null
+tmux send-keys -t tsfdo-sim q; sim_gone 5; tmux kill-session -t tsfdo-sim 2>/dev/null
 python - "$out" "$sched" "$@" <<'PY'
 import json, os, sys
 out, sched, overrides = sys.argv[1], sys.argv[2], sys.argv[3:]

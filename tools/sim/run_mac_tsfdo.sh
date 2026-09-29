@@ -36,7 +36,8 @@ fi
 "$ROOT/tools/sim/launch_openpilot.sh" > /tmp/tsfdo-mac-manager.log 2>&1 &
 MANAGER=$!
 trap 'pkill -TERM -P $MANAGER 2>/dev/null; kill -TERM $MANAGER 2>/dev/null' EXIT
-echo "manager pid $MANAGER, log /tmp/tsfdo-mac-manager.log; first run builds the CoreML cache (~1 min)"
-sleep 15
+echo "manager pid $MANAGER, log /tmp/tsfdo-mac-manager.log"
+# SIM_FAST_LAUNCH=1 (tools/sim/lat_episode.sh): start the bridge 2 s after the manager instead of 15 s.
+sleep $([ "${SIM_FAST_LAUNCH:-0}" = 1 ] && echo 2 || echo 15)
 # TSFDO reads the wide camera too; single-camera mode feeds it the narrow frame through the wide warp.
 "$ROOT/tools/sim/run_bridge.py" --dual_camera "$@"
