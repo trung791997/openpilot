@@ -116,7 +116,7 @@ def test_default_spec_unchanged_by_new_options():
 
 def test_scenarios_parse():
   for name in ("gapturn_12_25", "gapturn_12_50", "gapturn_16_25", "gapturn_16_50", "gapturn_12_50_cut", "gapturn_12_50_fault",
-               "flicker_12_294s14", "repress_30", "handsoff_16"):
+               "flicker_12_294s14", "repress_30", "handsoff_16", "gapturn_6_50_fault"):
     s = SCEN[name]
     if s["press"] is not None:
       DriverModel({"presses": [s["press"]]})

@@ -1043,5 +1043,38 @@
    }
   },
   "note": "hug_30 with the road release ramp and a re-press if the wheel moves >= 1 deg 0.3-0.8 s after release (snap_deg set in Phase 1); twin handsoff_30"
+ },
+ "gapturn_6_50_fault": {
+  "cruise_kph": 10,
+  "blocks": [
+   [
+    "S",
+    137
+   ],
+   [
+    "C",
+    13.6,
+    140.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 5.0,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 3400
+  },
+  "eps_status": {
+   "threshold": true
+  },
+  "note": "2b fallback: gapturn_12_50_fault on the turn_6 map at 10 kph (road faults are mostly below 4.5 m/s)"
  }
 }
