@@ -25,7 +25,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from openpilot.tools.sim.lib.driver_model import ROAD_R_OUT, ROAD_R_OUT_BP, window  # noqa: E402
 
-SCEN = json.load(open(os.path.join(os.path.dirname(__file__), "maps", "override_scenarios.json")))
+with open(os.path.join(os.path.dirname(__file__), "maps", "override_scenarios.json")) as f:
+  SCEN = json.load(f)
 
 
 def press_start(run):
