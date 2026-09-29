@@ -76,6 +76,14 @@ def test_record_synthetic(tmp_path: Path) -> None:
   assert data["params"] == params
 
 
+def test_t_is_seconds_near_t0() -> None:
+  # logMonoTime is ns: a row 0.5 ms after t0 must read 0.0005 s, not 500000 (the t-row-1 bug, PR 10 Amendment 4)
+  t0 = 1_000_000_000_000
+  for dt_ns in (0, 500_000, 10_000_000):
+    row = build_row({"logMonoTime": {"controlsState": t0 + dt_ns}}, t0=t0)
+    assert abs(row[FIELDS.index("t")] - dt_ns * 1e-9) < 1e-12
+
+
 def test_episode_offroad(tmp_path: Path) -> None:
   bridge_log = tmp_path / "bridge.log"
   bridge_log.write_text("""frame 10: normal

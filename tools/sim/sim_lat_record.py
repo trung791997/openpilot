@@ -46,12 +46,10 @@ def build_row(sm_like: Any, t0: float | None = None) -> list[float]:
     else:
       raw_lmt = _get(c, "logMonoTime", 0)
 
+    # logMonoTime is always ns. The old "> 1e6 means ns" guess left a row within 1 ms of t0 in ns (the t-row-1 bug,
+    # PR 10 Amendment 4); pr10_metrics 4b8bf07a repairs recordings made before 2026-09-29.
     raw_val = float(raw_lmt) if raw_lmt is not None else 0.0
-    if t0 is not None:
-      diff = raw_val - t0
-      t = diff * 1e-9 if abs(diff) > 1e6 else diff
-    else:
-      t = raw_val * 1e-9 if abs(raw_val) > 1e6 else raw_val
+    t = (raw_val - t0) * 1e-9 if t0 is not None else raw_val * 1e-9
 
   v = float(_get(cs, "vEgo", 0.0))
   a_ego = float(_get(cs, "aEgo", 0.0))
@@ -191,6 +189,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "starpilotLateralState",
     "liveCalibration",
     "starpilotPlan",
+    "selfdriveState",
   ], poll="controlsState")
 
   rows = []
@@ -207,6 +206,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   # (the car is already at 7-8 m/s), so distance-from-npz-start windows landed 30-38 m off the map (varying per run).
   cs_mono = []  # per row: controlsState logMonoTime (s). Its steps vs t_mono steps separate a slow controlsd from a slow
   #              recorder loop that drops messages, which the row rate alone cannot (2026-09-28).
+  status = []  # per row: carState steerFaultTemporary, selfdriveState active, starpilotLateralState epsFfActive (NaN before
+  #             first seen); saved to lanes.npz status (N x 3) for the Phase 2b fault gates C1/C2 (2026-09-29)
   t0 = None
   start_mono = time.monotonic()
   cp_bytes = None
@@ -262,6 +263,9 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                 ([float(sp.cscControllingSpeed), sp.cscSpeed, sp.vCruise] if sm.seen["starpilotPlan"] else [np.nan] * 3))
     t_mono.append(time.monotonic())
     cs_mono.append(sm.logMonoTime["controlsState"] * 1e-9)
+    status.append([float(sm["carState"].steerFaultTemporary),
+                   float(sm["selfdriveState"].active) if sm.seen["selfdriveState"] else np.nan,
+                   float(sl.epsFfActive) if sm.seen["starpilotLateralState"] else np.nan])
 
   elapsed = time.monotonic() - start_mono
   lane_arr = np.array([(l + [np.nan] * 6)[:6] for l in lanes], dtype=np.float64).reshape(-1, 6)
@@ -270,7 +274,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                       eps_ff=np.array(eps_ff, dtype=np.float64).reshape(-1, 2),
                       calib=np.array(calib, dtype=np.float64).reshape(-1, 6),
                       plan=np.array(plan, dtype=np.float64).reshape(-1, 4),
-                      t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64))
+                      t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64),
+                      status=np.array(status, dtype=np.float64).reshape(-1, 3))
   if cp_bytes is None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()
