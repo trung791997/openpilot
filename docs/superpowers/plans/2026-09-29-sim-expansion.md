@@ -65,7 +65,7 @@ Magnitudes from liveParameters, 294/296/297, one segment in three (James; Kevin 
 
 Goal: test angle-offset and roll handling, which the flat, calm sim never exercises.
 
-- Constant lateral force (wind) and a banked straight (crown 1-3 %), each in both directions.
+- Constant lateral force (wind) and a banked straight (crown levels below), each in both directions.
 - Metric: lane offset drift on straights, time to settle after onset, and whether liveParameters' angleOffset
   and roll follow in the sim.
 
@@ -94,9 +94,9 @@ slow for a curve) would test the planner through the model's lead. Synthetic rad
 bigger job and would not be realistic about noise, ghosts or dropouts, which is where the radar work lives;
 replay data stays the right tool for that.
 
-## Questions for Kevin and James
+## Review questions (all answered 2026-09-29 by Kevin and James)
 
-1. Order: Phase 1 first (it tells us which sim metrics to trust)? Anything you would put ahead of it?
-2. Phase 1 match: 296 route pieces enough, or do you want the 287/289/294 hands-off chunks too?
-3. Phase 3/4: which magnitudes match what you see on the car (wind, crown, param lag)?
-4. Anything from driver-override or VFN Shadow work that needs a sim capability not listed here?
+1. Order: answered; see the Order line at the top.
+2. Phase 1 matching set: answered; see Phase 1 "Matching set".
+3. Magnitudes: answered; see Phase 3 "Magnitudes" and Phase 4.
+4. Missing capabilities: answered; see Phase 2b and the Phase 1 / Phase 4 additions.
