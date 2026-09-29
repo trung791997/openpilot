@@ -12,7 +12,9 @@ is 0 below 3000, 0.03 at 3000-3200, 0.52 at 3200-3400, 0.91 at 3400-4000. Mostly
 reach 3200 against the assist), so there is no speed gate by default. Of 92 OFF gaps between fault runs, 65 have the
 torque dip below 3150 (the hysteresis below), and 27 keep it above 3150 throughout: the EPS itself clears the alert for
 0.04-0.17 s (median 0.06) and raises it again. Of the 98 ON runs, 70 end with |tq| still >= 3150 (the EPS ended them;
-median 0.09 s, max 5.53 s) and 28 end on a torque dip, which the hysteresis already produces. The threshold mode resamples
+median 0.09 s, max 5.53 s) and 28 end on a torque dip, which the hysteresis already produces. Those 28 are right-censored
+EPS lengths (the EPS would have ended them later), so dropping them leans the drawn ON lengths slightly short, most in the
+tail (James review; disclosed in the 2b prereg, which gates the p50 only). The threshold mode resamples
 each ON run's cap from the 70 EPS-ended lengths and each EPS-side gap from the 27 high-torque gaps (road frame counts
 below, drawn directly: no interpolation between deciles, which put 10 % of draws at a uniform 0.72-6.96 s; James/John
 review 2026-09-29).
@@ -77,10 +79,12 @@ class EpsStatus:
     self.cut_assist = bool(s.get("cut_assist", False))
     self.events = [dict(TEMPLATES[e["template"]], **{k: v for k, v in e.items() if k != "template"}) if "template" in e else dict(e)
                    for e in s.get("events", [])]
+    self.n = 0  # steps taken; t = n * DT, not a running float sum
     self.t = 0.0
     self.press_t0 = None
     self.thr_on = False
-    self.thr_left = 0.0  # s left in the current ON run (thr_on) or EPS-side gap (not thr_on)
+    self.thr_left = 0  # frames left in the current ON run (thr_on) or EPS-side gap (not thr_on); integer, so twins stay
+                       # bit-identical (James review)
     self.seq = None  # [(t_on, t_off), ...] of the scripted event in progress
     self.status = NORMAL
     self.log = []  # (t_on, t_off) of each status-2 run, for scoring
@@ -94,39 +98,41 @@ class EpsStatus:
         t0 = self.press_t0 + e["after_press_s"]
       else:
         return False
-      if self.t >= t0:
+      n0 = round(t0 / DT)
+      if self.n >= n0:
         self.events.pop(0)
-        edges, t = [], t0
+        edges, n = [], n0  # step numbers, rounded once per duration, so a 0.01 s run is exactly one step
         for k, on in enumerate(e["on"]):
-          edges.append((t, t + on))
-          t += on + (e["off"][k] if k < len(e["off"]) else 0.0)
+          edges.append((n, n + round(on / DT)))
+          n = edges[-1][1] + (round(e["off"][k] / DT) if k < len(e["off"]) else 0)
         self.seq = edges
     if self.seq is None:
       return False
-    if self.t >= self.seq[-1][1]:
+    if self.n >= self.seq[-1][1]:
       self.seq = None
       return False
-    return any(a <= self.t < b for a, b in self.seq)
+    return any(a <= self.n < b for a, b in self.seq)
 
-  def draw(self, frames) -> float:
-    return float(frames[int(self.rng.integers(len(frames)))]) * DT
+  def draw(self, frames) -> int:
+    return int(frames[int(self.rng.integers(len(frames)))])
 
   def update(self, driver_tq: float, v_ego: float, pressed_started: bool = False) -> int:
     """One 100 Hz step. pressed_started: the driver model has started its first press (for after_press_s)."""
-    self.t += DT
+    self.n += 1
+    self.t = self.n * DT
     if pressed_started and self.press_t0 is None:
       self.press_t0 = self.t
     on = False
     if self.threshold:
       if self.thr_on:
-        self.thr_left -= DT
+        self.thr_left -= 1
         if abs(driver_tq) < self.tq_off:
-          self.thr_on, self.thr_left = False, 0.0
-        elif self.thr_left <= 0.0:
+          self.thr_on, self.thr_left = False, 0
+        elif self.thr_left <= 0:
           self.thr_on, self.thr_left = False, self.draw(GAP_FRAMES)
       else:
-        self.thr_left -= DT
-        if abs(driver_tq) > self.tq_on and self.thr_left <= 0.0:
+        self.thr_left -= 1
+        if abs(driver_tq) > self.tq_on and self.thr_left <= 0:
           self.thr_on, self.thr_left = True, self.draw(ON_FRAMES)
       on = self.thr_on
     on = self._scripted() or on
