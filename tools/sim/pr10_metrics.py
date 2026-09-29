@@ -50,6 +50,14 @@ def rms(x):
 def run_metrics(run):
   z = np.load(f"{run}/lat_pid_sim.npz")
   t = np.asarray(z["t"], float)
+  # Amendment 4: sim_lat_record leaves row 1 in ns when it lands < 1 ms after row 0 (abs(diff) > 1e6 heuristic).
+  # Repair only that pattern; any other non-increasing t voids the run as a runner fault.
+  t1_raw = None
+  if len(t) > 2 and t[1] > t[-1] and 0 < t[1] <= 1e6:
+    t1_raw, t = float(t[1]), t.copy()
+    t[1] *= 1e-9
+  if len(t) < 3 or not (np.all(np.diff(t) > 0) and (t1_raw is None or t[1] - t[0] < 1e-3)):
+    return {"run": run.rstrip("/").split("/")[-1], "bands": {}, "void": True, "t_fault": True, "t1_repair": t1_raw}
   dt = float(np.median(np.diff(t)))
   tu = np.arange(t[0], t[-1], dt)
   u = {k: np.interp(tu, t, np.asarray(z[k], float)) for k in ("angle", "des_angle", "cc_torque", "v", "eps_torque")}
@@ -107,6 +115,9 @@ def run_metrics(run):
   out["void"] = bool(span == 0 or out["mask05_pct"] > 10.0 or out["mask15_pct"] > 15.0)
   out["n_gaps"] = len(gaps)
   out["stall_ms"] = round(1e3 * g, 1) if g > 0.1 else 0.0
+  out["t1_repair"] = t1_raw  # raw row-1 value when the Amendment 4 repair fired, else None
+  if t1_raw is not None:  # the repaired row must sit outside every scored window
+    out["t1_pre_engage"] = bool((not z["active"][1] or z["v"][1] < 0.5) and t[1] < t0)
   return out
 
 

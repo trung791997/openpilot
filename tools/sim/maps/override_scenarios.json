@@ -157,7 +157,15 @@
    ]
   ],
   "press": null,
-  "note": "hug_30 map, no driver: A/B/C delivered identical"
+  "note": "hug_30 map, no driver: A/B/C delivered identical",
+  "virtual_press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "trigger_deg": 20,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  }
  },
  "turn_12": {
   "cruise_kph": 19,
@@ -770,5 +778,607 @@
    "r": 0.1
   },
   "note": "grab: want = plan - 10 window(r 0.1) for 0.4 s (Kevin/James)"
+ },
+ "poshug_30_in": {
+  "cruise_kph": 48,
+  "blocks": [
+   [
+    "S",
+    433
+   ],
+   [
+    "C",
+    98.0,
+    109.1,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "trigger_deg": 20,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "hug_30 map, driver holds 0.5 m inside of lane centre (MetaDrive lane truth), 6 s"
+ },
+ "poshug_30_out": {
+  "cruise_kph": 48,
+  "blocks": [
+   [
+    "S",
+    433
+   ],
+   [
+    "C",
+    98.0,
+    109.1,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": -0.5,
+   "trigger_deg": 20,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "hug_30 map, driver holds 0.5 m outside of lane centre (MetaDrive lane truth), 6 s"
+ },
+ "poshug_45_in": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    78.6,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "hug_45 map, driver holds 0.5 m inside of lane centre (MetaDrive lane truth), 6 s"
+ },
+ "poshug_45_out": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    78.6,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": -0.5,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "hug_45 map, driver holds 0.5 m outside of lane centre (MetaDrive lane truth), 6 s"
+ },
+ "handsoff_45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    78.6,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "offset",
+   "offset_deg": 3,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  },
+  "note": "hug_45 map, no driver: the sim's own wobble floor for back_vs_pre (scored from where hug_45's press would start)"
+ },
+ "handsoff_n45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    67.3,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 1.0,
+   "r": 0.2
+  },
+  "note": "nudge_45 map, no driver: the sim's own wobble floor for back_vs_pre (scored from where nudge_45's press would start)"
+ },
+ "poshug_g45_in": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "poshug_45_in on the gentler 45 mph curve (R 300 m, 60 deg; plan ~8 deg): the plan's hands-off drift on the R 204 maps made the twin spread > 0.1 m"
+ },
+ "poshug_g45_out": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": -0.5,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "poshug_45_out on the gentler 45 mph curve (R 300 m, 60 deg; plan ~8 deg): the plan's hands-off drift on the R 204 maps made the twin spread > 0.1 m"
+ },
+ "grab_g45_0.3": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 0.3,
+   "r": 0.1
+  },
+  "note": "grab_45_0.3 on the gentler 45 mph curve (R 300 m, 60 deg; plan ~8 deg): the plan's hands-off drift on the R 204 maps made the twin spread > 0.1 m"
+ },
+ "grab_g45_0.4": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 0.4,
+   "r": 0.1
+  },
+  "note": "grab_45_0.4 on the gentler 45 mph curve (R 300 m, 60 deg; plan ~8 deg): the plan's hands-off drift on the R 204 maps made the twin spread > 0.1 m"
+ },
+ "nudge_g45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 1.0,
+   "r": 0.2
+  },
+  "note": "nudge_45 on the gentler 45 mph curve (R 300 m, 60 deg; plan ~8 deg): the plan's hands-off drift on the R 204 maps made the twin spread > 0.1 m"
+ },
+ "handsoff_g45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    300.0,
+    60.0,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "trigger_deg": 6.5,
+   "dwell": 1.5,
+   "dur": 6.0,
+   "r": 1.0
+  },
+  "note": "gentler 45 mph curve, no driver: drift baseline twins"
+ },
+ "grab_s45_0.3": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    1150
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "dwell": 3.0,
+   "dur": 0.3,
+   "r": 0.1,
+   "trigger_v": 18.5,
+   "side": 1.0
+  },
+  "note": "grab_45_0.3 on a straight at 45 mph, speed-triggered, fixed side +1 (wheel right / position target lat -0.5 m): the curve maps' hands-off twins spread 0.35-0.46 m"
+ },
+ "grab_s45_0.4": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    1150
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "dwell": 3.0,
+   "dur": 0.4,
+   "r": 0.1,
+   "trigger_v": 18.5,
+   "side": 1.0
+  },
+  "note": "grab_45_0.4 on a straight at 45 mph, speed-triggered, fixed side +1 (wheel right / position target lat -0.5 m): the curve maps' hands-off twins spread 0.35-0.46 m"
+ },
+ "nudge_s45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    1150
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "dwell": 3.0,
+   "dur": 1.0,
+   "r": 0.2,
+   "trigger_v": 18.5,
+   "side": 1.0
+  },
+  "note": "nudge_45 on a straight at 45 mph, speed-triggered, fixed side +1 (wheel right / position target lat -0.5 m): the curve maps' hands-off twins spread 0.35-0.46 m"
+ },
+ "poshug_s45_in": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    1150
+   ]
+  ],
+  "press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "dwell": 3.0,
+   "dur": 6.0,
+   "r": 1.0,
+   "trigger_v": 18.5,
+   "side": 1.0
+  },
+  "note": "poshug_45_in on a straight at 45 mph, speed-triggered, fixed side +1 (wheel right / position target lat -0.5 m): the curve maps' hands-off twins spread 0.35-0.46 m"
+ },
+ "handsoff_s45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    1150
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "position",
+   "target_m": 0.5,
+   "dwell": 3.0,
+   "dur": 6.0,
+   "r": 1.0,
+   "trigger_v": 18.5,
+   "side": 1.0
+  },
+  "note": "straight 45 mph, no driver: drift baseline twins for the *_s45 rows"
+ },
+ "grab_s25_0.3": {
+  "cruise_kph": 43,
+  "blocks": [
+   [
+    "S",
+    700
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "dwell": 3.0,
+   "dur": 0.3,
+   "r": 0.1,
+   "trigger_v": 10.5,
+   "side": 1.0
+  },
+  "note": "grab_25 mph straight_0.3: 25 mph (~11.2 m/s, C BACK 10 dps) straight, speed-triggered, fixed side +1; James via Kevin 2026-09-28"
+ },
+ "grab_s25_0.4": {
+  "cruise_kph": 43,
+  "blocks": [
+   [
+    "S",
+    700
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 10,
+   "dwell": 3.0,
+   "dur": 0.4,
+   "r": 0.1,
+   "trigger_v": 10.5,
+   "side": 1.0
+  },
+  "note": "grab_25 mph straight_0.4: 25 mph (~11.2 m/s, C BACK 10 dps) straight, speed-triggered, fixed side +1; James via Kevin 2026-09-28"
+ },
+ "nudge_s25": {
+  "cruise_kph": 43,
+  "blocks": [
+   [
+    "S",
+    700
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "dwell": 3.0,
+   "dur": 1.0,
+   "r": 0.2,
+   "trigger_v": 10.5,
+   "side": 1.0
+  },
+  "note": "nudge_25 mph straight: 25 mph (~11.2 m/s, C BACK 10 dps) straight, speed-triggered, fixed side +1; James via Kevin 2026-09-28"
+ },
+ "handsoff_s25": {
+  "cruise_kph": 43,
+  "blocks": [
+   [
+    "S",
+    700
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "offset",
+   "offset_deg": 5,
+   "dwell": 3.0,
+   "dur": 1.0,
+   "r": 0.2,
+   "trigger_v": 10.5,
+   "side": 1.0
+  },
+  "note": "straight 25 mph, no driver: drift baseline twins for the *_s25 rows (0.05 m gate)"
+ },
+ "exit_45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    33.0,
+    0
+   ],
+   [
+    "S",
+    200
+   ]
+  ],
+  "press": {
+   "kind": "offset",
+   "offset_deg": 3,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  },
+  "note": "Kevin's ovsim 'exit': hug_45 whose curve ends ~2.5 s into the 4 s hold (press at s~700 m, v~14.8 m/s -> curve end at 737 m = 33 deg of R204.2); plan straightens under the held wheel. Hold metrics only (no twins)."
+ },
+ "handsoff_x45": {
+  "cruise_kph": 72,
+  "blocks": [
+   [
+    "S",
+    620
+   ],
+   [
+    "C",
+    204.2,
+    33.0,
+    0
+   ],
+   [
+    "S",
+    200
+   ]
+  ],
+  "press": null,
+  "virtual_press": {
+   "kind": "offset",
+   "offset_deg": 3,
+   "trigger_deg": 9.6,
+   "dwell": 1.5,
+   "dur": 4.0,
+   "r": 0.4
+  },
+  "note": "exit_45 map, no driver: hands-off twins for exit_45 rows (stop rule f9867f29 addendum), same virtual press as handsoff_45"
+ },
+ "handsoff_s60": {
+  "cruise_kph": 105,
+  "blocks": [
+   [
+    "S",
+    1800
+   ]
+  ],
+  "press": null,
+  "virtual_press": null,
+  "note": "straight 60 mph (27 m/s), no driver: PR 10 R2 25+ m/s band"
+ },
+ "handsoff_12_4": {
+  "cruise_kph": 14,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": null,
+  "note": "handsoff_12 map at ~4 m/s (14 km/h): PR 10 R4/R5b-4 check whether the sim can hold the crawl-gate speed"
  }
 }
