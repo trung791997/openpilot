@@ -26,6 +26,32 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
   return getattr(obj, key, default)
 
 
+# lateral toggles read back at record start and end (P' prereg, 2026-09-29): controlsd reads them when it starts, so a start value
+# that differs from the arm's setting voids the run. A key this build's Params does not know reads as "unknown", not a crash
+TOGGLE_KEYS = ("NrdrLatEpsFirmwareFF", "NrdrLatPidFirmwareFF", "NrdrLatEpsFfAngleGate")
+
+
+def read_toggles(params: Any, keys: tuple[str, ...] = TOGGLE_KEYS) -> dict[str, str]:
+  out = {}
+  for k in keys:
+    try:
+      v = params.get(k)
+    except Exception:
+      out[k] = "unknown"
+      continue
+    out[k] = "unset" if v is None else (v.decode() if isinstance(v, bytes) else str(int(v) if isinstance(v, bool) else v))
+  return out
+
+
+def long_plan_row(mv: Any, lp: Any, mv_seen: bool, lp_seen: bool) -> list[float]:
+  """modelV2 action.desiredAcceleration, longitudinalPlan aTarget, speeds[0], hasLead (NaN before first seen); P' X1."""
+  da = float(mv.action.desiredAcceleration) if mv_seen else np.nan
+  if not lp_seen:
+    return [da, np.nan, np.nan, np.nan]
+  speeds = list(lp.speeds)
+  return [da, float(lp.aTarget), float(speeds[0]) if speeds else np.nan, float(lp.hasLead)]
+
+
 def build_row(sm_like: Any, t0: float | None = None) -> list[float]:
   c = _get(sm_like, "controlsState")
   cs = _get(sm_like, "carState")
@@ -190,7 +216,9 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "liveCalibration",
     "starpilotPlan",
     "selfdriveState",
+    "longitudinalPlan",
   ], poll="controlsState")
+  toggles_start = read_toggles(Params())
 
   rows = []
   lanes = []  # per row: modelV2 laneLineProbs (4) + roadEdgeStds (2), saved to lanes.npz (perception of the sim's roads)
@@ -208,6 +236,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   #              recorder loop that drops messages, which the row rate alone cannot (2026-09-28).
   status = []  # per row: carState steerFaultTemporary, selfdriveState active, starpilotLateralState epsFfActive (NaN before
   #             first seen); saved to lanes.npz status (N x 3) for the Phase 2b fault gates C1/C2 (2026-09-29)
+  long_plan = []  # per row: long_plan_row (N x 4); is an s60 plateau the plan or the lateral loop (P' X1, 2026-09-29)
   t0 = None
   start_mono = time.monotonic()
   cp_bytes = None
@@ -266,6 +295,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     status.append([float(sm["carState"].steerFaultTemporary),
                    float(sm["selfdriveState"].active) if sm.seen["selfdriveState"] else np.nan,
                    float(sl.epsFfActive) if sm.seen["starpilotLateralState"] else np.nan])
+    long_plan.append(long_plan_row(mv, sm["longitudinalPlan"], sm.seen["modelV2"], sm.seen["longitudinalPlan"]))
 
   elapsed = time.monotonic() - start_mono
   lane_arr = np.array([(l + [np.nan] * 6)[:6] for l in lanes], dtype=np.float64).reshape(-1, 6)
@@ -275,7 +305,9 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                       calib=np.array(calib, dtype=np.float64).reshape(-1, 6),
                       plan=np.array(plan, dtype=np.float64).reshape(-1, 4),
                       t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64),
-                      status=np.array(status, dtype=np.float64).reshape(-1, 3))
+                      status=np.array(status, dtype=np.float64).reshape(-1, 3),
+                      long_plan=np.array(long_plan, dtype=np.float64).reshape(-1, 4),
+                      toggles=json.dumps({"start": toggles_start, "end": read_toggles(Params())}))
   if cp_bytes is None:
     if sm.seen["carParams"]:
       cp_bytes = sm["carParams"].as_builder().to_bytes()

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from openpilot.tools.lateral.lat_pid_sim import FIELDS, TUNING_KEYS, extract
-from openpilot.tools.sim.sim_lat_record import build_row, check_offroad, write_episode, write_npz
+from openpilot.tools.sim.sim_lat_record import build_row, check_offroad, long_plan_row, read_toggles, write_episode, write_npz
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SET_OVERRIDES_SCRIPT = REPO_ROOT / "tools" / "sim" / "sim_set_overrides.py"
@@ -82,6 +82,26 @@ def test_t_is_seconds_near_t0() -> None:
   for dt_ns in (0, 500_000, 10_000_000):
     row = build_row({"logMonoTime": {"controlsState": t0 + dt_ns}}, t0=t0)
     assert abs(row[FIELDS.index("t")] - dt_ns * 1e-9) < 1e-12
+
+
+def test_read_toggles() -> None:
+  class FakeParams:
+    def get(self, k):
+      if k == "NrdrLatEpsFfAngleGate":
+        raise KeyError(k)  # a Params build that does not know the key
+      return {"NrdrLatEpsFirmwareFF": b"1"}.get(k)
+  assert read_toggles(FakeParams()) == {"NrdrLatEpsFirmwareFF": "1", "NrdrLatPidFirmwareFF": "unset", "NrdrLatEpsFfAngleGate": "unknown"}
+  assert read_toggles(SimpleNamespace(get=lambda k: True), ("A",)) == {"A": "1"}
+
+
+def test_long_plan_row() -> None:
+  mv = SimpleNamespace(action=SimpleNamespace(desiredAcceleration=0.4))
+  lp = SimpleNamespace(aTarget=0.3, speeds=[24.5, 24.6], hasLead=False)
+  assert long_plan_row(mv, lp, True, True) == [0.4, 0.3, 24.5, 0.0]
+  r = long_plan_row(mv, lp, False, False)
+  assert all(x != x for x in r)
+  empty = long_plan_row(mv, SimpleNamespace(aTarget=0.0, speeds=[], hasLead=True), True, True)
+  assert empty[2] != empty[2] and empty[3] == 1.0
 
 
 def test_episode_offroad(tmp_path: Path) -> None:
