@@ -1,0 +1,431 @@
+ONPATHCAP: a context-scaled leadOnpath brake cap instead of deletion. Open-loop replay only, current radard + planner, 121 of the 130 adoptstat adoptions reproduced.
+=====================================================================================================================
+VERDICT (n = 1 known FP vs measured cost; replay only, open loop)
+(a) What 297 tid 42 (30:24.8) cost at today's cap of 1.0 was small but not zero.
+    - The leadOnpath planner wanted -3.50. The published target went to -1.00 for 0.35 s and then ramped back over about 0.4 s. Without leadOnpath the target was about -0.03.
+    - The open-loop cost is 0.54 m/s of speed and about 2.8 m, with 0.65 s more time below -0.3 (4.25 s vs 3.60 s). It is one 1 m/s^2 tap.
+    - The later -1.73 at 30:28-30:30 is this planner's own braking. It is present without leadOnpath too, so it is not part of tid 42's cost.
+(b/d) All three contexts hold on every tid 42 leadOnpath frame: |kappa| 0.016-0.021 (above 0.012), no vision association, and birth azimuth +19.3 deg.
+    So every context variant gives tid 42 the same benefit:
+    - C = 0.5: min -0.50, 0.33 of the 0.54 m/s given back.
+    - C = 0.3: min -0.30, 0.43 m/s given back.
+    - C = 0.0: min -0.29, 0.54 m/s given back (the whole cost).
+(c) Cost, 120 other reproduced adoptions. "Given up" = sum of (variant - base)*dt over the event; dx is the open-loop proxy for the gap lost.
+    Narrow contexts. Every car they hit is a CONFIRMED near-stationary car on a curve, born off-axis like tid 42 (the same set the accel check found):
+    - K8&NV&AZ:
+      C = 0.5: 2 cars (28a 28:17.7 tid 49, 292 0:46.2 tid 6); 0.20 / 0.28 m/s given up, 1.1 / 1.5 m, no brake-start delay.
+      C = 0.0: 3 cars (adds 293 22:59.3 tid 55); brake start +0.40 / +0.45 / +0.55 s, 2.2 / 3.1 / 1.2 m.
+    - AZ alone: C = 0.5 costs those 2 (0.83 m/s total). C = 0.0 costs 3; 28a tid 49 never reaches -0.3 (brake lost), 292 tid 6 +1.0 s and 4.6 m.
+    - K8 or K12 alone: also 283 0:34.6 tid 8. That car's own planner goes to -6.43 later. At C = 0.0 its brake start is +1.15 s late and dx is 6.6 m (C = 0.5: 3.7 m, no delay).
+    - K8&NV and K12&NV: the same cars as K8 / K12.
+    Wide contexts:
+    - NV (no vision association) alone, or the OR of all three: 28-37 adoptions changed, 9.4-18.0 m/s given up.
+      Near-stationary cars hit: 8-10, with 5 brake starts delayed or lost at C <= 0.3.
+      297 tid 6 (the true stopped car, 31:14.0) gives up 0.56-0.65 m/s: dx +3.8 m (C = 0.5) / +4.5 m (C <= 0.3), brake start +0.15 s. The stopped-car case pays about 1.5x the FP benefit.
+    - "always" (the cap simply lowered): 31-41 changed, 10-19 m/s given up.
+    297 tid 6 is untouched by K8, K12, AZ and all AND-combinations.
+- Framing: a cap of 0.5 under K8&NV&AZ removes 0.33 m/s / 1.7 m of the one known FP's braking. It costs 0.48 m/s and 2.6 m, spread over 2 confirmed stopped cars
+  that share every cue with the FP. At C = 0.0 it removes 0.54 m/s / 2.8 m, at a cost of 1.17 m/s / 6.5 m and 0.40-0.55 s brake-start delay on 3 real stopped cars.
+  None of the contexts separates the FP from real off-axis stopped cars on curves. The cap only trades braking between them one for one, as the planner comment already says about a deeper cap.
+- Baseline check: leadOnpath lowers the span min by more than 0.05 on only 17 of 121 adoptions (4 of 23 near-stationary). Most adoptions add nothing, because the planner already brakes harder or the lead is not closing.
+
+METHOD
+- onpathcap/cap.py: radard runs from about 25 s before each event. The planners run over [t0-20, end+8]. One shared on-path planner is fed onpath_lead_view (its state is independent of the cap, as in production).
+  There is one own planner per cap C in {1.0, 0.5, 0.3, 0.0}, plus one never bounded ("none" = no leadOnpath). Each keeps its own state including prev_output_a_target feedback.
+  C = 1.0 is exactly production update().
+- Contexts per frame (onpathcap/capana.py):
+  - K = |yaw rate| / v from livePose.
+  - NV = no leadsV3 entry with prob >= 0.5, |x - 1.52 - d| < max(5, 0.2 d) and |-y - yRel| < 2.5.
+  - AZ = |azimuth| at the track's first radar point (a gap over 1 s counts as a new track) > 15 deg.
+  The variant target is spliced per frame: capped planner where the context holds (held through frames without leadOnpath), production elsewhere.
+  The splice is approximate at context on/off edges.
+- Metrics per event over [first leadOnpath - 0.5 s, last + 5 s]. "min" rejects single-frame dips and is taken over the leadOnpath span + 1.5 s.
+  Brake start = the first target below -0.3 (inf = never). dx = double integral of the target difference (open-loop proxy, + = nearer the car).
+- Not reproduced in the segment-start harness (9): listed at the end of the detail. Some QP "status 3" solver messages appeared in the log; the -3.50 values are the planner's own clip.
+
+DETAIL (capana.txt)
+events reproduced in the harness: 121 of 130 loaded (130 baseline)
+(a) 297 tid 42 baseline cost (open loop, window 30:24.3-30:30.1): with leadOnpath (cap 1.0) min -1.73 (raw -1.74), time < -0.3 4.25 s; without leadOnpath min -1.73 (raw -1.74), time < -0.3 3.60 s; extra braking sum(dt*diff) -0.54 m/s; open-loop speed lost 0.54 m/s, distance 2.8 m
+    ctx fraction of tid42 onpath frames: K8 1.00, K12 1.00, NV 1.00, AZ 1.00, K8&NV 1.00, K12&NV 1.00, K8&AZ 1.00, NV&AZ 1.00, K8&NV&AZ 1.00, always 1.00, K8|NV|AZ 1.00
+    frames: t v kappa vis birth_az | none c1.0 c0.5 c0.3 c0.0 op
+     1824.33  9.19 +0.0213 -        | +0.09 +0.09 +0.09 +0.09 +0.09 +0.09
+     1824.43  9.21 +0.0215 -        | +0.06 +0.06 +0.06 +0.06 +0.06 +0.06
+     1824.53  9.23 +0.0214 -        | +0.03 +0.03 +0.03 +0.03 +0.03 +0.03
+     1824.63  9.23 +0.0213 -        | +0.02 +0.02 +0.02 +0.02 +0.02 +0.02
+     1824.73  9.23 +0.0209 -        | +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+     1824.78  9.23 +0.0205 nv  +19.3 | -0.02 -1.00 -0.50 -0.30 -0.02 -3.50
+     1824.83  9.25 +0.0198 nv  +19.3 | -0.02 -1.00 -0.50 -0.30 -0.02 -3.38
+     1824.88  9.27 +0.0190 nv  +19.3 | -0.03 -1.00 -0.50 -0.30 -0.03 -3.25
+     1824.93  9.26 +0.0184 nv  +19.3 | -0.03 -1.00 -0.50 -0.30 -0.03 -3.12
+     1824.98  9.25 +0.0179 nv  +19.3 | -0.04 -1.00 -0.50 -0.30 -0.04 -3.00
+     1825.03  9.25 +0.0176 nv  +19.3 | -0.03 -1.00 -0.50 -0.30 -0.03 -2.91
+     1825.08  9.27 +0.0171 nv  +19.3 | -0.04 -1.00 -0.50 -0.30 -0.04 -2.90
+     1825.13  9.27 +0.0162 nv  +19.3 | -0.04 -1.00 -0.50 -0.30 -0.04 -2.87
+     1825.23  9.25 +0.0158 -        | -0.04 -0.75 -0.25 -0.05 -0.04 -2.62
+     1825.33  9.24 +0.0152 -        | -0.05 -0.50 -0.05 -0.05 -0.05 -2.37
+     1825.43  9.21 +0.0154 -        | -0.06 -0.25 -0.06 -0.06 -0.06 -2.12
+     1825.53  9.21 +0.0152 -        | -0.06 -0.06 -0.06 -0.06 -0.06 -1.87
+     1825.63  9.22 +0.0146 -        | -0.07 -0.07 -0.07 -0.07 -0.07 -1.62
+     1825.73  9.22 +0.0148 -        | -0.07 -0.07 -0.07 -0.07 -0.07 -1.37
+     1825.83  9.18 +0.0142 -        | -0.08 -0.08 -0.08 -0.08 -0.08 -0.08
+     1825.93  9.20 +0.0132 -        | -0.10 -0.10 -0.10 -0.10 -0.10 -0.10
+     1826.03  9.22 +0.0124 -        | -0.11 -0.11 -0.11 -0.11 -0.11 -0.11
+     1826.13  9.23 +0.0115 -        | -0.13 -0.13 -0.13 -0.13 -0.13 -0.13
+     1826.23  9.18 +0.0102 -        | -0.18 -0.18 -0.18 -0.18 -0.18 -0.18
+     1826.33  9.15 +0.0098 -        | -0.22 -0.22 -0.22 -0.22 -0.22 -0.22
+     1826.43  9.15 +0.0084 -        | -0.27 -0.27 -0.27 -0.27 -0.27 -0.27
+     1826.53  9.12 +0.0088 -        | -0.29 -0.29 -0.29 -0.29 -0.29 -0.29
+     1826.63  9.07 +0.0084 -        | -0.36 -0.36 -0.36 -0.36 -0.36 -0.36
+     1826.73  9.03 +0.0075 -        | -0.38 -0.38 -0.38 -0.38 -0.38 -0.38
+     1826.83  8.99 +0.0068 -        | -0.44 -0.44 -0.44 -0.44 -0.44 -0.44
+     1826.93  8.93 +0.0067 -        | -0.43 -0.43 -0.43 -0.43 -0.43 -0.43
+     1827.03  8.85 +0.0065 -        | -0.47 -0.47 -0.47 -0.47 -0.47 -0.47
+     1827.13  8.72 +0.0055 -        | -0.46 -0.46 -0.46 -0.46 -0.46 -0.46
+     1827.23  8.60 +0.0051 -        | -0.49 -0.49 -0.49 -0.49 -0.49 -0.49
+     1827.33  8.48 +0.0046 -        | -0.46 -0.46 -0.46 -0.46 -0.46 -0.46
+     1827.43  8.34 +0.0042 -        | -0.45 -0.45 -0.45 -0.45 -0.45 -0.45
+     1827.53  8.20 +0.0038 -        | -0.40 -0.40 -0.40 -0.40 -0.40 -0.40
+     1827.63  8.02 +0.0031 -        | -0.40 -0.40 -0.40 -0.40 -0.40 -0.40
+     1827.73  7.86 +0.0026 -        | -0.41 -0.41 -0.41 -0.41 -0.41 -0.41
+     1827.83  7.67 +0.0017 -        | -0.46 -0.46 -0.46 -0.46 -0.46 -0.46
+     1827.93  7.49 +0.0009 -        | -0.49 -0.49 -0.49 -0.49 -0.49 -0.49
+     1828.03  7.34 +0.0001 -        | -0.59 -0.59 -0.59 -0.59 -0.59 -0.59
+     1828.13  7.15 -0.0005 -        | -0.69 -0.69 -0.69 -0.69 -0.69 -0.69
+     1828.23  6.97 -0.0009 -        | -0.82 -0.82 -0.82 -0.82 -0.82 -0.82
+     1828.33  6.79 -0.0013 -        | -0.94 -0.94 -0.94 -0.94 -0.94 -0.94
+     1828.43  6.60 -0.0016 -        | -1.06 -1.06 -1.06 -1.06 -1.06 -1.06
+     1828.53  6.42 -0.0020 -        | -1.20 -1.20 -1.20 -1.20 -1.20 -1.20
+     1828.63  6.26 -0.0022 -        | -1.33 -1.33 -1.33 -1.33 -1.33 -1.33
+     1828.73  6.05 -0.0022 -        | -1.44 -1.44 -1.44 -1.44 -1.44 -1.44
+     1828.83  5.85 -0.0028 -        | -1.53 -1.53 -1.53 -1.53 -1.53 -1.53
+     1828.93  5.66 -0.0026 -        | -1.60 -1.60 -1.60 -1.60 -1.60 -1.60
+     1829.03  5.47 -0.0026 -        | -1.66 -1.66 -1.66 -1.66 -1.66 -1.66
+     1829.13  5.25 -0.0025 -        | -1.69 -1.69 -1.69 -1.69 -1.69 -1.69
+     1829.23  5.06 -0.0028 -        | -1.72 -1.72 -1.72 -1.72 -1.72 -1.72
+     1829.33  4.86 -0.0028 -        | -1.73 -1.73 -1.73 -1.73 -1.73 -1.73
+     1829.43  4.63 -0.0027 -        | -1.73 -1.73 -1.73 -1.73 -1.73 -1.73
+     1829.53  4.42 -0.0025 -        | -1.72 -1.72 -1.72 -1.72 -1.72 -1.72
+     1829.63  4.22 -0.0023 -        | -1.70 -1.70 -1.70 -1.70 -1.70 -1.70
+     1829.73  4.02 -0.0033 -        | -1.68 -1.68 -1.68 -1.68 -1.68 -1.68
+     1829.83  3.81 -0.0027 -        | -1.66 -1.66 -1.66 -1.66 -1.66 -1.66
+     1829.93  3.59 -0.0033 -        | -1.64 -1.64 -1.64 -1.64 -1.64 -1.64
+     1830.03  3.40 -0.0034 -        | -1.58 -1.58 -1.58 -1.58 -1.58 -1.58
+     1830.13  3.21 -0.0028 -        | -1.52 -1.52 -1.52 -1.52 -1.52 -1.52
+
+per variant (context, C_low): benefit on tid42 | cost on the other reproduced adoptions
+  tid42: min (single-frame-rejected), time<-0.3, braking removed sum((var-base)dt) m/s
+  cost: n events changed (|dmin|>0.05); total braking given up (m/s); n brake-start delayed >0.2 s (or lost) [max]; near-stat(23) n changed / given-up / delayed; 297 tid6 dmin, delay, dx
+  K8        C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 3 given-up 1.21 delayed 0 [max 0.00] | near-stat changed 3 given-up 1.21 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8        C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 4 given-up 1.74 delayed 4 [max 1.15] | near-stat changed 4 given-up 1.74 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8        C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 4 given-up 2.48 delayed 4 [max 1.15] | near-stat changed 4 given-up 2.48 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12       C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 3 given-up 1.01 delayed 0 [max 0.00] | near-stat changed 3 given-up 1.01 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12       C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 4 given-up 1.46 delayed 4 [max 1.15] | near-stat changed 4 given-up 1.46 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12       C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 4 given-up 2.08 delayed 4 [max 1.15] | near-stat changed 4 given-up 2.08 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  NV        C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 28 given-up 9.41 delayed 0 [max 0.00] | near-stat changed 8 given-up 3.34 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +3.8m
+  NV        C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 29 given-up 12.90 delayed 10 [max inf] | near-stat changed 9 given-up 4.55 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+  NV        C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 37 given-up 17.74 delayed 10 [max inf] | near-stat changed 10 given-up 6.16 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+  AZ        C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 2 given-up 0.83 delayed 0 [max 0.00] | near-stat changed 2 given-up 0.83 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  AZ        C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 3 given-up 1.21 delayed 3 [max inf] | near-stat changed 3 given-up 1.21 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  AZ        C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 3 given-up 1.87 delayed 3 [max inf] | near-stat changed 3 given-up 1.87 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV     C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 3 given-up 1.16 delayed 0 [max 0.00] | near-stat changed 3 given-up 1.16 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV     C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 4 given-up 1.67 delayed 4 [max 1.15] | near-stat changed 4 given-up 1.67 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV     C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 4 given-up 2.38 delayed 4 [max 1.15] | near-stat changed 4 given-up 2.38 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12&NV    C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 3 given-up 1.01 delayed 0 [max 0.00] | near-stat changed 3 given-up 1.01 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12&NV    C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 4 given-up 1.46 delayed 4 [max 1.15] | near-stat changed 4 given-up 1.46 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K12&NV    C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 4 given-up 2.08 delayed 4 [max 1.15] | near-stat changed 4 given-up 2.08 delayed 4 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&AZ     C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 2 given-up 0.53 delayed 0 [max 0.00] | near-stat changed 2 given-up 0.53 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&AZ     C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 3 given-up 0.79 delayed 3 [max 0.65] | near-stat changed 3 given-up 0.79 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&AZ     C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 3 given-up 1.27 delayed 3 [max 0.65] | near-stat changed 3 given-up 1.27 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  NV&AZ     C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 2 given-up 0.70 delayed 0 [max 0.00] | near-stat changed 2 given-up 0.70 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  NV&AZ     C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 3 given-up 1.04 delayed 3 [max inf] | near-stat changed 3 given-up 1.04 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  NV&AZ     C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 3 given-up 1.62 delayed 3 [max inf] | near-stat changed 3 given-up 1.62 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV&AZ  C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 2 given-up 0.48 delayed 0 [max 0.00] | near-stat changed 2 given-up 0.48 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV&AZ  C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 3 given-up 0.72 delayed 3 [max 0.55] | near-stat changed 3 given-up 0.72 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  K8&NV&AZ  C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 3 given-up 1.17 delayed 3 [max 0.55] | near-stat changed 3 given-up 1.17 delayed 3 | tid6 dmin +0.00 delay 0.0 dx +0.0m
+  always    C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 31 given-up 10.24 delayed 0 [max 0.00] | near-stat changed 9 given-up 3.56 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +3.9m
+  always    C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 33 given-up 13.96 delayed 13 [max inf] | near-stat changed 10 given-up 4.81 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+  always    C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 41 given-up 19.29 delayed 13 [max inf] | near-stat changed 11 given-up 6.50 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+  K8|NV|AZ  C=0.5: tid42 min -0.50 <-0.3 4.05s removed +0.33 | changed 28 given-up 9.53 delayed 0 [max 0.00] | near-stat changed 8 given-up 3.47 delayed 0 | tid6 dmin +0.00 delay 0.0 dx +3.8m
+  K8|NV|AZ  C=0.3: tid42 min -0.30 <-0.3 3.60s removed +0.43 | changed 29 given-up 13.07 delayed 10 [max inf] | near-stat changed 9 given-up 4.72 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+  K8|NV|AZ  C=0.0: tid42 min -0.29 <-0.3 3.60s removed +0.54 | changed 37 given-up 17.99 delayed 10 [max inf] | near-stat changed 10 given-up 6.41 delayed 5 | tid6 dmin +0.00 delay 0.15 dx +4.5m
+
+per-event detail for context/cap combos (changed events only): route time tid cat conf | dmin, given-up, brake-start delay, dx proxy (m, + = closer to the car)
+== K8 C=0.5
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.20 delay 0.0 dx +1.1
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.33 delay 0.0 dx +1.8
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== K8 C=0.0
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.40 delay 0.4 dx +2.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.65 delay 0.65 dx +3.6
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== K12 C=0.5
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.13 delay 0.0 dx +0.7
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.23 delay 0.0 dx +1.3
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== K12 C=0.0
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.25 delay 0.25 dx +1.4
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.45 delay 0.45 dx +2.5
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== NV C=0.5
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.50 given-up +0.12 delay 0.0 dx +0.6
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.07 delay 0.0 dx +0.4
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.32 delay 0.0 dx +1.7
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.28 given-up +0.06 delay 0.0 dx +0.3
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.10 delay 0.0 dx +0.6
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.00 given-up +0.12 delay 0.0 dx +0.6
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.06 delay 0.0 dx +0.4
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.45 delay 0.0 dx +2.4
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +0.00 given-up +0.06 delay 0.0 dx +0.3
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.31 delay 0.0 dx +1.6
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.3
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.50 given-up +0.25 delay 0.0 dx +1.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.54 delay 0.0 dx +2.6
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.11 delay 0.0 dx +0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.00 given-up +0.08 delay 0.0 dx +0.5
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.00 given-up +1.63 delay 0.0 dx +16.3
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.30 delay 0.0 dx +1.7
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.56 delay 0.0 dx +3.8
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.50 given-up +0.21 delay 0.0 dx +1.0
+== NV C=0.0
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.75 given-up +0.20 delay 0.0 dx +1.1
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.15 delay 0.0 dx +0.8
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +1.77 delay 1.8 dx +10.4
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +1.17 delay 0.0 dx +6.9
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.65 delay 0.0 dx +3.5
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.78 given-up +0.15 delay 0.0 dx +0.8
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.32 delay 1.8 dx +1.7
+  260  7:20.1 tid  47 lead leaving l CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.8
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.00 given-up +0.14 delay 0.0 dx +0.7
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.16 delay 0.0 dx +1.0
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.90 delay 0.0 dx +4.9
+  268 11:16.1 tid  37 lead leaving l CONF    | base min -0.40 none -0.16 dmin +0.24 given-up +0.17 delay inf dx +0.9
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +0.00 given-up +0.18 delay 0.0 dx +1.0
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.64 delay 0.0 dx +3.3
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.5
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  283 12:17.8 tid   7 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.99 given-up +0.50 delay 0.0 dx +2.6
+  286  6:28.0 tid  36 lead leaving l CONF    | base min -0.35 none -0.30 dmin +0.04 given-up +0.06 delay 0.05 dx +0.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.81 delay 0.0 dx +4.0
+  28a  2:43.5 tid  19 lead leaving l CONF    | base min -0.35 none -0.35 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.24 delay 0.0 dx +1.2
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.00 given-up +0.15 delay 0.0 dx +1.0
+  290 10:45.6 tid  22 lead leaving l CONF    | base min -0.24 none -0.20 dmin +0.04 given-up +0.09 delay None dx +0.5
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.01 given-up +3.35 delay 0.0 dx +33.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.60 delay 0.45 dx +3.3
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.65 delay 0.15 dx +4.5
+  298  9:06.6 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.8
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.99 given-up +0.32 delay 1.9 dx +1.6
+  298 21:15.9 tid   9 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.07 delay 0.3 dx +0.4
+== AZ C=0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.43 delay 0.0 dx +2.3
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== AZ C=0.0
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.85 delay 1.0 dx +4.6
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== K8&NV C=0.5
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.20 delay 0.0 dx +1.1
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.28 delay 0.0 dx +1.5
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== K8&NV C=0.0
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.40 delay 0.4 dx +2.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.55 delay 0.45 dx +3.1
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== NV&AZ C=0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.30 delay 0.0 dx +1.7
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== NV&AZ C=0.0
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.60 delay 0.45 dx +3.3
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== K8&NV&AZ C=0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.20 delay 0.0 dx +1.1
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.28 delay 0.0 dx +1.5
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+== K8&NV&AZ C=0.0
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.00 given-up +0.40 delay 0.4 dx +2.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.55 delay 0.45 dx +3.1
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+== K8|NV|AZ C=0.5
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.50 given-up +0.12 delay 0.0 dx +0.6
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.07 delay 0.0 dx +0.4
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.32 delay 0.0 dx +1.7
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.28 given-up +0.06 delay 0.0 dx +0.3
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.10 delay 0.0 dx +0.6
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.00 given-up +0.12 delay 0.0 dx +0.6
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.06 delay 0.0 dx +0.4
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.45 delay 0.0 dx +2.4
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +0.00 given-up +0.06 delay 0.0 dx +0.3
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.31 delay 0.0 dx +1.6
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.3
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.50 given-up +0.25 delay 0.0 dx +1.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.54 delay 0.0 dx +2.6
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.11 delay 0.0 dx +0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.00 given-up +0.08 delay 0.0 dx +0.5
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.00 given-up +1.63 delay 0.0 dx +16.3
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.43 delay 0.0 dx +2.3
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.56 delay 0.0 dx +3.8
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.50 given-up +0.21 delay 0.0 dx +1.0
+== K8|NV|AZ C=0.0
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.75 given-up +0.20 delay 0.0 dx +1.1
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.15 delay 0.0 dx +0.8
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +1.77 delay 1.8 dx +10.4
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +1.17 delay 0.0 dx +6.9
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.65 delay 0.0 dx +3.5
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.78 given-up +0.15 delay 0.0 dx +0.8
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.32 delay 1.8 dx +1.7
+  260  7:20.1 tid  47 lead leaving l CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.8
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.00 given-up +0.14 delay 0.0 dx +0.7
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.16 delay 0.0 dx +1.0
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.90 delay 0.0 dx +4.9
+  268 11:16.1 tid  37 lead leaving l CONF    | base min -0.40 none -0.16 dmin +0.24 given-up +0.17 delay inf dx +0.9
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +0.00 given-up +0.18 delay 0.0 dx +1.0
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.64 delay 0.0 dx +3.3
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.5
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  283 12:17.8 tid   7 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.99 given-up +0.50 delay 0.0 dx +2.6
+  286  6:28.0 tid  36 lead leaving l CONF    | base min -0.35 none -0.30 dmin +0.04 given-up +0.06 delay 0.05 dx +0.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.81 delay 0.0 dx +4.0
+  28a  2:43.5 tid  19 lead leaving l CONF    | base min -0.35 none -0.35 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.24 delay 0.0 dx +1.2
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.00 given-up +0.15 delay 0.0 dx +1.0
+  290 10:45.6 tid  22 lead leaving l CONF    | base min -0.24 none -0.20 dmin +0.04 given-up +0.09 delay None dx +0.5
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.01 given-up +3.35 delay 0.0 dx +33.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.85 delay 1.0 dx +4.6
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.65 delay 0.15 dx +4.5
+  298  9:06.6 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.8
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.99 given-up +0.32 delay 1.9 dx +1.6
+  298 21:15.9 tid   9 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.07 delay 0.3 dx +0.4
+== always C=0.5
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.50 given-up +0.12 delay 0.0 dx +0.6
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.07 delay 0.0 dx +0.4
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +0.87 delay 0.0 dx +5.1
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.32 delay 0.0 dx +1.7
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.28 given-up +0.06 delay 0.0 dx +0.3
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.10 delay 0.0 dx +0.6
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.12 given-up +0.12 delay 0.0 dx +0.6
+  261  6:51.7 tid   7 lead leaving l CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.4
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.06 delay 0.0 dx +0.4
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.45 delay 0.0 dx +2.4
+  268  9:04.2 tid  25 lead leaving l CONF    | base min -3.69 none -3.69 dmin +0.00 given-up +0.22 delay 0.0 dx +1.2
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +0.50 given-up +0.17 delay 0.0 dx +1.0
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.31 delay 0.0 dx +1.6
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.3
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +0.66 delay 0.0 dx +3.7
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.50 given-up +0.25 delay 0.0 dx +1.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.54 delay 0.0 dx +2.6
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.11 delay 0.0 dx +0.5
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  28f 13:46.5 tid   6 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.11 delay 0.0 dx +0.6
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.50 given-up +0.24 delay 0.0 dx +1.6
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.00 given-up +1.63 delay 0.0 dx +16.3
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.43 delay 0.0 dx +2.3
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +0.50 given-up +0.40 delay 0.0 dx +2.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.50 given-up +0.33 delay 0.0 dx +1.7
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.57 delay 0.0 dx +3.9
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.50 given-up +0.21 delay 0.0 dx +1.0
+== always C=0.0
+  20c  5:05.4 tid  63 lead leaving l unc     | base min -1.00 none -0.25 dmin +0.75 given-up +0.20 delay 0.0 dx +1.1
+  232 21:53.7 tid  37 lead leaving l CONF    | base min -4.24 none -4.24 dmin +0.00 given-up +0.15 delay 0.0 dx +0.8
+  239  0:52.2 tid  11 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +1.77 delay 1.8 dx +10.4
+  239 10:31.4 tid  21 lead leaving l CONF    | base min -2.50 none -2.50 dmin +0.00 given-up +0.06 delay 0.0 dx +0.3
+  245  6:16.9 tid  42 lead leaving l unc     | base min -1.69 none -1.69 dmin +0.00 given-up +1.17 delay 0.0 dx +6.9
+  258 55:29.8 tid  18 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.65 delay 0.0 dx +3.5
+  258 66:28.7 tid  20 lead leaving l CONF    | base min -3.50 none -3.50 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  25f  0:57.0 tid  43 lead leaving l unc  NS | base min -1.69 none -1.69 dmin +0.00 given-up +0.19 delay 0.0 dx +0.9
+  25f 17:54.5 tid  35 lead leaving l unc  NS | base min -0.78 none +0.00 dmin +0.78 given-up +0.15 delay 0.0 dx +0.8
+  25f 22:04.5 tid  55 far car on cur unc     | base min -0.80 none -0.76 dmin +0.04 given-up +0.32 delay 1.8 dx +1.7
+  260  7:20.1 tid  47 lead leaving l CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.05 delay 0.0 dx +0.8
+  260  9:08.3 tid  35 lead leaving l CONF    | base min -1.00 none -0.88 dmin +0.12 given-up +0.14 delay 0.0 dx +0.7
+  261  6:51.7 tid   7 lead leaving l CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.4
+  263  0:17.0 tid  10 lead leaving l CONF    | base min -0.75 none -0.73 dmin +0.02 given-up +0.16 delay 0.0 dx +1.0
+  266 28:10.7 tid   7 lead leaving l unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.90 delay 0.0 dx +4.9
+  268  9:04.2 tid  25 lead leaving l CONF    | base min -3.69 none -3.69 dmin +0.00 given-up +0.22 delay 0.0 dx +1.2
+  268 11:16.1 tid  37 lead leaving l CONF    | base min -0.40 none -0.16 dmin +0.24 given-up +0.17 delay inf dx +0.9
+  26c 10:08.9 tid  39 lead leaving l CONF    | base min -1.00 none +0.05 dmin +1.00 given-up +0.49 delay inf dx +2.8
+  276 13:49.7 tid   4 lead leaving l unc     | base min -0.92 none -0.84 dmin +0.08 given-up +0.64 delay 0.0 dx +3.3
+  276 18:36.1 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.5
+  280 12:52.3 tid  27 slow/moving ca CONF    | base min -1.33 none -1.33 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283  0:34.6 tid   8 stopped/near-s CONF NS | base min -6.43 none -6.43 dmin +0.00 given-up +1.17 delay 1.15 dx +6.6
+  283 12:17.8 tid   7 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.08 delay 0.0 dx +0.4
+  283 19:17.4 tid  13 slow/moving ca CONF    | base min -0.99 none -0.92 dmin +0.07 given-up +0.25 delay 0.0 dx +1.4
+  284  9:28.4 tid  54 lead leaving l unc  NS | base min -1.00 none -0.01 dmin +0.99 given-up +0.50 delay 0.0 dx +2.6
+  286  6:28.0 tid  36 lead leaving l CONF    | base min -0.35 none -0.30 dmin +0.04 given-up +0.06 delay 0.05 dx +0.3
+  289  1:21.6 tid  47 lead leaving l unc     | base min -1.51 none -1.51 dmin +0.00 given-up +0.81 delay 0.0 dx +4.0
+  28a  2:43.5 tid  19 lead leaving l CONF    | base min -0.35 none -0.35 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  28a 19:49.6 tid  50 lead leaving l CONF    | base min -0.90 none -0.62 dmin +0.28 given-up +0.24 delay 0.0 dx +1.2
+  28a 28:17.7 tid  49 stopped/near-s CONF NS | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  28f 13:46.5 tid   6 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.12 delay 0.0 dx +0.7
+  28f 15:20.4 tid  19 lead leaving l CONF    | base min -1.00 none -0.05 dmin +0.95 given-up +0.64 delay inf dx +4.2
+  290 10:45.6 tid  22 lead leaving l CONF    | base min -0.24 none -0.20 dmin +0.04 given-up +0.09 delay None dx +0.5
+  290 11:05.6 tid   2 lead leaving l CONF    | base min -1.12 none -1.13 dmin -0.01 given-up +3.35 delay 0.0 dx +33.2
+  292  0:46.2 tid   6 stopped/near-s CONF NS | base min -1.00 none -1.00 dmin +0.00 given-up +0.85 delay 1.0 dx +4.6
+  292 19:40.9 tid  15 slow/moving ca unc     | base min -1.00 none +0.00 dmin +1.00 given-up +0.80 delay inf dx +4.3
+  293 22:59.3 tid  55 stopped/near-s CONF NS | base min -0.61 none -0.61 dmin +0.00 given-up +0.22 delay 0.55 dx +1.2
+  297 30:24.8 tid  42 slow/moving ca unc  NS | base min -1.00 none -0.29 dmin +0.71 given-up +0.54 delay 1.8 dx +2.8
+  297 31:14.0 tid   6 stopped/near-s CONF NS | base min -3.50 none -3.50 dmin +0.00 given-up +0.66 delay 0.15 dx +4.5
+  298  9:06.6 tid  22 lead leaving l CONF    | base min -1.00 none -1.00 dmin +0.00 given-up +0.07 delay 0.0 dx +0.8
+  298 16:58.3 tid   2 slow/moving ca unc     | base min -1.00 none -0.01 dmin +0.99 given-up +0.32 delay 1.9 dx +1.6
+  298 21:15.9 tid   9 lead leaving l CONF    | base min -0.40 none -0.40 dmin +0.00 given-up +0.08 delay 0.4 dx +0.4
+  299 42:12.4 tid  57 lead leaving l CONF    | base min -0.39 none -0.39 dmin +0.00 given-up +0.02 delay 0.75 dx +0.1
+
+baseline (cap 1.0 vs no leadOnpath) per adoption, reproduced events: n where leadOnpath adds braking (min lower by > 0.05)
+  17 of 121; near-stat 4 of 23
+not reproduced (9): 23e 43:26.1 tid58, 25b 22:36.7 tid43, 25d 1:34.2 tid19, 25f 11:40.5 tid59, 262 2:33.7 tid59, 26c 21:25.4 tid51, 280 22:27.1 tid39, 28b 6:37.4 tid8, 299 21:37.4 tid54
