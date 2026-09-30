@@ -576,3 +576,280 @@ route  time     tid en  v    d0    y0    g0  gmax0  gu0  emin  |vw| conf wasL he
 290 10:45.6  22 1 31.3 101.7  -0.2  24.4  28.5  26.6 0.99  24.3 Ch 1   1.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
 299 11:23.9  26 1 30.0  69.4  -0.1  25.9  27.3  27.8 0.86  25.9 Ch 1   0.7   V105 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
 286  6:09.3  37 1 28.1 118.2   1.3  26.0  26.7  24.6 0.54  26.1 Ch 1   1.5      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+
+
+=====================================================================================================================
+ACCEL PLAUSIBILITY (replay only; Jason's check, 2026-09-30)
+=====================================================================================================================
+VERDICT (replay, n = 1 known FP; not a separation result)
+- Holding adoption while the world-frame |a| > A removes tid 42 (297 30:24.8) at both A = 6 and A = 8, in both forms. It is removed, not just delayed:
+  its |a| stayed above A for its whole baseline adoption span. |a| at onset was 8.3 m/s^2 on the current sweep, and 16.1 as the max over the 1 s window.
+- Cheapest form ("now" = |a| at the current sweep, A = 8): removes the one known FP at a measured cost of 16 other adoptions removed (11 confirmed) plus 10 delayed
+  by more than 0.2 s. 5 of those are not covered by leadOne; the only confirmed loss among them is 26b 25:52.0 tid 47 (slow car at 98 m). Two confirmed ones are
+  delayed 0.22-0.25 s (263 0:47.7 tid 56, 26c 21:25.4 tid 51). The other 2 are unconfirmed. The 4-6 s delays (258 tid 20, 260 tid 47, 26b tid 32, 298 tid 22)
+  are all covered by leadOne.
+  "now" A = 6: 21 removed (15 confirmed), 18 delayed, 9 not covered.
+  "win" (max over the 1 s window): much worse, at A = 8 49 removed and 23 delayed (22 not covered), and at A = 6 65 removed and 21 delayed (24 not covered). Do not use the window-max form.
+- 297 tid 6 (31:14.0, true stopped car): "now" keeps it (+0.01 s at A = 6 and 8). "win" delays it +0.62 s (A = 8) / +0.76 s (A = 6).
+- Near-stationary true cars lost under "now" A = 8: 232 19:07.0 tid 29 (vision leadOne at 52 m) and 23a 15:56.1 tid 15 (radar leadOne same time). Both are covered.
+  "win" also loses 292 0:46.2 tid 6, 298 23:20.0 tid 20 and 297 46:56.7 tid 45, the first two NOT covered.
+- Birth settling (D-068): most accel hits are NOT in the birth-settling phase. A fresh |a| value needs about 0.5-1 s of history, so "first 1 s of life" is read as a
+  track age at onset under 1.5 s (or under 2.0 s). Of the |a| > A hits at onset: "now" A = 8 has 33, of which 10 are under 1.5 s and 13 under 2.0 s of age;
+  "now" A = 6 has 48 (13 / 17); "win" A = 8 has 71 (19 / 25). Of the removed or delayed adoptions other than tid 42 under "now" A = 8, 7 of 25 are under 1.5 s.
+  The rest are mature tracks, mostly a lead leaving the lane at 30-100 m. There, |a| of 9-30 m/s^2 comes from azimuth/pose error under double differentiation,
+  not real motion. So the |a| signal is noisy on real cars in general, not only at birth.
+- (2) Birth signature (|azimuth| > 15 deg and range < 50 m at birth) is shared by 6 of the 130 adoptions, including tid 42. Of the other 5, 4 are confirmed
+  and 3 are confirmed near-stationary cars adopted about 1 s after birth, exactly like tid 42: 28a 28:17.7 tid 49, 292 0:46.2 tid 6 and 293 22:59.3 tid 55.
+  The birth signature therefore does not separate tid 42. 12 tracks were born before the loaded segments (all old tracks), so their birth is not counted.
+- Framing: "now-|a| > 8 removes the one known FP at a measured cost of 26 of 130 replay adoptions lost or delayed (5 not covered by leadOne, 1 confirmed uncovered loss)."
+
+METHOD (acc.py, acc2.py, radar interface only, no radard)
+- For each of the 130 baseline events, the event tid's per-sweep d/y came from the Bosch-A radar interface over the event segments plus 1 prior segment. Ego pose is integrated
+  at carState (v, livePose yaw), as in rep.py.
+- World position -> v_world = 0.5 s LSQ slope (>= 6 sweeps). a_world = |0.5 s LSQ slope of v_world| (so about 1 s of track history). Measured sweeps only.
+- The gate holds adoption while |a| > A. The onset is the first sweep at or after the baseline onset, inside the baseline adoption runs, where the gate passes.
+  This approximates the replica: it does not model the adoption switching to another candidate. "removed" = the gate never passes inside the baseline runs.
+- conf / category / leadOne coverage definitions are the same as the sections above.
+
+per-form summary (130 baseline adoptions; 'now' = |a| at the current sweep, 'win' = max |a| over the 1 s adopt window)
+  now A=6: removed 21 (conf 15), delayed>0.2s 18, not covered by leadOne 9; onset hits 48, track age at onset <1.5/<2.0 s 13/17; removed/delayed (excl. tid42) age <1.5/<2.0 s/all 8/10/38
+      tid42 -> removed (|a| at onset 8.3); 297 tid6 -> [('kept', np.float64(0.011624815000004673))]
+  now A=8: removed 16 (conf 11), delayed>0.2s 10, not covered by leadOne 5; onset hits 33, track age at onset <1.5/<2.0 s 10/13; removed/delayed (excl. tid42) age <1.5/<2.0 s/all 7/8/25
+      tid42 -> removed (|a| at onset 8.3); 297 tid6 -> [('kept', np.float64(0.011624815000004673))]
+  win A=6: removed 65 (conf 50), delayed>0.2s 21, not covered by leadOne 24; onset hits 87, track age at onset <1.5/<2.0 s 23/30; removed/delayed (excl. tid42) age <1.5/<2.0 s/all 22/29/85
+      tid42 -> removed (|a| at onset 16.1); 297 tid6 -> [('kept', np.float64(0.7556995109998752))]
+  win A=8: removed 49 (conf 37), delayed>0.2s 23, not covered by leadOne 22; onset hits 71, track age at onset <1.5/<2.0 s 19/25; removed/delayed (excl. tid42) age <1.5/<2.0 s/all 19/25/71
+      tid42 -> removed (|a| at onset 16.1); 297 tid6 -> [('kept', np.float64(0.624957545999905))]
+
+== now A=6: lost or delayed (>0.2 s) adoptions other than tid 42
+  232 10:39.7 tid   8 d  79.3 vAbs  15.1 age  4.8s |a|0   8.4 | CONF | lead leaving lane/cut | visionLeadOne@108m | delayed 0.27 s
+  232 19:07.0 tid  29 d  44.7 vAbs   0.2 age  1.2s |a|0  11.4 | CONF | stopped/near-stationary | visionLeadOne@52m | removed
+  237 18:26.6 tid  11 d  64.4 vAbs  12.9 age 10.2s |a|0   9.0 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 0.57 s
+  239 10:31.4 tid  21 d  61.6 vAbs  17.6 age 70.5s |a|0  28.9 | CONF | lead leaving lane/cut | visionLeadOne@72m | delayed 0.73 s
+  23a 15:56.1 tid  15 d  65.9 vAbs   0.8 age  1.5s |a|0   6.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  24f  5:55.3 tid  48 d  78.5 vAbs  16.3 age 101.7s |a|0  18.6 | CONF | lead leaving lane/cut | visionLeadOne@101m | delayed 0.31 s
+  258 66:28.7 tid  20 d  68.2 vAbs   9.7 age  2.3s |a|0   9.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | delayed 4.14 s
+  260  7:20.1 tid  47 d  69.3 vAbs   2.4 age  2.3s |a|0  21.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | delayed 6.25 s
+  260 10:27.6 tid  13 d  89.5 vAbs  13.5 age  3.1s |a|0   7.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  263  0:47.7 tid  56 d  96.5 vAbs   3.7 age  1.2s |a|0   9.7 | CONF | slow/moving car | NOT covered | delayed 0.44 s
+  263  4:57.7 tid  50 d  47.4 vAbs  17.2 age 22.3s |a|0   6.5 | CONF | slow/moving car | visionLeadOne@78m | delayed 0.39 s
+  263  6:16.4 tid  25 d  37.1 vAbs   6.5 age 21.6s |a|0   8.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  266 14:29.4 tid  36 d  37.3 vAbs  12.1 age 60.1s |a|0  15.1 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  266 15:04.4 tid  49 d 106.7 vAbs  16.1 age  1.7s |a|0   6.5 | unconf | slow/moving car | NOT covered | removed
+  267 10:07.3 tid  48 d  58.8 vAbs   6.9 age  5.0s |a|0   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 tid  18 d  34.2 vAbs   5.7 age 19.7s |a|0  10.0 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 tid  25 d  65.8 vAbs   8.9 age 25.8s |a|0   9.6 | CONF | lead leaving lane/cut | visionLeadOne@73m | delayed 0.32 s
+  26b 25:52.0 tid  47 d  98.3 vAbs   3.3 age  1.2s |a|0  21.8 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 tid  32 d  77.3 vAbs  22.4 age 32.8s |a|0   1.5 | CONF | lead leaving lane/cut | visionLeadOne@95m | delayed 4.73 s
+  26c  9:55.9 tid  39 d  38.9 vAbs  16.3 age 85.3s |a|0  17.1 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:51.1 tid  39 d  72.4 vAbs  21.0 age 140.5s |a|0   8.4 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 tid  51 d 102.5 vAbs   3.9 age  1.1s |a|0   8.1 | CONF | far car on curve | NOT covered | delayed 0.22 s
+  270  4:21.6 tid  63 d  37.6 vAbs   6.1 age  1.4s |a|0   9.2 | CONF | slow/moving car | visionLeadOne@44m | removed
+  276 13:49.7 tid   4 d  48.8 vAbs  14.2 age  6.8s |a|0   6.4 | unconf | lead leaving lane/cut | visionLeadOne@77m | delayed 0.26 s
+  277  4:09.1 tid   7 d  75.1 vAbs  19.3 age 43.8s |a|0  11.4 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  27a  7:59.1 tid  24 d  79.2 vAbs  17.2 age 13.9s |a|0   6.5 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 tid  10 d  90.0 vAbs  14.3 age  6.1s |a|0   9.0 | unconf | lead leaving lane/cut | NOT covered | delayed 0.37 s
+  280 13:14.1 tid   7 d   6.3 vAbs   6.2 age  5.5s |a|0   7.5 | unconf | lead leaving lane/cut | visionLeadOne@15m | delayed 0.34 s
+  280 31:07.2 tid  63 d  31.6 vAbs   7.5 age 10.5s |a|0  19.0 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  28a  8:39.7 tid  47 d 117.7 vAbs   9.4 age  1.2s |a|0  12.6 | unconf | slow/moving car | NOT covered | removed
+  290 10:45.6 tid  22 d 101.7 vAbs  24.4 age  6.1s |a|0  11.3 | CONF | lead leaving lane/cut | NOT covered | delayed 0.25 s
+  292 10:24.6 tid   1 d 120.0 vAbs  20.5 age  1.8s |a|0  10.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  297  7:16.3 tid  25 d  16.1 vAbs   8.2 age  5.7s |a|0   8.6 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 tid   8 d 107.6 vAbs  12.7 age  1.0s |a|0   7.4 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 45:49.3 tid  34 d  40.3 vAbs  16.5 age 24.9s |a|0  14.0 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  298  9:06.6 tid  22 d  93.8 vAbs  19.1 age  3.7s |a|0   3.1 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | delayed 4.48 s
+  298 17:02.3 tid  60 d 106.3 vAbs  12.3 age  4.6s |a|0  10.6 | CONF | lead leaving lane/cut | NOT covered | delayed 0.20 s
+  299 42:12.4 tid  57 d  67.1 vAbs  19.5 age  7.6s |a|0   6.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 0.43 s
+== now A=8: lost or delayed (>0.2 s) adoptions other than tid 42
+  232 19:07.0 tid  29 d  44.7 vAbs   0.2 age  1.2s |a|0  11.4 | CONF | stopped/near-stationary | visionLeadOne@52m | removed
+  237 18:26.6 tid  11 d  64.4 vAbs  12.9 age 10.2s |a|0   9.0 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 0.49 s
+  239 10:31.4 tid  21 d  61.6 vAbs  17.6 age 70.5s |a|0  28.9 | CONF | lead leaving lane/cut | visionLeadOne@72m | delayed 0.25 s
+  23a 15:56.1 tid  15 d  65.9 vAbs   0.8 age  1.5s |a|0   6.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  24f  5:55.3 tid  48 d  78.5 vAbs  16.3 age 101.7s |a|0  18.6 | CONF | lead leaving lane/cut | visionLeadOne@101m | delayed 0.31 s
+  258 66:28.7 tid  20 d  68.2 vAbs   9.7 age  2.3s |a|0   9.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | delayed 4.08 s
+  260  7:20.1 tid  47 d  69.3 vAbs   2.4 age  2.3s |a|0  21.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | delayed 6.25 s
+  263  0:47.7 tid  56 d  96.5 vAbs   3.7 age  1.2s |a|0   9.7 | CONF | slow/moving car | NOT covered | delayed 0.25 s
+  266 14:29.4 tid  36 d  37.3 vAbs  12.1 age 60.1s |a|0  15.1 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  267 10:07.3 tid  48 d  58.8 vAbs   6.9 age  5.0s |a|0   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 tid  18 d  34.2 vAbs   5.7 age 19.7s |a|0  10.0 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 tid  25 d  65.8 vAbs   8.9 age 25.8s |a|0   9.6 | CONF | lead leaving lane/cut | visionLeadOne@73m | delayed 0.25 s
+  26b 25:52.0 tid  47 d  98.3 vAbs   3.3 age  1.2s |a|0  21.8 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 tid  32 d  77.3 vAbs  22.4 age 32.8s |a|0   1.5 | CONF | lead leaving lane/cut | visionLeadOne@95m | delayed 4.73 s
+  26c  9:55.9 tid  39 d  38.9 vAbs  16.3 age 85.3s |a|0  17.1 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 21:25.4 tid  51 d 102.5 vAbs   3.9 age  1.1s |a|0   8.1 | CONF | far car on curve | NOT covered | delayed 0.22 s
+  270  4:21.6 tid  63 d  37.6 vAbs   6.1 age  1.4s |a|0   9.2 | CONF | slow/moving car | visionLeadOne@44m | removed
+  277  4:09.1 tid   7 d  75.1 vAbs  19.3 age 43.8s |a|0  11.4 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  27a  7:59.1 tid  24 d  79.2 vAbs  17.2 age 13.9s |a|0   6.5 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  280 31:07.2 tid  63 d  31.6 vAbs   7.5 age 10.5s |a|0  19.0 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  28a  8:39.7 tid  47 d 117.7 vAbs   9.4 age  1.2s |a|0  12.6 | unconf | slow/moving car | NOT covered | removed
+  292 10:24.6 tid   1 d 120.0 vAbs  20.5 age  1.8s |a|0  10.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  297  7:16.3 tid  25 d  16.1 vAbs   8.2 age  5.7s |a|0   8.6 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 45:49.3 tid  34 d  40.3 vAbs  16.5 age 24.9s |a|0  14.0 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  298  9:06.6 tid  22 d  93.8 vAbs  19.1 age  3.7s |a|0   3.1 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | delayed 4.48 s
+== win A=6: lost or delayed (>0.2 s) adoptions other than tid 42
+  232  4:39.9 tid  35 d  41.3 vAbs   1.2 age  1.2s |a|0   7.8 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  232 10:39.7 tid   8 d  79.3 vAbs  15.1 age  4.8s |a|0   8.5 | CONF | lead leaving lane/cut | visionLeadOne@108m | delayed 1.89 s
+  232 18:19.2 tid  34 d 112.4 vAbs  11.9 age  1.1s |a|0  12.3 | CONF | slow/moving car | radarLeadOne+0.0s | removed
+  232 19:07.0 tid  29 d  44.7 vAbs   0.2 age  1.2s |a|0  11.4 | CONF | stopped/near-stationary | visionLeadOne@52m | removed
+  236 14:04.3 tid  61 d  42.5 vAbs  15.3 age 35.7s |a|0   9.2 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  236 36:46.4 tid  40 d  69.0 vAbs  18.8 age 18.0s |a|0   7.4 | CONF | lead leaving lane/cut | visionLeadOne@75m | removed
+  236 38:18.6 tid  41 d 119.5 vAbs  16.0 age  1.7s |a|0  22.9 | CONF | lead leaving lane/cut | NOT covered | delayed 3.40 s
+  237  3:13.2 tid   6 d  65.8 vAbs  13.0 age  4.3s |a|0  12.3 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  237 17:55.5 tid  22 d 105.7 vAbs  20.0 age  5.8s |a|0   8.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  237 18:26.6 tid  11 d  64.4 vAbs  12.9 age 10.2s |a|0  15.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 1.82 s
+  239 10:31.4 tid  21 d  61.6 vAbs  17.6 age 70.5s |a|0  28.9 | CONF | lead leaving lane/cut | visionLeadOne@72m | removed
+  23a 15:56.1 tid  15 d  65.9 vAbs   0.8 age  1.5s |a|0   6.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  23e  5:26.8 tid  44 d  62.9 vAbs  16.0 age  1.5s |a|0   7.3 | CONF | far car on curve | radarLeadOne+0.3s | removed
+  23e 36:36.4 tid  42 d 111.6 vAbs  17.4 age  5.6s |a|0  16.1 | CONF | slow/moving car | NOT covered | delayed 1.44 s
+  23e 44:02.7 tid  12 d  16.2 vAbs   6.9 age 34.5s |a|0   6.6 | CONF | lead leaving lane/cut | visionLeadOne@29m | removed
+  24f  5:55.3 tid  48 d  78.5 vAbs  16.3 age 101.7s |a|0  18.6 | CONF | lead leaving lane/cut | visionLeadOne@101m | delayed 3.74 s
+  258 66:28.7 tid  20 d  68.2 vAbs   9.7 age  2.3s |a|0  36.5 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  25e 11:10.6 tid  56 d  96.8 vAbs   6.0 age  1.0s |a|0  14.2 | CONF | far car on curve | NOT covered | removed
+  25e 13:27.9 tid  13 d 106.6 vAbs  23.6 age  5.8s |a|0   6.0 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  25f  0:57.0 tid  43 d  26.8 vAbs   3.1 age 14.0s |a|0  12.0 | unconf | lead leaving lane/cut | visionLeadOne@45m | removed
+  25f 11:40.5 tid  59 d  35.9 vAbs  17.4 age 64.8s |a|0   8.4 | unconf | lead leaving lane/cut | visionLeadOne@60m | delayed 0.75 s
+  25f 22:04.5 tid  55 d  73.6 vAbs  11.3 age  1.0s |a|0  10.4 | unconf | far car on curve | NOT covered | removed
+  260  7:20.1 tid  47 d  69.3 vAbs   2.4 age  2.3s |a|0  21.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | delayed 6.25 s
+  260  9:08.3 tid  35 d  44.7 vAbs  11.5 age 22.8s |a|0  17.4 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  260 10:27.6 tid  13 d  89.5 vAbs  13.5 age  3.1s |a|0  15.6 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  261  2:07.8 tid  18 d 117.9 vAbs  20.7 age  1.6s |a|0  11.5 | CONF | slow/moving car | radarLeadOne+0.4s | removed
+  263  0:47.7 tid  56 d  96.5 vAbs   3.7 age  1.2s |a|0  11.5 | CONF | slow/moving car | NOT covered | delayed 1.38 s
+  263  4:57.7 tid  50 d  47.4 vAbs  17.2 age 22.3s |a|0  10.1 | CONF | slow/moving car | visionLeadOne@78m | delayed 5.03 s
+  263  6:16.4 tid  25 d  37.1 vAbs   6.5 age 21.6s |a|0  18.7 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  263  8:00.2 tid  46 d  59.9 vAbs   3.1 age  2.0s |a|0  23.0 | CONF | lead leaving lane/cut | visionLeadOne@83m | delayed 0.73 s
+  266  6:21.5 tid   9 d 113.6 vAbs  16.6 age  1.2s |a|0  28.2 | CONF | slow/moving car | NOT covered | removed
+  266 14:29.4 tid  36 d  37.3 vAbs  12.1 age 60.1s |a|0  15.1 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  266 15:04.4 tid  49 d 106.7 vAbs  16.1 age  1.7s |a|0   6.6 | unconf | slow/moving car | NOT covered | removed
+  267 10:07.3 tid  48 d  58.8 vAbs   6.9 age  5.0s |a|0   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 tid  18 d  34.2 vAbs   5.7 age 19.7s |a|0  18.0 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 tid  25 d  65.8 vAbs   8.9 age 25.8s |a|0  19.1 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  268 11:16.1 tid  37 d  50.4 vAbs  17.2 age  3.2s |a|0   6.5 | CONF | lead leaving lane/cut | visionLeadOne@59m | delayed 0.32 s
+  26b 10:29.9 tid  55 d 113.6 vAbs  12.7 age  1.0s |a|0  22.4 | CONF | slow/moving car | radarLeadOne+0.2s | removed
+  26b 25:52.0 tid  47 d  98.3 vAbs   3.3 age  1.2s |a|0  21.8 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 tid  32 d  77.3 vAbs  22.4 age 32.8s |a|0   2.8 | CONF | lead leaving lane/cut | visionLeadOne@95m | delayed 5.75 s
+  26c  3:53.7 tid  27 d  96.3 vAbs  15.5 age  9.7s |a|0  11.2 | CONF | far car on curve | NOT covered | removed
+  26c  4:06.0 tid  27 d 107.3 vAbs  21.4 age 21.9s |a|0  10.7 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  26c  9:55.9 tid  39 d  38.9 vAbs  16.3 age 85.3s |a|0  18.7 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:51.1 tid  39 d  72.4 vAbs  21.0 age 140.5s |a|0  16.0 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 tid  51 d 102.5 vAbs   3.9 age  1.1s |a|0   8.1 | CONF | far car on curve | NOT covered | removed
+  26f  7:03.2 tid  30 d  59.8 vAbs  16.3 age  1.1s |a|0  11.3 | CONF | slow/moving car | visionLeadOne@66m | removed
+  270  4:21.6 tid  63 d  37.6 vAbs   6.1 age  1.4s |a|0  11.1 | CONF | slow/moving car | visionLeadOne@44m | removed
+  271 24:31.6 tid  21 d  56.2 vAbs  19.7 age 16.8s |a|0  18.9 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  276 13:49.7 tid   4 d  48.8 vAbs  14.2 age  6.8s |a|0   6.4 | unconf | lead leaving lane/cut | visionLeadOne@77m | removed
+  276 17:45.8 tid  22 d  70.6 vAbs  18.2 age 16.0s |a|0   6.3 | CONF | lead leaving lane/cut | visionLeadOne@99m | delayed 2.06 s
+  277  4:09.1 tid   7 d  75.1 vAbs  19.3 age 43.8s |a|0  17.2 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  278  3:53.1 tid  32 d 107.5 vAbs  15.2 age  2.2s |a|0  17.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | delayed 0.89 s
+  27a  6:00.9 tid  17 d 117.9 vAbs  10.6 age  6.3s |a|0  21.4 | CONF | lead leaving lane/cut | NOT covered | delayed 0.73 s
+  27a  7:59.1 tid  24 d  79.2 vAbs  17.2 age 13.9s |a|0   8.9 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 tid  10 d  90.0 vAbs  14.3 age  6.1s |a|0   9.9 | unconf | lead leaving lane/cut | NOT covered | removed
+  280 13:14.1 tid   7 d   6.3 vAbs   6.2 age  5.5s |a|0   7.5 | unconf | lead leaving lane/cut | visionLeadOne@15m | removed
+  280 22:27.1 tid  39 d  58.2 vAbs  14.3 age  1.6s |a|0   8.2 | CONF | lead leaving lane/cut | visionLeadOne@69m | removed
+  280 31:07.2 tid  63 d  31.6 vAbs   7.5 age 10.5s |a|0  19.0 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  280 31:23.9 tid  13 d  34.8 vAbs   6.2 age  2.2s |a|0   9.1 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  283 19:17.4 tid  13 d  33.3 vAbs  14.3 age  1.9s |a|0  11.9 | CONF | slow/moving car | visionLeadOne@43m | delayed 0.30 s
+  286  6:09.3 tid  37 d 118.2 vAbs  26.0 age  4.2s |a|0   9.9 | CONF | lead leaving lane/cut | NOT covered | delayed 0.84 s
+  286  6:28.0 tid  36 d  56.8 vAbs  20.1 age 12.8s |a|0   8.4 | CONF | lead leaving lane/cut | visionLeadOne@71m | delayed 1.35 s
+  28a  8:39.7 tid  47 d 117.7 vAbs   9.4 age  1.2s |a|0  14.0 | unconf | slow/moving car | NOT covered | removed
+  28a 19:49.6 tid  50 d  45.1 vAbs  12.0 age 11.5s |a|0   7.6 | CONF | lead leaving lane/cut | visionLeadOne@68m | removed
+  28f 14:54.0 tid   6 d  23.3 vAbs   8.0 age 103.5s |a|0   9.3 | CONF | lead leaving lane/cut | visionLeadOne@41m | removed
+  28f 15:20.4 tid  19 d  55.8 vAbs  15.3 age  1.2s |a|0  11.9 | CONF | lead leaving lane/cut | visionLeadOne@67m | removed
+  290 10:45.6 tid  22 d 101.7 vAbs  24.4 age  6.1s |a|0  11.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  290 11:05.6 tid   2 d  60.4 vAbs  22.3 age  1.9s |a|0  11.7 | CONF | lead leaving lane/cut | visionLeadOne@97m | delayed 6.92 s
+  292  0:46.2 tid   6 d  33.6 vAbs  -0.4 age  1.1s |a|0  29.2 | CONF | stopped/near-stationary | NOT covered | removed
+  292 10:24.6 tid   1 d 120.0 vAbs  20.5 age  1.8s |a|0  10.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  292 19:40.9 tid  15 d  48.1 vAbs  10.0 age  2.3s |a|0  16.5 | unconf | slow/moving car | NOT covered | removed
+  294 12:01.7 tid  13 d  45.4 vAbs  17.4 age 13.5s |a|0   8.8 | CONF | lead leaving lane/cut | visionLeadOne@55m | removed
+  297  7:16.3 tid  25 d  16.1 vAbs   8.2 age  5.7s |a|0  11.6 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 tid   8 d 107.6 vAbs  12.7 age  1.0s |a|0   9.3 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 23:24.9 tid  14 d  74.0 vAbs  16.5 age  1.2s |a|0   6.1 | CONF | lead leaving lane/cut | NOT covered | removed
+  297 31:14.0 tid   6 d  75.6 vAbs   1.0 age  1.3s |a|0   9.7 | CONF | stopped/near-stationary | NOT covered | delayed 0.76 s
+  297 45:49.3 tid  34 d  40.3 vAbs  16.5 age 24.9s |a|0  17.1 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  297 46:56.7 tid  45 d  86.3 vAbs  -0.6 age  1.4s |a|0  15.6 | CONF | stopped/near-stationary | visionLeadOne@118m | removed
+  298  9:06.6 tid  22 d  93.8 vAbs  19.1 age  3.7s |a|0   6.5 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | delayed 6.63 s
+  298 16:58.3 tid   2 d  25.6 vAbs   4.3 age  1.0s |a|0  12.7 | unconf | slow/moving car | NOT covered | removed
+  298 17:02.3 tid  60 d 106.3 vAbs  12.3 age  4.6s |a|0  10.6 | CONF | lead leaving lane/cut | NOT covered | removed
+  298 23:20.0 tid  20 d  66.8 vAbs  -1.3 age  2.0s |a|0  10.5 | CONF | stopped/near-stationary | NOT covered | removed
+  299 11:23.9 tid  26 d  69.4 vAbs  25.9 age  4.3s |a|0   7.4 | CONF | lead leaving lane/cut | visionLeadOne@105m | removed
+  299 31:22.5 tid  15 d  17.1 vAbs   7.4 age 68.9s |a|0  10.3 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+  299 42:12.4 tid  57 d  67.1 vAbs  19.5 age  7.6s |a|0   9.9 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+== win A=8: lost or delayed (>0.2 s) adoptions other than tid 42
+  232 10:39.7 tid   8 d  79.3 vAbs  15.1 age  4.8s |a|0   8.5 | CONF | lead leaving lane/cut | visionLeadOne@108m | delayed 1.89 s
+  232 18:19.2 tid  34 d 112.4 vAbs  11.9 age  1.1s |a|0  12.3 | CONF | slow/moving car | radarLeadOne+0.0s | removed
+  232 19:07.0 tid  29 d  44.7 vAbs   0.2 age  1.2s |a|0  11.4 | CONF | stopped/near-stationary | visionLeadOne@52m | removed
+  236 14:04.3 tid  61 d  42.5 vAbs  15.3 age 35.7s |a|0   9.2 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  236 38:18.6 tid  41 d 119.5 vAbs  16.0 age  1.7s |a|0  22.9 | CONF | lead leaving lane/cut | NOT covered | delayed 2.05 s
+  237  3:13.2 tid   6 d  65.8 vAbs  13.0 age  4.3s |a|0  12.3 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  237 17:55.5 tid  22 d 105.7 vAbs  20.0 age  5.8s |a|0   8.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  237 18:26.6 tid  11 d  64.4 vAbs  12.9 age 10.2s |a|0  15.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 1.50 s
+  239 10:31.4 tid  21 d  61.6 vAbs  17.6 age 70.5s |a|0  28.9 | CONF | lead leaving lane/cut | visionLeadOne@72m | removed
+  23a 15:56.1 tid  15 d  65.9 vAbs   0.8 age  1.5s |a|0   6.8 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  23e 36:36.4 tid  42 d 111.6 vAbs  17.4 age  5.6s |a|0  16.1 | CONF | slow/moving car | NOT covered | delayed 1.38 s
+  24f  5:55.3 tid  48 d  78.5 vAbs  16.3 age 101.7s |a|0  18.6 | CONF | lead leaving lane/cut | visionLeadOne@101m | delayed 3.74 s
+  258 66:28.7 tid  20 d  68.2 vAbs   9.7 age  2.3s |a|0  36.5 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | delayed 4.08 s
+  25e 11:10.6 tid  56 d  96.8 vAbs   6.0 age  1.0s |a|0  14.2 | CONF | far car on curve | NOT covered | removed
+  25f  0:57.0 tid  43 d  26.8 vAbs   3.1 age 14.0s |a|0  12.0 | unconf | lead leaving lane/cut | visionLeadOne@45m | removed
+  25f 22:04.5 tid  55 d  73.6 vAbs  11.3 age  1.0s |a|0  10.4 | unconf | far car on curve | NOT covered | removed
+  260  7:20.1 tid  47 d  69.3 vAbs   2.4 age  2.3s |a|0  21.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | delayed 6.25 s
+  260  9:08.3 tid  35 d  44.7 vAbs  11.5 age 22.8s |a|0  17.4 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  260 10:27.6 tid  13 d  89.5 vAbs  13.5 age  3.1s |a|0  15.6 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  261  2:07.8 tid  18 d 117.9 vAbs  20.7 age  1.6s |a|0  11.5 | CONF | slow/moving car | radarLeadOne+0.4s | removed
+  263  0:47.7 tid  56 d  96.5 vAbs   3.7 age  1.2s |a|0  11.5 | CONF | slow/moving car | NOT covered | delayed 1.19 s
+  263  4:57.7 tid  50 d  47.4 vAbs  17.2 age 22.3s |a|0  10.1 | CONF | slow/moving car | visionLeadOne@78m | delayed 0.25 s
+  263  6:16.4 tid  25 d  37.1 vAbs   6.5 age 21.6s |a|0  18.7 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  263  8:00.2 tid  46 d  59.9 vAbs   3.1 age  2.0s |a|0  23.0 | CONF | lead leaving lane/cut | visionLeadOne@83m | delayed 0.66 s
+  266  6:21.5 tid   9 d 113.6 vAbs  16.6 age  1.2s |a|0  28.2 | CONF | slow/moving car | NOT covered | removed
+  266 14:29.4 tid  36 d  37.3 vAbs  12.1 age 60.1s |a|0  15.1 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  267 10:07.3 tid  48 d  58.8 vAbs   6.9 age  5.0s |a|0   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 tid  18 d  34.2 vAbs   5.7 age 19.7s |a|0  18.0 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 tid  25 d  65.8 vAbs   8.9 age 25.8s |a|0  19.1 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  26b 10:29.9 tid  55 d 113.6 vAbs  12.7 age  1.0s |a|0  22.4 | CONF | slow/moving car | radarLeadOne+0.2s | removed
+  26b 25:52.0 tid  47 d  98.3 vAbs   3.3 age  1.2s |a|0  21.8 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 tid  32 d  77.3 vAbs  22.4 age 32.8s |a|0   2.8 | CONF | lead leaving lane/cut | visionLeadOne@95m | delayed 5.75 s
+  26c  3:53.7 tid  27 d  96.3 vAbs  15.5 age  9.7s |a|0  11.2 | CONF | far car on curve | NOT covered | removed
+  26c  4:06.0 tid  27 d 107.3 vAbs  21.4 age 21.9s |a|0  10.7 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  26c  9:55.9 tid  39 d  38.9 vAbs  16.3 age 85.3s |a|0  18.7 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:51.1 tid  39 d  72.4 vAbs  21.0 age 140.5s |a|0  16.0 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 tid  51 d 102.5 vAbs   3.9 age  1.1s |a|0   8.1 | CONF | far car on curve | NOT covered | removed
+  26f  7:03.2 tid  30 d  59.8 vAbs  16.3 age  1.1s |a|0  11.3 | CONF | slow/moving car | visionLeadOne@66m | removed
+  270  4:21.6 tid  63 d  37.6 vAbs   6.1 age  1.4s |a|0  11.1 | CONF | slow/moving car | visionLeadOne@44m | removed
+  271 24:31.6 tid  21 d  56.2 vAbs  19.7 age 16.8s |a|0  18.9 | CONF | lead leaving lane/cut | visionLeadOne@73m | delayed 0.47 s
+  277  4:09.1 tid   7 d  75.1 vAbs  19.3 age 43.8s |a|0  17.2 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  278  3:53.1 tid  32 d 107.5 vAbs  15.2 age  2.2s |a|0  17.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | delayed 0.70 s
+  27a  6:00.9 tid  17 d 117.9 vAbs  10.6 age  6.3s |a|0  21.4 | CONF | lead leaving lane/cut | NOT covered | delayed 0.73 s
+  27a  7:59.1 tid  24 d  79.2 vAbs  17.2 age 13.9s |a|0   8.9 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 tid  10 d  90.0 vAbs  14.3 age  6.1s |a|0   9.9 | unconf | lead leaving lane/cut | NOT covered | removed
+  280 22:27.1 tid  39 d  58.2 vAbs  14.3 age  1.6s |a|0   8.2 | CONF | lead leaving lane/cut | visionLeadOne@69m | delayed 0.99 s
+  280 31:07.2 tid  63 d  31.6 vAbs   7.5 age 10.5s |a|0  19.0 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  280 31:23.9 tid  13 d  34.8 vAbs   6.2 age  2.2s |a|0   9.1 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  283 19:17.4 tid  13 d  33.3 vAbs  14.3 age  1.9s |a|0  11.9 | CONF | slow/moving car | visionLeadOne@43m | delayed 0.30 s
+  286  6:09.3 tid  37 d 118.2 vAbs  26.0 age  4.2s |a|0   9.9 | CONF | lead leaving lane/cut | NOT covered | delayed 0.71 s
+  286  6:28.0 tid  36 d  56.8 vAbs  20.1 age 12.8s |a|0   8.4 | CONF | lead leaving lane/cut | visionLeadOne@71m | delayed 1.35 s
+  28a  8:39.7 tid  47 d 117.7 vAbs   9.4 age  1.2s |a|0  14.0 | unconf | slow/moving car | NOT covered | removed
+  28f 14:54.0 tid   6 d  23.3 vAbs   8.0 age 103.5s |a|0   9.3 | CONF | lead leaving lane/cut | visionLeadOne@41m | removed
+  28f 15:20.4 tid  19 d  55.8 vAbs  15.3 age  1.2s |a|0  11.9 | CONF | lead leaving lane/cut | visionLeadOne@67m | delayed 1.88 s
+  290 10:45.6 tid  22 d 101.7 vAbs  24.4 age  6.1s |a|0  11.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  290 11:05.6 tid   2 d  60.4 vAbs  22.3 age  1.9s |a|0  11.7 | CONF | lead leaving lane/cut | visionLeadOne@97m | delayed 0.67 s
+  292  0:46.2 tid   6 d  33.6 vAbs  -0.4 age  1.1s |a|0  29.2 | CONF | stopped/near-stationary | NOT covered | removed
+  292 10:24.6 tid   1 d 120.0 vAbs  20.5 age  1.8s |a|0  10.1 | unconf | lead leaving lane/cut | NOT covered | removed
+  292 19:40.9 tid  15 d  48.1 vAbs  10.0 age  2.3s |a|0  16.5 | unconf | slow/moving car | NOT covered | removed
+  294 12:01.7 tid  13 d  45.4 vAbs  17.4 age 13.5s |a|0   8.8 | CONF | lead leaving lane/cut | visionLeadOne@55m | removed
+  297  7:16.3 tid  25 d  16.1 vAbs   8.2 age  5.7s |a|0  11.6 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 tid   8 d 107.6 vAbs  12.7 age  1.0s |a|0   9.3 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 31:14.0 tid   6 d  75.6 vAbs   1.0 age  1.3s |a|0   9.7 | CONF | stopped/near-stationary | NOT covered | delayed 0.62 s
+  297 45:49.3 tid  34 d  40.3 vAbs  16.5 age 24.9s |a|0  17.1 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  297 46:56.7 tid  45 d  86.3 vAbs  -0.6 age  1.4s |a|0  15.6 | CONF | stopped/near-stationary | visionLeadOne@118m | removed
+  298  9:06.6 tid  22 d  93.8 vAbs  19.1 age  3.7s |a|0   6.5 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | delayed 6.63 s
+  298 16:58.3 tid   2 d  25.6 vAbs   4.3 age  1.0s |a|0  12.7 | unconf | slow/moving car | NOT covered | removed
+  298 17:02.3 tid  60 d 106.3 vAbs  12.3 age  4.6s |a|0  10.6 | CONF | lead leaving lane/cut | NOT covered | removed
+  298 23:20.0 tid  20 d  66.8 vAbs  -1.3 age  2.0s |a|0  10.5 | CONF | stopped/near-stationary | NOT covered | removed
+  299 31:22.5 tid  15 d  17.1 vAbs   7.4 age 68.9s |a|0  10.3 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+  299 42:12.4 tid  57 d  67.1 vAbs  19.5 age  7.6s |a|0   9.9 | CONF | lead leaving lane/cut | visionLeadOne@74m | delayed 0.63 s
+
+(2) adoptions whose track was born at |azimuth| > 15 deg and range < 50 m (like tid 42: +19.5 deg, 42.7 m): 6 of 130; confirmed 4, near-stationary 3
+  280 12:52.3 tid  27 born az -15.6 d  8.9 age@onset 34.6s | CONF | slow/moving car
+  284  9:28.4 tid  54 born az +16.6 d 12.6 age@onset 14.4s | unconf | lead leaving lane/cut
+  28a 28:17.7 tid  49 born az -15.8 d 28.0 age@onset  1.0s | CONF | stopped/near-stationary
+  292  0:46.2 tid   6 born az +17.1 d 41.7 age@onset  1.1s | CONF | stopped/near-stationary
+  293 22:59.3 tid  55 born az +17.1 d 39.1 age@onset  1.1s | CONF | stopped/near-stationary
+  297 30:24.8 tid  42 born az +19.3 d 41.6 age@onset  1.4s | unconf | slow/moving car
+  (births not inside the loaded segments: 12; missing tracks: 0)
