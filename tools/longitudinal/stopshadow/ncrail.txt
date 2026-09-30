@@ -1,0 +1,196 @@
+NC-AT-RAIL REPLAY SCORE, c40fe684f (stopshadow-radar), BOSCH_A_NC_RAIL_VREL True vs False. REPLAY ONLY, open-loop planner.
+STATUS: COMPLETE: 22 routes scored (1f9 has no rlog locally; 288 absent).
+
+VERDICT (replay)
+- D-068 check first: no fake lead accel. In no window does ON have leadOne aLeadK > +1 where OFF does not. After every NC release on a
+  leadOne track, ON aLeadK is equal to OFF or slightly MORE negative (245 690.16: -5.64 vs -5.50). No real brake was softened by a fake accel.
+- Does it help? Not measurably, beyond D-053 rail-fast. NC changes a published point on 148 point-sweeps across 22 routes (14 routes) (about 0.02 % of sweeps).
+  38 of 44 NC episodes are on tracks that never become leadOne/leadTwo/leadOnpath. 31 of the tracks are ONCOMING (ground speed < -3 m/s).
+  In the 6 leadOne episodes, the ON-published leadOne vRel differs from OFF on 1-4 sweeps only. Time to first correct closing
+  (|published - 2 s fit| < 1) is IDENTICAL on vs off in every episode. Planner min accel is identical in every episode, FCW counts
+  are identical, and no leadOne/leadTwo/leadOnpath selection changes anywhere. The D-053 assist does shrink as expected (271 570: mean
+  |correction| 2.02 ON vs 2.11 OFF) and never doubles. On the one lead track where the assist was active (271 tid 24), the published vRel is the same.
+- Does it add risk? Small in control terms, but it adds rough edges to the radar channel:
+  * Flicker: on changed tracks, sweep-to-sweep |dvRel| p95 is 5.6 ON vs 0.4 OFF, with 76 steps > 3 m/s ON vs 0 OFF. Engage and release steps are
+    usually the full 6.5 m/s (-13.5 <-> -20 clamp). Most releases come from the |y|>2 gate (23) or the rate check failing (29). The 0.3 s hold
+    rarely applies (1 release). The step lands on the track's native vRel, i.e. the radard KF input.
+  * Over-closing vs next-1 s range slope on changed sweeps: >3 m/s over-close is 19.6 % ON vs 7.1 % rail (n=112). Mean error is +2.4 ON vs +6.3 rail
+    (NC is closer to truth on average, but less often than the rail on the conservative side). The worst cases are 263 tid 10 at 874.4-874.8 s (not a lead): NC -15.65..-13.95 vs next-1 s -11.1..-7.7 (-6.3 at worst, rail alone -5.8); and 232 tid 40 at 92.2 s,
+    -13.6 vs next-1 s -7.6 (the rail alone is already -5.9 over). The increment over the rail on the same sweeps (NC - rail) is at most
+    -6.5 (the clamp).
+  * 297 tid 60 ~2858.2 (Steve's oncoming case): in this replay the NC candidate (-17.5..-19.6) was REJECTED by the range-rate gate on all
+    4 sweeps. Published vRel stayed at the -13.5 rail, it never became a lead or leadOnpath, and the planner was unchanged.
+  * 297 tid 45 ~2819.2 (leadOne): NC -13.87 vs rail -13.5 vs next-1 s -11.38 (the rail's own error is -2.1, NC adds -0.37). The planner min
+    is the same (-3.60 both).
+  * Planner differences > 0.3: only 245 690.2-690.7 (tid 40, a real, vision-confirmed, near-stopped car at 27->22 m, vEgo 9.7, not
+    engaged). ON is 0.96 SOFTER for 0.1 s (-2.10 vs -3.06), then 1.03 HARDER for 0.1 s (-3.03 vs -2.00). The episode min is the same
+    (-5.68). This is the planner reacting to a 0.07 aLeadK difference after 2 NC sweeps, not a phantom.
+    26b 2493.5 (a one-frame 1.1 difference, no lead, no radar difference within minutes) is harness noise: planner instances in one
+    process, same inputs. Treat single-frame differences with no radar difference as noise.
+  * Oncoming: NC fired on 107 sweeps of 31 oncoming tracks. None of them became a lead or changed leads/planner/FCW.
+  * Off-rail: 0 changes. Every changed point is a measured sweep with U11 on the low rail, |y|<=2, d<50. No coast/presence/geometry changes.
+    The OFF parser is the pre-NC parser: the diff is 61 insertions, all NC.
+- Bottom line (replay): on these routes NC-at-rail adds nothing over D-053 rail-fast in the lead or planner. It adds 6.5 m/s vRel steps
+  on the parser output and a higher rate of > 3 m/s over-close on the sweeps it touches. Protected brakes are unchanged.
+
+Routes: 20c 232 236 23e 245 258 25e 263 26b 271 277 283 284 28b 292 293 297 298 299 (stopshadow 19) + 287 289 28a (D-063; 25e, 297 already in).
+Harness: /tmp/rv/ncrail/nc.py. It loads the c40fe684f parser as opendbc.car.honda.radar_interface and runs two parsers, toggling the switch per update,
+two RadarD and two HEAD LongitudinalPlanner, open-loop on logged carState. The shared get_RadarState_from_vision.prev_aLeadK is saved and
+restored per variant. A/A check on 283 seg 14: 0 frame differences. Analysis: /tmp/rv/ncrail/ana.py. Time = (logMonoTime - seg-0 initData)/1e9.
+Rate references: next-1 s = LSQ of OFF-parser measured dRel over [t, t+1]; 2 s = centered [t-1, t+1]; ground speed = vEgo + 2 s rate.
+"Increment NC-rail" = (NC - rate) - (rail - rate) = NC - rail on the same sweeps.
+
+PER ROUTE: route, sweeps, sweeps changed, diff classes, tracks changed, lead-select frames diff, onpath frames diff, planner frames diff
+20c 17981 0 {} 0 0 0 0
+232 25421 16 {'nc_direct': 16} 7 0 0 0
+236 37027 1 {'nc_direct': 1} 1 0 0 0
+23e 40818 25 {'nc_direct': 25} 7 0 0 0
+245 16841 16 {'nc_direct': 16} 4 0 0 34
+258 60627 16 {'nc_direct': 16} 4 0 0 0
+25e 18863 1 {'nc_direct': 1} 1 0 0 0
+263 17817 9 {'nc_direct': 9} 1 0 0 0
+26b 43876 20 {'nc_direct': 20} 6 0 0 68
+271 34276 16 {'nc_direct': 16} 5 0 0 264
+277 38170 0 {} 0 0 0 0
+283 32922 0 {} 0 0 0 0
+284 26293 0 {} 0 0 0 0
+287 6406 6 {'nc_direct': 6} 1 0 0 0
+289 17301 1 {'nc_direct': 1} 1 0 0 0
+28a 26223 2 {'nc_direct': 2} 1 0 0 0
+28b 27871 0 {} 0 0 0 0
+292 22606 0 {} 0 0 0 0
+293 36091 5 {'nc_direct': 5} 2 0 0 0
+297 51610 14 {'nc_direct': 14} 3 0 0 13
+298 22782 0 {} 0 0 0 0
+299 49786 0 {} 0 0 0 0
+
+ITEM 1 dvRel (on-off) all changed points: n=148 min -6.50 p5 -6.50 p25 -6.50 p50 -6.05 p75 -1.66 p95 -0.16 max -0.01
+  of which coast sweeps after an NC-trusted vRel: n=0
+
+ITEM 2 nc_direct sweeps vs next-1 s range slope (vRel - slope; < -3 = over-close):
+  NC (on): n=112 mean +2.39 median +0.82 over-close>3 0.196 under-close>3 0.366  |err| mean 4.47
+  rail (off): n=112 mean +6.26 median +4.88 over-close>3 0.071 under-close>3 0.598  |err| mean 7.56
+
+PER-ROUTE over-closing on nc_direct sweeps (published NC vRel - range rate; negative = over-closing):
+  route n | next-1s: min p1 p50 | 2s-centered: min p1 p50 | increment NC-rail: mean p1 min
+  232 16 | -6.04 -5.83 +9.17 | -1.42 -1.24 +8.44 | -6.10 -6.50 -6.50
+  236 1 | -2.58 -2.58 -2.58 | +1.27 +1.27 +1.27 | -5.01 -5.01 -5.01
+  23e 25 | +1.17 +1.28 +4.88 | +0.86 +1.09 +3.74 | -6.33 -6.50 -6.50
+  245 16 | -4.06 -4.00 -2.96 | -2.85 -2.83 -0.24 | -2.48 -5.95 -6.02
+  258 16 | +2.04 +2.05 +7.00 | +2.93 +2.94 +5.83 | -6.29 -6.50 -6.50
+  25e 1 | n/a | +10.56 +10.56 +10.56 | -6.50 -6.50 -6.50
+  263 9 | -6.26 -6.23 -4.83 | -3.34 -3.33 -2.99 | -1.41 -2.13 -2.15
+  26b 20 | -3.78 -3.70 +2.54 | -3.94 -3.83 +1.58 | -4.72 -6.50 -6.50
+  271 16 | -1.79 -1.76 +0.30 | +0.14 +0.15 +1.82 | -4.29 -6.50 -6.50
+  287 6 | -1.35 -1.35 +0.08 | -0.27 -0.25 +0.24 | -4.31 -5.17 -5.19
+  289 1 | n/a | n/a | -2.29 -2.29 -2.29
+  28a 2 | n/a | n/a | -6.05 -6.49 -6.50
+  293 5 | +0.37 +0.42 +2.03 | +1.30 +1.35 +2.82 | -3.05 -6.37 -6.50
+  297 14 | -2.49 -2.49 +0.02 | -1.33 -1.31 -0.04 | -0.33 -0.87 -0.90
+  worst 10 over-closing sweeps (route, t, tid, dRel, yRel, NC vRel, rail vRel, next-1s rate, 2s rate):
+    ('263', 874.8, 10, 42.5, -0.29, -13.95, -13.5, -7.69, -10.88)
+    ('232', 92.17, 40, 28.12, 1.94, -13.62, -13.5, -7.58, -12.2)
+    ('263', 874.74, 10, 43.31, -0.32, -14.21, -13.5, -8.33, -11.24)
+    ('263', 874.67, 10, 44.19, -0.3, -14.5, -13.5, -9.04, -11.61)
+    ('263', 874.61, 10, 45.06, -0.31, -14.79, -13.5, -9.81, -11.85)
+    ('263', 874.54, 10, 45.94, -0.31, -15.07, -13.5, -10.24, -12.0)
+    ('263', 874.47, 10, 46.81, -0.32, -15.36, -13.5, -10.67, -12.16)
+    ('263', 874.4, 10, 47.69, -0.3, -15.65, -13.5, -11.07, -12.3)
+    ('245', 690.09, 40, 28.5, 0.32, -13.8, -13.5, -9.75, -10.95)
+    ('26b', 2801.14, 34, 36.56, 0.23, -17.14, -13.5, -13.36, -13.84)
+  case 297 tid 45 ~2819.2:
+    ('297', 2819.21, 45, 49.31, -0.6, -13.87, -13.5, -11.38, -12.54)
+    ('297', 2819.28, 45, 48.5, -0.52, -13.64, -13.5, -11.16, -12.45)
+  case 297 tid 60 ~2858.2:
+
+ONCOMING (ground speed < -3 from range rate): NC-fired sweeps 107 tracks 31 {'232': [1, 6, 20, 40, 46, 52, 61], '236': [14], '23e': [1, 2, 5, 9, 31, 58], '258': [9, 26, 42, 62], '25e': [3], '263': [10], '26b': [10, 30, 34], '271': [2, 21, 30, 62], '287': [44], '293': [5, 12], '297': [18]}
+  frames where an oncoming NC track is a lead (on or off) and leads/planner/FCW differ (route, t, slot, variant, tid, dRel, yRel, NC vRel, rail vRel, ground v, a_on, a_off, fcw_on, fcw_off):
+  total such frames: 0
+
+HARDER BRAKING ON by >0.3 (route, t, a_on, a_off, vEgo, supported, [tid, dRel, yRel, vRel_on, rate1s, rate2s, closing>rail, stopped], vision prob>0.5):
+    ('245', 690.63, -3.03, -2.0, 9.7, True, [(40, 22.92, 0.25, -11.52, -7.86, -9.65, False, np.True_), (40, 22.92, 0.25, -11.52, -7.86, -9.65, False, np.True_)], True)
+    ('245', 690.68, -3.03, -2.0, 9.5, True, [(40, 22.23, 0.24, -11.17, -7.62, -9.52, False, np.True_), (40, 22.23, 0.24, -11.17, -7.62, -9.52, False, np.True_)], True)
+    ('26b', 2493.5, -0.5, 0.61, 11.8, False, [], False)
+  total frames 3 unsupported 1
+
+D-068 CHECK: lead aLeadK in 2 s after NC release, released track as leadOne/leadOnpath (route, t, tid, why, slot, aLeadK on (min,max), off (min,max), a_on-a_off min, max):
+    ('245', 690.16, 40, 'left rail', 'L1', (-5.64, 0.41), (-5.5, 0.4), -1.03, 0.96)
+    ('26b', 1555.77, 47, 'rate disagreement', 'L1', (-1.08, 2.94), (-1.09, 2.93), -0.01, 0.0)
+    ('271', 570.62, 24, 'rate disagreement', 'L1', (-3.36, -0.29), (-3.08, -0.33), -0.19, 0.01)
+    ('271', 570.76, 24, 'rate disagreement', 'L1', (-3.21, -0.1), (-3.08, -0.12), -0.19, 0.01)
+    ('289', 911.95, 28, 'rate disagreement', 'L1', (-0.64, 0.0), (0.0, 0.0), 0.0, 0.0)
+    ('297', 2819.34, 45, 'rate disagreement', 'L1', (-3.42, 0.15), (-3.44, 0.14), -0.0, 0.0)
+  windows where ON leadOne aLeadK > +1 and OFF not (route, t0, t1, tid, max aLeadK on, off, a_on-a_off min, max):
+
+D-053 FRAMING: NC episodes on lead tracks (route, t0, t1, tid, slot, ON, OFF). cor = |published - native parser vRel| (the radard range assist), overclose_vs_fit = max(2 s fit - published) (>0 = published more closing than fit), t_first = first frame |published - fit| < 1, amin = planner min accel):
+    ('245', 238.95, 239.29, 26, 'L1', None, None)
+    ('245', 690.03, 690.09, 40, 'L1', {'n': 61, 'cor_mean': 0.0, 'cor_max': 0.01, 'overclose_vs_fit': 2.85, 't_first': 688.58, 'pub_min': -13.8, 'amin': -5.68}, {'n': 61, 'cor_mean': 0.0, 'cor_max': 0.01, 'overclose_vs_fit': 2.55, 't_first': 688.58, 'pub_min': -13.5, 'amin': -5.68})
+    ('26b', 1555.71, 1555.71, 47, 'L1', {'n': 60, 'cor_mean': 0.0, 'cor_max': 0.01, 'overclose_vs_fit': 2.51, 't_first': 1554.24, 'pub_min': -13.68, 'amin': -3.49}, {'n': 60, 'cor_mean': 0.0, 'cor_max': 0.01, 'overclose_vs_fit': 2.51, 't_first': 1554.24, 'pub_min': -13.5, 'amin': -3.49})
+    ('271', 570.29, 570.69, 24, 'L1', {'n': 68, 'cor_mean': 2.02, 'cor_max': 4.82, 'overclose_vs_fit': 2.05, 't_first': 568.86, 'pub_min': -18.32, 'amin': -6.29}, {'n': 68, 'cor_mean': 2.11, 'cor_max': 4.82, 'overclose_vs_fit': 2.05, 't_first': 568.86, 'pub_min': -18.32, 'amin': -6.29})
+    ('289', 911.88, 911.88, 28, 'L1', {'n': 2, 'cor_mean': 0.0, 'cor_max': 0.0, 'overclose_vs_fit': None, 't_first': None, 'pub_min': -15.79, 'amin': -3.5}, {'n': 2, 'cor_mean': 0.0, 'cor_max': 0.0, 'overclose_vs_fit': None, 't_first': None, 'pub_min': -13.5, 'amin': -3.5})
+    ('297', 2819.21, 2819.28, 45, 'L1', {'n': 62, 'cor_mean': 0.0, 'cor_max': 0.0, 'overclose_vs_fit': 2.87, 't_first': 2817.72, 'pub_min': -13.87, 'amin': -3.6}, {'n': 62, 'cor_mean': 0.0, 'cor_max': 0.0, 'overclose_vs_fit': 2.87, 't_first': 2817.72, 'pub_min': -13.5, 'amin': -3.6})
+  NC episodes on tracks never leadOne/leadTwo/leadOnpath in either run: 38
+
+ITEM 3 flicker |dvRel| sweep to sweep on changed tracks (+-2 s):
+  fl_on: n=1262 p50 0.00 p95 5.64 max 6.50 >3: 76
+  fl_off: n=1262 p50 0.00 p95 0.36 max 1.91 >3: 0
+  engage step (NC out - previous sweep's published): n=54 min -6.50 p5 -6.50 p25 -6.50 p50 -6.22 p75 -2.28 p95 -0.14 max -0.01
+  engage on first call after a gap (value): n=1 min -20.00 p5 -20.00 p25 -20.00 p50 -20.00 p75 -20.00 p95 -20.00 max -20.00
+  release step (published - previous NC): n=54 min +0.01 p5 +0.11 p25 +2.41 p50 +6.50 p75 +6.50 p95 +6.50 max +6.50
+  release reasons: {'|y|>2': 23, 'rate disagreement': 29, 'left rail': 1, 'NC none, hold expired or held value disagrees': 1}
+
+ITEM 7 release events (route, t, tid, why, prev fresh/held, prev vRel, new vRel, step, dRel):
+   ('232', 607.84, 6, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 47.6)
+   ('232', 726.96, 46, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 13.9)
+   ('232', 1009.95, 52, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 33.4)
+   ('232', 605.41, 1, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 20.6)
+   ('232', 1284.33, 20, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 46.1)
+   ('232', 945.75, 61, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 23.3)
+   ('23e', 1474.11, 2, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 41.1)
+   ('23e', 1474.52, 2, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 33.3)
+   ('23e', 1474.65, 2, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 29.9)
+   ('23e', 1473.49, 1, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 40.2)
+   ('23e', 1474.03, 1, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 27.7)
+   ('23e', 1742.86, 5, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 47.8)
+   ('23e', 818.03, 9, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 21.1)
+   ('23e', 326.13, 31, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 34.6)
+   ('23e', 326.47, 31, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 23.8)
+   ('23e', 1665.09, 43, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 7.0)
+   ('258', 3729.47, 9, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 18.9)
+   ('258', 2600.01, 62, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 22.6)
+   ('258', 3500.35, 26, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 40.2)
+   ('25e', 615.37, 3, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 14.9)
+   ('26b', 2633.69, 10, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 34.6)
+   ('26b', 2635.52, 30, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 20.8)
+   ('271', 1048.56, 2, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 47.0)
+   ('271', 1048.83, 2, '|y|>2', 'fresh', -20.0, -13.5, 6.5, 36.1)
+   ('271', 2174.98, 30, 'rate disagreement', 'fresh', -20.0, -13.5, 6.5, 43.6)
+  left-rail releases while held: 0 of 1
+
+ITEM 4 lead selection changes (route, t0, t1, L1 on (status,radar,tid), dRel, off ..., L2 on/off):
+  leadOnpath changes:
+
+ITEM 5 planner diff episodes (route t0-t1 min_on min_off fcw_on fcw_off first<-1 on/off eng, leadOne on @min, vEgo, vision):
+   245 690.23-694.18 min -5.68/-5.68 fcw 26/26 first<-1 689.77579447/689.77579447 eng False lead (True, True, 40, 21.61, 0.23, -10.84, -1.12, -3.16) v 9.2 vis (0.99, 23.4, 0.04, 0.59)
+   245 731.43-731.43 min -0.01/-0.00 fcw 0/0 first<-1 None/None eng False lead (True, True, 37, 61.73, -0.06, 2.36, 22.36, 0.72) v 20.1 vis (1.0, 68.35, 0.14, 24.02)
+   26b 1555.84-1559.34 min -3.49/-3.49 fcw 0/0 first<-1 1555.339338281/1555.339338281 eng True lead (True, True, 47, 40.06, -0.12, -12.7, 2.66, -1.07) v 15.1 vis (0.99, 46.06, 0.16, 4.63)
+   26b 2493.50-2493.50 min -0.50/+0.00 fcw 0/0 first<-1 None/None eng False lead (False, False, -1, 0.0, 0.0, 0.0, 0.0, 0.0) v 11.8 vis (0.01, 73.54, -12.69, 13.33)
+   26b 2552.20-2552.55 min -0.03/-0.03 fcw 0/0 first<-1 None/None eng True lead (False, False, -1, 0.0, 0.0, 0.0, 0.0, 0.0) v 15.7 vis (0.0, 135.11, -0.04, 13.62)
+   271 571.41-576.56 min -5.68/-5.68 fcw 11/11 first<-1 570.961652969/570.961652969 eng False lead (True, True, 24, 25.0, -0.39, -12.25, -1.17, -2.3) v 10.7 vis (0.98, 27.26, 0.31, 0.66)
+   271 614.36-614.56 min +0.05/+0.05 fcw 0/0 first<-1 None/None eng True lead (True, True, 24, 6.06, -0.25, 2.84, 3.03, 1.94) v 0.4 vis (1.0, 5.79, 0.1, 2.44)
+   271 1138.23-1148.32 min +0.00/+0.00 fcw 0/0 first<-1 None/None eng True lead (True, True, 48, 30.0, -0.38, 0.73, 13.19, 0.99) v 12.5 vis (1.0, 30.82, 0.25, 12.96)
+   271 2109.47-2110.67 min -1.00/-1.00 fcw 0/0 first<-1 None/None eng False lead (True, True, 44, 9.56, -0.21, -2.47, -0.18, 0.25) v 2.2 vis (1.0, 10.77, 0.08, 0.07)
+   297 2819.27-2820.17 min -3.60/-3.60 fcw 0/0 first<-1 2818.818666095/2818.818666095 eng True lead (True, True, 45, 49.31, -0.6, -13.87, 0.8, -2.63) v 14.3 vis (0.91, 56.84, 0.93, 1.6)
+  new brakes <= -1.0 extra (worst 10): extra, route, t, on, off, dRel, yRel, vRel, vLead, vEgo, vision, engaged
+    (1.11, '26b', 2493.5, -0.5, 0.61, 0.0, 0.0, 0.0, 0.0, 11.8, 'novis', False)
+    (1.03, '245', 690.68, -3.03, -2.0, 22.23, 0.24, -11.17, -1.2, 9.5, 'vis', False)
+  total frames with >=1.0 extra brake: 3
+  protected brakes (route, t, min on, min off, fcw on, fcw off):
+    ('23e', 2342.9, -0.75, -0.75, 0, 0)
+    ('23e', 2344.9, -2.8, -2.8, 0, 0)
+    ('283', 881.5, -0.45, -0.45, 0, 0)
+    ('283', 884.2, -3.5, -3.5, 0, 0)
+    ('297', 525.6, -1.43, -1.43, 0, 0)
+    ('297', 526.9, -2.5, -2.5, 0, 0)
+
+ITEM 6 off-rail / unexplained changes: 0
