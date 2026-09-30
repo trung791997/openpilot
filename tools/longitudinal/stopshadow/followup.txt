@@ -1,0 +1,40 @@
+FOLLOW-UP to summary.txt (offline log/replay only; tool copy at ae6ae25e8; radard replay = leadlate/rep.py adapted as adopt/rep_adopt.py,
+current-tree radard.py, onpath_adoptable() at radard.py:694-717; "no-U11 variant" = the same checks with the U11 mean terms
+(radard.py:711 and 715-717) replaced by the range LSQ slope). Table: cases2.csv. Flag default here = 0.5 s window, 0.5 s hold, a=1.0 b=0.02.
+
+1. FLAG vs ONPATH_RADAR_ADOPT (adoptable onset t / d; flag 0.5/0.5 onset t / d)
+   00000297 tid 6   adopt 1874.03 / 75.6 m   flag 1874.23 / 71.7 m   SAME (0.2 s). Replay leadOne 1877.13 / 30.4 m.
+   00000245 tid 28  adopt 1047.24 / 53.1     flag 1047.19 / 53.1     SAME. (leadOne already at 64.6 m)
+   00000271 tid 52  adopt 1105.17 / 98.3     flag 1107.83 / 63.1     flag LATER by 2.7 s
+   00000277 tid 6   adopt 506.37 / 105.2     flag 509.53 / 62.6      flag LATER by 3.2 s
+   0000028b tid 14  adopt 357.99 / 97.8      flag 362.82 / 35.4      flag LATER by 4.8 s
+   00000297 tid 56  adopt 1078.79 / 13.1     flag 1073.78 / 43.2     flag EARLIER by 5.0 s
+   0000025e tid 59 (moving negative control) adopt 725.61 / 60.1; flag 729.17 / 15.8 (only once the car had nearly stopped; 0.5/0.5 no longer false-fires at 115 m)
+   Never adoptable (track never entered the on-path history; the no-U11 variant never fires either):
+   00000232 tid 11, 00000236 tid 59, 00000258 tid 26, 0000026b tid 16 (|y| med 2.2 m, never leadOne), 00000293 tid 60.
+   On 232/236/258/293 the replay leadOne was the track already (vision match at 55-121 m) before the flag.
+   The flag fired on 258 tid 26 at 66.9 m and on 26b tid 16 at 76.2 m, when neither adopt nor leadOne had it.
+   U11 GATING: on no case did adopt's onset depend on U11. The no-U11 variant has the same onset everywhere (277: 0.1 s earlier).
+   Verdict: the flag is not generally earlier than adopt. It ties at 297/245, lags on 3 approaches that were
+   in-path from ~100 m, and leads only where adopt came late or never (297 tid 56, 26b, 258).
+2. G SPLIT (truth 1 s LSQ, closing >1, U11 unrailed; k [95% CI], c on d_rel):
+   same-direction in-lane |y|<2:  k -0.75 [-0.84,-0.65]  c +0.7   (median closing 2.3 m/s, 492 tracks)
+   same-direction any lane:       k -0.70 [-0.74,-0.66]  c +5.5
+   oncoming:                      k -1.02 [-1.10,-0.95]  c +3.8   (median closing 9.0, 337 tracks)
+   range-stationary, not confirmed: k -0.91 [-0.96,-0.85] c +2.0
+   confirmed stopped (same truth):  k -1.01 [-1.15,-0.87]  c +0.6
+   With the stopped-fit (k -1.03, c +1.07) the median pred/truth ratio is 0.90-0.98 in every group. The low moving k comes from the
+   same-direction, low-closing (~2-3 m/s) rows; oncoming and stopped agree at k ~ -1.0. Verdict: PARTLY EXPLAINED. The gap is in same-direction
+   slow closers, where 1/64 quantization plus the NC=0 dropout at small closing bias an unconstrained (k,c) fit (c trades with k).
+   It is not a stopped-vs-moving physical difference. The exact cause of k -0.75 in-lane is unexplained beyond that.
+3. F ON MOVERS (U11 vs 1 s LSQ, same-direction, 20-80 m, age>2 s, unrailed, |aEgo|<0.3, |d rate/dt|<0.3):
+   closing  scale 0.97 [0.94,0.99], median ratio 0.98 (811 tracks)
+   opening  scale 0.89 [0.87,0.91], median ratio 0.81 (936 tracks)
+   all |rate|>1  0.92 [0.91,0.94]
+   Verdict: about 1.0 (closing), NOT 1.10. The +10% U11 scale is specific to stationary targets (stopped ratio 1.10 vs range slope 0.98).
+   U11 under-reads opening movers by ~10-19%.
+4. FLAG DEFAULT 0.5 s window / 0.5 s hold, a=1.0 b=0.02, vEgo>5 (rows):
+   TP (confirmed-stopped) 0.427. FS vision-assoc vLead>5 0.00003 (0-40 m 0.00000, 40-80 0.00004, 80+ 0.00016).
+   FS radar-moving |vAbs|>3 0.00010. FS slow movers 3-8 m/s 0.0014.
+   Grid: a=0.5,b=0: TP 0.10 / FS-slow 0; a=1.5,b=0.05: TP 0.71 / FS-vis 0.00015 / FS-slow 0.012 (full grid in fu_out.txt).
+   Compared with the 0.5 s window and a 0.25 s hold: TP drops 0.56 -> 0.43, FS-vis 0.0001 -> 0.00003, FS-slow 0.0076 -> 0.0014.
