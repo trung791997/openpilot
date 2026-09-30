@@ -415,7 +415,7 @@ def strict_key(tid: np.ndarray, inc: np.ndarray, brk: np.ndarray) -> tuple[np.nd
   return tid * 1e9 + inc * 1e5 + runs, sat
 
 
-def derived(T: dict, win_s: float = LSQ_WINDOWS_S[0]) -> dict:
+def derived(T: dict, win_s: float = LSQ_WINDOWS_S[1]) -> dict:
   key = T["tid"] * 1e9 + T["inc"] * 1e5
   slope = lsq_slope(T["t"], T["d_rel"], key, win_s)
   skey, sat = strict_key(T["tid"], T["inc"], T["brk"])
@@ -596,7 +596,8 @@ def main(argv=None) -> int:
       p.add_argument("--track", type=int, required=True)
       p.add_argument("--out")
       p.add_argument("--csv")
-      p.add_argument("--win", type=float, default=LSQ_WINDOWS_S[0], help="LSQ slope window, s (plan: 0.25 or 0.5)")
+      # 0.5 s by default: on 0000025e tid 59 (a car slowing to a stop) the 0.25 s window reads stationary at 115 m, 0.5 s only at 26 m
+      p.add_argument("--win", type=float, default=LSQ_WINDOWS_S[1], help="LSQ slope window, s (plan: 0.25 or 0.5)")
   args = ap.parse_args(argv)
   return {"extract": cmd_extract, "tracks": cmd_tracks, "plot": cmd_plot}[args.mode](args)
 
