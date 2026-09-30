@@ -6,7 +6,7 @@ ae6ae25e8 (the Bosch-A track tool the corpus run is pinned to).
 
 Peter, 2026-09-30: plots may go on this branch; nothing merges into ns-bosch-radar-testing until the work is verified.
 
-- Evidence here is replay only. No car-side code changes on this branch.
+- Evidence here is replay only. Car-side change (NC-at-rail in radar_interface.py) is behind BOSCH_A_NC_RAIL_VREL; replay pending; not for sync until a DECISIONS entry.
 - Route data is cited by route ID and never committed. Plots and small CSV summaries are fine.
 - The shared checkout stays on ns-bosch-radar-testing. Commit here without checking out with
   `/tmp/stopshadow_commit.sh "<message>" <repo-path>=<local-file> ...` (temporary index + commit-tree).
