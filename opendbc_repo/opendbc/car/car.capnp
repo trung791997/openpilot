@@ -324,6 +324,10 @@ struct RadarData @0x888ad6581cf0aacb {
 
     # some radars flag measurements VS estimates
     measured @6 :Bool;
+
+    # Honda Bosch-A only: closing vRel implied by NORMALIZED_CLOSING, valid when ncValid (else ignore ncVRel)
+    ncVRel @7 :Float32; # m/s
+    ncValid @8 :Bool;
   }
 
   enum ErrorDEPRECATED {
