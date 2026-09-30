@@ -194,7 +194,8 @@ BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD = True
 # D-063 is built in (was the BoschARailInterval toggle; on in the owner's drives 00000287-0000028b). Replay, static and
 # limited road evidence. Set False (replays, tests) and both gate calls below run `exact`, the pre-D-063 gate.
 BOSCH_A_RAIL_INTERVAL = True
-# NC-at-rail (stopshadow-radar, REPLAY ONLY, no road evidence; proposed to Peter, not in DECISIONS yet). F2's
+# NC-at-rail (stopshadow-radar ONLY -- do not sync this file to another branch until a DECISIONS entry exists; REPLAY
+# ONLY, no road evidence). F2's
 # NORMALIZED_CLOSING (23|10, 1/64, -8; raw 512 = 0 = no reading) is a closing-only inverse-TTC channel the rail does not
 # clamp: over the stopshadow corpus (tools/longitudinal/stopshadow/summary.txt, followup.txt) -NC * dRel tracked the long-window
 # range rate past the -13.5 rail at 0.91-0.95 of truth (stopped fit k -1.03, c +1.07 m on parser dRel, c=0 inside the CI),
@@ -1164,7 +1165,7 @@ class RadarInterface(RadarInterfaceBase):
   def _bosch_a_nc_rail_vrel(self, track, observation, direct_vrel, vrel, d_rel, y_rel, now):
     """NC-at-rail (see BOSCH_A_NC_RAIL_VREL): a low-rail U11 in our lane replaced by NORMALIZED_CLOSING when the range agrees."""
     low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
-    if direct_vrel is None or direct_vrel > low_rail or abs(y_rel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M:
+    if direct_vrel is None or direct_vrel > low_rail + 1e-6 or abs(y_rel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M:
       track.nc_vrel = None
       track.nc_vrel_nanos = None
       return vrel
