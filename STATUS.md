@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-27**
+**As of: 2026-09-28**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -1828,7 +1828,8 @@ decode error — **all objects were firmware no-target sentinels.** See D-027, D
     Upstream `SpysyWeeb/Spysypilot` restructured BLoTv2 into BLoTv3 (`combo-blotv3`, `7aed876`,
     `docs/BLoTv3.md`). Two of those changes are supervisor behavior and are now in
     `selfdrive/controls/lib/blotv3.py`: the `t_follow` pads saturate at their ceilings instead of
-    vanishing above `ONSET_MAX_A_REQ`, and the crawl hold latches on "was necessity-braking"
+    vanishing above `ONSET_MAX_A_REQ` (**reverted 2026-09-28**: it made hard brakes harder,
+    route 00000294 6:25 sim -4.23 -> -3.90; closed-loop replay only, see D-058), and the crawl hold latches on "was necessity-braking"
     instead of on the exact `JERK_SCALE_MIN` floor (released by the emergency bypass and by lead
     loss). The module, class, tests and toggle are renamed (`BlotV2` → `BlotV3`, toggle starts off).
     The BLoTv3 module split (`force_stops.py`, `stop_helpers.py`,
@@ -6102,6 +6103,16 @@ Run: all 17 item 104 routes plus 266 and 267, `--bearings 0.075 --fixes`, at HEA
   - Rendered on 28a segs 13 and 20 and 28b seg 19: 2–4 tracks per frame. Each in-path and side lead has its dot at the marker tip. Close leads' returns fall below the view, so they have none.
   - Replay render evidence; not seen on the device.
 - **Deployed to the car, 2026-09-28** (owner: "you can do update and restart on it. But don't change any toggle"). While offroad, with no other agent logged in: `/data/openpilot` fast-forwarded 99e807fd → e0d4aa2c, pure Python, and the `prebuilt` marker was kept. The device's local `starpilot/assets/active_theme/` edits were left as they were. It was rebooted, came back on e0d4aa2c, and `selfdrive.ui.ui` is running with no UI exception in swaglog. No param or toggle was changed. Not yet driven on this build.
+- **First drives with the radar dots, 2026-09-28** (openpilot-51 (Steve); logs pulled from the comma, analysed, then deleted). 0000028f--b6284c4bc9 ran e0d4aa2c; 00000290--af15379c8c, 00000291--edadbd74e6 and 00000292--72e364dd62 ran ea8e066d, whose mici renderer is identical to e0d4aa2c and HEAD. `RadarTracksUI` and `AdjacentLeadsUI` were on for all four.
+  - Method: every segment (62, 70,230 frames) replayed frame by frame through the real `ModelRenderer`, recording markers, labels and radar dots. Selected frames rendered over the qcamera. Replay render evidence; the owner has not yet reported what he saw.
+  - Flip: 56 leadOne form changes, 0 that switch back within 1 s.
+  - Doubled labels: 0 frames with the same car labelled twice. Every repeated speed is two different cars, for example 28f seg 13 785.2 s: leadOne track 46 (its right-lane copy correctly hidden) and left lead track 43, both 19 mph.
+  - Radar dots: a dot sits within 25 px of the in-path marker tip on 11,028 of 12,519 radar-lead frames on 28f, 1,742 of 1,747 on 290 and 4,926 of 6,608 on 292. Nearly all the misses are flipped close leads, whose returns fall below the view. Only 36 upright frames miss, mostly cut-ins whose marker is clamped at the screen edge.
+  - **Marker blinks:** leadOne's status drops for 0.5 s or less and comes back 176 times (28f 20, 290 28, 291 1, 292 127). 152 of these are vision-only leads (track −1). Worst case: 292 seg 1 118.3–120.2 s (render 56.9–57.2 s), stopped at night, disengaged, with a vision lead at 26 m switching on and off every 0.1–0.3 s. Not changed; holding the marker through these dropouts is an owner decision (see the open item in the handoff).
+  - Seen once in a render: 28f seg 8 11.8 s, a flipped right-lane marker (15 m, yRel −2.8) draws over the corner of the speed-limit sign. Label avoidance covers labels, not markers.
+  - **Side labels no longer jump across the in-path label (owner, from the contact sheet).** At 28f seg 6 51.2 s the right-lane lead's "56 mph" and at 28f seg 8 11.8 s its "46 mph" had slid about 180 px left to get off the speed-limit sign, past the in-path label, so they read as a second in-path speed ("super confusing"). `_draw_lead_label` now drops a side-lane label that sits on the sign, never slides a side label inward past the label it hit, and never parks one under the sign. Label-only collisions still slide outward, and in-path labels are unchanged. The marker still draws. Unit tests plus a replay render of both frames; not seen on device.
+  - **Not a UI fault, for Radar Work (Bob):** at 28f seg 6 32.6 s the blue left-lane "16 mph" marker sits next to the black sedan, not under it. It is on track 49 (dRel 29.5, yRel 3.0), whose range closes at about 21 m/s (the car's own speed; 74.6 → 7.9 m over 30.5–34.0 s) while U11 sits on the −13.5 m/s rail. That makes it a stationary return, published as the rail bound (vLead = vEgo − 13.5 ≈ 16 mph), not the sedan, which moves with traffic. Track 43 (9 m left) shows the same pattern.
+  - **Side leads wait 0.5 s before their marker and label (owner: "Just radar points on those. No need for label and marker.").** A new leadLeft/leadRight track gets no marker and no speed label until the same radar track has held that slot `SIDE_LEAD_MIN_AGE_S` = 0.5 s; a new track id or a status drop starts the wait over. Its radar dot draws the whole time. Unit tests only, not rendered or seen on device. **Second correction (replay, Radar Work (Bob) + this session):** the first correction above tested the UI delay alone against radard-OFF output (28f segs 8-12 → 65.5 s to 34.9 s of oncoming marker time, a flat ~0.5 s trim). That understated the car's actual behavior, which runs the radard fix and this UI delay together. Bob's own gate simulation (`/tmp/rv/adj_0000028f_8-9-10-11-12.json`, 28f 517-750 s) with both fixes combined: oncoming marker time 68.4 s (no fixes) → 21.3 s (radard fix only) → 0.0 s (radard + UI delay, fully cleared); other railed takeovers (track-43-style handoffs) 7.1 s → 0.0 s; stationary 4.9 s → 0.1 s; real same-direction side cars 14.9 s → 12.4 s (still mostly shown, as intended). So on the car, the combination does clear the oncoming markers in this stretch — the "only trims 0.5 s" read holds for the UI delay in isolation, not for the shipped combination. Replay numbers only, not rendered or seen on device. The big UI (`selfdrive/ui/onroad/model_renderer.py`) is unchanged.
 - **Watch:** a tall lead (truck, SUV) has its roof above 1.5 m, so the marker sits on the rear of the body rather than above it (rendered above). Photograph it if the marker flickers between the two forms in stop-and-go.
 
 ## 109. The item 107 per-track hold is shipped in the planner (ffa72fdc, owner approved); the shipped code reproduces the replay prototype on 19 routes. Replay evidence only; brake-affecting; not driven.
@@ -7443,6 +7454,33 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
   - acting share unchanged (4.2 / 7.1 %); 0 frames lifting > 0.05 while the lead closes faster than 0.5 m/s or brakes harder than −1.0.
 - Tests: `test_exp_lead_departure.py` now checks the gentle release rate (closing, braking, lost lead), the 3-frame release, the urgent instant drops, stop / toggle / e2e-brake instant drops and the MPC cap. 560 passed with `test_longitudinal_planner.py`.
 
+### 136f. Route 11c8fa231c0499ed|00000293--9d152a3cdc (owner: drove in Experimental Mode throughout): the smoothed release (136e) runs on the road. Log decode and replay only; nothing changed.
+
+- Build 6b0242f4 (contains a5c342ba, assist code unchanged since); `ExpLeadDepartureAssist` = 1. Radar alpha long; 26.2 engaged min, 24.8 in Experimental Mode (95 %); lead present 66 % of it, 84 % radar.
+- Assist acted 62 s (4.1 % of exp), 40 episodes, lift p50 0.11, max 0.41. The logged aTarget − min(e2e, MPC) matches the replay within 0.02 on 97 % of acting frames.
+- Release: the largest logged one-frame drop during a release is 0.31. Only 2 drops exceed 0.16, and both are urgent cases (lead closing > 0.5 m/s or braking < −1.0). 0 frames lifting while the lead closes/brakes past those limits; 0 frames lifting while e2e < −0.15.
+- 27 brake onsets below −1.5 in exp. 26 have assist ≤ 0.02 in the 5 s before; each has a closing radar/vision lead or, at 19:36, MPC braking with no lead. The one exception is 34:02.5 (−1.6 within 2 s): the assist lifted ≤ 0.22 behind a lead at 46 m / 32 mph, released by 34:01.6, then the lead braked at −1.9.
+- What the assist does not cover — the owner's gas presses on this drive:
+  - 29:23 and 34:12: a radar lead pulling away at +4.8 / +5.9 m/s with MPC +0.6 / −0.15 → +0.3, while e2e itself braked at −0.45 / −0.83. By design the assist never lifts e2e braking below −0.15.
+  - 12:06, 12:16, 14:05: no lead; e2e −0.16 to +0.18 against MPC +0.35 to +0.60. The assist needs a lead.
+  - These are the item 136a `e2e_brake` / no-lead classes, not the class the assist targets.
+
+### 136g. `ExpLeadDepartureAssist` baked in unconditionally; the TEST toggle is removed (owner request). Unit tests and static build checks only; not itself driven — no behavior changes for a car that already had the toggle on.
+
+**Why.** Four separate logged/replayed drives (136c–136f, 96.9 replay-minutes plus routes 278/280/283/293 on the road) showed the assist behaving exactly as designed with the toggle on: logged `aTarget` matched the open-loop replay within 0.02 on 95–97 % of acting frames, 0 frames lifted while a lead closed faster than 0.5 m/s or braked harder than −1.0 m/s², 0 frames lifted while e2e itself was braking below −0.15, and no hard brake in the 5–8 s window after an episode was attributable to the assist — each was an independent lead event or a model braking decision the assist does not touch. 136d's one-frame release steps (up to 0.50 m/s²) were the only defect found, and 136e/136f closed it (max release step fell to 0.31–0.32, and every remaining step > 0.16 is one of the intentional urgent instant-drop cases). With no fault found across four drives and a defined defect already fixed and re-verified, the TEST/default-off gate was no longer buying anything but an extra param a driver had to know to flip. Removing it collapses the assist to the same "on in Experimental Mode" behavior every driver who had already opted in was getting.
+
+**What did not change.** Every gate from 136b is still in force: `get_exp_lead_departure_weight` still requires a lead (radar, or vision with modelProb ≥ 0.5) at or beyond the follow distance and pulling away, ≥ 4.5 m/s, no planned stop; `update_exp_lead_departure` still runs only on the tinygrad-model branch of the e2e/MPC arbitration, in Experimental Mode; the lift still never exceeds the MPC target, never lowers the e2e target, and never touches e2e braking below −0.15; the smoothed release (136e) is unchanged. The only thing removed is the boolean gate that let a driver turn the whole rule off.
+
+**What is explicitly not in scope.** 136f identified two classes of gas presses the assist still does not cover: e2e braking behind a departing lead (the assist never touches e2e braking by design), and no-lead cases where the model itself is slow. Extending the assist to either would mean overriding the model's own braking decision, which risks masking something the radar cannot see — that is a separate, harder change and was not requested here.
+
+**Code (`selfdrive/controls/lib/longitudinal_planner.py`).** `update_exp_lead_departure` no longer takes a `starpilot_toggles` argument or gates on it; it always computes the lift (subject to the gates above) unless `hold_experimental`. The call site drops the now-unused argument. The constant-block comment above `EXP_LEAD_DEPARTURE_MIN_SPEED` documents the full 136b–136g history so the next person touching these constants can see what each one is for and what evidence set it.
+
+**Removed.** The `ExpLeadDepartureAssist` key: from `common/params_keys.h`; the `toggle.exp_lead_departure_assist` load in `starpilot/common/starpilot_variables.py`; the "Follow Departing Leads (Experimental)" row in `selfdrive/ui/layouts/settings/starpilot/longitudinal.py`; the matching entry in `starpilot/common/assets/device_settings_layout.json`. `tools/longitudinal/exp_lead_departure_replay.py` and `selfdrive/controls/tests/test_exp_lead_departure.py` updated for the new function signature; the toggle-specific tests (`test_toggle_off_changes_nothing`, the `toggle=False` case in the stop/brake instant-drop test) removed since there is no longer a toggle to test.
+
+**Params artifacts.** `common/params_pyx.so` and `common/libcommon.a` rebuilt natively on this aarch64 host with the pinned toolchain (clang 18.1.3, system Python 3.12.3, Cython 3.1.4, `SP_FORCE_TICI=1`, sconsign cleared first): keys 855 → 854 against the pre-change blob, the only removal `ExpLeadDepartureAssist`; `params_pyx.cpp` byte-identical apart from the build-path comment; a remaining key (`BoschARadar`) still put/get/removes cleanly, and reading the removed key now raises `UnknownKeyName` as expected.
+
+**Tests.** `test_exp_lead_departure.py` (24, was 18 pre-136e) and `test_longitudinal_planner.py` together: 566 passed, same count as 136e/136f since no test logic changed beyond the signature and the toggle-specific cases removed.
+
 ## 141. Galaxy Plots rebuilt: recorded drives with a lateral/longitudinal analysis. Unit tests and a headless render against a synthetic drive only; not used on a car.
 
 **What changed.** The Plots page (classic `/plots` and mobile `#/plots`) no longer grades a 30 s window with client-side "Great/Good/Fair/Poor" scores. A backend module `starpilot/system/the_galaxy/drive_plots.py` (commit 57cca03c) samples `controlsState`, `carControl`, `carState`, `longitudinalPlan` at ~20 Hz. Requested lateral is `desiredCurvature·v²`, measured is `curvature·v²`; requested longitudinal is `longitudinalPlan.aTarget`, measured is `aEgo`. Only engaged, non-override samples count (`latActive`/`longActive`, no steer/gas press).
@@ -7464,6 +7502,208 @@ Tests: `test_latcontrol_pid_rate_ff.py` (3 new: default off and param read, torq
 **Evidence.** `test_drive_plots.py` 22 tests (bands recover a planted 0.75 gain above 50 mph, saturation fraction, header-tolerant read, empty discard); frontend suites pass (69 total). Both pages rendered in headless Chromium against the real Flask app with a synthetic drive: takeaways, band tables, tune list, zoom and axis alignment checked visually on 1400 px and 412 px viewports.
 
 **Not verified.** Still no car. The swallowed-tap fix is verified by node identity across polls, not by a human tap. Band edges and the 5 % saturation threshold are guesses. `ruff` reports the same implicit-string-concatenation and `time.time` classes as the committed version; not changed.
+
+## 141b. Galaxy Plots follow the new lateral controllers and radar work: wheel-angle scoring, tight low-speed turns, a "Moments to check" list with the car ahead, and a tune snapshot that knows which controller drove (owner, 2026-09-28). Unit tests and a headless render against a synthetic drive only; not used on a car.
+
+**Why.** Since 141a the Civic defaults to LatControlClarityEps (STATUS 188), the NRDR PID gains are set per LowSpeed / Standard / Highway band, and the radar work is judged on hard brakes and phantom braking. The page still scored curves on the vehicle-model lateral acceleration, used 30/50/70 mph bands, and advised LatP/LatI changes to a controller that does not read them.
+
+**What changed.**
+- New recorded columns: requested and measured wheel angle (`ang_des`, `ang_act`, `ang_ok`) and the car ahead (`lead_d`, `lead_v`, `lead_src` = none / radar / camera only). Older recordings still analyze; the new metrics are left out.
+- Curve response is measured on wheel angle, so a wrong steer ratio no longer biases it. Tight turns (wheel past 45 degrees under 25 mph) get their own table in degrees: off-by, past the request (overshoot or late unwind), behind, and time at limit. A wheel-wobble table covers near-straight road.
+- Speed bands are now Low speed (under 25 mph), Standard (25-50) and Highway (50+), matching the tuning sliders.
+- "Moments to check" lists hard brakes, gas presses while openpilot braked, steering takeovers and tight turns that went 10 degrees or more past the request. Each moment gives the clock time, speed, and the car ahead with its distance, speed and source. Tapping one opens the charts there.
+- The zoom and live views add a steering-wheel-angle chart and a car-ahead distance chart. The distance line breaks where no car was tracked.
+- The drive meta records which steering controller drove (James's controller, NRDR PID, or the CarParams tuning type) and snapshots the lateral, NRDR, longitudinal and radar params (BlotV3, BoschARadar, NrdrHondaEcuMatchedLong). Under James's controller the Lat*Scale and Honda PID scale values are marked "not used", advice does not suggest slider changes, and the P-term chart notes that the logged P is before its speed-band scale and output filter.
+
+**Evidence.** `test_drive_plots.py` 33 tests (angle-based curve response, planted tight turns and wobble, each moment kind, controller-specific advice, old-column tolerance); with the frontend suites 79 pass. Both pages rendered in headless Chromium against the Flask app with a synthetic drive at 1400 px and 412 px: moments, turn tables, grouped tune, wheel-angle and car-ahead charts checked visually; no page errors from Plots.
+
+**Not verified.** No real drive has been recorded with the new columns. The 45 degree / 25 mph tight-turn cut, the 10 degree "went past" cut, and the 2.5 m/s² hard-brake threshold are guesses to be checked against the first real recordings. The controller label mirrors the controlsd selection rule by reading CarParamsPersistent and NrdrLatEpsFirmwareFF; it is not read from the running controller.
+
+## 141c. Galaxy Plots records every drive by itself and copies its moments into the drive's rlog, with the signals the long and lat agents asked for, plus an offline tool that rebuilds the same analysis from any rlog (owner, 2026-09-28). Unit tests, a headless render against a synthetic drive, and a replay of one real route; not yet recorded on a car.
+
+**Why.** Recording only ran when someone pressed Start, and what it found stayed in the Galaxy session folder, where the agents working on long and lat could not see it. The owner asked for recording to start with the drive, for the results to land in the rlogs, and for the plots to carry what those agents need. James, Bob, Kevin and John were asked what they wanted, and all four replied.
+
+**What changed.**
+- **Auto-record.** A watcher starts when the Galaxy starts. It begins recording when the car goes onroad and stops 30 s after offroad.
+  - The setting lives in `drive_plots/settings.json`, not a param, because the device runs a prebuilt tree and a new params key would need a rebuild. It defaults to `{"auto_record": true, "publish_to_log": true}`.
+  - Both Plots pages have a "Record every drive" checkbox (`/api/plots/settings`).
+  - Pressing Stop skips the rest of that drive; the next drive records again.
+  - Only automatic sessions are pruned: the newest 20 are kept, up to 1 GB. Manual recordings are never pruned.
+- **Copy in the rlog.** The recording publishes JSON on `customReservedRawData0`. It is already in the log list and nothing else sends on it; the testing-ground worker uses customReserved9.
+  - The schema is `drivePlots/1`, with `type` start / moment / takeover / summary / end and `mono_ns`.
+  - `start` carries the drive meta: controller, tune snapshot, git and lateral delay.
+  - Moments are published as they finish. Every 20 s the last 60 s are scanned, and a moment is sent once it is 8 s old. Takeovers wait 7 s after release so the recovery is measured.
+  - `summary` goes out every 300 s, and `end` goes out at stop.
+  - loggerd only runs onroad, so nothing published after offroad reaches the rlog. The final analysis stays in the Galaxy session.
+- **New columns** (NaN when that service never arrived, so older recordings and missing services are not read as zeros):
+  - Lateral: `steer_tq`, `steer_tq_eps`, `steer_rate`, `blinker`, `tq_req`, `tq_out`, `lat_out`, `ang_err`, `pid_active`, `ff_active`, `ff_w`, `ff`, `lane_off` (+ = car left of centre), `lane_w`, `lane_prob`.
+  - Timing: `cs_age_ms` (carState age at the plan).
+  - Longitudinal: `a_cmd`, `should_stop`, `fcw`, `has_lead`, `exp_mode`, `t_follow`, `tracking_lead`, `standstill`.
+  - Lead: `lead_id`, `lead_y`, `lead_vrel`, `lead_a`, `lead_prob`, `lead_meas`, `lead_vrr`, `lead2_on/d/v/id`.
+  - Model lead: `mlead_p/x/y/v/a`.
+  - The Galaxy now subscribes to carOutput, modelV2, selfdriveState, starpilotPlan and starpilotLateralState at 20 Hz on every drive. That is extra CPU in the Galaxy process, and it has not been measured on the device.
+- **New moments** (`drive_plots_agents.py`): firm brake, brake with no car ahead, camera-only brake, driver brake override, car appeared close, car vanished close, and track-ID swap.
+  - Steering takeovers are measured as episodes: hold time, push direction, blinker, wheel swing after release, and time back on plan and back within 2 degrees.
+  - Recovery numbers are left empty when lateral was not active after the release.
+  - The drive analysis adds a takeover breakdown and the median lane position on straights per speed band. Under 8 cm reads "centred".
+- **`tools/drive_plots/rlog_report.py ROUTE_DIR_OR_RLOG... --out DIR [--rate plan|carstate] [--no-detect]`** rebuilds the same rows and analysis from raw rlogs. It writes `report.json` and `samples.csv`.
+  - Times are labelled `route_s`, `seg` and `seg_mmss`. Each segment starts at its first carState, because initData repeats in every segment.
+  - The report includes:
+    - the tune snapshot (every Nrdr*/HondaOverride* key in `params_keys.h`; "missing" when not logged)
+    - the controller, detected by `lat_score`
+    - controls gaps from `cs_age_ms`
+    - lateral delay and liveTorqueParameters
+    - the car's own drivePlots messages, when present
+
+**Evidence.**
+- 86 tests pass across `test_drive_plots.py`, the frontend suites and `tools/drive_plots/tests`. They cover:
+  - the agent columns and NaN handling
+  - the takeover episode
+  - auto start and the manual-stop skip
+  - the rlog messages through a fake publisher
+  - pruning
+  - a synthetic rlog through the offline tool
+- Both pages were rendered in headless Chromium at 1400 px and 412 px. The checkbox, takeover moments, takeover rows and lane-position row were checked as text; there were no Plots page errors.
+- Replay: `rlog_report.py` on 3 segments of one real ClarityEps route gave 3529 rows, detected clarity_eps, and found 32 moments and 20 takeovers in about 5 s. That replay found and fixed three bugs:
+  - "car appeared close" fired at standstill
+  - takeovers while disengaged got a recovery overshoot
+  - segment labels were wrong
+
+**Not verified.**
+- No drive has been recorded on the device with this code, and no rlog yet contains a drivePlots message.
+- A takeover held longer than about 50 s is not published live; the offline tool still finds it.
+- The Galaxy CPU cost of the extra subscriptions is unmeasured.
+- All moment thresholds are first guesses, to be checked against real recordings.
+
+## 141d. Plots moments after the agents' first read of 141c (2026-09-28): takeovers say which controller drove and where the car sat in the lane, and the lead moments stop firing on next-lane blinks and radar/camera handoffs. Unit tests and a replay of one real route only.
+
+- **Takeovers** (Driver override, VFN Shadow controller):
+  - Every episode carries `lateral_controller` and `git_commit`, because takeovers under ClarityEps and the PID are not comparable. The rlog copy and rlog_report carry them too.
+  - Each episode adds `lane_press_m`, `lane_release_m` and `lane_press_3s_m`: position from the centre of the lane at the press (+ = left), carried across a lane change. This is the real-grab counterpart of the design-C sim's "+3 s from press" residual. It is limited road evidence and never scored pass/fail, since a real grab has no no-push twin.
+- **Lead moments** (Radar Work, from route 28f):
+  - `track_id_swap` is now radar to radar only: both IDs >= 0, lead kept, distance within 3 m. Handoffs are `radar_acquired` / `radar_lost`. They stay in the analysis and the rlog but are not listed on the page.
+  - `lead_appeared_close` / `lead_vanished_close` now need the lead within 2 m laterally and under 30 / 40 m, and the new state must hold 0.5 s.
+  - An appear and a vanish within 1 s are one `lead_flicker`.
+  - A distance drop over 8 m while the lead is 30 m or farther is `lead_jump`.
+- **Experimental mode:** the moment field is now `experimental_active`. `selfdriveState.experimentalMode` is switched by Conditional Experimental, so it is not the driver's setting. ConditionalExperimental and ConditionalChill join ExperimentalMode in the tune snapshot.
+- **Replay** of the same 3 segments of one ClarityEps route:
+  - Before: 5 swaps, 7 appeared, 4 vanished.
+  - After: 0 swaps (5 radar_lost, 4 radar_acquired), 2 appeared, 1 lead_jump, 0 vanished.
+  - All 20 takeovers carry clarity_eps, the commit and the three lane positions.
+  - Its snapshot shows ConditionalExperimental = 1.
+- 87 tests pass, including a scenario that exercises every lead gate.
+- **Not verified:** the new 2 m / 0.5 s / 1 s gates are Bob's numbers from one route and have not been checked against a second.
+
+## 141e. Plots checked against the rlogs and the agents' lat_score (owner, 2026-09-28): the tight-turn table now also gives lat_score's figure, wobble leaves out lane changes, and `tools/drive_plots/mirror_check.py` checks all four layers. Unit tests and a replay of one real route only.
+
+- **Mirror check** (`tools/drive_plots/mirror_check.py <route>`), four checks on the same logs:
+  - **columns:** every `build_row` column against the rlog field it names, read on its own at each longitudinalPlan.
+  - **frames:** Plots' angle, desired angle, grab, pidState.active and lane-change state against `lat_pid_sim.extract_logs` (the frames lat_score scores). Rows are lined up by message order, not logMonoTime, because an rlog's logMonoTime is not strictly ordered (a controlsState can be stamped after the plan that follows it in the file). Matching by time put 3% of rows one frame off.
+  - **lat_score:** `score_arrays` turn error / past / behind and wobble beside Plots.
+  - **car:** the drivePlots messages in the rlog beside the same moments and takeovers found offline.
+- **Two gaps it found, both fixed:**
+  - **Tight turns read about 10x lower than lat_score** (under 12 mph: 2.7 vs 26.6 deg). The cause is that Plots leaves out the second after the driver lets go (James asked for that), and those frames average about 30 deg off.
+    - Each turn bin now also carries `scorecard`, which uses lat_score's mask: pidState.active (latActive before that column), hands off, over 4 m/s.
+    - The page shows it under the table as "Counting the second after you let go, as the agents' scorecard does: ...", and the notes carry it too. Plots' own figure is unchanged.
+  - **Wobble 8-12 m/s counted lane changes** (0.36 vs lat_score 0.19). A new column, `lane_change` (modelV2.meta.laneChangeState), lets the straight mask drop them as lat_score does. Older recordings without the column are scored as before.
+- **Replay** of 3 segments of one ClarityEps route:
+  - **columns:** all 69 columns match the rlog fields on 3529 rows.
+  - **frames:** desired angle and pidState.active agree on 100% of rows; angle, grab and lane change on 99.8%+. The rest are rows holding a carState or modelV2 one frame newer than lat_pid_sim's frame.
+  - **lat_score vs Plots:**
+
+    | Metric | lat_score | Plots |
+    |---|---|---|
+    | turn error, under 12 mph | 26.6 | 26.4 |
+    | turn error, 12-25 mph | 18.3 | 18.7 |
+    | wobble 5-8 m/s | 0.524 | 0.54 |
+    | wobble 8-12 m/s | 0.194 | 0.21 |
+    | wobble 12-20 m/s | 0.189 | 0.16 |
+
+    All are within the printed tolerances: 1.5 deg / 10% for turns, 0.03 deg / 15% for wobble.
+  - **car:** this route predates the car's drivePlots messages, so the car check is untested on a real drive.
+- 89 tests pass. Two are new synthetic-drive tests: one with out-of-order stamps, a lane change, a tight turn with a grab and a car message, and one negative control where a column reads the wrong field.
+- **Not verified:**
+  - The car check on a drive recorded by the car.
+  - Any route other than this one.
+
+## 141f. Plots fixes from James's read of route 293 with rlog_report (2026-09-28): lane drift needs both lines through the window, turns under a light hold are left out and tagged, and overshoots carry route times. Unit tests and a replay of one real route only.
+
+- **Takeover lane numbers:**
+  - drift_1s / 3s / 6s are None unless both lane lines stay above 0.5 from the press to the end of that window. `lanes_ok` is the same test from press to release.
+  - `lane_release_m` and `lane_press_3s_m` are gated the same way. New `lane_prob_min` is the lowest from press to release + 6 s.
+  - At 1202.7 the old release-only check passed (0.72 at release) while the right line sat at 0.02-0.18 in the hold, and the reported 1.06 m was the line jumping.
+- **Holds:**
+  - The "driver's hands plus 1 s after" mask (`agents.after_release`, new `agents.held`) now counts the takeover episodes as well as raw steeringPressed. steeringPressed flickers off in a light hold the torque still shows.
+  - This affects Plots' own turn and wobble figures, the tight-turns list and the lane-straight numbers. The `scorecard` figures stay on lat_score's steeringPressed-only mask.
+  - Each tight turn carries `held_frac`: the share of -10 s .. +5 s around turn-in that the driver was holding.
+- **Overshoots** carry mono_s, so rlog_report adds route_s / seg / seg_mmss and drops the old `t`. That `t` counted from the first sample, not the route start, and was easy to misread against samples.csv's monotonic `t`.
+- **Replay of route 293** (41 segments):
+  - 1202.7 has drift None and lane_prob_min 0.02.
+  - The 234.0 turn is gone. 1166 is tagged held_frac 0.52, and the tight-turn list is down to 8.
+  - One overshoot remains, at route_s 1742.8.
+  - Only 1 of 80 takeovers keeps its drift, against 10 that passed at release before. The median lowest lane probability in a takeover on this route is 0.00, so on this road drift is mostly not measurable.
+- 91 tests pass.
+- **Lane rule loosened at James's request** (same day): a window counts when both lines are above 0.5 for 90% of its frames and neither stays under 0.3 longer than 0.5 s in a row. One-frame dropouts at merges and gores no longer void it. New `lane_ok_frac`.
+  - Route 293 still keeps only 3 drift_3s of 80 (lanes_ok 4). The median lane_ok_frac is 0.04, and 1202.7 is still rejected at 0.45.
+  - The lines are faint, not flickering: both lines are above 0.5 on 3% of the frames where the wheel is held (median 0.01), against 64% engaged above 15 m/s. Takeovers here happen at low speed and in turns, where the model does not see both lines.
+  - Any both-lines rule keeps few takeovers on such roads. A looser signal (the stronger line alone) would need a new column, and is James's call.
+  - James chose to keep this rule: None is the honest answer on such takeovers. A one-line gate would bring back the lane-width guesses.
+- **Added** (James):
+  - `lane_prob_l` / `lane_prob_r` columns beside the min, to see which side drops out. The mirror check confirms all 71 columns against the rlog.
+  - Each takeover drift median now has `drift_Ns_measurable` ("n / total", blinker takeovers left out) beside it. On route 293: 3 / 49 at 1 s and 3 s, 2 / 49 at 6 s.
+  - The median now uses every measurable takeover without a blinker; drift is gated per window itself.
+- **Not verified:** the rule on a highway route, where takeovers should see the lines.
+
+## 141g. Plots memory on the comma (2026-09-28): reading a finished drive no longer takes the_galaxy to 667 MB. Device reading (read-only) and local measurements; not yet re-measured on the device.
+
+- **Seen on the device** (route 294 procLog, read-only ssh): while recording, the_galaxy went 78 → 121 MB and levelled off
+  (the live buffer is 60 s, < 1 MB). At the stop it reached 229 MB (finalize), then 667 MB when Plots was opened,
+  device memory 89 %, and it stayed near 510 MB: seven ~33 MB glibc arenas held freed memory.
+- **Cause:** every zoom (`get_window`) and the finalize parsed the whole CSV as text plus Python float lists
+  (~110 MB for 20 min). Taps at once stacked (8 at once: 730 MB peak, 315 MB held, local).
+- **Fix:** `read_rows` streams into one array, and with a window keeps only that window's rows; one whole-session read
+  at a time (`DrivePlots._heavy`); `malloc_trim` after each; the_galaxy caps glibc at 2 arenas in `main()`
+  (`limit_malloc_arenas`, pure Python, no launch change). Local, same 20-min session: 8 zooms at once +8 MB peak,
+  finalize +36 MB peak (was +112). Results are identical to the old reader (whole drive and windows; test).
+- **Not verified:** the device numbers after an update. Check `/proc/<the_galaxy>/status` VmRSS/VmHWM after a drive
+  and a few zooms.
+- **2026-09-29 follow-up:**
+  - Device on the fix (ffe96749), route 297, ~58 min, auto-record off: the_galaxy held at 96-109 MB (qlog procLog), device
+    memory 78-82 %. There is still no device reading with a recording.
+  - Local worst case, a 2-hour drive (the 20-min session tiled): finalize peaked at +250 MB, because `read_rows` grew its array by
+    doubling. It now fills fixed 2048-row blocks and joins them one at a time: a clean 2 h read + analyze is +90 MB,
+    72 MB of which is the rows themselves. 10 zooms at once on 2 h: +8 MB.
+  - A stop in the background (by hand, or MAX_RECORDING_S mid-drive) now waits until IsOnroad is false before the
+    whole-drive analysis, so it never runs while driving.
+- **2026-09-29 zoom:** drag sideways across any whole-drive chart to zoom to that stretch (a tap still gives a minute).
+  Buttons pan and zoom in/out, and ctrl + scroll or a trackpad pinch zooms around the pointer. The zoomed stretch is
+  shaded on the whole-drive charts, and a drag inside a zoomed chart zooms further in. Spans are 4 s to 900 s, kept
+  inside the drive, and the newest request wins. Charts use `touch-action: pan-y`, so an up/down swipe still scrolls the
+  phone page. Each zoom is still one `/window` read under the `_heavy` lock (+8 MB for 10 at once, above).
+  Evidence is static only: `tests/test_plots_zoom_browser.mjs` runs headless Chromium on both pages against a synthetic
+  20-min drive, covering mouse drag, finger drag, vertical swipe, tap, buttons and the band. Not yet tried on a phone
+  against the device.
+- **2026-09-29 agent metrics** (Kevin, James, Bob and John asked; static and one-route replay evidence only):
+  - 31 more columns (09d059dac): steering faults, desired/actual curvature, firmware-FF internals, liveParameters,
+    liveDelay, planner source and caps, pitch, set speed, red light, gas learner, adjacent leads. RAM, local x86, a 2 h
+    drive with every column filled: finalize peak 255 MB vs 188 MB before (+67 MB after parking); nothing added
+    while driving (rows stream to disk). About 50 µs of CPU per row.
+  - Per-takeover numbers for Kevin (fcfe0e868): release gap, takeback rate, t90, re-press, fault flicker, near-cut.
+  - Moments (d7c014256, bcd56fd0d): Bob's exp_flipflop, false_red_light, atarget_step, close_lead_cap,
+    radar_coast_near, vrel_disagree, radar_vs_model, overspeed_no_lead and gf_clip; James's fault_flicker,
+    release_snap, hwy_inside_cut and hwy_wiggle. Bob then set vrel_disagree to > 3.0 m/s held > 1.0 s, moving only
+    (f9511da9e): 8 on route 297 (0.96 h), was 263; `radar_vrel_gap` p50 0.74, p90 2.39 m/s. exp_flipflop carries
+    standstill and long_active; bursts with long control off stay in the analysis but leave the drive's list
+    (3afd48749): 10 of 25 listed on 297.
+  - Kevin's live flags on each takeover (`flags`, published as it finishes): FLICKER, SNAPBACK, GAP (> 20° under
+    10 mph), NEAR-CUT (1500-1800 held > 1 s). Route 297 replay: 20 of 91 takeovers flagged (6 / 10 / 5 / 0).
+    `rlog_report` also writes `moment_windows.csv`, ±2 s of rows around each moment (offline only).
+  - Bob's brake_overshoot (long active, aEgo more than 0.8 below a negative a_cmd held > 0.3 s) and
+    unmeasured_lead_cap (radar lead with measuredRadar false while closeLeadBrakeCap < 0, held > 0.3 s); runs under
+    1 s apart are one moment. Replay: 298 has 1 overshoot (its bookmark 1, -3.5 asked, -4.72 reached) and 6 caps (its
+    bookmark 3 is the 121 m one); 297 has 2 and 4. 7 of the 10 caps start with vRel at -13.3 to -13.5 m/s.
+  - `tools/drive_plots/sim_export.py` writes John's `lat_pid_sim.npz` per steered segment at the controls rate
+    (~97 Hz on 297), t from each segment's first carState. Not yet read by his scorer.
 
 ## 142. Step 2 toward a torque controller: comma's torque controller (2a) and StarPilot's (2b, NNFF off) against the NRDR PID in the closed-loop sim, with and without the firmware VGR map. Sim only; nothing on the car changed.
 
@@ -9692,3 +9932,14 @@ Tools:
 - `tools/sim/override_openloop.py` replays one recorded run's inputs through the real `LatControlClarityEps.update()` in two NRDR_OVERRIDE_MODEs. `--ctl` loads a patched copy, so the owner file is never touched. `--blip` injects a raw torque spike.
 - Results on handsoff_30 (4786 frames), design C v2 (patched file sha1 8a68ecbe): C vs A max |d output| = 0.0 exactly. With a hands-off corner blip (2100, 3 frames): A 0.000, C v1 0.034, C v2 0.032. With a blip in the middle of a hug: A 0.166, C 0.149. The mid-hug step comes from the pressed path the two modes share: C's offset is unchanged by the blip.
 - `driver_model` gains "blips" (a raw sensor spike, max(|tq|, 2100), for n frames). New scenarios: handsoff_12, blip_30/45, blipho_30/45 and grab_45_0.3/0.4. The scorer gains blip_step_*, post_* and lane_changed.
+
+## 199. (ns-bosch-radar-testing STATUS 192, renumbered at the 2026-09-30 merge of pr10-smooth 44918d843 into sim-lat-training) ICBM gas-release set speed is baked in (owner request, 2026-09-29); the `SetSpeedOnGasRelease` toggle is gone, and the ICBM description is rewritten. Static and unit evidence only.
+
+- **Why:** `SetSpeedOnGasRelease` has defaulted on since STATUS 84, and the owner's ICBM drives since then ran with it on. STATUS 86/87/126 reworked it into the release set speed, the time-limited gas-release floor and the gas snap. The owner asked for it to be part of ICBM rather than a toggle.
+- **Change:**
+  - `starpilot/common/starpilot_variables.py`: `set_speed_on_gas_release` is now `redneck_cruise` on every ICBM car (Hyundai and Honda), as before by default. The param is no longer read.
+  - `starpilot/common/assets/device_settings_layout.json`: the Galaxy toggle entry is removed. The ICBM description now lists what ICBM adds to stock ACC: curve and speed-limit slowdowns, the Honda far-lead slowdown, launch after a stop, gas-release set speed, Honda counter sync, and driver buttons always win. Stock ACC still does the following and braking.
+  - The comments in `selfdrive/car/cruise.py` and `selfdrive/car/redneck_cruise.py` are updated.
+  - The key stays in `params_keys.h` and `feasibleparams.txt`, so there is no binary rebuild. It is unused.
+- **Effect:** a car that had the toggle turned off now gets the gas-release set speed, floor and snap too. No other behaviour changes.
+- **Tests:** `test_redneck_cruise.py`, `test_cruise_speed.py`, the_galaxy `test_device_settings_layout.py` and `test_device_settings_frontend.py`, and `test_starpilot_variables.py`: 212 pass.

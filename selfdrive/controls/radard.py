@@ -12,7 +12,6 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
-from openpilot.selfdrive.controls.lib.desire_helper import LaneChangeDirection, LaneChangeState
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 from opendbc.car.honda.radar_interface import (BOSCH_A_DIRECT_VREL_CENTER_RAW, BOSCH_A_DIRECT_VREL_MIN_RAW,
                                                BOSCH_A_DIRECT_VREL_SCALE_MPS, BOSCH_A_FREQ_HZ)
@@ -196,6 +195,20 @@ RANGE_VREL_RAIL_LONG_MIN_SPAN_S = 0.45
 RANGE_VREL_RAIL_ARM_UPDATES = 3
 RANGE_VREL_RAIL_SIZE_MEAN = True
 
+# --- Adjacent-lead rail gate (2026-09-28). REPLAY evidence only, nothing driven.
+# The range assist above only runs on leadOne/leadTwo, so every other track publishes the raw U11
+# rail: vLead = vEgo - 13.5 even for a stopped object. 0000028f seg 6 ~30.5-34 s (UI Work, STATUS
+# 108): track 49 at yRel ~3.2, range 74.6 -> 7.9 m in 3.5 s (closing ~ vEgo 21 m/s, i.e. stationary),
+# U11 pinned at -13.5 throughout, was published as leadLeft at ~16 mph; track 43 (yRel ~9) the same.
+# leadLeft/leadRight feed the UI and the conditional-chill adjacent-lead veto.
+# A Bosch-A track stops being ELIGIBLE as leadLeft/leadRight once, on the rail, the fresh short range
+# fit says at least RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS more closing than the rail on
+# ADJACENT_RAIL_GATE_UPDATES consecutive measured updates; it stays so until U11 leaves the rail.
+# The point itself is still published and still eligible as leadOne/leadTwo (D-041/D-042); only
+# the adjacent-lead label changes. Set ADJACENT_RAIL_GATE to False to restore the old behaviour.
+ADJACENT_RAIL_GATE = True
+ADJACENT_RAIL_GATE_UPDATES = 3
+
 # --- Vision-corroborated range assist (2026-09-26, extends D-053, rides RANGE_VREL_ASSIST).
 # REPLAY evidence only (open- and closed-loop), nothing driven; default OFF. 0000026c--10bec2e200 4:08:
 # a lead braking on a curve at 80 -> 60 m. U11 lagged (-2.7 -> -13.5 over 1.3 s) while the range closed
@@ -230,6 +243,59 @@ VISION_ASSIST_CLOSING_MARGIN_MPS = 3.0
 VISION_ASSIST_MAX_AZIMUTH_DEG = 10.8
 VISION_ASSIST_ARM_UPDATES = 3          # arm updates needed while corroborated on every one of them
 VISION_ASSIST_SHORT_ONLY = True        # corroborated: a long fit failing span/residual falls back to the short fit
+
+# --- Camera x-rate cap on a range walk (2026-09-29, extends D-053, rides RANGE_VREL_ASSIST). ON (owner, 2026-09-29).
+# REPLAY evidence only (open-loop radarState from logged CAN, plus the closed-loop planner tool on logged ego); not driven.
+# The assist fits the radar range and cannot see a range error. 00000297--f971b5896f 40:23.5 and 42:18.3: the radar
+# range fell faster than the matched camera lead's own x did, and the assist published that extra closing.
+# This judges the correction against the CAMERA'S RANGE (leadsV3[0].x), not its speed output: the model's speed
+# under-reads real far closing (STATUS 162; 297 53:40, 280 25:03 and 236 18:55 have the camera x falling 5-9 m/s
+# while its speed said 2-4), which is why the camera-speed version of this cap was dropped there.
+# Every model cycle a same-car camera sample (prob >= MIN_PROB, VISION_ASSIST_RANGE_TOL / MAX_DY_M geometry) is kept
+# on the lead track with the track's own dRel, over the trailing WINDOW_S. camera_xrate_verdict() then judges it; the
+# rules are the ones in the UI Work replay viewer (keep the two identical):
+#   FEW     fewer than MIN_POINTS                                               -> no action
+#   STEP    a two-level fit (>= STEP_MIN_SIDE points a side) with SSE_S < STEP_SSE_RATIO * SSE_L and a level change
+#           > STEP_MIN_M is a camera lead switch (a plain fit reads the 297 10:55 74 -> 60 m jump as 7-10 m/s of
+#           closing). Only the points after the break are kept; fewer than POST_MIN_POINTS or a span under
+#           POST_MIN_SPAN_S of them                                              -> no action
+#   NOISY   line residual sd >= max(MAX_RESID_SD_M, RESID_SD_REL * mean camera range)  -> no action
+#   AGREE   |camera slope - radar dRel slope| over the same samples < max(AGREE_MPS, AGREE_REL * mean range) -> none
+#   JUDGED  otherwise: published closing may exceed the camera x-rate closing by at most MARGIN_MPS.
+# It only LOWERS a correction: never arms one, never touches U11, the KF, selection or the point (D-041/D-042).
+# The U11 rail is exempt (D-041, 000001f9 29:52), as the rail rules above decide alone there.
+# Chosen on replay (per-event m/s*s of leadOne correction, base -> cap):
+#   WINDOW 3 s, MIN_POINTS 20: a 2 s window cut 237 19:49 to 12.84 and 258 56:18 to 0.47.
+#   MIN_PROB 0.9: 0.8 cut 280 25:03 to 20.62 (0.7: 18.77 under the fixed-sd rule); 0.9 keeps 21.81.
+#   MARGIN 2: margin 3 left 297 42:18.3 at 7.34 (2: 6.81).
+#   Cut: 297 42:18.3 8.45 -> 6.81, 40:23.5 1.77 -> 1.15, 283 9:12 4.40 -> 0.34 (post-break refit).
+#   Kept (within 0.02): 297 39:01.7, 53:40.5, 15:00, 236 12:51, 236 18:55, 237 5:21, 258 56:18, 026b 28:27, 280 25:03,
+#   271 9:26, 026c 4:08. Cost: 237 14:25 9.80 -> 8.72 and 19:49 15.74 -> 15.01 (radar range fell ~9.5 m/s against a
+#   camera x of ~5 at the tail of a real approach).
+#   AGREE_REL 0: 0.03 is what cost 42:18. At 95-107 m it widens agreement to ~3 m/s and the walk's 2.0-2.6 m/s
+#   disagreement passed as AGREE (6.81). At 0, 42:18 goes to 2.34 (planner cmd -1.95 -> -1.50) and every kept event
+#   is unchanged (237 19:49 14.92). The UI Work viewer uses 0 too (40c62a24d).
+#   Corpus (UI Work arm scan, 378 arms, 40 routes, 635e99ca3): the one hard phantom is 283 9:12 (a radar track walking
+#   in behind a lead change; U11 alone read -6.6, so this cap removes the assist's extra only). 241 3:36, the other
+#   hard one, was a real slow car. A camera-SPEED gate was re-tested there and rejected again: it caught 14/87 helped
+#   arms and 241, whose camera speed lagged its real slowdown.
+#   NOT FIXED: 297 10:55.1 (7.22 -> 7.22) and 0000025e 7:04.2 (10.53 -> 10.53). The walk arms at the camera's own
+#   lead switch and peaks within 1 s, before 20 matched points exist; after that the 60 m camera range scatters
+#   3.2-3.7 m (limit max(3, 2.5)) and reads NOISY until the correction has decayed.
+RANGE_VREL_CAM_XRATE = True
+RANGE_VREL_CAM_XRATE_MIN_PROB = 0.9
+RANGE_VREL_CAM_XRATE_WINDOW_S = 3.0
+RANGE_VREL_CAM_XRATE_MIN_POINTS = 20
+RANGE_VREL_CAM_XRATE_STEP_MIN_SIDE = 5
+RANGE_VREL_CAM_XRATE_STEP_SSE_RATIO = 0.5
+RANGE_VREL_CAM_XRATE_STEP_MIN_M = 6.0
+RANGE_VREL_CAM_XRATE_POST_MIN_POINTS = 10
+RANGE_VREL_CAM_XRATE_POST_MIN_SPAN_S = 1.0
+RANGE_VREL_CAM_XRATE_MAX_RESID_SD_M = 3.0
+RANGE_VREL_CAM_XRATE_RESID_SD_REL = 0.04
+RANGE_VREL_CAM_XRATE_AGREE_MPS = 2.0
+RANGE_VREL_CAM_XRATE_AGREE_REL = 0.0
+RANGE_VREL_CAM_XRATE_MARGIN_MPS = 2.0
 
 # Last, the correction is capped at the native lead speed, so a corrected vLead is never published
 # below zero. A physical bound like MAX_CORRECTION, not a tuned value: on the replay it bound only
@@ -273,6 +339,81 @@ YOUNG_TRACK_VISION_MIN_PROB = 0.9
 YOUNG_TRACK_VISION_MAX_CLOSING = 2.0
 YOUNG_TRACK_VISION_MIN_ACCEL = -1.0
 YOUNG_TRACK_VISION_RANGE_MARGIN_M = 5.0
+
+# ONPATH_RADAR_ADOPT: a radar-only track that sits on the driving path for a second is published as
+# radarState.leadOnpath, beside an unchanged leadOne, so the planner can brake for it before the camera sees it. Above
+# V_EGO_STATIONARY, get_lead only consults radar when the model lead's probability clears lead_detection_probability,
+# and then only the track that matches the model lead; the only radar-only path is the low-speed override
+# (v_ego < 4 m/s, dRel < 25 m). A car the model does not yet see is therefore invisible to the planner however long
+# radar has it on the path. Route 00000297--f971b5896f (owner bookmark 31:11.2): track 6, a stopped car on a curve
+# (yRel -9 .. -14 m, path offset within ~1.3 m), measured on every sweep from 94 m down to 39 m over 3.5 s while
+# leadsV3[0].prob was 0.00-0.28; the lead arrived at 31:09.6 (vision, 38 m) and the brake was -3.1 .. -3.5 with aEgo
+# -4.1 .. -4.35. 46:49-46:51 (bookmark 46:54): track 45, a car at ~6 m/s, on path 106 -> 69 m for ~2 s while the lead
+# was none and then a vision lead at 118 m that the track could not match; brake -3.5.
+#
+# The gate is persistence on the path, not a single sweep: every fresh measured sweep of the last
+# ONPATH_ADOPT_MIN_SPAN_S has |yRel + model path y at dRel| <= ONPATH_ADOPT_HARD_WIDTH_M, their median is within
+# ONPATH_ADOPT_MEDIAN_WIDTH_M and ONPATH_ADOPT_CORE_FRAC of them are within ONPATH_ADOPT_CORE_WIDTH_M; a coast longer
+# than ONPATH_ADOPT_MAX_COAST_S or one sweep outside the hard width restarts it. The median/fraction form, not a
+# plain 1.0 m width, is from 297 31:06-31:09: the model path 70-90 m out on that curve put the stopped car at
+# -1.7 .. +1.3 m on single sweeps, and a strict 1.0 m width never held it for a second before vision had it.
+# The track must also close (mean U11 <= -ONPATH_ADOPT_MIN_CLOSING_MPS) and its own ranges must agree: an LSQ over
+# the window with rms <= ONPATH_ADOPT_MAX_RANGE_RESIDUAL_M whose slope is within ONPATH_ADOPT_RATE_TOL_MPS of the mean
+# U11, except that a slope FASTER than U11 is accepted when U11 sits near the rail (D-041/D-063: a railed U11 is a
+# bound; 297 track 6 read -13.5 railed against a range slope of -13 .. -19).
+#
+# Why it is a separate field and not leadOne: stationary on-path returns also come from overhead structures and
+# roadside clutter on curves, and Bosch-A publishes no elevation. Over 50 routes (replay, 2026-09-29) the gate made
+# 109 adoptions, 76 later confirmed by HEAD or the model; of 33 unconfirmed most were real cars (a lead leaving the
+# lane, a far car on a curve the model saw at low probability), but 00000297--f971b5896f 30:18.1 was a stationary
+# object at 28 m on a sharp curve (engaged, 9 m/s) that the car passed ~2.5 m to the side, and its window was better
+# centred (median 0.66 m, 87 % within 1.0 m) than the true stopped car at 31:07 (0.67 m, 80 %). No width in this form
+# separates them (and D-061: path gates made a brake worse). As leadOne it drew -3.5 m/s^2 for ~1 s. So the track
+# gets bounded authority (D-048): the planner lets leadOnpath add braking only down to ONPATH_LEAD_MAX_BRAKE
+# (longitudinal_planner.py), leadOne is never changed, and leadOnpath is withdrawn the cycle radard's own leadOne
+# becomes a radar lead (vision match or its normal radar path) or a vision leadOne is not
+# ONPATH_ADOPT_VISION_MARGIN_M farther away. Nothing is deleted and no range is moved (D-041/D-042).
+# ON (owner, 2026-09-29), with the planner cap. Replay evidence only, no road evidence. Cost: a second planner/MPC
+# instance every cycle (1.44 -> 2.89 ms per planner step on the aarch64 VM); not yet timed on the device.
+ONPATH_RADAR_ADOPT = True
+ONPATH_ADOPT_MIN_SPAN_S = 1.0
+ONPATH_ADOPT_MIN_SAMPLES = 10          # ~14 sweeps a second at BOSCH_A_FREQ_HZ; a few coasts are tolerated
+ONPATH_ADOPT_HARD_WIDTH_M = 2.0
+ONPATH_ADOPT_MEDIAN_WIDTH_M = 0.8
+ONPATH_ADOPT_CORE_WIDTH_M = 1.0
+ONPATH_ADOPT_CORE_FRAC = 0.7
+ONPATH_ADOPT_MAX_COAST_S = 0.15
+ONPATH_ADOPT_MIN_CLOSING_MPS = 2.0
+ONPATH_ADOPT_MAX_RANGE_RESIDUAL_M = 1.0
+ONPATH_ADOPT_RATE_TOL_MPS = 2.5
+ONPATH_ADOPT_RAIL_VREL_MPS = -12.5     # mean U11 at or below this is treated as railed (the rail is -13.5)
+ONPATH_ADOPT_MAX_D_REL_M = 120.0
+ONPATH_ADOPT_VISION_MARGIN_M = 5.0
+
+# Far birth-rail vision bound (route 00000298 Bookmark 3, ~1020.3-1021.4). Far leadOne track 60 was born at ~121 m
+# with U11 on the low rail (-13.5) and no range fit yet, while the camera saw a car at that range doing 16-18 m/s;
+# the planner held ~-0.85 for 1.2 s and the car reached aEgo -1.21. A railed U11 is only a bound (D-063). For a
+# Bosch-A radar lead (leadOne, leadTwo or leadOnpath) at dRel >= FAR_RAIL_MIN_D_REL_M whose published vRel is on the
+# rail, when the model lead in the same slot sat at the same range (|x - RADAR_TO_CAMERA - dRel| <=
+# max(FAR_RAIL_RANGE_TOL_M, FAR_RAIL_RANGE_TOL_FRAC * dRel), prob >= FAR_RAIL_VISION_MIN_PROB) on at least
+# FAR_RAIL_MIN_MATCHES of the last FAR_RAIL_HIST_FRAMES model frames with steady speed (pstdev <=
+# FAR_RAIL_MAX_SPEED_STDEV_MPS), the published vRel may claim at most FAR_RAIL_MARGIN_MPS more closing than
+# median(camera v) - vEgo. vLead/vLeadK move by the same amount; aLeadK, the track, U11, the KF and lead selection are
+# untouched, and nothing is deleted or coasted (D-041/D-042). Range veto: when the track's own vRelRangeDerived closes
+# at least as fast as the floor, the rail stands -- without it 266 484 (range fit -15..-19) braked 0.05 s later.
+# Replay (car-matched 07b66420, params 2026-09-30T16:44:42Z, fitted plant): 298 BM3 sim accel -1.20 -> -0.58; 283
+# 881.5, 23e 2342.9, 297 525.6, 263 358, 266 484, 266 560 identical to base. Does not touch the 0.2 s leadOnpath step
+# at 298 1018.35 (25 m). Replay evidence only; not road-validated.
+FAR_RAIL_VISION_BOUND = True
+FAR_RAIL_MIN_D_REL_M = 80.0
+FAR_RAIL_VREL_TOL_MPS = 0.05          # published vRel within this of BOSCH_A_U11_LOW_RAIL_MPS counts as railed
+FAR_RAIL_HIST_FRAMES = 20             # model frames (radard runs once per modelV2)
+FAR_RAIL_MIN_MATCHES = 12
+FAR_RAIL_VISION_MIN_PROB = 0.15
+FAR_RAIL_RANGE_TOL_M = 8.0
+FAR_RAIL_RANGE_TOL_FRAC = 0.08
+FAR_RAIL_MAX_SPEED_STDEV_MPS = 2.0
+FAR_RAIL_MARGIN_MPS = 3.0
 
 # stationary qualification parameters
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
@@ -335,6 +476,29 @@ def young_track_vision_contradicts(lead, vis, v_ego: float) -> bool:
           float(vis.a[0]) >= YOUNG_TRACK_VISION_MIN_ACCEL)
 
 
+def far_rail_model_sample(vis) -> tuple[float, float, float] | None:
+  """FAR_RAIL_VISION_BOUND history entry for one model lead: (prob, range at the radar, speed), or None."""
+  if vis is None or not len(vis.x) or not len(vis.v):
+    return None
+  return float(vis.prob), float(vis.x[0]) - RADAR_TO_CAMERA, float(vis.v[0])
+
+
+def far_rail_vrel_floor(lead, hist, v_ego: float) -> float | None:
+  """FAR_RAIL_VISION_BOUND: the least vRel a far railed Bosch-A radar lead may publish, or None when it does not apply."""
+  if not (lead.status and lead.radar and lead.dRel >= FAR_RAIL_MIN_D_REL_M and
+          lead.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + FAR_RAIL_VREL_TOL_MPS):
+    return None
+  tol = max(FAR_RAIL_RANGE_TOL_M, FAR_RAIL_RANGE_TOL_FRAC * lead.dRel)
+  speeds = [h[2] for h in hist if h is not None and h[0] >= FAR_RAIL_VISION_MIN_PROB and abs(h[1] - lead.dRel) <= tol]
+  if len(speeds) < FAR_RAIL_MIN_MATCHES or float(np.std(speeds)) > FAR_RAIL_MAX_SPEED_STDEV_MPS:
+    return None
+  floor = float(np.median(speeds)) - float(v_ego) - FAR_RAIL_MARGIN_MPS
+  v_range = float(lead.vRelRangeDerived)
+  if math.isfinite(v_range) and v_range <= floor:
+    return None  # the track's own range fit closes at least as fast: the rail stands
+  return floor
+
+
 def vision_assist_closing(d_rel: float, y_rel: float, vis, v_ego: float) -> float | None:
   """VISION_ASSIST_GEOMETRY: the model lead's closing speed (m/s, > 0) when it corroborates this track closing, else None."""
   if vis is None or float(vis.prob) < VISION_ASSIST_MIN_PROB or not len(vis.x) or not len(vis.v) or not len(vis.y):
@@ -346,6 +510,57 @@ def vision_assist_closing(d_rel: float, y_rel: float, vis, v_ego: float) -> floa
     return None
   closing = float(v_ego) - float(vis.v[0])
   return closing if closing >= VISION_ASSIST_MIN_CLOSING_MPS else None
+
+
+def camera_xrate_sample(d_rel: float, y_rel: float, vis) -> float | None:
+  """RANGE_VREL_CAM_XRATE: the camera range (m, radar frame) of a confident model lead matched to this track, else None."""
+  if vis is None or float(vis.prob) < RANGE_VREL_CAM_XRATE_MIN_PROB or not len(vis.x) or not len(vis.y):
+    return None
+  cam_d = float(vis.x[0]) - RADAR_TO_CAMERA
+  if abs(cam_d - float(d_rel)) > VISION_ASSIST_RANGE_TOL * max(float(d_rel), 1.0):
+    return None
+  if abs(float(y_rel) + float(vis.y[0])) > VISION_ASSIST_MAX_DY_M:
+    return None
+  return cam_d
+
+
+def _line_fit(t, y) -> tuple[float, float]:
+  """Least-squares slope and residual sum of squares of y on t."""
+  tm, ym = t.mean(), y.mean()
+  slope = float(((t - tm) * (y - ym)).sum()) / float(((t - tm) ** 2).sum())
+  return slope, float(((y - ym - slope * (t - tm)) ** 2).sum())
+
+
+def camera_xrate_verdict(samples) -> tuple[str, float | None]:
+  """RANGE_VREL_CAM_XRATE. `samples` are (t, camera range, radar dRel). Returns (verdict, camera closing m/s, + closes);
+  the closing is only meaningful for AGREE and JUDGED. See the constant block for the rules."""
+  n = len(samples)
+  if n < RANGE_VREL_CAM_XRATE_MIN_POINTS:
+    return "FEW", None
+  arr = np.asarray(samples, dtype=float)
+  t, x, d = arr[:, 0] - arr[-1, 0], arr[:, 1], arr[:, 2]
+  slope, sse_l = _line_fit(t, x)
+  k = RANGE_VREL_CAM_XRATE_STEP_MIN_SIDE
+  if n >= 2 * k:
+    c1, c2 = np.cumsum(x), np.cumsum(x * x)
+    n1 = np.arange(k, n - k + 1, dtype=float)
+    s1, q1 = c1[k - 1:n - k], c2[k - 1:n - k]
+    s2, q2 = c1[-1] - s1, c2[-1] - q1
+    n2 = n - n1
+    sse_s = (q1 - s1 * s1 / n1) + (q2 - s2 * s2 / n2)
+    i = int(np.argmin(sse_s))
+    if sse_s[i] < RANGE_VREL_CAM_XRATE_STEP_SSE_RATIO * sse_l and abs(s2[i] / n2[i] - s1[i] / n1[i]) > RANGE_VREL_CAM_XRATE_STEP_MIN_M:
+      t, x, d = t[k + i:], x[k + i:], d[k + i:]   # a camera lead switch: judge only what came after it
+      if len(t) < RANGE_VREL_CAM_XRATE_POST_MIN_POINTS or t[-1] - t[0] < RANGE_VREL_CAM_XRATE_POST_MIN_SPAN_S:
+        return "STEP", None
+      slope, sse_l = _line_fit(t, x)
+  radar_slope, _ = _line_fit(t, d)
+  m, x_mean = len(t), float(x.mean())
+  if (sse_l / max(m - 2, 1)) ** 0.5 >= max(RANGE_VREL_CAM_XRATE_MAX_RESID_SD_M, RANGE_VREL_CAM_XRATE_RESID_SD_REL * x_mean):
+    return "NOISY", None
+  if abs(slope - radar_slope) < max(RANGE_VREL_CAM_XRATE_AGREE_MPS, RANGE_VREL_CAM_XRATE_AGREE_REL * x_mean):
+    return "AGREE", -slope
+  return "JUDGED", -slope
 
 
 class Track:
@@ -398,10 +613,21 @@ class Track:
     # measurement_update is False for both and they need opposite handling -- see
     # _update_range_assist.
     self._range_assist_last_t = float('nan')
+    # RANGE_VREL_CAM_XRATE: (model t, camera range, dRel) of same-car camera samples over the trailing window.
+    self.cam_hist: deque = deque()
     # YOUNG_TRACK_FLAT_RANGE_BOUND: first update time and every fresh-sweep (t, dRel) of the track's first
     # YOUNG_TRACK_MAX_AGE_S. Coasted sweeps count: a Bosch-A coast holds vRel but publishes the live gated range.
     self.t_first = float('nan')
     self.young_range_hist: list = []
+
+    # ONPATH_RADAR_ADOPT: fresh measured sweeps (t, dRel, vRel, path offset) of the current on-path run
+    self.onpath_hist: deque = deque(maxlen=64)
+    self._onpath_last_meas_t = float('nan')
+    self.onpath_adopted = False  # published as leadOnpath (ONPATH_RADAR_ADOPT); cleared with the run
+
+    # ADJACENT_RAIL_GATE: consecutive railed updates the range contradicts, and the latch they set
+    self.rail_range_count = 0
+    self.rail_range_inconsistent = False
 
     # deceleration history for the adjacent-lane stopped-vehicle detector
     self.moving_frames = 0
@@ -410,7 +636,8 @@ class Track:
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
              measurement_update: bool | None = None, t_now: float = 0.0,
-             range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False):
+             range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False,
+             camera_sample: tuple[float, float | None] | None = None):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -456,7 +683,17 @@ class Track:
     # fed the NATIVE speed, and get_RadarState applies the correction to vRel, vLead and vLeadK at
     # publish time. The first version fed the corrected speed here, and aLeadK absorbed every
     # arming step as a hard acceleration (see the rework note at the top of this file).
+    if camera_sample is not None:
+      # One call per radard (model) cycle: append the matched camera range, then drop what left the window.
+      t_cam, cam_d = camera_sample
+      if cam_d is not None:
+        self.cam_hist.append((float(t_cam), float(cam_d), float(d_rel)))
+      while self.cam_hist and self.cam_hist[0][0] < t_cam - RANGE_VREL_CAM_XRATE_WINDOW_S:
+        self.cam_hist.popleft()
     self._update_range_assist(range_assist, measurement_update, t_now, vision_closing, vision_assist)
+
+    if measurement_update:
+      self._update_rail_range_inconsistent()
 
     if measurement_update and self.cnt > 0:
       self.kf.update(self.vLead)
@@ -487,6 +724,45 @@ class Track:
         self.rest_frames = 0
 
       self.cnt += 1
+
+  def update_onpath(self, t_now: float, path_offset: float, measured: bool) -> None:
+    """ONPATH_RADAR_ADOPT bookkeeping, once per fresh liveTracks message. `path_offset` is NaN off the model path."""
+    if measured:
+      if path_offset == path_offset and abs(path_offset) <= ONPATH_ADOPT_HARD_WIDTH_M:
+        if not self.onpath_hist or t_now > self.onpath_hist[-1][0]:
+          self.onpath_hist.append((float(t_now), float(self.dRel), float(self.vRel), float(path_offset)))
+      else:
+        self.onpath_hist.clear()
+      self._onpath_last_meas_t = float(t_now)
+    elif not (t_now - self._onpath_last_meas_t <= ONPATH_ADOPT_MAX_COAST_S):
+      self.onpath_hist.clear()
+    if not self.onpath_hist:
+      self.onpath_adopted = False
+
+  def onpath_adoptable(self, held: bool = False) -> bool:
+    """True when this track has been on the driving path long enough to be a radar-only lead.
+    `held`: it was leadOnpath last cycle, so only an unbroken on-path run is required."""
+    if not self.onpath_hist or not (self.dRel <= ONPATH_ADOPT_MAX_D_REL_M):
+      return False
+    if held:
+      return True
+    t_last = self.onpath_hist[-1][0]
+    win = [x for x in self.onpath_hist if x[0] >= t_last - ONPATH_ADOPT_MIN_SPAN_S - 1e-6]
+    if len(win) < ONPATH_ADOPT_MIN_SAMPLES or self.onpath_hist[0][0] > t_last - ONPATH_ADOPT_MIN_SPAN_S + 1e-6:
+      return False
+    offs = np.abs(np.array([x[3] for x in win]))
+    if np.median(offs) > ONPATH_ADOPT_MEDIAN_WIDTH_M or np.mean(offs <= ONPATH_ADOPT_CORE_WIDTH_M) < ONPATH_ADOPT_CORE_FRAC:
+      return False
+    ts = np.array([x[0] for x in win]) - t_last
+    ds = np.array([x[1] for x in win])
+    v_mean = float(np.mean([x[2] for x in win]))
+    if v_mean > -ONPATH_ADOPT_MIN_CLOSING_MPS:
+      return False
+    slope, icpt = np.polyfit(ts, ds, 1)
+    rms = float(np.sqrt(np.mean((ds - (slope * ts + icpt)) ** 2)))
+    if rms > ONPATH_ADOPT_MAX_RANGE_RESIDUAL_M or slope > v_mean + ONPATH_ADOPT_RATE_TOL_MPS:
+      return False
+    return bool(slope >= v_mean - ONPATH_ADOPT_RATE_TOL_MPS or v_mean <= ONPATH_ADOPT_RAIL_VREL_MPS)
 
   def _clear_range_assist(self) -> None:
     self.range_assist_active = False
@@ -650,7 +926,26 @@ class Track:
     if self.vision_assist_early:
       # Never claim more closing than vision corroborates plus the margin: published vRel >= -(closing + margin).
       correction = min(correction, max(self.vRel + vision_closing + VISION_ASSIST_CLOSING_MARGIN_MPS, 0.0))
+    if RANGE_VREL_CAM_XRATE and correction > 0.0 and not on_rail:
+      verdict, cam_closing = camera_xrate_verdict(self.cam_hist)
+      if verdict == "JUDGED":
+        # Range walk: published closing may exceed the camera's own x-rate closing by at most the margin.
+        correction = min(correction, max(self.vRel + cam_closing + RANGE_VREL_CAM_XRATE_MARGIN_MPS, 0.0))
     self.range_assist_correction = correction
+
+  def _update_rail_range_inconsistent(self) -> None:
+    """ADJACENT_RAIL_GATE latch. Rail-agnostic here; only Bosch-A callers act on it (a -13.5 vRel is a
+    real reading on other radars)."""
+    if self.vRel > BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_DIRECT_VREL_SCALE_MPS / 2:
+      self.rail_range_count = 0
+      self.rail_range_inconsistent = False
+      return
+    if self.vRelRangeFresh and self.vRel - self.vRelRange >= RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS:
+      self.rail_range_count += 1
+      if self.rail_range_count >= ADJACENT_RAIL_GATE_UPDATES:
+        self.rail_range_inconsistent = True
+    else:
+      self.rail_range_count = 0
 
   def _fit_long_range(self) -> bool:
     """Plain LSQ over range_hist_long. Sets vRelRangeLong (slope, m/s), vRelRangeLongResidual (RMS,
@@ -834,12 +1129,14 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_data: capnp._DynamicStructReader, tracks: dict[int, Track],
                           starpilot_toggles: SimpleNamespace, g90_radar_filter: bool = False,
                           preferred_track_id: int = -1):
-  if model_data.meta.laneChangeState == LaneChangeState.laneChangeStarting and getattr(starpilot_toggles, "human_lane_changes", False):
-    direction = model_data.meta.laneChangeDirection
-    if direction == LaneChangeDirection.left:
-      tracks = {k: v for k, v in tracks.items() if v.yRel > 0}
-    elif direction == LaneChangeDirection.right:
-      tracks = {k: v for k, v in tracks.items() if v.yRel < 0}
+  # No lane-change side filter here. StarPilot's HumanLaneChanges dropped every track on the far side
+  # of 0 m (left change: yRel <= 0) during laneChangeStarting. It never changed WHICH car was followed
+  # -- this function only pairs a radar track with the vision lead, which must also agree laterally --
+  # it only took the radar away from it. Route 00000293 (owner-bookmarked, replay-reproduced): 10:49
+  # the new lane's car (track 61) crossed to y -0.2..-0.4 as we arrived and went vision-only through
+  # the -3.5 brake; 29:13-29:16 track 12 sat at y +0.2..+1.2 on a curve, vision put it 65-73 m away
+  # while radar had 53-62 m, the +0.55 merge push held, and radar's return at 51.6 m forced -1.4.
+  # D-041/D-042: a gate that can only delete radar points is removed rather than tuned.
 
   if g90_radar_filter:
     tracks = {k: v for k, v in tracks.items() if g90_radar_lead_lateral_sane(v)}
@@ -867,6 +1164,23 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
                             vel_limit=13.0, y_std_scale=2.0, y_floor=1.5):
       return preferred_track
   return None
+
+
+def get_onpath_lead(v_ego: float, tracks: dict[int, Track], lead_one, preferred_track_id: int = -1) -> dict[str, Any] | None:
+  """ONPATH_RADAR_ADOPT (see the constant block): the radar-only on-path lead, published as radarState.leadOnpath
+  beside an unchanged leadOne. None when leadOne is already a radar lead (it is never replaced), when the nearest
+  adoptable track is not ONPATH_ADOPT_VISION_MARGIN_M nearer than a vision leadOne, or below V_EGO_STATIONARY."""
+  if v_ego < V_EGO_STATIONARY or (lead_one.status and lead_one.radar):
+    return None
+  candidates = [c for c in tracks.values()
+                if c.onpath_adoptable(held=c.onpath_adopted and c.identifier == preferred_track_id)]
+  if not candidates:
+    return None
+  closest_track = min(candidates, key=lambda c: c.dRel)
+  if lead_one.status and not closest_track.dRel < lead_one.dRel - ONPATH_ADOPT_VISION_MARGIN_M:
+    return None
+  closest_track.onpath_adopted = True
+  return closest_track.get_RadarState(shadow_telemetry=True)
 
 
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, model_prob: float):
@@ -976,10 +1290,13 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   return lead_dict
 
 
-def get_adjacent_lead(tracks: dict[int, Track], standstill: bool, model_data: capnp._DynamicStructReader, left: bool = True) -> dict[str, Any]:
+def get_adjacent_lead(tracks: dict[int, Track], standstill: bool, model_data: capnp._DynamicStructReader, left: bool = True,
+                      honda_bosch_a: bool = False) -> dict[str, Any]:
   lead_dict = {'status': False}
 
-  adjacent_tracks = [c for c in tracks.values() if c.potential_adjacent_lead(left, standstill, model_data)]
+  rail_gate = ADJACENT_RAIL_GATE and honda_bosch_a
+  adjacent_tracks = [c for c in tracks.values()
+                     if c.potential_adjacent_lead(left, standstill, model_data) and not (rail_gate and c.rail_range_inconsistent)]
   if len(adjacent_tracks) > 0:
     closest_track = min(adjacent_tracks, key=lambda c: c.dRel)
     lead_dict = closest_track.get_RadarState()
@@ -1024,6 +1341,8 @@ class RadarD:
     self.tracks: dict[int, Track] = {}
     self.honda_bosch_a_radar = honda_bosch_a_radar
     self.young_flat_bound_count = 0
+    self.far_rail_bound_count = 0
+    self.far_rail_hist = [deque(maxlen=FAR_RAIL_HIST_FRAMES) for _ in range(2)]  # per model lead slot
     # The lead KF consumes Bosch measurements at the physical radar cadence. Lead probability
     # filters, however, consume modelV2 leads every model cycle and must retain model-loop timing.
     kf_dt = HONDA_BOSCH_A_RADAR_TS if self.honda_bosch_a_radar else radar_ts
@@ -1032,6 +1351,7 @@ class RadarD:
     lead_prob_dt = DT_MDL if self.honda_bosch_a_radar else radar_ts
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, lead_prob_dt) for _ in range(2)]
     self.prev_lead_track_ids = [-1, -1]
+    self.prev_onpath_track_id = -1  # radarState.leadOnpath last cycle (ONPATH_RADAR_ADOPT)
     self.preferred_stale_track_ids = [-1, -1]
     self.preferred_challenger_stale_counts = [0, 0]
     self.preferred_gross_distance_stale_counts = [0, 0]
@@ -1156,10 +1476,26 @@ class RadarD:
       vis_closing = None
       if vision_assist and ids in lead_track_ids and len(sm['modelV2'].leadsV3):
         vis_closing = vision_assist_closing(rpt[0], rpt[1], sm['modelV2'].leadsV3[0], self.v_ego)
+      cam_sample = None
+      if RANGE_VREL_CAM_XRATE and ids in lead_track_ids:
+        vis = sm['modelV2'].leadsV3[0] if len(sm['modelV2'].leadsV3) else None
+        cam_sample = (sm.logMonoTime['modelV2'] * 1e-9, camera_xrate_sample(rpt[0], rpt[1], vis))
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
-                              vision_assist=vision_assist)
+                              vision_assist=vision_assist, camera_sample=cam_sample)
+
+    # ONPATH_RADAR_ADOPT: path offset of every track on a fresh sweep (yRel + = left, model y + = right)
+    if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar and radar_fresh:
+      position = getattr(sm['modelV2'], 'position', None) if self.ready else None
+      px = np.asarray(position.x) if position is not None and len(position.x) else None
+      py = np.asarray(position.y) if px is not None else None
+      t_live = sm.logMonoTime['liveTracks'] * 1e-9
+      for ids, rpt in ar_pts.items():
+        off = float('nan')
+        if px is not None and 1.0 < rpt[0] <= px[-1]:
+          off = rpt[1] + float(np.interp(rpt[0], px, py))
+        self.tracks[ids].update_onpath(t_live, off, bool(rpt[3]))
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -1176,6 +1512,9 @@ class RadarD:
       model_v_ego = self.v_ego
 
     leads_v3 = sm['modelV2'].leadsV3
+    if FAR_RAIL_VISION_BOUND and self.honda_bosch_a_radar:
+      for i in range(2):
+        self.far_rail_hist[i].append(far_rail_model_sample(leads_v3[i]) if len(leads_v3) > i else None)
     if len(leads_v3) > 1:
       for i in range(2):
         lead_prob = float(leads_v3[i].prob)
@@ -1197,9 +1536,18 @@ class RadarD:
                                           preferred_track_id=self.prev_lead_track_ids[1],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
 
+      if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar:
+        onpath = get_onpath_lead(self.v_ego, self.tracks, self.radar_state.leadOne, self.prev_onpath_track_id)
+        if onpath is not None:
+          self.radar_state.leadOnpath = onpath
+        self.prev_onpath_track_id = onpath['radarTrackId'] if onpath is not None else -1
+
       if YOUNG_TRACK_FLAT_RANGE_BOUND and self.honda_bosch_a_radar:
         t_live = sm.logMonoTime['liveTracks'] * 1e-9
-        for lead, vis in ((self.radar_state.leadOne, leads_v3[0]), (self.radar_state.leadTwo, leads_v3[1])):
+        young_leads = [(self.radar_state.leadOne, leads_v3[0]), (self.radar_state.leadTwo, leads_v3[1])]
+        if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar:
+          young_leads.append((self.radar_state.leadOnpath, leads_v3[0]))
+        for lead, vis in young_leads:
           track = self.tracks.get(int(lead.radarTrackId)) if lead.status and lead.radar else None
           if track is not None and YOUNG_TRACK_VISION_GATE and not young_track_vision_contradicts(lead, vis, self.v_ego):
             track = None
@@ -1210,6 +1558,19 @@ class RadarD:
             lead.vLead = lead.vLead + dv
             lead.vLeadK = lead.vLeadK + dv
             self.young_flat_bound_count += 1
+
+      if FAR_RAIL_VISION_BOUND and self.honda_bosch_a_radar:
+        far_leads = [(self.radar_state.leadOne, 0), (self.radar_state.leadTwo, 1)]
+        if ONPATH_RADAR_ADOPT:
+          far_leads.append((self.radar_state.leadOnpath, 0))
+        for lead, slot in far_leads:
+          floor = far_rail_vrel_floor(lead, self.far_rail_hist[slot], self.v_ego)
+          if floor is not None and lead.vRel < floor:
+            dv = floor - lead.vRel
+            lead.vRel = floor
+            lead.vLead = lead.vLead + dv
+            lead.vLeadK = lead.vLeadK + dv
+            self.far_rail_bound_count += 1
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):
@@ -1222,8 +1583,10 @@ class RadarD:
           self._reset_preferred_stale_evidence(i)
 
     if self.ready and (self.starpilot_toggles.adjacent_lead_tracking or self.starpilot_toggles.human_lane_changes):
-      self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True)
-      self.starpilot_radar_state.leadRight = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=False)
+      self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True,
+                                                              honda_bosch_a=self.honda_bosch_a_radar)
+      self.starpilot_radar_state.leadRight = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=False,
+                                                              honda_bosch_a=self.honda_bosch_a_radar)
 
     # Not gated on the adjacent-lead toggles: this is a separate signal with a separate
     # consumer (Force Stop), and leaving leadLeft/leadRight untouched keeps existing

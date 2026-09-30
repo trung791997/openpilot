@@ -649,7 +649,7 @@ def test_model_lead_trajectory_used_for_braking_lead_with_long_ttc():
 
 
 @pytest.mark.parametrize("d_rel,v_lead,a_lead", [
-  (10.0, 15.0, 0.0),
+  (9.0, 15.0, 0.0),
   (8.0, 0.0, 0.0),
 ])
 def test_model_lead_trajectory_falls_back_for_urgent_raw_lead(d_rel, v_lead, a_lead):
@@ -1477,7 +1477,8 @@ def test_acc_mode_pretracking_vision_slow_lead_blocks_positive_catchup(model_ver
   sm_no_lead["starpilotPlan"].vCruise = v_ego + 6.0
   sm_with_lead["starpilotPlan"].vCruise = v_ego + 6.0
 
-  for _ in range(6):
+  # 10 frames: the brake release limit holds the shared -0.5 start ~2 frames longer on both planners
+  for _ in range(10):
     planner_no_lead.update(sm_no_lead, make_toggles(model_version))
     planner_with_lead.update(sm_with_lead, make_toggles(model_version))
 
@@ -1599,7 +1600,9 @@ def test_acc_mode_pretracking_vision_far_slower_lead_starts_braking_before_track
 
   no_lead_outputs = []
   lead_outputs = []
-  for _ in range(8):
+  # 12 frames, compared from frame 8: both planners first release a start-up brake from init, and the
+  # BRAKE_RELEASE_DWELL hold makes that release 2 frames later, so frames 5-7 no longer isolate the lead.
+  for _ in range(12):
     planner_no_lead.update(sm_no_lead, make_toggles(model_version))
     planner_with_lead.update(sm_with_lead, make_toggles(model_version))
     no_lead_outputs.append(planner_no_lead.output_a_target)
@@ -1608,8 +1611,8 @@ def test_acc_mode_pretracking_vision_far_slower_lead_starts_braking_before_track
   assert planner_with_lead.mode == "acc"
   assert not planner_with_lead.raw_close_lead_needs_control(sm_with_lead["radarState"].leadOne, v_ego)
   assert all(lead_output <= no_lead_output + 1e-6
-             for lead_output, no_lead_output in zip(lead_outputs[5:], no_lead_outputs[5:]))
-  assert min(lead_outputs[5:]) < min(no_lead_outputs[5:]) - 0.08
+             for lead_output, no_lead_output in zip(lead_outputs[8:], no_lead_outputs[8:]))
+  assert min(lead_outputs[8:]) < min(no_lead_outputs[8:]) - 0.08
   assert lead_outputs[-1] < no_lead_outputs[-1] - 0.15
 
 
@@ -3669,13 +3672,18 @@ def test_no_throttle_cap_stays_at_coast_limit_until_throttle_returns():
   sm["carControl"].orientationNED = [0.0, 0.1, 0.0]
   toggles = make_toggles()
 
-  for _ in range(5):
+  # COAST_CEILING_SLEW eases the ceiling down at COAST_CEILING_JERK, so allow it time to reach the coast limit.
+  outputs = []
+  for _ in range(20):
     planner.update(sm, toggles)
+    outputs.append(planner.output_a_target)
 
   accel_coast = max(get_vehicle_min_accel(CP, v_ego), get_coast_accel(sm["carControl"].orientationNED[1]))
 
   assert not planner.allow_throttle
   assert planner.output_a_target == pytest.approx(accel_coast, abs=1e-3)
+  step = longitudinal_planner_module.COAST_CEILING_JERK * planner.dt
+  assert all(b >= a - step - 1e-6 for a, b in zip(outputs[1:], outputs[2:], strict=False))
 
 
 def test_experimental_release_state_arms_only_on_falling_edge():
@@ -4414,6 +4422,28 @@ def test_lane_change_merge_floor_releases_on_hard_mpc_lead_brake(mpc_demand, exp
   assert (floor is not None) == expected_floor
 
 
+@pytest.mark.parametrize("a_lead, released", [(0.0, False), (-0.8, False), (-1.3, True)])
+def test_lane_change_merge_floor_releases_on_braking_lead(a_lead, released):
+  # Route 00000293 10:48: the floor held -0.4 at TTC 6-8 s while the lead braked -1.2..-3.5.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  planner.lead_one = make_lead(status=True, d_rel=39.0, v_lead=18.0, a_lead=a_lead, radar=True, model_prob=1.0)
+  toggles = SimpleNamespace(lane_change_close_gap=True, minimum_lane_change_speed=0.0)
+  floor = planner.get_lane_change_merge_accel_floor(_merge_sm(), toggles, 19.0, 30.0, 0.3, blocked=False)
+  assert (floor is None) == released
+
+
+@pytest.mark.parametrize("v_lead, pushes", [(21.0, True), (15.0, False)])
+def test_lane_change_merge_push_withheld_when_closing_fast(v_lead, pushes):
+  # Route 00000293 29:12: +0.55 pushed toward a car 49 m ahead closing at 6.4 m/s (TTC 7.6 s).
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  planner.allow_throttle = True
+  planner.lead_one = make_lead(status=True, d_rel=49.0, v_lead=v_lead, radar=True, model_prob=1.0)
+  toggles = SimpleNamespace(lane_change_close_gap=True, minimum_lane_change_speed=0.0)
+  floor = planner.get_lane_change_merge_accel_floor(_merge_sm(), toggles, 21.4, 30.0, 0.3, blocked=False)
+  assert floor is not None
+  assert (floor > 0.0) == pushes
+
+
 def _stopped_radar_lead(*, a_lead: float, d_rel: float = 22.9, v_lead: float = -0.3, model_prob: float = 0.97,
                         y_rel: float = 0.4, radar: bool = True, track_id: int = 27):
   lead = make_lead(status=True, d_rel=d_rel, v_lead=v_lead, a_lead=a_lead, radar=radar, model_prob=model_prob, y_rel=y_rel)
@@ -4665,3 +4695,293 @@ def test_far_lead_coast_cap_stands_down_when_camera_sees_lead_braking():
 
 def test_far_lead_coast_cap_ignores_low_confidence_camera_brake():
   assert _far_lead_cap_case(model_a=-1.4, model_prob=0.3) == pytest.approx(-longitudinal_planner_module.FAR_LEAD_COAST_MAX_DECEL)
+
+
+
+def _onpath_sm(v_ego, *, lead_one=None, onpath=None):
+  sm = make_sm(v_ego, 0.0, -3.5, experimental_mode=False, tracking_lead=lead_one is not None, lead_one=lead_one)
+  sm["radarState"].leadOnpath = onpath if onpath is not None else make_lead(status=False)
+  return sm
+
+
+def _run(sm, *, bound=True, car=CAR.HONDA_CIVIC_BOSCH, frames=20):
+  CP = CarInterface.get_non_essential_params(car)
+  CP.longitudinalActuatorDelay = 0.5
+  saved = longitudinal_planner_module.ONPATH_LEAD_BOUND
+  longitudinal_planner_module.ONPATH_LEAD_BOUND = bound
+  try:
+    planner = LongitudinalPlanner(CP, init_v=float(sm["carState"].vEgo))
+  finally:
+    longitudinal_planner_module.ONPATH_LEAD_BOUND = saved
+  out = []
+  for _ in range(frames):
+    planner.update(sm, make_toggles())
+    out.append(float(planner.output_a_target))
+  return out, planner
+
+
+def _stopped_car(d_rel=66.0):
+  # 00000297--f971b5896f 31:08.0: track 6, stopped car on the path at 66 m, ego 13.4 m/s, no model lead
+  return make_lead(status=True, d_rel=d_rel, v_lead=0.0, radar=True, model_prob=0.0)
+
+
+@pytest.mark.parametrize("own,with_onpath", [
+  (-0.3, -1.8), (-0.3, -0.6), (-0.3, 0.4), (0.8, -2.5), (-1.4, -3.0), (-2.7, -2.9), (-1.0, -1.0), (0.5, 1.5),
+])
+def test_onpath_bounded_target_is_one_sided(own, with_onpath):
+  cap = longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE
+  out = longitudinal_planner_module.onpath_bounded_target(own, with_onpath)
+  assert out <= own                                 # never less braking, never more acceleration
+  assert out >= min(own, -cap)                      # extra braking only down to the cap
+  assert out == pytest.approx(min(own, max(with_onpath, min(own, -cap))))
+
+
+def test_onpath_lead_brakes_only_down_to_the_cap():
+  cap = longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE
+  sm = _onpath_sm(13.4, onpath=_stopped_car())
+  bounded, planner = _run(sm)
+  assert planner.onpath_bound_active
+  assert min(bounded) == pytest.approx(-cap, abs=1e-6)
+  # the same object as leadOne gets full authority, and asks for more than the cap
+  full, _ = _run(_onpath_sm(13.4, lead_one=_stopped_car()))
+  assert min(full) < -cap - 0.3
+  # without the bound the on-path lead does nothing at all (HEAD)
+  head, _ = _run(sm, bound=False)
+  assert min(bounded) < min(head) - 0.2
+  assert all(b <= h + 1e-9 for b, h in zip(bounded, head, strict=True))
+
+
+def test_onpath_lead_bound_lifts_when_radard_stops_publishing_it():
+  # radard withdraws leadOnpath as soon as its own leadOne takes the track (vision match, or its radar path):
+  # the planner is then byte-for-byte HEAD
+  sm = _onpath_sm(13.4, lead_one=_stopped_car())
+  bounded, planner = _run(sm)
+  head, _ = _run(sm, bound=False)
+  assert not planner.onpath_bound_active
+  assert bounded == head
+
+
+def test_onpath_lead_never_softens_a_harder_leadone_brake():
+  near = make_lead(status=True, d_rel=18.0, v_lead=4.0, a_lead=-1.5, radar=False, model_prob=0.9)
+  sm = _onpath_sm(13.4, lead_one=near, onpath=_stopped_car(12.0))
+  bounded, _ = _run(sm)
+  head, _ = _run(_onpath_sm(13.4, lead_one=near), bound=False)
+  assert min(head) < -longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE
+  assert all(b <= h + 1e-9 for b, h in zip(bounded, head, strict=True))
+  assert all(b >= min(h, -longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE) - 1e-9 for b, h in zip(bounded, head, strict=True))
+
+
+def test_onpath_lead_never_adds_acceleration():
+  # an on-path lead far ahead and pulling away: the second planner would accelerate harder; the output stays HEAD's
+  far = make_lead(status=True, d_rel=120.0, v_lead=25.0, radar=True)
+  slow = make_lead(status=True, d_rel=30.0, v_lead=12.0, radar=False, model_prob=0.9)
+  bounded, _ = _run(_onpath_sm(13.4, lead_one=slow, onpath=far))
+  head, _ = _run(_onpath_sm(13.4, lead_one=slow), bound=False)
+  assert all(b <= h + 1e-9 for b, h in zip(bounded, head, strict=True))
+
+
+def test_onpath_lead_bound_is_bosch_a_only():
+  _, planner = _run(_onpath_sm(13.4, onpath=_stopped_car()), car=CAR.HONDA_CIVIC, frames=1)  # Nidec
+  assert planner.onpath_planner is None
+
+
+@pytest.mark.parametrize("prev,target", [
+  (-2.0, 0.5), (-2.0, -1.0), (-2.0, -2.9), (-0.1, 1.0), (0.0, 1.5), (0.4, -2.0), (-1.3, -0.3), (-0.5, -0.5),
+])
+def test_brake_release_limit_only_slows_a_brake_release(prev, target):
+  dt = 0.05
+  out = longitudinal_planner_module.brake_release_limited_target(prev, target, dt)
+  assert out <= target + 1e-12                       # never less braking than asked
+  if target <= prev or prev >= 0.0:
+    assert out == pytest.approx(target)              # onset and deeper braking pass through unchanged
+  else:
+    assert out == pytest.approx(min(target, prev + longitudinal_planner_module.BRAKE_RELEASE_JERK * dt))
+
+
+def _release_run(sm_brake, sm_release, *, limit, brake_frames=30, release_frames=40):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.longitudinalActuatorDelay = 0.5
+  saved = longitudinal_planner_module.BRAKE_RELEASE_LIMIT
+  longitudinal_planner_module.BRAKE_RELEASE_LIMIT = limit
+  try:
+    planner = LongitudinalPlanner(CP, init_v=float(sm_brake["carState"].vEgo))
+    out = []
+    for i in range(brake_frames + release_frames):
+      planner.update(sm_brake if i < brake_frames else sm_release, make_toggles())
+      out.append(float(planner.output_a_target))
+  finally:
+    longitudinal_planner_module.BRAKE_RELEASE_LIMIT = saved
+  return out, planner
+
+
+def test_brake_release_limit_brakes_as_early_and_releases_slower():
+  brake = make_sm(13.4, 0.0, -3.5, experimental_mode=False, tracking_lead=True,
+                  lead_one=make_lead(status=True, d_rel=20.0, v_lead=0.0, radar=True))
+  clear = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  on, _ = _release_run(brake, clear, limit=True)
+  off, _ = _release_run(brake, clear, limit=False)
+  step = longitudinal_planner_module.BRAKE_RELEASE_JERK * 0.05
+  assert min(off) < -1.0
+  def first(xs):
+    return next(i for i, x in enumerate(xs) if x <= -0.5)
+  assert first(on) == first(off)                     # brake onset unchanged
+  assert all(a <= b + 1e-9 for a, b in zip(on, off, strict=True))   # never less braking
+  for a, b in zip(on, on[1:], strict=False):
+    if a < 0.0:
+      assert b - a <= step + 1e-6                    # rises at most J*dt while braking
+  assert sum(off) > sum(on)                          # the release is actually slowed
+
+
+def test_brake_release_limit_is_skipped_on_reset():
+  brake = make_sm(13.4, 0.0, -3.5, experimental_mode=False, tracking_lead=True,
+                  lead_one=make_lead(status=True, d_rel=20.0, v_lead=0.0, radar=True))
+  off_sm = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  off_sm["controlsState"].longControlState = LongCtrlState.off
+  off_sm["selfdriveState"].enabled = False          # reset on either path (op-long or stock-long CP)
+  on, _ = _release_run(brake, off_sm, limit=True, release_frames=2)
+  ref, _ = _release_run(brake, off_sm, limit=False, release_frames=2)
+  assert on[-1] == pytest.approx(ref[-1])            # reset re-seeds from aEgo, no slewed hold
+
+
+def test_brake_release_limit_keeps_the_onpath_bound_one_sided():
+  cap = longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE
+  bounded, planner = _run(_onpath_sm(13.4, onpath=_stopped_car()), frames=40)
+  assert planner.onpath_bound_active
+  assert planner.onpath_planner.onpath_planner is None   # the shadow has no shadow of its own
+  assert min(bounded) == pytest.approx(-cap, abs=1e-6)  # the limiter never pushes the bounded target below the cap
+  head, _ = _run(_onpath_sm(13.4, onpath=_stopped_car()), bound=False, frames=40)
+  assert all(b <= h + 1e-9 for b, h in zip(bounded, head, strict=True))
+
+
+@pytest.mark.parametrize("w,exp_active", [(0.0, True), (0.3, True), (1.0, False), (0.02, False), (0.0, False)])
+def test_exp_mode_blend_weight_enters_at_once_and_fades_out(w, exp_active):
+  dt = 0.05
+  out = longitudinal_planner_module.exp_mode_blend_weight(w, exp_active, dt)
+  if exp_active:
+    assert out == 1.0                                # entering experimental mode is never slowed
+  else:
+    assert out == pytest.approx(max(0.0, w - dt / longitudinal_planner_module.EXP_MODE_EXIT_BLEND_TIME))
+
+
+@pytest.mark.parametrize("a_mpc,a_e2e,w", [(1.0, 0.0, 0.5), (0.2, 1.0, 0.7), (-1.0, -2.0, 0.0), (-1.0, -2.0, 1.0)])
+def test_exp_mode_blend_target_stays_between_mpc_and_exp_target(a_mpc, a_e2e, w):
+  out = longitudinal_planner_module.exp_mode_blend_target(a_mpc, a_e2e, w)
+  assert min(a_mpc, a_e2e) - 1e-12 <= out <= a_mpc + 1e-12
+  assert longitudinal_planner_module.exp_mode_blend_target(a_mpc, a_e2e, 0.0) == pytest.approx(a_mpc)
+  assert longitudinal_planner_module.exp_mode_blend_target(a_mpc, a_e2e, 1.0) == pytest.approx(min(a_mpc, a_e2e))
+
+
+def _exp_mode_run(sm_a, sm_b, *, blend, a_frames=40, b_frames=40):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.longitudinalActuatorDelay = 0.5
+  saved = longitudinal_planner_module.EXP_MODE_EXIT_BLEND
+  longitudinal_planner_module.EXP_MODE_EXIT_BLEND = blend
+  try:
+    planner = LongitudinalPlanner(CP, init_v=float(sm_a["carState"].vEgo))
+    out = []
+    for i in range(a_frames + b_frames):
+      planner.update(sm_a if i < a_frames else sm_b, make_toggles())
+      out.append(float(planner.output_a_target))
+  finally:
+    longitudinal_planner_module.EXP_MODE_EXIT_BLEND = saved
+  return out
+
+
+def test_exp_mode_release_fades_instead_of_stepping():
+  # 00000280--d02d9c2f8e 30:42.89: EXP (e2e ~0) -> ACC (mpc ~+1) stepped aTarget +0.01 -> +0.99 in one frame.
+  exp = make_sm(17.0, 0.0, -3.5, experimental_mode=True)
+  acc = make_sm(17.0, 0.0, -3.5, experimental_mode=False)
+  on = _exp_mode_run(exp, acc, blend=True)
+  off = _exp_mode_run(exp, acc, blend=False)
+  k = 40
+  assert on[:k] == pytest.approx(off[:k])            # nothing changes before the flip
+  jump_off = off[k] - off[k - 1]
+  assert jump_off > 0.3                              # the step this removes
+  assert on[k] - on[k - 1] < 0.5 * jump_off
+  assert all(a <= b + 0.02 for a, b in zip(on[k:], off[k:], strict=True))   # release is only held back
+  assert on[-1] == pytest.approx(off[-1], abs=0.05)  # converged once the fade is done
+
+
+@pytest.mark.parametrize("red_light,desired_accel", [(False, 0.0), (False, -0.2), (True, 0.0), (False, -1.5)])
+def test_exp_mode_entry_is_not_delayed(red_light, desired_accel):
+  acc = make_sm(17.0, desired_accel, -3.5, experimental_mode=False)
+  exp = make_sm(17.0, desired_accel, -3.5, experimental_mode=True)
+  exp["starpilotPlan"].redLight = red_light
+  on = _exp_mode_run(acc, exp, blend=True, b_frames=10)
+  off = _exp_mode_run(acc, exp, blend=False, b_frames=10)
+  assert on == pytest.approx(off)                    # same frame, same target as without the fade
+
+
+def test_exp_mode_reentry_during_fade_returns_to_exp_target_at_once():
+  exp = make_sm(17.0, 0.0, -3.5, experimental_mode=True)
+  acc = make_sm(17.0, 0.0, -3.5, experimental_mode=False)
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.longitudinalActuatorDelay = 0.5
+  on = LongitudinalPlanner(CP, init_v=17.0)
+  ref = LongitudinalPlanner(CP, init_v=17.0)
+  for sm in [exp] * 40 + [acc] * 8:
+    on.update(sm, make_toggles())
+  for sm in [exp] * 48:
+    ref.update(sm, make_toggles())
+  on.update(exp, make_toggles())
+  ref.update(exp, make_toggles())
+  assert on.exp_mode_blend_weight == 1.0
+  assert float(on.output_a_target) <= float(ref.output_a_target) + 0.05
+
+
+def test_brake_release_dwell_only_holds_more_braking():
+  m = longitudinal_planner_module
+  hold = m.BRAKE_RELEASE_DWELL_TICKS
+  seq = [-0.88, -1.0] * 6 + [-0.5] * (hold + 2)              # the 25e 732.5 two-cycle dither, then a real release
+  prev, n, pub = 0.0, hold + 1, []
+  for t in seq:
+    prev, n = m.brake_release_dwell_target(prev, t, n)
+    pub.append(prev)
+  assert all(p <= t + 1e-12 for p, t in zip(pub, seq, strict=True))   # never less braking than asked
+  assert pub[1:12] == [pytest.approx(-1.0)] * 11                        # dither removed: held at the deeper value
+  assert pub[12:12 + hold] == [pytest.approx(-1.0)] * hold              # a release waits BRAKE_RELEASE_DWELL_TICKS
+  assert pub[12 + hold] == pytest.approx(-0.5)                          # then passes (the slew above limits its rate)
+  assert m.brake_release_dwell_target(-0.4, -2.0, 1) == (pytest.approx(-2.0), 0)   # deeper braking passes at once
+  assert m.brake_release_dwell_target(0.2, 0.8, 0)[0] == pytest.approx(0.8)         # throttle is never held
+
+def test_brake_release_dwell_brakes_as_early_and_is_skipped_on_reset():
+  brake = make_sm(13.4, 0.0, -3.5, experimental_mode=False, tracking_lead=True,
+                  lead_one=make_lead(status=True, d_rel=20.0, v_lead=0.0, radar=True))
+  clear = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  saved = longitudinal_planner_module.BRAKE_RELEASE_DWELL
+  try:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = True
+    on, _ = _release_run(brake, clear, limit=True)
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = False
+    off, _ = _release_run(brake, clear, limit=True)
+  finally:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = saved
+  def first(xs):
+    return next(i for i, x in enumerate(xs) if x <= -0.5)
+  assert first(on) == first(off)                                         # brake onset unchanged
+  assert all(a <= b + 1e-9 for a, b in zip(on, off, strict=True))       # never less braking
+  off_sm = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  off_sm["controlsState"].longControlState = LongCtrlState.off
+  off_sm["selfdriveState"].enabled = False
+  r_on, _ = _release_run(brake, off_sm, limit=True, release_frames=2)
+  longitudinal_planner_module.BRAKE_RELEASE_DWELL = False
+  try:
+    r_off, _ = _release_run(brake, off_sm, limit=True, release_frames=2)
+  finally:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = saved
+  assert r_on[-1] == pytest.approx(r_off[-1])                            # reset re-seeds from aEgo, no hold
+
+
+def test_coast_ceiling_slew_moves_at_most_j_dt_from_the_output():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  planner = LongitudinalPlanner(CP, init_v=5.4)
+  step = longitudinal_planner_module.COAST_CEILING_JERK * planner.dt
+  assert planner.slew_coast_ceiling(2.0, 0.46, reset=True) == pytest.approx(2.0)
+  out = [planner.slew_coast_ceiling(-0.42, 0.46, reset=False)]           # throttle gate closes (294 568.16)
+  assert out[0] == pytest.approx(0.46 - step)
+  for _ in range(20):
+    out.append(planner.slew_coast_ceiling(-0.42, out[-1], reset=False))
+  assert all(b >= a - step - 1e-9 for a, b in zip(out, out[1:], strict=False))
+  assert out[-1] == pytest.approx(-0.42)                                 # reaches the coast limit
+  assert planner.slew_coast_ceiling(2.0, -0.42, reset=False) == pytest.approx(-0.42 + step)   # rises at J too
+  assert planner.slew_coast_ceiling(-0.42, 0.3, reset=True) == pytest.approx(-0.42)            # reset passes through

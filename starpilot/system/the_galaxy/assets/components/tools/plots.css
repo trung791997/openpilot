@@ -32,6 +32,21 @@
   margin: 0;
 }
 
+.plotToggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.plotToggle input {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
 .plotActions {
   display: flex;
   gap: var(--gap-sm);
@@ -227,6 +242,12 @@
   stroke: #e0af68;
 }
 
+.plotLine.lead,
+.plotLegendLine.lead {
+  background-color: #f7768e;
+  stroke: #f7768e;
+}
+
 .plotSvg path {
   fill: none;
   vector-effect: non-scaling-stroke;
@@ -240,8 +261,27 @@
   margin-bottom: var(--margin-base);
 }
 
+/* Sideways drags select a stretch to zoom into; up/down swipes still scroll the page. */
 .plotSvgClickable {
-  cursor: zoom-in;
+  cursor: crosshair;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The zoomed stretch, shown on each whole-drive chart. */
+.plotZoomBand {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: rgba(122, 162, 247, 0.18);
+  border-left: 1.5px solid rgba(122, 162, 247, 0.8);
+  border-right: 1.5px solid rgba(122, 162, 247, 0.8);
+}
+
+.plotZoomControls .plotButton {
+  min-width: 2.6em;
 }
 
 .plotYRange {
@@ -449,4 +489,74 @@ a.plotButton {
 
 .plotTakeawayList {
   color: var(--text-color);
+}
+
+/* Chart footnote (the controller-terms caveat under James's controller). */
+.plotChartNote {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  margin: var(--margin-sm) 0 0;
+}
+
+.plotTableTitle {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-demi-bold);
+  margin: var(--margin-sm) 0 0;
+}
+
+.plotTableNote {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--margin-xs, 4px) 0 0;
+}
+
+/* Moments to check: each row opens the zoom charts at that time. */
+.plotMomentList {
+  display: grid;
+  gap: var(--gap-xs, 6px);
+  max-height: 26rem;
+  overflow-y: auto;
+}
+
+.plotMoment {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 3px solid #7aa2f7;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  padding: 0.5em 0.75em;
+  text-align: left;
+  width: 100%;
+}
+
+.plotMoment.brake {
+  border-left-color: #f7768e;
+}
+
+.plotMoment:hover,
+.plotMoment:focus-visible {
+  background: rgba(122, 162, 247, 0.1);
+}
+
+.plotMomentHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+  justify-content: space-between;
+}
+
+.plotMomentDetail {
+  display: block;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+.plotUnused {
+  opacity: 0.55;
 }

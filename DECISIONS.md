@@ -1009,6 +1009,18 @@ hard-braking runs, and also for 1.1 s during the 239 phantom brake), on an exper
 gated behind the `BlotV3` toggle. Both changes widen following distance or keep the jerk
 cost softer for longer; neither deletes a radar point or commands acceleration.
 
+**Part 1 reverted 2026-09-28 (owner request).** The pads again apply only below
+`ONSET_MAX_A_REQ` and slew back out above it. The premise above was wrong: a pad asks the MPC for
+*more* following distance, so a pad held while the car already needs a hard brake makes that brake
+harder, not softer. Evidence (closed-loop replay sim, not driven): route 00000294 6:25, an
+owner-bookmarked bad brake (a real lead braked about -5 m/s² and then turned off at 35 m), peaked
+at -4.23 with BLoTv3 on, -3.54 off and -3.90 after the revert. Across 8 hard brakes on 00000293 and
+00000294, BLoTv3 on braked harder than off in every one (by 0.03-0.8 m/s²) and kept the same closest
+gap within about 1 m. After the revert the gap to BLoTv3-off is 0.0-0.57 m/s², and the closest gap
+moves by at most 0.9 m (293 6:54: 7.8 -> 7.4 m, off 8.8). What is left of the gap to off comes from
+the model-trigger jerk softening, which is BLoTv2's original design and not reverted here. Part 2
+(the crawl hold) is unchanged.
+
 ## D-059 — a join publishes measured vRel only after a fresh post-join rate fit agrees
 
 **Status:** on the car branch 2026-09-17, replay and static only. Closes STATUS item 22.5.
@@ -1396,3 +1408,47 @@ and release edge pair in `buttonEvents` on every hold is the bench question in S
 
 ## D-066 — `eps_tools/rwd_format/` is canonical; `eps_tools/rwd_xray/format/` is reference only
 `eps_tools/rwd_xray/` is cfranyota/rwd-xray at 8d8e1ff3 (MIT), folded in on the owner's request for EPS firmware analysis. Content-hash compare against the tracked tree: `header.py` and `header_value.py` are identical to `rwd_format/`; `base.py`, `x31.py` and `x5a.py` differ only by the Python-3 port (relative imports, bytes indexing instead of `ord`). Run `rwd_format/`; keep `rwd_xray/` unedited as the source of the per-EPS patch offsets and stock/modified table values in `tools/eps_tool.py`.
+
+## D-067 — IMPLEMENTED: no lane-change side filter in `match_vision_to_track`
+StarPilot's `HumanLaneChanges` dropped every radar track on the far side of 0 m (left change: yRel <= 0,
+right change: yRel >= 0) during `laneChangeStarting`. The function only pairs a radar track with the
+vision lead, which must already agree in distance, speed and lateral position, so the filter never
+changed which car was followed. It could only take radar away from it (D-041/D-042: a gate that can only
+delete radar points is removed rather than tuned).
+
+Evidence (replay/closed-loop sim, `--bearings 0.075`, filter re-applied vs removed, route 00000293):
+- 10:49 left change: the new lane's car (track 61) crossed to y -0.2..-0.4 as we arrived. With the filter
+  it went vision-only for ~2.5 s and the sim brake came late, -1.7 then -3.3; without it radar stays on,
+  the brake starts earlier and plateaus at -2.6..-2.9, min gap 11.9 -> 13.1 m.
+- 29:13-29:16 right change on a curve: track 12 at y +0.2..+1.2. With the filter vision put the car at
+  64-79 m (radar 53-67) and the merge push held +0.5 until radar returned at 52.6 m; without it the push
+  releases ~1 s earlier, the later brake is -1.79 vs -1.92, min gap 41.8 -> 43.6 m.
+- 294 13:10: no difference (the lead was lost for another reason).
+- Route 00000296 (device without this change): radar was on the lead for 0-53% of each of 5 lane changes.
+
+Limits: replay only; no road drive with this change yet. `test_leads.py`
+`test_match_vision_to_track_keeps_new_lane_car_during_human_lane_change` pins both 293 geometries.
+
+## D-068 — REJECTED: publishing a high-U10 birth as a bound
+Route 00000296 5:16 (route 322.05-322.38 s): track 17, the real in-lane lead slowing to a stop at
+66 -> 63 m, had U10 above `BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW` on all six sweeps. With no accepted
+sample and no trusted vRel, the coast path had nothing to coast, so the object was never published.
+
+Tried (not committed): publish such a birth, in lane (|y| <= 2 m) and from 25 m out, once its own ranges fit
+(4 samples over 0.25 s, rms <= 1 m), with vRel = max(live U11, fit - 3 m/s), measured=False. It did not stay
+in the tree. Open-loop A/B replay, `--bearings 0.075`:
+- 00000296: no gain. Track 17 was published for its last two sweeps only and never became the lead. The
+  5:16 command was unchanged; 0 harder and 0 softer frames on the route.
+- 00000294 7:06 (route 426.4 s): track 16, a new in-lane car at 69 m. Its birth U11 was railed at -13.5
+  and its settling birth ranges fit about -13.6, so the bound was -13.5. The radar then read -5.6 a few
+  sweeps later. Vision also said -13 then, so the bound was not a new wrong distance or speed on its own.
+  But radard's lead filter, seeded at -13.5 and then corrected to -5.6, reported the lead ACCELERATING at
+  +3..+5.7 m/s^2 for ~1.1 s (426.9-428.0). Without the change it reported -0.2 falling to -3; the lead was
+  starting to brake. The command was softer by up to 0.5 m/s^2 in that window (peak -2.39 vs -2.76) and
+  crossed -1.5 slightly harder at 428.0 (-1.63 vs -1.47).
+
+Reason: a birth's own ranges are still settling (00000239), and a railed birth U11 is only a bound (D-063).
+Neither gives a vRel good enough to seed radard's filter. A wrong-direction lead acceleration can make a
+real brake late, which is worse than 296's extra 2 s of vision-only lead. Any retry needs a birth vRel
+that does not seed the lead filter's acceleration, and a replay showing a gain. The patch is not kept;
+this entry is the record. Replay evidence only.

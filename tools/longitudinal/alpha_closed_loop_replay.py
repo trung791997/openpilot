@@ -114,6 +114,24 @@ HUMAN_VARIANTS = ("human_off", "frog", "frog_guard")
 # 'late_A' = only the comfort-floor pass, 'late_B' = only the merge-floor release.
 LATE_VARIANTS = {"late_off": (False, None), "late_A": (True, None), "late_B": (False, -1.5)}
 LATE_DEFAULTS = (LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND)
+
+
+class LogClock:
+  """time.monotonic() for the planner, read from the log time of the message being replayed.
+
+  The planner's latches (0.8 s low-speed stop-buffer hold, 0.7 s recent-brake window, the post-departure
+  settle latch) are timed with time.monotonic(). With the wall clock, how many frames a latch spans depended
+  on how fast this machine ran the replay, so two identical runs differed (up to 1.0 m/s2 on 293 1965 s).
+  On the car monotonic time and logMonoTime are the same clock. Planner copies loaded outside this module
+  can share it: `module.time = LOG_CLOCK`.
+  """
+  now = 0.0
+
+  def monotonic(self) -> float:
+    return self.now
+
+
+LOG_CLOCK = LogClock()
 # --hf-gate: FrogPilot e7debabe5 (2026-09-20) gates the HumanFollowing model path on the radar lead's own
 # modelProb as well as the model lead's prob, so a lead the model never matched (low-speed override,
 # modelProb 0) keeps its aLeadK extrapolation. 'hf_gate' = the shipped builder plus that gate.
@@ -127,6 +145,74 @@ BRAKE_VARIANTS = ("cap_off", "cap_radar", "alead_floor")
 ALEAD_FLOOR = 2.0
 GUARD_TTC = 3.0
 GUARD_MIN_CLOSING = 0.75
+
+
+# --blot-ab: 'noblot' = the same planner with the BLoTv3 supervisor off (it is on in the car, BlotV3=1).
+# Each frame also records what the supervisor did in the first variant (jerk scale, t_follow, triggers).
+BLOT_OFF_VARIANT = "noblot"
+
+# --sim-window T0,T1 (route seconds): inside the window every replayed variant drives its own simulated car
+# instead of the logged one, so a variant that brakes earlier also arrives slower. The lead stays as logged in
+# the world: its dRel is shifted by how far the simulated car is behind the logged car, its vRel re-based on
+# the simulated speed, and the camera lead's x shifted the same way. The car's acceleration follows the
+# planner's output through SIM_DELAY and a first-order SIM_TAU lag (fit on 28f 11:20-11:45: accel command ->
+# aEgo, rmse 0.22 m/s^2), plus the logged residual (aEgo minus the same model driven by the logged command),
+# so grade and drag carry over and a variant commanding exactly what the car did reproduces the log.
+# Not modelled: the driver, starpilotPlan (tFollow, vCruise stay as logged), and the rest of modelV2.
+SIM_DELAY = 0.1
+SIM_TAU = 0.3
+
+
+class _Over:
+  """Read-through proxy that overrides a few attributes of a capnp reader."""
+  def __init__(self, base, **over):
+    self._base = base
+    self._over = over
+
+  def __getattr__(self, k):
+    over = self.__dict__["_over"]
+    return over[k] if k in over else getattr(self.__dict__["_base"], k)
+
+
+class _FirstOrderDelay:
+  def __init__(self, a0: float):
+    self.a = a0
+    self.buf: list = []
+
+  def step(self, u: float, dt: float) -> float:
+    self.buf.append(u)
+    ud = self.buf.pop(0) if len(self.buf) > round(SIM_DELAY / 0.05) else self.buf[0]
+    self.a += (ud - self.a) * min(dt / SIM_TAU, 1.0)
+    return self.a
+
+
+class SimCar:
+  """One variant's simulated ego inside --sim-window (see SIM_DELAY)."""
+  def __init__(self, v: float, a: float):
+    self.v = v
+    self.a = a
+    self.gap_shift = 0.0
+    self.model = _FirstOrderDelay(a)
+    self.u = a
+
+  def step(self, dt: float, residual: float, v_log: float):
+    self.a = self.model.step(self.u, dt) + residual
+    v_new = max(self.v + self.a * dt, 0.0)
+    self.gap_shift += (v_log - (self.v + v_new) / 2.0) * dt
+    self.v = v_new
+
+  def views(self, cs, rs, model):
+    shift, v = self.gap_shift, self.v
+
+    def lead(ld):
+      if not ld.status:
+        return ld
+      return _Over(ld, dRel=float(ld.dRel) + shift, vRel=float(ld.vLead) - v)
+
+    cs_v = _Over(cs, vEgo=v, vEgoCluster=v, aEgo=self.a, standstill=v < 0.05)
+    rs_v = _Over(rs, leadOne=lead(rs.leadOne), leadTwo=lead(rs.leadTwo))
+    leads = [_Over(ld, x=[float(x) + shift for x in ld.x]) for ld in model.leadsV3]
+    return cs_v, rs_v, _Over(model, leadsV3=leads)
 
 
 def frogpilot_model_lead_trajectory(lead_detection_probability, guard=False, trips=None):
@@ -273,6 +359,28 @@ def vision_view(model, v_ego: float) -> dict | None:
   return {"p": float(ld.prob), "x": x, "v": v, "a": a, "req": req}
 
 
+def _r(x: float, nd: int = 2):
+  x = float(x)
+  return round(x, nd) if math.isfinite(x) else None
+
+
+def viz_view(rd, rs) -> dict:
+  """Every radard track and both published leads, for tools/longitudinal/long_replay_viewer.py.
+
+  tr: [id, dRel, yRel, native vRel, vRelRange, measured] per track. l1/l2: [dRel, yRel, published vRel,
+  native vRel of its track, vRelRangeDerived, track id, radar, modelProb], or None."""
+  tr = [[int(k), _r(t.dRel), _r(t.yRel), _r(t.vRel), _r(t.vRelRange), int(bool(t.measured))] for k, t in rd.tracks.items()]
+
+  def lead(ld):
+    if not ld.status:
+      return None
+    tid = int(ld.radarTrackId)
+    native = rd.tracks[tid].vRel if ld.radar and tid in rd.tracks else float("nan")
+    return [_r(ld.dRel), _r(ld.yRel), _r(ld.vRel), _r(native), _r(ld.vRelRangeDerived), tid, int(bool(ld.radar)),
+            _r(ld.modelProb, 3)]
+  return {"tr": tr, "l1": lead(rs.leadOne), "l2": lead(rs.leadTwo)}
+
+
 def hf_gated_model_lead_trajectory(builder, lead_detection_probability, fired):
   """The shipped HumanFollowing builder, refused when the radar lead is not vision-matched (FrogPilot e7debabe5)."""
   def build(model_lead, radar_lead, v_ego, *args, **kwargs):
@@ -298,7 +406,7 @@ def floored_a_lead(bound):
 
 def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bound: bool = False,
            human_ab: bool = False, vision_only: bool = False, late_ab: bool = False, hf_gate: bool = False,
-           brake_ab: bool = False):
+           brake_ab: bool = False, blot_ab: bool = False, sim_window: tuple | None = None):
   files = segment_files(route_dir)
   if not files:
     raise SystemExit(f"no rlog segments under {route_dir}")
@@ -306,6 +414,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
   variants = ([f"b{b:g}" for b in bearings] + (list(FIX_VARIANTS) if fixes else []) +
               (list(HUMAN_VARIANTS) if human_ab else []) + (list(LATE_VARIANTS) if late_ab else []) +
               ([HF_GATE_VARIANT] if hf_gate else []) + (list(BRAKE_VARIANTS) if brake_ab else []) +
+              ([BLOT_OFF_VARIANT] if blot_ab else []) +
               ["nobound", "logged"])
   original_builder = LM.build_model_lead_trajectory
   fix_bounds = {k: FixBound(k) for k in FIX_VARIANTS} if fixes else {}
@@ -327,9 +436,15 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
                 "shipped_bearing": LP.OFF_AXIS_LEAD_MIN_BEARING}
   agree = {"both": 0, "radar": 0, "d1m": 0, "track": 0, "status_eq": 0, "ticks": 0}
   frames: list[dict] = []
+  sims: dict = {}
+  sim_resid_model = None
+  t_prev = None
+  meta["sim_window"] = sim_window
 
+  LP.time = LOG_CLOCK
   for path in files:
     for msg in LogReader(str(path), sort_by_time=True):
+      LOG_CLOCK.now = msg.logMonoTime / 1e9
       which = msg.which()
       if t0 is None and which == "initData":
         t0 = msg.logMonoTime
@@ -348,7 +463,7 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
         blot = bool(meta.get("blotv3", False))
         for v in variants:
           p = LP.LongitudinalPlanner(acp)
-          p._blotv3_active = (lambda b=blot: b)
+          p._blotv3_active = (lambda b=blot and v != BLOT_OFF_VARIANT: b)
           if v == "nobound":
             p.bound_off_axis_radar_leads = False
           planners[v] = p
@@ -430,18 +545,38 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
       guard_trip = False
       hf_gate_fired = []
       fix_fired = {}
+      blot_rec = None
       saved = LP.OFF_AXIS_LEAD_MIN_BEARING
       t_now = (msg.logMonoTime - t0) / 1e9
+      in_sim = sim_window is not None and sim_window[0] <= t_now <= sim_window[1]
+      dt = min(t_now - t_prev, 0.2) if t_prev is not None else 0.05
+      t_prev = t_now
+      logged_cmd = accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel)
+      if sim_resid_model is None:
+        sim_resid_model = _FirstOrderDelay(float(cs.aEgo))
+      sim_resid = float(cs.aEgo) - sim_resid_model.step(logged_cmd if np.isfinite(logged_cmd) else float(cs.aEgo), dt)
+      if not in_sim:
+        sims.clear()
+      else:
+        for v in planners:
+          if v == "logged":
+            continue
+          if v not in sims:
+            sims[v] = SimCar(float(cs.vEgo), float(cs.aEgo))
+          else:
+            sims[v].step(dt, sim_resid, float(cs.vEgo))
       try:
         for v, p in planners.items():
           sm = _ReplaySM(state, valid)
           sm["controlsState"] = cstate
+          if v in sims:
+            sm["carState"], rs_sim, sm["modelV2"] = sims[v].views(cs, rs, model)
           if v == "logged":
             sm["radarState"] = state["radarState_logged"]
             sm._valid = {**valid, "radarState": valid["radarState_logged"]}
             LP.OFF_AXIS_LEAD_MIN_BEARING = saved
           else:
-            sm["radarState"] = rs
+            sm["radarState"] = rs_sim if v in sims else rs
             sm._valid = {**valid, "radarState": bool(rd.radar_state_valid)}
             LP.OFF_AXIS_LEAD_MIN_BEARING = float(v[1:]) if v.startswith("b") else saved
           LP.MPC_LEAD_BRAKE_PASSES_COMFORT_FLOOR, LP.LC_MERGE_RELEASE_MPC_DEMAND = LATE_VARIANTS.get(v, LATE_DEFAULTS)
@@ -477,6 +612,12 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
           if v in fix_bounds:
             fix_fired[v] = fix_bounds[v].fired
           out[v] = float(p.output_a_target)
+          if v == variants[0] and p._blotv3_policy is not None:
+            bp = p._blotv3_policy
+            blot_rec = [round(float(bp.jerk_scale), 3), round(float(bp.t_follow), 3), round(float(bp.required_decel), 2),
+                    int(bp.emergency), int(bp.recovery_active), int(bp.model_active), int(bp.launch_active)]
+          if v in sims:
+            sims[v].u = out[v]
           if v == "frog_guard":
             guard_trip = bool(trips)
           src[v] = str(p.mpc.source)
@@ -502,12 +643,15 @@ def replay(route_dir: Path, bearings: list[float], fixes: bool = False, coast_bo
         "t": (msg.logMonoTime - t0) / 1e9, "engaged": engaged, "v_ego": float(cs.vEgo), "a_ego": float(cs.aEgo),
         "accel_cmd": accel_cmd if not meta["logged_op_long"] else float(state["carControl"].actuators.accel),
         "steer": float(cs.steeringAngleDeg), "out": out, "src": src, "brake": bool(cs.brakePressed), "fix": fix_fired, "guard_trip": guard_trip,
-        "hf_gate": bool(hf_gate_fired),
+        "hf_gate": bool(hf_gate_fired), "blot": blot_rec,
+        "sim": {v: [round(c.v, 3), round(c.a, 3), round(c.gap_shift, 2)] for v, c in sims.items()},
         "vis": vision_view(model, float(cs.vEgo)),
         "lead": lead_view(lr, model, bearings), "lead_logged_bearing":
           abs(float(lg.yRel)) / max(float(lg.dRel), 1.0) if lg.status and lg.radar else None,
+        "viz": viz_view(rd, rs),
       })
   meta["agreement"] = agree
+  meta["t0_mono"] = t0
   meta["variants"] = variants
   return frames, meta
 
@@ -654,17 +798,23 @@ def main() -> int:
                   help="add 'hf_gate': HumanFollowing also needs the radar lead's modelProb (FrogPilot e7debabe5)")
   ap.add_argument("--brake-ab", action="store_true",
                   help="add 'cap_off' (cap disabled), 'cap_radar' (cap ignores vision, as before), 'alead_floor'")
+  ap.add_argument("--blot-ab", action="store_true", help="add 'noblot': the BLoTv3 supervisor off")
+  ap.add_argument("--sim-window", help="T0,T1 route seconds: each variant drives its own simulated car there (SIM_DELAY)")
+  ap.add_argument("--frames-json", type=Path, help="write every replayed frame here, for charts (keep it outside the repo)")
   ap.add_argument("--json", type=Path, help="write episodes + metadata here (keep it outside the repo)")
   args = ap.parse_args()
 
   bearings = [float(x) for x in args.bearings.split(",")]
   frames, meta = replay(args.route_dir, bearings, args.fixes, args.coast_bound, args.human_ab, args.vision_only,
-                        args.late_ab, args.hf_gate, args.brake_ab)
+                        args.late_ab, args.hf_gate, args.brake_ab, args.blot_ab,
+                        tuple(float(x) for x in args.sim_window.split(",")) if args.sim_window else None)
   eps = episodes(frames, meta, args.threshold)
   diffs = frame_diffs(frames, meta)
   print_report(meta, frames, eps, diffs, args.threshold)
   if args.json:
     args.json.write_text(json.dumps({"meta": meta, "episodes": eps, "diffs": diffs}, indent=1, default=str))
+  if args.frames_json:
+    args.frames_json.write_text(json.dumps({"meta": meta, "frames": frames}, default=str))
   return 0
 
 

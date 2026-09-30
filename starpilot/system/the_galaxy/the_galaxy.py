@@ -39,7 +39,7 @@ from urllib.parse import quote
 from cereal import car, custom, log, messaging
 from opendbc.can.parser import CANParser
 from opendbc.car.gm.values import GMFlags
-from opendbc.car.honda.values import HONDA_BOSCH_A
+from opendbc.car.honda.values import CAR as HONDA_CAR, HONDA_BOSCH_A, HondaFlags
 from opendbc.car.toyota.carcontroller import LOCK_CMD, UNLOCK_CMD
 from opendbc.car.toyota.values import ToyotaStarPilotFlags
 from openpilot.common.constants import CV
@@ -1981,8 +1981,50 @@ def _get_param_int_value(key, default=0):
   except Exception:
     return int(default)
 
+# Steering tune keys the NRDR PID controller reads (speed-band sliders, Honda PID scales, feedforward
+# switches). Kept in sync with lat_tune_analyzer.TUNING_KEYS; a failed import only drops them from the snapshot.
+try:
+  from openpilot.selfdrive.controls.lib.lat_tune_analyzer import TUNING_KEYS as _NRDR_LATERAL_TUNE_KEYS
+except Exception:
+  _NRDR_LATERAL_TUNE_KEYS = ()
+_DRIVE_PLOTS_RADAR_KEYS = ("BlotV3", "BoschARadar", "NrdrHondaEcuMatchedLong")
+# Asked for by the lateral agents: lane centring, the delay the controller assumes, the firmware-FF switch, and
+# (Bob, 2026-09-29) the conditional-experimental override state the drive started in.
+_DRIVE_PLOTS_AGENT_KEYS = ("LaneCentering", "LaneCenteringE2EAuthority", "LaneCenterOffset", "SteerDelay",
+                           "NrdrLatEpsFirmwareFF", "ExperimentalMode", "ConditionalExperimental", "ConditionalChill",
+                           "CEStatus", "PersistedCEStatus")
+_CLARITY_EPS_CARS = (HONDA_CAR.HONDA_CLARITY, HONDA_CAR.HONDA_CIVIC_BOSCH)
+_lateral_controller_cache = {"key": None, "value": None}
+
+def _lateral_controller_info():
+  """Which steering controller controlsd runs, mirroring use_clarity_eps_controller():
+  "clarity_eps" (James's controller, fixed gains), "nrdr_pid" (the PID the speed-band sliders tune),
+  or the plain lateralTuning type. None when the car is unknown."""
+  cp_bytes = _safe_params_get_live_raw("CarParamsPersistent")
+  if not cp_bytes:
+    return None
+  eps_ff = _safe_params_get_bool("NrdrLatEpsFirmwareFF")
+  cache_key = (bytes(cp_bytes), eps_ff)
+  if _lateral_controller_cache["key"] == cache_key:
+    return _lateral_controller_cache["value"]
+  value = None
+  try:
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+      tuning = str(cp.lateralTuning.which())
+      eps_modified = bool(cp.flags & HondaFlags.EPS_MODIFIED) and str(cp.brand) == "honda"
+      if tuning == "pid" and eps_modified and cp.carFingerprint in _CLARITY_EPS_CARS and eps_ff:
+        value = drive_plots.CONTROLLER_CLARITY_EPS
+      elif tuning == "pid" and eps_modified:
+        value = drive_plots.CONTROLLER_NRDR_PID
+      else:
+        value = tuning
+  except Exception:
+    value = None
+  _lateral_controller_cache.update(key=cache_key, value=value)
+  return value
+
 def _drive_plots_meta():
-  """Snapshot what a recorded drive is being judged against: the car and the tune."""
+  """Snapshot what a recorded drive is being judged against: the car, the steering controller and the tune."""
   meta = {"car": None, "git_commit": None, "tune": {}}
   cp_bytes = _safe_params_get_live_raw("CarParamsPersistent")
   if cp_bytes:
@@ -1993,13 +2035,28 @@ def _drive_plots_meta():
         meta["lateral_tuning"] = str(cp.lateralTuning.which())
     except Exception:
       pass
+  meta["lateral_controller"] = _lateral_controller_info()
   for key, target in (("GitCommit", "git_commit"), ("GitBranch", "git_branch")):
     try:
       value = params.get(key)
       meta[target] = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
     except Exception:
       pass
-  for key in [*_TROUBLESHOOT_ADVANCED_LATERAL_KEYS, *_TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS]:
+  try:
+    meta["route"] = _drive_plots_route()
+  except Exception:
+    meta["route"] = None
+  meta["lateral_delay"] = _drive_plots_lateral_delay()
+  try:
+    all_keys = [k.decode() if isinstance(k, bytes) else str(k) for k in params.all_keys()]
+  except Exception:
+    all_keys = []
+  # Every Nrdr*/HondaOverride* key, so an agent reading the log sees the whole tune (a missing one reads "missing").
+  agent_keys = sorted(k for k in all_keys if k.startswith(("Nrdr", "HondaOverride")))
+  tune_keys = dict.fromkeys([*_TROUBLESHOOT_ADVANCED_LATERAL_KEYS, *_NRDR_LATERAL_TUNE_KEYS,
+                              *_TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS, *_DRIVE_PLOTS_RADAR_KEYS,
+                              *_DRIVE_PLOTS_AGENT_KEYS, *agent_keys])
+  for key in tune_keys:
     try:
       value = params.get(key)
       if isinstance(value, bytes):
@@ -2008,7 +2065,24 @@ def _drive_plots_meta():
         meta["tune"][key] = value if isinstance(value, (str, int, float, bool)) else str(value)
     except Exception:
       pass
+  for key in agent_keys:
+    meta["tune"].setdefault(key, "missing")
   return meta
+
+def _drive_plots_route():
+  value = params.get("CurrentRoute")
+  return (value.decode("utf-8", "replace") if isinstance(value, bytes) else value) or None
+
+def _drive_plots_lateral_delay():
+  """lagd's learned steering delay (LiveDelay), in seconds, or None."""
+  try:
+    raw = _safe_params_get_live_raw("LiveDelay")
+    if raw:
+      with log.Event.from_bytes(raw) as evt:
+        return round(float(evt.liveDelay.lateralDelay), 3)
+  except Exception:
+    pass
+  return None
 
 _drive_plots = None
 _drive_plots_init_lock = threading.Lock()
@@ -2017,8 +2091,11 @@ def _get_drive_plots():
   global _drive_plots
   with _drive_plots_init_lock:
     if _drive_plots is None:
-      _drive_plots = drive_plots.DrivePlots(_get_galaxy_dir() / "drive_plots", is_onroad=lambda: params.get_bool("IsOnroad"))
+      _drive_plots = drive_plots.DrivePlots(_get_galaxy_dir() / "drive_plots", is_onroad=lambda: params.get_bool("IsOnroad"),
+                                            controller_fn=_lateral_controller_info, meta_fn=_drive_plots_meta,
+                                            route_fn=_drive_plots_route)
       threading.Thread(target=_drive_plots.recover_interrupted, daemon=True).start()
+      _drive_plots.start_auto()
     return _drive_plots
 
 def _set_fast_update_state(**kwargs):
@@ -8272,7 +8349,19 @@ def setup(app):
     payload = _get_drive_plots().live(since)
     payload["isOnroad"] = params.get_bool("IsOnroad")
     payload["isMetric"] = _safe_params_get_bool("IsMetric")
+    payload["lateralController"] = _lateral_controller_info()
+    payload["settings"] = _get_drive_plots().settings()
     return jsonify(payload), 200
+
+  @app.route("/api/plots/settings", methods=["GET", "POST"])
+  def plots_settings():
+    plots = _get_drive_plots()
+    if request.method == "POST":
+      body = request.get_json(silent=True) or {}
+      if not isinstance(body, dict):
+        return jsonify({"error": "Invalid request"}), 400
+      return jsonify({"settings": plots.set_settings(body)}), 200
+    return jsonify({"settings": plots.settings()}), 200
 
   @app.route("/api/plots/recording/start", methods=["POST"])
   def start_plots_recording():
@@ -10603,6 +10692,8 @@ def setup(app):
     return {"error": "Video not found"}, 404
 
 def main():
+  # Before any thread starts: glibc gives each request thread its own malloc arena and keeps what is freed in it.
+  drive_plots.limit_malloc_arenas(2)
   while not _ensure_galaxy_web_deps():
     print(f"The Galaxy waiting for Flask dependency ({_GALAXY_WEB_DEPS_ERROR}); retrying in 60s.")
     time.sleep(60)
@@ -10610,6 +10701,8 @@ def main():
   app = Flask(__name__, static_folder="assets", static_url_path="/assets")
   setup(app)
   threading.Thread(target=_testing_ground_custom_reserved_worker, daemon=True).start()
+  # Plots records every drive on its own (Plots > "Record every drive"); building it starts that watcher.
+  threading.Thread(target=_get_drive_plots, daemon=True).start()
 
   # Desktop-only debug mode. On-device must stay on 8082 to match Galaxy FRP routing.
   on_device = _is_comma_device_runtime()

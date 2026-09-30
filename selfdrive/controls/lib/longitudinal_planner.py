@@ -133,6 +133,15 @@ FAST_CLOSING_LEAD_MAX_BRAKE = 2.0
 # 1338.6 it held -0.4 for 1.3 s while the MPC asked -1.5..-4.2 and the lead braked 3-5 m/s^2,
 # 0.85 s behind stock ACC. It now lets go when the MPC asks this much inside LC_MERGE_TTC_ACCEL.
 LC_MERGE_RELEASE_MPC_DEMAND = -1.5
+# Route 00000293 (owner-bookmarked, both called bad): the TTC gates above use the current closing speed only.
+# 10:48 (left change): the floor held -0.4 for ~1 s while the lead braked at aLeadK -1.2..-3.5 and closed
+# 1 -> 5 m/s at TTC 6-8 s; it let go only at dRel 30 and the car went straight to -3.5 (aEgo -4.0).
+# A lead braking harder than this now releases the floor, so the MPC starts on it while it is still far.
+LC_MERGE_RELEASE_LEAD_BRAKE = -1.0
+# 29:12 (right change): the +0.55 push held for ~4 s toward a car 49-72 m ahead closing at 2-6.4 m/s
+# (TTC 7.6 s) until the change finished, then -1.4 (aEgo -2.0). The push is now withheld while closing
+# faster than this on the lead; the -0.4 floor still applies.
+LC_MERGE_PUSH_MAX_CLOSING = 3.0
 
 A_CRUISE_MAX_BP = [0.0, 5., 10., 15., 20., 25., 40.]
 A_CRUISE_MAX_VALS = [1.125, 1.125, 1.125, 1.125, 1.25, 1.25, 1.5]
@@ -267,6 +276,132 @@ OFF_AXIS_LEAD_VISION_MIN_PROB = 0.5
 # to vision's closing less a margin and aLeadK to vision's accel with a floor. Planner input only, like the off-axis
 # bound: radarState and radard are untouched, the point stays published and its range is kept (D-041/D-042).
 REASSOC_LEAD_BOUND = True
+
+# Radar-only on-path lead (radarState.leadOnpath, ONPATH_RADAR_ADOPT in radard.py): a Bosch-A track that sat on the
+# driving path for a second while the model did not see it. radard publishes it BESIDE an unchanged leadOne, and it
+# gets bounded authority here (D-048: a lead without vision corroboration does not get full authority). A second
+# planner instance runs every cycle on the same inputs with leadOne replaced by leadOnpath, so its state stays in
+# step; while leadOnpath is present the published target is that planner's, clipped to
+# [min(own, -ONPATH_LEAD_MAX_BRAKE), own]. One-sided: it can only add braking to what this planner already asks,
+# never remove braking and never add acceleration, and it adds nothing once this planner itself brakes harder than
+# the cap. Full authority returns when radard's own leadOne takes the track (vision match or its normal radar path),
+# because leadOnpath is then not published; the output is this planner's again on that cycle. The point is never
+# deleted and its range is never moved (D-041/D-042), so nothing here can pull the car toward a stopped object.
+# The cap is on the resulting target, not a delta: from +0.46 it may go to -0.80 (00000276 13:45.2).
+# 1.0 m/s^2: the off-axis bound's accepted residue on a false brake was -1.01 .. -1.22 (25f 13:58.4, 260 9:07.8).
+# Replay evidence only (closed-loop alpha_closed_loop_replay, 2026-09-29), route 00000297--f971b5896f:
+#   31:08.0 stopped car, adopted 1.35 s before HEAD's radar lead: -1.00 from 31:08.0 (HEAD -0.3); peak -2.86 vs HEAD
+#     -3.24 (uncapped -2.37), sim aEgo min -3.79 vs -4.06; ends 1.4 m farther back than HEAD (uncapped 2.4 m).
+#   30:18.1 stationary object on a curve edge, passed ~2.5 m to the side: -1.00 for 0.35 s (uncapped -2.87 and 1.0 s
+#     of extra braking), 0.4 m/s lost vs HEAD (uncapped 1.9 m/s).
+# A deeper cap buys back the uncapped gap on 31:08 and gives back the false brake at 30:18 one for one; there is no
+# road evidence either way.
+ONPATH_LEAD_BOUND = True
+ONPATH_LEAD_MAX_BRAKE = 1.0
+
+
+# Brake release rate limit (replay only, no road evidence). While the previous published target is a brake
+# (< 0), the next target may rise by at most BRAKE_RELEASE_JERK * dt. It never lowers a target by more than that
+# step allows, never delays brake onset (a falling target passes through unchanged), and is skipped on reset and
+# at standstill so a stop-and-go departure is not slowed. Evidence, closed-loop replay of 12 windows on
+# 00000294/293/292/25e (tools/longitudinal/alpha_closed_loop_replay.py, forced engagement, 2026-09-29):
+# the step-to-step movement of our target is dominated by the close-lead caps (close_lead_brake_cap moved it on
+# 468 cycles, mean |step| 0.72 m/s^2) and by vision_low_speed_stop_buffer toggling -1.3 <-> -0.3 at a creep.
+# Removing the caps outright gives mvl-like smoothness but loses the 293 1965 stop, so the caps stay and only
+# their release is slewed. J = 2.5: geo-mean RMS d(cmd)/dt 0.74x base (1.5 gave 0.69x, 4.0 gave 0.76x),
+# first-brake time unchanged in every window, peak brake within 0.1, min gap >= base - 0.1 m.
+# Rerun on the repeatable log-clock replay (45e9d316c, 16 windows incl. 725/1383/2304 stop-and-go): mean jerk RMS
+# 0.82x today, 9 fewer accel sign flips, brake onset identical in all 16, no trusted min gap below today's.
+# Shipped ON (owner, 2026-09-29) with no road evidence yet.
+# Costs: a brake hold of up to |a| / J seconds longer (-2.5 -> 0 takes 1 s) before throttle on a lead pull-away.
+BRAKE_RELEASE_LIMIT = True
+BRAKE_RELEASE_JERK = 2.5  # m/s^3
+# Release dwell (closed-loop replay only, not driven; 2026-09-29 plan2 study vs mvl sp-honda-dev-202608). Near a
+# close lead the MPC answer can alternate every cycle (25e 732.5-733.0: raw MPC -1.99, -0.50, -1.70, -0.46, ... at
+# 2 m/s, 4.5 m) and the published target dithered -1.00 <-> -0.88 between the comfort-floor clip and the release
+# slew above. The alternation rides on the caps writing self.a_desired into the next MPC x0; cutting that feedback
+# diverged the replay (725: min gap 5.3 -> -98.8 m), so the feedback stays and only the output is held: a brake may
+# rise only after it has asked for no rise for BRAKE_RELEASE_DWELL_TICKS cycles (a short running-min). It only
+# ever holds more braking, so it cannot delay onset. Log-clock replay, 16 windows vs the shipped slew: geo-mean
+# jerk RMS 0.986x, 23 fewer accel sign flips (725 24 -> 15, 559 25 -> 19), onset never later, trusted min gap never
+# below base -0.1 m, 725/1965 peak brake unchanged. 4 ticks, or holding only after a fall, removed fewer flips.
+# Costs: every brake release starts BRAKE_RELEASE_DWELL_TICKS * DT_MDL (0.1 s) later.
+BRAKE_RELEASE_DWELL = True
+BRAKE_RELEASE_DWELL_TICKS = 2
+# Coast-ceiling slew (closed-loop replay only, not driven; same study). When the model's throttle gate closes, the
+# output ceiling drops from the accel limit to the coast accel in one cycle (294 568.16: +0.46 -> -0.42 at 5.4 m/s).
+# mvl reaches the same coast limit through a jerk-limited cruise target. The ceiling now moves at most
+# COAST_CEILING_JERK * dt per cycle from where the output was. It only ever allows more throttle than the ceiling for
+# a few cycles and never overrides a lower MPC or cap target. Alone it cost 0.4 m of min gap in 294 559 (fails the
+# gap rule); with BRAKE_RELEASE_DWELL it passed (16 windows: jerk RMS 0.975x, 27 fewer flips vs the shipped slew).
+COAST_CEILING_SLEW = True
+COAST_CEILING_JERK = 2.5  # m/s^3
+
+
+# Experimental-mode exit crossfade (log, open-loop and closed-loop replay evidence only; not driven).
+# The planner publishes min(mpc, e2e) while experimental mode is on and mpc the frame it turns off, so every
+# EXP->ACC flip is a one-frame target step of mpc - min(mpc, e2e).
+# Route 00000280--d02d9c2f8e 30:42.89: CEM released on an open 3-5 deg climb and aTarget stepped +0.01 -> +0.99
+# in one 20 Hz frame; CURVATURE then re-entered/released at 30:43.49/30:44.09 and 30:46.14/30:46.84, each
+# release another ~+1.1 step. Corpus (45 routes, 10 h engaged, 995 flips): 79 of 561 exits stepped > 0.5.
+# Change: on EXP->ACC fade from min(mpc, e2e) to mpc over EXP_MODE_EXIT_BLEND_TIME. Entries are NOT slowed:
+# the weight jumps back to 1 on the frame experimental mode turns on, so a stop is braked for exactly as today.
+# A fade that allowed slowing entries was rejected: with any e2e bypass threshold tried (-0.5, -0.3, 0.0) it
+# held up to 1.44 m/s^2 more accel than HEAD on entries followed by a real stop within 10 s.
+# Cost (open loop, 1.0 s): the car keeps the experimental (lower) target for up to 1 s longer after a release;
+# speed withheld vs HEAD over 1.5 s p50 0.02 p90 0.26 max 0.72 m/s. If e2e is braking when CEM releases, that
+# braking fades out over <= 1 s instead of ending at once. Closed-loop replay (CEM fed from shadow replay, with
+# STOP_LIGHT_HOLD_CLEAR_RELEASE_TIME and CURVE_MODE_HOLD_TIME): route 280 29:30-31:10 aTarget steps > 0.5 9 -> 5;
+# red-light stops 00000293 ~7:00 and 00000296 ~9:30 brake at the same frame with the same or larger min gap.
+EXP_MODE_EXIT_BLEND = True
+EXP_MODE_EXIT_BLEND_TIME = 1.0  # s for a full min(mpc, e2e) -> mpc fade after experimental mode turns off
+
+
+def exp_mode_blend_weight(weight: float, exp_active: bool, dt: float) -> float:
+  """Weight of min(mpc, e2e) against mpc: 1 at once while experimental mode is on, then decays to 0
+  at 1/EXP_MODE_EXIT_BLEND_TIME per second after it turns off."""
+  if exp_active or not EXP_MODE_EXIT_BLEND:
+    return 1.0 if exp_active else 0.0
+  return float(max(0.0, weight - dt / EXP_MODE_EXIT_BLEND_TIME))
+
+
+def exp_mode_blend_target(a_mpc: float, a_e2e: float, weight: float) -> float:
+  """mpc at weight 0, min(mpc, e2e) at weight 1; never above mpc and never below min(mpc, e2e)."""
+  return float(a_mpc + weight * min(0.0, a_e2e - a_mpc))
+
+
+def brake_release_limited_target(prev: float, target: float, dt: float) -> float:
+  """While braking, the target may rise at most BRAKE_RELEASE_JERK * dt per step; it may always fall."""
+  if prev >= 0.0:
+    return float(target)
+  return float(min(target, prev + BRAKE_RELEASE_JERK * dt))
+
+
+def brake_release_dwell_target(prev: float, target: float, rise_ticks: int) -> tuple[float, int]:
+  """While braking, a rise is held for the first BRAKE_RELEASE_DWELL_TICKS cycles that ask for it; returns (target, rise_ticks)."""
+  if target <= prev + 1e-3:
+    return float(target), 0
+  rise_ticks += 1
+  if prev < 0.0 and rise_ticks <= BRAKE_RELEASE_DWELL_TICKS:
+    return float(prev), rise_ticks
+  return float(target), rise_ticks
+
+
+def onpath_lead_view(sm):
+  """SubMaster view with radarState.leadOne replaced by leadOnpath, or None when there is no on-path lead."""
+  try:
+    radar_state = sm['radarState']
+  except (KeyError, AttributeError):
+    return None
+  lead = getattr(radar_state, 'leadOnpath', None)
+  if lead is None or not bool(getattr(lead, 'status', False)):
+    return None
+  return _BoundedSubMaster(sm, _BoundedRadarState(radar_state, lead, radar_state.leadTwo))
+
+
+def onpath_bounded_target(own: float, with_onpath: float) -> float:
+  """The on-path lead may lower the target by at most down to -ONPATH_LEAD_MAX_BRAKE, and never raise it."""
+  return float(np.clip(with_onpath, min(own, -ONPATH_LEAD_MAX_BRAKE), own))
 REASSOC_LEAD_WINDOW_FRAMES = 30         # 1.5 s of history per radar track
 REASSOC_LEAD_MIN_OFFSET_M = 10.0        # track was this far beyond the vision lead ...
 REASSOC_LEAD_MIN_DROP_M = 6.0           # ... and its range has since dropped this much
@@ -425,12 +560,19 @@ EXPERIMENTAL_RELEASE_ACCEL_MIN_DELTA_A = 0.12
 EXPERIMENTAL_RELEASE_ACCEL_STEP = 0.06
 EXPERIMENTAL_SPEED_HANDOFF_BAND = 5.0 * CV.MPH_TO_MS
 EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE = -0.15
-# Experimental-mode lead-departure assist (TEST, default OFF, param ExpLeadDepartureAssist; STATUS 136b).
-# 518 exp-mode gas presses on 100 vision-only alpha-long routes: 110 had the e2e target below the MPC
-# while asking for accel >= 0, 57 of them with a lead pulling away (e2e +0.0..+0.5 while the MPC
-# allowed +0.7..+0.9). When a lead is at or beyond the follow distance and pulling away, lift the e2e
-# target part of the way toward the MPC. Stateless apart from a weight filter; e2e braking below
-# EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE is never touched, and the result never exceeds the MPC target.
+# Experimental-mode lead-departure assist (STATUS 136b-136g). Started as the TEST toggle
+# ExpLeadDepartureAssist, default off: 518 exp-mode gas presses on 100 vision-only alpha-long routes
+# showed 110 with the e2e target below the MPC while asking for accel >= 0, 57 of them with a lead
+# pulling away (e2e +0.0..+0.5 while the MPC allowed +0.7..+0.9). Tuned on open-loop replay (136b),
+# then confirmed on four logged drives with the toggle on (136c-136f): logged aTarget matched the
+# replay within 0.02 on 95-97% of acting frames, no hard brake in the 5-8 s after an episode was
+# caused by it, and 0 frames lifted while a lead closed faster than 0.5 m/s or braked harder than
+# -1.0. Baked in unconditionally in 136g: still Experimental Mode only (get_exp_lead_departure_weight
+# requires a lead at or beyond the follow distance, and update_exp_lead_departure only runs on the
+# tinygrad-model branch below), and every other gate is unchanged. When a lead is at or beyond the
+# follow distance and pulling away, lift the e2e target part of the way toward the MPC. Stateless
+# apart from a weight filter; e2e braking below EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE is never touched,
+# and the result never exceeds the MPC target.
 EXP_LEAD_DEPARTURE_MIN_SPEED = 4.5  # m/s, ~10 mph
 EXP_LEAD_DEPARTURE_VREL_BP = [0.3, 1.0]  # m/s lead pulling away -> weight 0..1 (replay, STATUS 136b)
 EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL = -0.2  # m/s^2, a lead braking harder than this disarms
@@ -442,7 +584,7 @@ EXP_LEAD_DEPARTURE_FALL_TAU = 0.15  # s, and going down
 EXP_LEAD_DEPARTURE_MAX_LIFT_RISE = 1.0  # m/s^3, the lift itself never rises faster
 # Release: the lift falls at most this fast (0.5 m/s^2 over ~0.17 s) instead of stepping to 0, which on 00000283
 # felt as a lift-off (11 one-frame drops > 0.3, STATUS 136d). Still instant for the urgent cases below, a planned
-# stop, e2e braking, or the toggle turning off; never lets the output exceed the MPC.
+# stop or e2e braking; never lets the output exceed the MPC.
 EXP_LEAD_DEPARTURE_MAX_LIFT_FALL = 3.0  # m/s^3
 EXP_LEAD_DEPARTURE_URGENT_VREL = -0.5  # m/s, a lead closing faster than this drops the lift at once
 EXP_LEAD_DEPARTURE_URGENT_LEAD_ACCEL = -1.0  # m/s^2, and a lead braking harder than this
@@ -997,8 +1139,13 @@ class LongitudinalPlanner:
         self._blotv3_enabled = False
     return self._blotv3_enabled
 
-  def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
+  def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, onpath_shadow=False):
     self.CP = CP
+    # ONPATH_LEAD_BOUND: the planner that sees leadOnpath as leadOne; never nested
+    self.onpath_planner = None
+    if ONPATH_LEAD_BOUND and not onpath_shadow and uses_off_axis_lead_bound(CP):
+      self.onpath_planner = LongitudinalPlanner(CP, init_v, init_a, dt, onpath_shadow=True)
+    self.onpath_bound_active = False
     self.bound_off_axis_radar_leads = uses_off_axis_lead_bound(CP)
     self.off_axis_lead_hold = OffAxisLeadHold()
     self.reassociation_hold = ReassociationHold()
@@ -1037,6 +1184,8 @@ class LongitudinalPlanner:
     self.v_model_error = 0.0
     self.output_a_target = 0.0
     self.mpc_lead_demand_hist = []
+    self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+    self.coast_ceiling = None
     self.fast_closing_lead_track = None
     self.stopped_radar_lead_hold_track = None
     self.stopped_radar_lead_hold_active = False
@@ -1099,6 +1248,7 @@ class LongitudinalPlanner:
     self.exp_lead_departure_weight = 0.0
     self.exp_lead_departure_lift = 0.0
     self.experimental_release_accel_until = 0.0
+    self.exp_mode_blend_weight = 0.0
 
     if self.is_preap:
       try:
@@ -2221,15 +2371,14 @@ class LongitudinalPlanner:
     return bool(tracking_lead and float(d_rel) < (float(t_follow) * 2.0) * float(v_ego))
 
   def update_exp_lead_departure(self, output_a_target, output_a_target_e2e, output_a_target_mpc, v_ego, t_follow,
-                                starpilot_toggles, hold_experimental):
+                                hold_experimental):
     raw = 0.0
-    enabled = bool(getattr(starpilot_toggles, "exp_lead_departure_assist", False))
-    if enabled and not hold_experimental:
+    if not hold_experimental:
       raw = get_exp_lead_departure_weight(self.lead_one, v_ego, t_follow)
     lead = self.lead_one
     lead_closing = lead is not None and lead.status and (
       float(lead.vRel) < 0.0 or float(getattr(lead, "aLeadK", 0.0)) < EXP_LEAD_DEPARTURE_MIN_LEAD_ACCEL)
-    if not enabled or hold_experimental or lead_closing:
+    if hold_experimental or lead_closing:
       # Disarm at once when the lead closes or brakes or a stop is planned; the lift then releases below.
       self.exp_lead_departure_weight = 0.0
     else:
@@ -2237,7 +2386,7 @@ class LongitudinalPlanner:
       self.exp_lead_departure_weight += (raw - self.exp_lead_departure_weight) * self.dt / (tau + self.dt)
     lift = apply_exp_lead_departure(output_a_target, output_a_target_e2e, output_a_target_mpc, self.exp_lead_departure_weight)
     lift = min(lift - output_a_target, self.exp_lead_departure_lift + EXP_LEAD_DEPARTURE_MAX_LIFT_RISE * self.dt)
-    urgent = (not enabled or hold_experimental or output_a_target_e2e < EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE or
+    urgent = (hold_experimental or output_a_target_e2e < EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE or
               (lead is not None and lead.status and (float(lead.vRel) < EXP_LEAD_DEPARTURE_URGENT_VREL or
                                                      float(getattr(lead, "aLeadK", 0.0)) < EXP_LEAD_DEPARTURE_URGENT_LEAD_ACCEL)))
     if not urgent:
@@ -2434,6 +2583,17 @@ class LongitudinalPlanner:
       return False
     return True
 
+  def slew_coast_ceiling(self, ceiling, prev_output, reset):
+    # Output ceiling moved at most COAST_CEILING_JERK * dt per cycle; a falling ceiling starts from the last output.
+    step = COAST_CEILING_JERK * self.dt
+    if reset or self.coast_ceiling is None:
+      self.coast_ceiling = float(ceiling)
+    elif ceiling < self.coast_ceiling:
+      self.coast_ceiling = float(max(ceiling, min(self.coast_ceiling, prev_output) - step))
+    else:
+      self.coast_ceiling = float(min(ceiling, self.coast_ceiling + step))
+    return self.coast_ceiling
+
   def get_mpc_lead_brake_accel_min(self, accel_min, mpc_target):
     # Output floor for the final clip: accel_min, lowered to a persistent MPC lead-brake demand.
     lead_demand = None
@@ -2507,15 +2667,28 @@ class LongitudinalPlanner:
     if (LC_MERGE_RELEASE_MPC_DEMAND is not None and mpc_demand is not None and
         mpc_demand < LC_MERGE_RELEASE_MPC_DEMAND and ttc < LC_MERGE_TTC_ACCEL):
       return None
+    if LC_MERGE_RELEASE_LEAD_BRAKE is not None and float(lead.aLeadK) < LC_MERGE_RELEASE_LEAD_BRAKE:
+      return None
 
     floor = LC_MERGE_BRAKE_FLOOR
-    if (self.allow_throttle and ttc >= LC_MERGE_TTC_ACCEL and d_rel >= LC_MERGE_ACCEL_MIN_DIST and
+    push_ok = LC_MERGE_PUSH_MAX_CLOSING is None or closing <= LC_MERGE_PUSH_MAX_CLOSING
+    if (push_ok and self.allow_throttle and ttc >= LC_MERGE_TTC_ACCEL and d_rel >= LC_MERGE_ACCEL_MIN_DIST and
         np.isfinite(v_cruise) and (v_cruise - scene_v_ego) >= LC_MERGE_HEADROOM_MIN):
       cruise_cap = max(0.0, (v_cruise - scene_v_ego) / max(action_t, self.dt))
       floor = min(LC_MERGE_ACCEL_BIAS, cruise_cap)
     return floor
 
   def update(self, sm, starpilot_toggles):
+    self._update(sm, starpilot_toggles)
+    if self.onpath_planner is None:
+      return
+    onpath_sm = onpath_lead_view(sm)
+    self.onpath_planner._update(onpath_sm if onpath_sm is not None else sm, starpilot_toggles)
+    self.onpath_bound_active = onpath_sm is not None
+    if self.onpath_bound_active:
+      self.output_a_target = onpath_bounded_target(self.output_a_target, self.onpath_planner.output_a_target)
+
+  def _update(self, sm, starpilot_toggles):
     if self.bound_off_axis_radar_leads:
       if REASSOC_LEAD_BOUND:
         sm = bound_reassociated_leads(sm, self.reassociation_hold)
@@ -2997,11 +3170,15 @@ class LongitudinalPlanner:
       output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
       output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-      if self.mode == 'acc' or self.generation == 'v9':
-        output_a_target = output_a_target_mpc
+      exp_active = not (self.mode == 'acc' or self.generation == 'v9')
+      if reset_state or sm['carState'].standstill:
+        self.exp_mode_blend_weight = 1.0 if exp_active else 0.0
+      else:
+        self.exp_mode_blend_weight = exp_mode_blend_weight(self.exp_mode_blend_weight, exp_active, self.dt)
+      output_a_target = exp_mode_blend_target(output_a_target_mpc, output_a_target_e2e, self.exp_mode_blend_weight)
+      if not exp_active:
         output_should_stop = output_should_stop_mpc
       else:
-        output_a_target = min(output_a_target_mpc, output_a_target_e2e)
         output_should_stop = output_should_stop_e2e or output_should_stop_mpc
         cem_following_lead = self.is_cem_following_lead(
           tracking_lead,
@@ -3025,7 +3202,7 @@ class LongitudinalPlanner:
         )
         output_a_target = self.update_exp_lead_departure(
           output_a_target, output_a_target_e2e, output_a_target_mpc, scene_v_ego,
-          sm['starpilotPlan'].tFollow, starpilot_toggles,
+          sm['starpilotPlan'].tFollow,
           bool(
             output_should_stop_e2e or
             getattr(sm['starpilotPlan'], 'forcingStop', False) or
@@ -3547,6 +3724,9 @@ class LongitudinalPlanner:
         output_a_target = max(output_a_target, tracked_vision_model_brake_cap)
 
     output_accel_max = no_throttle_output_max if not self.allow_throttle else accel_limits_turns[1]
+    if COAST_CEILING_SLEW:
+      output_accel_max = self.slew_coast_ceiling(output_accel_max, prev_output_a_target,
+                                                 reset_state or bool(sm['carState'].standstill))
     final_accel_min = self.get_mpc_lead_brake_accel_min(output_accel_min, output_a_target_mpc)
     output_a_target = float(np.clip(output_a_target, final_accel_min, output_accel_max))
 
@@ -3731,6 +3911,15 @@ class LongitudinalPlanner:
     if accord_stop_go_target < output_a_target:
       self.a_desired = min(self.a_desired, accord_stop_go_target)
       output_a_target = accord_stop_go_target
+
+    if BRAKE_RELEASE_LIMIT and not reset_state and not bool(sm['carState'].standstill):
+      # prev is the last published target (after the on-path bound in update(), which runs after this)
+      output_a_target = brake_release_limited_target(prev_output_a_target, output_a_target, self.dt)
+    if BRAKE_RELEASE_DWELL and not reset_state and not bool(sm['carState'].standstill):
+      output_a_target, self.brake_release_rise_ticks = brake_release_dwell_target(
+        prev_output_a_target, output_a_target, self.brake_release_rise_ticks)
+    else:
+      self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)

@@ -42,6 +42,11 @@ LEAD_FLIP_MEMORY_S = 1.0
 # (owner: "sometimes the speed label doubles"; 00000267 seg 16 38.2 s: leadOne and leadRight were radar track 41).
 SAME_LEAD_D_REL = 1.5
 SAME_LEAD_Y_REL = 1.0
+# A side-lane lead's marker and label wait until the same radar track has held that slot this long; until then only its
+# radar dot shows (owner: "just radar points on those"). 28f 8:37-12:30 (replay, Radar Work (Bob)): 62 oncoming cars
+# reached leadLeft for ~0.9 s each at a railed ~17 mph, and 6b22b5da's radard latch still lets the first ~0.3 s through;
+# 5 real same-direction side cars in that window held their slot 2.7 s (median).
+SIDE_LEAD_MIN_AGE_S = 0.5
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 STOCK_LANE_LINES_COLOR = rl.Color(255, 255, 255, 255)
@@ -342,17 +347,29 @@ class ModelRenderer(Widget):
 
   def _update_adjacent_leads(self, starpilot_radar_state, path_x_array, radar_state=None):
     """Screen positions of the left/right adjacent-lane leads (starpilotRadarState), Developer UI only. A side lead
-    that is the same car as an in-path lead is left out, so it is not drawn and labelled twice."""
+    that is the same car as an in-path lead is left out, so it is not drawn and labelled twice, and a side lead gets no
+    marker or label until its radar track has held the slot SIDE_LEAD_MIN_AGE_S (its radar dot still draws)."""
     in_path = (radar_state.leadOne, radar_state.leadTwo) if radar_state is not None else ()
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    ages = self.__dict__.setdefault("_side_lead_since", [None, None])
     if starpilot_radar_state is None:
+      ages[:] = [None, None]
       return
+    now = self._clock()
     lane_lines = [line.raw_points for line in self._lane_lines]
     for i, lead_data in enumerate((starpilot_radar_state.leadLeft, starpilot_radar_state.leadRight)):
+      # how long this radar track has held the slot; a new track id or a status drop starts it over
+      track = getattr(lead_data, "radarTrackId", -1) if lead_data and lead_data.status else None
+      if track is None:
+        ages[i] = None
+        continue
+      if ages[i] is None or ages[i][0] != track:
+        ages[i] = (track, now)
+      if now - ages[i][1] < SIDE_LEAD_MIN_AGE_S:
+        continue
       if any(same_lead(lead_data, p) for p in in_path):
         continue
-      if lead_data and lead_data.status and lead_in_adjacent_lane(lead_data.dRel, lead_data.yRel, i == 0,
-                                                                  lane_lines, self._lane_line_probs):
+      if lead_in_adjacent_lane(lead_data.dRel, lead_data.yRel, i == 0, lane_lines, self._lane_line_probs):
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
@@ -424,10 +441,11 @@ class ModelRenderer(Widget):
 
   def _draw_lead_label(self, chevron, text: str, font_size: int = LEAD_LABEL_FONT_SIZE, side: int = 0) -> None:
     """Label under the marker (above it when the marker is flipped tip-down). Any label that would overlap another
-    label is dropped. Labels also avoid the HUD obstacles (the speed-limit sign): a side-lane label (side -1 left,
-    +1 right) slides outward, then inward if outward still collides or leaves the screen, then just below the sign,
-    and is dropped if none fits. An in-path label slides off the sign toward the side it is on the same way, and is
-    drawn in place if none fits (the sign alone never hides the in-path speed)."""
+    label is dropped, except that a side-lane label (side -1 left, +1 right) blocked only by other labels first tries
+    sliding outward. A side-lane label never slides inward or off a HUD obstacle (the speed-limit sign): it is dropped,
+    because either way it crossed over the in-path label and read as that car's speed. An in-path label slides off
+    the sign toward the side it is on, then just below the sign, and is drawn in place if none fits (the sign alone
+    never hides the in-path speed)."""
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
 
     font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -455,6 +473,10 @@ class ModelRenderer(Widget):
 
     hits = hits_at(label_rect.x)
     hit_obstacle = next((r for r in hits if any(r is ob for ob in obstacles)), None)
+    if side and hit_obstacle is not None:
+      # owner (2026-09-28): a right-lane label slid 180 px left off the sign, past the in-path label, and read as a
+      # second in-path speed ("47 mph 56 mph ... super confusing"); the marker alone marks that car
+      return
     dodge = side
     if not side and hit_obstacle is not None:
       # in-path label on the sign (e.g. a flipped cut-in at the right edge; owner: "make the cut-in label avoid the
@@ -463,7 +485,9 @@ class ModelRenderer(Widget):
     if hits and dodge:
       outward = (min(r.x for r in hits) - label_rect.width if dodge < 0 else max(r.x + r.width for r in hits))
       inward = (max(r.x + r.width for r in hits) if dodge < 0 else min(r.x for r in hits) - label_rect.width)
-      new_x = next((rx for rx in (outward, inward) if fits(rx)), None)
+      # a side label slid inward lands on the far side of the label it hit (owner 2026-09-28, 28f seg 6: a right-lane
+      # "56 mph" jumped left of the in-path "47 mph")
+      new_x = next((rx for rx in ((outward,) if side else (outward, inward)) if fits(rx)), None)
       if new_x is not None:
         x += new_x - label_rect.x
         label_rect.x = new_x
@@ -471,7 +495,7 @@ class ModelRenderer(Widget):
       else:
         # No room beside it: if the sign is what blocks it, drop the label just below the sign (owner: "drop just
         # below the sign"), centred under it, rather than hiding the speed.
-        below = self._below_obstacle(label_rect, [label_rect.x, outward, inward])
+        below = None if side else self._below_obstacle(label_rect, [label_rect.x, outward, inward])
         if below is not None:
           x += below.x - label_rect.x
           y += below.y - label_rect.y
