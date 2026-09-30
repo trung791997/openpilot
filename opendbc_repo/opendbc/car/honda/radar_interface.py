@@ -218,6 +218,18 @@ BOSCH_A_NC_SCALE = 1.0 / 64.0
 BOSCH_A_NC_MAX_SIGMA_RAW = 32
 BOSCH_A_NC_RAIL_MAX_D_REL_M = 50.0
 BOSCH_A_NC_RAIL_HOLD_S = 0.3
+# NC for radard's RANGE_VREL_RAIL_NC_VETO (D-071 PROPOSED; the veto switch is in radard.py and is OFF). REPLAY/LOG evidence
+# only. These are NEW limits used only to fill RadarPoint.ncVetoVRel/ncVetoValid; BOSCH_A_NC_RAIL_MAX_D_REL_M and
+# BOSCH_A_NC_MAX_SIGMA_RAW above are unchanged and still set ncValid. The veto may only zero a RAIL_FAST correction (it can
+# never publish less closing than the U11 rail), so it can use NC further out than the value-replacing uses above can:
+#   * 80 m: 297 48:12 (00000297--f971b5896f, tid 4) had its RAIL_FAST excursion at 61.8-64.0 m. Against a future
+#     ground-frame range fit (t+0.2..t+1.2 s, stopshadow/ncveto.txt), the 5-sample NC median on non-oncoming railed rows
+#     has median error -0.3 / +0.1 m/s at 50-75 / 75-100 m but +3.1 m/s past 100 m (NC under-reads closing far out,
+#     e.g. 271 9:27 at 104 m: NC -16.2 vs truth -21..-23), so the veto stops short of 100 m.
+#   * sigma < 64: 297's NC sigma was 20-42 over the railed stretch, above the 32 the value paths use. The veto reads a
+#     median of several sweeps, which is what carries its confidence; sigma 64 only drops the unusable tail (7-bit field).
+BOSCH_A_NC_VETO_MAX_D_REL_M = 80.0
+BOSCH_A_NC_VETO_MAX_SIGMA_RAW = 64
 # The D-063 addendum's coast bound (_bosch_a_coast_vrel) also runs, without the rail interval, when the
 # D-053 range-derived vRel switch is on. The coast is exactly where D-053 cannot act: radard disarms its
 # assist on every unmeasured sample. Route 00000268 9:52.3-9:54.7 (STATUS 110): a 5 m range step as track
@@ -425,6 +437,16 @@ def _bosch_a_nc_vrel(nc_raw: int | None, nc_sigma_raw: int | None, d_rel: float)
   if nc_raw is None or nc_sigma_raw is None or int(nc_raw) == BOSCH_A_NC_CENTER_RAW:
     return None
   if int(nc_sigma_raw) >= BOSCH_A_NC_MAX_SIGMA_RAW or not 0.0 < d_rel < BOSCH_A_NC_RAIL_MAX_D_REL_M:
+    return None
+  vrel = -(int(nc_raw) - BOSCH_A_NC_CENTER_RAW) * BOSCH_A_NC_SCALE * d_rel
+  return vrel if vrel < 0.0 else None
+
+
+def _bosch_a_nc_veto_vrel(nc_raw: int | None, nc_sigma_raw: int | None, d_rel: float) -> float | None:
+  """_bosch_a_nc_vrel under the wider RANGE_VREL_RAIL_NC_VETO limits (BOSCH_A_NC_VETO_*), or None."""
+  if nc_raw is None or nc_sigma_raw is None or int(nc_raw) == BOSCH_A_NC_CENTER_RAW:
+    return None
+  if int(nc_sigma_raw) >= BOSCH_A_NC_VETO_MAX_SIGMA_RAW or not 0.0 < d_rel < BOSCH_A_NC_VETO_MAX_D_REL_M:
     return None
   vrel = -(int(nc_raw) - BOSCH_A_NC_CENTER_RAW) * BOSCH_A_NC_SCALE * d_rel
   return vrel if vrel < 0.0 else None
@@ -933,6 +955,7 @@ class RadarInterface(RadarInterfaceBase):
         if accepted_fresh and point is not None:
           point.measured = False
           point.ncValid = False
+          point.ncVetoValid = False
         else:
           self.pts.pop(track_id, None)
         track.prev_frame_idx = idx0
@@ -1059,6 +1082,7 @@ class RadarInterface(RadarInterfaceBase):
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
           point.ncValid = False
+          point.ncVetoValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1106,6 +1130,7 @@ class RadarInterface(RadarInterfaceBase):
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
           point.ncValid = False
+          point.ncVetoValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1159,6 +1184,10 @@ class RadarInterface(RadarInterfaceBase):
         nc_vrel = _bosch_a_nc_vrel(observation['nc_raw'], observation['nc_sigma_raw'], dRel)
         self.pts[track_id].ncValid = nc_vrel is not None
         self.pts[track_id].ncVRel = nc_vrel if nc_vrel is not None else 0.0
+        # Wider-limit NC for radard's RANGE_VREL_RAIL_NC_VETO (D-071, off); also never changes vRel here.
+        nc_veto = _bosch_a_nc_veto_vrel(observation['nc_raw'], observation['nc_sigma_raw'], dRel)
+        self.pts[track_id].ncVetoValid = nc_veto is not None
+        self.pts[track_id].ncVetoVRel = nc_veto if nc_veto is not None else 0.0
       else:
         self.pts.pop(track_id, None)
 

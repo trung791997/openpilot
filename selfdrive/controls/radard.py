@@ -210,6 +210,35 @@ RANGE_VREL_RAIL_NC_CAP = False
 # 3.0 m/s: the plan's margin (docs/PLAN_NC_CAP_RAIL_FAST.md, 297 48:12), the same tolerance D-043 / D-069 use for
 # range-vs-velocity agreement. At 297 48:12 it allows -13.0 against NC -10, under the -16.2 RAIL_FAST published.
 RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS = 3.0
+# --- NC veto on the rail fast path (D-071 PROPOSED; OFF, enabling is Peter's call). REPLAY/LOG evidence only, nothing driven.
+# The NC cap above never acts at 297 48:12 because NC there is outside ncValid (tid 4 at 55.9-72.9 m, sigma 20-42). This is
+# a different, one-sided rule: when the track's own NORMALIZED_CLOSING says it is closing clearly LESS than the U11 rail,
+# RAIL_FAST's correction is zeroed and the rail itself is published (the D-041 bound; never above it, never dropped or
+# coasted). Evidence (tools/longitudinal/stopshadow/ncveto.txt; truth = future ground-frame range fit t+0.2..t+1.2 s, which
+# uses no NC, no U11 and no past range):
+#   * 297 48:12.47-12.68 (00000297--f971b5896f, tid 4, 61.8-64.0 m): RAIL_FAST published -16.54/-16.24/-15.85/-13.99;
+#     NC per sweep -8.0..-9.8, 5-sample median -8.3..-8.7 (4.8-5.2 above the rail); truth -8.1..-8.8.
+#   * The gain cases it must not touch: 271 9:26 (NC median -14.8..-17.3 at 34-106 m), 237 10:00 (-13.3..-14.5), 298 4:10
+#     (-20.3), 236 12:51/12:54 (the closest: 236 12:52.60-12:53.35 tid 40 at 64-78 m, median -10.9..-11.5 while truth was
+#     -15..-21; NC under-read closing there by 4-9 m/s, which is why the threshold sits 3.5 above the rail and single
+#     sweeps are not trusted; at 2.0 the veto removed 16 frames of that gain in replay).
+#   * Open-loop A/B (ncveto.txt): 297 48:12 lead vRel -16.54 -> -13.50 on 5 frames, planner up to 0.46 softer for 0.6 s,
+#     planner minimum unchanged (-3.65 / -3.66: the rail itself still over-reads closing there). 0 changed frames on 271,
+#     236 x2, 237, 298 and 6 more railed-lead windows (245 x2, 26b x2, 289, 297 46:59); A/A 0.
+#   * A median, not one sweep: 236 12:52.85 had a single NC of -10.4 (3.1 above the rail) with truth -18.1.
+#   * Not the short/long fit agreement of candidate (b): at 297 the two fits agreed (-16.6/-16.5, -15.5/-16.2) because both
+#     sit on the newborn range-convergence tail; and not a min-age / rsig gate (rejected, would lose 271/298).
+# Reads RadarPoint.ncVetoVRel/ncVetoValid (parser limits BOSCH_A_NC_VETO_*: 80 m, sigma < 64). Off: byte-identical.
+RANGE_VREL_RAIL_NC_VETO = False
+# Veto when the median NC is at least this far ABOVE (less closing than) the rail. 3.5: 297 medians sit 4.8-5.1 above;
+# the nearest gain case (236 12:52.6-12:53.35) sits 2.0-2.6 above. At 5.0 the veto misses 297's -15.85 sweep. Over all
+# non-oncoming railed rows (8 routes, < 100 m, sigma < 64) a median >= rail + 3.5 met truth past rail - 1.0 on 3 of 26
+# rows (26b 24:11 tid 30, truth -14.8..-15.3, never a RAIL_FAST row).
+RANGE_VREL_RAIL_NC_VETO_ABOVE_RAIL_MPS = 3.5
+# Median of the last up-to-5 valid NC sweeps no older than 0.5 s, and at least 3 of them (about 5 sweeps at 14.35 Hz).
+RANGE_VREL_RAIL_NC_VETO_SAMPLES = 5
+RANGE_VREL_RAIL_NC_VETO_MIN_SAMPLES = 3
+RANGE_VREL_RAIL_NC_VETO_WINDOW_S = 0.5
 
 # --- Adjacent-lead rail gate (2026-09-28). REPLAY evidence only, nothing driven.
 # The range assist above only runs on leadOne/leadTwo, so every other track publishes the raw U11
@@ -552,6 +581,8 @@ class Track:
     # only on Bosch-A, only for the lead track, and only with RANGE_VREL_ASSIST on.
     self.range_hist: deque = deque(maxlen=RANGE_VREL_SAMPLES)
     self.vRelRange = float('nan')
+    # RANGE_VREL_RAIL_NC_VETO: (t, ncVetoVRel) of the last measured sweeps with a valid wide-limit NC.
+    self.nc_veto_hist: deque = deque(maxlen=RANGE_VREL_RAIL_NC_VETO_SAMPLES)
     # Freshness bit for the fit above. vRelRange is only ASSIGNED once the deque is full, so after
     # a dropout clears it the field holds the pre-gap value for up to four updates. That is
     # harmless for telemetry and unacceptable for control, so D-053 reads this rather than
@@ -606,7 +637,7 @@ class Track:
              measurement_update: bool | None = None, t_now: float = 0.0,
              range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False,
              camera_sample: tuple[float, float | None] | None = None,
-             nc_vrel: float = 0.0, nc_valid: bool = False):
+             nc_vrel: float = 0.0, nc_valid: bool = False, nc_veto_vrel: float = 0.0, nc_veto_valid: bool = False):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -650,6 +681,8 @@ class Track:
             self.range_hist.clear()
             self.range_hist.append((float(t_now), float(d_rel)))
       self.range_hist_long.append((float(t_now), float(d_rel)))
+      if nc_veto_valid:
+        self.nc_veto_hist.append((float(t_now), float(nc_veto_vrel)))
 
     # D-053. Must run after the fits above. It only sets range_assist_correction: the KF below is
     # fed the NATIVE speed, and get_RadarState applies the correction to vRel, vLead and vLeadK at
@@ -898,6 +931,11 @@ class Track:
     if RANGE_VREL_RAIL_NC_CAP and rail_fast and self.ncValid:
       # Published vRel >= ncVRel - margin; floored at zero so the cap only ever shrinks the correction.
       correction = min(correction, max(self.vRel - self.ncVRel + RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS, 0.0))
+    if RANGE_VREL_RAIL_NC_VETO and rail_fast and correction > 0.0:
+      nc_med = self.nc_veto_median(t_now)
+      if nc_med is not None and nc_med >= BOSCH_A_U11_LOW_RAIL_MPS + RANGE_VREL_RAIL_NC_VETO_ABOVE_RAIL_MPS:
+        # NC says clearly less closing than the rail: publish the rail itself (D-041 bound), no RAIL_FAST correction.
+        correction = 0.0
     if self.vision_assist_early:
       # Never claim more closing than vision corroborates plus the margin: published vRel >= -(closing + margin).
       correction = min(correction, max(self.vRel + vision_closing + VISION_ASSIST_CLOSING_MARGIN_MPS, 0.0))
@@ -921,6 +959,13 @@ class Track:
         self.rail_range_inconsistent = True
     else:
       self.rail_range_count = 0
+
+  def nc_veto_median(self, t_now: float) -> float | None:
+    """RANGE_VREL_RAIL_NC_VETO: median of the recent wide-limit NC vRels, or None with too few fresh samples."""
+    vals = [v for t, v in self.nc_veto_hist if float(t_now) - t <= RANGE_VREL_RAIL_NC_VETO_WINDOW_S]
+    if len(vals) < RANGE_VREL_RAIL_NC_VETO_MIN_SAMPLES:
+      return None
+    return float(np.median(vals))
 
   def _fit_long_range(self) -> bool:
     """Plain LSQ over range_hist_long. Sets vRelRangeLong (slope, m/s), vRelRangeLongResidual (RMS,
@@ -1417,7 +1462,8 @@ class RadarD:
       radar_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
       self._last_tracks_frame = sm.recv_frame['liveTracks']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid] for pt in rr.points}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid, pt.ncVetoVRel, pt.ncVetoValid]
+              for pt in rr.points}
 
     # D-053. Bosch-A only, and only for the tracks that were the lead on the previous cycle.
     # prev_lead_track_ids is the authoritative "which track is the lead" state; Track.leadTrackID
@@ -1457,7 +1503,7 @@ class RadarD:
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
                               vision_assist=vision_assist, camera_sample=cam_sample,
-                              nc_vrel=rpt[4], nc_valid=rpt[5])
+                              nc_vrel=rpt[4], nc_valid=rpt[5], nc_veto_vrel=rpt[6], nc_veto_valid=rpt[7])
 
     # ONPATH_RADAR_ADOPT: path offset of every track on a fresh sweep (yRel + = left, model y + = right)
     if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar and radar_fresh:

@@ -1,0 +1,81 @@
+# RANGE_VREL_RAIL_NC_VETO (D-071, PROPOSED, switch OFF) -- REPLAY / LOG evidence only, nothing driven
+
+Base: origin/ccr-065b271d-b5t6ub d9ca5b342 (PR #11) + this commit. rlogs from Konik (never committed), route IDs below.
+Clock: t = logMonoTime - seg-0 initData. All segments requested were served (99.5 Hz CAN, 893-894 sweeps/segment).
+
+## Rule
+On a railed lead (U11 = -13.5) with a RAIL_FAST correction, take the median of the track's last <= 5 NORMALIZED_CLOSING
+vRels (-NC*dRel) from the last 0.5 s (>= 3 needed), each read with NEW parser limits dRel < 80 m, sigma < 64
+(RadarPoint.ncVetoVRel/ncVetoValid). If that median is >= rail + 3.5 (i.e. NC says >= 3.5 m/s LESS closing than the rail)
+the RAIL_FAST correction is zeroed and the rail itself is published. It never publishes above the rail (D-041), never
+drops or coasts a point, and changes nothing when off.
+
+## Truth reference (ncveto_extract.py + ncveto_truth.py, log)
+truth(t) = LSQ slope of lead ground position (dRel + ego odometry) over the same track's measured sweeps in
+[t+0.2, t+1.2] s, minus vEgo(t). Future range only: no NC, no U11, no past range. Lead accel inside the window biases it.
+Rows: 8 routes (236 s0,11,12; 237 s0,9,10; 245 s0,2,3,10,11; 26b s0,24,25; 271 s0,8,9; 289 s0,14,15; 297 s0,45-48;
+298 s0,3,4), all measured railed rows with NC raw != 512: 2109; non-oncoming (vEgo+truth > -3) with a median: 1248.
+
+5-sweep NC median minus truth (+ = NC reads LESS closing), non-oncoming, sigma < 64
+| dRel m | n | median | p10 | p90 | share > +3.5 |
+|---|---|---|---|---|---|
+| 0-50 | 248 | +0.01 | -2.74 | +2.13 | 0.040 |
+| 50-75 | 490 | -0.28 | -4.87 | +3.44 | 0.100 |
+| 75-100 | 405 | +0.14 | -6.22 | +5.10 | 0.205 |
+| 100-150 | 54 | +3.06 | -6.88 | +5.44 | 0.389 |
+Past 50 m NC is unbiased to 100 m but noisy (p10/p90 +-5..6); past 100 m it under-reads closing (+3.1), as at
+271 9:27 (104 m, NC -16.2 vs truth -19.5..-22.5). Hence 80 m and a one-sided, median-based, 3.5 m/s rule.
+
+Veto over ALL railed rows (not only RAIL_FAST rows), dRel < 80, sigma < 64. LOST = truth <= rail - 1
+| Y | fires (non-oncoming) | LOST (non-oncoming) | fires (all) | LOST (all) |
+|---|---|---|---|---|
+| 2.0 | 81 | 22 | 111 | 52 |
+| 3.0 | 35 | 3 | 52 | 20 |
+| 3.5 | 26 | 3 | 33 | 10 |
+| 4.0 | 14 | 1 | 20 | 7 |
+| 5.0 | 4 | 0 | 10 | 6 |
+LOST non-oncoming at 3.5: 26b 24:11.41-11.54 tid 30, 76-78 m, median -9.3..-9.9, truth -14.8..-15.3 (never a RAIL_FAST
+row; no lead in that window in replay). The 7 other LOST (all) rows are oncoming tracks (radard's backward-lead guard).
+
+## Every RAIL_FAST firing row on the 5 gain/problem episodes (rec, replay OFF): NC median vs rail
+297 48:12.52-12.72 tid 4 61.8-64 m: pub -16.54/-16.24/-15.85/-13.99, NC per sweep -8.7..-9.8 (sigma 24-25), median
+  -8.4..-8.7 (rail +4.8..+5.1), truth -8.1..-8.8.
+236 12:50.9-12:54.2 tid 40: median -11.0..-14.9; nearest to the threshold 12:52.60-12:53.35 at 64-78 m, median
+  -10.9..-11.5 (rail +2.0..+2.6) while truth -15.3..-20.6 (NC under-read closing by 4-9 m/s).
+271 9:27.1-9:31.0 tid 24: median -13.0..-17.3. 237 9:58.95-10:00.4 tid 7: -13.3..-14.5. 298 4:11.67 tid 35: -20.3.
+
+## Open-loop A/B (ncveto_ab.py -> ncveto_ab_ana.py): OFF vs ON (RANGE_VREL_RAIL_NC_VETO), OFF2 = A/A
+| episode | min lead1 vRel OFF | min lead1 vRel ON | max rail corr OFF/ON | planner min OFF/ON | lead vRel frames changed | accel frames changed | A/A diff frames |
+|---|---|---|---|---|---|---|---|
+| 271 9:26 | -20.00 @ 9:27.21 (tid 24, d 104) | -20.00 | 6.50 / 6.50 | -6.29 / -6.29 | 0 | 0 | 0 |
+| 236 12:51 | -18.43 @ 12:51.00 (tid 40, d 102) | -18.43 | 4.93 / 4.93 | -3.29 / -3.29 | 0 | 0 | 0 |
+| 236 12:54 | -18.43 @ 12:51.00 (tid 40, d 102) | -18.43 | 4.93 / 4.93 | -3.29 / -3.29 | 0 | 0 | 0 |
+| 237 10:00 | -17.39 @ 9:58.95 (tid 7, d 81) | -17.39 | 3.89 / 3.89 | -2.60 / -2.60 | 0 | 0 | 0 |
+| 298 4:10 | -14.58 @ 4:11.67 (tid 35, d 57) | -14.58 | 1.08 / 1.08 | -3.61 / -3.61 | 0 | 0 | 0 |
+| 297 48:12 | -16.54 @ 48:12.52 (tid 4, d 64) | -13.50 | 3.04 / 0.00 | -3.65 / -3.66 | 5 | 84 (max 0.46; ON harder <= 0.08) | 0 |
+Negatives (railed leadOne episodes from ncrail.txt + 26b 24:11):
+| 245 3:59 | -13.50 @ 3:56.37 (tid 26, d 108) | -13.50 | 0.00 / 0.00 | -6.56 / -6.56 | 0 | 0 | 0 |
+| 245 11:30 | -13.50 @ 11:28.98 (tid 40, d 41) | -13.50 | 0.00 / 0.00 | -6.03 / -6.03 | 0 | 0 | 0 |
+| 26b 24:11 | no lead1 | | 0.00 / 0.00 | 0.01 / 0.01 | 0 | 0 | 0 |
+| 26b 25:55.7 | -13.50 @ 25:52.94 (tid 47, d 87) | -13.50 | 0.00 / 0.00 | -3.59 / -3.59 | 0 | 0 | 0 |
+| 289 15:11.9 | -13.50 @ 15:11.86 (tid 28, d 21) | -13.50 | 0.00 / 0.00 | -3.50 / -3.50 | 0 | 0 | 0 |
+| 297 46:59.2 | -15.88 @ 46:57.27 (vision) | -15.88 | 0.00 / 0.00 | -3.60 / -3.60 | 0 | 0 | 0 |
+The negatives are weak: RAIL_FAST never corrected in them on this code, so the veto had nothing to act on.
+
+297 48:12 detail (ON vs OFF): lead vRel -16.54/-16.24/-15.85/-15.85/-13.99 -> -13.50 at 48:12.52-12.72 (NC median
+-8.41/-8.41/-8.74/-8.74/-8.74). Planner ON softer by 0.06..0.46 from 48:12.52 to 48:13.12, then 0.03..0.08 harder
+48:13.22-13.42; minimum -3.65 vs -3.66. The rail itself (-13.5 vs truth ~-8.5) still drives the brake: this removes the
+RAIL_FAST excursion, not the brake. Ego (-4.50 logged aEgo at 48:13.17) is open loop here and not re-simulated.
+
+Threshold sensitivity (VETO_Y_ON, replay): Y 2.0 on 236 changes 16 frames (12:52.60-12:53.35, lead -18.2 -> -13.5 while
+truth -15..-21: gain lost; planner up to 0.31 softer). Y 5.0 on 297 vetoes 2 of 3 excursion sweeps (-15.85 at 48:12.62
+remains). The usable window is Y in (2.6, 4.8); 3.5 is inside it with ~1 m/s either side. One case each side.
+
+## Candidates rejected (replay, post-hoc on the RAIL_FAST firing rows above; per-sweep, exact for the track output)
+(a) D-070's cap (vRel >= NC - 3) with NC trusted to 80 m / sigma < 64: removes 297 (4 sweeps) but also cuts real gain on
+    236 (20 sweeps, up to 4.3 m/s less closing), 237 (8, up to 2.0), 271 (4, up to 1.9). To 100 m: 236 25, 237 10, 271 12.
+    Margin 5.0 to 100 m: 236 8 sweeps (2.3), 297 only 3 of 4. A per-sweep two-sided cap cannot separate them: NC past 50 m
+    is too noisy (p10 -5..-6) and the cap acts whenever NC is less closing than RAIL_FAST, not than the rail.
+(b) Short/long range-fit agreement on young tracks: at 297 the fits AGREE (|rs-rl| 0.1, 0.4, 0.8) because both sit on the
+    newborn range-convergence tail, while 271 (3.3-4.4) and 237 (0.7-3.1) disagree. It would keep 297 and cut 271: wrong
+    way round. Min-age / rsig gates stay rejected (plan, 271/298).

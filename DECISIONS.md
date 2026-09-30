@@ -1519,3 +1519,47 @@ frames change lead vRel, 0 change the planner. The -4.4 at 297 was logged aEgo (
 
 Status: kept OFF. Not recommended to enable as is: it changes nothing on the six episodes. Making it act at 297 needs
 NC trusted past 50 m and above sigma 32, a constant change that needs its own evidence (D-042's lesson) and Peter's call.
+
+## D-071 — PROPOSED (switch OFF): veto RAIL_FAST when NORMALIZED_CLOSING says clearly less closing than the rail (`RANGE_VREL_RAIL_NC_VETO`)
+Recorded 2026-09-30 on nc-cap-v2 (PR #11, base d9ca5b342). Static unit tests + log analysis + open-loop replay only; nothing
+driven. Enabling the switch is Peter's call. Evidence and harness: tools/longitudinal/stopshadow/ncveto.txt, ncveto_*.py.
+
+Problem: D-070's cap is inert at 297 48:12 (00000297--f971b5896f, tid 4), where RAIL_FAST published -16.54/-16.24/-15.85
+at 61.8-64 m while the truth was about -8.5, because NC there is outside ncValid (> 50 m, sigma 20-42).
+
+Rule: on a railed lead with a RAIL_FAST correction, if the median of the track's last <= 5 NC vRels within 0.5 s (>= 3,
+each read with NEW parser limits `BOSCH_A_NC_VETO_MAX_D_REL_M` 80 m and `BOSCH_A_NC_VETO_MAX_SIGMA_RAW` 64, published as
+RadarPoint.ncVetoVRel/ncVetoValid) is >= rail + 3.5 m/s, the correction is zeroed and the rail itself is published. One-sided:
+it only ever removes a RAIL_FAST correction, never publishes less closing than the U11 rail (D-041), never drops or coasts a
+point (D-041/D-042). No existing constant or gate is changed (ncValid keeps 50 m / sigma 32). Off: byte-identical (static).
+
+Evidence (log; truth = future ground-frame range fit t+0.2..t+1.2 s, which uses no NC, no U11 and no past range):
+- NC 5-sweep median minus truth on 1248 non-oncoming railed rows, 8 routes: median -0.3 / +0.1 m/s at 50-75 / 75-100 m
+  (p10/p90 -4.9/+3.4 and -6.2/+5.1), +3.1 past 100 m. NC under-reads closing far out (271 9:27 at 104 m: -16.2 vs
+  -19.5..-22.5), so the veto stops at 80 m and uses NC only one-sidedly, against the rail.
+- On every RAIL_FAST firing row of the six episodes: 297 median -8.4..-8.7 (rail +4.8..+5.1); nearest gain case 236
+  12:52.60-12:53.35 median -10.9..-11.5 (rail +2.0..+2.6, truth -15..-21); 271 -13.0..-17.3; 237 -13.3..-14.5; 298 -20.3.
+- Over all railed rows < 80 m (not only RAIL_FAST rows), the rule would fire on 26 non-oncoming rows, 3 with truth past
+  rail - 1 (26b 24:11 tid 30, truth -14.8..-15.3, never a RAIL_FAST row).
+
+Open-loop A/B replay (ncveto_ab.py; OFF / OFF2 A/A / ON; each route's own initData params; A/A 0 diffs everywhere):
+
+| episode | min lead1 vRel OFF → ON | max rail corr OFF/ON | planner min OFF/ON | changed frames (vRel / accel) |
+|---|---|---|---|---|
+| 271 9:26 | -20.00 → -20.00 | 6.50 / 6.50 | -6.29 / -6.29 | 0 / 0 |
+| 236 12:51, 12:54 | -18.43 → -18.43 | 4.93 / 4.93 | -3.29 / -3.29 | 0 / 0 |
+| 237 10:00 | -17.39 → -17.39 | 3.89 / 3.89 | -2.60 / -2.60 | 0 / 0 |
+| 298 4:10 | -14.58 → -14.58 | 1.08 / 1.08 | -3.61 / -3.61 | 0 / 0 |
+| 297 48:12 | -16.54 → -13.50 | 3.04 / 0.00 | -3.65 / -3.66 | 5 / 84 (max 0.46 softer) |
+| negatives: 245 3:59, 245 11:30, 26b 24:11, 26b 25:55.7, 289 15:11.9, 297 46:59.2 | unchanged | 0 / 0 | unchanged | 0 / 0 |
+
+Result: the 297 excursion is gone; the RAIL_FAST gain on 271/236/237/298 is untouched. The planner minimum at 297 is NOT
+improved (-3.66 vs -3.65, ON softer by up to 0.46 for 0.6 s first): the rail itself (-13.5 vs truth ~-8.5) still drives
+that brake, and the rail is the D-041 floor this rule may not cross. The negatives are weak (RAIL_FAST never corrected in
+them). The threshold window is narrow and set by one case per side: Y 2.0 loses 236's gain for 16 frames, Y 5.0 misses one
+297 sweep; 3.5 sits ~1 m/s from each.
+
+Rejected: (a) D-070's cap with NC trusted to 80-100 m — per sweep it also cuts real gain on 236 (20-25 sweeps, up to
+4.3 m/s), 237 (8-10) and 271 (4-12), because NC past 50 m is noisy and the cap compares NC to RAIL_FAST's output, not to
+the rail; (b) short/long range-fit agreement on young tracks — at 297 the fits agree (|diff| 0.1-0.8, both on the newborn
+convergence tail) while 271 disagrees (3.3-4.4): it would cut 271 and keep 297. Min-age / rsig gates stay rejected.

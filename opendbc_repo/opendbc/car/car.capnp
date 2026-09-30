@@ -328,6 +328,10 @@ struct RadarData @0x888ad6581cf0aacb {
     # Honda Bosch-A only: closing vRel implied by NORMALIZED_CLOSING, valid when ncValid (else ignore ncVRel)
     ncVRel @7 :Float32; # m/s
     ncValid @8 :Bool;
+    # Honda Bosch-A only: the same NC vRel under the wider RANGE_VREL_RAIL_NC_VETO limits (80 m, sigma < 64), valid when
+    # ncVetoValid (else ignore ncVetoVRel). Read only by radard's veto switch (D-071, off).
+    ncVetoVRel @9 :Float32; # m/s
+    ncVetoValid @10 :Bool;
   }
 
   enum ErrorDEPRECATED {

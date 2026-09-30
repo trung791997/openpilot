@@ -2160,6 +2160,57 @@ class TestNcFields:
     assert rr.points[0].ncValid is False
 
 
+class TestNcVetoFields(TestNcFields):
+  """RadarPoint.ncVetoVRel / ncVetoValid for radard's RANGE_VREL_RAIL_NC_VETO (D-071 PROPOSED, radard switch off): the same
+  NC reading under the wider BOSCH_A_NC_VETO_* limits (80 m, sigma < 64). ncValid's limits (50 m, sigma < 32) are unchanged.
+  Coasts carry ncVetoValid False. Static unit tests only."""
+
+  def test_limits_are_new_constants_and_the_old_ones_are_unchanged(self):
+    from opendbc.car.honda import radar_interface as HRI
+    assert HRI.BOSCH_A_NC_VETO_MAX_D_REL_M == 80.0 and HRI.BOSCH_A_NC_VETO_MAX_SIGMA_RAW == 64
+    assert HRI.BOSCH_A_NC_RAIL_MAX_D_REL_M == 50.0 and HRI.BOSCH_A_NC_MAX_SIGMA_RAW == 32
+
+  def test_297_shape_60_m_sigma_40_is_veto_valid_but_not_nc_valid(self):
+    # 297 48:12 tid 4: 61.8-64.0 m, sigma 24-42, NC about -8.5. ncValid (50 m, 32) rejects it; the veto limits keep it.
+    pt = self._drive(start_raw=1100, nc_vrel=-8.5, nc_sigma_raw=40)
+    assert 50.0 < pt.dRel < 80.0 and pt.measured
+    assert not pt.ncValid
+    assert pt.ncVetoValid
+    assert pt.ncVetoVRel == pytest.approx(-8.5, abs=0.3)
+    assert pt.vRel == pytest.approx(-13.5), "the veto fields never change vRel"
+
+  def test_under_50_m_both_fields_agree(self):
+    pt = self._drive()
+    assert pt.ncValid and pt.ncVetoValid
+    assert pt.ncVetoVRel == pt.ncVRel
+
+  def test_sigma_at_the_veto_gate_is_invalid(self):
+    assert self._drive(nc_sigma_raw=63).ncVetoValid
+    pt = self._drive(nc_sigma_raw=64)
+    assert pt.measured and not pt.ncVetoValid
+
+  def test_no_reading_raw_512_is_veto_invalid(self):
+    pt = self._drive(nc_raw=512)
+    assert pt.measured and not pt.ncVetoValid
+
+  def test_beyond_80_m_is_veto_invalid(self):
+    pt = self._drive(start_raw=1500)
+    assert pt.dRel > 80.0 and pt.measured and not pt.ncVetoValid
+
+  def test_gross_disagreement_coast_is_veto_invalid(self):
+    ri = make_radar_interface()
+    for i, raw in enumerate((500, 510, 520, 530)):
+      rr = ri.update(sweep(0, i, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=864 + 40, direct_vrel_uncertainty_raw=0,
+                           nc_raw=self._nc_raw(raw / 16.0 - 3.0, -2.0)))
+    assert rr.points[0].measured and rr.points[0].ncVetoValid, "the control sweep must carry a valid NC"
+    rr = ri.update(sweep(0, 4, 0x7, 540, 1024, 9, 4 * self.DT_NS, with_aux=True,
+                         direct_vrel_raw=864 - 11 * 64, direct_vrel_uncertainty_raw=0,
+                         nc_raw=self._nc_raw(540 / 16.0 - 3.0, -2.0)))
+    assert not rr.points[0].measured
+    assert not rr.points[0].ncVetoValid
+
+
 class TestNcAtRail:
   """A low-rail U11 in our lane under 50 m is replaced by NORMALIZED_CLOSING only when the range agrees, only ever
   toward MORE closing, and is held across short NC dropouts instead of flickering back to the rail."""

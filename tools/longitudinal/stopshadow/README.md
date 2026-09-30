@@ -16,6 +16,8 @@ Peter, 2026-09-30: plots may go on this branch; nothing merges into ns-bosch-rad
 - D: no mount-angle offset detected; turning-case b ≈ +0.3 m/s likely selection, open. Lever arm L ≈ 3 m on 00000297.
 
 ## Closed items (2026-09-30, replay only)
+- **NC veto on RAIL_FAST (D-071, PROPOSED, switch `RANGE_VREL_RAIL_NC_VETO` off).** Removes the 297 48:12 -16.5 excursion, 0 changed frames on
+  271/236/237/298; planner minimum at 297 unchanged (the rail itself drives it). Rejected: extended-range NC cap, fit agreement. See `ncveto.txt`.
 - **Stopped-flag lead onset: negative.** The flag (0.5 s window, 0.5 s hold) adds no lead radard lacked. On 258 tid 26 and 297 tid 56, lead one
   already had the track via vision. 26b tid 16 was a correct hard-width rejection and a flag false positive. See `adoptmiss.txt` and `followup.txt`.
 - **Option 2, camera car-vs-clutter for ONPATH_RADAR_ADOPT: negative.** No gate is added. The FP's effect stays capped by ONPATH_LEAD_MAX_BRAKE (D-048). See `clutter.txt` and `clutter.csv`.
