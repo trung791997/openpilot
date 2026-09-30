@@ -1366,6 +1366,21 @@ class TestRailFastNcVeto:
     assert all(c == 0.0 for c, _ in on)
     assert all(v == RAIL for _, v in on), "the rail itself is published (D-041 bound), never less closing"
 
+  def test_278_437_shape_fires_just_inside_the_threshold(self, monkeypatch):
+    # 278 4:37 tid 61 (Bob's car-matched A/B): RAIL_FAST -15.3 at 62.6-65.7 m, NC median -9.53..-9.78 (3.72-3.97
+    # above the rail), sigma 14-17. The veto fires; this case is the upper edge of the (2.6, 3.72) threshold window.
+    # A clean synthetic -15.3 slope does not arm RAIL_FAST (the logged one armed on a noisy newborn tail), so the range
+    # uses the -16.2 arming shape; what is under test is the NC side.
+    ncs = [-9.6, -9.8, -9.5, -9.7, -9.6]
+    off, on = _veto_ab(monkeypatch, _closing(-16.2, d0=66.0), lambda i: (ncs[i % len(ncs)], True), nc_sigma=15)
+    assert any(c > 0.0 for c, _ in off), "RAIL_FAST must arm in the flag-off control"
+    assert all(c == 0.0 for c, _ in on) and all(v == RAIL for _, v in on)
+
+  def test_278_439_near_miss_does_not_fire(self, monkeypatch):
+    # 278 4:39: NC 3.23-3.38 above the rail, below the 3.5 threshold: the correction is kept.
+    off, on = _veto_ab(monkeypatch, _closing(-16.2, d0=66.0), _const_nc(RAIL + 3.3), nc_sigma=15)
+    assert on == off and any(c > 0.0 for c, _ in on)
+
   def test_271_shape_nc_past_the_rail_keeps_the_gain(self, monkeypatch):
     # 271 9:27 tid 24: range about -21, NC median -14.8..-17.3 (never above the rail).
     off, on = _veto_ab(monkeypatch, _closing(-21.0, d0=78.0), _const_nc(-16.2))
