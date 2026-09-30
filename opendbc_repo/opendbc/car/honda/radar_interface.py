@@ -194,6 +194,15 @@ BOSCH_A_RAIL_INTERVAL_DOWN_SIDE_ONLY_ON_RAIL_HOLD = True
 # D-063 is built in (was the BoschARailInterval toggle; on in the owner's drives 00000287-0000028b). Replay, static and
 # limited road evidence. Set False (replays, tests) and both gate calls below run `exact`, the pre-D-063 gate.
 BOSCH_A_RAIL_INTERVAL = True
+# NORMALIZED_CLOSING (F2 23|10, 1/64, -8; raw 512 = 0 = no reading): a closing-only inverse-TTC channel the U11
+# rail does not clamp. -NC * dRel tracked the long-window range rate past the -13.5 rail at 0.91-0.95 of truth on the
+# stopshadow corpus with NORMALIZED_CLOSING_SIGMA_RAW (F2 46|7) < 32 as its confidence gate, under 50 m (D-069 evidence;
+# replay only). On this branch only the parser fields (RadarPoint.ncVRel/ncValid) are published, for radard's
+# RANGE_VREL_RAIL_NC_CAP (D-070, off); D-069's NC-at-rail vRel replacement was rejected and is not carried here.
+BOSCH_A_NC_CENTER_RAW = 512
+BOSCH_A_NC_SCALE = 1.0 / 64.0
+BOSCH_A_NC_MAX_SIGMA_RAW = 32
+BOSCH_A_NC_RAIL_MAX_D_REL_M = 50.0
 # The D-063 addendum's coast bound (_bosch_a_coast_vrel) also runs, without the rail interval, when the
 # D-053 range-derived vRel switch is on. The coast is exactly where D-053 cannot act: radard disarms its
 # assist on every unmeasured sample. Route 00000268 9:52.3-9:54.7 (STATUS 110): a 5 m range step as track
@@ -391,6 +400,16 @@ def _bosch_a_direct_vrel_interval(direct_vrel: float, exact: bool = False) -> tu
   if direct_vrel >= high_rail:
     return direct_vrel, BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS
   return direct_vrel, direct_vrel
+
+
+def _bosch_a_nc_vrel(nc_raw: int | None, nc_sigma_raw: int | None, d_rel: float) -> float | None:
+  """The closing vRel NORMALIZED_CLOSING implies at this range, or None when NC has no confident reading (D-070)."""
+  if nc_raw is None or nc_sigma_raw is None or int(nc_raw) == BOSCH_A_NC_CENTER_RAW:
+    return None
+  if int(nc_sigma_raw) >= BOSCH_A_NC_MAX_SIGMA_RAW or not 0.0 < d_rel < BOSCH_A_NC_RAIL_MAX_D_REL_M:
+    return None
+  vrel = -(int(nc_raw) - BOSCH_A_NC_CENTER_RAW) * BOSCH_A_NC_SCALE * d_rel
+  return vrel if vrel < 0.0 else None
 
 
 def _bosch_a_distance_to_interval(value: float, interval: tuple[float, float]) -> float:
@@ -648,6 +667,8 @@ class RadarInterface(RadarInterfaceBase):
       angle_raw = int(v0['AZIMUTH_RAW'])
       range_sigma_raw = int(v0['RANGE_SIGMA_RAW'])
       existence_raw = int(v1['OBJECT_EXISTENCE_PROBABILITY_RAW'])
+      nc_raw = int(v2['NORMALIZED_CLOSING_RAW'])
+      nc_sigma_raw = int(v2['NORMALIZED_CLOSING_SIGMA_RAW'])
       life = int(v2['LIFECYCLE_RAW'])
       track_id = int(v3['TRACK_ID'])
       track_id_valid = BOSCH_A_TRACK_ID_MIN <= track_id <= BOSCH_A_TRACK_ID_MAX
@@ -688,6 +709,8 @@ class RadarInterface(RadarInterfaceBase):
         'direct_vrel_raw': direct_vrel_raw,
         'direct_vrel_uncertainty_raw': direct_vrel_uncertainty_raw,
         'range_ratio_raw': range_ratio_raw,
+        'nc_raw': nc_raw,
+        'nc_sigma_raw': nc_sigma_raw,
       })
 
     # First collapse duplicate wire observations of one CAN identity. The dictionary is also the
@@ -889,6 +912,7 @@ class RadarInterface(RadarInterfaceBase):
         point = self.pts.get(track_id)
         if accepted_fresh and point is not None:
           point.measured = False
+          point.ncValid = False
         else:
           self.pts.pop(track_id, None)
         track.prev_frame_idx = idx0
@@ -1014,6 +1038,7 @@ class RadarInterface(RadarInterfaceBase):
           point.yRel = yRel
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
+          point.ncValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1060,6 +1085,7 @@ class RadarInterface(RadarInterfaceBase):
           point.yRel = yRel
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
+          point.ncValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1106,6 +1132,11 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[track_id].yRel = yRel
         self.pts[track_id].vRel = vRel
         self.pts[track_id].measured = True
+        # NC is published beside vRel for radard's RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md). It is
+        # never changes vRel here (D-069's NC-at-rail vRel replacement is not carried on this branch).
+        nc_vrel = _bosch_a_nc_vrel(observation['nc_raw'], observation['nc_sigma_raw'], dRel)
+        self.pts[track_id].ncValid = nc_vrel is not None
+        self.pts[track_id].ncVRel = nc_vrel if nc_vrel is not None else 0.0
       else:
         self.pts.pop(track_id, None)
 

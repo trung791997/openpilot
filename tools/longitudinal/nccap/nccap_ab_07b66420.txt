@@ -1,0 +1,32 @@
+NC cap (RANGE_VREL_RAIL_NC_CAP) A/B on car-matched code -- REPLAY ONLY, open loop, nothing driven.
+Recorded 2026-09-30 on branch ns-bosch-radar-testing-pr10-smooth + the D-070 port (parser NC fields + radard cap only;
+D-069's NC-at-rail switch is NOT on this branch).
+
+Code: two runs, identical OFF-vs-ON result.
+  (a) 07b66420 (the code on the car) + port: branch tip 44918d843 + port with radard.FAR_RAIL_VISION_BOUND = False
+      (the only code difference between 07b66420 and 44918d843 is that switch's commit).
+  (b) branch tip 44918d843 + port (FAR_RAIL_VISION_BOUND on, its default).
+Params: each route's own initData params. NOT Bob's 2026-09-30T16:44:42Z params (not in the repo).
+Harness: tools/longitudinal/nccap/nccap_ab.py <route> <segs> <windows>, analysis nccap_ab_ana.py (unchanged copies of
+tools/longitudinal/stopshadow/ on ccr-065b271d-b5t6ub). Windows [episode-3 s, episode+5 s]. Arms: OFF, OFF2 (A/A), ON.
+rlogs (Konik), episode segment + the one before; 99.5 Hz CAN, 893-894 Bosch sweeps/segment.
+
+| episode | min lead1 vRel (OFF = ON) | lead ncValid share | max rail corr | planner min (OFF = ON) | frames changed ON vs OFF |
+|---|---|---|---|---|---|
+| 00000271--4e9b9502db 9:26  | -20.00 @ 9:27.21, d 103.6  | 0.23 | 6.50 | -6.29 | 0 |
+| 00000236--60bfb34cb1 12:51 | -18.43 @ 12:51.00, d 102.0 | 0.16 | 4.93 | -3.29 | 0 |
+| 00000236--60bfb34cb1 12:54 | same window minimum        | 0.18 | 4.93 | -3.29 | 0 |
+| 00000237--77313c5a66 10:00 | -17.39 @ 9:58.95, d 81.0   | 0.06 | 3.89 | -2.60 | 0 |
+| 00000298--c4d2a4acbc 4:10  | -14.58 @ 4:11.67, d 57.4   | 0.00 | 1.08 | -3.61 | 0 |
+| 00000297--f971b5896f 48:12 | -16.54 @ 48:12.52, d 64.0  | 0.00 | 3.04 | -3.65 | 0 |
+
+frames changed = lead selection, lead1 vRel and planner accel, each 0 on every episode, in both runs (a) and (b).
+A/A (OFF vs OFF2): 0 differing frames on every episode. ON cap violations (published < ncVRel - 3 on a capped frame): none.
+
+Same table as the stopshadow-radar run (nccap_ab.txt, code f6cb7630e): every summary number above is identical.
+Frame level, the OFF arm itself differs from the stopshadow OFF arm (different base code): planner accel on 21-179 frames
+per episode (max 0.53 m/s^2, 236), lead1 vRel on 6 frames at 236 (max 1.98 m/s); the episode minima do not move.
+Run (a) vs (b): only 236 differs (157 frames; FAR_RAIL_VISION_BOUND acts there), OFF and ON alike.
+
+Result: the cap is inert on all six episodes on the car-matched code. 297 is not fixed: its railed lead (track 4, 57.4-72.9 m in the series window) is past
+BOSCH_A_NC_RAIL_MAX_D_REL_M (50 m) and NC sigma reads 22-42 (gate < 32), so ncValid is False there. Keep OFF.

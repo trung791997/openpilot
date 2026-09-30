@@ -194,6 +194,22 @@ RANGE_VREL_RAIL_LONG_MIN_SAMPLES = 8
 RANGE_VREL_RAIL_LONG_MIN_SPAN_S = 0.45
 RANGE_VREL_RAIL_ARM_UPDATES = 3
 RANGE_VREL_RAIL_SIZE_MEAN = True
+# --- NC cap on the rail fast path (PROPOSED, docs/PLAN_NC_CAP_RAIL_FAST.md; OFF, enabling is Peter's call).
+# REPLAY evidence only, nothing driven. 00000297--f971b5896f 48:12 (STATUS 194, car-matched replay on code 07b66420,
+# params 2026-09-30T16:44:42Z): a newborn track sat on the U11 birth rail (-13.5) from 48:11.97 to 48:13.33 while the
+# true closing was about -10; RAIL_FAST sized its correction from the track's range-convergence tail (rsig 11 -> 9) and
+# published -16.2 m/s for 0.25 s, more closing than the rail itself. When this is on, the point is on the rail and the
+# parser's NORMALIZED_CLOSING vRel is valid for it (RadarPoint.ncValid, _bosch_a_nc_vrel), the RAIL_FAST output is
+# clamped to vRel >= ncVRel - RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS, applied after the MAX_CORRECTION and vLead >= 0 caps.
+# It only shrinks the correction (never below zero), so it can only make the published vRel LESS negative than
+# RAIL_FAST alone, never more than the native rail, and it never drops or coasts a point (D-041/D-042). NC invalid
+# (raw 512, sigma >= 32, dRel outside (0, 50) m, or a coast) leaves RAIL_FAST unchanged. Not a min-age / rsig gate:
+# that would remove the gain on 271 9:26 and 298 4:10 (newborn tracks where the rail was a correct bound).
+# Set False (default) and the output is byte-identical to RAIL_FAST without it.
+RANGE_VREL_RAIL_NC_CAP = False
+# 3.0 m/s: the plan's margin (docs/PLAN_NC_CAP_RAIL_FAST.md, 297 48:12), the same tolerance D-043 / D-069 use for
+# range-vs-velocity agreement. At 297 48:12 it allows -13.0 against NC -10, under the -16.2 RAIL_FAST published.
+RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS = 3.0
 
 # --- Adjacent-lead rail gate (2026-09-28). REPLAY evidence only, nothing driven.
 # The range assist above only runs on leadOne/leadTwo, so every other track publishes the raw U11
@@ -637,13 +653,17 @@ class Track:
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
              measurement_update: bool | None = None, t_now: float = 0.0,
              range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False,
-             camera_sample: tuple[float, float | None] | None = None):
+             camera_sample: tuple[float, float | None] | None = None,
+             nc_vrel: float = 0.0, nc_valid: bool = False):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
     self.vRel = v_rel   # REL_SPEED
     self.vLead = v_lead
     self.measured = measured   # measured or estimate
+    # Bosch-A NORMALIZED_CLOSING vRel for this sweep (RANGE_VREL_RAIL_NC_CAP); 0/False on every other radar
+    self.ncVRel = float(nc_vrel)
+    self.ncValid = bool(nc_valid)
 
     # `measurement_update` is separate from the published measured bit so legacy radar sources keep
     # their existing behaviour. Civic Bosch emits real measurements at ~15 Hz while radard is driven
@@ -923,6 +943,9 @@ class Track:
     # Active with a negative smaller disagreement (only possible on the rail) publishes zero while
     # staying armed. The last bound keeps a corrected vLead from being published below zero.
     correction = float(min(max(size, 0.0), RANGE_VREL_ASSIST_MAX_CORRECTION_MPS, max(self.vLead, 0.0)))
+    if RANGE_VREL_RAIL_NC_CAP and rail_fast and self.ncValid:
+      # Published vRel >= ncVRel - margin; floored at zero so the cap only ever shrinks the correction.
+      correction = min(correction, max(self.vRel - self.ncVRel + RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS, 0.0))
     if self.vision_assist_early:
       # Never claim more closing than vision corroborates plus the margin: published vRel >= -(closing + margin).
       correction = min(correction, max(self.vRel + vision_closing + VISION_ASSIST_CLOSING_MARGIN_MPS, 0.0))
@@ -1444,7 +1467,7 @@ class RadarD:
       radar_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
       self._last_tracks_frame = sm.recv_frame['liveTracks']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid] for pt in rr.points}
 
     # D-053. Bosch-A only, and only for the tracks that were the lead on the previous cycle.
     # prev_lead_track_ids is the authoritative "which track is the lead" state; Track.leadTrackID
@@ -1483,7 +1506,8 @@ class RadarD:
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
-                              vision_assist=vision_assist, camera_sample=cam_sample)
+                              vision_assist=vision_assist, camera_sample=cam_sample,
+                              nc_vrel=rpt[4], nc_valid=rpt[5])
 
     # ONPATH_RADAR_ADOPT: path offset of every track on a fresh sweep (yRel + = left, model y + = right)
     if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar and radar_fresh:

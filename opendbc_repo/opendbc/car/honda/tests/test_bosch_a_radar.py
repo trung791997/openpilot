@@ -72,10 +72,13 @@ def make_f1(frame_idx=0, existence_raw=126):
   return bytes([0, 0, 0, (frame_idx & 0xF) << 1, 0, existence_raw & 0x7F, 0, 0])
 
 
-def make_f2(frame_idx=0, life=0):
+def make_f2(frame_idx=0, life=0, nc_raw=512, nc_sigma_raw=0):
   B1 = (frame_idx & 0xF) | ((life & 0xF) << 4)
   B0 = (life >> 4) & 0xFF
-  return bytes([B0, B1, 0, 0, 0, 0, 0, 0])
+  B2 = (nc_raw >> 2) & 0xFF
+  B3 = (nc_raw & 0x3) << 6
+  B5 = nc_sigma_raw & 0x7F
+  return bytes([B0, B1, B2, B3, 0, B5, 0, 0])
 
 
 def make_f3(frame_idx=0, edge_a_raw=0, edge_b_raw=0, sigma_a_raw=0, track_id=0xFF):
@@ -102,12 +105,12 @@ def make_aux(frame_idx=0, rawc9=0, rawca=0, direct_vrel_raw=BOSCH_A_DIRECT_VREL_
 
 
 def make_main_frames(slot, frame_idx, status, range_raw, angle_raw, life, track_id=1,
-                     range_sigma_raw=1, existence_raw=126):
+                     range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
   f0, f1, f2, f3 = BOSCH_A_MAIN_IDS[slot]
   return [
     CanData(f0, make_f0(frame_idx, status, range_raw, angle_raw, range_sigma_raw), BUS),
     CanData(f1, make_f1(frame_idx, existence_raw), BUS),
-    CanData(f2, make_f2(frame_idx, life), BUS),
+    CanData(f2, make_f2(frame_idx, life, nc_raw, nc_sigma_raw), BUS),
     CanData(f3, make_f3(frame_idx, track_id=track_id), BUS),
   ]
 
@@ -149,7 +152,7 @@ def _stamp(frame: CanData) -> CanData:
 
 def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux=False, aux_frame_idx=None,
           rawc9=0, rawca=BOSCH_A_RANGE_RATIO_INVALID, extra_slots=(), track_id=1, direct_vrel_raw=BOSCH_A_DIRECT_VREL_INVALID,
-          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126):
+          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
   """Build one update() input: a full main-frame set for `slot` (+ optional aux), plus the trigger
   frame (slot 15's f3) so update() always processes the cycle unless the caller is testing slot 15
   itself or an incomplete-frame scenario via extra_slots."""
@@ -157,7 +160,7 @@ def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux
   aux = BOSCH_A_AUX_IDS[slot]
   frames = make_main_frames(
     slot, frame_idx, status, range_raw, angle_raw, life, track_id,
-    range_sigma_raw=range_sigma_raw, existence_raw=existence_raw,
+    range_sigma_raw=range_sigma_raw, existence_raw=existence_raw, nc_raw=nc_raw, nc_sigma_raw=nc_sigma_raw,
   )
   if with_aux:
     frames.append(CanData(aux, make_aux(aux_frame_idx if aux_frame_idx is not None else frame_idx, rawc9, rawca,
@@ -2073,3 +2076,81 @@ def test_degraded_rail_corroboration_fits_the_tail_of_the_run_not_the_finished_w
   assert len(tail) == 5
   assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(tail), interval) > BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
   assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(run), interval) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+
+
+# --- NC fields for RANGE_VREL_RAIL_NC_CAP (D-070, static) -----------------------------------------------
+
+class TestNcFields:
+  """RadarPoint.ncVRel / ncValid for radard's RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md). Filled on every
+  measured Bosch-A point from _bosch_a_nc_vrel, and never changing vRel
+  (D-069's NC-at-rail replacement is not carried on this branch). Coasts carry ncValid False. Static unit tests only."""
+  DT_NS = 70_000_000
+
+  @staticmethod
+  def _nc_raw(d_rel, vrel):
+    return int(round(512 + (-vrel / d_rel) * 64))
+
+  def _drive(self, start_raw=700, n=6, nc_vrel=-10.0, nc_sigma_raw=0, nc_raw=None):
+    ri = make_radar_interface()
+    rr = None
+    for i in range(n):
+      raw = start_raw - 20 * i   # 17.9 m/s, past the rail, so the D-043 check keeps the sweep measured
+      d_rel = raw / 16.0 - 3.0
+      raw_nc = self._nc_raw(d_rel, nc_vrel) if nc_raw is None else nc_raw
+      rr = ri.update(sweep(0, i & 0xF, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=BOSCH_A_DIRECT_VREL_MIN_RAW, direct_vrel_uncertainty_raw=90,
+                           nc_raw=raw_nc, nc_sigma_raw=nc_sigma_raw))
+    return rr.points[0]
+
+  def test_valid_nc_is_published_without_touching_vrel(self):
+    pt = self._drive()
+    assert pt.measured
+    assert pt.ncValid
+    assert pt.ncVRel == pytest.approx(-10.0, abs=0.3)
+    assert pt.vRel == pytest.approx(-13.5), "vRel stays the U11 rail"
+
+  def test_sigma_at_the_gate_is_invalid(self):
+    pt = self._drive(nc_sigma_raw=32)
+    assert pt.measured and not pt.ncValid
+
+  def test_sigma_just_under_the_gate_is_valid(self):
+    assert self._drive(nc_sigma_raw=31).ncValid
+
+  def test_no_reading_raw_512_is_invalid(self):
+    pt = self._drive(nc_raw=512)
+    assert pt.measured and not pt.ncValid
+
+  def test_beyond_50_m_is_invalid(self):
+    pt = self._drive(start_raw=1100)
+    assert pt.dRel > 50.0 and pt.measured and not pt.ncValid
+
+  def test_gross_disagreement_coast_is_invalid(self):
+    # test_gross_velocity_range_disagreement_coasts' shape, with a valid NC on every sweep.
+    ri = make_radar_interface()
+    for i, raw in enumerate((500, 510, 520, 530)):
+      rr = ri.update(sweep(0, i, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=864 + 40, direct_vrel_uncertainty_raw=0,
+                           nc_raw=self._nc_raw(raw / 16.0 - 3.0, -2.0)))
+    assert rr.points[0].measured and rr.points[0].ncValid, "the control sweep must carry a valid NC"
+    rr = ri.update(sweep(0, 4, 0x7, 540, 1024, 9, 4 * self.DT_NS, with_aux=True,
+                         direct_vrel_raw=864 - 11 * 64, direct_vrel_uncertainty_raw=0,
+                         nc_raw=self._nc_raw(540 / 16.0 - 3.0, -2.0)))
+    assert len(rr.points) == 1
+    assert not rr.points[0].measured
+    assert not rr.points[0].ncValid
+
+  def test_range_rejected_coast_is_invalid(self):
+    # test_discontinuous_range_coasts_last_accepted_point_unmeasured's shape, with a valid NC throughout.
+    ri = make_radar_interface()
+    nc = self._nc_raw(500 / 16.0 - 3.0, -2.0)
+    ri.update(sweep(0, 0, 0x7, 500, 1024, 1, 0, with_aux=True,
+                    direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=500, nc_raw=nc))
+    rr = ri.update(sweep(0, 1, 0x7, 510, 1024, 3, 50_000_000, with_aux=True,
+                         direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=500, nc_raw=nc))
+    assert rr.points[0].measured and rr.points[0].ncValid
+    rr = ri.update(sweep(0, 2, 0x7, 100, 1024, 5, 100_000_000, with_aux=True,
+                         direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=509,
+                         range_sigma_raw=4, existence_raw=0, nc_raw=nc))
+    assert len(rr.points) == 1
+    assert rr.points[0].measured is False
+    assert rr.points[0].ncValid is False
