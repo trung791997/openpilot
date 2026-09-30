@@ -1476,3 +1476,10 @@ Reason: a change with no measured benefit that makes the native vRel flicker is 
 switch is False and the code and TestNcAtRail stay for the record. A retry needs a case D-053 rail-fast
 misses (a railed in-lane car that is not leadOne/leadTwo but matters to the planner), and must publish NC as
 a bound at radard publish time, not as the native vRel, so the lead KF never sees the step.
+
+Addendum (3bac76a7b, replay): 000001f9 29:52, the D-041 origin case (segments 28-30; 288 not scored, its full
+name is unrecorded). Rail-fast already published correct closing for the stopped car (tid 61, U11 railed on every
+sweep) at 1801.94, identical ON and OFF. NC engaged only for 4 sweeps at 42-39 m, 1.1 s later, over-reading closing by
+3.2 m/s vs 2.3 for the rail. Planner min −5.85 vs −5.86. At NC engage, leadOne aLeadK stepped −3.41 → −5.3 for ~0.4 s
+(OFF −3.4), and on tid 7 at 1731.49 ON added a real FCW frame (aLeadK −4.95 vs −3.54). That is the harder-braking sign,
+not D-068's softening, but the same mechanism: an NC step fed into the lead KF. D-069 stands.
