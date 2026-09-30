@@ -489,8 +489,9 @@ def derived(T: dict, win_s: float = LSQ_WINDOWS_S[1]) -> dict:
   v_abs = T["v_ego"] + slope - yaw * T["y_rel"]
   vis = ((np.abs(T["m_x"] - T["d_rel"]) < np.maximum(VIS_DX_M, VIS_DX_FRAC * T["d_rel"])) & (np.abs(T["m_y"] - T["y_rel"]) < VIS_DY_M)
          & (T["m_prob"] > 0.5))
+  nc = nc_rail(T)
   return {"slope": slope, "slope_strict": slope_strict, "stat_ref": stat, "nc_d": T["f2_NORMALIZED_CLOSING"] * T["d_rel"],
-          "nc_vrel": -T["f2_NORMALIZED_CLOSING"] * T["d_rel"], **nc_rail(T),
+          "nc_vrel": -T["f2_NORMALIZED_CLOSING"] * T["d_rel"], **nc, "v_abs_nc": T["v_ego"] + nc["nc_vrel_pub"] - yaw * T["y_rel"],
           "v_abs": v_abs, "v_abs_strict": T["v_ego"] + slope_strict - yaw * T["y_rel"],
           "v_abs_u11": T["v_ego"] + T["vrel_u11"] - yaw * T["y_rel"], "vis_assoc": vis.astype(float),
           "vis_dv": np.where(vis, T["m_v"] - v_abs, np.nan)}
@@ -606,8 +607,12 @@ def cmd_plot(args) -> int:
                 ("-vEgo + w*y", t, X["stat_ref"], "#999"), ("U11 vRel", t, T["vrel_u11"], "#9467bd", "dots"),
                 ("NC-at-rail vRel (fresh)", t, np.where(X["nc_fired"] == 1, X["nc_vrel_pub"], np.nan), "#d62728", "dots"),
                 ("NC-at-rail vRel (held)", t, np.where(X["nc_fired"] == 2, X["nc_vrel_pub"], np.nan), "#ff7f0e", "dots")]},
-    {"label": "vAbs = vEgo + slope - w*y (m/s)", "series": [("vAbs (slope)", t, X["v_abs"], "#1f77b4"),
+    {"label": "vAbs = vEgo + slope - w*y (m/s); < 0 is oncoming", "series": [("vAbs (slope)", t, X["v_abs"], "#1f77b4"),
                                                            ("vAbs (U11)", t, X["v_abs_u11"], "#9467bd", "dots"),
+                                                           ("vAbs (slope) where NC-at-rail fired", t,
+                                                            np.where(X["nc_fired"] > 0, X["v_abs"], np.nan), "#d62728", "dots"),
+                                                           ("vAbs (NC-at-rail vRel)", t, np.where(X["nc_fired"] > 0, X["v_abs_nc"], np.nan),
+                                                            "#ff7f0e", "dots"),
                                                            ("vEgo", t, T["v_ego"], "#999")]},
     {"label": "yRel and model path at this x (m, left +)", "series": [("yRel", t, T["y_rel"], "#1f77b4", "dots"),
                                                                      ("path y", t, T["path_y"], "#2ca02c")]},
