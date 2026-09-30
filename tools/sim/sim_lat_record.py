@@ -222,6 +222,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "starpilotPlan",
     "selfdriveState",
     "longitudinalPlan",
+    "gyroscope",
+    "liveDelay",
   ], poll="controlsState")
   toggles_start = read_toggles(Params())
   # every carControl / carState message, unconflated: the Phase 2c C2 gate counts latActive drops per raw carControl message
@@ -245,6 +247,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
   #              recorder loop that drops messages, which the row rate alone cannot (2026-09-28).
   status = []  # per row: carState steerFaultTemporary, selfdriveState active, starpilotLateralState epsFfActive (NaN before
   #             first seen); saved to lanes.npz status (N x 3) for the Phase 2b fault gates C1/C2 (2026-09-29)
+  yaw = []  # per row: carState.yawRate (the car's 0x94 path), the plant yaw rate the sim's gyroscope carries (rad/s, left+),
+  #          liveDelay.lateralDelay (s, what controlsd steers with); saved to lanes.npz yaw (N x 3) (2026-09-30)
   long_plan = []  # per row: long_plan_row (N x 4); is an s60 plateau the plan or the lateral loop (P' X1, 2026-09-29)
   t0 = None
   start_mono = time.monotonic()
@@ -306,6 +310,9 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     status.append([float(sm["carState"].steerFaultTemporary),
                    float(sm["selfdriveState"].active) if sm.seen["selfdriveState"] else np.nan,
                    float(sl.epsFfActive) if sm.seen["starpilotLateralState"] else np.nan])
+    yaw.append([sm["carState"].yawRate,
+                sm["gyroscope"].gyroUncalibrated.v[0] if sm.seen["gyroscope"] else np.nan,
+                sm["liveDelay"].lateralDelay if sm.seen["liveDelay"] else np.nan])
     long_plan.append(long_plan_row(mv, sm["longitudinalPlan"], sm.seen["modelV2"], sm.seen["longitudinalPlan"]))
 
   elapsed = time.monotonic() - start_mono
@@ -317,6 +324,7 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                       plan=np.array(plan, dtype=np.float64).reshape(-1, 4),
                       t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64),
                       status=np.array(status, dtype=np.float64).reshape(-1, 3),
+                      yaw=np.array(yaw, dtype=np.float64).reshape(-1, 3),
                       long_plan=np.array(long_plan, dtype=np.float64).reshape(-1, 4),
                       cc_raw=np.array(cc_raw, dtype=np.float64).reshape(-1, 2),
                       cs_raw=np.array(cs_raw, dtype=np.float64).reshape(-1, 2),

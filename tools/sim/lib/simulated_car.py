@@ -1,3 +1,4 @@
+import math
 import os
 import traceback
 import cereal.messaging as messaging
@@ -9,7 +10,8 @@ from opendbc.can.parser import CANParser
 from opendbc.can.dbc import DBC as DBCDefinition
 from opendbc.car import Bus
 from opendbc.car.honda.hondacan import CanBus
-from opendbc.car.honda.values import DBC, HondaSafetyFlags
+from opendbc.car.honda.values import CAR, DBC, HondaSafetyFlags
+from opendbc.car.honda.yaw_rate import DBC_SCALE, DBC_ZERO, YAW_RATE_CALIBRATION
 from openpilot.common.params import Params
 from openpilot.selfdrive.pandad.pandad_api_impl import can_list_to_can_capnp
 from openpilot.tools.sim.lib.common import SimulatorState
@@ -22,6 +24,15 @@ def load_car_config():
     return None
   with open(os.path.join(config_dir, "carParams.bin"), "rb") as f:
     return f.read()
+
+
+def kinematics_yaw_rate(yaw_rate: float) -> float:
+  """KINEMATICS YAW_RATE (DBC deg/s, clockwise-positive) for a plant yaw rate in rad/s, left-positive, as the Civic
+  Bosch VSA sensor would send it: 0.244 deg/s per count about a 513-count zero (yaw_rate.py). carstate decodes it
+  back through the same calibration, so carState.yawRate reads the plant's yaw rate."""
+  scale, zero = YAW_RATE_CALIBRATION[CAR.HONDA_CIVIC_BOSCH]
+  counts = zero - math.degrees(yaw_rate) / scale
+  return (min(max(round(counts), 0), 1023) - DBC_ZERO) * DBC_SCALE
 
 
 class SimulatedCar:
@@ -101,6 +112,7 @@ class SimulatedCar:
                                     "BRAKE_PRESSED": simulator_state.user_brake > 0
                                     }))
     msg.append(self.make_msg("CAR_SPEED", 0, {}))
+    msg.append(self.make_msg("KINEMATICS", 0, {"YAW_RATE": kinematics_yaw_rate(simulator_state.imu.gyroscope.x)}))
 
     # *** cam bus ***
     msg.append(self.make_msg("STEERING_CONTROL", 2, {}))
