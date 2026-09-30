@@ -85,3 +85,11 @@ I. MI(stopped vs moving | range), ranked by (frame, bit). Top bits: AUX byte6 b3
 J. Non-object traffic: 0x39F LEAD_DISTANCE / 0x1DF ACCEL_COMMAND change at 100% of stock decel onsets (n 418), as expected for the ACC
    command. At stopped-in-lane confirmations (n 33), no radar/ACC field changes above control. 0x244 LINE_SOLID 0.45 vs 0.15 is lane-line
    (camera) noise. Verdict: no non-object field marks a stopped object appearing. INCONCLUSIVE for stock-reaction precursors.
+
+================ ADDENDUM (2026-09-30, after Steve's independent check) ================
+- Steve reproduced all four flag onsets from his own extracts, each within 0.01 s.
+- Window/hold wording: every flag onset above uses a 0.25 s hold. The "0.5 s window" onsets pair a 0.5 s window with a 0.25 s hold.
+  With a 0.5 s window AND a 0.5 s hold: 297 tid 6 fires at 72 m, and 25e tid 59 (the negative control) at 16 m.
+- Plain verdict, item 2: in 8 of the 10 in-lane stopped approaches, lead one or a brake came first anyway. The early-radar gain
+  shows only on 00000297 tid 6, 00000258 tid 26 and 0000026b tid 16.
+- The tool's plot now defaults to --win 0.5 on stopshadow-radar (3532e66b7). The results here were produced at ae6ae25e8.
