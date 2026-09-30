@@ -26,6 +26,7 @@ Peter, 2026-09-30: plots may go on this branch; nothing merges into ns-bosch-rad
   | ego lane-line margin | inside, +1.15..+1.43 m | 297 tid 6 outside at times (min -1.74 m) | no (inverts) |
   | model lead prob | median 0.04, max 0.10 | 297 tid 6 median 0.05, max 0.38; straight-road TPs 0.59-1.00 | no |
   | roadEdgeStd, object side | 2.47 | medians 0.35-1.69 | gap on one FP; road-level, untested on negatives, not a gate |
+- **Car vs roadside clutter for ONPATH_RADAR_ADOPT: closed negative (replay, one known FP, 297 tid 42).** Six cues tested and failed: camera cues (`clutter.txt`), radar-field AUC (best 0.853, below 0.9; `clutter2`), ground-speed gate (removes tid 42 but costs 111-124 of 130 adoptions), existence floor (the 0.065 was the model lead prob; tid 42 radar existence min 0.84), world-frame coherence, and world-accel plausibility (A=8 removes tid 42 but loses 26b 25:52.0 tid 47, a confirmed car with no lead one cover; `adoptstat.txt`). Reopen only with more roadside negatives. ONPATH_LEAD_MAX_BRAKE (D-048) remains the only FP control. No DECISIONS entry, since nothing changes.
 - **Path-end NaN (radard.py:1446) is latent, not fixed.** The path offset is computed only when dRel <= model position.x[-1]. Beyond that it is NaN and
   clears ONPATH adopt's history. Over 19 routes there are 38 episodes (6 of them >= 1 s) where a stopped track beyond the path end had no lead one covering it.
   Open case: 00000284 tid 36 at 600.9-602.5 s (42 -> 37 m at 3.4 m/s, flag only, ego already stopping). Curve-at-speed is not ruled out. See `pathend.txt`.
