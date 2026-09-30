@@ -89,3 +89,47 @@ def test_parse_segs_and_svg():
   svg = bat._svg_panels("x", 0.0, 1.0, [{"label": "p", "series": [("a", [0, 1], [1, 2]), ("b", [0, 1], [np.nan, 3], "#000", "dots")]}],
                         [(0.5, "#f00", "mark")])
   assert svg.startswith("<svg") and "polyline" in svg and "circle" in svg
+
+
+def _nc_table(n=12, d0=40.0, rate=-16.0, nc_raw=None, sigma=10, y=0.5, u11_raw=0, dt=0.07):
+  # a car in our lane closing past the -13.5 rail: U11 railed low, NC reading the true rate
+  t = np.arange(n) * dt
+  d = d0 + rate * t
+  if nc_raw is None:
+    nc_raw = np.round(512 + (-rate / d) / bat.NC_SCALE)
+  full = lambda v: np.full(n, v, dtype=float)  # noqa: E731
+  return {"t": t, "tid": full(7), "inc": full(1), "valid": full(1), "d_rel": d, "y_rel": full(y), "frame_idx": np.arange(n, dtype=float),
+          "aux_FRAME_IDX": np.arange(n, dtype=float), "aux_REL_VELOCITY_RAW": full(u11_raw), "aux_REL_VELOCITY_UNCERTAINTY_RAW": full(0),
+          "u10": full(0), "vrel_ratio": full(np.nan), "f2_NORMALIZED_CLOSING_RAW": np.broadcast_to(nc_raw, (n,)).astype(float),
+          "f2_NORMALIZED_CLOSING_SIGMA_RAW": full(sigma)}
+
+
+def test_nc_rail_constants_match_the_parser():
+  for tool, name in ((bat.NC_CENTER_RAW, "BOSCH_A_NC_CENTER_RAW"), (bat.NC_SCALE, "BOSCH_A_NC_SCALE"),
+                     (bat.NC_MAX_SIGMA_RAW, "BOSCH_A_NC_MAX_SIGMA_RAW"), (bat.NC_RAIL_MAX_D_REL_M, "BOSCH_A_NC_RAIL_MAX_D_REL_M"),
+                     (bat.NC_RAIL_HOLD_S, "BOSCH_A_NC_RAIL_HOLD_S")):
+    assert getattr(RI, name, tool) == tool, name
+
+
+def test_nc_rail_fires_past_the_rail_once_the_range_fit_agrees():
+  X = bat.nc_rail(_nc_table())
+  assert np.all(X["nc_fired"][:4] == 0) and np.allclose(X["nc_vrel_pub"][:4], -13.5)  # no D-043 fit yet (4 x 70 ms < 0.25 s)
+  assert np.all(X["nc_fired"][4:] == 1) and np.all(np.abs(X["nc_vrel_pub"][4:] + 16.0) < 0.6)
+
+
+def test_nc_rail_gates_only_ever_add_closing():
+  for kw in ({"y": 2.5}, {"d0": 70.0}, {"sigma": 32}, {"u11_raw": 100}, {"nc_raw": 512}, {"nc_raw": 700}):
+    X = bat.nc_rail(_nc_table(**kw))
+    assert not X["nc_fired"].any(), kw
+  X = bat.nc_rail(_nc_table(rate=-12.0, nc_raw=np.round(512 + (20.0 / 40.0) / bat.NC_SCALE)))
+  assert not X["nc_fired"].any()  # NC says -20 at 40 m but the range closes at -12: > 3 m/s apart, rail kept
+  X = bat.nc_rail(_nc_table(rate=-30.0, d0=45.0))
+  assert np.all(X["nc_vrel_pub"] >= -20.0)  # clamped at the rail bound
+
+
+def test_nc_rail_holds_a_good_reading_for_0p3_s_only():
+  T = _nc_table(n=16)
+  T["f2_NORMALIZED_CLOSING_RAW"][6:] = 512  # NC drops out from 0.42 s
+  X = bat.nc_rail(T)
+  held = np.flatnonzero(X["nc_fired"] == 2)
+  assert len(held) and T["t"][held[-1]] - T["t"][5] <= 0.3 + 1e-9 and not X["nc_fired"][held[-1] + 1:].any()

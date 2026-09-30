@@ -415,6 +415,68 @@ def strict_key(tid: np.ndarray, inc: np.ndarray, brk: np.ndarray) -> tuple[np.nd
   return tid * 1e9 + inc * 1e5 + runs, sat
 
 
+# NC-at-rail (stopshadow-radar c40fe684f, BOSCH_A_NC_RAIL_VREL): the parser's gates, mirrored here because the checked-out
+# radar_interface.py may predate them. test_nc_rail_constants_match_the_parser holds them equal wherever the parser has them.
+NC_CENTER_RAW, NC_SCALE, NC_MAX_SIGMA_RAW = 512, 1.0 / 64.0, 32
+NC_RAIL_MAX_D_REL_M, NC_RAIL_HOLD_S = 50.0, 0.3
+
+
+def nc_rail(T: dict) -> dict:
+  """Replay of the parser's NC-at-rail vRel on every valid row, per track incarnation in time order.
+
+  Gates as _bosch_a_nc_rail_vrel: qualified U11 (with u10) on the low rail, |yRel| <= BOSCH_A_RAIL_INTERVAL_MAX_Y_M,
+  0 < dRel < 50, NC raw != 512 and sigma < 32, -NC*dRel closing; a good reading held 0.3 s while U11 stays railed;
+  used only when within the D-043 tolerance of the trailing D-043 range fit (the parser's own helpers, over the last
+  BOSCH_A_VREL_MAX_SAMPLES rows), then min(U11, NC) clamped at -BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS.
+  One known difference: the parser fits over its ACCEPTED ranges and only runs this on measured, accepted sweeps;
+  here every valid row of the incarnation is history and gets a value. Rows the parser coasted are not marked, and a
+  --t0 cut restarts the history (nothing fires in its first 0.25 s).
+  nc_vrel_pub: published vRel (U11 unless NC fired); nc_fired: 1 fresh NC, 2 held NC, 0 not used."""
+  n = len(T["t"])
+  pub, fired = np.full(n, np.nan), np.zeros(n)
+  low_rail = (RI.BOSCH_A_DIRECT_VREL_MIN_RAW - RI.BOSCH_A_DIRECT_VREL_CENTER_RAW) * RI.BOSCH_A_DIRECT_VREL_SCALE_MPS
+  if "f2_NORMALIZED_CLOSING_RAW" not in T or "aux_REL_VELOCITY_RAW" not in T:
+    return {"nc_vrel_pub": pub, "nc_fired": fired}
+  u_raw = T["aux_REL_VELOCITY_RAW"]
+  u10 = T.get("aux_REL_VELOCITY_UNCERTAINTY_RAW", T["u10"])
+  state: dict = {}
+  for i in range(n):
+    if T["valid"][i] <= 0 or not np.isfinite(T["d_rel"][i]):
+      continue
+    key = (int(T["tid"][i]), int(T["inc"][i]))
+    st = state.setdefault(key, {"hist": [], "nc": None, "nc_t": None})
+    t, d, y = float(T["t"][i]), float(T["d_rel"][i]), float(T["y_rel"][i])
+    st["hist"] = (st["hist"] + [(t, d)])[-RI.BOSCH_A_VREL_MAX_SAMPLES:]
+    direct = None
+    aux_ok = "aux_FRAME_IDX" not in T or T["aux_FRAME_IDX"][i] == T["frame_idx"][i]  # the parser pairs AUX by cycle
+    if aux_ok and np.isfinite(u_raw[i]):
+      direct = RI._bosch_a_direct_vrel(int(u_raw[i]), None if not np.isfinite(u10[i]) else int(u10[i]))
+    vrel = direct if direct is not None else float(T["vrel_ratio"][i])
+    pub[i] = vrel
+    if direct is None or direct > low_rail + 1e-6 or abs(y) > RI.BOSCH_A_RAIL_INTERVAL_MAX_Y_M:
+      st["nc"] = st["nc_t"] = None
+      continue
+    raw, sig = T["f2_NORMALIZED_CLOSING_RAW"][i], T["f2_NORMALIZED_CLOSING_SIGMA_RAW"][i]
+    cand = None
+    if np.isfinite(raw) and np.isfinite(sig) and int(raw) != NC_CENTER_RAW and int(sig) < NC_MAX_SIGMA_RAW and 0.0 < d < NC_RAIL_MAX_D_REL_M:
+      v = -(int(raw) - NC_CENTER_RAW) * NC_SCALE * d
+      cand = v if v < 0.0 else None
+    fresh = cand is not None
+    if not fresh and st["nc"] is not None and t - st["nc_t"] <= NC_RAIL_HOLD_S:
+      cand = st["nc"]
+    if cand is None:
+      continue
+    rate = RI._bosch_a_fresh_range_rate(RI._bosch_a_trailing_fit_window(st["hist"]))
+    if rate is None or abs(cand - rate) > RI.BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS:
+      continue
+    if fresh:
+      st["nc"], st["nc_t"] = cand, t
+    out = max(-RI.BOSCH_A_DIRECT_VREL_RAIL_BOUND_MPS, min(vrel, cand))
+    if out < vrel:
+      pub[i], fired[i] = out, 1.0 if fresh else 2.0
+  return {"nc_vrel_pub": pub, "nc_fired": fired}
+
+
 def derived(T: dict, win_s: float = LSQ_WINDOWS_S[1]) -> dict:
   key = T["tid"] * 1e9 + T["inc"] * 1e5
   slope = lsq_slope(T["t"], T["d_rel"], key, win_s)
@@ -428,6 +490,7 @@ def derived(T: dict, win_s: float = LSQ_WINDOWS_S[1]) -> dict:
   vis = ((np.abs(T["m_x"] - T["d_rel"]) < np.maximum(VIS_DX_M, VIS_DX_FRAC * T["d_rel"])) & (np.abs(T["m_y"] - T["y_rel"]) < VIS_DY_M)
          & (T["m_prob"] > 0.5))
   return {"slope": slope, "slope_strict": slope_strict, "stat_ref": stat, "nc_d": T["f2_NORMALIZED_CLOSING"] * T["d_rel"],
+          "nc_vrel": -T["f2_NORMALIZED_CLOSING"] * T["d_rel"], **nc_rail(T),
           "v_abs": v_abs, "v_abs_strict": T["v_ego"] + slope_strict - yaw * T["y_rel"],
           "v_abs_u11": T["v_ego"] + T["vrel_u11"] - yaw * T["y_rel"], "vis_assoc": vis.astype(float),
           "vis_dv": np.where(vis, T["m_v"] - v_abs, np.nan)}
@@ -538,8 +601,11 @@ def cmd_plot(args) -> int:
     {"label": "U11 vRel and range-ratio vRel (m/s)",
      "series": [("U11 vRel", t, T["vrel_u11"], "#1f77b4", "dots"), ("ratio vRel", t, T["vrel_ratio"], "#9467bd", "dots"),
                 ("slope", t, X["slope"], "#bbb")]},
-    {"label": "NORMALIZED_CLOSING x dRel", "series": [("NC*dRel", t, X["nc_d"], "#1f77b4", "dots"), ("slope", t, X["slope"], "#bbb"),
-                                                      ("-vEgo + w*y", t, X["stat_ref"], "#999")]},
+    {"label": "-NORMALIZED_CLOSING x dRel on the range slope; NC-at-rail published vRel where it fired (m/s)",
+     "series": [("-NC*dRel", t, X["nc_vrel"], "#1f77b4", "dots"), ("slope", t, X["slope"], "#bbb"),
+                ("-vEgo + w*y", t, X["stat_ref"], "#999"), ("U11 vRel", t, T["vrel_u11"], "#9467bd", "dots"),
+                ("NC-at-rail vRel (fresh)", t, np.where(X["nc_fired"] == 1, X["nc_vrel_pub"], np.nan), "#d62728", "dots"),
+                ("NC-at-rail vRel (held)", t, np.where(X["nc_fired"] == 2, X["nc_vrel_pub"], np.nan), "#ff7f0e", "dots")]},
     {"label": "vAbs = vEgo + slope - w*y (m/s)", "series": [("vAbs (slope)", t, X["v_abs"], "#1f77b4"),
                                                            ("vAbs (U11)", t, X["v_abs_u11"], "#9467bd", "dots"),
                                                            ("vEgo", t, T["v_ego"], "#999")]},
@@ -566,7 +632,8 @@ def cmd_plot(args) -> int:
   out.write_text(_svg_panels(title, t0, t1, panels, marks))
   print(out)
   if args.csv:
-    cols = ["t", "inc", "brk", "d_rel", "y_rel", "path_y", "vrel_u11", "vrel_ratio", "f2_NORMALIZED_CLOSING", "f2_NORMALIZED_CLOSING_SIGMA_RAW",
+    cols = ["t", "inc", "brk", "d_rel", "y_rel", "path_y", "vrel_u11", "vrel_ratio", "f2_NORMALIZED_CLOSING", "f2_NORMALIZED_CLOSING_RAW",
+            "f2_NORMALIZED_CLOSING_SIGMA_RAW",
             "f1_OBJECT_EXISTENCE_PROBABILITY_RAW", "f0_RANGE_SIGMA_RAW", "f0_RANGE", "u10", "u11_railed", "aux_lag_ms", "spread_ms",
             "v_ego", "yaw", "is_lead", "stock_acc", "op_long_active", "m_x", "m_y", "m_v", "m_prob"]
     cols = [c for c in cols if c in T]  # tables extracted before a column existed
