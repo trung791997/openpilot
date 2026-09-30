@@ -425,6 +425,32 @@ SLOW_RADAR_LEAD_GATE_MIN_PROB = 0.9
 SLOW_RADAR_LEAD_GATE_DECEL = 1.0
 SLOW_RADAR_LEAD_GATE_STANDOFF = 10.0
 
+# Planner-local MPC action time (D-072, PROPOSED; off by default, trial switch). The
+# planner reads its output off the MPC trajectory at action_t = longitudinal actuator delay + DT_MDL,
+# about 0.55 s on the Civic (CP delay 0.50, or the live LongitudinalActuatorDelay toggle). Reading
+# 0.55 s ahead turns every small wiggle in the MPC's far plan into an output step, which shows up as
+# jerk and light brake taps. mvl-boston/openpilot sp-honda-dev-202608 (5372439bf) plans with 0.30.
+# Replay, open loop, of this switch alone (planner at 44918d843 + this change; 10 routes: 00000236
+# seg 11-12, 00000237 seg 9-10, 00000297 seg 47-48, 00000298 seg 3-4, and all engaged time of
+# 0000029b/29c/29d/29e/29f and 000002a2): frames over 2 m/s^3 443 -> 396, RMS jerk down 0-7 % per
+# route (236 flat), light brake taps 24 -> 23, brake onsets 64 -> 53. Cost: the -0.5 onset of the
+# hardest brake is up to 0.3 s later (297 48:12 +0.30, 0000029e 5:33 +0.25, 0000029d 3:50 +0.20)
+# and its peak up to 0.09 m/s^2 softer. D-072 has the table.
+# Only the read-off point moves. CP.longitudinalActuatorDelay, the carcontroller's learner that also
+# reads it, self.longitudinal_actuator_delay (every reaction_t gate below), the model-launch read,
+# the cruise and lane-change caps all keep the actuator delay. PLANNER_ACTION_T_OVERRIDE = True turns
+# it on; False (default) is action_t = actuator delay + DT_MDL exactly, as before. Replay evidence
+# only; not road-validated.
+PLANNER_ACTION_T_OVERRIDE = False
+PLANNER_ACTION_T_S = 0.30
+
+
+def get_planner_action_t(actuator_delay: float) -> float:
+  """Time on the MPC trajectory the planner reads its output from (PLANNER_ACTION_T_OVERRIDE)."""
+  if PLANNER_ACTION_T_OVERRIDE:
+    return PLANNER_ACTION_T_S
+  return actuator_delay + DT_MDL
+
 
 VISION_LEAD_APPROACH_MIN_MODEL_PROB = 0.85
 VISION_LEAD_APPROACH_FULL_MODEL_PROB = 0.98
@@ -3150,6 +3176,7 @@ class LongitudinalPlanner:
     tinygrad_model = bool(getattr(starpilot_toggles, "tinygrad_model", False))
     experimental_mlsim = bool(tinygrad_model and self.mlsim and self.mode != 'acc')
     action_t = self.longitudinal_actuator_delay + DT_MDL
+    plan_action_t = get_planner_action_t(self.longitudinal_actuator_delay)
     prev_output_a_target = float(self.output_a_target)
     model_launch_accel = None
     if self.model_launch_armed and not bool(sm['modelV2'].action.shouldStop):
@@ -3162,11 +3189,11 @@ class LongitudinalPlanner:
     if classic_model:
       output_a_target, output_should_stop = get_accel_from_plan_classic(
         self.CP, self.v_desired_trajectory, self.a_desired_trajectory, starpilot_toggles.vEgoStopping,
-        actuator_delay=self.longitudinal_actuator_delay)
+        actuator_delay=(plan_action_t - DT_MDL) if PLANNER_ACTION_T_OVERRIDE else self.longitudinal_actuator_delay)
     elif tinygrad_model:
       output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
-        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+        action_t=plan_action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
       output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
       output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
@@ -3212,7 +3239,7 @@ class LongitudinalPlanner:
     else:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
-        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+        action_t=plan_action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
 
     # BLoT reads the MPC's own solution, not the arbitrated output. Upstream
     # (SpysyWeeb/Spysypilot) keeps these as two fields for this reason: everything below
