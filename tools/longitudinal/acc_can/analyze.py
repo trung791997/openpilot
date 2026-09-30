@@ -836,9 +836,17 @@ def timing_route(R, acc):
       cw = ce[(ce_t >= ton - 2.0) & (ce_t <= ton)]
       engaged_change |= bool(len(cw) > 1 and np.any(cw[1:] != cw[:-1]))
     engaged_change |= "ACC_ON" in chg
-    cls = "hold" if (ss_share > 0.5 or ve < 0.5) else ("engage" if engaged_change else "brake")
+    # 'hold' only when already stopped at onset; a brake that starts moving and ends in the standstill hold is 'stop'
+    ve_seg = zoh(cs_t, vE, t[seg]) if len(cs_t) else np.full(len(ss), np.nan)
+    moving = (ss == 0) & ~(ve_seg < 0.5)
+    peak_mv = float(cmd[seg][moving].min()) if moving.any() else np.nan
+    at_floor = np.abs(cmd[seg] + 4.0) < 0.005
+    floor_held = float(np.mean(~moving[at_floor])) if at_floor.any() else np.nan
+    ends_stopped = bool(ss_share > 0 or v_min < 0.3)
+    cls = "hold" if ve < 0.5 else ("engage" if engaged_change else ("stop" if ends_stopped else "brake"))
     rec = dict(route=R.name, ton=ton, peak=peak, L0=L0, L1=L1, dsw=dsw, dvt=dvt, stopped=stopped, chg=chg,
-               cls=cls, ve=float(ve), v_min=v_min, ss_share=ss_share, floor_share=floor_share, dur=float(t[i1] - t[i0]))
+               cls=cls, ve=float(ve), v_min=v_min, ss_share=ss_share, floor_share=floor_share, dur=float(t[i1] - t[i0]),
+               peak_mv=peak_mv, floor_held=floor_held)
     acc["timing_eps"].append(rec)
   # alert-bit assertions
   for src, D, tt in (("0x1DF", AC, t), ("0x30C", HUD, th), ("0x39F", RH, tr)):
@@ -863,11 +871,11 @@ def timing_print(acc):
   E = acc["timing_eps"]
   if E:
     P(f"  {'route':10s} {'t_on':>7s} {'peak':>5s} | {'d@on':>5s} {'v@on':>5s} {'ttc':>5s} | {'d@-1':>5s} {'v@-1':>5s} {'ttc':>5s}"
-      f" | {'dt_sw':>5s} {'dt_vth':>6s} stop | {'class':6s} {'vEgo':>5s} {'vmin':>5s} {'ss%':>4s} {'dur':>5s} | 0x30C changed +-1s")
+      f" | {'dt_sw':>5s} {'dt_vth':>6s} stop | {'class':6s} {'vEgo':>5s} {'vmin':>5s} {'ss%':>4s} {'dur':>5s} {'pk_mv':>5s} | 0x30C changed +-1s")
     for e in E[:400]:
       P(f"  {short(e['route'], 10):10s} {e['ton']:7.1f} {e['peak']:5.2f} | {fmt(e['L0'][0],1,5)} {fmt(e['L0'][1],1,5)} {fmt(e['L0'][2],1,5)}"
         f" | {fmt(e['L1'][0],1,5)} {fmt(e['L1'][1],1,5)} {fmt(e['L1'][2],1,5)} | {fmt(e['dsw'],2,5)} {fmt(e['dvt'],2,6)} "
-        f"{'Y' if e['stopped'] else 'n'}    | {e['cls']:6s} {fmt(e['ve'],1,5)} {fmt(e['v_min'],1,5)} {e['ss_share']*100:4.0f} {e['dur']:5.1f}"
+        f"{'Y' if e['stopped'] else 'n'}    | {e['cls']:6s} {fmt(e['ve'],1,5)} {fmt(e['v_min'],1,5)} {e['ss_share']*100:4.0f} {e['dur']:5.1f} {fmt(e['peak_mv'],2,5)}"
         f" | {','.join(e['chg'][:5]) or '-'}")
     if len(E) > 400:
       P(f"  ... {len(E) - 400} more episodes not shown")
@@ -893,13 +901,18 @@ def timing_print(acc):
       P(f"  [log] peak at the -4.00 floor: {len(fl)} episodes, classes " + ", ".join(f"{k}={v}" for k, v in sorted(fc.items()))
         + f"; median vEgo at onset {np.nanmedian([e['ve'] for e in fl]):.1f} m/s, median min vEgo {np.nanmedian([e['v_min'] for e in fl]):.1f},"
         f" median STANDSTILL share {np.median([e['ss_share'] for e in fl]):.0%}, median share of frames at the floor {np.median([e['floor_share'] for e in fl]):.0%}")
-    B = [e for e in E if e["cls"] == "brake"]
-    P(f"  [log] brake-only (hold and engage removed): onset - last swap {q([e['dsw'] for e in B])}")
-    P(f"  [log] brake-only: onset - vRel<-1 start {q([e['dvt'] for e in B])}")
-    fb = [e["dsw"] for e in B if np.isfinite(e["dsw"])]
-    wb = sum(0 <= v <= 0.5 for v in fb)
-    if B:
-      P(f"  [log] brake-only: onsets within 0.5 s after a lead swap {wb}/{len(B)} ({wb / len(B):.0%}); stopped-lead {sum(e['stopped'] for e in B)}/{len(B)}")
+      fh = [e["floor_held"] for e in fl if np.isfinite(e["floor_held"])]
+      P(f"  [log] -4.00 floor frames sent while stopped (STANDSTILL set or vEgo < 0.5): median {np.median(fh):.0%},"
+        f" episodes with >=95% of floor frames stopped {sum(v >= 0.95 for v in fh)}/{len(fh)}")
+    M = [e for e in E if e["cls"] in ("brake", "stop")]
+    pm = [e["peak_mv"] for e in M if np.isfinite(e["peak_mv"])]
+    if pm:
+      P(f"  [log] moving brakes (brake+stop): peak while moving median {np.median(pm):.2f} p10 {np.percentile(pm, 10):.2f} min {np.min(pm):.2f} m/s2, n={len(pm)}")
+    for lbl, B in (("moving brakes (brake+stop, hold and engage removed)", M), ("brake-only (does not end stopped)", [e for e in E if e["cls"] == "brake"])):
+      fb = [e["dsw"] for e in B if np.isfinite(e["dsw"])]
+      wb = sum(0 <= v <= 0.5 for v in fb)
+      P(f"  [log] {lbl}: onset - last swap {q([e['dsw'] for e in B])}; onset - vRel<-1 start {q([e['dvt'] for e in B])};"
+        f" within 0.5 s of a swap {wb}/{len(B)}; stopped-lead {sum(e['stopped'] for e in B)}/{len(B)}")
   else:
     P("  [log] no stock brake episodes found")
   A = acc["timing_alerts"]

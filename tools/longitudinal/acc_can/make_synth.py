@@ -118,7 +118,8 @@ def build(route, T, op_long, stall, with_lead_script, sparse=False):
         elif 199.67 <= t < 199.9: cmd = -0.4
         elif 199.9 <= t < 201.5: cmd = -1.6
         elif 250.0 <= t < 250.3: cmd = -1.5
-        elif 260.0 <= t < 262.0: cmd = -4.0   # standstill hold at the floor -> class 'hold'
+        elif 259.0 <= t < 260.0: cmd = -2.5   # moving brake that ends in the standstill hold ->
+        elif 260.0 <= t < 262.0: cmd = -4.0   # class 'stop', floor frames all under STANDSTILL, peak while moving -2.5
         elif 280.0 <= t < 281.0: cmd = -1.5   # right after CONTROL_ON 0->5 at 279.0 -> class 'engage'
         vals = dict(ACCEL_COMMAND=cmd, CONTROL_ON=0 if 277.0 <= t < 279.0 else 5, GAS_COMMAND=0, BRAKE_REQUEST=int(cmd < -0.3),
                     STANDSTILL=int(260.0 <= t < 262.0), AEB_PREPARE=int(150.0 <= t < 151.0))
@@ -248,9 +249,11 @@ CHECKS = [
   ("decode: 0x1DB B3 ~ dRel (or md_x0)", r"0x1DB .*\n\s+\[log\] candidate\s+B3\w*\s+~ (dRel|md_x0)\s+rho=\+(0\.9|1\.0)"),
   ("timing: DBC name", r"DBC used .*honda_civic_hatchback_ex_2017_can_generated"),
   ("timing: 4 episodes on stock route", r"synth_stock_A: 0x1DF@b1 .* episodes=4"),
-  ("timing: classes brake=2 engage=1 hold=1", r"episode classes: brake=2, engage=1, hold=1"),
-  ("timing: floor episode is a hold", r"peak at the -4\.00 floor: 1 episodes, classes hold=1;.*frames at the floor 100%"),
-  ("timing: brake-only 1/2 within 0.5 s of swap", r"brake-only: onsets within 0\.5 s after a lead swap 1/2"),
+  ("timing: classes brake=2 engage=1 stop=1", r"episode classes: brake=2, engage=1, stop=1"),
+  ("timing: floor episode is a stop", r"peak at the -4\.00 floor: 1 episodes, classes stop=1;"),
+  ("timing: peak while moving excludes the hold", r"peak while moving median -2\.00 p10 -2\.\d\d min -2\.50 m/s2, n=3"),
+  ("timing: moving brakes 1/3 within 0.5 s of swap", r"moving brakes \(brake\+stop.*within 0\.5 s of a swap 1/3"),
+  ("timing: floor frames all stopped", r"-4\.00 floor frames sent while stopped .*median 100%"),
   ("timing: episode1 onset 100.3 dt_sw 0.3", r"\s100\.[23]\s+-2\.00 .*\|\s+0\.[23]\d\s+0\.[23]\d n\s+\|.*HUD_LEAD"),
   ("timing: episode2 onset 199.7 dt_vth ~1.0", r"\s199\.[67]\s+-1\.60 .*\s+(0\.9\d|1\.0\d) n"),
   ("timing: onsets within 0.5 s of swap counted over all 4", r"onsets within 0\.5 s after a lead swap: 1/4"),
