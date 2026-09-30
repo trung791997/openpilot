@@ -72,10 +72,13 @@ def make_f1(frame_idx=0, existence_raw=126):
   return bytes([0, 0, 0, (frame_idx & 0xF) << 1, 0, existence_raw & 0x7F, 0, 0])
 
 
-def make_f2(frame_idx=0, life=0):
+def make_f2(frame_idx=0, life=0, nc_raw=512, nc_sigma_raw=0):
   B1 = (frame_idx & 0xF) | ((life & 0xF) << 4)
   B0 = (life >> 4) & 0xFF
-  return bytes([B0, B1, 0, 0, 0, 0, 0, 0])
+  B2 = (nc_raw >> 2) & 0xFF
+  B3 = (nc_raw & 0x3) << 6
+  B5 = nc_sigma_raw & 0x7F
+  return bytes([B0, B1, B2, B3, 0, B5, 0, 0])
 
 
 def make_f3(frame_idx=0, edge_a_raw=0, edge_b_raw=0, sigma_a_raw=0, track_id=0xFF):
@@ -102,12 +105,12 @@ def make_aux(frame_idx=0, rawc9=0, rawca=0, direct_vrel_raw=BOSCH_A_DIRECT_VREL_
 
 
 def make_main_frames(slot, frame_idx, status, range_raw, angle_raw, life, track_id=1,
-                     range_sigma_raw=1, existence_raw=126):
+                     range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
   f0, f1, f2, f3 = BOSCH_A_MAIN_IDS[slot]
   return [
     CanData(f0, make_f0(frame_idx, status, range_raw, angle_raw, range_sigma_raw), BUS),
     CanData(f1, make_f1(frame_idx, existence_raw), BUS),
-    CanData(f2, make_f2(frame_idx, life), BUS),
+    CanData(f2, make_f2(frame_idx, life, nc_raw, nc_sigma_raw), BUS),
     CanData(f3, make_f3(frame_idx, track_id=track_id), BUS),
   ]
 
@@ -149,7 +152,7 @@ def _stamp(frame: CanData) -> CanData:
 
 def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux=False, aux_frame_idx=None,
           rawc9=0, rawca=BOSCH_A_RANGE_RATIO_INVALID, extra_slots=(), track_id=1, direct_vrel_raw=BOSCH_A_DIRECT_VREL_INVALID,
-          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126):
+          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
   """Build one update() input: a full main-frame set for `slot` (+ optional aux), plus the trigger
   frame (slot 15's f3) so update() always processes the cycle unless the caller is testing slot 15
   itself or an incomplete-frame scenario via extra_slots."""
@@ -157,7 +160,7 @@ def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux
   aux = BOSCH_A_AUX_IDS[slot]
   frames = make_main_frames(
     slot, frame_idx, status, range_raw, angle_raw, life, track_id,
-    range_sigma_raw=range_sigma_raw, existence_raw=existence_raw,
+    range_sigma_raw=range_sigma_raw, existence_raw=existence_raw, nc_raw=nc_raw, nc_sigma_raw=nc_sigma_raw,
   )
   if with_aux:
     frames.append(CanData(aux, make_aux(aux_frame_idx if aux_frame_idx is not None else frame_idx, rawc9, rawca,
@@ -2073,3 +2076,72 @@ def test_degraded_rail_corroboration_fits_the_tail_of_the_run_not_the_finished_w
   assert len(tail) == 5
   assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(tail), interval) > BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
   assert _bosch_a_distance_to_interval(_bosch_a_fresh_range_rate(run), interval) <= BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS
+
+
+# --- NC-at-rail (stopshadow-radar, replay only) ----------------------------------------------------------
+
+class TestNcAtRail:
+  """A low-rail U11 in our lane under 50 m is replaced by NORMALIZED_CLOSING only when the range agrees, only ever
+  toward MORE closing, and is held across short NC dropouts instead of flickering back to the rail."""
+  STEP_RAW = 20            # 1.25 m per 70 ms sweep: closing at 17.86 m/s, past the -13.5 rail
+  DT_NS = 70_000_000
+  TRUE_VREL = -STEP_RAW / 16.0 / 0.07
+
+  @staticmethod
+  def _nc_raw(d_rel, vrel):
+    return int(round(512 + (-vrel / d_rel) * 64))
+
+  def _drive(self, start_raw=720, n=10, angle_raw=1024, nc=lambda i, d: None, nc_sigma_raw=0):
+    ri = make_radar_interface()
+    out = []
+    for i in range(n):
+      raw = start_raw - self.STEP_RAW * i
+      d_rel = raw / 16.0 - 3.0
+      nc_raw = nc(i, d_rel)
+      rr = ri.update(sweep(0, i & 0xF, 0x7, raw, angle_raw, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=BOSCH_A_DIRECT_VREL_MIN_RAW, direct_vrel_uncertainty_raw=90,
+                           nc_raw=512 if nc_raw is None else nc_raw, nc_sigma_raw=nc_sigma_raw))
+      out.append(rr.points[0].vRel if rr is not None and rr.points else None)
+    return out
+
+  def _true_nc(self, i, d):
+    return self._nc_raw(d, self.TRUE_VREL)
+
+  def test_railed_close_stopped_car_publishes_nc_closing(self):
+    vrels = self._drive(nc=self._true_nc)
+    assert vrels[-1] == pytest.approx(self.TRUE_VREL, abs=1.0)
+    assert vrels[-1] < -15.0
+
+  def test_no_nc_reading_keeps_the_rail(self):
+    assert self._drive()[-1] == pytest.approx(-13.5)
+
+  def test_low_confidence_nc_keeps_the_rail(self):
+    assert self._drive(nc=self._true_nc, nc_sigma_raw=32)[-1] == pytest.approx(-13.5)
+
+  def test_beyond_50_m_keeps_the_rail(self):
+    assert self._drive(start_raw=1100, nc=self._true_nc)[-1] == pytest.approx(-13.5)
+
+  def test_adjacent_lane_keeps_the_rail(self):
+    # 0.10 rad left (1/2048 rad per raw) at ~35 m: yRel ~3.6 m, outside the in-lane bound
+    assert self._drive(angle_raw=1024 + 210, nc=self._true_nc)[-1] == pytest.approx(-13.5)
+
+  def test_nc_disagreeing_with_range_keeps_the_rail(self):
+    vrels = self._drive(nc=lambda i, d: self._nc_raw(d, -30.0))
+    assert vrels[-1] == pytest.approx(-13.5)
+
+  def test_nc_can_never_publish_less_closing_than_the_rail(self):
+    vrels = self._drive(nc=lambda i, d: self._nc_raw(d, -12.0))
+    assert all(v is None or v <= -13.5 + 1e-6 for v in vrels)
+
+  def test_short_dropout_holds_the_nc_value(self):
+    vrels = self._drive(n=12, nc=lambda i, d: None if i in (9, 10) else self._true_nc(i, d))
+    assert vrels[9] < -15.0 and vrels[10] < -15.0
+
+  def test_long_dropout_returns_to_the_rail(self):
+    vrels = self._drive(n=14, nc=lambda i, d: None if i >= 8 else self._true_nc(i, d))
+    assert vrels[-1] == pytest.approx(-13.5)
+
+  def test_switch_off_is_the_old_behaviour(self, monkeypatch):
+    from opendbc.car.honda import radar_interface as HRI
+    monkeypatch.setattr(HRI, 'BOSCH_A_NC_RAIL_VREL', False)
+    assert self._drive(nc=self._true_nc)[-1] == pytest.approx(-13.5)
