@@ -118,8 +118,10 @@ def build(route, T, op_long, stall, with_lead_script, sparse=False):
         elif 199.67 <= t < 199.9: cmd = -0.4
         elif 199.9 <= t < 201.5: cmd = -1.6
         elif 250.0 <= t < 250.3: cmd = -1.5
-        vals = dict(ACCEL_COMMAND=cmd, CONTROL_ON=5, GAS_COMMAND=0, BRAKE_REQUEST=int(cmd < -0.3),
-                    AEB_PREPARE=int(150.0 <= t < 151.0))
+        elif 260.0 <= t < 262.0: cmd = -4.0   # standstill hold at the floor -> class 'hold'
+        elif 280.0 <= t < 281.0: cmd = -1.5   # right after CONTROL_ON 0->5 at 279.0 -> class 'engage'
+        vals = dict(ACCEL_COMMAND=cmd, CONTROL_ON=0 if 277.0 <= t < 279.0 else 5, GAS_COMMAND=0, BRAKE_REQUEST=int(cmd < -0.3),
+                    STANDSTILL=int(260.0 <= t < 262.0), AEB_PREPARE=int(150.0 <= t < 151.0))
         C.add(t, 1, 0x1DF, pt.pack(0x1DF, vals))
     # 10 Hz: 0x30C, 0x39F, 0x1DB, 0x1EF (radar clock-ish)
     for t in np.arange(0.011, T, 0.1):
@@ -245,10 +247,13 @@ CHECKS = [
   ("decode: 0x410 B5 event-only at 150/250", r"event-only B5: 2 changes.*@150\.\ds 00->01.*@250\.\ds 01->00"),
   ("decode: 0x1DB B3 ~ dRel (or md_x0)", r"0x1DB .*\n\s+\[log\] candidate\s+B3\w*\s+~ (dRel|md_x0)\s+rho=\+(0\.9|1\.0)"),
   ("timing: DBC name", r"DBC used .*honda_civic_hatchback_ex_2017_can_generated"),
-  ("timing: 2 episodes on stock route", r"synth_stock_A: 0x1DF@b1 .* episodes=2"),
+  ("timing: 4 episodes on stock route", r"synth_stock_A: 0x1DF@b1 .* episodes=4"),
+  ("timing: classes brake=2 engage=1 hold=1", r"episode classes: brake=2, engage=1, hold=1"),
+  ("timing: floor episode is a hold", r"peak at the -4\.00 floor: 1 episodes, classes hold=1;.*frames at the floor 100%"),
+  ("timing: brake-only 1/2 within 0.5 s of swap", r"brake-only: onsets within 0\.5 s after a lead swap 1/2"),
   ("timing: episode1 onset 100.3 dt_sw 0.3", r"\s100\.[23]\s+-2\.00 .*\|\s+0\.[23]\d\s+0\.[23]\d n\s+\|.*HUD_LEAD"),
   ("timing: episode2 onset 199.7 dt_vth ~1.0", r"\s199\.[67]\s+-1\.60 .*\s+(0\.9\d|1\.0\d) n"),
-  ("timing: 1/2 onsets within 0.5 s of swap", r"onsets within 0\.5 s after a lead swap: 1/2"),
+  ("timing: onsets within 0.5 s of swap counted over all 4", r"onsets within 0\.5 s after a lead swap: 1/4"),
   ("timing: AEB_PREPARE at 150", r"0x1DF AEB_PREPARE=1 at 150\.0"),
   ("timing: CHIME at 150.2", r"0x30C CHIME=1 at 150\.[23]"),
   ("timing: alpha route skipped", r"synth_alpha_B: op_long route, skipped"),

@@ -821,7 +821,24 @@ def timing_route(R, acc):
         v = HUD[kk][w]
         if len(v) > 1 and np.any(v[1:] != v[:-1]):
           chg.append(kk)
-    rec = dict(route=R.name, ton=ton, peak=peak, L0=L0, L1=L1, dsw=dsw, dvt=dvt, stopped=stopped, chg=chg)
+    # classify: 'hold' = standstill hold (car stopped / STANDSTILL set), 'engage' = ACC just engaged, else 'brake'
+    seg = slice(i0, i1 + 1)
+    ss = AC.get("STANDSTILL", np.zeros(len(cmd)))[seg]
+    ss_share = float(np.mean(ss > 0)) if len(ss) else 0.0
+    v_min = float(np.nanmin(zoh(cs_t, vE, t[seg]))) if len(cs_t) else np.nan
+    floor_share = float(np.mean(np.abs(cmd[seg] - peak) < 0.005)) if peak <= -3.99 else 0.0
+    co = AC.get("CONTROL_ON", np.zeros(len(cmd)))
+    w2 = (t >= ton - 2.0) & (t <= ton)
+    co_w = co[w2]
+    engaged_change = bool(len(co_w) > 1 and np.any(co_w[1:] != co_w[:-1]))
+    ce_t, ce = R.g("cs_t"), R.g("cs_cruiseEnabled")
+    if len(ce_t):
+      cw = ce[(ce_t >= ton - 2.0) & (ce_t <= ton)]
+      engaged_change |= bool(len(cw) > 1 and np.any(cw[1:] != cw[:-1]))
+    engaged_change |= "ACC_ON" in chg
+    cls = "hold" if (ss_share > 0.5 or ve < 0.5) else ("engage" if engaged_change else "brake")
+    rec = dict(route=R.name, ton=ton, peak=peak, L0=L0, L1=L1, dsw=dsw, dvt=dvt, stopped=stopped, chg=chg,
+               cls=cls, ve=float(ve), v_min=v_min, ss_share=ss_share, floor_share=floor_share, dur=float(t[i1] - t[i0]))
     acc["timing_eps"].append(rec)
   # alert-bit assertions
   for src, D, tt in (("0x1DF", AC, t), ("0x30C", HUD, th), ("0x39F", RH, tr)):
@@ -846,13 +863,14 @@ def timing_print(acc):
   E = acc["timing_eps"]
   if E:
     P(f"  {'route':10s} {'t_on':>7s} {'peak':>5s} | {'d@on':>5s} {'v@on':>5s} {'ttc':>5s} | {'d@-1':>5s} {'v@-1':>5s} {'ttc':>5s}"
-      f" | {'dt_sw':>5s} {'dt_vth':>6s} stop | 0x30C changed +-1s")
-    for e in E[:40]:
+      f" | {'dt_sw':>5s} {'dt_vth':>6s} stop | {'class':6s} {'vEgo':>5s} {'vmin':>5s} {'ss%':>4s} {'dur':>5s} | 0x30C changed +-1s")
+    for e in E[:400]:
       P(f"  {short(e['route'], 10):10s} {e['ton']:7.1f} {e['peak']:5.2f} | {fmt(e['L0'][0],1,5)} {fmt(e['L0'][1],1,5)} {fmt(e['L0'][2],1,5)}"
         f" | {fmt(e['L1'][0],1,5)} {fmt(e['L1'][1],1,5)} {fmt(e['L1'][2],1,5)} | {fmt(e['dsw'],2,5)} {fmt(e['dvt'],2,6)} "
-        f"{'Y' if e['stopped'] else 'n'}    | {','.join(e['chg'][:5]) or '-'}")
-    if len(E) > 40:
-      P(f"  ... {len(E) - 40} more episodes not shown")
+        f"{'Y' if e['stopped'] else 'n'}    | {e['cls']:6s} {fmt(e['ve'],1,5)} {fmt(e['v_min'],1,5)} {e['ss_share']*100:4.0f} {e['dur']:5.1f}"
+        f" | {','.join(e['chg'][:5]) or '-'}")
+    if len(E) > 400:
+      P(f"  ... {len(E) - 400} more episodes not shown")
 
     def q(x):
       x = np.array([v for v in x if np.isfinite(v)])
@@ -866,6 +884,22 @@ def timing_print(acc):
     within = sum(0 <= v <= 0.5 for v in fin)
     P(f"  [log] onsets within 0.5 s after a lead swap: {within}/{len(E)} ({within / len(E):.0%});"
       f" stopped-lead episodes {sum(e['stopped'] for e in E)}/{len(E)}")
+    from collections import Counter
+    cc = Counter(e["cls"] for e in E)
+    P(f"  [log] episode classes: " + ", ".join(f"{k}={v}" for k, v in sorted(cc.items())))
+    fl = [e for e in E if e["peak"] <= -3.99]
+    if fl:
+      fc = Counter(e["cls"] for e in fl)
+      P(f"  [log] peak at the -4.00 floor: {len(fl)} episodes, classes " + ", ".join(f"{k}={v}" for k, v in sorted(fc.items()))
+        + f"; median vEgo at onset {np.nanmedian([e['ve'] for e in fl]):.1f} m/s, median min vEgo {np.nanmedian([e['v_min'] for e in fl]):.1f},"
+        f" median STANDSTILL share {np.median([e['ss_share'] for e in fl]):.0%}, median share of frames at the floor {np.median([e['floor_share'] for e in fl]):.0%}")
+    B = [e for e in E if e["cls"] == "brake"]
+    P(f"  [log] brake-only (hold and engage removed): onset - last swap {q([e['dsw'] for e in B])}")
+    P(f"  [log] brake-only: onset - vRel<-1 start {q([e['dvt'] for e in B])}")
+    fb = [e["dsw"] for e in B if np.isfinite(e["dsw"])]
+    wb = sum(0 <= v <= 0.5 for v in fb)
+    if B:
+      P(f"  [log] brake-only: onsets within 0.5 s after a lead swap {wb}/{len(B)} ({wb / len(B):.0%}); stopped-lead {sum(e['stopped'] for e in B)}/{len(B)}")
   else:
     P("  [log] no stock brake episodes found")
   A = acc["timing_alerts"]
