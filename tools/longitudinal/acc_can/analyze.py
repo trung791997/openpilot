@@ -777,21 +777,29 @@ def timing_route(R, acc):
     return dd, vv, ttc
 
   # episodes
-  hard = cmd < -1.0
-  eps = []
-  for i0, i1 in runs(hard):
-    if eps and t[i0] - t[eps[-1][1]] < 0.15:  # merge brief dropouts
-      eps[-1] = (eps[-1][0], i1)
+  # One episode per brake: a run of cmd < -0.3 (brief dropouts merged) that holds cmd < -1.0 for >= 0.5 s somewhere.
+  # Episodes used to be the hard runs themselves, each walked back to its onset, so two hard runs inside one brake
+  # were counted twice with the same onset.
+  soft = []
+  for i0, i1 in runs(cmd < -0.3):
+    if soft and t[i0] - t[soft[-1][1]] < 0.15:
+      soft[-1] = (soft[-1][0], i1)
     else:
-      eps.append((i0, i1))
-  eps = [(i0, i1) for i0, i1 in eps if t[i1] - t[i0] >= 0.5]
+      soft.append((i0, i1))
+  eps = []
+  for s0, s1 in soft:
+    hr = []
+    for h0, h1 in runs(cmd[s0:s1 + 1] < -1.0):
+      if hr and t[s0 + h0] - t[s0 + hr[-1][1]] < 0.15:
+        hr[-1] = (hr[-1][0], h1)
+      else:
+        hr.append((h0, h1))
+    if any(t[s0 + h1] - t[s0 + h0] >= 0.5 for h0, h1 in hr):
+      eps.append((s0, s1))
   acc["timing_lines"].append(f"  {short(R.name)}: 0x1DF@b{b} n={len(t)} 0x30C@b{bh} 0x39F@b{br} swaps={len(sw)} episodes={len(eps)}")
   hud_keys = [k for k in HUD if not k.endswith("#raw") and k not in ("COUNTER", "CHECKSUM")]
   for i0, i1 in eps:
-    j = i0
-    while j > 0 and cmd[j - 1] < -0.3 and t[i0] - t[j - 1] < 10:
-      j -= 1
-    ton = t[j]
+    ton = t[i0]
     peak = float(cmd[i0:i1 + 1].min())
     L0, L1 = lead_at(ton), lead_at(ton - 1.0)
     prev = sw[sw <= ton + 1e-6]
@@ -831,7 +839,7 @@ def timing_route(R, acc):
 
 def timing_print(acc):
   P("DBC used for 0x1DF/0x30C/0x39F: " + ("; ".join(sorted(acc["timing_dbc"])) or "none"))
-  P("episode = ACCEL_COMMAND < -1.0 for >=0.5 s; onset = first frame of the enclosing run < -0.3. lead swap = radarState"
+  P("episode = one run of ACCEL_COMMAND < -0.3 (dropouts <0.15 s merged) holding < -1.0 for >=0.5 s; onset = its first frame. lead swap = radarState"
     " dRel jump >4 m within 0.15 s or status change. dt_sw = onset - last swap; dt_vth = onset - start of vRel<-1 run.")
   for l in acc["timing_lines"]:
     P(l)

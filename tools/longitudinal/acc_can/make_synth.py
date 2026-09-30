@@ -112,7 +112,9 @@ def build(route, T, op_long, stall, with_lead_script, sparse=False):
         cmd = 0.0
         if 100.3 <= t < 100.6: cmd = -0.35 - (t - 100.3) / 0.3 * 0.85
         elif 100.6 <= t < 102.0: cmd = -2.0
-        elif 102.0 <= t < 102.5: cmd = -0.9
+        elif 102.0 <= t < 102.3: cmd = -0.9  # soft gap > 0.15 s, then a 2nd hard run in the SAME brake:
+        elif 102.3 <= t < 103.0: cmd = -1.4  # must stay one episode (regression: duplicate onset rows)
+        elif 103.0 <= t < 103.2: cmd = -0.5
         elif 199.67 <= t < 199.9: cmd = -0.4
         elif 199.9 <= t < 201.5: cmd = -1.6
         elif 250.0 <= t < 250.3: cmd = -1.5
