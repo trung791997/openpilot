@@ -1,0 +1,44 @@
+VERDICT (A, offline log only, 19 routes):
+- On confirmed-stopped rows with U11 railed low and dRel < 50 m, NC was valid on every row: 399/399 had NC != 0 (raw != 512), and 99.7% had NORMALIZED_CLOSING_SIGMA_RAW < 32.
+- There were no NC dropouts inside those railed stretches (28 stretches; median 8 sweeps, max 50). No hold is needed on this population.
+- The sample is small because "confirmed" requires a closing speed that matches vEgo inside the rail region; 299 alone has 191 of the 399 rows.
+- Widening to stop_ext / flag55 / confirmed gives 830 rows over 124 incarnations: NC != 0 on 99.5%, sigma < 32 on 97.5%. There are no closed dropouts; 2 dropouts were still open at the stretch end (1 and 3 sweeps).
+- For context, all railed rows with age > 2 s (movers included): 18,775 rows, NC != 0 on 99.1%. There are 10 closed dropouts: 1:3, 2:1, 4:1, 5:1, 7:1, 15:1, 18:1, 26:1 (sweeps). A 3-sweep hold bridges 40% and a 5-sweep hold 60%. The long ones (15-26 sweeps) are not bridgeable by a short hold.
+- The earlier G figure (NC = 0 on 13-39% of closing rows) comes from non-railed, lower-closing rows. NC reads 0 when closing is weak (one-sided inverse TTC), not when the U11 rail is hit.
+
+SIGMA / NC-VALID on stopped (confirmed) rows, U11 railed low (<= -13.4), dRel < 50 m, vEgo > 1. 19 routes. Offline log only.
+rows 399: NC_SIGMA_RAW < 32 0.997; NC != 0 (raw != 512) 1.000; both 0.997
+  d 0-20 m: rows 59 NC!=0 1.000 sigma<32 1.000
+  d 20-35 m: rows 129 NC!=0 1.000 sigma<32 1.000
+  d 35-50 m: rows 211 NC!=0 1.000 sigma<32 0.995
+per route (rows, NC!=0, sigma<32):
+  0000020c     4 1.000 0.750
+  00000232     2 1.000 1.000
+  00000236    16 1.000 1.000
+  00000245    16 1.000 1.000
+  00000258    25 1.000 1.000
+  0000025e    27 1.000 1.000
+  0000026b    21 1.000 1.000
+  00000271    17 1.000 1.000
+  00000277    19 1.000 1.000
+  0000028b    27 1.000 1.000
+  00000292    27 1.000 1.000
+  00000293     5 1.000 1.000
+  00000297     2 1.000 1.000
+  00000299   191 1.000 1.000
+railed stretches 28 (median 8 sweeps, max 50)
+NC dropout runs inside stretches (closed): 0; length sweeps: 
+  runs open at stretch end (censored): 0; lengths: 
+  hold 1 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+  hold 2 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+  hold 3 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+  hold 4 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+  hold 5 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+  hold 8 sweeps bridges nan of closed dropouts; rows still uncovered 0.000 of railed rows
+
+Wider populations (same railed/dRel<50/vEgo>1 cut):
+[stop_ext or flag55] rows 830 incarnations 124: NC!=0 0.995, sigma<32 0.975; stretches 137 median 3 sweeps
+   closed NC-dropout runs 0: ; open at stretch end 2: 1:1, 3:1
+[all railed, age>2 s] rows 18775 incarnations 1655: NC!=0 0.991, sigma<32 0.974; stretches 1684 median 10 sweeps
+   closed NC-dropout runs 10: 1:3, 2:1, 4:1, 5:1, 7:1, 15:1, 18:1, 26:1; open at stretch end 14: 1:1, 2:1, 3:2, 4:2, 5:3, 6:1, 7:1, 8:1, 12:1, 16:1
+   p50 4 p90 19 p99 25 max 26; hold 1/2/3/5 sweeps bridges 0.30/0.40/0.40/0.60

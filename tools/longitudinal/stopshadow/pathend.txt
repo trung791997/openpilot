@@ -1,0 +1,114 @@
+PATHEND. Offline log only, 19 routes; the logged radarState leadOne (on-device) is used, not a replay.
+
+VERDICT
+- The radard.py:1446 path-end NaN hides stopped tracks often, but almost always while leadOne already covers that object.
+- Rows: confirmed or flag55 stopped rows at vEgo > 3 total 12,362.
+  - 5,854 (47%) are beyond model position.x[-1].
+  - 2,619 of those are also within 1.85 m (half a lane) of the last path point.
+  - Only 268 sweeps (193 within 1.0 m) have leadOne as a different track or none. These form 38 episodes, 6 of them 1 s or longer.
+- None of the 38 shows a stopped car in our lane that no lead covered for 1 s or more at speed:
+  - Most are single-sweep to 0.4 s flickers at vEgo 3-7 m/s (stop-and-go approaches).
+  - Others are roadside or adjacent-lane returns: the final yRel is 3-12 m, or the flat extrapolation is far past the path end on a curve.
+  - Others are covered by a vision leadOne at the same range, or have a nearer radar lead in front.
+- The one open case is 284 tid 36, 600.87-602.48 s:
+  - 42 -> 37 m, vEgo 3.4 m/s, flag only (not confirmed).
+  - leadOne none, then vision 10 m off its range; model lead prob 0.48.
+  - It ended at y -0.85 m, 32 m, and never became leadOne. The ego was already stopping (min vEgo -0.1).
+- So the path-end hole is real, but in this corpus it does not hide an uncovered on-path stopped car at speed.
+  - Evidence is 19 routes. A curve at speed with the model not seeing the car (297 31:08 type) is the case this cannot rule out.
+
+METHOD
+- Stopped = D['conf'] | stop_row | the 0.5 s window / 0.5 s hold flag (flag55).
+- Path end = modelV2.position.x[-1] from the latest model step (pathend/pe_*.npz, extracted from rlogs).
+- Beyond = dRel > x[-1] and dRel > 1, as at radard.py:1446 (dRel against raw position.x, same as radard).
+- Lateral = |yRel + position.y[-1]| <= 1.85 m (flat extrapolation from the last path point).
+- Other lead = logged leadOne.radarTrackId != tid, or leadOne.status false. vEgo > 3.
+- Episodes split on gaps > 0.5 s or a new incarnation.
+- Columns:
+  - leadOne: none / V (vision-only) / R<tid>
+  - |L1d-d|: leadOne range minus track range (under 3 m = likely the same object under another ID or vision)
+  - vis: fraction of the episode with model lead prob > 0.5; m_x is the model lead x
+  - conf: confirmed stopped; flag: flag55
+- Fate (pathend/fate.py): whether the track later became leadOne, its last d/y, and the min vEgo over the next 15 s.
+
+route    tid   t0-t1 (s)          n   d m (start->end)  path_end m   |off| y_rel  leadOne   |L1d-d|  vis>0.5 m_x   vEgo conf flag
+0000020c   6   231.57-  231.63    2   32.9-> 32.6   27.0- 28.8  0.16 -0.22  V            0.6  1.00  33.0   6.7 0 1
+0000020c   6   233.31-  235.26   30   25.1-> 18.4   11.3- 20.6  0.17 -0.24  V            0.0  1.00  20.4   3.9 0 1
+0000020c  16  1089.45- 1092.19   42   33.9-> 19.2   13.9- 31.2  0.30 +0.30  V            0.1  1.00  24.2   6.6 0 1
+0000020c  16  1092.87- 1093.01    3   17.6-> 17.2   10.0- 10.7  0.23 +0.19  V            2.3  1.00  15.1   3.1 0 1
+00000236  59   411.50-  411.77    4  121.3->118.5  102.1-106.1  0.85 -2.81  none         nan  0.00   nan  15.8 1 0
+0000023e  37   106.81-  106.81    1   59.7-> 59.7   37.4- 37.4  0.16 +0.09  V           13.8  1.00  46.4   6.2 0 1
+0000023e  26   422.69-  422.75    2   21.7-> 21.4   18.1- 18.4  1.61 +5.88  R24          7.7  1.00  12.6   3.0 0 1
+0000023e  27  1383.64- 1383.98    6   34.8-> 32.6   28.0- 29.7  1.02 +0.95  R60          3.5  1.00  30.3   5.4 0 1
+00000245  37    49.49-   49.75    5   41.0-> 39.2   36.1- 38.2  1.01 -6.56  V            4.5  0.20  35.6   5.7 0 1
+00000258  17  1008.86- 1008.86    1   67.7-> 67.7   48.1- 48.1  1.05 -10.16  none         nan  0.00   nan   9.1 0 1
+00000258  26  2893.19- 2893.39    4   78.0-> 76.4   70.3- 75.9  0.93 -1.05  V           19.1  1.00  55.7  11.5 1 0
+00000263  26   376.32-  376.32    1   68.2-> 68.2   53.5- 53.5  1.27 -18.32  R25         30.8  0.00   nan  13.2 0 1
+0000026b  49  1716.83- 1717.99   17   49.0-> 45.1   11.1- 15.4  1.80 +1.66  R48         25.2  1.00  19.6   3.8 0 1
+0000026b  29  2652.27- 2652.27    1   33.8-> 33.8   18.9- 18.9  0.09 +0.28  none         nan  0.00   nan   3.5 0 1
+0000026b  34  2653.09- 2653.09    1   28.8-> 28.8   16.3- 16.3  1.21 -0.86  none         nan  0.00   nan   3.0 0 1
+00000271  51  1929.91- 1930.32    7   71.5-> 67.1   45.6- 53.9  0.19 +0.20  V           15.3  1.00  49.3  12.2 0 1
+00000271  49  1931.13- 1931.54    5   59.4-> 54.9   33.1- 36.7  1.83 +1.33  R51/none     0.4  0.00   nan  10.5 1 1
+00000271  51  1931.47- 1932.08    8   56.1-> 50.0   27.9- 33.2  1.09 -2.05  none         nan  0.00   nan   9.7 1 1
+00000271  49  1932.34- 1935.16   31   47.8-> 28.6    8.8- 26.0  0.99 +2.50  none/V/R51   1.8  0.00   nan   6.7 1 1
+00000271  12  1933.47- 1933.88    6   41.6-> 39.3   14.9- 17.4  1.03 +4.90  none/V/R51   1.2  0.00   nan   6.7 1 0
+00000271  51  1934.62- 1934.62    1   33.9-> 33.9   10.5- 10.5  0.00 +0.40  V            7.3  0.00   nan   5.0 0 1
+00000271  12  1934.83- 1935.36    3   34.2-> 31.0    7.0-  9.3  0.78 +6.30  R51          0.1  0.00   nan   4.7 1 1
+00000284  24   596.23-  596.36    3   63.6-> 62.4   39.5- 41.7  0.25 -1.67  none         nan  0.00   nan   5.4 0 1
+00000284  39   599.44-  599.72    5   30.8-> 29.4   28.3- 30.0  0.47 -5.89  none         nan  0.00   nan   4.2 0 1
+00000284  39   600.53-  600.53    1   26.1-> 26.1   25.7- 25.7  1.45 -3.39  none         nan  0.00   nan   3.9 0 1
+00000284  36   600.87-  602.48   25   42.4-> 37.0   19.7- 31.6  0.31 -0.08  none/V      10.3  0.48  26.3   3.4 0 1
+00000284  61  1534.16- 1534.16    1   16.1-> 16.1   10.7- 10.7  0.04 -0.15  R39          1.4  1.00  15.2   3.6 0 1
+0000028b  28    57.43-   57.69    3   36.0-> 34.8   24.8- 27.1  0.88 +9.52  none         nan  0.00   nan   3.3 0 1
+0000028b  28    58.58-   58.71    2   32.2-> 32.1   28.5- 30.1  1.17 +8.61  none         nan  0.00   nan   3.2 0 1
+0000028b   1   567.75-  567.89    3   53.7-> 52.8   41.5- 44.7  1.38 -12.14  none         nan  0.00   nan  10.7 0 1
+00000293   6  2157.11- 2157.11    1   48.3-> 48.3   43.7- 43.7  1.75 +2.34  V           36.5  1.00  11.8   3.1 0 1
+00000293   6  2159.32- 2161.12   27   38.3-> 29.2   17.8- 37.0  0.33 +1.63  R17/none/V   6.9  0.00   nan   5.0 0 1
+00000297  27   526.97-  526.97    1   49.6-> 49.6   46.5- 46.5  0.84 +6.06  V           17.2  1.00  32.4  12.5 0 1
+00000297  27   528.05-  528.05    1   40.1-> 40.1   38.6- 38.6  1.48 +4.42  R32          7.0  1.00  25.6   9.6 0 1
+00000298  39  1460.31- 1461.03    7   37.6-> 34.9   25.0- 30.7  1.00 -2.13  none/R36    11.6  0.00   nan   4.0 0 1
+00000298  31  1460.78- 1460.84    2   37.5-> 37.2   25.4- 26.9  0.38 -6.53  R36         13.1  0.00   nan   3.9 0 1
+00000299   1  3308.58- 3308.78    3   25.5-> 24.8   23.6- 25.2  1.21 -0.62  none         nan  0.00   nan   3.3 0 1
+00000299  46  3308.98- 3309.05    2   23.9-> 23.7   22.6- 23.3  0.85 +1.77  R1           0.4  0.00   nan   3.2 0 1
+
+FATE (later leadOne 1 = the same track was the logged leadOne later; last y far from 0 = passed beside)
+0000020c   6   231.57 dur 0.06 | track to   244.47 last d   9.5 y -0.12; later leadOne 0; min vEgo next 15 s  0.7
+0000020c   6   233.31 dur 1.95 | track to   244.47 last d   9.5 y -0.12; later leadOne 0; min vEgo next 15 s  0.7
+0000020c  16  1089.45 dur 2.74 | track to  1098.38 last d  14.4 y +0.44; later leadOne 0; min vEgo next 15 s  1.2
+0000020c  16  1092.87 dur 0.14 | track to  1098.38 last d  14.4 y +0.44; later leadOne 0; min vEgo next 15 s  1.2
+00000236  59   411.50 dur 0.27 | track to   426.75 last d   4.6 y -0.11; later leadOne 1; min vEgo next 15 s  0.8
+0000023e  37   106.81 dur 0.00 | track to   121.76 last d   5.1 y -0.07; later leadOne 1; min vEgo next 15 s  0.7
+0000023e  26   422.69 dur 0.06 | track to   425.17 last d  16.4 y +6.39; later leadOne 0; min vEgo next 15 s  0.8
+0000023e  27  1383.64 dur 0.34 | track to  1384.37 last d  30.4 y +0.89; later leadOne 0; min vEgo next 15 s -0.1
+00000245  37    49.49 dur 0.26 | track to    64.70 last d   4.9 y +0.00; later leadOne 1; min vEgo next 15 s -0.1
+00000258  17  1008.86 dur 0.00 | track to  1009.67 last d  60.3 y -11.66; later leadOne 0; min vEgo next 15 s  5.1
+00000258  26  2893.19 dur 0.20 | track to  2908.37 last d   9.0 y -0.09; later leadOne 1; min vEgo next 15 s  0.9
+00000263  26   376.32 dur 0.00 | track to   379.88 last d  30.0 y -6.55; later leadOne 0; min vEgo next 15 s -0.1
+0000026b  49  1716.83 dur 1.16 | track to  1722.35 last d  34.8 y +2.04; later leadOne 0; min vEgo next 15 s -0.1
+0000026b  29  2652.27 dur 0.00 | track to  2652.27 last d  33.8 y +0.28; later leadOne 0; min vEgo next 15 s  1.7
+0000026b  34  2653.09 dur 0.00 | track to  2653.22 last d  28.4 y -1.19; later leadOne 0; min vEgo next 15 s  1.7
+00000271  51  1929.91 dur 0.40 | track to  1939.04 last d  22.8 y +0.18; later leadOne 1; min vEgo next 15 s -0.1
+00000271  49  1931.13 dur 0.41 | track to  1938.90 last d  19.9 y +3.05; later leadOne 0; min vEgo next 15 s -0.1
+00000271  51  1931.47 dur 0.60 | track to  1939.04 last d  22.8 y +0.18; later leadOne 1; min vEgo next 15 s -0.1
+00000271  49  1932.34 dur 2.83 | track to  1938.90 last d  19.9 y +3.05; later leadOne 0; min vEgo next 15 s -0.1
+00000271  12  1933.47 dur 0.41 | track to  1938.71 last d  20.7 y +5.07; later leadOne 0; min vEgo next 15 s -0.1
+00000271  51  1934.62 dur 0.00 | track to  1939.04 last d  22.8 y +0.18; later leadOne 1; min vEgo next 15 s -0.1
+00000271  12  1934.83 dur 0.53 | track to  1938.71 last d  20.7 y +5.07; later leadOne 0; min vEgo next 15 s -0.1
+00000284  24   596.23 dur 0.13 | track to   598.78 last d  51.4 y -9.08; later leadOne 0; min vEgo next 15 s -0.1
+00000284  39   599.44 dur 0.28 | track to   607.70 last d  20.8 y -8.18; later leadOne 0; min vEgo next 15 s -0.1
+00000284  39   600.53 dur 0.00 | track to   607.70 last d  20.8 y -8.18; later leadOne 0; min vEgo next 15 s -0.1
+00000284  36   600.87 dur 1.61 | track to   617.45 last d  32.1 y -0.85; later leadOne 0; min vEgo next 15 s -0.1
+00000284  61  1534.16 dur 0.00 | track to  1549.12 last d   4.4 y +0.14; later leadOne 1; min vEgo next 15 s -0.1
+0000028b  28    57.43 dur 0.26 | track to    58.84 last d  32.1 y +7.74; later leadOne 0; min vEgo next 15 s  1.9
+0000028b  28    58.58 dur 0.13 | track to    58.84 last d  32.1 y +7.74; later leadOne 0; min vEgo next 15 s  1.6
+0000028b   1   567.75 dur 0.14 | track to   571.45 last d  27.7 y -3.85; later leadOne 0; min vEgo next 15 s -0.1
+00000293   6  2157.11 dur 0.00 | track to  2172.00 last d  46.6 y -2.53; later leadOne 1; min vEgo next 15 s  2.1
+00000293   6  2159.32 dur 1.80 | track to  2172.00 last d  46.6 y -2.53; later leadOne 1; min vEgo next 15 s  2.1
+00000297  27   526.97 dur 0.00 | track to   528.53 last d  37.1 y +3.36; later leadOne 0; min vEgo next 15 s -0.1
+00000297  27   528.05 dur 0.00 | track to   528.53 last d  37.1 y +3.36; later leadOne 0; min vEgo next 15 s -0.1
+00000298  39  1460.31 dur 0.73 | track to  1462.05 last d  29.6 y -11.86; later leadOne 0; min vEgo next 15 s -0.1
+00000298  31  1460.78 dur 0.06 | track to  1460.91 last d  37.0 y -6.57; later leadOne 0; min vEgo next 15 s -0.1
+00000299   1  3308.58 dur 0.20 | track to  3310.11 last d  19.2 y +0.07; later leadOne 1; min vEgo next 15 s -0.1
+00000299  46  3308.98 dur 0.07 | track to  3310.58 last d  18.4 y +3.26; later leadOne 0; min vEgo next 15 s -0.1
+
+Files: pathend/ext.py, pathend/pe_*.npz, pathend/ana.py, pathend/ana_out.txt, pathend/eps.npy, pathend/fate.py

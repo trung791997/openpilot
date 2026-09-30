@@ -1,0 +1,60 @@
+CLUTTER. ONPATH_RADAR_ADOPT: roadside false positive vs true adopt onsets. Offline replay (adopt/clut.py = rep_adopt.py plus modelV2 features per model step, onset to onset+2 s). Not road evidence.
+
+VERDICT
+- No camera cue separates the 297 roadside FP from all the true onsets with margin.
+- Outside the road edge: no. The FP sits INSIDE the model road edges.
+  - FP edge margin is +2.51 to +2.63 m.
+  - The lowest TP margin is 297 tid 6 at +2.70 m, which leaves a 0.2 m gap on one case. That is not a margin.
+- Outside the ego lane lines: no. The FP sits INSIDE the ego lane lines (margin +1.15 to +1.43 m).
+  - The true stopped car 297 tid 6 was OUTSIDE them at times (min -1.74 m).
+  - A lane-line gate would reject the TP and keep the FP.
+- Model lead prob: no.
+  - FP median 0.04, max 0.10.
+  - 297 tid 6 TP median 0.05, max 0.38. This is the case ONPATH_RADAR_ADOPT exists for: a far car on a curve the model barely sees.
+  - Any prob threshold that drops the FP also drops 297 tid 6.
+  - The other TPs (straight roads) have 0.59-1.00.
+- The only cue with any gap is roadEdgeStds on the object's side.
+  - FP left-edge std 2.47 against TP medians of 0.35-1.69.
+  - That is one FP, it is a road-level uncertainty (not about the target), and it is untested on negatives. It is not a gate.
+- laneChangeState was off and desire 0 in every case. Curvature: FP -0.015 (sharp curve) vs 297 tid 6 +0.006. The other TPs are straight.
+- So "nothing separates them" stands, consistent with the radard.py:366-370 comment and D-061.
+
+TIME BASE NOTE
+- The FP "30:18.1" in radard.py:368 is tid 42 at 1824.78 s in this replay's initData-based clock: 28.6 m, yRel +4.88, off -1.05, vEgo 9.2 m/s. It was published as leadOnpath (ontid 42).
+- The 297 tid 6 "31:08" matches our 1874.03 s.
+- So the radard comment's clock runs about 6-7 s behind the one used here. Nothing is adoptable on 297 in 1808-1824 s of our clock except this.
+
+CASES (onset = first model step with onpath_adoptable() true)
+297 42 FP roadside onset 1824.78 d 28.6 v 9.2 n 8 | edge_margin min/med +2.51/+2.63 | lane_margin min/med +1.15/+1.43 | llp1/2 med 0.12/0.03 res0/1 med 2.47/0.90 | lprob med/max 0.04/0.10 |lx-d| med 3.4 | |off| med 1.15 ym med -3.99 | curv med -0.0150 | pxend med 69 | lcs ['off'] desire [0]
+297 6 TP onset 1874.03 d 75.6 v 13.6 n 41 | edge_margin min/med +2.70/+5.50 | lane_margin min/med -1.74/+0.14 | llp1/2 med 0.58/0.10 res0/1 med 0.92/1.03 | lprob med/max 0.05/0.38 |lx-d| med 6.0 | |off| med 0.86 ym med +11.83 | curv med +0.0060 | pxend med 88 | lcs ['off'] desire [0]
+25e 59 TP (moving lead, flag neg-control) onset 725.61 d 60.1 v 21.4 n 41 | edge_margin min/med +3.45/+4.55 | lane_margin min/med +1.39/+1.55 | llp1/2 med 0.54/0.26 res0/1 med 0.49/0.35 | lprob med/max 0.92/0.97 |lx-d| med 2.6 | |off| med 1.50 ym med -0.34 | curv med +0.0000 | pxend med 86 | lcs ['off'] desire [0]
+245 28 TP onset 1047.24 d 53.1 v 12.1 n 40 | edge_margin min/med +5.39/+6.03 | lane_margin min/med +1.37/+1.67 | llp1/2 med 0.76/0.77 res0/1 med 1.30/1.02 | lprob med/max 0.91/0.98 |lx-d| med 3.1 | |off| med 0.09 ym med -0.45 | curv med -0.0010 | pxend med 46 | lcs ['off'] desire [0]
+271 52 TP onset 1105.17 d 98.3 v 16.7 n 41 | edge_margin min/med +5.37/+5.88 | lane_margin min/med +0.62/+1.76 | llp1/2 med 0.30/0.26 res0/1 med 1.01/0.59 | lprob med/max 0.81/0.92 |lx-d| med 6.4 | |off| med 0.10 ym med +0.04 | curv med +0.0000 | pxend med 96 | lcs ['off'] desire [0]
+277 6 TP onset 506.37 d 105.2 v 19.0 n 40 | edge_margin min/med +5.90/+7.26 | lane_margin min/med +1.09/+1.52 | llp1/2 med 0.83/0.36 res0/1 med 1.39/1.55 | lprob med/max 0.59/0.76 |lx-d| med 5.6 | |off| med 0.10 ym med -0.43 | curv med +0.0000 | pxend med 106 | lcs ['off'] desire [0]
+28b 14 TP onset 357.99 d 97.8 v 19.6 n 40 | edge_margin min/med +3.13/+4.55 | lane_margin min/med +1.23/+1.62 | llp1/2 med 0.31/0.93 res0/1 med 0.87/1.19 | lprob med/max 0.87/0.92 |lx-d| med 3.5 | |off| med 0.24 ym med +0.16 | curv med +0.0000 | pxend med 88 | lcs ['off'] desire [0]
+297 56 TP (leadOne already R56) onset 1078.79 d 13.1 v 2.8 n 40 | edge_margin min/med +4.60/+5.28 | lane_margin min/med +1.60/+1.74 | llp1/2 med 0.67/0.56 res0/1 med 1.69/0.86 | lprob med/max 1.00/1.00 |lx-d| med 0.5 | |off| med 0.18 ym med +0.24 | curv med +0.0010 | pxend med 48 | lcs ['off'] desire [0]
+
+Columns in clutter.csv (one row per model step, onset to +2 s):
+- d, y (radar yRel, + left), off (radard path offset), ym = -yRel (model frame, + right)
+- re0/re1: roadEdges[0/1] y at x = dRel; res0/res1: roadEdgeStds
+- edge_margin = min(ym - re0, re1 - ym), where + means inside the road
+- ll1/ll2: laneLines[1/2] y at x; llp1/llp2: laneLineProbs; lane_margin, the same form
+- lprob/lx/ly: leadsV3[0]; desire (argmax desireState), lcs/lcd (laneChange state and direction)
+- curv: action.desiredCurvature; pxend: position.x[-1]; vego; ontid (published leadOnpath); lead1 (replay leadOne source)
+- x is dRel against raw model x, as radard does. |lx-d| in the summary subtracts 1.52 m (RADAR_TO_CAMERA).
+Caveats:
+- One FP only. 25e tid 59 is a moving lead (the flag's negative control), a real car.
+- 297 tid 56 is a real car, but its leadOne was already R56, so it was never published.
+- The FP track lasted only 8 model steps after onset.
+
+FP per step (297 tid 42):
+1824.781,0.0,9.23,42,none,28.625,4.883,-1.053,-4.883,-11.331,-2.273,2.854,0.829,2.61,-6.029,-2.297,0.119,0.026,1.147,0.065,33.69,-8.941,0,off,none,-0.016,53.725,True
+1824.83,0.049,9.25,42,none,28.188,4.483,-1.209,-4.483,-10.755,-1.977,2.613,0.907,2.506,-5.829,-2.322,0.112,0.017,1.347,0.032,32.526,-9.371,0,off,none,-0.016,67.023,True
+1824.88,0.1,9.27,42,none,28.188,4.483,-0.863,-4.483,-10.932,-1.743,2.545,0.886,2.74,-5.847,-2.296,0.125,0.027,1.364,0.103,32.781,-8.422,0,off,none,-0.016,54.894,True
+1824.93,0.149,9.26,42,none,27.875,4.127,-0.997,-4.127,-10.318,-1.569,2.071,0.819,2.558,-5.739,-2.199,0.102,0.016,1.613,0.044,33.268,-8.981,0,off,none,-0.015,70.181,True
+1824.981,0.201,9.25,42,none,27.938,3.857,-1.086,-3.857,-10.24,-1.217,2.508,0.854,2.641,-5.784,-2.144,0.124,0.027,1.714,0.062,32.742,-8.464,0,off,none,-0.015,75.53,True
+1825.03,0.25,9.25,42,none,28.312,3.628,-1.245,-3.628,-10.195,-1.001,2.423,1.072,2.627,-5.811,-2.085,0.118,0.032,1.543,0.023,33.178,-8.879,0,off,none,-0.015,72.039,True
+1825.08,0.3,9.27,42,none,28.312,3.628,-1.348,-3.628,-10.251,-0.876,2.124,1.089,2.752,-5.804,-2.133,0.139,0.025,1.495,0.024,34.361,-8.548,0,off,none,-0.015,59.524,True
+1825.131,0.35,9.27,42,none,28.625,3.398,-1.324,-3.398,-10.115,-0.712,2.205,1.088,2.686,-5.743,-2.043,0.137,0.027,1.356,0.013,35.173,-8.961,0,off,none,-0.015,81.809,True
+
+Files: adopt/clut.py, adopt/clut_run.sh, adopt/clut_*.pkl, adopt/clut_ana.py, clutter.csv
