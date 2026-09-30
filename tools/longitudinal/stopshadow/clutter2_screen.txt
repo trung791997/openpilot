@@ -1,0 +1,75 @@
+[spec] SB n=23 vs PASSED n=24; features tested 496
+   m_f2_lid_b63w9                                AUC 0.147 (sep 0.853) nSB 23 nP 24  best: <= 486.2 SB-side 0.83 P-side 0.17
+   m_raw_f2_B6_b2                                AUC 0.148 (sep 0.852) nSB 23 nP 24  best: <= 0.9375 SB-side 0.83 P-side 0.12
+   m_raw_f2_B6_b0                                AUC 0.155 (sep 0.845) nSB 23 nP 24  best: <= 0.9375 SB-side 0.83 P-side 0.17
+   m_raw_f2_B7_b7                                AUC 0.844 (sep 0.844) nSB 23 nP 24  best: >= 0.0625 SB-side 0.83 P-side 0.17
+   path_end                                      AUC 0.172 (sep 0.828) nSB 23 nP 24  best: <= 34.26 SB-side 0.65 P-side 0.08
+   s_f2_lid_b63w9                                AUC 0.178 (sep 0.822) nSB 23 nP 24  best: <= 266 SB-side 0.74 P-side 0.12
+   m_raw_f2_B6_b1                                AUC 0.178 (sep 0.822) nSB 23 nP 24  best: <= 0.9375 SB-side 0.83 P-side 0.17
+   m_raw_f1_B5_b0                                AUC 0.180 (sep 0.820) nSB 23 nP 24  best: <= 0.2667 SB-side 1.00 P-side 0.38
+   m_raw_f2_B6_b7                                AUC 0.185 (sep 0.815) nSB 23 nP 24  best: <= 0.9375 SB-side 0.78 P-side 0.17
+   m_az_extent                                   AUC 0.813 (sep 0.813) nSB 23 nP 24  best: >= 0.04229 SB-side 0.78 P-side 0.25
+   m_f1_ANGULAR_WIDTH_DEG                        AUC 0.812 (sep 0.812) nSB 23 nP 24  best: >= 2.76 SB-side 0.74 P-side 0.21
+   m_raw_f2_B6_b3                                AUC 0.194 (sep 0.806) nSB 23 nP 24  best: <= 0.9375 SB-side 0.74 P-side 0.08
+   s_f1_ANGULAR_WIDTH_DEG                        AUC 0.797 (sep 0.797) nSB 23 nP 24  best: >= 2.406 SB-side 0.78 P-side 0.25
+   s_az_extent                                   AUC 0.793 (sep 0.793) nSB 23 nP 24  best: >= 0.0376 SB-side 0.78 P-side 0.25
+   s_raw_f2_B6_b7                                AUC 0.215 (sep 0.785) nSB 23 nP 24  best: <= 0 SB-side 0.70 P-side 0.12
+   m_raw_f2_B5_b7                                AUC 0.776 (sep 0.776) nSB 23 nP 24  best: >= 0.3333 SB-side 0.70 P-side 0.17
+   m_raw_f2_B4_b1                                AUC 0.226 (sep 0.774) nSB 23 nP 24  best: <= 0.8 SB-side 0.70 P-side 0.17
+   m_raw_f1_B5_b1                                AUC 0.771 (sep 0.771) nSB 23 nP 24  best: >= 0.6875 SB-side 0.87 P-side 0.29
+   d_elig                                        AUC 0.234 (sep 0.766) nSB 23 nP 24  best: <= 42.44 SB-side 0.78 P-side 0.29
+   m_f0_RANGE_SIGMA_RAW                          AUC 0.236 (sep 0.764) nSB 23 nP 24  best: <= 2.933 SB-side 0.70 P-side 0.21
+   m_raw_f2_B6_b5                                AUC 0.237 (sep 0.763) nSB 23 nP 24  best: <= 0.9375 SB-side 0.70 P-side 0.17
+   m_raw_f2_B6_b4                                AUC 0.237 (sep 0.763) nSB 23 nP 24  best: <= 0.9375 SB-side 0.61 P-side 0.08
+   m_raw_f2_B4_b2                                AUC 0.243 (sep 0.757) nSB 23 nP 24  best: <= 0.6667 SB-side 0.70 P-side 0.12
+   m_raw_f1_B1_b1                                AUC 0.747 (sep 0.747) nSB 23 nP 24  best: >= 0.8 SB-side 0.91 P-side 0.42
+   m_raw_f0_B6_b1                                AUC 0.747 (sep 0.747) nSB 23 nP 24  best: >= 0.8 SB-side 0.91 P-side 0.42
+   permutation null (200 label shuffles): max separation over all 496 features p50 0.735 p95 0.794
+   candidates AUC>=0.9 with >=20 PASSED: 0
+[strict] SB n=23 vs PASSED n=5; features tested 486
+   path_end                                      AUC 0.070 (sep 0.930) nSB 23 nP 5  best: <= 46.49 SB-side 0.78 P-side 0.00
+   m_raw_f1_B4_b2                                AUC 0.917 (sep 0.917) nSB 23 nP 5  best: >= 0.7333 SB-side 0.83 P-side 0.00
+   m_raw_f2_B6_b2                                AUC 0.087 (sep 0.913) nSB 23 nP 5  best: <= 0.9375 SB-side 0.83 P-side 0.00
+   m_raw_f2_B6_b1                                AUC 0.087 (sep 0.913) nSB 23 nP 5  best: <= 0.9375 SB-side 0.83 P-side 0.00
+   m_raw_f2_B6_b0                                AUC 0.087 (sep 0.913) nSB 23 nP 5  best: <= 0.9375 SB-side 0.83 P-side 0.00
+   m_f2_lid_b63w9                                AUC 0.087 (sep 0.913) nSB 23 nP 5  best: <= 486.2 SB-side 0.83 P-side 0.00
+   m_raw_f2_B7_b7                                AUC 0.913 (sep 0.913) nSB 23 nP 5  best: >= 0.0625 SB-side 0.83 P-side 0.00
+   m_prob                                        AUC 0.896 (sep 0.896) nSB 23 nP 5  best: >= 0.6334 SB-side 0.96 P-side 0.20
+   m_raw_f2_B6_b7                                AUC 0.109 (sep 0.891) nSB 23 nP 5  best: <= 0.9375 SB-side 0.78 P-side 0.00
+   m_raw_f1_B5_b1                                AUC 0.878 (sep 0.878) nSB 23 nP 5  best: >= 0.8 SB-side 0.74 P-side 0.00
+   s_f2_lid_b63w9                                AUC 0.130 (sep 0.870) nSB 23 nP 5  best: <= 266 SB-side 0.74 P-side 0.00
+   m_raw_f2_B6_b3                                AUC 0.130 (sep 0.870) nSB 23 nP 5  best: <= 0.9375 SB-side 0.74 P-side 0.00
+   m_raw_f1_B5_b0                                AUC 0.135 (sep 0.865) nSB 23 nP 5  best: <= 0.2 SB-side 0.91 P-side 0.20
+   m_f3_AZIMUTH_EDGE_A_RAD                       AUC 0.861 (sep 0.861) nSB 23 nP 5  best: >= 0.01673 SB-side 0.61 P-side 0.00
+   m_raw_f2_B5_b7                                AUC 0.848 (sep 0.848) nSB 23 nP 5  best: >= 0.3333 SB-side 0.70 P-side 0.00
+   s_raw_f2_B6_b7                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 0 SB-side 0.70 P-side 0.00
+   m_raw_f2_B6_b5                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 0.9375 SB-side 0.70 P-side 0.00
+   m_raw_f2_B4_b2                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 0.6667 SB-side 0.70 P-side 0.00
+   m_raw_f2_B4_b1                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 0.8 SB-side 0.70 P-side 0.00
+   m_raw_f2_B4_b0                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 0.8125 SB-side 0.70 P-side 0.00
+   m_f2_lid_b47w9                                AUC 0.152 (sep 0.848) nSB 23 nP 5  best: <= 437.8 SB-side 0.70 P-side 0.00
+   s_f3_AZIMUTH_EDGE_A_RAD                       AUC 0.826 (sep 0.826) nSB 23 nP 5  best: >= 0.01709 SB-side 0.57 P-side 0.00
+   m_raw_f2_B4_b6                                AUC 0.174 (sep 0.826) nSB 23 nP 5  best: <= 0.6875 SB-side 0.65 P-side 0.00
+   m_raw_f2_B4_b4                                AUC 0.174 (sep 0.826) nSB 23 nP 5  best: <= 0.9333 SB-side 0.65 P-side 0.00
+   m_raw_f2_B4_b3                                AUC 0.174 (sep 0.826) nSB 23 nP 5  best: <= 0.75 SB-side 0.65 P-side 0.00
+   permutation null (200 label shuffles): max separation over all 486 features p50 0.887 p95 0.948
+   candidates AUC>=0.9 with >=20 PASSED: 0
+
+[FP42 separation] features where 297 tid 42 lies beyond every STOPPED_BEHIND value, on the side of the PASSED median:
+   abs_kappa                                     FP42 0.01985  SB range [4.422e-05, 0.008299]  PASSED median 0.0007383  PASSED beyond SB range on that side: 0.08
+   flag55_frac1s                                 FP42 0  SB range [0.06667, 1]  PASSED median 0.4333  PASSED beyond SB range on that side: 0.00
+   kappa                                         FP42 0.01985  SB range [-0.005812, 0.008299]  PASSED median 0.000109  PASSED beyond SB range on that side: 0.04
+   m_f1_lid_b47w9                                FP42 220.5  SB range [244.9, 256.7]  PASSED median 248.9  PASSED beyond SB range on that side: 0.21
+   m_prob                                        FP42 0.06488  SB range [0.3835, 0.9979]  PASSED median 0.7142  PASSED beyond SB range on that side: 0.38
+   m_raw_f0_B2_b1                                FP42 0.7333  SB range [0.3333, 0.6667]  PASSED median 0.5333  PASSED beyond SB range on that side: 0.00
+   m_raw_f1_B5_b0                                FP42 0.6  SB range [0, 0.2667]  PASSED median 0.3333  PASSED beyond SB range on that side: 0.62
+   m_raw_f2_B7_b1                                FP42 1  SB range [0.1333, 0.9333]  PASSED median 0.5333  PASSED beyond SB range on that side: 0.12
+   m_raw_f3_B7_b0                                FP42 0.8  SB range [0.2667, 0.625]  PASSED median 0.5333  PASSED beyond SB range on that side: 0.12
+   m_raw_f3_B7_b3                                FP42 0.2667  SB range [0.3333, 0.7333]  PASSED median 0.4667  PASSED beyond SB range on that side: 0.04
+   m_width_m                                     FP42 1.314  SB range [1.478, 1.687]  PASSED median 1.554  PASSED beyond SB range on that side: 0.25
+   s_f1_lid_b47w9                                FP42 216  SB range [231, 262]  PASSED median 249  PASSED beyond SB range on that side: 0.04
+   s_f3_AZIMUTH_EDGE_B_RAD                       FP42 0.1357  SB range [-0.1714, 0.1074]  PASSED median -0.02222  PASSED beyond SB range on that side: 0.12
+   s_width_m                                     FP42 1.239  SB range [1.405, 1.712]  PASSED median 1.57  PASSED beyond SB range on that side: 0.04
+   vabs1_1s                                      FP42 5.122  SB range [-0.849, 2.133]  PASSED median 1.311  PASSED beyond SB range on that side: 0.21
+   vabs1_elig                                    FP42 4.816  SB range [-0.9209, 2.57]  PASSED median 1.124  PASSED beyond SB range on that side: 0.04
+   (16 of 709 features)
