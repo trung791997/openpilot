@@ -1,0 +1,75 @@
+ADOPTMISS: replay (radard via adopt/diag.py, a copy of rep_adopt.py that logs every update_onpath sweep). Offline log/replay only.
+
+VERDICT
+- No single ONPATH_RADAR_ADOPT sub-gate explains all three cases, so the item-2 relaxation replay was not run.
+- None of the three is a missed lead:
+  - 258 tid 26 and 297 tid 56: leadOne was already this same radar track (vision-matched) BEFORE the flag fired.
+    - 258: leadOne = R26 from 2893.42 s / 76.4 m. The flag fired at 2894.33 s / 66.9 m.
+    - 297: leadOne = R56 from 1069.74 s / 79.5 m. The flag fired at 1073.78 s / 43.2 m.
+    - get_onpath_lead returns None whenever leadOne is a radar lead (radard.py:1125). So leadOnpath could never publish, whatever the sub-gates said.
+    - The "adopt at 13 m" on 297 was onpath_adoptable() turning true at 1078.77 s. It was never published (leadOnpath stayed -1).
+  - 26b tid 16 was never within 2.0 m of the model path (offset +2.4 to +3.0 m, up to +14 m). The model lead prob was 0.00-0.12 for most of it. The track passed beside the car at y +2.2 m, 6.5 m range, with no braking needed (vEgo stayed at 10+ m/s). The hard width correctly rejected it. It is a flag false-positive candidate, not an adopt miss.
+- For 258 and 297 the blocking gate was the path-offset NaN, not a width, span, U11 or rms gate.
+  - The offset is only computed when 1.0 < dRel <= modelV2.position.x[-1] (radard.py:1446). Otherwise it is NaN, and update_onpath clears the history (radard.py:683-686).
+  - While the model plans a stop behind the car, the planned path ends short of the car, so the car is never on the path.
+    - 297: px_end 41 -> 12 m against d 47 -> 18 m.
+    - 258: px_end 62 -> ~0 m against d 67 -> 4 m.
+  - This is structural. Any stopped car that the model is already stopping for sits beyond the path end, until the path briefly overshoots it.
+  - It did not matter here because vision already had the car. It would matter only where the model plans a stop without having that car as leadOne. Not seen in these three.
+
+ITEM 1: sub-gate order (selfdrive/controls/radard.py at the current HEAD)
+  update_onpath, per fresh sweep (680-692):
+    - measured and offset finite and |off| <= 2.0 (HARD_WIDTH, line 381): append to the history. Otherwise: clear.
+    - Not measured for more than 0.15 s (MAX_COAST, 386): clear.
+  onpath_adoptable (694-717):
+    1. History empty, or dRel > 120 (MAX_D_REL, 390).
+    2. held -> True.
+    3. Fewer than 10 samples in the last 1.0 s, or the history spans less than 1.0 s (MIN_SAMPLES/MIN_SPAN, 379-380).
+    4. median |off| > 0.8, or the fraction with |off| <= 1.0 is below 0.7 (382-384).
+    5. U11 mean > -2.0 (MIN_CLOSING, 387).
+    6. range-LSQ rms > 1.0, or slope > vmean + 2.5 (388-389).
+    7. slope >= vmean - 2.5, or vmean <= -12.5 (RAIL, 390).
+  get_onpath_lead (1121-1137):
+    - None if vEgo < 4, or if leadOne is already radar (1125).
+    - Otherwise the nearest adoptable track, withdrawn unless it is 5 m nearer than a vision leadOne (1132).
+  Path offset = yRel + interp(dRel, position.x, position.y), and only when 1 < dRel <= px[-1] (1444-1447).
+
+Per-sweep tally, first failing check, from flag onset to adopt or track end (sweep-by-sweep table: adopt/diag_show.txt):
+  258 tid 26 (2894.33-2932.7 s):
+    - offset NaN (d > px_end): 337
+    - span/samples (history restarting after NaN gaps): 49
+    - U11 mean > -2: 164 (after ego stopped at 2912 s and the car pulled away)
+    - hard width: 22 (the car turning off at 2931.4 s)
+    - It was in the on-path history only for brief bursts: 2909.7-2910.1 s at 7 m, then from 2918.5 s at 4 m with the ego stopped.
+    - Path offset while in the history: -0.06 to -0.49 m.
+  26b tid 16 (2794.4-2800.7 s):
+    - hard width: 89
+    - span/samples: 5 (2797.25-2797.65 s at 43-38 m, off +1.70/+1.94, a single sample each before it cleared again)
+    - Offset otherwise +2.4 to +14.0 m. Never in the history for more than 2 samples.
+  297 tid 56 (1073.78-1078.77 s):
+    - offset NaN (d > px_end): 59 (d 43.8 -> 18.1 m against px_end 36.7 -> 11.7 m)
+    - span/samples: 15 (the history started 1077.77 s at 17.8 m, off -0.15 to -0.24 m)
+    - ADOPTABLE at 1078.77 s / 13.1 m (off -0.16) once 1.0 s and 10 samples had built.
+    - No sweep failed on median/core width, U11 closing, rms or the vision margin. Coast only for the 2 sweeps before the flag.
+  Vision-margin withdrawal (1132): never reached. Wherever tracks were adoptable, leadOne was already radar (1125).
+
+ITEM 2: not run. The three cases fail on three different things (NaN beyond the path end; hard width on an off-path object; a correct suppression because leadOne was radar).
+  - Relaxing the hard width enough to admit 26b tid 16 (about 3.0 m) would admit the adjacent-lane and roadside objects the width exists for. The object itself was one: vision prob about 0, and it passed at y +2.2 m.
+  - Allowing offsets beyond px[-1] (extrapolating the path end) would admit 258 and 297 earlier, but it changes nothing published, because leadOne was already radar.
+  - So there is no smallest relaxation that admits all three. The 297 30:18.1 roadside check and the 19-route scan of new adoptions were therefore not done.
+
+ITEM 3 (cheap, limited): U11 / true stopped rate (truth_x = -vEgo + yaw*y) against incarnation age, on born, confirmed-stopped incarnations, U11 unrailed, closing > 3 m/s. u11ramp.py -> u11ramp.txt.
+  Only 6 tracks qualify (most confirmed-stopped incarnations did not start at a real birth), so this is weak.
+  age 0-0.25 s: median 0.66 (p25 0.21)
+  0.25-0.5 s: 1.086
+  0.5-1 s: 1.09
+  1-2 s: 1.09 (p25 0.47-0.79: some tracks still ramping)
+  2-3 s: 1.092
+  3-10 s: 1.10-1.104
+  10-30 s: 1.056 (n 34, one track)
+  Per track: the 0.5 s trailing median first reaches 1.07 at age 0.20, 0.20, 0.40, 0.74, 3.90 (271 tid 29) and 4.96 s (25e tid 6).
+  - The ~1.10 scale is present from the first ~0.25 s of life on most tracks. There is no clear 1.0 -> 1.10 step late in the life that would fingerprint a separate radar "stationary" decision.
+  - The late steps on 271 tid 29 and 25e tid 6 are the exceptions worth a closer look.
+  - Not done: relative to flag onset.
+
+Files: adopt/diag.py, adopt/diag_run.sh, adopt/diag_{258_26,26b_16,297_56}.pkl, adopt/diag_show.py, adopt/diag_show.txt, u11ramp.py, u11ramp.txt

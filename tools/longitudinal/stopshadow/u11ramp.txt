@@ -1,0 +1,22 @@
+ratio U11/truth_x (stopped truth rate) on born, confirmed-stopped incarnations, U11 unrailed, closing>3 m/s
+age_s   n   p25   med   p75
+   0-0.25    23 0.212 0.655 1.086
+0.25-0.5     24 0.311 1.086 1.111
+ 0.5-0.75    24 0.318 1.096 1.107
+0.75-1.0     18 0.342 1.087 1.096
+ 1.0-1.5     48 0.474 1.089 1.101
+ 1.5-2       38 0.790 1.088 1.098
+   2-3       75 1.078 1.092 1.099
+   3-4       60 1.091 1.099 1.102
+   4-6      132 1.094 1.101 1.111
+   6-10     136 1.096 1.104 1.127
+  10-30      34 1.016 1.056 1.073
+tracks 6; with ratio<=1.03 at some point 4; reaching >=1.07 6
+low-then-high tracks 4: age of first >=1.07 median 2.32 s  p25 0.65 p75 4.17; age of first low median 0.20
+first-unrailed-sample age median 0.00; ratio after 3 s median 1.110
+  00000236 tid 14 life 5.5 firstok 0.00 low@nan high@0.20 late 1.110
+  00000236 tid 46 life 41.7 firstok 0.00 low@0.20 high@0.40 late 1.116
+  0000025e tid 6 life 65.5 firstok 0.00 low@0.20 high@4.96 late 1.113
+  00000271 tid 15 life 3.0 firstok 0.00 low@nan high@0.20 late nan
+  00000271 tid 29 life 6.0 firstok 0.00 low@0.20 high@3.90 late 1.091
+  00000271 tid 48 life 11.8 firstok 0.00 low@0.27 high@0.74 late 1.099
