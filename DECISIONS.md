@@ -1485,6 +1485,9 @@ sweep) at 1801.94, identical ON and OFF. NC engaged only for 4 sweeps at 42-39 m
 not D-068's softening, but the same mechanism: an NC step fed into the lead KF. D-069 stands.
 
 ## D-070 — PROPOSED (switch OFF): cap RAIL_FAST with NORMALIZED_CLOSING (`RANGE_VREL_RAIL_NC_CAP`)
+**Superseded by D-071 (2026-09-30): the cap code and `RANGE_VREL_RAIL_NC_CAP` are removed** (inert on all six
+episodes). RadarPoint ncVRel/ncValid now carry NC with no range or sigma limit, plus ncSigma; consumers apply their
+own limits. `tools/longitudinal/stopshadow/nccap_ab.py` is kept as the historical replay and no longer runs against HEAD.
 Recorded 2026-09-30 on `stopshadow-radar`. Plan: docs/PLAN_NC_CAP_RAIL_FAST.md (approved by Peter). Code f6cb7630e.
 Static unit tests + open-loop replay only; nothing driven. Enabling the switch is Peter's call.
 
@@ -1528,8 +1531,8 @@ Problem: D-070's cap is inert at 297 48:12 (00000297--f971b5896f, tid 4), where 
 at 61.8-64 m while the truth was about -8.5, because NC there is outside ncValid (> 50 m, sigma 20-42).
 
 Rule: on a railed lead with a RAIL_FAST correction, if the median of the track's last <= 5 NC vRels within 0.5 s (>= 3,
-each read with NEW parser limits `BOSCH_A_NC_VETO_MAX_D_REL_M` 80 m and `BOSCH_A_NC_VETO_MAX_SIGMA_RAW` 64, published as
-RadarPoint.ncVetoVRel/ncVetoValid) is >= rail + 3.5 m/s, the correction is zeroed and the rail itself is published. One-sided:
+each limited in radard by `RANGE_VREL_RAIL_NC_VETO_MAX_D_REL_M` 80 m and `RANGE_VREL_RAIL_NC_VETO_MAX_SIGMA_RAW` 64, read
+from RadarPoint.ncVRel/ncValid/ncSigma, which the parser publishes with no range or sigma limit) is >= rail + 3.5 m/s, the correction is zeroed and the rail itself is published. One-sided:
 it only ever removes a RAIL_FAST correction, never publishes less closing than the U11 rail (D-041), never drops or coasts a
 point (D-041/D-042). No existing constant or gate is changed (ncValid keeps 50 m / sigma 32). Off: byte-identical (static).
 

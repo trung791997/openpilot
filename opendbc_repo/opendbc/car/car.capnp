@@ -325,13 +325,12 @@ struct RadarData @0x888ad6581cf0aacb {
     # some radars flag measurements VS estimates
     measured @6 :Bool;
 
-    # Honda Bosch-A only: closing vRel implied by NORMALIZED_CLOSING, valid when ncValid (else ignore ncVRel)
+    # Honda Bosch-A only: closing vRel implied by NORMALIZED_CLOSING (-NC * dRel) on a measured sweep, with NO range or
+    # sigma limit applied; ncValid when NC has a closing reading (raw != 512), else ignore ncVRel. ncSigma is the raw NC
+    # sigma (7-bit, 127 when absent). Consumers apply their own limits (radard's RANGE_VREL_RAIL_NC_VETO, D-071).
     ncVRel @7 :Float32; # m/s
     ncValid @8 :Bool;
-    # Honda Bosch-A only: the same NC vRel under the wider RANGE_VREL_RAIL_NC_VETO limits (80 m, sigma < 64), valid when
-    # ncVetoValid (else ignore ncVetoVRel). Read only by radard's veto switch (D-071, off).
-    ncVetoVRel @9 :Float32; # m/s
-    ncVetoValid @10 :Bool;
+    ncSigma @9 :UInt8;
   }
 
   enum ErrorDEPRECATED {

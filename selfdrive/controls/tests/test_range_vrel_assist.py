@@ -1292,112 +1292,19 @@ class TestRailFastPath:
 
 
 
-def rail_series_nc(track, n, d_of, nc_vrel, nc_valid=True, v_ego=30.0):
-  """rail_series with the parser's NORMALIZED_CLOSING fields; returns (correction, published vRel) per sweep."""
-  out = []
-  for i in range(n):
-    t = i * DT
-    track.update(d_of(i, t), 0.0, RAIL, v_ego + RAIL, True, True, t_now=t, range_assist=True,
-                 nc_vrel=nc_vrel, nc_valid=nc_valid)
-    out.append((track.range_assist_correction, track.vRel - track.range_assist_correction))
-  return out
-
-
 def _closing(rate, d0=95.0):
   return lambda i, t: d0 + rate * t
 
 
-class TestRailFastNcCap:
-  """RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md, PROPOSED, default off). Static unit tests only;
-  the 297 48:12 geometry is a steady -16.2 m/s range against the -13.5 rail, which is what RAIL_FAST published
-  there for 0.25 s (STATUS 194). Nothing here is road evidence."""
-
-  def test_default_is_off(self):
-    assert radard.RANGE_VREL_RAIL_NC_CAP is False
-    assert radard.RANGE_VREL_RAIL_NC_CAP_MARGIN_MPS == 3.0
-
-  @pytest.mark.parametrize("nc_vrel,nc_valid", [(-10.0, True), (-20.0, True), (-10.0, False), (0.0, False)])
-  def test_flag_off_is_byte_identical(self, nc_vrel, nc_valid):
-    # Flag off: whatever the NC fields say, the correction trace equals a run that never passes them.
-    base = rail_series(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2))
-    with_nc = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), nc_vrel, nc_valid)
-    assert [c for _, _, c in base] == [c for c, _ in with_nc]
-    assert any(c > 0.0 for _, _, c in base), "RAIL_FAST must arm, or the comparison is empty"
-
-  def test_297_shape_nc_valid_caps_the_rail_fast_excursion(self, monkeypatch):
-    # RAIL_FAST alone publishes ~-16.2; NC says -10. The cap removes the whole correction: the published vRel
-    # returns to the native rail (-13.5), which D-041 keeps as a bound. It cannot reach NC - 3 = -13.0, because
-    # that would publish LESS closing than the rail; the cap only shrinks the correction (never below zero).
-    off = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), -10.0)
-    assert min(v for _, v in off) < -16.0, "the flag-off control must reproduce the -16.2 excursion"
-    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-    on = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), -10.0)
-    assert all(c == 0.0 for c, _ in on)
-    assert all(v == RAIL for _, v in on)
-    assert all(v >= min(RAIL, -10.0 - 3.0) for _, v in on)
-
-  def test_partial_cap_publishes_exactly_nc_minus_margin(self, monkeypatch):
-    # NC -12: RAIL_FAST's -16.2 is 4.2 past NC; the cap allows -15.0 (a 1.5 m/s correction).
-    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-    on = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), -12.0)
-    armed = [(c, v) for c, v in on if c > 0.0]
-    assert armed, "the cap must leave a positive correction here"
-    for c, v in armed:
-      assert v >= -15.0 - 1e-9
-      assert c <= 1.5 + 1e-9
-    assert min(v for _, v in on) == pytest.approx(-15.0)
-
-  def test_nc_invalid_is_unchanged(self, monkeypatch):
-    off = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), -10.0, nc_valid=False)
-    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-    on = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), -10.0, nc_valid=False)
-    assert on == off
-    assert any(c > 0.0 for c, _ in on)
-
-  def test_298_shape_nc_more_closing_than_rail_fast_is_unchanged(self, monkeypatch):
-    # 298 4:10 shape: NC -20, RAIL_FAST -18 (range -18). NC - 3 = -23 is beyond the RAIL_FAST output: no change.
-    off = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-18.0), -20.0)
-    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-    on = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-18.0), -20.0)
-    assert on == off
-    assert min(v for _, v in on) < -17.5, "RAIL_FAST must still publish its gain"
-
-  def test_off_the_rail_the_cap_changes_nothing(self, monkeypatch):
-    # U11 one quantum above the rail: not RAIL_FAST, so the NC cap must not touch the plain D-053 assist.
-    def run():
-      track = new_track(v_lead=30.0 + RAIL + Q)
-      res = []
-      for i in range(30):
-        t = i * DT
-        track.update(90.0 - 20.0 * t, 0.0, RAIL + Q, 30.0 + RAIL + Q, True, True, t_now=t, range_assist=True,
-                     nc_vrel=-5.0, nc_valid=True)
-        res.append(track.range_assist_correction)
-      return res
-    off = run()
-    monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-    assert run() == off
-    assert any(c > 0.0 for c in off)
-
-  def test_cap_never_publishes_more_closing_than_rail_fast_alone(self, monkeypatch):
-    # Sweep NC across the range: ON is never more closing than OFF and never less closing than the native rail.
-    for nc in (-5.0, -10.0, -12.0, -13.5, -15.0, -18.0, -25.0):
-      off = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), nc)
-      monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", True)
-      on = rail_series_nc(new_track(v_lead=30.0 + RAIL), 25, _closing(-16.2), nc)
-      monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_CAP", False)
-      for (c_off, v_off), (c_on, v_on) in zip(off, on, strict=True):
-        assert 0.0 <= c_on <= c_off
-        assert v_off <= v_on <= RAIL
-
-def rail_series_veto(track, n, d_of, nc_of, v_ego=30.0):
-  """Railed sweeps with the parser's wide-limit NC (ncVetoVRel/ncVetoValid); nc_of(i) -> (value, valid).
+def rail_series_veto(track, n, d_of, nc_of, v_ego=30.0, nc_sigma=30):
+  """Railed sweeps with the parser's unlimited NC (ncVRel/ncValid/ncSigma); nc_of(i) -> (value, valid).
   Returns (correction, published vRel) per sweep."""
   out = []
   for i in range(n):
     t = i * DT
     nc, ok = nc_of(i)
     track.update(d_of(i, t), 0.0, RAIL, v_ego + RAIL, True, True, t_now=t, range_assist=True,
-                 nc_veto_vrel=nc, nc_veto_valid=ok)
+                 nc_vrel=nc, nc_valid=ok, nc_sigma=nc_sigma)
     out.append((track.range_assist_correction, track.vRel - track.range_assist_correction))
   return out
 
@@ -1406,10 +1313,10 @@ def _const_nc(v, ok=True):
   return lambda i: (v, ok)
 
 
-def _veto_ab(monkeypatch, d_of, nc_of, n=25):
-  off = rail_series_veto(new_track(v_lead=30.0 + RAIL), n, d_of, nc_of)
+def _veto_ab(monkeypatch, d_of, nc_of, n=25, nc_sigma=30):
+  off = rail_series_veto(new_track(v_lead=30.0 + RAIL), n, d_of, nc_of, nc_sigma=nc_sigma)
   monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_VETO", True)
-  on = rail_series_veto(new_track(v_lead=30.0 + RAIL), n, d_of, nc_of)
+  on = rail_series_veto(new_track(v_lead=30.0 + RAIL), n, d_of, nc_of, nc_sigma=nc_sigma)
   monkeypatch.setattr(radard, "RANGE_VREL_RAIL_NC_VETO", False)
   return off, on
 
@@ -1428,6 +1335,21 @@ class TestRailFastNcVeto:
     assert radard.RANGE_VREL_RAIL_NC_VETO_ABOVE_RAIL_MPS == 3.5
     assert (radard.RANGE_VREL_RAIL_NC_VETO_SAMPLES, radard.RANGE_VREL_RAIL_NC_VETO_MIN_SAMPLES) == (5, 3)
     assert radard.RANGE_VREL_RAIL_NC_VETO_WINDOW_S == 0.5
+    assert (radard.RANGE_VREL_RAIL_NC_VETO_MAX_D_REL_M, radard.RANGE_VREL_RAIL_NC_VETO_MAX_SIGMA_RAW) == (80.0, 64)
+    assert not hasattr(radard, "RANGE_VREL_RAIL_NC_CAP"), "D-070's inert cap was removed (superseded by D-071)"
+
+  def test_297_shape_sigma_40_vetoes_but_sigma_64_does_not(self, monkeypatch):
+    # 297's NC sigma was 20-42: inside the veto's limit. At 64 (the unusable tail) the samples are ignored.
+    ncs = [-9.2, -8.0, -9.8, -8.7, -8.4, -9.5]
+    _, on = _veto_ab(monkeypatch, _closing(-16.2, d0=72.0), lambda i: (ncs[i % len(ncs)], True), nc_sigma=40)
+    assert all(c == 0.0 for c, _ in on)
+    off, on = _veto_ab(monkeypatch, _closing(-16.2, d0=72.0), lambda i: (ncs[i % len(ncs)], True), nc_sigma=64)
+    assert on == off and any(c > 0.0 for c, _ in on)
+
+  def test_nc_at_or_beyond_80_m_does_not_veto(self, monkeypatch):
+    # Same NC as 297 but the track sits past 80 m, where NC under-reads closing: the correction is kept.
+    off, on = _veto_ab(monkeypatch, _closing(-16.2, d0=110.0), _const_nc(-8.5))
+    assert on == off and any(c > 0.0 for c, _ in on)
 
   @pytest.mark.parametrize("nc,ok", [(-8.5, True), (-20.0, True), (-8.5, False), (0.0, False)])
   def test_flag_off_is_byte_identical(self, nc, ok):
@@ -1482,7 +1404,7 @@ class TestRailFastNcVeto:
       for i in range(30):
         t = i * DT
         track.update(90.0 - 20.0 * t, 0.0, RAIL + Q, 30.0 + RAIL + Q, True, True, t_now=t, range_assist=True,
-                     nc_veto_vrel=-5.0, nc_veto_valid=True)
+                     nc_vrel=-5.0, nc_valid=True, nc_sigma=30)
         res.append(track.range_assist_correction)
       return res
     off = run()

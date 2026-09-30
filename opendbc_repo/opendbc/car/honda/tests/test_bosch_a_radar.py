@@ -2081,9 +2081,9 @@ def test_degraded_rail_corroboration_fits_the_tail_of_the_run_not_the_finished_w
 # --- NC-at-rail (stopshadow-radar, replay only) ----------------------------------------------------------
 
 class TestNcFields:
-  """RadarPoint.ncVRel / ncValid for radard's RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md). Filled on every
-  measured Bosch-A point from _bosch_a_nc_vrel, independent of BOSCH_A_NC_RAIL_VREL (D-069, left off here), and never
-  changing vRel. Coasts carry ncValid False. Static unit tests only."""
+  """RadarPoint.ncVRel / ncValid / ncSigma for radard's RANGE_VREL_RAIL_NC_VETO (D-071, off). Filled on every measured
+  Bosch-A point with NO range or sigma limit (radard applies its own), independent of BOSCH_A_NC_RAIL_VREL (D-069, left
+  off here), and never changing vRel. Coasts carry ncValid False. Static unit tests only."""
   DT_NS = 70_000_000
 
   @staticmethod
@@ -2111,22 +2111,33 @@ class TestNcFields:
     assert pt.measured
     assert pt.ncValid
     assert pt.ncVRel == pytest.approx(-10.0, abs=0.3)
+    assert pt.ncSigma == 0
     assert pt.vRel == pytest.approx(-13.5), "with BOSCH_A_NC_RAIL_VREL off, vRel stays the U11 rail"
 
-  def test_sigma_at_the_gate_is_invalid(self):
-    pt = self._drive(nc_sigma_raw=32)
-    assert pt.measured and not pt.ncValid
-
-  def test_sigma_just_under_the_gate_is_valid(self):
-    assert self._drive(nc_sigma_raw=31).ncValid
+  def test_sigma_is_published_not_gated(self):
+    # D-069's value limit (sigma < 32) is not applied to the published field; radard's consumer applies its own.
+    pt = self._drive(nc_sigma_raw=40)
+    assert pt.measured and pt.ncValid and pt.ncSigma == 40
 
   def test_no_reading_raw_512_is_invalid(self):
     pt = self._drive(nc_raw=512)
     assert pt.measured and not pt.ncValid
 
-  def test_beyond_50_m_is_invalid(self):
-    pt = self._drive(start_raw=1100)
-    assert pt.dRel > 50.0 and pt.measured and not pt.ncValid
+  def test_297_shape_60_m_sigma_40_is_published(self):
+    # 297 48:12 tid 4: 61.8-64.0 m, sigma 24-42, NC about -8.5. Outside D-069's 50 m / 32; published for the veto.
+    pt = self._drive(start_raw=1100, nc_vrel=-8.5, nc_sigma_raw=40)
+    assert 50.0 < pt.dRel < 80.0 and pt.measured
+    assert pt.ncValid and pt.ncSigma == 40
+    assert pt.ncVRel == pytest.approx(-8.5, abs=0.3)
+    assert pt.vRel == pytest.approx(-13.5), "the NC fields never change vRel"
+
+  def test_opening_nc_is_invalid(self):
+    pt = self._drive(nc_vrel=+2.0)
+    assert pt.measured and not pt.ncValid
+
+  def test_d069_limits_are_unchanged(self):
+    from opendbc.car.honda import radar_interface as HRI
+    assert HRI.BOSCH_A_NC_RAIL_MAX_D_REL_M == 50.0 and HRI.BOSCH_A_NC_MAX_SIGMA_RAW == 32
 
   def test_gross_disagreement_coast_is_invalid(self):
     # test_gross_velocity_range_disagreement_coasts' shape, with a valid NC on every sweep.
@@ -2158,57 +2169,6 @@ class TestNcFields:
     assert len(rr.points) == 1
     assert rr.points[0].measured is False
     assert rr.points[0].ncValid is False
-
-
-class TestNcVetoFields(TestNcFields):
-  """RadarPoint.ncVetoVRel / ncVetoValid for radard's RANGE_VREL_RAIL_NC_VETO (D-071 PROPOSED, radard switch off): the same
-  NC reading under the wider BOSCH_A_NC_VETO_* limits (80 m, sigma < 64). ncValid's limits (50 m, sigma < 32) are unchanged.
-  Coasts carry ncVetoValid False. Static unit tests only."""
-
-  def test_limits_are_new_constants_and_the_old_ones_are_unchanged(self):
-    from opendbc.car.honda import radar_interface as HRI
-    assert HRI.BOSCH_A_NC_VETO_MAX_D_REL_M == 80.0 and HRI.BOSCH_A_NC_VETO_MAX_SIGMA_RAW == 64
-    assert HRI.BOSCH_A_NC_RAIL_MAX_D_REL_M == 50.0 and HRI.BOSCH_A_NC_MAX_SIGMA_RAW == 32
-
-  def test_297_shape_60_m_sigma_40_is_veto_valid_but_not_nc_valid(self):
-    # 297 48:12 tid 4: 61.8-64.0 m, sigma 24-42, NC about -8.5. ncValid (50 m, 32) rejects it; the veto limits keep it.
-    pt = self._drive(start_raw=1100, nc_vrel=-8.5, nc_sigma_raw=40)
-    assert 50.0 < pt.dRel < 80.0 and pt.measured
-    assert not pt.ncValid
-    assert pt.ncVetoValid
-    assert pt.ncVetoVRel == pytest.approx(-8.5, abs=0.3)
-    assert pt.vRel == pytest.approx(-13.5), "the veto fields never change vRel"
-
-  def test_under_50_m_both_fields_agree(self):
-    pt = self._drive()
-    assert pt.ncValid and pt.ncVetoValid
-    assert pt.ncVetoVRel == pt.ncVRel
-
-  def test_sigma_at_the_veto_gate_is_invalid(self):
-    assert self._drive(nc_sigma_raw=63).ncVetoValid
-    pt = self._drive(nc_sigma_raw=64)
-    assert pt.measured and not pt.ncVetoValid
-
-  def test_no_reading_raw_512_is_veto_invalid(self):
-    pt = self._drive(nc_raw=512)
-    assert pt.measured and not pt.ncVetoValid
-
-  def test_beyond_80_m_is_veto_invalid(self):
-    pt = self._drive(start_raw=1500)
-    assert pt.dRel > 80.0 and pt.measured and not pt.ncVetoValid
-
-  def test_gross_disagreement_coast_is_veto_invalid(self):
-    ri = make_radar_interface()
-    for i, raw in enumerate((500, 510, 520, 530)):
-      rr = ri.update(sweep(0, i, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
-                           direct_vrel_raw=864 + 40, direct_vrel_uncertainty_raw=0,
-                           nc_raw=self._nc_raw(raw / 16.0 - 3.0, -2.0)))
-    assert rr.points[0].measured and rr.points[0].ncVetoValid, "the control sweep must carry a valid NC"
-    rr = ri.update(sweep(0, 4, 0x7, 540, 1024, 9, 4 * self.DT_NS, with_aux=True,
-                         direct_vrel_raw=864 - 11 * 64, direct_vrel_uncertainty_raw=0,
-                         nc_raw=self._nc_raw(540 / 16.0 - 3.0, -2.0)))
-    assert not rr.points[0].measured
-    assert not rr.points[0].ncVetoValid
 
 
 class TestNcAtRail:
