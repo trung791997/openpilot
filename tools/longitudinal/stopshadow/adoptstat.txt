@@ -1,0 +1,578 @@
+ADOPTSTAT: ground-speed adopt gate, V = 1.5 / 2.5 / 3.5 m/s (replay only, current radard, 52 routes = 19 stopshadow + 50-route fixB set, union)
+=====================================================================================================================
+
+VERDICT (replay, n = 1 known FP; this is not a separation result)
+- Only the max-over-0.5 s-subwindow form (gmax) removes the one known FP, 297 tid 42 at 1824.78 s. It does so at every V, at a measured cost of
+  111 / 115 / 124 adoptions (V 3.5 / 2.5 / 1.5) out of 130 baseline adoptions. 88-99 of the removed were confirmed, and 27-31 were NOT covered by leadOne.
+- The plain 1 s window gate (g: mean v + LSQ range slope - mean yaw*y) does NOT remove tid 42. It keeps it with a delay of 0.00 / 0.05 / 0.15 s, because the
+  1 s mean g0 is -2.66 m/s. It still removes 105-112 adoptions.
+- Any ground-speed gate turns adopt into "stationary/near-stationary only". 107 of the 130 baseline adoptions have |g0| >= 3.5 m/s at onset. Nearly all of those are
+  a lead leaving the lane or cutting (97) or slow/moving cars (18). Most are covered by a vision leadOne, but 25-31 are not.
+- Within the 23 near-stationary adoptions (|g0| < 3.5), gmax 3.5 removes 5 (tid 42 plus 298 tid 20, 260 tid 47 and 26b tid 47, all confirmed, and 25f tid 43, unconfirmed).
+  It also delays 3: 263 tid 46 +0.70 s, 292 tid 6 +0.45 s, and 297 tid 45 +0.50 s.
+- Existence floor (min or median of existence/127 over the window, 0.2 or 0.3): does NOT remove tid 42, whose window min is 0.84 and radar existence mostly 120-126/127.
+  Cost: emin 0.2 removes 4 adoptions (2 confirmed), and emin 0.3 removes 6 (3 confirmed). emed removes 1 (unconfirmed) at either floor. So it is cheap but useless for this FP.
+- World-frame coherence: not clean.
+  - tid 42 |v_world| at onset is 3.05 m/s (0.33 x vEgo).
+  - The other 22 near-stationary adoptions span 0.2-3.3 m/s, with ratios to vEgo of 0.01-0.50.
+  - The true stopped car 297 tid 6 shows world vlon -4 to -5.5 m/s at 50-75 m on the same curve (1875-1876 s), from azimuth/pose error, and gmax up to 3.77.
+  - No threshold separates tid 42 from the true adopts.
+- 297 tid 6 (1874.0 s, d 75.6, y -13.9, g0 1.0, gmax 1.4) is kept by EVERY variant with 0 delay.
+- 271 / 277 / 28b case-list stopped cars (271 tid 52 ~1104-1130 s, 277 tid 6 ~503-577 s, 28b tid 14 ~356-400 s) are never adopted by the current radard, so there is nothing to lose.
+  The adoptions that do exist on those routes are moving cars. Ground-speed gates remove them, but vision leadOne covers each one:
+  - 271 24:31.6 tid 21 (g0 19.7)
+  - 277 4:09.1 tid 7 (19.3)
+  - 28b 6:37.4 tid 8 (13.2)
+- 297 tid 45, 46:56.7 (the "car at ~6 m/s" in the radard comment): g0 -0.6 and gmax 5.5.
+  - g keeps it with 0 delay.
+  - gmax delays it 0.50-0.55 s.
+  - gu (per-sweep U11 vRel) removes it at every V.
+- Framing: "gmax (any V) removes the one known FP at a measured cost of 111-124 of 130 replay adoptions (27-31 not covered by leadOne). Of the
+  near-stationary subset, it loses 4 real ones and delays 3 by up to 0.7 s at V 3.5." There is no evidence that it separates FPs in general.
+
+tid 42 KINEMATICS (00000297 route, npz bat_297, times in s)
+- Lifetime 1823.26-1828.76 s (5.5 s, 83 sweeps). Born at d 42.7, azimuth +19.5 deg, y +15, and died at d 15.5, y -6.
+- For 1823.26-1824.66 its world position is fixed within ~3 m, with world speed of about 0.6-3.7 m/s from pose noise. That looks like a stationary point.
+- Then its world longitudinal speed jumps +2.8 -> +5.6 -> +6.6 m/s within ~0.4 s (> 10 m/s^2, implausible for a car or cyclist starting from rest).
+  It slides ~20 m in world over 4 s while ego drives 47 m at 9.2 m/s, as ego yaw falls 0.197 -> 0 rad/s at the curve exit.
+  The point stays roughly fixed in the ego frame while its bearing swings, which is consistent with a reflection sliding along a curved edge/guardrail.
+- The camera never had it:
+  - model lead prob <= 0.12 throughout, and the model lead sat at ~x 30, y +9.6 (radar sign), not on it.
+  - leadOne was none.
+  - Only one other track (tid 26 at 64 m) was present at 1824.8.
+- Radar existence was 44-126 raw, mostly 120-126 (122 at the first sweep, 1 s mean 115.4). CORRECTION to the clutter2 report: "existence 0.065" there was
+  the MODEL lead prob, not radar existence.
+- Read: a guardrail/edge reflection sliding with us, not a real mover (log/replay reading, n = 1).
+
+GATE DEFINITIONS (replica of get_onpath_lead per variant, in the /tmp replay only; radard.py unmodified)
+- g    : 1 s window, |mean vEgo + LSQ range slope - mean(yaw*y)| < V
+- gmax : max over the window of |ground speed| from trailing 0.5 s LSQ sub-windows (>= 6 sweeps) < V
+- gu   : max per-sweep |vEgo + U11 vRel - yaw*y| < V
+- emin/emed : min / median existence_raw/127 over the window >= floor
+- conf = a HEAD leadOne radar with the same tid within the event + 15 s, or a model-lead match. "covered" = visionLeadOne present at onset, or radar leadOne with lag <= 0.5 s.
+
+Near-stationary subset (|g0| < 3.5, 23 events): removed / delayed > 0.2 s per variant
+  g 1.5 removed: 25f tid43 57.0 u, 260 tid47 440.1 C, 26b tid47 1552.0 C, 26c tid55 208.8 C, 284 tid54 568.4 u | delayed: 239 tid11 +0.30, 263 tid46 +0.50, 283 tid8 +0.95
+  g 2.5 removed: 25f tid43 57.0 u, 26b tid47 1552.0 C | delayed: 263 tid46 +0.35
+  g 3.5 removed: - | delayed: -
+  gmax 1.5 removed: 232 tid35 279.9 C, 232 tid29 1147.0 C, 23a tid15 956.1 C, 25f tid43 57.0 u, 25f tid35 1074.5 u, 260 tid47 440.1 C, 261 tid7 411.7 C, 263 tid46 480.2 C, 26b tid47 1552.0 C, 26c tid55 208.8 C, 27e tid21 274.9 C, 283 tid8 34.6 C, 283 tid61 1909.7 C, 284 tid54 568.4 u, 28a tid49 1697.7 C, 292 tid6 46.2 C, 297 tid42 1824.8 u, 298 tid20 1400.0 C | delayed: 239 tid11 +1.75, 297 tid45 +0.55
+  gmax 2.5 removed: 23a tid15 956.1 C, 25f tid43 57.0 u, 260 tid47 440.1 C, 263 tid46 480.2 C, 26b tid47 1552.0 C, 27e tid21 274.9 C, 284 tid54 568.4 u, 297 tid42 1824.8 u, 298 tid20 1400.0 C | delayed: 292 tid6 +0.45, 297 tid45 +0.50
+  gmax 3.5 removed: 25f tid43 57.0 u, 260 tid47 440.1 C, 26b tid47 1552.0 C, 297 tid42 1824.8 u, 298 tid20 1400.0 C | delayed: 263 tid46 +0.70, 292 tid6 +0.45, 297 tid45 +0.50
+  gu 1.5 removed: 232 tid35 279.9 C, 25f tid43 57.0 u, 260 tid47 440.1 C, 263 tid46 480.2 C, 26b tid47 1552.0 C, 26c tid55 208.8 C, 283 tid61 1909.7 C, 284 tid54 568.4 u, 297 tid45 2816.7 C | delayed: -
+  gu 2.5 removed: 232 tid35 279.9 C, 25f tid43 57.0 u, 260 tid47 440.1 C, 263 tid46 480.2 C, 26b tid47 1552.0 C, 26c tid55 208.8 C, 283 tid61 1909.7 C, 284 tid54 568.4 u, 297 tid45 2816.7 C | delayed: -
+  gu 3.5 removed: 232 tid35 279.9 C, 25f tid43 57.0 u, 260 tid47 440.1 C, 26b tid47 1552.0 C, 26c tid55 208.8 C, 283 tid61 1909.7 C, 284 tid54 568.4 u, 297 tid45 2816.7 C | delayed: 263 tid46 +0.70
+  emin 0.2 removed: 28a tid49 1697.7 C | delayed: -
+  emin 0.3 removed: 28a tid49 1697.7 C | delayed: -
+  emed 0.2 removed: - | delayed: -
+  emed 0.3 removed: - | delayed: -
+
+=== summ.txt (variant table, removed/delayed lists with category and leadOne coverage) ===
+baseline (current radard, replay): 130 leadOnpath adoption events on 52 routes, 104 confirmed (HEAD leadOne same tid within 30 s or model lead on it), 101 engaged
+ground speed |g0| at onset (1 s window LSQ): <1.5 13, 1.5-3.5 10, >=3.5 107
+categories: {'lead leaving lane/cut': 97, 'slow/moving car': 18, 'stopped/near-stationary': 9, 'far car on curve': 5}
+
+gate                removed(conf/unconf)  of which not covered by leadOne   delayed>0.2s   tid42
+    g 1.5   112 (88/24)           26                      3            kept, +0.15 s
+    g 2.5   109 (86/23)           26                      1            kept, +0.05 s
+    g 3.5   105 (85/20)           25                      2            kept, +0.00 s
+ gmax 1.5   124 (99/25)           31                      2            REMOVED
+ gmax 2.5   115 (91/24)           27                      2            REMOVED
+ gmax 3.5   111 (88/23)           27                      3            REMOVED
+   gu 1.5   116 (92/24)           26                      0            kept, +0.00 s
+   gu 2.5   116 (92/24)           26                      0            kept, +0.00 s
+   gu 3.5   115 (91/24)           26                      1            kept, +0.00 s
+ emin 0.2     4 (2/2)            2                      0            kept, +0.00 s
+ emin 0.3     6 (3/3)            3                      0            kept, +0.00 s
+ emed 0.2     1 (0/1)            1                      0            kept, +0.00 s
+ emed 0.3     1 (0/1)            1                      0            kept, +0.00 s
+
+== gmax 3.5: removed or delayed real-car adoptions (route time tid en v d y g0 gmax0 | conf | category | leadOne coverage | delay)
+  20c  5:05.4 (305.4 s) tid  63 en0 v 14.6 d  11.8 y  -1.0 vAbs  11.5 gmax  11.9 | unconf | lead leaving lane/cut | visionLeadOne@21m | removed
+  20c 13:06.7 (786.7 s) tid  34 en1 v 13.8 d  62.9 y   0.2 vAbs  12.0 gmax  13.1 | CONF | lead leaving lane/cut | visionLeadOne@90m | removed
+  232 10:39.7 (639.7 s) tid   8 en1 v 19.5 d  79.3 y  -0.9 vAbs  15.1 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@108m | removed
+  232 18:19.2 (1099.2 s) tid  34 en1 v 17.7 d 112.4 y  -2.0 vAbs  11.9 gmax  13.8 | CONF | slow/moving car | radarLeadOne+0.0s | removed
+  232 21:53.7 (1313.7 s) tid  37 en0 v  8.7 d  19.9 y   1.1 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | visionLeadOne@34m | removed
+  236 14:04.3 (844.3 s) tid  61 en1 v 16.1 d  42.5 y   4.8 vAbs  15.3 gmax  16.5 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  236 36:46.4 (2206.4 s) tid  40 en1 v 23.6 d  69.0 y   5.1 vAbs  18.8 gmax  20.6 | CONF | lead leaving lane/cut | visionLeadOne@75m | removed
+  236 38:18.6 (2298.6 s) tid  41 en1 v 21.8 d 119.5 y  -3.9 vAbs  16.0 gmax  20.2 | CONF | lead leaving lane/cut | NOT covered | removed
+  237  3:13.2 (193.2 s) tid   6 en1 v 21.7 d  65.8 y   0.0 vAbs  13.0 gmax  13.7 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  237 13:24.1 (804.1 s) tid  58 en1 v 25.1 d 115.1 y  -0.2 vAbs  21.1 gmax  21.9 | unconf | slow/moving car | NOT covered | removed
+  237 17:55.5 (1075.5 s) tid  22 en1 v 23.6 d 105.7 y   3.9 vAbs  20.0 gmax  21.3 | unconf | lead leaving lane/cut | NOT covered | removed
+  237 18:26.6 (1106.6 s) tid  11 en1 v 18.6 d  64.4 y  -6.2 vAbs  12.9 gmax  14.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  239 10:31.4 (631.4 s) tid  21 en1 v 24.3 d  61.6 y  -3.8 vAbs  17.6 gmax  23.7 | CONF | lead leaving lane/cut | visionLeadOne@72m | removed
+  23e  3:36.2 (216.2 s) tid  37 en1 v 19.0 d  38.2 y  -4.0 vAbs  16.4 gmax  16.8 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e  5:26.8 (326.8 s) tid  44 en1 v 16.7 d  62.9 y  -3.5 vAbs  16.0 gmax  16.6 | CONF | far car on curve | radarLeadOne+0.3s | removed
+  23e 14:34.6 (874.6 s) tid  28 en1 v 20.3 d 107.6 y  -1.5 vAbs  19.6 gmax  20.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  23e 36:36.4 (2196.4 s) tid  42 en1 v 22.6 d 111.6 y  -3.2 vAbs  17.4 gmax  18.5 | CONF | slow/moving car | NOT covered | removed
+  23e 43:26.1 (2606.1 s) tid  58 en1 v  8.6 d  26.4 y  -1.0 vAbs   7.2 gmax   8.4 | unconf | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e 44:02.7 (2642.7 s) tid  12 en1 v  9.3 d  16.2 y  -0.6 vAbs   6.9 gmax  10.5 | CONF | lead leaving lane/cut | visionLeadOne@29m | removed
+  245  6:16.9 (376.9 s) tid  42 en0 v 22.9 d  10.6 y   0.9 vAbs  20.7 gmax  20.8 | unconf | lead leaving lane/cut | visionLeadOne@20m | removed
+  24f  5:55.3 (355.3 s) tid  48 en1 v 23.2 d  78.5 y  -5.1 vAbs  16.3 gmax  20.4 | CONF | lead leaving lane/cut | visionLeadOne@101m | removed
+  258 55:29.8 (3329.8 s) tid  18 en1 v 10.1 d  27.0 y  -0.6 vAbs   5.9 gmax   7.7 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  258 66:28.7 (3988.7 s) tid  20 en1 v 13.6 d  68.2 y   0.2 vAbs   9.7 gmax  11.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  25b 22:36.7 (1356.7 s) tid  43 en1 v  8.3 d  18.7 y  -0.7 vAbs   7.4 gmax   8.1 | unconf | lead leaving lane/cut | visionLeadOne@31m | removed
+  25d  1:34.2 (94.2 s) tid  19 en1 v 22.3 d 113.5 y   0.3 vAbs  20.6 gmax  21.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  25e 11:10.6 (670.6 s) tid  56 en1 v 22.3 d  96.8 y   8.2 vAbs   6.0 gmax   9.2 | CONF | far car on curve | NOT covered | removed
+  25e 13:27.9 (807.9 s) tid  13 en1 v 24.7 d 106.6 y  -0.4 vAbs  23.6 gmax  24.7 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  25e 13:56.6 (836.6 s) tid  13 en1 v 22.0 d  57.9 y   0.0 vAbs  19.6 gmax  21.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  25f  0:57.0 (57.0 s) tid  43 en1 v  9.7 d  26.8 y   1.0 vAbs   3.1 gmax   8.0 | unconf | lead leaving lane/cut | visionLeadOne@45m | removed
+  25f 11:40.5 (700.5 s) tid  59 en1 v 21.3 d  35.9 y   0.9 vAbs  17.4 gmax  17.9 | unconf | lead leaving lane/cut | visionLeadOne@60m | removed
+  25f 22:04.5 (1324.5 s) tid  55 en0 v 15.4 d  73.6 y   1.4 vAbs  11.3 gmax  13.1 | unconf | far car on curve | NOT covered | removed
+  260  7:20.1 (440.1 s) tid  47 en0 v 17.4 d  69.3 y   2.0 vAbs   2.4 gmax   7.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | removed
+  260  9:08.3 (548.3 s) tid  35 en1 v 16.2 d  44.7 y   4.0 vAbs  11.5 gmax  13.0 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  260 10:27.6 (627.6 s) tid  13 en1 v 21.9 d  89.5 y   1.7 vAbs  13.5 gmax  15.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  261  2:07.8 (127.8 s) tid  18 en1 v 24.7 d 117.9 y   0.2 vAbs  20.7 gmax  22.5 | CONF | slow/moving car | radarLeadOne+0.4s | removed
+  262  2:33.7 (153.7 s) tid  59 en1 v 17.5 d  67.2 y  -2.4 vAbs  15.0 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  263  0:17.0 (17.0 s) tid  10 en1 v 13.6 d  30.6 y  -0.7 vAbs  10.1 gmax  10.3 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  263  0:47.7 (47.7 s) tid  56 en0 v 15.0 d  96.5 y  -0.4 vAbs   3.7 gmax   5.8 | CONF | slow/moving car | NOT covered | removed
+  263  4:57.7 (297.7 s) tid  50 en1 v 21.5 d  47.4 y   0.8 vAbs  17.2 gmax  18.7 | CONF | slow/moving car | visionLeadOne@78m | removed
+  263  6:16.4 (376.4 s) tid  25 en1 v 13.0 d  37.1 y  -4.1 vAbs   6.5 gmax   8.2 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  263  8:00.2 (480.2 s) tid  46 en0 v 15.2 d  59.9 y  -2.6 vAbs   3.1 gmax   4.4 | CONF | lead leaving lane/cut | visionLeadOne@83m | delayed 0.70 s
+  263 14:06.2 (846.2 s) tid  51 en1 v 21.8 d  81.4 y  -0.3 vAbs  20.8 gmax  21.3 | CONF | lead leaving lane/cut | visionLeadOne@112m | removed
+  266  6:21.5 (381.5 s) tid   9 en1 v 24.7 d 113.6 y   2.8 vAbs  16.6 gmax  17.9 | CONF | slow/moving car | NOT covered | removed
+  266 14:29.4 (869.4 s) tid  36 en1 v 17.8 d  37.3 y  -3.4 vAbs  12.1 gmax  16.7 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  266 15:04.4 (904.4 s) tid  49 en1 v 19.8 d 106.7 y   2.0 vAbs  16.1 gmax  18.6 | unconf | slow/moving car | NOT covered | removed
+  266 28:10.7 (1690.7 s) tid   7 en0 v  9.3 d  11.9 y  -1.2 vAbs   4.2 gmax   7.1 | unconf | lead leaving lane/cut | visionLeadOne@21m | removed
+  267 10:07.3 (607.3 s) tid  48 en0 v 15.3 d  58.8 y  -3.0 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 (327.0 s) tid  18 en1 v 13.6 d  34.2 y   2.7 vAbs   5.7 gmax   8.1 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 (544.2 s) tid  25 en1 v 22.6 d  65.8 y   4.7 vAbs   8.9 gmax  11.8 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  268 11:16.1 (676.1 s) tid  37 en1 v 20.0 d  50.4 y  -3.8 vAbs  17.2 gmax  17.4 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  26b 10:29.9 (629.9 s) tid  55 en1 v 21.4 d 113.6 y  -1.2 vAbs  12.7 gmax  13.9 | CONF | slow/moving car | radarLeadOne+0.2s | removed
+  26b 25:52.0 (1552.0 s) tid  47 en1 v 19.4 d  98.3 y   2.3 vAbs   3.3 gmax   8.0 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 (2398.3 s) tid  32 en1 v 22.7 d  77.3 y  -3.6 vAbs  22.4 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@95m | removed
+  26c  3:53.7 (233.7 s) tid  27 en1 v 20.0 d  96.3 y  -8.9 vAbs  15.5 gmax  16.8 | CONF | far car on curve | NOT covered | removed
+  26c  4:06.0 (246.0 s) tid  27 en1 v 22.2 d 107.3 y  -0.2 vAbs  21.4 gmax  22.4 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  26c  9:55.9 (595.9 s) tid  39 en1 v 21.0 d  38.9 y   3.3 vAbs  16.3 gmax  20.7 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:08.9 (608.9 s) tid  39 en1 v 20.1 d  40.6 y  -4.8 vAbs  16.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  26c 10:51.1 (651.1 s) tid  39 en1 v 22.3 d  72.4 y   4.3 vAbs  21.0 gmax  23.1 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 (1285.4 s) tid  51 en0 v 18.9 d 102.5 y   4.5 vAbs   3.9 gmax   5.7 | CONF | far car on curve | NOT covered | removed
+  26f  7:03.2 (423.2 s) tid  30 en1 v 20.3 d  59.8 y  -6.0 vAbs  16.3 gmax  18.7 | CONF | slow/moving car | visionLeadOne@66m | removed
+  270  4:21.6 (261.6 s) tid  63 en0 v 21.6 d  37.6 y  -2.7 vAbs   6.1 gmax  11.6 | CONF | slow/moving car | visionLeadOne@44m | removed
+  271 24:31.6 (1471.6 s) tid  21 en1 v 20.4 d  56.2 y   4.3 vAbs  19.7 gmax  21.1 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  276 13:49.7 (829.7 s) tid   4 en1 v 18.9 d  48.8 y  -0.8 vAbs  14.2 gmax  15.9 | unconf | lead leaving lane/cut | visionLeadOne@77m | removed
+  276 15:46.8 (946.8 s) tid  24 en1 v 19.3 d  80.9 y  -4.4 vAbs  18.8 gmax  19.4 | CONF | lead leaving lane/cut | NOT covered | removed
+  276 17:45.8 (1065.8 s) tid  22 en1 v 18.6 d  70.6 y   0.2 vAbs  18.2 gmax  19.3 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  276 18:16.7 (1096.7 s) tid  22 en1 v 19.7 d  59.7 y  -0.1 vAbs  17.9 gmax  18.7 | CONF | lead leaving lane/cut | visionLeadOne@94m | removed
+  276 18:36.1 (1116.1 s) tid  22 en1 v 17.4 d  37.2 y   0.9 vAbs  14.6 gmax  15.5 | CONF | lead leaving lane/cut | visionLeadOne@63m | removed
+  277  4:09.1 (249.1 s) tid   7 en1 v 25.4 d  75.1 y   1.0 vAbs  19.3 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  278  3:53.1 (233.1 s) tid  32 en1 v 22.6 d 107.5 y   2.6 vAbs  15.2 gmax  17.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  27a  6:00.9 (360.9 s) tid  17 en1 v 14.5 d 117.9 y   0.1 vAbs  10.6 gmax  11.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  27a  7:59.1 (479.1 s) tid  24 en1 v 20.2 d  79.2 y  -0.4 vAbs  17.2 gmax  19.2 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 (506.7 s) tid  10 en1 v 21.5 d  90.0 y  -0.0 vAbs  14.3 gmax  16.4 | unconf | lead leaving lane/cut | NOT covered | removed
+  280 12:52.3 (772.3 s) tid  27 en1 v 12.2 d  44.6 y  -2.5 vAbs   8.3 gmax   8.6 | CONF | slow/moving car | visionLeadOne@58m | removed
+  280 13:14.1 (794.1 s) tid   7 en0 v  8.3 d   6.3 y  -0.8 vAbs   6.2 gmax   7.7 | unconf | lead leaving lane/cut | visionLeadOne@15m | removed
+  280 22:27.1 (1347.1 s) tid  39 en1 v 18.6 d  58.2 y   2.4 vAbs  14.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@69m | removed
+  280 31:07.2 (1867.2 s) tid  63 en1 v 11.8 d  31.6 y  -1.4 vAbs   7.5 gmax  12.2 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  280 31:23.9 (1883.9 s) tid  13 en1 v 14.0 d  34.8 y   1.7 vAbs   6.2 gmax  10.0 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  283 12:17.8 (737.8 s) tid   7 en0 v 26.1 d  68.8 y  -1.4 vAbs  19.3 gmax  19.9 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  283 19:17.4 (1157.4 s) tid  13 en1 v 17.3 d  33.3 y  -3.3 vAbs  14.3 gmax  14.9 | CONF | slow/moving car | visionLeadOne@43m | removed
+  284 27:52.1 (1672.1 s) tid  48 en0 v 12.8 d  63.8 y   3.0 vAbs   9.3 gmax  10.3 | CONF | slow/moving car | NOT covered | removed
+  286  6:09.3 (369.3 s) tid  37 en1 v 28.1 d 118.2 y   1.3 vAbs  26.0 gmax  26.7 | CONF | lead leaving lane/cut | NOT covered | removed
+  286  6:28.0 (388.0 s) tid  36 en1 v 24.9 d  56.8 y   2.4 vAbs  20.1 gmax  23.4 | CONF | lead leaving lane/cut | visionLeadOne@71m | removed
+  287  5:24.8 (324.8 s) tid  32 en1 v 22.5 d  58.1 y   1.3 vAbs  19.4 gmax  20.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  289  1:21.6 (81.6 s) tid  47 en1 v  6.7 d  15.8 y  -0.7 vAbs   4.1 gmax   4.5 | unconf | lead leaving lane/cut | visionLeadOne@27m | removed
+  28a  2:43.5 (163.5 s) tid  19 en1 v 19.7 d  79.8 y  -0.2 vAbs  14.6 gmax  15.8 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  28a  8:39.7 (519.7 s) tid  47 en1 v 17.9 d 117.7 y  14.7 vAbs   9.4 gmax  13.4 | unconf | slow/moving car | NOT covered | removed
+  28a 19:49.6 (1189.6 s) tid  50 en1 v 17.7 d  45.1 y   0.0 vAbs  12.0 gmax  13.6 | CONF | lead leaving lane/cut | visionLeadOne@68m | removed
+  28b  6:37.4 (397.4 s) tid   8 en1 v 13.8 d  45.7 y  -3.9 vAbs  13.2 gmax  14.8 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  28f 13:46.5 (826.5 s) tid   6 en1 v 19.0 d  36.5 y   5.7 vAbs  15.1 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  28f 14:54.0 (894.0 s) tid   6 en0 v  9.5 d  23.3 y   1.9 vAbs   8.0 gmax   8.8 | CONF | lead leaving lane/cut | visionLeadOne@41m | removed
+  28f 15:20.4 (920.4 s) tid  19 en1 v 21.8 d  55.8 y  -3.5 vAbs  15.3 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@67m | removed
+  290 10:45.6 (645.6 s) tid  22 en1 v 31.3 d 101.7 y  -0.2 vAbs  24.4 gmax  28.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  290 11:05.6 (665.6 s) tid   2 en1 v 28.7 d  60.4 y  -0.1 vAbs  22.3 gmax  24.4 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  292  0:46.2 (46.2 s) tid   6 en0 v  7.3 d  33.6 y   3.6 vAbs  -0.4 gmax   8.2 | CONF | stopped/near-stationary | NOT covered | delayed 0.45 s
+  292  5:06.0 (306.0 s) tid  33 en1 v 19.8 d  69.8 y   2.5 vAbs  15.2 gmax  16.0 | CONF | lead leaving lane/cut | visionLeadOne@96m | removed
+  292 10:24.6 (624.6 s) tid   1 en1 v 21.8 d 120.0 y  -1.1 vAbs  20.5 gmax  22.9 | unconf | lead leaving lane/cut | NOT covered | removed
+  292 19:40.9 (1180.9 s) tid  15 en0 v 19.8 d  48.1 y  -2.4 vAbs  10.0 gmax  14.6 | unconf | slow/moving car | NOT covered | removed
+  294 12:01.7 (721.7 s) tid  13 en1 v 19.5 d  45.4 y   3.4 vAbs  17.4 gmax  17.8 | CONF | lead leaving lane/cut | visionLeadOne@55m | removed
+  297  7:16.3 (436.3 s) tid  25 en0 v 13.1 d  16.1 y   2.1 vAbs   8.2 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 (802.3 s) tid   8 en1 v 22.6 d 107.6 y   1.2 vAbs  12.7 gmax  14.3 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 23:24.9 (1404.9 s) tid  14 en1 v 20.1 d  74.0 y  -0.8 vAbs  16.5 gmax  17.9 | CONF | lead leaving lane/cut | NOT covered | removed
+  297 24:55.1 (1495.1 s) tid  42 en1 v 24.2 d  82.8 y  -3.8 vAbs  20.3 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  297 45:49.3 (2749.3 s) tid  34 en1 v 17.3 d  40.3 y  -3.3 vAbs  16.5 gmax  19.1 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  297 46:56.7 (2816.7 s) tid  45 en1 v 19.2 d  86.3 y  -2.8 vAbs  -0.6 gmax   5.5 | CONF | stopped/near-stationary | visionLeadOne@118m | delayed 0.50 s
+  298  9:06.6 (546.6 s) tid  22 en1 v 24.4 d  93.8 y  -0.2 vAbs  19.1 gmax  20.1 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 16:58.3 (1018.3 s) tid   2 en1 v 20.3 d  25.6 y   0.6 vAbs   4.3 gmax   7.7 | unconf | slow/moving car | NOT covered | removed
+  298 17:02.3 (1022.3 s) tid  60 en1 v 19.3 d 106.3 y   0.2 vAbs  12.3 gmax  14.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  298 17:44.5 (1064.5 s) tid  15 en1 v 19.6 d  81.3 y  -8.7 vAbs  16.1 gmax  17.2 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 21:15.9 (1275.9 s) tid   9 en1 v 19.1 d  54.9 y  -2.9 vAbs  14.0 gmax  14.3 | CONF | lead leaving lane/cut | visionLeadOne@64m | removed
+  298 23:20.0 (1400.0 s) tid  20 en0 v 12.5 d  66.8 y  -8.3 vAbs  -1.3 gmax   4.5 | CONF | stopped/near-stationary | NOT covered | removed
+  299 11:23.9 (683.9 s) tid  26 en1 v 30.0 d  69.4 y  -0.1 vAbs  25.9 gmax  27.3 | CONF | lead leaving lane/cut | visionLeadOne@105m | removed
+  299 21:37.4 (1297.4 s) tid  54 en1 v 16.5 d  44.1 y   0.8 vAbs  12.4 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@56m | removed
+  299 31:22.5 (1882.5 s) tid  15 en1 v 13.8 d  17.1 y   0.5 vAbs   7.4 gmax  12.7 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+  299 42:12.4 (2532.4 s) tid  57 en1 v 24.3 d  67.1 y  -4.3 vAbs  19.5 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+== gmax 1.5: removed or delayed real-car adoptions (route time tid en v d y g0 gmax0 | conf | category | leadOne coverage | delay)
+  20c  5:05.4 (305.4 s) tid  63 en0 v 14.6 d  11.8 y  -1.0 vAbs  11.5 gmax  11.9 | unconf | lead leaving lane/cut | visionLeadOne@21m | removed
+  20c 13:06.7 (786.7 s) tid  34 en1 v 13.8 d  62.9 y   0.2 vAbs  12.0 gmax  13.1 | CONF | lead leaving lane/cut | visionLeadOne@90m | removed
+  232  4:39.9 (279.9 s) tid  35 en0 v 16.7 d  41.3 y   3.2 vAbs   1.2 gmax   2.5 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  232 10:39.7 (639.7 s) tid   8 en1 v 19.5 d  79.3 y  -0.9 vAbs  15.1 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@108m | removed
+  232 18:19.2 (1099.2 s) tid  34 en1 v 17.7 d 112.4 y  -2.0 vAbs  11.9 gmax  13.8 | CONF | slow/moving car | radarLeadOne+0.0s | removed
+  232 19:07.0 (1147.0 s) tid  29 en1 v 12.7 d  44.7 y   0.1 vAbs   0.2 gmax   2.5 | CONF | stopped/near-stationary | visionLeadOne@52m | removed
+  232 21:53.7 (1313.7 s) tid  37 en0 v  8.7 d  19.9 y   1.1 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | visionLeadOne@34m | removed
+  236 14:04.3 (844.3 s) tid  61 en1 v 16.1 d  42.5 y   4.8 vAbs  15.3 gmax  16.5 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  236 36:46.4 (2206.4 s) tid  40 en1 v 23.6 d  69.0 y   5.1 vAbs  18.8 gmax  20.6 | CONF | lead leaving lane/cut | visionLeadOne@75m | removed
+  236 38:18.6 (2298.6 s) tid  41 en1 v 21.8 d 119.5 y  -3.9 vAbs  16.0 gmax  20.2 | CONF | lead leaving lane/cut | NOT covered | removed
+  237  3:13.2 (193.2 s) tid   6 en1 v 21.7 d  65.8 y   0.0 vAbs  13.0 gmax  13.7 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  237 13:24.1 (804.1 s) tid  58 en1 v 25.1 d 115.1 y  -0.2 vAbs  21.1 gmax  21.9 | unconf | slow/moving car | NOT covered | removed
+  237 17:55.5 (1075.5 s) tid  22 en1 v 23.6 d 105.7 y   3.9 vAbs  20.0 gmax  21.3 | unconf | lead leaving lane/cut | NOT covered | removed
+  237 18:26.6 (1106.6 s) tid  11 en1 v 18.6 d  64.4 y  -6.2 vAbs  12.9 gmax  14.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  239  0:52.2 (52.2 s) tid  11 en0 v  7.2 d  41.9 y   4.8 vAbs   1.6 gmax   1.8 | CONF | stopped/near-stationary | NOT covered | delayed 1.75 s
+  239 10:31.4 (631.4 s) tid  21 en1 v 24.3 d  61.6 y  -3.8 vAbs  17.6 gmax  23.7 | CONF | lead leaving lane/cut | visionLeadOne@72m | removed
+  23a 15:56.1 (956.1 s) tid  15 en0 v 12.8 d  65.9 y   0.9 vAbs   0.8 gmax   2.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  23e  3:36.2 (216.2 s) tid  37 en1 v 19.0 d  38.2 y  -4.0 vAbs  16.4 gmax  16.8 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e  5:26.8 (326.8 s) tid  44 en1 v 16.7 d  62.9 y  -3.5 vAbs  16.0 gmax  16.6 | CONF | far car on curve | radarLeadOne+0.3s | removed
+  23e 14:34.6 (874.6 s) tid  28 en1 v 20.3 d 107.6 y  -1.5 vAbs  19.6 gmax  20.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  23e 36:36.4 (2196.4 s) tid  42 en1 v 22.6 d 111.6 y  -3.2 vAbs  17.4 gmax  18.5 | CONF | slow/moving car | NOT covered | removed
+  23e 43:26.1 (2606.1 s) tid  58 en1 v  8.6 d  26.4 y  -1.0 vAbs   7.2 gmax   8.4 | unconf | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e 44:02.7 (2642.7 s) tid  12 en1 v  9.3 d  16.2 y  -0.6 vAbs   6.9 gmax  10.5 | CONF | lead leaving lane/cut | visionLeadOne@29m | removed
+  245  6:16.9 (376.9 s) tid  42 en0 v 22.9 d  10.6 y   0.9 vAbs  20.7 gmax  20.8 | unconf | lead leaving lane/cut | visionLeadOne@20m | removed
+  24f  5:55.3 (355.3 s) tid  48 en1 v 23.2 d  78.5 y  -5.1 vAbs  16.3 gmax  20.4 | CONF | lead leaving lane/cut | visionLeadOne@101m | removed
+  258 55:29.8 (3329.8 s) tid  18 en1 v 10.1 d  27.0 y  -0.6 vAbs   5.9 gmax   7.7 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  258 66:28.7 (3988.7 s) tid  20 en1 v 13.6 d  68.2 y   0.2 vAbs   9.7 gmax  11.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  25b 22:36.7 (1356.7 s) tid  43 en1 v  8.3 d  18.7 y  -0.7 vAbs   7.4 gmax   8.1 | unconf | lead leaving lane/cut | visionLeadOne@31m | removed
+  25d  1:34.2 (94.2 s) tid  19 en1 v 22.3 d 113.5 y   0.3 vAbs  20.6 gmax  21.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  25e 11:10.6 (670.6 s) tid  56 en1 v 22.3 d  96.8 y   8.2 vAbs   6.0 gmax   9.2 | CONF | far car on curve | NOT covered | removed
+  25e 13:27.9 (807.9 s) tid  13 en1 v 24.7 d 106.6 y  -0.4 vAbs  23.6 gmax  24.7 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  25e 13:56.6 (836.6 s) tid  13 en1 v 22.0 d  57.9 y   0.0 vAbs  19.6 gmax  21.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  25f  0:57.0 (57.0 s) tid  43 en1 v  9.7 d  26.8 y   1.0 vAbs   3.1 gmax   8.0 | unconf | lead leaving lane/cut | visionLeadOne@45m | removed
+  25f 11:40.5 (700.5 s) tid  59 en1 v 21.3 d  35.9 y   0.9 vAbs  17.4 gmax  17.9 | unconf | lead leaving lane/cut | visionLeadOne@60m | removed
+  25f 17:54.5 (1074.5 s) tid  35 en0 v  4.2 d  21.4 y   0.6 vAbs   0.1 gmax   2.3 | unconf | lead leaving lane/cut | visionLeadOne@37m | removed
+  25f 22:04.5 (1324.5 s) tid  55 en0 v 15.4 d  73.6 y   1.4 vAbs  11.3 gmax  13.1 | unconf | far car on curve | NOT covered | removed
+  260  7:20.1 (440.1 s) tid  47 en0 v 17.4 d  69.3 y   2.0 vAbs   2.4 gmax   7.2 | CONF | lead leaving lane/cut | visionLeadOne@93m | removed
+  260  9:08.3 (548.3 s) tid  35 en1 v 16.2 d  44.7 y   4.0 vAbs  11.5 gmax  13.0 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  260 10:27.6 (627.6 s) tid  13 en1 v 21.9 d  89.5 y   1.7 vAbs  13.5 gmax  15.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  261  2:07.8 (127.8 s) tid  18 en1 v 24.7 d 117.9 y   0.2 vAbs  20.7 gmax  22.5 | CONF | slow/moving car | radarLeadOne+0.4s | removed
+  261  6:51.7 (411.7 s) tid   7 en1 v 10.5 d  52.4 y   2.5 vAbs   1.5 gmax   2.2 | CONF | lead leaving lane/cut | NOT covered | removed
+  262  2:33.7 (153.7 s) tid  59 en1 v 17.5 d  67.2 y  -2.4 vAbs  15.0 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  263  0:17.0 (17.0 s) tid  10 en1 v 13.6 d  30.6 y  -0.7 vAbs  10.1 gmax  10.3 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  263  0:47.7 (47.7 s) tid  56 en0 v 15.0 d  96.5 y  -0.4 vAbs   3.7 gmax   5.8 | CONF | slow/moving car | NOT covered | removed
+  263  4:57.7 (297.7 s) tid  50 en1 v 21.5 d  47.4 y   0.8 vAbs  17.2 gmax  18.7 | CONF | slow/moving car | visionLeadOne@78m | removed
+  263  6:16.4 (376.4 s) tid  25 en1 v 13.0 d  37.1 y  -4.1 vAbs   6.5 gmax   8.2 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  263  8:00.2 (480.2 s) tid  46 en0 v 15.2 d  59.9 y  -2.6 vAbs   3.1 gmax   4.4 | CONF | lead leaving lane/cut | visionLeadOne@83m | removed
+  263 14:06.2 (846.2 s) tid  51 en1 v 21.8 d  81.4 y  -0.3 vAbs  20.8 gmax  21.3 | CONF | lead leaving lane/cut | visionLeadOne@112m | removed
+  266  6:21.5 (381.5 s) tid   9 en1 v 24.7 d 113.6 y   2.8 vAbs  16.6 gmax  17.9 | CONF | slow/moving car | NOT covered | removed
+  266 14:29.4 (869.4 s) tid  36 en1 v 17.8 d  37.3 y  -3.4 vAbs  12.1 gmax  16.7 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  266 15:04.4 (904.4 s) tid  49 en1 v 19.8 d 106.7 y   2.0 vAbs  16.1 gmax  18.6 | unconf | slow/moving car | NOT covered | removed
+  266 28:10.7 (1690.7 s) tid   7 en0 v  9.3 d  11.9 y  -1.2 vAbs   4.2 gmax   7.1 | unconf | lead leaving lane/cut | visionLeadOne@21m | removed
+  267 10:07.3 (607.3 s) tid  48 en0 v 15.3 d  58.8 y  -3.0 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 (327.0 s) tid  18 en1 v 13.6 d  34.2 y   2.7 vAbs   5.7 gmax   8.1 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 (544.2 s) tid  25 en1 v 22.6 d  65.8 y   4.7 vAbs   8.9 gmax  11.8 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  268 11:16.1 (676.1 s) tid  37 en1 v 20.0 d  50.4 y  -3.8 vAbs  17.2 gmax  17.4 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  26b 10:29.9 (629.9 s) tid  55 en1 v 21.4 d 113.6 y  -1.2 vAbs  12.7 gmax  13.9 | CONF | slow/moving car | radarLeadOne+0.2s | removed
+  26b 25:52.0 (1552.0 s) tid  47 en1 v 19.4 d  98.3 y   2.3 vAbs   3.3 gmax   8.0 | CONF | slow/moving car | NOT covered | removed
+  26b 39:58.3 (2398.3 s) tid  32 en1 v 22.7 d  77.3 y  -3.6 vAbs  22.4 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@95m | removed
+  26c  3:28.8 (208.8 s) tid  55 en0 v 15.8 d  55.6 y   3.4 vAbs  -2.1 gmax   2.3 | CONF | lead leaving lane/cut | visionLeadOne@66m | removed
+  26c  3:53.7 (233.7 s) tid  27 en1 v 20.0 d  96.3 y  -8.9 vAbs  15.5 gmax  16.8 | CONF | far car on curve | NOT covered | removed
+  26c  4:06.0 (246.0 s) tid  27 en1 v 22.2 d 107.3 y  -0.2 vAbs  21.4 gmax  22.4 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  26c  9:55.9 (595.9 s) tid  39 en1 v 21.0 d  38.9 y   3.3 vAbs  16.3 gmax  20.7 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:08.9 (608.9 s) tid  39 en1 v 20.1 d  40.6 y  -4.8 vAbs  16.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  26c 10:51.1 (651.1 s) tid  39 en1 v 22.3 d  72.4 y   4.3 vAbs  21.0 gmax  23.1 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 (1285.4 s) tid  51 en0 v 18.9 d 102.5 y   4.5 vAbs   3.9 gmax   5.7 | CONF | far car on curve | NOT covered | removed
+  26f  7:03.2 (423.2 s) tid  30 en1 v 20.3 d  59.8 y  -6.0 vAbs  16.3 gmax  18.7 | CONF | slow/moving car | visionLeadOne@66m | removed
+  270  4:21.6 (261.6 s) tid  63 en0 v 21.6 d  37.6 y  -2.7 vAbs   6.1 gmax  11.6 | CONF | slow/moving car | visionLeadOne@44m | removed
+  271 24:31.6 (1471.6 s) tid  21 en1 v 20.4 d  56.2 y   4.3 vAbs  19.7 gmax  21.1 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  276 13:49.7 (829.7 s) tid   4 en1 v 18.9 d  48.8 y  -0.8 vAbs  14.2 gmax  15.9 | unconf | lead leaving lane/cut | visionLeadOne@77m | removed
+  276 15:46.8 (946.8 s) tid  24 en1 v 19.3 d  80.9 y  -4.4 vAbs  18.8 gmax  19.4 | CONF | lead leaving lane/cut | NOT covered | removed
+  276 17:45.8 (1065.8 s) tid  22 en1 v 18.6 d  70.6 y   0.2 vAbs  18.2 gmax  19.3 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  276 18:16.7 (1096.7 s) tid  22 en1 v 19.7 d  59.7 y  -0.1 vAbs  17.9 gmax  18.7 | CONF | lead leaving lane/cut | visionLeadOne@94m | removed
+  276 18:36.1 (1116.1 s) tid  22 en1 v 17.4 d  37.2 y   0.9 vAbs  14.6 gmax  15.5 | CONF | lead leaving lane/cut | visionLeadOne@63m | removed
+  277  4:09.1 (249.1 s) tid   7 en1 v 25.4 d  75.1 y   1.0 vAbs  19.3 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  278  3:53.1 (233.1 s) tid  32 en1 v 22.6 d 107.5 y   2.6 vAbs  15.2 gmax  17.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  27a  6:00.9 (360.9 s) tid  17 en1 v 14.5 d 117.9 y   0.1 vAbs  10.6 gmax  11.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  27a  7:59.1 (479.1 s) tid  24 en1 v 20.2 d  79.2 y  -0.4 vAbs  17.2 gmax  19.2 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 (506.7 s) tid  10 en1 v 21.5 d  90.0 y  -0.0 vAbs  14.3 gmax  16.4 | unconf | lead leaving lane/cut | NOT covered | removed
+  27e  4:34.9 (274.9 s) tid  21 en0 v 11.3 d  59.9 y  -1.8 vAbs  -1.0 gmax   3.0 | CONF | lead leaving lane/cut | visionLeadOne@77m | removed
+  280 12:52.3 (772.3 s) tid  27 en1 v 12.2 d  44.6 y  -2.5 vAbs   8.3 gmax   8.6 | CONF | slow/moving car | visionLeadOne@58m | removed
+  280 13:14.1 (794.1 s) tid   7 en0 v  8.3 d   6.3 y  -0.8 vAbs   6.2 gmax   7.7 | unconf | lead leaving lane/cut | visionLeadOne@15m | removed
+  280 22:27.1 (1347.1 s) tid  39 en1 v 18.6 d  58.2 y   2.4 vAbs  14.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@69m | removed
+  280 31:07.2 (1867.2 s) tid  63 en1 v 11.8 d  31.6 y  -1.4 vAbs   7.5 gmax  12.2 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  280 31:23.9 (1883.9 s) tid  13 en1 v 14.0 d  34.8 y   1.7 vAbs   6.2 gmax  10.0 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  283  0:34.6 (34.6 s) tid   8 en0 v  4.5 d  14.6 y   0.7 vAbs   1.9 gmax   2.3 | CONF | stopped/near-stationary | NOT covered | removed
+  283 12:17.8 (737.8 s) tid   7 en0 v 26.1 d  68.8 y  -1.4 vAbs  19.3 gmax  19.9 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  283 19:17.4 (1157.4 s) tid  13 en1 v 17.3 d  33.3 y  -3.3 vAbs  14.3 gmax  14.9 | CONF | slow/moving car | visionLeadOne@43m | removed
+  283 31:49.7 (1909.7 s) tid  61 en1 v 19.6 d  73.6 y   1.1 vAbs   0.9 gmax   1.8 | CONF | lead leaving lane/cut | visionLeadOne@102m | removed
+  284  9:28.4 (568.4 s) tid  54 en0 v  5.2 d  15.6 y  -1.3 vAbs   2.4 gmax   3.2 | unconf | lead leaving lane/cut | visionLeadOne@41m | removed
+  284 27:52.1 (1672.1 s) tid  48 en0 v 12.8 d  63.8 y   3.0 vAbs   9.3 gmax  10.3 | CONF | slow/moving car | NOT covered | removed
+  286  6:09.3 (369.3 s) tid  37 en1 v 28.1 d 118.2 y   1.3 vAbs  26.0 gmax  26.7 | CONF | lead leaving lane/cut | NOT covered | removed
+  286  6:28.0 (388.0 s) tid  36 en1 v 24.9 d  56.8 y   2.4 vAbs  20.1 gmax  23.4 | CONF | lead leaving lane/cut | visionLeadOne@71m | removed
+  287  5:24.8 (324.8 s) tid  32 en1 v 22.5 d  58.1 y   1.3 vAbs  19.4 gmax  20.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  289  1:21.6 (81.6 s) tid  47 en1 v  6.7 d  15.8 y  -0.7 vAbs   4.1 gmax   4.5 | unconf | lead leaving lane/cut | visionLeadOne@27m | removed
+  28a  2:43.5 (163.5 s) tid  19 en1 v 19.7 d  79.8 y  -0.2 vAbs  14.6 gmax  15.8 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  28a  8:39.7 (519.7 s) tid  47 en1 v 17.9 d 117.7 y  14.7 vAbs   9.4 gmax  13.4 | unconf | slow/moving car | NOT covered | removed
+  28a 19:49.6 (1189.6 s) tid  50 en1 v 17.7 d  45.1 y   0.0 vAbs  12.0 gmax  13.6 | CONF | lead leaving lane/cut | visionLeadOne@68m | removed
+  28a 28:17.7 (1697.7 s) tid  49 en0 v  4.1 d  26.3 y  -2.0 vAbs   1.5 gmax   1.9 | CONF | stopped/near-stationary | NOT covered | removed
+  28b  6:37.4 (397.4 s) tid   8 en1 v 13.8 d  45.7 y  -3.9 vAbs  13.2 gmax  14.8 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  28f 13:46.5 (826.5 s) tid   6 en1 v 19.0 d  36.5 y   5.7 vAbs  15.1 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  28f 14:54.0 (894.0 s) tid   6 en0 v  9.5 d  23.3 y   1.9 vAbs   8.0 gmax   8.8 | CONF | lead leaving lane/cut | visionLeadOne@41m | removed
+  28f 15:20.4 (920.4 s) tid  19 en1 v 21.8 d  55.8 y  -3.5 vAbs  15.3 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@67m | removed
+  290 10:45.6 (645.6 s) tid  22 en1 v 31.3 d 101.7 y  -0.2 vAbs  24.4 gmax  28.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  290 11:05.6 (665.6 s) tid   2 en1 v 28.7 d  60.4 y  -0.1 vAbs  22.3 gmax  24.4 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  292  0:46.2 (46.2 s) tid   6 en0 v  7.3 d  33.6 y   3.6 vAbs  -0.4 gmax   8.2 | CONF | stopped/near-stationary | NOT covered | removed
+  292  5:06.0 (306.0 s) tid  33 en1 v 19.8 d  69.8 y   2.5 vAbs  15.2 gmax  16.0 | CONF | lead leaving lane/cut | visionLeadOne@96m | removed
+  292 10:24.6 (624.6 s) tid   1 en1 v 21.8 d 120.0 y  -1.1 vAbs  20.5 gmax  22.9 | unconf | lead leaving lane/cut | NOT covered | removed
+  292 19:40.9 (1180.9 s) tid  15 en0 v 19.8 d  48.1 y  -2.4 vAbs  10.0 gmax  14.6 | unconf | slow/moving car | NOT covered | removed
+  294 12:01.7 (721.7 s) tid  13 en1 v 19.5 d  45.4 y   3.4 vAbs  17.4 gmax  17.8 | CONF | lead leaving lane/cut | visionLeadOne@55m | removed
+  297  7:16.3 (436.3 s) tid  25 en0 v 13.1 d  16.1 y   2.1 vAbs   8.2 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 (802.3 s) tid   8 en1 v 22.6 d 107.6 y   1.2 vAbs  12.7 gmax  14.3 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 23:24.9 (1404.9 s) tid  14 en1 v 20.1 d  74.0 y  -0.8 vAbs  16.5 gmax  17.9 | CONF | lead leaving lane/cut | NOT covered | removed
+  297 24:55.1 (1495.1 s) tid  42 en1 v 24.2 d  82.8 y  -3.8 vAbs  20.3 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  297 45:49.3 (2749.3 s) tid  34 en1 v 17.3 d  40.3 y  -3.3 vAbs  16.5 gmax  19.1 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  297 46:56.7 (2816.7 s) tid  45 en1 v 19.2 d  86.3 y  -2.8 vAbs  -0.6 gmax   5.5 | CONF | stopped/near-stationary | visionLeadOne@118m | delayed 0.55 s
+  298  9:06.6 (546.6 s) tid  22 en1 v 24.4 d  93.8 y  -0.2 vAbs  19.1 gmax  20.1 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 16:58.3 (1018.3 s) tid   2 en1 v 20.3 d  25.6 y   0.6 vAbs   4.3 gmax   7.7 | unconf | slow/moving car | NOT covered | removed
+  298 17:02.3 (1022.3 s) tid  60 en1 v 19.3 d 106.3 y   0.2 vAbs  12.3 gmax  14.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  298 17:44.5 (1064.5 s) tid  15 en1 v 19.6 d  81.3 y  -8.7 vAbs  16.1 gmax  17.2 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 21:15.9 (1275.9 s) tid   9 en1 v 19.1 d  54.9 y  -2.9 vAbs  14.0 gmax  14.3 | CONF | lead leaving lane/cut | visionLeadOne@64m | removed
+  298 23:20.0 (1400.0 s) tid  20 en0 v 12.5 d  66.8 y  -8.3 vAbs  -1.3 gmax   4.5 | CONF | stopped/near-stationary | NOT covered | removed
+  299 11:23.9 (683.9 s) tid  26 en1 v 30.0 d  69.4 y  -0.1 vAbs  25.9 gmax  27.3 | CONF | lead leaving lane/cut | visionLeadOne@105m | removed
+  299 21:37.4 (1297.4 s) tid  54 en1 v 16.5 d  44.1 y   0.8 vAbs  12.4 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@56m | removed
+  299 31:22.5 (1882.5 s) tid  15 en1 v 13.8 d  17.1 y   0.5 vAbs   7.4 gmax  12.7 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+  299 42:12.4 (2532.4 s) tid  57 en1 v 24.3 d  67.1 y  -4.3 vAbs  19.5 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+== g 3.5: removed or delayed real-car adoptions (route time tid en v d y g0 gmax0 | conf | category | leadOne coverage | delay)
+  20c  5:05.4 (305.4 s) tid  63 en0 v 14.6 d  11.8 y  -1.0 vAbs  11.5 gmax  11.9 | unconf | lead leaving lane/cut | visionLeadOne@21m | removed
+  20c 13:06.7 (786.7 s) tid  34 en1 v 13.8 d  62.9 y   0.2 vAbs  12.0 gmax  13.1 | CONF | lead leaving lane/cut | visionLeadOne@90m | removed
+  232 10:39.7 (639.7 s) tid   8 en1 v 19.5 d  79.3 y  -0.9 vAbs  15.1 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@108m | removed
+  232 18:19.2 (1099.2 s) tid  34 en1 v 17.7 d 112.4 y  -2.0 vAbs  11.9 gmax  13.8 | CONF | slow/moving car | radarLeadOne+0.0s | removed
+  232 21:53.7 (1313.7 s) tid  37 en0 v  8.7 d  19.9 y   1.1 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | visionLeadOne@34m | removed
+  236 14:04.3 (844.3 s) tid  61 en1 v 16.1 d  42.5 y   4.8 vAbs  15.3 gmax  16.5 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  236 36:46.4 (2206.4 s) tid  40 en1 v 23.6 d  69.0 y   5.1 vAbs  18.8 gmax  20.6 | CONF | lead leaving lane/cut | visionLeadOne@75m | removed
+  236 38:18.6 (2298.6 s) tid  41 en1 v 21.8 d 119.5 y  -3.9 vAbs  16.0 gmax  20.2 | CONF | lead leaving lane/cut | NOT covered | removed
+  237  3:13.2 (193.2 s) tid   6 en1 v 21.7 d  65.8 y   0.0 vAbs  13.0 gmax  13.7 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  237 13:24.1 (804.1 s) tid  58 en1 v 25.1 d 115.1 y  -0.2 vAbs  21.1 gmax  21.9 | unconf | slow/moving car | NOT covered | removed
+  237 17:55.5 (1075.5 s) tid  22 en1 v 23.6 d 105.7 y   3.9 vAbs  20.0 gmax  21.3 | unconf | lead leaving lane/cut | NOT covered | removed
+  237 18:26.6 (1106.6 s) tid  11 en1 v 18.6 d  64.4 y  -6.2 vAbs  12.9 gmax  14.5 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  239 10:31.4 (631.4 s) tid  21 en1 v 24.3 d  61.6 y  -3.8 vAbs  17.6 gmax  23.7 | CONF | lead leaving lane/cut | visionLeadOne@72m | removed
+  23e  3:36.2 (216.2 s) tid  37 en1 v 19.0 d  38.2 y  -4.0 vAbs  16.4 gmax  16.8 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e  5:26.8 (326.8 s) tid  44 en1 v 16.7 d  62.9 y  -3.5 vAbs  16.0 gmax  16.6 | CONF | far car on curve | radarLeadOne+0.3s | removed
+  23e 14:34.6 (874.6 s) tid  28 en1 v 20.3 d 107.6 y  -1.5 vAbs  19.6 gmax  20.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  23e 36:36.4 (2196.4 s) tid  42 en1 v 22.6 d 111.6 y  -3.2 vAbs  17.4 gmax  18.5 | CONF | slow/moving car | NOT covered | removed
+  23e 43:26.1 (2606.1 s) tid  58 en1 v  8.6 d  26.4 y  -1.0 vAbs   7.2 gmax   8.4 | unconf | lead leaving lane/cut | visionLeadOne@44m | removed
+  23e 44:02.7 (2642.7 s) tid  12 en1 v  9.3 d  16.2 y  -0.6 vAbs   6.9 gmax  10.5 | CONF | lead leaving lane/cut | visionLeadOne@29m | removed
+  245  6:16.9 (376.9 s) tid  42 en0 v 22.9 d  10.6 y   0.9 vAbs  20.7 gmax  20.8 | unconf | lead leaving lane/cut | visionLeadOne@20m | removed
+  24f  5:55.3 (355.3 s) tid  48 en1 v 23.2 d  78.5 y  -5.1 vAbs  16.3 gmax  20.4 | CONF | lead leaving lane/cut | visionLeadOne@101m | removed
+  258 55:29.8 (3329.8 s) tid  18 en1 v 10.1 d  27.0 y  -0.6 vAbs   5.9 gmax   7.7 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  258 66:28.7 (3988.7 s) tid  20 en1 v 13.6 d  68.2 y   0.2 vAbs   9.7 gmax  11.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  25b 22:36.7 (1356.7 s) tid  43 en1 v  8.3 d  18.7 y  -0.7 vAbs   7.4 gmax   8.1 | unconf | lead leaving lane/cut | visionLeadOne@31m | removed
+  25d  1:34.2 (94.2 s) tid  19 en1 v 22.3 d 113.5 y   0.3 vAbs  20.6 gmax  21.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  25e 11:10.6 (670.6 s) tid  56 en1 v 22.3 d  96.8 y   8.2 vAbs   6.0 gmax   9.2 | CONF | far car on curve | NOT covered | removed
+  25e 13:27.9 (807.9 s) tid  13 en1 v 24.7 d 106.6 y  -0.4 vAbs  23.6 gmax  24.7 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  25e 13:56.6 (836.6 s) tid  13 en1 v 22.0 d  57.9 y   0.0 vAbs  19.6 gmax  21.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  25f 11:40.5 (700.5 s) tid  59 en1 v 21.3 d  35.9 y   0.9 vAbs  17.4 gmax  17.9 | unconf | lead leaving lane/cut | visionLeadOne@60m | removed
+  25f 22:04.5 (1324.5 s) tid  55 en0 v 15.4 d  73.6 y   1.4 vAbs  11.3 gmax  13.1 | unconf | far car on curve | NOT covered | removed
+  260  9:08.3 (548.3 s) tid  35 en1 v 16.2 d  44.7 y   4.0 vAbs  11.5 gmax  13.0 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  260 10:27.6 (627.6 s) tid  13 en1 v 21.9 d  89.5 y   1.7 vAbs  13.5 gmax  15.9 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  261  2:07.8 (127.8 s) tid  18 en1 v 24.7 d 117.9 y   0.2 vAbs  20.7 gmax  22.5 | CONF | slow/moving car | radarLeadOne+0.4s | removed
+  262  2:33.7 (153.7 s) tid  59 en1 v 17.5 d  67.2 y  -2.4 vAbs  15.0 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+  263  0:17.0 (17.0 s) tid  10 en1 v 13.6 d  30.6 y  -0.7 vAbs  10.1 gmax  10.3 | CONF | lead leaving lane/cut | visionLeadOne@53m | removed
+  263  0:47.7 (47.7 s) tid  56 en0 v 15.0 d  96.5 y  -0.4 vAbs   3.7 gmax   5.8 | CONF | slow/moving car | NOT covered | removed
+  263  4:57.7 (297.7 s) tid  50 en1 v 21.5 d  47.4 y   0.8 vAbs  17.2 gmax  18.7 | CONF | slow/moving car | visionLeadOne@78m | removed
+  263  6:16.4 (376.4 s) tid  25 en1 v 13.0 d  37.1 y  -4.1 vAbs   6.5 gmax   8.2 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  263 14:06.2 (846.2 s) tid  51 en1 v 21.8 d  81.4 y  -0.3 vAbs  20.8 gmax  21.3 | CONF | lead leaving lane/cut | visionLeadOne@112m | removed
+  266  6:21.5 (381.5 s) tid   9 en1 v 24.7 d 113.6 y   2.8 vAbs  16.6 gmax  17.9 | CONF | slow/moving car | NOT covered | removed
+  266 14:29.4 (869.4 s) tid  36 en1 v 17.8 d  37.3 y  -3.4 vAbs  12.1 gmax  16.7 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  266 15:04.4 (904.4 s) tid  49 en1 v 19.8 d 106.7 y   2.0 vAbs  16.1 gmax  18.6 | unconf | slow/moving car | NOT covered | removed
+  266 28:10.7 (1690.7 s) tid   7 en0 v  9.3 d  11.9 y  -1.2 vAbs   4.2 gmax   7.1 | unconf | lead leaving lane/cut | visionLeadOne@21m | delayed 0.20 s
+  267 10:07.3 (607.3 s) tid  48 en0 v 15.3 d  58.8 y  -3.0 vAbs   6.9 gmax   9.0 | CONF | lead leaving lane/cut | radarLeadOne+0.0s | removed
+  268  5:27.0 (327.0 s) tid  18 en1 v 13.6 d  34.2 y   2.7 vAbs   5.7 gmax   8.1 | CONF | lead leaving lane/cut | visionLeadOne@45m | removed
+  268  9:04.2 (544.2 s) tid  25 en1 v 22.6 d  65.8 y   4.7 vAbs   8.9 gmax  11.8 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  268 11:16.1 (676.1 s) tid  37 en1 v 20.0 d  50.4 y  -3.8 vAbs  17.2 gmax  17.4 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  26b 10:29.9 (629.9 s) tid  55 en1 v 21.4 d 113.6 y  -1.2 vAbs  12.7 gmax  13.9 | CONF | slow/moving car | radarLeadOne+0.2s | removed
+  26b 39:58.3 (2398.3 s) tid  32 en1 v 22.7 d  77.3 y  -3.6 vAbs  22.4 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@95m | removed
+  26c  3:53.7 (233.7 s) tid  27 en1 v 20.0 d  96.3 y  -8.9 vAbs  15.5 gmax  16.8 | CONF | far car on curve | NOT covered | removed
+  26c  4:06.0 (246.0 s) tid  27 en1 v 22.2 d 107.3 y  -0.2 vAbs  21.4 gmax  22.4 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  26c  9:55.9 (595.9 s) tid  39 en1 v 21.0 d  38.9 y   3.3 vAbs  16.3 gmax  20.7 | CONF | lead leaving lane/cut | visionLeadOne@52m | removed
+  26c 10:08.9 (608.9 s) tid  39 en1 v 20.1 d  40.6 y  -4.8 vAbs  16.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@48m | removed
+  26c 10:51.1 (651.1 s) tid  39 en1 v 22.3 d  72.4 y   4.3 vAbs  21.0 gmax  23.1 | CONF | lead leaving lane/cut | visionLeadOne@88m | removed
+  26c 21:25.4 (1285.4 s) tid  51 en0 v 18.9 d 102.5 y   4.5 vAbs   3.9 gmax   5.7 | CONF | far car on curve | NOT covered | removed
+  26f  7:03.2 (423.2 s) tid  30 en1 v 20.3 d  59.8 y  -6.0 vAbs  16.3 gmax  18.7 | CONF | slow/moving car | visionLeadOne@66m | removed
+  270  4:21.6 (261.6 s) tid  63 en0 v 21.6 d  37.6 y  -2.7 vAbs   6.1 gmax  11.6 | CONF | slow/moving car | visionLeadOne@44m | removed
+  271 24:31.6 (1471.6 s) tid  21 en1 v 20.4 d  56.2 y   4.3 vAbs  19.7 gmax  21.1 | CONF | lead leaving lane/cut | visionLeadOne@73m | removed
+  276 13:49.7 (829.7 s) tid   4 en1 v 18.9 d  48.8 y  -0.8 vAbs  14.2 gmax  15.9 | unconf | lead leaving lane/cut | visionLeadOne@77m | removed
+  276 15:46.8 (946.8 s) tid  24 en1 v 19.3 d  80.9 y  -4.4 vAbs  18.8 gmax  19.4 | CONF | lead leaving lane/cut | NOT covered | removed
+  276 17:45.8 (1065.8 s) tid  22 en1 v 18.6 d  70.6 y   0.2 vAbs  18.2 gmax  19.3 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  276 18:16.7 (1096.7 s) tid  22 en1 v 19.7 d  59.7 y  -0.1 vAbs  17.9 gmax  18.7 | CONF | lead leaving lane/cut | visionLeadOne@94m | removed
+  276 18:36.1 (1116.1 s) tid  22 en1 v 17.4 d  37.2 y   0.9 vAbs  14.6 gmax  15.5 | CONF | lead leaving lane/cut | visionLeadOne@63m | removed
+  277  4:09.1 (249.1 s) tid   7 en1 v 25.4 d  75.1 y   1.0 vAbs  19.3 gmax  22.8 | CONF | lead leaving lane/cut | visionLeadOne@104m | removed
+  278  3:53.1 (233.1 s) tid  32 en1 v 22.6 d 107.5 y   2.6 vAbs  15.2 gmax  17.5 | CONF | lead leaving lane/cut | radarLeadOne+0.2s | removed
+  27a  6:00.9 (360.9 s) tid  17 en1 v 14.5 d 117.9 y   0.1 vAbs  10.6 gmax  11.3 | CONF | lead leaving lane/cut | NOT covered | removed
+  27a  7:59.1 (479.1 s) tid  24 en1 v 20.2 d  79.2 y  -0.4 vAbs  17.2 gmax  19.2 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  27a  8:26.7 (506.7 s) tid  10 en1 v 21.5 d  90.0 y  -0.0 vAbs  14.3 gmax  16.4 | unconf | lead leaving lane/cut | NOT covered | removed
+  280 12:52.3 (772.3 s) tid  27 en1 v 12.2 d  44.6 y  -2.5 vAbs   8.3 gmax   8.6 | CONF | slow/moving car | visionLeadOne@58m | removed
+  280 13:14.1 (794.1 s) tid   7 en0 v  8.3 d   6.3 y  -0.8 vAbs   6.2 gmax   7.7 | unconf | lead leaving lane/cut | visionLeadOne@15m | removed
+  280 22:27.1 (1347.1 s) tid  39 en1 v 18.6 d  58.2 y   2.4 vAbs  14.3 gmax  17.7 | CONF | lead leaving lane/cut | visionLeadOne@69m | removed
+  280 31:07.2 (1867.2 s) tid  63 en1 v 11.8 d  31.6 y  -1.4 vAbs   7.5 gmax  12.2 | unconf | lead leaving lane/cut | visionLeadOne@54m | removed
+  280 31:23.9 (1883.9 s) tid  13 en1 v 14.0 d  34.8 y   1.7 vAbs   6.2 gmax  10.0 | CONF | lead leaving lane/cut | visionLeadOne@46m | removed
+  283 12:17.8 (737.8 s) tid   7 en0 v 26.1 d  68.8 y  -1.4 vAbs  19.3 gmax  19.9 | CONF | lead leaving lane/cut | visionLeadOne@99m | removed
+  283 19:17.4 (1157.4 s) tid  13 en1 v 17.3 d  33.3 y  -3.3 vAbs  14.3 gmax  14.9 | CONF | slow/moving car | visionLeadOne@43m | removed
+  284 27:52.1 (1672.1 s) tid  48 en0 v 12.8 d  63.8 y   3.0 vAbs   9.3 gmax  10.3 | CONF | slow/moving car | NOT covered | removed
+  286  6:09.3 (369.3 s) tid  37 en1 v 28.1 d 118.2 y   1.3 vAbs  26.0 gmax  26.7 | CONF | lead leaving lane/cut | NOT covered | removed
+  286  6:28.0 (388.0 s) tid  36 en1 v 24.9 d  56.8 y   2.4 vAbs  20.1 gmax  23.4 | CONF | lead leaving lane/cut | visionLeadOne@71m | removed
+  287  5:24.8 (324.8 s) tid  32 en1 v 22.5 d  58.1 y   1.3 vAbs  19.4 gmax  20.0 | CONF | lead leaving lane/cut | visionLeadOne@85m | removed
+  289  1:21.6 (81.6 s) tid  47 en1 v  6.7 d  15.8 y  -0.7 vAbs   4.1 gmax   4.5 | unconf | lead leaving lane/cut | visionLeadOne@27m | delayed 0.40 s
+  28a  2:43.5 (163.5 s) tid  19 en1 v 19.7 d  79.8 y  -0.2 vAbs  14.6 gmax  15.8 | CONF | lead leaving lane/cut | visionLeadOne@109m | removed
+  28a  8:39.7 (519.7 s) tid  47 en1 v 17.9 d 117.7 y  14.7 vAbs   9.4 gmax  13.4 | unconf | slow/moving car | NOT covered | removed
+  28a 19:49.6 (1189.6 s) tid  50 en1 v 17.7 d  45.1 y   0.0 vAbs  12.0 gmax  13.6 | CONF | lead leaving lane/cut | visionLeadOne@68m | removed
+  28b  6:37.4 (397.4 s) tid   8 en1 v 13.8 d  45.7 y  -3.9 vAbs  13.2 gmax  14.8 | CONF | lead leaving lane/cut | visionLeadOne@59m | removed
+  28f 13:46.5 (826.5 s) tid   6 en1 v 19.0 d  36.5 y   5.7 vAbs  15.1 gmax  16.3 | CONF | lead leaving lane/cut | visionLeadOne@44m | removed
+  28f 14:54.0 (894.0 s) tid   6 en0 v  9.5 d  23.3 y   1.9 vAbs   8.0 gmax   8.8 | CONF | lead leaving lane/cut | visionLeadOne@41m | removed
+  28f 15:20.4 (920.4 s) tid  19 en1 v 21.8 d  55.8 y  -3.5 vAbs  15.3 gmax  17.2 | CONF | lead leaving lane/cut | visionLeadOne@67m | removed
+  290 10:45.6 (645.6 s) tid  22 en1 v 31.3 d 101.7 y  -0.2 vAbs  24.4 gmax  28.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  290 11:05.6 (665.6 s) tid   2 en1 v 28.7 d  60.4 y  -0.1 vAbs  22.3 gmax  24.4 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  292  5:06.0 (306.0 s) tid  33 en1 v 19.8 d  69.8 y   2.5 vAbs  15.2 gmax  16.0 | CONF | lead leaving lane/cut | visionLeadOne@96m | removed
+  292 10:24.6 (624.6 s) tid   1 en1 v 21.8 d 120.0 y  -1.1 vAbs  20.5 gmax  22.9 | unconf | lead leaving lane/cut | NOT covered | removed
+  292 19:40.9 (1180.9 s) tid  15 en0 v 19.8 d  48.1 y  -2.4 vAbs  10.0 gmax  14.6 | unconf | slow/moving car | NOT covered | removed
+  294 12:01.7 (721.7 s) tid  13 en1 v 19.5 d  45.4 y   3.4 vAbs  17.4 gmax  17.8 | CONF | lead leaving lane/cut | visionLeadOne@55m | removed
+  297  7:16.3 (436.3 s) tid  25 en0 v 13.1 d  16.1 y   2.1 vAbs   8.2 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@32m | removed
+  297 13:22.3 (802.3 s) tid   8 en1 v 22.6 d 107.6 y   1.2 vAbs  12.7 gmax  14.3 | CONF | lead leaving lane/cut | radarLeadOne+0.3s | removed
+  297 23:24.9 (1404.9 s) tid  14 en1 v 20.1 d  74.0 y  -0.8 vAbs  16.5 gmax  17.9 | CONF | lead leaving lane/cut | NOT covered | removed
+  297 24:55.1 (1495.1 s) tid  42 en1 v 24.2 d  82.8 y  -3.8 vAbs  20.3 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@97m | removed
+  297 45:49.3 (2749.3 s) tid  34 en1 v 17.3 d  40.3 y  -3.3 vAbs  16.5 gmax  19.1 | CONF | lead leaving lane/cut | visionLeadOne@47m | removed
+  298  9:06.6 (546.6 s) tid  22 en1 v 24.4 d  93.8 y  -0.2 vAbs  19.1 gmax  20.1 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 16:58.3 (1018.3 s) tid   2 en1 v 20.3 d  25.6 y   0.6 vAbs   4.3 gmax   7.7 | unconf | slow/moving car | NOT covered | removed
+  298 17:02.3 (1022.3 s) tid  60 en1 v 19.3 d 106.3 y   0.2 vAbs  12.3 gmax  14.5 | CONF | lead leaving lane/cut | NOT covered | removed
+  298 17:44.5 (1064.5 s) tid  15 en1 v 19.6 d  81.3 y  -8.7 vAbs  16.1 gmax  17.2 | CONF | lead leaving lane/cut | radarLeadOne+0.1s | removed
+  298 21:15.9 (1275.9 s) tid   9 en1 v 19.1 d  54.9 y  -2.9 vAbs  14.0 gmax  14.3 | CONF | lead leaving lane/cut | visionLeadOne@64m | removed
+  299 11:23.9 (683.9 s) tid  26 en1 v 30.0 d  69.4 y  -0.1 vAbs  25.9 gmax  27.3 | CONF | lead leaving lane/cut | visionLeadOne@105m | removed
+  299 21:37.4 (1297.4 s) tid  54 en1 v 16.5 d  44.1 y   0.8 vAbs  12.4 gmax  12.8 | unconf | lead leaving lane/cut | visionLeadOne@56m | removed
+  299 31:22.5 (1882.5 s) tid  15 en1 v 13.8 d  17.1 y   0.5 vAbs   7.4 gmax  12.7 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+  299 42:12.4 (2532.4 s) tid  57 en1 v 24.3 d  67.1 y  -4.3 vAbs  19.5 gmax  22.3 | CONF | lead leaving lane/cut | visionLeadOne@74m | removed
+== emin 0.3: removed or delayed real-car adoptions (route time tid en v d y g0 gmax0 | conf | category | leadOne coverage | delay)
+  25e 11:10.6 (670.6 s) tid  56 en1 v 22.3 d  96.8 y   8.2 vAbs   6.0 gmax   9.2 | CONF | far car on curve | NOT covered | removed
+  270  4:21.6 (261.6 s) tid  63 en0 v 21.6 d  37.6 y  -2.7 vAbs   6.1 gmax  11.6 | CONF | slow/moving car | visionLeadOne@44m | removed
+  280 13:14.1 (794.1 s) tid   7 en0 v  8.3 d   6.3 y  -0.8 vAbs   6.2 gmax   7.7 | unconf | lead leaving lane/cut | visionLeadOne@15m | removed
+  28a 28:17.7 (1697.7 s) tid  49 en0 v  4.1 d  26.3 y  -2.0 vAbs   1.5 gmax   1.9 | CONF | stopped/near-stationary | NOT covered | removed
+  298 16:58.3 (1018.3 s) tid   2 en1 v 20.3 d  25.6 y   0.6 vAbs   4.3 gmax   7.7 | unconf | slow/moving car | NOT covered | removed
+  299 31:22.5 (1882.5 s) tid  15 en1 v 13.8 d  17.1 y   0.5 vAbs   7.4 gmax  12.7 | unconf | lead leaving lane/cut | visionLeadOne@30m | removed
+
+=== tab.txt (all 130 baseline adoption events) ===
+route  time     tid en  v    d0    y0    g0  gmax0  gu0  emin  |vw| conf wasL headlag L@onset | g1.5 g2.5 g3.5 gmax1.5 gmax2.5 gmax3.5 gu1.5 gu2.5 gu3.5 emin0.2 emin0.3 emed0.2 emed0.3
+293 22:59.3  55 0  5.0  35.1   3.7   0.1   1.2   0.4 0.98   0.7 Ch 0   0.7      - | +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+25f 17:54.5  35 0  4.2  21.4   0.6   0.1   2.3   0.7 0.28   1.2 - 1   nan    V37 | +0.00 +0.00 +0.00   X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.15 +0.00 +0.00
+232 19:07.0  29 1 12.7  44.7   0.1   0.2   2.5   0.8 0.74   0.3 Chv 0   0.1    V52 | +0.00 +0.00 +0.00   X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+292  0:46.2   6 0  7.3  33.6   3.6  -0.4   8.2   0.5 0.97   1.2 Ch 0   1.0      - | +0.00 +0.00 +0.00   X   +0.45 +0.45 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+297 46:56.7  45 1 19.2  86.3  -2.8  -0.6   5.5   6.0 0.98   0.2 Ch 0   0.9   V118 | +0.00 +0.00 +0.00 +0.55 +0.50 +0.50   X     X     X   +0.00 +0.00 +0.00 +0.00
+25f  2:45.8  33 1  7.1  21.6  -2.5   0.7   1.3   0.7 0.98   0.7 Ch 1   0.4    V27 | +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+23a 15:56.1  15 0 12.8  65.9   0.9   0.8   2.9   0.8 0.94   0.6 Ch 1   0.0      - | +0.00 +0.00 +0.00   X     X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+283 31:49.7  61 1 19.6  73.6   1.1   0.9   1.8   6.4 0.54   0.9 Ch 1   0.4   V102 | +0.00 +0.00 +0.00   X   +0.00 +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00
+297 31:14.0   6 1 13.5  75.6 -13.9   1.0   1.4   0.8 0.94   1.0 Chv 0   3.1      - | +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+27e  4:34.9  21 0 11.3  59.9  -1.8  -1.0   3.0   1.3 0.72   1.2 Ch 1   0.1    V77 | +0.00 +0.00 +0.00   X     X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+232  4:39.9  35 0 16.7  41.3   3.2   1.2   2.5   5.2 0.98   0.9 Ch 1   0.1    V53 | +0.00 +0.00 +0.00   X   +0.00 +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00
+298 23:20.0  20 0 12.5  66.8  -8.3  -1.3   4.5   1.4 0.72   1.6 Ch 0   1.4      - | +0.00 +0.00 +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+261  6:51.7   7 1 10.5  52.4   2.5   1.5   2.2   0.9 0.95   1.5 Ch 1   0.9      - | +0.00 +0.00 +0.00   X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+28a 28:17.7  49 0  4.1  26.3  -2.0   1.5   1.9   0.4 0.18   1.6 Ch 0   3.1      - | +0.05 +0.00 +0.00   X   +0.00 +0.00 +0.00 +0.00 +0.00   X     X   +0.00 +0.00
+239  0:52.2  11 0  7.2  41.9   4.8   1.6   1.8   0.6 0.87   1.7 Ch 0   2.2      - | +0.30 +0.00 +0.00 +1.75 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+283  0:34.6   8 0  4.5  14.6   0.7   1.9   2.3   0.7 0.87   1.9 Ch 0   2.2      - | +0.95 +0.00 +0.00   X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+26c  3:28.8  55 0 15.8  55.6   3.4  -2.1   2.3   3.6 0.74   1.9 Ch 1   0.0    V66 |   X   +0.00 +0.00   X   +0.00 +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00
+284  9:28.4  54 0  5.2  15.6  -1.3   2.4   3.2   3.9 0.51   2.6 - 1   nan    V41 |   X   +0.00 +0.00   X     X   +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00
+260  7:20.1  47 0 17.4  69.3   2.0   2.4   7.2   5.1 0.53   2.3 Ch 1   0.0    V93 |   X   +0.00 +0.00   X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297 30:24.8  42 1  9.2  28.6   4.9  -2.7   5.4   0.6 0.84   3.1 - 0   nan      - | +0.15 +0.05 +0.00   X     X     X   +0.00 +0.00 +0.00 +0.00 +0.00 +0.00 +0.00
+25f  0:57.0  43 1  9.7  26.8   1.0   3.1   8.0   9.3 0.98   3.1 - 1   nan    V45 |   X     X   +0.00   X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263  8:00.2  46 0 15.2  59.9  -2.6   3.1   4.4   4.4 0.61   3.3 Ch 1   0.0    V83 | +0.50 +0.35 +0.00   X     X   +0.70   X     X   +0.70 +0.00 +0.00 +0.00 +0.00
+26b 25:52.0  47 1 19.4  98.3   2.3   3.3   8.0   9.2 0.98   3.0 Ch 0   0.9      - |   X     X   +0.00   X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263  0:47.7  56 0 15.0  96.5  -0.4   3.7   5.8   7.7 0.87   4.0 Ch 0   2.1      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c 21:25.4  51 0 18.9 102.5   4.5   3.9   5.7   5.3 0.53   4.5 Ch 0   1.4      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+289  1:21.6  47 1  6.7  15.8  -0.7   4.1   4.5   4.6 0.73   4.3 - 1   nan    V27 |   X     X   +0.40   X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+266 28:10.7   7 0  9.3  11.9  -1.2   4.2   7.1   5.9 0.98   4.3 - 1   nan    V21 |   X     X   +0.20   X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+298 16:58.3   2 1 20.3  25.6   0.6   4.3   7.7   6.8 0.00   4.6 - 0   nan      - |   X     X     X     X     X     X     X     X     X     X     X     X     X  
+268  5:27.0  18 1 13.6  34.2   2.7   5.7   8.1  11.9 0.98   5.8 Ch 1   0.1    V45 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+258 55:29.8  18 1 10.1  27.0  -0.6   5.9   7.7   6.5 0.98   5.7 Ch 1   0.1    V46 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25e 11:10.6  56 1 22.3  96.8   8.2   6.0   9.2   7.9 0.23   6.0 Ch 0   2.3      - |   X     X     X     X     X     X     X     X     X   +0.00   X   +0.00 +0.00
+270  4:21.6  63 0 21.6  37.6  -2.7   6.1  11.6   8.5 0.00   6.7 Ch 0   0.7    V44 |   X     X     X     X     X     X     X     X     X     X     X   +0.00 +0.00
+280 13:14.1   7 0  8.3   6.3  -0.8   6.2   7.7   6.6 0.00   6.0 - 1   nan    V15 |   X     X     X     X     X     X     X     X     X     X     X   +0.00 +0.00
+280 31:23.9  13 1 14.0  34.8   1.7   6.2  10.0   8.7 0.86   6.6 Ch 1   0.1    V46 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263  6:16.4  25 1 13.0  37.1  -4.1   6.5   8.2   8.0 0.53   6.8 Ch 1   0.2      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e 44:02.7  12 1  9.3  16.2  -0.6   6.9  10.5   8.3 0.53   6.6 Ch 1   0.2    V29 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+232 21:53.7  37 0  8.7  19.9   1.1   6.9   9.0   9.0 0.99   7.2 Ch 1   0.1    V34 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+267 10:07.3  48 0 15.3  58.8  -3.0   6.9   9.0   8.4 0.98   7.0 Ch 1   0.0      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e 43:26.1  58 1  8.6  26.4  -1.0   7.2   8.4   6.9 0.99   7.2 - 1   nan    V44 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25b 22:36.7  43 1  8.3  18.7  -0.7   7.4   8.1   8.1 0.99   7.4 - 1   nan    V31 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+299 31:22.5  15 1 13.8  17.1   0.5   7.4  12.7  11.7 0.30   7.6 - 1   nan    V30 |   X     X     X     X     X     X     X     X     X   +0.00   X   +0.00 +0.00
+280 31:07.2  63 1 11.8  31.6  -1.4   7.5  12.2   8.8 0.73   7.6 - 1   nan    V54 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28f 14:54.0   6 0  9.5  23.3   1.9   8.0   8.8   8.3 0.98   8.2 Ch 1   0.1    V41 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297  7:16.3  25 0 13.1  16.1   2.1   8.2  12.8  12.6 0.95   8.4 - 1   nan    V32 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+280 12:52.3  27 1 12.2  44.6  -2.5   8.3   8.6  12.1 0.98   8.5 Ch 0   0.6    V58 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+268  9:04.2  25 1 22.6  65.8   4.7   8.9  11.8  14.8 0.98   8.6 Chv 1   1.4    V73 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+284 27:52.1  48 0 12.8  63.8   3.0   9.3  10.3   9.0 0.98   9.2 Ch 0   0.6      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28a  8:39.7  47 1 17.9 117.7  14.7   9.4  13.4  13.0 0.85   9.8 - 0   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+258 66:28.7  20 1 13.6  68.2   0.2   9.7  11.9  10.1 0.85   9.7 Ch 1   0.0      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+292 19:40.9  15 0 19.8  48.1  -2.4  10.0  14.6  11.3 0.54  10.2 - 0   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263  0:17.0  10 1 13.6  30.6  -0.7  10.1  10.3   9.9 0.91   9.7 Ch 1   0.0    V53 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+27a  6:00.9  17 1 14.5 117.9   0.1  10.6  11.3  12.8 0.87  10.7 Ch 1   2.7      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25f 22:04.5  55 0 15.4  73.6   1.4  11.3  13.1  13.7 0.54  11.3 - 0   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+260  9:08.3  35 1 16.2  44.7   4.0  11.5  13.0  14.1 0.98  11.4 Chv 1   0.0    V53 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+20c  5:05.4  63 0 14.6  11.8  -1.0  11.5  11.9  11.7 0.99  11.5 - 1   nan    V21 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+232 18:19.2  34 1 17.7 112.4  -2.0  11.9  13.8  15.1 0.97  11.9 Ch 0   0.0      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+20c 13:06.7  34 1 13.8  62.9   0.2  12.0  13.1  12.7 0.95  12.1 Ch 1   0.9    V90 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28a 19:49.6  50 1 17.7  45.1   0.0  12.0  13.6  15.3 0.51  12.0 Ch 1   0.3    V68 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+266 14:29.4  36 1 17.8  37.3  -3.4  12.1  16.7  16.1 0.98  12.3 Chv 1   0.1    V44 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+298 17:02.3  60 1 19.3 106.3   0.2  12.3  14.5  15.0 0.97  12.5 Ch 1   1.4      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+299 21:37.4  54 1 16.5  44.1   0.8  12.4  12.8  12.1 0.98  12.4 - 1   nan    V56 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26b 10:29.9  55 1 21.4 113.6  -1.2  12.7  13.9  14.7 0.74  13.0 Ch 0   0.2      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297 13:22.3   8 1 22.6 107.6   1.2  12.7  14.3  13.4 0.61  12.6 Ch 1   0.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+237 18:26.6  11 1 18.6  64.4  -6.2  12.9  14.5  15.9 0.96  13.2 Chv 1   3.2    V74 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+237  3:13.2   6 1 21.7  65.8   0.0  13.0  13.7  11.0 0.98  13.2 Cv 1   nan    V73 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28b  6:37.4   8 1 13.8  45.7  -3.9  13.2  14.8  11.8 0.73  13.4 Chv 1   0.1    V59 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+260 10:27.6  13 1 21.9  89.5   1.7  13.5  15.9  14.6 0.98  13.9 Ch 1   0.0      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+298 21:15.9   9 1 19.1  54.9  -2.9  14.0  14.3  14.6 0.87  14.1 Chv 1   0.7    V64 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+276 13:49.7   4 1 18.9  48.8  -0.8  14.2  15.9  14.2 0.87  14.2 - 1   nan    V77 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+283 19:17.4  13 1 17.3  33.3  -3.3  14.3  14.9  15.9 0.54  14.8 Ch 0   1.2    V43 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+27a  8:26.7  10 1 21.5  90.0  -0.0  14.3  16.4  16.6 0.87  14.8 - 1   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+280 22:27.1  39 1 18.6  58.2   2.4  14.3  17.7  16.0 0.98  14.4 Chv 1   0.0    V69 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28a  2:43.5  19 1 19.7  79.8  -0.2  14.6  15.8  14.7 0.98  14.5 Ch 1   1.5   V109 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+276 18:36.1  22 1 17.4  37.2   0.9  14.6  15.5  15.1 0.99  14.3 Ch 1   0.1    V63 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+262  2:33.7  59 1 17.5  67.2  -2.4  15.0  16.3  15.4 0.98  15.2 Chv 1   0.1    V74 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28f 13:46.5   6 1 19.0  36.5   5.7  15.1  16.3  16.4 0.98  15.3 Chv 1   0.2    V44 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+232 10:39.7   8 1 19.5  79.3  -0.9  15.1  17.2  15.6 0.98  14.8 Ch 1   0.7   V108 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+292  5:06.0  33 1 19.8  69.8   2.5  15.2  16.0  16.9 0.49  15.4 Ch 1   0.0    V96 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+278  3:53.1  32 1 22.6 107.5   2.6  15.2  17.5  18.9 0.98  15.3 Ch 1   0.2      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+28f 15:20.4  19 1 21.8  55.8  -3.5  15.3  17.2  19.2 0.97  15.4 Chv 1   2.0    V67 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+236 14:04.3  61 1 16.1  42.5   4.8  15.3  16.5  14.9 0.99  16.0 Chv 1   0.1    V48 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c  3:53.7  27 1 20.0  96.3  -8.9  15.5  16.8  17.9 0.61  15.6 Ch 0   3.4      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+236 38:18.6  41 1 21.8 119.5  -3.9  16.0  20.2  18.4 0.87  16.1 Ch 1   3.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e  5:26.8  44 1 16.7  62.9  -3.5  16.0  16.6  14.6 0.98  16.1 Ch 0   0.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+298 17:44.5  15 1 19.6  81.3  -8.7  16.1  17.2  16.9 0.99  16.1 Ch 1   0.1      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+266 15:04.4  49 1 19.8 106.7   2.0  16.1  18.6  16.3 0.93  16.1 - 0   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c 10:08.9  39 1 20.1  40.6  -4.8  16.3  17.7  18.6 0.98  16.1 Chv 1   1.0    V48 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+24f  5:55.3  48 1 23.2  78.5  -5.1  16.3  20.4  19.1 0.86  16.7 Chv 1   0.1   V101 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c  9:55.9  39 1 21.0  38.9   3.3  16.3  20.7  19.3 0.94  17.0 Ch 1   0.3    V52 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26f  7:03.2  30 1 20.3  59.8  -6.0  16.3  18.7  16.5 0.73  16.8 Chv 0   0.3    V66 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e  3:36.2  37 1 19.0  38.2  -4.0  16.4  16.8  16.6 0.99  16.6 Chv 1   0.2    V44 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297 45:49.3  34 1 17.3  40.3  -3.3  16.5  19.1  17.2 0.98  16.9 Chv 1   0.1    V47 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297 23:24.9  14 1 20.1  74.0  -0.8  16.5  17.9  18.4 0.96  16.6 Ch 1   3.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+266  6:21.5   9 1 24.7 113.6   2.8  16.6  17.9  19.3 0.40  16.5 Ch 0   1.7      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+268 11:16.1  37 1 20.0  50.4  -3.8  17.2  17.4  15.5 0.72  17.5 Chv 1   0.1    V59 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263  4:57.7  50 1 21.5  47.4   0.8  17.2  18.7  18.9 0.99  16.9 Ch 0   1.1    V78 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+27a  7:59.1  24 1 20.2  79.2  -0.4  17.2  19.2  18.4 0.87  17.3 Ch 1   0.1   V109 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e 36:36.4  42 1 22.6 111.6  -3.2  17.4  18.5  20.3 0.86  17.4 Ch 0   2.1      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+294 12:01.7  13 1 19.5  45.4   3.4  17.4  17.8  17.8 0.98  17.8 Ch 1   0.0    V55 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25f 11:40.5  59 1 21.3  35.9   0.9  17.4  17.9  18.7 0.99  17.6 - 1   nan    V60 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+239 10:31.4  21 1 24.3  61.6  -3.8  17.6  23.7  21.6 0.98  17.8 Chv 1   0.3    V72 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+276 18:16.7  22 1 19.7  59.7  -0.1  17.9  18.7  17.9 0.86  17.7 Ch 1   2.6    V94 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+276 17:45.8  22 1 18.6  70.6   0.2  18.2  19.3  16.3 0.98  18.2 Ch 1   0.1    V99 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+236 36:46.4  40 1 23.6  69.0   5.1  18.8  20.6  20.8 0.87  18.8 Chv 1   0.1    V75 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+276 15:46.8  24 1 19.3  80.9  -4.4  18.8  19.4  17.0 0.98  19.0 Ch 1   0.9      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+298  9:06.6  22 1 24.4  93.8  -0.2  19.1  20.1  20.5 0.61  19.7 Ch 1   0.1      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+283 12:17.8   7 0 26.1  68.8  -1.4  19.3  19.9  18.4 0.53  18.5 Ch 1   0.2    V99 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+277  4:09.1   7 1 25.4  75.1   1.0  19.3  22.8  21.6 0.87  19.1 Ch 1   0.2   V104 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+287  5:24.8  32 1 22.5  58.1   1.3  19.4  20.0  18.9 0.98  19.7 Ch 1   0.1    V85 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+299 42:12.4  57 1 24.3  67.1  -4.3  19.5  22.3  21.5 0.99  19.5 Chv 1   0.1    V74 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+23e 14:34.6  28 1 20.3 107.6  -1.5  19.6  20.3  17.4 0.54  19.5 Ch 1   2.9      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25e 13:56.6  13 1 22.0  57.9   0.0  19.6  21.0  20.1 0.99  19.2 Ch 1   0.2    V85 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+271 24:31.6  21 1 20.4  56.2   4.3  19.7  21.1  18.0 0.99  20.0 Chv 1   1.3    V73 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+237 17:55.5  22 1 23.6 105.7   3.9  20.0  21.3  20.2 0.61  20.2 - 1   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+286  6:28.0  36 1 24.9  56.8   2.4  20.1  23.4  23.9 0.54  20.2 Ch 1   0.1    V71 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+297 24:55.1  42 1 24.2  82.8  -3.8  20.3  22.3  20.5 0.98  20.6 Chv 1   0.1    V97 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+292 10:24.6   1 1 21.8 120.0  -1.1  20.5  22.9  19.8 0.52  20.2 - 1   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25d  1:34.2  19 1 22.3 113.5   0.3  20.6  21.5  20.1 0.99  20.7 Ch 1   0.5      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+245  6:16.9  42 0 22.9  10.6   0.9  20.7  20.8  20.3 0.99  20.9 - 1   nan    V20 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+261  2:07.8  18 1 24.7 117.9   0.2  20.7  22.5  23.6 0.99  20.9 Ch 0   0.4      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+263 14:06.2  51 1 21.8  81.4  -0.3  20.8  21.3  19.8 0.98  20.8 Ch 1   0.3   V112 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c 10:51.1  39 1 22.3  72.4   4.3  21.0  23.1  20.1 0.98  21.1 Ch 1   1.6    V88 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+237 13:24.1  58 1 25.1 115.1  -0.2  21.1  21.9  23.6 0.54  21.3 - 0   nan      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26c  4:06.0  27 1 22.2 107.3  -0.2  21.4  22.4  20.2 0.98  21.9 Ch 1   0.1      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+290 11:05.6   2 1 28.7  60.4  -0.1  22.3  24.4  25.5 0.98  21.7 Ch 1   2.3    V97 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+26b 39:58.3  32 1 22.7  77.3  -3.6  22.4  22.8  20.4 0.98  22.4 Ch 1   0.1    V95 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+25e 13:27.9  13 1 24.7 106.6  -0.4  23.6  24.7  21.4 0.98  23.7 Ch 1   0.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+290 10:45.6  22 1 31.3 101.7  -0.2  24.4  28.5  26.6 0.99  24.3 Ch 1   1.3      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+299 11:23.9  26 1 30.0  69.4  -0.1  25.9  27.3  27.8 0.86  25.9 Ch 1   0.7   V105 |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
+286  6:09.3  37 1 28.1 118.2   1.3  26.0  26.7  24.6 0.54  26.1 Ch 1   1.5      - |   X     X     X     X     X     X     X     X     X   +0.00 +0.00 +0.00 +0.00
