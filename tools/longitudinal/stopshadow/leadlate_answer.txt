@@ -1,0 +1,9 @@
+00000297--f971b5896f tid 6 inc 13: why leadOne arrived only at ~30 m (replay of current radard over seg 31, /tmp/rv/stopshadow/leadlate/rep.py -> rep.pkl; replay leadOne matches the logged leadOne to within one step)
+
+Mostly model-side. Two model gates in selfdrive/controls/radard.py, one after the other. No Bosch-A gate is involved: radar_interface published tid 6 on every sweep from 94 m, and the low-speed override (radard.py:1021, v_ego < 4 m/s and dRel < 25) never applies at 9-14 m/s.
+
+1) 1872.7-1875.9 s, 94 -> 45 m: model probability gate, radard.py:1172/1181, `filtered_lead_prob > lead_detection_probability` (0.35). leadsV3[0].prob was 0.00 until 1874.4, then 0.01-0.34. No leadOne at all, radar or vision. The model lead was also somewhere else: x 52-74 m against radar 94-60 m, and v 4-11 m/s against a stopped target.
+2) 1875.93-1877.08 s, 45 -> 30 m: prob clears 0.35 at 1875.93. match_vision_to_track's argmax (radard.py:1099) picks tid 3 instead. tid 3 is a second return about 3.5 m further right at the same range, and it sits closer to the model's lateral y. leadOne = tid 3 from 43.5 m. tid 6 fails lat_sane at radard.py:1077: |yRel + lead.y| < max(1.0, yStd). dy was 1.7-3.2 m against a 1.0-1.6 m limit (dist and vel pass). At 1876.68 tid 3 also fails lat (dy -1.7 .. -2.5), and leadOne goes vision-only at 38-40 m for 0.45 s. tid 6 dy there is 1.05-1.44 against 1.00.
+3) 1877.13 s, d 30.4 m: tid 6 dy drops to 0.92 < 1.00 (yStd 0.67) -> strict match -> leadOne = tid 6.
+
+In the current tree, ONPATH_RADAR_ADOPT would have published tid 6 as leadOnpath from 1874.03 (75.6 m), with capped authority (replay only). The logged drive has no leadOnpath.

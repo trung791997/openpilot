@@ -1,0 +1,87 @@
+STOPPED-TRACK SHADOW TEST: offline log/replay analysis only. No repo edits.
+Tool: tools/longitudinal/bosch_a_tracks.py @ ae6ae25e8. Extracts for 20c 232 236 23e 277 292 299 (and /tmp/bat_25e, /tmp/bat_297)
+were built from the repo-path file. 245 258 263 26b 271 283 284 28b 293 298 were built from the byte-identical copy
+/tmp/rv/stopshadow/bosch_a_tracks.py.
+Corpus (19 routes, stock and OP long, night 277/292): 0000020c--4712c9cce5 00000232--3a01619ce5 00000236--60bfb34cb1 0000023e--9a40b07f55
+00000245--1356bb0355 00000258--626242f48b 0000025e--919b58ab81 00000263--b8afdda0eb 0000026b--92b1979afa 00000271--4e9b9502db
+00000277--2f5fd64a58 00000283--fe4e75f88b 00000284--1109db7c4c 0000028b--ed67104f14 00000292--72e364dd62 00000293--9d152a3cdc
+00000297--f971b5896f 00000298--c4d2a4acbc 00000299--cfcac519b7
+Confirmed stopped = 2 s centered LSQ of d_rel, >=18 pts over >=1.5 s, mean vEgo>5, mean|yaw|<0.03,
+|vEgo+slope-yaw*y| < 0.4+0.02 vEgo, fit rms<0.35 m, >=12 confirmed rows. No U11 or NC is used. 72 incarnations on 15 routes.
+Sign check: -vEgo + yaw*y (both left +) holds (D below: dy/dt = -yaw*x, scale +1.06).
+Files: g_out.txt flag_out.txt af_out.txt d2_out.txt, stopped_tracks.csv (per track), cases.csv, case_*.svg, leadlate/answer.txt.
+
+================ G: NORMALIZED_CLOSING (F2) ================
+PLAIN VERDICT: NC is a one-sided (closing-only) inverse time-to-collision channel. It keeps tracking closing speed
+beyond the U11 +/-13.5 rail: NC*(d+c) reads about 0.92-0.95 of truth at 13.5-60 m/s closing, with no rail. Its error
+grows with range because of the 1/64 quantization, about 0.016*d m/s per LSB. On stopped targets it only beats U11
+inside ~50 m. HOLDS as an uncapped closing channel; it is not a drop-in vRel.
+- Fit truth = k*NC*(d+c), with k and c free. Fit on U11-unrailed rows, 95% CI from a track bootstrap:
+  stopped reference (72 tracks, 15 routes): k -1.03 [-1.15,-0.93], c +1.07 m [-1.34,+3.31] on d_rel (parser, includes the DBC -3.0 m);
+     c -1.93 m [-4.36,+0.76] on raw RANGE_RAW/16. The k=-1 / c=-2.3 preliminary is inside the CI on the raw reference, and c is
+     poorly constrained (c and k trade off). Not labelled "matches Bosch C".
+  moving check, 1 s LSQ range rate, age>2 s, closing>1 m/s (3868 tracks): k -0.80 [-0.85,-0.76], c +3.6 m [+2.5,+5.2] (d_rel) / +0.6 (raw).
+     Near-lane (|y|<3) moving: k -0.72, c +4.5. Fitting closing AND opening rows is meaningless (k -0.52), because NC is 0 on opening targets.
+  Ratio of pred/truth by closing speed (k,c from stopped): stopped 3-8 0.96, 8-13.5 0.93, 13.5-20 0.92, 20-30 0.77 (n 57);
+     moving closing 3-8 0.94, 8-13.5 0.94, 13.5-20 0.95, 20-30 0.93, 30-60 0.91. NC max seen 2.2, far below the +8 field limit.
+- Rail test (persistent age>2 s, U11 railed, truth closing >13.5): median signed error, U11 vs NC.
+  stopped (728 rows/20 tracks): 15-30 m U11 +2.75 vs NC -0.36; 30-50 +1.87 vs +0.75; 50-70 +1.25 vs +1.92; 70-100 +0.97 vs +1.94; 100+ +1.71 vs +2.79.
+  moving closing (18897 rows/1450 tracks, mostly oncoming): 15-30 +11.4 vs +3.6; 30-50 +13.4 vs +6.2; 50-70 +10.6 vs +5.7; 70-100 +7.4 vs +5.8.
+- NC==0: opening or not-closing targets read 0 about 90% of the time (one-sided). With closing >1 m/s and age>2 s the NC=0 rate is
+  0-5 m 0.39, 5-10 0.28, 10-13 0.20, 13-16 0.17, 20-40 0.13, 40-80 0.18, 80+ 0.35.
+  By age in sweeps (all rows): 0-3 sw 0.39, then 0.33-0.35 up to 50 sw. The rate does not fall with age; NC is not a "newborn = 0" field.
+  The NC-only-beyond-13 m rule is FALSIFIED as a hard cut: NC is nonzero below 13 m when closing.
+- NC_SIGMA_RAW: on stopped tracks the error rises with sigma. Relative error: raw 0-16 about 0.09-0.11, 16-32 0.13, >=32 0.27 (HOLDS as a confidence).
+  On moving closing tracks the relative error also rises (0.28 -> 0.61), but the absolute error is mixed. Use it as a gate, e.g. sigma < 32.
+- B-ramp (time from birth until each stays within 1 m/s of the LSQ rate for 1 s), by closing at birth. 136 born tracks, medians:
+  <5 U11 2.3 s / NC 4.6 s; 5-10 U11 5.2 / NC 3.4; 10-15 U11 5.6 / NC 3.9; >15 U11 4.6 / NC 5.8 (never: 31-67%). NC lagging U11 (as on
+  25e tid 59) is not general; at 5-15 m/s NC converges first.
+
+================ ITEM 2: stopped flag (|vEgo+slope-yaw*y| < a+b*vEgo, held 0.25 s) ================
+Default a=1.0, b=0.02, 0.25 s window (>=4 pts). Full table and cases in flag_out.txt and cases.csv.
+- 00000297 tid 6 inc 13: flag held at 1873.90 s / 76 m (0.5 s window: 1873.5 / 82 m), with U11 railed.
+  Lead one at 1877.12 / 30 m; OP decel onset 1876.20 / 39 m. The flag leads lead one by 3.2 s / 46 m.
+  The strict confirmation FAILS on this track: it was approached in a curve (yaw up to 0.08, |y| up to 13 m) and vEgo fell below 5.
+  Why lead one came late (replay of current radard, leadlate/answer.txt): model-side, not radar.
+  (1) radard.py:1172/1181, prob gate 0.35: the model lead prob was 0.00-0.34 until 1875.9 s (94->45 m).
+  (2) match_vision_to_track lat_sane radard.py:1077, |yRel+lead.y| < max(1.0, yStd): tid 3 was matched first. tid 6 passes at 1877.13 / 30.4 m.
+  No Bosch-A maturity or U11 gate. The replayed ONPATH_RADAR_ADOPT would have published it from 75.6 m.
+  Consistent with Steve: first camera association at 26.5 m.
+- 0000025e tid 59 (NEGATIVE control, a car slowing to a stop): the 0.25 s flag fired at 722.3 s / 115 m, which is FALSE-stationary.
+  The 0.5 s window fired at 728.2 / 26 m. The short window is not sufficient on its own for far, slowly moving targets.
+- Corpus in-lane stopped approaches (10). In 8 of 10, lead one or the driver/stock decel came before or within 0.5 s of the flag (a stopped queue that was already led).
+  Flag earlier than lead one: 00000258 tid 26 (91 m vs 76 m, +1.5 s); 0000026b tid 16 (95 m, never lead one).
+  Stock reaction: no stock-ACC decel onset (<-1) inside these windows. Where decel happened, the driver was braking or OP long was active.
+- False-stationary rate (rows), flag held, vision-associated vLead>5 (model only, no radar exclusion), vEgo>5:
+  0.25 s a=1.0 b=0.02: 0-40 m 0.0000, 40-80 0.0002, 80+ 0.0004; a=1.5 b=0.05: 0.0001/0.0005/0.0021; a=0.5 b=0: 0/0/0.
+  0.5 s a=1.0 b=0.02: 0/0.0002/0.0009. Radar slow movers (1 s |vAbs| 3-8): 0.25 s default 0.0018, a=1.5 b=0.05 0.0103.
+  TP on confirmed-stopped rows: 0.25 s default 0.43; 0.5 s default 0.56; 0.5 s a=1.5 b=0.05 0.80.
+  The reset/no-reset variants are identical here (sat-hold brk 3 is rare inside these windows).
+  Caveat: the FS rates are row-level and the confirmed set is range-derived, so TP is a lower bound for noise and not held out.
+
+================ A-F, H, I, J ================
+A. Assumption: the +/-13.5 rail is a clamp, not a Doppler wrap. Prediction (clamp): U11 sits at the rail when closing >14.
+   Measured: 502 rows / 18 stopped tracks, 100% at the rail, raw 0, 0% at truth+27. Verdict: HOLDS (clamp). Routes: corpus.
+B. Assumption: U11 is a tracker estimate, not raw Doppler. Prediction: lag vs the vEgo-derived stopped reference during |aEgo|>1.
+   Measured: best lag 0.50 s (med|err| 0.74 -> 0.25), vs the range slope at 0.10 s. The ramp from birth is 2-6 s (G above).
+   Verdict: HOLDS (filtered, ~0.5 s lag).
+C. Assumption: dRel is longitudinal x, not radial. Held-out off-axis rows (10 tracks, cos med 0.992): x-model med|err| 0.534 vs radial 0.530.
+   Verdict: INCONCLUSIVE. The geometry difference is below the noise; we need |y/d|>0.3 at speed.
+D. Assumption: yRel sign and scale; dy/dt = -yaw*x in turns, on tracks confirmed on straights.
+   Measured: scale 1.06 [0.99,1.17], corr 0.99 (53 rows / 7 tracks). Verdict: sign HOLDS; scale consistent with 1 to 1.17 (Steve: 1.05-1.16).
+   Lever arm dy/dt = -w(x+L)+b: pooled L +1.7 m [-4.2,+7.7] (7 tracks). INCONCLUSIVE; cannot say whether L tracks the -3.0 offset.
+   Boresight dy/dt = delta*vEgo+b0 (straight, stricter gate, x>30): per-route CIs are wide. Only 2 routes exclude 0
+   (0000020c -6.7 deg, 0000026b -1.5 deg); pooled -0.74 [-1.51,-0.03]. NOT called (need >=3 routes).
+E. Latency: range slope vs vEgo best lag 0.10 s (err 0.42->0.41, flat). Confirmation keeps 2379/2382 rows at 0 shift and 2133 at 0.1 s,
+   so it is mildly sensitive, and E is a free parameter only to ~0.1 s. Receive-time resolution is ~10 ms (aux_lag/spread median 0,
+   p99 11.2 ms; Steve). Verdict: HOLDS (small latency, <=0.1 s).
+F. The 10% stationary scale: U11/stopped-ref 1.10 overall, flat by range (1.08-1.11), azimuth (1.10-1.11) and vEgo (1.10-1.11).
+   Control: range slope/stopped-ref 0.98. Verdict: the ~10% is a U11 scale, not a vEgo scale. HOLDS.
+H. RANGE_RATIO vRel: stopped ratio 0.88 (0.97 near-axis, 0.85 at |az|>0.05, 0.76 at 60-100 m), lag 0, max |val| 316 (outliers).
+   Moving closing ratio 0.79. Verdict: scale-biased and azimuth-dependent. Not rail-capped (7.4% beyond 13.4) but noisy. Not a truth channel.
+I. MI(stopped vs moving | range), ranked by (frame, bit). Top bits: AUX byte6 b3-7 (high bits of RANGE_RATIO), F2 byte5 b3-6
+   (NC_SIGMA), AUX byte0 b6 (U11), F2 byte2 b1 (NC). All of these are inside velocity-derived fields. The best undecoded field is F1 bits 47+
+   (f1_lid_b47w9, CMI 0.007, values 249-252). Verdict: no class/motion nibble found; FALSIFIED for "a hidden stationary flag bit".
+J. Non-object traffic: 0x39F LEAD_DISTANCE / 0x1DF ACCEL_COMMAND change at 100% of stock decel onsets (n 418), as expected for the ACC
+   command. At stopped-in-lane confirmations (n 33), no radar/ACC field changes above control. 0x244 LINE_SOLID 0.45 vs 0.15 is lane-line
+   (camera) noise. Verdict: no non-object field marks a stopped object appearing. INCONCLUSIVE for stock-reaction precursors.
