@@ -19,7 +19,9 @@ for _l in ("info", "warning", "error", "exception", "event", "debug"):
   setattr(cloudlog, _l, lambda *a, **k: None)
 
 NC: dict = {}
-_orig_nc = HRI._bosch_a_nc_vrel
+# Spy the always-called publisher (5d7be6e730+). _bosch_a_nc_vrel runs only with BOSCH_A_NC_RAIL_VREL on (D-069, off),
+# so spying it left nc_raw empty on every row (found by Bob, 2026-09-30).
+_orig_nc = HRI._bosch_a_nc_published
 
 
 def _spy(nc_raw, nc_sigma_raw, d_rel):
@@ -27,7 +29,7 @@ def _spy(nc_raw, nc_sigma_raw, d_rel):
   return _orig_nc(nc_raw, nc_sigma_raw, d_rel)
 
 
-HRI._bosch_a_nc_vrel = _spy
+HRI._bosch_a_nc_published = _spy
 IDS = frozenset(HRI.BOSCH_A_ALL_IDS)
 
 
