@@ -2080,6 +2080,86 @@ def test_degraded_rail_corroboration_fits_the_tail_of_the_run_not_the_finished_w
 
 # --- NC-at-rail (stopshadow-radar, replay only) ----------------------------------------------------------
 
+class TestNcFields:
+  """RadarPoint.ncVRel / ncValid for radard's RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md). Filled on every
+  measured Bosch-A point from _bosch_a_nc_vrel, independent of BOSCH_A_NC_RAIL_VREL (D-069, left off here), and never
+  changing vRel. Coasts carry ncValid False. Static unit tests only."""
+  DT_NS = 70_000_000
+
+  @staticmethod
+  def _nc_raw(d_rel, vrel):
+    return int(round(512 + (-vrel / d_rel) * 64))
+
+  def _drive(self, start_raw=700, n=6, nc_vrel=-10.0, nc_sigma_raw=0, nc_raw=None):
+    ri = make_radar_interface()
+    rr = None
+    for i in range(n):
+      raw = start_raw - 20 * i   # 17.9 m/s, past the rail, so the D-043 check keeps the sweep measured
+      d_rel = raw / 16.0 - 3.0
+      raw_nc = self._nc_raw(d_rel, nc_vrel) if nc_raw is None else nc_raw
+      rr = ri.update(sweep(0, i & 0xF, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=BOSCH_A_DIRECT_VREL_MIN_RAW, direct_vrel_uncertainty_raw=90,
+                           nc_raw=raw_nc, nc_sigma_raw=nc_sigma_raw))
+    return rr.points[0]
+
+  def test_switch_is_off_by_default(self):
+    from opendbc.car.honda import radar_interface as HRI
+    assert HRI.BOSCH_A_NC_RAIL_VREL is False
+
+  def test_valid_nc_is_published_without_touching_vrel(self):
+    pt = self._drive()
+    assert pt.measured
+    assert pt.ncValid
+    assert pt.ncVRel == pytest.approx(-10.0, abs=0.3)
+    assert pt.vRel == pytest.approx(-13.5), "with BOSCH_A_NC_RAIL_VREL off, vRel stays the U11 rail"
+
+  def test_sigma_at_the_gate_is_invalid(self):
+    pt = self._drive(nc_sigma_raw=32)
+    assert pt.measured and not pt.ncValid
+
+  def test_sigma_just_under_the_gate_is_valid(self):
+    assert self._drive(nc_sigma_raw=31).ncValid
+
+  def test_no_reading_raw_512_is_invalid(self):
+    pt = self._drive(nc_raw=512)
+    assert pt.measured and not pt.ncValid
+
+  def test_beyond_50_m_is_invalid(self):
+    pt = self._drive(start_raw=1100)
+    assert pt.dRel > 50.0 and pt.measured and not pt.ncValid
+
+  def test_gross_disagreement_coast_is_invalid(self):
+    # test_gross_velocity_range_disagreement_coasts' shape, with a valid NC on every sweep.
+    ri = make_radar_interface()
+    for i, raw in enumerate((500, 510, 520, 530)):
+      rr = ri.update(sweep(0, i, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
+                           direct_vrel_raw=864 + 40, direct_vrel_uncertainty_raw=0,
+                           nc_raw=self._nc_raw(raw / 16.0 - 3.0, -2.0)))
+    assert rr.points[0].measured and rr.points[0].ncValid, "the control sweep must carry a valid NC"
+    rr = ri.update(sweep(0, 4, 0x7, 540, 1024, 9, 4 * self.DT_NS, with_aux=True,
+                         direct_vrel_raw=864 - 11 * 64, direct_vrel_uncertainty_raw=0,
+                         nc_raw=self._nc_raw(540 / 16.0 - 3.0, -2.0)))
+    assert len(rr.points) == 1
+    assert not rr.points[0].measured
+    assert not rr.points[0].ncValid
+
+  def test_range_rejected_coast_is_invalid(self):
+    # test_discontinuous_range_coasts_last_accepted_point_unmeasured's shape, with a valid NC throughout.
+    ri = make_radar_interface()
+    nc = self._nc_raw(500 / 16.0 - 3.0, -2.0)
+    ri.update(sweep(0, 0, 0x7, 500, 1024, 1, 0, with_aux=True,
+                    direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=500, nc_raw=nc))
+    rr = ri.update(sweep(0, 1, 0x7, 510, 1024, 3, 50_000_000, with_aux=True,
+                         direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=500, nc_raw=nc))
+    assert rr.points[0].measured and rr.points[0].ncValid
+    rr = ri.update(sweep(0, 2, 0x7, 100, 1024, 5, 100_000_000, with_aux=True,
+                         direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=509,
+                         range_sigma_raw=4, existence_raw=0, nc_raw=nc))
+    assert len(rr.points) == 1
+    assert rr.points[0].measured is False
+    assert rr.points[0].ncValid is False
+
+
 class TestNcAtRail:
   """A low-rail U11 in our lane under 50 m is replaced by NORMALIZED_CLOSING only when the range agrees, only ever
   toward MORE closing, and is held across short NC dropouts instead of flickering back to the rail."""

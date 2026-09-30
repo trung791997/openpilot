@@ -932,6 +932,7 @@ class RadarInterface(RadarInterfaceBase):
         point = self.pts.get(track_id)
         if accepted_fresh and point is not None:
           point.measured = False
+          point.ncValid = False
         else:
           self.pts.pop(track_id, None)
         track.prev_frame_idx = idx0
@@ -1057,6 +1058,7 @@ class RadarInterface(RadarInterfaceBase):
           point.yRel = yRel
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
+          point.ncValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1103,6 +1105,7 @@ class RadarInterface(RadarInterfaceBase):
           point.yRel = yRel
           point.vRel = _bosch_a_coast_vrel(track, self.rail_interval, self.coast_range_bound, self.v_ego)
           point.measured = False
+          point.ncValid = False
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1151,6 +1154,11 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[track_id].yRel = yRel
         self.pts[track_id].vRel = vRel
         self.pts[track_id].measured = True
+        # NC is published beside vRel for radard's RANGE_VREL_RAIL_NC_CAP (docs/PLAN_NC_CAP_RAIL_FAST.md). It is
+        # computed independently of BOSCH_A_NC_RAIL_VREL (D-069, off) and never changes vRel here.
+        nc_vrel = _bosch_a_nc_vrel(observation['nc_raw'], observation['nc_sigma_raw'], dRel)
+        self.pts[track_id].ncValid = nc_vrel is not None
+        self.pts[track_id].ncVRel = nc_vrel if nc_vrel is not None else 0.0
       else:
         self.pts.pop(track_id, None)
 
