@@ -124,6 +124,11 @@ def build_row(sm_like: Any, t0: float | None = None) -> list[float]:
   ]
 
 
+def raw_rows(msgs: list, which: str, field: str) -> list[list[float]]:
+  """One [logMonoTime s, float(field)] per received message, in arrival order (not resampled to controlsState rows)."""
+  return [[m.logMonoTime * 1e-9, float(getattr(getattr(m, which), field))] for m in msgs]
+
+
 def write_npz(outdir: str, rows: list | np.ndarray, cp_bytes: bytes | np.ndarray, params: dict | str) -> None:
   os.makedirs(outdir, exist_ok=True)
   arr = np.array(rows, dtype=np.float64)
@@ -219,6 +224,10 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
     "longitudinalPlan",
   ], poll="controlsState")
   toggles_start = read_toggles(Params())
+  # every carControl / carState message, unconflated: the Phase 2c C2 gate counts latActive drops per raw carControl message
+  # after the first raw carState message with steerFaultTemporary set; the rows above copy only the latest of each (2026-09-30)
+  raw_socks = {w: messaging.sub_sock(w, conflate=False) for w in ("carControl", "carState")}
+  cc_raw, cs_raw = [], []
 
   rows = []
   lanes = []  # per row: modelV2 laneLineProbs (4) + roadEdgeStds (2), saved to lanes.npz (perception of the sim's roads)
@@ -254,6 +263,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
         print(f"sim_lat_record: map_end, stopping at {time.monotonic() - start_mono:.1f} s", flush=True)
         break
     sm.update(100)
+    cc_raw += raw_rows(messaging.drain_sock(raw_socks["carControl"]), "carControl", "latActive")
+    cs_raw += raw_rows(messaging.drain_sock(raw_socks["carState"]), "carState", "steerFaultTemporary")
     if not sm.updated["controlsState"]:
       continue
 
@@ -307,6 +318,8 @@ def record(outdir: str, secs: float, bridge_log: str | None = None) -> None:
                       t_mono=np.array(t_mono, dtype=np.float64), cs_mono=np.array(cs_mono, dtype=np.float64),
                       status=np.array(status, dtype=np.float64).reshape(-1, 3),
                       long_plan=np.array(long_plan, dtype=np.float64).reshape(-1, 4),
+                      cc_raw=np.array(cc_raw, dtype=np.float64).reshape(-1, 2),
+                      cs_raw=np.array(cs_raw, dtype=np.float64).reshape(-1, 2),
                       toggles=json.dumps({"start": toggles_start, "end": read_toggles(Params())}))
   if cp_bytes is None:
     if sm.seen["carParams"]:

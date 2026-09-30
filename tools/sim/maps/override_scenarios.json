@@ -1686,5 +1686,68 @@
    "threshold": true
   },
   "note": "2b fallback: gapturn_12_50_fault on the turn_6 map at 10 kph (road faults are mostly below 4.5 m/s)"
+ },
+ "p2c_gapturn_12_50_d1.5_cap2950": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 1.5,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 2950
+  },
+  "note": "Phase 2c M2a (prereg 1ff51757): gapturn_12_50, gap press held 1.5 s, hand capped at 2950 (road p90 hold max; below the 3150 C1 fault floor); twin handsoff_12"
+ },
+ "p2c_gapturn_12_50_d1.5_fault": {
+  "cruise_kph": 19,
+  "blocks": [
+   [
+    "S",
+    207
+   ],
+   [
+    "C",
+    27.2,
+    133.4,
+    0
+   ],
+   [
+    "S",
+    40
+   ]
+  ],
+  "press": {
+   "kind": "gap",
+   "gap_deg": 50,
+   "trigger_deg": 30,
+   "dwell": 0.5,
+   "dur": 1.5,
+   "r": 0.3,
+   "r_out": "road",
+   "tq_cap": 3400
+  },
+  "eps_status": {
+   "threshold": true
+  },
+  "note": "Phase 2c M2b/M2c (prereg 1ff51757): gapturn_12_50_fault, gap press held 1.5 s so the final release lands on the road; M2c adds OVR_CUT_ASSIST=1"
  }
 }

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from openpilot.tools.lateral.lat_pid_sim import FIELDS, TUNING_KEYS, extract
-from openpilot.tools.sim.sim_lat_record import build_row, check_offroad, long_plan_row, read_toggles, write_episode, write_npz
+from openpilot.tools.sim.sim_lat_record import build_row, check_offroad, long_plan_row, raw_rows, read_toggles, write_episode, write_npz
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SET_OVERRIDES_SCRIPT = REPO_ROOT / "tools" / "sim" / "sim_set_overrides.py"
@@ -180,3 +180,9 @@ def test_set_overrides() -> None:
   assert readback.returncode == 0, f"stdout={readback.stdout!r} stderr={readback.stderr!r}"
   lines = readback.stdout.strip().splitlines()
   assert lines == ["75", "True", "False"]
+
+
+def test_raw_rows() -> None:
+  msgs = [SimpleNamespace(logMonoTime=int(1e9) + 10_000_000 * k, carControl=SimpleNamespace(latActive=k != 1)) for k in range(3)]
+  assert raw_rows(msgs, "carControl", "latActive") == [[1.0, 1.0], [1.01, 0.0], [1.02, 1.0]]
+  assert raw_rows([], "carState", "steerFaultTemporary") == []
