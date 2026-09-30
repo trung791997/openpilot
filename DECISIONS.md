@@ -1483,3 +1483,39 @@ sweep) at 1801.94, identical ON and OFF. NC engaged only for 4 sweeps at 42-39 m
 3.2 m/s vs 2.3 for the rail. Planner min −5.85 vs −5.86. At NC engage, leadOne aLeadK stepped −3.41 → −5.3 for ~0.4 s
 (OFF −3.4), and on tid 7 at 1731.49 ON added a real FCW frame (aLeadK −4.95 vs −3.54). That is the harder-braking sign,
 not D-068's softening, but the same mechanism: an NC step fed into the lead KF. D-069 stands.
+
+## D-070 — PROPOSED (switch OFF): cap RAIL_FAST with NORMALIZED_CLOSING (`RANGE_VREL_RAIL_NC_CAP`)
+Recorded 2026-09-30 on `stopshadow-radar`. Plan: docs/PLAN_NC_CAP_RAIL_FAST.md (approved by Peter). Code f6cb7630e.
+Static unit tests + open-loop replay only; nothing driven. Enabling the switch is Peter's call.
+
+Implemented: the parser publishes RadarPoint.ncVRel/ncValid (from `_bosch_a_nc_vrel`, independent of D-069's switch;
+ncValid False on coasts). With the switch on, a RAIL_FAST correction on a railed point with valid NC is shrunk so
+published vRel >= ncVRel - 3.0; floored at zero, so it never publishes less closing than the U11 rail (D-041) and never
+drops or coasts a point. Static: switch off is byte-identical; honda 345 passed, radard/lead/range-assist 290 passed.
+Note: the plan's test "NC -10, RAIL_FAST -16.2 -> published >= -13.0" is unreachable without going above the rail;
+the cap zeroes the correction there (published -13.5), which is what the test asserts.
+
+Replay (tools/longitudinal/stopshadow/nccap_ab.py, nccap_ab.txt). NOT Bob's setup: code f6cb7630e (stopshadow), not
+07b66420; params = each route's own initData params, not the 2026-09-30T16:44:42Z set. Current parser re-run on logged
+CAN -> RadarD OFF/OFF2/ON -> LongitudinalPlanner, open loop. Time = logMonoTime - seg-0 initData. rlogs (Konik) only,
+episode segment + the one before, all fetched (99.4-99.5 Hz CAN, 893-894 liveTracks/segment). A/A: 0 differing
+frames. OFF matches the car on 297: lead1 -16.54 vs logged -16.56; aTarget -3.65 vs logged -3.64.
+
+| episode | min lead1 vRel (OFF = ON) | lead ncValid share | max rail corr | planner min (OFF = ON) | frames changed |
+|---|---|---|---|---|---|
+| 00000271--4e9b9502db 9:26 | -20.00 @ 9:27.21, d 104 | 0.23 | 6.50 | -6.29 | 0 |
+| 00000236--60bfb34cb1 12:51 | -18.43 @ 12:51.00, d 102 | 0.16 | 4.93 | -3.29 | 0 |
+| 00000236--60bfb34cb1 12:54 | same window minimum | 0.18 | 4.93 | -3.29 | 0 |
+| 00000237--77313c5a66 10:00 | -17.39 @ 9:58.95, d 81 | 0.06 | 3.89 | -2.60 | 0 |
+| 00000298--c4d2a4acbc 4:10 | -14.58 @ 4:11.67, d 57 | 0.00 | 1.08 | -3.61 | 0 |
+| 00000297--f971b5896f 48:12 | -16.54 @ 48:12.52, d 64 | 0.00 | 3.04 | -3.65 | 0 |
+
+Result (replay): the cap is INERT. Pass conditions: no lost gain on 271/236/237 (met, trivially); 298 unchanged (met);
+297 -16.2 excursion gone (NOT met: -16.54/-16.24/-15.85 at 48:12.47-12.60, identical OFF and ON). Reason: NC is valid
+only under 50 m (`BOSCH_A_NC_RAIL_MAX_D_REL_M`) and at sigma < 32; 297 track 4 was at 55.9-72.9 m with sigma 20-42, and
+298's railed leads at 60-92 m. Diagnostic only (limit ignored): 297 -NC*dRel read -8.0..-11.4, so a valid NC would have
+removed the correction; 298 read -18.4..-23.3, agreeing with the rail. Positive control (harness margin 0, 271): 22
+frames change lead vRel, 0 change the planner. The -4.4 at 297 was logged aEgo (-4.50 @ 48:13.17), not the planner.
+
+Status: kept OFF. Not recommended to enable as is: it changes nothing on the six episodes. Making it act at 297 needs
+NC trusted past 50 m and above sigma 32, a constant change that needs its own evidence (D-042's lesson) and Peter's call.
