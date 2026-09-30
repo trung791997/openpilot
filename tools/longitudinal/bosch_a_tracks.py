@@ -431,6 +431,10 @@ def nc_rail(T: dict) -> dict:
   One known difference: the parser fits over its ACCEPTED ranges and only runs this on measured, accepted sweeps;
   here every valid row of the incarnation is history and gets a value. Rows the parser coasted are not marked, and a
   --t0 cut restarts the history (nothing fires in its first 0.25 s).
+  So the nc_* columns are an UPPER BOUND on what the parser does, not a record of it. Replay, 00000297 tid 60 at
+  2858.2 s (oncoming): the tool fires on 4 rows; the parser returns the rail on all 4, because rows 2857.82-2858.15
+  never reached it as accepted sweeps, its fit window was 4 samples over 0.21 s (< 0.25 s) and the rate was None.
+  NC-at-rail itself is rejected (D-069) and the switch is off; the columns stay as a record of the candidate.
   nc_vrel_pub: published vRel (U11 unless NC fired); nc_fired: 1 fresh NC, 2 held NC, 0 not used."""
   n = len(T["t"])
   pub, fired = np.full(n, np.nan), np.zeros(n)
