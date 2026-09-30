@@ -2087,6 +2087,12 @@ class TestNcAtRail:
   DT_NS = 70_000_000
   TRUE_VREL = -STEP_RAW / 16.0 / 0.07
 
+  @pytest.fixture(autouse=True)
+  def _switch_on(self, monkeypatch):
+    # D-069 rejected the switch (default False); these tests pin the kept code path with it on.
+    from opendbc.car.honda import radar_interface as HRI
+    monkeypatch.setattr(HRI, 'BOSCH_A_NC_RAIL_VREL', True)
+
   @staticmethod
   def _nc_raw(d_rel, vrel):
     return int(round(512 + (-vrel / d_rel) * 64))

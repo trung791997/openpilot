@@ -1452,3 +1452,27 @@ Neither gives a vRel good enough to seed radard's filter. A wrong-direction lead
 real brake late, which is worse than 296's extra 2 s of vision-only lead. Any retry needs a birth vRel
 that does not seed the lead filter's acceleration, and a replay showing a gain. The patch is not kept;
 this entry is the record. Replay evidence only.
+
+## D-069 — REJECTED: NC-at-rail (NORMALIZED_CLOSING past the U11 low rail)
+Recorded 2026-09-30 on `stopshadow-radar` only. Replay evidence only; nothing driven.
+
+The idea: U11 rails at −13.5 m/s, and F2 NORMALIZED_CLOSING (23|10, 1/64, centre raw 512) times dRel is an
+unrailed closing channel (stopshadow corpus: 0.91–0.95 of the long-window range rate past the rail, sigma
+F2 46|7 < 32 on 99.7 % of stopped railed rows < 50 m). The parser change (c40fe684f, `BOSCH_A_NC_RAIL_VREL`)
+replaced a low-rail U11 with −NC·dRel for |yRel| ≤ 2 m, 0 < dRel < 50 m, sigma < 32, and only when it agreed
+within 3 m/s with the trailing range fit; clamped to [−20, rail], 0.3 s hold.
+
+Replay (tools/longitudinal/stopshadow/ncrail.txt, 8f3b15028; 22 routes, open-loop planner), ON vs OFF:
+- No gain. 148 point-sweeps changed on 14 routes; 38 of 44 episodes were never a lead and 31 tracks were
+  oncoming. Zero leadOne/leadTwo/leadOnpath selection changes, identical planner minimum and FCW counts,
+  identical time to correct closing on all 6 railed leadOne episodes. radard's D-053 rail-fast assist
+  (radard.py:793-819) already covers those leads at publish time; under NC it shrinks and never doubles.
+- Added roughness on the KF input. Sweep |dvRel| p95 5.6 vs 0.4 m/s, 76 steps > 3 m/s vs 0, mostly the full
+  −13.5 ↔ −20 step on |y| or rate-check release. Over-close > 3 m/s vs the next-1 s range slope on 19.6 % of
+  changed sweeps vs 7.1 % for the rail (mean error +2.4 vs +6.3).
+- D-068 check clean: no fake lead acceleration (aLeadK > +1 only in ON) anywhere; protected brakes unchanged.
+
+Reason: a change with no measured benefit that makes the native vRel flicker is not worth carrying. The
+switch is False and the code and TestNcAtRail stay for the record. A retry needs a case D-053 rail-fast
+misses (a railed in-lane car that is not leadOne/leadTwo but matters to the planner), and must publish NC as
+a bound at radard publish time, not as the native vRel, so the lead KF never sees the step.

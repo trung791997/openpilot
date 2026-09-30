@@ -208,7 +208,11 @@ BOSCH_A_RAIL_INTERVAL = True
 # agrees with the range slope, so vRel does not flicker rail <-> NC sweep to sweep. The range-innovation gate, the D-063
 # rail interval and rail_hold are untouched: they still read the rail U11; NC only changes the published/trusted vRel
 # of a measured sweep, which coasts then start from under the existing _bosch_a_coast_vrel bounds.
-BOSCH_A_NC_RAIL_VREL = True
+# D-069 REJECTED (replay, 8f3b15028 ncrail.txt, 22 routes): no measurable gain over radard's D-053 rail-fast assist (zero
+# lead selection, planner-min or FCW changes; identical time to correct closing on all 6 leadOne episodes), while it made
+# native vRel flicker (p95 sweep |dvRel| 5.6 vs 0.4, 76 steps > 3 m/s vs 0, mostly the full -13.5 <-> -20 step) and
+# over-closed > 3 m/s on 19.6 % of changed sweeps vs 7.1 % for the rail. Off by default; code kept for the record.
+BOSCH_A_NC_RAIL_VREL = False
 BOSCH_A_NC_CENTER_RAW = 512
 BOSCH_A_NC_SCALE = 1.0 / 64.0
 BOSCH_A_NC_MAX_SIGMA_RAW = 32
