@@ -1566,3 +1566,22 @@ Rejected: (a) D-070's cap with NC trusted to 80-100 m — per sweep it also cuts
 4.3 m/s), 237 (8-10) and 271 (4-12), because NC past 50 m is noisy and the cap compares NC to RAIL_FAST's output, not to
 the rail; (b) short/long range-fit agreement on young tracks — at 297 the fits agree (|diff| 0.1-0.8, both on the newborn
 convergence tail) while 271 disagrees (3.3-4.4): it would cut 271 and keep 297. Min-age / rsig gates stay rejected.
+
+Car-matched A/B (Bob, 2026-09-30; code 5d7be6e730, params 2026-09-30T17:50:49Z, OFF and ON in separate processes,
+OFF-vs-OFF 0 diffs on 6 windows; replay and static only). Does not include ns-bosch-radar-testing's later radard changes
+(e.g. 3fc070837 FAR_RAIL_VISION_BOUND).
+- Named episodes: 271 9:26, 236 12:51/12:54, 237 10:00 and 298 4:10 never fire, and 0 frames change (closest 236, 0.90
+  below the threshold). 294 7:06 has no RAIL_FAST correction. 297 48:12 fires on 3/3 calls (NC median -8.41..-8.74,
+  sigma 25-26, 61.8-63.0 m): lead vRel -16.24 → -13.50, planner min -3.63 → -3.61.
+- 109 rail windows on 40 routes, RAIL_FAST armed in 20: the veto fires only at 297 48:12 and at a NEW case, 278 4:37
+  (00000278--8f101d683e, tid 61, 62.6-65.7 m). It fires on 4/12 calls there, with NC median 3.72-3.97 above the rail
+  (sigma 14-17). OFF published -15.29 while the replayed range slope was -13.15..-13.55 (at the rail), so the fire looks
+  correct: lead min -15.29 → -14.96, planner min -2.42 → -2.41. Largest planner-min change anywhere: 0.01.
+  Caveat: that slope is a rough least-squares fit of the replayed lead distance, not the ground-frame truth above; at
+  297 it reads -5.3..-6.2 against truth -8.1..-8.8.
+- Near misses that do not fire (NC above rail, closing less than the rail, so a fire would be harmless): 023e 24:09
+  (2.90), 266 8:03 (2.84), 278 4:39 (3.23-3.38).
+- Threshold window: 278 4:37 shows the upper bound near 3.72, not 4.8, so the window is about (2.6, 3.72) and 3.5 sits
+  0.22 below its top. The largest real-gain case is still 236 at 2.60. The constant is unchanged.
+- Tests on a built aarch64 tree: test_range_vrel_assist 147 passed, test_bosch_a_radar 157 passed, honda tests 346
+  passed. The 2 Mac TestBuiltIn failures were the params fallback.
