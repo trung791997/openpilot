@@ -57,10 +57,12 @@ BOSCH_A_FREQ_HZ = 14.35
 
 # Range: f0 raw_range (12-bit, B2:B3 high nibble) -> meters. Firmware q16 = 8*raw_range.
 #
-# The scale is firmware-exact, not fitted. AC004 converts the internal value with
-# (q16 - n) / 128, and q16 = sat16(round(8 * raw_range)), so
-#
-#     range_m = (8 * raw_range - n) / 128 = raw_range / 16 - n / 128
+# The scale was believed firmware-exact: AC004 converting with (q16 - n) / 128, where
+# q16 = sat16(round(8 * raw_range)), so range_m = raw_range / 16 - n / 128.
+# CORRECTION 2026-10-01 (static, A160; firmware-analysis-kit radar-re/range_offset_fw/): the function
+# that applies n (chip 0xDC028-0xDC0B6) computes cos * (A - n) / 128 and has no x8 and no sat16, so the
+# chain above is refuted for that function. Whether x8/sat16 happen elsewhere is UNRESOLVED, and so is the
+# firmware derivation of 1/16. The 1/16 value is not changed here.
 #
 # Corroboration that 1/16 is the designed mapping rather than a coincidence: 8 * 4095 = 32760
 # fits int16 with 7 counts to spare, so the *8 exists to make the 12-bit field fill the internal
@@ -70,11 +72,20 @@ BOSCH_A_FREQ_HZ = 14.35
 # (~9% low, -9 m at 60 m against vision).
 BOSCH_A_RANGE_SCALE_M = 1.0 / 16.0
 
-# Offset. The firmware term is -n/128, where n is assembled from a configuration word plus a
-# runtime addend and is therefore a PER-UNIT CALIBRATION VALUE, not a constant; 335 (-2.617 m) is
-# only the fallback the firmware uses when the config word reads zero. -3.0 is retained because it
-# sits inside the plausible calibration range and the choice barely moves the residual. Do not
-# re-fit this against vision: read it from the radar's own configuration instead.
+# Offset. The firmware term is -n/128. Corrected 2026-10-01, static, A160 image
+# (firmware-analysis-kit radar-re/range_offset_fw/ and can2ff/; scripts re-run byte-identical).
+# n is built in two steps:
+#   n0 = trunc(cfg / 16 + 0.5), where cfg is an s16 configuration word.
+#   If n0 == 0 (cfg -23..7), n0 = 335. 335 is a literal, not computed; it is in all 9 radar images.
+# Then n = n0 + addend, where addend = round((x / 1024 - 1.5) * 128).
+#   x is a 12-bit field (bytes 1-2) of CAN 0x669. The default is -192 until 0x669 arrives.
+#   On Peter's routes (237, 25e, 265), x = 615, giving addend -115 and n = 220 (if cfg is in -23..7).
+# n is subtracted from A, whose source and units are untraced. So it is UNRESOLVED whether n / 128 is
+# metres: the old "335 = -2.617 m fallback" reading is withdrawn, and neither -2.617 nor -3.0 has a
+# firmware basis.
+# -3.0 is the long-standing value and is retained unchanged; no evidence was recorded that it "barely
+# moves the residual". Do not re-fit this against vision. The route to the true value is the radar's
+# own configuration (cfg word plus CAN 0x669).
 BOSCH_A_RANGE_OFFSET_M = -3.0
 
 # Azimuth: f0 raw_angle (11-bit, B4:B5 high 3 bits), offset-binary about 1024.
