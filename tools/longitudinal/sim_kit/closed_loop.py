@@ -16,7 +16,7 @@ _KIT = os.path.dirname(os.path.abspath(__file__))
 _CAR_LP = os.environ.get("CAR_LP", os.path.join(_KIT, "car", "longitudinal_planner.py"))
 if _CAR_LP:
   import openpilot.selfdrive.controls.lib  # parent package
-  for _n in ("longitudinal_lead", "blotv3"):  # removed from the tree with BLoTv3; the 2a6 build (87505f426) imports them
+  for _n in ("longitudinal_lead", "blotv3", "accel_boost"):  # removed from the tree with BLoTv3; the 2a6 build (87505f426) imports them
     _bs = importlib.util.spec_from_file_location(f"openpilot.selfdrive.controls.lib.{_n}", os.path.join(_KIT, "car", f"{_n}.py"))
     _bm = importlib.util.module_from_spec(_bs); sys.modules[_bs.name] = _bm; _bs.loader.exec_module(_bm)
   _spec = importlib.util.spec_from_file_location("openpilot.selfdrive.controls.lib.longitudinal_planner", _CAR_LP)

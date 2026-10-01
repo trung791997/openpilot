@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 os.environ.setdefault("DEBUG", "0")
 import openpilot.selfdrive.controls.lib  # noqa
-for _n in ("longitudinal_lead", "blotv3"):
+for _n in ("longitudinal_lead", "blotv3", "accel_boost"):
   _bs = importlib.util.spec_from_file_location(f"openpilot.selfdrive.controls.lib.{_n}", os.path.join(os.path.dirname(os.path.abspath(__file__)), "car", f"{_n}.py"))
   _bm = importlib.util.module_from_spec(_bs); sys.modules[_bs.name] = _bm; _bs.loader.exec_module(_bm)
 VARS = [v.split("=") for v in os.environ["VARIANTS"].split(",")]
