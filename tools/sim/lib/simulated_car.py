@@ -11,7 +11,7 @@ from opendbc.can.dbc import DBC as DBCDefinition
 from opendbc.car import Bus
 from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.values import CAR, DBC, HondaSafetyFlags
-from opendbc.car.honda.yaw_rate import DBC_SCALE, DBC_ZERO, YAW_RATE_CALIBRATION
+from opendbc.car.honda.yaw_rate import DBC_SCALE, DBC_ZERO, YAW_RATE_CALIBRATION, yaw_rate_deg_s
 from openpilot.common.params import Params
 from openpilot.selfdrive.pandad.pandad_api_impl import can_list_to_can_capnp
 from openpilot.tools.sim.lib.common import SimulatorState
@@ -30,9 +30,12 @@ def kinematics_yaw_rate(yaw_rate: float) -> float:
   """KINEMATICS YAW_RATE (DBC deg/s, clockwise-positive) for a plant yaw rate in rad/s, left-positive, as the Civic
   Bosch VSA sensor would send it: 0.244 deg/s per count about a 513-count zero (yaw_rate.py). carstate decodes it
   back through the same calibration, so carState.yawRate reads the plant's yaw rate."""
-  scale, zero = YAW_RATE_CALIBRATION[CAR.HONDA_CIVIC_BOSCH]
-  counts = zero - math.degrees(yaw_rate) / scale
-  return (min(max(round(counts), 0), 1023) - DBC_ZERO) * DBC_SCALE
+  scale, zero, right_loss = YAW_RATE_CALIBRATION[CAR.HONDA_CIVIC_BOSCH]
+  clockwise = -math.degrees(yaw_rate)
+  # the nearest whole count that decodes back to this rate (the clockwise under-read shifts it by up to ~1 count)
+  guess = round(clockwise / scale)
+  offset = min(range(guess - 2, guess + 3), key=lambda c: abs(yaw_rate_deg_s(c, scale, right_loss) - clockwise))
+  return (min(max(round(zero) + offset, 0), 1023) - DBC_ZERO) * DBC_SCALE
 
 
 class SimulatedCar:
