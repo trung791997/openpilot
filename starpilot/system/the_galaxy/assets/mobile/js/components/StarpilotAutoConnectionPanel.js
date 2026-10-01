@@ -99,8 +99,24 @@ export const StarpilotAutoConnectionPanel = {
       if (!chosen || address(chosen.address) === this.selectedCar) return
       return this.request("select_receiver", { address: chosen.address, name: chosen.name || chosen.address })
     },
+    async ensureBluetooth() {
+      let enabled = false  // an unreachable service is the same as off: powering on starts it
+      try {
+        enabled = !!(await api.getBluetoothStatus())?.enabled
+      } catch {}
+      if (enabled) return true
+      if (!window.confirm("Bluetooth is off. Pairing a car needs it.\n\nTurn Bluetooth on now?")) return false
+      try {
+        await api.bluetoothOp("power", { enabled: true })
+        return true
+      } catch (e) {
+        showSnackbar(e?.message || "Bluetooth could not be turned on.", "error")
+        return false
+      }
+    },
     async pairNewCar() {
       if (!this.offroad || this.busy) return
+      if (!await this.ensureBluetooth()) return
       if (!await this.request("prepare_pairing")) return
       try {
         await api.bluetoothOp("scan")
