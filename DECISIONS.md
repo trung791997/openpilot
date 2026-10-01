@@ -232,6 +232,14 @@ against vision. Also rejected: re-fitting either constant against the vision lea
 not a range reference, and a two-parameter fit against it will silently trade scale for
 offset and look good in the middle of the range.
 
+**Correction 2026-10-01 (static only; see STATUS "Range offset: corrected").**
+- The A160 function that applies the offset computes `cos·(A − n)/128`, with no ×8/sat16.
+- `n` is `335` (a literal, used when the cfg word gives 0) plus a runtime addend from CAN 0x669. Peter's
+  routes give an addend of −115, which makes n = 220.
+- The units of `A` are untraced, so the metre value of the offset is UNRESOLVED.
+- The decision itself stands: do not re-fit the offset against vision. The way to improve it is still the
+  radar's own configuration, now known to include CAN 0x669.
+
 ## D-041 — A saturation rail is a bound, and it must still be published
 **Decided in this repo; recorded 2026-09-15.** U11 raw `0` and `1728` mean `|vRel| ≥ 13.5 m/s`
 with the exact value unrecoverable. Publish the rail. Do **not** treat it as a missing

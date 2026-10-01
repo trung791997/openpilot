@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-09-28**
+**As of: 2026-10-01**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -68,11 +68,22 @@ declared so opendbc enforces them.
   (Q7) is this firmware's unit for physical quantities throughout. The previous `0.05712`
   was solved from a **single tape point with the offset assumed** and read ~9% short —
   −9 m at 60 m against vision.
-- **Range offset is a per-unit calibration value, not a constant.** The firmware term is
-  `−n/128`, with `n` assembled from a config word plus a runtime addend; `335` (−2.617 m) is
-  only the fallback when the config word reads zero. `−3.0` is retained because it sits
-  inside the plausible calibration range. Read it from the radar's own configuration rather
-  than re-fitting it.
+- **Range offset: corrected 2026-10-01 (static, A160 image, firmware-analysis-kit
+  `radar-re/range_offset_fw/`; scripts re-run byte-identical).** The function that applies the
+  offset (A160 chip 0xDC028–0xDC0B6) computes `cos·(A − n)/128`. It contains **no ×8 and no
+  sat16**, so the `(8·raw − n)/128` chain above is REFUTED *for this function*. Whether ×8/sat16
+  happen elsewhere is UNRESOLVED, and so is the firmware basis of the 1/16 scale.
+  - **How `n` is built:**
+    - `n0 = trunc(cfg/16 + 0.5)`, where `cfg` is an s16 config word.
+    - If `n0 == 0` (cfg −23…7), `n0` is replaced by the **literal 335**. This is not computed; the literal is
+      present in all 9 radar images.
+    - Then `n = n0 + addend`, with `addend = round((x/1024 − 1.5)·128)`, where `x` is a 12-bit field of
+      **CAN 0x669** byte 1–2 (IPdu 0x49, no E2E check). The default is −192 until the frame arrives.
+  - **On Peter's routes** (00000237, 0000025e, 00000265; 8 segments): 0x669 runs at 1 Hz, and x = 615
+    gives addend **−115**, constant. So n = 220 if the cfg word is in −23…7.
+  - **UNRESOLVED:** the units of `A`, so **neither n nor −2.617 is proven to be metres**. Also unresolved
+    are the cfg value on the car's A150, and the sender of 0x669. `−3.0` is unchanged and has no
+    firmware basis. The earlier "335 → −2.617 m" reading is withdrawn.
 - **Azimuth = `(raw_angle − 1024)/2048` rad**, closed independently by the `f3` angular-edge
   pair. Supersedes the older empirical 0.032 deg/count fit.
 - **Sweep cadence = 14.35 Hz** (median of `0x280` inter-arrival across Peter's routes; p5
