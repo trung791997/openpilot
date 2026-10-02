@@ -74,8 +74,9 @@ EPISODE_JOIN_S = 2.0
 PRESS_LONG_S = 0.3
 BLINKER_BEFORE_S = 2.0
 # Toggles a scored drive must have stored (D-053: a toggle never written is not in initData, and its drive can't be
-# attributed). John scores PR 10 drives against NrdrLatEpsFfAngleGate.
-REQUIRED_PARAMS = ("NrdrLatEpsFfAngleGate",)
+# attributed). Empty: NrdrLatEpsFfAngleGate was the only one, and its code left pr10 / pr10-smooth at f69e8c228 /
+# 0e528b3ef (the key stays in params_keys.h, unread), so on later drives its value means nothing.
+REQUIRED_PARAMS: tuple[str, ...] = ()
 NAN = float("nan")
 
 
