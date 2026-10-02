@@ -1655,6 +1655,6 @@ No gate threshold or radar constant is changed. Both processes read the param on
 
 Evidence: 15-drive replay (STATUS 198). Without the closing check the early publish made phantom brakes (280 ×2, 294,
 2ae seg26, 284); with it those are gone. One new early brake remains, 297 seg48 t 4572.62 (−2.00 for one frame, 0.75 s
-before base, real car). Open on main only: 280 t 798.6 loses a −2.87 brake with the toggle ON (STATUS 198).
+before base, real car). On main, 280 t 798.6: the toggle removes a one-frame wrong match on a roadside object (−2.87), which the car really made; no real brake was lost there, but the rejection was by 0.45 m/s on MIN_RATE (STATUS 198).
 
 Why OFF: not driven; a newborn lead can still brake 0.75 s earlier than today (297 4572.62).
