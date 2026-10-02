@@ -22,10 +22,12 @@ here. Where the two touch — the CR-V lateral profile, the steering-ratio curve
 
 **Open topics to revisit** (parked by decision, not closed):
 - **Newborn radar points toggle: D-075 (`BoschANewbornLeads`, default OFF).** Replay and static only, not driven. Publishes young closing radar points earlier and lets one lead only once its own range closes. Turn it on on pr10-smooth first. A new-object rejection in replay was a narrow call (STATUS 198); watch for late braking on stopped cars.
-- **U11 scale 1/72: D-074 ACCEPTED (owner, 2026-10-02), the only scale.** Static and replay only, not driven. Rails
+- **U11 scale 1/72: D-074 ACCEPTED (owner, 2026-10-02), the default; `BoschAU11Scale72` OFF switches back to 1/64.**
+  Static and replay only, not driven. Rails
   ±12.0 m/s; every closing speed published is 64/72 of the old 1/64 reading (−11.1 %), the D-041 danger direction.
   `ONPATH_ADOPT_RAIL_VREL_MPS` = rail + 1.0 = −11.0 (approved). Open: a separate fit of the scale itself, the m/s gate
-  thresholds whose evidence was logged at 1/64 (item 199), and the first drive at 1/72.
+  thresholds whose evidence was logged at 1/64 (item 199), why Job's range check depends on distance (D-074,
+  UNRESOLVED), and the first drive at 1/72.
 - **Off-axis lead follow-ups: items 74f/74g.** The 237 942.6 false brake (a real on-road phantom
   brake to aEgo −2.7) is removed in replay by 74g. Two real closings now brake later (25b 665.2 +1.5 s,
   245 40.7 +0.9 s). Needs a road drive on curves with the fix.
@@ -10092,7 +10094,7 @@ Replay of the fixed code (base = the old law, same 10 routes):
 - **280 t 798.6, explained (replay + logged):** main without the toggle brakes to −2.87 there and main with it ON stays near −0.93. The cause is one frame (798.646) where radar track 58 — unmeasured, vRel railed at −13.5, 47 m — was wrongly matched to a vision lead whose position jumped for one frame (distance check passed by 0.13 m). The car really did this on the road: logged leadOne R58 and −2.88 at 798.696, released at once. In replay base the brake-release limit holds it for ~0.8 s. Track 58 was an object beside the path (stationary or slow): closest 6.50 m at yRel −2.70, never in path, and vision never locked near it. Later braking (~−1.7 at 803.3) is the same in both arms. With the toggle ON, `NEWBORN_LEAD_NEEDS_CLOSING` refuses 58 because `young_range_genuinely_closing` fails MIN_RATE: slope −7.55 vs ≤ −8.0, a 0.45 m/s margin. No real brake was lost in this case, but a stopped in-path car seen with a noisy early range slope could fail the same check; this case does not assess that risk. Tools: /tmp/rv/ng/probe280.py, probe280b.py (scratch, not committed). Reviewed with Jason.
 - **Artifacts:** larch64 `common/params_pyx.so` and `libcommon.a` rebuilt with the key; the only key-table change is `BoschANewbornLeads`.
 
-## 199. Radar closing speed is read at 1/72 m/s per count, the only scale (D-074 ACCEPTED, owner, 2026-10-02). Replay and static unit tests only; not driven.
+## 199. Radar closing speed is read at 1/72 m/s per count by default; a new switch, default ON, goes back to 1/64 (D-074 ACCEPTED, owner, 2026-10-02). Replay and static unit tests only; not driven.
 - **Problem:** the radar's closing-speed field was read at 1/64 m/s per count. Camera firmware of the same family writes it at 1/72, and three replay fits give about 71. At 1/64 every closing speed read 12.5 % high and the rails sat at ±13.5 instead of ±12.0.
 - **Change:** U11 is decoded as `(raw − 864) / 72` everywhere (`BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS = 72`), rails exactly ±12.0, half-count on-rail tolerance 0.5/72. `ONPATH_ADOPT_RAIL_VREL_MPS` = rail + 1.0 = −11.0. `tools/bosch_a_scenarios.py` encodes at 1/72. No other constant changed. `BOSCH_A_NC_SCALE` (1/64) is the separate NORMALIZED_CLOSING channel and is unchanged.
 - **Tests:** 285 pass / 3 fail (base 285 / the same 3). The 3 are environment failures in the cp -al test tree (two newborn-toggle tests need a params library with the key, one Galaxy test needs `git show HEAD:`); the Galaxy layout tests pass in the git checkout (31). Longitudinal planner 591/591.
@@ -10127,4 +10129,18 @@ Replay of the fixed code (base = the old law, same 10 routes):
   64/72 shrink. The 284 t 2066.36 flip is `ONPATH_ADOPT_RATE_TOL_MPS` 2.5 deciding: the range slope must not exceed the
   window mean + 2.5, i.e. −4.010 + 2.5 = −1.510 at 1/64 (slope −1.413, rejected by 0.097) and −3.507 + 2.5 = −1.007 at
   1/72 (slope −1.255, adopted). RATE_TOL 2.5 is a 1/64-evidenced threshold that now governs 1/72 adoption, untuned.
-- **Still open:** a separate fit of the scale itself (the U10 census cannot fit it); the first drive at 1/72.
+- **Switch kept (owner, 2026-10-02, after Job's range check came back mixed; D-074 second addendum):** 1/72 is the
+  default and `BoschAU11Scale72` stays as a switch back to 1/64 (params key default "1", Longitudinal row "Radar
+  Closing Speed 1/72 Scale", Galaxy entry). OFF is the old 1/64 path exactly (rails ±13.5, half-count 1/128,
+  `ONPATH_ADOPT_RAIL_VREL_MPS` −12.5); ON is ±12.0, 1/144, −11.0. Read once at start (radar interface `__init__`,
+  radard `main()`); unset or unreadable params mean ON. Job's per-dRel-band slope is not flat (66.8 / 71.2 / 72.4 /
+  77.0 / 67.0 counts per m/s at 0–19 / 20–39 / 40–59 / 60–79 / 80–99 m; table in D-074); the cause is UNRESOLVED.
+  `ONPATH_ADOPT_MIN_CLOSING_MPS` 2.0 and `_RATE_TOL_MPS` 2.5 are evidenced only at 1/64.
+  - Tests (static): 299 pass / 1 fail on each branch; the 1 is the Galaxy `git show HEAD:` test, which passes in the
+    git checkout (31/31). Longitudinal planner 614/614 (pr10), 591/591 (main).
+  - Artifacts: larch64 `libcommon.a` / `params_pyx.so` rebuilt with the key. pr10: 863 keys, the same set as
+    98e6e5cc8. main: 856 → 857, only `BoschAU11Scale72` added. Default reads True; put/remove round-trip.
+  - Replay identity (2ae, 280, 294, 284; every frame of radar tracks, leads and aTarget): switch ON is identical to the
+    1/72-only build, and switch OFF is identical to the code before the change (1/64), on both branches.
+- **Still open:** a separate fit of the scale itself (the U10 census cannot fit it); why the range check depends on
+  distance (UNRESOLVED); the first drive at 1/72.
