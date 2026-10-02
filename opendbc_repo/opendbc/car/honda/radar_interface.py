@@ -129,20 +129,38 @@ BOSCH_A_DIRECT_VREL_INVALID = 0x7FE
 BOSCH_A_DIRECT_VREL_MIN_RAW = 0
 BOSCH_A_DIRECT_VREL_MAX_RAW = 1728
 BOSCH_A_DIRECT_VREL_CENTER_RAW = 864
-BOSCH_A_DIRECT_VREL_SCALE_MPS = 1.0 / 64.0
-# The domain endpoints are SATURATION RAILS: at raw 0 or 1728 the true |vRel| is >= 13.5 m/s and
-# the exact value is not recoverable from this field. A rail is therefore a BOUND, not an unknown,
+# D-074 (ACCEPTED by the owner 2026-10-02; static and replay evidence only, no road A/B): U11 is 1/72 m/s per
+# count, the only scale. It was decoded at 1/64 until 2026-10-02, and every m/s figure in this file and in radard
+# that was measured before then (13.5 rails, -16.54, -19.4 ...) was logged at 1/64: multiply by 64/72 for 1/72.
+#   * static: Bosch-radar-partner camera firmware (36161-TLA-A070; same-family TGG-A080, TGH-A040,
+#     TFJ/TGG/TGL-G070) formats vRel as round((v + 12) / 0x3c638e45), and 0x3c638e45 is 1/72 as an f32.
+#     (v + 12) * 72 spans raw 0..1728, the observed rails, centre 864: the field is +-12.0 m/s by design.
+#     The owner's camera, 36161-TBA-A130, is not imaged. (firmware-analysis-kit: camera-re/bosch_a_inventory,
+#     radar-re/u11_encode)
+#   * replay: stationary objects vs GPS 70.75 counts per m/s; lead-stop 71.55 [71.26, 72.40]; road-speed
+#     approaches 70.90 [70.29, 71.40]. All three exclude 64. (radar-re/u11_gps, u11_leadstop, u11_dynamics)
+#   * The one contrary result, moving leads against the range rate at 55-66 counts per m/s (radar-re/u11_moving),
+#     collapsed on re-run (1/72 retrace 2026-10-02, R3/R4): binned by range, OLS 53-57, inverse 67-69, TLS 60-62, Deming
+#     60-64, so it brackets ~55-69 and cannot separate 64 from 72.
+# Centre 864, rails raw 0/1728, sentinel 0x7FE, u10, range and azimuth are unchanged. 1/72 publishes 64/72 of the
+# old closing speed (-11.1 %) and puts the rail at 12.0 instead of 13.5 m/s; no gate threshold was re-tuned.
+# The decode divides by the count rate, v = (raw - 864) / 72 exactly as the firmware formatter's inverse; multiplying by
+# a rounded 1/72 differs from it by one double ulp on 598 of the 1729 raws (none after the float32 publish).
+BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS = 72
+BOSCH_A_DIRECT_VREL_SCALE_MPS = 1.0 / BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
+# The domain endpoints are SATURATION RAILS: at raw 0 or 1728 the true |vRel| is >= 12.0 m/s (13.5 in the 1/64
+# units the evidence below was logged in) and the exact value is not recoverable from this field. A rail is therefore a BOUND, not an unknown,
 # and it must still be published.
 #
 # This was briefly treated as "no measurement" and routed to the coast path. That was a safety
-# regression, because a stationary car approached at any speed above 13.5 m/s (30 mph) rails on
+# regression, because a stationary car approached above 12.0 m/s (27 mph; 13.5 / 30 mph at 1/64) rails on
 # EVERY sweep -- so the coast never ended, it outlived BOSCH_A_STALE_S, and the radar point was
 # deleted. Measured on route 000001f9 at 29:52: two stopped cars, 88 of 88 active frames on the low
 # rail with healthy u10 (78-94), range closing smoothly at -19.4 m/s. The radar lead was dropped,
 # radard fell back to the vision lead which reported only -11.4 m/s, and the planner commanded 0.00
 # while closing on stopped traffic at 76 m with a 6.6 s TTC. The driver had to intervene.
 #
-# Publishing the rail understates the closing rate (a stopped car reads as vLead = vEgo - 13.5), and
+# Publishing the rail understates the closing rate (a stopped car reads as vLead = vEgo - 12.0), and
 # that understatement is why it looked worth "fixing". But understating closing still brakes;
 # deleting the object does not. Recovering the true value past the rail needs the range channel and
 # is deliberately left for a separate, validated change.
@@ -436,7 +454,7 @@ def _bosch_a_direct_vrel(raw_value: int | float | None,
   """Decode the capture-validated AUX relative-velocity candidate.
 
   None means that AUX was absent/invalid and the caller should use the existing fallback policy. The [0, 1728]
-  active domain is deliberately enforced here because values above the observed +13.5 m/s rail have
+  active domain is deliberately enforced here because raw values above the observed 1728 rail (+12.0 m/s) have
   not appeared on active objects; 0x7FE is the observed inactive sentinel.
   """
   if raw_value is None:
@@ -450,7 +468,7 @@ def _bosch_a_direct_vrel(raw_value: int | float | None,
   # conservative threshold is evidence-backed tuning, not a recovered firmware validity rule.
   if uncertainty_raw is not None and int(uncertainty_raw) > BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW:
     return None
-  return (raw - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+  return (raw - BOSCH_A_DIRECT_VREL_CENTER_RAW) / BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
 
 
 def _bosch_a_range_ratio(raw_value: int | float | None) -> float | None:
@@ -472,8 +490,8 @@ def _bosch_a_range_ratio_vrel(raw_value: int | float | None, d_rel: float, dt: f
 
 def _bosch_a_direct_vrel_interval(direct_vrel: float, exact: bool = False) -> tuple[float, float]:
   """D-063: the vRel interval a decoded U11 vouches for. A rail is a one-sided bound, anything else exact."""
-  low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
-  high_rail = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+  low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) / BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
+  high_rail = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) / BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
   if exact:
     return direct_vrel, direct_vrel
   if direct_vrel <= low_rail:
@@ -1296,7 +1314,7 @@ class RadarInterface(RadarInterfaceBase):
 
   def _bosch_a_nc_rail_vrel(self, track, observation, direct_vrel, vrel, d_rel, y_rel, now):
     """NC-at-rail (see BOSCH_A_NC_RAIL_VREL): a low-rail U11 in our lane replaced by NORMALIZED_CLOSING when the range agrees."""
-    low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
+    low_rail = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) / BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
     if direct_vrel is None or direct_vrel > low_rail + 1e-6 or abs(y_rel) > BOSCH_A_RAIL_INTERVAL_MAX_Y_M:
       track.nc_vrel = None
       track.nc_vrel_nanos = None
