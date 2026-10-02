@@ -1643,6 +1643,59 @@ Limits: the plant misses the real brakes' ~0.8 m/s² overshoot (STATUS 195), so 
 2a6 2:42 jab only softens -2.51 → -2.31 here. The STATUS 148 stock-ACC comparison cases (25b 1338.8, 25e 318.1, 25f 483.1,
 262 379.4, 263 374.3) were logged with Experimental Mode off, so this path does not run there (static). Status stays ACCEPTED-unvalidated until drives in Experimental Mode with it are reviewed.
 
+## D-074 — ACCEPTED (owner, 2026-10-02): U11 vRel is decoded at 1/72 m/s per count, the only scale
+Recorded 2026-10-01 on ns-bosch-radar-testing-pr10-smooth as a test toggle (`BoschAU11Scale72`, default OFF; never on
+this branch); accepted by the owner (Peter, in chat) on 2026-10-02 as the only scale on both branches, toggle removed.
+**Static and replay evidence only; no road evidence.**
+
+U11 is `v = (raw − 864) / 72` everywhere the scale is used (`BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS = 72`; the decode
+divides, as the inverse of the firmware formatter). The rails are exactly ±12.0 m/s (raw 0 and 1728), down from ±13.5
+at 1/64. The scale also sets the D-063 rail interval, the D-054 innovation gate, the D-057 re-anchor and the NC-at-rail
+test (radar_interface.py), and in radard.py `BOSCH_A_U11_LOW_RAIL_MPS` (−12.0), the half-count on-rail tolerance
+(0.5/72 m/s), the FAR_RAIL bound and the NC veto (rail + 3.5). The centre (864), the raw rails (0, 1728), the 0x7FE
+sentinel, u10, range and azimuth are unchanged. No gate threshold is re-tuned. `BOSCH_A_NC_SCALE` (1/64) is the
+separate NORMALIZED_CLOSING channel and is unchanged.
+
+Evidence (firmware-analysis-kit, cited, not copied):
+- static: readable Bosch-radar-partner camera firmware (36161-TLA-A070; same-family TGG-A080, TGH-A040,
+  TFJ/TGG/TGL-G070) formats vRel as `round((v + 12) / 0x3c638e45)`, where `0x3c638e45` is 1/72 as an f32
+  (`camera-re/bosch_a_inventory`, `radar-re/u11_encode`). Peter's camera, 36161-TBA-A130, is not available as an image,
+  so this is unproven for his car.
+- replay: steady-state slope is about 71 counts per m/s. Stationary objects vs GPS give 70.75 (`radar-re/u11_gps`).
+  Lead-stop gives 71.55 [71.26, 72.40] and road-speed approaches give 70.90 [70.29, 71.40] (`radar-re/u11_leadstop`,
+  `radar-re/u11_dynamics`). All three exclude 64.
+- The one contrary result (moving leads against the range rate, k = 55–66, `radar-re/u11_moving`) is no longer
+  UNRESOLVED; see the addendum.
+
+What it does to the car: 1/72 publishes 64/72 of the old closing speed (−11.1 %), and a rail now means ≥ 12.0 rather
+than ≥ 13.5 m/s. Understating closing is the D-041 danger direction; the owner accepted this on the evidence above.
+
+`ONPATH_ADOPT_RAIL_VREL_MPS` was a fixed −12.5 ("treated as railed", 1.0 inside the −13.5 rail). It is now
+`rail + 1.0` (`ONPATH_ADOPT_RAIL_VREL_MARGIN_MPS`) = −11.0. Left at −12.5, a −12.0 rail would never count as railed for
+leadOnpath adoption, which would fail toward not adopting the lead. Approved by the owner 2026-10-02.
+
+Every m/s figure in the code comments and in this file that was measured before 2026-10-02 (13.5 rails, −16.54, −19.4,
+…) was logged at 1/64: multiply by 64/72 for 1/72. The m/s gate thresholds whose evidence was measured in 1/64 units
+were deliberately left as they are (listed in STATUS item 199).
+
+**Addendum (2026-10-02, owner acceptance):**
+- Retrace R3/R4 of the moving-lead result: binned by range, the slope estimators give OLS 53–57, inverse 67–69,
+  TLS 60–62 and Deming 60–64 counts per m/s. It brackets about 55–69 and cannot separate 64 from 72, so it no longer
+  contradicts 71–72.
+- U10 v2 census (Job, replay only, 36 routes, `rs2_merged.json`, sha256
+  `69ac57f8d45dd5794c3e65e551bdf92e7478fd3f7d2cce5a7bc190bc523eb868`, verified by Jason): per 7-sweep window, mean
+  direct vRel minus the least-squares range slope, source 2, n = 878,077 windows. At 1/64 the bias is −0.130 m/s and
+  the RMS 2.854; at 1/72 the bias is −0.077 and the RMS 2.847. 1/72 has the lower RMS in every U10 band 0–255 and every
+  STATUS; the largest gap is STATUS 3, 1.776 vs 1.625. This is **consistent with, slightly favours 1/72, not
+  decisive**. The census cannot fit the optimal scale (it has no raw² sums and no vRel-magnitude bins).
+  Separate context, not part of this change: the residual sd rises monotonically with U10, 1.31 to 10.96 m/s, and is
+  not U10/144.
+- On pr10-smooth the `BoschAU11Scale72` toggle, its 1/64 path and its tests are removed. This branch never had the
+  toggle, so no params key, UI row or larch64 artifact changes here.
+- `tools/bosch_a_scenarios.py` now encodes at 1/72 (rail 12.0).
+- `ONPATH_ADOPT_RAIL_VREL_MPS` = rail + 1.0 = −11.0 approved (not −13.0).
+- Still open: a separate fit of the scale itself; no road A/B exists.
+
 ## D-075 — PROPOSED (toggle OFF): `BoschANewbornLeads` publishes newborn Bosch-A points early, leads only on proven range closing
 Recorded 2026-10-02, owner decision (Peter, in chat): build it as an opt-in toggle, default OFF, on main and pr10-smooth.
 **Replay and static evidence only; no road evidence.** With the toggle OFF, `BOSCH_A_NEWBORN_RANGE_PUBLISH`,
@@ -1655,6 +1708,6 @@ No gate threshold or radar constant is changed. Both processes read the param on
 
 Evidence: 15-drive replay (STATUS 198). Without the closing check the early publish made phantom brakes (280 ×2, 294,
 2ae seg26, 284); with it those are gone. One new early brake remains, 297 seg48 t 4572.62 (−2.00 for one frame, 0.75 s
-before base, real car). On main, 280 t 798.6: the toggle removes a one-frame wrong match on a roadside object (−2.87), which the car really made; no real brake was lost there, but the rejection was by 0.45 m/s on MIN_RATE (STATUS 198).
+before base, real car). On main, 280 t 798.6: the toggle removes a one-frame wrong match on a roadside object, −2.88 (logged), which the car really made; no real brake was lost there, but the rejection was by 0.45 m/s on MIN_RATE (STATUS 198).
 
 Why OFF: not driven; a newborn lead can still brake 0.75 s earlier than today (297 4572.62).
