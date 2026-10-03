@@ -380,6 +380,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Tester rollout: parse the Bosch-A harness's own 16-slot radar object bank into real
     // leadOne/leadTwo tracks instead of treating the car as radarless. RX-only, no CAN authority taken.
     {"BoschARadar", {PERSISTENT, BOOL, "1", "1", 3}},
+    // TEST, default OFF. Bosch-A only. D-076: range offset -335/128 = -2.617 m (the firmware fallback) instead of -3.0;
+    // every dRel reads 0.383 m longer. Static only. Read once at startup in honda/radar_interface.py.
+    {"BoschARangeOffsetFallback", {PERSISTENT, BOOL, "0", "0", 3}},
     // Default ON. Bosch-A only. D-074: decode the U11 track vRel at 1/72 m/s per count (rails +-12.0); OFF goes back to
     // 1/64 (rails +-13.5). Static and replay evidence, limited road evidence. Read once at startup in
     // honda/radar_interface.py and radard.py.
