@@ -332,6 +332,26 @@ ONPATH_LEAD_MAX_BRAKE = 1.0
 # Costs: a brake hold of up to |a| / J seconds longer (-2.5 -> 0 takes 1 s) before throttle on a lead pull-away.
 BRAKE_RELEASE_LIMIT = True
 BRAKE_RELEASE_JERK = 2.5  # m/s^3
+# Release dwell (closed-loop replay only, not driven; 2026-09-29 plan2 study vs mvl sp-honda-dev-202608). Near a
+# close lead the MPC answer can alternate every cycle (25e 732.5-733.0: raw MPC -1.99, -0.50, -1.70, -0.46, ... at
+# 2 m/s, 4.5 m) and the published target dithered -1.00 <-> -0.88 between the comfort-floor clip and the release
+# slew above. The alternation rides on the caps writing self.a_desired into the next MPC x0; cutting that feedback
+# diverged the replay (725: min gap 5.3 -> -98.8 m), so the feedback stays and only the output is held: a brake may
+# rise only after it has asked for no rise for BRAKE_RELEASE_DWELL_TICKS cycles (a short running-min). It only
+# ever holds more braking, so it cannot delay onset. Log-clock replay, 16 windows vs the shipped slew: geo-mean
+# jerk RMS 0.986x, 23 fewer accel sign flips (725 24 -> 15, 559 25 -> 19), onset never later, trusted min gap never
+# below base -0.1 m, 725/1965 peak brake unchanged. 4 ticks, or holding only after a fall, removed fewer flips.
+# Costs: every brake release starts BRAKE_RELEASE_DWELL_TICKS * DT_MDL (0.1 s) later.
+BRAKE_RELEASE_DWELL = True
+BRAKE_RELEASE_DWELL_TICKS = 2
+# Coast-ceiling slew (closed-loop replay only, not driven; same study). When the model's throttle gate closes, the
+# output ceiling drops from the accel limit to the coast accel in one cycle (294 568.16: +0.46 -> -0.42 at 5.4 m/s).
+# mvl reaches the same coast limit through a jerk-limited cruise target. The ceiling now moves at most
+# COAST_CEILING_JERK * dt per cycle from where the output was. It only ever allows more throttle than the ceiling for
+# a few cycles and never overrides a lower MPC or cap target. Alone it cost 0.4 m of min gap in 294 559 (fails the
+# gap rule); with BRAKE_RELEASE_DWELL it passed (16 windows: jerk RMS 0.975x, 27 fewer flips vs the shipped slew).
+COAST_CEILING_SLEW = True
+COAST_CEILING_JERK = 2.5  # m/s^3
 
 
 # Experimental-mode exit crossfade (log, open-loop and closed-loop replay evidence only; not driven).
@@ -373,6 +393,16 @@ def brake_release_limited_target(prev: float, target: float, dt: float) -> float
   return float(min(target, prev + BRAKE_RELEASE_JERK * dt))
 
 
+def brake_release_dwell_target(prev: float, target: float, rise_ticks: int) -> tuple[float, int]:
+  """While braking, a rise is held for the first BRAKE_RELEASE_DWELL_TICKS cycles that ask for it; returns (target, rise_ticks)."""
+  if target <= prev + 1e-3:
+    return float(target), 0
+  rise_ticks += 1
+  if prev < 0.0 and rise_ticks <= BRAKE_RELEASE_DWELL_TICKS:
+    return float(prev), rise_ticks
+  return float(target), rise_ticks
+
+
 def onpath_lead_view(sm):
   """SubMaster view with radarState.leadOne replaced by leadOnpath, or None when there is no on-path lead."""
   try:
@@ -410,6 +440,36 @@ SLOW_RADAR_LEAD_GATE_MAX_SPEED = 3.0
 SLOW_RADAR_LEAD_GATE_MIN_PROB = 0.9
 SLOW_RADAR_LEAD_GATE_DECEL = 1.0
 SLOW_RADAR_LEAD_GATE_STANDOFF = 10.0
+
+# Planner-local MPC action time (D-072, PROPOSED; driver trial toggle, shipped on). The
+# planner reads its output off the MPC trajectory at action_t = longitudinal actuator delay + DT_MDL,
+# about 0.55 s on the Civic (CP delay 0.50, or the live LongitudinalActuatorDelay toggle). Reading
+# 0.55 s ahead turns every small wiggle in the MPC's far plan into an output step, which shows up as
+# jerk and light brake taps. mvl-boston/openpilot sp-honda-dev-202608 (5372439bf) plans with 0.30.
+# Replay, open loop, of this switch alone (planner at 44918d843 + this change; 10 routes: 00000236
+# seg 11-12, 00000237 seg 9-10, 00000297 seg 47-48, 00000298 seg 3-4, and all engaged time of
+# 0000029b/29c/29d/29e/29f and 000002a2): frames over 2 m/s^3 443 -> 396, RMS jerk down 0-7 % per
+# route (236 flat), light brake taps 24 -> 23, brake onsets 64 -> 53. Cost: the -0.5 onset of the
+# hardest brake is up to 0.3 s later (297 48:12 +0.30, 0000029e 5:33 +0.25, 0000029d 3:50 +0.20)
+# and its peak up to 0.09 m/s^2 softer. D-072 has the table.
+# Only the read-off point moves. CP.longitudinalActuatorDelay, the carcontroller's learner that also
+# reads it, self.longitudinal_actuator_delay (every reaction_t gate below), the model-launch read,
+# the cruise and lane-change caps all keep the actuator delay. Built in ON (it shipped as the
+# PlannerShortActionTime toggle, default on at Peter's request); replays set PLANNER_ACTION_T_OVERRIDE
+# = False for the old read-off. Off is action_t = actuator delay + DT_MDL exactly, as before.
+# Closed-loop replay with the fitted plant (car-matched to 07b66420): the command is smoother (jerk
+# x0.64-0.93, taps 19 -> 14) but the car's accel changes only ~3 %, brake onsets are 0.1-0.3 s later
+# and 0000029d's closest gap drops 6.0 -> 5.6 m. Replay evidence only; not road-validated. Peter asked for it on the road (2026-09-30).
+PLANNER_ACTION_T_OVERRIDE = True
+PLANNER_ACTION_T_S = 0.30
+
+
+def get_planner_action_t(actuator_delay: float, enabled: bool | None = None) -> float:
+  """Time on the MPC trajectory the planner reads its output from. enabled=None means the
+  PLANNER_ACTION_T_OVERRIDE constant alone."""
+  if PLANNER_ACTION_T_OVERRIDE if enabled is None else enabled:
+    return PLANNER_ACTION_T_S
+  return actuator_delay + DT_MDL
 
 
 VISION_LEAD_APPROACH_MIN_MODEL_PROB = 0.85
@@ -1110,6 +1170,10 @@ def bound_off_axis_leads(sm, hold=None):
 
 
 class LongitudinalPlanner:
+  def _short_action_t_active(self) -> bool:
+    """D-072: built in on through PLANNER_ACTION_T_OVERRIDE."""
+    return PLANNER_ACTION_T_OVERRIDE
+
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, onpath_shadow=False):
     self.CP = CP
     # ONPATH_LEAD_BOUND: the planner that sees leadOnpath as leadOne; never nested
@@ -1146,6 +1210,8 @@ class LongitudinalPlanner:
     self.v_model_error = 0.0
     self.output_a_target = 0.0
     self.mpc_lead_demand_hist = []
+    self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+    self.coast_ceiling = None
     self.fast_closing_lead_track = None
     self.stopped_radar_lead_hold_track = None
     self.stopped_radar_lead_hold_active = False
@@ -2542,6 +2608,17 @@ class LongitudinalPlanner:
       return False
     return True
 
+  def slew_coast_ceiling(self, ceiling, prev_output, reset):
+    # Output ceiling moved at most COAST_CEILING_JERK * dt per cycle; a falling ceiling starts from the last output.
+    step = COAST_CEILING_JERK * self.dt
+    if reset or self.coast_ceiling is None:
+      self.coast_ceiling = float(ceiling)
+    elif ceiling < self.coast_ceiling:
+      self.coast_ceiling = float(max(ceiling, min(self.coast_ceiling, prev_output) - step))
+    else:
+      self.coast_ceiling = float(min(ceiling, self.coast_ceiling + step))
+    return self.coast_ceiling
+
   def get_mpc_lead_brake_accel_min(self, accel_min, mpc_target):
     # Output floor for the final clip: accel_min, lowered to a persistent MPC lead-brake demand.
     lead_demand = None
@@ -3071,6 +3148,8 @@ class LongitudinalPlanner:
     tinygrad_model = bool(getattr(starpilot_toggles, "tinygrad_model", False))
     experimental_mlsim = bool(tinygrad_model and self.mlsim and self.mode != 'acc')
     action_t = self.longitudinal_actuator_delay + DT_MDL
+    short_action_t = self._short_action_t_active()
+    plan_action_t = get_planner_action_t(self.longitudinal_actuator_delay, short_action_t)
     prev_output_a_target = float(self.output_a_target)
     model_launch_accel = None
     if self.model_launch_armed and not bool(sm['modelV2'].action.shouldStop):
@@ -3083,11 +3162,11 @@ class LongitudinalPlanner:
     if classic_model:
       output_a_target, output_should_stop = get_accel_from_plan_classic(
         self.CP, self.v_desired_trajectory, self.a_desired_trajectory, starpilot_toggles.vEgoStopping,
-        actuator_delay=self.longitudinal_actuator_delay)
+        actuator_delay=(plan_action_t - DT_MDL) if short_action_t else self.longitudinal_actuator_delay)
     elif tinygrad_model:
       output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
-        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+        action_t=plan_action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
       output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
       accel_boost_on = bool(getattr(starpilot_toggles, "gas_override_boost", True))
       if accel_boost_on:
@@ -3149,7 +3228,7 @@ class LongitudinalPlanner:
     else:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
-        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+        action_t=plan_action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
 
     comfort_output_accel_min = get_vehicle_min_accel(self.CP, v_ego) if experimental_mlsim else accel_limits_turns[0]
     vision_cap_accel_min = min(comfort_output_accel_min, get_vehicle_min_accel(self.CP, v_ego))
@@ -3666,6 +3745,9 @@ class LongitudinalPlanner:
         output_a_target = max(output_a_target, tracked_vision_model_brake_cap)
 
     output_accel_max = no_throttle_output_max if not self.allow_throttle else accel_limits_turns[1]
+    if COAST_CEILING_SLEW:
+      output_accel_max = self.slew_coast_ceiling(output_accel_max, prev_output_a_target,
+                                                 reset_state or bool(sm['carState'].standstill))
     final_accel_min = self.get_mpc_lead_brake_accel_min(output_accel_min, output_a_target_mpc)
     output_a_target = float(np.clip(output_a_target, final_accel_min, output_accel_max))
 
@@ -3854,6 +3936,11 @@ class LongitudinalPlanner:
     if BRAKE_RELEASE_LIMIT and not reset_state and not bool(sm['carState'].standstill):
       # prev is the last published target (after the on-path bound in update(), which runs after this)
       output_a_target = brake_release_limited_target(prev_output_a_target, output_a_target, self.dt)
+    if BRAKE_RELEASE_DWELL and not reset_state and not bool(sm['carState'].standstill):
+      output_a_target, self.brake_release_rise_ticks = brake_release_dwell_target(
+        prev_output_a_target, output_a_target, self.brake_release_rise_ticks)
+    else:
+      self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)

@@ -8,6 +8,7 @@ import pytest
 
 from cereal import log
 from openpilot.common.constants import CV
+from openpilot.common.realtime import DT_MDL
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR
 from opendbc.car.gm.values import CAR as GM_CAR, GMFlags
@@ -719,6 +720,15 @@ def make_sm(v_ego: float, desired_accel: float, min_accel: float, *, experimenta
       approachStopLength=0.0,
     ),
   }
+
+
+@pytest.fixture(autouse=True)
+def _short_action_time_off_unless_tested(request, monkeypatch):
+  # The short action time is built in ON (D-072). The tests below were written against the
+  # actuator-delay read-off and check other features, so they pin it off; the *action_t* tests
+  # drive PLANNER_ACTION_T_OVERRIDE themselves.
+  if "action_t" not in request.node.name:
+    monkeypatch.setattr(longitudinal_planner_module.LongitudinalPlanner, "_short_action_t_active", lambda self: False)
 
 
 def make_toggles(model_version: str = "v11", radar_takeoffs: bool = False):
@@ -1600,7 +1610,9 @@ def test_acc_mode_pretracking_vision_far_slower_lead_starts_braking_before_track
 
   no_lead_outputs = []
   lead_outputs = []
-  for _ in range(8):
+  # 12 frames, compared from frame 8: both planners first release a start-up brake from init, and the
+  # BRAKE_RELEASE_DWELL hold makes that release 2 frames later, so frames 5-7 no longer isolate the lead.
+  for _ in range(12):
     planner_no_lead.update(sm_no_lead, make_toggles(model_version))
     planner_with_lead.update(sm_with_lead, make_toggles(model_version))
     no_lead_outputs.append(planner_no_lead.output_a_target)
@@ -1609,8 +1621,8 @@ def test_acc_mode_pretracking_vision_far_slower_lead_starts_braking_before_track
   assert planner_with_lead.mode == "acc"
   assert not planner_with_lead.raw_close_lead_needs_control(sm_with_lead["radarState"].leadOne, v_ego)
   assert all(lead_output <= no_lead_output + 1e-6
-             for lead_output, no_lead_output in zip(lead_outputs[5:], no_lead_outputs[5:]))
-  assert min(lead_outputs[5:]) < min(no_lead_outputs[5:]) - 0.08
+             for lead_output, no_lead_output in zip(lead_outputs[8:], no_lead_outputs[8:]))
+  assert min(lead_outputs[8:]) < min(no_lead_outputs[8:]) - 0.08
   assert lead_outputs[-1] < no_lead_outputs[-1] - 0.15
 
 
@@ -3670,13 +3682,18 @@ def test_no_throttle_cap_stays_at_coast_limit_until_throttle_returns():
   sm["carControl"].orientationNED = [0.0, 0.1, 0.0]
   toggles = make_toggles()
 
-  for _ in range(5):
+  # COAST_CEILING_SLEW eases the ceiling down at COAST_CEILING_JERK, so allow it time to reach the coast limit.
+  outputs = []
+  for _ in range(20):
     planner.update(sm, toggles)
+    outputs.append(planner.output_a_target)
 
   accel_coast = max(get_vehicle_min_accel(CP, v_ego), get_coast_accel(sm["carControl"].orientationNED[1]))
 
   assert not planner.allow_throttle
   assert planner.output_a_target == pytest.approx(accel_coast, abs=1e-3)
+  step = longitudinal_planner_module.COAST_CEILING_JERK * planner.dt
+  assert all(b >= a - step - 1e-6 for a, b in zip(outputs[1:], outputs[2:], strict=False))
 
 
 def test_experimental_release_state_arms_only_on_falling_edge():
@@ -4920,6 +4937,160 @@ def test_exp_mode_reentry_during_fade_returns_to_exp_target_at_once():
   ref.update(exp, make_toggles())
   assert on.exp_mode_blend_weight == 1.0
   assert float(on.output_a_target) <= float(ref.output_a_target) + 0.05
+
+
+def test_brake_release_dwell_only_holds_more_braking():
+  m = longitudinal_planner_module
+  hold = m.BRAKE_RELEASE_DWELL_TICKS
+  seq = [-0.88, -1.0] * 6 + [-0.5] * (hold + 2)              # the 25e 732.5 two-cycle dither, then a real release
+  prev, n, pub = 0.0, hold + 1, []
+  for t in seq:
+    prev, n = m.brake_release_dwell_target(prev, t, n)
+    pub.append(prev)
+  assert all(p <= t + 1e-12 for p, t in zip(pub, seq, strict=True))   # never less braking than asked
+  assert pub[1:12] == [pytest.approx(-1.0)] * 11                        # dither removed: held at the deeper value
+  assert pub[12:12 + hold] == [pytest.approx(-1.0)] * hold              # a release waits BRAKE_RELEASE_DWELL_TICKS
+  assert pub[12 + hold] == pytest.approx(-0.5)                          # then passes (the slew above limits its rate)
+  assert m.brake_release_dwell_target(-0.4, -2.0, 1) == (pytest.approx(-2.0), 0)   # deeper braking passes at once
+  assert m.brake_release_dwell_target(0.2, 0.8, 0)[0] == pytest.approx(0.8)         # throttle is never held
+
+def test_brake_release_dwell_brakes_as_early_and_is_skipped_on_reset():
+  brake = make_sm(13.4, 0.0, -3.5, experimental_mode=False, tracking_lead=True,
+                  lead_one=make_lead(status=True, d_rel=20.0, v_lead=0.0, radar=True))
+  clear = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  saved = longitudinal_planner_module.BRAKE_RELEASE_DWELL
+  try:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = True
+    on, _ = _release_run(brake, clear, limit=True)
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = False
+    off, _ = _release_run(brake, clear, limit=True)
+  finally:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = saved
+  def first(xs):
+    return next(i for i, x in enumerate(xs) if x <= -0.5)
+  assert first(on) == first(off)                                         # brake onset unchanged
+  assert all(a <= b + 1e-9 for a, b in zip(on, off, strict=True))       # never less braking
+  off_sm = make_sm(13.4, 0.0, -3.5, experimental_mode=False)
+  off_sm["controlsState"].longControlState = LongCtrlState.off
+  off_sm["selfdriveState"].enabled = False
+  r_on, _ = _release_run(brake, off_sm, limit=True, release_frames=2)
+  longitudinal_planner_module.BRAKE_RELEASE_DWELL = False
+  try:
+    r_off, _ = _release_run(brake, off_sm, limit=True, release_frames=2)
+  finally:
+    longitudinal_planner_module.BRAKE_RELEASE_DWELL = saved
+  assert r_on[-1] == pytest.approx(r_off[-1])                            # reset re-seeds from aEgo, no hold
+
+
+def test_coast_ceiling_slew_moves_at_most_j_dt_from_the_output():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  planner = LongitudinalPlanner(CP, init_v=5.4)
+  step = longitudinal_planner_module.COAST_CEILING_JERK * planner.dt
+  assert planner.slew_coast_ceiling(2.0, 0.46, reset=True) == pytest.approx(2.0)
+  out = [planner.slew_coast_ceiling(-0.42, 0.46, reset=False)]           # throttle gate closes (294 568.16)
+  assert out[0] == pytest.approx(0.46 - step)
+  for _ in range(20):
+    out.append(planner.slew_coast_ceiling(-0.42, out[-1], reset=False))
+  assert all(b >= a - step - 1e-9 for a, b in zip(out, out[1:], strict=False))
+  assert out[-1] == pytest.approx(-0.42)                                 # reaches the coast limit
+  assert planner.slew_coast_ceiling(2.0, -0.42, reset=False) == pytest.approx(-0.42 + step)   # rises at J too
+  assert planner.slew_coast_ceiling(-0.42, 0.3, reset=True) == pytest.approx(-0.42)            # reset passes through
+
+
+def _spy_plan_read(monkeypatch, planner_toggles, *, override: bool, live_delay=None):
+  """Run one planner tick and record the time each output read-off function was called with."""
+  monkeypatch.setattr(longitudinal_planner_module, "PLANNER_ACTION_T_OVERRIDE", override)
+  calls = {}
+  real_plan = longitudinal_planner_module.get_accel_from_plan
+  real_classic = longitudinal_planner_module.get_accel_from_plan_classic
+
+  def spy_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
+    calls.setdefault("action_t", []).append(action_t)
+    return real_plan(speeds, accels, action_t=action_t, vEgoStopping=vEgoStopping)
+
+  def spy_classic(CP, speeds, accels, vEgoStopping, actuator_delay=None):
+    calls.setdefault("classic_delay", []).append(actuator_delay)
+    return real_classic(CP, speeds, accels, vEgoStopping, actuator_delay=actuator_delay)
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", spy_plan)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan_classic", spy_classic)
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.longitudinalActuatorDelay = 0.5
+  if live_delay is not None:
+    planner_toggles.longitudinalActuatorDelay = live_delay
+  planner = LongitudinalPlanner(CP, init_v=20.0)
+  sm = make_sm(20.0, desired_accel=0.0, min_accel=-3.5, experimental_mode=False)
+  planner.update(sm, planner_toggles)
+  return CP, planner, calls
+
+
+def _classic_toggles():
+  toggles = make_toggles()
+  toggles.tinygrad_model = False
+  toggles.classic_model = True
+  return toggles
+
+
+def _plain_toggles():
+  toggles = make_toggles()
+  toggles.tinygrad_model = False
+  return toggles
+
+
+@pytest.mark.parametrize("toggles_fn", [make_toggles, _plain_toggles])
+def test_planner_action_t_off_reads_the_plan_at_actuator_delay(monkeypatch, toggles_fn):
+  # D-072 switch off: exactly the pre-switch read-off point, actuator delay + DT_MDL (0.55 s here).
+  CP, planner, calls = _spy_plan_read(monkeypatch, toggles_fn(), override=False)
+  assert calls["action_t"] == [CP.longitudinalActuatorDelay + DT_MDL]
+  assert calls["action_t"][0] == planner.longitudinal_actuator_delay + DT_MDL
+
+
+def test_planner_action_t_off_follows_the_live_delay_toggle(monkeypatch):
+  _, planner, calls = _spy_plan_read(monkeypatch, make_toggles(), override=False, live_delay=0.15)
+  assert planner.longitudinal_actuator_delay == pytest.approx(0.15)
+  assert calls["action_t"] == [planner.longitudinal_actuator_delay + DT_MDL]
+
+
+def test_planner_action_t_off_classic_path_passes_the_actuator_delay(monkeypatch):
+  _, planner, calls = _spy_plan_read(monkeypatch, _classic_toggles(), override=False)
+  assert calls["classic_delay"] == [planner.longitudinal_actuator_delay]
+
+
+@pytest.mark.parametrize("toggles_fn", [make_toggles, _plain_toggles])
+@pytest.mark.parametrize("live_delay", [None, 0.15, 0.8])
+def test_planner_action_t_on_reads_the_plan_at_0_30(monkeypatch, toggles_fn, live_delay):
+  CP, planner, calls = _spy_plan_read(monkeypatch, toggles_fn(), override=True, live_delay=live_delay)
+  assert longitudinal_planner_module.PLANNER_ACTION_T_S == 0.30
+  assert calls["action_t"] == [pytest.approx(0.30)]
+  # The actuator delay itself is untouched: CP (which the carcontroller also reads) and the
+  # planner's own copy that every reaction_t gate uses.
+  assert CP.longitudinalActuatorDelay == pytest.approx(0.5)
+  expected_delay = 0.5 if live_delay is None else live_delay
+  assert planner.longitudinal_actuator_delay == pytest.approx(expected_delay)
+
+
+def test_planner_action_t_on_classic_path_reads_at_0_30(monkeypatch):
+  CP, planner, calls = _spy_plan_read(monkeypatch, _classic_toggles(), override=True)
+  assert calls["classic_delay"][0] + DT_MDL == pytest.approx(0.30)
+  assert CP.longitudinalActuatorDelay == pytest.approx(0.5)
+  assert planner.longitudinal_actuator_delay == pytest.approx(0.5)
+
+
+def test_planner_action_t_switch_leaves_car_params_delay_alone(monkeypatch):
+  for override in (False, True):
+    CP, planner, _ = _spy_plan_read(monkeypatch, make_toggles(), override=override)
+    assert CP.longitudinalActuatorDelay == pytest.approx(0.5)
+    assert planner.CP.longitudinalActuatorDelay == pytest.approx(0.5)
+    assert planner.longitudinal_actuator_delay == pytest.approx(0.5)
+
+
+def test_planner_action_t_default_is_on():
+  # D-072: built in on (it shipped as PlannerShortActionTime, default on); no param is read.
+  assert longitudinal_planner_module.PLANNER_ACTION_T_OVERRIDE is True
+  assert longitudinal_planner_module.get_planner_action_t(0.5) == pytest.approx(0.30)
+  assert longitudinal_planner_module.get_planner_action_t(0.5, enabled=False) == 0.5 + DT_MDL
+  import inspect
+  assert '"PlannerShortActionTime"' not in inspect.getsource(longitudinal_planner_module)
 
 
 def _exp_close_lead_case(experimental_mode=True):
