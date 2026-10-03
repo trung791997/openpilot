@@ -583,16 +583,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_value=lambda: f"{self._params.get_float('VEgoStopping'):.2f}m/s",
                  on_click=lambda: self._show_slider("VEgoStopping", 0.01, 1.0, step=0.01, unit="m/s", value_type="float"),
                  visible=self._show_stop_tuning_values),
-      SettingRow("GasOverrideBoost", "toggle", tr_noop("Accel Boost"),
-                 subtitle=tr_noop("Experimental Mode only. Raises the model's requested acceleration "
-                                  "when it is more cautious than the MPC. Pressing the gas above "
-                                  "~10 mph while the model is braking harder than the MPC adds up to "
-                                  "0.2 m/s^2 (0.05 per press, held for the drive; port of upstream "
-                                  "PR 39015). A lead pulling away beyond the follow distance also "
-                                  "lifts the model's braking part of the way toward the MPC."),
-                 get_state=lambda: self._params.get_bool("GasOverrideBoost"),
-                 set_state=lambda v: self._params.put_bool("GasOverrideBoost", v),
-                 visible=adv),
     ]
 
     # ── 3. Speed Limit Controller (SLC) Rows ──
@@ -612,11 +602,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
-      SettingRow("BoschANewbornLeads", "toggle", tr_noop("Radar Newborn Leads"),
-                 subtitle=tr_noop("Bosch-A newborn radar points: publish young closing targets earlier, only as a lead once their "
-                                  "own range proves closing. Replay-tested only; not road-validated. Restart required."),
-                 get_state=lambda: self._params.get_bool("BoschANewbornLeads"),
-                 set_state=lambda v: self._params.put_bool("BoschANewbornLeads", v)),
     ]
 
     self._slc_rows = [

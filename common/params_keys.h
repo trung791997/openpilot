@@ -390,9 +390,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // TEST, default OFF. Bosch-A only. Newborn radar points: publish young high-u10 closing targets on their range
     // fit (radar_interface BOSCH_A_NEWBORN_RANGE_PUBLISH) plus radard's NEWBORN_* switches. Replay evidence only.
     // Read once at startup in honda/radar_interface.py and radard.py.
+    // BoschANewbornLeads: unused since 2026-10-03 (built in on); kept to match the committed aarch64 params_pyx.so.
     {"BoschANewbornLeads", {PERSISTENT, BOOL, "0", "0", 3}},
     // Default ON. Experimental Mode only. STATUS 136h: "Accel Boost" gates both upstream PR 39015's
     // gas-press boost and the lead-departure assist. Unreplayed. Read in longitudinal_planner.py.
+    // GasOverrideBoost: unused since 2026-10-03 (built in on); kept to match the committed aarch64 params_pyx.so.
     {"GasOverrideBoost", {PERSISTENT, BOOL, "1", "1", 3}},
     {"RemoteStartBootsComma", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"TeslaWakeOnCAN", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
