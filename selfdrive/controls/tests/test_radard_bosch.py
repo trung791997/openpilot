@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from cereal import car
@@ -768,3 +769,73 @@ def test_bosch_a_lead_accel_tau_timebase_does_not_change_published_points(monkey
   # same points, same KF state; only aLeadTau differs
   assert published[0] == published[1]
   assert [p[0] for p in published[0]] == [1]
+
+
+# P1 range-first lead filter (report §12.3; STATUS 204)
+def _run_range_kf(a_lead_after, t_brake=3.0, t_end=5.0, noise=0.0, walk=None, seed=0):
+  rng = np.random.default_rng(seed)
+  kf = radard.RangeLeadKF()
+  h = 1 / 14.35
+  t, d, vl, ve = 0.0, 50.0, 25.0, 25.0
+  while t < t_end:
+    vl = max(vl + (a_lead_after if t >= t_brake else 0.0) * h, 0.0)
+    d += (vl - ve) * h
+    t += h
+    z = d + rng.normal(0.0, noise) + (walk(t) if walk else 0.0)
+    kf.update(t, z, ve, 25.0)
+  return kf
+
+
+def test_range_kf_tracks_a_braking_lead():
+  kf = _run_range_kf(-3.0, noise=0.07)
+  assert kf.healthy
+  assert kf.a_lead < -2.0
+  assert kf.v_lead < 25.0 - 3.0
+
+
+def test_range_kf_gross_outlier_is_not_absorbed():
+  kf = _run_range_kf(0.0, t_end=3.0, walk=lambda t: 5.0 if abs(t - 2.5) < 0.04 else 0.0)
+  assert abs(kf.a_lead) < 0.5
+
+
+def test_range_kf_restarts_on_a_range_step():
+  # a persistent 3 m jump (re-association) restarts the filter, which then publishes nothing for a while
+  kf = _run_range_kf(0.0, t_end=3.0, walk=lambda t: 3.0 if t > 2.9 else 0.0)
+  assert not kf.healthy
+
+
+def _kf_lead(a_lead=-3.0, d_rel=30.0, y_rel=0.0, age=2.0):
+  track = SimpleNamespace(range_kf=_run_range_kf(a_lead, noise=0.0), t_first=0.0, t_last=age)
+  lead = dict(status=True, radar=True, dRel=d_rel, yRel=y_rel, vRel=0.0, vLead=25.0, vLeadK=25.0, aLeadK=0.0)
+  return lead, track
+
+
+def _vision(a, prob=0.9):
+  return SimpleNamespace(prob=prob, a=[a])
+
+
+def test_range_kf_adjust_adds_braking_only_when_camera_agrees():
+  lead, track = _kf_lead()
+  out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(-1.0))
+  assert out['aLeadK'] == pytest.approx(-radard.RANGE_LEAD_KF_MAX_ACCEL_ADD)
+  assert out['vLead'] < lead['vLead'] and out['vRel'] < lead['vRel'] and out['vLeadK'] < lead['vLeadK']
+  assert out['dRel'] == lead['dRel']
+  # camera not braking, unsure, or absent: native lead untouched
+  for vis in (_vision(0.0), _vision(-1.0, prob=0.3), None):
+    assert radard.range_lead_kf_adjust(lead, track, 25.0, vis) == lead
+
+
+@pytest.mark.parametrize("kw,v_ego", [
+  (dict(d_rel=5.0), 25.0), (dict(y_rel=2.0), 25.0), (dict(age=0.5), 25.0), ({}, 3.0),
+])
+def test_range_kf_adjust_gates(kw, v_ego):
+  lead, track = _kf_lead(**kw)
+  assert radard.range_lead_kf_adjust(lead, track, v_ego, _vision(-1.0)) == lead
+
+
+def test_range_kf_adjust_never_removes_braking():
+  # range sees the lead accelerating while U11 says braking: nothing is relaxed
+  lead, track = _kf_lead(a_lead=+2.0)
+  lead.update(aLeadK=-2.0, vLead=10.0, vLeadK=10.0, vRel=-15.0)
+  out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(-1.0))
+  assert out['aLeadK'] == -2.0 and out['vLead'] == 10.0 and out['vRel'] == -15.0

@@ -92,6 +92,132 @@ RANGE_VREL_MAX_SPAN_S = 0.60
 # nothing here has been driven. (Since then: on in the owner's Civic drives from 0000023e.)
 RANGE_VREL_ASSIST = True
 
+# Range-first lead filter (report §12.3 P1; STATUS 204; owner, 2026-10-04: ship baked in, no switch). A
+# constant-acceleration Kalman filter on the lead's position along the road, z = dRel + integrated ego
+# travel, run on every measured Bosch-A sweep. Range leads U11 by ~1 s at a closing onset (D-044:
+# 0.88-1.28 s vs 0.07-0.14 s), so this filter's speed and acceleration see a braking lead first.
+# It may only ADD closing and braking to the published lead (D-053's one-sided rule), and only when the
+# CAMERA independently sees its lead braking: the range channel cannot check itself (the t~=11 s false
+# brake and the 232 3:02.8 walk above were range errors that a range-only filter would follow).
+#   * Noise: route 00000268, 4087 lead sweeps, residual of a 15-sample quadratic fit: robust sigma 0.07 m,
+#     p99 0.35 m. R uses 0.10 m. Q (jerk spectral density 3.0) was set on a synthetic -3 m/s^2 lead
+#     brake at sigma 0.1: steady aLead sd 0.46, |a| max 1.06, -2 reached 0.67 s after onset.
+#   * A sample whose innovation exceeds max(0.75 m, 4 sigma) is not absorbed; three in a row (a range
+#     walk or a re-association) restart the filter, and it publishes nothing until MIN_UPDATES clean ones.
+#   * A new track publishes nothing for MIN_AGE_S (236 22:13.6, a new track settling at +10 m/s^2).
+#   * Geometry and ego speed reuse the D-053 gates (dRel >= 8, |yRel| <= 1.5, vEgo >= 5; 236 14:45).
+# Replay-only (STATUS 204). Nothing here has been driven.
+RANGE_LEAD_KF_R = 0.10 ** 2
+RANGE_LEAD_KF_Q = 3.0
+RANGE_LEAD_KF_GATE_M = 0.75
+RANGE_LEAD_KF_GATE_SIGMA = 4.0
+RANGE_LEAD_KF_RESET_REJECTS = 3
+RANGE_LEAD_KF_MIN_UPDATES = 10
+RANGE_LEAD_KF_MIN_AGE_S = 1.0
+RANGE_LEAD_KF_MAX_DT_S = 0.5
+RANGE_LEAD_KF_MIN_V_EGO = 5.0
+# The camera must see its lead braking at least this hard, at this probability.
+RANGE_LEAD_KF_VISION_MIN_PROB = 0.5
+RANGE_LEAD_KF_VISION_MAX_ACCEL = -0.3
+# Deadbands before anything is added, and caps on what is added.
+RANGE_LEAD_KF_VREL_DEADBAND = 0.5
+RANGE_LEAD_KF_MAX_VREL_ADD = 8.0  # the D-053 assist's physical bound (RANGE_VREL_ASSIST_MAX_CORRECTION_MPS)
+RANGE_LEAD_KF_ACCEL_DEADBAND = 0.5
+RANGE_LEAD_KF_MIN_ACCEL = -1.0
+RANGE_LEAD_KF_MAX_ACCEL_ADD = 1.5
+
+
+class RangeLeadKF:
+  """[position, speed, acceleration] of a lead along the road from range plus ego odometry."""
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.x = None
+    self.P = None
+    self.t = 0.0
+    self.ego_s = 0.0
+    self.accepted = 0
+    self.rejects = 0
+
+  @property
+  def healthy(self) -> bool:
+    return self.x is not None and self.accepted >= RANGE_LEAD_KF_MIN_UPDATES and self.rejects == 0
+
+  @property
+  def v_lead(self) -> float:
+    return float(self.x[1])
+
+  @property
+  def a_lead(self) -> float:
+    return float(self.x[2])
+
+  def _init(self, t: float, d_rel: float, v_lead: float):
+    self.t = t
+    self.ego_s = 0.0
+    self.x = np.array([d_rel, v_lead, 0.0])
+    self.P = np.diag([RANGE_LEAD_KF_R, 4.0, 9.0])
+    self.accepted = 0
+    self.rejects = 0
+
+  def update(self, t: float, d_rel: float, v_ego: float, v_lead: float):
+    if self.x is None:
+      self._init(t, d_rel, v_lead)
+      return
+    dt = t - self.t
+    if not (0.0 < dt <= RANGE_LEAD_KF_MAX_DT_S):
+      self._init(t, d_rel, v_lead)
+      return
+    self.t = t
+    self.ego_s += v_ego * dt
+    F = np.array([[1.0, dt, dt * dt / 2.0], [0.0, 1.0, dt], [0.0, 0.0, 1.0]])
+    Q = RANGE_LEAD_KF_Q * np.array([[dt ** 5 / 20.0, dt ** 4 / 8.0, dt ** 3 / 6.0],
+                                    [dt ** 4 / 8.0, dt ** 3 / 3.0, dt * dt / 2.0],
+                                    [dt ** 3 / 6.0, dt * dt / 2.0, dt]])
+    x = F @ self.x
+    P = F @ self.P @ F.T + Q
+    innov = d_rel + self.ego_s - x[0]
+    S = P[0, 0] + RANGE_LEAD_KF_R
+    if abs(innov) > max(RANGE_LEAD_KF_GATE_M, RANGE_LEAD_KF_GATE_SIGMA * math.sqrt(S)):
+      self.rejects += 1
+      if self.rejects >= RANGE_LEAD_KF_RESET_REJECTS:
+        self._init(t, d_rel, v_lead)
+      else:
+        self.x, self.P = x, P
+      return
+    K = P[:, 0] / S
+    self.x = x + K * innov
+    self.P = P - np.outer(K, P[0, :])
+    self.accepted += 1
+    self.rejects = 0
+
+
+def range_lead_kf_adjust(lead: dict, track, v_ego: float, vision_lead) -> dict:
+  """One-sided P1 correction of a published Bosch-A radar lead dict; returns it unchanged unless every gate holds."""
+  if track is None or not lead.get('status', False) or not lead.get('radar', False):
+    return lead
+  kf = track.range_kf
+  if not kf.healthy or track.t_last - track.t_first < RANGE_LEAD_KF_MIN_AGE_S:
+    return lead
+  if (v_ego < RANGE_LEAD_KF_MIN_V_EGO or lead['dRel'] < RANGE_VREL_ASSIST_MIN_D_REL_M or
+      abs(lead['yRel']) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M):
+    return lead
+  if (vision_lead is None or float(vision_lead.prob) < RANGE_LEAD_KF_VISION_MIN_PROB or not len(vision_lead.a) or
+      float(vision_lead.a[0]) > RANGE_LEAD_KF_VISION_MAX_ACCEL):
+    return lead
+  lead = dict(lead)
+  add_v = min(lead['vLead'] - kf.v_lead - RANGE_LEAD_KF_VREL_DEADBAND, RANGE_LEAD_KF_MAX_VREL_ADD)
+  if add_v > 0.0:
+    lead['vRel'] -= add_v
+    lead['vLead'] -= add_v
+    lead['vLeadK'] -= add_v
+  a_native = lead['aLeadK']
+  a_range = kf.a_lead
+  if a_range <= RANGE_LEAD_KF_MIN_ACCEL and a_range < a_native - RANGE_LEAD_KF_ACCEL_DEADBAND:
+    lead['aLeadK'] = max(a_range, a_native - RANGE_LEAD_KF_MAX_ACCEL_ADD)
+  return lead
+
+
 # Minimum disagreement, m/s, before arming. D-043 deliberately does not chase "the milder
 # 0.6-2.5 m/s overshoots at deceleration onset"; this is the mirror of that, and 2.0 m/s is also
 # the band tools/bosch_a_vrel_shadow_report.py already reports against. It is NOT a noise floor on
@@ -747,6 +873,7 @@ class Track:
     self.K_C = kalman_params.C
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
+    self.range_kf = RangeLeadKF()  # P1; Bosch-A only, see RANGE_LEAD_KF_*
 
     self.leadTrackID = 0
 
@@ -819,7 +946,7 @@ class Track:
              range_assist: bool = False, vision_closing: float | None = None, vision_assist: bool = False,
              camera_sample: tuple[float, float | None] | None = None,
              nc_vrel: float = 0.0, nc_valid: bool = False, nc_sigma: int = 127,
-             newborn_follow: bool = False):
+             newborn_follow: bool = False, range_kf: bool = False):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -866,6 +993,9 @@ class Track:
             self.range_hist.clear()
             self.range_hist.append((float(t_now), float(d_rel)))
       self.range_hist_long.append((float(t_now), float(d_rel)))
+      if range_kf:
+        # v_lead - v_rel is the same delayed v_ego the native speed is aligned with
+        self.range_kf.update(float(t_now), float(d_rel), float(v_lead) - float(v_rel), float(v_lead))
       if (nc_valid and int(nc_sigma) < RANGE_VREL_RAIL_NC_VETO_MAX_SIGMA_RAW
           and 0.0 < d_rel < RANGE_VREL_RAIL_NC_VETO_MAX_D_REL_M):
         self.nc_veto_hist.append((float(t_now), float(nc_vrel)))
@@ -1722,7 +1852,8 @@ class RadarD:
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
                               vision_assist=vision_assist, camera_sample=cam_sample,
                               nc_vrel=rpt[4], nc_valid=rpt[5], nc_sigma=rpt[6],
-                              newborn_follow=self.honda_bosch_a_radar and radar_fresh and not rpt[3])
+                              newborn_follow=self.honda_bosch_a_radar and radar_fresh and not rpt[3],
+                              range_kf=self.honda_bosch_a_radar)
 
     # ONPATH_RADAR_ADOPT: path offset of every track on a fresh sweep (yRel + = left, model y + = right)
     if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar and radar_fresh:
@@ -1764,11 +1895,14 @@ class RadarD:
 
         self._update_honda_bosch_a_preferred_staleness(i, leads_v3[i], self.lead_prob_filters[i].x)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, sm['modelV2'],
-                                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
-                                          g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
-                                          preferred_track_id=self.prev_lead_track_ids[0],
-                                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+      lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, sm['modelV2'],
+                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
+                          g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
+                          preferred_track_id=self.prev_lead_track_ids[0],
+                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+      if self.honda_bosch_a_radar:
+        lead_one = range_lead_kf_adjust(lead_one, self.tracks.get(lead_one.get('radarTrackId', -1)), self.v_ego, leads_v3[0])
+      self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,

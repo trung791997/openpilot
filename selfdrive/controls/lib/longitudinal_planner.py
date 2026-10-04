@@ -771,6 +771,67 @@ def get_far_lead_coast_cap(lead, v_ego, desired_gap, output_a_target, model_msg=
   return max(float(output_a_target), -FAR_LEAD_COAST_MAX_DECEL)
 
 
+# Early coast for far radar leads (report §12.3 P5; STATUS 204). The Bosch-A radar holds a lead out
+# to ~150 m, well before the follow law reacts, so a closing far lead caps throttle instead of letting
+# the cruise target accelerate into a brake later. It only lowers a positive target; it never brakes and
+# never raises a braking target. The cap tapers with TTC so entering it is not a step. Owner, 2026-10-04.
+FAR_RADAR_EARLY_COAST_MIN_SPEED = 10.0
+FAR_RADAR_EARLY_COAST_MIN_DISTANCE = 45.0
+FAR_RADAR_EARLY_COAST_MAX_DISTANCE = 150.0
+FAR_RADAR_EARLY_COAST_MAX_LATERAL = 1.5
+FAR_RADAR_EARLY_COAST_MIN_CLOSING = 1.0
+FAR_RADAR_EARLY_COAST_TTC_BP = [10.0, 15.0, 20.0]
+FAR_RADAR_EARLY_COAST_CAP_V = [0.0, 0.3, 2.0]
+
+
+def get_far_radar_lead_early_coast_cap(lead, v_ego, output_a_target):
+  if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
+    return float(output_a_target)
+  v_ego = float(v_ego)
+  lead_distance = float(getattr(lead, "dRel", float("inf")))
+  closing_speed = v_ego - float(getattr(lead, "vLead", v_ego))
+  if (
+    v_ego <= FAR_RADAR_EARLY_COAST_MIN_SPEED or
+    closing_speed < FAR_RADAR_EARLY_COAST_MIN_CLOSING or
+    not (FAR_RADAR_EARLY_COAST_MIN_DISTANCE <= lead_distance <= FAR_RADAR_EARLY_COAST_MAX_DISTANCE) or
+    abs(float(getattr(lead, "yRel", 0.0))) > FAR_RADAR_EARLY_COAST_MAX_LATERAL
+  ):
+    return float(output_a_target)
+  cap = float(np.interp(lead_distance / closing_speed, FAR_RADAR_EARLY_COAST_TTC_BP, FAR_RADAR_EARLY_COAST_CAP_V))
+  return min(float(output_a_target), cap)
+
+
+# Soft final stop behind a stopped radar lead (report §12.3 P6; STATUS 204). Between 3.0 and vEgoStopping
+# (0.5 m/s) the braking target is limited to a speed-scaled floor (-0.6 at 0.5 m/s, -1.0 at 2.0 m/s, none
+# at 3.0 m/s) but never softer than STOP_SOFTEN_MARGIN x the decel that stops the car STOP_DISTANCE short of
+# the lead, so the car still stops before the obstacle point. Below vEgoStopping longcontrol's stopping state
+# and the standstill stopped-lead guard own the stop; this does not touch them. Owner, 2026-10-04.
+STOP_SOFTEN_MIN_SPEED = 0.5
+STOP_SOFTEN_SPEED_BP = [0.5, 1.5, 2.0, 3.0]
+STOP_SOFTEN_FLOOR_V = [0.6, 0.8, 1.0, 3.5]
+STOP_SOFTEN_MAX_LEAD_SPEED = 0.5
+STOP_SOFTEN_MAX_LATERAL = 1.5
+STOP_SOFTEN_MIN_REMAINING = 0.5
+STOP_SOFTEN_MARGIN = 1.5
+
+
+def get_soft_stop_floor(lead, v_ego):
+  """Lowest aTarget the final stop needs, or None when the soft stop does not apply."""
+  if lead is None or not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)):
+    return None
+  v_ego = float(v_ego)
+  if not (STOP_SOFTEN_MIN_SPEED <= v_ego < STOP_SOFTEN_SPEED_BP[-1]):
+    return None
+  if (float(getattr(lead, "vLead", 0.0)) > STOP_SOFTEN_MAX_LEAD_SPEED or
+      abs(float(getattr(lead, "yRel", 0.0))) > STOP_SOFTEN_MAX_LATERAL):
+    return None
+  remaining = float(getattr(lead, "dRel", 0.0)) - STOP_DISTANCE
+  if remaining < STOP_SOFTEN_MIN_REMAINING:
+    return None
+  needed = STOP_SOFTEN_MARGIN * v_ego ** 2 / (2.0 * remaining)
+  return -max(float(np.interp(v_ego, STOP_SOFTEN_SPEED_BP, STOP_SOFTEN_FLOOR_V)), needed)
+
+
 # Restored planner constants retained by CEM, stop, and departure paths.
 A_CRUISE_MIN = -1.0
 # A soft decel profile (ECO -0.5, traffic -0.35) is a cruise-decel preference. With a closing lead
@@ -3867,6 +3928,13 @@ class LongitudinalPlanner:
     if far_lead_coast_allowed:
       output_a_target = get_far_lead_coast_cap(comfort_lead, scene_v_ego, desired_gap, output_a_target,
                                                sm['modelV2'])
+    output_a_target = get_far_radar_lead_early_coast_cap(comfort_lead, scene_v_ego, output_a_target)
+
+    soft_stop_floor = None if (panic_bypass or bool(getattr(sm['starpilotPlan'], 'forcingStop', False))) else \
+      get_soft_stop_floor(comfort_lead, scene_v_ego)
+    if soft_stop_floor is not None and output_a_target < soft_stop_floor:
+      # output only: raising self.a_desired would feed a softer x0 into the next MPC solve (see BRAKE_RELEASE_DWELL)
+      output_a_target = soft_stop_floor
 
     if radar_gap_settle_active:
       output_a_target = RADAR_STANDSTILL_GAP_SETTLE_ACCEL
