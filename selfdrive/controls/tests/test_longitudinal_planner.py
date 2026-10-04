@@ -4673,6 +4673,29 @@ def test_fast_closing_lead_latch_holds_while_closing_and_releases(monkeypatch):
   assert not planner2.fast_closing_lead_passes_floor(lead2, 'lead0', 20.0, model2)
 
 
+def test_fast_closing_entry_survives_source_flicker_across_vision_window(monkeypatch):
+  # STATUS 204, 26b 2233.84: the vision test passed while mpc.source read cruise, and failed again by the
+  # tick the source read lead0. Entry still happens within FAST_CLOSING_LEAD_VISION_MEMORY_TICKS on that track.
+  monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_PASSES_COMFORT_FLOOR", True)
+  planner, lead, model = _fast_closing_setup(source='cruise')
+  assert not planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, model)
+  _, mismatched = _fast_closing_setup(vis_x=60.0)[1:]
+  planner.fast_closing_tick += 1
+  planner.mpc.source = 'lead0'
+  assert planner.fast_closing_lead_passes_floor(lead, 'lead0', 20.0, mismatched)
+  # Past the memory, or on another track, the source alone is not entry.
+  late, late_lead, late_model = _fast_closing_setup(source='cruise')
+  assert not late.fast_closing_lead_passes_floor(late_lead, 'lead0', 20.0, late_model)
+  late.fast_closing_tick += longitudinal_planner_module.FAST_CLOSING_LEAD_VISION_MEMORY_TICKS + 1
+  late.mpc.source = 'lead0'
+  assert not late.fast_closing_lead_passes_floor(late_lead, 'lead0', 20.0, mismatched)
+  other, other_lead, other_model = _fast_closing_setup(source='cruise')
+  assert not other.fast_closing_lead_passes_floor(other_lead, 'lead0', 20.0, other_model)
+  other_lead.radarTrackId = 25
+  other.mpc.source = 'lead0'
+  assert not other.fast_closing_lead_passes_floor(other_lead, 'lead0', 20.0, mismatched)
+
+
 def test_fast_closing_pass_is_capped_at_max_brake(monkeypatch):
   # STATUS 150: the pass opens the comfort floor only to -FAST_CLOSING_LEAD_MAX_BRAKE, not the vehicle minimum.
   monkeypatch.setattr(longitudinal_planner_module, "FAST_CLOSING_LEAD_MAX_BRAKE", 2.0)

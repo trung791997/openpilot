@@ -122,6 +122,14 @@ FAST_CLOSING_LEAD_MAX_TTC = 6.0
 FAST_CLOSING_LEAD_MIN_VISION_PROB = 0.5
 FAST_CLOSING_LEAD_MIN_VISION_CLOSING = 6.0
 FAST_CLOSING_LEAD_VISION_MATCH = 0.15
+# The vision test passed in one tick and mpc.source == this lead in another is still entry, if they
+# are at most FAST_CLOSING_LEAD_VISION_MEMORY_TICKS apart on the same radar track (closing speed and
+# TTC are tested in the entry tick itself). STATUS 204: 26b 2233.6-2233.8 the model lead matched dRel
+# within 15 % for five ticks only; mpc.source flickered lead0/cruise across them, and whether it read
+# lead0 in the last matching tick (2233.84) decided between -1.9 and -1.1 for 2 s on a lead closing
+# 11 m/s at 52 m. A 0.003 m/s^2 difference in MPC warm start three seconds earlier was enough to flip
+# it. The rail-phantom guard is unchanged: such a lead never passes the vision test at all.
+FAST_CLOSING_LEAD_VISION_MEMORY_TICKS = 5
 # The pass is built against max(vehicle minimum, -FAST_CLOSING_LEAD_MAX_BRAKE), not the vehicle minimum (STATUS 150).
 # Uncapped, the pass was held because the owner reported rough braking, and on the current tree it still deepened 22
 # approaches (frames < -3.0 1363 -> 1626 over 32 routes). Capped at -2.0 it brakes earlier and softer instead: fleet
@@ -1275,6 +1283,8 @@ class LongitudinalPlanner:
     self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     self.coast_ceiling = None
     self.fast_closing_lead_track = None
+    self.fast_closing_tick = 0
+    self.fast_closing_vision_seen = {}
     self.stopped_radar_lead_hold_track = None
     self.stopped_radar_lead_hold_active = False
     self.output_should_stop = False
@@ -2706,15 +2716,16 @@ class LongitudinalPlanner:
       return False
     closing = -float(lead.vRel)
     d_rel = float(lead.dRel)
-    if self.mpc.source != lead_source or closing < FAST_CLOSING_LEAD_MIN_CLOSING or d_rel > FAST_CLOSING_LEAD_MAX_TTC * closing:
+    if closing < FAST_CLOSING_LEAD_MIN_CLOSING or d_rel > FAST_CLOSING_LEAD_MAX_TTC * closing:
       return False
     leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
-    if not leads or len(leads[0].x) == 0 or len(leads[0].v) == 0:
-      return False
-    vision = leads[0]
-    if (float(vision.prob) < FAST_CLOSING_LEAD_MIN_VISION_PROB or
-        abs(float(vision.x[0]) - d_rel) > FAST_CLOSING_LEAD_VISION_MATCH * d_rel or
-        v_ego - float(vision.v[0]) < FAST_CLOSING_LEAD_MIN_VISION_CLOSING):
+    vision = leads[0] if leads and len(leads[0].x) > 0 and len(leads[0].v) > 0 else None
+    if (vision is not None and float(vision.prob) >= FAST_CLOSING_LEAD_MIN_VISION_PROB and
+        abs(float(vision.x[0]) - d_rel) <= FAST_CLOSING_LEAD_VISION_MATCH * d_rel and
+        v_ego - float(vision.v[0]) >= FAST_CLOSING_LEAD_MIN_VISION_CLOSING):
+      self.fast_closing_vision_seen[track] = self.fast_closing_tick
+    seen = self.fast_closing_vision_seen.get(track)
+    if self.mpc.source != lead_source or seen is None or self.fast_closing_tick - seen > FAST_CLOSING_LEAD_VISION_MEMORY_TICKS:
       return False
     self.fast_closing_lead_track = track
     return True
@@ -3402,6 +3413,9 @@ class LongitudinalPlanner:
         lead.status and bool(getattr(lead, "radar", False)) and int(getattr(lead, "radarTrackId", -1)) == self.fast_closing_lead_track
         for lead in (self.lead_one, self.lead_two)):
       self.fast_closing_lead_track = None
+    self.fast_closing_tick += 1
+    self.fast_closing_vision_seen = {k: t for k, t in self.fast_closing_vision_seen.items()
+                                     if self.fast_closing_tick - t <= FAST_CLOSING_LEAD_VISION_MEMORY_TICKS}
     exp_close_lead_cap = None
     exp_close_lead_floor = min(self.exp_close_lead_floor, accel_limits_turns[0])
     if lead_control_active:
