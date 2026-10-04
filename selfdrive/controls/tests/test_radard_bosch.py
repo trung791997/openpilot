@@ -933,8 +933,9 @@ def test_range_kf_adjust_drops_stale_correction():
   assert radard.range_lead_kf_adjust(lead, track, 25.0, _vision(0.0), 10.0) == lead
 
 
-def _young_cam_lead(d=47.0, v_rel=-12.0, a=-4.3, v_ego=22.0):
-  return SimpleNamespace(status=True, radar=True, dRel=d, vRel=v_rel, vLead=v_ego + v_rel, vLeadK=v_ego + v_rel, aLeadK=a)
+def _young_cam_lead(d=47.0, v_rel=-12.0, a=-4.3, v_ego=22.0, v_range=float('nan')):
+  return SimpleNamespace(status=True, radar=True, dRel=d, vRel=v_rel, vLead=v_ego + v_rel, vLeadK=v_ego + v_rel, aLeadK=a,
+                         vRelRangeDerived=v_range)
 
 
 def _young_cam_track(age=0.3):
@@ -970,6 +971,17 @@ def test_young_cam_bound_does_not_apply(case):
   elif case == "few_frames":
     hist = _young_cam_hist(n=radard.YOUNG_CAM_MIN_MATCHES - 1)
   assert radard.young_cam_bounds(lead, track, hist, 22.0) is None
+
+
+def test_young_cam_bound_range_fit_veto():
+  # 000002d9 538.6: camera speed said ~0 closing while the radar range fell ~8-11 m/s and the road kept closing to 51 m
+  # at vRel -4.6. The track's own range fit closing past the floor vetoes the bound: the radar stands (D-041).
+  lead = _young_cam_lead(d=61.6, v_rel=-5.1, a=-3.6, v_ego=22.0, v_range=-8.0)
+  hist = _young_cam_hist(x=63.0, v=22.0, a=0.0)
+  assert radard.young_cam_bounds(lead, _young_cam_track(), hist, 22.0) is None
+  # a range fit slower than the floor does not veto
+  lead.vRelRangeDerived = -1.0
+  assert radard.young_cam_bounds(lead, _young_cam_track(), hist, 22.0) is not None
 
 
 def test_young_cam_bound_keeps_d041_rail():

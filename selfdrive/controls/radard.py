@@ -925,6 +925,9 @@ def young_cam_bounds(lead, track, hist, v_ego: float) -> tuple[float, float] | N
   if young_range_genuinely_closing(track, v_ego):
     return None  # the track's own range proves the closing
   v_floor = float(np.median([h[2] for h in m])) - float(v_ego) - YOUNG_CAM_MARGIN_MPS
+  v_range = float(lead.vRelRangeDerived)
+  if math.isfinite(v_range) and v_range <= v_floor:
+    return None  # the track's own range fit closes at least as fast as the floor: the camera is wrong, the radar stands
   a_floor = min(float(np.median([h[3] for h in m])), 0.0) - YOUNG_CAM_ACCEL_MARGIN
   return v_floor, a_floor
 
