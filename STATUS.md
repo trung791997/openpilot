@@ -10277,5 +10277,15 @@ on 0x18DAB0F1, `carcontroller.py` tester-present), and the bank still arrives on
   8-11 m/s). With a range-fit veto, it no longer touched the 000002d5 bookmark.
 - **Open (owner agreed to pursue):** whether a track born on the U11 rail is the camera tracker spinning up rather
   than a real closing. If so, the owner has to decide (DECISIONS) on a bound that ramps up over the tracker's spin-up
-  instead of publishing the full rail on the first sweep. Evidence is being gathered with
-  `tools/bosch_a_birth_rail_report.py`, using ego odometry anchors only.
+  instead of publishing the full rail on the first sweep. Evidence: `tools/bosch_a_birth_rail_report.py`, which
+  uses ego odometry anchors only. Proposal: D-077 (PROPOSED, no code).
+- **Birth-rail result (offline statistics, 8 routes 236/268/26b/2d5/2d6/2d7/2d8/2d9; not road evidence):**
+  6693 tracks; 2914 born on the −12 rail (461 live ≥ 3 s); 329 born on the +12 rail. Of 434 born low-railed, ≥ 3 s,
+  ego ≥ 5 m/s, 211 could be anchored. Settle anchor (moving lead, constant speed assumed): **128/130 overstated**
+  (truth closing < 8 m/s; median rail-minus-truth 10.8 m/s). Stationary anchor (ego < 12 m/s only): **61/81
+  genuine**. Overstated tracks decay off the rail like a filter spinning up: median U11 −12.0 at birth, −9.4 at
+  0.5 s, −6.6 at 1.0 s, −4.7 at 1.5 s (excess 1/e ≈ 1.2 s); genuine ones stay railed. +12 births: 91% spin-up.
+  Only 16/2914 born-railed tracks became leadOne within 1 s, and only the 000002d5 bookmark (t 716.5, tid 23)
+  published −20 within 3 s of birth. Caveats: the settle anchor is selection-biased toward leads that settle;
+  about half the tracks have no anchor; above 12 m/s a stopped object and a spinning-up tracker both read −12, so
+  U11 alone cannot tell them apart. A blanket ramp would delay genuine stopped-object braking.
