@@ -810,8 +810,9 @@ def _kf_lead(a_lead=-3.0, d_rel=30.0, y_rel=0.0, age=2.0):
   return lead, track
 
 
-def _vision(a, prob=0.9):
-  return SimpleNamespace(prob=prob, a=[a])
+def _vision(a, prob=0.9, v=19.0):
+  # default v: the _kf_lead KF's own speed (25 m/s, -3 m/s^2 for 2 s), i.e. the camera agrees on size
+  return SimpleNamespace(prob=prob, a=[a], v=[v])
 
 
 def _adjust(lead, track, v_ego, vis, n=20, t0=0.0):
@@ -839,6 +840,48 @@ def test_range_kf_adjust_adds_braking_only_when_camera_agrees():
 def test_range_kf_adjust_gates(kw, v_ego):
   lead, track = _kf_lead(**kw)
   assert _adjust(lead, track, v_ego, _vision(-1.0)) == lead
+
+
+def test_range_kf_adjust_bounded_by_camera_size():
+  # replay 0000026b 11:40: camera lead closing ~2 m/s and braking -0.4, range KF far harder
+  lead, track = _kf_lead()
+  out = _adjust(lead, track, 25.0, _vision(-0.4, v=24.0), n=40)
+  v_floor = 24.0 - radard.RANGE_LEAD_KF_VISION_V_MARGIN
+  assert out['vLead'] >= v_floor - radard.RANGE_LEAD_KF_VREL_DEADBAND - 1e-6
+  assert lead['vLead'] - out['vLead'] < 25.0 - track.range_kf.v_lead
+  # accel floor -1.4 is not 0.5 below native 0: decel added up to that floor only
+  assert out['aLeadK'] >= -0.4 - radard.RANGE_LEAD_KF_VISION_A_MARGIN - 1e-6
+  # the camera agrees on size: the full correction
+  lead, track = _kf_lead()
+  out = _adjust(lead, track, 25.0, _vision(-2.5, v=19.0), n=40)
+  assert out['vLead'] == pytest.approx(track.range_kf.v_lead + radard.RANGE_LEAD_KF_VREL_DEADBAND, abs=1e-6)
+
+
+def test_range_kf_adjust_skips_when_camera_sees_less_closing_than_radar():
+  # replay 0000026b 11:40: native radar closing 6.5 m/s, camera 2.1 m/s and braking -0.34
+  lead, track = _kf_lead()
+  lead.update(vRel=-6.5, vLead=21.3 - 6.5, vLeadK=21.3 - 6.5)
+  assert _adjust(lead, track, 21.3, _vision(-0.34, v=21.3 - 2.1), n=40) == lead
+  # camera closing at least the radar's (268 4:52: 6.1 vs 4.5): corrected
+  lead, track = _kf_lead()
+  lead.update(vRel=-4.5, vLead=22.3 - 4.5, vLeadK=22.3 - 4.5)
+  assert _adjust(lead, track, 22.3, _vision(-0.34, v=22.3 - 6.1), n=40)['aLeadK'] < lead['aLeadK']
+
+
+def test_range_kf_adjust_skips_lead_drifting_out_of_lane():
+  lead, track = _kf_lead()
+  prev = 0.0
+  for k in range(30):
+    drifting = dict(lead, yRel=0.2 + 1.0 * k * radard.DT_MDL)  # 1 m/s outward, past 1.5 m (geometry gate) at k=26
+    out = radard.range_lead_kf_adjust(drifting, track, 25.0, _vision(-1.0), k * radard.DT_MDL)
+    cur = drifting['aLeadK'] - out['aLeadK']
+    if drifting['yRel'] > radard.RANGE_LEAD_KF_DRIFT_MIN_Y_M + 0.1:
+      assert cur <= prev  # nothing new once drifting; what built up before bleeds off
+    prev = cur
+  assert out == drifting
+  # same lead held in lane: corrected
+  lead, track = _kf_lead()
+  assert _adjust(dict(lead, yRel=0.8), track, 25.0, _vision(-1.0))['aLeadK'] < lead['aLeadK']
 
 
 def test_range_kf_adjust_never_removes_braking():
