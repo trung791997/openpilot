@@ -764,34 +764,6 @@ FAR_RAIL_RANGE_TOL_FRAC = 0.08
 FAR_RAIL_MAX_SPEED_STDEV_MPS = 2.0
 FAR_RAIL_MARGIN_MPS = 3.0
 
-# Young-track camera agreement (owner, 2026-10-04: "make sure radar and vision agree with each other when it comes to an
-# urgent situation like that"). Route 000002d5--1393dccb3d, bookmark at 12:03.7, brake 717.9-719.8 (log build 5a6edd46):
-# the leadOne radar track dropped and cut-in track 23 (yRel -2.7 -> -0.3) was promoted at 54.8 m with U11 on the low
-# rail (-12.0) and one -20.0 RAIL_FAST frame; aLeadK went to -4.3 on the vision -> radar handoff. The camera had the same
-# car (prob 0.83-0.99, range within ~8 m) closing a steady 4-5.6 m/s the whole time, and the car settled at ~35 m with
-# vRel ~0 at 17 m/s, so the camera was right: a radar lead doing 10 m/s cannot match 17 m/s 1.5 s later. The planner went
-# to the -3.5 floor in 0.4 s (aEgo -4.67). FAR_RAIL_VISION_BOUND did not apply (dRel < 80 m, 12 matched frames needed).
-# For a Bosch-A radar lead (leadOne, leadTwo, leadOnpath) at dRel < FAR_RAIL_MIN_D_REL_M whose track is at most
-# YOUNG_CAM_MAX_AGE_S old, when the model lead in the same slot sat at the same range (|x - RADAR_TO_CAMERA - dRel| <=
-# max(YOUNG_CAM_RANGE_TOL_M, YOUNG_CAM_RANGE_TOL_FRAC * dRel), prob >= YOUNG_CAM_MIN_PROB) on at least YOUNG_CAM_MIN_MATCHES
-# of the last YOUNG_CAM_HIST_FRAMES model frames with steady speed, the published vRel may claim at most
-# YOUNG_CAM_MARGIN_MPS more closing than median(camera v) - vEgo, and aLeadK at most YOUNG_CAM_ACCEL_MARGIN below
-# min(median camera a, 0). It only takes closing/decel away down to that bound: the lead, its range, the track, U11, the
-# KF and lead selection are untouched and nothing is deleted or coasted (D-041/D-042 publish-a-bound). It lifts a rail
-# only where the camera sees less than rail - margin closing on the same object; the D-041 route (000001f9, camera
-# -11.4) stays on the rail. A young track whose own range proves the closing (young_range_genuinely_closing, 000002ae)
-# keeps the radar value. After YOUNG_CAM_MAX_AGE_S the radar value stands. Replay evidence only; not road-validated.
-YOUNG_CAM_AGREEMENT_BOUND = True
-YOUNG_CAM_MAX_AGE_S = 2.0
-YOUNG_CAM_HIST_FRAMES = 6             # 0.3 s of model frames: a cut-in has no long camera history on its own range
-YOUNG_CAM_MIN_MATCHES = 4
-YOUNG_CAM_MIN_PROB = 0.7
-YOUNG_CAM_RANGE_TOL_M = 10.0
-YOUNG_CAM_RANGE_TOL_FRAC = 0.25
-YOUNG_CAM_MAX_SPEED_STDEV_MPS = 2.0
-YOUNG_CAM_MARGIN_MPS = 3.0
-YOUNG_CAM_ACCEL_MARGIN = 1.5
-
 # stationary qualification parameters
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
@@ -903,33 +875,6 @@ def far_rail_vrel_floor(lead, hist, v_ego: float) -> float | None:
   if math.isfinite(v_range) and v_range <= floor:
     return None  # the track's own range fit closes at least as fast: the rail stands
   return floor
-
-
-def young_cam_sample(vis) -> tuple[float, float, float, float] | None:
-  """YOUNG_CAM_AGREEMENT_BOUND history entry for one model lead: (prob, range at the radar, speed, accel), or None."""
-  if vis is None or not len(vis.x) or not len(vis.v) or not len(vis.a):
-    return None
-  return float(vis.prob), float(vis.x[0]) - RADAR_TO_CAMERA, float(vis.v[0]), float(vis.a[0])
-
-
-def young_cam_bounds(lead, track, hist, v_ego: float) -> tuple[float, float] | None:
-  """YOUNG_CAM_AGREEMENT_BOUND: (least vRel, least aLeadK) a young near Bosch-A radar lead may publish, or None."""
-  if not (lead.status and lead.radar and lead.dRel < FAR_RAIL_MIN_D_REL_M) or track is None:
-    return None
-  if not (track.t_last - track.t_first <= YOUNG_CAM_MAX_AGE_S):
-    return None
-  tol = max(YOUNG_CAM_RANGE_TOL_M, YOUNG_CAM_RANGE_TOL_FRAC * lead.dRel)
-  m = [h for h in hist if h is not None and h[0] >= YOUNG_CAM_MIN_PROB and abs(h[1] - lead.dRel) <= tol]
-  if len(m) < YOUNG_CAM_MIN_MATCHES or float(np.std([h[2] for h in m])) > YOUNG_CAM_MAX_SPEED_STDEV_MPS:
-    return None
-  if young_range_genuinely_closing(track, v_ego):
-    return None  # the track's own range proves the closing
-  v_floor = float(np.median([h[2] for h in m])) - float(v_ego) - YOUNG_CAM_MARGIN_MPS
-  v_range = float(lead.vRelRangeDerived)
-  if math.isfinite(v_range) and v_range <= v_floor:
-    return None  # the track's own range fit closes at least as fast as the floor: the camera is wrong, the radar stands
-  a_floor = min(float(np.median([h[3] for h in m])), 0.0) - YOUNG_CAM_ACCEL_MARGIN
-  return v_floor, a_floor
 
 
 def vision_assist_closing(d_rel: float, y_rel: float, vis, v_ego: float) -> float | None:
@@ -1843,8 +1788,6 @@ class RadarD:
     self.young_flat_bound_count = 0
     self.far_rail_bound_count = 0
     self.far_rail_hist = [deque(maxlen=FAR_RAIL_HIST_FRAMES) for _ in range(2)]  # per model lead slot
-    self.young_cam_bound_count = 0
-    self.young_cam_hist = [deque(maxlen=YOUNG_CAM_HIST_FRAMES) for _ in range(2)]  # per model lead slot
     # The lead KF consumes Bosch measurements at the physical radar cadence. Lead probability
     # filters, however, consume modelV2 leads every model cycle and must retain model-loop timing.
     kf_dt = HONDA_BOSCH_A_RADAR_TS if self.honda_bosch_a_radar else radar_ts
@@ -2021,9 +1964,6 @@ class RadarD:
     if FAR_RAIL_VISION_BOUND and self.honda_bosch_a_radar:
       for i in range(2):
         self.far_rail_hist[i].append(far_rail_model_sample(leads_v3[i]) if len(leads_v3) > i else None)
-    if YOUNG_CAM_AGREEMENT_BOUND and self.honda_bosch_a_radar:
-      for i in range(2):
-        self.young_cam_hist[i].append(young_cam_sample(leads_v3[i]) if len(leads_v3) > i else None)
     if len(leads_v3) > 1:
       for i in range(2):
         lead_prob = float(leads_v3[i].prob)
@@ -2087,27 +2027,6 @@ class RadarD:
             lead.vLead = lead.vLead + dv
             lead.vLeadK = lead.vLeadK + dv
             self.far_rail_bound_count += 1
-
-      if YOUNG_CAM_AGREEMENT_BOUND and self.honda_bosch_a_radar:
-        young_cam_leads = [(self.radar_state.leadOne, 0), (self.radar_state.leadTwo, 1)]
-        if ONPATH_RADAR_ADOPT:
-          young_cam_leads.append((self.radar_state.leadOnpath, 0))
-        for lead, slot in young_cam_leads:
-          if not (lead.status and lead.radar):
-            continue
-          b = young_cam_bounds(lead, self.tracks.get(int(lead.radarTrackId)), self.young_cam_hist[slot], self.v_ego)
-          if b is None:
-            continue
-          v_floor, a_floor = b
-          if lead.vRel < v_floor or lead.aLeadK < a_floor:
-            self.young_cam_bound_count += 1
-          if lead.vRel < v_floor:
-            dv = v_floor - lead.vRel
-            lead.vRel = v_floor
-            lead.vLead = lead.vLead + dv
-            lead.vLeadK = lead.vLeadK + dv
-          if lead.aLeadK < a_floor:
-            lead.aLeadK = a_floor
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):
