@@ -1818,7 +1818,8 @@ stopped objects (ego < 12 m/s, where they can be anchored) genuine in 61/81. A b
 stopped-object braking, which D-041 exists to prevent.
 
 Proposal, in order of risk (owner picks; each would ship behind a default-OFF switch with replay first):
-1. **+12 birth rail only** (opening; 91% spin-up). It cannot add braking and removes nothing that brakes.
+1. **+12 birth rail only** (opening; 91% spin-up). It publishes less opening than the rail, the more-closing
+   direction (D-042), so it never removes braking, but it can add braking or hold back acceleration.
 2. **−12 birth rail, ramp only when the track cannot be stopped:** the published bound starts at the track's own
    range-fit closing (or the rail × (1 − e^(−age/1.2 s)), whichever closes more) and reaches the full rail by
    ~2.5 s, *only* when the range fit shows the target moving (range closing clearly below vEgo) **and** ego speed

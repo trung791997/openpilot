@@ -931,3 +931,66 @@ def test_range_kf_adjust_drops_stale_correction():
   _adjust(lead, track, 25.0, _vision(-1.0))
   # not leadOne for a while, then back with the camera not braking: nothing carried over
   assert radard.range_lead_kf_adjust(lead, track, 25.0, _vision(0.0), 10.0) == lead
+
+
+# D-077 birth-rail ramp (both switches OFF by default; replay comparison only, not driven).
+def _born_track(u11, closing, v_ego=22.0, seconds=3.0, d0=60.0, u11_first=None):
+  """Feed a fresh track at 15 Hz; U11 `u11` (or `u11_first` for the first 0.6 s), range closing at `closing` m/s.
+  Returns [(age, published vRel)]."""
+  track = radard.Track(1, 0.0, radard.KalmanParams(radard.HONDA_BOSCH_A_RADAR_TS))
+  out = []
+  dt = 1.0 / 15.0
+  for i in range(int(seconds / dt)):
+    t = 100.0 + i * dt
+    v = u11_first if (u11_first is not None and i * dt < 0.6) else u11
+    track.update(d0 - closing * i * dt, 0.0, v, v + v_ego, True, measurement_update=True, t_now=t)
+    out.append((i * dt, track.get_RadarState()["vRel"]))
+  return out
+
+
+def _at(rows, age):
+  return min(rows, key=lambda r: abs(r[0] - age))[1]
+
+
+def test_birth_rail_ramp_off_by_default_publishes_the_rail():
+  assert not radard.BIRTH_RAIL_RAMP_LOW and not radard.BIRTH_RAIL_RAMP_HIGH
+  rows = _born_track(radard.BOSCH_A_U11_LOW_RAIL_MPS, 4.0)
+  assert all(v == radard.BOSCH_A_U11_LOW_RAIL_MPS for _, v in rows)
+
+
+def test_birth_rail_low_ramp_moving_lead_eases_in_then_reaches_the_rail(monkeypatch):
+  monkeypatch.setattr(radard, "BIRTH_RAIL_RAMP_LOW", True)
+  rows = _born_track(radard.BOSCH_A_U11_LOW_RAIL_MPS, 4.0)
+  # Range fit -4 m/s, ramp -12 * f(age): the published closing is the larger of the two, never past the rail.
+  assert -6.0 < _at(rows, 0.6) < -3.5
+  assert -10.5 < _at(rows, 1.5) < -8.0
+  assert _at(rows, 2.6) == radard.BOSCH_A_U11_LOW_RAIL_MPS
+  assert all(v >= radard.BOSCH_A_U11_LOW_RAIL_MPS for _, v in rows)
+  # Before the first range fit (~0.3 s) the full rail is published; afterwards the ramp only moves toward the rail.
+  assert _at(rows, 0.1) == radard.BOSCH_A_U11_LOW_RAIL_MPS
+  vs = [v for a, v in rows if a >= 0.4]
+  assert all(b <= a + 0.05 for a, b in zip(vs, vs[1:], strict=False))
+
+
+@pytest.mark.parametrize("closing,v_ego", [(22.0, 22.0), (19.0, 22.0), (4.0, 10.0)])
+def test_birth_rail_low_ramp_keeps_full_rail_for_possible_stopped_object_or_low_speed(monkeypatch, closing, v_ego):
+  monkeypatch.setattr(radard, "BIRTH_RAIL_RAMP_LOW", True)
+  rows = _born_track(radard.BOSCH_A_U11_LOW_RAIL_MPS, closing, v_ego=v_ego)
+  assert all(v <= radard.BOSCH_A_U11_LOW_RAIL_MPS for a, v in rows if a >= 0.4)
+
+
+def test_birth_rail_ramp_ignores_tracks_that_reach_the_rail_later(monkeypatch):
+  monkeypatch.setattr(radard, "BIRTH_RAIL_RAMP_LOW", True)
+  rows = _born_track(radard.BOSCH_A_U11_LOW_RAIL_MPS, 4.0, u11_first=-5.0)
+  assert all(v == radard.BOSCH_A_U11_LOW_RAIL_MPS for a, v in rows if a >= 0.6)
+
+
+def test_birth_rail_high_ramp_publishes_less_opening_only(monkeypatch):
+  monkeypatch.setattr(radard, "BIRTH_RAIL_RAMP_HIGH", True)
+  high = -radard.BOSCH_A_U11_LOW_RAIL_MPS
+  rows = _born_track(high, -2.0)
+  assert _at(rows, 0.5) < 6.0
+  assert all(v <= high for _, v in rows)
+  assert _at(rows, 2.6) == high
+  # LOW stays off: a low-rail birth is untouched.
+  assert all(v == radard.BOSCH_A_U11_LOW_RAIL_MPS for _, v in _born_track(radard.BOSCH_A_U11_LOW_RAIL_MPS, 4.0))

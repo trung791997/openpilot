@@ -14,6 +14,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 from opendbc.car.honda.radar_interface import (BOSCH_A_DIRECT_VREL_CENTER_RAW, BOSCH_A_DIRECT_VREL_MIN_RAW,
+                                               BOSCH_A_DIRECT_VREL_MAX_RAW,
                                                BOSCH_A_DIRECT_VREL_SCALE_MPS, BOSCH_A_FREQ_HZ)
 from opendbc.car.honda.values import HONDA_BOSCH_A
 
@@ -397,6 +398,37 @@ RANGE_VREL_ASSIST_MAX_BACKWARD_LEAD_MPS = 5.0
 # units); thresholds were not re-tuned.
 BOSCH_A_U11_SCALE_MPS = BOSCH_A_DIRECT_VREL_SCALE_MPS
 BOSCH_A_U11_LOW_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_U11_SCALE_MPS
+BOSCH_A_U11_HIGH_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_U11_SCALE_MPS
+
+# D-077 (PROPOSED, both switches OFF; replay comparison only, not driven). The Bosch-A bank is the camera tracker
+# (STATUS 205) and U11 its low-pass velocity state. A track whose U11 is railed within BIRTH_RAIL_WINDOW_S of its
+# first update is "born railed"; while U11 stays on that rail the published vRel ramps toward the rail as
+# rail * (1 - e^(-age/TAU)), normalised to reach the full rail at BIRTH_RAIL_RAMP_MAX_AGE_S. Evidence
+# (tools/bosch_a_birth_rail_report.py, 8 routes, odometry anchors): born-railed moving leads overstated 128/130,
+# excess 1/e ~1.2 s; born-railed stopped objects (ego < 12) genuine 61/81.
+#   HIGH (option 1): +12 births publish LESS opening than the rail. More-closing direction (D-042), so it can only
+#     add braking or remove acceleration; 91% of +12 births were spin-up.
+#   LOW (option 2): -12 births publish LESS closing than the rail, which narrows D-041. Only while ego >= 12 m/s
+#     and the track's own range fit says the target moves at >= BIRTH_RAIL_LOW_MIN_LEAD_MPS; the published closing
+#     is the larger of the ramp and the range fit, never past the rail, and RAIL_FAST is withheld meanwhile. The
+#     full rail is published until the first range fit (~0.3 s), so the ramp can step to less closing then. The
+#     first update that fails a condition ends the ramp for good (full rail, as today).
+# aLeadK stays native (D-053 note). Bosch-A only: nothing turns these on outside replays and tests.
+BIRTH_RAIL_RAMP_HIGH = False
+BIRTH_RAIL_RAMP_LOW = False
+BIRTH_RAIL_WINDOW_S = 0.5
+BIRTH_RAIL_RAMP_TAU_S = 1.2
+BIRTH_RAIL_RAMP_MAX_AGE_S = 2.5
+BIRTH_RAIL_LOW_MIN_V_EGO_MPS = 12.0
+BIRTH_RAIL_LOW_MIN_LEAD_MPS = 5.0
+
+
+def birth_rail_ramp_fraction(age: float) -> float:
+  """D-077: share of the rail published at track age `age`; 0 at birth, 1 at BIRTH_RAIL_RAMP_MAX_AGE_S."""
+  if age >= BIRTH_RAIL_RAMP_MAX_AGE_S:
+    return 1.0
+  full = 1.0 - math.exp(-BIRTH_RAIL_RAMP_MAX_AGE_S / BIRTH_RAIL_RAMP_TAU_S)
+  return max(0.0, (1.0 - math.exp(-max(age, 0.0) / BIRTH_RAIL_RAMP_TAU_S)) / full)
 
 # --- Rail fast path (2026-09-26, STATUS 130; extends D-053, rides RANGE_VREL_ASSIST).
 # REPLAY evidence only, open loop. 00000271 9:26 (BM0): a near-stopped car published at 118.8 m
@@ -1004,6 +1036,12 @@ class Track:
     self.t_first = float('nan')
     self.t_last = float('nan')  # NEWBORN_RANGE_CLOSING_EXEMPT: t_now of the latest update (the track's age)
     self.young_range_hist: list = []
+    # D-077: -1 born on the low rail, +1 on the high rail, 0 not (yet); birth_rail_done ends the ramp for good.
+    # birth_rail_vrel is the vRel to publish while the ramp is active, else None.
+    self.birth_rail = 0
+    self.birth_rail_done = False
+    self.birth_rail_ramping = False  # LOW: the range fit confirmed a moving target
+    self.birth_rail_vrel: float | None = None
 
     # ONPATH_RADAR_ADOPT: fresh measured sweeps (t, dRel, vRel, path offset, existence) of the current on-path run;
     # existence is NaN when the radar does not provide it (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE)
@@ -1091,6 +1129,7 @@ class Track:
       while self.cam_hist and self.cam_hist[0][0] < t_cam - RANGE_VREL_CAM_XRATE_WINDOW_S:
         self.cam_hist.popleft()
     self._update_range_assist(range_assist, measurement_update, t_now, vision_closing, vision_assist)
+    self._update_birth_rail(t_now)
 
     if measurement_update:
       self._update_rail_range_inconsistent()
@@ -1354,6 +1393,48 @@ class Track:
         correction = min(correction, max(self.vRel + cam_closing + RANGE_VREL_CAM_XRATE_MARGIN_MPS, 0.0))
     self.range_assist_correction = correction
 
+  def _update_birth_rail(self, t_now: float) -> None:
+    """D-077: track the born-railed state and set birth_rail_vrel (None unless a ramp is active). Must run after
+    _update_range_assist; the LOW ramp withholds RAIL_FAST by zeroing range_assist_correction."""
+    self.birth_rail_vrel = None
+    if self.birth_rail_done or not (BIRTH_RAIL_RAMP_HIGH or BIRTH_RAIL_RAMP_LOW):
+      return
+    age = float(t_now) - self.t_first
+    on_low = self.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_U11_SCALE_MPS / 2
+    on_high = self.vRel >= BOSCH_A_U11_HIGH_RAIL_MPS - BOSCH_A_U11_SCALE_MPS / 2
+    if self.birth_rail == 0:
+      if age > BIRTH_RAIL_WINDOW_S:
+        self.birth_rail_done = True
+        return
+      self.birth_rail = -1 if on_low else (1 if on_high else 0)
+      if self.birth_rail == 0:
+        return
+    if age >= BIRTH_RAIL_RAMP_MAX_AGE_S or not (on_low if self.birth_rail < 0 else on_high):
+      self.birth_rail_done = True
+      return
+    frac = birth_rail_ramp_fraction(age)
+    if self.birth_rail > 0:
+      if not BIRTH_RAIL_RAMP_HIGH:
+        self.birth_rail_done = True
+        return
+      # Less opening than the rail: the more-closing direction, combined with any range assist below.
+      self.birth_rail_vrel = min(float(self.vRel) - float(self.range_assist_correction), BOSCH_A_U11_HIGH_RAIL_MPS * frac)
+      return
+    v_ego_aligned = self.vLead - self.vRel
+    fit = self.vRelRangeFresh and math.isfinite(self.vRelRange)
+    if not BIRTH_RAIL_RAMP_LOW or v_ego_aligned < BIRTH_RAIL_LOW_MIN_V_EGO_MPS:
+      self.birth_rail_done = True
+      return
+    if not fit and not self.birth_rail_ramping and age <= BIRTH_RAIL_WINDOW_S:
+      # No range fit yet (5 sweeps, ~0.3 s): publish the full rail and decide once the fit exists.
+      return
+    if not fit or v_ego_aligned + self.vRelRange < BIRTH_RAIL_LOW_MIN_LEAD_MPS:
+      self.birth_rail_done = True
+      return
+    self.birth_rail_ramping = True
+    self.birth_rail_vrel = max(BOSCH_A_U11_LOW_RAIL_MPS, min(BOSCH_A_U11_LOW_RAIL_MPS * frac, float(self.vRelRange)))
+    self.range_assist_correction = 0.0
+
   def _update_rail_range_inconsistent(self) -> None:
     """ADJACENT_RAIL_GATE latch. Rail-agnostic here; only Bosch-A callers act on it (a rail-valued vRel is a
     real reading on other radars)."""
@@ -1441,6 +1522,9 @@ class Track:
     # self.vRel and self.vLead themselves stay NATIVE -- the adjacent-lane detectors and the vision
     # association read those -- and so does self.vLeadK, so nothing applies the correction twice.
     correction = float(self.range_assist_correction)
+    if self.birth_rail_vrel is not None:
+      # D-077 ramp (switches off by default): the same shift on all three speeds, so the lead stays self-consistent.
+      correction = float(self.vRel) - float(self.birth_rail_vrel)
     state = {
       "dRel": float(self.dRel),
       "yRel": float(self.yRel),
