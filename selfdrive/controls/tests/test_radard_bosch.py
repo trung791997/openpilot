@@ -824,7 +824,7 @@ def _adjust(lead, track, v_ego, vis, n=20, t0=0.0):
 
 def test_range_kf_adjust_adds_braking_only_when_camera_agrees():
   lead, track = _kf_lead()
-  out = _adjust(lead, track, 25.0, _vision(-1.0))
+  out = _adjust(lead, track, 25.0, _vision(-2.5))
   assert out['aLeadK'] == pytest.approx(-radard.RANGE_LEAD_KF_MAX_ACCEL_ADD)
   assert out['vLead'] < lead['vLead'] and out['vRel'] < lead['vRel'] and out['vLeadK'] < lead['vLeadK']
   assert out['dRel'] == lead['dRel']
@@ -864,8 +864,17 @@ def test_range_kf_adjust_skips_when_camera_sees_less_closing_than_radar():
   assert _adjust(lead, track, 21.3, _vision(-0.34, v=21.3 - 2.1), n=40) == lead
   # camera closing at least the radar's (268 4:52: 6.1 vs 4.5): corrected
   lead, track = _kf_lead()
-  lead.update(vRel=-4.5, vLead=22.3 - 4.5, vLeadK=22.3 - 4.5)
-  assert _adjust(lead, track, 22.3, _vision(-0.34, v=22.3 - 6.1), n=40)['aLeadK'] < lead['aLeadK']
+  lead.update(vRel=-4.5, vLead=25.0 - 4.5, vLeadK=25.0 - 4.5)
+  assert _adjust(lead, track, 25.0, _vision(-0.34, v=25.0 - 6.1), n=40)['vLead'] < lead['vLead']
+
+
+def test_range_kf_adjust_never_past_camera():
+  # replay 2d6 21:44: native radar closing 1.1, camera 0.2 and braking -0.66; KF far harder. Nothing past the camera.
+  lead, track = _kf_lead()
+  lead.update(vRel=-1.1, vLead=15.4 - 1.1, vLeadK=15.4 - 1.1, aLeadK=-0.55)
+  out = _adjust(lead, track, 15.4, _vision(-0.66, v=15.4 - 0.2), n=40)
+  assert out['vLead'] >= lead['vLead'] - 1e-6
+  assert out['aLeadK'] >= -0.66 - 1e-6
 
 
 def test_range_kf_adjust_skips_lead_drifting_out_of_lane():

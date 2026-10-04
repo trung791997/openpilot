@@ -132,14 +132,20 @@ RANGE_LEAD_KF_MAX_ACCEL_ADD = 1.5
 # speed down to the camera's lead speed minus V_MARGIN, and the acceleration to the camera's minus A_MARGIN.
 # The margins keep the range lead over the camera at an onset (the camera lags too, so it may not cap the
 # KF at its own value) while bounding what a range-only error can add.
-RANGE_LEAD_KF_VISION_V_MARGIN = 2.5  # m/s
-RANGE_LEAD_KF_VISION_A_MARGIN = 1.0  # m/s^2
+# 2026-10-04 replay of the owner's 2d5/2d6/2d8/2d9 routes: with margins of 2.5 m/s and 1.0 m/s^2 the KF still
+# added braking the drive did not need, e.g. 2d6 21:44 (lead 34 m, native radar closing 1.1, camera 0.2, KF
+# pushed vRel to -2.2 and aLeadK to -1.66; planner -0.09 -> -1.15 in one step, road command -0.49) and 2d9 4:32
+# (-1.95 on the road vs -3.24). Every warranted correction above had the camera at or beyond the KF, so the
+# camera now caps the correction with no margin: the range lead may only go as far as the camera already sees.
+RANGE_LEAD_KF_VISION_V_MARGIN = 0.0  # m/s
+RANGE_LEAD_KF_VISION_A_MARGIN = 0.0  # m/s^2
+RANGE_LEAD_KF_VISION_DISAGREE_MPS = 2.5
 # The A margin alone did not stop 11:40: the camera's -0.37 still let the KF add ~1.2 m/s^2, enough to rail the
 # planner at A_CRUISE_MIN. What separates it from every warranted correction in the 0268/026b/0236 replays is
 # that the camera saw far LESS closing than the radar lead itself (2.1 vs 6.5 m/s: the radar and the camera
 # were not on the same object). In the warranted ones the camera's closing matched or exceeded the native
 # radar's (268 4:52 6.1 vs 4.5; 026b 29:58 5 vs 1; 236 37:31 1.7 vs 0.8). So when the camera's closing is
-# below the native radar's by more than V_MARGIN, nothing is added.
+# below the native radar's by more than DISAGREE_MPS, nothing is added.
 # Lateral drift (same episode: yRel 0.21 -> 0.80 m in 0.55 s, gone to 4.7 m 3 s later). A radial range rate on
 # a target leaving the lane is not this lane's closing; once |yRel| exceeds MIN_Y and it moves outward faster
 # than RATE (EMA, TAU), nothing new is added and what was applied bleeds off.
@@ -250,7 +256,7 @@ def _range_lead_kf_target(lead: dict, track, v_ego: float, vision_lead) -> tuple
   if (abs(lead['yRel']) > RANGE_LEAD_KF_DRIFT_MIN_Y_M and lead['yRel'] * kf.y_rate > 0.0 and
       abs(kf.y_rate) > RANGE_LEAD_KF_DRIFT_RATE_MPS):
     return 0.0, 0.0
-  if v_ego - float(vision_lead.v[0]) < -lead['vRel'] - RANGE_LEAD_KF_VISION_V_MARGIN:
+  if v_ego - float(vision_lead.v[0]) < -lead['vRel'] - RANGE_LEAD_KF_VISION_DISAGREE_MPS:
     return 0.0, 0.0
   v_range = max(kf.v_lead, float(vision_lead.v[0]) - RANGE_LEAD_KF_VISION_V_MARGIN)
   add_v = float(np.clip(lead['vLead'] - v_range - RANGE_LEAD_KF_VREL_DEADBAND, 0.0, RANGE_LEAD_KF_MAX_VREL_ADD))
