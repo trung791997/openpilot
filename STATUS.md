@@ -10201,3 +10201,47 @@ Replay of the fixed code (base = the old law, same 10 routes):
   (the code constant still forces it on). Read once when radard starts, so a restart is needed; any read failure,
   including a params_pyx.so without the key, means OFF. Bosch-A only.
 - **Still open:** the item 202 replay on the D-053 routes before anyone turns it on for a drive.
+
+## 204. Bosch-A report §12.3 proposals baked in, no toggle (2026-10-04, owner: "ship them baked in, no toggle needed, make sure to run replays"). Open-loop replay on 3 routes and static unit tests only; not driven.
+Commits: f1263181b (P2), 923c67cdf (P1, P4, P5, P6), 27346000c (P1 slew limit), 5f8f1a81d (fast-closing pass entry).
+P-numbers below are the report's §12 numbers.
+- **P2 aLeadTau radar-period timing:** `BOSCH_A_LEAD_ACCEL_TAU_RADAR_DT` is always on. The item 203 `BoschALeadTauRadarDt`
+  toggle and its UI row are removed (f1263181b). An earlier replay moved the planner output by ~0: the model-lead
+  trajectory takes over from `aLeadTau` in most frames. Re-deciding `_LEAD_ACCEL_TAU` is still open.
+- **P1 range-driven lead correction (`radard.py` `RangeLeadKF`, `range_lead_kf_adjust`):** a per-track KF on dRel only,
+  run beside U11. It may only make leadOne close faster or brake harder (D-042 one-sided), never softer, and only
+  when the track is ≥ 1 s old, dRel ≥ 8 m, |yRel| ≤ 1.5 m, v_ego ≥ 5 and the model lead (prob ≥ 0.5) is braking
+  (a ≤ −0.3). vRel correction ≤ 8 m/s, aLeadK correction ≤ 1.5 m/s². It builds at 4 m/s/s / 3 m/s²/s and bleeds at
+  max(2 m/s/s, adj / 1 s) / max(1.5 m/s²/s, adj / 1 s); a stale correction (> 0.25 s) is dropped. U11 stays the
+  primary source, so this is a range *correction*, not the full range-first filter the report describes.
+  The first version without the slew limit made one-frame −1.0 jabs on 0268 (gate chatter); the fall rate was then
+  lowered after a double jab at 0268 4:52-4:54.
+- **P4 over-brake compensation (`carcontroller.py` `bosch_overbrake_compensation`):** Civic Bosch only, not while
+  stopping. +0 at −1.0, +0.10 at −2.0, +0.15 at −2.5, +0 at −3.0 and below. VSA evidence is mixed (item 202 tool):
+  26b over-delivers −0.06…−0.54 in the −1…−3 bins, 0268 shows none. The replay does not run the carcontroller, so
+  this is static only: 571/9958 (0268), 719/25707 (26b), 1291/31812 (0236) engaged frames have a logged command in
+  the band, mean comp 0.043-0.046, max 0.150.
+- **P5 far radar lead early coast / P6 soft stop tail (`longitudinal_planner.py`):** output-only caps. P5 lowers a
+  positive target for a radar lead at 60-150 m with TTC > 8 s; P6 holds the last ~1 m/s of a stop at −0.5…−0.8,
+  `STANDSTILL_STOPPED_LEAD_GUARD` kept. Neither fired on 0268 or 26b; on 0236 24 frames each (P6 at most +0.03).
+  The "soft brake" half of P5 and the "go" half of P6 are not built.
+- **Fast-closing pass entry (`FAST_CLOSING_LEAD_VISION_MEMORY_TICKS = 5`):** found by the P1 replay. 26b 2233.84: the
+  vision test passed for five ticks only; mpc.source flickered lead0/cruise; P1 off read lead0 in the last one and
+  braked −1.9 for 2 s, P1 on read cruise and stayed at −1.1 on a lead closing 11 m/s at 52 m. Entry now accepts
+  vision and source up to 5 ticks apart on the same track. With the re-run radard it changes 0 frames on all three
+  routes with P1 off; with the logged radarState it changes three episodes on 0236 (9:20 −1.0 → −2.0 for 3 frames on
+  a lead closing 12 m/s at 53 m; 18:37 7 s after engagement, +2.0 → +0.4, not root-caused; 23:24 disengaged).
+  Not re-checked on the 28 routes that set the latch's other constants.
+- **Replay, on vs off** (`tools/longitudinal/alpha_closed_loop_replay.py`, dongle 11c8fa231c0499ed, HONDA_CIVIC_BOSCH,
+  open loop, re-run radard, `nobound` variant; route data not committed):
+  - `00000268--4bc9811934`: 252 frames changed > 0.05, all more brake. 4:52 −0.28 → −1.00 about 2 s before U11
+    shows the closing; 5:28 −1.58 → −2.02; 6:37 −1.14 → −1.39; 9:56 −0.73 → −1.00. The onset still steps ~−0.2 →
+    −1.0 within ~0.2 s: that is the MPC saturating at `A_CRUISE_MIN`, not the P1 correction.
+  - `0000026b--92b1979afa`: 730 frames, 597 more brake (min −1.26), 133 less (max +0.67, one frame at 37:13.84).
+  - `00000236--60bfb34cb1`: 552 frames, 503 more brake, 49 less (max +0.50). Engaged worst: 34:57 −0.47 → −2.05
+    (lead at 11 m, 29 m/s), 37:31 −1.77 → −2.22. The −4…−5 values (24:56, 39:08) are disengaged frames.
+  - Per-frame |ΔaTarget| > 0.3 while engaged: 14 → 15, 26 → 29, 108 → 111; p99 unchanged except 26b 0.074 → 0.085.
+- **Tests:** honda 392 pass; radard_bosch, lead_behavior, lead_follow_policy, following_distance, turn_lead,
+  longitudinal_planner 784 pass. ruff: no new findings (9 pre-existing in the planner files).
+- **Still open:** a drive. P0 on more routes before trusting P4's numbers. The report's onset slew limiter, P7
+  (uncertainty only adds caution) and the upstream planner structure are not started.
