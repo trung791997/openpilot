@@ -139,6 +139,9 @@ class RangeLeadKF:
     self.ego_s = 0.0
     self.accepted = 0
     self.rejects = 0
+    self.adj_v = 0.0  # applied, slew-limited correction (see range_lead_kf_adjust)
+    self.adj_a = 0.0
+    self.adj_t = -1.0
 
   @property
   def healthy(self) -> bool:
@@ -192,29 +195,65 @@ class RangeLeadKF:
     self.rejects = 0
 
 
-def range_lead_kf_adjust(lead: dict, track, v_ego: float, vision_lead) -> dict:
-  """One-sided P1 correction of a published Bosch-A radar lead dict; returns it unchanged unless every gate holds."""
+# The gates above chatter frame to frame (camera a[0] around -0.3, one rejected range sample clears
+# `healthy`). Replay of 00000268 with the raw correction (2026-10-04) showed one-frame vRel spikes of
+# 2-3 m/s that dropped the planner output to -1.0 for a single frame and snapped it back. The applied
+# correction is therefore slew-limited per track. A 0.2 s build-up still stepped the output from -0.2
+# to A_CRUISE_MIN in 0.1 s (00000268 4:52), so it builds in ~0.5 s (2 m/s, 1.5 m/s^2), which keeps
+# ~0.5-0.8 s of the 0.88-1.28 s U11 lag. Once any gate fails it bleeds off at max(FALL, adj / FALL_TAU):
+# a 0.3 s fall released the output -1.0 -> -0.6 and re-braked 1.3 s later (00000268 4:52-4:54, a double
+# jab). Bound on how long extra braking outlives its gates: ~1 s for the 1.5 m/s^2 and 2 m/s typical
+# sizes, ~2.4 s for the 8 m/s cap. It is dropped at once if the track has not been leadOne for longer
+# than RANGE_LEAD_KF_ADJ_STALE_S.
+RANGE_LEAD_KF_ADJ_V_RISE = 4.0  # m/s per s
+RANGE_LEAD_KF_ADJ_V_FALL = 2.0  # m/s per s
+RANGE_LEAD_KF_ADJ_A_RISE = 3.0  # m/s^2 per s
+RANGE_LEAD_KF_ADJ_A_FALL = 1.5  # m/s^2 per s
+RANGE_LEAD_KF_ADJ_FALL_TAU_S = 1.0
+RANGE_LEAD_KF_ADJ_STALE_S = 0.25
+
+
+def _range_lead_kf_target(lead: dict, track, v_ego: float, vision_lead) -> tuple[float, float]:
+  """Raw (extra closing m/s, extra decel m/s^2) P1 wants this cycle; (0, 0) unless every gate holds."""
+  kf = track.range_kf
+  if not kf.healthy or track.t_last - track.t_first < RANGE_LEAD_KF_MIN_AGE_S:
+    return 0.0, 0.0
+  if (v_ego < RANGE_LEAD_KF_MIN_V_EGO or lead['dRel'] < RANGE_VREL_ASSIST_MIN_D_REL_M or
+      abs(lead['yRel']) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M):
+    return 0.0, 0.0
+  if (vision_lead is None or float(vision_lead.prob) < RANGE_LEAD_KF_VISION_MIN_PROB or not len(vision_lead.a) or
+      float(vision_lead.a[0]) > RANGE_LEAD_KF_VISION_MAX_ACCEL):
+    return 0.0, 0.0
+  add_v = float(np.clip(lead['vLead'] - kf.v_lead - RANGE_LEAD_KF_VREL_DEADBAND, 0.0, RANGE_LEAD_KF_MAX_VREL_ADD))
+  a_native, a_range = lead['aLeadK'], kf.a_lead
+  add_a = 0.0
+  if a_range <= RANGE_LEAD_KF_MIN_ACCEL and a_range < a_native - RANGE_LEAD_KF_ACCEL_DEADBAND:
+    add_a = min(a_native - a_range, RANGE_LEAD_KF_MAX_ACCEL_ADD)
+  return add_v, add_a
+
+
+def range_lead_kf_adjust(lead: dict, track, v_ego: float, vision_lead, t_now: float) -> dict:
+  """One-sided, slew-limited P1 correction of a published Bosch-A radar lead dict (adds closing/decel only)."""
   if track is None or not lead.get('status', False) or not lead.get('radar', False):
     return lead
   kf = track.range_kf
-  if not kf.healthy or track.t_last - track.t_first < RANGE_LEAD_KF_MIN_AGE_S:
-    return lead
-  if (v_ego < RANGE_LEAD_KF_MIN_V_EGO or lead['dRel'] < RANGE_VREL_ASSIST_MIN_D_REL_M or
-      abs(lead['yRel']) > RANGE_VREL_ASSIST_MAX_ABS_Y_REL_M):
-    return lead
-  if (vision_lead is None or float(vision_lead.prob) < RANGE_LEAD_KF_VISION_MIN_PROB or not len(vision_lead.a) or
-      float(vision_lead.a[0]) > RANGE_LEAD_KF_VISION_MAX_ACCEL):
+  target_v, target_a = _range_lead_kf_target(lead, track, v_ego, vision_lead)
+  dt = t_now - kf.adj_t
+  if kf.adj_t < 0.0 or dt < 0.0 or dt > RANGE_LEAD_KF_ADJ_STALE_S:
+    kf.adj_v = kf.adj_a = 0.0
+    dt = DT_MDL
+  kf.adj_t = t_now
+  fall_v = max(RANGE_LEAD_KF_ADJ_V_FALL, kf.adj_v / RANGE_LEAD_KF_ADJ_FALL_TAU_S) * dt
+  fall_a = max(RANGE_LEAD_KF_ADJ_A_FALL, kf.adj_a / RANGE_LEAD_KF_ADJ_FALL_TAU_S) * dt
+  kf.adj_v = float(np.clip(target_v, kf.adj_v - fall_v, kf.adj_v + RANGE_LEAD_KF_ADJ_V_RISE * dt))
+  kf.adj_a = float(np.clip(target_a, kf.adj_a - fall_a, kf.adj_a + RANGE_LEAD_KF_ADJ_A_RISE * dt))
+  if kf.adj_v <= 0.0 and kf.adj_a <= 0.0:
     return lead
   lead = dict(lead)
-  add_v = min(lead['vLead'] - kf.v_lead - RANGE_LEAD_KF_VREL_DEADBAND, RANGE_LEAD_KF_MAX_VREL_ADD)
-  if add_v > 0.0:
-    lead['vRel'] -= add_v
-    lead['vLead'] -= add_v
-    lead['vLeadK'] -= add_v
-  a_native = lead['aLeadK']
-  a_range = kf.a_lead
-  if a_range <= RANGE_LEAD_KF_MIN_ACCEL and a_range < a_native - RANGE_LEAD_KF_ACCEL_DEADBAND:
-    lead['aLeadK'] = max(a_range, a_native - RANGE_LEAD_KF_MAX_ACCEL_ADD)
+  lead['vRel'] -= kf.adj_v
+  lead['vLead'] -= kf.adj_v
+  lead['vLeadK'] -= kf.adj_v
+  lead['aLeadK'] -= kf.adj_a
   return lead
 
 
@@ -1901,7 +1940,8 @@ class RadarD:
                           preferred_track_id=self.prev_lead_track_ids[0],
                           honda_bosch_a_radar=self.honda_bosch_a_radar)
       if self.honda_bosch_a_radar:
-        lead_one = range_lead_kf_adjust(lead_one, self.tracks.get(lead_one.get('radarTrackId', -1)), self.v_ego, leads_v3[0])
+        lead_one = range_lead_kf_adjust(lead_one, self.tracks.get(lead_one.get('radarTrackId', -1)), self.v_ego, leads_v3[0],
+                                       self.current_time)
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,

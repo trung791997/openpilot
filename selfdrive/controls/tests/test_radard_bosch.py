@@ -814,15 +814,23 @@ def _vision(a, prob=0.9):
   return SimpleNamespace(prob=prob, a=[a])
 
 
+def _adjust(lead, track, v_ego, vis, n=20, t0=0.0):
+  out = lead
+  for k in range(n):
+    out = radard.range_lead_kf_adjust(lead, track, v_ego, vis, t0 + k * radard.DT_MDL)
+  return out
+
+
 def test_range_kf_adjust_adds_braking_only_when_camera_agrees():
   lead, track = _kf_lead()
-  out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(-1.0))
+  out = _adjust(lead, track, 25.0, _vision(-1.0))
   assert out['aLeadK'] == pytest.approx(-radard.RANGE_LEAD_KF_MAX_ACCEL_ADD)
   assert out['vLead'] < lead['vLead'] and out['vRel'] < lead['vRel'] and out['vLeadK'] < lead['vLeadK']
   assert out['dRel'] == lead['dRel']
   # camera not braking, unsure, or absent: native lead untouched
   for vis in (_vision(0.0), _vision(-1.0, prob=0.3), None):
-    assert radard.range_lead_kf_adjust(lead, track, 25.0, vis) == lead
+    lead, track = _kf_lead()
+    assert _adjust(lead, track, 25.0, vis) == lead
 
 
 @pytest.mark.parametrize("kw,v_ego", [
@@ -830,12 +838,44 @@ def test_range_kf_adjust_adds_braking_only_when_camera_agrees():
 ])
 def test_range_kf_adjust_gates(kw, v_ego):
   lead, track = _kf_lead(**kw)
-  assert radard.range_lead_kf_adjust(lead, track, v_ego, _vision(-1.0)) == lead
+  assert _adjust(lead, track, v_ego, _vision(-1.0)) == lead
 
 
 def test_range_kf_adjust_never_removes_braking():
   # range sees the lead accelerating while U11 says braking: nothing is relaxed
   lead, track = _kf_lead(a_lead=+2.0)
   lead.update(aLeadK=-2.0, vLead=10.0, vLeadK=10.0, vRel=-15.0)
-  out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(-1.0))
+  out = _adjust(lead, track, 25.0, _vision(-1.0))
   assert out['aLeadK'] == -2.0 and out['vLead'] == 10.0 and out['vRel'] == -15.0
+
+
+def test_range_kf_adjust_is_slew_limited():
+  # replay 00000268: gates chatter; one passing frame must not publish the full correction
+  lead, track = _kf_lead()
+  dt = radard.DT_MDL
+  out = _adjust(lead, track, 25.0, _vision(-1.0), n=1)
+  assert lead['aLeadK'] - out['aLeadK'] <= radard.RANGE_LEAD_KF_ADJ_A_RISE * dt + 1e-9
+  assert lead['vRel'] - out['vRel'] <= radard.RANGE_LEAD_KF_ADJ_V_RISE * dt + 1e-9
+  # built up, then the camera stops agreeing: the correction bleeds off at the fall rate, not at once
+  full = _adjust(lead, track, 25.0, _vision(-1.0), t0=dt)
+  prev = lead['aLeadK'] - full['aLeadK']
+  t = 21 * dt
+  for _ in range(40):
+    out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(0.0), t)
+    cur = lead['aLeadK'] - out['aLeadK']
+    fall = max(radard.RANGE_LEAD_KF_ADJ_A_FALL, prev / radard.RANGE_LEAD_KF_ADJ_FALL_TAU_S) * dt
+    assert 0.0 <= cur <= prev and prev - cur <= fall + 1e-9
+    prev, t = cur, t + dt
+  # the 8 m/s closing cap is gone within ~2.4 s, the 1.5 m/s^2 decel within ~1 s
+  assert out['aLeadK'] == lead['aLeadK']
+  for _ in range(10):
+    out = radard.range_lead_kf_adjust(lead, track, 25.0, _vision(0.0), t)
+    t += dt
+  assert out == lead
+
+
+def test_range_kf_adjust_drops_stale_correction():
+  lead, track = _kf_lead()
+  _adjust(lead, track, 25.0, _vision(-1.0))
+  # not leadOne for a while, then back with the camera not braking: nothing carried over
+  assert radard.range_lead_kf_adjust(lead, track, 25.0, _vision(0.0), 10.0) == lead
