@@ -613,14 +613,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
-      SettingRow("BoschAOverBrakeComp", "toggle", tr_noop("Mid-Band Over-Brake Comp"),
-                 subtitle=tr_noop("Mid-band over-brake compensation for Civic Bosch. Restart required."), 
-                 get_state=lambda: self._params.get_bool("BoschAOverBrakeComp"),
-                 set_state=lambda v: self._params.put_bool("BoschAOverBrakeComp", v)),
-      SettingRow("BoschABirthRailRamps", "toggle", tr_noop("Birth-Rail Ramps"),
-                 subtitle=tr_noop("D-077 birth-rail ramps. Restart required."), 
-                 get_state=lambda: self._params.get_bool("BoschABirthRailRamps"),
-                 set_state=lambda v: self._params.put_bool("BoschABirthRailRamps", v)),
     ]
 
     self._slc_rows = [
