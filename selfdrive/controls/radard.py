@@ -434,6 +434,26 @@ RANGE_VREL_CAM_XRATE_RESID_SD_REL = 0.04
 RANGE_VREL_CAM_XRATE_AGREE_MPS = 2.0
 RANGE_VREL_CAM_XRATE_AGREE_REL = 0.0
 RANGE_VREL_CAM_XRATE_MARGIN_MPS = 2.0
+# --- Camera-gated off-rail arming (2026-10-07, amends STATUS 214). ON (owner, 2026-10-07).
+# REPLAY evidence only, open loop on logged ego; not driven. Off the rail the assist may arm again,
+# but only when the camera's own range trend over the last RANGE_VREL_OFF_RAIL_CAM_WINDOW_S closes
+# faster than U11 by MIN_DISAGREEMENT. Camera range slope, never the model speed (that under-reads
+# far closing, STATUS 162). The x-rate cap and the hysteresis are unchanged.
+#   000002f5 whole route: keeps the slow-lead approaches 237, 336-339, 436, 747, 895, 1060 s (U11
+#   up to 7-10 m/s fast); blocks 661, 1052, 1866 s, where the radar range alone closed 4-5 m/s and
+#   camera range, camera speed and U11 all read ~0.
+#   STATUS 214 pulse spots: 236 18:56 and 29:07, 2d5 13:05 and 2e1 6:07 no longer arm. 2e2 4:44
+#   still arms at 284.6 (76 m): range trend 11-12 m/s, published 9.4-13 against U11's 14-16.
+RANGE_VREL_OFF_RAIL_CAM_GATE = True
+RANGE_VREL_OFF_RAIL_CAM_WINDOW_S = 1.5
+# The x-rate cap's match (prob 0.9, 15% range) drops 747 s and 1059.9 s of 2f5: the camera reads
+# 16-20% short of the radar at 50 m and prob is 0.4-0.8 until the lead is near. Gate-only match:
+RANGE_VREL_OFF_RAIL_CAM_MIN_PROB = 0.5
+RANGE_VREL_OFF_RAIL_CAM_RANGE_TOL = 0.25
+# Off the rail the size, min(short, long) disagreement, follows the short fit's scatter at 80-100 m:
+# 2e2 4:44 published vLead 10.5 -> 14.7 -> 11.6 within 0.3 s while the range trend held 11-12. Off
+# the rail only, the published correction follows the sized one with this time constant.
+RANGE_VREL_OFF_RAIL_SMOOTH_TAU_S = 0.5
 
 # Last, the correction is capped at the native lead speed, so a corrected vLead is never published
 # below zero. A physical bound like MAX_CORRECTION, not a tuned value: on the replay it bound only
@@ -783,6 +803,18 @@ def camera_xrate_sample(d_rel: float, y_rel: float, vis) -> float | None:
   return cam_d
 
 
+def camera_gate_sample(d_rel: float, y_rel: float, vis) -> float | None:
+  """RANGE_VREL_OFF_RAIL_CAM_GATE: camera_xrate_sample with the looser gate-only prob and range match."""
+  if vis is None or float(vis.prob) < RANGE_VREL_OFF_RAIL_CAM_MIN_PROB or not len(vis.x) or not len(vis.y):
+    return None
+  cam_d = float(vis.x[0]) - RADAR_TO_CAMERA
+  if abs(cam_d - float(d_rel)) > RANGE_VREL_OFF_RAIL_CAM_RANGE_TOL * max(float(d_rel), 1.0):
+    return None
+  if abs(float(y_rel) + float(vis.y[0])) > VISION_ASSIST_MAX_DY_M:
+    return None
+  return cam_d
+
+
 def _line_fit(t, y) -> tuple[float, float]:
   """Least-squares slope and residual sum of squares of y on t."""
   tm, ym = t.mean(), y.mean()
@@ -866,6 +898,7 @@ class Track:
     # RANGE_VREL_ASSIST, a Bosch-A car, and this track having been leadOne/leadTwo last
     # cycle. range_assist_correction is m/s of EXTRA closing and is never negative.
     self.range_assist_active = False
+    self.range_assist_cam_armed = False  # RANGE_VREL_OFF_RAIL_CAM_GATE armed this correction
     self.range_assist_arm_count = 0
     self._range_long_min_samples = RANGE_VREL_LONG_SAMPLES  # lowered per update on the rail fast path
     self.range_assist_rail_count = 0
@@ -879,6 +912,7 @@ class Track:
     self._range_assist_last_t = float('nan')
     # RANGE_VREL_CAM_XRATE: (model t, camera range, dRel) of same-car camera samples over the trailing window.
     self.cam_hist: deque = deque()
+    self.cam_gate_hist: deque = deque()  # RANGE_VREL_OFF_RAIL_CAM_GATE, looser match
     # YOUNG_TRACK_FLAT_RANGE_BOUND: first update time and every fresh-sweep (t, dRel) of the track's first
     # YOUNG_TRACK_MAX_AGE_S. Coasted sweeps count: a Bosch-A coast holds vRel but publishes the live gated range.
     self.t_first = float('nan')
@@ -969,9 +1003,14 @@ class Track:
     # arming step as a hard acceleration (see the rework note at the top of this file).
     if camera_sample is not None:
       # One call per radard (model) cycle: append the matched camera range, then drop what left the window.
-      t_cam, cam_d = camera_sample
+      t_cam, cam_d = camera_sample[:2]
+      gate_d = camera_sample[2] if len(camera_sample) > 2 else None
       if cam_d is not None:
         self.cam_hist.append((float(t_cam), float(cam_d), float(d_rel)))
+      if gate_d is not None:
+        self.cam_gate_hist.append((float(t_cam), float(gate_d), float(d_rel)))
+      while self.cam_gate_hist and self.cam_gate_hist[0][0] < t_cam - RANGE_VREL_OFF_RAIL_CAM_WINDOW_S:
+        self.cam_gate_hist.popleft()
       while self.cam_hist and self.cam_hist[0][0] < t_cam - RANGE_VREL_CAM_XRATE_WINDOW_S:
         self.cam_hist.popleft()
     self._update_range_assist(range_assist, measurement_update, t_now, vision_closing, vision_assist)
@@ -1061,8 +1100,16 @@ class Track:
     ex = [x[4] for x in win if x[4] == x[4]]
     return not (ex and float(np.median(ex)) < ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE)
 
+  def _off_rail_cam_ok(self) -> bool:
+    """RANGE_VREL_OFF_RAIL_CAM_GATE: the camera range over the short window closes faster than U11 by MIN_DISAGREEMENT."""
+    if not RANGE_VREL_OFF_RAIL_CAM_GATE:
+      return False
+    verdict, cam_closing = camera_xrate_verdict(self.cam_gate_hist)
+    return verdict in ("AGREE", "JUDGED") and cam_closing - (-self.vRel) >= RANGE_VREL_ASSIST_MIN_DISAGREEMENT_MPS
+
   def _clear_range_assist(self) -> None:
     self.range_assist_active = False
+    self.range_assist_cam_armed = False
     self.vision_assist_count = 0
     self.vision_assist_early = False
     self.range_assist_arm_count = 0
@@ -1138,7 +1185,7 @@ class Track:
 
     # Quantized U11 sits exactly on the rail value, so half a step of tolerance is exact.
     on_rail = self.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + BOSCH_A_U11_SCALE_MPS / 2
-    if not (on_rail or RANGE_VREL_ASSIST_OFF_RAIL or self.range_assist_active):
+    if not (on_rail or RANGE_VREL_ASSIST_OFF_RAIL or self.range_assist_active or self._off_rail_cam_ok()):
       # Off-rail arming disabled (STATUS 214): only a rail-armed correction may continue off the rail.
       self._clear_range_assist()
       return
@@ -1220,6 +1267,8 @@ class Track:
         self.range_assist_correction = 0.0
         return
       self.range_assist_active = True
+      # Armed off the rail only because the camera gate allowed it: that correction is smoothed below.
+      self.range_assist_cam_armed = not (on_rail or RANGE_VREL_ASSIST_OFF_RAIL)
       self.vision_assist_early = bypass or short_only or (self.range_assist_arm_count < RANGE_VREL_ASSIST_ARM_UPDATES and
                                                           not rail_armed)
 
@@ -1241,6 +1290,10 @@ class Track:
       if verdict == "JUDGED":
         # Range walk: published closing may exceed the camera's own x-rate closing by at most the margin.
         correction = min(correction, max(self.vRel + cam_closing + RANGE_VREL_CAM_XRATE_MARGIN_MPS, 0.0))
+    if self.range_assist_cam_armed and not on_rail and np.isfinite(last_t):
+      k = min(max(float(t_now) - float(last_t), 0.0) / RANGE_VREL_OFF_RAIL_SMOOTH_TAU_S, 1.0)
+      correction = float(self.range_assist_correction) + k * (correction - float(self.range_assist_correction))
+      correction = min(correction, max(self.vLead, 0.0))  # the vLead >= 0 bound again, after smoothing
     self.range_assist_correction = correction
 
   def _update_birth_rail(self, t_now: float, vision_lead: tuple[float, float, float, float] | None = None) -> None:
@@ -1867,7 +1920,8 @@ class RadarD:
       cam_sample = None
       if RANGE_VREL_CAM_XRATE and ids in lead_track_ids:
         vis = sm['modelV2'].leadsV3[0] if len(sm['modelV2'].leadsV3) else None
-        cam_sample = (sm.logMonoTime['modelV2'] * 1e-9, camera_xrate_sample(rpt[0], rpt[1], vis))
+        cam_sample = (sm.logMonoTime['modelV2'] * 1e-9, camera_xrate_sample(rpt[0], rpt[1], vis),
+                      camera_gate_sample(rpt[0], rpt[1], vis) if RANGE_VREL_OFF_RAIL_CAM_GATE else None)
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
                               t_now=sm.logMonoTime['liveTracks'] * 1e-9,
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
