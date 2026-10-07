@@ -1704,7 +1704,7 @@ class TestOffRailArmingOff:
 
 
 def cam_gate_series(track, n, *, d0, range_rate, v_rel, cam_rate, v_ego=V_EGO):
-  """Off-rail sweeps with a matched camera range for RANGE_VREL_OFF_RAIL_CAM_GATE; returns the corrections."""
+  """Off-rail sweeps with a matched camera range for the camera-gated off-rail arming; returns the corrections."""
   out = []
   for i in range(n):
     t = i * DT
@@ -1723,11 +1723,6 @@ class TestOffRailCameraGate:
   @pytest.fixture(autouse=True)
   def _gate(self, monkeypatch):
     monkeypatch.setattr(radard, "RANGE_VREL_ASSIST_OFF_RAIL", False)
-    monkeypatch.setattr(radard, "RANGE_VREL_OFF_RAIL_CAM_GATE", True)
-
-  def test_shipped_default_is_on(self):
-    import inspect
-    assert "\nRANGE_VREL_OFF_RAIL_CAM_GATE = True\n" in inspect.getsource(radard)
 
   def test_camera_closing_with_the_range_arms(self):
     out = cam_gate_series(new_track(v_lead=V_EGO - 6.6), SETTLE + 30, cam_rate=-10.6, **self.KW)
@@ -1742,10 +1737,11 @@ class TestOffRailCameraGate:
     track = new_track(v_lead=V_EGO - 6.6)
     assert peak(track, SETTLE + 30, **self.KW) == 0.0
 
-  def test_control_gate_off_does_not_arm(self, monkeypatch):
-    monkeypatch.setattr(radard, "RANGE_VREL_OFF_RAIL_CAM_GATE", False)
-    out = cam_gate_series(new_track(v_lead=V_EGO - 6.6), SETTLE + 30, cam_rate=-10.6, **self.KW)
-    assert max(out) == 0.0
+  def test_control_gate_bypassed_arms_on_the_flat_camera(self, monkeypatch):
+    # Control for test_camera_flat_does_not_arm: with the camera check forced true the same series arms.
+    monkeypatch.setattr(radard.Track, "_off_rail_cam_ok", lambda self: True)
+    out = cam_gate_series(new_track(v_lead=V_EGO - 6.6), SETTLE + 30, cam_rate=-6.6, **self.KW)
+    assert max(out) > 0.0
 
   def test_correction_is_smoothed_off_the_rail(self):
     # The first published correction is a fraction of the ~4 m/s disagreement, not a step to it.
