@@ -898,6 +898,7 @@ class Track:
     # cycle. range_assist_correction is m/s of EXTRA closing and is never negative.
     self.range_assist_active = False
     self.range_assist_cam_armed = False  # the camera gate armed this correction off the rail
+    self._cam_release = False  # a camera-armed correction is fading out after a clear
     self.range_assist_arm_count = 0
     self._range_long_min_samples = RANGE_VREL_LONG_SAMPLES  # lowered per update on the rail fast path
     self.range_assist_rail_count = 0
@@ -1012,7 +1013,18 @@ class Track:
         self.cam_gate_hist.popleft()
       while self.cam_hist and self.cam_hist[0][0] < t_cam - RANGE_VREL_CAM_XRATE_WINDOW_S:
         self.cam_hist.popleft()
+    prev_correction, prev_cam = self.range_assist_correction, self.range_assist_cam_armed or self._cam_release
+    prev_t = self._range_assist_last_t
     self._update_range_assist(range_assist, measurement_update, t_now, vision_closing, vision_assist)
+    # A camera-armed correction that just cleared fades out over RANGE_VREL_OFF_RAIL_SMOOTH_TAU_S, not in one
+    # step: 2f5 343.25 cleared 5.5 m/s for one update and re-armed, a 4.4 m/s published vLead jump.
+    self._cam_release = False
+    if prev_cam and not self.range_assist_active and prev_correction > 0.0 and np.isfinite(prev_t):
+      k = min(max(float(t_now) - float(prev_t), 0.0) / RANGE_VREL_OFF_RAIL_SMOOTH_TAU_S, 1.0)
+      faded = min(prev_correction * (1.0 - k), max(self.vLead, 0.0))
+      if faded > 0.05:
+        self.range_assist_correction = faded
+        self._cam_release = True
     self._update_birth_rail(t_now, vision_lead)
 
     if measurement_update:

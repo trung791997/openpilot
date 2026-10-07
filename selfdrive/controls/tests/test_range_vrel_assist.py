@@ -1750,3 +1750,18 @@ class TestOffRailCameraGate:
     assert first <= 4.0 * DT / radard.RANGE_VREL_OFF_RAIL_SMOOTH_TAU_S + 1e-6
     steps = np.diff(out)
     assert np.max(np.abs(steps)) < 1.0
+
+  def test_a_cleared_correction_fades_out(self):
+    # 2f5 343.25: one clearing update stepped a 5.5 m/s correction to zero and re-armed the next update.
+    track = new_track(v_lead=V_EGO - 6.6)
+    out = cam_gate_series(track, SETTLE + 30, cam_rate=-10.6, **self.KW)
+    before = out[-1]
+    assert before > 1.0
+    fades = []
+    for i in range(SETTLE + 30, SETTLE + 60):
+      t = i * DT
+      track.update(107.0 - 10.6 * t, 0.0, -6.6, V_EGO - 6.6, True, True, t_now=t, range_assist=False)
+      fades.append(track.range_assist_correction)
+    assert 0.0 < fades[0] < before
+    assert all(b <= a for a, b in zip(fades, fades[1:]))
+    assert fades[-1] == 0.0
