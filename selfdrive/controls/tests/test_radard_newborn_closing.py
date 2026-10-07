@@ -17,10 +17,10 @@ def newborn_leads_on():
   radard.set_bosch_a_newborn_leads(True)
 
 
-def make_track(ranges, v_rel, v_ego=19.8, t0=100.0):
+def make_track(ranges, v_rel, v_ego=19.8, t0=100.0, measured=False):
   track = radard.Track(39, v_rel + v_ego, radard.KalmanParams(DT))
   for i, d in enumerate(ranges):
-    track.update(d, 0.0, v_rel, v_rel + v_ego, False, measurement_update=False, t_now=t0 + i * DT)
+    track.update(d, 0.0, v_rel, v_rel + v_ego, measured, measurement_update=measured, t_now=t0 + i * DT)
   return track
 
 
@@ -46,10 +46,27 @@ def test_noisy_run_is_not_closing():
   assert not radard.young_range_genuinely_closing(make_track(ranges, -10.5), 19.8)
 
 
-def test_vrel_disagreeing_with_range_is_not_closing():
+def test_measured_vrel_disagreeing_with_range_is_not_closing():
   ranges = linear(116.0, 90.0, 19)
-  assert not radard.young_range_genuinely_closing(make_track(ranges, -16.0), 19.8)  # |~-20.6 - -16| > 3
-  assert radard.young_range_genuinely_closing(make_track(ranges, -18.5), 19.8)
+  measured = make_track(ranges, -16.0, measured=True)
+  assert measured.cnt > 0
+  assert not radard.young_range_genuinely_closing(measured, 19.8)  # U11 |~-20.6 - -16| > 3
+  assert radard.young_range_genuinely_closing(make_track(ranges, -18.5, measured=True), 19.8)
+
+
+def test_never_measured_vrel_is_not_compared_with_its_own_range():
+  # Its vRel is radar_interface's fit of these same ranges; the old agreement check was circular (PR #17 review).
+  ranges = linear(116.0, 90.0, 19)
+  track = make_track(ranges, -16.0)
+  assert track.cnt == 0
+  assert radard.young_range_genuinely_closing(track, 19.8)
+
+
+def test_closing_faster_than_a_stopped_object_is_not_closing():
+  # 116 -> 80 m in ~1.25 s is ~-28.6 m/s at vEgo 19.8: more than 5 m/s past stationary, so range noise, not a lead.
+  assert not radard.young_range_genuinely_closing(make_track(linear(116.0, 80.0, 19), -19.8), 19.8)
+  # 000002ae 17 track 39 fit ~-23 at vEgo 19.8 (3.2 past stationary): still exempt.
+  assert radard.young_range_genuinely_closing(make_track(linear(116.0, 87.8, 19), -19.8), 19.8)
 
 
 def test_short_or_old_or_slow_closing_is_not_closing():

@@ -497,10 +497,19 @@ YOUNG_TRACK_VISION_RANGE_MARGIN_M = 5.0
 # cannot be confused with at vEgo ~20). The vRel agreement (3.0, the D-043 rate-check tolerance) keeps a coasted
 # U11 that disagrees with its own range out. Replay evidence only; not road-validated.
 # Built in on for Bosch-A (owner, 2026-10-03; was the BoschANewbornLeads toggle): main() calls set_bosch_a_newborn_leads().
+# 2026-10-07 (owner chose "option 2" after James's PR #17 review): for a never-measured newborn the vRel agreement was
+# circular -- its published vRel IS radar_interface's fit of the same ranges -- so it now applies only once the track
+# has a measured (U11) update. A never-measured newborn instead must not close more than
+# NEWBORN_RANGE_CLOSING_STATIONARY_TOL faster than a stopped object at ego's wheel speed (independent of the radar):
+# an in-lane lead cannot, and James found 42.7% of newborn range slopes did. 000002ae 17 track 39, the case this
+# exemption exists for, fit ~-23 at vEgo 19.8 (3.2 past stationary), so the margin is 5. Position is confirmed by the
+# camera at both call sites: track_matches_vision also needs dist_sane/lat_sane, and the FAR_RAIL floor exists only
+# with a model lead at the track's range. Static tests only.
 NEWBORN_RANGE_CLOSING_EXEMPT = True
 NEWBORN_RANGE_CLOSING_MIN_RATE = -8.0     # m/s; the range slope must be at or below this
 NEWBORN_RANGE_CLOSING_EGO_FRAC = 0.5      # ... and at or below -this * vEgo
-NEWBORN_RANGE_CLOSING_VREL_TOL = 3.0      # m/s; |slope - track.vRel| at most this
+NEWBORN_RANGE_CLOSING_VREL_TOL = 3.0      # m/s; |slope - track.vRel| at most this, once the track has a measured update
+NEWBORN_RANGE_CLOSING_STATIONARY_TOL = 5.0  # m/s; the slope may close at most this much faster than -vEgo
 
 # Newborn KF follows its own range (REPLAY ONLY, no DECISIONS entry yet). The Track KF starts at the first published
 # vLead and only updates on a measurement_update, which on Bosch-A needs pt.measured; a newborn published unmeasured
@@ -703,7 +712,8 @@ def young_track_vision_contradicts(lead, vis, v_ego: float) -> bool:
 
 def young_range_genuinely_closing(track, v_ego: float) -> bool:
   """NEWBORN_RANGE_CLOSING_EXEMPT: True when this young track's own fresh-sweep range history since birth fits a clean
-  line that closes clearly (see the constant block) and its published vRel agrees with that line. Caller gates Bosch-A."""
+  line that closes clearly but no faster than a stopped object allows, and, once measured, its U11 vRel agrees with that
+  line (see the constant block). Caller gates Bosch-A."""
   if not NEWBORN_RANGE_CLOSING_EXEMPT or track is None:
     return False
   if not (track.t_last - track.t_first <= YOUNG_TRACK_MAX_AGE_S) or len(track.young_range_hist) < YOUNG_TRACK_MIN_SAMPLES:
@@ -718,6 +728,10 @@ def young_range_genuinely_closing(track, v_ego: float) -> bool:
     return False
   if not (slope <= NEWBORN_RANGE_CLOSING_MIN_RATE and slope <= -NEWBORN_RANGE_CLOSING_EGO_FRAC * float(v_ego)):
     return False
+  if slope < -(float(v_ego) + NEWBORN_RANGE_CLOSING_STATIONARY_TOL):
+    return False
+  if track.cnt == 0:
+    return True  # never measured: vRel is the fit of these same ranges, so comparing them proves nothing
   return abs(float(slope) - float(track.vRel)) <= NEWBORN_RANGE_CLOSING_VREL_TOL
 
 
