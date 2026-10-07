@@ -892,8 +892,8 @@
       {
         "key": "StockBrakeFeel",
         "label": "Stock Brake Feel",
-        "description": "Brakes for a closing car the way stock Honda ACC does, from stock's own commands on 12 drives: braking deepens slowly (0.6 m/s^3 at 10 s to contact, 1 m/s^3 at 6 s, 2-3 m/s^3 near 2 s) and goes no deeper than stock does at that time to contact (about -0.4 m/s^2 at 25 s, -1.1 at 11 s, -2.1 at 5 s, -2.4 at 3 s, -3.5 at 2 s). Under 2 s to contact and with no car closing, the normal braking depth applies but builds no faster than 5 m/s^3; when stopping, at a red light or forced stop, normal braking applies. Also ignores a brief false braking reading on a newly seen car. Replaced the Smooth Brake Onset toggle. Closes the gap more than without it, including when the car ahead brakes hard; raise the following distance if that is too close. Replay only, not driven.",
-        "picker_description": "Brakes for a closing car the way stock ACC does.",
+        "description": "Drives up to a slower car the way stock Honda ACC does. When closing in, it lets off the gas and coasts down to the car's speed instead of staying on the throttle, then brakes gently only if coasting is not enough, and the gas comes back smoothly once the gap opens. Braking builds slowly and goes no deeper than stock would at the same time to contact. Uses less brake and less gas while closing than stock, which stays on the gas until it brakes. Normal braking under 2 s to contact, when stopping, and at a red light. Also ignores a brief false braking reading on a newly seen car.",
+        "picker_description": "Coasts up to a slower car, then brakes the way stock ACC does.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "AdvancedLongitudinalTune",

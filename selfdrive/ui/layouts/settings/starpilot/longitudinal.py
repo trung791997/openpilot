@@ -549,8 +549,8 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  set_state=lambda s: self._params.put_bool("ResumeBrakeRamp", s),
                  visible=adv),
       SettingRow("StockBrakeFeel", "toggle", tr_noop("Stock Brake Feel"),
-                 subtitle=tr_noop("Brakes for a closing car like stock ACC: slower build-up, and no deeper than stock at the same "
-                                  "time to contact. Normal braking under 2 s to contact and when stopping. Closes the gap more. Replay only, not driven."),
+                 subtitle=tr_noop("Coasts up to a slower car instead of staying on the gas, then brakes like stock ACC: slow build-up, "
+                                  "no deeper than stock. Normal braking under 2 s to contact and when stopping."),
                  get_state=lambda: self._params.get_bool("StockBrakeFeel"),
                  set_state=lambda s: self._params.put_bool("StockBrakeFeel", s),
                  visible=adv),
