@@ -10,10 +10,12 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.layouts import HBoxLayout
 from openpilot.system.ui.widgets.icon_widget import IconWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.application import ASSETS_DIR, gui_app, FontWeight, MousePos
 from openpilot.selfdrive.ui.lib.mode_banner import ModeBannerVariant, get_mode_banner_variant, mode_atom_color
 from openpilot.selfdrive.ui.lib.starpilot_version import DEFAULT_HOME_SCREEN_NAME, STARPILOT_DISPLAY_VERSION, home_screen_name
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot import jetlink_adapter
 from openpilot.starpilot.common.model_lab import model_lab_pair_display_name_from_params
 
 HEAD_BUTTON_FONT_SIZE = 40
@@ -146,6 +148,71 @@ class ModeStatusAtom(Widget):
           rl.unload_texture(texture)
 
 
+class JetlinkStatusAtom(Widget):
+  """Home-screen Jetlink state: the egpu icon in the colour of the link's state, and a short label."""
+  REFRESH_S = 1.0
+  ICONS = {
+    'ready': 'egpu_green', 'active': 'egpu_green', 'waiting': 'egpu_orange', 'uncompiled': 'egpu_orange',
+    'loading': 'egpu_loading', 'disconnected': 'egpu_crossed', 'failed': 'egpu_crossed',
+  }
+
+  def __init__(self):
+    super().__init__()
+    self._textures = {name: gui_app.texture(f"icons_mici/{name}.png", 50, 37) for name in set(self.ICONS.values())}
+    self._label = UnifiedLabel("", font_size=30, font_weight=FontWeight.ROMAN, text_color=rl.GRAY, max_width=220, wrap_text=False)
+    self._icon_name: str | None = None
+    self._last_refresh = 0.0
+    self.set_enabled(False)
+    self.set_visible(False)
+    self.set_rect(rl.Rectangle(0, 0, 0, 37))
+
+  @staticmethod
+  def describe(status) -> tuple[str, str] | None:
+    """(egpu icon state, label) for a jetlink_adapter.status() snapshot, or None when Jetlink is off."""
+    if status is None or not status.enabled:
+      return None
+    if status.reason:
+      return 'failed', "Jetlink error"
+    state = status.icon(False, False, False, '')
+    progress = status.progress or {}
+    if state == 'loading':
+      frac = progress.get('frac')
+      return state, f"Jetlink {int(frac * 100)}%" if isinstance(frac, (int, float)) and 0 < frac < 1 else "Jetlink loading"
+    if state == 'ready':
+      return state, "Jetlink ready"
+    if state == 'disconnected':
+      return state, "Jetlink: no host"
+    if state == 'uncompiled':
+      return state, "Jetlink: not built"
+    return state, "Jetlink failed"
+
+  def refresh(self) -> None:
+    now = time.monotonic()
+    if now - self._last_refresh < self.REFRESH_S:
+      return
+    self._last_refresh = now
+    try:
+      shown = self.describe(jetlink_adapter.status())
+    except Exception:
+      shown = None
+    if shown is None:
+      self._icon_name = None
+      self.set_visible(False)
+      return
+    state, text = shown
+    self._icon_name = self.ICONS[state]
+    self._label.set_text(text)
+    self.set_visible(True)
+    self.set_rect(rl.Rectangle(0, 0, 50 + 10 + min(measure_text_cached(gui_app.font(FontWeight.ROMAN), text, 30).x, 220), 37))
+
+  def _render(self, _) -> None:
+    if self._icon_name is None:
+      return
+    rl.draw_texture_ex(self._textures[self._icon_name], rl.Vector2(self._rect.x, self._rect.y), 0.0, 1.0, rl.WHITE)
+    self._label.set_position(self._rect.x + 60, self._rect.y)
+    self._label.render()
+
+
 class MiciHomeLayout(Widget):
   def __init__(self):
     super().__init__()
@@ -166,6 +233,7 @@ class MiciHomeLayout(Widget):
     self._bluetooth_icon.set_visible(False)
     self._egpu_icon = IconWidget("icons_mici/egpu.png", (50, 37))
     self._egpu_icon_gray = IconWidget("icons_mici/egpu_gray.png", (50, 37))
+    self._jetlink_atom = JetlinkStatusAtom()
     self._mic_icon = IconWidget("icons_mici/microphone.png", (32, 46))
 
     self._status_bar_layout = HBoxLayout([
@@ -175,6 +243,7 @@ class MiciHomeLayout(Widget):
       self._mode_status_atom,
       self._egpu_icon,
       self._egpu_icon_gray,
+      self._jetlink_atom,
       self._mic_icon,
     ], spacing=18)
 
@@ -292,6 +361,7 @@ class MiciHomeLayout(Widget):
     # ***** Center-aligned bottom section icons *****
     self._egpu_icon.set_visible(ui_state.usbgpu and ui_state.usbgpu_active)
     self._egpu_icon_gray.set_visible(ui_state.usbgpu and not ui_state.usbgpu_active)
+    self._jetlink_atom.refresh()
     self._mic_icon.set_visible(ui_state.recording_audio)
 
     footer_rect = rl.Rectangle(self.rect.x + HOME_PADDING, self.rect.y + self.rect.height - 48, self.rect.width - HOME_PADDING, 48)
