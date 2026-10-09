@@ -44,8 +44,9 @@ EXTRA_CATALOG_URL = 'https://raw.githubusercontent.com/zoompilot/jetlink/refs/he
 REQUIRED_SELECTOR_VERSION = 19
 # Mountain Dew V2 Preview (October 08, 2026), from EXTRA_CATALOG_URL rather
 # than sunnypilot's catalog: on a Galaxy Tab S9's NPU it held ~35 ms a frame
-# and fell behind only at its start, where Cinque Terre V3 fell behind four
-# times in one drive (routes 309 and 30a, 2026-10-09). If the extra catalog
+# and fell behind only at its start, where ResAction Preview fell behind four
+# times in one drive (routes 309 and 30a, 2026-10-09; Cinque Terre V3 was not
+# compared on the Tab). If the extra catalog
 # drops it, default_model falls back to the newest listed model
 DEFAULT_BIG_MODEL_REF = '4bfb53406352e2c8716ab06e23b57b4e3c00b45c'
 # its name as the catalog lists it, without the build date: what a comma with
