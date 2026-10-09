@@ -8,6 +8,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import A_CRUISE_MIN
 from openpilot.starpilot.common.accel_profile import A_CRUISE_MAX_BP_CUSTOM, ACCELERATION_PROFILES, DECELERATION_PROFILES
 from openpilot.starpilot.controls.lib.starpilot_acceleration import (
   A_CRUISE_MIN_ECO,
+  A_CRUISE_MIN_SPORT,
   A_CRUISE_MIN_TRAFFIC,
   PULSE_GLIDE_COAST_MIN_ACCEL,
   StarPilotAcceleration,
@@ -61,9 +62,10 @@ def make_lead(status=False, d_rel=150.0, v_lead=0.0, a_lead_k=0.0):
 
 def make_sm(*, set_speed_kph=100.0, lead_one=None, lead_two=None, standstill=False, force_decel=False,
             eco_gear=False, sport_gear=False, force_coast=False, pulse_and_glide=False, traffic_mode=False,
-            v_ego_cluster=0.0, pitch=0.0):
+            v_ego_cluster=0.0, pitch=0.0, gas_pressed=False):
   return {
-    "carState": SimpleNamespace(vCruise=set_speed_kph, standstill=standstill, vEgoCluster=v_ego_cluster),
+    "carState": SimpleNamespace(vCruise=set_speed_kph, standstill=standstill, vEgoCluster=v_ego_cluster,
+                                gasPressed=gas_pressed),
     "carControl": SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
     "controlsState": SimpleNamespace(forceDecel=force_decel),
     "selfdriveState": SimpleNamespace(personality=1),
@@ -162,6 +164,101 @@ def test_slc_coast_window_disabled_when_target_drop_is_not_slc():
   accel.update(57.0 * CV.MPH_TO_MS, sm, make_toggles(deceleration_profile=DECELERATION_PROFILES["ECO"]))
 
   assert accel.min_accel == pytest.approx(A_CRUISE_MIN_ECO)
+
+
+SET_KPH = 100.0
+SET_MS = SET_KPH * CV.KPH_TO_MS
+
+
+def _gas_override(v_ego, *, profile=DECELERATION_PROFILES["STANDARD"], planner_v_cruise=SET_MS, release_sm=None,
+                  toggles=None, **planner_kwargs):
+  accel = StarPilotAcceleration(FakePlanner(v_cruise=planner_v_cruise, **planner_kwargs))
+  toggles = toggles or make_toggles(deceleration_profile=profile, speed_limit_controller=False)
+  accel.update(v_ego, make_sm(set_speed_kph=SET_KPH, gas_pressed=True), toggles)
+  accel.update(v_ego, release_sm or make_sm(set_speed_kph=SET_KPH), toggles)
+  return accel
+
+
+def test_gas_override_small_overshoot_coasts_at_gas_off_estimate():
+  accel = _gas_override(SET_MS + 0.5)
+  assert accel.min_accel == pytest.approx(-0.3, abs=1e-3)
+
+
+def test_gas_override_downhill_keeps_slc_coast_floor():
+  accel = _gas_override(SET_MS + 0.5, release_sm=make_sm(set_speed_kph=SET_KPH, pitch=-0.1))
+  assert accel.min_accel == pytest.approx(-0.03, abs=1e-3)
+
+
+def test_gas_override_eco_coast_never_deeper_than_profile():
+  accel = _gas_override(SET_MS + 0.5, release_sm=make_sm(set_speed_kph=SET_KPH, pitch=0.1),
+                        profile=DECELERATION_PROFILES["ECO"])
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN_ECO)
+
+
+def test_gas_override_large_overshoot_builds_to_profile_floor():
+  floors = [_gas_override(SET_MS + over).min_accel for over in (0.5, 1.5, 2.5, 3.5, 6.0)]
+  assert all(a >= b for a, b in zip(floors, floors[1:], strict=False))
+  assert floors[1] > -0.4
+  assert floors[-1] == pytest.approx(A_CRUISE_MIN)
+
+
+def test_overshoot_without_gas_press_keeps_profile_floor():
+  accel = StarPilotAcceleration(FakePlanner(v_cruise=SET_MS))
+  accel.update(SET_MS + 0.5, make_sm(set_speed_kph=SET_KPH), make_toggles(deceleration_profile=DECELERATION_PROFILES["STANDARD"],
+                                                                         speed_limit_controller=False))
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+@pytest.mark.parametrize("hazard", [
+  {"lead_one": make_lead(status=True, d_rel=20.0, v_lead=20.0)},
+  {"lead_one": make_lead(status=True, d_rel=80.0, v_lead=SET_MS + 0.5, a_lead_k=-1.0)},
+  {"force_decel": True},
+])
+def test_gas_override_coast_off_for_lead_and_forced_decel(hazard):
+  accel = _gas_override(SET_MS + 0.5, release_sm=make_sm(set_speed_kph=SET_KPH, **hazard))
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+@pytest.mark.parametrize("planner_kwargs", [{"red_light": True}, {"forcing_stop": True}, {"disable_throttle": True}])
+def test_gas_override_coast_off_for_stop_and_red_light(planner_kwargs):
+  accel = _gas_override(SET_MS + 0.5, **planner_kwargs)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+def test_gas_override_coast_off_when_curve_target_is_below_set_speed():
+  accel = _gas_override(SET_MS + 0.5, planner_v_cruise=SET_MS - 3.0)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+def test_gas_override_latch_clears_at_set_speed_and_on_set_speed_change():
+  toggles = make_toggles(deceleration_profile=DECELERATION_PROFILES["STANDARD"], speed_limit_controller=False)
+  accel = _gas_override(SET_MS + 0.5, toggles=toggles)
+  accel.update(SET_MS, make_sm(set_speed_kph=SET_KPH), toggles)
+  accel.update(SET_MS + 0.5, make_sm(set_speed_kph=SET_KPH), toggles)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+  accel = _gas_override(SET_MS + 0.5, toggles=toggles)
+  accel.starpilot_planner.v_cruise = SET_MS - 2.0
+  accel.update(SET_MS + 0.5, make_sm(set_speed_kph=SET_KPH - 8.0), toggles)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
+
+
+def test_gas_override_coast_applies_to_mapped_sport_gear():
+  toggles = make_toggles(deceleration_profile=DECELERATION_PROFILES["STANDARD"], speed_limit_controller=False,
+                         map_deceleration=True)
+  accel = StarPilotAcceleration(FakePlanner(v_cruise=SET_MS))
+  accel.update(SET_MS + 0.5, make_sm(set_speed_kph=SET_KPH, sport_gear=True, gas_pressed=True), toggles)
+  accel.update(SET_MS + 0.5, make_sm(set_speed_kph=SET_KPH, sport_gear=True), toggles)
+  assert accel.min_accel == pytest.approx(-0.3, abs=1e-3)
+  accel.update(SET_MS + 6.0, make_sm(set_speed_kph=SET_KPH, sport_gear=True), toggles)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN_SPORT)
+
+
+def test_gas_override_coast_flag_off_keeps_profile_floor(monkeypatch):
+  import openpilot.starpilot.controls.lib.starpilot_acceleration as sa
+  monkeypatch.setattr(sa, "GAS_OVERRIDE_COAST", False)
+  accel = _gas_override(SET_MS + 0.5)
+  assert accel.min_accel == pytest.approx(A_CRUISE_MIN)
 
 
 def test_truck_tuning_standard_profile_keeps_non_binding_launch_headroom():

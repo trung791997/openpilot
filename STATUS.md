@@ -10938,3 +10938,20 @@ variant drives its own simulated car), 13 windows on 297, 305, 308, 2a6, 2f2:
 Simulated minimum gap is identical in every window; end speed differs only on 308 4:09 (+0.08 m/s, the brake not taken). 298 1018.35 no longer adopts (existence gate),
 so it is untouched. Planner tests 631 pass (3 new; the blip test fails with the ramp off). Not driven.
 
+
+## 231. Gas press above the set speed: openpilot coasts back down instead of braking (D-095). Replay only, not driven.
+
+Discord report: openpilot braked right after the driver let off the gas above the set speed. Now, after a gas press above the set
+speed, the min-accel floor uses the SLC coast-first shape against the set speed with the gas-off coast estimate (about -0.3 flat)
+as the floor, building to the profile floor for large overshoots. Off for relevant leads, stops, red lights, forced decel and any
+target below the set speed. Upstream PR 39060 (A_CRUISE_MIN -0.5 globally) was rejected: it also weakens our closing-lead floor.
+
+| replay (11 routes) | fix off | fix on |
+|---|---|---|
+| no lead, 2 m/s over: brake below -0.3 (median) | 3.1 s | 0 s |
+| no lead, 1 / 3.5 m/s over: brake below -0.3 | 0 / 6.1 s | 0 / 6.0 s |
+| frames with a relevant lead, stop or red light that differ | - | 0 |
+| worst window (2f2 871.2, lead at 60-80 m) min target | -0.45 | -0.59 |
+| min gap (worst change, 305 40.8) | 54.2 m | 52.0 m |
+
+Unit tests: 13 new in test_starpilot_acceleration.py (the flag-off test keeps the old floor). Not driven.

@@ -252,6 +252,7 @@ class StarPilotPlanner:
     else:
       self.starpilot_acceleration.max_accel = 0
       self.starpilot_acceleration.min_accel = 0
+      self.starpilot_acceleration.gas_override_coast = False
 
     self.starpilot_events.update(controls_enabled, v_cruise, sm, starpilot_toggles)
 
