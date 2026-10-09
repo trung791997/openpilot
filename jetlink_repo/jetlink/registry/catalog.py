@@ -42,12 +42,16 @@ EXTRA_CATALOG_URL = 'https://raw.githubusercontent.com/zoompilot/jetlink/refs/he
 # It is a string in the JSON; bundles at any other version describe fields we
 # would misread.
 REQUIRED_SELECTOR_VERSION = 19
-# Cinque Terre V3 Model (September 17, 2026)
-DEFAULT_BIG_MODEL_REF = 'bf3e3631b3f91d92a1020a5e0dd4298b93ff4244'
-# its name as sunnypilot's catalog lists it, without the build date: what a
-# comma with no catalog to name it from shows (jetlink.openpilot, on a fork
-# without sunnypilot's model manager)
-DEFAULT_BIG_MODEL_NAME = 'Cinque Terre V3 Model'
+# Mountain Dew V2 Preview (October 08, 2026), from EXTRA_CATALOG_URL rather
+# than sunnypilot's catalog: on a Galaxy Tab S9's NPU it held ~35 ms a frame
+# and fell behind only at its start, where Cinque Terre V3 fell behind four
+# times in one drive (routes 309 and 30a, 2026-10-09). If the extra catalog
+# drops it, default_model falls back to the newest listed model
+DEFAULT_BIG_MODEL_REF = '4bfb53406352e2c8716ab06e23b57b4e3c00b45c'
+# its name as the catalog lists it, without the build date: what a comma with
+# no catalog to name it from shows (jetlink.openpilot, on a fork without
+# sunnypilot's model manager)
+DEFAULT_BIG_MODEL_NAME = 'Mountain Dew V2 Preview'
 CATALOG_TIMEOUT = 10.0
 
 _REF = re.compile(r'[0-9a-f]{40}')
