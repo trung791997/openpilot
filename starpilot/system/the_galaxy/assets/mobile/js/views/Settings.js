@@ -17,6 +17,8 @@ import { StarpilotAutoIdentityPanel } from "../components/StarpilotAutoIdentityP
 import { StarpilotAutoCarScreenPanel } from "../components/StarpilotAutoCarScreenPanel.js?v=car-screen-7"
 import { languageState, setLanguage, t } from "../i18n.js"
 
+// Replaced by the profile panel only when PERSONALITY_PROFILES_ENABLED; this branch's planner still reads them,
+// so they stay visible while the panel is off (same as the desktop device_settings.js).
 const LEGACY_PERSONALITY_KEYS = new Set([
   "AccelerationProfile", "AggressiveFollow", "AggressiveFollowHigh", "CustomAccelProfile",
   "CustomAccelProfile0MPH", "CustomAccelProfile11MPH", "CustomAccelProfile22MPH", "CustomAccelProfile34MPH",
@@ -54,7 +56,7 @@ export const Settings = {
         .filter((s) => s.name !== "Model & Customization")
         .map((s) => ({
           ...s,
-          params: (s.params || []).filter((p) => !LEGACY_PERSONALITY_KEYS.has(p.key) && (!STARPILOT_AUTO_KEYS.includes(p.key) || s.name === "Starpilot Auto") && isSettingVisible(s, p, this.values)),
+          params: (s.params || []).filter((p) => !(PERSONALITY_PROFILES_ENABLED && LEGACY_PERSONALITY_KEYS.has(p.key)) && (!STARPILOT_AUTO_KEYS.includes(p.key) || s.name === "Starpilot Auto") && isSettingVisible(s, p, this.values)),
           slug: slugifySectionName(s.name),
         }))
         .filter((s) => s.params.length > 0)
