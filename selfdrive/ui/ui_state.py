@@ -120,6 +120,8 @@ class UIState:
     self.usbgpu_compiled: bool = self.params.get_bool("UsbGpuCompiled")
     self.usbgpu_active: bool = self.params.get_bool("UsbGpuActive")
     self.usbgpu_loading: bool = self.params.get_bool("UsbGpuLoading")
+    self.jetlink_link: int = 0
+    self.jetlink_big: bool = False
     self.started: bool = False
     # Set by the Starpilot Auto car view while its navigation map is drawn beside the
     # driving view; the driving view then leaves out what the map already shows.
@@ -261,6 +263,8 @@ class UIState:
     self.usbgpu_compiled = params.get_bool("UsbGpuCompiled")
     self.usbgpu_active = params.get_bool("UsbGpuActive")
     self.usbgpu_loading = params.get_bool("UsbGpuLoading")
+    self.jetlink_link = params.get_int("JetlinkLink") or 0
+    self.jetlink_big = params.get_bool("JetlinkBigActive") if self.jetlink_link else False
     self.switchback_mode_enabled = self.live_params.get_bool("SwitchbackModeEnabled") if self.started else False
     self.conditional_status = self.live_params.get_int("CEStatus", default=0) if self.started else 0
     mark_progress("ui.update.after_state_params")

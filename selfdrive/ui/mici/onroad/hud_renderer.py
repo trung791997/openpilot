@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.lib.speed_limit_pulse import SpeedLimitPulse
 from openpilot.selfdrive.ui.onroad.starpilot.nav_lane_prompt import NavLaneMovePromptRenderer
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
+from openpilot.starpilot import jetlink_adapter
 from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_tint
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.utils import draw_circle_gradient_compat
@@ -57,6 +58,20 @@ SPEED_LIMIT_PROMPT_EU_SIGN_SIZE = 148
 SPEED_LIMIT_PROMPT_CENTER_OFFSET_X = -26
 VISION_SPEED_LIMIT_PULSE_SECONDS = 1.0
 VISION_SPEED_LIMIT_PULSE_COLOR = rl.Color(188, 132, 255, 255)
+
+
+def jetlink_hud_state(status, big: bool, model_seen: bool) -> str:
+  """Onroad Jetlink icon: green (big model drives), orange (linked, small drives), crossed, loading."""
+  if big and model_seen:
+    return 'green'
+  if status is None or status.reason or not status.present:
+    return 'crossed'
+  stage = str((status.progress or {}).get('stage', ''))
+  if stage == 'failed':
+    return 'crossed'
+  if not model_seen or (stage and stage != 'ready'):
+    return 'loading'
+  return 'orange'
 
 
 @dataclass(frozen=True)
@@ -151,6 +166,8 @@ class HudRenderer(Widget):
     self._icbm_ceiling_active: bool = False
     self._max_in_sign: bool = False
     self._egpu_fade_time: float = 0.0
+    self._jetlink_checked: float = 0.0
+    self._jetlink_status = None
     self._show_speed_limit: bool = False
     self._speed_limit: float = 0.0
     self._speed_limit_offset: float = 0.0
@@ -334,7 +351,7 @@ class HudRenderer(Widget):
     if self.is_cruise_set:
       self._draw_set_speed(self._rect)
 
-    if ui_state.usbgpu and ui_state.usbgpu_compiled:
+    if ui_state.jetlink_link or (ui_state.usbgpu and ui_state.usbgpu_compiled):
       self._draw_model_source(self._rect)
 
     self._draw_steering_wheel(self._rect)
@@ -356,27 +373,45 @@ class HudRenderer(Widget):
 
     model_seen = ui_state.sm.recv_frame['modelV2'] > ui_state.started_frame
     model_alive = ui_state.sm.alive['modelV2'] if model_seen else True
-    big_failed = (
-      ui_state.usbgpu_active is False or
-      not ui_state.usbgpu or
-      (ui_state.usbgpu_active is True and model_seen and not model_alive)
-    )
-    self._small_model_engaged &= big_failed
-    loading = ui_state.usbgpu_loading
-
-    if loading:
-      pulse = 0.5 - 0.5 * math.cos(rl.get_time() * 6.0)
-      icon = self._txt_egpu_loading
-      opacity = 0.35 + 0.65 * pulse
-    elif self._small_model_engaged:
-      icon = self._txt_egpu_crossed
-      opacity = 0.65
-    elif big_failed:
-      icon = self._txt_egpu_orange
+    if ui_state.jetlink_link:
+      now = rl.get_time()
+      if now - self._jetlink_checked > 1.0:
+        self._jetlink_checked = now
+        try:
+          self._jetlink_status = jetlink_adapter.status()
+        except Exception:
+          self._jetlink_status = None
+      jl = jetlink_hud_state(self._jetlink_status, ui_state.jetlink_big, model_seen)
+      loading = jl == 'loading'
       opacity = 1.0
+      if loading:
+        opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(now * 6.0))
+      icon = {'green': self._txt_egpu_green, 'orange': self._txt_egpu_orange,
+              'crossed': self._txt_egpu_crossed, 'loading': self._txt_egpu_loading}[jl]
+      if jl == 'crossed':
+        opacity = 0.65
     else:
-      icon = self._txt_egpu_green
-      opacity = 1.0
+      big_failed = (
+        ui_state.usbgpu_active is False or
+        not ui_state.usbgpu or
+        (ui_state.usbgpu_active is True and model_seen and not model_alive)
+      )
+      self._small_model_engaged &= big_failed
+      loading = ui_state.usbgpu_loading
+
+      if loading:
+        pulse = 0.5 - 0.5 * math.cos(rl.get_time() * 6.0)
+        icon = self._txt_egpu_loading
+        opacity = 0.35 + 0.65 * pulse
+      elif self._small_model_engaged:
+        icon = self._txt_egpu_crossed
+        opacity = 0.65
+      elif big_failed:
+        icon = self._txt_egpu_orange
+        opacity = 1.0
+      else:
+        icon = self._txt_egpu_green
+        opacity = 1.0
 
     if icon is not self._egpu_icon:
       self._egpu_fade_time = rl.get_time()

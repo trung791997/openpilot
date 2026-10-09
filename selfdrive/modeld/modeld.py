@@ -1327,6 +1327,7 @@ def main(demo=False):
   frame_id = 0
   last_vipc_frame_id = 0
   run_count = 0
+  jetlink_big_published: bool | None = None
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
@@ -1487,6 +1488,9 @@ def main(demo=False):
       model.in_control = jetlink_adapter.in_control(sm)
       model.frame_drop_ratio = frame_drop_ratio
       handovers = getattr(model, 'handovers', 0)
+      if model.big != jetlink_big_published:
+        jetlink_big_published = model.big
+        params.put_bool("JetlinkBigActive", jetlink_big_published)
 
     mt1 = time.perf_counter()
     try:
