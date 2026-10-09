@@ -1490,7 +1490,10 @@ def main(demo=False):
       handovers = getattr(model, 'handovers', 0)
       if model.big != jetlink_big_published:
         jetlink_big_published = model.big
-        params.put_bool("JetlinkBigActive", jetlink_big_published)
+        try:  # display only: a params build without the key must not stop the model
+          params.put_bool("JetlinkBigActive", jetlink_big_published)
+        except Exception:
+          cloudlog.exception("JetlinkBigActive write failed")
 
     mt1 = time.perf_counter()
     try:
