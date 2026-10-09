@@ -14,6 +14,30 @@ os.environ['DEV'] = 'QCOM' if TICI else 'LLVM'
 # 3.6 GB mici and pushed it past selfdrived's 90% lowMemory soft-disable; the
 # small model is a prebuilt pickle, so only the link's few runtime kernels use it
 os.environ.setdefault('PARALLEL', '2')
+
+
+def _jetlink_gpu_priority() -> None:
+  """With Jetlink on, modeld's GPU work is the link's warp, ~0.5 ms a frame,
+  which must finish inside HOLD_FRAME (46 ms). launch_env.sh puts every
+  tinygrad process at QCOM_PRIORITY 12, so the warp queued behind
+  dmonitoringmodeld's ~19 ms on the same KGSL ringbuffer (priority / 4), and
+  frames starting 8-12 ms into a DM run were late 22-33% of the time (routes
+  309 and 30a, 2026-10-09), bursts that tripped the hand-back to the small
+  model. 11 is the next ringbuffer up, so the warp preempts DM: a bench on the
+  comma cut a warp-sized job's wait behind a DM-like one from 69 to 5.7 ms
+  median. The UI's GL priority was not measured. Read before tinygrad opens
+  the device; a change applies at the next modeld start."""
+  if not TICI:
+    return
+  try:
+    from openpilot.common.params import Params
+    if (Params().get_int('JetlinkLink') or 0) != 0:
+      os.environ['QCOM_PRIORITY'] = '11'
+  except Exception:
+    pass
+
+
+_jetlink_gpu_priority()
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
 import time
