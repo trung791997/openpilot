@@ -6,7 +6,7 @@ import numpy as np
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
-from openpilot.selfdrive.controls.lib.longitudinal_planner import A_CRUISE_MIN, get_max_accel
+from openpilot.selfdrive.controls.lib.longitudinal_planner import A_CRUISE_MIN, LEAD_COAST_MIN, get_coast_accel, get_max_accel
 
 from openpilot.starpilot.common.accel_profile import (
   ACCELERATION_PROFILES,
@@ -98,6 +98,23 @@ SLC_COAST_MIN_SPEED = 4.0
 SLC_TARGET_EPS = 0.15
 RELEVANT_LEAD_MIN_CLOSING_SPEED = 0.5
 RELEVANT_LEAD_MIN_BRAKE = -0.4
+# D-095 gas-override coast. Driver presses the gas past the set speed and lets go: the
+# planner resets to v_ego and plans back down to the set speed at the full profile floor
+# (-1.0 Standard, -2.0 Sport), which reads as openpilot braking right after the driver lets
+# off (Discord report 2026-10-09). Job's logged lift-offs on 27 routes: 0.5-3 m/s overshoots
+# already ran near coast (command median -0.28..-0.30, brake share 0-5%); the one > 3 m/s
+# lift-off (2cc @297.4, pre D-092 build) commanded -0.56 with 63% brake vs stock -1.28 / 0%.
+# Fix: after a gas press above the set speed, reuse the SLC coast-first shape (get_slc_shaped_min_accel) against the
+# driver's set speed until the car is back at it, with the gas-off coast estimate (get_coast_accel, ~-0.3 flat, clipped
+# to LEAD_COAST_MIN) as the in-window floor instead of SLC's -0.03: the replay held ~1 m/s over the set speed for the
+# whole 12 s window at -0.03 (light gas), while stock's own small-overshoot command is -0.33 with no brake (Job, 27
+# routes). A target at the coast estimate is what D-092 sends gas-off on Honda Bosch. Downhill (estimate above the
+# SLC floor) keeps the SLC floor. Beyond the window the floor builds quadratically to the profile limit, as in SLC.
+# Never applies with a braking-relevant lead, a stop/red light, forced decel, or when CSC,
+# SLC or anything else holds the planner target below the set speed.
+GAS_OVERRIDE_COAST = True
+GAS_OVERRIDE_COAST_RELEASE = 0.05   # m/s above set speed at which the latch clears
+GAS_OVERRIDE_SET_SPEED_EPS = 0.15   # planner target within this of the set speed = not limited by others
 PULSE_GLIDE_MIN_TARGET_SPEED = 5.0
 PULSE_GLIDE_MIN_LOWER_SPEED = 3.0
 PULSE_GLIDE_HYSTERESIS = 0.25
@@ -164,9 +181,10 @@ def lead_is_braking_relevant(lead, v_ego):
 
   return float(getattr(lead, "dRel", 1e6)) < max(18.0, 2.0 * float(v_ego))
 
-def get_slc_shaped_min_accel(v_ego, v_target, deceleration_profile, full_brake_floor):
+def get_slc_shaped_min_accel(v_ego, v_target, deceleration_profile, full_brake_floor, coast_floor=None):
   profile = DECELERATION_PROFILES["STANDARD"] if deceleration_profile is None else deceleration_profile
-  coast_floor = SLC_COAST_FLOOR.get(profile, SLC_COAST_FLOOR[DECELERATION_PROFILES["STANDARD"]])
+  if coast_floor is None:
+    coast_floor = SLC_COAST_FLOOR.get(profile, SLC_COAST_FLOOR[DECELERATION_PROFILES["STANDARD"]])
   coast_window = float(akima_interp(v_ego, SLC_COAST_WINDOW_BP, SLC_COAST_WINDOW_BASE))
   coast_window *= SLC_COAST_WINDOW_MULTIPLIER.get(profile, 1.0)
   excess_scale = float(akima_interp(v_ego, SLC_EXCESS_SCALE_BP, SLC_EXCESS_SCALE_V))
@@ -192,6 +210,8 @@ class StarPilotAcceleration:
     self.pulse_glide_coasting = False
     self.pulse_glide_target = None
     self.pulse_glide_hill_paused = False
+    self.gas_override_coast = False
+    self.gas_override_set_speed = 0.0
 
   def _update_pulse_glide_hill_pause(self, sm):
     try:
@@ -314,7 +334,80 @@ class StarPilotAcceleration:
         not has_relevant_lead and
         not stop_context):
       return get_slc_shaped_min_accel(v_ego, v_target, deceleration_profile, full_brake_floor)
-    return full_brake_floor
+    return self._shape_min_accel_for_gas_override(
+      v_ego, sm, starpilot_toggles, deceleration_profile, full_brake_floor, raw_v_cruise, v_target,
+      has_relevant_lead or stop_context,
+    )
+
+  def _update_gas_override_latch(self, v_ego, sm, raw_v_cruise):
+    if not GAS_OVERRIDE_COAST or raw_v_cruise <= 0.0:
+      self.gas_override_coast = False
+      return
+
+    # A set-speed change while latched is the driver asking for a new speed; brake to it normally.
+    if self.gas_override_coast and abs(raw_v_cruise - self.gas_override_set_speed) > 0.01:
+      self.gas_override_coast = False
+    if bool(getattr(sm["carState"], "gasPressed", False)) and v_ego > raw_v_cruise + GAS_OVERRIDE_COAST_RELEASE:
+      self.gas_override_coast = True
+      self.gas_override_set_speed = raw_v_cruise
+    if v_ego <= raw_v_cruise + GAS_OVERRIDE_COAST_RELEASE or sm["carState"].standstill:
+      self.gas_override_coast = False
+
+  def _shape_min_accel_for_gas_override(
+    self, v_ego, sm, starpilot_toggles, deceleration_profile, full_brake_floor, raw_v_cruise=None, v_target=None, hazard=None,
+  ):
+    if not self.gas_override_coast:
+      return full_brake_floor
+    if raw_v_cruise is None:
+      raw_v_cruise, v_target = self._get_cruise_targets(v_ego, sm, starpilot_toggles)
+    if hazard is None:
+      hazard = (
+        any(lead_is_braking_relevant(lead, v_ego) for lead in (sm["radarState"].leadOne, sm["radarState"].leadTwo)) or
+        self._stop_context(sm)
+      )
+    # Only the driver's own set speed: a curve, SLC or other target below it keeps its braking.
+    if hazard or v_ego <= SLC_COAST_MIN_SPEED or v_target < raw_v_cruise - GAS_OVERRIDE_SET_SPEED_EPS:
+      return full_brake_floor
+    profile = DECELERATION_PROFILES["STANDARD"] if deceleration_profile is None else deceleration_profile
+    coast_floor = SLC_COAST_FLOOR.get(profile, SLC_COAST_FLOOR[DECELERATION_PROFILES["STANDARD"]])
+    try:
+      pitch = float(sm["carControl"].orientationNED[1])
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+      pitch = float("nan")
+    if math.isfinite(pitch):
+      coast_floor = min(coast_floor, float(np.clip(get_coast_accel(pitch), LEAD_COAST_MIN, 0.0)))
+    coast_floor = max(coast_floor, full_brake_floor)
+    return max(full_brake_floor, get_slc_shaped_min_accel(v_ego, raw_v_cruise, deceleration_profile, full_brake_floor, coast_floor))
+
+  def _stop_context(self, sm):
+    return bool(
+      sm["carState"].standstill or
+      getattr(sm["controlsState"], "forceDecel", False) or
+      getattr(self.starpilot_planner.starpilot_cem, "stop_light_detected", False) or
+      getattr(self.starpilot_planner.starpilot_vcruise, "forcing_stop", False) or
+      getattr(self.starpilot_planner.starpilot_following, "disable_throttle", False)
+    )
+
+  def _get_cruise_targets(self, v_ego, sm, starpilot_toggles):
+    raw_v_cruise_kph = 0.0 if sm["carState"].vCruise == V_CRUISE_UNSET else min(sm["carState"].vCruise, V_CRUISE_MAX)
+    if 0 < raw_v_cruise_kph < V_CRUISE_UNSET and getattr(starpilot_toggles, "set_speed_offset", 0) > 0:
+      raw_v_cruise_kph += starpilot_toggles.set_speed_offset
+    raw_v_cruise = raw_v_cruise_kph * CV.KPH_TO_MS
+    v_ego_cluster = getattr(sm["carState"], "vEgoCluster", v_ego)
+    if v_ego_cluster is None:
+      v_ego_cluster = v_ego
+    effective_slc_target = get_active_slc_control_target(
+      getattr(starpilot_toggles, "speed_limit_controller", False),
+      getattr(self.starpilot_planner.starpilot_vcruise, "slc_target", 0.0),
+      getattr(self.starpilot_planner.starpilot_vcruise, "slc_offset", 0.0),
+      getattr(getattr(self.starpilot_planner.starpilot_vcruise, "slc", None), "overridden_speed", 0.0),
+      max(v_ego_cluster, v_ego) - v_ego,
+      allow_lower_override=getattr(starpilot_toggles, "redneck_cruise", False),
+    )
+    v_target = float(self.starpilot_planner.v_cruise or raw_v_cruise)
+    if effective_slc_target > 0.0:
+      v_target = min(v_target, effective_slc_target)
+    return raw_v_cruise, v_target
 
   def _shape_personality_min_accel_for_cruise(
     self, v_ego, sm, starpilot_toggles, deceleration_profile, requested_floor, baseline_floor,
@@ -429,6 +522,7 @@ class StarPilotAcceleration:
       self.max_accel -= self.max_accel * self.starpilot_planner.starpilot_weather.reduce_acceleration
 
     pulse_glide_coasting = self._update_pulse_glide(v_ego, sm, starpilot_toggles)
+    self._update_gas_override_latch(v_ego, sm, self._get_cruise_targets(v_ego, sm, starpilot_toggles)[0])
     if sm["starpilotCarState"].forceCoast:
       self.min_accel = A_CRUISE_MIN_ECO
     elif pulse_glide_coasting:
@@ -454,9 +548,13 @@ class StarPilotAcceleration:
       self.min_accel = A_CRUISE_MIN_TRAFFIC
     elif starpilot_toggles.map_deceleration and (eco_gear or sport_gear):
       if eco_gear:
-        self.min_accel = A_CRUISE_MIN_ECO
+        self.min_accel = self._shape_min_accel_for_gas_override(
+          v_ego, sm, starpilot_toggles, DECELERATION_PROFILES["ECO"], A_CRUISE_MIN_ECO
+        )
       else:
-        self.min_accel = A_CRUISE_MIN_SPORT
+        self.min_accel = self._shape_min_accel_for_gas_override(
+          v_ego, sm, starpilot_toggles, DECELERATION_PROFILES["SPORT"], A_CRUISE_MIN_SPORT
+        )
     else:
       if starpilot_toggles.map_deceleration:
         # Same reasoning as the acceleration side, but resolved through the profile so

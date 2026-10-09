@@ -2139,3 +2139,26 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
   already builds gradually), 2f2 13:16/15:10 (real leads leaving the lane) and 305 2:19.9.
 - **Lever if a real radar-only brake comes late:** `ONPATH_LEAD_ONSET_JERK` (larger is closer to the old step), not removing it.
 
+
+## D-095 — After a gas press above the set speed, openpilot coasts back down instead of braking (STATUS 231, 2026-10-09, replay only, not driven)
+
+- **Finding (Discord report 2026-10-09).** A driver presses the gas past the set speed and lets go. The gas press resets the
+  planner to v_ego, and it then plans back to the set speed at the full profile floor (-1.0 Standard, -2.0 Sport), which reads as
+  openpilot braking right after the driver lets off. Job's logged lift-offs on 27 routes: 0.5-3 m/s overshoots already ran near
+  coast (command median -0.28..-0.30); the one > 3 m/s lift-off (2cc @297.4, pre D-092 build) commanded -0.56 with 63% brake.
+- **Shipped default on (`GAS_OVERRIDE_COAST`, starpilot_acceleration.py).** A latch set by gasPressed above the set speed reuses
+  the SLC coast-first shape (`get_slc_shaped_min_accel`) against the driver's set speed until the car is back at it. The in-window
+  floor is the gas-off coast estimate (`get_coast_accel`, clipped to LEAD_COAST_MIN; downhill keeps the SLC floor), which D-092
+  sends gas-off on Honda Bosch; beyond the window it builds to the profile floor as in SLC. The latch clears at the set speed, on a
+  set-speed change, at standstill and when controls are off.
+- **Never applies** with a braking-relevant lead, a red light / forced stop / disable-throttle, forced decel, or when CSC, SLC or
+  anything else holds the planner target below the set speed. MPC lead braking keeps its full authority in every case.
+- **Rejected: upstream PR 39060 (A_CRUISE_MIN -1.0 -> -0.5 everywhere).** Our A_CRUISE_MIN also sets the Eco/Sport/Traffic floors,
+  the closing-lead floor (STATUS 42/61) and the close-lead brake cap; halving it weakens those.
+- **First version rejected:** SLC's -0.03 in-window floor held about 1 m/s over the set speed for the whole 12 s window (light gas).
+- **Evidence (replay, 11 routes):** open loop, frames with a relevant lead, stop or red light never differ (0 of ~116k). Synthetic
+  overshoots at logged cruise moments, closed loop: no lead, 2 m/s over: brake below -0.3 3.1 s -> 0 s, the car ends 0.12 m/s
+  faster after 12 s (still at or under the set speed); 1 and 3.5 m/s over: near identical. Minimum gap and TTC no worse except 305 40.8
+  (54.2 -> 52.0 m at 54 m). Worst case 2f2 871.2: about 0.2 m/s more speed into a lead at 60-80 m, brake -0.45 -> -0.59. Real
+  lift-offs in these logs (26b 9:16/9:39, 2a6 1:47) are identical (large overshoots already at the full floor).
+- **Lever if a driver reports carrying too much speed after a gas press:** `GAS_OVERRIDE_COAST` off, or a deeper in-window floor.
