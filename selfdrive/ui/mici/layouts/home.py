@@ -159,7 +159,8 @@ class JetlinkStatusAtom(Widget):
   def __init__(self):
     super().__init__()
     self._textures = {name: gui_app.texture(f"icons_mici/{name}.png", 50, 37) for name in set(self.ICONS.values())}
-    self._label = UnifiedLabel("", font_size=30, font_weight=FontWeight.ROMAN, text_color=rl.GRAY, max_width=220, wrap_text=False)
+    self._label = UnifiedLabel("", font_size=30, font_weight=FontWeight.ROMAN, text_color=rl.GRAY, max_width=220, wrap_text=False, scroll=True)
+    self._text = ""
     self._icon_name: str | None = None
     self._last_refresh = 0.0
     self.set_enabled(False)
@@ -179,7 +180,7 @@ class JetlinkStatusAtom(Widget):
       frac = progress.get('frac')
       return state, f"Jetlink {int(frac * 100)}%" if isinstance(frac, (int, float)) and 0 < frac < 1 else "Jetlink loading"
     if state == 'ready':
-      return state, "Jetlink ready"
+      return state, f"Jetlink: {status.active_model}" if status.active_model else "Jetlink ready"
     if state == 'disconnected':
       return state, "Jetlink: no host"
     if state == 'uncompiled':
@@ -201,7 +202,10 @@ class JetlinkStatusAtom(Widget):
       return
     state, text = shown
     self._icon_name = self.ICONS[state]
-    self._label.set_text(text)
+    if text != self._text:
+      self._text = text
+      self._label.set_text(text)
+      self._label.reset_scroll()
     self.set_visible(True)
     self.set_rect(rl.Rectangle(0, 0, 50 + 10 + min(measure_text_cached(gui_app.font(FontWeight.ROMAN), text, 30).x, 220), 37))
 

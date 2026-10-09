@@ -12,7 +12,8 @@ def _status(**kw):
 
 
 @pytest.mark.parametrize("kw,expected", [
-  (dict(), ('ready', "Jetlink ready")),
+  (dict(), ('ready', "Jetlink: Mountain Dew V2")),
+  (dict(model=None), ('ready', "Jetlink ready")),
   (dict(present=False), ('disconnected', "Jetlink: no host")),
   (dict(ready=False), ('uncompiled', "Jetlink: not built")),
   (dict(progress={'stage': 'build', 'frac': 0.42}), ('loading', "Jetlink 42%")),
