@@ -49,7 +49,7 @@ class Navigationd:
     self._last_nav_state: dict[str, object] | None = None
 
   @staticmethod
-  def _destination_key(destination: dict[str, object] | None) -> tuple[str, str, float, float] | None:
+  def _destination_key(destination: dict[str, object] | None) -> tuple | None:
     if destination is None:
       return None
     return (
@@ -57,6 +57,10 @@ class Navigationd:
       str(destination.get("routeId") or "main"),
       round(float(destination["latitude"]), 6),
       round(float(destination["longitude"]), 6),
+      bool(destination.get("avoid_tolls", False)),
+      bool(destination.get("avoid_highways", False)),
+      bool(destination.get("avoid_ferries", False)),
+      bool(destination.get("prefer_eco", False)),
     )
 
   def _snapshot_route(self) -> tuple[NavigationRoute | None, dict[str, object] | None, int]:

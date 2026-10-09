@@ -20,6 +20,8 @@ for (const surface of ['classic','mobile']) for (const scenario of ['stale-poll'
  await context.route('**/*',async route=>{
   const req=route.request(),u=new URL(req.url());
   if(u.origin!=='http://galaxy.invalid') {unexpected.push(req.url());return route.abort();}
+  // the Jetlink panel's own read; these suites exercise the Galaxy catalogue
+  if(u.pathname==='/api/models/jetlink' && route.request().method()==='GET') return route.fulfill({json:{available:false,models:[],isOnroad:false}});
   if(u.pathname==='/api/models/status' && req.method()==='GET') {
    gets++; const json=payload();
    if(holdNext) {holdNext=false;heldGet={route,json};return;}

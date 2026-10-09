@@ -172,7 +172,13 @@ from openpilot.starpilot.common.testing_grounds import (
   TESTING_GROUNDS_SLOT_DEFINITIONS as SHARED_TESTING_GROUNDS_SLOT_DEFINITIONS,
   TESTING_GROUNDS_STATE_PATH as SHARED_TESTING_GROUNDS_STATE_PATH,
 )
-from openpilot.starpilot.navigation.destination_store import normalize_destination_payload, routing_configured, update_recent_destinations
+from openpilot.starpilot.navigation.destination_store import (
+  load_route_preferences,
+  normalize_destination_payload,
+  routing_configured,
+  save_route_preferences,
+  update_recent_destinations,
+)
 from openpilot.starpilot.navigation.offline_maps import (
   AREA_MAX_RADIUS_KM,
   AREA_MIN_RADIUS_KM,
@@ -6154,7 +6160,20 @@ def setup(app):
       "mapboxPublic": params.get("MapboxPublicKey", encoding="utf8") or "",
       "mapboxSecret": params.get("MapboxSecretKey", encoding="utf8") or "",
       "previousDestinations": params.get("ApiCache_NavDestinations", encoding="utf8") or "",
+      "routePreferences": load_route_preferences(params),
     }
+
+  @app.route("/api/navigation/preferences", methods=["GET", "POST"])
+  def navigation_preferences():
+    if request.method == "POST":
+      body = request.json or {}
+      prefs = load_route_preferences(params)
+      for k in ("avoid_tolls", "avoid_highways", "avoid_ferries", "prefer_eco"):
+        if k in body:
+          prefs[k] = bool(body[k])
+      save_route_preferences(prefs, params)
+      return {"message": "Route preferences saved", "routePreferences": prefs}
+    return {"routePreferences": load_route_preferences(params)}
 
   @app.route("/api/navigation", methods=["POST"])
   def set_navigation():
@@ -6166,6 +6185,18 @@ def setup(app):
     destination = normalize_destination_payload(request.json)
     if destination is None:
       return {"message": "Invalid destination payload"}, 400
+
+    # Persist any updated preferences passed with the destination
+    pref_keys = ("avoid_tolls", "avoid_highways", "avoid_ferries", "prefer_eco")
+    current_prefs = load_route_preferences(params)
+    prefs_in_req = {k: destination[k] for k in pref_keys if k in destination}
+    if prefs_in_req:
+      current_prefs.update(prefs_in_req)
+      save_route_preferences(current_prefs, params)
+
+    for k, v in current_prefs.items():
+      if k not in destination:
+        destination[k] = v
 
     recent_destinations = update_recent_destinations(
       params.get("ApiCache_NavDestinations", encoding="utf8") or "",
@@ -7660,6 +7691,37 @@ def setup(app):
       return jsonify({"error": f"Failed to refresh model manifest: {exception}"}), 500
 
     return jsonify({"message": "Model manifest refreshed."}), 200
+
+  @app.route("/api/models/jetlink", methods=["GET", "PUT"])
+  def jetlink_models():
+    from openpilot.starpilot import jetlink_adapter
+
+    if request.method == "PUT":
+      if params.get_bool("IsOnroad"):
+        return jsonify({"error": "Cannot change the Jetlink model while driving."}), 403
+      data = request.get_json(silent=True)
+      if not isinstance(data, dict) or not isinstance(data.get("ref", ""), str):
+        return jsonify({"error": "A model ref string is required ('' for the default)."}), 400
+      ref = data.get("ref", "").strip()
+      if not jetlink_adapter.select_model(ref or None):
+        return jsonify({"error": f"Unknown Jetlink model '{ref}'."}), 404
+
+    status = jetlink_adapter.status()
+    return jsonify({
+      "available": status is not None,
+      "mode": status.mode if status else jetlink_adapter.MODES[0],
+      "enabled": bool(status and status.enabled),
+      "present": bool(status and status.present),
+      "transport": status.transport if status else "",
+      "ready": bool(status and status.ready),
+      "reason": status.reason if status else None,
+      "progress": status.progress if status else None,
+      "model": status.model if status else None,
+      "defaultModel": status.default_model if status else None,
+      "activeModel": status.active_model if status else None,
+      "models": jetlink_adapter.models(),
+      "isOnroad": params.get_bool("IsOnroad"),
+    }), 200
 
   @app.route("/api/models/download", methods=["POST"])
   def start_model_download():

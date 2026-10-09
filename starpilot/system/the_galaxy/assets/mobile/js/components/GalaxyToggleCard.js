@@ -354,7 +354,7 @@ export const GalaxyToggleCard = {
     <ScreenBrightnessControl v-if="param.ui_type === 'brightness'" :param="param" :value="value" :values="values"
       :locked="locked" :lock-message="lockMessage" @change="$emit('change', $event)" />
     <div v-else>
-      <div class="gx-row" :class="{ disabled: locked, 'gx-row--favorites': isFavorites, 'gx-row--stack': isSlider || isSelect }">
+      <div class="gx-row" :class="{ disabled: locked, 'gx-row--favorites': isFavorites, 'gx-row--stack': isSlider || isSelect || isText }">
         <div class="gx-row__info">
           <span class="gx-row__label">{{ tr(displayParam.label, displayParam.label) }}
             <span v-if="displayParam.settings_tier === 'advanced'" class="gx-chip gx-chip--advanced">{{ tr("Advanced") }}</span>
@@ -417,7 +417,7 @@ export const GalaxyToggleCard = {
           {{ updating ? tr("Working...") : tr(param.action_label || "Run", param.action_label || "Run") }}
         </button>
 
-        <button v-else-if="isGroup" class="gx-btn gx-btn--tonal" @click="$emit('manage', param.key)">{{ tr("Manage") }}</button>
+        <button v-else-if="isGroup && !manageable" class="gx-btn gx-btn--tonal" @click="$emit('manage', param.key)">{{ tr("Manage") }}</button>
       </div>
       <button v-if="manageable" type="button" class="gx-manage-btn" @click="$emit('manage', param.key)">
         {{ manageOpen ? tr("Close") : tr("Manage") }}

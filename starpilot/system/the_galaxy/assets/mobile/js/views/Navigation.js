@@ -1,6 +1,7 @@
-import { NavigationDestinationPanel } from "../components/NavigationDestinationPanel.js?v=nav-destination-6"
+import { NavigationDestinationPanel } from "../components/NavigationDestinationPanel.js?v=nav-route-prefs-1"
 import { MapsPanel } from "../components/MapsPanel.js?v=offline-download-4"
 import { NavigationKeysPanel } from "../components/NavigationKeysPanel.js"
+import { NavigationSettingsPanel } from "../components/NavigationSettingsPanel.js?v=nav-settings-2"
 import { SpeedLimitsPanel } from "../components/SpeedLimitsPanel.js"
 import { StarpilotAutoOfflinePanel } from "../components/StarpilotAutoOfflinePanel.js?v=offline-layout-8"
 import { GalaxySection } from "../components/GalaxySection.js"
@@ -9,6 +10,7 @@ import { useTabRouting } from "../composables.js"
 
 const TABS = {
   nav: "Destination",
+  settings: "Settings",
   maps: "Offline Maps",
   keys: "App Keys",
   speeds: "Speed Limits",
@@ -17,13 +19,13 @@ const TABS = {
 export const Navigation = {
   name: "Navigation",
   components: {
-    NavigationDestinationPanel, MapsPanel, NavigationKeysPanel, SpeedLimitsPanel, GalaxyTabs,
+    NavigationDestinationPanel, NavigationSettingsPanel, MapsPanel, NavigationKeysPanel, SpeedLimitsPanel, GalaxyTabs,
     StarpilotAutoOfflinePanel, GalaxySection,
   },
   data() { return { TABS } },
   setup() {
     return useTabRouting("/navigation", {
-      nav: "", maps: "maps", keys: "keys", speeds: "speeds",
+      nav: "", settings: "settings", maps: "maps", keys: "keys", speeds: "speeds",
     })
   },
   template: `
@@ -50,6 +52,7 @@ export const Navigation = {
           </GalaxySection>
         </div>
       </template>
+      <template v-if="tab === 'settings'"><NavigationSettingsPanel /></template>
       <template v-if="tab === 'keys'"><NavigationKeysPanel /></template>
       <template v-if="tab === 'speeds'"><SpeedLimitsPanel /></template>
     </div>

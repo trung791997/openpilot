@@ -19,6 +19,7 @@ from opendbc.car.nissan.values import CAR as NISSAN_CAR
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
+from openpilot.starpilot.jetlink_adapter import OWNER as JETLINK_OWNER
 from openpilot.common.gps import get_gps_location_service
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
@@ -666,7 +667,10 @@ class SelfdriveD:
     if self.big_model_active and big_failed:
       self.events.add(EventName.bigModelFailed)
 
-    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
+    # jetlinkd is optional: the small model drives without it, and it waits out a
+    # restart backoff while shouldBeRunning
+    not_running = {p.name for p in self.sm['managerState'].processes
+                   if not p.running and p.shouldBeRunning and p.name != JETLINK_OWNER}
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)

@@ -22,6 +22,8 @@ try {
   await context.route('**/*',async route=>{
    const url=new URL(route.request().url());
    if(url.origin!=='http://galaxy.invalid') return route.abort();
+   // the Jetlink panel's own read; these suites exercise the Galaxy catalogue
+   if(url.pathname==='/api/models/jetlink' && route.request().method()==='GET') return route.fulfill({json:{available:false,models:[],isOnroad:false}});
    if(url.pathname.startsWith('/api/')) {
     if(route.request().method()!=='GET') {
      writes.push({path:url.pathname,body:route.request().postDataJSON()});

@@ -25,6 +25,7 @@ from openpilot.system.hardware import HARDWARE, TICI, AGNOS, PC
 from openpilot.system.loggerd.config import get_available_bytes, get_available_percent, get_used_bytes
 from openpilot.system.statsd import statlog
 from openpilot.common.swaglog import cloudlog
+from openpilot.starpilot import jetlink_adapter
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import TiciFanController
 from openpilot.system.hardware.usb import (
@@ -318,6 +319,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   off_ts: float | None = None
   started_ts: float | None = None
+  accelerator_off_ts: float | None = None
   started_seen = False
   startup_blocked_ts: float | None = None
   thermal_status = ThermalStatus.ok
@@ -452,6 +454,11 @@ def hardware_thread(end_event, hw_queue) -> None:
         set_offroad_alert_if_changed,
       )
 
+    # an enabled accelerator that cannot come up is otherwise silently absent
+    accelerator_error = jetlink_adapter.reason()
+    set_offroad_alert_if_changed("Offroad_AcceleratorUnavailable", accelerator_error is not None,
+                                 extra_text=accelerator_error)
+
     # this subset is only used for offroad
     temp_sources = [
       msg.deviceState.memoryTempC,
@@ -490,6 +497,8 @@ def hardware_thread(end_event, hw_queue) -> None:
     startup_conditions["up_to_date"] = True
     startup_conditions["no_excessive_actuation"] = params.get("Offroad_ExcessiveActuation") is None
     startup_conditions["not_uninstalling"] = not params.get_bool("DoUninstall")
+    # the accelerator was asked to power off with the comma: no drive may start under the power-off that follows
+    startup_conditions["not_powering_off"] = accelerator_off_ts is None
     startup_conditions["accepted_terms"] = params.get("HasAcceptedTerms") == terms_version
 
     # with 2% left, we killall, otherwise the phone will take a long time to boot
@@ -590,12 +599,17 @@ def hardware_thread(end_event, hw_queue) -> None:
     shutdown_reason = power_monitor.shutdown_reason(
       onroad_conditions["ignition"], in_car, off_ts, started_seen, starpilot_toggles,
     )
-    if shutdown_reason is not None:
-      cloudlog.warning(f"shutting device down, reason={shutdown_reason}, offroad since {off_ts}")
-      if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
-        sentry_power_off_notified = True
-        notify_sentry_power_off(shutdown_reason, power_monitor)
-      params.put_bool("DoShutdown", True)
+    if accelerator_off_ts is not None or shutdown_reason is not None:
+      if accelerator_off_ts is None:
+        cloudlog.warning(f"shutting device down, reason={shutdown_reason}, offroad since {off_ts}")
+        if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
+          sentry_power_off_notified = True
+          notify_sentry_power_off(shutdown_reason, power_monitor)
+        # an accelerator on its own supply outlives us: ask it once, and keep publishing while it powers off
+        jetlink_adapter.request_shutdown(f"comma shutting down, reason={shutdown_reason}, offroad since {off_ts}")
+        accelerator_off_ts = time.monotonic()
+      if not jetlink_adapter.shutdown_pending() or time.monotonic() - accelerator_off_ts >= 25.0:
+        params.put_bool("DoShutdown", True)
     else:
       sentry_power_off_notified = False
 

@@ -1661,6 +1661,41 @@ button.gx-chip:hover {
 
 .gx-navigation-route-option.selected { color: var(--primary); }
 
+.gx-navigation-preferences {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.gx-navigation-pref-pill {
+  align-items: center;
+  background: var(--surface-container);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-full);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  transition: all 0.15s ease-in-out;
+}
+
+.gx-navigation-pref-pill:hover,
+.gx-navigation-pref-pill:focus-visible {
+  border-color: var(--primary);
+}
+
+.gx-navigation-pref-pill.active {
+  background: var(--primary-container);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
 .gx-navigation-summary__actions {
   display: flex;
   gap: var(--sp-2);
@@ -1708,6 +1743,33 @@ button.gx-chip:hover {
     padding-top: calc(var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-3));
     padding-bottom: calc(var(--bottomnav-clearance) + 56px);
   }
+
+  .gx-navigation-search { padding: 2px var(--sp-1); }
+  .gx-navigation-search .gx-field { font-size: var(--fs-sm); min-height: 38px; }
+  .gx-navigation-search__row > i { font-size: 1rem; padding-left: var(--sp-2); }
+  .gx-navigation-send { min-height: 36px; min-width: 36px; }
+  .gx-navigation-summary { margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3) var(--sp-3); }
+  .gx-navigation-summary__title { padding: 0; }
+  .gx-navigation-metrics { gap: 6px; padding: 6px 0; }
+  .gx-navigation-metric {
+    gap: 6px;
+    grid-auto-flow: column;
+    justify-content: center;
+    padding: 6px var(--sp-1);
+  }
+  .gx-navigation-metric span { display: none; }
+  .gx-navigation-route-picker { gap: 6px; padding: 2px 0 6px; }
+  .gx-navigation-route-option { min-height: 32px; padding: 0 var(--sp-3); }
+  .gx-navigation-preferences {
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin-bottom: var(--sp-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .gx-navigation-preferences::-webkit-scrollbar { display: none; }
+  .gx-navigation-pref-pill { flex: 0 0 auto; min-height: 30px; padding: 0 var(--sp-3); white-space: nowrap; }
+  .gx-navigation-summary__actions .gx-btn { min-height: 44px; }
 
   .gx-navigation-tabs {
     bottom: var(--bottomnav-clearance);
@@ -2476,7 +2538,9 @@ button.gx-chip:hover {
   .blur-nav { display: flex; }
   .gx-drawer { padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px)); }
   .gx-back-btn { display: inline-flex; }
-  .gx-appbar__search { flex: 1; min-width: 0; }
+  .gx-appbar__search { flex: 1; font-size: var(--fs-xs); height: 32px; min-width: 0; padding: 0 var(--sp-3); }
+  .gx-appbar__pill { gap: var(--sp-1); padding: 4px var(--sp-2); }
+  .gx-appbar__title { font-size: var(--fs-base); }
   .gx-status-pill { display: none; }
   .gx-content { padding-left: var(--sp-3); padding-right: var(--sp-3); }
 }
@@ -2584,3 +2648,20 @@ button.gx-chip:hover {
 .gx-car-diag__outcome--error { color: var(--error, #f85149); }
 .gx-car-diag__report { display: grid; gap: 8px; justify-items: start; padding: 0 var(--sp-3) var(--sp-3); min-width: 0; }
 .gx-car-diag__report pre { margin: 0; width: 100%; max-height: 360px; overflow: auto; padding: 12px; border-radius: 12px; border: 1px solid var(--outline-variant); background: var(--surface-container, rgba(255,255,255,.03)); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Audit polish: icon chips, link buttons, native checkboxes */
+.gx-chip > i { margin-right: 6px; }
+.gx-chip { white-space: nowrap; }
+.gx-section__header .gx-chip { white-space: normal; text-align: center; }
+.gx-tab { flex-shrink: 0; white-space: nowrap; }
+.gx-btn--tonal { white-space: nowrap; }
+input[type="checkbox"] { accent-color: var(--primary); flex: 0 0 auto; height: 18px; width: 18px; }
+@media (max-width: 767px) {
+  .gx-btn--tonal { font-size: var(--fs-sm); min-height: 38px; padding: 0 var(--sp-4); }
+}
+@media (max-width: 767px) {
+  .gx-row--stack { align-items: stretch; flex-direction: column; gap: var(--sp-2); }
+  .gx-section__header { flex-wrap: wrap; }
+  input[type="search"].gx-field { text-overflow: ellipsis; }
+}
+.gx-tabs > button.gx-chip { border: 0; font-family: inherit; line-height: 1.2; min-height: 26px; padding: 3px 10px; }

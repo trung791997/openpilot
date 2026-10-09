@@ -387,6 +387,16 @@ BOSCH_A_VREL_MAX_SAMPLES = 8
 BOSCH_A_REANCHOR_MIN_SPAN_S = 1.5
 BOSCH_A_REANCHOR_WINDOW = 8
 BOSCH_A_REANCHOR_MAX_RMS_M = 1.0
+# D-089 (STATUS 225; replay only, not driven): far-range recovery. RANGE_SIGMA_RAW grows with range (~0.07-0.09 x dRel), so it
+# is >= BOSCH_A_RANGE_SIGMA_DEGRADED_RAW on every sweep beyond ~60 m and a far lead locked out by one D-054 range step could
+# never re-anchor until it came close: 103 s, 22 % of camera-only lead time on 7 routes. For the D-057 window ONLY, range
+# sigma is judged against max(BOSCH_A_RANGE_SIGMA_DEGRADED_RAW, FRAC x dRel); existence and u10 still count, and every other
+# use of the degraded flag is unchanged. Alone this was rejected: the recovered U11 was wrong by 7-8 m/s on 2f2/2a4/2a6, both
+# ways. So a point re-anchored only because of this rule is published with RadarPoint.recovered, and radard uses it only
+# while the camera and its own range slope agree (RECOVERED_CAM_GATE). Without this rule the point would not exist at all,
+# so an unconfirmed recovered point is the old picture. 0.15 is the one value replayed closed-loop (6 routes: 2f5 +34 s
+# radar lead, no extra brake dip; one genuine slowdown 2f5 16:44.5 crossed -1.0 0.6 s later).
+BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC = 0.15
 
 # Staleness gate -- TUNING constant, reused plumbing pattern (not a firmware fact). At the observed
 # ~15 Hz cadence, 0.20 s is approximately three missed sweeps.
@@ -444,6 +454,12 @@ class _BoschATrackState:
   # BOSCH_A_NEWBORN_RANGE_PUBLISH: (time, range) of high-u10 sweeps before the first accepted sample.
   newborn_run: list = field(default_factory=list)
   newborn_vrel: float | None = None  # the vRel the newborn point was last published with
+  # D-089: the anchor came from a re-anchor only the range-scaled sigma window allowed (RadarPoint.recovered). Cleared by
+  # BOSCH_A_REANCHOR_WINDOW consecutive accepted sweeps that are non-degraded by the shipped rule, i.e. the evidence a
+  # shipped D-057 re-anchor would have needed, and by a lifecycle discontinuity.
+  recovered: bool = False
+  strict_clean_count: int = 0
+  rejected_strict_dirty_t: float = -1e9  # last rejected sweep that only the relaxed window called clean
 
 
 def _bosch_a_newborn_vrel(run: list, v_ego: float | None) -> float | None:
@@ -567,8 +583,9 @@ def _bosch_a_range_innovation_rejected(baseline: tuple[float, float], now_s: flo
 
 
 def _bosch_a_measurement_degraded(range_sigma_raw: int, existence_raw: int,
-                                  direct_vrel_uncertainty_raw: int | None) -> bool:
-  range_quality_bad = range_sigma_raw >= BOSCH_A_RANGE_SIGMA_DEGRADED_RAW or existence_raw in (0, 0x7F)
+                                  direct_vrel_uncertainty_raw: int | None,
+                                  range_sigma_limit_raw: float = BOSCH_A_RANGE_SIGMA_DEGRADED_RAW) -> bool:
+  range_quality_bad = range_sigma_raw >= range_sigma_limit_raw or existence_raw in (0, 0x7F)
   velocity_quality_bad = (direct_vrel_uncertainty_raw is not None and
                           direct_vrel_uncertainty_raw > BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW)
   return range_quality_bad or velocity_quality_bad
@@ -926,6 +943,8 @@ class RadarInterface(RadarInterfaceBase):
         track.inconsistent_run.clear()
         track.rejoin_samples = None
         track.rail_hold = False
+        track.recovered = False
+        track.strict_clean_count = 0
         track.nc_vrel = None
         track.nc_vrel_nanos = None
         track.last_trusted_vrel = None
@@ -1042,8 +1061,17 @@ class RadarInterface(RadarInterfaceBase):
 
       if range_rejected:
         track.inconsistent_run.clear()
-        track.rejected_run.append((now_s, dRel, direct_vrel, degraded))
+        # D-089: the window's own degraded flag, with range sigma judged against a range-scaled limit.
+        step_degraded = _bosch_a_measurement_degraded(
+          observation['range_sigma_raw'], observation['existence_raw'], direct_vrel_uncertainty_raw,
+          max(BOSCH_A_RANGE_SIGMA_DEGRADED_RAW, BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC * dRel))
+        track.rejected_run.append((now_s, dRel, direct_vrel, step_degraded))
+        track.strict_clean_count = 0
+        if step_degraded != degraded:
+          track.rejected_strict_dirty_t = now_s
         if _bosch_a_lasting_clean_step(track.rejected_run, exact=exact_gate, counts_per_mps=self.u11_counts_per_mps):
+          window_t0 = track.rejected_run[-BOSCH_A_REANCHOR_WINDOW][0]
+          track.recovered = track.rejected_strict_dirty_t >= window_t0
           rail_admitted = not exact_gate and not _bosch_a_lasting_clean_step(track.rejected_run, exact=True,
                                                                               counts_per_mps=self.u11_counts_per_mps)
           # D-057: the step has outlasted every returning excursion measured, cleanly and at the U11
@@ -1290,6 +1318,10 @@ class RadarInterface(RadarInterfaceBase):
       track.samples.append((now_s, dRel))
       track.range_anchor = (now_s, dRel)
       sample_count = len(track.samples)
+      if track.recovered:
+        track.strict_clean_count = 0 if degraded else track.strict_clean_count + 1
+        if track.strict_clean_count >= BOSCH_A_REANCHOR_WINDOW:
+          track.recovered = False
 
       # Prefer qualified native U11; otherwise the range-ratio field. The raw one-sweep derivative is
       # never published as a measurement -- see the coast/drop branch above, which intercepts before
@@ -1326,6 +1358,7 @@ class RadarInterface(RadarInterfaceBase):
         # The radar's own OBJECT_EXISTENCE_PROBABILITY for this sweep, carried for radard's onpath adoption gate
         # (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE). Informational only here: it gates no point in this file.
         self.pts[track_id].existence = observation['existence_raw'] / 127.0
+        self.pts[track_id].recovered = track.recovered
       else:
         self.pts.pop(track_id, None)
 

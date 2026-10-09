@@ -172,3 +172,38 @@ def test_newborn_kf_untouched_without_flag_or_after_a_measurement():
   for i, d in enumerate(linear(115.0, 90.0, 18)):
     track.update(d, 0.0, -8.0, 11.8, False, measurement_update=False, t_now=100.0 + (i + 1) * DT, newborn_follow=True)
   assert track.vLeadK == pytest.approx(11.8)
+
+
+def _stale_then_measured(gap_s, v_meas=1.9, v_ego=12.5, n_meas=8):
+  # 000002f7 21:31 track 15 style: 2 s of unmeasured range at -5 m/s (seed vEgo - 5 = 7.5), then unmeasured for gap_s
+  # past the follow window, then measured sweeps at v_meas.
+  n = int(radard.YOUNG_TRACK_MAX_AGE_S / DT) + 1
+  track = _newborn(linear(72.7, 72.7 - 5.0 * (n - 1) * DT, n), -12.0, v_ego=v_ego)
+  t, d = 100.0 + (n - 1) * DT, 72.7 - 5.0 * (n - 1) * DT
+  assert track.vLeadK == pytest.approx(v_ego - 5.0, abs=0.05)
+  t += gap_s
+  aleadk = []
+  for _ in range(n_meas):
+    t += DT
+    d -= (v_ego - v_meas) * DT
+    track.update(d, 0.0, v_meas - v_ego, v_meas, True, measurement_update=True, t_now=t)
+    aleadk.append(track.aLeadK)
+  return track, aleadk
+
+
+def test_stale_newborn_seed_is_dropped_on_the_first_measurement():
+  track, aleadk = _stale_then_measured(gap_s=2.3)
+  assert track.vLeadK == pytest.approx(1.9, abs=0.05)
+  assert min(aleadk) > -0.5
+
+
+def test_fresh_newborn_seed_is_kept():
+  # Measured within NEWBORN_KF_STALE_SEED_S of the last follow seed: the KF takes over from the follow state as before.
+  track, aleadk = _stale_then_measured(gap_s=0.0)
+  assert min(aleadk) < -2.0
+
+
+def test_negative_control_stale_reseed_off_reproduces_the_fake_decel(monkeypatch):
+  monkeypatch.setattr(radard, "NEWBORN_KF_STALE_RESEED", False)
+  _, aleadk = _stale_then_measured(gap_s=2.3)
+  assert min(aleadk) < -4.0

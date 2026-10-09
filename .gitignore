@@ -140,3 +140,6 @@ Pipfile
 
 # per-session compact checkpoints (see CLAUDE.md); never committed
 .claude/compact-state*.md
+
+# jetlink warp JITs are committed: this branch runs prebuilt, so the
+# SConscript that builds them never runs on the device

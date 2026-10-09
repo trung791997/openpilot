@@ -478,6 +478,15 @@ def _elapsed_text(seconds: float) -> str:
   return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def valid_coordinate(latitude: float, longitude: float) -> bool:
+  """False for NaN, out-of-range and the (0, 0) "no fix / unset" point, which fits a map to the Gulf of Guinea."""
+  if not (math.isfinite(latitude) and math.isfinite(longitude)):
+    return False
+  if abs(latitude) > 90.0 or abs(longitude) > 180.0:
+    return False
+  return abs(latitude) > 1e-4 or abs(longitude) > 1e-4
+
+
 class GpsAcquisition:
   """Satellites the receiver is tracking while it has no fix, for the map's progress bar.
 
@@ -1036,15 +1045,15 @@ class NavMapView(Widget):
 
     if self._preview_active:
       pieces = [route for route in self._preview_routes if len(route)]
-      if self._preview_destination is not None:
+      if self._preview_destination is not None and valid_coordinate(*self._preview_destination):
         pieces.append(np.array([world_xy(*self._preview_destination)]))
-      if car is not None:
+      if car is not None and self._gps is not None and self._gps.fresh and valid_coordinate(self._gps.latitude, self._gps.longitude):
         pieces.append(np.array([car]))
       if pieces:
         points = np.concatenate(pieces)
         min_x, min_y = points.min(axis=0)
         max_x, max_y = points.max(axis=0)
-        pad = 90.0
+        pad = 56.0
         span_x, span_y = max(max_x - min_x, 1e-7), max(max_y - min_y, 1e-7)
         fit = min((rect.width - 2 * pad) / (span_x * tile_scale), (rect.height - 2 * pad) / (span_y * tile_scale))
         zoom = max(3.0, min(PREVIEW_MAX_ZOOM, math.log2(max(fit, 1e-9))))

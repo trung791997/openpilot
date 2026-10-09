@@ -490,6 +490,45 @@ def test_navigation_api_accepts_destination_with_secret_key(monkeypatch):
   assert json.loads(fake_params.get("NavDestination"))["name"] == "Work"
 
 
+def test_navigation_api_returns_and_updates_route_preferences(monkeypatch):
+  client, fake_params = _params_client(monkeypatch, {"MapboxSecretKey": "secret"}, "tici")
+
+  # GET returns default preferences
+  get_res = client.get("/api/navigation")
+  assert get_res.status_code == 200
+  data = get_res.get_json()
+  assert data["routePreferences"] == {
+    "avoid_tolls": False,
+    "avoid_highways": False,
+    "avoid_ferries": False,
+    "prefer_eco": False,
+  }
+
+  # POST /api/navigation/preferences updates preferences
+  post_pref_res = client.post("/api/navigation/preferences", json={
+    "avoid_tolls": True,
+    "prefer_eco": True,
+  })
+  assert post_pref_res.status_code == 200
+  pref_data = post_pref_res.get_json()["routePreferences"]
+  assert pref_data["avoid_tolls"] is True
+  assert pref_data["prefer_eco"] is True
+  assert pref_data["avoid_highways"] is False
+
+  # Submitting destination can also pass preferences and updates persistent store
+  dest_res = client.post("/api/navigation", json={
+    "name": "Work",
+    "latitude": 41.0,
+    "longitude": -87.0,
+    "avoid_highways": True,
+  })
+  assert dest_res.status_code == 200
+  dest_payload = json.loads(fake_params.get("NavDestination"))
+  assert dest_payload["avoid_highways"] is True
+  assert dest_payload["avoid_tolls"] is True
+  assert dest_payload["prefer_eco"] is True
+
+
 def test_save_longitudinal_maneuver_status_writes_json_param_as_dict(monkeypatch):
   fake_params = WritableFakeParams()
   monkeypatch.setattr(the_galaxy, "params", fake_params)

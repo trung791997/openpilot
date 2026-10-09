@@ -2,8 +2,8 @@
 #
 # The first drive seen with the toggle on is the anchor, stored as an xattr on the log root. Every rlog from the
 # anchor route onward goes up oldest first, so an unfinished previous drive completes before the one in progress.
-# Routes older than the anchor (the backlog from before the toggle was on) are never sent. Turning the toggle off
-# clears the anchor, so turning it back on starts again at the drive in progress.
+# Routes older than the anchor (the backlog from before rlogs were first sent) are never sent. With UploadRlogs off
+# the rlogs still go up while the device is parked, so the anchor is kept and a drive's rlogs finish after parking.
 #
 # Kept free of uploader imports (Api, cereal) so hardwared can use it without an import cycle. Upload marks are
 # read uncached here because the uploader sets them from another process.

@@ -111,6 +111,7 @@ function handleRouteEvents(map, clickLayerId, onRouteSelect, routes, useMetric, 
       <div class="tooltip-row"><span class="emoji">🛣️</span><span class="label">Distance:</span><span class="value">${distance}</span></div>
       <div class="tooltip-row"><span class="emoji">⌛</span><span class="label">Duration:</span><span class="value">${duration}</span></div>
       <div class="tooltip-row"><span class="emoji">🕗</span><span class="label">ETA:</span><span class="value">${eta}</span></div>
+      ${props.isEco ? `<div class="tooltip-row"><span class="emoji">🌿</span><span class="label">Eco Route</span><span class="value">${props.ecoSavingsPct > 0 ? `Saves ${props.ecoSavingsPct}% fuel` : ""}</span></div>` : ""}
     `;
     new mapboxgl.Popup({ closeButton: false, closeOnClick: true, className: 'route-tooltip', maxWidth: 'none' })
       .setLngLat(e.lngLat)
@@ -148,7 +149,9 @@ export function addRouteToMap(map, routes, start, dest, onRouteSelect, useMetric
         congestion: route.legs[0].annotation.congestion,
         routeId,
         duration: route.duration,
-        distance: route.distance
+        distance: route.distance,
+        isEco: Boolean(route.isEco),
+        ecoSavingsPct: Number(route.ecoSavingsPct) || 0
       }
     };
     addRouteSource(map, sourceId, feature);
@@ -171,7 +174,13 @@ export function addRouteToMap(map, routes, start, dest, onRouteSelect, useMetric
 
 
   const padding = window.innerWidth < 600 ? 100 : 250;
-  map.fitBounds([start, dest], { padding, duration: 1000 });
+  const isRealPoint = (p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]) &&
+    Math.abs(p[0]) <= 180 && Math.abs(p[1]) <= 90 && (Math.abs(p[0]) > 1e-4 || Math.abs(p[1]) > 1e-4);
+  if (isRealPoint(start) && isRealPoint(dest)) {
+    map.fitBounds([start, dest], { padding, duration: 1000 });
+  } else if (isRealPoint(dest)) {
+    map.flyTo({ center: dest, zoom: 14, duration: 1000 });
+  }
 }
 
 export async function getCoordinatesFromSearch(searchValue, mapboxPublic, searchContext = {}) {
@@ -184,11 +193,60 @@ export async function getCoordinatesFromSearch(searchValue, mapboxPublic, search
   return data.features?.[0]?.geometry?.coordinates;
 }
 
-export async function getRoutes(from, to, mapboxPublic) {
-  const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${from};${to}?geometries=geojson&annotations=congestion&overview=full&alternatives=true&access_token=${mapboxPublic}`;
+export async function getRoutes(from, to, mapboxPublic, options = {}) {
+  let url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${from};${to}?geometries=geojson&annotations=congestion&overview=full&alternatives=true&steps=true&access_token=${mapboxPublic}`;
+  if (options?.exclude) {
+    url += `&exclude=${encodeURIComponent(options.exclude)}`;
+  }
   const response = await fetch(url);
   const data = await response.json();
   return data.routes;
+}
+
+// Mirrors NavigationRoute.calculate_eco_cost in starpilot/navigation/route_engine.py exactly
+// (same per-step formula over legs[0].steps, same whole-route fallback) so Galaxy's eco pick
+// matches the route the comma drives.
+export function ecoRouteCost(route) {
+  const ecoTerm = (distance, speed) => (distance / 1000.0) * (1.0 + 0.8 * Math.max(0.0, (speed - 15.0) / 10.0) ** 2);
+  let total = 0.0;
+  for (const step of route?.legs?.[0]?.steps || []) {
+    const distance = Number(step.distance) || 0;
+    const duration = Math.max(1.0, Number(step.duration) || 0);
+    const speed = distance / duration;
+    let cost = ecoTerm(distance, speed);
+    if (speed < 4.0 && distance > 0) {
+      cost += (duration / 60.0) * 0.4;
+    }
+    total += cost;
+  }
+  const routeDistance = Number(route?.distance) || 0;
+  if (total === 0.0 && routeDistance > 0.0) {
+    total = ecoTerm(routeDistance, routeDistance / Math.max(1.0, Number(route?.duration) || 0));
+  }
+  return total;
+}
+
+// Like MapboxRouteEngine.fetch_routes with prefer_eco: only the best-eco route moves to index 0
+// (first minimum wins), the rest keep Mapbox order, savings are vs Mapbox's original first route.
+export function rankEcoRoutes(routes) {
+  if (!routes || routes.length <= 1) return routes;
+  const costs = routes.map(ecoRouteCost);
+  let best = 0;
+  for (let i = 1; i < costs.length; i++) {
+    if (costs[i] < costs[best]) best = i;
+  }
+  const baseline = costs[0];
+  const savingsPct = baseline > 0.0 ? Math.max(0.0, (baseline - costs[best]) / baseline * 100.0) : 0.0;
+  const ranked = routes.map((route, i) => ({
+    ...route,
+    isEco: i === best,
+    ecoSavingsPct: i === best ? Math.round(savingsPct) : 0,
+  }));
+  if (best !== 0) {
+    const [eco] = ranked.splice(best, 1);
+    ranked.unshift(eco);
+  }
+  return ranked;
 }
 
 function buildGradientExpression(coords, congestion) {

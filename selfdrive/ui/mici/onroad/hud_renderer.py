@@ -7,6 +7,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.starpilot.rivian_lateral_mode import rivian_lateral_mode
 from openpilot.selfdrive.ui.mici.onroad.speed_limit_utils import resolve_display_speed_limit_ms
 from openpilot.selfdrive.ui.lib.speed_limit_pulse import SpeedLimitPulse
+from openpilot.selfdrive.ui.onroad.starpilot.nav_lane_prompt import NavLaneMovePromptRenderer
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_tint
@@ -174,6 +175,7 @@ class HudRenderer(Widget):
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
     self._navigation_card = NavigationCardRenderer("mici")
+    self._nav_lane_prompt = NavLaneMovePromptRenderer(self._navigation_card)
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
@@ -322,6 +324,7 @@ class HudRenderer(Widget):
     """Draw HUD elements that should sit behind alerts."""
     self._draw_speed_limit(self._rect)
     self._navigation_card.render(self._rect)
+    self._nav_lane_prompt.render(self._rect)
 
   def render_foreground(self) -> None:
     """Draw HUD elements that should sit above alerts."""

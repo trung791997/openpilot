@@ -359,7 +359,7 @@ export const Recordings = {
           <span class="gx-section__count">{{ stats.count }} drives · {{ stats.formattedDuration }}</span>
         </div>
         <div style="padding: var(--sp-3); display:flex; gap:8px; flex-wrap:wrap;">
-          <input class="gx-field" style="flex:1; min-width:160px;" type="search" placeholder="Search routes, dates, or IDs..." v-model="searchQuery" />
+          <input class="gx-field" style="flex:1; min-width:160px;" type="search" placeholder="Search drives" v-model="searchQuery" />
           <GalaxySelect class="gx-field" v-model="sortOrder">
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>

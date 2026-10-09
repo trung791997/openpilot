@@ -65,6 +65,11 @@ RECORD_SPEED = int(os.getenv("RECORD_SPEED", "1"))  # Speed multiplier
 OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offline rendering
 
 
+# mici has no vsync and raylib is uncapped there, so the UI otherwise redraws as fast as it can at RT priority.
+UI_FRAME_STATS_INTERVAL = 30.0  # seconds between ui_frame_stats swaglog lines
+MICI_FRAME_CAP_FPS = int(os.getenv("MICI_FRAME_CAP_FPS", "30"))
+
+
 def _raylib_target_fps(fps: int) -> int:
   return 0 if OFFSCREEN or (DEVICE_TYPE == "mici" and not PC) else fps
 
@@ -583,6 +588,10 @@ class GuiApplication:
     self._burn_in_start_time = time.monotonic()
     self._frame = 0
     self.frame_timing = FrameTiming()
+    self._timing_sum = [0.0] * 5
+    self._timing_max_frame_ms = 0.0
+    self._timing_frames = 0
+    self._timing_log_time = time.monotonic()
     self._window_close_requested = False
     self._nav_stack: list[object] = []
     self._nav_stack_ticks: list[Callable[[], None]] = []
@@ -1796,6 +1805,10 @@ class GuiApplication:
         )
         self._monitor_fps()
         self._frame += 1
+        if MICI_FRAME_CAP_FPS > 0 and DEVICE_TYPE == "mici" and not PC and not OFFSCREEN and not RECORD:
+          remaining = frame_start + 1 / MICI_FRAME_CAP_FPS - time.monotonic()
+          if remaining > 0:
+            time.sleep(remaining)
         self._mark_progress("gui_app.loop_idle")
 
         if self._profile_render_frames > 0 and self._frame >= self._profile_render_frames:
@@ -1924,7 +1937,25 @@ class GuiApplication:
     self._trace_log_callback = trace_log_callback
     rl.set_trace_log_callback(self._trace_log_callback)
 
+  def _log_frame_stats(self):
+    timing = self.frame_timing
+    for i, v in enumerate(timing):
+      self._timing_sum[i] += v
+    self._timing_max_frame_ms = max(self._timing_max_frame_ms, timing.frame_ms)
+    self._timing_frames += 1
+    now = time.monotonic()
+    if now - self._timing_log_time >= UI_FRAME_STATS_INTERVAL:
+      n = self._timing_frames
+      avg = [v / n for v in self._timing_sum]
+      cloudlog.info(f"ui_frame_stats fps={n / (now - self._timing_log_time):.1f} frame={avg[0]:.1f}ms cpu={avg[1]:.1f}ms " +
+                    f"draw={avg[2]:.1f}ms update={avg[3]:.1f}ms present={avg[4]:.1f}ms max_frame={self._timing_max_frame_ms:.1f}ms")
+      self._timing_sum = [0.0] * 5
+      self._timing_max_frame_ms = 0.0
+      self._timing_frames = 0
+      self._timing_log_time = now
+
   def _monitor_fps(self):
+    self._log_frame_stats()
     fps = rl.get_fps()
 
     # Log FPS drop below threshold at regular intervals

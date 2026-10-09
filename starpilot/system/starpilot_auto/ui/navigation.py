@@ -10,6 +10,7 @@ place is picked, which is how Mapbox bills them.
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -20,6 +21,7 @@ import pyray as rl
 
 from openpilot.starpilot.system.starpilot_auto.ui.settings_panels.starpilot.aethergrid import (
   AetherListColors,
+  draw_action_pill,
   draw_empty_state_card,
   draw_section_header,
   draw_selection_list_row,
@@ -37,13 +39,21 @@ from openpilot.starpilot.system.starpilot_auto.ui.settings_panels.starpilot.navi
   SearchResult,
   StarPilotNavigationLayout,
 )
+from openpilot.starpilot.navigation.destination_store import (
+  load_route_preferences,
+  save_route_preferences,
+)
 from openpilot.starpilot.system.starpilot_auto.ui.nav_map import NavMapView
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import _format_distance
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.starpilot.navigation.route_engine import Coordinate, MapboxRouteEngine, NavigationRoute
+from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 NAV_ROUTE_ROW_HEIGHT = 104.0
+NAV_PREF_BUTTON_HEIGHT = 62.0
+NAV_PREF_GAP = 12.0
 NAV_MAP_MIN_WIDTH = 1100.0  # below this the page is list-only
 NAV_MAP_FRACTION = 0.5
 SEARCH_DEBOUNCE_SECONDS = 0.35  # after the last key, before asking Mapbox
@@ -87,12 +97,38 @@ class LiveSearchClient(MapboxSearchClient):
     return super().search(query, public_token, session_token, proximity=proximity, language=language, limit=limit)
 
 
+LEAF_GREEN = rl.Color(76, 201, 106, 255)
+LEAF_VEIN = rl.Color(24, 110, 52, 255)
+
+
+def draw_leaf(cx: float, cy: float, size: float, alpha: int = 255) -> None:
+  """A green leaf centred on (cx, cy), `size` pixels tall; drawn as shapes because the UI font has no leaf glyph."""
+  half = size / 2.0
+  steps = 12
+  ang = -math.pi / 4.0
+  ca, sa = math.cos(ang), math.sin(ang)
+
+  def at(u: float, v: float) -> rl.Vector2:
+    # u along the leaf (-1 base .. 1 tip), v across it; rotated so the tip points up and to the right
+    x, y = u * half, v * half
+    return rl.Vector2(cx + x * ca - y * sa, cy + x * sa + y * ca)
+
+  outline = [at(-1 + 2 * i / steps, 0.55 * math.sin(math.pi * i / steps) ** 0.9) for i in range(steps + 1)]
+  outline += [at(1 - 2 * i / steps, -0.55 * math.sin(math.pi * i / steps) ** 0.9) for i in range(1, steps)]
+  fan = [at(0.0, 0.0)] + outline + [outline[0]]
+  green = rl.Color(LEAF_GREEN.r, LEAF_GREEN.g, LEAF_GREEN.b, alpha)
+  vein = rl.Color(LEAF_VEIN.r, LEAF_VEIN.g, LEAF_VEIN.b, alpha)
+  rl.draw_triangle_fan(fan, len(fan), green)
+  rl.draw_line_ex(at(-1.25, 0.0), at(0.7, 0.0), max(1.5, size / 12.0), vein)
+
+
 class CarNavigationLayout(StarPilotNavigationLayout):
   """``on_started`` runs after a route starts. Offline maps have their own page (offline_maps.py)."""
 
   def __init__(self, on_started=None):
     super().__init__()
     self._on_started = on_started
+    self._route_prefs = load_route_preferences(self._params)
     self._search_client = LiveSearchClient()
     from openpilot.starpilot.navigation.mapbox_usage import shared_usage
     self._route_engine = MapboxRouteEngine(usage=shared_usage())
@@ -107,6 +143,8 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     self._search_due: float | None = None
 
   def show_event(self):
+    # Galaxy may have changed the shared preferences while this page was hidden.
+    self._route_prefs = load_route_preferences(self._params)
     self._clear_route_preview()
     self._live_query = ""
     self._search_due = None
@@ -177,6 +215,8 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     # A place was picked: the Search Box session ends, and the next search starts a new one.
     self._session_token = str(uuid.uuid4())
     if self._draft_destination is not None:
+      for k, v in self._route_prefs.items():
+        self._draft_destination[k] = v
       self._fetch_route_preview(self._draft_destination)
 
   def _clear_route_preview(self):
@@ -206,6 +246,8 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     self._routes_loading = True
     start = Coordinate(position[1], position[0])
     target = dict(destination)
+    for k, v in self._route_prefs.items():
+      target[k] = v
 
     def worker():
       try:
@@ -217,8 +259,11 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     threading.Thread(target=worker, daemon=True, name="navigation-route-preview").start()
 
   def _start_navigation(self):
-    if self._draft_destination is not None and self._preview_routes:
-      self._draft_destination["routeId"] = "main" if self._preview_route_index == 0 else f"alt-{self._preview_route_index}"
+    if self._draft_destination is not None:
+      for k, v in self._route_prefs.items():
+        self._draft_destination[k] = v
+      if self._preview_routes:
+        self._draft_destination["routeId"] = "main" if self._preview_route_index == 0 else f"alt-{self._preview_route_index}"
     had_draft = self._draft_destination is not None
     super()._start_navigation()
     if had_draft and self._draft_destination is None:  # the route was accepted
@@ -231,6 +276,24 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     self._clear_route_preview()
 
   def _activate_navigation_target(self, target_id: str | None):
+    if target_id and target_id.startswith("action:pref:"):
+      key = target_id.split(":", 2)[2]
+      pref_map = {
+        "tolls": "avoid_tolls",
+        "highways": "avoid_highways",
+        "ferries": "avoid_ferries",
+        "eco": "prefer_eco",
+      }
+      if key in pref_map:
+        attr = pref_map[key]
+        # Toggle against freshly loaded preferences so a change made in Galaxy isn't overwritten.
+        self._route_prefs = load_route_preferences(self._params)
+        self._route_prefs[attr] = not self._route_prefs.get(attr, False)
+        save_route_preferences(self._route_prefs, self._params)
+        if self._draft_destination is not None:
+          self._draft_destination[attr] = self._route_prefs[attr]
+          self._fetch_route_preview(self._draft_destination)
+      return
     if target_id and target_id.startswith("route:"):
       try:
         index = int(target_id.split(":", 1)[1])
@@ -276,17 +339,74 @@ class CarNavigationLayout(StarPilotNavigationLayout):
       row_separator=PANEL_STYLE.divider_color,
     )
 
+  def _preferences_definitions(self) -> list[tuple[str, str, bool]]:
+    return [
+      ("action:pref:tolls", tr("Avoid Tolls"), bool(self._route_prefs.get("avoid_tolls", False))),
+      ("action:pref:highways", tr("Avoid Highways"), bool(self._route_prefs.get("avoid_highways", False))),
+      ("action:pref:ferries", tr("Avoid Ferries"), bool(self._route_prefs.get("avoid_ferries", False))),
+      ("action:pref:eco", tr("Fuel-Efficient"), bool(self._route_prefs.get("prefer_eco", False))),
+    ]
+
+  def _preferences_section_height(self) -> float:
+    if self._draft_destination is None:
+      return 0.0
+    return NAV_SECTION_HEIGHT + 2 * NAV_PREF_BUTTON_HEIGHT + NAV_PREF_GAP + NAV_GAP
+
+  def _draw_preferences_section(self, x: float, y: float, width: float, manager: NavigationManagerView) -> float:
+    if self._draft_destination is None:
+      return 0.0
+    draw_section_header(
+      rl.Rectangle(x, y, width, NAV_SECTION_HEIGHT),
+      tr("Route Preferences"),
+      title_size=30,
+      style=PANEL_STYLE,
+    )
+    row_y = y + NAV_SECTION_HEIGHT
+    defs = self._preferences_definitions()
+    cols = 2
+    button_w = (width - NAV_PREF_GAP) / cols
+    for idx, (target_id, label, active) in enumerate(defs):
+      col = idx % cols
+      row = idx // cols
+      rect = rl.Rectangle(
+        x + col * (button_w + NAV_PREF_GAP),
+        row_y + row * (NAV_PREF_BUTTON_HEIGHT + NAV_PREF_GAP),
+        button_w,
+        NAV_PREF_BUTTON_HEIGHT,
+      )
+      hovered, pressed = manager._interactive_state(target_id, rect, pad_y=4)
+      if active:
+        fill = with_alpha(AetherListColors.SUCCESS, 52 if (hovered or pressed) else 36)
+        border = with_alpha(AetherListColors.SUCCESS, 130)
+        text_color = AetherListColors.HEADER
+      else:
+        fill = with_alpha(AetherListColors.PRIMARY, 28 if (hovered or pressed) else 14)
+        border = with_alpha(PANEL_STYLE.surface_border, 40 if (hovered or pressed) else 18)
+        text_color = AetherListColors.MUTED
+      draw_action_pill(rect, label, fill, border, text_color, font_size=22)
+      if target_id == "action:pref:eco":
+        label_w = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), label, 22).x
+        draw_leaf(rect.x + (rect.width - label_w) / 2 - 18, rect.y + rect.height / 2, 24, 255 if active else 150)
+
+    return NAV_SECTION_HEIGHT + 2 * NAV_PREF_BUTTON_HEIGHT + NAV_PREF_GAP + NAV_GAP
+
   def _draw_action_buttons(self, x: float, y: float, width: float, manager: NavigationManagerView) -> float:
-    # The route choices sit between the summary row and the action buttons.
-    routes_height = self._draw_route_section(x, y, width, manager)
-    action_height = super()._draw_action_buttons(x, y + routes_height, width, manager)
+    # Preferences bar sits right above the route choices
+    prefs_height = self._draw_preferences_section(x, y, width, manager)
+    offset_y = y + prefs_height
+    routes_height = self._draw_route_section(x, offset_y, width, manager)
+    offset_y += routes_height
+    action_height = super()._draw_action_buttons(x, offset_y, width, manager)
     if action_height > 0:
-      return routes_height + action_height
-    return max(0.0, routes_height - NAV_GAP)
+      return prefs_height + routes_height + action_height
+    return max(0.0, prefs_height + routes_height - NAV_GAP)
 
   def _measure_navigation_content_height(self, content_width: float) -> float:
     height = super()._measure_navigation_content_height(content_width)
-    if self._draft_destination is not None or self._active_destination is not None:
+    if self._draft_destination is not None:
+      height += self._preferences_section_height()
+      height += self._route_section_height()
+    elif self._active_destination is not None:
       height += self._route_section_height()
     if not self._search_results and not self._favorites and not self._recent_destinations and not self._search_loading and not self._search_error:
       height += NAV_GAP
@@ -311,9 +431,14 @@ class CarNavigationLayout(StarPilotNavigationLayout):
     rows = []
     fastest = min((route.total_duration for route in self._preview_routes), default=0.0)
     for index, route in enumerate(self._preview_routes):
-      title = tr("Recommended route") if index == 0 else tr("Alternative {}").format(index)
+      if route.is_eco_recommended:
+        title = tr("Eco route") if index == 0 else tr("Alternative {} (Eco)").format(index)
+      else:
+        title = tr("Recommended route") if index == 0 else tr("Alternative {}").format(index)
       subtitle = f"{self._duration_text(route.total_duration)}  •  {_format_distance(route.total_distance, ui_state.is_metric)}"
-      if index > 0 and route.total_duration > fastest + 30:
+      if route.is_eco_recommended and route.eco_savings_pct >= 1.0:
+        subtitle += "  •  " + tr("Saves {:.0f}% fuel").format(route.eco_savings_pct)
+      elif index > 0 and route.total_duration > fastest + 30:
         subtitle += "  •  " + tr("+{} slower").format(self._duration_text(route.total_duration - fastest))
       rows.append((f"route:{index}", title, subtitle))
     return rows
@@ -377,5 +502,9 @@ class CarNavigationLayout(StarPilotNavigationLayout):
         current_border=AetherListColors.CURRENT_BORDER,
         row_separator=PANEL_STYLE.divider_color,
       )
+      if self._preview_routes[index].is_eco_recommended:
+        title_w = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), title, 30).x
+        title_y = row_y + 16 + (NAV_ROUTE_ROW_HEIGHT - 32 - (30 + 22 + 8)) / 2
+        draw_leaf(row_rect.x + 24 + title_w + 22, title_y + 15, 28)
       row_y += NAV_ROUTE_ROW_HEIGHT
     return NAV_SECTION_HEIGHT + len(rows) * NAV_ROUTE_ROW_HEIGHT + NAV_GAP

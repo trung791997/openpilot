@@ -15,6 +15,7 @@ from opendbc.car.honda.carcontroller import (
   CarController,
   get_eps_modified_steering_pressed,
   get_honda_bosch_wind_brake_mps2,
+  honda_bosch_lead_coast,
   update_honda_bosch_braking,
   update_honda_bosch_live_learning,
 )
@@ -86,6 +87,21 @@ class TestHondaFingerprint:
 
     assert values["GAS_COMMAND"] == -30000
 
+  def test_bosch_lead_coast_is_gas_off_without_brake_request(self):
+    # D-091: a -0.33 coast target used to cross BOSCH_BRAKE_FORCE_ON and go out with BRAKE_REQUEST and brake lights
+    assert update_honda_bosch_braking(False, -0.33, False, True)
+    assert honda_bosch_lead_coast(True, -0.33, False, True)
+    values = self._acc_control_values(True, -0.33, gas=0, gas_force=CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], braking=False)
+    assert values["GAS_COMMAND"] == -30000
+    assert values["BRAKE_REQUEST"] == 0
+    assert values["BRAKE_LIGHTS"] == 0
+    assert values["ACCEL_COMMAND"] == pytest.approx(-0.33)
+
+  @pytest.mark.parametrize("coast,accel,stopping,active", [
+    (False, -0.33, False, True), (True, -0.9, False, True), (True, -0.33, True, False), (True, -0.33, True, True), (True, 0.3, False, True)])
+  def test_bosch_lead_coast_never_replaces_a_real_brake(self, coast, accel, stopping, active):
+    assert not honda_bosch_lead_coast(coast, accel, stopping, active)
+
   def test_bosch_braking_uses_force_hysteresis(self):
     braking = update_honda_bosch_braking(False, BOSCH_BRAKE_FORCE_ON - 0.01, False, True)
     assert braking
@@ -99,6 +115,31 @@ class TestHondaFingerprint:
   def test_bosch_braking_preserves_stopping_and_resets_inactive(self):
     assert update_honda_bosch_braking(False, 0.5, True, True)
     assert not update_honda_bosch_braking(True, -1.0, False, False)
+
+  def test_bosch_braking_positive_target_on_a_descent_does_not_brake(self):
+    # D-093, route 00000308 6:07.5: target +0.15 on a 3.7 % descent, force -0.12 after the hill term
+    assert update_honda_bosch_braking(False, -0.15, False, True)
+    assert not update_honda_bosch_braking(False, -0.15, False, True, accel=0.15)
+    assert not update_honda_bosch_braking(False, -0.5, False, True, accel=cc_mod.BOSCH_HILL_BRAKE_MAX_ACCEL + 0.01)
+
+  @pytest.mark.parametrize("accel", [0.0, -0.1, -0.5, -2.0])
+  def test_bosch_braking_zero_or_negative_target_brakes_as_before(self, accel):
+    for force in (BOSCH_BRAKE_FORCE_ON - 0.01, -1.0, -3.0):
+      assert update_honda_bosch_braking(False, force, False, True, accel=accel) == update_honda_bosch_braking(False, force, False, True)
+    assert update_honda_bosch_braking(True, -0.05, False, True, accel=accel)
+
+  def test_bosch_braking_releases_once_target_rises_past_margin(self):
+    braking = update_honda_bosch_braking(False, -0.3, False, True, accel=-0.05)
+    assert braking
+    assert update_honda_bosch_braking(braking, -0.3, False, True, accel=0.05)  # inside the margin: no flip
+    assert not update_honda_bosch_braking(braking, -0.3, False, True, accel=cc_mod.BOSCH_HILL_BRAKE_RELEASE_ACCEL + 0.01)
+
+  def test_bosch_braking_stopping_ignores_the_guard(self):
+    assert update_honda_bosch_braking(False, 0.5, True, True, accel=0.3)
+
+  def test_bosch_braking_guard_switch_off_restores_old_rule(self, monkeypatch):
+    monkeypatch.setattr(cc_mod, "BOSCH_HILL_BRAKE_GUARD", False)
+    assert update_honda_bosch_braking(False, -0.15, False, True, accel=0.15)
 
   def test_honda_lkas_hud_shows_lane_lines_when_lateral_only_is_active(self):
     class FakePacker:

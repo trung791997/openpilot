@@ -4814,6 +4814,54 @@ def test_onpath_lead_never_adds_acceleration():
   assert all(b <= h + 1e-9 for b, h in zip(bounded, head, strict=True))
 
 
+@pytest.mark.parametrize("own,bounded,prev", [
+  (0.48, -1.0, 0.48), (-0.3, -1.0, -0.3), (-0.3, -1.0, -0.9), (-1.6, -1.6, -1.0), (0.5, 0.5, 0.5),
+  (-0.2, -1.0, 0.6), (-0.6, -1.0, -1.0), (-0.5, -0.7, -0.6),
+])
+def test_onpath_onset_limit_only_slows_the_onpath_share(own, bounded, prev):
+  dt = 0.05
+  step = longitudinal_planner_module.ONPATH_LEAD_ONSET_JERK * dt
+  out = longitudinal_planner_module.onpath_onset_limited_target(own, bounded, prev, dt)
+  assert bounded - 1e-12 <= out <= own + 1e-12        # never past the bound, never above this planner's own target
+  assert out >= min(own, prev - step) - 1e-12        # the on-path share falls no faster than the jerk
+  if bounded >= own:
+    assert out == pytest.approx(bounded)             # no on-path share: unchanged
+  saved = longitudinal_planner_module.ONPATH_LEAD_ONSET_LIMIT
+  longitudinal_planner_module.ONPATH_LEAD_ONSET_LIMIT = False
+  try:
+    assert longitudinal_planner_module.onpath_onset_limited_target(own, bounded, prev, dt) == pytest.approx(bounded)
+  finally:
+    longitudinal_planner_module.ONPATH_LEAD_ONSET_LIMIT = saved
+
+
+def test_onpath_lead_two_cycle_blip_is_not_a_full_cap_brake():
+  # 00000308--2d74665430 4:09.1: leadOnpath for two cycles, then withdrawn; it stepped the target to -1.00 at once
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.longitudinalActuatorDelay = 0.5
+  planner = LongitudinalPlanner(CP, init_v=17.7)
+  free = make_sm(17.7, 0.0, -3.5, experimental_mode=False, tracking_lead=False)
+  free["radarState"].leadOnpath = make_lead(status=False)
+  for _ in range(20):
+    planner.update(free, make_toggles())
+  before = float(planner.output_a_target)
+  blip = _onpath_sm(17.7, onpath=make_lead(status=True, d_rel=24.0, v_lead=11.7, radar=True, model_prob=0.0))
+  out = []
+  for _ in range(2):
+    planner.update(blip, make_toggles())
+    out.append(float(planner.output_a_target))
+  step = longitudinal_planner_module.ONPATH_LEAD_ONSET_JERK * planner.dt
+  assert min(out) >= min(before, 0.0) - 2 * step - 1e-6
+  assert min(out) > -longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE + 0.5
+
+
+def test_onpath_lead_still_reaches_the_cap_when_it_persists():
+  cap = longitudinal_planner_module.ONPATH_LEAD_MAX_BRAKE
+  bounded, _ = _run(_onpath_sm(13.4, onpath=_stopped_car()), frames=20)
+  first = next(i for i, b in enumerate(bounded) if b <= -cap + 1e-6)
+  assert first * 0.05 <= (cap + 0.5) / longitudinal_planner_module.ONPATH_LEAD_ONSET_JERK + 0.05
+  assert all(b2 <= b1 + 1e-9 for b1, b2 in zip(bounded[:first], bounded[1:first + 1], strict=True))  # a monotone ramp, no dip
+
+
 def test_onpath_lead_bound_is_bosch_a_only():
   _, planner = _run(_onpath_sm(13.4, onpath=_stopped_car()), car=CAR.HONDA_CIVIC, frames=1)  # Nidec
   assert planner.onpath_planner is None

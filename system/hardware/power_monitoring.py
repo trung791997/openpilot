@@ -24,9 +24,8 @@ VOLTAGE_SHUTDOWN_MIN_OFFROAD_TIME_S = 60
 VOLTAGE_SHUTDOWN_SUSTAINED_TIME_S = 30.0
 
 # StarPilot variables
-# UploadRlogs: the offroad timer waits for unfinished rlogs (rlog_upload.py), capped so a dead link can't keep the device up.
-# Low voltage and battery-exhausted shutdowns are never held
-RLOG_UPLOAD_HOLD_MAX_S = 2*3600
+# rlog upload (always on while parked): the offroad timer waits for unfinished rlogs (rlog_upload.py), with no time cap.
+# Low voltage and battery-exhausted shutdowns are never held, so the hold ends when the car battery is nearly out
 RLOG_UPLOAD_CHECK_S = 30.0
 
 class PowerMonitoring:
@@ -173,8 +172,6 @@ class PowerMonitoring:
     return "forced_power_down" if forced else reason
 
   def hold_for_rlog_upload(self, now: float, time_past_timeout: float) -> bool:
-    if time_past_timeout > RLOG_UPLOAD_HOLD_MAX_S or not self.params.get_bool("UploadRlogs"):
-      return False
     if self.rlogs_checked_at is None or now - self.rlogs_checked_at >= RLOG_UPLOAD_CHECK_S:
       self.rlogs_checked_at = now
       try:

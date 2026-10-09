@@ -48,7 +48,7 @@ def make_sm():
     "carControl": SimpleNamespace(longActive=False, latActive=False),
     "selfdriveState": SimpleNamespace(active=False, alertType=[], experimentalMode=False),
     "starpilotSelfdriveState": SimpleNamespace(alertType=[]),
-    "starpilotPlan": SimpleNamespace(lateralCheck=True),
+    "starpilotPlan": SimpleNamespace(lateralCheck=True, speedLimitChanged=False, unconfirmedSlcSpeedLimit=0),
     "liveCalibration": SimpleNamespace(calPerc=100),
   })
 

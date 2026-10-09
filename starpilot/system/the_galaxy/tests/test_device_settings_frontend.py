@@ -43,7 +43,7 @@ def test_device_settings_uses_the_params_api_and_layout_json():
 
   assert 'fetch("/api/params/all")' in source
   assert 'fetch("/api/params/defaults")' in source
-  assert 'fetch("/assets/components/tools/device_settings_layout.json?v=settings-tier-1"' in source
+  assert 'fetch("/assets/components/tools/device_settings_layout.json?v=nav-settings-2"' in source
 
 
 def test_device_settings_speed_units_follow_the_vehicle():

@@ -10,6 +10,7 @@ from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.radar_interface import (
   BOSCH_A_REANCHOR_MIN_SPAN_S,
+  BOSCH_A_REANCHOR_WINDOW,
   BOSCH_A_AZIMUTH_SCALE_RAD,
   BOSCH_A_AUX_IDS,
   BOSCH_A_DBC_NAME,
@@ -1221,7 +1222,8 @@ class TestLastingCleanStepReAnchors:
     assert (published_at - 6) * self.DT_NANOS * 1e-9 >= BOSCH_A_REANCHOR_MIN_SPAN_S
     assert (published_at - 6) * self.DT_NANOS * 1e-9 <= BOSCH_A_REANCHOR_MIN_SPAN_S + 0.15
 
-  @pytest.mark.parametrize("sigma,existence", [(7, 126), (1, 0)])
+  # Range sigma 20 is above the D-089 range-scaled limit at ~94 m (0.15 x 94 = 14.1), so it stays degraded.
+  @pytest.mark.parametrize("sigma,existence", [(20, 126), (1, 0)])
   def test_negative_control_a_degraded_lasting_step_never_re_anchors(self, sigma, existence):
     ri = make_radar_interface()
     raw = self._birth(ri) - 136
@@ -1229,6 +1231,47 @@ class TestLastingCleanStepReAnchors:
       raw -= self.CLOSING_RAW
       rr = self._drive(ri, i, raw, -2.0, sigma=sigma, existence=existence)
       assert not any(p.measured for p in rr.points)
+
+  def test_a_clean_step_re_anchors_without_the_recovered_flag(self):
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    for i in range(6, 60):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0)
+      if rr.points and rr.points[0].measured:
+        assert rr.points[0].recovered is False
+
+  def test_d089_far_step_with_range_scaled_sigma_re_anchors_flagged_recovered(self):
+    # Sigma 7 at ~94 m: degraded by BOSCH_A_RANGE_SIGMA_DEGRADED_RAW (4), clean by the range-scaled limit (14.1).
+    # Before D-089 this lead stayed dark (the old negative control); now it comes back flagged for radard's checks.
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    published = []
+    for i in range(6, 60):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0, sigma=7)
+      if rr.points and rr.points[0].measured:
+        published.append(rr.points[0].recovered)
+    assert published and all(published)
+
+  def test_d089_recovered_flag_clears_after_a_window_of_strictly_clean_sweeps(self):
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    i = 6
+    while True:
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0, sigma=7)
+      i += 1
+      if rr.points and rr.points[0].measured:
+        break
+    assert rr.points[0].recovered is True
+    flags = []
+    for j in range(i, i + BOSCH_A_REANCHOR_WINDOW + 2):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, j, raw, -2.0, sigma=1)
+      flags.append(rr.points[0].recovered)
+    assert flags[:BOSCH_A_REANCHOR_WINDOW - 1] == [True] * (BOSCH_A_REANCHOR_WINDOW - 1)
+    assert flags[BOSCH_A_REANCHOR_WINDOW - 1:] == [False] * 3
 
   def test_negative_control_a_clean_step_that_contradicts_u11_never_re_anchors(self):
     ri = make_radar_interface()

@@ -432,6 +432,12 @@ class LongControl:
         output_accel, a_target, should_stop, CS.vEgo, has_lead, long_tuning.stopAccel,
       )
       output_accel = self._apply_moving_stop_target_follow(output_accel, a_target, should_stop, CS, long_tuning.vEgoStopping)
+      if bool(getattr(starpilot_toggles, "stock_brake_feel", False)) and CS.vEgo > st.get("phase_switch_v", 0.15):
+        # STOP_EASE (longitudinal_planner): while still rolling, ease a held stopping brake toward the floor
+        from openpilot.selfdrive.controls.lib import longitudinal_planner as lp  # deferred: the planner imports this module
+        output_accel = lp.stop_eased_target(self.last_output_accel, output_accel,
+                                            lp.stop_ease_floor(CS.vEgo, drel_filtered if math.isfinite(drel_filtered) else None),
+                                            DT_CTRL)
       self.reset(preserve_stop_release=True)
 
     elif self.long_control_state == LongCtrlState.starting:

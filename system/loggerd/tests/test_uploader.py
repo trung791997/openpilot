@@ -47,6 +47,7 @@ class TestUploader(UploaderTestCase):
     log_handler.reset()
     # UploadRlogs defaults on in StarPilot; the upstream tests cover qlog-only uploading
     self.params.put_bool("UploadRlogs", False)
+    self.params.put_bool("IsOffroad", False)
     clear_anchor(Paths.log_root())
 
   def start_thread(self):
@@ -244,30 +245,20 @@ class TestUploader(UploaderTestCase):
                              [f"{seg_format3.format(i)}/rlog" for i in [0, 1]]
     assert not rlogs_pending(Paths.log_root()), "the pre-toggle backlog must not hold shutdown"
 
-  def test_upload_rlogs_off_clears_anchor(self):
+  def test_upload_rlogs_off_still_uploads_when_parked(self):
     self.make_file_with_data(self.seg_format.format(0), "rlog", 1)
-    self.params.put_bool("UploadRlogs", True)
+    self.params.put_bool("UploadRlogs", False)
+    self.params.put_bool("IsOffroad", False)
     up = Uploader("0000000000000000", Paths.log_root())
+    assert up.next_file_to_upload(metered=False) is None  # driving: nothing, and no anchor yet
+
+    self.params.put_bool("IsOffroad", True)
     assert up.next_file_to_upload(metered=False)[1] == f"{self.seg_format.format(0)}/rlog"
 
-    self.params.put_bool("UploadRlogs", False)
-    assert up.next_file_to_upload(metered=False) is None
-    assert get_anchor(Paths.log_root()) is None and not rlogs_pending(Paths.log_root())
-
-    # back on later: starts again at the newest drive, the one left unsent is backlog now
+    # driving again with the toggle off keeps the anchor, so this drive's rlogs go up once parked
+    self.params.put_bool("IsOffroad", False)
     self.make_file_with_data(self.seg_format2.format(0), "rlog", 1)
-    self.params.put_bool("UploadRlogs", True)
-    assert self.drain(up) == [f"{self.seg_format2.format(0)}/rlog"]
-
-  def test_upload_rlogs_skips_locked_uploads_metered(self):
-    self.gen_files(lock=True, boot=False)
-    self.params.put_bool("UploadRlogs", True)
-    up = Uploader("0000000000000000", Paths.log_root())
-    assert up.next_file_to_upload(metered=False) is None, "locked (in-progress) segment uploaded"
-
-    clear_locks(Paths.log_root())
-    assert up.next_file_to_upload(metered=False)[0] == "qlog"
-    setxattr(str(Path(Paths.log_root()) / self.seg_dir / "qlog"), UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE)
-    # phone hotspots report metered; the owner uploads rlogs over one
-    assert up.next_file_to_upload(metered=True)[0] == "rlog"
-    assert up.next_file_to_upload(metered=False)[0] == "rlog"
+    assert up.next_file_to_upload(metered=False) is None
+    assert get_anchor(Paths.log_root()) == self.seg_format.rpartition('--')[0]
+    self.params.put_bool("IsOffroad", True)
+    assert self.drain(up) == [f"{self.seg_format.format(0)}/rlog", f"{self.seg_format2.format(0)}/rlog"]

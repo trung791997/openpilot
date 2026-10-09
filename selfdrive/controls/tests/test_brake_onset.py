@@ -145,16 +145,16 @@ def test_stock_feel_toggle_is_wired_and_off_by_default():
 
 def test_stock_feel_depth_follows_stock_by_ttc():
   # 100 m closing 8 m/s (TTC 12.5): planner -3.0 held at stock's ~-0.93; 30 m closing 10 m/s (TTC 3): ~-2.37
-  assert lp.stock_feel_target((_lead(100.0, -8.0),), -3.0, -3.0, 0.05) == pytest.approx(
-    float(lp.np.interp(12.5, lp.STOCK_FEEL_DEPTH_BP, lp.STOCK_FEEL_DEPTH_V)))
-  assert lp.stock_feel_target((_lead(30.0, -10.0),), -3.0, -3.0, 0.05) == pytest.approx(
-    float(lp.np.interp(3.0, lp.STOCK_FEEL_DEPTH_BP, lp.STOCK_FEEL_DEPTH_V)))
+  d12 = float(lp.np.interp(12.5, lp.STOCK_FEEL_DEPTH_BP, lp.STOCK_FEEL_DEPTH_V))
+  d3 = float(lp.np.interp(3.0, lp.STOCK_FEEL_DEPTH_BP, lp.STOCK_FEEL_DEPTH_V))
+  assert lp.stock_feel_target((_lead(100.0, -8.0),), d12, -3.0, 0.05) == pytest.approx(d12)
+  assert lp.stock_feel_target((_lead(30.0, -10.0),), d3, -3.0, 0.05) == pytest.approx(d3)
   assert lp.stock_feel_target((_lead(100.0, -8.0),), -0.58, -0.6, 0.05) == pytest.approx(-0.6)  # shallower, slow: untouched
 
 
 def test_stock_feel_ignores_the_gap_and_lead_braking_gates_like_stock():
   # 12 m at 20 m/s (inside 1.5 s of gap) closing 4 m/s, lead braking -3: TTC 3 s, still stock's depth
-  assert lp.stock_feel_target((_lead(12.0, -4.0, a=-3.0),), -3.5, -3.5, 0.05) > -2.5
+  assert lp.stock_feel_target((_lead(12.0, -4.0, a=-3.0),), -2.0, -3.5, 0.05) > -2.5
 
 
 def test_stock_feel_deepens_at_stock_rate():
@@ -176,6 +176,21 @@ def test_stock_feel_keeps_planner_depth_but_limits_the_step(leads):
   assert lp.stock_feel_target(leads, -3.5, -3.5, 0.05) == -3.5
   assert lp.stock_feel_target(leads, 0.0, -3.5, 0.05) == pytest.approx(-lp.STOCK_FEEL_JERK_OUTSIDE * 0.05)
   assert lp.stock_feel_target(leads, -2.0, -1.0, 0.05) == -1.0
+
+
+def test_stock_feel_does_not_cut_a_brake_already_under_way():
+  # 2f7 26:38: planner at -1.02 for a car 25 m ahead when the closing crossed 0.5 m/s (TTC ~30 s, table -0.35).
+  leads = (_lead(24.7, -0.82),)
+  out, a = [], -1.02
+  for _ in range(12):  # 0.6 s
+    a = lp.stock_feel_target(leads, a, -1.05, 0.05)
+    out.append(a)
+  assert out[0] == pytest.approx(-1.02 + lp.STOCK_FEEL_CAP_RELEASE_JERK * 0.05)
+  assert all(b >= x - 1e-9 for x, b in zip(out, out[1:]))
+  assert out[-1] == pytest.approx(-1.02 + 12 * lp.STOCK_FEEL_CAP_RELEASE_JERK * 0.05)
+  # the planner's own easing still passes straight through, and a new brake still stops at the table
+  assert lp.stock_feel_target(leads, -1.02, -0.2, 0.05) == -0.2
+  assert lp.stock_feel_target(leads, -0.35, -1.05, 0.05) == pytest.approx(-0.35)
 
 
 def test_stock_feel_depth_table_is_monotone():
@@ -291,3 +306,95 @@ def test_lead_coast_to_brake_builds_at_stock_rate_unless_close():
   assert not lp.brake_onset_ttc((_lead(3.0, -2.0),)) > lp.STOCK_FEEL_TTC_FLOOR_S  # 1.5 s: planner depth, no limit here
   # closing faster than 0.5 m/s: the stock law's own TTC rate applies instead (2 m/s^3 at TTC 2.5 s), not 1 m/s^3
   assert lp.brake_onset_ttc((_lead(5.0, -2.0),), lp.STOCK_FEEL_MIN_CLOSING) != float('inf')
+
+
+def test_lead_coast_gas_off_only_while_the_coast_ceiling_binds():
+  # D-091: 2f8's -0.30..-0.40 coast targets became brake taps on the Civic; the plan now flags them as a coast
+  c = -0.33
+  assert lp.lead_coast_gas_off(c, 0.5, c, False)                     # planner wants gas, the ceiling holds it at c
+  assert lp.lead_coast_gas_off(c, c, c, False)
+  assert not lp.lead_coast_gas_off(c, -0.8, -0.8, False)             # a deeper planner brake is a brake
+  assert not lp.lead_coast_gas_off(0.0, 0.5, 0.0, False)             # hold is a throttle cap, not a coast
+  assert not lp.lead_coast_gas_off(None, 0.5, c, False)
+  assert not lp.lead_coast_gas_off(c, 0.5, c, True)                  # emergency
+  assert not lp.lead_coast_gas_off(c, 0.5, 0.2, False)               # gas is gas
+
+
+def test_lead_coast_gas_off_covers_the_release():
+  # 2f8 replay: with the flag tied to the coast level, the target still easing back up from the ceiling (brake-release
+  # limits) after the coast ended, or lagging a ceiling that rose with speed, went out as 0.2-0.5 s brake taps
+  assert lp.lead_coast_gas_off(-0.20, 0.3, -0.44, False)             # ceiling rising back, output lagging below it
+  assert lp.lead_coast_gas_off(-0.28, -0.1, -0.35, False)            # coast ceiling rose; output held by the release limit
+  assert not lp.lead_coast_gas_off(-0.28, -0.6, -0.35, False)        # ...unless the planner itself wants the brake
+
+
+def test_lead_coast_gas_off_exit_hysteresis():
+  # 2f8 replay: with one margin the flag flickered while the planner hovered at the ceiling (brake-light flicker)
+  c = -0.33
+  assert not lp.lead_coast_gas_off(c, c - 0.08, c, False, active=False)
+  assert lp.lead_coast_gas_off(c, c - 0.08, c, False, active=True)
+  assert not lp.lead_coast_gas_off(c, c - 0.15, c, False, active=True)
+
+
+def test_lead_coast_flag_is_published_and_reaches_the_actuators():
+  from pathlib import Path
+  src = Path(lp.__file__).read_text()
+  assert 'longitudinalPlan.leadCoast = self.lead_coast_request or self.ease_coast_request' in src
+  ctl = (Path(lp.__file__).parents[2] / 'controls' / 'controlsd.py').read_text()
+  assert 'actuators.coast = bool(CC.longActive and long_plan.leadCoast' in ctl
+
+
+
+def ease(coast, a, blocked=False, active=False, armed=True):
+  return lp.ease_coast_gas_off(coast, a, blocked, active, armed)[0]
+
+
+def test_ease_coast_covers_gentle_planner_easing_within_the_coast():
+  # route 300: far-lead / no-lead / CSC easing at -0.17..-0.35 went out as light brake taps
+  coast = -0.30
+  for a in (-0.12, -0.23, -0.30, -0.35):
+    assert ease(coast, a)
+  assert not ease(coast, -0.40)                                      # deeper than the car coasts: a brake
+  assert not ease(coast, -0.05)                                      # near-zero: cruising, light gas stays
+  assert not ease(coast, 0.3)
+
+
+def test_ease_coast_never_on_downhill_unknown_pitch_or_when_blocked():
+  assert not ease(0.02, -0.2)                                        # downhill: coasting would not slow the car
+  assert not ease(-0.20, -0.15)                                      # ~1.8 % downhill: the car brakes near 0 there
+  assert ease(-0.28, -0.15)
+  assert not ease(None, -0.2)
+  assert not ease(-0.30, -0.2, blocked=True)                         # stopping, slow, FCW, emergency, toggle off
+  # steep uphill: the coast level is clipped to LEAD_COAST_MIN, deeper targets stay brakes
+  assert ease(-0.9, lp.LEAD_COAST_MIN)
+  assert not ease(-0.9, lp.LEAD_COAST_MIN - 0.1)
+
+
+def test_ease_coast_hysteresis_on_both_edges():
+  coast = -0.30
+  assert not ease(coast, -0.38)
+  assert ease(coast, -0.38, active=True)
+  assert not ease(coast, -0.45, active=True)
+  assert not ease(coast, -0.08)
+  assert ease(coast, -0.08, active=True)
+  assert not ease(coast, -0.03, active=True)
+
+
+def test_ease_coast_starts_only_from_above_never_inside_a_brake():
+  # route 300 open-loop: re-entering while a brake hovered around the coast level split brakes into taps (12 -> 21)
+  coast, armed, active, flags = -0.30, False, False, []
+  for a in (0.1, -0.08, -0.2, -0.3, -0.5, -0.32, -0.2, -0.08, -0.03, -0.2):
+    active, armed = lp.ease_coast_gas_off(coast, a, False, active, armed)
+    flags.append(active)
+  assert flags == [False, False, True, True, False, False, False, False, False, True]
+  assert lp.ease_coast_gas_off(coast, -0.2, True, True, True) == (False, False)
+
+
+def test_ease_coast_is_blocked_by_stops_speed_fcw_and_the_toggle():
+  from pathlib import Path
+  src = Path(lp.__file__).read_text()
+  i = src.index('self.ease_coast_blocked = bool(')
+  block = src[i:src.index('\n\n', i)]
+  for gate in ('stock_brake_feel', 'reset_state', 'standstill', 'self.output_should_stop', 'self.fcw',
+               'self.stock_feel_emergency', 'EASE_COAST_MIN_SPEED', 'forcingStop', 'redLight'):
+    assert gate in block, gate

@@ -544,6 +544,16 @@ NEWBORN_RANGE_CLOSING_STATIONARY_TOL = 5.0  # m/s; the slope may close at most t
 # Built in on for Bosch-A (owner, 2026-10-03; was the BoschANewbornLeads toggle): main() calls set_bosch_a_newborn_leads().
 NEWBORN_KF_FOLLOW_RANGE = True
 NEWBORN_KF_FOLLOW_MIN_SAMPLES = 4
+# The follow above stops at YOUNG_TRACK_MAX_AGE_S, but a Bosch-A track can stay unmeasured for longer. Its KF then
+# holds the last follow seed, and the first measured updates drag it to the measured speed, which the KF reads as
+# a hard deceleration. 000002f7 21:31 (bookmark 21:36): track 15 born 1287.56, last follow seed 1289.46 at 7.48 m/s
+# (range: lead slowing 7.7 -> 4.4 m/s), first measured sweep 1291.74 at 1.9 m/s (vision 1.2, range 4.4). aLeadK
+# went -1.51 -> -2.93 -> -5.09 -> -5.51 over 1.4 s while no source showed the lead slowing by more than ~1 m/s^2;
+# the planner went -0.65 -> -1.52. So on a track's first measured update, a follow seed older than
+# NEWBORN_KF_STALE_SEED_S is dropped and the KF starts at [measured vLead, 0], as stock does at birth. Only tracks
+# that had a follow seed are touched; vLead, vRel and the point are unchanged. Replay evidence only; not road-validated.
+NEWBORN_KF_STALE_RESEED = True
+NEWBORN_KF_STALE_SEED_S = 0.5
 
 # Newborn lead needs a proven closing (REPLAY ONLY, no DECISIONS entry yet). Fleet replay of the layers above (15
 # drives, 13 usable) found newborns already lead on sweeps 1-4 (span <= 0.20 s), on their range-slope vRel, while
@@ -658,6 +668,64 @@ FAR_RAIL_RANGE_TOL_FRAC = 0.08
 FAR_RAIL_MAX_SPEED_STDEV_MPS = 2.0
 FAR_RAIL_MARGIN_MPS = 3.0
 
+# D-089 (STATUS 225; replay only, not driven): a Bosch-A point re-admitted by the range-scaled far-range re-anchor
+# (RadarPoint.recovered, see BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC) may be a lead, adjacent or onpath candidate only after
+# RECOVERED_CAM_CONFIRM_FRAMES consecutive frames on which BOTH a confident camera lead agrees with it (range, lateral,
+# speed) AND its own range slope over the long fit window agrees with its vRel. It stops being one after
+# RECOVERED_CAM_DROP_FRAMES consecutive frames on which either disagrees. Without that re-anchor rule these points do not
+# exist, so an unconfirmed one is the picture radard had before: nothing the old build used is withheld (D-041/D-042).
+# The track itself keeps updating either way. Why both checks: alone, the re-anchor recovered U11 values 7-8 m/s wrong
+# (2f2/2a4/2a6); with the camera check, 6-route closed-loop replay showed no extra brake dip and 2f5 +34 s of radar lead.
+# The range-slope check was added after that replay (the camera's speed is noisy at 50-80 m) and was replayed with it.
+RECOVERED_CAM_GATE = True
+RECOVERED_CAM_MIN_PROB = 0.5
+RECOVERED_CAM_RANGE_TOL = 0.15
+RECOVERED_CAM_RANGE_FLOOR_M = 5.0
+RECOVERED_CAM_Y_TOL_M = 2.0
+RECOVERED_CAM_VREL_TOL_MPS = 3.0
+RECOVERED_CAM_CONFIRM_FRAMES = 3
+RECOVERED_CAM_DROP_FRAMES = 10
+# Range-slope check: LSQ over the track's last RANGE_VREL_LONG_SAMPLES measured ranges (0.6-1.5 s span). The tolerance is the
+# D-043 rate disagreement the interface's own re-anchor uses (BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS) and the RMS limit is
+# its BOSCH_A_REANCHOR_MAX_RMS_M; a fit above that RMS, or a short history, gives no verdict (and so no confirmation).
+RECOVERED_RANGE_SLOPE_TOL_MPS = 3.0
+RECOVERED_RANGE_SLOPE_MAX_RMS_M = 1.0
+
+# RAIL_RANGE_VEL_CHECK (D-090). On Bosch-A a vRel at the U11 rail (|vRel| >= BOSCH_A_U11 rail - RAIL_RANGE_VEL_RAIL_EPS)
+# is a clamp, not a speed: the true closing can be anywhere beyond it. track_matches_vision compared that clamp with
+# the camera, so a nearly stopped object read as vLead ~1.4 and passed vel_limit 10 against a 12 m/s camera car by
+# 0.14 m/s. Route 000002f8 1:30.4-1:34.6 (owner-bookmarked "weird slowdown", replay-reproduced): track 52 at -12.00
+# closed 86 -> 48 m at ~16.5 m/s while the camera car (prob 0.98) held 65-76 m at 11-12 m/s; the strict gate took it
+# at 1:30.3 (|-12 + 13.38 - 11.24| = 9.86), the preferred gate (vel 13) kept it, and the planner braked to -2.3.
+# Here a railed track's own range slope stands in for the clamp, and only when the slope lies BEYOND the rail in the
+# same direction (the only thing the clamp can hide) and the fit is clean: the D-089 long fit (0.6-1.5 s, RMS <= 1.0
+# m), else the young-track fit since birth (YOUNG_TRACK_* limits). Any other case keeps vRel, so a track can only
+# lose a pairing when its own range says it is moving >= vel_limit away from the camera's speed. That drops the
+# radar match and leaves the vision lead (the 000001fe 35:36 risk the vel_sane note above warns of), so the D-041
+# exemption NEWBORN_RANGE_CLOSING_EXEMPT still runs after it unchanged.
+# The same railed track also loses match_vision_to_track's loose preferred-track hold (dist 0.40, vel 13), which exists
+# for a semi that misses the strict gate by a small margin: on 2f8 the slope fell to -15.3 .. -13.0 as the logged ego
+# braked for this very track, and vel 13 let it back at 1:31.6 (12.98) for the rest of the event.
+RAIL_RANGE_VEL_CHECK = True
+RAIL_RANGE_VEL_RAIL_EPS = 0.05
+
+
+def recovered_cam_agrees(rpt, leads_v3, model_v_ego: float) -> bool | None:
+  """True / False when a confident camera lead agrees / disagrees with the point, None with no confident camera lead."""
+  verdict = None
+  for lv in list(leads_v3)[:2]:
+    if lv.prob < RECOVERED_CAM_MIN_PROB:
+      continue
+    d_cam = float(lv.x[0]) - RADAR_TO_CAMERA
+    ok = (abs(rpt[0] - d_cam) < max(RECOVERED_CAM_RANGE_TOL * d_cam, RECOVERED_CAM_RANGE_FLOOR_M) and
+          abs(rpt[1] + float(lv.y[0])) < RECOVERED_CAM_Y_TOL_M and
+          abs(rpt[2] - (float(lv.v[0]) - model_v_ego)) < RECOVERED_CAM_VREL_TOL_MPS)
+    if ok:
+      return True
+    verdict = False
+  return verdict
+
+
 # stationary qualification parameters
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
@@ -752,6 +820,34 @@ def young_range_genuinely_closing(track, v_ego: float) -> bool:
   if track.cnt == 0:
     return True  # never measured: vRel is the fit of these same ranges, so comparing them proves nothing
   return abs(float(slope) - float(track.vRel)) <= NEWBORN_RANGE_CLOSING_VREL_TOL
+
+
+def rail_range_vrel(track) -> float | None:
+  """RAIL_RANGE_VEL_CHECK: the clean range slope of a track whose vRel sits on the U11 rail, when that slope lies
+  beyond the rail in the same direction; else None (use vRel)."""
+  if not RAIL_RANGE_VEL_CHECK or track is None:
+    return None
+  v_rel = float(track.vRel)
+  if not (v_rel <= BOSCH_A_U11_LOW_RAIL_MPS + RAIL_RANGE_VEL_RAIL_EPS or v_rel >= BOSCH_A_U11_HIGH_RAIL_MPS - RAIL_RANGE_VEL_RAIL_EPS):
+    return None
+  slope = None
+  if len(track.range_hist_long) >= RANGE_VREL_LONG_SAMPLES:
+    a = np.array(track.range_hist_long, dtype=np.float64)
+    ts = a[:, 0] - a[-1, 0]
+    if RANGE_VREL_LONG_MIN_SPAN_S <= ts[-1] - ts[0] <= RANGE_VREL_LONG_MAX_SPAN_S:
+      k, b = np.polyfit(ts, a[:, 1], 1)
+      if float(np.sqrt(((a[:, 1] - (b + k * ts)) ** 2).mean())) <= RECOVERED_RANGE_SLOPE_MAX_RMS_M:
+        slope = float(k)
+  if slope is None and track.t_last - track.t_first <= YOUNG_TRACK_MAX_AGE_S and len(track.young_range_hist) >= YOUNG_TRACK_MIN_SAMPLES:
+    a = np.array(track.young_range_hist, dtype=np.float64)
+    ts = a[:, 0] - a[-1, 0]
+    if ts[-1] - ts[0] >= YOUNG_TRACK_MIN_SPAN_S:
+      k, b = np.polyfit(ts, a[:, 1], 1)
+      if float(np.sqrt(((a[:, 1] - (b + k * ts)) ** 2).mean())) <= YOUNG_TRACK_MAX_RESIDUAL_M:
+        slope = float(k)
+  if slope is None or slope * v_rel <= 0.0 or abs(slope) <= abs(v_rel):
+    return None
+  return slope
 
 
 def far_rail_model_sample(vis) -> tuple[float, float, float] | None:
@@ -866,6 +962,11 @@ class Track:
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
 
     self.leadTrackID = 0
+    # D-089 (RadarPoint.recovered): the camera / range-slope confirmation state of a recovered point
+    self.recovered = False
+    self.recover_ok = False
+    self.recover_agree = 0
+    self.recover_disagree = 0
 
     # A range-derived vRel, published alongside the radar's own vRel so the two can be compared on
     # real drives. Measured on 000001fe/fb/fd, U11 (the Bosch-A native velocity) detects a closing
@@ -916,6 +1017,7 @@ class Track:
     # YOUNG_TRACK_FLAT_RANGE_BOUND: first update time and every fresh-sweep (t, dRel) of the track's first
     # YOUNG_TRACK_MAX_AGE_S. Coasted sweeps count: a Bosch-A coast holds vRel but publishes the live gated range.
     self.t_first = float('nan')
+    self._kf_follow_t = float('nan')  # time of the last NEWBORN_KF_FOLLOW_RANGE seed
     self.t_last = float('nan')  # NEWBORN_RANGE_CLOSING_EXEMPT: t_now of the latest update (the track's age)
     self.young_range_hist: list = []
     # D-077: -1 born on the low rail, +1 on the high rail, 0 not (yet); birth_rail_done ends the ramp for good.
@@ -1032,12 +1134,16 @@ class Track:
 
     if measurement_update and self.cnt > 0:
       self.kf.update(self.vLead)
+    elif NEWBORN_KF_STALE_RESEED and measurement_update and self.cnt == 0 and \
+         float(t_now) - self._kf_follow_t > NEWBORN_KF_STALE_SEED_S:
+      self.kf.set_x([[float(self.vLead)], [0.0]])
     elif NEWBORN_KF_FOLLOW_RANGE and newborn_follow and young_fresh and not measurement_update and self.cnt == 0 and \
          len(self.young_range_hist) >= NEWBORN_KF_FOLLOW_MIN_SAMPLES:
       a = np.array(self.young_range_hist, dtype=np.float64)
       slope = float(np.polyfit(a[:, 0] - a[-1, 0], a[:, 1], 1)[0])
       v_ego_aligned = float(v_lead) - float(v_rel)
       self.kf.set_x([[v_ego_aligned + max(slope, -v_ego_aligned)], [0.0]])
+      self._kf_follow_t = float(t_now)
 
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
@@ -1397,6 +1503,37 @@ class Track:
     self.vRelRangeLongSpan = float(ts[-1] - ts[0])
     return True
 
+  def update_recovered(self, recovered: bool, cam_agrees: bool | None) -> None:
+    """D-089: once per radard cycle. A recovered point is confirmed (recover_ok) after RECOVERED_CAM_CONFIRM_FRAMES
+    consecutive cycles where the camera AND the range slope agree, and unconfirmed after RECOVERED_CAM_DROP_FRAMES
+    consecutive cycles where either disagrees. No verdict (no confident camera, no usable fit) breaks both runs."""
+    self.recovered = bool(recovered)
+    if not self.recovered:
+      self.recover_ok, self.recover_agree, self.recover_disagree = False, 0, 0
+      return
+    slope = self.recovered_range_slope_agrees(self.vRel)
+    agree = bool(cam_agrees) and bool(slope)
+    disagree = cam_agrees is False or slope is False
+    self.recover_agree = self.recover_agree + 1 if agree else 0
+    self.recover_disagree = self.recover_disagree + 1 if disagree else 0
+    if self.recover_agree >= RECOVERED_CAM_CONFIRM_FRAMES:
+      self.recover_ok = True
+    elif self.recover_disagree >= RECOVERED_CAM_DROP_FRAMES:
+      self.recover_ok = False
+
+  def recovered_range_slope_agrees(self, v_rel: float) -> bool | None:
+    """D-089: True / False when the long-window range slope agrees / disagrees with v_rel, None without a usable fit."""
+    if len(self.range_hist_long) < RANGE_VREL_LONG_SAMPLES:
+      return None
+    hist = np.array(self.range_hist_long, dtype=np.float64)
+    ts = hist[:, 0] - hist[-1, 0]
+    if not (RANGE_VREL_LONG_MIN_SPAN_S <= ts[-1] - ts[0] <= RANGE_VREL_LONG_MAX_SPAN_S):
+      return None
+    slope, icpt = np.polyfit(ts, hist[:, 1], 1)
+    if float(np.sqrt(((hist[:, 1] - (icpt + slope * ts)) ** 2).mean())) > RECOVERED_RANGE_SLOPE_MAX_RMS_M:
+      return None
+    return abs(float(slope) - float(v_rel)) <= RECOVERED_RANGE_SLOPE_TOL_MPS
+
   def young_flat_range_vrel_floor(self, t_now: float) -> float | None:
     """YOUNG_TRACK_FLAT_RANGE_BOUND: the least vRel (most closing) this young track's flat range supports, else None."""
     if not (t_now - self.t_first <= YOUNG_TRACK_MAX_AGE_S) or len(self.young_range_hist) < YOUNG_TRACK_MIN_SAMPLES:
@@ -1553,7 +1690,12 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
   # closure that radar tracked correctly. Deleting radar leads is the 000001f9 failure mode, so this
   # is left as-is deliberately: inert, but inert in the safe direction. Do not "fix" it without
   # first establishing which sensor is right on the frames it would start rejecting.
-  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < vel_limit) or (v_ego + track.vRel > 3)
+  v_rel = track.vRel
+  if honda_bosch_a:
+    rail_slope = rail_range_vrel(track)
+    if rail_slope is not None:
+      v_rel = rail_slope  # RAIL_RANGE_VEL_CHECK: the rail is a clamp; the clean range slope is the speed
+  vel_sane = (abs(v_rel + v_ego - lead.v[0]) < vel_limit) or (v_ego + v_rel > 3)
   if honda_bosch_a and NEWBORN_LEAD_NEEDS_CLOSING and track.cnt == 0 and not track.measured and \
      not young_range_genuinely_closing(track, v_ego):
     return False  # NEWBORN_LEAD_NEEDS_CLOSING: a never-measured newborn is no lead until its range proves closing
@@ -1595,7 +1737,8 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
   # strict vision gate by a small margin, keep the previous radar match instead of
   # oscillating between radar and vision estimates.
   preferred_track = tracks.get(preferred_track_id)
-  if preferred_track is not None and preferred_track.cnt >= 3:
+  if preferred_track is not None and preferred_track.cnt >= 3 and \
+     not (honda_bosch_a and rail_range_vrel(preferred_track) is not None):  # RAIL_RANGE_VEL_CHECK: no loose hold on a clamp
     if track_matches_vision(preferred_track, lead, v_ego,
                             dist_scale=0.40, dist_floor=8.0,
                             vel_limit=13.0, y_std_scale=2.0, y_floor=1.5, honda_bosch_a=honda_bosch_a):
@@ -1885,7 +2028,8 @@ class RadarD:
       radar_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
       self._last_tracks_frame = sm.recv_frame['liveTracks']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid, pt.ncSigma, getattr(pt, 'existence', -1.0)] for pt in rr.points}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid, pt.ncSigma, getattr(pt, 'existence', -1.0),
+                           bool(getattr(pt, 'recovered', False))] for pt in rr.points}
 
     # D-053. Bosch-A only, and only for the tracks that were the lead on the previous cycle.
     # prev_lead_track_ids is the authoritative "which track is the lead" state; Track.leadTrackID
@@ -1938,6 +2082,13 @@ class RadarD:
                               nc_vrel=rpt[4], nc_valid=rpt[5], nc_sigma=rpt[6],
                               newborn_follow=self.honda_bosch_a_radar and radar_fresh and not rpt[3],
                               vision_lead=birth_vision)
+      # D-089: a recovered point counts only once the camera and its own range slope confirm it.
+      trk = self.tracks[ids]
+      if rpt[8] and RECOVERED_CAM_GATE:
+        mv = sm['modelV2'].velocity.x[0] if len(sm['modelV2'].velocity.x) else self.v_ego
+        trk.update_recovered(True, recovered_cam_agrees(rpt, sm['modelV2'].leadsV3, mv))
+      else:
+        trk.update_recovered(rpt[8], None)
 
     # ONPATH_RADAR_ADOPT: path offset of every track on a fresh sweep (yRel + = left, model y + = right)
     if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar and radar_fresh:
@@ -1966,6 +2117,10 @@ class RadarD:
       model_v_ego = self.v_ego
 
     leads_v3 = sm['modelV2'].leadsV3
+    # D-089: recovered points the camera and range slope have not confirmed are not lead/adjacent/onpath candidates.
+    sel_tracks = self.tracks
+    if RECOVERED_CAM_GATE and self.honda_bosch_a_radar:
+      sel_tracks = {k: t for k, t in self.tracks.items() if not (t.recovered and not t.recover_ok)}
     if FAR_RAIL_VISION_BOUND and self.honda_bosch_a_radar:
       for i in range(2):
         self.far_rail_hist[i].append(far_rail_model_sample(leads_v3[i]) if len(leads_v3) > i else None)
@@ -1979,20 +2134,20 @@ class RadarD:
 
         self._update_honda_bosch_a_preferred_staleness(i, leads_v3[i], self.lead_prob_filters[i].x)
 
-      lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, sm['modelV2'],
+      lead_one = get_lead(self.v_ego, self.ready, sel_tracks, leads_v3[0], model_v_ego, sm['modelV2'],
                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
                           preferred_track_id=self.prev_lead_track_ids[0],
                           honda_bosch_a_radar=self.honda_bosch_a_radar)
       self.radar_state.leadOne = lead_one
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, sel_tracks, leads_v3[1], model_v_ego, sm['modelV2'],
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
                                           preferred_track_id=self.prev_lead_track_ids[1],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
 
       if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar:
-        onpath = get_onpath_lead(self.v_ego, self.tracks, self.radar_state.leadOne, self.prev_onpath_track_id)
+        onpath = get_onpath_lead(self.v_ego, sel_tracks, self.radar_state.leadOne, self.prev_onpath_track_id)
         if onpath is not None:
           self.radar_state.leadOnpath = onpath
         self.prev_onpath_track_id = onpath['radarTrackId'] if onpath is not None else -1
@@ -2041,16 +2196,16 @@ class RadarD:
           self._reset_preferred_stale_evidence(i)
 
     if self.ready and (self.starpilot_toggles.adjacent_lead_tracking or self.starpilot_toggles.human_lane_changes):
-      self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True,
+      self.starpilot_radar_state.leadLeft = get_adjacent_lead(sel_tracks, sm['carState'].standstill, sm['modelV2'], left=True,
                                                               honda_bosch_a=self.honda_bosch_a_radar)
-      self.starpilot_radar_state.leadRight = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=False,
+      self.starpilot_radar_state.leadRight = get_adjacent_lead(sel_tracks, sm['carState'].standstill, sm['modelV2'], left=False,
                                                               honda_bosch_a=self.honda_bosch_a_radar)
 
     # Not gated on the adjacent-lead toggles: this is a separate signal with a separate
     # consumer (Force Stop), and leaving leadLeft/leadRight untouched keeps existing
     # lane-change and UI behaviour unchanged.
     if self.ready:
-      self.starpilot_radar_state.adjacentStopped = get_adjacent_stopped(self.tracks, sm['modelV2'])
+      self.starpilot_radar_state.adjacentStopped = get_adjacent_stopped(sel_tracks, sm['modelV2'])
 
     self.starpilot_toggles = get_starpilot_toggles(sm)
 

@@ -8,7 +8,8 @@ import {
   formatSecondsToHuman,
   formatMetersToHuman,
   formatMetersToMiles,
-} from "../../../components/navigation/navigation_utilities.js?v=nav-route-selection-1"
+  rankEcoRoutes,
+} from "../../../components/navigation/navigation_utilities.js?v=nav-route-prefs-1"
 
 const MAPBOX_STYLE = "mapbox://styles/frogsgomoo/cmcfv151j000o01rcdxebhl76"
 
@@ -109,6 +110,12 @@ export const NavigationDestinationPanel = {
       searchTimer: null,
       searchRequest: 0,
       sessionToken: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2),
+      routePreferences: {
+        avoid_tolls: false,
+        avoid_highways: false,
+        avoid_ferries: false,
+        prefer_eco: false,
+      },
     }
   },
   computed: {
@@ -165,6 +172,14 @@ export const NavigationDestinationPanel = {
         this.language = String(nav?.language || "").trim()
         this.isMetric = !!nav?.isMetric
         this.lastPosition = coordinates(nav?.lastPosition)
+        if (nav?.routePreferences) {
+          this.routePreferences = {
+            avoid_tolls: !!nav.routePreferences.avoid_tolls,
+            avoid_highways: !!nav.routePreferences.avoid_highways,
+            avoid_ferries: !!nav.routePreferences.avoid_ferries,
+            prefer_eco: !!nav.routePreferences.prefer_eco,
+          }
+        }
         this.favorites = Array.isArray(favoritePayload?.favorites) ? favoritePayload.favorites : []
         this.recentDestinations = parseJson(nav?.previousDestinations, [])
         const saved = parseObject(nav?.destination)
@@ -298,7 +313,14 @@ export const NavigationDestinationPanel = {
         this.destination = place || await this.resolveQuery()
         if (!this.destination) throw new Error("Enter a destination first.")
         const selectedRouteId = this.selectedRouteId || this.routeSummary?.routeId || "main"
-        this.destination = { ...this.destination, routeId: selectedRouteId }
+        this.destination = {
+          ...this.destination,
+          routeId: selectedRouteId,
+          avoid_tolls: Boolean(this.routePreferences?.avoid_tolls),
+          avoid_highways: Boolean(this.routePreferences?.avoid_highways),
+          avoid_ferries: Boolean(this.routePreferences?.avoid_ferries),
+          prefer_eco: Boolean(this.routePreferences?.prefer_eco),
+        }
         await api.setNavigation(this.destination)
         this.navigationStarted = true
         this.query = this.destination.name
@@ -373,6 +395,29 @@ export const NavigationDestinationPanel = {
       }
       if (this.map && this.routes.length) highlightRoute(this.map, this.routes, routeId)
     },
+    async togglePreference(key) {
+      this.routePreferences[key] = !this.routePreferences[key]
+      await api.setNavigationPreferences(this.routePreferences).catch(() => {})
+      if (this.navigationStarted && this.destination) {
+        // The car is already routing: re-send the active destination with the new preferences
+        // (same call as setDestination) so the comma re-routes, not just the preview.
+        this.destination = {
+          ...this.destination,
+          avoid_tolls: Boolean(this.routePreferences?.avoid_tolls),
+          avoid_highways: Boolean(this.routePreferences?.avoid_highways),
+          avoid_ferries: Boolean(this.routePreferences?.avoid_ferries),
+          prefer_eco: Boolean(this.routePreferences?.prefer_eco),
+        }
+        try {
+          await api.setNavigation(this.destination)
+        } catch (e) {
+          showSnackbar(e?.message || "Could not update the active route.", "error")
+        }
+      }
+      if (this.destination) {
+        await this.previewDestination(this.destination)
+      }
+    },
     async previewDestination(place, preferredRouteId = null) {
       if (!this.mapReady || !this.map || !place) return
       const mapboxgl = window.mapboxgl
@@ -386,8 +431,16 @@ export const NavigationDestinationPanel = {
         return
       }
       try {
-        const payload = await api.mapboxDirections(this.lastPosition, place, this.mapboxPublic)
-        const routes = Array.isArray(payload?.routes) ? payload.routes : []
+        const excludes = []
+        if (this.routePreferences.avoid_tolls) excludes.push("toll")
+        if (this.routePreferences.avoid_highways) excludes.push("motorway")
+        if (this.routePreferences.avoid_ferries) excludes.push("ferry")
+        const options = excludes.length ? { exclude: excludes.join(",") } : {}
+        const payload = await api.mapboxDirections(this.lastPosition, place, this.mapboxPublic, options)
+        let routes = Array.isArray(payload?.routes) ? payload.routes : []
+        if (routes.length && this.routePreferences.prefer_eco) {
+          routes = rankEcoRoutes(routes)
+        }
         if (routes.length) {
           const requestedRouteId = preferredRouteId || place.routeId || this.selectedRouteId || "main"
           const selectedIndex = routes.findIndex((_, index) => this.routeId(index) === requestedRouteId)
@@ -404,6 +457,7 @@ export const NavigationDestinationPanel = {
             this.isMetric,
             () => this.selectedRouteId,
           )
+          this.fitPreview([this.lastPosition.longitude, this.lastPosition.latitude], [place.longitude, place.latitude])
         } else {
           this.routeSummary = null
           this.routes = []
@@ -416,6 +470,20 @@ export const NavigationDestinationPanel = {
         this.selectedRouteId = "main"
         this.map.fitBounds([[this.lastPosition.longitude, this.lastPosition.latitude], [place.longitude, place.latitude]], { padding: 80, duration: 500 })
       }
+    },
+    fitPreview(start, dest) {
+      if (!this.map || window.innerWidth >= 768) return
+      this.$nextTick(() => {
+        const stage = this.$el?.getBoundingClientRect?.()
+        const card = this.$el?.querySelector?.(".gx-navigation-summary")?.getBoundingClientRect?.()
+        const tabs = document.querySelector(".gx-navigation-tabs")?.getBoundingClientRect?.()
+        if (!stage || !card) return
+        const top = Math.max(60, card.bottom - stage.top + 16)
+        const bottom = Math.max(40, (tabs ? window.innerHeight - tabs.top : 0) + 16)
+        const room = stage.height - top - bottom
+        if (room < 120) return
+        this.map.fitBounds([start, dest], { padding: { top, bottom, left: 40, right: 40 }, duration: 600 })
+      })
     },
     usePlace(place) { this.chooseSuggestion(place) },
   },
@@ -463,8 +531,22 @@ export const NavigationDestinationPanel = {
               class="gx-navigation-route-option" :class="{ selected: selectedRouteId === routeId(index) }"
               :aria-pressed="selectedRouteId === routeId(index)" :aria-label="'Select route ' + (index + 1)"
               @click="selectRoute(route, routeId(index))">
-              <strong>Route {{ index + 1 }}</strong>
-              <small>{{ formatDistance(route.distance) }} · {{ formatDuration(route.duration) }}</small>
+              <strong>{{ route.isEco ? '🌿 Eco Route' : ('Route ' + (index + 1)) }}</strong>
+              <small>{{ formatDistance(route.distance) }} · {{ formatDuration(route.duration) }}<span v-if="route.isEco && route.ecoSavingsPct > 0"> · Saves {{ route.ecoSavingsPct }}% fuel</span></small>
+            </button>
+          </div>
+          <div class="gx-navigation-preferences" aria-label="Route Preferences">
+            <button type="button" class="gx-navigation-pref-pill" :class="{ active: routePreferences.avoid_tolls }" @click="togglePreference('avoid_tolls')">
+              <i class="bi bi-slash-circle"></i> Avoid Tolls
+            </button>
+            <button type="button" class="gx-navigation-pref-pill" :class="{ active: routePreferences.avoid_highways }" @click="togglePreference('avoid_highways')">
+              <i class="bi bi-sign-stop"></i> Avoid Highways
+            </button>
+            <button type="button" class="gx-navigation-pref-pill" :class="{ active: routePreferences.avoid_ferries }" @click="togglePreference('avoid_ferries')">
+              <i class="bi bi-water"></i> Avoid Ferries
+            </button>
+            <button type="button" class="gx-navigation-pref-pill" :class="{ active: routePreferences.prefer_eco }" @click="togglePreference('prefer_eco')">
+              <i class="bi bi-tree"></i> 🌿 Fuel-Efficient
             </button>
           </div>
           <div class="gx-navigation-summary__actions">

@@ -749,7 +749,10 @@ class Car:
 
     self.CI.CS.CC = self.sm['carControl']
 
-    self.starpilot_toggles = get_starpilot_toggles(self.sm)
+    # The toggles only change with a new starpilotPlan (get_starpilot_toggles(sm) returns the same cached object for the
+    # same text), so skip the lookup on the other cycles (card CPU profile, route 00000300).
+    if self.sm.updated['starpilotPlan']:
+      self.starpilot_toggles = get_starpilot_toggles(self.sm)
 
   def params_thread(self, evt):
     while not evt.is_set():

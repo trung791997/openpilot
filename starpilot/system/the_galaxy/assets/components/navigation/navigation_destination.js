@@ -9,7 +9,9 @@ import {
   removeRouteFromMap,
   getOrdinalSuffix,
   highlightRoute,
-} from "./navigation_utilities.js?v=nav-search-context-2";
+  rankEcoRoutes,
+} from "./navigation_utilities.js?v=nav-route-prefs-1";
+import { NavigationSettings } from "./navigation_settings.js?v=nav-settings-2";
 import { Modal } from "/assets/components/modal.js";
 
 function sha1hex(str) {
@@ -242,6 +244,13 @@ const state = reactive({
   previousDestinations: "[]",
   searchProvider: "mapbox",
   selectedRoute: null,
+  settingsVisible: false,
+  routePreferences: {
+    avoid_tolls: false,
+    avoid_highways: false,
+    avoid_ferries: false,
+    prefer_eco: false
+  },
   showRemoveFavoriteModal: false,
   showRenameFavoriteModal: false,
   suggestions: "[]"
@@ -295,7 +304,56 @@ export function NavDestination() {
     await setSpecial(favorite, "work", state, loadFavoritesAlphabetically);
   }
 
-  async function initiateNavigation(destination, { resume = false } = {}) {
+  async function toggleRoutePreference(key) {
+    state.routePreferences = { ...state.routePreferences, [key]: !state.routePreferences[key] };
+    const preferences = {
+      avoid_tolls: Boolean(state.routePreferences.avoid_tolls),
+      avoid_highways: Boolean(state.routePreferences.avoid_highways),
+      avoid_ferries: Boolean(state.routePreferences.avoid_ferries),
+      prefer_eco: Boolean(state.routePreferences.prefer_eco)
+    };
+    try {
+      await fetch("/api/navigation/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(preferences)
+      });
+    } catch {
+      showSnackbar("Could not save route preferences.", "error");
+    }
+    const selected = state.selectedRoute;
+    if (!selected?.destinationCoordinates) return;
+    const destination = {
+      name: selected.name,
+      longitude: selected.destinationCoordinates[0],
+      latitude: selected.destinationCoordinates[1],
+      routeId: selected.routeId
+    };
+    let keepConfirmed = false;
+    if (areRoutesEqual(selected, state.confirmedRoute)) {
+      // The car is already routing: re-send the active destination with the new preferences
+      // (same POST as Start Navigation) so the comma re-routes, not just this preview.
+      try {
+        const res = await fetch("/api/navigation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...destination, ...preferences })
+        });
+        const result = await res.json().catch(() => ({}));
+        if (res.ok) {
+          keepConfirmed = true;
+          showSnackbar("Active route updated with new preferences.");
+        } else {
+          showSnackbar(result.message || "Could not update the active route.", "error");
+        }
+      } catch {
+        showSnackbar("Could not reach the comma to update the active route.", "error");
+      }
+    }
+    await initiateNavigation(destination, { keepConfirmed });
+  }
+
+  async function initiateNavigation(destination, { resume = false, keepConfirmed = false } = {}) {
     state.selectedRoute = null;
     state.confirmedRoute = null;
     state.loadingRoute = true;
@@ -314,11 +372,22 @@ export function NavDestination() {
       if (destinationMarker) destinationMarker.remove();
       destinationMarker = new mapboxgl.Marker().setLngLat(coords).addTo(map);
 
-      const routes = await getRoutes(
+      const excludes = [];
+      if (state.routePreferences.avoid_tolls) excludes.push("toll");
+      if (state.routePreferences.avoid_highways) excludes.push("motorway");
+      if (state.routePreferences.avoid_ferries) excludes.push("ferry");
+      const options = excludes.length ? { exclude: excludes.join(",") } : {};
+
+      let routes = await getRoutes(
         `${state.lastPosition.longitude},${state.lastPosition.latitude}`,
         `${coords[0]},${coords[1]}`,
-        state.mapboxPublic
+        state.mapboxPublic,
+        options
       );
+
+      if (routes && routes.length > 0 && state.routePreferences.prefer_eco) {
+        routes = rankEcoRoutes(routes);
+      }
 
       removeRouteFromMap(map);
 
@@ -334,11 +403,17 @@ export function NavDestination() {
           startingCoordinates: [state.lastPosition.longitude, state.lastPosition.latitude],
           routeId: selectedRouteId,
           routeHash,
+          isEco: Boolean(selectedRouteData.isEco),
+          ecoSavingsPct: Number(selectedRouteData.ecoSavingsPct) || 0,
           steps: selectedRouteData?.legs?.[0]?.steps || []
         };
 
         state.selectedRoute = selected;
-        if (resume) state.confirmedRoute = JSON.parse(JSON.stringify(selected));
+        if (resume || keepConfirmed) state.confirmedRoute = JSON.parse(JSON.stringify(selected));
+        if (keepConfirmed) {
+          localStorage.setItem("activeRouteId", selected.routeId);
+          state.confirmedRouteRefresh = Math.random();
+        }
 
         localStorage.setItem("lastRouteId", selected.routeId);
 
@@ -353,6 +428,8 @@ export function NavDestination() {
               duration: route.duration,
               distance: route.distance,
               routeId,
+              isEco: Boolean(route?.isEco),
+              ecoSavingsPct: Number(route?.ecoSavingsPct) || 0,
               steps: route?.legs?.[0]?.steps || []
             };
             highlightRoute(map, routes, routeId);
@@ -360,6 +437,17 @@ export function NavDestination() {
           state.isMetric,
           () => state.selectedRoute?.routeId ?? null
         );
+
+        if (window.innerWidth <= 768 && window.matchMedia("(orientation: portrait)").matches) {
+          requestAnimationFrame(() => {
+            const box = document.querySelector("#infobox .navigation-summary-widget");
+            const start = [state.lastPosition.longitude, state.lastPosition.latitude];
+            if (!box || !Number.isFinite(start[0]) || !Number.isFinite(coords?.[0])) return;
+            const top = Math.round(box.getBoundingClientRect().bottom + 16);
+            if (window.innerHeight - top < 200) return;
+            map.fitBounds([start, coords], { padding: { top, bottom: 40, left: 40, right: 40 }, duration: 600 });
+          });
+        }
 
         if (resume && map) {
           requestAnimationFrame(() => {
@@ -392,6 +480,14 @@ export function NavDestination() {
     state.amap2Key = data.amap2Key?.trim() || "";
     state.isMetric = data.isMetric ?? true;
     state.language = data.language?.trim() || "";
+    if (data.routePreferences) {
+      state.routePreferences = {
+        avoid_tolls: !!data.routePreferences.avoid_tolls,
+        avoid_highways: !!data.routePreferences.avoid_highways,
+        avoid_ferries: !!data.routePreferences.avoid_ferries,
+        prefer_eco: !!data.routePreferences.prefer_eco
+      };
+    }
     const hasMapbox = !!state.mapboxPublic && !!state.mapboxSecret;
     const hasAMap = !!state.amap1Key && !!state.amap2Key;
     state.missingKeys = !hasMapbox;
@@ -713,8 +809,8 @@ export function NavDestination() {
       ? [state.lastPosition.longitude, state.lastPosition.latitude]
       : (parseCoordinatePair(state.destination)
         ? [state.destination.longitude, state.destination.latitude]
-        : [0, 0]);
-    const initialZoom = state.lastPosition ? 15 : 2;
+        : [-98.5, 39.8]);
+    const initialZoom = state.lastPosition ? 15 : (parseCoordinatePair(state.destination) ? 12 : 3);
     map = new mapboxgl.Map({
       container,
       center: initialCenter,
@@ -794,6 +890,9 @@ export function NavDestination() {
                   <a href="/manage_navigation_keys" class="keys-required-button">Go to "Manage Keys"</a>
                 </div>
               </section>
+              <section class="navigation-settings-standalone">
+                ${NavigationSettings({ getRoutePreferences: () => state.routePreferences, toggleRoutePreference })}
+              </section>
             `
         : html`
               <div class="map-wrapper">
@@ -801,6 +900,7 @@ export function NavDestination() {
                   <div class="search-controls">
                     <input autocomplete="off" id="search-field" placeholder="Search here" value="${() => searchFieldState.value}" @input="${searchInput}" @keydown="${handleSearchKey}" />
                     ${() => (state.favoritesCount > 0 ? html`<button class="favorites-toggle-button" @click="${handleFavoritesClick}">❤️ Favorites</button>` : "")}
+                    <button type="button" class="${() => "favorites-toggle-button navigation-settings-toggle" + (state.settingsVisible ? " active" : "")}" aria-pressed="${() => (state.settingsVisible ? "true" : "false")}" @click="${() => { state.settingsVisible = !state.settingsVisible; }}"><i class="bi bi-gear"></i> Settings</button>
                     ${() => (state.canToggleProvider ? html`
                       <div class="search-provider-toggle">
                         <button class="${() => (state.searchProvider === "amap" ? "active" : "")}" title="AMap / Gaode search provider" @click="${() => { state.searchProvider = "amap"; state.suggestions = "[]"; }}">AMap</button>
@@ -809,6 +909,11 @@ export function NavDestination() {
                     ` : "")}
                   </div>
                   <div id="infobox">
+                    ${() => (state.settingsVisible ? NavigationSettings({
+            getRoutePreferences: () => state.routePreferences,
+            toggleRoutePreference,
+            onClose: () => { state.settingsVisible = false; }
+          }) : "")}
                     ${() => {
             if (state.loadingRoute) {
               return html`<div class="navigation-summary-widget loading-status"><span class="spinner"></span> Calculating route...</div>`;
@@ -831,6 +936,7 @@ export function NavDestination() {
                 },
                 loadFavorites: loadFavoritesAlphabetically,
                 removeFavorite: confirmRemoveFavorite,
+                toggleRoutePreference,
                 searchFieldState,
                 favoriteRoutes: state.favoriteRoutes
               }, state.confirmedRouteRefresh);
@@ -922,8 +1028,11 @@ function NavigationDestination({
   onConfirm,
   loadFavorites,
   removeFavorite,
+  toggleRoutePreference,
   searchFieldState,
   isFavorited,
+  isEco = false,
+  ecoSavingsPct = 0,
   favoriteRoutes = [],
   steps = []
   }) {
@@ -949,6 +1058,10 @@ function NavigationDestination({
           longitude: destinationCoordinates[0],
           latitude: destinationCoordinates[1],
           routeId,
+          avoid_tolls: Boolean(state.routePreferences?.avoid_tolls),
+          avoid_highways: Boolean(state.routePreferences?.avoid_highways),
+          avoid_ferries: Boolean(state.routePreferences?.avoid_ferries),
+          prefer_eco: Boolean(state.routePreferences?.prefer_eco),
         })
       });
       result = await response.json().catch(() => ({}));
@@ -1040,6 +1153,27 @@ function NavigationDestination({
         <span class="emoji">🕗</span>
         <span class="label">ETA:</span>
         <span class="value">${etaString}</span>
+      </div>
+      ${isEco ? html`
+        <div class="summary-row">
+          <span class="emoji">🌿</span>
+          <span class="label">Eco Route</span>
+          <span class="value">${ecoSavingsPct > 0 ? `Saves ${ecoSavingsPct}% fuel` : "Most fuel-efficient"}</span>
+        </div>
+      ` : ""}
+      <div class="navigation-preferences">
+        <button type="button" class="${() => "navigation-pref-pill" + (state.routePreferences.avoid_tolls ? " active" : "")}" @click="${() => toggleRoutePreference('avoid_tolls')}">
+          <i class="bi bi-slash-circle"></i> Avoid Tolls
+        </button>
+        <button type="button" class="${() => "navigation-pref-pill" + (state.routePreferences.avoid_highways ? " active" : "")}" @click="${() => toggleRoutePreference('avoid_highways')}">
+          <i class="bi bi-sign-stop"></i> Avoid Highways
+        </button>
+        <button type="button" class="${() => "navigation-pref-pill" + (state.routePreferences.avoid_ferries ? " active" : "")}" @click="${() => toggleRoutePreference('avoid_ferries')}">
+          <i class="bi bi-water"></i> Avoid Ferries
+        </button>
+        <button type="button" class="${() => "navigation-pref-pill" + (state.routePreferences.prefer_eco ? " active" : "")}" @click="${() => toggleRoutePreference('prefer_eco')}">
+          <i class="bi bi-tree"></i> 🌿 Fuel-Efficient
+        </button>
       </div>
       <div class="buttonCluster">
         ${() =>

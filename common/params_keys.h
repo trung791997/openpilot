@@ -177,6 +177,21 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UpdaterLastFetchTime", {PERSISTENT, TIME}},
     {"UptimeOffroad", {PERSISTENT, FLOAT, "0.0"}},
     {"UptimeOnroad", {PERSISTENT, FLOAT, "0.0"}},
+    // jetlink: the large model on a Jetson, Mac, NVIDIA PC, iPhone or Android over
+    // USB (zoompilot/jetlink). JetlinkSpec carries whether the engine is built, which
+    // must survive a reboot, or every ignition cycle would rebuild a multi-minute engine.
+    {"AcceleratorProgress", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_AcceleratorUnavailable", {CLEAR_ON_MANAGER_START, JSON}},
+    {"JetlinkLink", {PERSISTENT, INT, "0"}},
+    {"JetlinkSpec", {PERSISTENT, JSON}},
+    {"JetlinkModelPointers", {PERSISTENT, JSON}},
+    // the big model jetlink runs, {ref, displayName}, picked in the Galaxy model
+    // manager (unset: jetlink's default), and the catalog it is picked from
+    {"JetlinkBigModel", {PERSISTENT, JSON}},
+    {"JetlinkCatalog", {PERSISTENT, JSON}},
+    // an iPhone on a direct cable charges from the comma; off by default, some
+    // lose the link once the comma powers them
+    {"JetlinkChargePhone", {PERSISTENT, BOOL, "0"}},
     {"UsbGpuActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"UsbGpuCompiled", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"UsbGpuLoading", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
@@ -593,6 +608,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ClearNavOnOffroadTimeoutMinutes", {PERSISTENT, INT, "0", "0", 2, SETTINGS_SIMPLE}},
     {"NavDestination", {PERSISTENT | CLEAR_ON_MANAGER_START, STRING, "", ""}},
     {"NavInstructionCollapsed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0", "0"}},
+    {"NavLaneMovePrompt", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON, "{}", "{}"}},
     {"NavInstructionState", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON, "{}", "{}"}},
     {"NextMapSpeedLimit", {CLEAR_ON_MANAGER_START, JSON, "{}", "{}"}},
     {"VisionSpeedLimit", {CLEAR_ON_MANAGER_START, FLOAT, "0.0", "0.0"}},

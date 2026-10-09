@@ -196,3 +196,11 @@ def test_routing_configured_only_requires_a_non_empty_secret_key():
   assert not routing_configured(FakeParams())
   assert not routing_configured(FakeParams({"MapboxSecretKey": "  "}))
   assert routing_configured(FakeParams({"MapboxSecretKey": "secret"}))
+
+
+def test_normalize_destination_payload_rejects_null_island_and_out_of_range():
+  base = {"name": "Somewhere"}
+  assert normalize_destination_payload({**base, "latitude": 0.0, "longitude": 0.0}) is None
+  assert normalize_destination_payload({**base, "latitude": 95.0, "longitude": 10.0}) is None
+  assert normalize_destination_payload({**base, "latitude": 10.0, "longitude": 190.0}) is None
+  assert normalize_destination_payload({**base, "latitude": 0.0, "longitude": 10.0}) is not None

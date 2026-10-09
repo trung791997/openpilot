@@ -9,6 +9,11 @@ import usb1
 from openpilot.system.hardware import HARDWARE, TICI
 os.environ['GMMU'] = '0'
 os.environ['DEV'] = 'QCOM' if TICI else 'LLVM'
+# jetlink's prepare() starts tinygrad's compile pool before modeld goes
+# realtime, sized PARALLEL = cpu count. 8 spawn workers held ~270 MB on a
+# 3.6 GB mici and pushed it past selfdrived's 90% lowMemory soft-disable; the
+# small model is a prebuilt pickle, so only the link's few runtime kernels use it
+os.environ.setdefault('PARALLEL', '2')
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
 import time
@@ -56,7 +61,9 @@ from openpilot.selfdrive.modeld.compile_modeld import (
   tinygrad_commit,
 )
 from openpilot.selfdrive.modeld.helpers import get_tg_input_devices, load_oob, tinygrad_dev_config, usbgpu_present
+from openpilot.selfdrive.modeld.jetlink_join import Joined, SmallModel
 from openpilot.selfdrive.modeld.usbgpu_link import wait_usbgpu_link
+from openpilot.starpilot import jetlink_adapter
 from openpilot.system.hardware.usb import CHESTNUT_USB_IDS
 from openpilot.starpilot.assets.model_manager import (
   ModelManager,
@@ -1120,6 +1127,9 @@ def main(demo=False):
   sentry.set_tag("daemon", PROCESS_NAME)
   cloudlog.bind(daemon=PROCESS_NAME)
   setproctitle(PROCESS_NAME)
+  # jetlink's GPU setup runs before the frame loop's realtime priority and core,
+  # and only with no chestnut: a chestnut's big model and Model Lab come first
+  jetlink_prepared = not usbgpu_present() and jetlink_adapter.prepare()
   config_realtime_process(7, 54)
 
   params = Params()
@@ -1257,6 +1267,11 @@ def main(demo=False):
       params,
       selected_model_version,
     )
+    if jetlink_prepared and not usbgpu_present_now:
+      jetlink_small = SmallModel(model)
+      joined = jetlink_adapter.attach(jetlink_small, vipc_client_main.width, vipc_client_main.height)
+      if joined is not None:
+        model = Joined(joined, jetlink_small)
 
   if not model_lab_active:
     set_runtime_model_params(params, model.model_id, model.policy_generation)
@@ -1440,6 +1455,15 @@ def main(demo=False):
                                                        log.LaneChangeState.laneChangeFinishing)
     blinker_on = bool(sm["carState"].leftBlinker or sm["carState"].rightBlinker) or lane_change_in_progress
 
+    # jetlink's joining model swaps its large model in only while nothing is in
+    # control, and hands it back on this share of dropped frames. A handover's
+    # stall is not lag, nor are the drops of the frame it happens on
+    jetlink_joined = isinstance(model, Joined)
+    if jetlink_joined:
+      model.in_control = jetlink_adapter.in_control(sm)
+      model.frame_drop_ratio = frame_drop_ratio
+      handovers = getattr(model, 'handovers', 0)
+
     mt1 = time.perf_counter()
     try:
       send_chestnut = (
@@ -1488,10 +1512,13 @@ def main(demo=False):
         )
       else:
         bufs, transforms, inputs = _runner_frame_args(
-          model, buf_main, buf_extra, model_transform_main, model_transform_extra,
+          model.small.model if jetlink_joined else model, buf_main, buf_extra, model_transform_main, model_transform_extra,
           vec_desire, traffic_convention, lat_action_t, long_action_t,
           prev_action, v_ego, lateral_control_params,
         )
+        if jetlink_joined:
+          # comma's large model always takes it
+          inputs["action_t"] = np.array([lat_action_t, long_action_t], dtype=np.float32)
         model_output = model.run(
           bufs,
           transforms,
@@ -1536,6 +1563,9 @@ def main(demo=False):
 
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+    if jetlink_joined and getattr(model, 'handovers', 0) != handovers:
+      run_count = 0
+      frame_drop_ratio = 0.
     if model_lab_active and model_lab_longitudinal is not None:
       model_lab_timings.append(model_execution_time * 1000)
       if run_count % (ModelConstants.MODEL_FREQ * 10) == 0:
@@ -1590,7 +1620,8 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
-      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, sm['starpilotPlan'], starpilot_toggles, sm['carControl'].enabled)
+      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, sm['starpilotPlan'], starpilot_toggles, sm['carControl'].enabled,
+                modeldata=modelv2_send.modelV2)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       starpilot_modelv2_send.starpilotModelV2.turnDirection = DH.turn_direction

@@ -29,14 +29,18 @@ NAV_UNLOCK_MPH = 10.0
 MPH_TO_MS = 0.44704
 
 PAD = 32.0
-TOP_BAR = 140.0
-ROUND_BUTTON = 80.0
-SEARCH_HEIGHT = 92.0
+TOP_BAR = 112.0
+ROUND_BUTTON = 72.0
+SEARCH_HEIGHT = 80.0
 SECTION_HEIGHT = 64.0
 ROW_HEIGHT = 104.0
 ROW_GAP = 6.0
 ICON = 56.0
-CHIP_HEIGHT = 60.0
+CHIP_HEIGHT = 52.0
+SHEET_IDLE_HEIGHT = 132.0   # the card under the map with no route being previewed
+SHEET_DRAFT_HEIGHT = 142.0  # name, summary and Start, before the chip rows
+SHEET_GAP = 12.0
+CHIP_ROW_GAP = 12.0
 DRAG_SLOP = 18.0
 PANEL_RADIUS = 24.0
 
@@ -225,8 +229,9 @@ class CarNavigateScreen(Widget):
       return []
     chips = []
     for index, route in enumerate(page._preview_routes):
-      name = tr("Fastest") if index == 0 else tr("Route {}").format(index + 1)
-      chips.append((f"route:{index}", f"{name} · {page._duration_text(route.total_duration)}", index == page._preview_route_index))
+      duration = page._duration_text(route.total_duration)
+      label = f"{tr('Fastest')} {duration}" if index == 0 else f"{index + 1} · {duration}"
+      chips.append((f"route:{index}", label, index == page._preview_route_index))
     return chips
 
   def favorite_chips(self) -> list[tuple[str, str, bool]]:
@@ -536,6 +541,18 @@ class CarNavigateScreen(Widget):
         x += area.width + KEY_GAP
       y += key_h + KEY_GAP
 
+  def _chip_layout(self, chips: list[tuple[str, str, bool]], width: float):
+    """Chips flowing left to right, wrapping at width: ([(chip, x offset, row)], row count)."""
+    medium = self._font(FontWeight.MEDIUM)
+    placed, x, row = [], 0.0, 0
+    for chip in chips:
+      chip_w = measure_text_cached(medium, chip[1], 26).x + 44
+      if x and x + chip_w > width:
+        x, row = 0.0, row + 1
+      placed.append((chip, x, row))
+      x += chip_w + 14
+    return placed, row + 1 if placed else 0
+
   def _chip(self, target: str, label: str, selected: bool, x: float, y: float) -> float:
     medium = self._font(FontWeight.MEDIUM)
     width = measure_text_cached(medium, label, 26).x + 44
@@ -561,9 +578,11 @@ class CarNavigateScreen(Widget):
     bold, medium = self._font(FontWeight.BOLD), self._font(FontWeight.MEDIUM)
     page = self.page
     draft = page._draft_destination
-    route_chips = self.route_chips() if draft is not None else []
-    sheet_h = 166.0 if draft is None else 258.0 + (CHIP_HEIGHT + 16 if route_chips else 0)
-    map_rect = rl.Rectangle(panel.x, panel.y, panel.width, panel.height - sheet_h - 16)
+    chips, chip_rows = [], 0
+    if draft is not None:
+      chips, chip_rows = self._chip_layout(self.route_chips() + self.favorite_chips(), panel.width - 60)
+    sheet_h = SHEET_IDLE_HEIGHT if draft is None else SHEET_DRAFT_HEIGHT + chip_rows * (CHIP_HEIGHT + CHIP_ROW_GAP)
+    map_rect = rl.Rectangle(panel.x, panel.y, panel.width, panel.height - sheet_h - SHEET_GAP)
     rl.draw_rectangle_rounded(map_rect, 2 * PANEL_RADIUS / map_rect.width, 16, TILE_BG)
     page._map.render(map_rect)
 
@@ -577,31 +596,25 @@ class CarNavigateScreen(Widget):
         button = rl.Rectangle(sheet.x + sheet.width - 30 - 240, sheet.y + (sheet_h - 96) / 2, 240, 96)
         self._big_button("action:cancel", tr("End route"), DANGER, button)
         name = str(active.get("name") or active.get("place_name") or "")
-        rl.draw_text_ex(medium, tr("Navigating to").upper(), rl.Vector2(inner_x, sheet.y + 30), 23, 1.5, ACCENT)
-        rl.draw_text_ex(bold, fit_text(bold, name, 38, button.x - inner_x - 24), rl.Vector2(inner_x, sheet.y + 72), 38, 0, TEXT)
+        rl.draw_text_ex(medium, tr("Navigating to").upper(), rl.Vector2(inner_x, sheet.y + 26), 23, 1.5, ACCENT)
+        rl.draw_text_ex(bold, fit_text(bold, name, 38, button.x - inner_x - 24), rl.Vector2(inner_x, sheet.y + 64), 38, 0, TEXT)
       else:
-        rl.draw_text_ex(bold, tr("Where to?"), rl.Vector2(inner_x, sheet.y + 40), 38, 0, TEXT)
+        rl.draw_text_ex(bold, tr("Where to?"), rl.Vector2(inner_x, sheet.y + 28), 38, 0, TEXT)
         rl.draw_text_ex(medium, fit_text(medium, tr("Search or pick a saved place to preview the route"), 27, inner_w),
-                        rl.Vector2(inner_x, sheet.y + 94), 27, 0, SUBTEXT)
+                        rl.Vector2(inner_x, sheet.y + 76), 27, 0, SUBTEXT)
       return
 
-    start = rl.Rectangle(sheet.x + sheet.width - 30 - 240, sheet.y + 30, 240, 110)
+    start = rl.Rectangle(sheet.x + sheet.width - 30 - 240, sheet.y + 22, 240, 96)
     can_start = page._routing_available()
     self._big_button("action:start", tr("Start"), START, start, enabled=can_start)
     text_w = start.x - inner_x - 24
     name = str(draft.get("name") or draft.get("place_name") or tr("Destination"))
-    rl.draw_text_ex(bold, fit_text(bold, name, 40, text_w), rl.Vector2(inner_x, sheet.y + 40), 40, 0, TEXT)
+    rl.draw_text_ex(bold, fit_text(bold, name, 40, text_w), rl.Vector2(inner_x, sheet.y + 22), 40, 0, TEXT)
     summary, color = self.route_summary()
-    rl.draw_text_ex(medium, fit_text(medium, summary, 28, text_w), rl.Vector2(inner_x, sheet.y + 96), 28, 0, color)
+    rl.draw_text_ex(medium, fit_text(medium, summary, 28, text_w), rl.Vector2(inner_x, sheet.y + 74), 28, 0, color)
 
-    y = sheet.y + 176
-    for chips in (route_chips, self.favorite_chips()):
-      if not chips:
-        continue
-      x = inner_x
-      for target, label, selected in chips:
-        x += self._chip(target, label, selected, x, y) + 14
-      y += CHIP_HEIGHT + 16
+    for (target, label, selected), dx, row in chips:
+      self._chip(target, label, selected, inner_x + dx, sheet.y + SHEET_DRAFT_HEIGHT - CHIP_ROW_GAP + row * (CHIP_HEIGHT + CHIP_ROW_GAP))
 
 
 class CarNavigateCard(Widget):

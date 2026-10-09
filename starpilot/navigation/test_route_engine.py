@@ -227,3 +227,111 @@ def test_fetch_routes_handles_errors():
   assert MapboxRouteEngine(DirectionsSession({"code": "NoRoute", "routes": []})).fetch_routes("token", Coordinate(0.0, 0.0), destination) == []
   assert MapboxRouteEngine(DirectionsSession({}, status_code=401)).fetch_routes("token", Coordinate(0.0, 0.0), destination) == []
   assert MapboxRouteEngine(DirectionsSession({})).fetch_routes("", Coordinate(0.0, 0.0), destination) == []
+
+
+def test_fetch_routes_applies_exclude_parameters_for_tolls_highways_ferries():
+  session = DirectionsSession({"code": "Ok", "routes": [mapbox_route(600.0, 0.01)]})
+  engine = MapboxRouteEngine(session)
+
+  # Avoid tolls only
+  engine.fetch_routes("token", Coordinate(0.0, 0.0), {"latitude": 0.0, "longitude": 0.01, "avoid_tolls": True})
+  assert session.params["exclude"] == "toll"
+
+  # Avoid tolls and highways
+  engine.fetch_routes("token", Coordinate(0.0, 0.0), {
+    "latitude": 0.0,
+    "longitude": 0.01,
+    "avoid_tolls": True,
+    "avoid_highways": True,
+  })
+  assert session.params["exclude"] == "toll,motorway"
+
+  # Avoid all three: tolls, highways, ferries
+  engine.fetch_routes("token", Coordinate(0.0, 0.0), {
+    "latitude": 0.0,
+    "longitude": 0.01,
+    "avoid_tolls": True,
+    "avoid_highways": True,
+    "avoid_ferries": True,
+  })
+  assert session.params["exclude"] == "toll,motorway,ferry"
+
+
+def test_fetch_routes_prefer_eco_ranks_fuel_efficient_route_first():
+  # Route 1: 15 miles (24140 m) highway route in 15 min (900 s) -> ~26.8 m/s (60 mph) -> higher aero drag & distance
+  route_highway = {
+    "distance": 24140.0,
+    "duration": 900.0,
+    "geometry": {"coordinates": [[0.0, 0.0], [0.1, 0.0]]},
+    "legs": [{
+      "steps": [
+        {"maneuver": {"type": "depart", "instruction": "Highway", "location": [0.0, 0.0]}, "distance": 24140.0, "duration": 900.0},
+        {"maneuver": {"type": "arrive", "instruction": "Arrive", "location": [0.1, 0.0]}, "distance": 0.0, "duration": 0.0},
+      ],
+    }],
+  }
+  # Route 2: 10 miles (16093 m) local route in 16 min (960 s) -> ~16.7 m/s (37 mph) -> lower aero drag & shorter distance
+  route_local = {
+    "distance": 16093.0,
+    "duration": 960.0,
+    "geometry": {"coordinates": [[0.0, 0.0], [0.1, 0.0]]},
+    "legs": [{
+      "steps": [
+        {"maneuver": {"type": "depart", "instruction": "Local", "location": [0.0, 0.0]}, "distance": 16093.0, "duration": 960.0},
+        {"maneuver": {"type": "arrive", "instruction": "Arrive", "location": [0.1, 0.0]}, "distance": 0.0, "duration": 0.0},
+      ],
+    }],
+  }
+
+  session = DirectionsSession({"code": "Ok", "routes": [route_highway, route_local]})
+  engine = MapboxRouteEngine(session)
+
+  # Without prefer_eco, route order is unchanged (highway first)
+  routes_standard = engine.fetch_routes("token", Coordinate(0.0, 0.0), {"latitude": 0.0, "longitude": 0.1})
+  assert routes_standard[0].total_distance == 24140.0
+
+  # With prefer_eco, the more fuel-efficient local route is promoted to index 0 and marked eco recommended
+  routes_eco = engine.fetch_routes("token", Coordinate(0.0, 0.0), {"latitude": 0.0, "longitude": 0.1, "prefer_eco": True})
+  assert routes_eco[0].total_distance == 16093.0
+  assert routes_eco[0].is_eco_recommended is True
+  assert routes_eco[0].eco_savings_pct > 0.0
+
+
+
+def single_step_route(distance: float, duration: float) -> dict:
+  return {
+    "distance": distance,
+    "duration": duration,
+    "geometry": {"coordinates": [[0.0, 0.0], [0.1, 0.0]]},
+    "legs": [{
+      "steps": [
+        {"maneuver": {"type": "depart", "instruction": "Go", "location": [0.0, 0.0]}, "distance": distance, "duration": duration},
+        {"maneuver": {"type": "arrive", "instruction": "Arrive", "location": [0.1, 0.0]}, "distance": 0.0, "duration": 0.0},
+      ],
+    }],
+  }
+
+
+def test_fetch_route_prefer_eco_main_requests_alternatives():
+  # "main" with prefer_eco must see the alternatives, or it cannot pick the eco route the previews showed.
+  session = DirectionsSession({"code": "Ok", "routes": [single_step_route(24140.0, 900.0), single_step_route(16093.0, 960.0)]})
+  engine = MapboxRouteEngine(session)
+  route = engine.fetch_route("token", Coordinate(0.0, 0.0), {"latitude": 0.0, "longitude": 0.1, "routeId": "main", "prefer_eco": True})
+  assert session.params["alternatives"] == "true"
+  assert route.total_distance == 16093.0
+  assert route.is_eco_recommended is True
+
+
+def test_fetch_route_prefer_eco_alt_indexes_reordered_list():
+  # Mapbox order [A highway, B longer highway, C local]; C is the eco pick, so the list shown is [C, A, B].
+  routes = [single_step_route(24140.0, 900.0), single_step_route(30000.0, 1100.0), single_step_route(16093.0, 960.0)]
+  session = DirectionsSession({"code": "Ok", "routes": routes})
+  engine = MapboxRouteEngine(session)
+  destination = {"latitude": 0.0, "longitude": 0.1, "prefer_eco": True}
+  shown = engine.fetch_routes("token", Coordinate(0.0, 0.0), destination)
+  assert [r.total_distance for r in shown] == [16093.0, 24140.0, 30000.0]
+  for index, expected in ((0, 16093.0), (1, 24140.0), (2, 30000.0)):
+    route_id = "main" if index == 0 else f"alt-{index}"
+    picked = engine.fetch_route("token", Coordinate(0.0, 0.0), {**destination, "routeId": route_id})
+    assert picked.total_distance == expected
+    assert session.params["alternatives"] == "true"

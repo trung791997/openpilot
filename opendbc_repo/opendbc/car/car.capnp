@@ -336,6 +336,11 @@ struct RadarData @0x888ad6581cf0aacb {
     # -1 (the default) means "not provided": every other radar, and every log recorded before this field existed.
     # radard gates only NEW onpath adoption on its window median (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE).
     existence @10 :Float32 = -1.0;
+
+    # Honda Bosch-A only (D-089): the point's range anchor came from a far-range D-057 re-anchor that only the
+    # range-scaled sigma window allowed (BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC). radard uses it only while the camera
+    # and the point's own range slope agree. False (the default) on every other radar and in older logs.
+    recovered @11 :Bool;
   }
 
   enum ErrorDEPRECATED {
@@ -387,6 +392,8 @@ struct CarControl {
     torqueOutputCan @8: Float32;   # value sent over can to the car
     speed @6: Float32;  # m/s
     lateralControlMode @9: LateralControlMode;
+    # planner lead coast: a car that can coast (gas off, no brake request) does so while accel is a light decel
+    coast @10: Bool;
 
     enum LongControlState @0xe40f3a917d908282{
       off @0;

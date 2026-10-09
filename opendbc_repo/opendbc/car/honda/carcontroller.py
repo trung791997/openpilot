@@ -56,6 +56,24 @@ def icbm_counter_sync_step(car_counter: int, last_car_counter: int, phase: int, 
 
 BOSCH_BRAKE_FORCE_ON = -0.12
 BOSCH_BRAKE_FORCE_RELEASE = -0.02
+# D-091 lead coast: while the planner's StockBrakeFeel lead coast is binding (actuators.coast), a light decel is sent
+# as gas off with no brake request -- the stock coast frame (ACCEL_COMMAND p50 -0.39, GAS -30000, no BRAKE_REQUEST) --
+# instead of the brake request the band above would make of it. The planner's coast ceiling is clipped to -0.5
+# (LEAD_COAST_MIN); anything deeper than this is a real brake and goes through the normal selection. Route 000002f8:
+# the -0.30..-0.40 coast targets became brake taps with brake lights (36 gas<->brake flips). Static + replay only.
+BOSCH_LEAD_COAST_MIN_ACCEL = -0.6
+# Positive target on a descent (D-093): the force above includes the hill term, so on a downhill a positive target
+# (planner wants to gain speed) can fall under BOSCH_BRAKE_FORCE_ON and go out as a brake request with brake lights.
+# Route 00000308 6:07.5 (42 mph, pitch -0.037, target +0.14..+0.17): force -0.12 -> 1.7 s of brake mode, aEgo fell from
+# +0.3 to about 0 while the planner asked for +0.15. With the target above BOSCH_HILL_BRAKE_MAX_ACCEL brake mode is not
+# entered (gas off, no brake: the car coasts and gravity gives it the speed it asked for), and an active brake mode lets go
+# once the target rises past BOSCH_HILL_BRAKE_RELEASE_ACCEL. A target at or below 0 brakes exactly as before, so this
+# never delays a planner brake. The release margin keeps a target hovering near 0 on a long descent from flipping
+# brake <-> coast: at 0.10, 0000026b 12:11 (9 m/s, pitch -0.03, target swinging -0.15..+0.20) let go for 0.2 s at +0.10
+# and braked again; 0.20 adds no brake episode on the 9 replayed routes. Static + replay only.
+BOSCH_HILL_BRAKE_GUARD = True
+BOSCH_HILL_BRAKE_MAX_ACCEL = 0.0      # m/s^2, brake mode is entered only at or below this target
+BOSCH_HILL_BRAKE_RELEASE_ACCEL = 0.20  # m/s^2, brake mode ends once the target is above this
 
 
 def get_eps_modified_steering_pressed(
@@ -242,14 +260,28 @@ def bosch_overbrake_compensation(accel: float, stopping: bool) -> float:
   return float(np.interp(accel, BOSCH_OVERBRAKE_COMP_BP, BOSCH_OVERBRAKE_COMP_V))
 
 
-def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
-  """Select Bosch brake mode from the same road-load-adjusted force used for gas."""
+def honda_bosch_lead_coast(coast: bool, accel: float, stopping: bool, long_active: bool) -> bool:
+  """D-091: True when this frame goes out as a coast (gas off, no brake request)."""
+  return bool(coast and long_active and not stopping and BOSCH_LEAD_COAST_MIN_ACCEL <= accel <= 0.0)
+
+
+def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool,
+                               accel: "float | None" = None) -> bool:
+  """Select Bosch brake mode from the same road-load-adjusted force used for gas.
+
+  accel is the planner's target; when given, a positive target is not turned into a brake by the hill term (D-093).
+  """
   if not long_active:
     return False
   if stopping:
     return True
+  guard = BOSCH_HILL_BRAKE_GUARD and accel is not None
   if braking:
+    if guard and accel > BOSCH_HILL_BRAKE_RELEASE_ACCEL:
+      return False
     return gas_pedal_force <= BOSCH_BRAKE_FORCE_RELEASE
+  if guard and accel > BOSCH_HILL_BRAKE_MAX_ACCEL:
+    return False
   return gas_pedal_force < BOSCH_BRAKE_FORCE_ON
 
 
@@ -784,19 +816,20 @@ class CarController(CarControllerBase):
     return steering_pressed
 
   def _get_live_tuning_params(self):
+    # Runs every 100 Hz cycle: scalar min/max, not np.clip (4.2 us -> 0.3 us each; card CPU profile, route 00000300)
     return {
-      "override_fade_down_s": float(np.clip(self.param_store.get_float("HondaOverrideFadeDownSecs", default=0.0), 0.0, 10.0)),
-      "override_fade_up_s": float(np.clip(self.param_store.get_float("HondaOverrideFadeUpSecs", default=1.5), 0.0, 10.0)),
-      "override_torque_scale": float(np.clip(self.param_store.get_int("HondaOverrideTorqueScale", default=0), 0, 100)) / 100.0,
+      "override_fade_down_s": float(min(max(self.param_store.get_float("HondaOverrideFadeDownSecs", default=0.0), 0.0), 10.0)),
+      "override_fade_up_s": float(min(max(self.param_store.get_float("HondaOverrideFadeUpSecs", default=1.5), 0.0), 10.0)),
+      "override_torque_scale": float(min(max(self.param_store.get_int("HondaOverrideTorqueScale", default=0), 0), 100)) / 100.0,
       "driver_assist_during_override": self.param_store.get_bool("HondaDriverAssistDuringOverride", default=False),
       "steer_delta_limiter_enabled": self.param_store.get_bool("HondaSteerDeltaLimiter", default=False),
-      "steer_delta_up": float(np.clip(self.param_store.get_float("HondaSteerDeltaUp", default=3.0), 0.0, 100.0)),
-      "steer_delta_down": float(np.clip(self.param_store.get_float("HondaSteerDeltaDown", default=3.0), 0.0, 100.0)),
+      "steer_delta_up": float(min(max(self.param_store.get_float("HondaSteerDeltaUp", default=3.0), 0.0), 100.0)),
+      "steer_delta_down": float(min(max(self.param_store.get_float("HondaSteerDeltaDown", default=3.0), 0.0), 100.0)),
       "live_learning_gas": self.param_store.get_bool("HondaLiveLearningGas", default=self.CP.carFingerprint in HONDA_BOSCH),
-      "stopping_decel_rate": float(np.clip(self.param_store.get_int("HondaStoppingDecelRate", default=30), 0, 100)) / 100.0,
+      "stopping_decel_rate": float(min(max(self.param_store.get_int("HondaStoppingDecelRate", default=30), 0), 100)) / 100.0,
       "ecu_matched_long": self.param_store.get_bool("NrdrHondaEcuMatchedLong", default=False),
       "increase_override_tolerance": self.param_store.get_bool("NrdrIncreaseOverrideTolerance", default=False),
-      "min_steer_speed": float(np.clip(self.param_store.get_int("NrdrMinSteerSpeed", default=1), 0, 45)) * CV.MPH_TO_MS,
+      "min_steer_speed": float(min(max(self.param_store.get_int("NrdrMinSteerSpeed", default=1), 0), 45)) * CV.MPH_TO_MS,
       "same_direction_assist": self.param_store.get_bool("NrdrSameDirectionAssist", default=False),
       "vfn_override": self.param_store.get_bool("NrdrLatVfnOverride", default=False),
     }
@@ -1107,6 +1140,9 @@ class CarController(CarControllerBase):
             brake_accel += bosch_overbrake_compensation(accel, actuators.longControlState == LongCtrlState.stopping)
           self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           gas_pedal_force = accel + wind_brake_mps2 * self._learner.windfactor + hill_brake
+          stopping = actuators.longControlState == LongCtrlState.stopping
+          # the car decelerates at its own coast rate here, so the learner must not read it as a gas/wind error
+          lead_coast = honda_bosch_lead_coast(bool(getattr(actuators, 'coast', False)), accel, stopping, CC.longActive)
 
           if live["live_learning_gas"]:
             self._learner.update(
@@ -1115,7 +1151,7 @@ class CarController(CarControllerBase):
               gas_pedal_force=gas_pedal_force,
               wind_brake_ms2=wind_brake_mps2,
               long_active=CC.longActive,
-              long_pid=(actuators.longControlState == LongCtrlState.pid),
+              long_pid=(actuators.longControlState == LongCtrlState.pid and not lead_coast),
               gas_pressed=CS.out.gasPressed,
               brake_pressed=CS.out.brakePressed,
               v_ego=CS.out.vEgo,
@@ -1141,8 +1177,11 @@ class CarController(CarControllerBase):
           self.gas = min(self.gas, max(60.0, self.bosch_last_gas + 60.0))
           self.bosch_last_gas = self.gas
 
-          stopping = actuators.longControlState == LongCtrlState.stopping
-          self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive)
+          if lead_coast:
+            self.bosch_braking = False
+            gas_pedal_force = min(gas_pedal_force, min_gas)  # create_acc_commands sends GAS -30000 at or below min_gas
+          else:
+            self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel)
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(
             hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,

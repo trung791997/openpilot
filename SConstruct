@@ -442,6 +442,7 @@ SConscript(['third_party/SConscript'])
 
 SConscript(['selfdrive/SConscript'])
 SConscript(['starpilot/system/starpilot_auto/SConscript'])
+SConscript(['starpilot/jetlink_adapter/SConscript'])
 
 if Dir('#tools/cabana/').exists() and GetOption('extras'):
   SConscript(['tools/replay/SConscript'])

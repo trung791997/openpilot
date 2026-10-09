@@ -6,6 +6,9 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
+from openpilot.starpilot.jetlink_adapter import KEYS as JETLINK_KEYS, MODES as JETLINK_MODES
+
+JETLINK_MODE_TITLES = {"off": "Off", "usb": "USB", "ios": "iOS"}
 
 
 class DeveloperLayoutMici(NavScroller):
@@ -46,6 +49,11 @@ class DeveloperLayoutMici(NavScroller):
     self._ssh_keys_btn = BigButton("SSH keys", "Not set" if not github_username else github_username, icon=txt_ssh)
     self._ssh_keys_btn.set_click_callback(ssh_keys_callback)
 
+    # Jetlink: the large model on a Jetson, Mac or NVIDIA PC (USB) or an iPhone (iOS);
+    # stored as an index into the adapter's MODES, offroad only
+    self._jetlink_btn = BigButton("jetlink", JETLINK_MODE_TITLES[self._jetlink_mode()])
+    self._jetlink_btn.set_click_callback(self._on_jetlink)
+
     # ******** Main Scroller ********
     self._adb_toggle = BigCircleParamControl(gui_app.texture("icons_mici/adb_short.png", 82, 82), "AdbEnabled", icon_offset=(0, 12))
     self._ssh_toggle = BigCircleParamControl(gui_app.texture("icons_mici/ssh_short.png", 82, 82), "SshEnabled", icon_offset=(0, 12))
@@ -68,6 +76,7 @@ class DeveloperLayoutMici(NavScroller):
       self._joystick_toggle,
       self._alpha_long_toggle,
       self._debug_mode_toggle,
+      self._jetlink_btn,
     ])
 
     # Toggle lists
@@ -89,6 +98,7 @@ class DeveloperLayoutMici(NavScroller):
     # Disable toggles that require offroad
     for item in onroad_blocked_toggles:
       item.set_enabled(lambda: ui_state.is_offroad())
+    self._jetlink_btn.set_enabled(lambda: ui_state.is_offroad())
 
     # Disable toggles that require not engaged
     for item in engaged_blocked_toggles:
@@ -141,3 +151,13 @@ class DeveloperLayoutMici(NavScroller):
     ui_state.params.put_bool("AlphaLongitudinalEnabled", state)
     restart_needed_callback(state)
     self._update_toggles()
+
+  @staticmethod
+  def _jetlink_mode() -> str:
+    index = ui_state.params.get(JETLINK_KEYS.link, return_default=True)
+    return JETLINK_MODES[index] if isinstance(index, int) and 0 <= index < len(JETLINK_MODES) else "off"
+
+  def _on_jetlink(self):
+    index = (JETLINK_MODES.index(self._jetlink_mode()) + 1) % len(JETLINK_MODES)
+    ui_state.params.put(JETLINK_KEYS.link, index)
+    self._jetlink_btn.set_value(JETLINK_MODE_TITLES[JETLINK_MODES[index]])

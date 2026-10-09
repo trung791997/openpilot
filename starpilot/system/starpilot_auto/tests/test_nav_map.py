@@ -760,3 +760,19 @@ def test_auto_shows_the_map_it_has_when_the_suns_pick_is_missing(monkeypatch):
   assert tiles._theme_style("dark") == DARK_STYLE, "only auto falls back"
   problems.clear()
   assert tiles._theme_style("auto") == DARK_STYLE
+
+
+def test_preview_fit_ignores_null_island_gps_and_destination(view):
+  now = 100.0
+  rect = nav_map.rl.Rectangle(0, 0, 900, 600)
+  route = [(36.30, -115.30), (36.32, -115.28)]
+  view.set_preview([route], 0, (36.32, -115.28))
+  view._gps = nav_map.GpsFix(0.0, 0.0, 0.0, 0.0, now, True)
+  camera, _, _ = view._target_camera(rect, now)
+  assert camera.zoom > 10.0, "a (0, 0) fix must not stretch the preview to a global view"
+  view.set_preview([route], 0, (0.0, 0.0))
+  camera, _, _ = view._target_camera(rect, now)
+  assert camera.zoom > 10.0, "a (0, 0) destination must not stretch the preview to a global view"
+  assert not nav_map.valid_coordinate(0.0, 0.0)
+  assert not nav_map.valid_coordinate(float("nan"), 1.0)
+  assert nav_map.valid_coordinate(36.3, -115.3)

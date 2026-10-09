@@ -17,6 +17,9 @@ blacklist = [
   ".gitattributes",
   ".git$",
   ".gitmodules",
+
+  # jetlink: the comma imports the package and runs scripts/comma/ (jetlink.comma.root)
+  "^jetlink_repo/(?!jetlink/|scripts/comma/|LICENSE$)",
 ]
 
 # gets you through the blacklist

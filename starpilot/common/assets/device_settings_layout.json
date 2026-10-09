@@ -284,22 +284,23 @@
       },
       {
         "key": "NavDesiresAllowed",
-        "label": "Use Route Desires for Turns",
-        "description": "Allow an active navigation route to request low-speed turn desires.",
-        "picker_description": "Allows navigation to request low-speed turns.",
+        "label": "Use Route Desires",
+        "description": "Let an active navigation route request turns. A turn is requested only when your blinker points the same way as the route, you are below the minimum lane change speed, and blind spot monitoring (or V-ASM) sees no car on that side.",
+        "picker_description": "Allows navigation to request lane keep and turns.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "LateralTune",
+        "is_parent_toggle": true,
         "settings_tier": "advanced"
       },
       {
         "key": "NavLanePositioningAllowed",
-        "label": "Use Route Desires for Lane Positioning",
-        "description": "Allow route lane bias only after steering torque confirms the requested direction. It never initiates a lane change by itself.",
-        "picker_description": "Uses route-based lane positioning after torque confirmation.",
+        "label": "Route Lane Positioning",
+        "description": "Requires Use Route Desires. Route lane keeping on forks and slight bends needs a light steering nudge toward the route. Highway exits (off-ramps within 500 m) start the first lane change when you turn on the blinker toward the exit; each further lane also needs a steering nudge toward the exit. Blind spot monitoring (or V-ASM) seeing a car blocks it.",
+        "picker_description": "Lets navigation position in lane and request blinker-confirmed exit lane changes.",
         "data_type": "bool",
         "ui_type": "toggle",
-        "parent_key": "LateralTune",
+        "parent_key": "NavDesiresAllowed",
         "settings_tier": "advanced"
       },
       {
@@ -2493,6 +2494,7 @@
         "min": 0.0,
         "max": 3.0,
         "step": 0.01,
+        "parent_key": "LowVisibilityOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2503,6 +2505,7 @@
         "ui_type": "numeric",
         "min": 0.0,
         "max": 10.0,
+        "parent_key": "LowVisibilityOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2514,6 +2517,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "LowVisibilityOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2525,6 +2529,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "LowVisibilityOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2545,6 +2550,7 @@
         "min": 0.0,
         "max": 3.0,
         "step": 0.01,
+        "parent_key": "RainOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2555,6 +2561,7 @@
         "ui_type": "numeric",
         "min": 0.0,
         "max": 10.0,
+        "parent_key": "RainOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2566,6 +2573,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "RainOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2577,6 +2585,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "RainOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2597,6 +2606,7 @@
         "min": 0.0,
         "max": 3.0,
         "step": 0.01,
+        "parent_key": "RainStormOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2607,6 +2617,7 @@
         "ui_type": "numeric",
         "min": 0.0,
         "max": 10.0,
+        "parent_key": "RainStormOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2618,6 +2629,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "RainStormOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2629,6 +2641,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "RainStormOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2649,6 +2662,7 @@
         "min": 0.0,
         "max": 3.0,
         "step": 0.01,
+        "parent_key": "SnowOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2659,6 +2673,7 @@
         "ui_type": "numeric",
         "min": 0.0,
         "max": 10.0,
+        "parent_key": "SnowOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2670,6 +2685,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "SnowOffsets",
         "settings_tier": "simple"
       },
       {
@@ -2681,6 +2697,7 @@
         "min": 0.0,
         "max": 99.0,
         "step": 1.0,
+        "parent_key": "SnowOffsets",
         "settings_tier": "simple"
       },
       {
@@ -5268,7 +5285,7 @@
       {
         "key": "UploadRlogs",
         "label": "Upload rlogs",
-        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. rlogs are uploaded after all pending qlogs, on any connection including a phone hotspot or other metered link. rlogs are much larger than qlogs, so this uses a lot of data.",
+        "description": "Upload the full-rate rlog of every finished segment alongside its qlog, including while driving, so routes arrive on Konik/connect complete without requesting them manually. With this off, rlogs are still uploaded whenever the device is parked or offroad. rlogs are uploaded after all pending qlogs, on any connection including a phone hotspot or other metered link. rlogs are much larger than qlogs, so this uses a lot of data.",
         "picker_description": "Uploads full rlogs after qlogs on any connection, including hotspots.",
         "data_type": "bool",
         "ui_type": "toggle",

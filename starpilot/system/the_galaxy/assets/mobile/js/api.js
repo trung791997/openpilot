@@ -1,4 +1,4 @@
-export const LAYOUT_URL = "/assets/components/tools/device_settings_layout.json?v=settings-tier-1"
+export const LAYOUT_URL = "/assets/components/tools/device_settings_layout.json?v=nav-settings-2"
 
 async function parse(res) {
   const data = await res.json().catch(() => ({}))
@@ -226,6 +226,8 @@ export const api = {
   setNavigation(body) { return request("/api/navigation", { method: "POST", data: body }) },
   clearNavigation() { return request("/api/navigation", { method: "DELETE" }) },
   getNavigationFavorites() { return request("/api/navigation/favorite", { cache: "no-store" }) },
+  getNavigationPreferences() { return request("/api/navigation/preferences") },
+  setNavigationPreferences(body) { return request("/api/navigation/preferences", { method: "POST", data: body }) },
   mapboxSuggest(query, accessToken, sessionToken, context = {}) {
     const params = new URLSearchParams({ access_token: accessToken, session_token: sessionToken, q: query, limit: "4", ...context })
     return request(`https://api.mapbox.com/search/searchbox/v1/suggest?${params.toString()}`, { cache: "no-store" })
@@ -242,10 +244,12 @@ export const api = {
     const params = new URLSearchParams({ longitude: String(longitude), latitude: String(latitude), types: "place", limit: "1", access_token: accessToken })
     return request(`https://api.mapbox.com/search/geocode/v6/reverse?${params.toString()}`, { cache: "no-store" })
   },
-  mapboxDirections(from, to, accessToken) {
+  mapboxDirections(from, to, accessToken, options = {}) {
     const origin = `${from.longitude},${from.latitude}`
     const destination = `${to.longitude},${to.latitude}`
-    const params = new URLSearchParams({ geometries: "geojson", annotations: "congestion", overview: "full", alternatives: "true", access_token: accessToken })
+    const query = { geometries: "geojson", annotations: "congestion", overview: "full", alternatives: "true", steps: "true", access_token: accessToken }
+    if (options?.exclude) query.exclude = options.exclude
+    const params = new URLSearchParams(query)
     return request(`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${origin};${destination}?${params.toString()}`, { cache: "no-store" })
   },
   getNavigationKeys() { return request("/api/navigation_key") },

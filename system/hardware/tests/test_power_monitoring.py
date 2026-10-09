@@ -3,8 +3,7 @@ from types import SimpleNamespace
 
 from openpilot.common.params import Params
 from openpilot.system.hardware.power_monitoring import PowerMonitoring, CAR_BATTERY_CAPACITY_uWh, \
-                                                CAR_CHARGING_RATE_W, VBATT_PAUSE_CHARGING, DELAY_SHUTDOWN_TIME_S, MAX_TIME_OFFROAD_S, \
-                                                RLOG_UPLOAD_HOLD_MAX_S
+                                                CAR_CHARGING_RATE_W, VBATT_PAUSE_CHARGING, DELAY_SHUTDOWN_TIME_S, MAX_TIME_OFFROAD_S
 
 # Create fake time
 ssb = 0.
@@ -245,13 +244,13 @@ class TestPowerMonitoring:
                                        started_seen, self.toggles()), \
                     f"Should shutdown after {DELAY_SHUTDOWN_TIME_S} seconds offroad time"
 
-  # StarPilot: UploadRlogs holds only the offroad timer, only while the last drive's rlogs are pending, and at most
-  # RLOG_UPLOAD_HOLD_MAX_S past it
+  # StarPilot: rlog upload (on whenever parked, whatever UploadRlogs says) holds only the offroad timer,
+  # only while the last drive's rlogs are pending, with no time cap
   @pytest.mark.parametrize("pending, upload_rlogs, past_timeout, expect_shutdown", [
     (True, True, 60, False),
     (False, True, 60, True),
-    (True, False, 60, True),
-    (True, True, RLOG_UPLOAD_HOLD_MAX_S + 60, True),
+    (True, False, 60, False),
+    (True, True, 10*3600, False),
   ])
   def test_offroad_timeout_held_for_rlog_upload(self, mocker, pending, upload_rlogs, past_timeout, expect_shutdown):
     pm_patch(mocker, "rlogs_pending", pending)

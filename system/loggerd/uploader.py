@@ -16,7 +16,7 @@ from openpilot.common.utils import get_upload_stream
 from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.system.hardware.hw import Paths
-from openpilot.system.loggerd.rlog_upload import RLOG_NAMES, clear_anchor, ensure_anchor, in_upload_window
+from openpilot.system.loggerd.rlog_upload import RLOG_NAMES, ensure_anchor, in_upload_window
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 from openpilot.common.swaglog import cloudlog
 
@@ -147,13 +147,12 @@ class Uploader:
       if name in self.immediate_priority:
         return name, key, fn
 
-    if self.params.get_bool("UploadRlogs"):
+    # UploadRlogs sends rlogs on any drive state; with it off they still go up whenever the device is parked
+    if self.params.get_bool("UploadRlogs") or self.params.get_bool("IsOffroad"):
       anchor = ensure_anchor(self.root)
       for name, key, fn in upload_files:
         if name in self.rlog_names and in_upload_window(key.split('/')[0], anchor):
           return name, key, fn
-    else:
-      clear_anchor(self.root)
 
     return None
 

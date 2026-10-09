@@ -10,7 +10,7 @@ Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 2026-09-30 and survives as tag `archive/claude/radar-testing-state-88vt2t`.) Branches deleted in that
 cleanup are cited below as their `archive/<name>` tags. For the current tip, trust `git log`, not this line.
 
-**Latest work (2026-10-05), start here:** item 117 (Gemini: Ported the massive "Smooshed SLC UI" Drawer overhaul from the upstream Dom branch (commits 12947fd616, cede5ddc9d) to both main and pr10-smooth. Carefully resolved line-by-line conflicts in `starpilot_card.py` and `starpilot_vcruise.py` to retain the user's custom `always_on_lateral` additions, the experimental `StockBrakeFeel` variables, and the `WHEEL_BUTTON_SOUND_PARAM` patches without throwing `AttributeError`. A naive `checkout --theirs` would have destroyed these and broken hardware compatibility. All tests that passed on the branch before the cherry-pick continue to pass. Update pushed to origin and deployed to the Comma device via SSH). Then item 116 (on-device adaptive P trim prototype, `LatAdaptiveTune` default 0 = off, 1 shadow, 2 apply: one bounded 0.05 step per knot per drive at 20/30/40/50 mph, 0.85–1.15, resets when the manual lateral tuning changes; shadow replay over 19 routes holds 1.00 at every knot on the current tuning, 20 mph never steps up because of override onsets; unit-test/log-replay only, not driven; try shadow first). Then item 115 (continuous lateral gain schedule `LatGainSchedule`, default off, falls back to the bands when absent or invalid, plus offline tuner `tools/lateral/lat_autotune.py`; on 26b+263 it suggests P 120/110/120/105 at 20/30/40/50 mph with I unchanged, about 2 % better on holdout; highway untrusted and frozen; unit-test/replay/sim only, not driven). Then item 114 (route 0000026b: sensor-reaction blips over `NrdrDriverOverrideThreshold` 2000 cut steering torque for ~1 s in low-speed turns and explain the owner's 32:40 exit oversteer and 48:10 stutter; corrected the same day: the 32:40 blips were a sustained driver push below the 2000 threshold, so do NOT raise it; 0.5 s fade-up, then `LatPScaleStandard` 115; replay/sim only). Then item 113 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 112 (radar: route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (radar: one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
+**Latest work (2026-10-08), start here:** item 225 (radar: why the lead goes camera-only; the far-range D-057 re-anchor lockout from range-scaled `RANGE_SIGMA_RAW`; relaxing the sigma test alone is rejected (D-089), closed-loop replay on 6 routes: camera-checked recovery +34 s radar lead on 2f5 with no extra brakes but one genuine slowdown braking 0.6 s later; one-way handoff smoothing helped nothing and softened one genuine brake, rejected as built; camera-checked recovery plus a range-slope check now shipped default on, IQ-stop-C only, replay only, not driven). Then item 117 (Gemini: Ported the massive "Smooshed SLC UI" Drawer overhaul from the upstream Dom branch (commits 12947fd616, cede5ddc9d) to both main and pr10-smooth. Carefully resolved line-by-line conflicts in `starpilot_card.py` and `starpilot_vcruise.py` to retain the user's custom `always_on_lateral` additions, the experimental `StockBrakeFeel` variables, and the `WHEEL_BUTTON_SOUND_PARAM` patches without throwing `AttributeError`. A naive `checkout --theirs` would have destroyed these and broken hardware compatibility. All tests that passed on the branch before the cherry-pick continue to pass. Update pushed to origin and deployed to the Comma device via SSH). Then item 116 (on-device adaptive P trim prototype, `LatAdaptiveTune` default 0 = off, 1 shadow, 2 apply: one bounded 0.05 step per knot per drive at 20/30/40/50 mph, 0.85–1.15, resets when the manual lateral tuning changes; shadow replay over 19 routes holds 1.00 at every knot on the current tuning, 20 mph never steps up because of override onsets; unit-test/log-replay only, not driven; try shadow first). Then item 115 (continuous lateral gain schedule `LatGainSchedule`, default off, falls back to the bands when absent or invalid, plus offline tuner `tools/lateral/lat_autotune.py`; on 26b+263 it suggests P 120/110/120/105 at 20/30/40/50 mph with I unchanged, about 2 % better on holdout; highway untrusted and frozen; unit-test/replay/sim only, not driven). Then item 114 (route 0000026b: sensor-reaction blips over `NrdrDriverOverrideThreshold` 2000 cut steering torque for ~1 s in low-speed turns and explain the owner's 32:40 exit oversteer and 48:10 stutter; corrected the same day: the 32:40 blips were a sustained driver push below the 2000 threshold, so do NOT raise it; 0.5 s fade-up, then `LatPScaleStandard` 115; replay/sim only). Then item 113 (lateral PID simulator `tools/lateral/lat_pid_sim.py`: open-loop torque replay, fitted steering plant, closed-loop sweeps of the banded lateral scales; validated in the 25–50 mph band on 263 and held-out 268; found that Kp 0.65 was not in effect on 268; suggests I 75 and a trial of `LatPScaleStandard` 115–125; sim evidence only). Then item 112 (radar: route 0000026b, the owner's "best drive yet" on d0b525140 with the hold: all six bookmarks are genuine approaches, the FCW at 39:30.7 was real; the item 111 bound changes nothing here; replay only). Then item 111 (radar: one-sided range bound on Bosch-A coasts behind `RangeDerivedVrel`: on 21 routes only 268 9:55.2 moves (−2.16 → −2.17), 0 protected episodes softened; the 268 9:52 latch brakes about 0.9 s earlier; replay only, not driven, needs a device build). Then item 110 (route 00000268, the owner's first alpha-long drive on build b6619f55, without the hold: the hold changes none of its 9 episodes in replay; the FCW at 11:43.8 was a real approach into slowing traffic, braked hard only after about 1.2 s at −1.0; a D-062 latch at 9:52 coasted a wrong-sign vRel +4.06 for 2.35 s while the live range closed at 6 m/s, and the D-053 assist was blind to it because it disarms on coasts; open design item; replay only). Then item 109 (the item 107 per-track 1 s hold shipped in ffa72fdc after the owner confirmed 237 18:09.4 was a phantom brake; the shipped planner reproduces the prototype on all 214 episodes of 19 routes, 0 protected episodes changed; replay only, not driven; watch curve exits with a lead at 40–70 m). Item 108 is the other agent's C4 marker work. Then item 107 (both item 106 fixes replayed on 19 routes: the 1 s per-track hold fixes 267 15:13.3 (−3.45 → −1.45) and touches only 237 18:09.4, a circular-label alpha brake; the vision-disagreement bound delays a real closing brake on 25f 8:02.6 by 0.35 s and is rejected; nothing shipped, owner decision pending). Then item 106 (stock-ACC routes 266/267 on d20a18d28: 0 protected episodes changed at 0.075; new off-axis false brake 267 15:13.3 lands at bearing 0.070–0.074, under 0.075, so the bearing threshold alone cannot close this class; design question open; replay only). Then item 105 (C4 lead speed labels enlarged to 26 px in-path / 22 px side-lane after the owner's on-road photo; UI only, not rendered). Then item 104 (closed-loop radar + planner replay on 17 routes; `OFF_AXIS_LEAD_MIN_BEARING` 0.10 → 0.075 shipped: 25f 13:58.4 and 260 9:07.8 false brakes −3.45/−3.20 → −1.22/−1.01, 0 of 125 genuine-brake episodes changed; replay only, not driven; 23e 4:54.6 turned out to be a pre-74e live alpha false brake on a curve, which the bound removes; 104a reran with a vision-based label, protected = either label: 0 of 125 protected episodes changed, 0.075 stays). Then item 103 (74c open-loop alpha replay on stock-ACC routes 25d–263: the 25b ~0.7 s hard-lead trail does not reproduce, median +0.05 s vs ACCEL_COMMAND; 25f 13:58.4 is an off-axis false brake at bearing 0.078–0.101, just under the 0.10 bound). Before that: item 91 (D-063 toggle replayed on all 22 alpha-long routes: keep it off; 1 spurious hard brake, 1 delayed brake), item 90 (D-063 variant D'' behind `BoschARailInterval`, default off) and item 89 (stock-ACC route scan, alpha-long watchlist). Earlier: item 74 (route 0000025b) and its sub-items 74a–74g.
 74e is a shipped planner change (off-axis Bosch-A lead aLeadK bound); 74f is the stock-ACC data
 census and the open follow-ups; 74g lowers the bound's bearing threshold to 0.10 for the 237 false brake.
 
@@ -10685,3 +10685,264 @@ Tests: `selfdrive/controls/tests/test_brake_onset.py` 23 pass (static). Galaxy s
 - **Pulse routes (open-loop).** 236 18:56 and 29:07, 2d5 13:05, 2e1 6:07 do not arm. 2e2 4:44 arms on a lead that really was slower (range truth 11-12 m/s vs U11 14-16).
 - **Closed-loop (Job, planner-only, before the fade-out).** 2e2: earlier onset (282.71 vs 282.79), min jerk −9.2 → −5.2. 2f5 5:30: onset 343.70 → 342.85, min jerk −41.8 → −35.6, peak −2.12 → −1.96, but one extra +0.42 m/s² pulse at 343.5; that pulse came from the correction clearing for one update, which the fade-out removes (open-loop step 5.85 → 0.83 m/s). 2f5 12:20: peak −2.75 → −2.29, one extra +0.62 pulse at 747.85, not yet explained. Closed-loop not yet rerun with the fade-out.
 - **Tests.** `test_range_vrel_assist.py::TestOffRailCameraGate` (arms with camera closing; not with flat or no camera; smoothing; fade-out). Rest of `selfdrive/controls/tests/` unchanged (same 44 environmental failures as the base).
+
+## 225. Getting more out of the radar readings: why the lead goes camera-only, the far-range re-anchor lockout, and two experiments (camera-checked recovery, one-way handoff smoothing). D-089 (2026-10-08). Owner: "The goal is to maximize what we can get out of these radar readings" and "ideally I would less extra brakes, maybe a smooth handoff between radar and vision could offset this". Log decode and replay only; nothing shipped, nothing driven.
+
+**How often the lead has a fresh radar reading (log decode, engaged, moving, lead present).** Measured 88.5 %, camera-only 9.1 %,
+unmeasured coast 2.2 %, U11 rail 0.1 %, newborn 0 %. Camera-only is the only share worth chasing.
+
+**Why the lead is camera-only (7 routes, 460 s of camera-only lead, raw CAN bus 2 vs liveTracks vs radard's match).**
+- 59 % the radar never sent an object at the camera's lead (includes 2f7's 73 s under 30 m). Nothing on our side can recover it.
+- 22 % (103 s) the radar sent it and our interface dropped it: the far-range lockout below.
+- 19 % our interface published it and radard's vision match rejected it, mostly on the lateral gate (~3.2 m off).
+- The 16-slot bank was never full on these frames; slot pressure is not a cause.
+
+**The far-range lockout (replay of the real RadarInterface).** `RANGE_SIGMA_RAW` scales with range, about 0.07-0.09 x dRel (p50 0.058 at
+20-40 m up to 0.088 at 100-150 m), so it is >= `BOSCH_A_RANGE_SIGMA_DEGRADED_RAW` (4) on 100 % of sweeps beyond 60 m and 47 % at 40-60 m.
+Every far sweep is therefore "degraded", and D-057 never re-anchors one. One range step on a far lead (D-054 rejection) deletes it after
+`BOSCH_A_STALE_S` and keeps it out until the car comes close. Seen on 000002f5--f5a523cbb1 18:26 (track 63, 89.7 -> 81.3 m, rejected run
+grew to 292 sweeps), 5:10 (track 16) and 16:32 (track 57, down to 48 m).
+
+**Tried: relax the D-057 window's sigma test** (`BOSCH_A_REANCHOR_SIGMA_FRAC`: degraded only when sigma >= max(4, frac x dRel); existence and
+U10 still count). 0.15 and "ignore sigma" behave the same. Replay of the real interface, 6 local routes + 2f7 (Job), scored against a centred
+1 s range fit:
+
+| route | camera-lead time with a radar point | recovered sweeps at the camera lead | shipped measured sweeps (reference) |
+|---|---|---|---|
+| 2f5 | 8.8 -> 51.9 s | n 640, p50 err 1.35, over-closing >3 m/s 5.9 %, under 5.2 % | p50 0.57, over 2.0 %, under 9.2 % |
+| 2f7 | 21.6 -> 28.6 s | n 179, p50 1.42, over 8.9 %, under 0 % | p50 0.65, over 1.8 %, under 6.4 % |
+| 2f2 | 16.2 -> 19.5 s | n 88, p50 2.97, over 30.7 %, under 18.2 % | p50 0.80, over 2.6 %, under 9.9 % |
+| 2a4 | no gain | n 10, all over-closing by ~7.7 m/s | p50 0.40, over 1.7 %, under 6.1 % |
+| 2a6 | no gain | n 33, 97 % UNDER-closing by ~7.5 m/s | p50 0.53, over 1.8 %, under 12.3 % |
+| 268 | no gain | n 6, fine | p50 0.76 |
+| 26b | no gain | none at the camera lead (elsewhere over 24.8 % / under 19.7 %) | p50 0.84 |
+
+0 shipped point-sweeps lost on any route. **Verdict: does not work on its own.** It recovers real far leads on 2f5, but on 2f2/2a4/2a6 the
+recovered U11 is wrong by 7-8 m/s in both directions, and 2a6's under-closing kind would delay a real brake.
+
+**Trying now (scratch only, env-switched, not committed): the relaxed re-anchor plus two guards.**
+- *Camera-checked recovery.* The interface marks a point re-anchored only by the relaxed rule (`RadarPoint.recovered`, cleared after 8
+  accepted sweeps that are clean by the shipped rule). radard lets such a point be a lead/adjacent/onpath candidate only after 3 consecutive
+  frames where a confident camera lead (prob >= 0.5) agrees on range (15 %, floor 5 m), lateral (2 m) and vRel (3 m/s); 10 frames of
+  confident disagreement take it away again. Unconfirmed, the picture is exactly the shipped one, because shipped has no such point.
+- *One-way handoff smoothing* (radard, leadOne and leadTwo). When the lead changes source (camera <-> radar, or track -> track), a step
+  toward more braking (lower vLead / aLeadK) is eased in linearly over 0.5 s, capped at 3 m/s and 1.5 m/s^2. Steps toward less braking go
+  through at once. No easing, or easing dropped mid-blend, when the new closing is confirmed: TTC < 4 s, or a radar lead whose range-derived
+  vRel or the camera speed agrees within 2 m/s. dRel easing is a separate switch, off.
+- *Measurement in progress:* `alpha_closed_loop_replay.py` (planner of IQ-stop-C, logged toggles) on 2f5, 2f2, 2a4, 2a6, 268, 26b, variants
+  shipped / both / smoothing only / camera-checked recovery only / unchecked recovery. Counts extra and removed brake dips (-0.5/-1.0/-1.5)
+  and any genuine-brake episode made softer or later. A 3-segment 2f5 smoke run (17-19): +16 s radar lead, no brake changed.
+  - *Results (closed-loop replay, 6 routes; planner of IQ-stop-C, ego motion logged so open in ego; vision-labelled
+    episodes; UNMATCHED to the car's current params beyond the logged toggles).*
+    - **Camera-checked recovery: worked, kept as a candidate.** 2f5 radar-lead time 834 -> 868 s (+34 s), 2f2 +2 s, the other four routes
+      byte-identical to shipped. No extra brake dip at -0.5/-1.0/-1.5 on any route; one shipped -0.52 dip removed (2f5 16:41.9, -> -0.24).
+      Cost: one vision-labelled genuine slowdown, 2f5 16:44.5, crosses -1.0 0.6 s later (minimum -3.53 vs -3.50, same depth). There the
+      shipped build is camera-only with camera vRel jumping -2..-6; the recovered radar track (57) reads -3.2..-3.8, which matches its own range
+      slope (49.3 -> 45.0 m in 1.2 s, -3.6 m/s). The camera's steeper apparent closing is its range converging ~10 m onto the radar's. So the
+      radar was likely right (inference), but it is a later brake on a real slowdown and is counted as a cost.
+    - **Unchecked recovery: did not work.** Same +44 s on 2f5, but 2f2 gains an extra dip (10:51.6, -0.64 vs -0.50 shipped) from a recovered
+      track whose U11 over-closes. Confirms the "alone" rejection in D-089.
+    - **One-way handoff smoothing: did not help, rejected as built.** On all 6 routes it removed no extra brake that mattered (2a6 15:20.2,
+      -0.50 vs -0.48). It softened one vision-labelled genuine episode: 268 10:21.7, -1.39 -> -1.19. At 623.14 the lead went radar track 35
+      (vRel +0.38) -> camera (vRel -1.53); the easing held the camera vRel near +0.8 for ~0.4 s. Track 35 came back at 623.44 at +1.46, so the
+      camera closing may have been spurious, but the easing still delayed braking on the only sensor left. The extra brakes Peter feels are not
+      at source handoffs in these routes; they are the radar or camera value itself.
+    - Both levers together = the sum of the two (2f5 16:44.5 later, 268 10:21.7 softer).
+    - Not replayed: 2f7 (not on this VM). Not driven.
+  - *Shipped (owner: "Sure let's give camera checked recovery a shot"), default on, IQ-stop-C only.* Camera-checked recovery plus
+    a range-slope check: a recovered point must also have its own range slope (LSQ over the last 15 measured ranges, 0.6-1.5 s,
+    RMS <= 1.0 m) within 3 m/s of its vRel, on the same 3 frames as the camera. No usable fit means no confirmation. Either check
+    disagreeing for 10 frames takes the confirmation away. The handoff smoothing is not shipped and the env switches are gone.
+    Constants: `BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC` 0.15 (radar_interface), `RECOVERED_CAM_*` and `RECOVERED_RANGE_SLOPE_*` (radard).
+    Unit tests: `test_radard_recovered.py` and four D-089 cases in `test_bosch_a_radar.py`. The old negative control "sigma 7 at ~94 m
+    never re-anchors" now uses sigma 20; sigma 7 there re-anchors flagged `recovered`, by design.
+    Closed-loop replay of the shipped build on the same 6 routes: 2f5 radar lead 834 -> 865 s (the slope check costs 3 s vs camera
+    only), 2f2 +1 s, other four routes identical to before. No extra dip at -0.5/-1.0/-1.5. 2f5 16:41.9 dip removed. 2f5 16:44.5
+    still crosses -1.0 0.6 s later (same depth). The slope check is a guard against a wrong U11 that the camera's noisy speed happens
+    to agree with; it changed no brake on these routes. Not driven. Watch on the next drive: far leads (60-100 m) staying radar,
+    and any slowdown that starts later than expected with a far lead.
+
+## 226. Route 000002f8: the "gas stop gas" was Stock Brake Feel's coast going out as a brake tap; the 1:38 slowdown was a railed radar object passing the camera pairing. Two fixes shipped, IQ-stop-C only. D-090, D-091 (2026-10-08). Owner: "I bookmarked two instances. One is a weird slowdown ... And second was like a gas stop gas. Not sure if this coasting fix is working" and "Yeah let's try both". Static + replay only; not driven.
+
+**What the route showed (log decode + closed-loop planner replay with SBF forced off/on).**
+- SBF on vs off (replay, whole route): throttle/brake flips 49 vs 9, time at -0.25 or more 351 vs 250 s, time under -1.0 75 vs 81 s,
+  RMS jerk 0.53 vs 0.64, deepest -3.50 both. The real brakes are softer with SBF, but its coast adds many small taps.
+- Why: SBF's coast caps the target near -0.33 for ~2 s while the lead closes by 0.5-1 m/s. The Civic Bosch carcontroller requests the
+  brake (with lights) once the road-load-adjusted force drops below -0.12, so the coast was a light brake. Logged car: 928 s gas, 460 s
+  brake, 66 s true coast; its brake taps (8:38, 9:45, 10:30, 11:12, 11:21, 14:21, 14:32, 20:40-21:07, 26:37) line up with the replay's.
+- Bookmark 2 (26:55): radar lost the lead at 26:36 and the camera showed it pulling away (gas +0.55); then a coast-turned-brake tap at
+  26:45; then a real brake to -1.7 when radar found the car again at 38 m closing at 4.6 m/s.
+- Bookmark 1 (1:38): not experimental mode, not a red light. Radar track 52 on the curve had U11 vRel on the -12 rail while its range
+  slope read -19.6 m/s; it passed the strict vision-match velocity gate by 0.14 m/s (9.86 < 10) and the loose preferred hold kept it.
+  The car braked at -2.3 from 30 to 17 mph. The camera's lead was a different car ~70 m ahead, which later did slow (12 -> 5 m/s,
+  probably turning off).
+
+**Fix 2, radar-camera pairing (D-090), `RAIL_RANGE_VEL_CHECK` in radard, default on.** For a railed vRel (within 0.05 of ±12) the
+vision match uses the track's own range slope when that slope is clean, the same sign and beyond the rail; such a track also loses the
+loose preferred hold. Nothing deleted or rewritten in the published point.
+- *Tried first, did not work:* the slope check on the strict gate alone; the track came back through the loose hold (12.98 < 13).
+- Open-loop scan, 7 routes (2f8, 2f5, 2f2, 2a4, 2a6, 268, 26b): changed episodes 2/2/3/0/0/1/2, each moving the lead toward the camera
+  speed (2f8 BM1 vLead 1.4 -> 11.9; 268 702.5 s radar 89 m vs camera 78.7 m; 26b nonsense vLead -9.5/-5.0 removed, disengaged). No
+  real slow lead lost.
+- Closed-loop replay, BM1: shipped -0.49/-1.13/-1.86 at 90.5/91.0/91.5 s then ~-2.05, min 7.2 m/s; fixed holds -1.00 over 91.0-91.5,
+  -1.24 at 92.0, then -2.1/-2.3 at 92.5-93.0 following the camera lead's real slowdown, min 7.5 m/s. **Partial**: it softens and delays
+  the first second; the rest of that slowdown follows a really slowing car.
+
+**Fix 1, true coast on Honda Bosch (D-091), `LEAD_COAST_GAS_OFF`, default on.** New `longitudinalPlan.leadCoast` -> controlsd
+`actuators.coast` (pid state only) -> Honda Bosch carcontroller sends gas off with no brake request while accel is in [-0.6, 0] and not
+stopping (`BOSCH_LEAD_COAST_MIN_ACCEL`). Measured on the whole 2f8 replay (RRV and SBF on) with an emulation of the Civic's
+gas/brake/coast selection (planner target as accel, no LongControl, windfactor 1, no hill; noisier than the car, which logged 36 flips):
+
+| version | gas s | brake s | coast s | gas<->brake flips | brake episodes | light taps (< 3 s, > -0.6) |
+|---|---|---|---|---|---|---|
+| SBF off (reference) | 994 | 412 | 56 | 56 | 50 | 10 |
+| SBF on, no coast fix | 900 | 528 | 34 | 122 | 81 | 31 |
+| v1: flag = COAST level and published target at the ceiling | 894 | 402 | 166 | 82 | 95 | 55 |
+| v2: flag = planner's own target at/above a below-zero ceiling | 886 | 375 | 201 | 43 | 69 | 30 |
+| **v3 shipped: v2 + exit hysteresis 0.10** | 883 | 364 | 215 | 43 | 52 | 13 |
+
+- *v1 did not work:* each coast ended with a 0.2-0.5 s brake tap (target still easing up from -0.4 under the brake-release limits after
+  the level dropped, or lagging a ceiling that rose with speed). More taps than without the fix.
+- *v2 fixed the exits but flickered:* 67 flag runs under 0.5 s as the planner hovered at the ceiling.
+- *v3:* the coast holds until the planner wants more than 0.10 m/s^2 beyond the ceiling (exit 0.20 gave 11 taps, 0.30 10; 0.10 is the
+  smallest step). Bookmark 2: the 26:45 tap becomes a coast, the real brake after it is kept.
+- The flag never changes the planner's targets; any brake deeper than the coast still goes out as a brake.
+- Caveat: stock eases off with a light brake request more often than it coasts while following (Job/Jason 2026-10-07), though its own
+  coast frames carry ACCEL_COMMAND p50 -0.39. If the next drive opens gaps too fast in light closing, tune the margins or the -0.6 floor.
+
+**Tests (static).** `test_radard_rail_range_vel.py` (4), `test_brake_onset.py` (+4 coast-flag cases, wiring), `test_honda.py` (gas off
+with no BRAKE_REQUEST/lights; the coast never replaces a real brake). controls + Honda tests: 2328 passed; the only error is
+`test_leads::test_radar_fault` needing /data/params on this VM (the 2 known latcontrol failures deselected). Ruff: no new findings.
+
+**Watch on the next drive:** fewer brake-light taps while following on the highway; the car should coast instead. Any gap that
+opens too much in light closing, and any slowdown that starts later than expected near a lead on a curve.
+
+**First drive on the fix build: 000002f9--46a5eb8e01 (commit 6d5c3b5d9, 2026-10-08), limited road evidence.** Owner: "It was a short one but
+pretty smooth". 3.9 min under openpilot long, mostly free road at 35-45 mph, two stops behind a car (2:28, 4:40) and one stretch of
+following (5:40-5:50). From sendcan ACC_CONTROL and `longitudinalPlan.leadCoast`: the coast flag was on for 70 frames and every one went
+out as a true coast (GAS_COMMAND -30000, no BRAKE_REQUEST), 0 as a brake. Coasts at 2:27.8 (0.8 s, then the real stop brake to -1.56),
+4:42.1 (0.8 s, then the stop brake), 5:40.2 (0.7 s), 5:44.2 (0.5 s, then a real brake 3.8 s to -0.77) and 5:48.6 (0.6 s). No light brake
+taps (< 3 s, shallower than -0.6) at all; 2f8 had 1.65 per engaged minute by the same count. A railed radar lead appeared on 2
+frames (2:25.3, far approach to the first stop); nothing to judge D-090 on. Too short to call either fix settled; the highway following
+of 2f8 was not repeated.
+
+**Second drive: 00000300--ef201af8fa (commit bd48223c9 = the D-090/D-091 build plus UI/uploader commits, 2026-10-08), limited road
+evidence.** 20.5 min under openpilot long. Same sendcan count as above, against 2f8: gas<->brake flips 5.04 -> 2.10 per engaged minute,
+brake episodes 3.76 -> 2.34/min, light taps 1.65 -> 0.59/min, true coast 4.5 % -> 10.6 % of engaged time. The coast flag was on for
+5118 frames: 5087 sent as a coast, 17 as a brake (accel below the -0.6 floor), 14 as gas. Mixed driving, so the per-minute rates are
+indicative only. The 12 light taps left:
+- 7 come from the planner's own -0.2..-0.35 easing with no SBF coast: a far lead at 48-104 m closing 1-2 m/s with the cruise source
+  setting the target (8:30, 8:31, 11:18, 23:58), and no lead at all (6:34, 24:07, 24:13). The D-091 flag does not cover these.
+- 3 follow a coast where the planner then wanted ~-0.5, past the exit hysteresis (13:08, 13:33, 18:07): working as designed.
+- 2 others (9:02 following at 28 m, -0.45; 18:10, a 1 s brake request at ~0 accel).
+Railed radar lead: 24 frames; no slowdown from one found in the light-tap list.
+
+## 227. Gentle slowdowns with a far car, no car, or a curve ahead now coast instead of tapping the brake. D-092 (2026-10-08). Owner: "Yeah go ahead and build it". Static + open-loop replay only; not driven.
+
+**What it fixes.** On 00000300 most of the light brake taps left after D-091 were the planner easing at -0.17..-0.35 on its own: a far
+lead at 49-104 m closing slowly, no lead, or curve speed control. Those went out as short brake requests with brake lights. The Civic
+coasts at about -0.21..-0.29 on the flat (logged coast frames on the same route, pitch-corrected), so those targets can be met with the gas off.
+
+**What shipped (IQ-stop-C, default on, part of the StockBrakeFeel toggle):** `EASE_COAST_GAS_OFF` in `longitudinal_planner.py`
+sets `longitudinalPlan.leadCoast` while the published target is in [coast estimate - 0.05, -0.10]. It exits at -0.05 or 0.10 below the
+estimate. It only starts when the target comes down from above -0.10, never in the middle of a brake. It needs a coast estimate of
+-0.25 or deeper (no downhill coasts). It is off when stopping, at standstill, under 5 m/s, on FCW, on a stock-feel emergency, on a
+forced stop or at a red light. The car side is unchanged from D-091: gas off, no brake request, only while accel is in [-0.6, 0].
+
+**Evidence.** Open-loop replay on 00000300's logged targets and sendcan modes (the flag does not feed the planner; the car's own
+decel while coasting is not modelled):
+
+| | logged (D-091) | with D-092 |
+|---|---|---|
+| light brake taps | 12 | 4 |
+| gas<->brake flips | 43 | 29 |
+| brake episodes | 48 | 40 |
+| true coast | 10.6 % | 15.0 % |
+
+All 8 taps it removed were the far-lead/no-lead/curve easing plus 18:07. The 4 left were already in the logged list.
+
+**Tried, did not work:**
+- Window only: 21 taps, because brakes hovering near the coast level were cut into pieces.
+- Plus the start-from-above rule: 9 taps; the 5 new ones were all on 1.2-2.3 % downhills.
+- The grade gate was picked on this same route.
+
+Tests: controls + Honda 2504 passed (5 new in `test_brake_onset.py`); the 2 failures are the known latcontrol ones (Bolt, Palisade). Ruff: no new findings.
+
+**Watch on the next drive:**
+- Fewer brake-light blips when easing to the set speed, behind a far car, or into a curve.
+- Any time it feels like it waits too long to slow for a slow far car, or runs a little fast into a curve.
+
+## 228. First drives with D-092: routes 00000305 and 00000308 (Jetlink-Port, 2026-10-08). No code change. Owner (via the Metadrive Sim session): wants the longitudinal analysis of 305; 308 was done first. Log decode + open-loop planner replay only. Limited road evidence: two drives, both with lowMemory trouble.
+
+Builds: 305 ran Jetlink-Port 64b4bb202 (before the lowMemory fix) and 308 ran 2304d0f40. Both logs carry initData commit eebb42a38. All three contain D-091 and D-092, and their `longitudinal_planner.py`, `radard.py` and Honda `carcontroller.py` match IQ-stop-C 514c2b76b, so everything below applies to IQ-stop-C.
+
+| | 305 | 308 | 300 (D-091 only) |
+|---|---|---|---|
+| engaged long | 7.5 min of 13.4 | 12.9 min | 20.5 min |
+| true coast | **16.7 %** | 10.7 % | 10.6 % |
+| light brake taps | 5 (0.66/min) | 4 (0.31/min) | 12 (0.59/min) |
+| gas<->brake flips | 20 (2.65/min) | 33 (2.55/min) | 2.10/min |
+| brake episodes | 19 (2.52/min) | 32 (2.48/min) | 2.34/min |
+
+**Taps.** 305: four of five are creeping at 1.5-2 m/s in a queue (lead 9-11 m); the fifth is one 0.02 s frame. None at speed. 308: three are creep (1:06-1:42), and 6:07.5 is a 1.7 s brake at a *positive* target (+0.15) on a 2-3.5 % downhill at 42 mph, no lead. On that grade the coast estimate is about -0.10, so +0.15 should be gas; the hill term pushed it into the brake (inferred from the logged pitch; not replayed through the car controller).
+
+**Flips are mostly stop-and-go, not highway.** 305: 13 of 20 under 7 mph. 308: 14 of 33 under 3 mph (standstill hand-offs at -1.0), 2 more under 13 mph. At speed: 305 about 0.8/min, 308 about 1.5/min. No difference inside vs outside the Jetlink large-model windows on 308 (1.4/min large, 2.4/min small, few events).
+
+**308 highway jabs (planner replay reproduces both on segment 4):**
+- 4:09.3, 40 mph, 0.5 s brake. The *on-path* planner braked to its -1.0 bound (`onpath_bounded_target`) for radar track 53: dead centre (y -0.5 to -0.2), 28 to 23 m, closing at 6 m/s, measured for at least 0.8 s. The camera never saw it (model lead 80-109 m), and the main lead was flipping between the radar car at 72 m and vision at 105 m. The MPC wanted +1.1 the whole time. The bound did its job (D-041/D-042: publish a bound, don't delete), but it is still an extra brake. Track 53 was not a real car stopping in front of us, but it is also not proven a ghost.
+- 4:38.3, 51 mph, 0.65 s brake. `get_close_lead_brake_cap` snapped the target from +0.12 to -1.11 in one frame for a real radar lead at 56 m, TTC about 13 s, because its aLeadK spiked to -1.3..-1.6 for about 0.2 s (vRel -3.1 to -4.35, then back to -2.1). The MPC followed one frame later.
+
+**305 hard brakes (four at -2.3 or deeper), all with a real lead slowing:**
+- 3:20.7, -3.50 at 37 mph: the lead braked hard from 33 m (closing went from 1 to 5.5 m/s in 1.5 s); we stopped 3.8 m behind it. The D-091 coast was on until vRel -1.2, then the brake ramped up in 1.5 s. Proportionate to the lead, not late by more than about 0.5 s.
+- 7:42.9, -2.50 at 50 mph: coasting 45 m behind at matched speed, the lead braked (closing to 3.8 m/s in 1.5 s).
+- 2:15.1, -2.43 at 32 mph, and 9:15.3, -2.33 at 44 mph: Experimental mode was already easing for slow traffic far ahead (-0.4 to -1.0). The radar lead then jumped to a nearer, slower car at 52-57 m closing 6.6-10.6 m/s, and the MPC stepped down. The geometry needed about -1.4 to -1.7 (inferred), so these overshoot by about 0.7.
+
+**D-092 on the road.** Coast share on 305 is the highest logged so far (16.7 %). On 308, 1370 frames had leadCoast; about 250 were the D-092 ease case (no lead within 60 m), the rest D-091. No tap on either drive came out of an ease coast. 305's 0.02 s blip at 6:13.9 came at the end of a D-091 lead coast (lead at 61 m, closing at 4.6 m/s).
+
+**Not long control:** 305's lowMemory soft disables at 2:35.7 and 3:34.0 both came within 5 s of a stop. The 3:33.5 one came with commIssue and selfdrivedLagging. That is the memory problem 2304d0f40 addressed, not the planner.
+
+**Open, for the owner to choose:** (a) require the camera, or longer persistence, before the on-path planner brakes for a radar-only centre track at speed; (b) rate-limit the close-lead cap when TTC > 8 s; (c) keep the hill term from turning a positive target into a brake. Nothing built.
+
+## 229. The three remaining 305/308 items from STATUS 228, owner go-ahead for (b)-(d) (via Metadrive Sim, 2026-10-08/09): one shipped, two not. Replay only, not driven.
+
+Owner's rule: build only what makes the driving smoother, with no new jerk anywhere in replay and no delay of real hard braking.
+
+**(c) Downhill brake at a positive target: shipped (D-093).** 308 6:07.5: a +0.15 target on a 3.7 % descent went out as 1.3-1.7 s
+of brake mode because the hill term pushed the force under -0.12. Now Honda Bosch does not enter brake mode while the planner's
+target is above 0, and lets an active brake go once the target is above +0.20. Replaying the brake choice on 9 routes: no route gains
+a brake episode, the 308 brake is gone, and brake time at a positive target falls on 26b (10.3 -> 6.1 s) and 2a4 (2.2 -> 0.6 s).
+Honda tests 408 pass (5 new). Not driven.
+
+**(b) Far-lead cap ramp: not shipped.** Five versions ramped the close-lead cap in for far leads (TTC >= 8 s). Closed-loop replay
+(fitted plant, 25 events), biggest 0.5 s brake step, before -> after: 308 4:38 1.56 -> 0.56, 2a4 18:29 1.14 -> 0.14, 2a6 2:42
+0.98 -> 0.09, 2a4 25:14 1.09 -> 0.17. But 305 7:42 0.83 -> 1.09, 2a6 15:08 1.19 -> 1.30-1.49 and 2a6 1:54 0.82 -> 1.01 got
+worse in every version: there a far lead turns into a real hard brake, the hard demand has to apply at once (the off-axis straight-lead
+tests need it), and the brake held back arrives as one step. Open loop it also cut per-frame drops 107 -> 71 but raised 2f2 14 -> 16.
+The patch is kept outside the repo, not committed.
+
+**(d) Lead-jump "overshoot": not a fault; nothing built.** STATUS 228 estimated 305 2:15 / 9:15 (route clock 2:21.7 / 9:22.2 in the
+planner replay) needed only -1.4..-1.7 from geometry. That left out the lead's own decel. By range rate the lead slowed at about
+-4 m/s^2 (2:21, range 58 -> 41 m in 1 s) and about -5 m/s^2 (9:22, closing -3 -> -10.9 m/s in 1.2 s, aLeadK down to -8.9). The
+-2.4 follows a real braking car and ramps in at about 0.15 per 0.1 s, so softening it would reduce a real hard brake.
+
+**(a)** (radar-only centre track): see 230.
+
+## 230. (a) from STATUS 228, owner go-ahead 2026-10-09: the radar-only on-path brake ramps in (D-094). Closed-loop replay only, not driven.
+
+308 4:09.1: track 53 was leadOnpath for 0.2 s (24 m, dead centre, camera lead at 106 m) and stepped the target +0.48 -> -1.00 in
+one cycle. Now the leadOnpath share of a brake ramps in at 2.5 m/s^3; the -1.0 cap, the adoption gate and every leadOne brake are
+unchanged. Camera and persistence gates were rejected (305 2:19.9 real car with camera lead farther away; 297 31:08 adopted only
+1.35 s before HEAD).
+
+Closed-loop replay (scratch copy of alpha_closed_loop_replay with a ramp-off variant; radard re-run on current code; each
+variant drives its own simulated car), 13 windows on 297, 305, 308, 2a6, 2f2:
+
+| window | min target off -> on | biggest 0.5 s drop off -> on | brake below -0.3 off -> on |
+|---|---|---|---|
+| 308 4:09 (blip) | -1.00 -> +0.04 | 1.69 -> 0.42 | 0.30 s -> 0 |
+| 297 30:18 (object on a curve edge) | -1.74 -> -1.74 | 1.24 -> 0.91 | 7.75 -> 7.50 s |
+| 297 31:08, 46:56 (real stopped cars), 2f2 13:16, 15:10, 8:18, 8:30, 305 2:19.9, 308 2:52, 4:18, 8:00, 2a6 5:36 | identical | identical | identical |
+
+Simulated minimum gap is identical in every window; end speed differs only on 308 4:09 (+0.08 m/s, the brake not taken). 298 1018.35 no longer adopts (existence gate),
+so it is untouched. Planner tests 631 pass (3 new; the blip test fails with the ramp off). Not driven.
+

@@ -1,0 +1,1 @@
+zoompilot/jetlink 4b747aebad3d8d96ab26d76f1668f2b2ecb1b667 (v0.8.5, the pin zoompilot develop uses). Vendored: jetlink/, scripts/comma/, LICENSE, pyproject.toml, README.md — what runs on the comma (zoompilot release_files keeps the same subset).

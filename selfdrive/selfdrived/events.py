@@ -257,6 +257,17 @@ def below_engage_speed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.
   return NoEntryAlert(f"Drive above {get_display_speed(CP.minEnableSpeed, metric)} to engage")
 
 
+def pre_lane_change_alert(direction: str, title: str, subtitle: str, size) -> AlertCallbackType:
+  # preLaneChange with no blinker on only happens for a navigation exit lane change, which the
+  # driver confirms by turning on the blinker toward the exit (desire_helper)
+  def alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality, *args) -> Alert:
+    if not (CS.leftBlinker or CS.rightBlinker):
+      return Alert(f"Turn On {direction} Blinker", "Confirm Exit Lane Change", AlertStatus.normal, AlertSize.mid,
+                   Priority.LOW, VisualAlert.none, AudibleAlert.none, .1)
+    return Alert(title, subtitle, AlertStatus.normal, size, Priority.LOW, VisualAlert.none, AudibleAlert.none, .1)
+  return alert
+
+
 def below_steer_speed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality, starpilot_toggles: SimpleNamespace) -> Alert:
   return Alert(
     f"Steer Unavailable Under {get_display_speed(CP.minSteerSpeed, metric)}",
@@ -706,19 +717,11 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.preLaneChangeLeft: {
-    ET.WARNING: Alert(
-      "Steer Left to Start Lane Change Once Safe",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+    ET.WARNING: pre_lane_change_alert("Left", "Steer Left to Start Lane Change Once Safe", "", AlertSize.small),
   },
 
   EventName.preLaneChangeRight: {
-    ET.WARNING: Alert(
-      "Steer Right to Start Lane Change Once Safe",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+    ET.WARNING: pre_lane_change_alert("Right", "Steer Right to Start Lane Change Once Safe", "", AlertSize.small),
   },
 
   EventName.laneChangeBlocked: {
@@ -1463,18 +1466,10 @@ if HARDWARE.get_device_type() == 'mici':
         Priority.LOW, VisualAlert.none, AudibleAlert.none, .2),
     },
     EventName.preLaneChangeLeft: {
-      ET.WARNING: Alert(
-        "Steer Left",
-        "Confirm Lane Change",
-        AlertStatus.normal, AlertSize.mid,
-        Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+      ET.WARNING: pre_lane_change_alert("Left", "Steer Left", "Confirm Lane Change", AlertSize.mid),
     },
     EventName.preLaneChangeRight: {
-      ET.WARNING: Alert(
-        "Steer Right",
-        "Confirm Lane Change",
-        AlertStatus.normal, AlertSize.mid,
-        Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+      ET.WARNING: pre_lane_change_alert("Right", "Steer Right", "Confirm Lane Change", AlertSize.mid),
     },
     EventName.laneChangeBlocked: {
       ET.WARNING: Alert(

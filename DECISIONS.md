@@ -2015,3 +2015,127 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
 1. Cleaned up the duplicates in `test_starpilot_vcruise.py`. 
 2. Safely removed the invalid `vision_lead=birth_vision` argument from `radard.py` to restore functionality.
 **Agent:** Gemini 3.8 Flash
+
+## D-089 — Far-range re-anchor lockout: relaxing the D-057 sigma test alone is rejected; camera-checked recovery shipped (IQ-stop-C); one-way handoff smoothing rejected as built (STATUS 225, 2026-10-08, replay only, not driven)
+
+- **Finding.** `RANGE_SIGMA_RAW` grows with range (~0.08 x dRel), so every sweep beyond ~60 m counts as degraded and D-057 can never
+  re-anchor a far lead after one range step. The lead is then camera-only until it comes close: 22 % (103 s) of camera-only lead time on 7
+  routes. 59 % is the radar never reporting the car (not recoverable here), 19 % radard's lateral match.
+- **Rejected: range-scaled sigma test alone** (`BOSCH_A_REANCHOR_SIGMA_FRAC` 0.15 or "ignore"). It recovers far leads on 2f5 (8.8 -> 51.9 s)
+  but the recovered U11 is wrong by 7-8 m/s on 2f2/2a4/2a6, over-closing (extra brakes) and under-closing (late brakes, 2a6). Do not ship it
+  without a guard. The `BOSCH_A_RANGE_SIGMA_DEGRADED_RAW` constant itself is unchanged; it still gates the rest of the interface.
+- **Candidate: camera-checked recovery.** The same relaxation, but the interface flags the point `recovered` and radard uses it only after
+  3 frames where a confident camera lead agrees on range, lateral and speed (dropped after 10 disagreeing frames). Closed-loop replay, 6
+  routes: +34 s radar lead on 2f5, no extra brake anywhere, one shipped dip removed; one genuine slowdown (2f5 16:44.5) crosses -1.0 0.6 s
+  later because it follows the radar's -3.4 m/s instead of the camera's inflated closing. **Shipped default on, IQ-stop-C only** (owner,
+  2026-10-08), with a range-slope check: the point's own long-window range slope must also agree with its vRel (3 m/s, the D-043 rate
+  tolerance). Replay of the shipped build: same brakes, 2f5 +31 s radar lead. Not driven. Do not loosen the camera or slope check without
+  a closed-loop replay; the relaxation alone was measured to recover wrong U11.
+- **Rejected: one-way handoff smoothing** (ease steps toward more braking over 0.5 s at a lead source change, bypass on TTC < 4 s or an
+  agreeing range/camera speed). On 6 routes it removed no meaningful extra brake and softened one genuine episode (268 10:21.7, -1.39 ->
+  -1.19) by easing a radar -> camera step. Extra brakes in these routes are not at handoffs. Do not retry it without a case where a
+  handoff step is the cause; if retried, never ease toward the camera when it is the only remaining sensor (D-042).
+- D-041/D-042 hold: the camera check only withholds points the shipped build never had.
+
+## D-090 — Radar–camera pairing: a track whose U11 vRel sits on the ±12 m/s rail is judged by its own range slope when that slope is beyond the rail (STATUS 226, 2026-10-08, replay only, not driven)
+
+- **Finding (route 000002f8--2db4adac1a, bookmark 1, ~1:30).** Radar track 52, vRel railed at -12.00 while its range slope read -19.6
+  m/s (decaying to -13 as the car braked), passed the strict vision-match velocity gate by 0.14 m/s (|-12 + 13.38 - 11.24| = 9.86 < 10)
+  because the rail hid the real closing. The loose preferred hold (13 m/s) then kept it. The car braked at -2.3 from 30 to 17 mph on an
+  object that slid off the path; the camera's lead was a different car ~70 m ahead.
+- **Shipped default on, IQ-stop-C only (owner: "Yeah let's try both"):** `RAIL_RANGE_VEL_CHECK`. For Honda Bosch A only, when vRel is
+  within 0.05 of the U11 rail and the track's own range slope (long window: >= 15 samples, 0.6-1.5 s, RMS <= 1.0 m; else the young-track
+  window: >= 6 samples, >= 0.35 s, RMS <= 0.6 m) has the same sign and is larger, `track_matches_vision` uses that slope instead of vRel,
+  and the loose preferred hold does not apply to the track. Off the rail, or with no clean slope, nothing changes. The published vRel is
+  not touched, and no point is deleted: the track just is not paired with the camera lead (D-041/D-042 hold).
+- **Evidence.** Open-loop scan on 7 routes: every changed episode moves the lead toward the camera's speed (2f8 BM1 vLead 1.4 -> 11.9;
+  268 702.5 s, radar 89 m vs camera 78.7 m; 26b removes vLead -9.5 and -5.0 while disengaged). No real slow lead lost. Closed-loop
+  replay of 2f8 BM1: holds -1.00 over 91.0-91.5 s instead of ramping to -1.86, then brakes -2.1..-2.3 at 92.5-93.0 because the camera
+  lead itself slowed (12 -> 5 m/s, likely turning off). **Partial:** fix 2 softens and delays the first second of BM1; the rest of
+  that slowdown follows a real slowing car.
+- Do not widen the rail band or drop the same-sign/larger test without a replay; a slope merely different from vRel is ordinary noise.
+
+## D-091 — StockBrakeFeel's lead coast becomes a true gas-off on Honda Bosch (STATUS 226, 2026-10-08, replay only, not driven)
+
+- **Finding (2f8, bookmark 2 and whole route).** SBF's coast caps the target near -0.33 for ~2 s when the lead closes by 0.5-1 m/s. The
+  Civic Bosch carcontroller requests the brake (with brake lights) once the road-load-adjusted force drops below -0.12, so the "coast"
+  went out as a brake tap. Logged car: 928 s gas, 460 s brake, 66 s true coast; replay flips 49 with SBF on vs 9 off.
+- **Shipped default on, IQ-stop-C only:** `LEAD_COAST_GAS_OFF`. While the lead-coast ceiling is below zero and the planner's own
+  target (before the ceiling) is at or above it (within 0.05; no emergency; published target <= 0), `longitudinalPlan.leadCoast` is
+  set. This covers the coast's release too. controlsd passes it as `actuators.coast` only in
+  the pid state; the Honda Bosch carcontroller then sends gas off (min gas, no BRAKE_REQUEST, no brake lights) while accel is in
+  [-0.6, 0] and not stopping, and keeps the gas learner out of those frames. Any deeper planner brake clears the flag and brakes as
+  before; the coast never replaces a real brake. Exit hysteresis: once on, the flag holds until the planner wants more than 0.10
+  beyond the ceiling (`LEAD_COAST_GAS_OFF_EXIT_MARGIN`).
+- **Tried, did not work:** tying the flag to the COAST level and the published target (each coast ended in a 0.2-0.5 s brake tap,
+  55 light taps vs 31 without the fix in the 2f8 Civic-mode emulation); the planner-target rule without hysteresis (flicker, 30 taps).
+  Shipped rule: 13 taps, gas<->brake flips 122 -> 43 (SBF off: 56 flips, 10 taps), braking 528 -> 364 s. Replay emulation only.
+- **Caveat.** Stock's coast frames carry ACCEL_COMMAND p50 -0.39 with no brake request, so the level matches stock; but while following
+  with its set speed out of the way, stock eases off with a light brake request more often than it coasts (Job/Jason, 2026-10-07).
+  If the next drive shows gaps opening too fast in light closing, the margin or the -0.6 floor is the lever, not removing the coast.
+
+## D-092 — Gentle planner easing (far lead, no lead, set speed, curve) also coasts gas-off on Honda Bosch (STATUS 227, 2026-10-08, open-loop replay only, not driven)
+
+- **Finding (route 00000300, D-091 on).** 7 of the 12 light brake taps left were the planner itself easing at -0.17..-0.35 with
+  no lead coast: no lead (6:34), a far lead at 49-104 m closing 1-2 m/s (8:30, 8:31, 11:18, 23:58), curve speed control
+  (24:07, 24:13). The carcontroller sends those as a brake request once the road-load-adjusted force is under -0.12. Logged coast
+  frames on the same route show the Civic coasts at -0.21..-0.29 (pitch-corrected) at 5-23 m/s, close to `get_coast_accel`.
+- **Shipped default on, IQ-stop-C only, inside the StockBrakeFeel toggle:** `EASE_COAST_GAS_OFF`. `longitudinalPlan.leadCoast`
+  is also set while the published target is at or below -0.10 and no deeper than the coast estimate minus 0.05 (exit: above
+  -0.05 or 0.10 below the estimate). Same path to the car as D-091 (pid state only; gas off, no brake request, accel in
+  [-0.6, 0]). Not while stopping, at standstill, under 5 m/s, on FCW or a stock-feel emergency, on a forced stop or a red light.
+  - It may only **start from above** (target was above -0.10): never inside a brake that is already on; it re-arms once the
+    target is back above -0.10.
+  - It needs a coast estimate of -0.25 or deeper (flat or uphill; downhill under ~0.9 %).
+- **Tried, did not work (route 300 open-loop on logged targets):**
+  - The window alone: flips 43 -> 28 but light taps 12 -> 21. Brakes hovering around -0.35..-0.48 were cut into coast/brake
+    pieces. The start-from-above rule fixed it: 9 taps.
+  - Of those 9, all 5 new taps were on a 1.2-2.3 % downhill: the hill term already brakes there at a target near 0, so a coast
+    started at -0.10 cut that brake in two. The -0.25 grade gate removed them.
+- **Result (open loop, route 300):** light taps 12 -> 4, flips 43 -> 29, brake episodes 48 -> 40, coast 10.6 -> 15.0 %. The 4
+  left are the same as before (two -0.45..-0.50 brakes, two at the D-091 coast exit).
+  - The grade gate was chosen on the route it was scored on.
+  - The flag does not feed the planner, so the car's slightly different decel while coasting is not modelled. If it
+    under-delivers, the planner target deepens out of the window and the brake comes back.
+- **Lever if the next drive closes on slow far leads too late or runs wide in curves:** the -0.10 upper bound and the coast
+  margin, not removing the coast.
+
+## D-093 — On Honda Bosch a positive planner target is not turned into a brake by the hill term (STATUS 229, 2026-10-09, replay only, not driven)
+
+- **Finding (route 00000308, 6:07.5, 42 mph, no lead).** The planner asked for +0.14..+0.17 on a 3.7 % descent (logged pitch
+  -0.037). The carcontroller's brake choice uses the road-load-adjusted force (target + wind + hill term), which fell to -0.12,
+  so the car went into brake mode for 1.3-1.7 s with brake lights; aEgo fell from about +0.3 to about 0 against a +0.15 target.
+- **Shipped default on, Honda Bosch only:** `BOSCH_HILL_BRAKE_GUARD` in `update_honda_bosch_braking`.
+  - Brake mode is not entered while the target is above `BOSCH_HILL_BRAKE_MAX_ACCEL` (0.0). The frame goes out as gas off with no
+    brake request, and gravity gives the car the speed the planner asked for.
+  - Brake mode already on ends once the target is above `BOSCH_HILL_BRAKE_RELEASE_ACCEL` (0.20); otherwise the old force release.
+  - A target at or below 0 brakes exactly as before, and stopping is untouched, so no planner brake is delayed or reduced.
+- **Tried:** a 0.10 release margin let go for 0.2 s and braked again on 0000026b 12:11 (9 m/s, target swinging -0.15..+0.20).
+  0.20 adds no brake episode on any replayed route.
+- **Evidence (replay of the brake-mode choice on logged targets, 9 routes):** brake episodes never go up (26b 64 -> 62,
+  2a4 36 -> 34, 308 29 -> 28, the rest equal); brake time at a positive target at speed 26b 10.3 -> 6.1 s, 2a4 2.2 -> 0.6 s,
+  308 1.3 -> 0 s. Not modelled: the extra speed while coasting instead of braking (about +0.2 m/s^2 for 1-2 s, so under
+  0.5 m/s), which the planner sees and answers with a lower target.
+- **Lever if a descent runs fast:** `BOSCH_HILL_BRAKE_MAX_ACCEL` (a small positive value brakes earlier), not removing the guard.
+
+## D-094 — The radar-only on-path brake (leadOnpath) ramps in instead of stepping to its cap (STATUS 230, 2026-10-09, replay only, not driven)
+
+- **Finding (route 00000308, 4:09.1, 40 mph).** Track 53 sat dead centre at 24 -> 23 m, closing 6 m/s, while the camera saw a
+  car at 106 m. radard published it as leadOnpath for two cycles (0.2 s) and withdrew it when its own leadOne went back to the
+  radar car at 76 m. `onpath_bounded_target` stepped the target from +0.48 to -1.00 in one cycle, and the brake release slew held
+  about 0.6 s of brake. Earlier, 00000297 30:18 (a stationary object on a curve edge) also drew a one-cycle step of 1.15.
+- **Shipped default on (`ONPATH_LEAD_ONSET_LIMIT`, `ONPATH_LEAD_ONSET_JERK` 2.5 m/s^3, longitudinal_planner.py).** The share of
+  braking that only leadOnpath asks for may pull the published target down by at most 2.5 m/s^3 from last cycle's output. This
+  planner's own target, so every leadOne/leadTwo brake and anything deeper than -ONPATH_LEAD_MAX_BRAKE, passes through as before;
+  the -1.0 cap and the adoption gate in radard are unchanged. 2.5 matches BRAKE_RELEASE_JERK; -0.3 -> -1.0 takes 0.28 s.
+- **Rejected for this item:**
+  - *Require the camera.* On 00000305 2:19.9 a real car at 61 m was leadOnpath while the camera's lead was at 83 m, and on 297
+    the stopped car had camera probability 0.00-0.28. A camera gate removes real cases.
+  - *Longer persistence.* It delays every real adoption: 297 31:08 had leadOnpath only 1.35 s before HEAD's radar lead.
+  Both remove a published radar point's authority outright; the ramp only slows a bounded brake (D-041/D-042/D-048).
+- **Evidence (closed-loop replay, current radard re-run from CAN, each variant drives its own simulated car, 13 windows):**
+  308 4:09 min target -1.00 -> +0.04, biggest 0.5 s drop 1.69 -> 0.42, 0.3 s of brake -> none; 297 30:18 biggest 0.5 s drop
+  1.24 -> 0.91. Identical in the other 11 windows, including the real stopped cars 297 31:08 and 46:56 (their on-path demand
+  already builds gradually), 2f2 13:16/15:10 (real leads leaving the lane) and 305 2:19.9.
+- **Lever if a real radar-only brake comes late:** `ONPATH_LEAD_ONSET_JERK` (larger is closer to the old step), not removing it.
+

@@ -1,6 +1,7 @@
 import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
+import { JetlinkModelsCard } from "../components/JetlinkModelsCard.js"
 import { openGalaxyHelpDialog } from "../components/FeatureHelp.js"
 import { readHardwareFilter, saveHardwareFilter, matchesHardware, hardwareLabel, fileSizeText } from "/assets/components/tools/model_hardware.js"
 
@@ -17,6 +18,7 @@ let selectionWrite = null
 
 export const ModelManager = {
   name: "ModelManager",
+  components: { JetlinkModelsCard },
   data() {
     return {
       loading: true,
@@ -326,6 +328,8 @@ export const ModelManager = {
 
           </div>
         </section>
+
+        <JetlinkModelsCard :is-onroad="status.isOnroad" />
 
         <template v-if="!sorted.length">
           <div class="gx-card"><div class="gx-empty">No models match these filters. Try Both or clear the favourite filters.</div></div>

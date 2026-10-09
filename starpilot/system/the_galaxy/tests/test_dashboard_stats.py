@@ -390,8 +390,27 @@ def _install_server_import_stubs():
     TESTING_GROUNDS_SLOT_DEFINITIONS=(),
     TESTING_GROUNDS_STATE_PATH=Path("/tmp/dashboard-test-testing-grounds.json"),
   )
+  _stub_prefs = {
+    "avoid_tolls": False,
+    "avoid_highways": False,
+    "avoid_ferries": False,
+    "prefer_eco": False,
+  }
+  import openpilot.starpilot.navigation.destination_store as _real_destination_store
+  _dest_store_overrides = {
+    "load_route_preferences",
+    "save_route_preferences",
+    "normalize_destination_payload",
+    "routing_configured",
+    "update_recent_destinations",
+  }
   sys.modules["openpilot.starpilot.navigation.destination_store"] = _simple_module(
     "openpilot.starpilot.navigation.destination_store",
+    **{k: getattr(_real_destination_store, k) for k in dir(_real_destination_store) if not k.startswith("__") and k not in _dest_store_overrides},
+    load_route_preferences=lambda params=None: getattr(params, "_route_prefs", _stub_prefs).copy(),
+    save_route_preferences=lambda prefs, params=None: (
+      setattr(params, "_route_prefs", dict(prefs)) if params is not None else _stub_prefs.update(prefs)
+    ),
     normalize_destination_payload=lambda payload: payload,
     routing_configured=lambda params: bool(str(params.get("MapboxSecretKey") or "").strip()),
     update_recent_destinations=lambda *args, **kwargs: [],

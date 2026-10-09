@@ -214,6 +214,32 @@ class NavigationRoute:
   steps: list[RouteStep]
   total_distance: float
   total_duration: float
+  eco_cost: float = 0.0
+  is_eco_recommended: bool = False
+  eco_savings_pct: float = 0.0
+
+  def calculate_eco_cost(self) -> float:
+    """Calculate estimated fuel/energy consumption index for a route.
+    
+    Physics model:
+    - Base rolling resistance / engine displacement is proportional to distance.
+    - Aerodynamic drag power scales cubically with vehicle speed (v^3), meaning work per unit distance
+      scales quadratically (v^2). Speeds exceeding 15 m/s (~34 mph) suffer rapid aerodynamic penalty.
+    - Low-speed stop-and-go congestion (< 4 m/s ~ 9 mph) penalizes idling and repeated acceleration cycles.
+    """
+    total_energy = 0.0
+    for step in self.steps:
+      d_m = step.distance
+      dt_s = max(1.0, step.duration)
+      v_ms = d_m / dt_s
+      step_cost = (d_m / 1000.0) * (1.0 + 0.8 * max(0.0, (v_ms - 15.0) / 10.0) ** 2)
+      if v_ms < 4.0 and d_m > 0:
+        step_cost += (dt_s / 60.0) * 0.4
+      total_energy += step_cost
+    if total_energy == 0.0 and self.total_distance > 0.0:
+      v_avg = self.total_distance / max(1.0, self.total_duration)
+      total_energy = (self.total_distance / 1000.0) * (1.0 + 0.8 * max(0.0, (v_avg - 15.0) / 10.0) ** 2)
+    return float(total_energy)
 
   @classmethod
   def from_mapbox_route(cls, route_data: dict[str, Any]) -> "NavigationRoute" | None:
@@ -399,7 +425,9 @@ class MapboxRouteEngine:
   def fetch_route(self, token: str, start: Coordinate, destination: dict[str, Any], bearing: float | None = None) -> NavigationRoute | None:
     route_id = str(destination.get("routeId") or "main")
     requested_route_index = int(route_id[4:]) if route_id.startswith("alt-") and route_id[4:].isdigit() else 0
-    routes = self.fetch_routes(token, start, destination, bearing, alternatives=requested_route_index > 0)
+    # prefer_eco may promote an alternative to index 0, so "main" needs the alternatives too.
+    routes = self.fetch_routes(token, start, destination, bearing,
+                               alternatives=requested_route_index > 0 or bool(destination.get("prefer_eco", False)))
     if not routes:
       return None
     return routes[requested_route_index] if requested_route_index < len(routes) else routes[0]
@@ -420,6 +448,21 @@ class MapboxRouteEngine:
       "alternatives": "true" if alternatives else "false",
       "banner_instructions": "true",
     }
+    avoid_tolls = bool(destination.get("avoid_tolls", False))
+    avoid_highways = bool(destination.get("avoid_highways", False))
+    avoid_ferries = bool(destination.get("avoid_ferries", False))
+    prefer_eco = bool(destination.get("prefer_eco", False))
+
+    excludes = []
+    if avoid_tolls:
+      excludes.append("toll")
+    if avoid_highways:
+      excludes.append("motorway")
+    if avoid_ferries:
+      excludes.append("ferry")
+    if excludes:
+      params["exclude"] = ",".join(excludes)
+
     if bearing is not None:
       params["bearings"] = f"{int((bearing + 360.0) % 360.0)},90;"
 
@@ -439,6 +482,24 @@ class MapboxRouteEngine:
       parsed = self._parse_route(route)
       if parsed is not None:
         routes.append(parsed)
+
+    for r in routes:
+      r.eco_cost = r.calculate_eco_cost()
+
+    if prefer_eco and len(routes) > 1:
+      best_eco_idx = min(range(len(routes)), key=lambda i: routes[i].eco_cost)
+      baseline_cost = routes[0].eco_cost
+      best_cost = routes[best_eco_idx].eco_cost
+      savings = max(0.0, (baseline_cost - best_cost) / baseline_cost * 100.0) if baseline_cost > 0.0 else 0.0
+      routes[best_eco_idx].is_eco_recommended = True
+      routes[best_eco_idx].eco_savings_pct = savings
+
+      # Always reorder (for "main" and "alt-N" alike) so "alt-N" indexes the same list that the
+      # Galaxy and device previews show: best eco route first, the rest in Mapbox order.
+      if best_eco_idx != 0:
+        eco_route = routes.pop(best_eco_idx)
+        routes.insert(0, eco_route)
+
     return routes
 
   @staticmethod

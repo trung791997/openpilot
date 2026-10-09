@@ -214,7 +214,7 @@ def init_overlay() -> None:
   cloudlog.info(f"git diff output:\n{git_diff}")
 
 
-def finalize_update() -> None:
+def finalize_update(params: Params) -> None:
   """Take the current OverlayFS merged view and finalize a copy outside of
   OverlayFS, ready to be swapped-in at BASEDIR. Copy using shutil.copytree"""
 
@@ -230,12 +230,17 @@ def finalize_update() -> None:
   run(["git", "reset", "--hard"], FINALIZED)
   run(["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"], FINALIZED)
 
+  # git gc's pack-objects reached 232 MB onroad on a 3.6 GB mici (route 308) and
+  # pushed it past selfdrived's 90% lowMemory soft-disable. Cleanup is optional,
+  # so it is killed when the car goes onroad and the finalized copy still ships
   cloudlog.info("Starting git cleanup in finalized update")
   t = time.monotonic()
   try:
-    run(["git", "gc"], FINALIZED)
-    run(["git", "lfs", "prune"], FINALIZED)
+    run_with_offroad_abort(["git", "gc"], params, FINALIZED)
+    run_with_offroad_abort(["git", "lfs", "prune"], params, FINALIZED)
     cloudlog.event("Done git cleanup", duration=time.monotonic() - t)
+  except UpdateAborted:
+    cloudlog.warning(f"Skipped git cleanup, car went onroad after {time.monotonic() - t:.3f} s")
   except subprocess.CalledProcessError:
     cloudlog.exception(f"Failed git cleanup, took {time.monotonic() - t:.3f} s")
 
@@ -461,7 +466,7 @@ class Updater:
     # Create the finalized, ready-to-swap update
     self.require_offroad("update finalization")
     self.params.put("UpdaterState", "finalizing update...")
-    finalize_update()
+    finalize_update(self.params)
     cloudlog.info("finalize success!")
 
     # StarPilot variables

@@ -207,7 +207,7 @@ export const ModelLaboratory = {
         <div style="padding: 0 var(--sp-4) var(--sp-3); color:var(--text-muted); font-size:var(--fs-sm);">
           Download eGPU-compatible small models. These are separate from the small models in Model Manager because they are compiled for the eGPU.
         </div>
-        <article v-for="m in availableModels" :key="m.value" class="gx-row">
+        <article v-for="m in availableModels" :key="m.value" class="gx-row gx-row--stack">
           <div class="gx-row__info">
             <span class="gx-row__label">{{ m.label }}</span>
             <span class="gx-row__desc">{{ m.value }} · {{ m.series || 'Unknown series' }}</span>

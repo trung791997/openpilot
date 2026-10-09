@@ -392,6 +392,41 @@
   transform: var(--hover-scale-sm);
 }
 
+.navigation-preferences {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--padding-xs);
+  justify-content: center;
+  margin: var(--padding-sm) 0;
+}
+
+.navigation-pref-pill {
+  align-items: center;
+  background-color: var(--input-bg);
+  border: var(--border-width-thin) solid var(--track-color);
+  border-radius: var(--border-radius-xl);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--font-size-xs);
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem !important;
+  margin: 2px !important;
+  transition: all var(--transition-fast);
+}
+
+.navigation-pref-pill:hover {
+  border-color: var(--thumb-color);
+  color: var(--text-color);
+}
+
+.navigation-pref-pill.active {
+  background-color: var(--thumb-color);
+  border-color: var(--thumb-color);
+  color: #fff !important;
+  font-weight: var(--font-weight-bold);
+}
+
 .navigation-summary-widget.horizontal-layout {
   flex-direction: row;
   gap: var(--padding-md);
@@ -557,4 +592,91 @@
     min-width: 0;
     width: calc(100% - var(--padding-xl));
   }
+
+  .navigation-summary-widget { padding: var(--padding-sm); }
+  .navigation-summary-title { margin-bottom: var(--padding-xs); }
+  .navigation-summary-widget .summary-row {
+    display: inline-grid;
+    grid-template-columns: auto auto;
+    margin-right: var(--padding-sm);
+  }
+  .navigation-summary-widget .summary-row .label { display: none; }
+  .navigation-summary-widget .summary-row .emoji { height: 1.5rem; width: 1.5rem; }
+  .navigation-preferences {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .navigation-pref-pill { flex: 0 0 auto; white-space: nowrap; }
+}
+
+/* ――― Navigation settings panel ――― */
+.navigation-settings-toggle {
+  flex-shrink: 0;
+  min-width: auto;
+  white-space: nowrap;
+}
+
+.navigation-settings-toggle.active {
+  border-color: var(--main-fg);
+  color: var(--main-fg);
+  font-weight: var(--font-weight-bold);
+}
+
+.navigation-settings-panel {
+  animation: fadeInUp 0.3s ease-out;
+  margin-top: var(--margin-sm);
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+  /* The search wrapper is 30% of the map; give the settings rows room to read. */
+  width: max(100%, min(22rem, 70vw));
+}
+
+.navigation-settings-panel .ds-section {
+  margin-bottom: var(--margin-sm);
+}
+
+.navigation-settings-panel .ds-row {
+  gap: var(--padding-sm);
+}
+
+.navigation-settings-panel .ds-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.navigation-settings-panel .ds-toggle {
+  flex-shrink: 0;
+}
+
+.navigation-settings-panel .nav-settings-number {
+  background-color: var(--input-bg);
+  border: var(--border-width-thin) solid var(--track-color);
+  border-radius: var(--border-radius-md);
+  color: var(--text-color);
+  flex-shrink: 0;
+  padding: 0 var(--padding-sm);
+  width: 5.5rem;
+}
+
+.navigation-settings-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 var(--padding-xs);
+}
+
+.navigation-settings-close:hover {
+  color: var(--text-color);
+}
+
+.navigation-settings-standalone {
+  margin: var(--margin-lg) auto 0;
+  max-width: 40rem;
+  padding: 0 var(--padding-base);
+}
+
+.navigation-settings-standalone .navigation-settings-panel {
+  max-height: none;
 }

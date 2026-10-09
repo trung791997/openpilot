@@ -758,7 +758,7 @@ def test_screen_route_and_favorite_chips(nav_screen):
   page._draft_destination = {"name": "Gym", "latitude": 37.6, "longitude": -122.2}
   page._preview_routes = [SimpleNamespace(total_duration=600), SimpleNamespace(total_duration=900)]
   page._preview_route_index = 1
-  assert nav_screen.route_chips() == [("route:0", "Fastest · 10 min", False), ("route:1", "Route 2 · 15 min", True)]
+  assert nav_screen.route_chips() == [("route:0", "Fastest 10 min", False), ("route:1", "2 · 15 min", True)]
   assert [chip[1:] for chip in nav_screen.favorite_chips()] == [("Save", False), ("Home", False), ("Work", False)]
   page._favorites = [{"id": "g", "name": "Gym", "latitude": 37.6, "longitude": -122.2, "is_home": True}]
   assert [chip[1:] for chip in nav_screen.favorite_chips()] == [("Saved", True), ("Home", True), ("Work", False)]
@@ -974,3 +974,52 @@ def test_bookmark_button_bookmarks_on_release_onroad(controls):
 def test_next_orientation_flips():
   assert car_ui.next_orientation("north_up") == "heading_up"
   assert car_ui.next_orientation("heading_up") == "north_up"
+
+
+def test_car_navigation_route_preferences_toggling_updates_state_and_triggers_preview(monkeypatch, tmp_path):
+  from openpilot.starpilot.system.starpilot_auto.ui import navigation
+  # The page reloads the shared preference store before each toggle, so back it with memory here.
+  store = {"avoid_tolls": False, "avoid_highways": False, "avoid_ferries": False, "prefer_eco": False}
+  monkeypatch.setattr(navigation, "load_route_preferences", lambda params=None: dict(store))
+  monkeypatch.setattr(navigation, "save_route_preferences", lambda prefs, params=None: store.update(prefs))
+  page = navigation.CarNavigationLayout.__new__(navigation.CarNavigationLayout)
+  page._route_prefs = dict(store)
+  page._params = None
+  page._draft_destination = {"latitude": 37.77, "longitude": -122.41, "name": "San Francisco"}
+  page._preview_routes = []
+  page._preview_route_index = 0
+
+  previews = []
+  page._fetch_route_preview = lambda dest: previews.append(dict(dest))
+
+  # Toggle tolls
+  page._activate_navigation_target("action:pref:tolls")
+  assert page._route_prefs["avoid_tolls"] is True
+  assert page._draft_destination["avoid_tolls"] is True
+  assert len(previews) == 1
+  assert previews[-1]["avoid_tolls"] is True
+
+  # Toggle highways
+  page._activate_navigation_target("action:pref:highways")
+  assert page._route_prefs["avoid_highways"] is True
+  assert page._draft_destination["avoid_highways"] is True
+  assert len(previews) == 2
+
+  # Toggle ferries
+  page._activate_navigation_target("action:pref:ferries")
+  assert page._route_prefs["avoid_ferries"] is True
+  assert page._draft_destination["avoid_ferries"] is True
+  assert len(previews) == 3
+
+  # Toggle eco
+  page._activate_navigation_target("action:pref:eco")
+  assert page._route_prefs["prefer_eco"] is True
+  assert page._draft_destination["prefer_eco"] is True
+  assert len(previews) == 4
+
+  # A change saved by Galaxy meanwhile (tolls turned back off) survives the next device toggle.
+  store["avoid_tolls"] = False
+  page._activate_navigation_target("action:pref:eco")
+  assert store == {"avoid_tolls": False, "avoid_highways": True, "avoid_ferries": True, "prefer_eco": False}
+  assert page._route_prefs == store
+

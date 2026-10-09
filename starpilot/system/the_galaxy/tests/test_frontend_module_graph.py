@@ -24,7 +24,7 @@ def test_router_and_settings_cache_bust_is_consistent():
   index = INDEX_PATH.read_text(encoding="utf-8")
 
   assert "/assets/components/settings.js?v=router-cycle-fix-5" in router
-  assert "/assets/components/router.js?v=router-cycle-fix-8" in index
+  assert "/assets/components/router.js?v=nav-settings-2" in index
   assert "/assets/components/sidebar.js?v=sidebar-pin-2" in router
   assert "/assets/components/main.css?v=sidebar-pin-2" in index
   assert "/assets/components/sidebar.css?v=sidebar-pin-2" in index
