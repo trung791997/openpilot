@@ -16,6 +16,7 @@ from openpilot.starpilot.common.experimental_state import (
 
 BRAKE_WHEEL_COLOR = rl.Color(255, 0, 0, 255)
 ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
+COAST_WHEEL_COLOR = rl.Color(150, 90, 220, 255)
 BRAKE_ACCEL_THRESHOLD = 0.25
 COMMAND_ACCEL_THRESHOLD = 0.05
 # Stopped on the brake while disengaged, pedalPressed's noEntry chatters and engageable flips
@@ -26,9 +27,13 @@ ENGAGEABLE_SETTLE_SECONDS = 0.5
 def get_wheel_tint(brake_pressed: bool, mode_tint: rl.Color | None, pedal_feedback_enabled: bool,
                    brake_lights: bool = False, acceleration: float = 0.0,
                    gas_pressed: bool = False, commanded_accel: float = 0.0,
-                   commanded_gas: float = 0.0) -> rl.Color | None:
+                   commanded_gas: float = 0.0, coasting: bool = False) -> rl.Color | None:
   if not pedal_feedback_enabled:
     return mode_tint
+
+  # A coast is gas off with no brake request; its commanded accel is slightly negative, so it must not read as braking.
+  if coasting and not brake_pressed and not brake_lights and not gas_pressed:
+    return COAST_WHEEL_COLOR
 
   braking = brake_pressed or brake_lights or acceleration < -BRAKE_ACCEL_THRESHOLD or \
     commanded_accel < -COMMAND_ACCEL_THRESHOLD
@@ -168,6 +173,7 @@ class ExpButton(Widget):
       getattr(car_state, "gasPressed", False),
       getattr(actuators, "accel", 0.0) if long_active else 0.0,
       getattr(actuators, "gas", 0.0) if long_active else 0.0,
+      long_active and bool(getattr(actuators, "coast", False)),
     )
     if wheel_tint is not None:
       tint = rl.Color(wheel_tint.r, wheel_tint.g, wheel_tint.b, self._white_color.a)

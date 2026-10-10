@@ -249,6 +249,7 @@ class HudRenderer(Widget):
       getattr(car_state, "gasPressed", False),
       getattr(actuators, "accel", 0.0) if long_active else 0.0,
       getattr(actuators, "gas", 0.0) if long_active else 0.0,
+      long_active and bool(getattr(actuators, "coast", False)),
     )
 
     v_cruise_cluster = car_state.vCruiseCluster
