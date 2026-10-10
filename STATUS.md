@@ -10988,3 +10988,11 @@ Owner reported nausea from the coast-gas cycle. After a coast the gas now ramps 
 in 308/312: 8 change (90% gas reached in 1.3-2.9 s instead of 0.1-0.6 s), 24 are unchanged because the planner target
 already rose slower. Unit tests: 4 new in test_honda.py (helper ramp, faster for a real accel request, only lowers gas,
 controller-level coast -> gas ramp); the controller test fails with the flag off. Honda tests 412 passed.
+
+## 234. The speed-up after a coast rises gently (D-098). Replay + static only, not driven.
+
+After a lead or ease coast, a positive planner target may only rise from 0 at 0.1 m/s^3 (cap dropped at 0.6 m/s^2);
+braking is untouched. Closed-loop replay, 17 min on 8 routes, 41 coast ends: 4 s peak p90 +0.51 -> +0.40, median time
+to +0.15 1.1 -> 1.6 s, cycles 18 -> 18, min gap/follow 0.46 -> 0.50, mean speed -0.07 m/s. The biggest 1 s rise barely
+moved (p90 0.82 -> 0.79): that is the coast -> gas step, which D-097 ramps in the carcontroller (not in this replay).
+Unit tests: 2 new in test_brake_onset.py (41 passed).

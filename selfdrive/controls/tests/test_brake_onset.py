@@ -398,3 +398,23 @@ def test_ease_coast_is_blocked_by_stops_speed_fcw_and_the_toggle():
   for gate in ('stock_brake_feel', 'reset_state', 'standstill', 'self.output_should_stop', 'self.fcw',
                'self.stock_feel_emergency', 'EASE_COAST_MIN_SPEED', 'forcingStop', 'redLight'):
     assert gate in block, gate
+
+
+def test_coast_resume_cap_rises_gently_after_a_coast():
+  dt = 0.05
+  cap = lp.coast_resume_cap(None, True, -0.3, dt)
+  assert cap == 0.0
+  caps = []
+  for _ in range(20):
+    cap = lp.coast_resume_cap(cap, False, 0.5, dt)
+    caps.append(cap)
+  assert caps[-1] == pytest.approx(20 * dt * lp.COAST_RESUME_JERK)
+  assert all(b > a for a, b in zip(caps, caps[1:], strict=False))
+
+
+def test_coast_resume_cap_drops_when_not_needed_or_never_coasted(monkeypatch):
+  assert lp.coast_resume_cap(None, False, 0.5, 0.05) is None
+  assert lp.coast_resume_cap(0.1, False, -0.05, 0.05) > 0.1  # a target still under it keeps the cap
+  assert lp.coast_resume_cap(lp.COAST_RESUME_CAP_END - 0.001, False, 1.0, 0.05) is None
+  monkeypatch.setattr(lp, "COAST_RESUME_CAP", False)
+  assert lp.coast_resume_cap(None, True, -0.3, 0.05) is None

@@ -533,6 +533,20 @@ EASE_COAST_EXIT_ACCEL = -0.05  # m/s^2; once coasting, leave above this
 # 25:02, 26:19, 26:21; 12 -> 9 taps but 5 new) was on a 1.2-2.3 % downhill (estimate -0.17..-0.23), where the
 # carcontroller's hill term already brakes at a target near 0, so a coast started at -0.10 cut that brake in two.
 EASE_COAST_MAX_LEVEL = -0.25  # m/s^2
+# Gentle speed-up after a coast (D-098, owner 2026-10-10: the coast-gas cycle "is giving me a bit of nausea", comfort
+# over efficiency). The D-091/D-092 coasts slow the car at its fixed coast rate (-0.2..-0.4), deeper than the plan's
+# -0.05..-0.10, so it falls behind and the planner asks for the speed back: 24 of 32 coast->gas handoffs on 308+312 were
+# that catch-up (308 13:05.8 rose to +0.46). Taking the coasts away (smooth pedal, closed-loop replay of 17 min on 8
+# routes) cut the cycles 18 -> 13 but cost gap: the over-slowing is also the margin to the lead (2f2 777.6 s gap/follow
+# 0.95 -> 0.56; 312b 806.3 s brake -1.30 -> -1.82..-2.73). So the coasts stay and the speed-up after one is shaped
+# instead: when a coast ends, a positive target may rise from 0 at COAST_RESUME_JERK only, until the cap passes
+# COAST_RESUME_CAP_END. Only a positive target is ever lowered; braking is not. Rate, closed-loop replay of the same 17 min
+# (41 coast ends): 0.1 cut the 4 s peak p90 +0.51 -> +0.40 and pushed the median time to +0.15 from 1.1 to 1.6 s, min
+# gap/follow 0.46 -> 0.50, mean speed -0.07 m/s; 0.2 and 0.4 were indistinguishable from no cap. The step at the moment
+# the coast ends is not this cap's (it starts at 0); that is the D-097 gas ramp in the carcontroller.
+COAST_RESUME_CAP = True
+COAST_RESUME_JERK = 0.1  # m/s^3
+COAST_RESUME_CAP_END = 0.6  # m/s^2
 # Newborn lead aLeadK bound (D-080, proposed; replay only, not driven), now part of the StockBrakeFeel toggle (D-086). STATUS 212:
 # on 2e2 (bookmark ~283 s) a radar lead first seen while its velocity estimate was still converging published aLeadK
 # -3 / -2.5 when ~0.75 m/s^2 was needed, and on 2e1 a jumping track reached -13.7; the planner braked early and twice,
@@ -757,6 +771,20 @@ def ease_coast_gas_off(coast: float | None, a_target: float, blocked: bool, acti
   upper = EASE_COAST_EXIT_ACCEL if active else EASE_COAST_MAX_ACCEL
   on = bool((active or armed) and level - margin <= a_target <= upper)
   return on, bool(on or a_target > upper)
+
+
+def coast_resume_cap(cap: float | None, coasting: bool, target: float, dt: float) -> float | None:
+  """COAST_RESUME_CAP: 0 while coasting; after it, rises at COAST_RESUME_JERK and is dropped (None) once it passes
+  COAST_RESUME_CAP_END. Not dropped when the target is under it: a coast ends with the target still near 0, and a first
+  version that let go there never limited the speed-up that followed (replay: 1 s rise p90 0.82 with and without)."""
+  if not COAST_RESUME_CAP:
+    return None
+  if coasting:
+    return 0.0
+  if cap is None:
+    return None
+  cap += COAST_RESUME_JERK * dt
+  return None if cap >= COAST_RESUME_CAP_END else float(cap)
 
 
 def brake_onset_limited_target(prev: float, target: float, dt: float, jerk: float | None) -> float:
@@ -1726,6 +1754,7 @@ class LongitudinalPlanner:
     self.ease_coast_blocked = True
     self.ease_coast_request = False
     self.ease_coast_armed = False
+    self.coast_resume_cap = None
     self.fast_closing_lead_track = None
     self.fast_closing_tick = 0
     self.fast_closing_vision_seen = {}
@@ -4486,6 +4515,12 @@ class LongitudinalPlanner:
         prev_output_a_target, output_a_target, self.brake_release_rise_ticks)
     else:
       self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+
+    # coasting: last published plan's flag (computed in publish)
+    self.coast_resume_cap = coast_resume_cap(self.coast_resume_cap, bool(self.lead_coast_request or self.ease_coast_request),
+                                             output_a_target, self.dt) if not reset_state else None
+    if self.coast_resume_cap is not None:
+      output_a_target = min(output_a_target, max(self.coast_resume_cap, 0.0))
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)

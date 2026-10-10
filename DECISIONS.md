@@ -2200,3 +2200,19 @@ handoffs, 90% gas is now reached in 1.3-2.9 s instead of 0.1-0.6 s.
 
 **Not addressed:** the planner catch-up swing (the other 24). Reducing that means coasting less, or only when the
 target is close to the coast level (D-092 entry); left for the owner to choose.
+
+## D-098 — The speed-up after a coast rises gently (STATUS 234, 2026-10-10, replay + static only, not driven)
+
+**Problem (owner, 2026-10-10):** the coast-gas cycle still gives nausea. After D-097 handles the gas jump at the
+moment a coast ends, the rest is the planner's catch-up: the coast slows the car at its fixed rate (-0.2..-0.4), deeper
+than the plan's easing target (-0.05..-0.10), so the planner asks for the lost speed back (24 of 32 handoffs on 308+312).
+
+**Rejected:** removing the coasts (smooth pedal, one pedal everywhere). Closed-loop replay of 17 min on 8 routes cut the
+cycles 18 -> 13 but the over-slowing is also the margin to the lead: 2f2 777.6 s gap/follow 0.95 -> 0.56..0.89, 312b
+806.3 s brake -1.30 -> -1.82..-2.73. Coasting only near the coast level (coast time 9.4 -> 4.9 %) raised the swing p99.
+
+**Decision:** `COAST_RESUME_CAP` (planner, default ON). While a D-091/D-092 coast is published the cap is 0; after it,
+a positive target may only rise at `COAST_RESUME_JERK` 0.1 m/s^3 until the cap passes 0.6 m/s^2. Only positive targets
+are lowered; braking is never limited. Same replay, 41 coast ends, rate sweep 0.1/0.2/0.4: 0.1 cut the 4 s peak p90
++0.51 -> +0.40 and the median time to +0.15 from 1.1 to 1.6 s, min gap/follow 0.46 -> 0.50, mean speed -0.07 m/s;
+0.2 and 0.4 matched no cap. The replay does not model the D-097 gas ramp, so the two together are untested.
