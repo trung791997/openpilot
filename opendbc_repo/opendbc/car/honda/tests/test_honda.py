@@ -15,7 +15,6 @@ from opendbc.car.honda.carcontroller import (
   CarController,
   get_eps_modified_steering_pressed,
   get_honda_bosch_wind_brake_mps2,
-  honda_bosch_lead_coast,
   honda_bosch_resume_gas,
   update_honda_bosch_braking,
   update_honda_bosch_live_learning,
@@ -87,21 +86,6 @@ class TestHondaFingerprint:
     values = self._acc_control_values(True, 0.2, gas=500, gas_force=-0.4)
 
     assert values["GAS_COMMAND"] == -30000
-
-  def test_bosch_lead_coast_is_gas_off_without_brake_request(self):
-    # D-091: a -0.33 coast target used to cross BOSCH_BRAKE_FORCE_ON and go out with BRAKE_REQUEST and brake lights
-    assert update_honda_bosch_braking(False, -0.33, False, True)
-    assert honda_bosch_lead_coast(True, -0.33, False, True)
-    values = self._acc_control_values(True, -0.33, gas=0, gas_force=CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], braking=False)
-    assert values["GAS_COMMAND"] == -30000
-    assert values["BRAKE_REQUEST"] == 0
-    assert values["BRAKE_LIGHTS"] == 0
-    assert values["ACCEL_COMMAND"] == pytest.approx(-0.33)
-
-  @pytest.mark.parametrize("coast,accel,stopping,active", [
-    (False, -0.33, False, True), (True, -0.9, False, True), (True, -0.33, True, False), (True, -0.33, True, True), (True, 0.3, False, True)])
-  def test_bosch_lead_coast_never_replaces_a_real_brake(self, coast, accel, stopping, active):
-    assert not honda_bosch_lead_coast(coast, accel, stopping, active)
 
   def test_bosch_gas_resume_after_coast_ramps_in(self):
     # D-097: route 00000308 5:26.7 went 0 -> 116 gas units in 0.2 s out of a coast; now it rises at 100 units/s

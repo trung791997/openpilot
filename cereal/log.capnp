@@ -1363,9 +1363,8 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   leadGeometryRequiredAccel @45 :Float32;
   # Gas override boost (port of commaai/openpilot#39015). Upstream uses @40, taken here by leadTrajectoryX0.
   accelBoost @46 :Float32;
-  # StockBrakeFeel lead coast is binding (LEAD_COAST_GAS_OFF): the car may coast (gas off, no brake request) instead
-  # of braking lightly to reach aTarget.
-  leadCoast @47 :Bool;
+  # Was the StockBrakeFeel lead/ease coast gas-off request (D-091/D-092); both removed (D-100), never set now.
+  leadCoastDEPRECATED @47 :Bool;
 
   enum LongitudinalPlanSource {
     cruise @0;

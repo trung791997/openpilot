@@ -56,12 +56,6 @@ def icbm_counter_sync_step(car_counter: int, last_car_counter: int, phase: int, 
 
 BOSCH_BRAKE_FORCE_ON = -0.12
 BOSCH_BRAKE_FORCE_RELEASE = -0.02
-# D-091 lead coast: while the planner's StockBrakeFeel lead coast is binding (actuators.coast), a light decel is sent
-# as gas off with no brake request -- the stock coast frame (ACCEL_COMMAND p50 -0.39, GAS -30000, no BRAKE_REQUEST) --
-# instead of the brake request the band above would make of it. The planner's coast ceiling is clipped to -0.5
-# (LEAD_COAST_MIN); anything deeper than this is a real brake and goes through the normal selection. Route 000002f8:
-# the -0.30..-0.40 coast targets became brake taps with brake lights (36 gas<->brake flips). Static + replay only.
-BOSCH_LEAD_COAST_MIN_ACCEL = -0.6
 # Positive target on a descent (D-093): the force above includes the hill term, so on a downhill a positive target
 # (planner wants to gain speed) can fall under BOSCH_BRAKE_FORCE_ON and go out as a brake request with brake lights.
 # Route 00000308 6:07.5 (42 mph, pitch -0.037, target +0.14..+0.17): force -0.12 -> 1.7 s of brake mode, aEgo fell from
@@ -271,11 +265,6 @@ def bosch_overbrake_compensation(accel: float, stopping: bool) -> float:
   if stopping or not (BOSCH_OVERBRAKE_COMP_BP[0] < accel < BOSCH_OVERBRAKE_COMP_BP[-1]):
     return 0.0
   return float(np.interp(accel, BOSCH_OVERBRAKE_COMP_BP, BOSCH_OVERBRAKE_COMP_V))
-
-
-def honda_bosch_lead_coast(coast: bool, accel: float, stopping: bool, long_active: bool) -> bool:
-  """D-091: True when this frame goes out as a coast (gas off, no brake request)."""
-  return bool(coast and long_active and not stopping and BOSCH_LEAD_COAST_MIN_ACCEL <= accel <= 0.0)
 
 
 def honda_bosch_resume_gas(gas: float, last_gas: float, resuming: bool, accel: float, dt: float) -> tuple[float, bool]:
@@ -1168,8 +1157,6 @@ class CarController(CarControllerBase):
           self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           gas_pedal_force = accel + wind_brake_mps2 * self._learner.windfactor + hill_brake
           stopping = actuators.longControlState == LongCtrlState.stopping
-          # the car decelerates at its own coast rate here, so the learner must not read it as a gas/wind error
-          lead_coast = honda_bosch_lead_coast(bool(getattr(actuators, 'coast', False)), accel, stopping, CC.longActive)
 
           if live["live_learning_gas"]:
             self._learner.update(
@@ -1178,7 +1165,7 @@ class CarController(CarControllerBase):
               gas_pedal_force=gas_pedal_force,
               wind_brake_ms2=wind_brake_mps2,
               long_active=CC.longActive,
-              long_pid=(actuators.longControlState == LongCtrlState.pid and not lead_coast and not self.bosch_gas_resume),
+              long_pid=(actuators.longControlState == LongCtrlState.pid and not self.bosch_gas_resume),
               gas_pressed=CS.out.gasPressed,
               brake_pressed=CS.out.brakePressed,
               v_ego=CS.out.vEgo,
@@ -1206,11 +1193,7 @@ class CarController(CarControllerBase):
                                                                    self.bosch_gas_resume or self.bosch_coasting, accel, 2 * DT_CTRL)
           self.bosch_last_gas = self.gas
 
-          if lead_coast:
-            self.bosch_braking = False
-            gas_pedal_force = min(gas_pedal_force, min_gas)  # create_acc_commands sends GAS -30000 at or below min_gas
-          else:
-            self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel)
+          self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel)
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           # a coast frame (gas off, no brake request) arms the D-097 ramp for the next gas frame
           self.bosch_coasting = bool(CC.longActive and not self.bosch_braking and gas_pedal_force <= min_gas)

@@ -5314,28 +5314,3 @@ def test_soft_stop_floor_softens_only_with_room():
 def test_soft_stop_floor_stands_down(lead_kwargs, v_ego):
   assert longitudinal_planner_module.get_soft_stop_floor(make_lead(**lead_kwargs), v_ego) is None
 
-
-def _closing_lead_run(stock_brake_feel):
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  planner = LongitudinalPlanner(CP, init_v=10.0)
-  lead = make_lead(status=True, d_rel=22.0, v_lead=9.0, model_prob=0.99, radar=True)
-  lead.vRel = -1.0
-  sm = make_sm(10.0, desired_accel=1.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=lead)
-  toggles = make_toggles()
-  toggles.stock_brake_feel = stock_brake_feel
-  out = []
-  for _ in range(40):
-    planner.update(sm, toggles)
-    out.append(planner.output_a_target)
-  return planner, out
-
-
-def test_stock_brake_feel_coasts_while_closing_on_the_lead():
-  # 2026-10-07 owner: a true coast instead of throttle while closing in on the lead, then the stock brake law.
-  planner, on = _closing_lead_run(True)
-  _, off = _closing_lead_run(False)
-  assert planner.lead_coast_active
-  # Off, the planner goes back on the gas while still 1 m/s faster than the lead; on, it coasts and never throttles.
-  assert max(off[-10:]) > 0.5
-  assert max(on) <= 0.0 + 1e-6
-  assert min(on[-10:]) >= longitudinal_planner_module.LEAD_COAST_MIN - 1e-6

@@ -837,8 +837,6 @@ class Controls:
                                                 pedal_override=tesla_pedal_override,
                                                 leads=(self.sm['radarState'].leadOne, self.sm['radarState'].leadTwo)),
                                 self.starpilot_toggles.max_desired_acceleration))
-    # LEAD_COAST_GAS_OFF (D-091): the planner's lead coast is binding; a car that can coast does so (Honda Bosch only)
-    actuators.coast = bool(CC.longActive and long_plan.leadCoast and self.LoC.long_control_state == car.CarControl.Actuators.LongControlState.pid)
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
