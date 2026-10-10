@@ -67,7 +67,7 @@ OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offli
 
 # mici has no vsync and raylib is uncapped there, so the UI otherwise redraws as fast as it can at RT priority.
 UI_FRAME_STATS_INTERVAL = 30.0  # seconds between ui_frame_stats swaglog lines
-MICI_FRAME_CAP_FPS = int(os.getenv("MICI_FRAME_CAP_FPS", "30"))
+MICI_FRAME_CAP_FPS = int(os.getenv("MICI_FRAME_CAP_FPS", "60"))
 
 
 def _raylib_target_fps(fps: int) -> int:
