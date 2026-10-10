@@ -657,9 +657,15 @@ ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE = 0.2
 # Replay (car-matched 07b66420, params 2026-09-30T16:44:42Z, fitted plant): 298 BM3 sim accel -1.20 -> -0.58; 283
 # 881.5, 23e 2342.9, 297 525.6, 263 358, 266 484, 266 560 identical to base. Does not touch the 0.2 s leadOnpath step
 # at 298 1018.35 (25 m). Replay evidence only; not road-validated.
+# D-096 (route 00000312): newly adopted tracks held vRel flat at -12.0, -11.1 (raw 65, one count off the rail) or
+# lower for 0.6-1.7 s while the range was flat or opening, at 63-80 m; the bound missed them on the exact-rail test
+# and the 80 m minimum. "Railed" now means within FAR_RAIL_NEAR_RAIL_MARGIN_MPS of the rail (the same 1.0 m/s as
+# ONPATH_ADOPT_RAIL_VREL_MARGIN_MPS) and the minimum is FAR_RAIL_MIN_D_REL_M = 50 m. The range veto and the
+# NEWBORN young_range_genuinely_closing exemption are unchanged, so a lead whose own range closes at least as fast
+# as the floor keeps its rail. Replay evidence only (see STATUS 232); not road-validated.
 FAR_RAIL_VISION_BOUND = True
-FAR_RAIL_MIN_D_REL_M = 80.0
-FAR_RAIL_VREL_TOL_MPS = 0.05          # published vRel within this of BOSCH_A_U11_LOW_RAIL_MPS counts as railed
+FAR_RAIL_MIN_D_REL_M = 50.0
+FAR_RAIL_NEAR_RAIL_MARGIN_MPS = 1.0   # published vRel within this of BOSCH_A_U11_LOW_RAIL_MPS counts as railed
 FAR_RAIL_HIST_FRAMES = 20             # model frames (radard runs once per modelV2)
 FAR_RAIL_MIN_MATCHES = 12
 FAR_RAIL_VISION_MIN_PROB = 0.15
@@ -860,7 +866,7 @@ def far_rail_model_sample(vis) -> tuple[float, float, float] | None:
 def far_rail_vrel_floor(lead, hist, v_ego: float) -> float | None:
   """FAR_RAIL_VISION_BOUND: the least vRel a far railed Bosch-A radar lead may publish, or None when it does not apply."""
   if not (lead.status and lead.radar and lead.dRel >= FAR_RAIL_MIN_D_REL_M and
-          lead.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + FAR_RAIL_VREL_TOL_MPS):
+          lead.vRel <= BOSCH_A_U11_LOW_RAIL_MPS + FAR_RAIL_NEAR_RAIL_MARGIN_MPS):
     return None
   tol = max(FAR_RAIL_RANGE_TOL_M, FAR_RAIL_RANGE_TOL_FRAC * lead.dRel)
   speeds = [h[2] for h in hist if h is not None and h[0] >= FAR_RAIL_VISION_MIN_PROB and abs(h[1] - lead.dRel) <= tol]

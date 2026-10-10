@@ -2162,3 +2162,22 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
   (54.2 -> 52.0 m at 54 m). Worst case 2f2 871.2: about 0.2 m/s more speed into a lead at 60-80 m, brake -0.45 -> -0.59. Real
   lift-offs in these logs (26b 9:16/9:39, 2a6 1:47) are identical (large overshoots already at the full floor).
 - **Lever if a driver reports carrying too much speed after a gas press:** `GAS_OVERRIDE_COAST` off, or a deeper in-window floor.
+
+## D-096 — The far railed-lead camera bound also covers near-rail readings and leads from 50 m (STATUS 232, 2026-10-10, replay only, not driven)
+
+- **Finding (route 00000312, owner: "see if radar is exhibiting the same bug").** Newly adopted Bosch-A tracks published vRel
+  held flat at -12.0 or -11.1 (raw 65, 0.9 m/s off the rail) for 0.6-1.7 s while their own range was flat or opening and the
+  camera saw a steady car at the same range. FAR_RAIL_VISION_BOUND (298 BM3) missed them: it needed the exact rail and >= 80 m.
+- **Shipped default on (owner: "Yeah let's try all 3").** In `far_rail_vrel_floor`: (1) "railed" is now within
+  `FAR_RAIL_NEAR_RAIL_MARGIN_MPS` = 1.0 of the low rail (the ONPATH_ADOPT_RAIL_VREL_MARGIN_MPS precedent; replaces
+  FAR_RAIL_VREL_TOL_MPS 0.05); (2) `FAR_RAIL_MIN_D_REL_M` 80 -> 50 m; (3) unchanged: the range veto (vRelRangeDerived closing at
+  least as fast as the floor keeps the rail) and the NEWBORN young_range_genuinely_closing exemption. Camera match rules,
+  margin (3.0 m/s) and the fact that nothing is deleted or coasted (D-041/D-042) are unchanged.
+- **Evidence (closed-loop replay, acl.py, base = old 80 m / exact rail).** 312 807.9 (log 813.6-814.0, track 62 back from a
+  +12 m range excursion onto the camera's 54 m car at -12.0): sim accel min -2.71 -> -2.43, plan -1.79 -> -0.59 at 813.98.
+  312 1405.8 (log 1412.2-1413.0, track 23 at 82-87 m opening at -11.1): sim accel -2.84 -> -1.95, plan -1.97 -> -0.20.
+  13 protected windows frame-identical (311 2490.0 hard real brake with a railed radar, 298 BM3, 297 4656, 2a6, 2f2 x4,
+  305, 308 x4); 312 609 frames identical.
+- **Not covered.** 312 609.8 (railed track 28 at 63 m; camera car 10-15 m farther, so no range match) and 312 1342.3 (held
+  -7.9, not near the rail). A wider camera range tolerance or a held-value rule would be a new decision.
+- **Lever:** `FAR_RAIL_NEAR_RAIL_MARGIN_MPS` 0.05 and `FAR_RAIL_MIN_D_REL_M` 80 restore the previous behaviour exactly.

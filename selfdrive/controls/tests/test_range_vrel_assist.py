@@ -1630,10 +1630,30 @@ def test_far_rail_bound_covers_route_298_bm3():
 
 def test_far_rail_bound_needs_far_railed_radar_lead():
   hist = _far_hist()
-  assert radard.far_rail_vrel_floor(_far_lead(d_rel=79.0), _far_hist(x=79.0 + radard.RADAR_TO_CAMERA), 21.5) is None
-  assert radard.far_rail_vrel_floor(_far_lead(v_rel=RAIL + 0.1), hist, 21.5) is None   # off the rail: U11 is a reading
+  d = radard.FAR_RAIL_MIN_D_REL_M - 1.0
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=d), _far_hist(x=d + radard.RADAR_TO_CAMERA), 21.5) is None
+  off_rail = RAIL + radard.FAR_RAIL_NEAR_RAIL_MARGIN_MPS + 0.1
+  assert radard.far_rail_vrel_floor(_far_lead(v_rel=off_rail), hist, 21.5) is None   # off the rail: U11 is a reading
   assert radard.far_rail_vrel_floor(_far_lead(radar=False), hist, 21.5) is None
   assert radard.far_rail_vrel_floor(_far_lead(status=False), hist, 21.5) is None
+
+
+def test_far_rail_bound_covers_route_312_near_rail_and_nearer_leads():
+  # D-096, route 00000312: 1405.8 held -11.1 (raw 65, 0.9 m/s off the -12.0 rail) at ~80 m with the range opening;
+  # 609.8 held -12.0 at ~63 m with the range flat. Both missed the old exact-rail, >= 80 m test.
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=80.0, v_rel=RAIL + 0.9, v_range=0.5),
+                                     _far_hist(x=80.0 + radard.RADAR_TO_CAMERA, v=29.0), 30.0)
+  assert floor == pytest.approx(29.0 - 30.0 - radard.FAR_RAIL_MARGIN_MPS)
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=63.0, v_range=0.0),
+                                     _far_hist(x=63.0 + radard.RADAR_TO_CAMERA, v=27.0), 29.0)
+  assert floor == pytest.approx(27.0 - 29.0 - radard.FAR_RAIL_MARGIN_MPS)
+
+
+def test_far_rail_bound_range_veto_keeps_a_near_closing_rail():
+  # 311 2490.0-like: a railed lead at 60 m whose own range closes at -14 while the camera still lags at -2.
+  hist = _far_hist(x=60.0 + radard.RADAR_TO_CAMERA, v=27.0)
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=60.0, v_range=-14.0), hist, 29.0) is None
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=60.0, v_rel=RAIL + 0.8, v_range=-14.0), hist, 29.0) is None
 
 
 def test_far_rail_bound_needs_a_steady_camera_match():

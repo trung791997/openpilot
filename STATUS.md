@@ -10963,3 +10963,20 @@ target below the set speed. Upstream PR 39060 (A_CRUISE_MIN -0.5 globally) was r
 | min gap (worst change, 305 40.8) | 54.2 m | 52.0 m |
 
 Unit tests: 13 new in test_starpilot_acceleration.py (the flag-off test keeps the old floor). Not driven.
+
+## 232. Route 312 far-lead brakes: the far railed-lead camera bound now also covers near-rail readings and leads from 50 m (D-096). Replay only, not driven.
+
+Owner: "Yeah let's try all 3". On route 00000312 newly picked-up radar tracks briefly reported the lead closing at -12 or
+-11.1 m/s while the distance was steady or growing, and the car braked for nothing. The existing camera bound ignored them
+(exact -12.0 only, 80 m and beyond). It now applies within 1.0 m/s of the -12.0 floor and from 50 m. The safety check that
+leaves the reading alone when the radar's own distance really closes that fast is unchanged.
+
+| closed-loop replay (acl.py) | before | after |
+|---|---|---|
+| 312 807.9: sim accel min | -2.71 | -2.43 |
+| 312 1405.8: sim accel min | -2.84 | -1.95 |
+| 312 609.8, 1342.3 (not covered, see D-096) | -2.33, -1.66 | same |
+| 13 protected windows incl. 311 2490.0 real hard brake, 298 BM3 | - | frame-identical |
+
+Unit tests: test_range_vrel_assist.py far-rail tests follow the new constants; 2 new (312 near-rail / 63 m cover, near
+closing-rail veto). selfdrive/controls/tests: all pass except 2 test_latcontrol failures that also fail on the base. Not driven.
