@@ -71,6 +71,19 @@ BOSCH_LEAD_COAST_MIN_ACCEL = -0.6
 # never delays a planner brake. The release margin keeps a target hovering near 0 on a long descent from flipping
 # brake <-> coast: at 0.10, 0000026b 12:11 (9 m/s, pitch -0.03, target swinging -0.15..+0.20) let go for 0.2 s at +0.10
 # and braked again; 0.20 adds no brake episode on the 9 replayed routes. Static + replay only.
+# Gas resume after a coast (D-097). Coming out of any gas-off coast (D-091 lead coast, D-092 easing, D-095 gas-override
+# coast, or a force that dipped to 0), the gas used to jump from -30000 to the road-load amount within 0.2-0.4 s (the
+# 60/frame limit below allows 3000 units/s): route 00000308 5:26.7 at 26 m/s went 0 -> 116 units in 0.2 s and aEgo from
+# -0.38 to -0.10, 13:05.8 at 15 m/s 0 -> 142 in 0.4 s; 308 had 19 coast->gas handoffs in 10 min, aEgo swing p50 0.52 /
+# p90 0.72 m/s^2, the 0.5 s rise up to 1.2 m/s^3, and 6 went back to coast within 5 s. The driver felt the cycle as
+# nausea (owner, 2026-10-10). After a coast frame the gas now rises from 0 at BOSCH_RESUME_GAS_RATE units/s (800 units
+# ~ 1 m/s^2 of force, so ~0.13 m/s^2 per s; road load 110-140 units is reached in ~1.2-1.4 s), faster for a larger
+# target up to BOSCH_RESUME_GAS_RATE_FAST. The ramp ends once it reaches the requested gas. It only lowers gas; brake
+# selection and every negative target are untouched. Log analysis + static only; not driven.
+BOSCH_RESUME_GAS_RAMP = True
+BOSCH_RESUME_GAS_RATE = 100.0  # gas units/s for a target at or below BOSCH_RESUME_GAS_RATE_BP[0]
+BOSCH_RESUME_GAS_RATE_FAST = 600.0  # gas units/s at or above BOSCH_RESUME_GAS_RATE_BP[1]
+BOSCH_RESUME_GAS_RATE_BP = [0.2, 0.8]  # m/s^2 target
 BOSCH_HILL_BRAKE_GUARD = True
 BOSCH_HILL_BRAKE_MAX_ACCEL = 0.0      # m/s^2, brake mode is entered only at or below this target
 BOSCH_HILL_BRAKE_RELEASE_ACCEL = 0.20  # m/s^2, brake mode ends once the target is above this
@@ -263,6 +276,18 @@ def bosch_overbrake_compensation(accel: float, stopping: bool) -> float:
 def honda_bosch_lead_coast(coast: bool, accel: float, stopping: bool, long_active: bool) -> bool:
   """D-091: True when this frame goes out as a coast (gas off, no brake request)."""
   return bool(coast and long_active and not stopping and BOSCH_LEAD_COAST_MIN_ACCEL <= accel <= 0.0)
+
+
+def honda_bosch_resume_gas(gas: float, last_gas: float, resuming: bool, accel: float, dt: float) -> tuple[float, bool]:
+  """D-097: limit the gas rise after a coast. resuming is True from the frame after a coast until the ramp reaches the
+  requested gas. Returns (gas to send, still resuming)."""
+  if not BOSCH_RESUME_GAS_RAMP or not resuming:
+    return gas, False
+  rate = float(np.interp(accel, BOSCH_RESUME_GAS_RATE_BP, [BOSCH_RESUME_GAS_RATE, BOSCH_RESUME_GAS_RATE_FAST]))
+  limit = max(0.0, last_gas) + rate * dt
+  if gas <= limit:
+    return gas, False
+  return limit, True
 
 
 def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool,
@@ -772,6 +797,8 @@ class CarController(CarControllerBase):
     self.same_dir_fading = False
     self.bosch_last_gas = 0.0
     self.bosch_braking = False
+    self.bosch_gas_resume = False  # D-097 ramp active
+    self.bosch_coasting = False  # last frame went out gas off without a brake request
     if self.CP.carFingerprint in HONDA_BOSCH:
       self.bosch_gas_factor = self.param_store.get_float("HondaGasFactorParams", default=1.0)
       self.bosch_wind_factor = self.param_store.get_float("HondaWindFactorParams", default=1.0)
@@ -1151,7 +1178,7 @@ class CarController(CarControllerBase):
               gas_pedal_force=gas_pedal_force,
               wind_brake_ms2=wind_brake_mps2,
               long_active=CC.longActive,
-              long_pid=(actuators.longControlState == LongCtrlState.pid and not lead_coast),
+              long_pid=(actuators.longControlState == LongCtrlState.pid and not lead_coast and not self.bosch_gas_resume),
               gas_pressed=CS.out.gasPressed,
               brake_pressed=CS.out.brakePressed,
               v_ego=CS.out.vEgo,
@@ -1175,6 +1202,8 @@ class CarController(CarControllerBase):
           # limit gas ramp to 60 units per frame, matches stock. Higher sometimes causes powertrain
           # to ignore gas command.
           self.gas = min(self.gas, max(60.0, self.bosch_last_gas + 60.0))
+          self.gas, self.bosch_gas_resume = honda_bosch_resume_gas(self.gas, self.bosch_last_gas,
+                                                                   self.bosch_gas_resume or self.bosch_coasting, accel, 2 * DT_CTRL)
           self.bosch_last_gas = self.gas
 
           if lead_coast:
@@ -1183,6 +1212,10 @@ class CarController(CarControllerBase):
           else:
             self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel)
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
+          # a coast frame (gas off, no brake request) arms the D-097 ramp for the next gas frame
+          self.bosch_coasting = bool(CC.longActive and not self.bosch_braking and gas_pedal_force <= min_gas)
+          if self.bosch_coasting or self.bosch_braking or not CC.longActive:
+            self.bosch_gas_resume = False
           can_sends.extend(
             hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
                                          self.stopping_counter, self.CP.carFingerprint, gas_pedal_force, self.bosch_braking)

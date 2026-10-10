@@ -2181,3 +2181,22 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
 - **Not covered.** 312 609.8 (railed track 28 at 63 m; camera car 10-15 m farther, so no range match) and 312 1342.3 (held
   -7.9, not near the rail). A wider camera range tolerance or a held-value rule would be a new decision.
 - **Lever:** `FAR_RAIL_NEAR_RAIL_MARGIN_MPS` 0.05 and `FAR_RAIL_MIN_D_REL_M` 80 restore the previous behaviour exactly.
+
+## D-097 — Gas comes back gently after a coast (STATUS 233, 2026-10-10, log analysis + static only, not driven)
+
+**Problem (owner, 2026-10-10):** the coast-gas cycle gives the driver nausea; the gas resume after a coast feels too strong.
+
+**Evidence:** sendcan ACC_CONTROL over route 00000308 (6 segments) and 00000312 (5 segments): 32 coast -> gas handoffs.
+In 8 of them the gas went from -30000 to the road-load amount (116-243 units) in 0.1-0.6 s, because the only limit was
+the 60 units/frame (3000 units/s) one. 308 5:26.7 at 26 m/s: 0 -> 116 in 0.2 s, aEgo -0.38 -> -0.10. In the other 24 the
+gas already rose slower than 100 units/s, following the planner target; there the swing is the planner's own catch-up
+after a coast that ran deeper (-0.3..-0.4) than the plan's easing target (-0.05..-0.10).
+
+**Decision:** `BOSCH_RESUME_GAS_RAMP` (carcontroller, default ON). After a coast frame (longActive, gas off, no brake
+request) the gas rises from 0 at 100 units/s (~0.13 m/s^2 of force per s), faster for larger targets up to 600 units/s at
+0.8 m/s^2. It ends once it reaches the requested gas, on any brake frame, and when long is not active. It only lowers
+gas; brake selection and all negative targets are unchanged. The gas learner is held while it ramps. On the 8 sharp
+handoffs, 90% gas is now reached in 1.3-2.9 s instead of 0.1-0.6 s.
+
+**Not addressed:** the planner catch-up swing (the other 24). Reducing that means coasting less, or only when the
+target is close to the coast level (D-092 entry); left for the owner to choose.

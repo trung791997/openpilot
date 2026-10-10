@@ -10980,3 +10980,11 @@ leaves the reading alone when the radar's own distance really closes that fast i
 
 Unit tests: test_range_vrel_assist.py far-rail tests follow the new constants; 2 new (312 near-rail / 63 m cover, near
 closing-rail veto). selfdrive/controls/tests: all pass except 2 test_latcontrol failures that also fail on the base. Not driven.
+
+## 233. Gas comes back gently after a coast (D-097). Log analysis + static only, not driven.
+
+Owner reported nausea from the coast-gas cycle. After a coast the gas now ramps in at 100 units/s (up to 600 for a
+0.8 m/s^2 target) instead of jumping to the road-load amount within 0.1-0.6 s. Counterfactual on the 32 logged handoffs
+in 308/312: 8 change (90% gas reached in 1.3-2.9 s instead of 0.1-0.6 s), 24 are unchanged because the planner target
+already rose slower. Unit tests: 4 new in test_honda.py (helper ramp, faster for a real accel request, only lowers gas,
+controller-level coast -> gas ramp); the controller test fails with the flag off. Honda tests 412 passed.

@@ -16,6 +16,7 @@ from opendbc.car.honda.carcontroller import (
   get_eps_modified_steering_pressed,
   get_honda_bosch_wind_brake_mps2,
   honda_bosch_lead_coast,
+  honda_bosch_resume_gas,
   update_honda_bosch_braking,
   update_honda_bosch_live_learning,
 )
@@ -101,6 +102,30 @@ class TestHondaFingerprint:
     (False, -0.33, False, True), (True, -0.9, False, True), (True, -0.33, True, False), (True, -0.33, True, True), (True, 0.3, False, True)])
   def test_bosch_lead_coast_never_replaces_a_real_brake(self, coast, accel, stopping, active):
     assert not honda_bosch_lead_coast(coast, accel, stopping, active)
+
+  def test_bosch_gas_resume_after_coast_ramps_in(self):
+    # D-097: route 00000308 5:26.7 went 0 -> 116 gas units in 0.2 s out of a coast; now it rises at 100 units/s
+    gas, last, resuming, t = 0.0, 0.0, True, 0.0
+    while resuming:
+      gas, resuming = honda_bosch_resume_gas(116.0, last, resuming, 0.03, 0.02)
+      assert gas - last <= cc_mod.BOSCH_RESUME_GAS_RATE * 0.02 + 1e-9
+      last = gas
+      t += 0.02
+    assert gas == 116.0
+    assert 1.1 < t < 1.3
+
+  def test_bosch_gas_resume_is_faster_for_a_real_accel_request(self):
+    slow, _ = honda_bosch_resume_gas(500.0, 0.0, True, 0.1, 0.02)
+    fast, _ = honda_bosch_resume_gas(500.0, 0.0, True, 1.0, 0.02)
+    assert slow == pytest.approx(cc_mod.BOSCH_RESUME_GAS_RATE * 0.02)
+    assert fast == pytest.approx(cc_mod.BOSCH_RESUME_GAS_RATE_FAST * 0.02)
+
+  def test_bosch_gas_resume_only_lowers_gas_and_leaves_steady_gas_alone(self):
+    assert honda_bosch_resume_gas(300.0, 280.0, False, 0.2, 0.02) == (300.0, False)
+    assert honda_bosch_resume_gas(1.0, 0.0, True, 0.0, 0.02) == (1.0, False)
+    for gas in (0.0, 50.0, 400.0):
+      out, _ = honda_bosch_resume_gas(gas, 0.0, True, 0.3, 0.02)
+      assert out <= gas
 
   def test_bosch_braking_uses_force_hysteresis(self):
     braking = update_honda_bosch_braking(False, BOSCH_BRAKE_FORCE_ON - 0.01, False, True)
@@ -546,6 +571,47 @@ class TestHondaFingerprint:
 
     new_actuators, _ = controller.update(CC.as_reader(), CS, 0, toggles)
     assert new_actuators.accel == pytest.approx(-0.3)
+
+  def test_honda_bosch_controller_ramps_gas_in_after_a_coast(self, monkeypatch):
+    # D-097: a coast frame (gas off, no brake request) followed by a small positive target used to send the full
+    # road-load gas within a few frames
+    toggles = get_test_toggles()
+    CP = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False, toggles)
+    # get_params of a manual-transmission car elsewhere in the suite leaves the class lookup at -0.2
+    monkeypatch.setattr(CarControllerParams, "BOSCH_GAS_LOOKUP_BP", [0.0, 2.0])
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    sent = []
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_steering_control", lambda *args, **kwargs: (0, []))
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_acc_commands",
+                        lambda *args, **kwargs: sent.append((args[5], args[8], args[9])) or [])
+
+    def step(accel):
+      CC = structs.CarControl.new_message()
+      CC.enabled = True
+      CC.longActive = True
+      CC.hudControl.visualAlert = structs.CarControl.HUDControl.VisualAlert.none
+      CC.actuators.accel = accel
+      CC.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+      CS = SimpleNamespace(out=SimpleNamespace(vEgo=8.0, aEgo=0.0, steeringPressed=False, gasPressed=False, brakePressed=False),
+                           v_cruise_factor=1.0)
+      controller.update(CC.as_reader(), CS, 0, toggles)
+      controller.frame += 2  # gas frames only; skip the 10-frame HUD sends
+      if controller.frame % 10 == 0:
+        controller.frame += 2
+
+    controller.frame = 2
+    for _ in range(20):
+      step(-0.1)
+    gas, force, braking = sent[-1]
+    assert force <= CarControllerParams.BOSCH_GAS_LOOKUP_BP[0] and not braking
+    n = len(sent)
+    for _ in range(100):
+      step(0.15)
+    ramp = [g for g, _, _ in sent[n:]]
+    target = ramp[-1]
+    assert target > 60.0
+    assert all(b - a <= cc_mod.BOSCH_RESUME_GAS_RATE * 0.02 + 1e-6 for a, b in zip([0.0] + ramp, ramp, strict=False))
+    assert ramp[:5][-1] < 15.0
 
   def test_honda_hrv_3g_uses_matched_longitudinal_delay(self):
     toggles = get_test_toggles()
