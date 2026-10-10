@@ -5,6 +5,7 @@ import time
 import pyray as rl
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
+from openpilot.selfdrive.ui.onroad.starpilot.pulse_glide import GLIDE_COLOR
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.starpilot.common.experimental_state import (
@@ -16,7 +17,7 @@ from openpilot.starpilot.common.experimental_state import (
 
 BRAKE_WHEEL_COLOR = rl.Color(255, 0, 0, 255)
 ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
-COAST_WHEEL_COLOR = rl.Color(150, 90, 220, 255)
+COAST_WHEEL_COLOR = GLIDE_COLOR
 BRAKE_ACCEL_THRESHOLD = 0.25
 COMMAND_ACCEL_THRESHOLD = 0.05
 # Stopped on the brake while disengaged, pedalPressed's noEntry chatters and engageable flips
