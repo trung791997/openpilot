@@ -2382,5 +2382,5 @@ toggle text should reflect that it no longer coasts (D-100).
 car is a Honda Bosch-A platform with the radar enabled (`not CP.radarUnavailable`, i.e. BoschARadar on). With the
 radar off, the param keeps its stored value but does nothing. The device UI shows the toggle inside the Bosch A Radar
 section, only while BoschARadar is on; the Galaxy layout hides it with `visible_when_all_true: [BoschARadar]`. The
-description now says what is left: the stock depth/onset law by TTC (D-086), STOP_EASE, the D-080 newborn-lead bound,
-and no coasting.
+description says it matches stock Bosch-A ACC with light brake taps (the D-086 depth/onset law by TTC), plus STOP_EASE
+and the D-080 newborn-lead bound; owner asked that it not be worded as "no longer coasts".

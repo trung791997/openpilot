@@ -11079,5 +11079,5 @@ Tests: 7 new in `test_radard_slide_bound.py`; radard/lead tests 310 pass. Lint c
 ## 239. Stock Brake Feel is Bosch-A radar only; description updated (D-103). Static only, not driven.
 
 With BoschARadar off (vision-only ACC) StockBrakeFeel has no effect and the planner drives alone. The device toggle
-moved into the Bosch A Radar section, shown only while the radar is on; Galaxy hides it the same way. Its text no
-longer describes the coasts removed in D-100. Layout/brake-onset tests 53 pass; lint unchanged from base.
+moved into the Bosch A Radar section, shown only while the radar is on; Galaxy hides it the same way. Its text now
+reads as matching stock Bosch-A ACC with light brake taps; the coasts removed in D-100 are no longer described. Layout/brake-onset tests 53 pass; lint unchanged from base.

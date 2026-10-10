@@ -608,8 +608,8 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
       SettingRow("StockBrakeFeel", "toggle", tr_noop("Stock Brake Feel"),
-                 subtitle=tr_noop("Brakes for a slower car like stock ACC: slow build-up, no deeper than stock. No coasting; "
-                                  "gas follows the normal planner. Normal braking under 2 s to contact and when stopping."),
+                 subtitle=tr_noop("Matches stock Bosch A ACC: light brake taps that build slowly, no deeper than stock. "
+                                  "Normal braking under 2 s to contact and when stopping."),
                  get_state=lambda: self._params.get_bool("StockBrakeFeel"),
                  set_state=lambda s: self._params.put_bool("StockBrakeFeel", s),
                  visible=lambda: self._params.get_bool("BoschARadar")),
