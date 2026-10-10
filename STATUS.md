@@ -11027,3 +11027,30 @@ Logs (313): gas, gas-off and brake deliver the same decel per command bin and sw
 Removed: lead coast, ease coast, coast_resume_cap (D-098), carcontroller lead-coast gas-off and `actuators.coast` from
 controlsd; `leadCoast` -> `leadCoastDEPRECATED`. Kept: D-086 cap, D-080, stop ease, D-097 gas ramp. Tests: 26 coast
 tests removed; the remaining failures (5 lead_geometry, 4 import errors) are the same on the base. Lint: no new errors.
+
+## 237. Far railed lead: own-range bound when the camera roughly agrees, coasted range veto lift-only (D-101). Replay + static only, not driven.
+
+Phantom brakes on 313 (38:45.7, 54:46.1, 81:15.5) and 312 23:33 came from a far Bosch-A track on the U11 -12 rail
+whose own ranges were flat or opening while the camera saw a lead at ego speed. D-096 missed them: the camera range was
+outside its 8 % match, or the range veto read a `vRelRangeDerived` frozen through the coast.
+
+| Event | shipped | D-101 | car |
+|---|---|---|---|
+| 313 38:50 | -1.91 | -1.14 | -1.94 |
+| 313 54:51 | -1.77 | -0.60 | -1.79 |
+| 313 81:25 | -1.37 | -0.47 | -2.32 |
+| 312 23:33 | -1.57 | -1.00 | -2.14 |
+
+17 replay groups, fidelity (shipped vs car command) corr 0.83-0.999 (298 0.27, older build). Other groups are unchanged,
+including 312 13:26 (D-086 cut-in) and 312 13:34. The coasted veto is lift-only: the first version removed a D-096
+bound at 312 13:34 (range converging onto the camera read as -11 m/s) and braked -1.67 against shipped -1.45.
+
+Replay tool fix: radard's `v_ego_hist` must be seeded with vEgo before the first update. Cold, the first track gets
+vLead = vRel, which made a -3.5 phantom in replay at 313 81:17 that never happened on the car.
+
+Tests: 12 new in `test_range_vrel_assist.py`, 181 pass. Lint: no new errors. Protected real-brake routes:
+- 17 events were replayed by the testing agent. 16 are identical on and off.
+- On 263 at 5:58.6, D-101 brakes up to 1.49 m/s² less (min -1.61 against -1.70; the car was -1.48).
+- At that point the lead is railed at -12 and coasted, at 78 m (3.5 s). The range opened from 77.9 m to 87.4 m, and the
+  bound stays at or below the range fit.
+- Replay fidelity is weak there (corr 0.37). See D-101.

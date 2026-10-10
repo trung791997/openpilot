@@ -1611,9 +1611,10 @@ def test_young_track_vision_gate():
 
 # FAR_RAIL_VISION_BOUND (route 00000298 Bookmark 3, ~1020.3): far leadOne track 60 at ~121 m on the U11 rail with no
 # range fit, while the camera saw a car at that range doing 16-18 m/s. Numbers below are from that event.
-def _far_lead(d_rel=121.0, v_rel=RAIL, v_range=float('nan'), radar=True, status=True):
+def _far_lead(d_rel=121.0, v_rel=RAIL, v_range=float('nan'), radar=True, status=True, measured=True):
   from types import SimpleNamespace
-  return SimpleNamespace(dRel=d_rel, vRel=v_rel, vRelRangeDerived=v_range, radar=radar, status=status)
+  return SimpleNamespace(dRel=d_rel, vRel=v_rel, vRelRangeDerived=v_range, radar=radar, status=status,
+                         measuredRadar=measured)
 
 
 def _far_hist(n=20, x=121.0 + radard.RADAR_TO_CAMERA, v=17.0, p=0.5, spread=0.0):
@@ -1677,6 +1678,111 @@ def test_far_rail_bound_floor_follows_camera_speed_less_margin():
   # The floor is the camera closing plus FAR_RAIL_MARGIN_MPS; it only ever raises a railed vRel, never lowers it.
   floor = radard.far_rail_vrel_floor(_far_lead(), _far_hist(v=30.0), 21.5)
   assert floor == pytest.approx(30.0 - 21.5 - radard.FAR_RAIL_MARGIN_MPS)
+
+
+# D-101 (route 00000313 54:51 track 16): born at 91 m on the -12 rail, coasted, range 91 -> 87 -> 95 while the camera
+# read the car 100-107 m out (12-17% long, outside D-096's 8%) at about ego speed.
+def _range_hist(slope=0.0, d0=90.0, n=24, dt=1.0 / 15.0, noise=0.0):
+  return [(i * dt, d0 + slope * i * dt + (noise if i % 2 else -noise)) for i in range(n)]
+
+
+def _wide_cam(v=29.5, x=104.0):
+  return _far_hist(x=x + radard.RADAR_TO_CAMERA, v=v)
+
+
+def test_wide_match_covers_route_313_54_51():
+  lead = _far_lead(d_rel=90.0)
+  assert radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0) is None                       # D-096 alone: rail stands
+  floor = radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, _range_hist(slope=0.5))
+  assert floor == pytest.approx(0.5 - radard.YOUNG_TRACK_FLAT_MARGIN, abs=1e-6)            # own range carries it
+  assert floor > RAIL + 5.0
+
+
+def test_wide_match_never_less_closing_than_the_camera_floor():
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=90.0), _wide_cam(v=27.5), 29.0, _range_hist(slope=2.0))
+  assert floor == pytest.approx(27.5 - 29.0 - radard.FAR_RAIL_MARGIN_MPS)
+
+
+def test_wide_match_keeps_the_rail_for_a_closing_range():
+  # A slow or stopped car: its own range closes, so the floor sits at or below the rail and nothing moves.
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=90.0), _wide_cam(), 29.0, _range_hist(slope=-12.0))
+  assert floor is None or floor <= RAIL
+
+
+def test_wide_match_needs_a_camera_that_is_not_closing():
+  # 266 795.4 / 237 1188.2: a camera closing 7-8.5 m/s is why YOUNG_TRACK_VISION_GATE exists.
+  cam = _wide_cam(v=29.0 - radard.YOUNG_TRACK_VISION_MAX_CLOSING - 0.5)
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=90.0), cam, 29.0, _range_hist(slope=0.5)) is None
+
+
+def test_wide_match_needs_a_usable_own_range_fit():
+  lead = _far_lead(d_rel=90.0)
+  assert radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, []) is None
+  assert radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, _range_hist(n=radard.YOUNG_TRACK_MIN_SAMPLES - 1)) is None
+  noise = radard.YOUNG_TRACK_NOISY_MAX_RESIDUAL_M + 0.5
+  assert radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, _range_hist(noise=noise)) is None
+  # Noisy but usable: the floor drops by standard errors, so it is more closing than the flat one.
+  noisy = radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, _range_hist(slope=0.5, noise=1.0))
+  assert noisy is not None and noisy < 0.5 - radard.YOUNG_TRACK_FLAT_MARGIN
+
+
+def test_wide_match_camera_range_and_range_veto():
+  x = 90.0 * (1.0 + radard.FAR_RAIL_WIDE_RANGE_TOL_FRAC) + 2.0
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=90.0), _wide_cam(x=x), 29.0, _range_hist(slope=0.5)) is None
+  lead = _far_lead(d_rel=90.0, v_range=-16.0)
+  assert radard.far_rail_vrel_floor(lead, _wide_cam(), 29.0, _range_hist(slope=0.5)) is None
+
+
+def test_wide_match_switch_off(monkeypatch):
+  monkeypatch.setattr(radard, "FAR_RAIL_WIDE_MATCH", False)
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=90.0), _wide_cam(), 29.0, _range_hist(slope=0.5)) is None
+
+
+def test_coasted_veto_reads_the_fresh_ranges_not_the_frozen_fit():
+  # 312 23:33 track 23: vRelRangeDerived frozen at -2.80 through the coast while the fresh ranges opened +2.5 m/s.
+  cam = _far_hist(x=87.0 + radard.RADAR_TO_CAMERA, v=33.0)
+  opening = _range_hist(slope=2.5, d0=84.0)
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=87.0, v_range=-2.8), cam, 32.2, opening) is None   # measured
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=87.0, v_range=-2.8, measured=False), cam, 32.2, opening)
+  assert floor == pytest.approx(33.0 - 32.2 - radard.FAR_RAIL_MARGIN_MPS)
+
+
+def test_coasted_veto_keeps_a_real_rail_approach():
+  # 266 484 shape, coasted: the frozen fit and the fresh ranges both close fast, so the rail stands.
+  cam = _far_hist(x=87.0 + radard.RADAR_TO_CAMERA, v=29.0)
+  closing = _range_hist(slope=-16.0, d0=95.0)
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=87.0, v_range=-16.0, measured=False), cam, 29.0, closing) is None
+  # No usable own fit: the frozen fit still vetoes, as before.
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=87.0, v_range=-16.0, measured=False), cam, 29.0, []) is None
+
+
+def test_coasted_veto_is_lift_only():
+  # 312 13:34 track 62: no vRelRangeDerived (NaN) and the range converging onto the camera reads as a fast close.
+  # D-096 bounds it; the fresh fit must not add a veto it did not have.
+  cam = _far_hist(x=54.0 + radard.RADAR_TO_CAMERA, v=28.3)
+  converging = _range_hist(slope=-11.0, d0=60.0)
+  floor = radard.far_rail_vrel_floor(_far_lead(d_rel=54.0, v_range=float('nan'), measured=False), cam, 29.9, converging)
+  assert floor == pytest.approx(28.3 - 29.9 - radard.FAR_RAIL_MARGIN_MPS)
+  # Same with a frozen value above the floor.
+  assert radard.far_rail_vrel_floor(_far_lead(d_rel=54.0, v_range=-1.0, measured=False), cam, 29.9, converging) == floor
+
+
+def test_coasted_veto_switch_off(monkeypatch):
+  monkeypatch.setattr(radard, "FAR_RAIL_COASTED_OWN_RANGE_VETO", False)
+  cam = _far_hist(x=87.0 + radard.RADAR_TO_CAMERA, v=33.0)
+  lead = _far_lead(d_rel=87.0, v_range=-2.8, measured=False)
+  assert radard.far_rail_vrel_floor(lead, cam, 32.2, _range_hist(slope=2.5, d0=84.0)) is None
+
+
+def test_recent_range_hist_keeps_fresh_sweeps_in_window():
+  track = new_track()
+  for i in range(60):
+    for _ in range(2):  # a duplicate payload (same liveTracks time) must not add a sample
+      track.update(90.0, 0.0, RAIL, V_EGO + RAIL, False, False, t_now=i / 15.0)
+  ts = [s[0] for s in track.recent_range_hist]
+  assert ts == sorted(set(ts))
+  assert ts[-1] - ts[0] <= radard.FAR_RAIL_RANGE_WINDOW_S
+  assert len(ts) >= radard.YOUNG_TRACK_MIN_SAMPLES
 
 
 # ---------------------------------------------------------------------------------------------

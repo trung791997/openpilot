@@ -2262,3 +2262,65 @@ hide; removing the cap alone in that window gives exactly the off result. This i
 -1.30 -> -1.82..-2.73) and it is real, but it belongs to D-086, not to the coasts. On 313, the removal brakes deeper
 than off by more than 0.3 m/s^2 in 4 of 242 windows and shallower in 6. The light brake taps with brake lights that
 D-091/D-092 hid (route 2f8, route 300) come back, the same as StockBrakeFeel off.
+
+## D-101 — A far railed lead the camera sees at about ego speed is bounded by its own fresh ranges, and the D-096 range veto reads fresh ranges while coasted, lift-only (STATUS 237, 2026-10-10, replay only, not driven)
+
+**Problem (owner, 2026-10-10):** phantom brakes on route 00000313: 38:45.7 (-1.94, track 47), 54:46.1 (-1.79,
+track 16), 81:15.5 (-2.32, track 20), and 312 23:33 (-2.14, track 23). In each, a far Bosch-A track (68-97 m) is born
+or coasted with U11 vRel on the -11..-12 rail. Its own ranges are flat or opening, and the camera sees a lead at about
+ego speed.
+
+**Cause:** D-096 bounds a railed far lead only when the camera's range matches the radar's within max(8 m, 8%). At 54:51
+the camera read 100-107 m against radar 87-92 m, so D-096 dropped after 0.5 s and the rail stood for 1.5 s. At 312 23:33
+the D-096 range veto read `vRelRangeDerived`, which only updates on a measured sweep and so sat frozen at -2.80 through
+the coast while the fresh ranges opened 80.6 -> 88.1 m. When the camera floor rose past -2.80, the frozen value vetoed
+the bound.
+
+**Decision:** two changes in `far_rail_vrel_floor`.
+- `FAR_RAIL_WIDE_MATCH`: when the strict match fails, a camera within 25 % on 12 of 20 frames, steady (stdev <= 2) and
+  not closing by more than YOUNG_TRACK_VISION_MAX_CLOSING may allow a bound. The bound comes from the track's own
+  ranges (`Track.recent_range_hist`, fresh liveTracks sweeps over the last 1.5 s, coasted sweeps included). It uses the
+  young-track flat-range fit and is never less closing than the camera floor. With no usable fit there is no bound.
+- `FAR_RAIL_COASTED_OWN_RANGE_VETO`: while the lead is coasted, a range veto from the frozen `vRelRangeDerived` is
+  lifted when the fresh-range fit is above the floor. **Lift-only:** the fresh fit never adds a veto D-096 did not have.
+  The first version replaced the frozen value outright. At 312 13:34 (813.9 s), track 62 had no `vRelRangeDerived`
+  (NaN) while its range converged 66 -> 54 m onto the camera's 52 m. Read as a -11 m/s fit, that removed D-096's
+  -3.6 bound and braked -1.67 (shipped -1.45, later). The same happened for 3 ticks at 312 23:32.
+
+**Evidence (replay; radard + planner open loop from the logs, radard seeded with vEgo history):** 17 groups (313
+segs 38, 54, 81, 111, 115, 158; 297a/b, 298, 2a6, 2f2, 305, 308, 311, 312a/b/c). Fidelity, D-101 off against the car
+command: corr 0.83-0.999 (298 0.27, an older build). Only four events change, and every tick where D-101 changes what
+radard publishes is shallower:
+
+| Event | Shipped | D-101 | Car |
+|---|---|---|---|
+| 313 38:50 | -1.91 | -1.14 | -1.94 |
+| 313 54:51 | -1.77 | -0.60 | -1.79 |
+| 313 81:25 | -1.37 | -0.47 | -2.32 |
+| 312 23:33 | -1.57 | -1.00 | -2.14 |
+
+The only deeper ticks (-0.11 at 38:53, -0.16 at 81:27.8) have identical radar input. They are the planner easing a little
+longer from the higher speed it kept. 312b 806 (the D-086 cut-in) and 13:34 are unchanged. D-101 only adds a bound
+where shipped code published the rail, so it cannot make D-086's delayed-then-deeper brake worse. A bound that releases
+later has the same shape as any D-096 release, and in 38:50 the release lands at -1.14 against -1.91. A stopped or slow
+car keeps the rail: its range closes, so the fit floor is at or below the rail.
+
+**Protected real-brake routes (testing agent, replay only, D-101 on vs off):**
+- 17 events on 232 (both 00000232 routes), 236, 237 (two), 25b, 25e (two), 25f, 263 (two), 266 (three), 268, 26f,
+  1e8 and 2ae trk39. 16 have the same minimum and no differing tick in the window.
+- Fidelity, off against the car command: corr 0.86-0.98 on most events. It is weak on 263 (0.37 and 0.62), 26f
+  (-0.16), 2ae (0.41), 25f (0.77) and 266 (0.77-0.79).
+- **The exception is 263 5:58.6:** min -1.61 on against -1.70 off (car -1.48), and on is up to +1.49 shallower at
+  5:59.6. It is the case D-101 is for, not a bug:
+  - Track 25 is leadOne throughout, at 78-88 m and vEgo 22, so headway is 3.5 s or more. The camera has it within 25%
+    at about 20.6 m/s. The raw vRel is railed at -12.00 and coasted from 5:57.9 to 5:59.8.
+  - The range bottoms out at 77.9 m (5:59.0) and then opens to 87.4 m (6:00.5). `vRelRangeDerived` is frozen at -4.26
+    the whole time.
+  - The own-range fit goes -13.3, -9.2, -6.1, -3.4, 0.0, then +3.2. The floor follows it from below: the first lift is
+    at 5:58.58 (-11.44), then -8.13, then -3.88. It is never above the fit.
+  - Off keeps -12.00 for about 0.9 s while the range opens and plans -1.70. On plans -1.32, -0.57, then -0.20.
+  - FAR_RAIL_WIDE_MATCH alone makes the whole window difference. The coasted-veto flag only adds the tail after
+    6:01, where radard's output is identical and the 0.1-0.24 differences are carried-over MPC state.
+  - 263 6:12-6:16 is not railed: the floor is None on both sides and the results match tick for tick.
+
+Not road-validated.
