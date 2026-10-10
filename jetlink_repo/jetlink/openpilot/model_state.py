@@ -51,8 +51,15 @@ HOLD_FRAME = 0.046
 # lets a quiet host run to, so a run of holds is always a host that answers,
 # late; one that has stopped answering fails the link first
 # (JetlinkClient.infer_begin), as a lost link
+# HOLDS_ALLOWED was 20 (10%). A Galaxy Tab S9 NPU at 35-42 ms a frame tails
+# past 46 in bursts and was handed back at 21 in 10 s twice in four minutes
+# (route 313, 2026-10-09). 40 lets up to 20% of frames publish a plan one
+# frame old. Not raised: HOLD_FRAME itself, because modeld's work outside the
+# model is ~8 ms a frame (frames start queueing at ~42 ms of model time on the
+# same route), so a later hold builds a backlog and drops frames where a held
+# frame does not. Static change, not yet driven
 HOLDS_IN_A_ROW = 5
-HOLDS_ALLOWED = 20
+HOLDS_ALLOWED = 40
 HOLD_WINDOW = 10.0
 # The first frames after a swap, which the fork holds engagement off for (a
 # second at 20 Hz): a single held frame among them is behind. A host cold from
