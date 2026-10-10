@@ -2180,7 +2180,8 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
 - **Evidence (closed-loop replay, acl.py, base = old 80 m / exact rail).** 312 807.9 (log 813.6-814.0, track 62 back from a
   +12 m range excursion onto the camera's 54 m car at -12.0): sim accel min -2.71 -> -2.43, plan -1.79 -> -0.59 at 813.98.
   312 1405.8 (log 1412.2-1413.0, track 23 at 82-87 m opening at -11.1): sim accel -2.84 -> -1.95, plan -1.97 -> -0.20.
-  13 protected windows frame-identical (311 2490.0 hard real brake with a railed radar, 298 BM3, 297 4656, 2a6, 2f2 x4,
+  13 protected windows frame-identical (311 2490.0 hard brake with a railed radar — reclassified 2026-10-10 as a
+  phantom, D-102, 298 BM3, 297 4656, 2a6, 2f2 x4,
   305, 308 x4); 312 609 frames identical.
 - **Not covered.** 312 609.8 (railed track 28 at 63 m; camera car 10-15 m farther, so no range match) and 312 1342.3 (held
   -7.9, not near the rail). A wider camera range tolerance or a held-value rule would be a new decision.
@@ -2324,3 +2325,50 @@ car keeps the rail: its range closes, so the fit floor is at or below the rail.
   - 263 6:12-6:16 is not railed: the floor is None on both sides and the results match tick for tick.
 
 Not road-validated.
+
+## D-102 — A lead track that slides onto a slower car in the next lane is floored at the camera lead's speed (STATUS 238, 2026-10-10, replay only, not driven)
+
+**Problem (owner, 2026-10-10):** route 00000311 41:34 (log ~2492-2497 s) braked hard with no reason. The video shows a
+dark SUV fully in the left lane; the in-lane cars stay about 70 m ahead.
+
+**Cause:** Bosch-A track 27 was on the in-lane lead at 72 m / 21 m/s, then slid onto the SUV: range 72 -> 46 m and vLead
+21 -> 5.6 m/s in 1.5 s, aLeadK -9.8. Its lateral stayed +0.3..+0.7, inside the lane band, so no lateral or rail gate
+applied. There was no separate track on the SUV. The camera lead also picked the SUV (y -0.2, prob 0.99) but held it at
+13-14 m/s. The planner braked on leadTwo, which carried the same track. Plan -3.17, replay sim -3.89.
+311 2490.0 had been listed as a protected real brake in D-096 / STATUS 232; it is this phantom and is reclassified.
+
+**Decision:** `SLIDE_BOUND` (radard.py, class `SlideBound`, Bosch-A only, default ON). Enter when leadOne is a radar
+track at d >= 20 m and, together:
+- its vLead fell faster than `SLIDE_DECEL` (8 m/s²) over ~0.75 s on the same track id;
+- the camera lead is at the same range (within max(10 m, 20 %)), prob > 0.9 for 1 s, accel > -1.5, ego-referenced
+  speed stdev < 1.5 over 1 s and 2 s trend flatter than -`SLIDE_CAM_SLOPE` (1.0 m/s²);
+- the camera is at least `SLIDE_MIN_GAP` (3 m/s) faster than vLead.
+Then vLead / vLeadK / vRel are raised to camera speed - `SLIDE_MARGIN` (1.0) and aLeadK to min(camera accel, 0) -
+`SLIDE_A_MARGIN` (0.5), on leadOne and on leadTwo / leadOnpath when they carry the same track. The latch holds up to
+`SLIDE_HOLD_S` (4 s) while the camera still sees the same object (prob, accel, range), without re-checking the decel.
+Lift-only, nothing deleted or coasted (D-041/D-042).
+
+**Why not more:** both sensors put the SUV in our lane. The remaining brake is the camera's own 13 m/s in-lane lead.
+Removing it needs a lateral signal neither sensor gives here. Zero margins (0 / 0) took 41:34 to plan -1.30 but softened
+the real brake at 311 84:20 by +0.68, so they were rejected.
+
+**Rejected signature:** range-slope vs vLead disagreement (too noisy, see the earlier refutation). The decel signature
+over 299/311/312 hits 311 41:33, 74:11, 78:54; 312 seg32, seg48; and 299 seg49 4137.2, a real slowing lead the camera
+lagged on (camera trend -1.4..-1.9). `SLIDE_CAM_SLOPE` blocks that one.
+
+**Evidence (replay, car-matched, D-101 and the coast-window change on in all arms):**
+
+| Event | today | D-102 | car |
+|---|---|---|---|
+| 311 41:34 plan min | -3.17 | -1.59 | - |
+| 311 41:34 sim accel min (closed loop) | -3.89 | -2.45 | - |
+| 313 116:00 (radar glitch) | -1.61 | -1.31 | - |
+| 312 23:32 (radar glitch) | -1.00 | +0.02 | - |
+| 312 13:33-37 (real closer lead) | -1.45 | -1.22 | - |
+
+At 312 13:33 the bound held 4.6 s and trimmed vRel to the camera's; one tick was 0.15 deeper. Testing agent (Job),
+independent replay: 41:34 plan -3.23 -> -1.64, sim -3.94 -> -2.47, fidelity corr 0.996. Real brakes 311 s9/s46/s72/s84
+and 299 s49 unchanged. 312 s32 max +0.06; 312 s48 sim -0.27 deeper. Protected 232/236/237/25b/25e/25f/263/266/268/26f/
+1e8/2ae unchanged except 266a (29 ticks shallower, 3 deeper, min -2.00 unchanged).
+
+**Lever:** `SLIDE_BOUND = False` restores the previous behaviour exactly.

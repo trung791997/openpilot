@@ -233,6 +233,30 @@ BIRTH_RAIL_LOW_VISION_Y_TOL_M = 2.0
 BIRTH_RAIL_LOW_VISION_MARGIN_MPS = 4.0
 
 
+# D-102 SLIDE_BOUND: a Bosch-A lead track that slides onto a slower car in the next lane reads it as the lead braking hard.
+# Route 311 41:34 (video: dark SUV in the LEFT lane the whole time): track 27 held the in-lane lead at 72 m / 21 m/s,
+# then its range ran 72 -> 46 m and vLead 21 -> 5.6 m/s in 1.5 s (aLeadK -9.8) while the camera lead held 13-14 m/s
+# (prob 0.99). The track's lateral never left the lane band, so no rail/lateral gate saw it; the plan asked -3.17.
+# Rule: when the lead's vLead falls faster than SLIDE_DECEL over ~0.75 s on the same track while a
+# confident camera lead at the same range (prob > 0.9 for 1 s, ego-referenced speed sd < 1.5, 2 s speed trend flatter
+# than -SLIDE_CAM_SLOPE, accel > -1.5) is >= 3 m/s faster, vLead/vRel/vLeadK are floored at camera speed - SLIDE_MARGIN
+# and aLeadK at min(camera accel, 0) - SLIDE_A_MARGIN, on every lead slot carrying that track (the planner braked on
+# leadTwo, the same track). Latched up to SLIDE_HOLD_S while the camera still sees the same object. Nothing is deleted.
+# Replay (car-matched, closed-loop fitted plant): 41:34 plan -3.17 -> -1.59, sim -3.89 -> -2.45. The rest is the
+# camera's own in-lane 13 m/s lead; both sensors put the SUV in our lane, so it cannot be removed here.
+# Margins: SLIDE_MARGIN 0 / A_MARGIN 0 softened real brake 311 84:20 by +0.68 (2026-10-10 replay); 1.0 / 0.5 left the
+# real brakes (311 s9/s46/s72/s84, 299 s49) and the protected set (232..2ae) unchanged except 266a (min unchanged).
+# SLIDE_CAM_SLOPE: the one real slowing lead the decel test met (299 seg 49) had a camera trend of -1.4..-1.9 m/s^2.
+# Decel-signature hits over 299/311/312: 311 41:33, 74:11, 78:54; 312 seg32, seg48; 299 seg49 (real, blocked by slope).
+SLIDE_BOUND = True
+SLIDE_DECEL = 8.0
+SLIDE_MARGIN = 1.0
+SLIDE_A_MARGIN = 0.5
+SLIDE_CAM_SLOPE = 1.0
+SLIDE_HOLD_S = 4.0
+SLIDE_MIN_GAP = 3.0
+SLIDE_MIN_D = 20.0
+
 def birth_rail_vision_agrees(d_rel: float, y_rel: float, vision_lead: tuple[float, float, float, float] | None) -> bool:
   """D-077 LOW moving test: a confident model lead at the track's range and lateral offset, moving >= MIN_LEAD."""
   if vision_lead is None:
@@ -1999,6 +2023,51 @@ def get_adjacent_stopped(tracks: dict[int, Track], model_data: capnp._DynamicStr
   }
 
 
+
+class SlideBound:
+  """D-102: floor a sliding lead's speed at the camera's (see SLIDE_BOUND)."""
+  def __init__(self):
+    self.hist: deque = deque(maxlen=40)  # (t, track, vLead, prob, cam_v), model cadence, 2 s
+    self.track = -1
+    self.t_latch = 0.0
+
+  def step(self, lead, others, vis, cam_v: float, t: float) -> bool:
+    trk = int(lead.radarTrackId) if lead.status and lead.radar else -1
+    self.hist.append((t, trk, float(lead.vLead), float(vis.prob), cam_v))
+    if trk < 0 or lead.dRel < SLIDE_MIN_D:
+      self.track = -1
+      return False
+    same_obj = vis.prob > 0.9 and vis.a[0] > -1.5 and abs(lead.dRel - float(vis.x[0])) < max(10.0, 0.2 * lead.dRel)
+    if self.track == trk and t - self.t_latch <= SLIDE_HOLD_S:
+      if not same_obj:
+        self.track = -1
+        return False
+    else:
+      cam1 = [x for x in self.hist if x[0] > t - 1.0]
+      cam2 = [x for x in self.hist if x[0] > t - 2.0]
+      slope = float(np.polyfit([x[0] for x in cam2], [x[4] for x in cam2], 1)[0]) if len(cam2) >= 16 else -99.0
+      old = [x for x in self.hist if t - 0.85 <= x[0] <= t - 0.65 and x[1] == trk]
+      if not (same_obj and len(cam1) >= 8 and all(x[3] > 0.9 for x in cam1) and float(np.std([x[4] for x in cam1])) < 1.5
+              and slope > -SLIDE_CAM_SLOPE and cam_v - float(lead.vLead) >= SLIDE_MIN_GAP and old
+              and (float(lead.vLead) - old[0][2]) / (t - old[0][0]) <= -SLIDE_DECEL):
+        self.track = -1
+        return False
+      self.track, self.t_latch = trk, t
+    floor = cam_v - SLIDE_MARGIN
+    a_floor = min(float(vis.a[0]), 0.0) - SLIDE_A_MARGIN
+    fired = False
+    for ld in [lead] + [o for o in others if o.status and o.radar and int(o.radarTrackId) == trk]:
+      dv = floor - float(ld.vLead)
+      if dv <= 0:
+        continue
+      ld.vLead = floor
+      ld.vLeadK = float(ld.vLeadK) + dv
+      ld.vRel = float(ld.vRel) + dv
+      ld.aLeadK = max(float(ld.aLeadK), a_floor)
+      fired = True
+    return fired
+
+
 class RadarD:
   def __init__(self, radar_ts: float = DT_MDL, delay: float = 0.0, g90_radar_filter: bool = False,
                honda_bosch_a_radar: bool = False):
@@ -2008,6 +2077,8 @@ class RadarD:
     self.honda_bosch_a_radar = honda_bosch_a_radar
     self.young_flat_bound_count = 0
     self.far_rail_bound_count = 0
+    self.slide_bound = SlideBound()
+    self.slide_bound_count = 0
     self.far_rail_hist = [deque(maxlen=FAR_RAIL_HIST_FRAMES) for _ in range(2)]  # per model lead slot
     # The lead KF consumes Bosch measurements at the physical radar cadence. Lead probability
     # filters, however, consume modelV2 leads every model cycle and must retain model-loop timing.
@@ -2270,6 +2341,9 @@ class RadarD:
             lead.vLeadK = lead.vLeadK + dv
             self.far_rail_bound_count += 1
 
+      if SLIDE_BOUND and self.honda_bosch_a_radar:
+        self._slide_bound(self.radar_state.leadOne, leads_v3[0], model_v_ego, sm.logMonoTime['modelV2'] * 1e-9)
+
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):
           track_id = int(getattr(lead, "radarTrackId", -1))
@@ -2293,6 +2367,11 @@ class RadarD:
       self.starpilot_radar_state.adjacentStopped = get_adjacent_stopped(sel_tracks, sm['modelV2'])
 
     self.starpilot_toggles = get_starpilot_toggles(sm)
+
+  def _slide_bound(self, lead, vis, model_v_ego: float, t: float) -> None:
+    others = [self.radar_state.leadTwo] + ([self.radar_state.leadOnpath] if ONPATH_RADAR_ADOPT else [])
+    if self.slide_bound.step(lead, others, vis, self.v_ego + float(vis.v[0]) - model_v_ego, t):
+      self.slide_bound_count += 1
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
