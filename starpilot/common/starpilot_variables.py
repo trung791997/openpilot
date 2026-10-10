@@ -17,6 +17,7 @@ from opendbc.car import gen_empty_fingerprint
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.chrysler.values import JEEPS as CHRYSLER_JEEPS
 from opendbc.car.gm.values import CAR as GM_CAR, EV_CAR as GM_EV_CAR, GMFlags
+from opendbc.car.honda.values import HONDA_BOSCH_A
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, EV_CAR as HYUNDAI_EV_CAR, HyundaiFlags, HyundaiStarPilotSafetyFlags
 from opendbc.car.interfaces import TORQUE_SUBSTITUTE_PATH, CarInterfaceBase, GearShifter
 from opendbc.car.mock.values import CAR as MOCK
@@ -881,10 +882,12 @@ class StarPilotVariables:
     # Resume brake ramp after a gas override (longcontrol RESUME_BRAKE_RAMP_*). Off unless the parent and this are on.
     toggle.resume_brake_ramp = self.get_value("ResumeBrakeRamp", condition=advanced_longitudinal_tuning)
     # Stock brake feel (longitudinal_planner STOCK_FEEL_*, D-086): stock Honda ACC's fitted depth and onset rate by TTC,
-    # plus the D-080 newborn-lead bound. Replaced the Smooth Brake Onset toggle. A params library built before the key
-    # existed raises on the read; that means off, never a failed toggle load.
+    # plus the D-080 newborn-lead bound and STOP_EASE. Replaced the Smooth Brake Onset toggle. Its coasts are gone (D-100).
+    # Bosch-A radar only (D-103): with the radar off (vision-only ACC) the planner runs alone, whatever the param says.
+    # A params library built before the key existed raises on the read; that means off, never a failed toggle load.
+    bosch_a_radar = toggle.car_make == "honda" and has_radar and CP.carFingerprint in HONDA_BOSCH_A
     try:
-      toggle.stock_brake_feel = self.get_value("StockBrakeFeel", condition=advanced_longitudinal_tuning)
+      toggle.stock_brake_feel = self.get_value("StockBrakeFeel", condition=advanced_longitudinal_tuning and bosch_a_radar)
     except Exception:
       toggle.stock_brake_feel = False
 

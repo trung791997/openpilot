@@ -548,12 +548,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  get_state=lambda: self._params.get_bool("ResumeBrakeRamp"),
                  set_state=lambda s: self._params.put_bool("ResumeBrakeRamp", s),
                  visible=adv),
-      SettingRow("StockBrakeFeel", "toggle", tr_noop("Stock Brake Feel"),
-                 subtitle=tr_noop("Coasts up to a slower car instead of staying on the gas, then brakes like stock ACC: slow build-up, "
-                                  "no deeper than stock. Normal braking under 2 s to contact and when stopping."),
-                 get_state=lambda: self._params.get_bool("StockBrakeFeel"),
-                 set_state=lambda s: self._params.put_bool("StockBrakeFeel", s),
-                 visible=adv),
       SettingRow("TrailerLoad", "value", tr_noop("Trailer Load"),
                  subtitle=tr_noop("Loaded trailer weight for tow-aware gas, brake, and conservative lateral assist."),
                  get_value=lambda: f"{self._params.get_int('TrailerLoad')} lb",
@@ -613,6 +607,12 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
+      SettingRow("StockBrakeFeel", "toggle", tr_noop("Stock Brake Feel"),
+                 subtitle=tr_noop("Brakes for a slower car like stock ACC: slow build-up, no deeper than stock. No coasting; "
+                                  "gas follows the normal planner. Normal braking under 2 s to contact and when stopping."),
+                 get_state=lambda: self._params.get_bool("StockBrakeFeel"),
+                 set_state=lambda s: self._params.put_bool("StockBrakeFeel", s),
+                 visible=lambda: self._params.get_bool("BoschARadar")),
     ]
 
     self._slc_rows = [

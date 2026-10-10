@@ -893,10 +893,13 @@
       {
         "key": "StockBrakeFeel",
         "label": "Stock Brake Feel",
-        "description": "Drives up to a slower car the way stock Honda ACC does. When closing in, it lets off the gas and coasts down to the car's speed instead of staying on the throttle, then brakes gently only if coasting is not enough, and the gas comes back smoothly once the gap opens. Braking builds slowly and goes no deeper than stock would at the same time to contact. Uses less brake and less gas while closing than stock, which stays on the gas until it brakes. Normal braking under 2 s to contact, when stopping, and at a red light. Also ignores a brief false braking reading on a newly seen car.",
-        "picker_description": "Coasts up to a slower car, then brakes the way stock ACC does.",
+        "description": "Honda Bosch-A Radar only; with that radar off this does nothing and the normal planner drives alone. Brakes for a slower car the way stock Honda ACC does: braking builds slowly and goes no deeper than stock would at the same time to contact. Normal braking under 2 s to contact, when stopping, and at a red light. Also eases a held stopping brake while still rolling, and ignores a brief false braking reading on a newly seen car. It no longer coasts: when closing on a slower car, gas and lift follow the normal planner.",
+        "picker_description": "Brakes for a slower car the way stock ACC does (Bosch-A radar only).",
         "data_type": "bool",
         "ui_type": "toggle",
+        "visible_when_all_true": [
+          "BoschARadar"
+        ],
         "parent_key": "AdvancedLongitudinalTune",
         "settings_tier": "advanced"
       },

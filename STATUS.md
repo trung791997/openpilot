@@ -11075,3 +11075,9 @@ unchanged except 266a (min unchanged); zero margins rejected (softened 311 84:20
 tick-identically to the tested env-gated version on all 17 groups. Fidelity at 41:34: corr 0.996, v RMSE 0.21-0.25.
 
 Tests: 7 new in `test_radard_slide_bound.py`; radard/lead tests 310 pass. Lint clean. Not road-validated.
+
+## 239. Stock Brake Feel is Bosch-A radar only; description updated (D-103). Static only, not driven.
+
+With BoschARadar off (vision-only ACC) StockBrakeFeel has no effect and the planner drives alone. The device toggle
+moved into the Bosch A Radar section, shown only while the radar is on; Galaxy hides it the same way. Its text no
+longer describes the coasts removed in D-100. Layout/brake-onset tests 53 pass; lint unchanged from base.
