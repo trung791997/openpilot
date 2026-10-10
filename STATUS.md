@@ -11081,3 +11081,10 @@ Tests: 7 new in `test_radard_slide_bound.py`; radard/lead tests 310 pass. Lint c
 With BoschARadar off (vision-only ACC) StockBrakeFeel has no effect and the planner drives alone. The device toggle
 moved into the Bosch A Radar section, shown only while the radar is on; Galaxy hides it the same way. Its text now
 reads as matching stock Bosch-A ACC with light brake taps; the coasts removed in D-100 are no longer described. Layout/brake-onset tests 53 pass; lint unchanged from base.
+
+## 240. A long Bosch-A coast is bounded by its last 1.0 s of ranges (D-104). Replay + static only, not driven.
+
+311 84:21: track 33 coasted -1.5 m/s for 14 s while its range closed ~8 m/s; the coast bound averaged the whole coast
+and lagged. It now fits the last 1.0 s. Closed-loop replay: -1.77 -> -1.44 (car -1.60), braking ~3 s earlier, min TTC
+4.9 -> 7.0 s. Testing agent: 21 of 23 windows identical, 2 within 0.01; 311 86:35 sim -4.27 -> -4.38 is sim carry-over
+with identical radar input. Tests: 3 new in `test_bosch_a_coast_fit_window.py`; Bosch-A radar tests 175 pass. Lint clean.

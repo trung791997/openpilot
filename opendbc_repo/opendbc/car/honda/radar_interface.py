@@ -642,6 +642,18 @@ def _bosch_a_trailing_fit_window(run: list) -> list:
   return run
 
 
+# D-104: the coast range bound fits only the last BOSCH_A_COAST_FIT_WINDOW_S of `inconsistent_run`, the range rate the
+# lead has now. Route 00000311 84:21 (track 33, ~100 m): a +2.6 m range jump made D-062 coast the -1.5 vRel, and every
+# later sweep was degraded (far range sigma), so D-062 never re-rooted and the coast ran 14 s (211 sweeps). Fitting the
+# whole run averaged the old near-steady ranges in and lagged (-0.9..-4.8) while U11 read -4..-7.7 and the last 1 s of
+# range -5..-11. The car closed late and braked -1.60 (replay -1.78). With 1.0 s: replay -1.43, braking starts ~3 s
+# earlier, min time to contact 4.9 -> 7.0 s. The bound stays one-sided outside a rail hold (more closing only), and
+# 1.0 s is 4x the D-043 minimum span, so a single bad sweep cannot set it. Replay (testing agent, 23 windows incl. the
+# protected real brakes): 21 identical, 25b/25f within 0.01; the only other change is 311 86:35, sim -4.27 -> -4.38
+# with identical radar input (sim state carried over from 84:21). 0 restores the whole-run fit.
+BOSCH_A_COAST_FIT_WINDOW_S = 1.0
+
+
 def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False, v_ego: float | None = None) -> float:
   """The vRel a coast publishes. Off (pre-D-063): the last trusted vRel, verbatim. With the rail interval on
   (D-063 addendum, STATUS 92): the same value bounded to within BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS of
@@ -676,7 +688,10 @@ def _bosch_a_coast_vrel(track, rail_interval: bool, range_bound: bool = False, v
   if track.rejoin_samples is not None:
     rate = _bosch_a_fresh_range_rate(track.rejoin_samples)
   if rate is None:
-    rate = _bosch_a_fresh_range_rate(track.inconsistent_run)
+    run = track.inconsistent_run
+    if BOSCH_A_COAST_FIT_WINDOW_S > 0 and run:
+      run = [w for w in run if w[0] >= run[-1][0] - BOSCH_A_COAST_FIT_WINDOW_S]
+    rate = _bosch_a_fresh_range_rate(run)
   reversing = v_ego is not None and v_ego + vrel < -BOSCH_A_COAST_REVERSING_MARGIN_MPS
   if rate is None:
     if reversing:

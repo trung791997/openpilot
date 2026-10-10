@@ -2384,3 +2384,24 @@ radar off, the param keeps its stored value but does nothing. The device UI show
 section, only while BoschARadar is on; the Galaxy layout hides it with `visible_when_all_true: [BoschARadar]`. The
 description says it matches stock Bosch-A ACC with light brake taps (the D-086 depth/onset law by TTC), plus STOP_EASE
 and the D-080 newborn-lead bound; owner asked that it not be worded as "no longer coasts".
+
+## D-104 — A long Bosch-A coast is bounded by its last 1.0 s of ranges, not the whole coast (STATUS 240, 2026-10-10, replay only, not driven)
+
+**Problem (owner, 2026-10-10):** route 00000311 84:21, a late, firmer brake (car -1.60) for a lead at ~100 m.
+
+**Cause:** track 33 had a +2.6 m range jump, so D-062 coasted its -1.5 vRel. Every later sweep was degraded (far range
+sigma), so D-062 never re-rooted and the coast ran 14 s (211 sweeps). The STATUS 111 coast bound fits
+`inconsistent_run`, which by then held the whole coast; the old near-steady ranges dragged the fit to -0.9..-4.8 while
+U11 read -4..-7.7 and the last 1 s of range -5..-11. The lead was closing ~8 m/s while radard published ~-1.5.
+
+**Decision:** `BOSCH_A_COAST_FIT_WINDOW_S = 1.0`: the coast bound fits only the trailing 1.0 s of `inconsistent_run`
+(4x the D-043 minimum span). Unchanged: the bound is one-sided (more closing only) outside a rail hold, the rejoin
+fit still comes first, and nothing is deleted (D-041/D-042). `0` restores the whole-run fit.
+
+**Evidence (closed-loop replay, car-matched):** 84:21 sim -1.77 -> -1.44 (car -1.60), braking starts ~3 s earlier, min
+time to contact 4.9 -> 7.0 s, fidelity v RMSE 0.33, cmd corr 0.975. The shipped constant replays tick-identically to
+the tested env arm. Testing agent (Job), COASTWIN-only A/B, 23 windows incl. the protected real brakes
+(232/236/237/25e/263/266/268/26f/1e8/2ae, 311 s9/s41/s46/s72, 299 s49, 312 s32/s48): 21 identical; 25b and 25f within
+0.01. In 311 s84 the only other change is 86:35, sim accel -4.27 -> -4.38: radard's leadOne is identical in both arms
+there (154 differing ticks, all vRel, all in 84:13-84:21); the difference is the sim car's state carried over from
+84:21 (+0.03 m/s, -0.5 m gap).
