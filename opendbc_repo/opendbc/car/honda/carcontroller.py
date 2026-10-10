@@ -84,17 +84,6 @@ BOSCH_RESUME_GAS_RAMP = True
 BOSCH_RESUME_GAS_RATE = 100.0  # gas units/s for a target at or below BOSCH_RESUME_GAS_RATE_BP[0]
 BOSCH_RESUME_GAS_RATE_FAST = 600.0  # gas units/s at or above BOSCH_RESUME_GAS_RATE_BP[1]
 BOSCH_RESUME_GAS_RATE_BP = [0.2, 0.8]  # m/s^2 target
-# Gas-off hold (D-099). Route 00000313 segs 159-164 (StockBrakeFeel off, 18-20 m/s following a lead 35-55 m out): the
-# road-load force sat on the gas-off line (min_gas) and the gas cut to -30000 and back 51 times in 4 min, 36 of those
-# cuts shorter than 1 s; seg 163 alone had 19 cuts (14 under 1 s), the drive the owner felt as nausea (2026-10-10). A
-# frame just under the line asks for ~0 gas either way (0 units vs -30000 decelerated alike in that log: -0.11..-0.23
-# m/s^2 at cmd -0.17), but each cut also re-arms the D-097 ramp, so the gas comes back slower than asked. Once the gas
-# is on, a force within BOSCH_GAS_OFF_HOLD_FORCE under the line keeps it on (at the lookup's ~0 units) for up to
-# BOSCH_GAS_OFF_HOLD_TIME; a deeper or longer dip cuts as before. Brake selection, D-091 lead coast and every brake
-# request are untouched (brake mode starts at BOSCH_BRAKE_FORCE_ON, well under the hold band). Log + static only.
-BOSCH_GAS_OFF_HOLD = True
-BOSCH_GAS_OFF_HOLD_FORCE = 0.05  # m/s^2 under min_gas
-BOSCH_GAS_OFF_HOLD_TIME = 1.0  # s
 BOSCH_HILL_BRAKE_GUARD = True
 BOSCH_HILL_BRAKE_MAX_ACCEL = 0.0      # m/s^2, brake mode is entered only at or below this target
 BOSCH_HILL_BRAKE_RELEASE_ACCEL = 0.20  # m/s^2, brake mode ends once the target is above this
@@ -299,18 +288,6 @@ def honda_bosch_resume_gas(gas: float, last_gas: float, resuming: bool, accel: f
   if gas <= limit:
     return gas, False
   return limit, True
-
-
-def honda_bosch_gas_off_hold(gas_pedal_force: float, min_gas: float, gas_on: bool, held_s: float,
-                             dt: float) -> tuple[bool, float]:
-  """D-099: keep the gas on through a shallow, short dip under min_gas. gas_on is whether the last frame went out
-  with gas. Returns (hold this frame, seconds held so far)."""
-  if not BOSCH_GAS_OFF_HOLD or not gas_on or gas_pedal_force > min_gas:
-    return False, 0.0
-  held_s += dt
-  if gas_pedal_force > min_gas - BOSCH_GAS_OFF_HOLD_FORCE and held_s <= BOSCH_GAS_OFF_HOLD_TIME + 1e-6:
-    return True, held_s
-  return False, held_s
 
 
 def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool,
@@ -822,8 +799,6 @@ class CarController(CarControllerBase):
     self.bosch_braking = False
     self.bosch_gas_resume = False  # D-097 ramp active
     self.bosch_coasting = False  # last frame went out gas off without a brake request
-    self.bosch_gas_on = False  # last frame went out with gas (D-099)
-    self.bosch_gas_hold_s = 0.0
     if self.CP.carFingerprint in HONDA_BOSCH:
       self.bosch_gas_factor = self.param_store.get_float("HondaGasFactorParams", default=1.0)
       self.bosch_wind_factor = self.param_store.get_float("HondaWindFactorParams", default=1.0)
@@ -1237,15 +1212,10 @@ class CarController(CarControllerBase):
           else:
             self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel)
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
-          gas_hold, self.bosch_gas_hold_s = honda_bosch_gas_off_hold(gas_pedal_force, min_gas, self.bosch_gas_on,
-                                                                     self.bosch_gas_hold_s, 2 * DT_CTRL)
-          if gas_hold and not lead_coast and not self.bosch_braking and not stopping and CC.longActive:
-            gas_pedal_force = min_gas + 1e-3  # create_acc_commands sends the gas (~0 units) above min_gas
           # a coast frame (gas off, no brake request) arms the D-097 ramp for the next gas frame
           self.bosch_coasting = bool(CC.longActive and not self.bosch_braking and gas_pedal_force <= min_gas)
           if self.bosch_coasting or self.bosch_braking or not CC.longActive:
             self.bosch_gas_resume = False
-          self.bosch_gas_on = bool(CC.longActive and not self.bosch_braking and gas_pedal_force > min_gas)
           can_sends.extend(
             hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
                                          self.stopping_counter, self.CP.carFingerprint, gas_pedal_force, self.bosch_braking)

@@ -2217,18 +2217,12 @@ are lowered; braking is never limited. Same replay, 41 coast ends, rate sweep 0.
 +0.51 -> +0.40 and the median time to +0.15 from 1.1 to 1.6 s, min gap/follow 0.46 -> 0.50, mean speed -0.07 m/s;
 0.2 and 0.4 matched no cap. The replay does not model the D-097 gas ramp, so the two together are untested.
 
-## D-099 — Gas stays on through a shallow, short dip under the gas-off line (STATUS 235, 2026-10-10, replay + static only, not driven)
+## D-099 — REJECTED (reverted 2026-10-10, STATUS 235): holding the gas on through a shallow dip under the gas-off line
 
-**Problem (owner, 2026-10-10, route 00000313):** nausea on segs 159-164, following a lead 35-55 m out at 18-20 m/s.
-StockBrakeFeel was off there (planner toggle log; the param was switched back on at 22:20:31, between seg 164 and 177),
-so no D-091 lead coast ran. The road-load force sat on the gas-off line and the gas cut to -30000 and back 51 times in
-4 min, 36 of the cuts shorter than 1 s; each cut also re-arms the D-097 slow ramp.
-
-**Rejected:** smoothing the planner's lead speed (s25/s40, closed-loop replay with the logged toggles): cycles 11 -> 11
-and 26 -> 26, no gain. The radar lead speed really oscillated on seg 163 (17.3-20.8 m/s).
-
-**Decision:** `BOSCH_GAS_OFF_HOLD` (carcontroller, default ON). Once the gas is on, a force within 0.05 m/s^2 under
-min_gas keeps the gas on at the lookup's ~0 units for up to 1.0 s; a deeper or longer dip cuts as before. Brake mode
-(-0.12), D-091 lead coast, stopping and every brake request are untouched. Open-loop replay through the real
-CarController with the logged toggles and learner factors (no-hold matched the log: 102 vs 108 cuts): toggle-off segs
-cuts 70 -> 35, under 1 s 43 -> 11; toggle-on segs 32 -> 32 (lead coast owns those); brake frames identical everywhere.
+Built and shipped for a few hours (e5fc8952b), then reverted at the owner's request ("remove the existing factor rather
+than a bandaid"). The cuts it removed are not felt: route 00000313 segs 159-164 ran build 680975fef (no D-096..D-098),
+51 gas cuts, the gas just before a cut was a median 10 units (p90 45, of 750), and aEgo over the 36 short cuts moved
+-0.004 -> +0.066 -> -0.005 (1 s before / during / after), noise-sized. 29 of 49 cuts were the planner asking +0.00..+0.24
+toward the set speed on a slight downhill whose hill term cancelled it; the gas-off line on force (accel + wind + hill
+> 0, nrdr gas learner port e7d2e193f) is physically right there, since uphill a cmd of -0.3 still needs gas. The nausea
+on 313 is a slower speed swing, not the gas flicker; its cause is still open.

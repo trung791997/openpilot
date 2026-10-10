@@ -10997,11 +10997,7 @@ to +0.15 1.1 -> 1.6 s, cycles 18 -> 18, min gap/follow 0.46 -> 0.50, mean speed 
 moved (p90 0.82 -> 0.79): that is the coast -> gas step, which D-097 ramps in the carcontroller (not in this replay).
 Unit tests: 2 new in test_brake_onset.py (41 passed).
 
-## 235. Gas stays on through a shallow, short dip under the gas-off line (D-099). Replay + static only, not driven.
+## 235. D-099 gas-off hold reverted. Log analysis only.
 
-Route 00000313 segs 159-164 (StockBrakeFeel off): the gas cut and came back 51 times in 4 min, 36 under 1 s. The
-carcontroller now keeps the gas on (~0 units) through a dip of up to 0.05 m/s^2 under min_gas for up to 1 s. Open-loop
-replay through the real CarController, 12 segs with the logged toggles and learner factors: toggle-off segs cuts
-70 -> 35, under 1 s 43 -> 11; toggle-on segs unchanged (32 -> 32); brake frames unchanged in every seg. Not modelled:
-the closed-loop speed effect of ~0 gas vs gas cut (the log shows both decelerating alike, -0.11..-0.23 m/s^2).
-Unit tests: 4 new in test_honda.py (honda tests + test_brake_onset: 457 passed).
+The hold cut route 313's gas flicker (70 -> 35 cuts in replay) but the flicker is not felt: median 10 gas units before a
+cut, aEgo through the short cuts within noise (-0.004 / +0.066 / -0.005 m/s^2). Reverted for the root cause (D-099).
