@@ -15,6 +15,7 @@ from opendbc.car.honda.carcontroller import (
   CarController,
   get_eps_modified_steering_pressed,
   get_honda_bosch_wind_brake_mps2,
+  honda_bosch_gas_off_hold,
   honda_bosch_lead_coast,
   honda_bosch_resume_gas,
   update_honda_bosch_braking,
@@ -126,6 +127,25 @@ class TestHondaFingerprint:
     for gas in (0.0, 50.0, 400.0):
       out, _ = honda_bosch_resume_gas(gas, 0.0, True, 0.3, 0.02)
       assert out <= gas
+
+  def test_bosch_gas_off_hold_rides_a_shallow_short_dip(self):
+    # D-099: route 00000313 seg 163 cut the gas 19 times in a minute, 14 of the cuts under 1 s
+    held, t = 0.0, 0.0
+    while True:
+      hold, held = honda_bosch_gas_off_hold(-0.03, 0.0, True, held, 0.02)
+      if not hold:
+        break
+      t += 0.02
+    assert cc_mod.BOSCH_GAS_OFF_HOLD_TIME - 0.03 < t <= cc_mod.BOSCH_GAS_OFF_HOLD_TIME + 1e-9
+    # expired: the next frame went out gas off, so no new hold until the gas is back on
+    assert honda_bosch_gas_off_hold(-0.03, 0.0, False, held, 0.02) == (False, 0.0)
+
+  def test_bosch_gas_off_hold_lets_a_real_slow_down_cut(self):
+    assert not honda_bosch_gas_off_hold(-cc_mod.BOSCH_GAS_OFF_HOLD_FORCE - 0.01, 0.0, True, 0.0, 0.02)[0]
+    assert not honda_bosch_gas_off_hold(-0.03, 0.0, False, 0.0, 0.02)[0]  # never turns gas on out of a coast
+    assert honda_bosch_gas_off_hold(0.2, 0.0, True, 0.5, 0.02) == (False, 0.0)  # above the line: nothing to hold
+    # the hold band sits above where brake mode starts, so it can never stand in for a brake request
+    assert -cc_mod.BOSCH_GAS_OFF_HOLD_FORCE > BOSCH_BRAKE_FORCE_ON
 
   def test_bosch_braking_uses_force_hysteresis(self):
     braking = update_honda_bosch_braking(False, BOSCH_BRAKE_FORCE_ON - 0.01, False, True)
@@ -612,6 +632,46 @@ class TestHondaFingerprint:
     assert target > 60.0
     assert all(b - a <= cc_mod.BOSCH_RESUME_GAS_RATE * 0.02 + 1e-6 for a, b in zip([0.0] + ramp, ramp, strict=False))
     assert ramp[:5][-1] < 15.0
+
+  @pytest.mark.parametrize("dip,held_frames", [(0.02, 50), (0.10, 0)])
+  def test_honda_bosch_controller_holds_gas_through_a_shallow_dip(self, monkeypatch, dip, held_frames):
+    # D-099: a force just under the gas-off line keeps the gas on for BOSCH_GAS_OFF_HOLD_TIME; a deeper one cuts at once
+    toggles = get_test_toggles()
+    CP = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False, toggles)
+    monkeypatch.setattr(CarControllerParams, "BOSCH_GAS_LOOKUP_BP", [0.0, 2.0])
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    sent = []
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_steering_control", lambda *args, **kwargs: (0, []))
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_acc_commands",
+                        lambda *args, **kwargs: sent.append((args[5], args[8], args[9])) or [])
+
+    def step(accel):
+      CC = structs.CarControl.new_message()
+      CC.enabled = True
+      CC.longActive = True
+      CC.hudControl.visualAlert = structs.CarControl.HUDControl.VisualAlert.none
+      CC.actuators.accel = accel
+      CC.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+      CS = SimpleNamespace(out=SimpleNamespace(vEgo=8.0, aEgo=0.0, steeringPressed=False, gasPressed=False, brakePressed=False),
+                           v_cruise_factor=1.0)
+      controller.update(CC.as_reader(), CS, 0, toggles)
+      controller.frame += 2
+      if controller.frame % 10 == 0:
+        controller.frame += 2
+
+    min_gas = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    controller.frame = 2
+    for _ in range(50):
+      step(0.15)
+    assert sent[-1][1] > min_gas
+    n = len(sent)
+    wind = get_honda_bosch_wind_brake_mps2(8.0) * controller._learner.windfactor
+    for _ in range(120):
+      step(-wind - dip)
+    on = [force > min_gas and not braking for _, force, braking in sent[n:]]
+    assert sum(on) == held_frames
+    assert all(on[:held_frames]) and not any(on[held_frames:])
+    assert not any(braking for _, _, braking in sent[n:])
 
   def test_honda_hrv_3g_uses_matched_longitudinal_delay(self):
     toggles = get_test_toggles()
