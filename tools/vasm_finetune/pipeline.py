@@ -95,6 +95,7 @@ class Pipeline:
       for line in p.stdout:
         sys.stdout.write(line)
         log.write(line)
+        log.flush()  # so a long train stage can be watched
         out.append(line)
       rc = p.wait()
     if rc not in (0,) and stage != "gate":

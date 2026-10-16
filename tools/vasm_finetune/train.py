@@ -219,7 +219,8 @@ def main():
 
   weights = sample_weights(tr, args.truck_weight, args.balance, args.onset_weight)
   weights = [w * (args.auto_weight if r.get("auto") else 1.0) for w, r in zip(weights, tr)]
-  sampler = WeightedRandomSampler(weights, num_samples=len(tr), replacement=True)
+  # epoch length stays the hand-labelled count, so auto labels change what is drawn, not how long an epoch takes
+  sampler = WeightedRandomSampler(weights, num_samples=sum(not r.get("auto") for r in tr), replacement=True)
   train_loader = DataLoader(Crops(args.crops, tr, True), batch_size=args.batch, sampler=sampler, num_workers=4)
   val_loader = DataLoader(Crops(args.crops, va, False), batch_size=64, num_workers=4)
 
