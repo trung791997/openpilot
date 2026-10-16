@@ -37,14 +37,17 @@ GRID = np.round(np.arange(0.50, 1.0, 0.005), 3)
 
 
 def scores(models, crops, rows, cache_dir):
+  # per-model cache keyed by crop file, so a crop set that grows (new routes) only scores the new crops
   acc = np.zeros((len(rows), 3), np.float32)
-  key = hashlib.sha1("".join(r["file"] for r in rows).encode()).hexdigest()[:8]
   for m in models:
-    c = os.path.join(cache_dir, f"autolabel_{hashlib.sha1(open(m, 'rb').read()).hexdigest()[:8]}_{key}.npy")
-    if not os.path.exists(c):
-      print("scoring", len(rows), "crops with", m, flush=True)
-      np.save(c, infer(m, crops, rows))
-    acc += np.load(c)
+    c = os.path.join(cache_dir, f"autolabel_{hashlib.sha1(open(m, 'rb').read()).hexdigest()[:8]}.npz")
+    have = dict(zip(*(lambda z: (list(z["files"]), z["p"]))(np.load(c)))) if os.path.exists(c) else {}
+    todo = [r for r in rows if r["file"] not in have]
+    if todo:
+      print("scoring", len(todo), "crops with", m, flush=True)
+      have.update(zip([r["file"] for r in todo], infer(m, crops, todo)))
+      np.savez(c, files=np.array(list(have)), p=np.stack(list(have.values())))
+    acc += np.stack([have[r["file"]] for r in rows])
   return acc / len(models)
 
 
