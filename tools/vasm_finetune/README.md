@@ -1,7 +1,10 @@
 # V-ASM fine-tuning on the owner's routes
 
-There is no upstream training code (github.com/prabhaavp/vasm-op has only a route-submission notebook) and no `.pt`
-checkpoint. The shipped model's ONNX metadata says it is an Ultralytics YOLO26n-cls classifier: input `images`
+github.com/prabhaavp/vasm-op published its training recipe on 2026-10-16 (`SELF_TRAIN.md`, `prepare_dataset.py`,
+`train_pipeline.py`, still no `.pt` checkpoint). Read statically: its crop (mask, letterbox to 352) matches the daemon's
+`_run_inference`; `train_pipeline.py` does not run as published (`DEVICE`, `BATCH_SIZE`, `NUM_WORKERS`, `TRAIN_STRIDE`,
+`INFERENCE_BATCH_SIZE`, `Tee` undefined); and its alarm sweep uses `alpha = 0.05 / smooth_sec` on frames sampled every
+4, 6 or 30 video frames, so its `smooth_sec` is not the daemon's (`alpha = dt / smooth_sec`). Use our val_sweep.py. The shipped model's ONNX metadata says it is an Ultralytics YOLO26n-cls classifier: input `images`
 [1,3,352,352] RGB/255, output `output0` [1,3] softmax over {0 no car, 1 car, 2 distant or rear}.
 
 1. `convert.py`: ONNX to PyTorch (onnx2torch). It rewrites opset-18 `Split(num_outputs)` to explicit sizes, sets
@@ -35,6 +38,12 @@ Run it the same way as `tools/vasm_replay` (scratch dir mounted at /work), with
    - **Blind test labelling:** test crops are labelled blind (the model's probabilities and proposal are hidden). `?split=train`
      shows only the flagged crops, with the model's view.
    - **Saving:** labels go to `<crops>/labels.json` after every key press. Reopening resumes at the first unlabelled crop.
+   - **Interval mode** (`/interval`, the vasm-op workflow): one segment side as a filmstrip. A key sets the pen class
+     and paints each crop the cursor moves onto (space plays at 4 Hz real time, `[` `]` speed, Esc lifts the pen);
+     Enter saves the side in one write. Owner labels are locked and never repainted; agent labels can be. Saved crops
+     carry `"how": "interval"`, and crops next to a class change also `"edge": true`; `?split=edges` lists those
+     (blind) until each is re-keyed one by one. Headless Chromium on a 30-crop scratch copy, 2026-10-16: painted
+     runs, truck tag, repaint, edge flags and the blind edges page as expected; owner labels byte-identical after.
    - **Verified with headless Chromium:** five rapid key presses land five labels, on five crops, in order. The first version lost
      fast presses to a save race. A path-traversal request returns 404.
 
