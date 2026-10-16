@@ -117,6 +117,15 @@ class Pipeline:
     for k in ("manifest", "labels"):
       if data[k] is None:
         sys.exit(f"{self.crops} has no {k}")
+    auto = self.recipe.get("train", {}).get("auto-labels")
+    if auto:
+      # auto labels train only after autolabel_check.py passed this exact file on an independent owner-labelled route
+      auto = os.path.join(self.work, auto)
+      data["auto"] = sha(auto)
+      chk = json.load(open(auto + ".check.json")) if os.path.exists(auto + ".check.json") else {}
+      if not chk.get("passed") or chk.get("labels_sha256") != data["auto"]:
+        sys.exit(f"{auto} has no passing autolabel_check.py result for this file; auto labels stay out of training")
+      data["auto_check"] = sha(auto + ".check.json")
     if not os.path.exists(self.base):
       sys.exit(f"missing {self.base} (convert.py)")
     if "data" in self.state and self.state["data"] != data:

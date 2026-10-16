@@ -79,3 +79,14 @@ Run it the same way as `tools/vasm_replay` (scratch dir mounted at /work), with
    - **Gate:** only a passing `benchmark.py --compare` produces `deliver/vasm.onnx` and `deploy.json`.
    - **Inspect:** `--dry-run` prints the commands; `--status` prints the stages and the labelling backlog.
    - **What stays manual:** crop extraction, labelling and deploying to the car.
+8. `autolabel.py` + `autolabel_check.py`: automatic labels for unlabelled train crops, kept out of training until an
+   independent check passes. v1 (one run12 soup, averaged) failed it on route 329: class 1 precision 0.70, Wilson 95%
+   lower 0.59, all 23 errors owner class 2, so v1 labels are not used. v2 adds `--agree` (per-model validation
+   thresholds, label only where differently trained models agree) and `--classes`. `autolabel_check.py` first
+   recomputes the report's validation result from the labeller's crops and refuses if it differs (so the check
+   judges exactly what was labelled), then scores the same decision on an owner-labelled route outside the
+   labeller's crops; every emitted class needs a Wilson lower bound >= 0.98. `pipeline.py` refuses a recipe with
+   `auto-labels` unless `<labels>.check.json` passed for that file's sha256, and binds both hashes to the run.
+   Verified 2026-10-16: the check reproduces the scratch alcheck numbers for v1 exactly and fails it; v2 without
+   `--agree` reproduces v1's 147,672 labels byte-identically; `test_autolabel.py` 10 passed (run with
+   `--noconftest -c <empty ini>`, the repo conftest needs the aarch64 binaries).

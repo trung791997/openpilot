@@ -18,6 +18,19 @@ auto-labelled. Validation groups, queue segments and test crops are never labell
 replaced, so validation, queue selection and the benchmark stay on owner labels. The precision and recall reported
 on validation are measured after the edge rule, exactly as applied to the labelled crops.
 Writes <out> = {file: {label, by, how, conf}} and <out>.report.json. Model scores are cached next to <out>.
+
+v1 failed its independent check (2026-10-16, route 329, owner labels): class 1 precision 0.70, 23 of the 76 errors
+owner class 2, with whole wrong events at p1 0.999. One run12-family model labelling its own training data copies its
+own class-2-as-1 mistakes, and the validation groups share routes with its training, so validation looked fine. So:
+- --agree: each --model gets its own validation thresholds and a crop is labelled only when every model decides the
+  same class. Use models trained differently (e.g. ul_scratch.py from ImageNet next to a run12 soup); averaging
+  (the default) lets one confident model outvote the other.
+- --classes: emit only these classes, so a class that fails the check can be left out.
+- No labels are usable for training until autolabel_check.py passes them on an owner-labelled route outside both the
+  labeller's calibration and the models' training; pipeline.py refuses a recipe whose auto labels lack a passing
+  check for that exact file (sha256). Radar lateral position was measured as a third signal and does not separate
+  class 1 from class 2 (diag/radar_lat.py, 2026-10-16: validation |yRel| median 3.53 m for owner 1 vs 3.13 m for owner 2;
+  leadLeft/leadRight are already adjacent-lane picks), so it is not used.
 """
 
 import argparse
@@ -39,6 +52,7 @@ GRID = np.round(np.arange(0.50, 1.0, 0.005), 3)
 def scores(models, crops, rows, cache_dir):
   # per-model cache keyed by crop file, so a crop set that grows (new routes) only scores the new crops
   acc = np.zeros((len(rows), 3), np.float32)
+  os.makedirs(cache_dir, exist_ok=True)
   for m in models:
     c = os.path.join(cache_dir, f"autolabel_{hashlib.sha1(open(m, 'rb').read()).hexdigest()[:8]}.npz")
     have = dict(zip(*(lambda z: (list(z["files"]), z["p"]))(np.load(c)))) if os.path.exists(c) else {}
@@ -90,6 +104,27 @@ def edge_abstain(dec, rows, seqs, gap):
   return out
 
 
+def decide_agree(Ss, thrs):
+  # a crop is decided only where every model decides, and all decide the same class
+  ds = [decide(S, t)[0] for S, t in zip(Ss, thrs)]
+  out = ds[0].copy()
+  for d in ds[1:]:
+    out = np.where(out == d, out, -1)
+  return out
+
+
+def apply(S, Ss, thr, agree, keep, rows, seqs, gap):
+  """The whole decision after scoring and smoothing; autolabel_check.py calls this too, so the check judges exactly
+  what was labelled. thr: {class: t} or, with agree, {class: [t per model]} (JSON string keys accepted)."""
+  thr = {int(c): t for c, t in thr.items()}
+  if agree:
+    raw = decide_agree(Ss, [{c: thr[c][j] for c in thr if thr[c][j] is not None} for j in range(len(Ss))])
+  else:
+    raw = decide(S, {c: t for c, t in thr.items() if t is not None})[0]
+  raw = np.where(np.isin(raw, list(keep)), raw, -1)
+  return edge_abstain(raw, rows, seqs, gap)
+
+
 def calibrate(S, y, prec, support):
   thr = {}
   pred, conf = S.argmax(1), S.max(1)
@@ -124,7 +159,9 @@ def main():
   ap.add_argument("--smooth", type=int, default=1, help="median filter half-width in 4 Hz frames")
   ap.add_argument("--edge-gap", type=float, default=0.5)
   ap.add_argument("--exclude-queue", default=None, help="default <crops>/queue.json if present")
-  ap.add_argument("--version", default="auto-v1")
+  ap.add_argument("--agree", action="store_true", help="per-model thresholds; label only where all models agree")
+  ap.add_argument("--classes", default="0,1,2", help="emit only these classes")
+  ap.add_argument("--version", default="auto-v2")
   args = ap.parse_args()
   out = args.out or os.path.join(args.crops, "autolabels.json")
   queue = args.exclude_queue or os.path.join(args.crops, "queue.json")
@@ -136,24 +173,33 @@ def main():
     labels = json.load(f)
   owner = {f: e["label"] for f, e in labels.items() if "by" not in e and e.get("label") in (0, 1, 2)}
 
-  P = scores(args.model, args.crops, rows, os.path.dirname(os.path.abspath(out)))
+  cache = os.path.dirname(os.path.abspath(out))
   seqs = sides(rows)
-  S = smooth(P, rows, seqs, args.smooth)
+  Ss = [smooth(scores([m], args.crops, rows, cache), rows, seqs, args.smooth) for m in args.model] if args.agree else None
+  S = smooth(scores(args.model, args.crops, rows, cache), rows, seqs, args.smooth)
   val = np.array([is_val(f"{r['route']}/{r['seg']}", args.val_frac) for r in rows])
   yv = np.array([owner.get(r["file"], -1) for r in rows])
   cal = val & (yv >= 0)
 
-  thr = calibrate(S[cal], yv[cal], args.precision, args.min_support)
-  dec = edge_abstain(decide(S, thr)[0], rows, seqs, args.edge_gap)
+  keep = {int(c) for c in args.classes.split(",") if c != ""}
+  if args.agree:
+    thrs = [calibrate(x[cal], yv[cal], args.precision, args.min_support) for x in Ss]
+    thr = {c: [t.get(c) for t in thrs] for c in (0, 1, 2)}
+  else:
+    thr = calibrate(S[cal], yv[cal], args.precision, args.min_support)
+  dec = apply(S, Ss, thr, args.agree, keep, rows, seqs, args.edge_gap)
   conf = S.max(1)
-  rep = {"version": args.version, "models": args.model, "args": vars(args), "thresholds": thr,
+  rep = {"version": args.version, "models": args.model,
+         "model_sha256": [hashlib.sha256(open(m, "rb").read()).hexdigest() for m in args.model],
+         "args": vars(args), "thresholds": thr,
          "val_owner_crops": int(cal.sum()), "val": report(dec[cal], yv[cal]),
          "val_shipped_argmax": report(np.array([int(np.argmax([float(r["p_nocar"]), float(r["p_car"]), float(r["p_distant"])]))
                                                for r in rows])[cal], yv[cal])}
 
   target = np.array([not val[i] and r["file"] not in owner and not in_segments(
       {"route": r["route"], "seg": r["seg"]}, segs) for i, r in enumerate(rows)])
-  auto = {rows[i]["file"]: {"label": int(dec[i]), "by": args.version, "how": f"ens{len(args.model)}+med{args.smooth}+edge{args.edge_gap}",
+  how = f"{'agree' if args.agree else 'ens'}{len(args.model)}+med{args.smooth}+edge{args.edge_gap}"
+  auto = {rows[i]["file"]: {"label": int(dec[i]), "by": args.version, "how": how,
                             "conf": round(float(conf[i]), 4)} for i in np.where(target & (dec >= 0))[0]}
   agent = {f: e["label"] for f, e in labels.items() if "by" in e and e.get("label") in (0, 1, 2)}
   both = [f for f in auto if f in agent]
@@ -161,8 +207,14 @@ def main():
                      "classes": np.bincount([e["label"] for e in auto.values()], minlength=3).tolist(),
                      "vs_agent": {f"{a}->{b}": sum(agent[f] == a and auto[f]["label"] == b for f in both)
                                   for a in (0, 1, 2) for b in (0, 1, 2)}}
+  # the rules above, asserted on the output: never an owner-labelled, validation, queue or test crop
+  byfile = {r["file"]: (i, r) for i, r in enumerate(rows)}
+  for f, e in auto.items():
+    i, r = byfile[f]
+    assert f not in owner and not val[i] and r["split"] == "train" and target[i] and e["label"] in keep, f
   with open(out, "w") as f:
     json.dump(auto, f)
+  rep["sha256"] = hashlib.sha256(open(out, "rb").read()).hexdigest()
   with open(out + ".report.json", "w") as f:
     json.dump(rep, f, indent=1)
   print(json.dumps({k: rep[k] for k in ("thresholds", "val", "labelled")}, indent=1))
