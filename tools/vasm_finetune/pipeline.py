@@ -33,7 +33,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAGES = ("check", "train", "soup", "select", "pick", "baseline", "test", "gate", "package")
 
-# run12 (ft/run12.sh, 2026-10-14). Keys are train.py flags; True = a bare flag.
+# run12 (ft/run12.sh, 2026-10-14). Keys are train.py flags; True = a bare flag. A recipe with "models" (ONNX paths
+# under --work, e.g. ul_scratch.py exports) skips train and soup and judges those models instead.
 RECIPE = {
   "seeds": [9, 10, 11],
   "rule": "highest",
@@ -130,6 +131,9 @@ class Pipeline:
     return range(self.recipe["train"]["epochs"])
 
   def train(self):
+    if "models" in self.recipe:
+      print("recipe gives models: no training")
+      return self.done("train")
     last = self.recipe["train"]["epochs"] - 1
     for s in self.recipe["seeds"]:
       out = os.path.join(self.run, f"s{s}")
@@ -148,9 +152,13 @@ class Pipeline:
     self.done("train")
 
   def soups(self):
+    if "models" in self.recipe:
+      return [os.path.join(self.work, m) for m in self.recipe["models"]]
     return [os.path.join(self.run, f"soup_ep{e}.onnx") for e in self.epochs()]
 
   def soup(self):
+    if "models" in self.recipe:
+      return self.done("soup")
     for e, out in zip(self.epochs(), self.soups()):
       if os.path.exists(out):
         continue

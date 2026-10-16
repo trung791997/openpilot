@@ -13,6 +13,9 @@ per epoch), because most crops are 0.
 --hardneg adds agent-0 crops the model scored as car, each checked by eye (concrete barriers, night window
 reflections: run3's new false-occupied time on test), to train only; validation stays owner-labelled.
 
+--auto-labels adds autolabel.py's calibrated labels to train only (use with --owner-only, so they stand in for agent
+labels); validation never sees them. --auto-weight scales their sampling weight.
+
 --owner-only drops agent labels (entries with a `by`). The agents put the adjacent lane one dashed line too far out:
 on the owner-relabelled test set, 107 of 201 crops the owner calls 2 were agent 1, and run1 (trained mostly on
 agent labels) failed the benchmark gate by calling distant traffic adjacent.
@@ -54,6 +57,18 @@ def load_rows(crops, owner_only=False, hardneg=()):
       truck = bool(e.get("truck") or tags.get(r["file"])) and e["label"] != 0
       rows.append({**_where(r), "file": r["file"], "y": e["label"], "truck": truck, "group": f"{r['route']}/{r['seg']}"})
   return rows
+
+
+def load_auto(crops, path, have, frac):
+  # autolabel.py labels: train-split crops with no label already in use, outside validation groups (belt and braces:
+  # autolabel.py never writes them)
+  with open(path) as f:
+    auto = json.load(f)
+  with open(os.path.join(crops, "manifest.csv")) as f:
+    manifest = {r["file"]: r for r in csv.DictReader(f) if r["split"] == "train"}
+  return [{**_where(r), "file": f, "y": e["label"], "truck": False, "group": f"{r['route']}/{r['seg']}", "auto": True}
+          for f, e in auto.items() if (r := manifest.get(f)) and f not in have and e.get("label") in (0, 1, 2)
+          and not is_val(f"{r['route']}/{r['seg']}", frac)]
 
 
 def _where(r):
@@ -162,6 +177,8 @@ def main():
   ap.add_argument("--val-frac", type=float, default=0.1)
   ap.add_argument("--on", type=float, default=0.8)
   ap.add_argument("--owner-only", action="store_true", help="train and validate on the owner's labels only (no `by`)")
+  ap.add_argument("--auto-labels", default=None, help="autolabel.py output: added to TRAIN only, never over an existing label")
+  ap.add_argument("--auto-weight", type=float, default=1.0, help="sampling weight on auto-labelled crops")
   ap.add_argument("--hardneg", default=None, help="json list of agent-0 crops checked by eye; added as 0 to TRAIN only")
   ap.add_argument("--exclude-queue", default=None, help="queue.json: its segments are never trained on (dense validation)")
   ap.add_argument("--hardneg-gap", type=float, default=0.0, help="drop hard negatives within this many s of a labelled car")
@@ -177,13 +194,15 @@ def main():
   os.makedirs(args.out, exist_ok=True)
 
   rows = load_rows(args.crops, args.owner_only, set(json.load(open(args.hardneg))) if args.hardneg else ())
+  if args.auto_labels:
+    rows += load_auto(args.crops, args.auto_labels, {r["file"] for r in rows}, args.val_frac)
   segs = queue_segments(args.exclude_queue) if args.exclude_queue else set()
   if args.hardneg_gap > 0:
     rows = drop_hardneg_near_cars(rows, args.crops, args.hardneg_gap)
   mark_onsets(rows, args.onset_s)
   # queue segments stay out of training only; validation groups queued for dense labelling (tier A) remain validation
   tr = [r for r in rows if not is_val(r["group"], args.val_frac) and not in_segments(r, segs)]
-  va = [r for r in rows if is_val(r["group"], args.val_frac) and not r.get("hardneg")]
+  va = [r for r in rows if is_val(r["group"], args.val_frac) and not r.get("hardneg") and not r.get("auto")]
   if args.limit:
     tr, va = random.sample(tr, min(args.limit, len(tr))), random.sample(va, min(args.limit, len(va)))
   summary = {
@@ -191,6 +210,7 @@ def main():
     "train_classes": np.bincount([r["y"] for r in tr], minlength=3).tolist(),
     "train_truck": sum(r["truck"] for r in tr),
     "train_hardneg": sum(bool(r.get("hardneg")) for r in tr),
+    "train_auto": sum(bool(r.get("auto")) for r in tr),
     "train_onset": sum(bool(r.get("onset")) for r in tr),
   }
   print(summary, flush=True)
@@ -198,6 +218,7 @@ def main():
     raise SystemExit("not enough labelled train crops")
 
   weights = sample_weights(tr, args.truck_weight, args.balance, args.onset_weight)
+  weights = [w * (args.auto_weight if r.get("auto") else 1.0) for w, r in zip(weights, tr)]
   sampler = WeightedRandomSampler(weights, num_samples=len(tr), replacement=True)
   train_loader = DataLoader(Crops(args.crops, tr, True), batch_size=args.batch, sampler=sampler, num_workers=4)
   val_loader = DataLoader(Crops(args.crops, va, False), batch_size=64, num_workers=4)
