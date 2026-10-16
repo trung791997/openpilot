@@ -66,3 +66,16 @@ Run it the same way as `tools/vasm_replay` (scratch dir mounted at /work), with
    - **Validation:** whole (route, segment) groups, 10 % by hash. The best epoch is chosen by class-1 F0.5 at `--on`.
    - **Smoke test (2026-10-13, docker oprad-test:py312):** 2 epochs on 64 crops ran. The exported ONNX loads in cv2.dnn and
      matches the torch model to 4e-10. This proves the pipeline only, not any accuracy.
+6. `pick.py`: picks one (soup, on, off) from `select_queue.py`'s qualifying candidates. It uses the held-out road route
+   (`cropsroad`, route 329) and never the test split. The rule is the owner's from 2026-10-14, and `--rule highest` is
+   run12's. It was moved here from the scratch `diag/run11_pick.py` with the logic unchanged.
+7. `pipeline.py`: the run12 recipe as one resumable command, like upstream's `train_pipeline.py`:
+   `check, train (3 seeds), soup, select, pick, baseline, test, gate, package`. Run it from the scratch root:
+   `PYTHONPATH=/tmp/oppath venv/bin/python <repo>/tools/vasm_finetune/pipeline.py --crops crops12 --run run13`.
+   - **Resuming:** every stage is skipped when its output exists, so after a crash you re-run the same command.
+   - **Data binding:** a run is tied to the sha256 of manifest, labels, hard negatives and queue. If any of them change,
+     the run refuses to continue and asks for a new `--run`.
+   - **Test once:** an existing `test.json` is never overwritten.
+   - **Gate:** only a passing `benchmark.py --compare` produces `deliver/vasm.onnx` and `deploy.json`.
+   - **Inspect:** `--dry-run` prints the commands; `--status` prints the stages and the labelling backlog.
+   - **What stays manual:** crop extraction, labelling and deploying to the car.
