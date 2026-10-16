@@ -178,6 +178,7 @@ def main():
   ap.add_argument("--on", type=float, default=0.8)
   ap.add_argument("--owner-only", action="store_true", help="train and validate on the owner's labels only (no `by`)")
   ap.add_argument("--auto-labels", default=None, help="autolabel.py output: added to TRAIN only, never over an existing label")
+  ap.add_argument("--epoch-size", type=int, default=0, help="draws per epoch: 0 = hand-labelled train count, -1 = every train row")
   ap.add_argument("--auto-weight", type=float, default=1.0, help="sampling weight on auto-labelled crops")
   ap.add_argument("--hardneg", default=None, help="json list of agent-0 crops checked by eye; added as 0 to TRAIN only")
   ap.add_argument("--exclude-queue", default=None, help="queue.json: its segments are never trained on (dense validation)")
@@ -220,7 +221,8 @@ def main():
   weights = sample_weights(tr, args.truck_weight, args.balance, args.onset_weight)
   weights = [w * (args.auto_weight if r.get("auto") else 1.0) for w, r in zip(weights, tr)]
   # epoch length stays the hand-labelled count, so auto labels change what is drawn, not how long an epoch takes
-  sampler = WeightedRandomSampler(weights, num_samples=sum(not r.get("auto") for r in tr), replacement=True)
+  n = len(tr) if args.epoch_size < 0 else args.epoch_size or sum(not r.get("auto") for r in tr)
+  sampler = WeightedRandomSampler(weights, num_samples=n, replacement=True)
   train_loader = DataLoader(Crops(args.crops, tr, True), batch_size=args.batch, sampler=sampler, num_workers=4)
   val_loader = DataLoader(Crops(args.crops, va, False), batch_size=64, num_workers=4)
 
