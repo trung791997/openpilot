@@ -94,7 +94,7 @@ def _pipe(tmp_path, recipe):
   (w / "ft" / "vasm_converted.pt").write_text("x")
   (w / "recipe.json").write_text(json.dumps(recipe))
   a = argparse.Namespace(work=str(w), crops="crops", run="t", hardneg="none.json", recipe=str(w / "recipe.json"),
-                         dry_run=False, until=None, road_crops="cropsroad", status=False)
+                         dry_run=False, until=None, road_crops="cropsroad", status=False, exclude_crops="cropsradar")
   return P.Pipeline(a)
 
 
@@ -122,3 +122,14 @@ def test_pipeline_without_auto_keeps_old_data_keys(tmp_path):
   p = _pipe(tmp_path, {"seeds": [1], "rule": "highest", "train": {"epochs": 1}})
   p.check()
   assert set(p.state["data"]) == {"manifest", "labels", "hardneg", "queue"}  # runs started before v2 still resume
+
+
+def test_pipeline_refuses_radar_assisted_labels(tmp_path):
+  p = _pipe(tmp_path, {"seeds": [1], "rule": "highest", "train": {"epochs": 1}})
+  (tmp_path / "cropsradar").mkdir()
+  (tmp_path / "cropsradar" / "manifest.csv").write_text("file\nr/0/0001_left.png\n")
+  (tmp_path / "crops" / "labels.json").write_text('{"r/0/0001_left.png": {"label": 1}}')
+  with pytest.raises(SystemExit, match="cropsradar crops"):
+    p.check()
+  (tmp_path / "crops" / "labels.json").write_text('{"r/0/0002_left.png": {"label": 1}}')
+  p.check()

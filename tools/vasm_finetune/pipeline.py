@@ -22,6 +22,7 @@ label), and deploying to the car (owner's call). Thresholds come from validation
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -117,6 +118,14 @@ class Pipeline:
     for k in ("manifest", "labels"):
       if data[k] is None:
         sys.exit(f"{self.crops} has no {k}")
+    # owner, 2026-10-16: radar-assisted crops are never training labels; radar stays an independent feature. r16
+    # without them: road-329 no-car 4.65 s vs run12's 11.31 s at the same 25.3 s car coverage.
+    banned = os.path.join(self.work, self.a.exclude_crops, "manifest.csv")
+    if self.a.exclude_crops and os.path.exists(banned):
+      with open(banned) as f:
+        bad = {r["file"] for r in csv.DictReader(f)} & set(json.load(open(os.path.join(self.crops, "labels.json"))))
+      if bad:
+        sys.exit(f"{len(bad)} labels in {self.a.crops} are {self.a.exclude_crops} crops; drop them (as crops12nr does)")
     auto = self.recipe.get("train", {}).get("auto-labels")
     if auto:
       # auto labels train only after autolabel_check.py passed this exact file on an independent owner-labelled route
@@ -274,6 +283,7 @@ def main():
   ap.add_argument("--recipe", default=None, help="JSON recipe (default: run12's); fixed for the life of a run")
   ap.add_argument("--hardneg", default="hardneg/accepted.json")
   ap.add_argument("--road-crops", default="cropsroad", help="held-out road route crops for pick.py")
+  ap.add_argument("--exclude-crops", default="cropsradar", help="crops dir under --work whose files may never be training labels")
   ap.add_argument("--until", choices=STAGES, default=None, help="stop after this stage")
   ap.add_argument("--dry-run", action="store_true")
   ap.add_argument("--status", action="store_true")
