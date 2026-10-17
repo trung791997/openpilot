@@ -16,6 +16,8 @@ from openpilot.common.realtime import set_core_affinity, Ratekeeper
 from openpilot.system.hardware import PC
 from openpilot.starpilot.common.cpu_throttle import device_cpu_throttle_factor
 from openpilot.starpilot.system.adj_spot_monitor_vision_inference import VASMInference, V_ASM_MODEL_PATH
+from openpilot.starpilot.common.vasm_assist import (CAR_TO_IMAGE, FOCUS_INTERVAL, PassHold, focus_sides,
+                                                    lead_from_capnp, pick_image_side)
 
 V_ASM_AFFINITY_CORES = [2]
 V_ASM_SOLO_AFFINITY_CORES = [0, 1, 2]
@@ -23,6 +25,14 @@ V_ASM_SOLO_AFFINITY_CORES = [0, 1, 2]
 BASE_INTERVAL = 1.000
 FOLLOWUP_INTERVAL = 0.300
 FOLLOWUP_WINDOW = 1.0
+# Night gate (owner, 2026-10-14). Below this crop brightness the owner could not make out cars in the side crops, and
+# on his labels the shipped model missed both night car events while raising 68 s/h of false-occupied (replay, 3 sides).
+# A dark side's camera verdict is dropped; V-ASM stays live and the D-118/D-121 radar pass holds alone mark that side
+# occupied (owner: rely on the radar hold at night). Owner-labelled crops by mean_luma, shipped model at 0.8: < 30 held 19 of its 229
+# false alarms and 28 of its 1,653 true detections; every night segment side sat at mean 15-20. Exit at 40 is
+# extract_crops.NIGHT_LUMA; the gap stops a passing headlight from toggling the gate.
+DARK_LUMA_ENTER = 30.0
+DARK_LUMA_EXIT = 40.0
 
 PARAM_REFRESH_INTERVAL = 2.0
 STATUS_LOG_INTERVAL = 10.0
@@ -35,7 +45,9 @@ class VASMDaemon:
 
     self.params = Params()
     self.params_memory = Params(memory=True)
-    self.sm = messaging.SubMaster(["deviceState", "starpilotCarState"])
+    # No carState: it is at msgq's 15-reader limit, and one more reader evicts them all (2026-10-13).
+    # starpilotCarState carries the speed and blinkers this needs.
+    self.sm = messaging.SubMaster(["deviceState", "starpilotCarState", "starpilotRadarState"])
 
     self.VisionIpcClient = VisionIpcClient
     self.stream_type = VisionStreamType.VISION_STREAM_DRIVER
@@ -51,11 +63,15 @@ class VASMDaemon:
     self.current_side = "left"
 
     self.followup_until = 0.0
+    self.pass_hold = PassHold()
+    self._hold = {"left": False, "right": False}  # car-frame D-118 pass holds
+    self._dark = {"left": False, "right": False}  # image-frame night gate
+    self._focus_image: set[str] = set()
     self.onroad_prev = False
     self.parked_prev = False
 
-    self._last_pub_left = False
-    self._last_pub_right = False
+    self._last_pub_left = (False, False)  # (camera active, pass hold) per image side
+    self._last_pub_right = (False, False)
     self._last_pub_left_conf = -1.0
     self._last_pub_right_conf = -1.0
     self._last_update_at = 0.0
@@ -77,6 +93,7 @@ class VASMDaemon:
 
   def _cache_params(self):
     self._enabled = self.params.get_bool("VASMEnabled")
+    self._radar_assist = self.params.get_bool("VASMRadarAssist")
     self._slv_enabled = self.params.get_bool("VisionSpeedLimitDetection")
 
     # Keep safe/documented defaults when a key is missing or has not been
@@ -146,21 +163,55 @@ class VASMDaemon:
       self.client.connect(True)
     return self.client.is_connected()
 
+  def _update_assist(self, now):
+    """D-118: radar pass holds and the sides worth looking at sooner. Off or no data: no holds, no focus."""
+    self._hold = {"left": False, "right": False}
+    self._focus_image = set()
+    if not self._radar_assist:
+      self.pass_hold.reset()
+      return
+    leads = {"left": None, "right": None}
+    if self.sm.valid.get("starpilotRadarState", False):
+      radar = self.sm["starpilotRadarState"]
+      leads = {"left": lead_from_capnp(radar.leadLeft), "right": lead_from_capnp(radar.leadRight)}
+    car_state = self.sm["starpilotCarState"] if self.sm.valid.get("starpilotCarState", False) else None
+    v_ego = float(car_state.vEgo) if car_state is not None else None
+    # D-121: the camera's latest verdict per car side (image left = car right, the camera is mirrored)
+    camera = {"left": bool(self.inference.right_active), "right": bool(self.inference.left_active)}
+    for side in ("left", "right"):
+      self._hold[side] = self.pass_hold.update(side, leads[side], now, v_ego, camera[side])
+    prompt_side = ""
+    try:
+      prompt = json.loads(self.params_memory.get("NavPassingPrompt") or "{}")
+      if isinstance(prompt, dict) and prompt.get("armed"):
+        prompt_side = str(prompt.get("side", ""))
+    except (TypeError, ValueError):
+      pass
+    focus = focus_sides(bool(car_state and car_state.leftBlinker), bool(car_state and car_state.rightBlinker), leads, prompt_side)
+    self._focus_image = {CAR_TO_IMAGE[side] for side in focus}
+
   def _update_inactive(self, reset_inference=False):
+    self.pass_hold.reset()
+    self._hold = {"left": False, "right": False}
+    self._focus_image = set()
     if reset_inference:
       self.inference.reset_state()
-    if self._last_update_at != 0.0 or self._last_pub_left or self._last_pub_right or self._last_pub_left_conf != 0.0 or self._last_pub_right_conf != 0.0:
+      self._dark = {"left": False, "right": False}
+    published = self._last_update_at != 0.0 or any(self._last_pub_left) or any(self._last_pub_right)
+    if published or self._last_pub_left_conf != 0.0 or self._last_pub_right_conf != 0.0:
       self._publish(False, False, 0.0, 0.0, 0, force=True, updated_at=0.0)
 
   def _inference_interval(self, now):
     in_followup = now < self.followup_until
     base = FOLLOWUP_INTERVAL if in_followup else BASE_INTERVAL
+    if self._focus_image:
+      base = min(base, FOCUS_INTERVAL)
     cpu_usage = list(self.sm["deviceState"].cpuUsagePercent) if self.sm.valid.get("deviceState", False) else []
     affinity_cores = V_ASM_AFFINITY_CORES if self._slv_enabled else V_ASM_SOLO_AFFINITY_CORES
     factor = device_cpu_throttle_factor(cpu_usage, name="VASM", cores=affinity_cores)
     self._throttle_factor = factor
     interval = base * factor
-    self._throttle_reason = f"cpu_{factor:.1f}x" if factor > 1.05 else ("followup" if in_followup else "steady")
+    self._throttle_reason = f"cpu_{factor:.1f}x" if factor > 1.05 else ("followup" if in_followup else ("focus" if self._focus_image else "steady"))
     return interval
 
   def _update_core_affinity(self, now):
@@ -212,6 +263,7 @@ class VASMDaemon:
           rk.keep_time()
           continue
 
+        self._update_assist(now)
         inference_interval = self._inference_interval(now)
 
         if self.last_inference_at != 0.0 and (now - self.last_inference_at < inference_interval - 0.015):
@@ -239,6 +291,8 @@ class VASMDaemon:
           continue
         if self.current_side not in configured_sides:
           self.current_side = configured_sides[0]
+        self.current_side = pick_image_side(self._focus_image, configured_sides, self.current_side,
+                                            self.last_inference_at_side, now)
 
         last_side_time = self.last_inference_at_side[self.current_side]
         dt = (now - last_side_time) if last_side_time != 0.0 else inference_interval
@@ -264,6 +318,10 @@ class VASMDaemon:
           conf_hold_off=self._conf_hold_off,
         )
 
+        if self._apply_dark_gate(self.current_side):
+          l_active, r_active = self.inference.left_active, self.inference.right_active
+        dark = any(self._dark.values())
+
         self._inference_count += 1
         if now - self._last_status_log >= STATUS_LOG_INTERVAL:
           self._last_status_log = now
@@ -272,6 +330,8 @@ class VASMDaemon:
           status = f"[VASM] {self._inference_count} inf {self._throttle_reason} | {cpu_str}"
           status += f" | factor={self._throttle_factor:.1f}x | L={self.inference.left_confidence:.3f}"
           status += f" R={self.inference.right_confidence:.3f}"
+          status += f" | luma L={self.inference.luma['left']:.0f} R={self.inference.luma['right']:.0f}"
+          status += " DARK (radar hold only)" if dark else ""
           print(status)
           self._inference_count = 0
 
@@ -291,6 +351,14 @@ class VASMDaemon:
         self._update_inactive(reset_inference=True)
         time.sleep(1.0)
 
+  def _apply_dark_gate(self, side):
+    """Night gate with hysteresis on the side just inferred; a dark side's detection is dropped. True if dark."""
+    luma = self.inference.luma[side]
+    self._dark[side] = luma <= DARK_LUMA_EXIT if self._dark[side] else luma < DARK_LUMA_ENTER
+    if self._dark[side]:
+      self.inference.clear_side(side)
+    return self._dark[side]
+
   def _publish(self, left_active, right_active, left_conf, right_conf, ts_sof, force=False, updated_at=None):
     if updated_at is not None:
       self._last_update_at = updated_at
@@ -299,19 +367,21 @@ class VASMDaemon:
     r_left_conf = round(left_conf, 3)
     r_right_conf = round(right_conf, 3)
 
+    hold = getattr(self, "_hold", {"left": False, "right": False})
     if not force and \
-       left_active == self._last_pub_left and \
-       right_active == self._last_pub_right and \
+       (left_active, hold["right"]) == self._last_pub_left and \
+       (right_active, hold["left"]) == self._last_pub_right and \
        abs(r_left_conf - self._last_pub_left_conf) < 0.005 and \
        abs(r_right_conf - self._last_pub_right_conf) < 0.005:
       return
 
-    self._last_pub_left = left_active
-    self._last_pub_right = right_active
+    self._last_pub_left = (left_active, hold["right"])
+    self._last_pub_right = (right_active, hold["left"])
     self._last_pub_left_conf = r_left_conf
     self._last_pub_right_conf = r_right_conf
 
-    ui_left_active, ui_right_active = right_active, left_active
+    # The driver camera is mirrored: image right is the car's left. D-118 pass holds are car-frame.
+    ui_left_active, ui_right_active = right_active or hold["left"], left_active or hold["right"]
     ui_left_conf, ui_right_conf = right_conf, left_conf
 
     self.params_memory.put("VASMLeftActive", "1" if ui_left_active else "0")

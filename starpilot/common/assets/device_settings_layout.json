@@ -119,6 +119,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "NrdrLatResumeRamp",
+        "label": "Ease Steering In When It Resumes",
+        "description": "Modified-EPS Honda steering controller only. When steering torque comes back below 20 mph (lateral turning on, or pulling away from a stop with Always On Lateral), the target starts at the wheel's current angle and blends to the model's over about a second, instead of snapping the wheel toward the model. Mostly helps pulling away with the wheel turned.",
+        "picker_description": "Steering eases in from where the wheel is when it resumes.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLateralTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "ForceTorqueController",
         "label": "Force Torque Controller",
         "description": "Use torque-based steering control instead of angle-based control for smoother lane keeping, especially in curves.",
@@ -169,6 +179,26 @@
         "ui_type": "toggle",
         "parent_key": "LaneChanges",
         "settings_tier": "simple"
+      },
+      {
+        "key": "LaneChangeCounterTorqueCancel",
+        "label": "Cancel Lane Change by Steering Back",
+        "description": "Cancel a lane change once it has started if you steer against it for a quarter second. Experimental and off by default; not road-validated.",
+        "picker_description": "Steering against a started lane change cancels it.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LaneChanges",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "LaneChangeEdgeGuard",
+        "label": "Lane Change Road Edge Guard",
+        "description": "Hold a lane change while the model sees a road edge where the target lane should be. Experimental and off by default; not road-validated.",
+        "picker_description": "No lane change toward a road edge.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LaneChanges",
+        "settings_tier": "advanced"
       },
       {
         "key": "NudgelessLaneChangeOnlyWhenEngaged",
@@ -476,6 +506,16 @@
         "max": 0.5,
         "step": 0.1,
         "precision": 1,
+        "parent_key": "VASMEnabled",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "VASMRadarAssist",
+        "label": "Radar Assist",
+        "description": "Check the side you signal toward, a side a passing or merge prompt points to, or a side where radar sees a car within 50 ft, every 0.3 s instead of every 2 s. After you pass a car that radar was tracking beside you, keep that side marked occupied for 1-6 s depending on how much faster you passed it, through short camera drop-outs, and, for a semi or other long vehicle, until its front is about two car lengths behind you (at most 20 s). Only ever marks a side occupied, never clear. Experimental and off by default; not road-validated.",
+        "picker_description": "Faster V-ASM checks when it matters, and holds the blind spot after you pass a car.",
+        "data_type": "bool",
+        "ui_type": "toggle",
         "parent_key": "VASMEnabled",
         "settings_tier": "advanced"
       },
@@ -885,6 +925,16 @@
         "label": "Resume Brake Ramp",
         "description": "After a gas override, build braking up gradually (at most 1.5 m/s^3 for 1.5 s) instead of stepping straight to the planner target. Skipped when stopping, at -2.0 m/s^2 or harder, or with a lead closer than 30 m. Releasing brake is never limited.",
         "picker_description": "Builds braking up gradually after you let off the gas.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AdvancedLongitudinalTune",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "WeakLeadCapEase",
+        "label": "Ease Weak-Lead Accel Cap",
+        "description": "Under 4.5 m/s behind a slow or barely moving lead, openpilot limits acceleration to 0.08-0.22 m/s^2. With this on, that limit eases in and out at 2 m/s^3 instead of cutting in within one frame, and a car the radar has only just picked up is judged by the camera's view of how fast it is pulling away. Braking is never limited or delayed.",
+        "picker_description": "Low-speed accel limit behind a slow lead eases in and out.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "AdvancedLongitudinalTune",

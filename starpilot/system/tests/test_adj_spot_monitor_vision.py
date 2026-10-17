@@ -133,3 +133,153 @@ def test_publish_writes_freshness_and_maps_camera_sides_to_ui_sides():
   assert daemon.params_memory.values["VASMLastUpdateMonoTime"] == "50.0"
   assert daemon.params_memory.values["VASMLeftActive"] == "0"
   assert daemon.params_memory.values["VASMRightActive"] == "1"
+
+class _Lead:
+  def __init__(self, status=False, dRel=0.0, vRel=0.0, radarTrackId=-1):
+    self.status, self.dRel, self.vRel, self.radarTrackId = status, dRel, vRel, radarTrackId
+
+
+class _FakeSM:
+  def __init__(self, left=None, right=None, left_blinker=False, right_blinker=False, v_ego=30.0):
+    from types import SimpleNamespace
+    self.valid = {"starpilotRadarState": True, "starpilotCarState": True}
+    self.msgs = {"starpilotRadarState": SimpleNamespace(leadLeft=left or _Lead(), leadRight=right or _Lead()),
+                 "starpilotCarState": SimpleNamespace(leftBlinker=left_blinker, rightBlinker=right_blinker, vEgo=v_ego)}
+
+  def __getitem__(self, key):
+    return self.msgs[key]
+
+
+def _assist_daemon(radar_assist=True):
+  from types import SimpleNamespace
+  from openpilot.starpilot.common.vasm_assist import PassHold
+
+  class Memory(FakeMemoryParams):
+    def get(self, key):
+      return self.values.get(key)
+
+  daemon = VASMDaemon.__new__(VASMDaemon)
+  daemon.params_memory = Memory()
+  daemon._radar_assist = radar_assist
+  daemon.pass_hold = PassHold()
+  daemon.inference = SimpleNamespace(left_active=False, right_active=False)
+  daemon._hold = {"left": False, "right": False}
+  daemon._focus_image = set()
+  daemon._last_pub_left = (False, False)
+  daemon._last_pub_right = (False, False)
+  daemon._last_pub_left_conf = -1.0
+  daemon._last_pub_right_conf = -1.0
+  daemon._last_update_at = 0.0
+  return daemon
+
+
+def test_d118_pass_hold_marks_the_car_side_occupied_while_the_camera_sees_nothing():
+  daemon = _assist_daemon()
+  daemon.sm = _FakeSM(left=_Lead(True, 3.0, -4.0, 7))
+  daemon._update_assist(0.0)
+  daemon.sm = _FakeSM()
+  daemon._update_assist(0.1)
+  assert daemon._hold == {"left": True, "right": False}
+  daemon._publish(False, False, 0.1, 0.1, 1, updated_at=0.1)
+  assert daemon.params_memory.values["VASMLeftActive"] == "1", "car-frame left, not mirrored"
+  assert daemon.params_memory.values["VASMRightActive"] == "0"
+
+  daemon._update_assist(10.0)
+  daemon._publish(False, False, 0.1, 0.1, 1, updated_at=10.0)
+  assert daemon.params_memory.values["VASMLeftActive"] == "0", "a hold ending is published even with no camera change"
+
+
+def test_d118_focus_is_image_frame_and_off_means_no_assist():
+  daemon = _assist_daemon()
+  daemon.sm = _FakeSM(left_blinker=True)
+  daemon._update_assist(0.0)
+  assert daemon._focus_image == {"right"}, "car left is image right on the driver camera"
+  daemon.params_memory.put("NavPassingPrompt", '{"armed": true, "side": "right"}')
+  daemon.sm = _FakeSM()
+  daemon._update_assist(0.1)
+  assert daemon._focus_image == {"left"}
+
+  off = _assist_daemon(radar_assist=False)
+  off.sm = _FakeSM(left=_Lead(True, 3.0, -4.0, 7), left_blinker=True)
+  off._update_assist(0.0)
+  off.sm = _FakeSM()
+  off._update_assist(0.1)
+  assert off._hold == {"left": False, "right": False} and off._focus_image == set()
+
+
+def test_d121_camera_on_the_car_side_feeds_the_semi_hold():
+  daemon = _assist_daemon()
+  daemon.sm = _FakeSM(right=_Lead(True, 8.0, -4.0, 44))
+  daemon._update_assist(0.0)
+  daemon.sm = _FakeSM()
+  t = 0.05
+  while t < 2.0:  # plain hold covers the hand-off
+    daemon._update_assist(t)
+    t += 0.05
+  daemon.inference.left_active = True  # image left = car right
+  while t < 8.0:  # 6 s at 4 m/s: 24 m of trailer and tractor
+    daemon._update_assist(t)
+    t += 0.05
+  daemon.inference.left_active = False
+  daemon._update_assist(t)
+  assert daemon._hold["right"] and not daemon._hold["left"], "camera lost the truck, but its front is still beside us"
+
+
+def test_luma_matches_extract_crops_measure_and_ignores_letterbox_padding():
+  inference = VASMInference(Path("unused.onnx"))
+  inference.load_config({"width": 200, "height": 100, "poly_left": [[0, 0], [200, 0], [200, 100], [0, 100]], "poly_right": []})
+  inference._prepare_geometry(100, 200)
+
+  class FakeNet:
+    def setInput(self, blob):
+      self.blob = blob
+
+    def forward(self):
+      return np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+  inference.net = FakeNet()
+  nv12 = np.full((150, 200), 128, dtype=np.uint8)
+  nv12[:100] = 20  # dark Y, neutral UV
+  inference._run_inference(nv12, 100, "left")
+  rgb = (inference.net.blob[0].transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
+  lit = rgb[rgb.max(axis=2) > 0]
+  assert lit.size < rgb.size, "a 2:1 crop is letterboxed"
+  assert inference.luma["left"] == float(lit.mean())
+  assert inference.luma["left"] < 30
+
+
+def _dark_daemon(luma):
+  from types import SimpleNamespace
+  daemon = VASMDaemon.__new__(VASMDaemon)
+  daemon._dark = {"left": False, "right": False}
+  cleared = []
+  daemon.inference = SimpleNamespace(luma={"left": luma, "right": 100.0}, clear_side=cleared.append)
+  return daemon, cleared
+
+
+def test_night_gate_has_hysteresis_and_drops_the_dark_side_detection():
+  from starpilot.system.adj_spot_monitor_vision import DARK_LUMA_ENTER, DARK_LUMA_EXIT
+  daemon, cleared = _dark_daemon(DARK_LUMA_ENTER + 1)
+  assert not daemon._apply_dark_gate("left") and cleared == []
+  daemon.inference.luma["left"] = DARK_LUMA_ENTER - 1
+  assert daemon._apply_dark_gate("left") and cleared == ["left"]
+  daemon.inference.luma["left"] = DARK_LUMA_EXIT  # a headlight sweep inside the band keeps it dark
+  assert daemon._apply_dark_gate("left")
+  daemon.inference.luma["left"] = DARK_LUMA_EXIT + 1
+  assert not daemon._apply_dark_gate("left")
+  assert not daemon._dark["right"]
+
+
+def test_dark_side_stays_live_and_the_radar_hold_still_publishes():
+  from openpilot.starpilot.common.vision_bsm import get_fresh_vasm_state, vasm_is_live
+
+  class Memory(FakeMemoryParams):
+    def get(self, key):
+      return self.values.get(key)
+
+  daemon = _assist_daemon()
+  daemon.params_memory = Memory()
+  daemon._hold = {"left": True, "right": False}  # car left = image right, whose camera verdict the gate dropped
+  daemon._publish(False, False, 0.0, 0.0, 1, updated_at=5.0)
+  assert vasm_is_live(daemon.params_memory, now=5.0)
+  assert get_fresh_vasm_state(daemon.params_memory, now=5.0) == (True, False)

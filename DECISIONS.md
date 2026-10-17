@@ -2474,6 +2474,124 @@ slow cut-in that slides the same radar track while the camera misreads it would 
 
 **Lever:** `LEAD_SWITCH = False` restores the previous behaviour exactly.
 
+
+## D-108 — Steering against a started lane change for 0.25 s cancels it (2026-10-12, static unit tests only, not driven, default off)
+
+**Problem:** once `laneChangeStarting` is reached, the driver has no way to call the move off short of overpowering the
+model for the whole move or waiting out `lane_change_time_max`. That matters most for the nav-exit moves added in
+D-107 and `NavLanePositioningAllowed`, which start without the driver's own blinker decision.
+
+**Decision:** behind the new default-off `LaneChangeCounterTorqueCancel` toggle, in `laneChangeStarting`, driver torque
+*against* the lane-change direction (same detection as the nudge: `steeringPressed` or |torque| > 1200, opposite sign)
+for 5 consecutive model frames (`LANE_CHANGE_CANCEL_TORQUE_FRAMES = round(0.25 / DT_MDL)`) sets the state to off and the
+direction to none. Any frame without counter-torque resets the count. Going to off (not preLaneChange) means a held
+blinker needs a fresh press, and a nav-exit move needs a fresh exit request, before anything relaunches. Only
+`laneChangeStarting` is guarded; `laneChangeFinishing` is left alone.
+
+**Evidence (static only):** five new tests in `test_navigation_desires.py` (45 pass, run on the Mac with
+`--noconftest` in a scratch venv): default-off, the 0.20 s / 0.25 s boundary and reset, torque toward the move does not
+cancel, no relaunch on a held blinker, no relaunch of the same nav-exit request. No replay or drive.
+
+**Provenance:** the idea (cancel on counter-torque, 0.25 s) comes from IQ.Pilot's compiled ActionEngine
+(`action_engine.so`, `LANE_CHANGE_CANCEL_TORQUE_FRAMES` built from 0.25 s), read statically. The code here is an
+independent implementation; no IQ.Pilot code is used, and IQ's exact cancel condition was not recovered.
+
+**Open:** `common/params_pyx.so` / `libcommon.a` must be rebuilt for this key (and for D-107's `NavExitAutoKeep`, which
+was also added without a rebuild) before this runs on the car.
+
+## D-110 — Road edge guard: hold a lane change toward a road edge the model sees inside one lane (2026-10-12, static unit tests only, not driven, default off)
+
+**Request (owner, 2026-10-12):** a road edge guard like IQ.Pilot's. The owner then asked for our own
+implementation, kept as close to IQ's behavior as possible, instead of shipping IQ's all-rights-reserved file.
+
+**Decision:** `starpilot/controls/lib/lateral_edge_guard.py` is an independent implementation. Its thresholds,
+debounce timing and fallbacks match IQ.Pilot's `iqpilot/selfdrive/controls/lib/helpers/lateral_edge_guard.py`, but
+none of IQ's code is used. `DesireHelper` updates it every frame. While the default-off `LaneChangeEdgeGuard` toggle
+is on, a block in the lane-change direction holds the preLaneChange → laneChangeStarting launch, exactly like a
+blind-spot hit. This applies to nudged, nudgeless and nav-exit lane changes.
+
+**The rule (IQ's numbers):**
+- Block when (nearest edge |y| over x 5–40 m) − 1·std < measured lane width + 0.95 + 0.25 m. The lane width is
+  clamped to 2.5–4.5 m and defaults to 3.5 m unless both ego lines have prob > 0.5.
+- Never block when the edge std is above 1.0 m, the edge is on the wrong side, or an outer lane line has prob > 0.5.
+- Inactive below 20 mph.
+- A block needs 0.30 s to set and 0.50 s to clear. Missing edges hold the last answer for 0.50 s, then fall back to
+  not blocking.
+
+**Failure direction:** the guard can only prevent or delay a lane change. It never steers. A false block means the
+driver has to steer the move manually, and a missed block is the same as today.
+
+**Evidence (static only):**
+- 11 guard tests (`starpilot/controls/lib/tests/test_lateral_edge_guard.py`, written here) and 2 integration tests
+  in `test_navigation_desires.py`.
+- A differential run against IQ's file over 2 × 400 random 200-frame sequences: 160,000 frames, including NaN
+  points, bad stds, wrong-side edges, empty edges, a missing model, low speed and toggle flips. It gave identical
+  `block_for_direction` on both sides in every frame (361 and 653 blocked side-frames), and the
+  missing-edge warnings fired at the same frames.
+- Params artifacts rebuilt, 880 → 881 keys (+LaneChangeEdgeGuard only).
+- Not replayed against Peter's routes. The thresholds are IQ's and were not re-derived here.
+
+### D-108 amendment (2026-10-12): the counter-torque cancel only works before the car reaches the lane line
+
+Replayed against the comma's own logs (52 rlog segments from routes 00000312, 00000313, 00000319, 0000031b–0000031e;
+56 completed lane changes): 6 of them had 0.25 s of opposing torque above the nudge threshold and would have been
+cancelled. Two of those came after the car had crossed the line (opposing torque 3.2 s in, line crossed at 2.5–2.9 s),
+when the driver catches the car settling into the new lane; a cancel there steers the car back across the line. The
+cancel window now closes 1.5 s into laneChangeStarting, or as soon as the target-side ego lane line (prob >= 0.5) has
+moved 0.8 m toward the car, whichever comes first. The other four were 0.7–1.75 s into the move with 0.55–1.4 s of
+opposing torque and still completed; three of them fall inside the window. The logs cannot tell whether the driver
+meant to abort, so that part is unresolved. Static tests and log replay of the rule only; not road-tested.
+
+
+## D-118 — V-ASM radar assist: look sooner where it matters; hold the blind spot after a pass (2026-10-12, static unit tests only, not driven, default off)
+
+**Request (owner, 2026-10-12):** V-ASM is slow to catch cars in the blind spot. After passing a car, assume it is still
+in the blind spot for a while, scaled by how fast you passed it.
+
+**Finding (static, from the code):** the daemon runs one inference per second and alternates sides, so each side is
+looked at about every 2 s, longer under CPU throttle. It only goes to 0.3 s after something is already detected. A
+detection needs a smoothed confidence of at least 0.94.
+
+**Decision:** one toggle, `VASMRadarAssist` (Galaxy, under V-ASM). Both parts only ever add "occupied".
+- **Look sooner.** Inference runs every 0.3 s while any of these holds: a blinker is on, a D-114/D-117 prompt points
+  to a side, or radar has `leadLeft`/`leadRight` within 15 m. When exactly one side is focused, that side gets the
+  turns, but the other side is never starved for more than 1 s. Sides are mapped car→image because the driver camera
+  is mirrored.
+- **Pass hold.** `PassHold` remembers the last sighting of an adjacent radar car we were closing on by ≥0.5 m/s at
+  0–15 m. When radar loses it, or a different car replaces it, within 0.5 s of that sighting, the side stays occupied
+  for `clamp((dRel + 12 m) / closing, 1 s, 6 s)` from the sighting. The 12 m is its length, ours, and a margin. That
+  gives 5 mph faster ≈ 5.4 s, 10 mph ≈ 2.7 s, and ≥27 mph = 1 s. Holds are ORed into `VASMLeftActive`/`VASMRightActive`,
+  so lane-change blocking, the border, the side camera, and the nav prompts all see them.
+
+**Limits:** static unit tests only (`test_vasm_assist.py`, `test_adj_spot_monitor_vision.py`). The 12 m, 15 m and
+0.5 s constants are chosen, not measured. Check on the owner's I-35 routes how far ahead radar last sees a car being
+passed and how long V-ASM takes to fire after that. Semi trailers are not handled. The camera sees the cab and drops
+the container side, so a radar-linked hold while the cab stays adjacent and close is planned once driver-camera
+footage is available.
+
+**Replay evidence (2026-10-12, driver-camera replay, 6 highway segments: 00000321--67540f4492 s30/31/41/42 and
+00000323--c20feb1f4b s3/4; scripts in `tools/vasm_replay/`).** The owner's live settings were threshold 0.80 and
+smoothing 0.1 s. At those settings the smoothing does nothing, because every sample is ≥0.3 s apart.
+- Radar loses a car being passed at 6.5–15 m ahead. The camera crop first reaches ≥0.8 on that car 0–4.9 s later,
+  because the crop looks at the rear quarter. This is the slow detection the owner reported.
+- `PassHold` fired 14 times and the camera confirmed a car on that side 14 times. The holds lasted 74.9 s in total.
+  Each hold started 0–4.9 s (median ~2 s) before the camera saw the car. It ended within −1.0…+1.5 s of the camera's
+  last sighting, and where it ended first the camera was already on. **12 m, 15 m and 0.5 s are kept.** The car leaves
+  the crop when it is 6–13 m behind the radar point, which matches `dRel + 12 m`.
+- Daemon sampling, simulated on the per-frame confidence: 44 camera intervals of at least 0.5 s. Without focus the
+  daemon missed 8 of them, with median onset 0.76 s and p90 1.83 s. With D-118 focus it missed 6, with median 0.42 s
+  and p90 1.61 s.
+- **Semi trucks:** the one semi in these segments was a tractor with a multi-axle trailer passed on the right. The
+  camera held 0.98–1.00 on every frame from the first trailer wheels through the cab. This footage does not reproduce
+  the reported dropout on a box/container trailer.
+- **The planned radar-linked truck hold is not built.** In 00000323 s4 t≈242–257, track 11 sat 12.4–13.9 m ahead in
+  the right lane with |vRel| < 0.7 m/s for 13 s. The road camera shows a white SUV pacing us, and the blind spot was
+  empty: the driver camera read 0.00–0.45 and the crop shows only the barrier. Radar cannot tell an SUV from a truck
+  cab at that range, so "adjacent track close ahead at similar speed means occupied" would have reported a false
+  blind-spot car for 13 s here. A truck hold needs evidence of the trailer itself: a timestamp where the camera drops
+  on a box trailer, then its radar/liveTracks picture.
+
+
 ## D-120 — Stock Brake Feel's lead-stop law skips a lead more than 20 s from stopping (STATUS 243, 2026-10-13, replay only, not driven)
 
 **Problem (owner, route 00000324):** early, firm brakes for far highway leads (bookmark 67:40, and 28:00, 41:50).
@@ -2511,6 +2629,63 @@ below 20 s from stopping or the emergency latch fires. 2f5 10:01 was not re-run 
 event's aLeadK of -2.46 latches the emergency, which this change does not touch.
 
 **Lever:** `STOCK_FEEL_LEAD_STOP_MAX_T = 0` restores the previous behaviour exactly.
+
+## D-121 — V-ASM radar assist holds a passed semi until its front is well behind, and bridges camera drop-outs (2026-10-12, static unit tests + log replay of the hold only, not driven, default off)
+
+**Problem (owner, 2026-10-12):** passing a semi on the right at ~70 mph (semi ~65 mph), it took Peter 7 s from his
+front bumper lining up with the trailer's rear to a gap he would move back into. D-118's pass hold is sized for cars
+(1-6 s) and D-118 already listed semi trailers as not handled.
+
+**Evidence (replay, route 324 segs 101/104/108 and 321 seg 42; semis confirmed by eye on the driver-camera crops):**
+truck positions are dead-reckoned from the last radar sighting, assuming the truck held the speed radar measured, and our
+carState speed. The camera stopped seeing the truck when its rear was 29.7-30.4 m behind our radar in all three 324
+passes (5.6-8.6 s after bumper alignment); in 321 s42 (Peter slowing, closing 5.2 -> 2.4 m/s) it stopped at 17.4 m, 4.2
+s after alignment, with the cab still about level with us. With Peter's settings (threshold 0.80, smoothing 0.1 s) the
+daemon also released the side for 0.3-0.4 s on plain trailer sides after D-118's hold had expired (324 s104 6274.3 and
+6275.3, s108 6524.8). Car passes gave 3-10 m of relative travel with the camera on.
+
+**Decision (owner approved the numbers):** under `VASMRadarAssist` (default off), after D-118's radar hand-off,
+`PassHold` follows the vehicle with the camera state for that car side and carState vEgo:
+- `PASS_BRIDGE_S = 0.6`: once the camera has seen it, a drop-out up to 0.6 s keeps the side occupied.
+- `LONG_VEHICLE_SEEN_M = 12`: relative travel with the camera on beyond this marks a long vehicle.
+- `LONG_VEHICLE_CLEAR_M = 38`: a long vehicle is held until its dead-reckoned rear is 38 m behind our radar (a ~23 m
+  semi's front ~10 m, about two car lengths, behind our rear bumper).
+- `LONG_VEHICLE_MAX_S = 20`: cap after radar lost it, for when the gap stops closing.
+Like D-118 it only adds "occupied". Without vEgo (e.g. `extract_crops.py`) it is the D-118 hold alone.
+
+**Replay of the hold (`~/oprad-scratch/vasm/semi_replay.py`, camera = the daemon's EMA and hysteresis on the shipped
+model's per-frame output; 15 segment-sides from routes 321/323/324):** 324 s101 held 2.0 s past the camera (to 6089.7),
+s104 bridged both mid-trailer gaps and held 0.8 s more, s108 bridged its gap and held 1.3 s more, 321 s42 held 7.6 s more
+(to 2550.7, 11.9 s after alignment). Car passes gained only 0.2-0.6 s bridges. 323 s4 (the SUV pacing at 12-14 m that
+ruled out a radar-only truck hold in D-118) gained nothing. One over-hold: 324 s67, a pickup then a Subaru seen back to
+back added up past 12 m, so the side stayed occupied 2.0 s longer after the Subaru.
+
+**Not checked:** dead reckoning error when the truck changes speed; whether the lane-change logic reacts within a
+0.3-0.4 s release (the bridge removes those releases either way); nothing driven.
+
+Not road-validated.
+
+## D-122 — V-ASM ignores the camera on a dark side; the radar pass hold covers it at night (2026-10-14, static unit tests + label replay only, not driven)
+
+The owner relabelled the night segment sides and could not make out cars in several of them. On his labels the shipped
+model missed both night car events and raised 68 s/h of false-occupied time (3 night sides, replay). Fine-tuning made
+night quieter but not better at seeing cars (run5 missed 16 of 16 night car frames at 0.8), so the camera, not the model,
+is the limit there.
+
+- **Gate:** the daemon measures each side's crop brightness exactly as `tools/vasm_finetune/extract_crops.py` does
+  (`mean_luma`: mean of the model input's non-padding pixels). A side goes dark below 30 and comes back above 40.
+- **Effect:** a dark side's camera detection is dropped. V-ASM stays live, and the D-118/D-121 radar pass holds still
+  publish on that side, so at night V-ASM is the radar hold alone (owner's call over making V-ASM unavailable).
+  Those holds exist only with Radar Assist (`VASMRadarAssist`, default off) on.
+- **Gap the owner accepted:** a car the radar never tracked ahead of us (one that comes up from behind into the blind
+  spot) is not held, so at night that side reads clear to nav passing and lane-change blocking unless the car's own
+  blind-spot sensor sees it.
+- **Replay over 183 owner-labelled segment sides (25,409 crops):** the gate trips on the 6 night sides only, none of the
+  other 177. It removes 19 of the shipped model's 229 false-alarm frames and 28 of its 1,653 true-detection frames
+  (23 of those on 478af4/13 right, where the shipped model did see a car at night).
+- **Not done:** no on-road check of the cutoff or of the hold at night, no toggle.
+
+Not road-validated.
 
 ## D-123 — Chill's close-lead cap eases in when a far lead slows for a moment (STATUS 244, 2026-10-14, replay only, not driven)
 

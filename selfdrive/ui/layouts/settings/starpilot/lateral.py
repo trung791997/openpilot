@@ -168,6 +168,20 @@ class StarPilotLateralLayout(_SettingsPage):
         visible=lc_on,
       ),
       SettingRow(
+        "LaneChangeCounterTorqueCancel", "toggle", tr_noop("Cancel by Steering Back"),
+        subtitle=tr_noop("Cancel a lane change once it has started if you steer against it for a quarter second. Experimental and off by default; not road-validated."),
+        get_state=lambda: p.get_bool("LaneChangeCounterTorqueCancel"),
+        set_state=lambda s: p.put_bool("LaneChangeCounterTorqueCancel", s),
+        visible=lc_on,
+      ),
+      SettingRow(
+        "LaneChangeEdgeGuard", "toggle", tr_noop("Road Edge Guard"),
+        subtitle=tr_noop("Hold a lane change while the model sees a road edge where the target lane should be. Experimental and off by default; not road-validated."),
+        get_state=lambda: p.get_bool("LaneChangeEdgeGuard"),
+        set_state=lambda s: p.put_bool("LaneChangeEdgeGuard", s),
+        visible=lc_on,
+      ),
+      SettingRow(
         "OneLaneChange", "toggle", tr_noop("One Per Signal"),
         subtitle=tr_noop("One lane change per signal activation."),
         get_state=lambda: p.get_bool("OneLaneChange"),
@@ -280,6 +294,13 @@ class StarPilotLateralLayout(_SettingsPage):
                              _sync_parent(p, "AdvancedLateralTune", _ADVANCED_LATERAL_KEYS)),
         enabled=lambda: cs.isTorqueCar and not cs.isAngleCar,
         disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "NrdrLatResumeRamp", "toggle", tr_noop("Ease Steering In When It Resumes"),
+        subtitle=tr_noop("Modified-EPS Hondas: steering takes over from where the wheel is when it resumes below 20 mph."),
+        get_state=lambda: p.get_bool("NrdrLatResumeRamp"),
+        set_state=lambda s: p.put_bool("NrdrLatResumeRamp", s),
         visible=alt_on,
       ),
       SettingRow(

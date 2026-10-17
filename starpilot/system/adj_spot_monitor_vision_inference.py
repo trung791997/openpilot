@@ -5,7 +5,14 @@ import cv2
 import numpy as np
 
 _ASSETS = Path(__file__).resolve().parents[1] / "assets" / "vision_models"
-V_ASM_MODEL_PATH = _ASSETS / "v_asm_model.onnx"
+# Upstream model: the benchmark baseline (tools/vasm_finetune), whose probabilities the crop manifest records.
+V_ASM_UPSTREAM_MODEL_PATH = _ASSETS / "v_asm_model.onnx"
+# The daemon runs the fine-tune (tools/vasm_finetune run12: uniform soup of 3 seeds at epoch 3, trained with the owner's
+# radar-timed hand-off labels, 2026-10-14; test replay at on 0.99 / off 0.84 vs upstream at 0.80 / 0.65 with D-118
+# focus: missed 2.38 vs 3.38, false-occupied 19.3 vs 29.4 s/h, latency p50 0.80 vs 0.78 s; held-out road route 329:
+# 11.3 vs 38.3 s published on labelled no-car, 25.3 vs 18.8 s of labelled car covered).
+# Its threshold is VASMConfidenceThreshold 0.99, set on the car; no road evidence yet.
+V_ASM_MODEL_PATH = _ASSETS / "v_asm_model_ft.onnx"
 
 MODEL_INPUT_SIZE = 352
 
@@ -53,6 +60,13 @@ class VASMInference:
     self.right_active = False
     self.left_confidence = 0.0
     self.right_confidence = 0.0
+    self.luma = {"left": 0.0, "right": 0.0}  # mean of the model input's unpadded pixels, last frame per side
+
+  def clear_side(self, side: str):
+    if side == "left":
+      self._l_score, self.left_active, self.left_confidence = 0.0, False, 0.0
+    else:
+      self._r_score, self.right_active, self.right_confidence = 0.0, False, 0.0
 
   @property
   def valid(self):
@@ -139,6 +153,9 @@ class VASMInference:
     top = (rs - nh) // 2
     left = (rs - nw) // 2
     crop_sq[top : top + nh, left : left + nw] = resized
+    # same measure as tools/vasm_finetune/extract_crops.py mean_luma, so the night cutoff carries over from the crops
+    lit = crop_sq[crop_sq.max(axis=2) > 0]
+    self.luma[side] = float(lit.mean()) if lit.size else 0.0
 
     blob = crop_sq.astype(np.float32) / 255.0
     blob = np.transpose(blob, (2, 0, 1))

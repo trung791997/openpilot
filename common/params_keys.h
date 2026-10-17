@@ -542,6 +542,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KonikMinutes", {PERSISTENT, INT, "0", "0", 0}},
     {"LaneCentering", {PERSISTENT, BOOL, "0", "0", 2}},
     {"LaneCenteringPauseOnSignal", {PERSISTENT, BOOL, "1", "1", 2}},
+    {"NrdrLatResumeRamp", {PERSISTENT, BOOL, "0", "0", 2}},
     {"LaneCenteringE2EAuthority", {PERSISTENT, FLOAT, "1.0", "1.0", 3}},
     {"LaneCenterOffset", {PERSISTENT, FLOAT, "0.0", "0.0", 3}},
     {"LaneChanges", {PERSISTENT, BOOL, "1", "1", 0, SETTINGS_SIMPLE}},
@@ -604,12 +605,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapSpeedLimit", {CLEAR_ON_MANAGER_START, FLOAT, "0.0", "0.0"}},
     {"NavDesiresAllowed", {PERSISTENT, BOOL, "1", "0", 2}},
     {"NavLanePositioningAllowed", {PERSISTENT, BOOL, "0", "0", 2}},
+    {"LaneChangeCounterTorqueCancel", {PERSISTENT, BOOL, "0", "0", 2}},
+    {"LaneChangeEdgeGuard", {PERSISTENT, BOOL, "0", "0", 2}},
     {"NavLongitudinalAllowed", {PERSISTENT, BOOL, "1", "0", 2}},
     {"ClearNavOnOffroad", {PERSISTENT, BOOL, "1", "1", 2, SETTINGS_SIMPLE}},
     {"ClearNavOnOffroadTimeoutMinutes", {PERSISTENT, INT, "0", "0", 2, SETTINGS_SIMPLE}},
     {"NavDestination", {PERSISTENT | CLEAR_ON_MANAGER_START, STRING, "", ""}},
     {"NavInstructionCollapsed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0", "0"}},
     {"NavLaneMovePrompt", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON, "{}", "{}"}},
+    {"NavPassingPrompt", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON, "{}", "{}"}},
     {"NavInstructionState", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON, "{}", "{}"}},
     {"NextMapSpeedLimit", {CLEAR_ON_MANAGER_START, JSON, "{}", "{}"}},
     {"VisionSpeedLimit", {CLEAR_ON_MANAGER_START, FLOAT, "0.0", "0.0"}},
@@ -873,6 +877,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Default OFF. D-086 stock Honda ACC brake law (STOCK_FEEL_* in longitudinal_planner.py): depth and deepening rate
     // capped at stock's by TTC. Read live through starpilot_toggles. Replay only, not driven.
     {"StockBrakeFeel", {PERSISTENT, BOOL, "0", "0", 3}},
+    // Default OFF. Weak-lead cap ease (WEAK_LEAD_CAP_EASE_* in longitudinal_planner.py): the low-speed weak-lead
+    // accel cap engages and releases at 2 m/s^3, and reads a newborn radar lead's accel from the model. Replay only.
+    {"WeakLeadCapEase", {PERSISTENT, BOOL, "0", "0", 3}},
     {"TuningLevel", {PERSISTENT, INT, "0", "0", 0}},
     {"TuningLevelConfirmed", {PERSISTENT, BOOL, "0", "0", 0}},
     {"TurnDesires", {PERSISTENT, BOOL, "0", "0", 2}},
@@ -900,6 +907,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"VASMRightActive", {CLEAR_ON_MANAGER_START, STRING, "0", "0", 2}},
     {"VASMRightConfidence", {CLEAR_ON_MANAGER_START, STRING, "0.0", "0.0", 2}},
     {"VASMSmoothSeconds", {PERSISTENT, FLOAT, "0.2", "0.2", 2}},
+    {"VASMRadarAssist", {PERSISTENT, BOOL, "0", "0", 2}},
     {"VASMTimestampEof", {CLEAR_ON_MANAGER_START, STRING, "0", "0", 2}},
     {"VEgoStarting", {PERSISTENT, FLOAT, "0.0", "0.0", 3}},
     {"VEgoStartingStock", {PERSISTENT, FLOAT, "0.0", "0.0", 3}},
