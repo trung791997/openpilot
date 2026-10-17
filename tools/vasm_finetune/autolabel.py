@@ -169,6 +169,7 @@ def main():
   ap.add_argument("--agree", action="store_true", help="per-model thresholds; label only where all models agree")
   ap.add_argument("--classes", default="0,1,2", help="emit only these classes")
   ap.add_argument("--version", default="auto-v2")
+  ap.add_argument("--only-routes", default="", help="comma list of route-name prefixes; label only these routes")
   ap.add_argument("--min-speed", type=float, default=0.0, help="no label below this v_ego (m/s); 0 = off")
   args = ap.parse_args()
   out = args.out or os.path.join(args.crops, "autolabels.json")
@@ -204,8 +205,10 @@ def main():
          "val_shipped_argmax": report(np.array([int(np.argmax([float(r["p_nocar"]), float(r["p_car"]), float(r["p_distant"])]))
                                                for r in rows])[cal], yv[cal])}
 
+  only = [x for x in args.only_routes.split(",") if x]
   target = np.array([not val[i] and r["file"] not in owner and not in_segments(
-      {"route": r["route"], "seg": r["seg"]}, segs) for i, r in enumerate(rows)])
+      {"route": r["route"], "seg": r["seg"]}, segs) and (not only or any(r["route"].startswith(x) for x in only))
+      for i, r in enumerate(rows)])
   how = f"{'agree' if args.agree else 'ens'}{len(args.model)}+med{args.smooth}+edge{args.edge_gap}"
   auto = {rows[i]["file"]: {"label": int(dec[i]), "by": args.version, "how": how,
                             "conf": round(float(conf[i]), 4)} for i in np.where(target & (dec >= 0))[0]}
@@ -220,6 +223,8 @@ def main():
   for f, e in auto.items():
     i, r = byfile[f]
     assert f not in owner and not val[i] and r["split"] == "train" and target[i] and e["label"] in keep, f
+    assert not only or any(r["route"].startswith(x) for x in only), f
+    assert args.min_speed <= 0 or float(r["v_ego"]) >= args.min_speed, f
   with open(out, "w") as f:
     json.dump(auto, f)
   rep["sha256"] = hashlib.sha256(open(out, "rb").read()).hexdigest()

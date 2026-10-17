@@ -142,3 +142,28 @@ def test_pipeline_refuses_radar_assisted_labels(tmp_path):
     p.check()
   (tmp_path / "crops" / "labels.json").write_text('{"r/0/0002_left.png": {"label": 1}}')
   p.check()
+
+
+def test_labeler_shows_auto_on_train_only_and_never_over_owner(tmp_path):
+  import csv
+
+  import labeler as Lb
+  hdr = ["file", "route", "seg", "t", "image_side", "split"]
+  rs = [("r1/0/0000_left.png", "r1", "0", "0.0", "left", "train"), ("r1/0/0001_left.png", "r1", "0", "0.25", "left", "train"),
+        ("r1/0/0002_left.png", "r1", "0", "0.5", "left", "train"), ("r2/0/0000_left.png", "r2", "0", "0.0", "left", "test")]
+  with open(tmp_path / "manifest.csv", "w") as f:
+    w = csv.writer(f)
+    w.writerow(hdr)
+    w.writerows(rs)
+  (tmp_path / "labels.json").write_text(json.dumps({"r1/0/0000_left.png": {"label": 1}}))
+  auto = tmp_path / "auto.json"
+  auto.write_text(json.dumps({f: {"label": 0, "by": "auto-v3m"} for f, *_ in rs}))
+  s = Lb.Store(str(tmp_path), str(auto))
+  side = {r["file"]: r for r in s.side("r1", "0", "left")}
+  assert side["r1/0/0000_left.png"]["lock"] == 1 and "auto" not in side["r1/0/0000_left.png"]  # owner wins
+  assert side["r1/0/0001_left.png"]["auto"] == 0
+  assert "auto" not in s.side("r2", "0", "left")[0]  # test split stays blind
+  (tr,) = s.sides("train")
+  assert (tr["n"], tr["labelled"], tr["auto"], tr["needs"]) == (3, 1, 2, 0)
+  assert s.sides("test")[0]["auto"] == 0
+  assert "auto" not in Lb.Store(str(tmp_path)).side("r1", "0", "left")[1]  # off without --auto

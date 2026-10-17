@@ -7,6 +7,10 @@
                                                   disagreed with, shown with the agent's label; a key press re-labels)
        or   http://127.0.0.1:8765/interval     (one segment side as a filmstrip: set the class with a key and play
                                                   through, Enter saves; never repaints a crop labelled before)
+       or   http://127.0.0.1:8765/interval with --auto <autolabel.py output>: the filmstrip also shows auto labels
+                                                  (dashed border, train split only) and the side list counts the crops
+                                                  that still need you; g jumps to the next one. Painting over an auto
+                                                  label makes it yours (training prefers owner labels)
        or   http://127.0.0.1:8765/?split=edges  (interval crops next to a class change, to check one by one, blind)
        or   http://127.0.0.1:8765/?split=queue  (every crop of the segment sides in <crops>/queue.json, labelled blind:
                                                   dense validation segments, so the event-level gate has more to score)
@@ -134,17 +138,19 @@ INTERVAL_PAGE = r"""<!doctype html><meta charset="utf-8"><title>V-ASM intervals<
  <span class="k">t</span>truck part <span class="k">x</span>unsure <span class="k">Esc</span>pen up.
  A key paints this crop, and every crop the cursor moves onto after it while the pen is down.
  <span class="k">space</span>play/pause <span class="k">&rarr;</span>step (paints) <span class="k">&larr;</span>back (does not paint)
- <span class="k">[</span><span class="k">]</span>speed <span class="k">Enter</span>save this side. Crops you labelled before are locked; agent labels are not.</p>
+ <span class="k">[</span><span class="k">]</span>speed <span class="k">Enter</span>save this side. Crops you labelled before are locked; agent labels are not.
+ <span class="k">g</span>next crop that needs you (dashed border = auto label, already done unless you paint over it).</p>
 <script>
 const COL = {0: "#555", 1: "#d33", 2: "#e90", x: "#36c", t: "#c3c"};
+const ACOL = {0: "#bbb", 1: "#d33", 2: "#e90"};  // auto labels: dashed, and no car brighter than unlabelled
 const NAMES = {0: "no car", 1: "adjacent", 2: "2+ lanes over", x: "unsure", t: "truck part"};
 let sides = [], rows = [], i = 0, pen = null, paint = {}, timer = null, speed = 1;
 const $ = id => document.getElementById(id);
 const key = r => r.lock !== undefined ? r.lock : paint[r.file];
 async function loadSides() {
   sides = (await (await fetch("/api/sides?split=" + $("split").value)).json()).sides;
-  $("side").innerHTML = sides.map((s, k) => `<option value="${k}">${s.route.slice(-6)} s${s.seg} ${s.image_side}  ${s.labelled}/${s.n}</option>`).join("");
-  const first = sides.findIndex(s => s.labelled < s.n);
+  $("side").innerHTML = sides.map((s, k) => `<option value="${k}">${s.route.slice(-6)} s${s.seg} ${s.image_side}  ${s.labelled}/${s.n}` + (s.auto ? `  auto ${s.auto}  needs you ${s.needs}` : "") + `</option>`).join("");
+  const first = sides.findIndex(s => s.needs > 0);
   $("side").value = String(first < 0 ? 0 : first); loadSide();
 }
 async function loadSide() {
@@ -156,17 +162,19 @@ function stamp() { if (pen !== null && rows[i] && rows[i].lock === undefined) pa
 function show() {
   const r = rows[i]; if (!r) return;
   $("main").src = "/crop/" + r.file;
-  $("main").style.borderColor = COL[key(r)] || "#333";
+  $("main").style.borderColor = (key(r) !== undefined ? COL[key(r)] : ACOL[r.auto]) || "#333";
+  $("main").style.borderStyle = key(r) === undefined && r.auto !== undefined ? "dashed" : "solid";
   const n = Object.keys(paint).length;
   $("bar").innerHTML = `crop ${i + 1}/${rows.length}  t=${r.t}  pen <b>${pen === null ? "up" : NAMES[pen]}</b>  speed ${speed}x  ` +
-    `<b>${n}</b> painted, not saved` + (r.lock !== undefined ? "  (locked: labelled before)" : "");
+    `<b>${n}</b> painted, not saved` + (r.lock !== undefined ? "  (locked: labelled before)" : "") +
+    (key(r) === undefined && r.auto !== undefined ? `  (auto: ${NAMES[r.auto]})` : "");
   $("info").textContent = `${r.route} seg ${r.seg}\ncar side ${r.car_side.toUpperCase()} (image ${r.image_side})\n` +
     `speed ${r.v_ego} m/s  blinker ${r.blinker == 1 ? "ON" : "off"}\nradar: ` +
     (r.radar_status == 1 ? `${r.radar_drel} m, rel ${r.radar_vrel} m/s` : "none") + `\npass hold: ${r.pass_hold == 1 ? "HOLDING" : "-"}`;
   let h = "";
   for (let k = i - 4; k <= i + 8; k++) {
     const q = rows[k]; if (!q) { h += "<div></div>"; continue; }
-    h += `<div class="${k === i ? "cur" : ""}"><img src="/crop/${q.file}" style="border-color:${COL[key(q)] || "#333"}">${(+q.t).toFixed(2)}</div>`;
+    h += `<div class="${k === i ? "cur" : ""}"><img src="/crop/${q.file}" style="border-color:${(key(q) !== undefined ? COL[key(q)] : ACOL[q.auto]) || "#333"};border-style:${key(q) === undefined && q.auto !== undefined ? "dashed" : "solid"}">${(+q.t).toFixed(2)}</div>`;
   }
   $("strip").innerHTML = h;
 }
@@ -182,7 +190,7 @@ async function save() {
             edge: (k > 0 && lab[k - 1] !== undefined && lab[k - 1] !== v) || (k < rows.length - 1 && lab[k + 1] !== undefined && lab[k + 1] !== v)};
   });
   if (!items.length) return;
-  const unpainted = rows.filter(r => key(r) === undefined).length;
+  const unpainted = rows.filter(r => key(r) === undefined && r.auto === undefined).length;
   if (!confirm(`Save ${items.length} labels (${items.filter(x => x.edge).length} edge crops go to "edges to check")?` +
                (unpainted ? `\n${unpainted} crops on this side stay unlabelled.` : ""))) return;
   const res = await fetch("/api/labels", {method: "POST", body: JSON.stringify({items})});
@@ -194,6 +202,7 @@ document.addEventListener("keydown", e => {
   if (e.target.tagName === "SELECT") return;
   if ("012xt".includes(e.key) && e.key.length === 1) { pen = /[012]/.test(e.key) ? Number(e.key) : e.key; stamp(); show(); }
   else if (e.key === "Escape") { pen = null; show(); }
+  else if (e.key === "g") { stop(); const k = rows.findIndex((r, k) => k > i && key(r) === undefined && r.auto === undefined); if (k >= 0) { i = k; stamp(); show(); } }
   else if (e.key === " ") { e.preventDefault(); timer ? stop() : play(); }
   else if (e.key === "ArrowRight") step();
   else if (e.key === "ArrowLeft" && i > 0) { i--; show(); }
@@ -207,8 +216,12 @@ loadSides();
 
 
 class Store:
-  def __init__(self, crops):
+  def __init__(self, crops, auto=None):
     self.crops = os.path.abspath(crops)
+    self.auto = {}
+    if auto:
+      with open(auto) as f:
+        self.auto = {k: e["label"] for k, e in json.load(f).items() if e.get("label") in (0, 1, 2)}
     self.path = os.path.join(self.crops, "labels.json")
     self.lock = threading.Lock()
     self.labels = json.load(open(self.path)) if os.path.exists(self.path) else {}
@@ -289,11 +302,12 @@ class Store:
     by = {}
     for r in self.rows:
       if r["split"] == split:
-        s = by.setdefault((r["route"], r["seg"], r["image_side"]), [0, 0])
+        s = by.setdefault((r["route"], r["seg"], r["image_side"]), [0, 0, 0])
         s[0] += 1
         s[1] += r["file"] in self.labels
-    return [{"route": rt, "seg": sg, "image_side": sd, "n": n, "labelled": m}
-            for (rt, sg, sd), (n, m) in sorted(by.items(), key=lambda kv: (kv[0][0], int(kv[0][1]), kv[0][2]))]
+        s[2] += r["file"] not in self.labels and split == "train" and r["file"] in self.auto
+    return [{"route": rt, "seg": sg, "image_side": sd, "n": n, "labelled": m, "auto": a, "needs": n - m - a}
+            for (rt, sg, sd), (n, m, a) in sorted(by.items(), key=lambda kv: (kv[0][0], int(kv[0][1]), kv[0][2]))]
 
   def side(self, route, seg, image_side):
     out = []
@@ -303,6 +317,8 @@ class Store:
         lab = self.labels.get(r["file"])
         if lab is not None and "by" not in lab:  # owner labels lock; agent labels ("by") can be painted over
           row["lock"] = "t" if lab.get("truck") else lab["label"]
+        elif lab is None and r["split"] == "train" and r["file"] in self.auto:  # never on test: labelled blind
+          row["auto"] = self.auto[r["file"]]
         out.append(row)
     out.sort(key=lambda r: float(r["t"]))
     return out
@@ -408,8 +424,9 @@ def main():
   ap = argparse.ArgumentParser()
   ap.add_argument("--crops", default=os.path.expanduser("~/oprad-scratch/vasm/crops"))
   ap.add_argument("--port", type=int, default=8765)
+  ap.add_argument("--auto", default=None, help="autolabel.py output to show on the interval page (train split only)")
   args = ap.parse_args()
-  store = Store(args.crops)
+  store = Store(args.crops, args.auto)
   print(f"{len(store.rows)} crops, {len(store.labels)} labelled; open http://127.0.0.1:{args.port}/?split=test", flush=True)
   ThreadingHTTPServer(("127.0.0.1", args.port), handler(store)).serve_forever()
 
