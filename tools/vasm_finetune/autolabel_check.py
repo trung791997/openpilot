@@ -51,7 +51,8 @@ def decisions(rep, crops, rows, cache):
   S = A.smooth(A.scores(rep["models"], crops, rows, cache), rows, seqs, a["smooth"])
   Ss = [A.smooth(A.scores([m], crops, rows, cache), rows, seqs, a["smooth"]) for m in rep["models"]] if a.get("agree") else None
   keep = {int(c) for c in a.get("classes", "0,1,2").split(",") if c != ""}
-  return A.apply(S, Ss, rep["thresholds"], a.get("agree", False), keep, rows, seqs, a["edge_gap"])
+  return A.apply(S, Ss, rep["thresholds"], a.get("agree", False), keep, rows, seqs, a["edge_gap"],
+                 a.get("min_speed", 0.0))
 
 
 def main():

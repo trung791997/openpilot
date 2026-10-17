@@ -31,6 +31,9 @@ own class-2-as-1 mistakes, and the validation groups share routes with its train
   check for that exact file (sha256). Radar lateral position was measured as a third signal and does not separate
   class 1 from class 2 (diag/radar_lat.py, 2026-10-16: validation |yRel| median 3.53 m for owner 1 vs 3.13 m for owner 2;
   leadLeft/leadRight are already adjacent-lane picks), so it is not used.
+- --min-speed: v2's check on route 327 (2026-10-17) failed class 1 almost entirely at a standstill: 1,158 of its
+  1,159 owner-0-as-1 errors are in segments 6-13, a drive-through line at v_ego 0.0 where landscaping grass beside the
+  car read as an adjacent car to both models. Stopped crops can then be left to the owner.
 """
 
 import argparse
@@ -113,16 +116,20 @@ def decide_agree(Ss, thrs):
   return out
 
 
-def apply(S, Ss, thr, agree, keep, rows, seqs, gap):
+def apply(S, Ss, thr, agree, keep, rows, seqs, gap, min_speed=0.0):
   """The whole decision after scoring and smoothing; autolabel_check.py calls this too, so the check judges exactly
-  what was labelled. thr: {class: t} or, with agree, {class: [t per model]} (JSON string keys accepted)."""
+  what was labelled. thr: {class: t} or, with agree, {class: [t per model]} (JSON string keys accepted).
+  min_speed > 0: crops with v_ego below it get no label, applied after the edge rule so it moves no other decision."""
   thr = {int(c): t for c, t in thr.items()}
   if agree:
     raw = decide_agree(Ss, [{c: thr[c][j] for c in thr if thr[c][j] is not None} for j in range(len(Ss))])
   else:
     raw = decide(S, {c: t for c, t in thr.items() if t is not None})[0]
   raw = np.where(np.isin(raw, list(keep)), raw, -1)
-  return edge_abstain(raw, rows, seqs, gap)
+  out = edge_abstain(raw, rows, seqs, gap)
+  if min_speed > 0:
+    out = np.where(np.array([float(r["v_ego"]) >= min_speed for r in rows]), out, -1)
+  return out
 
 
 def calibrate(S, y, prec, support):
@@ -162,6 +169,7 @@ def main():
   ap.add_argument("--agree", action="store_true", help="per-model thresholds; label only where all models agree")
   ap.add_argument("--classes", default="0,1,2", help="emit only these classes")
   ap.add_argument("--version", default="auto-v2")
+  ap.add_argument("--min-speed", type=float, default=0.0, help="no label below this v_ego (m/s); 0 = off")
   args = ap.parse_args()
   out = args.out or os.path.join(args.crops, "autolabels.json")
   queue = args.exclude_queue or os.path.join(args.crops, "queue.json")
@@ -187,7 +195,7 @@ def main():
     thr = {c: [t.get(c) for t in thrs] for c in (0, 1, 2)}
   else:
     thr = calibrate(S[cal], yv[cal], args.precision, args.min_support)
-  dec = apply(S, Ss, thr, args.agree, keep, rows, seqs, args.edge_gap)
+  dec = apply(S, Ss, thr, args.agree, keep, rows, seqs, args.edge_gap, args.min_speed)
   conf = S.max(1)
   rep = {"version": args.version, "models": args.model,
          "model_sha256": [hashlib.sha256(open(m, "rb").read()).hexdigest() for m in args.model],

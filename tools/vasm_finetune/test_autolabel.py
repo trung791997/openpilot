@@ -73,6 +73,15 @@ def test_apply_keep_and_json_keys():
   assert A.apply(S, [S, S], {"0": [0.5, None]}, True, {0}, r, A.sides(r), 0.0).tolist() == [-1] * 4
 
 
+def test_apply_min_speed_abstains_only_stopped_crops():
+  r = rows(4)
+  for x, v in zip(r, ("0.0", "0.9", "1.0", "20.0")):
+    x["v_ego"] = v
+  S = onehot([1, 1, 1, 1])
+  assert A.apply(S, None, {"1": 0.5}, False, {1}, r, A.sides(r), 0.0, 1.0).tolist() == [-1, -1, 1, 1]
+  assert A.apply(S, None, {"1": 0.5}, False, {1}, r, A.sides(r), 0.0).tolist() == [1] * 4  # default off
+
+
 def test_wilson_lower_bound():
   assert C.wilson_lo(0, 0) == 0.0
   assert C.wilson_lo(190, 190) >= 0.98 > C.wilson_lo(180, 180)  # 0.98 needs ~190 clean labels
