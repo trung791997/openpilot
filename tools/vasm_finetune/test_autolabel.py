@@ -201,3 +201,41 @@ def test_labeler_shows_auto_on_train_only_and_never_over_owner(tmp_path):
   assert (tr["n"], tr["labelled"], tr["auto"], tr["needs"]) == (3, 1, 2, 0)
   assert s.sides("test")[0]["auto"] == 0
   assert "auto" not in Lb.Store(str(tmp_path)).side("r1", "0", "left")[1]  # off without --auto
+
+
+def test_check_score_fails_on_planted_mislabels():
+  # positive control: the check must fail labels that are wrong at a rate the gate is meant to catch
+  rng = np.random.default_rng(0)
+  y = np.array([0] * 2000 + [1] * 400 + [-1] * 100)
+  dec = y.copy()
+  dec[2400:] = 0  # crops without an owner label never count
+  assert C.score(y, dec, [0, 1], 0.98)[1]
+  bad = dec.copy()
+  bad[rng.choice(2000, 60, replace=False)] = 1  # 3% of owner 0s planted as auto 1 (60 wrong of 460)
+  cls, ok = C.score(y, bad, [0, 1], 0.98)
+  assert not ok and not cls[1]["passed"] and cls[0]["passed"] and cls[1]["wrong_as"][0] == 60
+  bad = dec.copy()
+  bad[rng.choice(400, 12, replace=False) + 2000] = 0  # 3% of owner 1s hidden as auto 0 (12 wrong of 2012)
+  cls, ok = C.score(y, bad, [0, 1], 0.98)
+  assert cls[0]["precision"] < 1 and cls[0]["wrong_as"][1] == 12
+  assert not C.score(y, dec, [0, 1, 2], 0.98)[1]  # an emitted class with no checkable crops fails
+  assert not C.score(y, dec, [], 0.98)[1]
+
+
+def test_pipeline_pick_and_bootstrap_args_default_off(tmp_path):
+  p = _pipe(tmp_path, {"seeds": [1], "rule": "highest", "train": {"epochs": 1}})
+  assert p.pick_args() == [] and p.boot_args() == ()
+  base = p.baseline_path()
+  p = _pipe(tmp_path, {"seeds": [1], "rule": "highest", "train": {"epochs": 1}, "bootstrap": 200,
+                       "pick": {"road-route": "r9", "scorer": "events"}})
+  assert p.pick_args() == ["--road-route", "r9", "--scorer", "events"] and p.boot_args() == ("--bootstrap", "200")
+  assert p.baseline_path() != base and p.baseline_path().endswith("_b200.json")
+
+
+def test_train_balance_owner_counts():
+  import train as T
+  rows_ = [{"y": 0, "truck": False}] * 4 + [{"y": 1, "truck": False}] + [{"y": 0, "truck": False, "auto": True}] * 12
+  w = T.sample_weights(rows_, 1.0, 1.0)
+  assert w[0] == pytest.approx(1 / 16) and w[4] == 1.0  # default: auto 0s dilute the hand-labelled class-0 weight
+  w = T.sample_weights(rows_, 1.0, 1.0, owner_counts=True)
+  assert w[0] == pytest.approx(1 / 4) and w[-1] == pytest.approx(1 / 4) and w[4] == 1.0

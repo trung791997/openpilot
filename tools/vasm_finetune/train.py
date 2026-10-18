@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import random
+import sys
 import time
 
 import cv2
@@ -120,10 +121,13 @@ def is_val(group, frac):
   return int(hashlib.sha1(group.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF < frac
 
 
-def sample_weights(rows, truck_weight, balance=1.0, onset_weight=1.0):
+def sample_weights(rows, truck_weight, balance=1.0, onset_weight=1.0, owner_counts=False):
   # balance 1 = each class drawn equally often; 0 = natural frequency. Full balancing makes the model call "car" too
   # readily at the daemon's fixed --on threshold (run2: false-occupied 29 -> 45 s/h on the owner test labels).
-  count = np.bincount([r["y"] for r in rows], minlength=3).astype(float)
+  # owner_counts: class counts from hand labels only, so auto rows (mostly 0) do not shift the class prior through the
+  # balance term; their mass is then set by --auto-weight alone
+  count = np.bincount([r["y"] for r in rows if not (owner_counts and r.get("auto"))], minlength=3).astype(float)
+  count[count == 0] = 1.0
   return [count[r["y"]] ** -balance * (truck_weight if r["truck"] else 1.0) * (onset_weight if r.get("onset") else 1.0)
           for r in rows]
 
@@ -179,6 +183,9 @@ def main():
   ap.add_argument("--owner-only", action="store_true", help="train and validate on the owner's labels only (no `by`)")
   ap.add_argument("--auto-labels", default=None, help="autolabel.py output: added to TRAIN only, never over an existing label")
   ap.add_argument("--epoch-size", type=int, default=0, help="draws per epoch: 0 = hand-labelled train count, -1 = every train row")
+  ap.add_argument("--onsets-owner-only", action="store_true", help="mark onsets on owner rows only, so an auto row next to an abstained edge is never an onset")
+  ap.add_argument("--val-by-route", action="store_true", help="validation = whole routes (hash of route), not route/segment")
+  ap.add_argument("--balance-owner-counts", action="store_true", help="class balance from hand-labelled counts only")
   ap.add_argument("--auto-weight", type=float, default=1.0, help="sampling weight on auto-labelled crops")
   ap.add_argument("--hardneg", default=None, help="json list of agent-0 crops checked by eye; added as 0 to TRAIN only")
   ap.add_argument("--exclude-queue", default=None, help="queue.json: its segments are never trained on (dense validation)")
@@ -200,10 +207,13 @@ def main():
   segs = queue_segments(args.exclude_queue) if args.exclude_queue else set()
   if args.hardneg_gap > 0:
     rows = drop_hardneg_near_cars(rows, args.crops, args.hardneg_gap)
-  mark_onsets(rows, args.onset_s)
+  mark_onsets([r for r in rows if not r.get("auto")] if args.onsets_owner_only else rows, args.onset_s)
   # queue segments stay out of training only; validation groups queued for dense labelling (tier A) remain validation
-  tr = [r for r in rows if not is_val(r["group"], args.val_frac) and not in_segments(r, segs)]
-  va = [r for r in rows if is_val(r["group"], args.val_frac) and not r.get("hardneg") and not r.get("auto")]
+  vk = (lambda r: r["route"]) if args.val_by_route else (lambda r: r["group"])
+  tr = [r for r in rows if not is_val(vk(r), args.val_frac) and not in_segments(r, segs)]
+  va = [r for r in rows if is_val(vk(r), args.val_frac) and not r.get("hardneg") and not r.get("auto")]
+  if not va:
+    sys.exit("no validation rows: with --val-by-route raise --val-frac")
   if args.limit:
     tr, va = random.sample(tr, min(args.limit, len(tr))), random.sample(va, min(args.limit, len(va)))
   summary = {
@@ -218,7 +228,7 @@ def main():
   if not tr or not va:
     raise SystemExit("not enough labelled train crops")
 
-  weights = sample_weights(tr, args.truck_weight, args.balance, args.onset_weight)
+  weights = sample_weights(tr, args.truck_weight, args.balance, args.onset_weight, args.balance_owner_counts)
   weights = [w * (args.auto_weight if r.get("auto") else 1.0) for w, r in zip(weights, tr)]
   # epoch length stays the hand-labelled count, so auto labels change what is drawn, not how long an epoch takes
   n = len(tr) if args.epoch_size < 0 else args.epoch_size or sum(not r.get("auto") for r in tr)

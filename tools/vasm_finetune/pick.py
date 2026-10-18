@@ -20,12 +20,14 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from benchmark import FOCUS_LEAD_DIST, default_model, infer, night_gate, simulate  # noqa: E402
+from benchmark import FOCUS_LEAD_DIST, default_model, event_scores, infer, night_gate, simulate  # noqa: E402
 
 ROAD_ROUTE = "00000329--2afda26f0e"
 
 
-def road_scorer(crops, route):
+def road_scorer(crops, route, scorer="road"):
+  """road (default): (no-car s published, car s covered) over every labelled crop. events: benchmark.py's daemon
+  event scoring on the same crops, (false-occupied s/h, missed events), so pick and test rank on one measure."""
   with open(os.path.join(crops, "labels.json")) as f:
     labels = json.load(f)
   with open(os.path.join(crops, "manifest.csv")) as f:
@@ -36,6 +38,18 @@ def road_scorer(crops, route):
   for i, r in enumerate(rows):
     by.setdefault(r["seg"], []).append(i)
   cache = {}
+  if scorer == "events":
+    lab = [labels.get(r["file"], {}).get("label") for r in rows]
+    keep = [i for i, x in enumerate(lab) if x in (0, 1, 2)]
+    erows = [dict(rows[i], y=lab[i]) for i in keep]
+
+    def events(model, on, off):
+      if model not in cache:
+        cache[model] = night_gate(rows, infer(model, crops, rows)[:, 1])
+      e = event_scores(erows, cache[model][keep], on, off)
+      return round(e["false_occupied_s_per_h"], 2), round(e["missed"], 2)
+
+    return events
 
   def road(model, on, off):
     if model not in cache:
@@ -70,21 +84,27 @@ def main():
   ap.add_argument("select", help="select_queue.py --out JSON")
   ap.add_argument("--road-crops", required=True)
   ap.add_argument("--road-route", default=ROAD_ROUTE)
+  ap.add_argument("--scorer", choices=("road", "events"), default="road", help="events = benchmark.py's event scores")
   ap.add_argument("--rule", choices=("highest", "order"), default="highest")
   ap.add_argument("--out", default=None)
   args = ap.parse_args()
 
-  road = road_scorer(args.road_crops, args.road_route)
+  road = road_scorer(args.road_crops, args.road_route, args.scorer)
   ref = road(default_model(), 0.80, 0.65)
-  print(f"road reference upstream@0.80: no-car published {ref[0]} s, car covered {ref[1]} s")
+  if args.scorer == "events":
+    print(f"road reference upstream@0.80: false-occupied {ref[0]} s/h, missed {ref[1]} events")
+    passes = lambda x: x[0] <= ref[0] and x[1] <= ref[1]  # noqa: E731
+  else:
+    print(f"road reference upstream@0.80: no-car published {ref[0]} s, car covered {ref[1]} s")
+    passes = lambda x: x[0] <= ref[0] and x[1] >= ref[1]  # noqa: E731
   with open(args.select) as f:
     ok = [r for r in json.load(f)["results"] if r["ok"]]
   print(len(ok), "queue-qualifying candidates")
   keep = []
   for r in ok:
-    f, c = road(r["model"], r["on"], r["off"])
-    if f <= ref[0] and c >= ref[1]:
-      keep.append({**r, "road": (f, c)})
+    x = road(r["model"], r["on"], r["off"])
+    if passes(x):
+      keep.append({**r, "road": x})
   print(len(keep), "also pass the road route")
   print("rule:", args.rule)
   hi = args.rule == "highest"
@@ -93,7 +113,7 @@ def main():
   pick = min(keep, key=key) if keep else None
   if args.out:
     with open(args.out, "w") as f:
-      json.dump({"road_reference": ref, "rule": args.rule, "kept": keep, "pick": pick}, f, indent=1)
+      json.dump({"road_reference": ref, "road_route": args.road_route, "scorer": args.scorer, "rule": args.rule, "kept": keep, "pick": pick}, f, indent=1)
   print(f"{pick['model']} {pick['on']} {pick['off']}" if pick else "NONE")
 
 

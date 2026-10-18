@@ -123,12 +123,14 @@ def event_scores(rows, p_car, on, off, phases=PHASES, focus=True):
   return e
 
 
-def _event_scores(rows, p_car, on, off, rng, focus=True):
+def _seg_stats(rows, p_car, on, off, rng, focus=True):
+  """Per-segment event tallies, in segment order; _aggregate turns any (re)weighting of them into the scores."""
   by_seg = {}
   for k, r in enumerate(rows):
     by_seg.setdefault((r["route"], r["seg"]), []).append(k)
-  missed, total, short, lat, false_s, side_s, used, skipped = 0, 0, 0, [], 0.0, 0.0, 0, 0
+  out = []
   for idx in by_seg.values():
+    missed, total, short, lat, false_s, side_s, used, skipped = 0, 0, 0, [], 0.0, 0.0, 0, 0
     times = sorted({float(rows[k]["t"]) for k in idx})
     pos = {t: n for n, t in enumerate(times)}
     t = np.array(times)
@@ -168,17 +170,50 @@ def _event_scores(rows, p_car, on, off, rng, focus=True):
           missed += 1
       near_car = np.array([np.any(car & (np.abs(t - ti) <= 1.0)) for ti in t])
       false_s += float(np.sum(pub[side] & (lab[side] >= 0) & ~car & ~near_car)) * dt
+    out.append({"missed": missed, "events": total, "short": short, "lat": lat, "false_s": false_s, "side_s": side_s,
+                "used": used, "skipped": skipped})
+  return out
+
+
+def _aggregate(segs, w=None):
+  w = np.ones(len(segs)) if w is None else w
+  tot = lambda k: sum(wi * s[k] for wi, s in zip(w, segs))  # noqa: E731
+  lat = [x for wi, s in zip(w, segs) for _ in range(int(wi)) for x in s["lat"]]
+  false_s, side_s = tot("false_s"), tot("side_s")
   return {
-    "events": total,
-    "missed": missed,
-    "short_events": short,
+    "events": int(tot("events")),
+    "missed": int(tot("missed")),
+    "short_events": int(tot("short")),
     "latency_p50": float(np.median(lat)) if lat else float("nan"),
     "latency_p90": float(np.percentile(lat, 90)) if lat else float("nan"),
     "false_occupied_s_per_h": false_s / side_s * 3600.0 if side_s else float("nan"),
     "side_hours": side_s / 3600.0,
-    "segment_sides_used": used,
-    "segment_sides_skipped": skipped,
+    "segment_sides_used": int(tot("used")),
+    "segment_sides_skipped": int(tot("skipped")),
   }
+
+
+def _event_scores(rows, p_car, on, off, rng, focus=True):
+  return _aggregate(_seg_stats(rows, p_car, on, off, rng, focus))
+
+
+BOOT_METRICS = ("missed", "false_occupied_s_per_h", "latency_p50")
+
+
+def bootstrap(rows, p_car, on, off, n, phases=PHASES, focus=True, seed=0):
+  """Segment-cluster bootstrap of the phase-averaged event scores. Draws depend only on the segment count and seed,
+  so two models scored on the same test set get the same draws and their differences pair."""
+  rng = np.random.default_rng(0)
+  per_phase = [_seg_stats(rows, p_car, on, off, rng, focus) for _ in range(max(phases, 1))]
+  draws = np.random.default_rng(seed).multinomial(len(per_phase[0]), np.full(len(per_phase[0]), 1 / len(per_phase[0])), size=n)
+  out = {k: [] for k in BOOT_METRICS}
+  for w in draws:
+    runs_ = [_aggregate(segs, w) for segs in per_phase]
+    out["missed"].append(float(np.mean([r["missed"] for r in runs_])))
+    out["false_occupied_s_per_h"].append(float(np.mean([r["false_occupied_s_per_h"] for r in runs_])))
+    out["latency_p50"].append(float(np.median([r["latency_p50"] for r in runs_])))
+  ci = {k: [float(np.nanpercentile(v, 2.5)), float(np.nanpercentile(v, 97.5))] for k, v in out.items()}
+  return {"n": n, "seed": seed, "segments": len(per_phase[0]), "ci95": ci, "draws": out}
 
 
 # starpilot/system/adj_spot_monitor_vision.py DARK_LUMA_ENTER / DARK_LUMA_EXIT (D-122); mean_luma is the same measure
@@ -263,6 +298,8 @@ def run(args):
     "sweep": {f"{on:.2f}": frame_scores(y_car, p_car, on) for on in SWEEP},
     "events": event_scores(rows, p_car, args.on, args.off, focus=args.focus),
   }
+  if args.bootstrap:
+    res["bootstrap"] = bootstrap(rows, p_car, args.on, args.off, args.bootstrap, focus=args.focus)
   report(res)
   if args.out:
     with open(args.out, "w") as f:
@@ -280,6 +317,9 @@ def report(res):
   e = res["events"]
   print(f"events (daemon sampling): {e['events']} car events (+{e['short_events']} under {MIN_EVENT_S} s, not scored), missed {e['missed']}")
   print(f"  latency p50 {e['latency_p50']:.2f} s, p90 {e['latency_p90']:.2f} s; false-occupied {e['false_occupied_s_per_h']:.0f} s/h")
+  if "bootstrap" in res:
+    ci = res["bootstrap"]["ci95"]
+    print(f"  95% CI over {res['bootstrap']['n']} segment resamples: " + ", ".join(f"{k} {lo:.2f}..{hi:.2f}" for k, (lo, hi) in ci.items()))
   print(f"  {e['side_hours']:.2f} side-hours, {e['segment_sides_used']} segment sides used, {e['segment_sides_skipped']} skipped < {LABELLED_MIN:.0%} labelled")
 
 
@@ -309,9 +349,30 @@ def compare(a_path, b_path):
     print(f"frame {k:16s} {fa[k]:22.3f} {fb[k]:22.3f}")
   for name, va, vb, ok in checks:
     print(f"{name:22s} {va:22.2f} {vb:22.2f}  {'ok' if ok else 'WORSE'}")
+  ba, bb = a.get("bootstrap"), b.get("bootstrap")
+  if ba and bb and (ba["n"], ba["seed"], ba["segments"]) == (bb["n"], bb["seed"], bb["segments"]):
+    # paired: the same segment resamples for both models (same test set, n, seed); informational, not part of the gate
+    for k in BOOT_METRICS:
+      d = np.array(bb["draws"][k]) - np.array(ba["draws"][k])
+      print(f"  paired diff {k:22s} {np.nanmean(d):+8.2f}  95% CI {np.nanpercentile(d, 2.5):+.2f}..{np.nanpercentile(d, 97.5):+.2f}")
   verdict = all(ok for *_, ok in checks)
   print("GATE:", "candidate no worse" if verdict else "candidate FAILS the gate")
   return verdict
+
+
+def spread(paths):
+  """Seed spread: per-seed event scores on one test set. A recipe change is only evidence when its effect exceeds twice
+  the spread (max - min) of the seeds it was trained over. Score the seeds only after the pick is fixed: this reports
+  how far apart they land, it never chooses between them."""
+  res = [json.load(open(p)) for p in paths]
+  if len({(r["manifest_sha256"], r["labels_sha256"]) for r in res}) != 1:
+    sys.exit("different test sets (manifest or labels changed): re-run all on one")
+  out = {}
+  for k in BOOT_METRICS:
+    v = [r["events"][k] for r in res]
+    out[k] = {"values": v, "spread": float(max(v) - min(v)), "needs_effect_over": float(2 * (max(v) - min(v)))}
+    print(f"{k:24s} " + " ".join(f"{x:8.2f}" for x in v) + f"   spread {out[k]['spread']:.2f}  -> effect must exceed {out[k]['needs_effect_over']:.2f}")
+  return out
 
 
 def default_model():
@@ -329,10 +390,15 @@ def main():
   ap.add_argument("--out")
   ap.add_argument("--no-night-gate", dest="night_gate", action="store_false", help="score without the daemon's D-122 gate")
   ap.add_argument("--no-focus", dest="focus", action="store_false", help="simulate the daemon with VASMRadarAssist off")
+  ap.add_argument("--bootstrap", type=int, default=0, help="segment resamples for 95%% CIs (0 = off)")
+  ap.add_argument("--spread", nargs="+", metavar="RESULT", help="per-seed results (same test set): print seed spread")
   ap.add_argument("--compare", nargs=2, metavar=("BASE", "CANDIDATE"))
   args = ap.parse_args()
   if args.compare:
     sys.exit(0 if compare(*args.compare) else 1)
+  if args.spread:
+    spread(args.spread)
+    return
   args.model = args.model or default_model()
   run(args)
 

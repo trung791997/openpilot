@@ -45,6 +45,22 @@ def owner_y(rows, labels):
   return np.array(y)
 
 
+def score(y, dec, emitted, min_lower):
+  """Per-class precision of the decisions `dec` against owner labels `y` (-1 = none); passes when every emitted class
+  has a Wilson lower bound of at least min_lower."""
+  m = y >= 0
+  classes = {}
+  for c in (0, 1, 2):
+    sel = m & (dec == c)
+    n, k = int(sel.sum()), int((y[sel] == c).sum())
+    classes[c] = {"auto": n, "correct": k, "precision": round(k / n, 4) if n else None,
+                  "wilson_lo": round(wilson_lo(k, n), 4),
+                  "wrong_as": {int(w): int(((y == w) & sel).sum()) for w in (0, 1, 2) if w != c},
+                  "recall": round(k / max(int((m & (y == c)).sum()), 1), 4),
+                  "passed": n > 0 and wilson_lo(k, n) >= min_lower}
+  return classes, bool(emitted) and all(classes[c]["passed"] for c in emitted)
+
+
 def decisions(rep, crops, rows, cache):
   a = rep["args"]
   seqs = A.sides(rows)
@@ -97,16 +113,8 @@ def main():
   res = {"labels": os.path.abspath(args.labels), "labels_sha256": digest, "route": args.route, "crops": args.crops,
          "min_lower": args.min_lower, "owner_crops": int(m.sum()),
          "owner_classes": dict(collections.Counter(int(c) for c in y[m])), "emitted_classes": emitted, "classes": {}}
-  for c in (0, 1, 2):
-    sel = m & (dec == c)
-    n, k = int(sel.sum()), int((y[sel] == c).sum())
-    res["classes"][c] = {"auto": n, "correct": k, "precision": round(k / n, 4) if n else None,
-                         "wilson_lo": round(wilson_lo(k, n), 4),
-                         "wrong_as": {int(w): int(((y == w) & sel).sum()) for w in (0, 1, 2) if w != c},
-                         "recall": round(k / max(int((m & (y == c)).sum()), 1), 4),
-                         "passed": n > 0 and wilson_lo(k, n) >= args.min_lower}
+  res["classes"], res["passed"] = score(y, dec, emitted, args.min_lower)
   res["errors"] = [{"file": rows[i]["file"], "owner": int(y[i]), "auto": int(dec[i])} for i in np.where(m & (dec >= 0) & (dec != y))[0]]
-  res["passed"] = bool(emitted) and all(res["classes"][c]["passed"] for c in emitted)
   out = args.labels + ".check.json"
   with open(out, "w") as f:
     json.dump(res, f, indent=1)

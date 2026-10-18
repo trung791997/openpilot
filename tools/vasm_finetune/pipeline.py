@@ -191,11 +191,19 @@ class Pipeline:
       self.sh("select", self.py("select_queue.py", "--crops", self.crops, "--with-val", "--models", *self.soups(), "--out", out))
     self.done("select")
 
+  def pick_args(self):
+    # optional recipe keys; recipes without them run exactly as before (route 329, the road scorer)
+    p = self.recipe.get("pick", {})
+    return [*(("--road-route", p["road-route"]) if "road-route" in p else ()), *(("--scorer", p["scorer"]) if "scorer" in p else ())]
+
+  def boot_args(self):
+    return ("--bootstrap", str(self.recipe["bootstrap"])) if self.recipe.get("bootstrap") else ()
+
   def pick(self):
     out = os.path.join(self.run, "pick.json")
     if not os.path.exists(out):
       self.sh("pick", self.py("pick.py", os.path.join(self.run, "select.json"), "--road-crops", os.path.join(self.work, self.a.road_crops),
-                              "--rule", self.recipe["rule"], "--out", out))
+                              "--rule", self.recipe["rule"], *self.pick_args(), "--out", out))
     if self.a.dry_run:
       return True
     p = json.load(open(out))["pick"]
@@ -206,12 +214,13 @@ class Pipeline:
 
   def baseline_path(self):
     d = self.state.get("data", {})
-    return os.path.join(self.ft, f"base_{(d.get('manifest') or 'x')[:8]}_{(d.get('labels') or 'x')[:8]}.json")
+    b = f"_b{self.recipe['bootstrap']}" if self.recipe.get("bootstrap") else ""  # a cached baseline without draws cannot pair
+    return os.path.join(self.ft, f"base_{(d.get('manifest') or 'x')[:8]}_{(d.get('labels') or 'x')[:8]}{b}.json")
 
   def baseline(self):
     out = self.baseline_path()
     if not os.path.exists(out):
-      self.sh("baseline", self.py("benchmark.py", "--crops", self.crops, "--out", out))
+      self.sh("baseline", self.py("benchmark.py", "--crops", self.crops, *self.boot_args(), "--out", out))
     self.done("baseline", path=out)
 
   def test(self):
@@ -220,7 +229,7 @@ class Pipeline:
       print("test already judged once:", out)
     else:
       p = self.state["stages"]["pick"]["pick"] if not self.a.dry_run else {"model": "<pick>", "on": "<on>", "off": "<off>"}
-      self.sh("test", self.py("benchmark.py", "--crops", self.crops, "--model", p["model"], "--on", p["on"], "--off", p["off"], "--out", out))
+      self.sh("test", self.py("benchmark.py", "--crops", self.crops, "--model", p["model"], "--on", p["on"], "--off", p["off"], *self.boot_args(), "--out", out))
     self.done("test")
 
   def gate(self):
