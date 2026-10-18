@@ -82,6 +82,40 @@ def test_apply_min_speed_abstains_only_stopped_crops():
   assert A.apply(S, None, {"1": 0.5}, False, {1}, r, A.sides(r), 0.0).tolist() == [1] * 4  # default off
 
 
+def test_glimpse_abstain_clears_zeros_near_a_car_lean_on_that_side_only():
+  r = rows(12) + rows(12, "right")
+  dec = np.zeros(24, int)
+  dec[11] = 1
+  lean = np.zeros(24, np.float32)
+  lean[5] = 0.4  # left side, t = 1.25 s
+  out = A.glimpse_abstain(dec, lean, r, A.sides(r), 0.3, 1.0)
+  assert out[:12].tolist() == [0] + [-1] * 9 + [0, 1]  # t 0.25..2.25 within 1.0 s; the 1 is untouched
+  assert (out[12:] == 0).all()  # other side unaffected
+  assert (A.glimpse_abstain(dec, lean, r, A.sides(r), 0.5, 1.0) == dec).all()  # lean below p
+
+
+def test_calibrate_glimpse_takes_largest_p_that_reaches_recall():
+  r = rows(8)
+  dec = np.zeros(8, int)
+  lean = np.array([0, 0.35, 0, 0, 0, 0, 0.15, 0], np.float32)
+  car = np.array([0, 1, 0, 0, 0, 0, 1, 0], bool)
+  val = np.ones(8, bool)
+  assert A.calibrate_glimpse(dec, lean, r, A.sides(r), car, val, 0.25) == 0.1
+  car[6] = False
+  assert A.calibrate_glimpse(dec, lean, r, A.sides(r), car, val, 0.25) == 0.3
+  assert A.calibrate_glimpse(dec, lean, r, A.sides(r), car & False, val, 0.25) == 0.5
+
+
+def test_apply_glimpse_off_by_default_and_before_min_speed():
+  r = rows(4)
+  for x in r:
+    x["v_ego"] = "5.0"
+  S = onehot([0, 0, 0, 0])
+  lean = np.array([0.9, 0, 0, 0], np.float32)
+  assert A.apply(S, None, {"0": 0.5}, False, {0}, r, A.sides(r), 0.0).tolist() == [0] * 4
+  assert A.apply(S, None, {"0": 0.5}, False, {0}, r, A.sides(r), 0.0, 0.0, lean, 0.5, 0.5).tolist() == [-1, -1, -1, 0]
+
+
 def test_wilson_lower_bound():
   assert C.wilson_lo(0, 0) == 0.0
   assert C.wilson_lo(190, 190) >= 0.98 > C.wilson_lo(180, 180)  # 0.98 needs ~190 clean labels

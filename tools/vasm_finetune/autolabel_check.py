@@ -51,8 +51,10 @@ def decisions(rep, crops, rows, cache):
   S = A.smooth(A.scores(rep["models"], crops, rows, cache), rows, seqs, a["smooth"])
   Ss = [A.smooth(A.scores([m], crops, rows, cache), rows, seqs, a["smooth"]) for m in rep["models"]] if a.get("agree") else None
   keep = {int(c) for c in a.get("classes", "0,1,2").split(",") if c != ""}
+  gp = rep.get("glimpse_p", 0.0) or 0.0
+  lean = A.car_lean(rep["models"], crops, rows, cache) if gp > 0 else None
   return A.apply(S, Ss, rep["thresholds"], a.get("agree", False), keep, rows, seqs, a["edge_gap"],
-                 a.get("min_speed", 0.0))
+                 a.get("min_speed", 0.0), lean, gp, a.get("glimpse_gap", 1.0))
 
 
 def main():
