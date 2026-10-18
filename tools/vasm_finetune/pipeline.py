@@ -188,7 +188,8 @@ class Pipeline:
   def select(self):
     out = os.path.join(self.run, "select.json")
     if not os.path.exists(out):
-      self.sh("select", self.py("select_queue.py", "--crops", self.crops, "--with-val", "--models", *self.soups(), "--out", out))
+      self.sh("select", self.py("select_queue.py", "--crops", self.crops, "--with-val", "--models", *self.soups(),
+                                *(("--val-routes", self.recipe["train"]["val-routes"]) if self.recipe["train"].get("val-routes") else ()), "--out", out))
     self.done("select")
 
   def pick_args(self):
@@ -197,7 +198,8 @@ class Pipeline:
     return [*(("--road-route", p["road-route"]) if "road-route" in p else ()), *(("--scorer", p["scorer"]) if "scorer" in p else ())]
 
   def boot_args(self):
-    return ("--bootstrap", str(self.recipe["bootstrap"])) if self.recipe.get("bootstrap") else ()
+    return (*(("--bootstrap", str(self.recipe["bootstrap"])) if self.recipe.get("bootstrap") else ()),
+            *(("--x-excluded",) if self.recipe.get("x-excluded") else ()))
 
   def pick(self):
     out = os.path.join(self.run, "pick.json")
@@ -215,6 +217,7 @@ class Pipeline:
   def baseline_path(self):
     d = self.state.get("data", {})
     b = f"_b{self.recipe['bootstrap']}" if self.recipe.get("bootstrap") else ""  # a cached baseline without draws cannot pair
+    b += "_x" if self.recipe.get("x-excluded") else ""
     return os.path.join(self.ft, f"base_{(d.get('manifest') or 'x')[:8]}_{(d.get('labels') or 'x')[:8]}{b}.json")
 
   def baseline(self):

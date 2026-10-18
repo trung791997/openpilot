@@ -152,7 +152,7 @@ def _seg_stats(rows, p_car, on, off, rng, focus=True):
     pub = simulate(t, p, on, off, **phase, focus=foc if focus else None)
     dt = np.median(np.diff(t)) if len(t) > 1 else 0.25
     for side in p:
-      if np.mean(lab[side] >= 0) < LABELLED_MIN:
+      if np.mean(lab[side] != -1) < LABELLED_MIN:  # -2 (x, --x-excluded) counts as labelled, never as car or no-car
         skipped += 1
         continue
       used += 1
@@ -260,6 +260,9 @@ def run(args):
     lab = labels.get(r["file"], {}).get("label")
     if lab in (0, 1, 2):
       rows.append(dict(r, y=lab))
+    elif lab == "x" and args.x_excluded:
+      # x crops stay in the daemon simulation (real frames with real model output) but are never scored
+      rows.append(dict(r, y=-2))
   print(f"test crops {len(allrows)}, labelled {len(rows)} (+{sum(labels.get(r['file'], {}).get('label') == 'x' for r in allrows)} unsure)")
   if not rows:
     sys.exit("no labelled test crops yet")
@@ -275,6 +278,7 @@ def run(args):
   y_car, p_car = y == 1, probs[:, 1]
   if args.night_gate:
     p_car = night_gate(rows, p_car)
+  sc = y >= 0  # scored crops (all of them unless --x-excluded)
   luma = np.array([float(r["mean_luma"]) for r in rows])
   subsets = {
     "all": np.ones(len(rows), bool),
@@ -289,13 +293,14 @@ def run(args):
     "model_sha256": sha(args.model),
     "manifest_sha256": sha(manifest),
     "labels_sha256": sha(labels_path),
-    "labelled": len(rows),
+    "labelled": int(sc.sum()),
     "on": args.on,
     "off": args.off,
     "night_gate": args.night_gate,
-    "frame": {name: frame_scores(y_car[m], p_car[m], args.on) for name, m in subsets.items() if m.any()},
+    "x_excluded": bool(args.x_excluded),
+    "frame": {name: frame_scores(y_car[m & sc], p_car[m & sc], args.on) for name, m in subsets.items() if (m & sc).any()},
     "confusion": [[int(np.sum((y == a) & (probs.argmax(1) == b))) for b in range(3)] for a in range(3)],
-    "sweep": {f"{on:.2f}": frame_scores(y_car, p_car, on) for on in SWEEP},
+    "sweep": {f"{on:.2f}": frame_scores(y_car[sc], p_car[sc], on) for on in SWEEP},
     "events": event_scores(rows, p_car, args.on, args.off, focus=args.focus),
   }
   if args.bootstrap:
@@ -332,6 +337,8 @@ def compare(a_path, b_path):
     sys.exit("different test sets (manifest or labels changed): re-run both")
   if a.get("night_gate", False) != b.get("night_gate", False):
     sys.exit("one run has the D-122 night gate and the other does not: re-run both the same way")
+  if a.get("x_excluded", False) != b.get("x_excluded", False):
+    sys.exit("one run scores x crops as excluded and the other drops them: re-run both the same way")
   if a["events"].get("phases", 0) != b["events"].get("phases", 0):
     sys.exit("the runs scored latency over different sampling phases: re-run both the same way")
   if a["events"].get("focus", False) != b["events"].get("focus", False):
@@ -390,6 +397,7 @@ def main():
   ap.add_argument("--out")
   ap.add_argument("--no-night-gate", dest="night_gate", action="store_false", help="score without the daemon's D-122 gate")
   ap.add_argument("--no-focus", dest="focus", action="store_false", help="simulate the daemon with VASMRadarAssist off")
+  ap.add_argument("--x-excluded", action="store_true", help="keep x crops in the simulation, unscored, and count them as labelled")
   ap.add_argument("--bootstrap", type=int, default=0, help="segment resamples for 95%% CIs (0 = off)")
   ap.add_argument("--spread", nargs="+", metavar="RESULT", help="per-seed results (same test set): print seed spread")
   ap.add_argument("--compare", nargs=2, metavar=("BASE", "CANDIDATE"))

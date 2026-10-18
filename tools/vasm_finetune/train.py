@@ -184,7 +184,8 @@ def main():
   ap.add_argument("--auto-labels", default=None, help="autolabel.py output: added to TRAIN only, never over an existing label")
   ap.add_argument("--epoch-size", type=int, default=0, help="draws per epoch: 0 = hand-labelled train count, -1 = every train row")
   ap.add_argument("--onsets-owner-only", action="store_true", help="mark onsets on owner rows only, so an auto row next to an abstained edge is never an onset")
-  ap.add_argument("--val-by-route", action="store_true", help="validation = whole routes (hash of route), not route/segment")
+  ap.add_argument("--val-routes", default="", help="comma list of route-name prefixes held out whole as validation "
+                  "(replaces the route/segment hash split; no segment of these routes trains)")
   ap.add_argument("--balance-owner-counts", action="store_true", help="class balance from hand-labelled counts only")
   ap.add_argument("--auto-weight", type=float, default=1.0, help="sampling weight on auto-labelled crops")
   ap.add_argument("--hardneg", default=None, help="json list of agent-0 crops checked by eye; added as 0 to TRAIN only")
@@ -209,11 +210,12 @@ def main():
     rows = drop_hardneg_near_cars(rows, args.crops, args.hardneg_gap)
   mark_onsets([r for r in rows if not r.get("auto")] if args.onsets_owner_only else rows, args.onset_s)
   # queue segments stay out of training only; validation groups queued for dense labelling (tier A) remain validation
-  vk = (lambda r: r["route"]) if args.val_by_route else (lambda r: r["group"])
-  tr = [r for r in rows if not is_val(vk(r), args.val_frac) and not in_segments(r, segs)]
-  va = [r for r in rows if is_val(vk(r), args.val_frac) and not r.get("hardneg") and not r.get("auto")]
+  vr = tuple(x for x in args.val_routes.split(",") if x)
+  isv = (lambda r: r["route"].startswith(vr)) if vr else (lambda r: is_val(r["group"], args.val_frac))  # noqa: E731
+  tr = [r for r in rows if not isv(r) and not in_segments(r, segs)]
+  va = [r for r in rows if isv(r) and not r.get("hardneg") and not r.get("auto")]
   if not va:
-    sys.exit("no validation rows: with --val-by-route raise --val-frac")
+    sys.exit(f"no validation rows (--val-routes {args.val_routes!r})")
   if args.limit:
     tr, va = random.sample(tr, min(args.limit, len(tr))), random.sample(va, min(args.limit, len(va)))
   summary = {

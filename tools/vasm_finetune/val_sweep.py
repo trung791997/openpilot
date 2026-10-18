@@ -24,7 +24,8 @@ from train import is_val  # noqa: E402
 GAP = 0.15
 
 
-def val_rows(crops, frac):
+def val_rows(crops, frac, routes=()):
+  # routes: train.py --val-routes prefixes; when given they replace the route/segment hash split
   with open(os.path.join(crops, "manifest.csv")) as f:
     manifest = [r for r in csv.DictReader(f) if r["split"] == "train"]
   with open(os.path.join(crops, "labels.json")) as f:
@@ -32,7 +33,7 @@ def val_rows(crops, frac):
   rows = []
   for r in manifest:
     e = labels.get(r["file"], {})
-    if "by" not in e and e.get("label") in (0, 1, 2) and is_val(f"{r['route']}/{r['seg']}", frac):
+    if "by" not in e and e.get("label") in (0, 1, 2) and (r["route"].startswith(tuple(routes)) if routes else is_val(f"{r['route']}/{r['seg']}", frac)):
       rows.append({**r, "y": e["label"]})
   return rows
 

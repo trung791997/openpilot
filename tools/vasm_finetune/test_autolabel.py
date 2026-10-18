@@ -239,3 +239,16 @@ def test_train_balance_owner_counts():
   assert w[0] == pytest.approx(1 / 16) and w[4] == 1.0  # default: auto 0s dilute the hand-labelled class-0 weight
   w = T.sample_weights(rows_, 1.0, 1.0, owner_counts=True)
   assert w[0] == pytest.approx(1 / 4) and w[-1] == pytest.approx(1 / 4) and w[4] == 1.0
+
+
+def test_benchmark_x_counts_as_labelled_but_never_scored():
+  import benchmark as B
+  base = [{"route": "r", "seg": "0", "image_side": "left", "t": f"{0.25 * i:.3f}", "blinker": "0", "radar_status": "0",
+           "radar_drel": "0"} for i in range(40)]
+  p = np.full(40, 0.95)  # the model calls car everywhere
+  ys = [0] * 20 + [-1] * 20  # half unlabelled: the side is skipped
+  assert B._event_scores([dict(r, y=y) for r, y in zip(base, ys)], p, 0.8, 0.65, None)["segment_sides_used"] == 0
+  e = B._event_scores([dict(r, y=y) for r, y in zip(base, [0] * 20 + [-2] * 20)], p, 0.8, 0.65, None)
+  assert e["segment_sides_used"] == 1 and e["events"] == 0
+  e0 = B._event_scores([dict(r, y=0) for r in base[:20]], p[:20], 0.8, 0.65, None)
+  assert e["false_occupied_s_per_h"] > 0 and e0["false_occupied_s_per_h"] > 0  # x time adds side time, not false time

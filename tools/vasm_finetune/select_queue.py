@@ -50,6 +50,7 @@ def main():
   ap.add_argument("--models", nargs="+", required=True)
   ap.add_argument("--with-val", action="store_true", help="also score train.py's held-out validation groups")
   ap.add_argument("--val-frac", type=float, default=0.1)
+  ap.add_argument("--val-routes", default="", help="as train.py --val-routes")
   ap.add_argument("--out", default=None)
   args = ap.parse_args()
 
@@ -57,7 +58,7 @@ def main():
   print(len(rows), "queue crops,", sum(r["y"] == 1 for r in rows), "car", flush=True)
   if args.with_val:
     seen = {r["file"] for r in rows}
-    extra = [r for r in val_rows(args.crops, args.val_frac) if r["file"] not in seen]
+    extra = [r for r in val_rows(args.crops, args.val_frac, [x for x in args.val_routes.split(",") if x]) if r["file"] not in seen]
     print(len(extra), "validation-group crops,", sum(r["y"] == 1 for r in extra), "car", flush=True)
     rows += extra
   ref = event_scores(rows, night_gate(rows, infer(default_model(), args.crops, rows)[:, 1]), 0.8, 0.65)
