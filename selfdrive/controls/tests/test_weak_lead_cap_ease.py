@@ -83,21 +83,9 @@ def test_slew_is_gated_and_positive_only():
   assert "release_limit = max(prev_output_a_target, 0.0) + weak_lead_cap_step" in src
 
 
-def test_toggle_is_wired_and_off_by_default():
-  found = []
-
-  def walk(node):
-    if isinstance(node, dict):
-      if node.get("key") == "WeakLeadCapEase":
-        found.append(node)
-      for v in node.values():
-        walk(v)
-    elif isinstance(node, list):
-      for v in node:
-        walk(v)
-  walk(json.loads((ROOT / "starpilot/common/assets/device_settings_layout.json").read_text()))
-  assert len(found) == 1
-  assert found[0]["parent_key"] == "AdvancedLongitudinalTune" and found[0]["ui_type"] == "toggle"
-  assert 'SettingRow("WeakLeadCapEase", "toggle"' in (ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text()
-  assert '{"WeakLeadCapEase", {PERSISTENT, BOOL, "0", "0", 3}}' in (ROOT / "common/params_keys.h").read_text()
-  assert 'toggle.weak_lead_cap_ease = False' in (ROOT / "starpilot/common/starpilot_variables.py").read_text()
+def test_built_in_without_a_toggle():
+  # 2026-10-19: no Galaxy toggle; on for vision and radar ACC.
+  assert '"WeakLeadCapEase"' not in (ROOT / "starpilot/common/assets/device_settings_layout.json").read_text()
+  assert 'SettingRow("WeakLeadCapEase"' not in (ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text()
+  variables = (ROOT / "starpilot/common/starpilot_variables.py").read_text()
+  assert 'toggle.weak_lead_cap_ease = True' in variables and 'toggle.resume_brake_ramp = True' in variables

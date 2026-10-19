@@ -307,6 +307,7 @@ EXP_EARLY_ONSET_MIN_NEED = 0.5     # m/s^2
 EXP_EARLY_ONSET_MAX = 1.5          # m/s^2
 EXP_EARLY_ONSET_E2E = -0.2         # m/s^2, the model must already be slowing
 EXP_EARLY_ONSET_JERK = 0.8         # m/s^3
+# Bosch-A radar only (self.bosch_a_radar): it compares the camera with a radar lead; vision-only ACC skips it.
 EXP_CAM_LEAD_BRAKE = True
 EXP_CAM_LEAD_BRAKE_PROB = 0.9
 EXP_CAM_LEAD_BRAKE_A = -0.5        # m/s^2
@@ -323,6 +324,7 @@ EXP_EARLY_RELEASE_JERK = 1.0       # m/s^3
 # backing toward us at -2.15 m/s; the close-lead cap went -0.76 -> -1.50 for one frame. The cap now reads vLead no lower
 # than -0.5 (a stopped lead's normal noise reaches -0.3). The lead itself is still published (D-041). Replay: min target
 # -1.62 -> -1.06, biggest 0.25 s drop 0.93 -> 0.28, closest gap 4.3 -> 3.2 m (r 0.907).
+# Bosch-A radar only (a radar range glitch); the close-lead cap's rate limits (D-073/D-123/D-124) run for vision too.
 CLOSE_LEAD_CAP_VLEAD_FLOOR = True
 CLOSE_LEAD_CAP_VLEAD_MIN = -0.5  # m/s
 
@@ -437,8 +439,9 @@ COAST_CEILING_SLEW = True
 COAST_CEILING_JERK = 2.5  # m/s^3
 # Smooth Brake Onset (D-078/D-081/D-083/D-084, BrakeOnsetLimit) was removed on 2026-10-05 at the owner's request in
 # favour of StockBrakeFeel below (D-086, STATUS 220); its replay evidence stays in STATUS 208-219.
-# Stock brake feel (D-086, proposed; closed-loop sim replay only, not driven), the StockBrakeFeel toggle, off by
-# default. Owner: "copy exactly how stock does it ... we are overemphasizing the safety issues and sacrificing the smooth
+# Stock brake feel (D-086, proposed; closed-loop sim replay only, not driven). Since 2026-10-19 it has no toggle: it
+# is on exactly when Bosch-A radar long is on (starpilot_variables stock_brake_feel).
+# Owner: "copy exactly how stock does it ... we are overemphasizing the safety issues and sacrificing the smooth
 # feel". It replaced Smooth Brake Onset's shaping (D-078/D-083/D-084, removed) with stock Honda ACC's own law, fitted from
 # ACC_CONTROL ACCEL_COMMAND on 12 stock-ACC routes (51k closing-lead frames at 10 Hz, stock_acc_reference.py corpus;
 # STATUS 220). Stock's depth follows time to contact and barely follows the kinematic need; its p25 command (the depth
@@ -1198,6 +1201,7 @@ VEHICLE_FAR_FOLLOW_SLEW_MAX_LATERAL_OFFSET = 1.5
 # through 0000028b). It trusts dRel/vLead at range, where closing speed can read low: the Bosch-A rail interval
 # and range-derived closing speed are what keep that reading honest. Replay of route 00000268 (STATUS 110),
 # forced on vs off: all 9 brake episodes identical; every far approach had a braking lead or a TTC under 8 s.
+# Bosch-A radar only since 2026-10-19 (self.bosch_a_radar): a camera-only lead's far range is not that honest.
 FAR_LEAD_COAST_MIN_DISTANCE = 45.0
 FAR_LEAD_COAST_MIN_TTC = 8.0
 FAR_LEAD_COAST_MIN_GAP_MARGIN = 6.0
@@ -1248,7 +1252,8 @@ LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_GAP = 4.0
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_LEAD_SPEED = 1.2
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_LEAD_DELTA = 0.8
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_LEAD_ACCEL = 0.5
-# Weak-lead cap ease (WeakLeadCapEase toggle, default off). Closed-loop and open-loop replay evidence only, not driven:
+# Weak-lead cap ease (built in for vision and radar ACC since 2026-10-19; was the WeakLeadCapEase toggle).
+# Closed-loop and open-loop replay evidence only, not driven:
 # 8 stop-and-go events of route 332, every planner fed the same radar re-parsed from CAN by this tree's parser.
 # The cap above engages and releases within one frame (0.05 s), and the most common trigger is a radar track just
 # born under the vision lead: its aLeadK starts near 0 while the model's lead is pulling away (+1.7 m/s^2), so the
@@ -1538,8 +1543,15 @@ class _BoundedSubMaster:
     return getattr(self._sm, name)
 
 
+def bosch_a_radar_on(CP):
+  """Bosch-A radar long (BoschARadar on). With it off the car runs vision-only ACC and every radar-only planner
+  rule below stands down; the shared and vision rules keep running."""
+  return getattr(CP, "brand", "") == "honda" and CP.carFingerprint in HONDA_BOSCH_A and \
+    not bool(getattr(CP, "radarUnavailable", False))
+
+
 def uses_off_axis_lead_bound(CP):
-  return getattr(CP, "brand", "") == "honda" and CP.carFingerprint in HONDA_BOSCH_A
+  return bosch_a_radar_on(CP)
 
 
 class OffAxisLeadHold:
@@ -1670,6 +1682,7 @@ class LongitudinalPlanner:
       self.onpath_planner = LongitudinalPlanner(CP, init_v, init_a, dt, onpath_shadow=True)
     self.onpath_bound_active = False
     self.bound_off_axis_radar_leads = uses_off_axis_lead_bound(CP)
+    self.bosch_a_radar = bosch_a_radar_on(CP)
     self.off_axis_lead_hold = OffAxisLeadHold()
     self.reassociation_hold = ReassociationHold()
     self.newborn_lead_hold = NewbornLeadHold()
@@ -1917,7 +1930,7 @@ class LongitudinalPlanner:
           need = max(need, self.get_lead_geometry_required_accel(ld, v_ego))
       if need >= EXP_EARLY_ONSET_MIN_NEED:
         floor = -min(need, EXP_EARLY_ONSET_MAX)
-    if not (EXP_CAM_LEAD_BRAKE and v_ego > 1.0 and float(lead.dRel) <= EXP_CAM_LEAD_BRAKE_GAP_S * v_ego):
+    if not (EXP_CAM_LEAD_BRAKE and self.bosch_a_radar and v_ego > 1.0 and float(lead.dRel) <= EXP_CAM_LEAD_BRAKE_GAP_S * v_ego):
       self.exp_cam_a_hist.clear()
     else:
       leads = getattr(model_msg, "leadsV3", None) if model_msg is not None else None
@@ -1959,7 +1972,8 @@ class LongitudinalPlanner:
     reaction_t = max(self.longitudinal_actuator_delay, self.dt)
     # D-125 (CLOSE_LEAD_CAP_VLEAD_FLOOR): a lead reading as backing toward us faster than CLOSE_LEAD_CAP_VLEAD_MIN is a
     # range glitch, not a car reversing; the cap reads CLOSE_LEAD_CAP_VLEAD_MIN.
-    v_lead_cap = max(float(lead.vLead), CLOSE_LEAD_CAP_VLEAD_MIN) if CLOSE_LEAD_CAP_VLEAD_FLOOR else float(lead.vLead)
+    v_lead_cap = max(float(lead.vLead), CLOSE_LEAD_CAP_VLEAD_MIN) if (CLOSE_LEAD_CAP_VLEAD_FLOOR and self.bosch_a_radar) \
+      else float(lead.vLead)
     closing_speed = max(0.0, v_ego - v_lead_cap)
     projected_closing_speed = closing_speed + lead_brake * reaction_t
     if projected_closing_speed < 0.1 and lead_brake < 0.5:
@@ -4484,7 +4498,7 @@ class LongitudinalPlanner:
     # Dom gates this on its inside-gap closing cap, which this planner does not have; a nearer
     # second lead or an active model brake floor holds it off instead.
     far_lead_coast_other = self.lead_two if comfort_lead is self.lead_one else self.lead_one
-    far_lead_coast_allowed = (
+    far_lead_coast_allowed = self.bosch_a_radar and (
       not experimental_mode and
       comfort_lead is not None and
       desired_gap is not None and

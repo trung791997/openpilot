@@ -11187,3 +11187,25 @@ Tests:
 - `test_exp_close_lead_cap_deepens_past_chill_floor_at_bounded_rate`: the cap may now step past 0.25 only while it follows
   a target that is already deeper (D-124). The cold first solve converges deeper.
 - The controls suite gives 2200 passed, 2 failed; both failures are the pre-existing latcontrol ones.
+
+## 250. Radar-only long fixes now follow the Bosch A Radar toggle; three Galaxy toggles removed (2026-10-19). Static and unit evidence only, not driven.
+
+Owner, before a vision-only (BoschARadar off) drive: "separate all of the radar-only long fixes ... when I turn on
+Bosch a radar, it should already be on", and remove the Resume Brake Ramp, Ease Weak-Lead Accel Cap and Stock Brake
+Feel toggles from Galaxy. Where each piece now sits:
+
+- **Bosch-A radar only** (`bosch_a_radar_on(CP)` / `self.bosch_a_radar` in `longitudinal_planner.py`: Honda, Bosch-A
+  fingerprint, `not CP.radarUnavailable`): Stock Brake Feel (D-086, with STOP_EASE and the D-080 newborn bound;
+  `toggle.stock_brake_feel` is now the Bosch-A radar condition itself), EXP_CAM_LEAD_BRAKE (D-125),
+  CLOSE_LEAD_CAP_VLEAD_FLOOR (D-125), the far-lead coast cap (STATUS 110), and the off-axis / onpath bound
+  (`uses_off_axis_lead_bound`, so the onpath shadow planner is not built on a vision drive). Everything in radard
+  that reads `lead.radar` or track state was already inert with no radar points.
+- **Both planners, built in**: Resume Brake Ramp (longcontrol; the owner drove it on) and Weak-Lead Cap Ease (its
+  newborn-lead part only ever acts on radar leads). The owner asked to keep the close-lead cap rate limits
+  (D-073/D-123/D-124) for vision; they and EXP_EARLY_ONSET, the brake-release/coast slews, EXP_MODE_EXIT_BLEND,
+  MPC_QP_CAP_RESOLVE and the actuator behaviour (D-093/095/097) are unchanged for both.
+- The `ResumeBrakeRamp`, `StockBrakeFeel` and `WeakLeadCapEase` param keys stay in `params_keys.h` (no params
+  library rebuild) but nothing reads them. The device UI rows went with the Galaxy entries.
+
+Behaviour change on a radar drive: Stock Brake Feel is now on whenever Bosch A Radar is on (the owner's device had
+it at 0). On a vision drive the far-lead coast cap, EXP_CAM_LEAD_BRAKE and the vLead floor no longer run.

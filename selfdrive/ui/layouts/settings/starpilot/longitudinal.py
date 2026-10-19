@@ -543,16 +543,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  visible=adv,
                  enabled=lambda: not self._params.get_bool("EVTuning"),
                  disabled_label=tr_noop("EV Active")),
-      SettingRow("ResumeBrakeRamp", "toggle", tr_noop("Resume Brake Ramp"),
-                 subtitle=tr_noop("Builds braking up gradually after you let off the gas. Skipped when stopping, braking hard, or close to a lead."),
-                 get_state=lambda: self._params.get_bool("ResumeBrakeRamp"),
-                 set_state=lambda s: self._params.put_bool("ResumeBrakeRamp", s),
-                 visible=adv),
-      SettingRow("WeakLeadCapEase", "toggle", tr_noop("Ease Weak-Lead Accel Cap"),
-                 subtitle=tr_noop("Pulling away behind a slow car at low speed, the accel limit eases in and out instead of cutting in."),
-                 get_state=lambda: self._params.get_bool("WeakLeadCapEase"),
-                 set_state=lambda s: self._params.put_bool("WeakLeadCapEase", s),
-                 visible=adv),
       SettingRow("TrailerLoad", "value", tr_noop("Trailer Load"),
                  subtitle=tr_noop("Loaded trailer weight for tow-aware gas, brake, and conservative lateral assist."),
                  get_value=lambda: f"{self._params.get_int('TrailerLoad')} lb",
@@ -612,12 +602,6 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
-      SettingRow("StockBrakeFeel", "toggle", tr_noop("Stock Brake Feel"),
-                 subtitle=tr_noop("Matches stock Bosch A ACC: light brake taps that build slowly, no deeper than stock. "
-                                  "Normal braking under 2 s to contact and when stopping."),
-                 get_state=lambda: self._params.get_bool("StockBrakeFeel"),
-                 set_state=lambda s: self._params.put_bool("StockBrakeFeel", s),
-                 visible=lambda: self._params.get_bool("BoschARadar")),
     ]
 
     self._slc_rows = [

@@ -31,8 +31,9 @@ TESLA_PEDAL_RELEASE_GUARD_MAX_DECEL = 0.35
 # RESUME_BRAKE_RAMP_TIME after off -> pid, the brake command may deepen by at most RESUME_BRAKE_RAMP_RATE per second.
 # Never applied when stopping, for targets at or below RESUME_BRAKE_RAMP_BYPASS_DECEL, or with a lead closer than
 # RESUME_BRAKE_RAMP_BYPASS_DREL: a real brake demand is not delayed. Releasing brake is never limited.
-# Toggle ResumeBrakeRamp (Advanced Longitudinal Tuning), default OFF: open-loop replay only, and Peter braked in every
-# replayed case the ramp would have softened -- whether that was "too sudden" or "not enough" is still open.
+# Built in for vision and radar ACC since 2026-10-19 (was the ResumeBrakeRamp toggle; the owner drove it on). Open-loop
+# replay only. The owner's two brake takeovers it would have softened (2cc 5:20, 2b7 18:31) were no-lead stops he
+# called not firm enough, not too sudden; he chose to leave them (STATUS 200).
 RESUME_BRAKE_RAMP_TIME = 1.5
 RESUME_BRAKE_RAMP_RATE = 1.5  # m/s^3; 2b7 command jerk p95 while braking was 1.27
 RESUME_BRAKE_RAMP_BYPASS_DECEL = -2.0

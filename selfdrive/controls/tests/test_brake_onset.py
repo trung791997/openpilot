@@ -117,28 +117,16 @@ def test_bound_is_applied_only_when_stock_brake_feel_is_on():
 
 
 # D-086: StockBrakeFeel toggle, stock Honda ACC depth and rate by TTC.
-def test_stock_feel_toggle_is_wired_and_off_by_default():
-  import json
+def test_stock_feel_is_built_into_bosch_a_radar():
+  # 2026-10-19: no Galaxy toggle; on exactly when Bosch-A radar long is on.
   from pathlib import Path
   root = Path(__file__).resolve().parents[3]
-  layout = json.loads((root / "starpilot/common/assets/device_settings_layout.json").read_text())
-  found = []
-
-  def walk(node):
-    if isinstance(node, dict):
-      if node.get("key") == "StockBrakeFeel":
-        found.append(node)
-      for v in node.values():
-        walk(v)
-    elif isinstance(node, list):
-      for v in node:
-        walk(v)
-  walk(layout)
-  assert len(found) == 1
-  assert found[0]["parent_key"] == "AdvancedLongitudinalTune" and found[0]["ui_type"] == "toggle"
-  assert 'SettingRow("StockBrakeFeel", "toggle"' in (root / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text()
-  assert '{"StockBrakeFeel", {PERSISTENT, BOOL, "0", "0", 3}}' in (root / "common/params_keys.h").read_text()
-  assert 'toggle.stock_brake_feel = False' in (root / "starpilot/common/starpilot_variables.py").read_text()
+  assert '"StockBrakeFeel"' not in (root / "starpilot/common/assets/device_settings_layout.json").read_text()
+  assert 'SettingRow("StockBrakeFeel"' not in (root / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text()
+  variables = (root / "starpilot/common/starpilot_variables.py").read_text()
+  assert 'get_value("StockBrakeFeel"' not in variables
+  assert ('toggle.stock_brake_feel = toggle.car_make == "honda" and has_radar and CP.carFingerprint in HONDA_BOSCH_A'
+          in variables)
   src = Path(lp.__file__).read_text()
   assert 'getattr(starpilot_toggles, "stock_brake_feel", False)' in src
 

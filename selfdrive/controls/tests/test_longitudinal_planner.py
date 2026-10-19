@@ -5395,6 +5395,7 @@ def _exp_early_planner(lead_one, lead_two=None, v_ego=20.0):
   planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=v_ego)
   planner.lead_one = lead_one
   planner.lead_two = lead_two if lead_two is not None else make_lead(status=False)
+  planner.bosch_a_radar = True  # EXP_CAM_LEAD_BRAKE is Bosch-A radar only
   return planner
 
 
@@ -5466,8 +5467,28 @@ def test_exp_cam_lead_brake_floor_gates(lead_kw, model):
 def test_close_lead_cap_floors_a_backward_lead_speed():
   # D-125, 329 5:25: one radar range glitch at creep read the lead backing at -2.15 m/s; the cap went -0.76 -> -1.50.
   planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=1.6)
+  planner.bosch_a_radar = True  # the floor is Bosch-A radar only
   glitch = make_lead(status=True, d_rel=6.27, v_lead=-2.15, radar=True)
   floored = make_lead(status=True, d_rel=6.27, v_lead=longitudinal_planner_module.CLOSE_LEAD_CAP_VLEAD_MIN, radar=True)
   assert planner.get_close_lead_brake_cap(glitch, 1.6, -3.5) == pytest.approx(planner.get_close_lead_brake_cap(floored, 1.6, -3.5))
   noise = make_lead(status=True, d_rel=6.27, v_lead=-0.3, radar=True)  # stopped-lead noise is untouched
   assert planner.get_close_lead_brake_cap(noise, 1.6, -3.5) != pytest.approx(planner.get_close_lead_brake_cap(floored, 1.6, -3.5))
+
+
+def test_radar_only_rules_follow_bosch_a_radar():
+  # 2026-10-19: with BoschARadar off (radarUnavailable) the car runs vision-only ACC and the radar-only planner rules
+  # (EXP_CAM_LEAD_BRAKE, CLOSE_LEAD_CAP_VLEAD_FLOOR, far-lead coast cap, off-axis bound) stand down.
+  from opendbc.car.honda.values import HONDA_BOSCH_A
+  fp = sorted(HONDA_BOSCH_A)[0]
+  on = SimpleNamespace(brand="honda", carFingerprint=fp, radarUnavailable=False)
+  off = SimpleNamespace(brand="honda", carFingerprint=fp, radarUnavailable=True)
+  assert longitudinal_planner_module.bosch_a_radar_on(on)
+  assert not longitudinal_planner_module.bosch_a_radar_on(off)
+  assert not longitudinal_planner_module.uses_off_axis_lead_bound(off)
+  assert not longitudinal_planner_module.bosch_a_radar_on(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC), init_v=1.6)
+  assert not planner.bosch_a_radar
+  glitch = make_lead(status=True, d_rel=6.27, v_lead=-2.15, radar=True)
+  floored = make_lead(status=True, d_rel=6.27, v_lead=longitudinal_planner_module.CLOSE_LEAD_CAP_VLEAD_MIN, radar=True)
+  assert planner.get_close_lead_brake_cap(glitch, 1.6, -3.5) != pytest.approx(planner.get_close_lead_brake_cap(floored, 1.6, -3.5))
