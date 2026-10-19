@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlanner, get_coast_accel, get_far_lead_coast_cap, get_vehicle_min_accel, should_publish_planner_fcw,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  LEAD_T_IDXS_MODEL,
   LongitudinalMpc,
   build_model_lead_trajectory,
   soften_far_radar_lead_accel,
@@ -5502,3 +5503,34 @@ def test_vision_slow_stopped_lead_cap_is_bounded_by_stopping_physics_in_a_queue(
   assert cap is None or cap > -0.3
   approach = make_lead(status=True, d_rel=40.0, v_lead=0.0, model_prob=1.0)
   assert planner.get_vision_slow_stopped_lead_cap(approach, 10.0, -3.5, 1.45) == pytest.approx(-1.2)
+
+
+def test_mpc_new_lead_starts_at_its_measured_speed_above_47_mph():
+  # STATUS 255, 00000380 3:50.3: a radar lead appearing at 107 m read 30.8 m/s in the MPC against vLead 20.1,
+  # because its filter had been fed the fake far lead (vEgo + 10).
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(26.0, 0.0)
+  mpc.set_weights(v_ego=26.0)
+  assert mpc.current_filter_time > 0.5
+  absent = make_lead(status=False, d_rel=0.0, v_lead=0.0, model_prob=0.0)
+  for _ in range(100):
+    mpc.process_lead(absent, lead_index=0)
+    mpc.process_lead(absent, lead_index=1)
+  lead = make_lead(status=True, d_rel=107.0, v_lead=20.1, model_prob=1.0, radar=True)
+  lead_xv = mpc.process_lead(lead, lead_index=0)
+  assert lead_xv[0, 1] == pytest.approx(20.1, abs=0.2)
+
+
+def test_mpc_lead_handed_back_from_model_path_starts_at_its_measured_speed():
+  # STATUS 255: an urgent close drops the model lead path; the filtered path must not start from the fake far lead.
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  absent = make_lead(status=False, d_rel=0.0, v_lead=0.0, model_prob=0.0)
+  model_lead = SimpleNamespace(prob=0.9, x=[60.0 + 18.0 * t for t in LEAD_T_IDXS_MODEL], v=[18.0] * len(LEAD_T_IDXS_MODEL))
+  steady = make_lead(status=True, d_rel=60.0, v_lead=18.0, model_prob=1.0)
+  for _ in range(100):
+    mpc.process_lead(steady, lead_index=0, model_lead=model_lead)
+    mpc.process_lead(absent, lead_index=1)
+  lead = make_lead(status=True, d_rel=20.0, v_lead=8.0, model_prob=1.0)  # urgent: model path drops out
+  lead_xv = mpc.process_lead(lead, lead_index=0, model_lead=model_lead)
+  assert lead_xv[0, 1] == pytest.approx(8.0, abs=0.2)

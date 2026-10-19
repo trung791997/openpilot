@@ -11328,3 +11328,20 @@ Fidelity (median band-pass aEgo corr / vEgo RMSE):
 - **Fix needed:** re-seed the filter on lead onset. A seed-on-entry attempt earlier broke 36 planner tests, so this is parked until a highway route with lead onsets can be replayed against it.
 
 **Untracked vision leads (base, 39c).** For 129 s, 53% of lead time, leadOne has status=1 but should_track_lead rejects it (the 25 m vision floor in lead_behavior.py). In those frames the MPC plans against the placeholder lead and e2e does the braking. This is consistent with "follow the model in experimental". Not acted on.
+
+## 255. MPC lead filter re-seeded when a lead enters it (2026-10-19). Static and unit tests; replay on 361/363 pending.
+
+Branch mpc-lead-onset-seed, not on the car.
+
+**What changed.** When leadOne or leadTwo enters the filtered path in long_mpc.process_lead, the shared lead_v_filter/lead_a_filter now starts at the measured values. "Enters" means the lead just appeared, or the model lead path just dropped it (an urgent close, or prob <= 0.35).
+- It only does this when the stale value is faster than vLead, the late-braking direction.
+- A stale value slower than vLead is left alone. Seeding in both directions broke 36 planner tests (fresh filters start at 0).
+- The per-lead split from 85f4aade0 is not included. It changed 7 tests, and STATUS 254 found no leak away from onset.
+
+**Static evidence.** Two new tests are red on the base code and green with the fix:
+- 380 3:50.3 shape: base reads 35.0 against vLead 20.1.
+- Urgent hand-back from the model path: base reads 28.6 against vLead 8.0.
+
+680 planner tests pass.
+
+**Next.** Job replays 361 and 363 (Peter: highway segments) against base, measuring onset |dv| and fidelity.

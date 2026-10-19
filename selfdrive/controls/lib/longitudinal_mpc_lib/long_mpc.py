@@ -460,6 +460,8 @@ class LongitudinalMpc:
     self.current_filter_time = LEAD_FILTER_TIME_LOW
     self.lead_a_filter = FirstOrderFilter(0.0, self.current_filter_time, self.dt)
     self.lead_v_filter = FirstOrderFilter(0.0, self.current_filter_time, self.dt)
+    # Per lead: did the last call run this lead through lead_v_filter? (STATUS 255)
+    self.lead_filter_live = [False, False]
     self.duplicate_lead_x_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_a_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_v_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
@@ -659,6 +661,7 @@ class LongitudinalMpc:
     if lead_active:
       model_lead_xv = build_model_lead_trajectory(model_lead, lead, v_ego, lead_detection_probability)
       if model_lead_xv is not None:
+        self.lead_filter_live[lead_index] = False
         return model_lead_xv
 
     if lead_active:
@@ -682,6 +685,14 @@ class LongitudinalMpc:
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
+    if lead_active and not self.lead_filter_live[lead_index] and self.lead_v_filter.x > v_lead:
+      # This lead just entered the filtered path (it appeared, or the model lead path dropped it), and the
+      # shared filter still holds another input, usually the fake far lead (vEgo + 10). Above 47 mph that read
+      # a new lead ~10 m/s fast for ~2 s (00000380 3:50.3: vLead 20.1, MPC 30.8 at 107 m), which brakes late.
+      # Start from the measured values. A stale value below vLead (earlier braking) is left as it was.
+      self.lead_a_filter.x = a_lead
+      self.lead_v_filter.x = v_lead
+    self.lead_filter_live[lead_index] = bool(lead_active)
     if lead_active and smooth_duplicate_vision and not bool(getattr(lead, "radar", False)):
       # Keep the baseline filter synchronized so leaving this narrow comfort
       # path cannot introduce a state discontinuity.
