@@ -96,3 +96,35 @@ def test_weak_lead_cap_release_is_ramped():
   before = planner.output_a_target
   planner.update(make_sm(v_ego=2.0, v_cruise=10.0, e2e_a=1.0))
   assert planner.output_a_target <= max(before, 0.0) + slp.WEAK_LEAD_CAP_EASE_JERK * planner.dt + 1e-6
+
+
+def test_brake_builds_no_faster_than_the_limit_without_a_closing_lead():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  planner.update(make_sm(e2e_a=0.0))
+  prev = planner.output_a_target
+  planner.update(make_sm(e2e_a=-2.0))
+  assert planner.output_a_target == pytest.approx(prev - slp.BRAKE_BUILD_JERK * planner.dt)
+  for _ in range(40):
+    planner.update(make_sm(e2e_a=-2.0))
+  assert planner.output_a_target == pytest.approx(-2.0)
+
+
+def test_closing_lead_lifts_the_brake_limit():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  planner.update(make_sm(e2e_a=0.0))
+  prev = planner.output_a_target
+  planner.update(make_sm(e2e_a=-2.0, lead_one=lead(True, 25.0, 5.0)))
+  assert planner.output_a_target < prev - 2 * slp.BRAKE_BUILD_JERK * planner.dt
+
+
+def test_brake_release_is_not_slowed():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  for _ in range(40):
+    planner.update(make_sm(e2e_a=-2.0))
+  planner.update(make_sm(e2e_a=-0.2))
+  assert planner.output_a_target == pytest.approx(-0.2)
+
+
+def test_gas_rises_no_faster_than_the_limit():
+  assert slp.limit_output_jerk(1.0, 0.0, 0.05, False) == pytest.approx(slp.GAS_RISE_JERK * 0.05)
+  assert slp.limit_output_jerk(1.0, -1.0, 0.05, False) == pytest.approx(slp.GAS_RISE_JERK * 0.05)

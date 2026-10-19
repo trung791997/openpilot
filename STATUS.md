@@ -11318,3 +11318,9 @@ tuning from mvl since it's designed for Honda. But everything else can be a red 
   later and braking is harsher (jerk p99 0.93 -> 2.50). With every guard off, braking reaches -3.5 and TTC 1.48 s.
 - Read: on this route "brakes further back" is the price of the smoother, earlier and shallower braking. The stock
   planner trades it for later, harder brakes. Not on the car; owner to decide.
+
+**251b in-between (owner: "Let's try something in between", 2026-10-19). Unit tests only; replay pending.**
+The stock planner still follows the model's onset. On top of it, the output builds brake no faster than BRAKE_BUILD_JERK
+2.5 m/s^3 and raises accel above max(previous, 0) no faster than GAS_RISE_JERK 1.0 m/s^3. Brake release is never
+slowed. The brake limit is lifted on FCW or while a lead closes with TTC < 3.0 s, so the cut-in brake is not delayed.
+All three values are first guesses for Job's sweep.

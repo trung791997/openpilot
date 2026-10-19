@@ -43,6 +43,14 @@ MIN_STABLE_DELAY = 0.3
 # The MPC here only follows leads; cruise is the separate a_cruise candidate, as upstream.
 MPC_V_CRUISE_LEADS_ONLY = V_CRUISE_MAX * CV.KPH_TO_MS
 
+# In-between (owner, 2026-10-19, after the 39c replay in STATUS 251): follow the model's onset, but build the brake no
+# faster than BRAKE_BUILD_JERK and raise accel above max(previous, 0) no faster than GAS_RISE_JERK. Brake release is
+# never slowed. The brake limit is lifted while a lead closes inside BRAKE_BUILD_BYPASS_TTC, or on FCW, so a cut-in
+# still gets the full MPC brake. Values are a first guess for replay, not tuned.
+BRAKE_BUILD_JERK = 2.5  # m/s^3
+GAS_RISE_JERK = 1.0  # m/s^3
+BRAKE_BUILD_BYPASS_TTC = 3.0  # s
+
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
@@ -81,6 +89,26 @@ def get_weak_lead_accel_cap(radar_state, v_ego):
           for lead in (radar_state.leadOne, radar_state.leadTwo)]
   caps = [cap for cap in caps if cap is not None]
   return min(caps) if caps else None
+
+
+def lead_closing_fast(radar_state, v_ego):
+  for lead in (radar_state.leadOne, radar_state.leadTwo):
+    if not lead.status:
+      continue
+    closing = float(v_ego) - float(lead.vLead)
+    if closing > 0.0 and float(lead.dRel) / closing < BRAKE_BUILD_BYPASS_TTC:
+      return True
+  return False
+
+
+def limit_output_jerk(target, prev, dt, bypass_brake):
+  """Rate-limit brake build-up and gas rise; brake release is never slowed."""
+  if target < prev and not bypass_brake:
+    target = max(target, prev - BRAKE_BUILD_JERK * dt)
+  rise_limit = max(prev, 0.0) + GAS_RISE_JERK * dt
+  if target > rise_limit:
+    target = rise_limit
+  return target
 
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle):
@@ -195,6 +223,9 @@ class StockLongitudinalPlanner:
     output_a_target, self.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(c[2] for c in candidates)
     output_a_target = float(np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX))
+    if not reset_state:
+      bypass_brake = self.fcw or lead_closing_fast(sm['radarState'], v_ego)
+      output_a_target = limit_output_jerk(output_a_target, a_prev, self.dt, bypass_brake)
 
     # Weak-lead cap, eased as in LongitudinalPlanner: engaging, it cuts the target by at most WEAK_LEAD_CAP_EASE_JERK
     # per second; released, the target may rise above max(previous, 0) by no more than that. Positive side only.
