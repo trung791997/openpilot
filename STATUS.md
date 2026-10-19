@@ -11270,3 +11270,12 @@ Feel toggles from Galaxy. Where each piece now sits:
 
 Behaviour change on a radar drive: Stock Brake Feel is now on whenever Bosch A Radar is on (the owner's device had
 it at 0). On a vision drive the far-lead coast cap, EXP_CAM_LEAD_BRAKE and the vLead floor no longer run.
+
+Job's replay of drive 380 (closed-loop alpha replay on radar re-parsed from CAN, using the logged toggles):
+- **Radar on, 4f9b1d716 vs 84d4c3aba:** bit-identical over 18093 frames. 380 itself ran with StockBrakeFeel,
+  ResumeBrakeRamp and WeakLeadCapEase all at 1, so this run says nothing new about Stock Brake Feel.
+- **Fidelity:** band-passed aEgo corr median 0.97 on radar and 0.85 on vision-only.
+- **Vision-only:**
+  - It brakes 8 s earlier at 3:52.4 (-1.75) and shallower at 4:02 (-1.61 vs -2.63).
+  - At 8:22-8:31, with the car stopped, the output cycles between -0.24 and -1.4. The sim creeps and stops in a loop;
+    the plant does not model the longcontrol stop hold, so this is most likely a sim artefact. Watch it on the road.
