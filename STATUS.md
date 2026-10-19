@@ -11232,3 +11232,32 @@ owner's standing OK to remove guards that hurt braking without adding smoothness
 - Closed loop: min gap is 0.1-0.8 m closer than base in every changed window; the smallest is 2.2 m (base 2.5).
 - Gap at the stop is 3.6-4.4 m (base 3.8-4.6). Nothing cap-driven ends under 2 m.
 - The replay harness creeps through logged standstills (negative gaps in both arms), so that part is not evidence.
+
+## 255. MPC lead filter re-seeded when a lead enters it (2026-10-19). Static, unit tests and replay (361/363).
+
+Branch mpc-lead-onset-seed, not on the car.
+
+**What changed.** When leadOne or leadTwo enters the filtered path in long_mpc.process_lead, the shared lead_v_filter/lead_a_filter now starts at the measured values. "Enters" means the lead just appeared, or the model lead path just dropped it (an urgent close, or prob <= 0.35).
+- It only does this when the stale value is faster than vLead, the late-braking direction.
+- A stale value slower than vLead is left alone. Seeding in both directions broke 36 planner tests (fresh filters start at 0).
+- The per-lead split from 85f4aade0 is not included. It changed 7 tests, and STATUS 254 found no leak away from onset.
+
+**Static evidence.** Two new tests are red on the base code and green with the fix:
+- 380 3:50.3 shape: base reads 35.0 against vLead 20.1.
+- Urgent hand-back from the model path: base reads 28.6 against vLead 8.0.
+
+680 planner tests pass.
+
+**Next.** Job replays 361 and 363 (Peter: highway segments) against base, measuring onset |dv| and fidelity.
+
+**255 replay (Job R15, closed loop, logged toggles, b0.075 plant, 4dd2649a9 vs 1ee280a39).**
+- Fidelity is the same in both arms. 363: aEgo corr median 0.97, vEgo RMSE median 0.13. 361: corr 0.95, vEgo RMSE median 0.13, but it drifts up to 175 m in position, so its gap/TTC figures are not evidence.
+- Every onset frame where the MPC lead speed was more than 1 m/s off is gone:
+  - 363 (20 onsets above 47 mph): 6 -> 0. Max 3.37 -> 3.20; the 3.20 is a pre-existing non-onset vision frame where the MPC reads the lead slower.
+  - 361 (17 onsets above 47 mph): 5 -> 0. Max 6.25 -> 1.25.
+  - The remaining non-onset frames are identical in both arms.
+- Output: identical on 361. On 363, five windows differ by more than 0.05, and none moves min out by more than 0.07.
+- Largest change, 363 11:07.6 (lead onset at 83 m): min out -1.81 -> -1.74. This comes after closed-loop divergence that began at 10:44.
+- Min gap 4.1 m, min TTC 2.59 s and gas-to-brake cycles (5 on 363, 21 on 361) are the same in both arms.
+- No window moved by more than 0.3, so no frames were pulled.
+- Verdict: the fix corrects the MPC's internal lead speed with no measurable change to how the car drives on these routes. Shipped default on (it has no toggle).
