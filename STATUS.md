@@ -11302,3 +11302,29 @@ owner's standing OK to remove guards that hurt braking without adding smoothness
 - Closed loop: min gap is 0.1-0.8 m closer than base in every changed window; the smallest is 2.2 m (base 2.5).
 - Gap at the stop is 3.6-4.4 m (base 3.8-4.6). Nothing cap-driven ends under 2 m.
 - The replay harness creeps through logged standstills (negative gaps in both arms), so that part is not evidence.
+
+## 254. R12: stock planner arms and the shared MPC lead filter (2026-10-19). Replay only; nothing shipped.
+
+Job ran R12 closed-loop on 0000039c--6eddcb4316, plus a lead-speed check on 00000380--0f0d512c9c. The base arm is 51a50191b.
+Fidelity (median band-pass aEgo corr / vEgo RMSE):
+- base: 0.86 / 0.34. Every stock-planner arm: 0.80 / 0.75-0.81.
+- The stock arms drift from the log, so their sim/log shift holds for only 159-164 s of the drive, against 208 s for base.
+- 380 base: 0.96 / 0.13.
+
+**Stock camera-only planner (voacc-stock-planner, STATUS 251).** It stays off the car. Every arm was worse than base:
+- **Arms:** s840; the rate limits (A); the model lead trajectory with limits (E) and with the limits relaxed (Eoff); and F, which adds per-lead filters.
+- **9:51:** the gap closes to 8.2-9.1 m (base 13.6 m), and braking starts at 9:49.3 (base 9:41.0).
+- **8:09 cut-in:** min out -3.07 to -3.41 (base -2.81), and the gap closes to 25.8-27.6 m (base 28.8 m).
+- **Gas-to-brake cycles:** 5-6 (base 2).
+- E (model lead trajectory) is the least close at 9:51, but it does not change the verdict.
+- No arm reached TTC < 1.5 s.
+
+**Shared lead filter (mpc-lead-filter-wip 85f4aade0).** The bug is real, and this drive does not exercise it:
+- **Why the fix arm (Fb) matches base:** Fb was byte-identical to base on 39c. The filter time is 0 below 47 mph, and 39c is above 47 mph in only 11% of frames, so the filter passes values straight through.
+- **Where it shows (380, above 47 mph):** all 32 real-lead frames off by more than 1 m/s fall within 2 s of a new lead appearing. Before that, the filter was fed the placeholder vEgo+10, so the new lead starts about 10 m/s fast and then decays.
+  Example, 3:50.3: dRel 107 m, vLead 20.1, MPC v 30.8.
+  The error is always in the "lead is faster" direction, i.e. later braking for a far lead. That is 0.4% of real-lead time.
+- **Why 85f4aade0 would not fix it:** its per-lead filter for index 0 is still fed the placeholder before onset.
+- **Fix needed:** re-seed the filter on lead onset. A seed-on-entry attempt earlier broke 36 planner tests, so this is parked until a highway route with lead onsets can be replayed against it.
+
+**Untracked vision leads (base, 39c).** For 129 s, 53% of lead time, leadOne has status=1 but should_track_lead rejects it (the 25 m vision floor in lead_behavior.py). In those frames the MPC plans against the placeholder lead and e2e does the braking. This is consistent with "follow the model in experimental". Not acted on.
