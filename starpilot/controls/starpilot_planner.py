@@ -301,13 +301,12 @@ class StarPilotPlanner:
 
     speed_limit = self._passing_speed_limit()
     return PassingInputs(
-      enabled=True,
       nav_state=self.starpilot_vcruise._nav_instruction_state,
       v_ego=v_ego,
       speed_limit=speed_limit,
       speed_offset=self._passing_speed_offset(speed_limit),
       min_lane_change_speed=float(starpilot_toggles.minimum_lane_change_speed),
-      lead=lead(self.lead_one), lead_left=lead(radar.leadLeft), lead_right=lead(radar.leadRight),
+      lead=lead(self.lead_one), lead_right=lead(radar.leadRight),
       lane_width_left=float(self.lane_width_left), lane_width_right=float(self.lane_width_right),
       edge_gap_left=float(self.edge_gap_left), edge_gap_right=float(self.edge_gap_right),
       # floor: with Lane Changes off the toggle reads 0, which would make any gap count as a lane
@@ -318,29 +317,28 @@ class StarPilotPlanner:
     )
 
   def update_nav_passing(self, sm, starpilot_toggles, v_ego):
-    """D-114: publish the pass / move-back suggestion. Prompt only; the driver's blinker does the lane change."""
+    """D-115/D-117: publish the keep-right, merge and jammed-exit prompts. Prompt only; the driver does the lane change."""
     self.nav_passing_chime = ""
     if self._passing_publish_disabled:
       return
     now = time.monotonic()
-    passing = bool(getattr(starpilot_toggles, "nav_passing_suggest", False))
     keep_right = bool(getattr(starpilot_toggles, "nav_keep_right", False))
     merge_warn = bool(getattr(starpilot_toggles, "nav_merge_warn", False))
     exit_jam_warn = bool(getattr(starpilot_toggles, "nav_jam_exit_warn", False))
-    if passing or keep_right or merge_warn or exit_jam_warn:
+    if keep_right or merge_warn or exit_jam_warn:
       inputs = self._passing_inputs(sm, starpilot_toggles, v_ego, now)
-      inputs.enabled, inputs.keep_right = passing, keep_right
+      inputs.keep_right = keep_right
       inputs.merge_warn, inputs.exit_jam_warn = merge_warn, exit_jam_warn
     else:
-      inputs = PassingInputs(False, {}, v_ego, 0.0, 0.0, Lead(), Lead(), Lead(), 0.0, 0.0, 0.0, False, False, False, False, False)
+      inputs = PassingInputs({}, v_ego, 0.0, 0.0, Lead(), Lead(), 0.0, 0.0, 0.0, False, False, False, False, False)
     prompt = self.nav_passing.update(inputs, now)
-    # one chime per phase per episode, so a flickering right-side block does not re-chime the return prompt
+    # one chime per phase per episode
     phase = prompt["phase"] if prompt["armed"] else ""
     self.nav_passing_chime = phase if phase and phase not in self._passing_chimed else ""
     if phase:
       self._passing_chimed.add(phase)
-    elif self.nav_passing.state == "idle":
-      self._passing_chimed -= {"pass", "return", "keepright"}
+    else:
+      self._passing_chimed.discard("keepright")
     # D-116: with no suggestion up, say why the jam slowdown is easing off. No chime; the banner only.
     jam = getattr(self.starpilot_vcruise, "nav_jam_notice", None)
     if not prompt["armed"] and jam is not None:

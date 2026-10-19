@@ -2,9 +2,10 @@ from openpilot.selfdrive.ui.onroad.starpilot.nav_passing_prompt import MERGE_BLO
 
 
 def test_parse_passing_prompt_needs_armed_fresh_side_and_phase():
-  raw = {"armed": True, "side": "left", "phase": "pass", "ts": 100.0}
-  assert parse_passing_prompt(raw, 101.0) == {"side": "left", "phase": "pass", "ts": 100.0, "distance": 0.0, "speed": 0.0, "blocked": False}
-  assert parse_passing_prompt('{"armed": true, "side": "right", "phase": "return", "ts": 100.0}', 100.5)["phase"] == "return"
+  raw = {"armed": True, "side": "right", "phase": "keepright", "ts": 100.0}
+  assert parse_passing_prompt(raw, 101.0) == {"side": "right", "phase": "keepright", "ts": 100.0, "distance": 0.0, "speed": 0.0,
+                                              "blocked": False}
+  assert parse_passing_prompt('{"armed": true, "side": "left", "phase": "merge", "ts": 100.0}', 100.5)["phase"] == "merge"
   assert parse_passing_prompt(raw, 103.0) is None, "stale: the planner stopped refreshing it"
   assert parse_passing_prompt({**raw, "armed": False}, 101.0) is None
   assert parse_passing_prompt({**raw, "phase": "bogus"}, 101.0) is None
@@ -17,8 +18,8 @@ def test_d115_keep_right_phase_parses():
   assert parse_passing_prompt({"armed": True, "side": "right", "phase": "keepright", "ts": 1.0}, 1.5)["phase"] == "keepright"
 
 
-def test_removed_exit_turn_and_arrive_banners_do_not_show():
-  for phase in ("exit", "turn", "arrive"):
+def test_removed_pass_exit_turn_and_arrive_banners_do_not_show():
+  for phase in ("pass", "return", "exit", "turn", "arrive"):
     assert phase not in TEXT
     assert parse_passing_prompt({"armed": True, "side": "right", "phase": phase, "ts": 1.0, "distance": 900.0}, 1.5) is None
 

@@ -1400,7 +1400,6 @@ class StarPilotVariables:
     toggle.nav_longitudinal_allowed = toggle.openpilot_longitudinal and self.get_value("NavLongitudinalAllowed", condition=longitudinal_tuning)
     toggle.nav_off_ramp_slowdown = self.get_value("NavOffRampSlowdown", condition=toggle.nav_longitudinal_allowed)
     toggle.nav_jam_slowdown = self.get_value("NavJamSlowdown", condition=toggle.nav_longitudinal_allowed)
-    toggle.nav_passing_suggest = self.get_value("NavPassingSuggest")
     toggle.nav_keep_right = self.get_value("NavKeepRightReminder")
     toggle.nav_merge_warn = self.get_value("NavMergeWarn")
     toggle.nav_jam_exit_warn = self.get_value("NavJamExitWarn")

@@ -15,8 +15,6 @@ PROMPT_STALE_SECONDS = 2.0
 PROMPT_UPDATE_INTERVAL = 0.1
 
 TEXT = {
-  "pass": ("Left lane is faster", "Check mirror, blinker to pass"),
-  "return": ("Passed: move back right", "Check mirror, blinker when clear"),
   "keepright": ("Keep right", "Right lane is open, check mirror"),
   "jam": ("Traffic ahead in {distance}", "Easing to {speed} for the slowdown"),
   "merge": ("Merge {side} ahead", "Check mirror before merging"),
@@ -35,7 +33,7 @@ def format_jam(distance_m: float, speed_ms: float, is_metric: bool) -> tuple[str
 
 
 def parse_passing_prompt(raw, now: float) -> dict | None:
-  """D-114 pass / move-back suggestion if it is armed and fresh, else None."""
+  """Keep-right, jam, merge or jammed-exit prompt if it is armed and fresh, else None."""
   if isinstance(raw, (str, bytes)):
     try:
       raw = json.loads(raw) if raw else {}
@@ -61,7 +59,7 @@ def parse_passing_prompt(raw, now: float) -> dict | None:
 
 
 class NavPassingPromptRenderer(Widget):
-  """MICI pill under the navigation card. Gives way to the exit-lane and faster-route prompts."""
+  """MICI pill under the navigation card. Gives way to the faster-route prompt."""
 
   def __init__(self, navigation_card=None, *other_prompts):
     super().__init__()

@@ -65,11 +65,7 @@ class StarPilotEvents:
       self.events.add(StarPilotEventName.forcingStop)
 
     passing_chime = getattr(self.starpilot_planner, "nav_passing_chime", "")
-    if passing_chime == "pass":
-      self.events.add(StarPilotEventName.navPassingSuggested)
-    elif passing_chime == "return":
-      self.events.add(StarPilotEventName.navPassingReturn)
-    elif passing_chime == "keepright":
+    if passing_chime == "keepright":
       self.events.add(StarPilotEventName.navKeepRight)
     elif passing_chime == "merge":
       self.events.add(StarPilotEventName.navMergeAhead)
