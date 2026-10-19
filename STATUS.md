@@ -11303,3 +11303,18 @@ tuning from mvl since it's designed for Honda. But everything else can be a red 
   distance), the live longitudinal delay, longcontrol and the Honda carcontroller (mvl gas learner, Honda tuning).
 - **Open:** Job's closed-loop replay of 0000039c, stock planner vs §250, with fidelity. It ships to the car only after
   that.
+
+**251 replay (Job, Request 10 + Request 9 ablation, 0000039c, closed loop, vision-only, logged toggles).**
+- Fidelity: baseline aEgo corr median 0.86, vEgo RMSE 0.34. The stock arm diverges more (0.80, 0.81).
+- Stock (840804aca) vs the 51a50191b baseline:
+  - Onsets match e2e (1:52 was 14 m early in the baseline).
+  - Cut-in at 8:10: -3.36 vs -2.81; 1.75 s below -2.5 vs 0.85 s.
+  - 9:51 work zone: min gap 8.2 m vs 13.6 m.
+  - 2:49 brakes to -2.42 vs -1.84; 9:38 to -2.15 vs -1.72.
+  - Commanded jerk p95 1.09 vs 0.53; gas-to-brake cycles 5 vs 2.
+  - No TTC under 1.5 s in either arm.
+  - The weak-lead cap never bound (no engaged stop-and-go on this route).
+- Ablation of the baseline: the min(mpc, e2e) blend is what holds output below e2e. Without it, onsets come 18-23 m
+  later and braking is harsher (jerk p99 0.93 -> 2.50). With every guard off, braking reaches -3.5 and TTC 1.48 s.
+- Read: on this route "brakes further back" is the price of the smoother, earlier and shallower braking. The stock
+  planner trades it for later, harder brakes. Not on the car; owner to decide.
