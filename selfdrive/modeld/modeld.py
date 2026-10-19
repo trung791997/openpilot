@@ -9,10 +9,10 @@ import usb1
 from openpilot.system.hardware import HARDWARE, TICI
 os.environ['GMMU'] = '0'
 os.environ['DEV'] = 'QCOM' if TICI else 'LLVM'
-# jetlink's prepare() starts tinygrad's compile pool before modeld goes
-# realtime, sized PARALLEL = cpu count. 8 spawn workers held ~270 MB on a
-# 3.6 GB mici and pushed it past selfdrived's 90% lowMemory soft-disable; the
-# small model is a prebuilt pickle, so only the link's few runtime kernels use it
+# tinygrad's compile pool, if anything starts one before modeld goes realtime: sized
+# PARALLEL = cpu count, 8 spawn workers held ~270 MB on a 3.6 GB mici and pushed it past
+# selfdrived's 90% lowMemory soft-disable. jetlink's init_device sets PARALLEL=0 for its own
+# compiles; this caps anything else (the small model is a prebuilt pickle)
 os.environ.setdefault('PARALLEL', '2')
 
 
@@ -1151,9 +1151,11 @@ def main(demo=False):
   sentry.set_tag("daemon", PROCESS_NAME)
   cloudlog.bind(daemon=PROCESS_NAME)
   setproctitle(PROCESS_NAME)
-  # jetlink's GPU setup runs before the frame loop's realtime priority and core,
-  # and only with no chestnut: a chestnut's big model and Model Lab come first
-  jetlink_prepared = not usbgpu_present() and jetlink_adapter.prepare()
+  # jetlink's GPU setup runs before the frame loop's realtime priority and core, and only with
+  # no chestnut: a chestnut's big model and Model Lab come first. hooks() never raises; any
+  # failure answers False and modeld runs the small model alone (mirrors StarPilot#231)
+  JETLINK = jetlink_adapter.hooks()
+  jetlink_prepared = JETLINK.prepare(usbgpu_present())
   config_realtime_process(7, 54)
 
   params = Params()
@@ -1293,7 +1295,8 @@ def main(demo=False):
     )
     if jetlink_prepared and not usbgpu_present_now:
       jetlink_small = SmallModel(model)
-      joined = jetlink_adapter.attach(jetlink_small, vipc_client_main.width, vipc_client_main.height)
+      # Hooks.attach answers its first argument when the link does not join: None, the small model alone
+      joined = JETLINK.attach(None, jetlink_small, vipc_client_main.width, vipc_client_main.height)
       if joined is not None:
         model = Joined(joined, jetlink_small)
 

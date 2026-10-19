@@ -19,6 +19,7 @@ from opendbc.car.nissan.values import CAR as NISSAN_CAR
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
+from openpilot.starpilot import jetlink_adapter
 from openpilot.starpilot.jetlink_adapter import OWNER as JETLINK_OWNER
 from openpilot.common.gps import get_gps_location_service
 
@@ -26,7 +27,7 @@ from openpilot.selfdrive.car.car_specific import CarSpecificEvents
 from openpilot.selfdrive.car.cruise_state import should_flag_cruise_mismatch
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
-from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
+from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, jetlink_in_control, jetlink_lost_alert, update_jetlink_swaps
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 from openpilot.selfdrive.selfdrived.alert_sound import filter_forcing_stop_alert_sound
@@ -259,6 +260,9 @@ class SelfdriveD:
     self.big_model_active = False
     self.big_model_failed = False
     self.big_model_ready_t = 0.
+    # Jetlink's swap events: bookkeeping alone, so built link on or off; None without a usable jetlink
+    self.jetlink_swaps = jetlink_adapter.hooks().swap_events(DT_CTRL)
+    self.jetlink_settling = self.jetlink_link_lost = self.jetlink_big = False
     self.experimental_mode = False
     self.ecu_disable_failed = False
     self.ecu_disable_failed_checked = not (
@@ -414,6 +418,8 @@ class SelfdriveD:
       self.big_model_active = True
     if not self.enabled and not model_unavailable:
       self.big_model_active = False
+    if self.jetlink_swaps is not None:
+      update_jetlink_swaps(self, jetlink_in_control(self))
 
     if self.sm.recv_frame['lateralManeuverPlan'] > 0:
       self.starpilot_events.add(StarPilotEventName.lateralManeuver)
@@ -915,6 +921,8 @@ class SelfdriveD:
     alerts = self.events.create_alerts(self.state_machine.current_alert_types, [self.CP, CS, self.sm, self.is_metric,
                                                                                 self.state_machine.soft_disable_timer, pers,
                                                                                 self.starpilot_toggles])
+    if getattr(self, 'jetlink_link_lost', False):
+      alerts.append(jetlink_lost_alert())
     self.AM.add_many(self.sm.frame, alerts)
     self.AM.process_alerts(self.sm.frame, clear_event_types)
 
