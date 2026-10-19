@@ -3,7 +3,7 @@
     "text": "Device temperature too high. System cooling down before starting. Current internal component temperature: %1",
     "severity": 0
   },
-  "Offroad_AcceleratorUnavailable": {
+  "Offroad_JetlinkUnavailable": {
     "text": "Jetlink unavailable: %1",
     "severity": 0
   },

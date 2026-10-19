@@ -18,7 +18,7 @@ from cereal import log
 from cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.system.hardware import HARDWARE, TICI, AGNOS, PC
@@ -193,6 +193,24 @@ def set_offroad_alert_if_changed(offroad_alert: str, show_alert: bool, extra_tex
   prev_offroad_states[offroad_alert] = (show_alert, extra_text)
   set_offroad_alert(offroad_alert, show_alert, extra_text)
 
+# A prebuilt params library not yet regenerated lacks Offroad_JetlinkUnavailable: the alert is skipped rather than
+# taking hardwared down (mirrors firestar5683/StarPilot#231)
+jetlink_alert_usable = True
+
+
+def update_jetlink_alert() -> None:
+  """Why the Jetlink the user turned on cannot run. Reads files only; with the link off, jetlink binds nothing."""
+  global jetlink_alert_usable
+  if not jetlink_alert_usable:
+    return
+  reason = jetlink_adapter.hooks().reason()
+  try:
+    set_offroad_alert_if_changed("Offroad_JetlinkUnavailable", reason is not None, extra_text=reason)
+  except UnknownKeyName:
+    jetlink_alert_usable = False
+    cloudlog.warning("Offroad_JetlinkUnavailable is not in this params library: Jetlink's offroad alert is off")
+
+
 def touch_thread(end_event):
   count = 0
 
@@ -319,7 +337,6 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   off_ts: float | None = None
   started_ts: float | None = None
-  accelerator_off_ts: float | None = None
   started_seen = False
   startup_blocked_ts: float | None = None
   thermal_status = ThermalStatus.ok
@@ -454,10 +471,8 @@ def hardware_thread(end_event, hw_queue) -> None:
         set_offroad_alert_if_changed,
       )
 
-    # an enabled accelerator that cannot come up is otherwise silently absent
-    accelerator_error = jetlink_adapter.reason()
-    set_offroad_alert_if_changed("Offroad_AcceleratorUnavailable", accelerator_error is not None,
-                                 extra_text=accelerator_error)
+    # a Jetlink the user turned on that cannot come up is otherwise silently absent
+    update_jetlink_alert()
 
     # this subset is only used for offroad
     temp_sources = [
@@ -497,8 +512,6 @@ def hardware_thread(end_event, hw_queue) -> None:
     startup_conditions["up_to_date"] = True
     startup_conditions["no_excessive_actuation"] = params.get("Offroad_ExcessiveActuation") is None
     startup_conditions["not_uninstalling"] = not params.get_bool("DoUninstall")
-    # the accelerator was asked to power off with the comma: no drive may start under the power-off that follows
-    startup_conditions["not_powering_off"] = accelerator_off_ts is None
     startup_conditions["accepted_terms"] = params.get("HasAcceptedTerms") == terms_version
 
     # with 2% left, we killall, otherwise the phone will take a long time to boot
@@ -599,17 +612,13 @@ def hardware_thread(end_event, hw_queue) -> None:
     shutdown_reason = power_monitor.shutdown_reason(
       onroad_conditions["ignition"], in_car, off_ts, started_seen, starpilot_toggles,
     )
-    if accelerator_off_ts is not None or shutdown_reason is not None:
-      if accelerator_off_ts is None:
-        cloudlog.warning(f"shutting device down, reason={shutdown_reason}, offroad since {off_ts}")
-        if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
-          sentry_power_off_notified = True
-          notify_sentry_power_off(shutdown_reason, power_monitor)
-        # an accelerator on its own supply outlives us: ask it once, and keep publishing while it powers off
-        jetlink_adapter.request_shutdown(f"comma shutting down, reason={shutdown_reason}, offroad since {off_ts}")
-        accelerator_off_ts = time.monotonic()
-      if not jetlink_adapter.shutdown_pending() or time.monotonic() - accelerator_off_ts >= 25.0:
-        params.put_bool("DoShutdown", True)
+    # a Jetlink host on its own supply is powered off by manager on the way down (lifecycle.shutdown), not here
+    if shutdown_reason is not None:
+      cloudlog.warning(f"shutting device down, reason={shutdown_reason}, offroad since {off_ts}")
+      if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
+        sentry_power_off_notified = True
+        notify_sentry_power_off(shutdown_reason, power_monitor)
+      params.put_bool("DoShutdown", True)
     else:
       sentry_power_off_notified = False
 
