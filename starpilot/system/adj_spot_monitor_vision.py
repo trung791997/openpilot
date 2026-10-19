@@ -22,7 +22,12 @@ from openpilot.starpilot.common.vasm_assist import (CAR_TO_IMAGE, FOCUS_INTERVAL
 V_ASM_AFFINITY_CORES = [2]
 V_ASM_SOLO_AFFINITY_CORES = [0, 1, 2]
 
-BASE_INTERVAL = 1.000
+# Steady scan, sides alternating, so each side is seen every 2 * BASE_INTERVAL. Was 1.0 (each side every 2 s). Owner,
+# 2026-10-19: cars passing on the highway were missed. Replay, run12 at 0.80 on routes 361+363 (425 run12-dense events,
+# not owner-labelled): expected missed 144 at 1.0 s, ~99 at 0.5 s, 52 at 0.3 s. On the comma (offroad clocks) one
+# inference costs ~375 ms CPU, so 0.3 s would need 125% of core 2; 0.5 s is ~75%. The daemon runs at nice 19 and the
+# cpu throttle below still backs it off when core 2 is busy. The real fix for 0.3 s is a smaller model input.
+BASE_INTERVAL = 0.500
 FOLLOWUP_INTERVAL = 0.300
 FOLLOWUP_WINDOW = 1.0
 # Night gate (owner, 2026-10-14). Below this crop brightness the owner could not make out cars in the side crops, and
