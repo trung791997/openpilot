@@ -71,3 +71,28 @@ def test_close_slow_lead_brakes_through_the_mpc():
     planner.update(make_sm(e2e_a=0.0, lead_one=lead(True, 25.0, 5.0)))
   assert planner.source == 'lead0'
   assert planner.output_a_target < -1.0
+
+
+def test_weak_lead_cap_limits_the_creep_toward_a_slow_lead():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=2.0)
+  for _ in range(60):
+    planner.update(make_sm(v_ego=2.0, v_cruise=10.0, e2e_a=1.0, lead_one=lead(True, 12.0, 2.0)))
+  cap = slp.get_weak_lead_accel_cap(make_sm(lead_one=lead(True, 12.0, 2.0))['radarState'], 2.0)
+  assert cap is not None
+  assert planner.output_a_target <= cap + 1e-6
+
+
+def test_weak_lead_cap_never_softens_a_brake():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=2.0)
+  for _ in range(20):
+    planner.update(make_sm(v_ego=2.0, v_cruise=10.0, e2e_a=-1.5, lead_one=lead(True, 12.0, 2.0)))
+  assert planner.output_a_target == pytest.approx(-1.5)
+
+
+def test_weak_lead_cap_release_is_ramped():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=2.0)
+  for _ in range(60):
+    planner.update(make_sm(v_ego=2.0, v_cruise=10.0, e2e_a=1.0, lead_one=lead(True, 12.0, 2.0)))
+  before = planner.output_a_target
+  planner.update(make_sm(v_ego=2.0, v_cruise=10.0, e2e_a=1.0))
+  assert planner.output_a_target <= max(before, 0.0) + slp.WEAK_LEAD_CAP_EASE_JERK * planner.dt + 1e-6

@@ -9,6 +9,10 @@ this planner when uses_stock_long_planner(CP); radar drives keep LongitudinalPla
 The output is min(lead MPC, jerk-limited cruise accel, model desiredAcceleration in experimental mode), as upstream.
 Inputs from StarPilot: starpilotPlan.vCruise (set speed after speed-limit and curve control) and starpilotPlan.tFollow
 (the driver's following distance). Static and unit evidence only; not driven.
+
+One StarPilot term is kept on top (owner, 2026-10-19): the low-speed weak-lead accel cap with its 2 m/s^3 ease, which
+limits the creep toward a slow lead in stop-and-go so the car does not gas up and then brake. It only ever lowers a
+positive accel target, so it cannot delay or soften a brake.
 """
 import math
 import numpy as np
@@ -24,6 +28,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, WEAK_LEAD_CAP_EASE_JERK
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.starpilot_variables import get_longitudinal_actuator_delay
 
@@ -70,6 +75,14 @@ def get_accel_from_plan(speeds, accels, t_idxs, action_t=DT_MDL):
   return float(2 * (v_target - v_now) / action_t - a_now)
 
 
+def get_weak_lead_accel_cap(radar_state, v_ego):
+  """The StarPilot low-speed weak-lead cap (see LongitudinalPlanner.get_low_speed_weak_lead_accel_cap), or None."""
+  caps = [LongitudinalPlanner.get_low_speed_weak_lead_accel_cap(None, lead, v_ego)
+          for lead in (radar_state.leadOne, radar_state.leadTwo)]
+  caps = [cap for cap in caps if cap is not None]
+  return min(caps) if caps else None
+
+
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
 
@@ -102,6 +115,7 @@ class StockLongitudinalPlanner:
     self.output_a_target = init_a
     self.output_should_stop = False
     self.source = 'cruise'
+    self.weak_lead_cap_releasing = False
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -180,7 +194,21 @@ class StockLongitudinalPlanner:
 
     output_a_target, self.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(c[2] for c in candidates)
-    self.output_a_target = float(np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX))
+    output_a_target = float(np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX))
+
+    # Weak-lead cap, eased as in LongitudinalPlanner: engaging, it cuts the target by at most WEAK_LEAD_CAP_EASE_JERK
+    # per second; released, the target may rise above max(previous, 0) by no more than that. Positive side only.
+    weak_lead_cap = None if self.output_should_stop else get_weak_lead_accel_cap(sm['radarState'], v_ego)
+    cap_step = WEAK_LEAD_CAP_EASE_JERK * self.dt
+    if weak_lead_cap is not None:
+      output_a_target = min(output_a_target, max(weak_lead_cap, a_prev - cap_step))
+      self.weak_lead_cap_releasing = True
+    elif self.weak_lead_cap_releasing:
+      release_limit = max(a_prev, 0.0) + cap_step
+      self.weak_lead_cap_releasing = output_a_target > release_limit
+      if self.weak_lead_cap_releasing:
+        output_a_target = release_limit
+    self.output_a_target = output_a_target
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
 

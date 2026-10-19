@@ -11295,6 +11295,10 @@ tuning from mvl since it's designed for Honda. But everything else can be a red 
   - The MPC runs in acc mode on leads only: v_cruise far, `optional_far_lead_comfort=False`, no HumanFollowing.
   - None of the post-MPC guards run: the close-lead caps, the vision approach caps, EXP_EARLY_ONSET, the soft-stop
     floor, the far-follow slew, the release slews, accel boost, and the car-specific tunes.
+- **Weak-lead cap kept** (owner, same day: it helps stop-and-go by cutting brake jerk): the low-speed weak-lead accel
+  cap and its 2 m/s^3 engage and release ease (WEAK_LEAD_CAP_EASE_JERK) run on top of the min(). Below 4.5 m/s, with
+  a lead inside 18 m going under 4 m/s, accel is capped at 0.08-0.22 m/s^2, so the car does not gas toward the lead
+  and then brake. It only lowers a positive target. Skipped when stopping. Newborn-radar part not ported (no radar).
 - **Kept:** starpilotPlan.vCruise (speed limit and curve control), starpilotPlan.tFollow (the driver's following
   distance), the live longitudinal delay, longcontrol and the Honda carcontroller (mvl gas learner, Honda tuning).
 - **Open:** Job's closed-loop replay of 0000039c, stock planner vs §250, with fidelity. It ships to the car only after
