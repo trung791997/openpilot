@@ -11,8 +11,6 @@ export const NAV_SETTING_KEYS = [
   "NavDesiresAllowed",
   "NavLanePositioningAllowed",
   "NavExitAutoKeep",
-  "NavKeepRightReminder",
-  "NavMergeWarn",
   "NavJamExitWarn",
   "TurnDesires",
   "VASMEnabled",
@@ -31,8 +29,6 @@ export const NAV_SETTING_KEYS = [
 const ON_PAGE_PARENT = {
   NavLanePositioningAllowed: "NavDesiresAllowed",
   NavExitAutoKeep: "NavLanePositioningAllowed",
-  NavKeepRightReminder: "VASMEnabled",
-  NavMergeWarn: "VASMEnabled",
   NavJamExitWarn: "VASMEnabled",
   NavOffRampSlowdown: "NavLongitudinalAllowed",
   NavJamSlowdown: "NavLongitudinalAllowed",

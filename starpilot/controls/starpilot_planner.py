@@ -20,13 +20,11 @@ from openpilot.selfdrive.controls.lib.lead_behavior import (
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import A_CHANGE_COST, DANGER_ZONE_COST, J_EGO_COST, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_lead_follow_jerk_scale
 
-from openpilot.starpilot.common.vision_bsm import get_fresh_vasm_state, vasm_is_live
 from openpilot.starpilot.common.starpilot_utilities import calculate_lane_width, calculate_road_curvature, extract_curve_profile
 from openpilot.starpilot.common.starpilot_variables import CRUISING_SPEED, MINIMUM_LATERAL_ACCELERATION, PLANNER_TIME, THRESHOLD
 from openpilot.starpilot.controls.lib.conditional_chill_mode import ConditionalChillMode
 from openpilot.starpilot.controls.lib.conditional_experimental_mode import ConditionalExperimentalMode
-from openpilot.starpilot.controls.lib.nav_passing import Lead, NavPassingAdvisor, PassingInputs, edge_gap
-from openpilot.starpilot.controls.lib.speed_limit_controller import SOURCE_NONE
+from openpilot.starpilot.controls.lib.nav_passing import NavPassingAdvisor, PassingInputs, edge_gap
 from openpilot.starpilot.controls.lib.starpilot_acceleration import StarPilotAcceleration
 from openpilot.starpilot.controls.lib.starpilot_events import StarPilotEvents
 from openpilot.starpilot.controls.lib.starpilot_following import StarPilotFollowing
@@ -280,74 +278,41 @@ class StarPilotPlanner:
     else:
       self.starpilot_weather.weather_id = 0
 
-  def _passing_speed_limit(self):
-    # a real posted limit only: SLC's set-speed fallback has no source and is not a limit
-    slc = self.starpilot_vcruise.slc
-    return float(slc.target or 0.0) if getattr(slc, "source", SOURCE_NONE) != SOURCE_NONE else 0.0
-
-  def _passing_speed_offset(self, limit):
-    # the owner's SLC offset for this limit: openpilot may drive up to limit + offset
-    return 0.0 if limit <= 0.0 else float(self.starpilot_vcruise.slc.get_offset(limit) or 0.0)
-
-  def _passing_inputs(self, sm, starpilot_toggles, v_ego, now):
+  def _passing_inputs(self, sm, starpilot_toggles):
     CS = sm["carState"]
-    radar = sm["starpilotRadarState"]
-    vasm_on = bool(getattr(starpilot_toggles, "v_asm_enabled", False))
-    vasm_live = vasm_on and vasm_is_live(self.params_memory, now)
-    vasm_left, vasm_right = get_fresh_vasm_state(self.params_memory, now) if vasm_live else (False, False)
-
-    def lead(l):
-      return Lead(bool(l.status), float(l.dRel), float(l.vLead))
-
-    speed_limit = self._passing_speed_limit()
     return PassingInputs(
       nav_state=self.starpilot_vcruise._nav_instruction_state,
-      v_ego=v_ego,
-      speed_limit=speed_limit,
-      speed_offset=self._passing_speed_offset(speed_limit),
-      min_lane_change_speed=float(starpilot_toggles.minimum_lane_change_speed),
-      lead=lead(self.lead_one), lead_right=lead(radar.leadRight),
       lane_width_left=float(self.lane_width_left), lane_width_right=float(self.lane_width_right),
       edge_gap_left=float(self.edge_gap_left), edge_gap_right=float(self.edge_gap_right),
       # floor: with Lane Changes off the toggle reads 0, which would make any gap count as a lane
       lane_detection_width=max(float(starpilot_toggles.lane_detection_width), PASSING_MIN_LANE_WIDTH),
-      vasm_live=vasm_live,
-      blocked_left=bool(CS.leftBlindspot or vasm_left), blocked_right=bool(CS.rightBlindspot or vasm_right),
       left_blinker=bool(CS.leftBlinker), right_blinker=bool(CS.rightBlinker),
     )
 
   def update_nav_passing(self, sm, starpilot_toggles, v_ego):
-    """D-115/D-117: publish the keep-right, merge and jammed-exit prompts. Prompt only; the driver does the lane change."""
+    """D-117: publish the jammed-exit prompt. Prompt only; the driver does the lane change."""
     self.nav_passing_chime = ""
     if self._passing_publish_disabled:
       return
     now = time.monotonic()
-    keep_right = bool(getattr(starpilot_toggles, "nav_keep_right", False))
-    merge_warn = bool(getattr(starpilot_toggles, "nav_merge_warn", False))
-    exit_jam_warn = bool(getattr(starpilot_toggles, "nav_jam_exit_warn", False))
-    if keep_right or merge_warn or exit_jam_warn:
-      inputs = self._passing_inputs(sm, starpilot_toggles, v_ego, now)
-      inputs.keep_right = keep_right
-      inputs.merge_warn, inputs.exit_jam_warn = merge_warn, exit_jam_warn
+    if getattr(starpilot_toggles, "nav_jam_exit_warn", False):
+      inputs = self._passing_inputs(sm, starpilot_toggles)
+      inputs.exit_jam_warn = True
     else:
-      inputs = PassingInputs({}, v_ego, 0.0, 0.0, Lead(), Lead(), 0.0, 0.0, 0.0, False, False, False, False, False)
+      inputs = PassingInputs({}, 0.0, 0.0, 0.0, False, False)
     prompt = self.nav_passing.update(inputs, now)
     # one chime per phase per episode
     phase = prompt["phase"] if prompt["armed"] else ""
     self.nav_passing_chime = phase if phase and phase not in self._passing_chimed else ""
     if phase:
       self._passing_chimed.add(phase)
-    else:
-      self._passing_chimed.discard("keepright")
     # D-116: with no suggestion up, say why the jam slowdown is easing off. No chime; the banner only.
     jam = getattr(self.starpilot_vcruise, "nav_jam_notice", None)
     if not prompt["armed"] and jam is not None:
       prompt = {"armed": True, "side": "", "phase": "jam", "ts": now,
                 "distance": float(round(jam[0] / 10.0) * 10.0), "speed": round(float(jam[1]), 1)}
-    # one chime per merge / jammed exit: re-arm only once navigationd no longer reports it
+    # one chime per jammed exit: re-arm only once navigationd no longer reports it
     nav = inputs.nav_state
-    if phase != "merge" and nav.get("maneuverType", "") != "merge":
-      self._passing_chimed.discard("merge")
     if phase != "exitjam" and float(nav.get("exitJamDistance", -1.0) or -1.0) <= 0.0:
       self._passing_chimed.discard("exitjam")
     key = (prompt["armed"], prompt["side"], prompt["phase"])

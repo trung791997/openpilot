@@ -1186,24 +1186,7 @@ STARPILOT_EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.steerRequired, StarPilotAudibleAlert.goat, 2.),
   },
 
-  # D-115: chime once per keep-right reminder
-  StarPilotEventName.navKeepRight: {
-    ET.PERMANENT: Alert(
-      "Keep Right",
-      "Right lane is open, check mirror",
-      StarPilotAlertStatus.starpilot, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
-  },
-
-  # D-117: chime once per route merge and jammed exit
-  StarPilotEventName.navMergeAhead: {
-    ET.PERMANENT: Alert(
-      "Merge Ahead",
-      "Check mirror before merging",
-      StarPilotAlertStatus.starpilot, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
-  },
-
+  # D-117: chime once per jammed exit
   StarPilotEventName.navExitJammed: {
     ET.PERMANENT: Alert(
       "Exit Is Backed Up",

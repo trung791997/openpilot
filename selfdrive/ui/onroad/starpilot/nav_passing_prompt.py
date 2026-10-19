@@ -15,12 +15,9 @@ PROMPT_STALE_SECONDS = 2.0
 PROMPT_UPDATE_INTERVAL = 0.1
 
 TEXT = {
-  "keepright": ("Keep right", "Right lane is open, check mirror"),
   "jam": ("Traffic ahead in {distance}", "Easing to {speed} for the slowdown"),
-  "merge": ("Merge {side} ahead", "Check mirror before merging"),
   "exitjam": ("Exit backed up in {distance}", "Move {side} early, check mirror"),
 }
-MERGE_BLOCKED = "Car beside you on the {side}: wait"
 
 
 def format_jam(distance_m: float, speed_ms: float, is_metric: bool) -> tuple[str, str]:
@@ -33,7 +30,7 @@ def format_jam(distance_m: float, speed_ms: float, is_metric: bool) -> tuple[str
 
 
 def parse_passing_prompt(raw, now: float) -> dict | None:
-  """Keep-right, jam, merge or jammed-exit prompt if it is armed and fresh, else None."""
+  """Jam or jammed-exit prompt if it is armed and fresh, else None."""
   if isinstance(raw, (str, bytes)):
     try:
       raw = json.loads(raw) if raw else {}
@@ -55,7 +52,7 @@ def parse_passing_prompt(raw, now: float) -> dict | None:
     return None
   if phase == "exitjam" and not (math.isfinite(distance) and distance > 0.0):
     return None
-  return {"side": side, "phase": phase, "ts": ts, "distance": distance, "speed": speed, "blocked": bool(raw.get("blocked", False))}
+  return {"side": side, "phase": phase, "ts": ts, "distance": distance, "speed": speed}
 
 
 class NavPassingPromptRenderer(Widget):
@@ -100,8 +97,6 @@ class NavPassingPromptRenderer(Widget):
     side = prompt["side"]
     title, detail = TEXT[prompt["phase"]]
     distance, speed = format_jam(prompt["distance"], prompt["speed"], ui_state.is_metric)
-    if prompt["phase"] == "merge" and prompt.get("blocked"):
-      detail = MERGE_BLOCKED
     title = title.format(side=side, distance=distance, speed=speed)
     detail = detail.format(side=side, distance=distance, speed=speed)
     accent = rl.Color(255, 176, 32, 220) if prompt["phase"] == "jam" else rl.Color(80, 200, 255, 210)

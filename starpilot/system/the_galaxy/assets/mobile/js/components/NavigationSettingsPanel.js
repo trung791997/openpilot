@@ -11,8 +11,6 @@ export const NAV_SETTING_KEYS = [
   "NavDesiresAllowed",
   "NavLanePositioningAllowed",
   "NavExitAutoKeep",
-  "NavKeepRightReminder",
-  "NavMergeWarn",
   "NavJamExitWarn",
   "TurnDesires",
   "VASMEnabled",

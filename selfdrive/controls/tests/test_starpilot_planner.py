@@ -275,48 +275,29 @@ def test_nav_passing_publishes_prompt_and_chimes_once(monkeypatch):
   try:
     clock = {"t": 1000.0}
     monkeypatch.setattr(starpilot_planner_module.time, "monotonic", lambda: clock["t"])
-    memory = FakeMemory({"VASMLastUpdateMonoTime": "1000.0", "VASMLeftActive": "0", "VASMRightActive": "0"})
+    memory = FakeMemory({})
     planner.params_memory = memory
-    planner.starpilot_vcruise._nav_instruction_state = {"valid": True, "maneuverModifier": "slight right", "maneuverDistance": 9000.0}
-    planner.starpilot_vcruise.slc.source = "Map Data"
-    planner.starpilot_vcruise.slc.target = 65 * CV.MPH_TO_MS
-    planner.lead_one = SimpleNamespace(status=False, dRel=0.0, vLead=0.0)
+    planner.starpilot_vcruise._nav_instruction_state = {"valid": True, "exitJamDistance": 2500.0, "exitJamSide": "right"}
     planner.lane_width_left = planner.lane_width_right = 3.6
     planner.edge_gap_left = planner.edge_gap_right = 99.0
-    no_lead = SimpleNamespace(status=False, dRel=0.0, vLead=0.0)
-    sm = {
-      "carState": SimpleNamespace(leftBlindspot=False, rightBlindspot=False, leftBlinker=False, rightBlinker=False),
-      "starpilotRadarState": SimpleNamespace(leadLeft=no_lead, leadRight=no_lead),
-    }
-    toggles = SimpleNamespace(nav_keep_right=True, v_asm_enabled=True, minimum_lane_change_speed=20 * CV.MPH_TO_MS,
-                              lane_detection_width=2.5)
+    sm = {"carState": SimpleNamespace(leftBlindspot=False, rightBlindspot=False, leftBlinker=False, rightBlinker=False)}
+    toggles = SimpleNamespace(nav_jam_exit_warn=True, lane_detection_width=2.5)
 
     chimes = []
-    for _ in range(130):
-      memory.values["VASMLastUpdateMonoTime"] = str(clock["t"])
-      planner.update_nav_passing(sm, toggles, 65 * CV.MPH_TO_MS)
+    for _ in range(10):
+      planner.update_nav_passing(sm, toggles, 25.0)
       chimes.append(planner.nav_passing_chime)
       clock["t"] += 0.5
 
-    assert chimes.count("keepright") == 1
+    assert chimes.count("exitjam") == 1
     key, prompt = memory.writes[-1]
-    assert key == "NavPassingPrompt" and prompt["armed"] and prompt["side"] == "right"
+    assert key == "NavPassingPrompt" and prompt["armed"] and prompt["side"] == "right" and prompt["phase"] == "exitjam"
 
-    # V-ASM goes stale: the prompt is withdrawn, never shown as clear
-    clock["t"] += 4.0
-    planner.update_nav_passing(sm, toggles, 65 * CV.MPH_TO_MS)
+    # navigationd stops reporting the jam: the prompt is withdrawn and the chime re-arms
+    planner.starpilot_vcruise._nav_instruction_state = {"valid": True}
+    planner.update_nav_passing(sm, toggles, 25.0)
     assert memory.writes[-1][1]["armed"] is False
-  finally:
-    planner.shutdown()
-
-
-def test_nav_passing_ignores_slc_set_speed_fallback():
-  planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
-
-  try:
-    planner.starpilot_vcruise.slc.source = "None"
-    planner.starpilot_vcruise.slc.target = 30.0
-    assert planner._passing_speed_limit() == 0.0
+    assert "exitjam" not in planner._passing_chimed
   finally:
     planner.shutdown()
 
@@ -329,8 +310,7 @@ def test_jam_notice_published_when_no_suggestion_is_up(monkeypatch):
     memory = FakeMemory({})
     planner.params_memory = memory
     planner.starpilot_vcruise.nav_jam_notice = (1234.0, 17.9)
-    toggles = SimpleNamespace(nav_keep_right=False,
-                              nav_merge_warn=False, nav_jam_exit_warn=False)
+    toggles = SimpleNamespace(nav_jam_exit_warn=False)
     planner.update_nav_passing({}, toggles, 25.0)
     key, prompt = memory.writes[-1]
     assert key == "NavPassingPrompt" and prompt["armed"] and prompt["phase"] == "jam" and prompt["side"] == ""

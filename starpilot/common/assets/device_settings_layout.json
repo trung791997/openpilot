@@ -347,28 +347,6 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "NavKeepRightReminder",
-        "galaxy_page": "navigation",
-        "label": "Keep Right Reminder",
-        "description": "On a navigated highway, remind you to move right after a minute of cruising with the right lane open, not slower, and V-ASM clear on the right. At most once every 5 minutes. Prompt and chime only. Needs V-ASM. Experimental and off by default; not road-validated.",
-        "picker_description": "Reminds you to move right when the right lane is open.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "VASMEnabled",
-        "settings_tier": "advanced"
-      },
-      {
-        "key": "NavMergeWarn",
-        "galaxy_page": "navigation",
-        "label": "Warn About Merges",
-        "description": "Banner and chime about 1000 ft before the route merges, telling you which side; says to wait while V-ASM sees a car beside you on that side. Prompt only; your hands do the merge. Needs V-ASM. Experimental and off by default; not road-validated.",
-        "picker_description": "Warns before the route merges and shows which side is blocked.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "VASMEnabled",
-        "settings_tier": "advanced"
-      },
-      {
         "key": "NavJamExitWarn",
         "galaxy_page": "navigation",
         "label": "Warn When Your Exit Is Backed Up",

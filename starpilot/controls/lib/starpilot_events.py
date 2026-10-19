@@ -65,11 +65,7 @@ class StarPilotEvents:
       self.events.add(StarPilotEventName.forcingStop)
 
     passing_chime = getattr(self.starpilot_planner, "nav_passing_chime", "")
-    if passing_chime == "keepright":
-      self.events.add(StarPilotEventName.navKeepRight)
-    elif passing_chime == "merge":
-      self.events.add(StarPilotEventName.navMergeAhead)
-    elif passing_chime == "exitjam":
+    if passing_chime == "exitjam":
       self.events.add(StarPilotEventName.navExitJammed)
 
     if not self.starpilot_planner.tracking_lead and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
