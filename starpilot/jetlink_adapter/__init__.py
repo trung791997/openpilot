@@ -1,16 +1,18 @@
 """
 Jetlink on StarPilot: the one module that holds every openpilot import jetlink
 needs, and the functions the hooks call. Ported from zoompilot's
-openpilot/sunnypilot/jetlink_adapter (develop, jetlink API 2; jetlink_repo
+openpilot/sunnypilot/jetlink_adapter (develop, jetlink API 3; jetlink_repo
 pinned in jetlink_repo/VENDORED_FROM). Original copyright Zeph Leggett, MIT.
 
 Differences from zoompilot: no sunnypilot model manager. StarPilot's manifest
 names no comma commits, so jetlink keeps its own catalog (JetlinkCatalog,
 sunnypilot's big-model catalogs as jetlink fetches them, refreshed by
 StarPilot's model manager) and its own pick (JetlinkBigModel, set from the
-Galaxy model manager; unset runs jetlink's default big model). No MADS (in_control reads
-carControl), StarPilot's MODELS_PATH as the model root, and this fork's
-make_warp signature.
+Galaxy model manager; unset runs jetlink's default big model). No MADS
+(in_control reads carControl, and counts StarPilot's always-on lateral), and
+StarPilot's MODELS_PATH as the model root. The warp is upstream openpilot's
+driving warp pickle, captured on the comma by
+selfdrive/modeld/compile_driving_warp.py; nothing builds one in scons.
 
 manager imports this module to build the process list and runs it as jetlinkd,
 the resident gadget owner, so the top level is the standard library only.
@@ -25,7 +27,7 @@ from pathlib import Path
 
 # the version of jetlink.openpilot's API this adapter is written to; any other
 # is treated as jetlink being absent, with the reason as the offroad alert
-API = 2
+API = 3
 
 # the gadget owner, as manager names the process and selfdrived lists it
 OWNER = 'jetlinkd'
@@ -47,11 +49,13 @@ KEYS = _Keys(link='JetlinkLink', offroad='IsOffroad', progress='AcceleratorProgr
 # hardware package is too heavy for the owner, so they are written out here
 CHESTNUT_IDS = frozenset({(0xADD1, 0x0001), (0x3801, 0x0001), (0x174C, 0x2464), (0x174C, 0x2463)})
 
-# where the build puts the warp for each camera (SConscript) and modeld loads
-# it from: in the fork's tree, never in the jetlink submodule (a file there
-# leaves it dirty for the updater), and under the *.pkl ignore, which the
-# release scripts add past. Not Paths.comma_home(), which on AGNOS is a tmpfs
-# overlay: the pickle was gone every boot
+# where the driving warp for each camera is committed and modeld loads it
+# from: upstream openpilot's format and name (driving_warp_{w}x{h}_tinygrad.pkl,
+# captured on the comma's GPU by selfdrive/modeld/compile_driving_warp.py).
+# In the fork's tree, never in the jetlink submodule (a file there leaves it
+# dirty for the updater). Not Paths.comma_home(), which on AGNOS is a tmpfs
+# overlay: the pickle was gone every boot. No file here, no large model: the
+# drive stays on the small model (warp.Warps.built)
 WARP_DIR = Path(__file__).resolve().parent / 'models'
 
 OWNER_LOG = Path('/data/log/jetlink-owner.log')
@@ -72,8 +76,10 @@ def _params_dir() -> Path:
 
 
 def warp_path(cam_w: int, cam_h: int, model_w: int, model_h: int) -> Path:
-  """The warp for one geometry: the build's target and what modeld opens."""
-  return WARP_DIR / f'warp_{cam_w}x{cam_h}_{model_w}x{model_h}_tinygrad.pkl'
+  """The driving warp for one camera, what modeld opens. Upstream names it by
+  the camera only; model_w x model_h is the 512x256 every driving model reads,
+  and warp.Warps.load checks the pickle's output shape against it."""
+  return WARP_DIR / f'driving_warp_{cam_w}x{cam_h}_tinygrad.pkl'
 
 
 def owner_config():
@@ -94,8 +100,8 @@ def main() -> None:
 
 
 def adapter() -> Adapter:
-  """The adapter, for jetlink's entry points that run as their own process:
-  the provisioning run and the warp build."""
+  """The adapter, for jetlink's entry point that runs as its own process:
+  the provisioning run."""
   return Adapter()
 
 
@@ -114,6 +120,8 @@ class Adapter:
     # 110 us for the read, and the UI reads several five times a second. By
     # store, since a test or a bench runs under its own prefix
     self._stores: dict[Path, object] = {}
+    # in_control()'s own SubMaster, made on first ask on modeld's frame thread
+    self._sm = None
 
   # -- params ---------------------------------------------------------------
 
@@ -189,20 +197,28 @@ class Adapter:
                      constants=ModelConstants, lat_smooth_seconds=LAT_SMOOTH_SECONDS,
                      long_smooth_seconds=LONG_SMOOTH_SECONDS, get_action_from_model=get_action_from_model)
 
+  def in_control(self) -> bool:
+    """jetlink's joining model, on modeld's frame thread before every frame:
+    is openpilot steering or holding the car? The rule is in_control(sm)
+    below, on a SubMaster of the adapter's own, polled without waiting, as
+    zoompilot's adapter does. Anything that goes wrong counts as in control,
+    so a swap never happens on no information; never raises."""
+    try:
+      if self._sm is None:
+        import cereal.messaging as messaging
+        self._sm = messaging.SubMaster(list(IN_CONTROL))
+      self._sm.update(0)
+    except Exception as e:
+      error = f"{type(e).__name__}: {e}"
+      if _failed_hooks.get('Adapter.in_control') != error:
+        _failed_hooks['Adapter.in_control'] = error
+        _log_failure("Adapter.in_control() failed", e)
+      return True
+    _failed_hooks.pop('Adapter.in_control', None)
+    return in_control(self._sm) is not False
+
   def event(self, name: str, **fields) -> None:
     self.log.event(name, **fields)
-
-  # -- the build --------------------------------------------------------------
-
-  def make_warp(self, cam_w: int, cam_h: int, model_w: int, model_h: int):
-    # compile_modeld first: it patches tinygrad's firmware fetch as it loads
-    # In policy-history mode on the default device this fork's make_warp is
-    # upstream's graph (frame_skip is unused there)
-    from openpilot.selfdrive.modeld.compile_modeld import IMAGE_HISTORY_IN_POLICY, NV12Frame, make_warp
-    from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
-    from tinygrad import Device
-    nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
-    return make_warp(nv12, model_w, model_h, 1, IMAGE_HISTORY_IN_POLICY, Device.DEFAULT), nv12.size
 
 
 # -- what the hooks call ------------------------------------------------------
@@ -366,10 +382,10 @@ IN_CONTROL = ('carState', 'carControl')
 
 @_guarded(True)
 def in_control(sm) -> bool:
-  """modeld, before every frame, onto the model: is openpilot steering or
-  holding the car? jetlink's large model swaps in only while it is not.
-  StarPilot's always-on lateral sets latActive without enabled. A service
-  late or invalid counts as in control."""
+  """The rule Adapter.in_control() applies to its SubMaster: is openpilot
+  steering or holding the car? jetlink's large model swaps in only while it
+  is not. StarPilot's always-on lateral sets latActive without enabled. A
+  service late or invalid counts as in control."""
   if not (sm.all_alive(IN_CONTROL) and sm.all_valid(IN_CONTROL)):
     return True
   cc = sm['carControl']

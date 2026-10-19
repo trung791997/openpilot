@@ -1481,11 +1481,11 @@ def main(demo=False):
     blinker_on = bool(sm["carState"].leftBlinker or sm["carState"].rightBlinker) or lane_change_in_progress
 
     # jetlink's joining model swaps its large model in only while nothing is in
-    # control, and hands it back on this share of dropped frames. A handover's
-    # stall is not lag, nor are the drops of the frame it happens on
+    # control, which it asks the adapter before every run() (jetlink API 3),
+    # and hands it back on this share of dropped frames. A handover's stall is
+    # not lag, nor are the drops of the frame it happens on
     jetlink_joined = isinstance(model, Joined)
     if jetlink_joined:
-      model.in_control = jetlink_adapter.in_control(sm)
       model.frame_drop_ratio = frame_drop_ratio
       handovers = getattr(model, 'handovers', 0)
       if model.big != jetlink_big_published:

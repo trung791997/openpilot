@@ -9,6 +9,12 @@ action_t from inputs. This ModelState runs on its own road/wide keys, takes
 prepare_only, blinker_on and after_output_sync, and modeld reads generation
 flags (is_v*, mlsim) off the model to pick the action law. Static only: no
 replay or road evidence yet.
+
+jetlink's fallback reset (warp.prepare_reset, v0.8.7) zeroes the small
+model's history the way upstream modeld's warmup does: the recurrent GPU
+state named by `state_pairs`, one host buffer `packed_input`, and
+`prev_desire`. SmallModel carries those names over this fork's ModelState,
+which keeps its history in more pieces; see HostInputs.
 """
 from __future__ import annotations
 
@@ -17,10 +23,47 @@ from collections.abc import Callable
 import numpy as np
 
 
+class HostInputs:
+  """Upstream modeld's `packed_input` (one uint8 buffer of every host input
+  and both frames, zeroed after warmup) over this fork's ModelState, which
+  keeps them in several arrays. fill(v) writes each of them in place, as
+  ModelState._reset_state zeroes them after warmup:
+
+  - every array in `npy`: the views the NPY tensors read (tfm, big_tfm and the
+    packed policy inputs: desire, traffic_convention, prev_feat, ...)
+  - `frame_views`, the fused graph's frame copies, when there are any
+  - every array in `numpy_inputs`, which run() copies into `npy`
+  - `full_prev_desired_curv`, the desired-curvature history, when the model has one
+
+  Not touched, unlike _reset_state: _blob_cache (camera buffer wrappers, not
+  history) and last_warp_output (overwritten by the next run). The arrays are
+  looked up on each fill, so one re-made by _reset_state is the one filled."""
+
+  def __init__(self, model):
+    self.model = model
+
+  def arrays(self) -> list[np.ndarray]:
+    m = self.model
+    found = list(m.npy.values())
+    found += list((getattr(m, 'frame_views', None) or {}).values())
+    found += list(m.numpy_inputs.values())
+    if getattr(m, 'prev_desired_curv_key', None) is not None and getattr(m, 'full_prev_desired_curv', None) is not None:
+      found.append(m.full_prev_desired_curv)
+    return found
+
+  def fill(self, value) -> None:
+    for array in self.arrays():
+      array.fill(value)
+
+
 class SmallModel:
   """The small ModelState as jetlink's joining model calls it. modeld sets
   prepare_only and blinker_on before each run(); jetlink sets in_control,
   frame_drop_ratio and lat_delay here. Anything else reads through."""
+
+  # stock modeld's ModelState, to jetlink's prepare_reset: no modeld_v2
+  # bundle adapter in between, so it reads state_pairs and packed_input
+  adapter = None
 
   def __init__(self, model):
     self.model = model
@@ -31,6 +74,17 @@ class SmallModel:
     self.lat_delay = 0.0
     self.PLANPLUS_CONTROL = 1.0
     self.chestnut = False
+    self.packed_input = HostInputs(model)
+
+  @property
+  def state_pairs(self) -> dict[str, str]:
+    """Upstream's {state: next_state} for the recurrent state on the GPU.
+    prepare_reset reads only the keys, as names in input_queues to zero. Here
+    that is every queue off the host (img_q, big_img_q, feat_q, desire_q on
+    QUEUE_DEV), the set jetlink v0.8.5 cleared; the NPY tensors are host
+    memory and packed_input zeroes them. This fork's queues advance in place,
+    so each pairs with itself."""
+    return {name: name for name, q in self.model.input_queues.items() if q.device != 'NPY'}
 
   def run(self, bufs: dict, transforms: dict[str, np.ndarray], inputs: dict[str, np.ndarray],
           after_enqueue: Callable[[], None] | None = None):
