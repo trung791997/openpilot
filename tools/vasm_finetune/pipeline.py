@@ -72,7 +72,8 @@ class Pipeline:
     if "recipe" in self.state and self.state["recipe"] != recipe:
       sys.exit(f"{args.run} was started with a different recipe; start a new --run")
     self.recipe = recipe
-    self.base = os.path.join(self.ft, "vasm_converted.pt")
+    # "base": a model under ft/, e.g. sizing.py's vasm_converted_224.pt (smaller input, same 352 ONNX interface)
+    self.base = os.path.join(self.ft, recipe.get("base", "vasm_converted.pt"))
     self.env = {**os.environ, "PYTORCH_ENABLE_MPS_FALLBACK": "1"}
 
   def save(self):
