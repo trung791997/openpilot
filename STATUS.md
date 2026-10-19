@@ -11329,7 +11329,7 @@ Fidelity (median band-pass aEgo corr / vEgo RMSE):
 
 **Untracked vision leads (base, 39c).** For 129 s, 53% of lead time, leadOne has status=1 but should_track_lead rejects it (the 25 m vision floor in lead_behavior.py). In those frames the MPC plans against the placeholder lead and e2e does the braking. This is consistent with "follow the model in experimental". Not acted on.
 
-## 255. MPC lead filter re-seeded when a lead enters it (2026-10-19). Static and unit tests; replay on 361/363 pending.
+## 255. MPC lead filter re-seeded when a lead enters it (2026-10-19). Static, unit tests and replay (361/363).
 
 Branch mpc-lead-onset-seed, not on the car.
 
@@ -11345,3 +11345,15 @@ Branch mpc-lead-onset-seed, not on the car.
 680 planner tests pass.
 
 **Next.** Job replays 361 and 363 (Peter: highway segments) against base, measuring onset |dv| and fidelity.
+
+**255 replay (Job R15, closed loop, logged toggles, b0.075 plant, 4dd2649a9 vs 1ee280a39).**
+- Fidelity is the same in both arms. 363: aEgo corr median 0.97, vEgo RMSE median 0.13. 361: corr 0.95, vEgo RMSE median 0.13, but it drifts up to 175 m in position, so its gap/TTC figures are not evidence.
+- Every onset frame where the MPC lead speed was more than 1 m/s off is gone:
+  - 363 (20 onsets above 47 mph): 6 -> 0. Max 3.37 -> 3.20; the 3.20 is a pre-existing non-onset vision frame where the MPC reads the lead slower.
+  - 361 (17 onsets above 47 mph): 5 -> 0. Max 6.25 -> 1.25.
+  - The remaining non-onset frames are identical in both arms.
+- Output: identical on 361. On 363, five windows differ by more than 0.05, and none moves min out by more than 0.07.
+- Largest change, 363 11:07.6 (lead onset at 83 m): min out -1.81 -> -1.74. This comes after closed-loop divergence that began at 10:44.
+- Min gap 4.1 m, min TTC 2.59 s and gas-to-brake cycles (5 on 363, 21 on 361) are the same in both arms.
+- No window moved by more than 0.3, so no frames were pulled.
+- Verdict: the fix corrects the MPC's internal lead speed with no measurable change to how the car drives on these routes. Shipped default on (it has no toggle).
