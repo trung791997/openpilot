@@ -69,12 +69,8 @@ class StarPilotEvents:
       self.events.add(StarPilotEventName.navPassingSuggested)
     elif passing_chime == "return":
       self.events.add(StarPilotEventName.navPassingReturn)
-    elif passing_chime == "exit":
-      self.events.add(StarPilotEventName.navExitOnlyLane)
     elif passing_chime == "keepright":
       self.events.add(StarPilotEventName.navKeepRight)
-    elif passing_chime == "turn":
-      self.events.add(StarPilotEventName.navTurnOnlyLane)
     elif passing_chime == "merge":
       self.events.add(StarPilotEventName.navMergeAhead)
     elif passing_chime == "exitjam":

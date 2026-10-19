@@ -188,14 +188,6 @@ def exit_jam_ahead(route, along_m: float, lookahead_m: float = EXIT_JAM_LOOKAHEA
   return None
 
 
-def arrival_side(route) -> str:
-  """D-117: "left"/"right" side of the destination from Mapbox's arrive modifier, "" when it gives none."""
-  steps = getattr(route, "steps", None) or []
-  if not steps or steps[-1].maneuver != "arrive":
-    return ""
-  modifier = str(steps[-1].modifier).lower()
-  return "left" if "left" in modifier else "right" if "right" in modifier else ""
-
 OFFER_STALE_S = 2.0  # navigationd rewrites an armed prompt every loop; older means it is gone
 
 

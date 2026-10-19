@@ -358,16 +358,6 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "NavExitOnlyWarn",
-        "galaxy_page": "navigation",
-        "label": "Warn About Exit-Only Lanes",
-        "description": "Warn with a banner and chime when you are in an exit-only lane up to about a mile before an exit your route does not take, or in a city turn-only lane about 1000 ft before a turn your route does not take. Uses Mapbox lane data, which some roads lack. Experimental and off by default; not road-validated.",
-        "picker_description": "Warns when your lane exits or turns ahead and the route does not.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "settings_tier": "advanced"
-      },
-      {
         "key": "NavKeepRightReminder",
         "galaxy_page": "navigation",
         "label": "Keep Right Reminder",
@@ -398,16 +388,6 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "VASMEnabled",
-        "settings_tier": "advanced"
-      },
-      {
-        "key": "NavArrivalHelp",
-        "galaxy_page": "navigation",
-        "label": "Show Destination Side",
-        "description": "In the last 1/4 mile, show which side of the road the destination is on. Banner only: no chime and no slowdown. Experimental and off by default; not road-validated.",
-        "picker_description": "Shows which side the destination is on near arrival.",
-        "data_type": "bool",
-        "ui_type": "toggle",
         "settings_tier": "advanced"
       },
       {

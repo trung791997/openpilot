@@ -113,18 +113,6 @@ def test_exit_jam_needs_a_jam_at_the_next_off_ramp():
   assert exit_jam_ahead(left, 0.0)[1] == "left"
 
 
-def test_arrival_side_from_the_arrive_modifier():
-  from dataclasses import replace
-  from openpilot.starpilot.navigation.traffic_reroute import arrival_side
-  route = _north(5)
-  assert arrival_side(route) == ""                             # "straight": no side
-  route.steps[-1] = replace(route.steps[-1], modifier="right")
-  assert arrival_side(route) == "right"
-  route.steps[-1] = replace(route.steps[-1], modifier="slightLeft")
-  assert arrival_side(route) == "left"
-  route.steps[-1] = replace(route.steps[-1], maneuver="turn")
-  assert arrival_side(route) == ""
-
 def test_route_engine_requests_and_parses_congestion():
   class Response:
     status_code = 200

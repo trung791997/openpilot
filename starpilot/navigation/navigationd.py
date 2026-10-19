@@ -11,18 +11,17 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.starpilot.navigation.destination_store import parse_destination_json
-from openpilot.starpilot.navigation.lane_traps import control_ahead, exit_only_ahead
+from openpilot.starpilot.navigation.lane_traps import control_ahead
 from openpilot.starpilot.navigation.route_engine import Coordinate, MapboxRouteEngine, NavigationRoute, RouteProgress
 from openpilot.starpilot.navigation.traffic_reroute import (
   JAM_DATA_MAX_AGE_S, JAM_MAX_ROUTE_OFFSET_M, TRAFFIC_CONFIRM_RECHECK_S, TRAFFIC_MANEUVER_GUARD_M, TRAFFIC_PROMPT_TIMEOUT_S,
-  TRAFFIC_REFRESH_INTERVAL_S, TrafficReroutePolicy, arrival_side, congestion_ahead, exit_jam_ahead, retry_delay_s, same_route,
+  TRAFFIC_REFRESH_INTERVAL_S, TrafficReroutePolicy, congestion_ahead, exit_jam_ahead, retry_delay_s, same_route,
 )
 
 NAVIGATIOND_HZ = 1
 REROUTE_TRIGGER_SECONDS = 2.0
 ARRIVAL_CLEAR_SECONDS = 5.0
 CONTROL_LOOKAHEAD_M = 400.0   # D-117: report a Mapbox-flagged signal / stop / crossing this far ahead
-ARRIVE_NOTICE_M = 400.0       # D-117: say which side the destination is on from this far out
 LOCATION_STATE_STALE_SECONDS = 2.5
 NAV_ROUTE_REPUBLISH_SECONDS = 5.0  # map views that start after the route was sent still get it
 REROUTE_ACCEPT_MAX_OFFSET_M = 40.0  # an accepted candidate must still start under the car
@@ -540,16 +539,6 @@ class Navigationd:
     if jam is not None:
       state["jamDistance"] = float(round(jam[0] / 10.0) * 10.0)
       state["jamSpeed"] = round(float(jam[1]), 1)
-    # D-115: the nearest exit-only lane ahead that the route does not take (-1 when none or the toggle is off)
-    state["exitOnlyDistance"] = -1.0
-    state["exitOnlySide"] = ""
-    state["exitOnlyKind"] = ""
-    if progress.distance_from_route <= JAM_MAX_ROUTE_OFFSET_M and self.params.get_bool("NavExitOnlyWarn"):
-      trap = exit_only_ahead(route, progress.along_distance)
-      if trap is not None:
-        state["exitOnlyDistance"] = float(round(trap["distance"] / 10.0) * 10.0)
-        state["exitOnlySide"] = trap["side"]
-        state["exitOnlyKind"] = trap["kind"]
     on_route = progress.distance_from_route <= JAM_MAX_ROUTE_OFFSET_M
     # D-117: the nearest Mapbox-flagged signal / stop sign / railway crossing ahead
     state["controlDistance"], state["controlKind"] = -1.0, ""
@@ -563,13 +552,6 @@ class Navigationd:
     if exit_jam is not None:
       state["exitJamDistance"] = float(round(exit_jam[0] / 10.0) * 10.0)
       state["exitJamSide"] = exit_jam[1]
-    # D-117: which side the destination is on, near the end
-    state["arriveDistance"], state["arriveSide"] = -1.0, ""
-    if on_route and self.params.get_bool("NavArrivalHelp") and 0.0 < progress.distance_remaining <= ARRIVE_NOTICE_M:
-      side = arrival_side(route)
-      if side:
-        state["arriveDistance"] = float(round(progress.distance_remaining / 10.0) * 10.0)
-        state["arriveSide"] = side
     if state != self._last_nav_state:
       self.params_memory.put_nonblocking("NavInstructionState", state)
       self._last_nav_state = state

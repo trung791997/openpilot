@@ -1203,15 +1203,7 @@ STARPILOT_EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
   },
 
-  # D-115: chime once per exit-only junction, and once per keep-right reminder
-  StarPilotEventName.navExitOnlyLane: {
-    ET.PERMANENT: Alert(
-      "Your Lane Exits Ahead",
-      "Move over to stay on route",
-      StarPilotAlertStatus.starpilot, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
-  },
-
+  # D-115: chime once per keep-right reminder
   StarPilotEventName.navKeepRight: {
     ET.PERMANENT: Alert(
       "Keep Right",
@@ -1220,15 +1212,7 @@ STARPILOT_EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
   },
 
-  # D-117: chime once per turn-only junction, route merge and jammed exit
-  StarPilotEventName.navTurnOnlyLane: {
-    ET.PERMANENT: Alert(
-      "Your Lane Turns Ahead",
-      "Move over to stay on route",
-      StarPilotAlertStatus.starpilot, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
-  },
-
+  # D-117: chime once per route merge and jammed exit
   StarPilotEventName.navMergeAhead: {
     ET.PERMANENT: Alert(
       "Merge Ahead",

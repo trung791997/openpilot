@@ -686,18 +686,6 @@ def _prompt_helper():
   return helper, published
 
 
-def test_lane_move_prompt_marks_blocked_when_blindspot_occupied():
-  helper, published = _prompt_helper()
-  toggles = make_toggles(nav_desires_allowed=True)
-  helper._publish_lane_move_prompt(make_car_state(vEgo=25.0, rightBlindspot=True), make_plan(laneWidthRight=4.0), toggles, True)
-  key, prompt = published[-1]
-  assert key == "NavLaneMovePrompt" and prompt["armed"] and prompt["side"] == "right" and prompt["blocked"]
-  helper._publish_lane_move_prompt(make_car_state(vEgo=25.0, rightBlindspot=False), make_plan(laneWidthRight=4.0), toggles, True)
-  assert published[-1][1]["armed"] and not published[-1][1]["blocked"]
-  helper._publish_lane_move_prompt(make_car_state(vEgo=25.0, leftBlindspot=True), make_plan(laneWidthRight=4.0), toggles, True)
-  assert not published[-1][1]["blocked"]
-
-
 def test_prompted_lane_move_blocked_by_blindspot_until_clear():
   helper, _ = _prompt_helper()
   toggles = make_toggles(nav_desires_allowed=True)

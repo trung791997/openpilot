@@ -13,10 +13,14 @@ def test_parse_passing_prompt_needs_armed_fresh_side_and_phase():
   assert parse_passing_prompt({}, 101.0) is None
 
 
-def test_d115_exit_and_keep_right_phases_parse():
-  for phase, side in (("exit", "left"), ("exit", "right"), ("keepright", "right")):
-    assert parse_passing_prompt({"armed": True, "side": side, "phase": phase, "ts": 1.0}, 1.5)["phase"] == phase
-  assert TEXT["exit"][1].format(side="left") == "Move left to stay on route"
+def test_d115_keep_right_phase_parses():
+  assert parse_passing_prompt({"armed": True, "side": "right", "phase": "keepright", "ts": 1.0}, 1.5)["phase"] == "keepright"
+
+
+def test_removed_exit_turn_and_arrive_banners_do_not_show():
+  for phase in ("exit", "turn", "arrive"):
+    assert phase not in TEXT
+    assert parse_passing_prompt({"armed": True, "side": "right", "phase": phase, "ts": 1.0, "distance": 900.0}, 1.5) is None
 
 
 def test_d116_jam_notice_has_no_side_and_needs_distance_and_speed():
@@ -30,13 +34,12 @@ def test_d116_jam_notice_has_no_side_and_needs_distance_and_speed():
   assert format_jam(1200.0, 12.5, True) == ("1.2 km", "45 km/h")
 
 
-def test_d117_turn_merge_exitjam_and_arrive_phases_parse():
-  assert parse_passing_prompt({"armed": True, "side": "left", "phase": "turn", "ts": 1.0}, 1.5)["phase"] == "turn"
+def test_d117_merge_and_exitjam_phases_parse():
   merge = {"armed": True, "side": "left", "phase": "merge", "ts": 1.0}
   assert parse_passing_prompt(merge, 1.5)["blocked"] is False
   assert parse_passing_prompt({**merge, "blocked": True}, 1.5)["blocked"] is True
   assert MERGE_BLOCKED.format(side="left") == "Car beside you on the left: wait"
-  for phase in ("exitjam", "arrive"):
+  for phase in ("exitjam",):
     raw = {"armed": True, "side": "right", "phase": phase, "ts": 1.0, "distance": 900.0}
     assert parse_passing_prompt(raw, 1.5)["distance"] == 900.0
     assert parse_passing_prompt({**raw, "distance": 0.0}, 1.5) is None, "needs a distance to show"

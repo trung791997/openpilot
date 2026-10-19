@@ -17,13 +17,10 @@ PROMPT_UPDATE_INTERVAL = 0.1
 TEXT = {
   "pass": ("Left lane is faster", "Check mirror, blinker to pass"),
   "return": ("Passed: move back right", "Check mirror, blinker when clear"),
-  "exit": ("Your lane exits ahead", "Move {side} to stay on route"),
   "keepright": ("Keep right", "Right lane is open, check mirror"),
   "jam": ("Traffic ahead in {distance}", "Easing to {speed} for the slowdown"),
-  "turn": ("Your lane turns ahead", "Move {side} to stay on route"),
   "merge": ("Merge {side} ahead", "Check mirror before merging"),
   "exitjam": ("Exit backed up in {distance}", "Move {side} early, check mirror"),
-  "arrive": ("Destination on {side}", "In {distance}"),
 }
 MERGE_BLOCKED = "Car beside you on the {side}: wait"
 
@@ -58,7 +55,7 @@ def parse_passing_prompt(raw, now: float) -> dict | None:
     return None
   if phase == "jam" and not (math.isfinite(distance) and math.isfinite(speed) and distance > 0.0 and speed > 0.0):
     return None
-  if phase in ("exitjam", "arrive") and not (math.isfinite(distance) and distance > 0.0):
+  if phase == "exitjam" and not (math.isfinite(distance) and distance > 0.0):
     return None
   return {"side": side, "phase": phase, "ts": ts, "distance": distance, "speed": speed, "blocked": bool(raw.get("blocked", False))}
 

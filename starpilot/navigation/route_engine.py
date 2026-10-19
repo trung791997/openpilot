@@ -74,9 +74,6 @@ class RouteStep:
   maxspeed_ms: float
   modifier: str
   instruction: str
-  # D-115: Mapbox lane data at every junction on the step, including exits the route drives past:
-  # (metres along the route, [{"valid": bool, "indications": [...]}, ...] left to right)
-  junction_lanes: tuple = ()
   # D-117: traffic controls Mapbox flags at intersections on the step: (metres along the route, "signal"|"stop"|"rail")
   junction_controls: tuple = ()
 
@@ -105,19 +102,6 @@ def _intersection_along(intersections, geometry, cumulative_distances):
     cursor = closest
     out.append((cumulative_distances[closest], item))
   return out
-
-
-def _junction_lanes(intersections, geometry, cumulative_distances) -> tuple:
-  out = []
-  for along, item in _intersection_along(intersections, geometry, cumulative_distances):
-    try:
-      lanes = [{"valid": bool(lane.get("valid", False)), "indications": [str(i) for i in lane.get("indications") or []]}
-               for lane in item["lanes"]]
-    except (KeyError, TypeError, ValueError, AttributeError):
-      continue
-    if lanes:
-      out.append((along, lanes))
-  return tuple(out)
 
 
 def _junction_controls(intersections, geometry, cumulative_distances) -> tuple:
@@ -326,7 +310,6 @@ class NavigationRoute:
         maxspeed_ms=maxspeed_ms,
         modifier=string_to_direction(str(step.get("modifier", "none"))),
         instruction=str(step.get("instruction", "")),
-        junction_lanes=_junction_lanes(step.get("intersections", []), geometry, cumulative_distances),
         junction_controls=_junction_controls(step.get("intersections", []), geometry, cumulative_distances),
       ))
 

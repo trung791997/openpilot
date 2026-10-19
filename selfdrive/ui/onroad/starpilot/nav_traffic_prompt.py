@@ -53,11 +53,10 @@ def format_savings(savings_s: float) -> str:
 class NavTrafficPromptRenderer(Widget):
   """MICI pill: a faster route was found. The route changes only if the driver taps Switch."""
 
-  def __init__(self, lane_prompt=None, navigation_card=None):
+  def __init__(self, navigation_card=None):
     super().__init__()
     self._font_bold = gui_app.font(FontWeight.BOLD)
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
-    self._lane_prompt = lane_prompt
     self._navigation_card = navigation_card
     self._prompt: dict | None = None
     self._answered_id: int | None = None
@@ -102,8 +101,6 @@ class NavTrafficPromptRenderer(Widget):
       interactive = card._interactive_rect
       if interactive.height > 0:
         top = int(interactive.y + interactive.height + 8)
-    if self._lane_prompt is not None and getattr(self._lane_prompt, "_prompt", None) is not None:
-      top += 82
     return top
 
   def _render(self, rect: rl.Rectangle) -> None:
