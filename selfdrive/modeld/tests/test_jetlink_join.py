@@ -84,6 +84,87 @@ def test_in_control_reads_carcontrol():
     assert jetlink_adapter.in_control(SM(True, cc)) is True
 
 
+class FakeSubMaster(dict):
+  """cereal's SubMaster as Adapter.in_control() uses it."""
+  def __init__(self, alive=True, cc=None, update_error=None):
+    super().__init__(carControl=cc)
+    self.alive = alive
+    self.update_error = update_error
+    self.updates = []
+
+  def update(self, timeout):
+    self.updates.append(timeout)
+    if self.update_error is not None:
+      raise self.update_error
+
+  def all_alive(self, _):
+    return self.alive
+
+  def all_valid(self, _):
+    return self.alive
+
+
+class FakeCC:
+  def __init__(self, **active):
+    self.enabled = self.latActive = self.longActive = False
+    for name, value in active.items():
+      setattr(self, name, value)
+
+
+def test_adapter_in_control_polls_its_own_submaster():
+  # jetlink API 3: the joining model asks the adapter before every frame
+  adapter = jetlink_adapter.Adapter()
+  adapter._sm = sm = FakeSubMaster(True, FakeCC())
+  assert adapter.in_control() is False
+  assert sm.updates == [0]   # polled, never waits on modeld's frame thread
+  for name in ('enabled', 'latActive', 'longActive'):
+    sm['carControl'] = FakeCC(**{name: True})
+    assert adapter.in_control() is True
+  sm['carControl'] = FakeCC()
+  sm.alive = False   # carState or carControl late or invalid
+  assert adapter.in_control() is True
+
+
+def test_adapter_in_control_fails_closed(monkeypatch):
+  import sys
+  import types
+
+  adapter = jetlink_adapter.Adapter()
+  adapter._sm = FakeSubMaster(True, FakeCC(), update_error=RuntimeError('socket'))
+  assert adapter.in_control() is True
+
+  class NoCarControl(FakeSubMaster):
+    def __getitem__(self, key):
+      raise KeyError(key)
+  adapter._sm = NoCarControl(True)
+  assert adapter.in_control() is True
+
+  # the SubMaster cannot be made: in control, and asked again next frame
+  def broken(services):
+    raise OSError('no msgq')
+  fake = types.ModuleType('cereal.messaging')
+  fake.SubMaster = broken
+  cereal = types.ModuleType('cereal')
+  cereal.messaging = fake
+  monkeypatch.setitem(sys.modules, 'cereal', cereal)
+  monkeypatch.setitem(sys.modules, 'cereal.messaging', fake)
+  adapter = jetlink_adapter.Adapter()
+  assert adapter.in_control() is True and adapter._sm is None
+
+  made = []
+  fake.SubMaster = lambda services: made.append(tuple(services)) or FakeSubMaster(True, FakeCC())
+  assert adapter.in_control() is False
+  assert made == [jetlink_adapter.IN_CONTROL]
+  assert adapter.in_control() is False and len(made) == 1   # made once
+
+
+def test_small_model_is_stock_modeld_to_prepare_reset():
+  inner, small, _, _ = make()
+  assert small.adapter is None
+  # the names v0.8.7's prepare_reset reads; their contents are test_jetlink_reset's
+  assert isinstance(SmallModel.state_pairs, property) and hasattr(small.packed_input, 'fill')
+
+
 def test_small_model_runs_on_its_own_keys():
   inner, _, _, joined = make()
   bufs, transforms, inputs = frame_args(inner)
