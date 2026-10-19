@@ -58,39 +58,25 @@ def frame_args(inner):
 
 
 def test_adapter_conforms():
-  assert conformance(jetlink_adapter.Adapter(), Openpilot) == []
+  assert conformance(jetlink_adapter.adapter(), Openpilot) == []
 
 
-def test_in_control_reads_carcontrol():
-  class CC:
-    enabled = latActive = longActive = False
-
-  class SM(dict):
-    def __init__(self, alive, cc):
-      super().__init__(carControl=cc)
-      self.alive = alive
-
-    def all_alive(self, _):
-      return self.alive
-
-    def all_valid(self, _):
-      return self.alive
-
-  assert jetlink_adapter.in_control(SM(False, CC())) is True
-  assert jetlink_adapter.in_control(SM(True, CC())) is False
-  for name in ('enabled', 'latActive', 'longActive'):
-    cc = CC()
-    setattr(cc, name, True)
-    assert jetlink_adapter.in_control(SM(True, cc)) is True
+class FakeMsg:
+  def __init__(self, **fields):
+    for name, value in fields.items():
+      setattr(self, name, value)
 
 
 class FakeSubMaster(dict):
-  """cereal's SubMaster as Adapter.in_control() uses it."""
-  def __init__(self, alive=True, cc=None, update_error=None):
-    super().__init__(carControl=cc)
-    self.alive = alive
+  """cereal's SubMaster as Stock.in_control() and the adapter's AOL reader use it."""
+  def __init__(self, services, alive=True, update_error=None, **msgs):
+    super().__init__(msgs)
+    self.services = services
+    self.ok = alive
     self.update_error = update_error
     self.updates = []
+    self.seen = {s: s in msgs for s in services}
+    self.alive = {s: alive for s in services}
 
   def update(self, timeout):
     self.updates.append(timeout)
@@ -98,48 +84,62 @@ class FakeSubMaster(dict):
       raise self.update_error
 
   def all_alive(self, _):
-    return self.alive
+    return self.ok
 
   def all_valid(self, _):
-    return self.alive
+    return self.ok
 
 
-class FakeCC:
-  def __init__(self, **active):
-    self.enabled = self.latActive = self.longActive = False
-    for name, value in active.items():
-      setattr(self, name, value)
+def _engaged_state(**active):
+  cc = FakeMsg(enabled=False, latActive=False, longActive=False)
+  ss = FakeMsg(enabled=False, active=False)
+  for name, value in active.items():
+    setattr(ss if name.startswith('ss_') else cc, name.removeprefix('ss_'), value)
+  return {'carControl': cc, 'selfdriveState': ss}
 
 
-def test_adapter_in_control_polls_its_own_submaster():
-  # jetlink API 3: the joining model asks the adapter before every frame
-  adapter = jetlink_adapter.Adapter()
-  adapter._sm = sm = FakeSubMaster(True, FakeCC())
+def _aol(allowed=False, enabled=False):
+  return FakeMsg(alwaysOnLateralAllowed=allowed, alwaysOnLateralEnabled=enabled)
+
+
+def test_in_control_is_openpilot_or_aol():
+  # the PR's rule: openpilot engaged, or AOL armed (paused included) or engaged
+  adapter = jetlink_adapter.adapter()
+  adapter._sm = sm = FakeSubMaster(adapter.IN_CONTROL_SERVICES, **_engaged_state())
+  adapter._aol = aol = FakeSubMaster([jetlink_adapter.AOL_SERVICE], starpilotCarState=_aol())
   assert adapter.in_control() is False
-  assert sm.updates == [0]   # polled, never waits on modeld's frame thread
-  for name in ('enabled', 'latActive', 'longActive'):
-    sm['carControl'] = FakeCC(**{name: True})
+  assert sm.updates == [0] and aol.updates == [0]   # polled, never waits on modeld's frame thread
+  for name in ('enabled', 'latActive', 'longActive', 'ss_enabled', 'ss_active'):
+    dict.update(sm, _engaged_state(**{name: True}))
+    assert adapter.in_control() is True, name
+  dict.update(sm, _engaged_state())
+  for allowed, enabled in ((True, False), (False, True), (True, True)):
+    aol['starpilotCarState'] = _aol(allowed, enabled)
     assert adapter.in_control() is True
-  sm['carControl'] = FakeCC()
-  sm.alive = False   # carState or carControl late or invalid
+  aol['starpilotCarState'] = _aol()
+  assert adapter.in_control() is False
+  aol.alive[jetlink_adapter.AOL_SERVICE] = False   # AOL's state gone stale: in control
   assert adapter.in_control() is True
 
 
-def test_adapter_in_control_fails_closed(monkeypatch):
+def test_aol_not_heard_yet_waits_its_grace():
+  assert jetlink_adapter.aol_in_control(None, False, waiting=True) is True
+  assert jetlink_adapter.aol_in_control(None, False, waiting=False) is False
+  assert jetlink_adapter.aol_in_control(_aol(), False) is True
+  assert jetlink_adapter.aol_in_control(_aol(), True) is False
+
+
+def test_in_control_fails_closed(monkeypatch):
   import sys
   import types
 
-  adapter = jetlink_adapter.Adapter()
-  adapter._sm = FakeSubMaster(True, FakeCC(), update_error=RuntimeError('socket'))
+  adapter = jetlink_adapter.adapter()
+  adapter._sm = FakeSubMaster(adapter.IN_CONTROL_SERVICES, update_error=RuntimeError('socket'), **_engaged_state())
+  assert adapter.in_control() is True
+  adapter._sm = FakeSubMaster(adapter.IN_CONTROL_SERVICES, alive=False, **_engaged_state())   # late or invalid
   assert adapter.in_control() is True
 
-  class NoCarControl(FakeSubMaster):
-    def __getitem__(self, key):
-      raise KeyError(key)
-  adapter._sm = NoCarControl(True)
-  assert adapter.in_control() is True
-
-  # the SubMaster cannot be made: in control, and asked again next frame
+  # the SubMaster cannot be made: in control, and not tried again on every frame
   def broken(services):
     raise OSError('no msgq')
   fake = types.ModuleType('cereal.messaging')
@@ -148,14 +148,48 @@ def test_adapter_in_control_fails_closed(monkeypatch):
   cereal.messaging = fake
   monkeypatch.setitem(sys.modules, 'cereal', cereal)
   monkeypatch.setitem(sys.modules, 'cereal.messaging', fake)
-  adapter = jetlink_adapter.Adapter()
+  adapter = jetlink_adapter.adapter()
   assert adapter.in_control() is True and adapter._sm is None
-
   made = []
-  fake.SubMaster = lambda services: made.append(tuple(services)) or FakeSubMaster(True, FakeCC())
-  assert adapter.in_control() is False
-  assert made == [jetlink_adapter.IN_CONTROL]
-  assert adapter.in_control() is False and len(made) == 1   # made once
+  fake.SubMaster = lambda services: made.append(tuple(services)) or FakeSubMaster(services, **_engaged_state())
+  assert adapter.in_control() is True and made == []   # inside the retry wait
+  adapter._sm_after = 0.
+  # the AOL reader is made from the same fake: not heard yet, inside its grace, counts as armed
+  assert adapter.in_control() is True
+  assert made[0] == tuple(adapter.IN_CONTROL_SERVICES) and made[1] == (jetlink_adapter.AOL_SERVICE,)
+  adapter._aol_since = -10.
+  assert adapter.in_control() is False and len(made) == 2   # each made once
+
+
+def test_hooks_fall_back_to_link_off(monkeypatch):
+  # no usable jetlink, or an unsupported device: every hook answers link off and modeld runs the small model
+  import builtins
+  real_import = builtins.__import__
+
+  def no_jetlink(name, *args, **kwargs):
+    if name.startswith('jetlink'):
+      raise ImportError('no jetlink')
+    return real_import(name, *args, **kwargs)
+  jetlink_adapter.hooks.cache_clear()
+  monkeypatch.setattr(builtins, '__import__', no_jetlink)
+  try:
+    link = jetlink_adapter.hooks()
+  finally:
+    monkeypatch.setattr(builtins, '__import__', real_import)
+    jetlink_adapter.hooks.cache_clear()
+  assert isinstance(link, jetlink_adapter._NoJetlink)
+  assert link.prepare(False) is False and link.should_run(True, None, None) is False and link.swap_events(0.01) is None
+  assert link.shutdown_step(True) is True and link.status() is None
+
+  from jetlink.openpilot.hooks import Off
+  monkeypatch.setattr(jetlink_adapter, 'supported_device', lambda device_type=None: False)
+  try:
+    link = jetlink_adapter.hooks()
+    assert isinstance(link, Off) and link.prepare(False) is False
+    small = object()
+    assert link.attach(None, small, 1928, 1208) is None   # not joined: modeld keeps the small model
+  finally:
+    jetlink_adapter.hooks.cache_clear()
 
 
 def test_small_model_is_stock_modeld_to_prepare_reset():
@@ -230,11 +264,11 @@ def test_refresh_catalog_keeps_the_last_on_failure(monkeypatch):
   params = Params()
   cached = {'bundles': [_bundle('d' * 40, 'Cached', 1)]}
   params.put(jetlink_adapter.KEYS.catalog, cached)
-  monkeypatch.setattr(jetlink_adapter, 'should_extend_catalog', lambda: True)
-  monkeypatch.setattr(jetlink_adapter, 'extend_catalog', lambda catalog: catalog)   # a failed fetch keeps what it had
+  link = FakeMsg(should_extend_catalog=lambda: True, extend_catalog=lambda catalog: catalog)   # a failed fetch keeps what it had
+  monkeypatch.setattr(jetlink_adapter, 'hooks', lambda: link)
   assert jetlink_adapter.refresh_catalog() is False and params.get(jetlink_adapter.KEYS.catalog) == cached
   fresh = {'bundles': [*cached['bundles'], _bundle('e' * 40, 'Fresh', 2)]}
-  monkeypatch.setattr(jetlink_adapter, 'extend_catalog', lambda catalog: fresh)
+  link.extend_catalog = lambda catalog: fresh
   assert jetlink_adapter.refresh_catalog() is True and params.get(jetlink_adapter.KEYS.catalog) == fresh
-  monkeypatch.setattr(jetlink_adapter, 'should_extend_catalog', lambda: False)   # a chestnut: StarPilot's own big models
+  link.should_extend_catalog = lambda: False   # a chestnut: StarPilot's own big models
   assert jetlink_adapter.refresh_catalog() is False

@@ -1557,6 +1557,12 @@ def main() -> None:
     traceback.print_exc()
     sentry.capture_exception()
   finally:
+    # a Jetlink host on its own supply powers off with the comma, before its owner is stopped; bounded at 30 s
+    try:
+      from openpilot.starpilot.system.jetlink.lifecycle import shutdown as shutdown_jetlink
+      shutdown_jetlink(Params())
+    except Exception:
+      cloudlog.exception("Jetlink shutdown handoff failed")
     manager_cleanup()
 
   params = Params()
