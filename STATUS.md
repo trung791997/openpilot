@@ -11293,3 +11293,12 @@ VISION_SLOW_LEAD_PHYSICS_MARGIN. At the bookmark that is 0.19, at the 0.18 floor
 1.2 ceiling (10 m/s to a stopped lead at 40 m allows 2.0). The MPC, e2e and the other caps are untouched. On the
 owner's standing OK to remove guards that hurt braking without adding smoothness. Open: Job's closed-loop replay of
 39d segments 6-8 and 22.
+
+**253 replay (Job R14, 39d, closed and open loop, logged toggles, 85aa94bb4 vs 51a50191b).**
+- Fidelity: aEgo corr median 0.82 / 0.83, vEgo RMSE median 0.21. The worst window is the 8:22 event itself (0.67 / 0.83).
+- Open loop: at 8:22.3 the output goes -1.20 -> -0.35, which is the model's ask. At 22:54 it goes -1.20 -> -0.40.
+- Output onset equals e2e onset at both events, and the output is never shallower than e2e (0.00 s).
+- The bound changed the output on 2.75 s of the route, all at 1.3-4.9 m/s behind stopped queues.
+- Closed loop: min gap is 0.1-0.8 m closer than base in every changed window; the smallest is 2.2 m (base 2.5).
+- Gap at the stop is 3.6-4.4 m (base 3.8-4.6). Nothing cap-driven ends under 2 m.
+- The replay harness creeps through logged standstills (negative gaps in both arms), so that part is not evidence.
