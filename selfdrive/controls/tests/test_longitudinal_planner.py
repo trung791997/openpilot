@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   should_trigger_planner_fcw,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LEAD_T_IDXS_MODEL
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   allow_radar_standstill_gap_settle,
   get_far_follow_output_slew_rates,
@@ -5492,3 +5493,30 @@ def test_radar_only_rules_follow_bosch_a_radar():
   glitch = make_lead(status=True, d_rel=6.27, v_lead=-2.15, radar=True)
   floored = make_lead(status=True, d_rel=6.27, v_lead=longitudinal_planner_module.CLOSE_LEAD_CAP_VLEAD_MIN, radar=True)
   assert planner.get_close_lead_brake_cap(glitch, 1.6, -3.5) != pytest.approx(planner.get_close_lead_brake_cap(floored, 1.6, -3.5))
+
+
+def test_mpc_lead_filters_are_per_lead():
+  # STATUS 252: leadTwo (or the fake far lead when it is absent) must not leak into leadOne's speed.
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  absent = make_lead(status=False, d_rel=0.0, v_lead=0.0, model_prob=0.0)
+  lead = make_lead(status=True, d_rel=40.0, v_lead=12.0, model_prob=1.0)
+  for _ in range(40):
+    mpc.process_lead(lead, lead_index=0)
+    mpc.process_lead(absent, lead_index=1)
+  assert mpc.lead_v_filters[0].x == pytest.approx(12.0, abs=1e-3)
+
+
+def test_mpc_lead_handed_back_from_model_path_starts_at_its_measured_speed():
+  # An urgent close drops the model lead path; the filtered path must not start from a stale value.
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  absent = make_lead(status=False, d_rel=0.0, v_lead=0.0, model_prob=0.0)
+  model_lead = SimpleNamespace(prob=0.9, x=[60.0 + 18.0 * t for t in LEAD_T_IDXS_MODEL], v=[18.0] * len(LEAD_T_IDXS_MODEL))
+  steady = make_lead(status=True, d_rel=60.0, v_lead=18.0, model_prob=1.0)
+  for _ in range(100):
+    mpc.process_lead(steady, lead_index=0, model_lead=model_lead)
+    mpc.process_lead(absent, lead_index=1)
+  lead = make_lead(status=True, d_rel=20.0, v_lead=8.0, model_prob=1.0)  # urgent: model path drops out
+  lead_xv = mpc.process_lead(lead, lead_index=0, model_lead=model_lead)
+  assert lead_xv[0, 1] < 18.0 + 0.5  # not the fake far lead's vEgo + 10

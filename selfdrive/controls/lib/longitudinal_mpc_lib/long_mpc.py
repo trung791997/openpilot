@@ -458,8 +458,10 @@ class LongitudinalMpc:
     self.source = SOURCES[2]
     # Initialize smoothing filters with default time constants
     self.current_filter_time = LEAD_FILTER_TIME_LOW
-    self.lead_a_filter = FirstOrderFilter(0.0, self.current_filter_time, self.dt)
-    self.lead_v_filter = FirstOrderFilter(0.0, self.current_filter_time, self.dt)
+    # One lead-speed/accel filter per lead (STATUS 252). They were shared by leadOne and leadTwo, so each lead's
+    # speed was blended with the other's, or with the fake far lead (vEgo + 10) when leadTwo was absent.
+    self.lead_a_filters = [FirstOrderFilter(0.0, self.current_filter_time, self.dt) for _ in range(2)]
+    self.lead_v_filters = [FirstOrderFilter(0.0, self.current_filter_time, self.dt) for _ in range(2)]
     self.duplicate_lead_x_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_a_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_v_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
@@ -551,10 +553,7 @@ class LongitudinalMpc:
         self.current_filter_time = np.interp(speed_mph, [47, 65], [0.0, LEAD_FILTER_TIME_HIGH])
     if abs(self.current_filter_time - getattr(self, 'prev_filter_time', 0)) > 0.1:  # Only update if significant change
       # Recreate filters with new time constant while preserving current values
-      current_a = self.lead_a_filter.x if hasattr(self.lead_a_filter, 'x') else 0.0
-      current_v = self.lead_v_filter.x if hasattr(self.lead_v_filter, 'x') else 0.0
-      self.lead_a_filter = FirstOrderFilter(current_a, self.current_filter_time, self.dt)
-      self.lead_v_filter = FirstOrderFilter(current_v, self.current_filter_time, self.dt)
+      self.rebuild_lead_filters(self.current_filter_time)
       self.prev_filter_time = self.current_filter_time
     # Adaptive jerk factors for distance with interp scaling
     dist_factor = 1.0 + self.current_dist_adapt * (20.0 / max(lead_dist, 5.0))
@@ -610,11 +609,21 @@ class LongitudinalMpc:
     filter_time_factor = float(self.filter_time_factor)
     if abs(filter_time_factor - getattr(self, 'prev_filter_time_factor', 1.0)) > 0.05:
       new_filter_time = self.current_filter_time * filter_time_factor
-      current_a = self.lead_a_filter.x if hasattr(self.lead_a_filter, 'x') else 0.0
-      current_v = self.lead_v_filter.x if hasattr(self.lead_v_filter, 'x') else 0.0
-      self.lead_a_filter = FirstOrderFilter(current_a, new_filter_time, self.dt)
-      self.lead_v_filter = FirstOrderFilter(current_v, new_filter_time, self.dt)
+      self.rebuild_lead_filters(new_filter_time)
       self.prev_filter_time_factor = filter_time_factor
+
+  @property
+  def lead_a_filter(self):
+    return self.lead_a_filters[0]
+
+  @property
+  def lead_v_filter(self):
+    return self.lead_v_filters[0]
+
+  def rebuild_lead_filters(self, filter_time):
+    """New time constant, current values kept."""
+    self.lead_a_filters = [FirstOrderFilter(f.x, filter_time, self.dt) for f in self.lead_a_filters]
+    self.lead_v_filters = [FirstOrderFilter(f.x, filter_time, self.dt) for f in self.lead_v_filters]
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
@@ -656,9 +665,17 @@ class LongitudinalMpc:
     v_ego = self.x0[1]
     lead_active = lead is not None and lead.status and tracking_lead
 
+    filter_index = 1 if lead_index == 1 else 0
+    lead_a_filter = self.lead_a_filters[filter_index]
+    lead_v_filter = self.lead_v_filters[filter_index]
+
     if lead_active:
       model_lead_xv = build_model_lead_trajectory(model_lead, lead, v_ego, lead_detection_probability)
       if model_lead_xv is not None:
+        # Keep this lead's filter on its measured values, so a hand-back (e.g. an urgent close, which drops the
+        # model path) does not start from a stale speed.
+        lead_a_filter.update(float(np.clip(lead.aLeadK, -10., 5.)))
+        lead_v_filter.update(max(float(lead.vLead), 0.0))
         return model_lead_xv
 
     if lead_active:
@@ -685,8 +702,8 @@ class LongitudinalMpc:
     if lead_active and smooth_duplicate_vision and not bool(getattr(lead, "radar", False)):
       # Keep the baseline filter synchronized so leaving this narrow comfort
       # path cannot introduce a state discontinuity.
-      self.lead_a_filter.update(a_lead)
-      self.lead_v_filter.update(v_lead)
+      lead_a_filter.update(a_lead)
+      lead_v_filter.update(v_lead)
 
       filter_time = self.current_filter_time
       filter_time = max(filter_time, DUPLICATE_VISION_LEAD_FILTER_TIME)
@@ -707,10 +724,10 @@ class LongitudinalMpc:
       v_lead = v_filter.update(v_lead)
     else:
       # Preserve the historical planner path outside the qualified comfort scene.
-      self.lead_a_filter.update(a_lead)
-      self.lead_v_filter.update(v_lead)
-      a_lead = self.lead_a_filter.x
-      v_lead = self.lead_v_filter.x
+      lead_a_filter.update(a_lead)
+      lead_v_filter.update(v_lead)
+      a_lead = lead_a_filter.x
+      v_lead = lead_v_filter.x
       self.duplicate_lead_x_filters[lead_index].initialized = False
       self.duplicate_lead_a_filters[lead_index].initialized = False
       self.duplicate_lead_v_filters[lead_index].initialized = False
