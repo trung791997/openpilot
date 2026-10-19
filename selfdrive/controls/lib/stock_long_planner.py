@@ -50,6 +50,9 @@ MPC_V_CRUISE_LEADS_ONLY = V_CRUISE_MAX * CV.KPH_TO_MS
 BRAKE_BUILD_JERK = 2.5  # m/s^3
 GAS_RISE_JERK = 1.0  # m/s^3
 BRAKE_BUILD_BYPASS_TTC = 3.0  # s
+# Feed the lead MPC the model's predicted lead path (HumanFollowing's build_model_lead_trajectory, as LongitudinalPlanner
+# does since STATUS 118) instead of upstream's decaying-accel extrapolation. Off until Job's 39c replay (STATUS 251c).
+USE_MODEL_LEAD_TRAJECTORY = False
 
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -188,7 +191,8 @@ class StockLongitudinalPlanner:
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
     zeros = np.zeros(len(T_IDXS_MPC))
     self.mpc.update(sm['radarState'], MPC_V_CRUISE_LEADS_ONLY, zeros.copy(), zeros.copy(), zeros.copy(), zeros.copy(),
-                    1.0, t_follow, personality=personality, tracking_lead=True, optional_far_lead_comfort=False)
+                    1.0, t_follow, personality=personality, tracking_lead=True, optional_far_lead_comfort=False,
+                    modelV2=sm['modelV2'] if USE_MODEL_LEAD_TRAJECTORY else None)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

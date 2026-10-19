@@ -11324,3 +11324,8 @@ The stock planner still follows the model's onset. On top of it, the output buil
 2.5 m/s^3 and raises accel above max(previous, 0) no faster than GAS_RISE_JERK 1.0 m/s^3. Brake release is never
 slowed. The brake limit is lifted on FCW or while a lead closes with TTC < 3.0 s, so the cut-in brake is not delayed.
 All three values are first guesses for Job's sweep.
+
+**251c model lead trajectory switch (owner: "Sure let's try that", 2026-10-19).** `USE_MODEL_LEAD_TRAJECTORY` passes
+modelV2 to the MPC, so the lead path is built by HumanFollowing's `build_model_lead_trajectory`, as in
+LongitudinalPlanner. It is off by default and is Job's arm E. Upstream and mvl extrapolate from leadsV3[i] point 0
+only, with aLeadTau 0.3.

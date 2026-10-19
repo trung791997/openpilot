@@ -128,3 +128,21 @@ def test_brake_release_is_not_slowed():
 def test_gas_rises_no_faster_than_the_limit():
   assert slp.limit_output_jerk(1.0, 0.0, 0.05, False) == pytest.approx(slp.GAS_RISE_JERK * 0.05)
   assert slp.limit_output_jerk(1.0, -1.0, 0.05, False) == pytest.approx(slp.GAS_RISE_JERK * 0.05)
+
+
+def test_model_lead_trajectory_reaches_the_mpc_when_on(monkeypatch):
+  seen = {}
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  original = planner.mpc.update
+
+  def spy(*args, **kwargs):
+    seen['modelV2'] = kwargs.get('modelV2')
+    return original(*args, **{k: v for k, v in kwargs.items() if k != 'modelV2'})
+
+  monkeypatch.setattr(planner.mpc, 'update', spy)
+  sm = make_sm()
+  planner.update(sm)
+  assert seen['modelV2'] is None
+  monkeypatch.setattr(slp, 'USE_MODEL_LEAD_TRAJECTORY', True)
+  planner.update(sm)
+  assert seen['modelV2'] is sm['modelV2']
