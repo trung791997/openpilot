@@ -5492,3 +5492,13 @@ def test_radar_only_rules_follow_bosch_a_radar():
   glitch = make_lead(status=True, d_rel=6.27, v_lead=-2.15, radar=True)
   floored = make_lead(status=True, d_rel=6.27, v_lead=longitudinal_planner_module.CLOSE_LEAD_CAP_VLEAD_MIN, radar=True)
   assert planner.get_close_lead_brake_cap(glitch, 1.6, -3.5) != pytest.approx(planner.get_close_lead_brake_cap(floored, 1.6, -3.5))
+
+
+def test_vision_slow_stopped_lead_cap_is_bounded_by_stopping_physics_in_a_queue():
+  # STATUS 253, 0000039d 8:22.3: 1.06 m/s, stopped pickup 7.4 m ahead; the cap used to step to -1.20.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH))
+  queue = make_lead(status=True, d_rel=7.4, v_lead=-0.18, a_lead=-0.6, model_prob=1.0)
+  cap = planner.get_vision_slow_stopped_lead_cap(queue, 1.06, -3.5, 1.45)
+  assert cap is None or cap > -0.3
+  approach = make_lead(status=True, d_rel=40.0, v_lead=0.0, model_prob=1.0)
+  assert planner.get_vision_slow_stopped_lead_cap(approach, 10.0, -3.5, 1.45) == pytest.approx(-1.2)

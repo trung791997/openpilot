@@ -848,6 +848,14 @@ VISION_SLOW_LEAD_FULL_TTC = 2.0
 VISION_SLOW_LEAD_MAX_DECEL = 1.2
 VISION_SLOW_LEAD_MIN_DECEL = 0.18
 VISION_SLOW_LEAD_MIN_MODEL_PROB = 0.9
+# Physics bound (STATUS 253). Log evidence, 0000039d 8:22.3 (owner's bookmark: "weird jerk at a red light"): creeping
+# at 1.06 m/s, 7.4 m behind a stopped pickup, the cap stepped -0.35 -> -1.20 in one frame for 0.35 s, while the model
+# asked -0.35 and stopped at 6.6 m. Its 7 m stop_gap left available_gap at the 0.5 m floor, so required_decel
+# saturated. The cap may now ask no more than VISION_SLOW_LEAD_PHYSICS_MARGIN x the decel that stops ego
+# VISION_SLOW_LEAD_HARD_GAP short of the lead: 1.5 x 1.06^2 / (2 x 4.4) = 0.19 there, at the 0.18 floor. Approaches
+# at speed are unchanged: 10 m/s to a stopped lead at 40 m allows 2.0, above the 1.2 ceiling.
+VISION_SLOW_LEAD_HARD_GAP = 3.0
+VISION_SLOW_LEAD_PHYSICS_MARGIN = 1.5
 LEAD_APPROACH_TFOLLOW_TRIGGER_TIME = 4.5
 LEAD_APPROACH_TFOLLOW_FULL_TIME = 1.5
 LEAD_APPROACH_TFOLLOW_MAX_DELTA = 0.162
@@ -2220,6 +2228,8 @@ class LongitudinalPlanner:
     decel_scale = 0.45 + 0.35 * time_factor + 0.20 * speed_factor
     approach_decel = min(VISION_SLOW_LEAD_MAX_DECEL, required_decel * decel_scale)
     approach_decel *= 0.65 + 0.35 * prob_factor
+    hard_gap = max(float(lead.dRel) - VISION_SLOW_LEAD_HARD_GAP, 0.5)
+    approach_decel = min(approach_decel, VISION_SLOW_LEAD_PHYSICS_MARGIN * float(v_ego) ** 2 / (2.0 * hard_gap))
     if approach_decel < VISION_SLOW_LEAD_MIN_DECEL:
       return None
 

@@ -11279,3 +11279,17 @@ Job's replay of drive 380 (closed-loop alpha replay on radar re-parsed from CAN,
   - It brakes 8 s earlier at 3:52.4 (-1.75) and shallower at 4:02 (-1.61 vs -2.63).
   - At 8:22-8:31, with the car stopped, the output cycles between -0.24 and -1.4. The sim creeps and stops in a loop;
     the plant does not model the longcontrol stop hold, so this is most likely a sim artefact. Watch it on the road.
+
+## 253. Vision slow stopped-lead cap bounded by stopping physics (2026-10-19). Static and unit tests; replay pending.
+
+The owner bookmarked "one weird jerk at a red light" on 0000039d (vision-only, experimental, 51a50191b). Job's log
+and open-loop replay (aT corr 0.997) put it at 8:22.3. Creeping at 1.06 m/s, 7.4 m behind a stopped pickup,
+`get_vision_slow_stopped_lead_cap` stepped from -0.35 to -1.20 in one frame and held for 0.35 s. aEgo reached -1.49
+while the model asked -0.35, and the model stopped at 6.6 m. Its 7 m stop_gap left available_gap at the 0.5 m floor, so
+required_decel saturated. There is a twin at 22:55 (stopped SUV behind a school bus).
+
+The cap now asks for no more than 1.5 x v^2 / (2 (dRel - 3 m)), with VISION_SLOW_LEAD_HARD_GAP and
+VISION_SLOW_LEAD_PHYSICS_MARGIN. At the bookmark that is 0.19, at the 0.18 floor. Approaches at speed still reach the
+1.2 ceiling (10 m/s to a stopped lead at 40 m allows 2.0). The MPC, e2e and the other caps are untouched. On the
+owner's standing OK to remove guards that hurt braking without adding smoothness. Open: Job's closed-loop replay of
+39d segments 6-8 and 22.
