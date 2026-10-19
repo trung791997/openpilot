@@ -230,7 +230,10 @@ GITLAB_API = "https://gitlab.com/api/v4"
 GITLAB_SUBMISSIONS_PROJECT_ID = "71992109"
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "")
 LEGACY_LATERAL_METHOD_API_PREFIX = "/api/" + "".join(("f", "t", "m"))
-VASM_CONFIGURATION_KEYS = {"VASMEnabled", "VASMConfidenceThreshold", "VASMSmoothSeconds", "VASMAnnotationConfig"}
+# Only the window annotation stays offroad-only. The daemon re-reads VASMEnabled, VASMConfidenceThreshold and
+# VASMSmoothSeconds every 2 s (adj_spot_monitor_vision.py PARAM_REFRESH_INTERVAL) and manager starts/stops it on
+# VASMEnabled, so those apply mid-drive (owner request 2026-10-19).
+VASM_CONFIGURATION_KEYS = {"VASMAnnotationConfig"}
 PIP_PREVIEW_CONFIGURATION_KEYS = {"PIPPreviewEnabled", "PIPPreviewMask", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM", "PIPPreviewInvert"}
 MODEL_SMOOTHING_KEYS = {"LatSmoothSeconds", "LongSmoothSeconds"}
 GALAXY_DEVELOPER_ONLY_KEYS = {"TurnSteeringLimitMuteSpeed"}
