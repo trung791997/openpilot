@@ -5,6 +5,7 @@ from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.controls.lib.stock_long_planner import StockLongitudinalPlanner, uses_stock_long_planner
 import cereal.messaging as messaging
 
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
@@ -19,7 +20,8 @@ def main():
   cloudlog.info("plannerd got CarParams: %s", CP.brand)
 
   ldw = LaneDepartureWarning()
-  longitudinal_planner = LongitudinalPlanner(CP)
+  # Camera-only Honda (Bosch A Radar off): the upstream planner as mvl runs it (stock_long_planner.py, STATUS 251)
+  longitudinal_planner = StockLongitudinalPlanner(CP) if uses_stock_long_planner(CP) else LongitudinalPlanner(CP)
   pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance'])
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState', 'modelV2', 'selfdriveState'],
                            poll='modelV2')

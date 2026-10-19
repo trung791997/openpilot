@@ -1,0 +1,73 @@
+"""stock_long_planner: the camera-only Honda planner is upstream's min(lead MPC, cruise, e2e) with no extra guards."""
+from types import SimpleNamespace
+
+import pytest
+
+from cereal import log
+from opendbc.car.honda.interface import CarInterface
+from opendbc.car.honda.values import CAR
+from openpilot.selfdrive.controls.lib import stock_long_planner as slp
+from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
+
+
+def lead(status=False, d_rel=0.0, v_lead=0.0):
+  return SimpleNamespace(status=status, dRel=d_rel, yRel=0.0, vLead=v_lead, vLeadK=v_lead, aLeadK=0.0, aLeadTau=1.5,
+                         modelProb=1.0 if status else 0.0, radar=False, vRel=0.0)
+
+
+def make_sm(v_ego=20.0, v_cruise=25.0, e2e_a=0.0, exp=True, lead_one=None, standstill=False):
+  return {
+    'carControl': SimpleNamespace(orientationNED=[0.0, 0.0, 0.0]),
+    'carState': SimpleNamespace(vEgo=v_ego, aEgo=0.0, vCruise=v_cruise * 3.6, standstill=standstill, steeringAngleDeg=0.0),
+    'controlsState': SimpleNamespace(forceDecel=False, longControlState=LongCtrlState.pid),
+    'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=exp, personality=log.LongitudinalPersonality.standard),
+    'liveParameters': SimpleNamespace(angleOffsetDeg=0.0),
+    'modelV2': SimpleNamespace(meta=SimpleNamespace(disengagePredictions=SimpleNamespace(gasPressProbs=[1.0, 1.0])),
+                               action=SimpleNamespace(desiredAcceleration=e2e_a, shouldStop=False)),
+    'radarState': SimpleNamespace(leadOne=lead_one or lead(), leadTwo=lead()),
+    'starpilotPlan': SimpleNamespace(vCruise=v_cruise, tFollow=1.45),
+  }
+
+
+def camera_only_cp():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.radarUnavailable = True
+  return CP
+
+
+def test_selected_only_for_camera_only_honda():
+  assert slp.uses_stock_long_planner(camera_only_cp())
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
+  CP.radarUnavailable = False
+  assert not slp.uses_stock_long_planner(CP)
+  assert not slp.uses_stock_long_planner(SimpleNamespace(brand="toyota", radarUnavailable=True))
+
+
+def test_experimental_follows_the_model_brake():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  for _ in range(20):
+    planner.update(make_sm(e2e_a=-0.8))
+  assert planner.source == 'e2e'
+  assert planner.output_a_target == pytest.approx(-0.8)
+
+
+def test_chill_ignores_the_model():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  for _ in range(20):
+    planner.update(make_sm(e2e_a=-0.8, exp=False))
+  assert planner.source != 'e2e'
+  assert planner.output_a_target > -0.1
+
+
+def test_cruise_accel_is_jerk_limited():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=10.0)
+  planner.update(make_sm(v_ego=10.0, v_cruise=30.0, e2e_a=2.0))
+  assert planner.a_cruise <= slp.J_CRUISE_VALS[0] * planner.dt + 1e-6
+
+
+def test_close_slow_lead_brakes_through_the_mpc():
+  planner = slp.StockLongitudinalPlanner(camera_only_cp(), init_v=20.0)
+  for _ in range(20):
+    planner.update(make_sm(e2e_a=0.0, lead_one=lead(True, 25.0, 5.0)))
+  assert planner.source == 'lead0'
+  assert planner.output_a_target < -1.0

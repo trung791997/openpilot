@@ -11279,3 +11279,23 @@ Job's replay of drive 380 (closed-loop alpha replay on radar re-parsed from CAN,
   - It brakes 8 s earlier at 3:52.4 (-1.75) and shallower at 4:02 (-1.61 vs -2.63).
   - At 8:22-8:31, with the car stopped, the output cycles between -0.24 and -1.4. The sim creeps and stops in a loop;
     the plant does not model the longcontrol stop hold, so this is most likely a sim artefact. Watch it on the road.
+
+## 251. Camera-only Honda runs the upstream planner as mvl runs it (`stock_long_planner.py`, 2026-10-19). Static and unit evidence only; replay pending; not driven.
+
+Owner, after 0000039c (first camera-only drive, experimental): it "brake[s] a little further back than I expected";
+"I want it to follow the model closely"; upstream dropped chill; "keep the live gas learner from mvl and specific
+tuning from mvl since it's designed for Honda. But everything else can be a red diff."
+
+- plannerd builds `StockLongitudinalPlanner` when `uses_stock_long_planner(CP)` is true (Honda with
+  `radarUnavailable`, i.e. Bosch A Radar off). Radar drives keep `LongitudinalPlanner` and every fix in §250.
+- **The law:** mvl sp-honda-dev-202608's planner. The output is
+  min(lead MPC, jerk-limited cruise accel, the model's desiredAcceleration when experimental), clipped to
+  ACCEL_MIN/MAX. It has the throttle gate on gasPressProbs with the pitch coast limit, lateral-accel limit and
+  cruise jerk in chill only, and get_accel_from_plan with MIN_STABLE_DELAY 0.3.
+  - The MPC runs in acc mode on leads only: v_cruise far, `optional_far_lead_comfort=False`, no HumanFollowing.
+  - None of the post-MPC guards run: the close-lead caps, the vision approach caps, EXP_EARLY_ONSET, the soft-stop
+    floor, the far-follow slew, the release slews, accel boost, and the car-specific tunes.
+- **Kept:** starpilotPlan.vCruise (speed limit and curve control), starpilotPlan.tFollow (the driver's following
+  distance), the live longitudinal delay, longcontrol and the Honda carcontroller (mvl gas learner, Honda tuning).
+- **Open:** Job's closed-loop replay of 0000039c, stock planner vs §250, with fidelity. It ships to the car only after
+  that.
