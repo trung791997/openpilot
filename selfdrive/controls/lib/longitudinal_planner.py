@@ -516,6 +516,12 @@ STOCK_FEEL_LEAD_STOP_MAX_T = 20.0  # s
 STOCK_FEEL_EMERGENCY = True
 STOCK_FEEL_EMERGENCY_A_LEAD = -2.0  # m/s^2
 STOCK_FEEL_EMERGENCY_NEED = 2.0  # m/s^2
+# The aLeadK path only latches when the worst TTC is at most STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC (STATUS 258).
+# 000003a3 17:28.35: aLeadK -2.09 on a lead at TTC 21.7 s latched the bypass, and it stayed on through the separate
+# 17:43-17:44 build 15 s later, which then ran unlimited to -3.03 with 26 m left (owner: build could be more gradual).
+# 2f5 10:01 latches via aLeadK -2.46 at TTC 6.98 s (replay R26) and is unchanged; lead_stop_need still covers a
+# hard-braking lead at any TTC.
+STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC = 10.0  # s
 # Stop ease (owner 2026-10-07, 000002f2, proposed; static only). Every hard stop on 2f2 reached standstill still braking
 # -1.6..-1.7 (longcontrol's stopping state only ever deepens, so it held -2.0/-2.27 through the stop): the clunk. With
 # this on, under STOP_EASE_BP[-1] the brake may go no deeper than STOP_EASE_V at that speed, easing to about -0.5 at
@@ -627,7 +633,7 @@ def stock_feel_emergency(leads, v_ego: float, active: bool) -> bool:
     return True
   for lead in leads:
     if lead is not None and bool(getattr(lead, 'status', False)) and -float(lead.vRel) > STOCK_FEEL_MIN_CLOSING and \
-       float(lead.aLeadK) <= STOCK_FEEL_EMERGENCY_A_LEAD:
+       float(lead.aLeadK) <= STOCK_FEEL_EMERGENCY_A_LEAD and ttc <= STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC:
       return True
   need = lead_stop_need(leads, v_ego)
   depth = float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, STOCK_FEEL_DEPTH_V))

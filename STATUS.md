@@ -11431,6 +11431,38 @@ Driven on 27b610702 (before 256): BoschARadar=1, small model, experimental, Resu
 - The 19 short-radar runs: 2 real nearer cars, 2 adjacent cars drifting in, the rest the same in-lane car with vision reading long. No ghosts. Radar-vs-vision output differences above 0.2 are mostly less gas, not braking.
 - dRel offset: radar - vision = -1.82 m - 0.028 x visionD. That is a fixed offset of about 1.8 m (mount or reference point) plus vision reading about 3% long at range. No change.
 
+## 258. 3a3 17:44 brake build: search closed, only the far-latch fix ships (2026-10-20). Replay only (Job R22-R28); not driven.
+
+Peter on 000003a3 17:44: brake timing fine, the build could be more gradual, and the car could close in more. Later: "I wouldn't mind if the car lets go of the gas, then ramps up brake if needed."
+
+**Ships (default on): STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC = 10 s.** The aLeadK path of the stock-feel emergency latch now needs TTC <= 10 s. At 17:28.35 an aLeadK of -2.09 on a lead 21.7 s away latched the bypass for 16 s. That is a latch bug; lead_stop_need still latches a hard-braking lead at any TTC. Replay: no regression on 20 events, and 2f5 10:01 is unchanged (latches via aLeadK -2.46 at TTC 6.98 s). It does not change 17:44, because need re-latches there at 17:43.06 (need 2.06, TTC 6.4).
+
+**What sets the 17:44 build (R24-R26).**
+- Once latched, the output is the MPC target. The MPC is on the model-lead path (build_model_lead_trajectory), so aLeadK and aLeadTau never reach it.
+- The lead really braked, 11.5 -> 4.2 m/s in about 1.5 s, then recovered to about 7. The model predicted it stopping (vL at 4 s: 0.2, against a radar reading of 6-7).
+- On 2f5 the model was wrong the other way: it was late and under-predicted a real hard brake.
+- K6 output peaks at -3.10 (aEgo -3.73) with min TTC 3.77. The end gap is 1.8x desired (corrected formula, including the lead term), and the extra space comes from the approach.
+- The car was already at or below coast from on-0.3 (17:37.21) to on-1.0 (17:41.91), so a coast-first hold has nothing to act on.
+
+**Rejected arms** (stop rule: later-and-harder, min TTC below base, 2f5 worse):
+| Arm | What it does | Result |
+|---|---|---|
+| J1-J3, K1-K5, K7-K8 | build-rate and far-radar taper variants | inert or worse |
+| N1 | need 2.5 | inert |
+| N2/N3 | recovering-lead aLeadK | peak -3.15, min TTC down on 10 events |
+| M1/M2 | in-latch build limit | eligible about 3 frames, inert |
+| M3/M4 | aLeadTau floor | no path on model lead |
+| P1/P3 | skip model while latched | maxInst 13.8, end gap wider |
+| P2 | floor the model's predicted lead-speed drop at the radar's current decel | 2f5 later and lower TTC; binds on 44-87% of frames, the model being right 34-40% of the time |
+| C1E-C3E | coast-first hold, logged gas-off table [-0.17,-0.23,-0.39] at v 5/15/25 | fidelity fails, 2f5 min TTC 1.63-1.65 vs 1.69 |
+
+**Fidelity (R28).**
+- Using each log's own planner commit as the sim planner, and excluding standstill and the first 1 s after each restart: windows 17/19, events 15/20, 2f5 passes.
+- Failing, unscored: 3a3 9:28 and 19:01; 361 22:18 (onset 0.45 s early), 23:01, 25:38; 363 16:35; 380 3:49.
+- Coast decel was measured from logged gas-off (ACC_CONTROL GAS_COMMAND -30000, pitch-corrected): -0.17 / -0.23 / -0.39 m/s^2 at 5 / 15 / 25 m/s, and steady coast at 25 m/s is -0.48.
+
+Open: softening this event without losing margin on real hard brakes would need a better lead-future prediction than the model gives. R21: radar read more closing than vision on the same car here.
+
 ## 259. Bosch-A shadow telemetry ported behind a new toggle, off by default (2026-10-20). Static tests only; not driven, not on the device.
 
 **What the driver sees:** nothing. A new toggle, **Honda Bosch-A Radar Shadow Telemetry**
