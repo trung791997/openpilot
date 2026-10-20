@@ -11413,3 +11413,14 @@ Other windows:
 Job suggests a TTC floor (no relaxation below 3 s / 10 m). That would keep the inflated brake at exactly Peter's event, so it is not taken. Peter chose to ship as-is (2026-10-20).
 
 Side finding: brake_release_limited_target returns the target unlimited once prev >= 0. After a brake ends, output can jump to the exp blend target at about 12 m/s^3 (3a0 23:31: 0.03 -> 0.62). This is a candidate gas-lurch source, open.
+
+## 257. Drive 000003a3 review, radar on (2026-10-20). Log evidence and open-loop replay (Job R20).
+
+Driven on 27b610702 (before 256): BoschARadar=1, small model, experimental, ResumeBrakeRamp=1. Engaged 1111 s. Swing 0.106 (3a0 big 0.118, 39c 0.102, 39d 0.099).
+
+- Driver brake takeovers: 21:33.5 (radar lead 17 m, out about -1.9) and 6:57.6 (41 mph, lead 33 m, out +0.06). Cause not yet confirmed with Peter.
+- Planner braked about 1.0 harder than e2e at 17:44.2 (-3.03) and 9:52.0 (-2.17). Stills at 9:52 put the radar lead in the left-centre lane (radar vL 4-5 vs vision about 0.5): possible wrong-lane radar lead, open.
+- 256 open loop over the whole route (corr to log 0.925): cap binds 17.0 s -> 10.5 s. The fix is softer by > 0.1 in 154 frames, never below TTC 4.4 s or gap 8.8 m. It also softens 21:29-21:32 (-1.79 -> -1.56), the window just before the 21:33.5 takeover.
+- Gas after brake release: 41 episodes, peak jerk at most 2.0 (base) / 2.37 (fix). The 12 m/s^3 3a0 case does not recur. The large output steps (17-19 m/s^3) are standstill launches, where the limiter is bypassed.
+- Radar dRel reads 1.7-2.1 m shorter than vision (median, all bands); 19 runs of 0.5 s or more where radar is 15-30 m short. vRel -12 rail only at 2:38-2:40 (stopped queue at 83-99 m). 4 track-ID swaps on the held lead, 128 radar/vision source flips.
+- Closed-loop fidelity was poor over long windows (vEgo RMSE 2.46), so no closed-loop numbers are used.
