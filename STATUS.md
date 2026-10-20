@@ -11286,3 +11286,34 @@ Branch close-cap-measured-vego. Not on the car.
 - The release dwell (BRAKE_RELEASE_DWELL_TICKS 2) and slew (BRAKE_RELEASE_JERK 2.5) held -3.50 for about 0.1 s after the cap eased. They are left alone.
 
 **Replay harness caveat.** alpha_closed_loop_replay sets vEgoCluster to the sim speed, so closed loop cannot show this effect unless the logged cluster offset is fed back in.
+
+**256 replay (Job R19; base 9e722afbd vs fix d025c48b2; 3a0, 39c, 39d, 361, 363, 380; logged toggles; b0.075).**
+Setup:
+- Closed loop is run on event windows only; vEgoCluster = sim v + the logged cluster offset.
+- The full-route closed loop drifted and was discarded.
+- Fidelity of the base windows: corr 0.977-0.999, vEgo RMSE 0.09-0.27.
+
+The offset, from the logs:
+- When out < -1, vEgoCluster - vEgo is over 0.3 in 94% of frames (p50 0.82, p90 1.41, max 3.30). It is about a 0.7 s lag, not a scale error.
+- The cap was binding for 45 s across the six routes, 37.5 s of that with an offset over 0.3.
+
+Closed loop, Peter's brake (3a0 23:02-23:38), base -> fix:
+
+| | base | fix |
+|---|---|---|
+| min out | -3.50 | -2.74 |
+| aEgo peak | -4.21 | -3.58 |
+| min gap | 7.6 m | 6.9 m |
+| min TTC | 2.3 s | 2.3 s |
+
+Other windows:
+- Peaks are 0.1-0.6 shallower. Min gap is 0.3-0.8 m smaller in most windows, and never below 3.3 m where the fix changed anything.
+- Two windows lost TTC: 39d 10:00 (3.7 -> 3.4) and 361 22:04 (3.7 -> 3.3).
+- 380 3:38 brakes slightly harder.
+- Gas-to-brake cycles are unchanged on every route.
+- Open loop flags the fix as softer at TTC < 3 s only at 3a0 23:29 (10 frames, min TTC 2.38, gap 8.4 m).
+- Stills show a real in-lane lead in every changed window.
+
+Job suggests a TTC floor (no relaxation below 3 s / 10 m). That would keep the inflated brake at exactly Peter's event, so it is not taken; decision to Peter.
+
+Side finding: brake_release_limited_target returns the target unlimited once prev >= 0. After a brake ends, output can jump to the exp blend target at about 12 m/s^3 (3a0 23:31: 0.03 -> 0.62). This is a candidate gas-lurch source, open.
