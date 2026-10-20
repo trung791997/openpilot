@@ -5534,3 +5534,17 @@ def test_mpc_lead_handed_back_from_model_path_starts_at_its_measured_speed():
   lead = make_lead(status=True, d_rel=20.0, v_lead=8.0, model_prob=1.0)  # urgent: model path drops out
   lead_xv = mpc.process_lead(lead, lead_index=0, model_lead=model_lead)
   assert lead_xv[0, 1] == pytest.approx(8.0, abs=0.2)
+
+
+def test_close_lead_cap_uses_measured_speed_not_the_cluster_speed():
+  # STATUS 256, 000003a0 23:29.7: braking at vEgo 4.37 while Honda's cluster speed still read 5.81; vision lead
+  # 8.3 m ahead at 1.25 m/s. The cap read the cluster speed and went to -3.50; at the measured speed it is about -1.35.
+  v_ego, v_cluster = 4.37, 5.81
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH), init_v=v_ego)
+  lead = make_lead(status=True, d_rel=8.3, v_lead=1.25, a_lead=0.3, model_prob=1.0)
+  sm = make_sm(v_ego, -1.0, -3.5, experimental_mode=True, tracking_lead=True, lead_one=lead, lead_two=lead)
+  sm["carState"].vEgoCluster = v_cluster
+  planner.update(sm, make_toggles())
+  measured = planner.get_close_lead_brake_cap(lead, v_ego, -3.5)
+  assert measured is not None and measured > -2.0
+  assert planner.close_lead_brake_cap_value == pytest.approx(measured, abs=0.05)

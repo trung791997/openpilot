@@ -11261,3 +11261,28 @@ Branch mpc-lead-onset-seed, not on the car.
 - Min gap 4.1 m, min TTC 2.59 s and gas-to-brake cycles (5 on 363, 21 on 361) are the same in both arms.
 - No window moved by more than 0.3, so no frames were pulled.
 - Verdict: the fix corrects the MPC's internal lead speed with no measurable change to how the car drives on these routes. Shipped default on (it has no toggle).
+
+## 256. Close-lead brake cap uses the measured speed, not the cluster speed (2026-10-20). Static and unit test; replay pending.
+
+Branch close-cap-measured-vego. Not on the car.
+
+**What happened.** Peter's hard brake on 000003a0 at 23:29.8 (Job R16/R17, log and open-loop replay) came from the close-lead brake cap.
+- It reached -3.50 at 1409.69, and aEgo peaked at -4.08.
+- The cap was fed the planner v_ego, get_planner_v_ego = max(vEgo, vEgoCluster). That max is upstream StarPilot's 4ef2bca38 "1mph undershoot", there for cruise tracking.
+- Honda's cluster speed (ROUGH_CAR_SPEED_2) steps and holds while braking. At 1409.5-1409.8 it read 5.81 while vEgo fell from 5.41 to 4.37. At 3:23.9 it read 12.07 against 9.43.
+- With vEgo alone, the static cap is -1.35 at 1409.69 instead of -3.50, and -2.12 at 203.88 instead of -3.58.
+- The static formula with the max() reproduces every logged closeLeadBrakeCap.
+- A vision range read short in sun glare added to it. Raw Bosch A radar, decoded offline, read 10.1-10.5 m against vision's 8.3-8.8 m.
+
+**Change.** The three get_close_lead_brake_cap calls now take scene_v_ego (carState.vEgo). Most lead-scene logic already used scene_v_ego.
+- The geometry, fast-closing, slow-stopped and low-speed caps are unchanged.
+- The cruise speed path and the MPC are unchanged.
+- New test, red on base (-3.50) and green with the change (-1.26). 681 planner tests pass.
+
+**R17 sensitivity arms, not shipped.**
+- S1: dRel used by the cap held to a kinematically consistent drop.
+- S2: a faster release slew. S2d: S2 without the dwell.
+- None of them changed the -3.50 peak, and S2/S3/S2d shortened the min gap in closed loop.
+- The release dwell (BRAKE_RELEASE_DWELL_TICKS 2) and slew (BRAKE_RELEASE_JERK 2.5) held -3.50 for about 0.1 s after the cap eased. They are left alone.
+
+**Replay harness caveat.** alpha_closed_loop_replay sets vEgoCluster to the sim speed, so closed loop cannot show this effect unless the logged cluster offset is fed back in.

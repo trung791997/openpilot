@@ -3977,13 +3977,16 @@ class LongitudinalPlanner:
         if rav4_early_lead_cap is not None:
           rav4_early_lead_caps.append(rav4_early_lead_cap)
         fast_closing = self.fast_closing_lead_passes_floor(lead, lead_source, v_ego, sm['modelV2'])
-        cap = self.get_close_lead_brake_cap(lead, v_ego, fast_closing_accel_min(vision_cap_accel_min) if fast_closing
+        # STATUS 256: the close-lead cap is lead physics, so it uses the measured vEgo (scene_v_ego), not the
+        # planner v_ego = max(vEgo, vEgoCluster). Honda's cluster speed steps and holds while braking: on
+        # 000003a0 23:29.7 it read 5.81 against vEgo 4.37, which took this cap from -1.35 to -3.50.
+        cap = self.get_close_lead_brake_cap(lead, scene_v_ego, fast_closing_accel_min(vision_cap_accel_min) if fast_closing
                                            else output_accel_min)
         if cap is not None and experimental_mlsim and not fast_closing:
           # D-073: the part of the Exp cap that comes from the lead's aLeadK may only go deeper than chill's
           # floor at EXP_CLOSE_LEAD_FLOOR_RATE; what the closing speed alone demands applies at once.
           exp_close_lead_cap = cap if exp_close_lead_cap is None else min(exp_close_lead_cap, cap)
-          closing_cap = self.get_close_lead_brake_cap(lead, v_ego, output_accel_min, count_lead_brake=False)
+          closing_cap = self.get_close_lead_brake_cap(lead, scene_v_ego, output_accel_min, count_lead_brake=False)
           # D-124: below chill's floor too, unless the lead brakes harder than CHILL_CLOSE_LEAD_MAX_BRAKE.
           hard_lead = -float(lead.aLeadK) > CHILL_CLOSE_LEAD_MAX_BRAKE
           exp_hard_lead |= hard_lead
@@ -3993,7 +3996,7 @@ class LongitudinalPlanner:
               -float(lead.aLeadK) <= CHILL_CLOSE_LEAD_MAX_BRAKE):
           # D-123: in chill the aLeadK share deepens at CHILL_CLOSE_LEAD_RATE; the closing-speed demand applies at once.
           chill_close_lead_cap = cap if chill_close_lead_cap is None else min(chill_close_lead_cap, cap)
-          closing_cap = self.get_close_lead_brake_cap(lead, v_ego, output_accel_min, count_lead_brake=False)
+          closing_cap = self.get_close_lead_brake_cap(lead, scene_v_ego, output_accel_min, count_lead_brake=False)
           cap = rate_limit_lead_brake_share(cap, chill_close_lead_floor, closing_cap)
         if cap is not None:
           close_lead_caps.append(cap)
