@@ -3,7 +3,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -22,7 +21,7 @@ def _galaxy_toggle_keys():
   # would be a much larger claim about the whole settings surface and is deliberately not made
   # here -- several keys legitimately live outside the device binary. The Bosch-A TEST toggles
   # (RangeDerivedVrel and friends) are built in now; BoschARadar is the row that remains.
-  return ("BoschARadar",)
+  return ("BoschARadar", "BoschARadarShadow")
 
 
 def _layout():
@@ -688,12 +687,3 @@ def test_bosch_a_shadow_row_is_off_by_default_offroad_and_says_it_does_not_chang
     "Logs extra radar edge and lateral-speed data for analysis. Does not change driving.")
   assert "BoschARadarShadow" in _all_declared_keys()
   assert _declared_default("BoschARadarShadow") == "0"
-
-
-# BoschARadarShadow is declared in params_keys.h but the committed aarch64 params_pyx.so predates it; it needs the
-# binary-only device rebuild (cf. 8fd49f886). When this XPASSes, move the key into _galaxy_toggle_keys() and drop this test.
-@pytest.mark.xfail(strict=True, reason="committed device params_pyx.so predates BoschARadarShadow; needs a device rebuild")
-def test_bosch_a_shadow_key_is_in_the_committed_device_params_binary():
-  blob = subprocess.run(["git", "show", "HEAD:common/params_pyx.so"], cwd=REPO_ROOT, capture_output=True,
-                        check=True).stdout
-  assert b"BoschARadarShadow" in set(re.findall(rb"[\x20-\x7e]{4,}", blob))
