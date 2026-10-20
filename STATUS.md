@@ -11358,9 +11358,9 @@ Branch mpc-lead-onset-seed, not on the car.
 - No window moved by more than 0.3, so no frames were pulled.
 - Verdict: the fix corrects the MPC's internal lead speed with no measurable change to how the car drives on these routes. Shipped default on (it has no toggle).
 
-## 256. Close-lead brake cap uses the measured speed, not the cluster speed (2026-10-20). Static and unit test; replay pending.
+## 256. Close-lead brake cap uses the measured speed, not the cluster speed (2026-10-20). Static, unit test and replay (R19). Shipped.
 
-Branch close-cap-measured-vego. Not on the car.
+Branch close-cap-measured-vego, shipped to iq-nav-on-pr10, pr10-smooth and ns-bosch-radar-testing on 2026-10-20 (Peter: ship as-is, no TTC floor).
 
 **What happened.** Peter's hard brake on 000003a0 at 23:29.8 (Job R16/R17, log and open-loop replay) came from the close-lead brake cap.
 - It reached -3.50 at 1409.69, and aEgo peaked at -4.08.
@@ -11410,6 +11410,6 @@ Other windows:
 - Open loop flags the fix as softer at TTC < 3 s only at 3a0 23:29 (10 frames, min TTC 2.38, gap 8.4 m).
 - Stills show a real in-lane lead in every changed window.
 
-Job suggests a TTC floor (no relaxation below 3 s / 10 m). That would keep the inflated brake at exactly Peter's event, so it is not taken; decision to Peter.
+Job suggests a TTC floor (no relaxation below 3 s / 10 m). That would keep the inflated brake at exactly Peter's event, so it is not taken. Peter chose to ship as-is (2026-10-20).
 
 Side finding: brake_release_limited_target returns the target unlimited once prev >= 0. After a brake ends, output can jump to the exp blend target at about 12 m/s^3 (3a0 23:31: 0.03 -> 0.62). This is a candidate gas-lurch source, open.
