@@ -107,6 +107,14 @@ def bosch_a_range_offset_m(car_fingerprint: str = "") -> float:
 BOSCH_A_AZIMUTH_SCALE_RAD = 1.0 / 2048.0
 BOSCH_A_AZIMUTH_CENTER = 1024
 
+# Shadow telemetry (2026-10-20 decode sweep; static/replay evidence only). Published beside the point, never gating.
+BOSCH_A_EDGE_CLAMP_LOW = 0  # F3 edge B raw 0 = clamped at the low end (|az| > ~22 deg); decode is (raw-1024)/2048 rad like AZIMUTH
+BOSCH_A_EDGE_CLAMP_HIGH = 2047  # F3 edge A raw 2047 = clamped at the high end
+BOSCH_A_ANGULAR_WIDTH_INVALID = 2047  # F1 width sentinel; unit 1/2048 rad per LSB (A-B == W within 1 LSB in 99.98 % of 54,258 rows)
+BOSCH_A_AZ_RATE_SCALE = 0.005  # F1 bits 39|9: rad/s = raw*0.005 - 1.25 (decode sweep 2026-10-20)
+BOSCH_A_AZ_RATE_OFFSET = -1.25
+BOSCH_A_AZ_RATE_ABSENT_RAWS = (510, 511)  # 510 absent, 511 invalid
+
 # Invalid sentinels (section 3/4/5/6 of the spec).
 BOSCH_A_STATUS_INVALID = 0xF
 BOSCH_A_RANGE_RAW_INVALID = 0xFFF
@@ -466,6 +474,37 @@ def _bosch_a_newborn_vrel(run: list, v_ego: float | None) -> float | None:
   return rate if v_ego is None else max(rate, -v_ego)
 
 
+def _bosch_a_edges_m(d_rel: float, y_rel: float, edge_a_raw: int, edge_b_raw: int, width_raw: int) -> tuple[float, float]:
+  """Shadow (yLeft, yRight) in metres, left positive; NaN pair when no usable source. Never gates anything."""
+  nan = float('nan')
+  clamped = edge_a_raw >= BOSCH_A_EDGE_CLAMP_HIGH or edge_b_raw <= BOSCH_A_EDGE_CLAMP_LOW
+  if clamped:
+    if width_raw == BOSCH_A_ANGULAR_WIDTH_INVALID:
+      return nan, nan
+    half = d_rel * math.tan(0.5 * width_raw * BOSCH_A_AZIMUTH_SCALE_RAD)
+    return y_rel + half, y_rel - half
+  return (d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_a_raw - BOSCH_A_AZIMUTH_CENTER)),
+          d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_b_raw - BOSCH_A_AZIMUTH_CENTER)))
+
+
+def _bosch_a_set_shadow(point, observation: dict, d_rel: float, y_rel: float, azimuth_rad: float, v_rel: float,
+                        from_ratio: bool):
+  """Shadow-only telemetry on a measured point (yLeft/yRight/azRate/yvRel/vRelFromRatio). Touches no other field."""
+  point.yLeft, point.yRight = _bosch_a_edges_m(d_rel, y_rel, observation['edge_a_raw'], observation['edge_b_raw'],
+                                                observation['width_raw'])
+  rate_raw = observation['az_rate_raw']
+  az_rate = float('nan') if rate_raw in BOSCH_A_AZ_RATE_ABSENT_RAWS else rate_raw * BOSCH_A_AZ_RATE_SCALE + BOSCH_A_AZ_RATE_OFFSET
+  point.azRate = az_rate
+  point.yvRel = d_rel * az_rate + math.tan(azimuth_rad) * v_rel if math.isfinite(az_rate) and math.isfinite(v_rel) else float('nan')
+  point.vRelFromRatio = from_ratio
+
+
+def _bosch_a_clear_shadow(point):
+  """Coasted / unmeasured points carry no shadow telemetry (the measurements belong to the sweep that was not trusted)."""
+  point.yLeft = point.yRight = point.azRate = point.yvRel = float('nan')
+  point.vRelFromRatio = False
+
+
 def _bosch_a_direct_vrel(raw_value: int | float | None,
                          uncertainty_raw: int | float | None = None,
                          counts_per_mps: int = BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS) -> float | None:
@@ -803,6 +842,10 @@ class RadarInterface(RadarInterfaceBase):
       angle_raw = int(v0['AZIMUTH_RAW'])
       range_sigma_raw = int(v0['RANGE_SIGMA_RAW'])
       existence_raw = int(v1['OBJECT_EXISTENCE_PROBABILITY_RAW'])
+      width_raw = int(v1['ANGULAR_WIDTH_RAW'])
+      az_rate_raw = int(v1['AZIMUTH_RATE_RAW'])
+      edge_a_raw = int(v3['AZIMUTH_EDGE_A_RAW'])
+      edge_b_raw = int(v3['AZIMUTH_EDGE_B_RAW'])
       nc_raw = int(v2['NORMALIZED_CLOSING_RAW'])
       nc_sigma_raw = int(v2['NORMALIZED_CLOSING_SIGMA_RAW'])
       life = int(v2['LIFECYCLE_RAW'])
@@ -842,6 +885,10 @@ class RadarInterface(RadarInterfaceBase):
         'object_valid': object_valid,
         'range_sigma_raw': range_sigma_raw,
         'existence_raw': existence_raw,
+        'width_raw': width_raw,
+        'az_rate_raw': az_rate_raw,
+        'edge_a_raw': edge_a_raw,
+        'edge_b_raw': edge_b_raw,
         'direct_vrel_raw': direct_vrel_raw,
         'direct_vrel_uncertainty_raw': direct_vrel_uncertainty_raw,
         'range_ratio_raw': range_ratio_raw,
@@ -1075,6 +1122,7 @@ class RadarInterface(RadarInterfaceBase):
         if accepted_fresh and point is not None:
           point.measured = False
           point.ncValid = False
+          _bosch_a_clear_shadow(point)
         else:
           self.pts.pop(track_id, None)
         track.prev_frame_idx = idx0
@@ -1202,6 +1250,7 @@ class RadarInterface(RadarInterfaceBase):
           point.measured = False
           point.ncValid = False
           point.existence = observation['existence_raw'] / 127.0
+          _bosch_a_clear_shadow(point)
         elif (self.newborn_range_publish and high_u10_live_vrel and range_anchor is None and
               track.last_trusted_vrel is None):
           # A newborn high-u10 identity: keep its ranges outside the accepted history and publish the
@@ -1223,6 +1272,7 @@ class RadarInterface(RadarInterfaceBase):
             point.measured = False
             point.ncValid = False
             point.existence = observation['existence_raw'] / 127.0
+            _bosch_a_clear_shadow(point)
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1271,6 +1321,7 @@ class RadarInterface(RadarInterfaceBase):
           point.measured = False
           point.ncValid = False
           point.existence = observation['existence_raw'] / 127.0
+          _bosch_a_clear_shadow(point)
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1326,6 +1377,8 @@ class RadarInterface(RadarInterfaceBase):
         # The radar's own OBJECT_EXISTENCE_PROBABILITY for this sweep, carried for radard's onpath adoption gate
         # (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE). Informational only here: it gates no point in this file.
         self.pts[track_id].existence = observation['existence_raw'] / 127.0
+        # Shadow telemetry only (yLeft/yRight/azRate/yvRel/vRelFromRatio); no gate reads it.
+        _bosch_a_set_shadow(pt, observation, dRel, yRel, azimuth_rad, vRel, direct_vrel is None)
       else:
         self.pts.pop(track_id, None)
 

@@ -336,6 +336,13 @@ struct RadarData @0x888ad6581cf0aacb {
     # -1 (the default) means "not provided": every other radar, and every log recorded before this field existed.
     # radard gates only NEW onpath adoption on its window median (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE).
     existence @10 :Float32 = -1.0;
+
+    # Honda Bosch-A only, shadow telemetry (2026-10-20 decode sweep; static/replay evidence only). NaN when unavailable.
+    # Nothing consumes these to gate, drop or coast a point.
+    yLeft @11 :Float32;  # m, left edge = dRel*tan(edgeA); same sign convention as yRel (left positive)
+    yRight @12 :Float32; # m, right edge = dRel*tan(edgeB); yRight <= yRel <= yLeft
+    azRate @13 :Float32; # rad/s, sensor-frame azimuth rate (raw*0.005 - 1.25), NaN when raw is 510 or 511
+    vRelFromRatio @14 :Bool; # true when vRel was taken from the RANGE_RATIO fallback instead of U11
   }
 
   enum ErrorDEPRECATED {
