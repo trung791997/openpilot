@@ -69,3 +69,13 @@ def test_hard_braking_lead_that_is_not_closing_is_ignored():
 def test_switch_off(monkeypatch):
   monkeypatch.setattr(lp, 'STOCK_FEEL_EMERGENCY', False)
   assert not lp.stock_feel_emergency([lead(*F5[3][2:])], F5[3][1], True)
+
+
+def test_far_braking_reading_does_not_latch(monkeypatch):
+  # 000003a3 17:28.35 (STATUS 258): aLeadK -2.09 on a lead at TTC 21.7 s latched the bypass; it stayed on into the
+  # separate 17:43-17:44 build. Shaped to that TTC with a stop need under STOCK_FEEL_EMERGENCY_NEED.
+  far = lead(65.0, -3.0, 13.0, -2.09)
+  assert lp.lead_stop_need([far], 16.0) < lp.STOCK_FEEL_EMERGENCY_NEED
+  assert not lp.stock_feel_emergency([far], 16.0, False)
+  monkeypatch.setattr(lp, 'STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC', float('inf'))
+  assert lp.stock_feel_emergency([far], 16.0, False)
