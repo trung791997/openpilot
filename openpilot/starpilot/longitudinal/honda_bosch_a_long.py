@@ -2,7 +2,8 @@
 
 Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad, selfdrive/controls/lib/longitudinal_planner.py).
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
-disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. There is no other toggle.
+disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
+switch (STOCK_BRAKE_FEEL, STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY, BIRTH_RAIL_ENABLED); all are off for now.
 
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
@@ -55,6 +56,20 @@ STOP_EASE_BP = [0.0, 1.0, 3.0]  # m/s
 STOP_EASE_V = [-0.5, -1.1, -2.5]  # m/s^2
 STOP_EASE_JERK = 2.0  # m/s^3
 STOP_EASE_MIN_GAP = 2.0  # m
+
+
+# ---- Switches (owner 2026-10-20: drive James's night-star7 as shipped first, so every switch is off) -----------------
+# STOCK_BRAKE_FEEL: the stock-ACC depth/jerk law and the emergency latch (step()).
+# STOP_EASE_ENABLED: the planner-side brake ease at the stop (step()).
+# RADAR_LEAD_RECOVERY groups D-089 (far-range recovery), D-075 (newborn range publish) and D-080 (newborn aLeadK
+#   bound). Only D-080 is ported (planner_radar_state()). D-089 and D-075 live in the decoder
+#   (bosch_a_radar.BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC = 0, BOSCH_A_NEWBORN_RANGE_PUBLISH = False) and need radard
+#   gates (RECOVERED_CAM_GATE, NEWBORN_*) plus RadarPoint fields (`measured`, `recovered`) that 7.0 does not have, so
+#   this switch does NOT turn them on. Turning those decoder constants on without the gates is the rejected
+#   configuration (STATUS 225; D-075 phantom brakes on 280/294/2ae/284).
+STOCK_BRAKE_FEEL = False
+STOP_EASE_ENABLED = False
+RADAR_LEAD_RECOVERY = False
 
 
 def active_for(CP) -> bool:
@@ -183,9 +198,19 @@ def stop_eased_target(prev: float, target: float, floor: float | None, dt: float
 
 class HondaBoschALongEnhancement:
   def __init__(self, CP, dt: float):
-    self.enabled = active_for(CP)
+    active = active_for(CP)
+    self.stock_feel = active and STOCK_BRAKE_FEEL
+    self.stop_ease = active and STOP_EASE_ENABLED
+    self.enabled = self.stock_feel or self.stop_ease
+    self.newborn_hold = NewbornLeadHold() if active and RADAR_LEAD_RECOVERY else None
     self.dt = dt
     self.reset()
+
+  def planner_radar_state(self, radar_state, a_ego: float):
+    """The radarState the MPC sees: D-080 bounds a newborn radar lead's aLeadK; otherwise radar_state itself."""
+    if self.newborn_hold is None:
+      return radar_state
+    return bound_newborn_leads(radar_state, a_ego, self.newborn_hold)
 
   def reset(self):
     self.emergency = False
@@ -198,14 +223,116 @@ class HondaBoschALongEnhancement:
       self.reset()
       return float(target)
     leads = (lead_one, lead_two)
-    if stopping:
+    if stopping or not self.stock_feel:
       self.reset()
     else:
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
       target = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
       self.law_t = STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
+    if not self.stop_ease:
+      return float(target)
     d_lead = float(lead_one.dRel) if _present(lead_one) else None
     return stop_eased_target(prev, target, stop_ease_floor(v_ego, d_lead), self.dt)
+
+
+# ---- Newborn lead aLeadK bound (D-080), under RADAR_LEAD_RECOVERY ---------------------------------------------------
+# Ported from openpilot-radar longitudinal_planner.py (567495f4ad), where it is part of the StockBrakeFeel toggle (D-086,
+# default off). Replay only, not driven. STATUS 212: on 2e2 (~283 s) a radar lead first seen while its velocity estimate
+# was still converging published aLeadK -3 / -2.5 when ~0.75 m/s^2 was needed, and on 2e1 a jumping track reached
+# -13.7. For the first NEWBORN_LEAD_FRAMES a radar track has been a lead (or after it drops out for
+# NEWBORN_LEAD_GAP_FRAMES or its range jumps NEWBORN_LEAD_JUMP_M), its aLeadK may go no lower than
+# -NEWBORN_LEAD_MIN_BRAKE, or lower only as far as a quadratic fit to its own range history says it is slowing.
+# MPC input only: dRel, vRel and radarState are untouched and the point is never dropped (D-041/D-042).
+# D-100: removing it alone changed nothing on route 313.
+NEWBORN_LEAD_FRAMES = 40        # 2.0 s as a lead
+NEWBORN_LEAD_GAP_FRAMES = 10    # absent this long (0.5 s): newborn again
+NEWBORN_LEAD_JUMP_M = 4.0       # range step from the last sample: newborn again
+NEWBORN_LEAD_FIT_FRAMES = 16    # 0.8 s of range history before the fit may lower the floor
+NEWBORN_LEAD_MIN_BRAKE = 1.0    # aLeadK floor without range confirmation
+NEWBORN_LEAD_DT = 0.05          # s per planner frame (DT_MDL)
+
+
+def _radar_lead(lead) -> bool:
+  return _present(lead) and bool(getattr(lead, "radar", False))
+
+
+class NewbornLeadHold:
+  """Per radar track, (frame, dRel, aEgo) since it became a lead; bounds aLeadK while it is newborn."""
+  def __init__(self):
+    self.frame = 0
+    self.hist: dict[int, list] = {}
+    self.bound_frames = 0
+
+  def _range_decel(self, h):
+    """Lead accel from a quadratic fit to the range history plus ego accel, or None if too short."""
+    if len(h) < NEWBORN_LEAD_FIT_FRAMES:
+      return None
+    t = np.array([f - h[-1][0] for f, _, _ in h], dtype=float) * NEWBORN_LEAD_DT
+    d = np.array([x for _, x, _ in h], dtype=float)
+    a_rel = 2.0 * float(np.polyfit(t, d, 2)[0])
+    return a_rel + float(np.mean([a for _, _, a in h]))
+
+  def observe(self, lead, a_ego):
+    """Record `lead` this frame; its history, or None for a missing or vision-only lead. Call after tick()."""
+    if lead is None or not _radar_lead(lead):
+      return None
+    tid = int(getattr(lead, "radarTrackId", -1))
+    d_rel = float(lead.dRel)
+    h = self.hist.get(tid)
+    if h is None or self.frame - h[-1][0] > NEWBORN_LEAD_GAP_FRAMES or abs(d_rel - h[-1][1]) > NEWBORN_LEAD_JUMP_M:
+      h = self.hist[tid] = [(self.frame, d_rel, float(a_ego))]
+    elif h[-1][0] != self.frame:  # leadOne and leadTwo on one track: record it once
+      h.append((self.frame, d_rel, float(a_ego)))
+    return h
+
+  def bound(self, lead, a_ego):
+    """aLeadK for `lead`, or None when it is left as is. Call once per lead per frame, after tick()."""
+    h = self.observe(lead, a_ego)
+    if h is None or self.frame - h[0][0] >= NEWBORN_LEAD_FRAMES:
+      return None
+    a_lead = float(lead.aLeadK)
+    a_range = self._range_decel(h)
+    a_floor = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
+    if a_lead >= a_floor:
+      return None
+    self.bound_frames += 1
+    return a_floor
+
+  def tick(self):
+    self.frame += 1
+    if len(self.hist) > 64:
+      self.hist = {k: h for k, h in self.hist.items() if self.frame - h[-1][0] <= NEWBORN_LEAD_GAP_FRAMES}
+
+
+class _BoundedLead:
+  """A lead that reads as `lead` except for aLeadK."""
+  def __init__(self, lead, a_lead: float):
+    self._lead = lead
+    self.aLeadK = float(a_lead)
+
+  def __getattr__(self, name):
+    return getattr(self._lead, name)
+
+
+class _BoundedRadarState:
+  def __init__(self, radar_state, lead_one, lead_two):
+    self._radar_state = radar_state
+    self.leadOne = lead_one
+    self.leadTwo = lead_two
+
+  def __getattr__(self, name):
+    return getattr(self._radar_state, name)
+
+
+def bound_newborn_leads(radar_state, a_ego: float, hold: NewbornLeadHold):
+  hold.tick()
+  leads = []
+  changed = False
+  for lead in (radar_state.leadOne, radar_state.leadTwo):
+    a_lead = hold.bound(lead, a_ego)
+    leads.append(lead if a_lead is None else _BoundedLead(lead, a_lead))
+    changed |= a_lead is not None
+  return _BoundedRadarState(radar_state, leads[0], leads[1]) if changed else radar_state
 
 
 # ---- Birth-rail ramps (D-077), OFF and not wired --------------------------------------------------------------------

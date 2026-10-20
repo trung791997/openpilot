@@ -28,12 +28,15 @@ from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
 LEAD_DETECTION_PROBABILITY = 0.35
 MAX_CLOSING_TTC = 2.0
 MIN_CLOSING_SPEED = 0.75
+# Off (owner 2026-10-20: drive James's night-star7 as shipped first). Also switches HumanAcceleration, which shares
+# enabled_for().
+ENABLED = False
 
 
 def enabled_for(CP) -> bool:
   """Honda cars with a verified Bosch-A radar, with the radar on or off (vision-only shares it)."""
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
+  return bool(ENABLED and CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
 
 
 def _horizon_matches(model_lead, lead, v_ego, model_v_ego) -> bool:
