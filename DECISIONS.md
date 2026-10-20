@@ -2015,3 +2015,34 @@ As a result, the commits were properly cherry-picked. The conflicts in `starpilo
 1. Cleaned up the duplicates in `test_starpilot_vcruise.py`. 
 2. Safely removed the invalid `vision_lead=birth_vision` argument from `radard.py` to restore functionality.
 **Agent:** Gemini 3.8 Flash
+
+## D-089 — Gate Bosch-A lateral velocity telemetry on a direct, unsaturated longitudinal estimate
+
+Owner requested a more gated lateral-velocity estimate after the shadow evaluation. This changes only
+`RadarPoint.yvRel` availability and its Cartesian derivative; no matcher or braking consumer is added.
+
+Use the derivative of the parser's own `yRel = dRel*tan(azimuth)`:
+`yvRel = dRel*sec(azimuth)^2*azRate + tan(azimuth)*vRel`. The old small-angle expression omitted sec².
+Publish it only on the existing fresh measured path with finite inputs, positive range, usable azimuth
+rate, direct U11, a known u10 within the existing ceiling of 511, and raw U11 strictly between 0 and 1728.
+The exact endpoints remain published as longitudinal bounds under D-041, while yvRel becomes NaN.
+Ratio fallback and coasts also have unavailable yvRel; azRate remains independently available on measured
+points even when the lateral estimate is suppressed. Do not replace unavailable velocity with zero or a
+held prior value. No empirical 11.9 m/s margin, tighter u10 threshold, motion classifier or yaw gate is added.
+
+Evidence is offline only. firmware-analysis-kit commit 1545d79 records an additional 17-segment case study on
+`000003a3--4f6ecdb929`, `0000039c--6eddcb4316`, `0000039a--952012df10`, `00000361--59b892c2ab`,
+and `00000363--159e8c5db6`: near-rail lateral signs agree on 520/836 pairs versus 6783/6939 interior pairs.
+The final 85-segment source-hashed replay covers those named in the retained original manifest (seven
+routes, including `0000033c--476e8185eb`). It keeps every established point field/set plus edges/azRate
+identical, publishes finite yvRel on 111,054/121,426 measured samples, and leaves no finite yvRel on rails
+or coasts. Against a seven-sample derivative, retained yvRel has R² 0.8846 and sign agreement 96.36%.
+The comparison shares track position history and is not independent target-motion ground truth.
+
+The change is on review branch `codex/bosch-a-gated-lateral-velocity`, based on committed shadow baseline
+1dc044833d (the exact previously dirty source snapshot); replay hashes identify the final source.
+Validation: 189 parser tests passed; 158 consumer tests passed; entire Honda suite 410 passed with the same
+pre-existing FakeParams.get_bool failure (firmware-analysis-kit eps-121). Replacing the exact derivative
+in memory with the old expression fails all eight independent trajectory tests. No live timing or
+closed-loop validation occurred. The estimate stays in the rotating sensor/ego frame: an eventual cut-in
+consumer still needs yaw/path semantics and its own replay. The separate edge-clamp correction remains open.

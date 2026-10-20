@@ -487,6 +487,29 @@ def _bosch_a_edges_m(d_rel: float, y_rel: float, edge_a_raw: int, edge_b_raw: in
           d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_b_raw - BOSCH_A_AZIMUTH_CENTER)))
 
 
+def _bosch_a_lateral_vrel(d_rel: float, azimuth_rad: float, v_rel: float, az_rate: float,
+                           direct_vrel_raw: int | None, uncertainty_raw: int | None, from_ratio: bool) -> float:
+  """D-089: rotating-frame lateral derivative, or NaN when its longitudinal input is not an estimate.
+
+  Raw U11 endpoints 0/1728 are saturation bounds (D-041), not missing points. A clipped dx/dt prevents
+  cancellation between changing range and angle and can manufacture lateral motion: the additional
+  361/363/3a3/39a/39c replay has only 520/836 lateral signs agreeing near the rails (diagnostic slice
+  |vRel|>=11.9, not a gate). Use the exact raw endpoints here, retaining adjacent representable readings.
+  Reuse the existing u10 ceiling without retuning it (D-042); ratio fallback is not direct velocity.
+  This helper gates only yvRel availability. Never remove the point, alter vRel's bound, or hide azRate.
+  Evidence: firmware-analysis-kit 1545d79, radar-re/parser-shadow/KONIK_FOLLOWUP.md; offline only.
+  """
+  if (from_ratio or direct_vrel_raw is None or uncertainty_raw is None or
+      not BOSCH_A_DIRECT_VREL_MIN_RAW < direct_vrel_raw < BOSCH_A_DIRECT_VREL_MAX_RAW or
+      not 0 <= uncertainty_raw <= BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW or
+      not all(math.isfinite(v) for v in (d_rel, azimuth_rad, v_rel, az_rate)) or d_rel <= 0.0):
+    return float('nan')
+  # yRel = dRel*tan(azimuth); differentiating requires sec(azimuth)^2 on the angular term.
+  tan_az = math.tan(azimuth_rad)
+  lateral_vrel = d_rel * (1.0 + tan_az * tan_az) * az_rate + tan_az * v_rel
+  return lateral_vrel if math.isfinite(lateral_vrel) else float('nan')
+
+
 def _bosch_a_set_shadow(point, observation: dict, d_rel: float, y_rel: float, azimuth_rad: float, v_rel: float,
                         from_ratio: bool):
   """Shadow-only telemetry on a measured point (yLeft/yRight/azRate/yvRel/vRelFromRatio). Touches no other field."""
@@ -495,7 +518,8 @@ def _bosch_a_set_shadow(point, observation: dict, d_rel: float, y_rel: float, az
   rate_raw = observation['az_rate_raw']
   az_rate = float('nan') if rate_raw in BOSCH_A_AZ_RATE_ABSENT_RAWS else rate_raw * BOSCH_A_AZ_RATE_SCALE + BOSCH_A_AZ_RATE_OFFSET
   point.azRate = az_rate
-  point.yvRel = d_rel * az_rate + math.tan(azimuth_rad) * v_rel if math.isfinite(az_rate) and math.isfinite(v_rel) else float('nan')
+  point.yvRel = _bosch_a_lateral_vrel(d_rel, azimuth_rad, v_rel, az_rate, observation['direct_vrel_raw'],
+                                     observation['direct_vrel_uncertainty_raw'], from_ratio)
   point.vRelFromRatio = from_ratio
 
 

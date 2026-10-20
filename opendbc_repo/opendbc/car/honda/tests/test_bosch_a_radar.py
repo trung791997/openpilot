@@ -2439,18 +2439,61 @@ class TestShadowTelemetry:
       assert math.isnan(pt.azRate)
       assert math.isnan(pt.yvRel)
 
-  def test_yvrel_formula(self):
-    angle_raw = 1124
-    pt = self._publish(angle_raw=angle_raw, az_rate_raw=300)
-    d = self._d()
-    expected = d * 0.25 + math.tan(100 / 2048) * pt.vRel
-    assert math.isfinite(pt.vRel)
-    assert pt.yvRel == pytest.approx(expected, rel=1e-5)
+  @pytest.mark.parametrize('angle_raw', [410, 1638])
+  @pytest.mark.parametrize('rate_raw', [230, 270])
+  @pytest.mark.parametrize('u11', [720, 1008])
+  def test_yvrel_matches_independent_analytic_trajectory(self, angle_raw, rate_raw, u11):
+    pt = self._publish(angle_raw=angle_raw, az_rate_raw=rate_raw, u11=u11)
+    theta, rate, dx = (angle_raw - 1024) / 2048, (rate_raw - 250) / 200, (u11 - 864) / 72
+    # Central difference of a trajectory, rather than repeating the production expression.
+    h = 1e-5
+    y_before = (self._d() - dx * h) * math.tan(theta - rate * h)
+    y_after = (self._d() + dx * h) * math.tan(theta + rate * h)
+    assert pt.yvRel == pytest.approx((y_after - y_before) / (2 * h), rel=1e-5, abs=1e-5)
+
+  @pytest.mark.parametrize('u11', [0, 1728])
+  def test_longitudinal_rail_keeps_point_and_rate_but_yvrel_is_unavailable(self, u11):
+    pt = self._publish(u11=u11, az_rate_raw=270, edge_a_raw=1324, edge_b_raw=1124)
+    assert pt.measured and pt.trackId == 1
+    assert abs(pt.vRel) == pytest.approx(12.0)
+    assert pt.azRate == pytest.approx(0.1)
+    assert math.isfinite(pt.yLeft) and math.isfinite(pt.yRight)
+    assert math.isnan(pt.yvRel)
+
+  @pytest.mark.parametrize('u11', [1, 1727])
+  def test_one_count_inside_raw_rail_remains_eligible(self, u11):
+    pt = self._publish(u11=u11, az_rate_raw=270)
+    assert pt.measured
+    assert math.isfinite(pt.yvRel)
+
+  def test_finite_to_rail_and_back_does_not_leave_stale_yvrel(self):
+    ri = make_radar_interface()
+    for i, raw in enumerate([1008, 1008, 0, 1008]):
+      rr = ri.update(sweep(0, i, 0x7, self.RANGE_RAW, 1124, 1 + 2 * i, i * 50_000_000,
+                           with_aux=True, direct_vrel_raw=raw, direct_vrel_uncertainty_raw=0,
+                           az_rate_raw=270, edge_a_raw=1224, edge_b_raw=1024))
+      if i == 0:
+        continue
+      assert len(rr.points) == 1 and rr.points[0].measured
+      assert math.isnan(rr.points[0].yvRel) if raw == 0 else math.isfinite(rr.points[0].yvRel)
+
+  def test_actual_coast_clears_previously_finite_lateral_velocity(self):
+    ri = make_radar_interface()
+    for i, uncertainty in enumerate([0, 0, 600]):
+      rr = ri.update(sweep(0, i, 0x7, self.RANGE_RAW, 1124, 1 + 2 * i, i * 50_000_000,
+                           with_aux=True, direct_vrel_raw=1008, direct_vrel_uncertainty_raw=uncertainty,
+                           az_rate_raw=270, edge_a_raw=1224, edge_b_raw=1024))
+      if i == 1:
+        assert rr.points[0].measured and math.isfinite(rr.points[0].yvRel)
+    assert len(rr.points) == 1 and not rr.points[0].measured
+    assert all(math.isnan(getattr(rr.points[0], k)) for k in ('azRate', 'yvRel', 'yLeft', 'yRight'))
 
   def test_v_rel_from_ratio_flag(self):
-    ratio_pt = self._publish(u11=BOSCH_A_DIRECT_VREL_INVALID, rawca=520)
+    ratio_pt = self._publish(u11=BOSCH_A_DIRECT_VREL_INVALID, rawca=520, az_rate_raw=270)
     assert ratio_pt.measured is True
     assert ratio_pt.vRelFromRatio is True
+    assert ratio_pt.azRate == pytest.approx(0.1)
+    assert math.isnan(ratio_pt.yvRel)
     u11_pt = self._publish()
     assert u11_pt.measured is True
     assert u11_pt.vRelFromRatio is False

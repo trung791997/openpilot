@@ -1,9 +1,21 @@
 # Status
 
-**As of: 2026-10-05**
+**As of: 2026-10-20**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
+
+**Latest radar telemetry update:** D-089, review branch `codex/bosch-a-gated-lateral-velocity`.
+The prior dirty shadow implementation is retained as baseline 1dc044833d. Lateral velocity now uses the
+exact derivative of dRel*tan(azimuth), and is NaN for U11 saturation endpoints, ratio fallback, unavailable
+rate/inputs, and coasts. It retains the existing direct-velocity quality ceiling without retuning.
+Established RadarPoint fields/sets, longitudinal bounds, azRate and edges are unchanged on the original
+85-segment replay. Finite lateral velocity remains on 111,054/121,426 measured points (91.46%). Retained
+sign agreement against a windowed position derivative is 96.36%; this is same-source offline consistency,
+not independent target-motion or closed-loop validation. Parser tests 189 passed; consumer tests 158 passed;
+full Honda 410 passed with the existing unrelated FakeParams.get_bool test failure. Nothing reads the new
+telemetry in radard, and no device was deployed. Evidence and follow-up: firmware-analysis-kit
+`radar-re/parser-shadow/GATED_YVREL.md`; edge-clamp geometry and active consumer validation remain open.
 
 Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`. (`claude/radar-testing-state-88vt2t` used to mirror it; it was deleted on
