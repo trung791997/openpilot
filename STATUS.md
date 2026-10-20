@@ -11424,3 +11424,9 @@ Driven on 27b610702 (before 256): BoschARadar=1, small model, experimental, Resu
 - Gas after brake release: 41 episodes, peak jerk at most 2.0 (base) / 2.37 (fix). The 12 m/s^3 3a0 case does not recur. The large output steps (17-19 m/s^3) are standstill launches, where the limiter is bypassed.
 - Radar dRel reads 1.7-2.1 m shorter than vision (median, all bands); 19 runs of 0.5 s or more where radar is 15-30 m short. vRel -12 rail only at 2:38-2:40 (stopped queue at 83-99 m). 4 track-ID swaps on the held lead, 128 radar/vision source flips.
 - Closed-loop fidelity was poor over long windows (vEgo RMSE 2.46), so no closed-loop numbers are used.
+
+**257 follow-up (Job R21; log, stills, open-loop replay with and without radar leads).**
+- 17:44.2: the brake was MPC on track 25, the in-lane car that matches vision (the right-lane SUV had no track). Radar read more closing speed than vision on the same car (vRel -7.9 vs -5.6, aLeadK -2.37 vs -1.41), so with radar the output was -3.26 against -1.43 with vision only.
+- 9:52.0: radar track 24 (36 m, coming in from the right) did not match the vision lead (48 m, stopped queue, left of centre). Vision-only brakes as hard (-2.36 vs -2.20), so the wrong-looking track did not drive this brake.
+- The 19 short-radar runs: 2 real nearer cars, 2 adjacent cars drifting in, the rest the same in-lane car with vision reading long. No ghosts. Radar-vs-vision output differences above 0.2 are mostly less gas, not braking.
+- dRel offset: radar - vision = -1.82 m - 0.028 x visionD. That is a fixed offset of about 1.8 m (mount or reference point) plus vision reading about 3% long at range. No change.
