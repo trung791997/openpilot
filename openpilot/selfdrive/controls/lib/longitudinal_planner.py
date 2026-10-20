@@ -34,6 +34,8 @@ from openpilot.starpilot.longitudinal.follow_jerk import FollowJerk
 from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project as project_takeoff
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
+from openpilot.starpilot.longitudinal import human_acceleration, human_following
+from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -96,6 +98,12 @@ class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, clock_ns: Callable[[], int] = time.monotonic_ns):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
+    # Optional owners (hooks): HumanFollowing/HumanAcceleration (Bosch-A Hondas, radar or vision) and the
+    # Honda Bosch A Long Enhancement (radar on).
+    self.human_driving = human_following.enabled_for(CP)
+    if self.human_driving:
+      human_following.install(self.mpc)
+    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
     self.dt = dt
@@ -254,6 +262,11 @@ class LongitudinalPlanner:
     acceleration_cap = self.last_profile.acceleration_max if self.last_profile is not None else None
     if selected_acceleration is not None:
       acceleration_cap = selected_acceleration
+    # HumanAcceleration scales the planner's own max accel (profile, else the stock cruise curve).
+    human_accel_base = acceleration_cap if acceleration_cap is not None else (
+      ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego))
+    if self.human_driving:
+      acceleration_cap = human_acceleration.cap(human_accel_base, v_cruise, v_ego)
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
                     follow_seconds=follow if follow is not None else
                     (self.last_profile.follow_seconds if self.last_profile is not None else None),
@@ -440,6 +453,14 @@ class LongitudinalPlanner:
         target=float(output_a_target), previous_target=float(a_prev), follow_seconds=float(self.mpc.params[0, 4]),
         blocked=bool(self.output_should_stop or self.fcw or self.force_stop_plan.forcing or
                      self.force_stop_plan.approach_distance_m > 0 or self.mpc.solution_status != 0))
+    if self.human_driving:
+      # Throttle side only: the cap is >= 0, so a braking target passes through.
+      output_a_target = min(output_a_target, human_acceleration.cap(human_accel_base, v_cruise, v_ego))
+    output_a_target = self.bosch_a_long.step(
+      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
+      target=float(output_a_target), v_ego=v_ego,
+      stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
+      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
