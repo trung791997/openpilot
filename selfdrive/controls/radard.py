@@ -8,7 +8,7 @@ from typing import Any
 import capnp
 from cereal import messaging, log, car, custom
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
@@ -1887,7 +1887,8 @@ def honda_bosch_a_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
 
 def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: float, *,
                          dist_scale: float, dist_floor: float, vel_limit: float,
-                         y_std_scale: float, y_floor: float, honda_bosch_a: bool = False) -> bool:
+                         y_std_scale: float, y_floor: float, honda_bosch_a: bool = False,
+                         lateral_distance: float | None = None) -> bool:
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
   dist_sane = abs(track.dRel - offset_vision_dist) < max(abs(offset_vision_dist) * dist_scale, dist_floor)
   # NOTE: the `or` makes this check inert for any lead above 3 m/s, i.e. essentially always at road
@@ -1912,8 +1913,114 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
     return False  # YOUNG_TRACK_VISION_HOLD: the camera keeps the lead while a young track's U11 settles
   if not vel_sane and honda_bosch_a and young_range_genuinely_closing(track, v_ego):
     vel_sane = True  # NEWBORN_RANGE_CLOSING_EXEMPT: the track's own range proves the closing the camera disputes
-  lat_sane = abs(track.yRel + lead.y[0]) < max(y_floor, y_std_scale * max(float(lead.yStd[0]), 0.2))
+  # lateral_distance is passed only by the D-128 shadow (bosch_a_overlap_shadow); every real caller leaves it None.
+  lat_distance = abs(track.yRel + lead.y[0]) if lateral_distance is None else lateral_distance
+  lat_sane = lat_distance < max(y_floor, y_std_scale * max(float(lead.yStd[0]), 0.2))
   return dist_sane and vel_sane and lat_sane
+
+
+# D-128: SHADOW ONLY, and only with the BoschARadarShadow param on. The 1 m half-width is a declared diagnostic
+# corridor (the strict matcher's lateral floor), not a body-width estimate or an admission threshold. Scores
+# are instantaneous cross-sections, not swept-path collision probabilities or cut-in labels.
+BOSCH_A_SHADOW_PATH_HALF_WIDTH_M = 1.0
+
+
+def _edge_bracket(point, radar_fresh: bool) -> tuple[float, float] | None:
+  if not radar_fresh or not point.measured:
+    return None
+  left, right = float(point.yLeft), float(point.yRight)
+  if (not all(math.isfinite(v) for v in (point.dRel, point.yRel, left, right)) or
+      point.dRel <= 0 or not right <= point.yRel <= left or right >= left):
+    return None
+  return right, left
+
+
+def _interval_distance(y: float, bracket: tuple[float, float]) -> float:
+  return max(bracket[0] - y, y - bracket[1], 0.0)
+
+
+def bosch_a_overlap_shadow(points, tracks: dict[int, Track], model_data, v_ego: float,
+                           radar_fresh: bool, live_time: int, ready: bool, probabilities,
+                           preferred_ids, selected_leads, toggles) -> dict:
+  """Read-only diagnostics beside the actual matcher (D-128). Never updates Track or selection state.
+
+  Edge matcher substitutes interval distance for the lateral PDF/gate ONLY, retaining
+  all distance/velocity/newborn gates and strict-best-then-preferred ordering. Unusable
+  edges fall back to centre matching, so coasts/duplicate sweeps never reuse an old extent.
+  Path overlap is reported separately and does not gate either matcher. No yvRel prediction.
+  `tracks` must be the same dict the real matcher saw (sel_tracks, after RECOVERED_CAM_GATE).
+  """
+  brackets = {p.trackId: _edge_bracket(p, radar_fresh) for p in points}
+  position = getattr(model_data, 'position', None) if ready else None
+  px = np.asarray(position.x, dtype=float) if position is not None else np.array([])
+  py = np.asarray(position.y, dtype=float) if position is not None else np.array([])
+  path_ok = (len(px) >= 2 and len(px) == len(py) and np.isfinite(px).all() and
+             np.isfinite(py).all() and np.all(np.diff(px) > 0))
+  half = BOSCH_A_SHADOW_PATH_HALF_WIDTH_M
+  rows = []
+  for p in points:
+    bracket = brackets[p.trackId]
+    # Model position uses the mesh origin, like model lead.x; radar dRel is forward
+    # of it by RADAR_TO_CAMERA. y sign follows the existing matcher: radar left +.
+    model_x = float(p.dRel) + RADAR_TO_CAMERA
+    valid = bool(bracket is not None and path_ok and px[0] <= model_x <= px[-1])
+    row = dict(radarTrackId=p.trackId, edgeValid=bracket is not None, pathValid=valid)
+    for key in ('pathY', 'centerOffset', 'leftOffset', 'rightOffset', 'overlapM',
+                'overlapFraction', 'edgeDistance', 'centerScore', 'edgeScore'):
+      row[key] = float('nan')
+    if valid:
+      path_y = -float(np.interp(model_x, px, py))
+      right, left = bracket
+      overlap = max(0.0, min(left, path_y + half) - max(right, path_y - half))
+      distance = _interval_distance(path_y, bracket)
+      row.update(pathY=path_y, centerOffset=p.yRel - path_y, leftOffset=left - path_y,
+                 rightOffset=right - path_y, overlapM=overlap, overlapFraction=overlap / (left - right),
+                 edgeDistance=distance, centerScore=math.exp(-abs(p.yRel - path_y) / half),
+                 edgeScore=math.exp(-distance / half))
+    rows.append(row)
+
+  matches = []
+  for i, lead in enumerate(list(model_data.leadsV3)[:2]):
+    usable = all(len(getattr(lead, key)) and math.isfinite(float(getattr(lead, key)[0]))
+                 for key in ('x', 'y', 'v', 'xStd', 'yStd', 'vStd'))
+    evaluated = bool(usable and ready and len(model_data.leadsV3) > 1 and
+                     probabilities[i] > float(getattr(toggles, 'lead_detection_probability', 0.35)))
+    preferred = preferred_ids[i]
+    candidates = []
+    for identifier, track in (tracks.items() if usable else []):
+      bracket = brackets.get(identifier)
+      distance = abs(track.yRel + lead.y[0]) if bracket is None else _interval_distance(-lead.y[0], bracket)
+      center_prob = vision_track_probability(track, lead, v_ego)
+      edge_prob = (laplacian_pdf(track.dRel, lead.x[0] - RADAR_TO_CAMERA, lead.xStd[0]) *
+                   laplacian_pdf(distance, 0.0, lead.yStd[0]) *
+                   laplacian_pdf(track.vRel + v_ego, lead.v[0], lead.vStd[0]))
+      strict = dict(dist_scale=0.25, dist_floor=5.0, vel_limit=10.0, y_std_scale=1.0, y_floor=1.0, honda_bosch_a=True)
+      candidates.append(dict(radarTrackId=identifier, edgeValid=bracket is not None,
+                             centerProbability=center_prob, edgeProbability=edge_prob,
+                             centerStrict=track_matches_vision(track, lead, v_ego, **strict),
+                             edgeStrict=track_matches_vision(track, lead, v_ego, lateral_distance=distance, **strict)))
+    existing = match_vision_to_track(v_ego, lead, model_data, tracks, toggles,
+                                     preferred_track_id=preferred, honda_bosch_a=True) if evaluated else None
+    shadow_id = -1
+    if evaluated and candidates:
+      best = max(candidates, key=lambda c: c['edgeProbability'])
+      if best['edgeStrict']:
+        shadow_id = best['radarTrackId']
+      elif (preferred in tracks and tracks[preferred].cnt >= 3 and
+            rail_range_vrel(tracks[preferred]) is None):  # same RAIL_RANGE_VEL_CHECK exclusion as the real fallback
+        track = tracks[preferred]
+        bracket = brackets.get(preferred)
+        distance = abs(track.yRel + lead.y[0]) if bracket is None else _interval_distance(-lead.y[0], bracket)
+        if track_matches_vision(track, lead, v_ego, dist_scale=0.40, dist_floor=8.0, vel_limit=13.0,
+                                y_std_scale=2.0, y_floor=1.5, honda_bosch_a=True, lateral_distance=distance):
+          shadow_id = preferred
+    existing_id = existing.identifier if existing is not None else -1
+    selected = selected_leads[i]
+    selected_id = int(selected.radarTrackId) if selected.status and selected.radar else -1
+    matches.append(dict(leadIndex=i, evaluated=evaluated, preferredTrackId=preferred,
+                        existingTrackId=existing_id, shadowTrackId=shadow_id, selectedTrackId=selected_id,
+                        changed=evaluated and existing_id != shadow_id, candidates=candidates))
+  return dict(liveTracksMonoTime=live_time, radarFresh=radar_fresh, pathHalfWidth=half, tracks=rows, matches=matches)
 
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_data: capnp._DynamicStructReader, tracks: dict[int, Track],
@@ -2235,8 +2342,11 @@ class CamABound:
 
 class RadarD:
   def __init__(self, radar_ts: float = DT_MDL, delay: float = 0.0, g90_radar_filter: bool = False,
-               honda_bosch_a_radar: bool = False):
+               honda_bosch_a_radar: bool = False, bosch_a_shadow: bool = False):
     self.current_time = 0.0
+    # D-128: BoschARadarShadow (off by default). Only adds radarState.boschAOverlapShadow; nothing reads it.
+    self.bosch_a_shadow = bosch_a_shadow
+    self._shadow_error_logged = False
 
     self.tracks: dict[int, Track] = {}
     self.honda_bosch_a_radar = honda_bosch_a_radar
@@ -2445,6 +2555,7 @@ class RadarD:
     if FAR_RAIL_VISION_BOUND and self.honda_bosch_a_radar:
       for i in range(2):
         self.far_rail_hist[i].append(far_rail_model_sample(leads_v3[i]) if len(leads_v3) > i else None)
+    overlap_preferred_ids = list(self.prev_lead_track_ids)  # D-128 shadow only
     if len(leads_v3) > 1:
       for i in range(2):
         lead_prob = float(leads_v3[i].prob)
@@ -2455,6 +2566,7 @@ class RadarD:
 
         self._update_honda_bosch_a_preferred_staleness(i, leads_v3[i], self.lead_prob_filters[i].x)
 
+      overlap_preferred_ids = list(self.prev_lead_track_ids)  # D-128 shadow only: the ids the matcher is given
       lead_one = get_lead(self.v_ego, self.ready, sel_tracks, leads_v3[0], model_v_ego, sm['modelV2'],
                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
@@ -2537,6 +2649,18 @@ class RadarD:
     if self.ready:
       self.starpilot_radar_state.adjacentStopped = get_adjacent_stopped(sel_tracks, sm['modelV2'])
 
+    if self.honda_bosch_a_radar and self.bosch_a_shadow:
+      # D-128 telemetry only, after every lead is final. A failure leaves the field unset and never stops radard.
+      try:
+        self.radar_state.boschAOverlapShadow = bosch_a_overlap_shadow(
+          rr.points, sel_tracks, sm['modelV2'], self.v_ego, radar_fresh, sm.logMonoTime['liveTracks'],
+          self.ready, [f.x for f in self.lead_prob_filters], overlap_preferred_ids,
+          (self.radar_state.leadOne, self.radar_state.leadTwo), self.starpilot_toggles)
+      except Exception:
+        if not self._shadow_error_logged:
+          self._shadow_error_logged = True
+          cloudlog.exception("radard: Bosch-A overlap shadow failed; boschAOverlapShadow left unset")
+
     self.starpilot_toggles = get_starpilot_toggles(sm)
 
   def _slide_bound(self, lead, vis, model_v_ego: float, t: float) -> None:
@@ -2581,8 +2705,13 @@ def main() -> None:
   honda_bosch_a_radar = is_bosch_a_radar_car(CP)
   # Newborn leads: built in on for Bosch-A, matching radar_interface's BOSCH_A_NEWBORN_RANGE_PUBLISH.
   set_bosch_a_newborn_leads(honda_bosch_a_radar)
+  # D-128: BoschARadarShadow, read once like BoschARadar (restart applies it). Off unless Bosch-A.
+  try:
+    bosch_a_shadow = honda_bosch_a_radar and Params().get_bool("BoschARadarShadow")
+  except UnknownKeyName:
+    bosch_a_shadow = False
   RD = RadarD(radar_ts=radar_ts, delay=CP.radarDelay, g90_radar_filter=g90_radar_filter,
-              honda_bosch_a_radar=honda_bosch_a_radar)
+              honda_bosch_a_radar=honda_bosch_a_radar, bosch_a_shadow=bosch_a_shadow)
 
   sm = sm.extend(['starpilotPlan'])
   pm = pm.extend(['starpilotRadarState'])

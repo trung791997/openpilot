@@ -8,7 +8,7 @@ import cereal.messaging as messaging
 
 from cereal import car, custom, log
 
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog, ForwardingHandler
 from openpilot.system.hardware.hw import Paths
@@ -194,6 +194,14 @@ class Car:
     else:
       self.CI, self.CP, self.FPCP = CI, CI.CP, CI.FPCP
       self.RI = RI
+
+    # D-127: BoschARadarShadow (Galaxy, off by default) turns on Bosch-A shadow telemetry in the radar parser:
+    # extra logged fields only, nothing reads them for control. Read once here, like BoschARadar (restart applies it).
+    if hasattr(self.RI, 'shadow_telemetry'):
+      try:
+        self.RI.shadow_telemetry = self.params.get_bool("BoschARadarShadow")
+      except UnknownKeyName:
+        self.RI.shadow_telemetry = False
 
     car_gps_supported = bool(getattr(self.CI.CS, 'car_gps_supported', False))
     self.params.put_bool("CarGpsAvailable", car_gps_supported)

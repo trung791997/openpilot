@@ -789,6 +789,53 @@ struct RadarState @0x9a185389d6fdd05f {
   # lead add braking beyond leadOne's, down to ONPATH_LEAD_MAX_BRAKE, until vision or radard's own leadOne takes it.
   leadOnpath @14 :LeadData;
 
+  # D-128: observational only, Honda Bosch-A, filled only when the BoschARadarShadow param is on.
+  # No lead selector or planner reads these scores.
+  boschAOverlapShadow @15 :OverlapShadow;
+
+  struct OverlapShadow {
+    liveTracksMonoTime @0 :UInt64;
+    radarFresh @1 :Bool;
+    pathHalfWidth @2 :Float32;  # diagnostic corridor, not a measured vehicle width
+    tracks @3 :List(TrackOverlap);
+    matches @4 :List(EdgeMatch);
+  }
+
+  struct TrackOverlap {
+    radarTrackId @0 :Int32;
+    edgeValid @1 :Bool;
+    pathValid @2 :Bool;
+    pathY @3 :Float32;  # radar convention: left positive, at track dRel
+    centerOffset @4 :Float32;
+    leftOffset @5 :Float32;
+    rightOffset @6 :Float32;
+    overlapM @7 :Float32;
+    overlapFraction @8 :Float32;  # intersection / reported extent; zero-width unavailable
+    edgeDistance @9 :Float32;  # distance from path centre to bracket; zero inside
+    centerScore @10 :Float32;  # exp(-abs(centerOffset)/pathHalfWidth)
+    edgeScore @11 :Float32;  # exp(-edgeDistance/pathHalfWidth)
+  }
+
+  struct EdgeMatch {
+    leadIndex @0 :UInt8;
+    evaluated @1 :Bool;
+    preferredTrackId @2 :Int32 = -1;
+    existingTrackId @3 :Int32 = -1;  # matcher before low-speed override
+    shadowTrackId @4 :Int32 = -1;  # interval score/gate with same preferred fallback
+    selectedTrackId @5 :Int32 = -1;  # actual final lead, including low-speed override
+    changed @6 :Bool;
+    candidates @7 :List(EdgeCandidate);
+  }
+
+  struct EdgeCandidate {
+    radarTrackId @0 :Int32;
+    edgeValid @1 :Bool;
+    centerProbability @2 :Float32;
+    edgeProbability @3 :Float32;  # only lateral PDF changes; invalid edge uses centre
+    centerStrict @4 :Bool;
+    edgeStrict @5 :Bool;
+  }
+
   struct LeadData {
     dRel @0 :Float32;
     yRel @1 :Float32;

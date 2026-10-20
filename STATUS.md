@@ -1,6 +1,6 @@
 # Status
 
-**As of: 2026-10-17**
+**As of: 2026-10-20**
 
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
@@ -11430,3 +11430,74 @@ Driven on 27b610702 (before 256): BoschARadar=1, small model, experimental, Resu
 - 9:52.0: radar track 24 (36 m, coming in from the right) did not match the vision lead (48 m, stopped queue, left of centre). Vision-only brakes as hard (-2.36 vs -2.20), so the wrong-looking track did not drive this brake.
 - The 19 short-radar runs: 2 real nearer cars, 2 adjacent cars drifting in, the rest the same in-lane car with vision reading long. No ghosts. Radar-vs-vision output differences above 0.2 are mostly less gas, not braking.
 - dRel offset: radar - vision = -1.82 m - 0.028 x visionD. That is a fixed offset of about 1.8 m (mount or reference point) plus vision reading about 3% long at range. No change.
+
+## 259. Bosch-A shadow telemetry ported behind a new toggle, off by default (2026-10-20). Static tests only; not driven, not on the device.
+
+**What the driver sees:** nothing. A new toggle, **Honda Bosch-A Radar Shadow Telemetry**
+(`BoschARadarShadow`, default off), logs extra radar edge and lateral-speed data for analysis. Nothing
+in lead selection, braking or the planner reads that data. Branch `bosch-a-shadow-telemetry`, from
+`iq-nav-on-pr10`. Not merged anywhere, not deployed.
+
+**Where it came from.** Codex's review branch `codex/bosch-a-gated-lateral-velocity` (1dc044833,
+f60e19d54, 4425d1404 on c6dbe85c74). Codex numbered the decisions D-089/D-090; this tree already has a
+D-089, so they are **D-127** (gated lateral velocity) and **D-128** (edge/path overlap shadow and the
+clamped-edge angle fix). `docs/bosch_a_overlap_handoff.md` is Codex's handoff, renumbered, with a port note.
+Codex's own STATUS notes, in short:
+- D-127: `yvRel` uses the exact derivative of `dRel*tan(azimuth)` and is NaN on U11 rails, ratio
+  fallback, unusable rate and coasts. Offline 85-segment replay: established point fields unchanged;
+  finite `yvRel` on 111,054/121,426 measured points; 96.36% sign agreement with a windowed position
+  derivative (same-source consistency, not ground truth).
+- D-128: `radarState.boschAOverlapShadow` logs model-path overlap and an edge-distance counterfactual of
+  the vision matcher beside the unchanged selector. Offline replay of four cached segments (3,187 model
+  cycles) against f60e19d543: no selected-state differences; seven counterfactual lead-slot changes, all
+  track 25 on `0000033c--476e8185eb/24` with zero or unavailable path overlap. These are not recovered leads.
+- Those replays were not rerun here: those segments are not cached on this VM, and the cached qlogs lack
+  the carParams/CAN the replay tool needs.
+
+**Schema.** `RadarPoint`: `yLeft @12`, `yRight @13`, `azRate @14`, `vRelFromRatio @15`.
+`RadarState.boschAOverlapShadow @15`. No collision on `iq-nav-on-pr10`, `ns-bosch-radar-testing` or
+`ns-bosch-radar-testing-pr10-smooth` (all three end at `recovered @11` and `leadOnpath @14`).
+
+**Plumbing.**
+- `common/params_keys.h`: `BoschARadarShadow` PERSISTENT BOOL "0".
+- Galaxy: a row under Advanced Longitudinal Tune next to Honda Bosch-A Radar, offroad only. It is in
+  `BOSCH_A_REQUIRED_KEYS`, so it shows only when `BoschARadarAvailable`. It is also in the drive-plots
+  radar snapshot keys.
+- raylib: a row in the Bosch A Radar section, which already shows only on Bosch-A cars. The row is hidden
+  until the params binary knows the key.
+- card.py sets `RadarInterface.shadow_telemetry` from the param at start; radard reads it at start ANDed
+  with `BoschARadar`. Both fall back to off on `UnknownKeyName`. Restart required.
+
+**With the toggle off,** the parser does not read the four extra raw signals or call any shadow helper.
+radard does not call `bosch_a_overlap_shadow`. The new fields stay at schema defaults, so
+`yLeft/yRight/azRate` read 0.0, not NaN. Tests monkeypatch every shadow helper to raise and show parser
+and radard bytes identical to a no-shadow run. A one-off compare against the `origin/iq-nav-on-pr10`
+parser and radard sources was also byte-identical (6 sweeps; 20 radard frames).
+
+**With it on,** every shadow call is in try/except: logged once, field left unset, the point still
+published, radard keeps running. Two deliberate differences from Codex:
+- The overlap shadow scores `sel_tracks`, the same set the selector sees.
+- Its preferred fallback skips a preferred track whose vRel is rail-range. This mirrors this tree's
+  RAIL_RANGE_VEL_CHECK.
+No existing `radar_interface.py` constant changed.
+
+**Tests (static, aarch64 VM).**
+- Honda: 435 passed (base 409).
+- `selfdrive/controls/tests` (without `test_leads.py`) + py39 compat + Galaxy layout: 2304 passed,
+  1 xfailed, 2 failed. Base: 2273 passed, the same 2 failed (`test_latcontrol` bolt and palisade,
+  pre-existing).
+- `test_radar_overlap_shadow.py`: 30 passed.
+- The capnp schemas load and ruff adds nothing new on the changed files.
+- The xfail is strict. It flips when the committed device `params_pyx.so` gains the key.
+
+**Timing (VM, not the device), synthetic 32-track frame, toggle on:**
+- Parser shadow: about 0.10 ms per sweep.
+- radard overlap shadow: about 1.1 ms per call, 1.4 ms with the capnp fill.
+- RadarD.update: 2.85 ms off, 4.31 ms on.
+
+**Open.**
+- The committed aarch64 `common/params_pyx.so` predates the key, so it needs the binary-only device
+  rebuild. Until then the Galaxy write is refused, the raylib row stays hidden and reads fall back to off.
+- Device CPU and log size with the toggle on are not measured. RadarPoint grows by four fields on the
+  wire even with the toggle off.
+- An active consumer still needs everything in D-128's open list (eps-120).

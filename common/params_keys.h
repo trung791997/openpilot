@@ -400,6 +400,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Tester rollout: parse the Bosch-A harness's own 16-slot radar object bank into real
     // leadOne/leadTwo tracks instead of treating the car as radarless. RX-only, no CAN authority taken.
     {"BoschARadar", {PERSISTENT, BOOL, "1", "1", 3}},
+    // D-127/D-128, default OFF: Bosch-A shadow telemetry (RadarPoint yLeft/yRight/azRate/vRelFromRatio + yvRel,
+    // radarState.boschAOverlapShadow). Logging only; nothing reads it for control. Read once by card and radard.
+    // Not yet in the committed aarch64 params_pyx.so: until that rebuild, reads fall back to OFF.
+    {"BoschARadarShadow", {PERSISTENT, BOOL, "0"}},
     // Default ON. Experimental Mode only. STATUS 136h: "Accel Boost" gates both upstream PR 39015's
     // gas-press boost and the lead-departure assist. Unreplayed. Read in longitudinal_planner.py.
     // GasOverrideBoost: unused since 2026-10-03 (built in on); kept to match the committed aarch64 params_pyx.so.

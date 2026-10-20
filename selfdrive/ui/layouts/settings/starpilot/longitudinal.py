@@ -597,6 +597,13 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                                   "way. Restart required to take effect."),
                  get_state=lambda: self._params.get_bool("BoschARadar"),
                  set_state=lambda v: self._params.put_bool("BoschARadar", v)),
+      # D-127/D-128: telemetry only, off by default; acts only with BoschARadar on. Shown only once the device's
+      # params binary knows the key (an older binary would raise on write).
+      SettingRow("BoschARadarShadow", "toggle", tr_noop("Bosch A Radar Shadow Telemetry"),
+                 subtitle=tr_noop("Logs extra radar edge and lateral-speed data for analysis. Does not change driving. Restart required."),
+                 get_state=lambda: self._params.get_bool("BoschARadarShadow"),
+                 set_state=self._set_bosch_a_shadow,
+                 visible=self._bosch_a_shadow_key_known),
     ]
 
     self._slc_rows = [
@@ -1064,6 +1071,19 @@ class StarPilotLongitudinalLayout(_SettingsPage):
           self._params.remove(profile + key)
 
     gui_app.push_widget(ConfirmDialog(tr_noop("Reset to Defaults?"), tr_noop("Confirm"), callback=on_close))
+
+  def _bosch_a_shadow_key_known(self) -> bool:
+    try:
+      self._params.check_key("BoschARadarShadow")
+      return True
+    except Exception:
+      return False
+
+  def _set_bosch_a_shadow(self, value: bool) -> None:
+    try:
+      self._params.put_bool("BoschARadarShadow", value)
+    except Exception:
+      pass  # older device params binary without the key: the row is hidden there anyway
 
   def _is_bosch_a(self) -> bool:
     """True on any plain bosch_a-harness Honda (not CANFD, not radarless, not alt-radar) -- the

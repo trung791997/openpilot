@@ -75,11 +75,12 @@ const VEHICLE_SETTING_MAKES = {
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
 const RADAR_REQUIRED_KEYS = new Set(["HumanLaneChanges", "RadarTakeoffs"])
-// Bosch-A-only TEST rows. Both only ever act on a Bosch-A radar lead, so they ride the same
-// car-family gate as the BoschARadar toggle itself rather than each introducing another one.
+// Bosch-A-only rows. They only ever act on a Bosch-A radar, so they ride the same car-family gate
+// as the BoschARadar toggle itself rather than each introducing another one.
+// BoschARadarShadow (D-127/D-128): logging only, off by default, does not change driving.
 // Keep this in step with the rows in selfdrive/ui/layouts/settings/starpilot/longitudinal.py,
 // which gates the same keys through the Bosch-A radar section.
-const BOSCH_A_REQUIRED_KEYS = new Set([])
+const BOSCH_A_REQUIRED_KEYS = new Set(["BoschARadarShadow"])
 
 // Plain variables — scheduling/routing flags that must NOT be reactive
 let syncScheduled = false

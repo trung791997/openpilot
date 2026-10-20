@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.values import DBC
 from opendbc.car.interfaces import RadarInterfaceBase
@@ -114,6 +115,15 @@ def bosch_a_range_offset_m(car_fingerprint: str = "") -> float:
 # This supersedes the older empirical 0.032 deg/count fit.
 BOSCH_A_AZIMUTH_SCALE_RAD = 1.0 / 2048.0
 BOSCH_A_AZIMUTH_CENTER = 1024
+
+# Shadow telemetry (2026-10-20 decode sweep; static/replay evidence only). Published beside the point, never gating,
+# and only when the BoschARadarShadow param is on (RadarInterface.shadow_telemetry, set by card). D-127.
+BOSCH_A_EDGE_CLAMP_LOW = 0  # F3 edge B raw 0 = clamped at the low end (|az| > ~22 deg); decode is (raw-1024)/2048 rad like AZIMUTH
+BOSCH_A_EDGE_CLAMP_HIGH = 2047  # F3 edge A raw 2047 = clamped at the high end
+BOSCH_A_ANGULAR_WIDTH_INVALID = 2047  # F1 width sentinel; unit 1/2048 rad per LSB (A-B == W within 1 LSB in 99.98 % of 54,258 rows)
+BOSCH_A_AZ_RATE_SCALE = 0.005  # F1 bits 39|9: rad/s = raw*0.005 - 1.25 (decode sweep 2026-10-20)
+BOSCH_A_AZ_RATE_OFFSET = -1.25
+BOSCH_A_AZ_RATE_ABSENT_RAWS = (510, 511)  # 510 absent, 511 invalid
 
 # Invalid sentinels (section 3/4/5/6 of the spec).
 BOSCH_A_STATUS_INVALID = 0xF
@@ -490,6 +500,72 @@ def _bosch_a_newborn_vrel(run: list, v_ego: float | None) -> float | None:
   return rate if v_ego is None else max(rate, -v_ego)
 
 
+def _bosch_a_edges_m(d_rel: float, y_rel: float, edge_a_raw: int, edge_b_raw: int, width_raw: int) -> tuple[float, float]:
+  """Shadow (yLeft, yRight) in metres, left positive; NaN pair when no usable source. Never gates anything."""
+  nan = float('nan')
+  clamped = edge_a_raw >= BOSCH_A_EDGE_CLAMP_HIGH or edge_b_raw <= BOSCH_A_EDGE_CLAMP_LOW
+  if clamped:
+    if (width_raw == BOSCH_A_ANGULAR_WIDTH_INVALID or d_rel <= 0 or
+        not all(math.isfinite(v) for v in (d_rel, y_rel))):
+      return nan, nan
+    # D-128: width is angular, so reconstruct the angles before projecting. Adding
+    # x*tan(width/2) to y was a small-angle approximation (up to 0.2285 m error
+    # in the retained raw-bank study). These remain return extents, not body edges.
+    centre = math.atan2(y_rel, d_rel)
+    half = 0.5 * width_raw * BOSCH_A_AZIMUTH_SCALE_RAD
+    if half < 0 or not -math.pi / 2 < centre - half <= centre + half < math.pi / 2:
+      return nan, nan
+    return d_rel * math.tan(centre + half), d_rel * math.tan(centre - half)
+  return (d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_a_raw - BOSCH_A_AZIMUTH_CENTER)),
+          d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_b_raw - BOSCH_A_AZIMUTH_CENTER)))
+
+
+def _bosch_a_lateral_vrel(d_rel: float, azimuth_rad: float, v_rel: float, az_rate: float,
+                           direct_vrel_raw: int | None, uncertainty_raw: int | None, from_ratio: bool) -> float:
+  """D-127: rotating-frame lateral derivative, or NaN when its longitudinal input is not an estimate.
+
+  Raw U11 endpoints 0/1728 are saturation bounds (D-041), not missing points. A clipped dx/dt prevents
+  cancellation between changing range and angle and can manufacture lateral motion: the additional
+  361/363/3a3/39a/39c replay has only 520/836 lateral signs agreeing near the rails (diagnostic slice
+  |vRel|>=11.9, not a gate). Use the exact raw endpoints here, retaining adjacent representable readings.
+  Reuse the existing u10 ceiling without retuning it (D-042); ratio fallback is not direct velocity.
+  This helper gates only yvRel availability. Never remove the point, alter vRel's bound, or hide azRate.
+  Evidence: firmware-analysis-kit 1545d79, radar-re/parser-shadow/KONIK_FOLLOWUP.md; offline only.
+  """
+  if (from_ratio or direct_vrel_raw is None or uncertainty_raw is None or
+      not BOSCH_A_DIRECT_VREL_MIN_RAW < direct_vrel_raw < BOSCH_A_DIRECT_VREL_MAX_RAW or
+      not 0 <= uncertainty_raw <= BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW or
+      not all(math.isfinite(v) for v in (d_rel, azimuth_rad, v_rel, az_rate)) or d_rel <= 0.0):
+    return float('nan')
+  # yRel = dRel*tan(azimuth); differentiating requires sec(azimuth)^2 on the angular term.
+  tan_az = math.tan(azimuth_rad)
+  lateral_vrel = d_rel * (1.0 + tan_az * tan_az) * az_rate + tan_az * v_rel
+  return lateral_vrel if math.isfinite(lateral_vrel) else float('nan')
+
+
+def _bosch_a_set_shadow(point, observation: dict, d_rel: float, y_rel: float, azimuth_rad: float, v_rel: float,
+                        from_ratio: bool):
+  """Shadow-only telemetry on a measured point (yLeft/yRight/azRate/yvRel/vRelFromRatio). Touches no other field.
+
+  Every value is computed before any is assigned, so a raise leaves the point untouched."""
+  y_left, y_right = _bosch_a_edges_m(d_rel, y_rel, observation['edge_a_raw'], observation['edge_b_raw'],
+                                     observation['width_raw'])
+  rate_raw = observation['az_rate_raw']
+  az_rate = float('nan') if rate_raw in BOSCH_A_AZ_RATE_ABSENT_RAWS else rate_raw * BOSCH_A_AZ_RATE_SCALE + BOSCH_A_AZ_RATE_OFFSET
+  y_vrel = _bosch_a_lateral_vrel(d_rel, azimuth_rad, v_rel, az_rate, observation['direct_vrel_raw'],
+                                 observation['direct_vrel_uncertainty_raw'], from_ratio)
+  point.yLeft, point.yRight = y_left, y_right
+  point.azRate = az_rate
+  point.yvRel = y_vrel
+  point.vRelFromRatio = from_ratio
+
+
+def _bosch_a_clear_shadow(point):
+  """Coasted / unmeasured points carry no shadow telemetry (the measurements belong to the sweep that was not trusted)."""
+  point.yLeft = point.yRight = point.azRate = point.yvRel = float('nan')
+  point.vRelFromRatio = False
+
+
 def _bosch_a_direct_vrel(raw_value: int | float | None,
                          uncertainty_raw: int | float | None = None,
                          counts_per_mps: int = BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS) -> float | None:
@@ -744,6 +820,10 @@ class RadarInterface(RadarInterfaceBase):
       self.newborn_range_publish = BOSCH_A_NEWBORN_RANGE_PUBLISH
       # D-076: firmware ROM-default range offset (-2.703 m Civic, -2.664 m CR-V). Fixed per car.
       self.range_offset_m = bosch_a_range_offset_m(CP.carFingerprint)
+      # D-127: BoschARadarShadow, set by card once at start (hasattr, like v_ego). Off: no shadow field is read,
+      # computed or written, and every point is byte-identical to a build without the shadow helpers.
+      self.shadow_telemetry = False
+      self._shadow_error_logged = False
     else:
       # Nidec
       self.rcp = _create_nidec_can_parser(CP.carFingerprint)
@@ -753,6 +833,24 @@ class RadarInterface(RadarInterfaceBase):
       self.radar_wrong_config = False
 
     self.updated_messages = set()
+
+  def _shadow_log_once(self, what: str):
+    if not self._shadow_error_logged:
+      self._shadow_error_logged = True
+      carlog.exception(f"Bosch-A shadow telemetry {what} failed; shadow fields left unset")
+
+  def _shadow_set(self, point, observation, d_rel, y_rel, azimuth_rad, v_rel, from_ratio):
+    # Telemetry only: a failure here must never change or drop the point.
+    try:
+      _bosch_a_set_shadow(point, observation, d_rel, y_rel, azimuth_rad, v_rel, from_ratio)
+    except Exception:
+      self._shadow_log_once("set")
+
+  def _shadow_clear(self, point):
+    try:
+      _bosch_a_clear_shadow(point)
+    except Exception:
+      self._shadow_log_once("clear")
 
   def update(self, can_strings):
     if self.radar_off_can or self.rcp is None:
@@ -843,6 +941,15 @@ class RadarInterface(RadarInterfaceBase):
       angle_raw = int(v0['AZIMUTH_RAW'])
       range_sigma_raw = int(v0['RANGE_SIGMA_RAW'])
       existence_raw = int(v1['OBJECT_EXISTENCE_PROBABILITY_RAW'])
+      if self.shadow_telemetry:
+        shadow_raw = {
+          'width_raw': int(v1['ANGULAR_WIDTH_RAW']),
+          'az_rate_raw': int(v1['AZIMUTH_RATE_RAW']),
+          'edge_a_raw': int(v3['AZIMUTH_EDGE_A_RAW']),
+          'edge_b_raw': int(v3['AZIMUTH_EDGE_B_RAW']),
+        }
+      else:
+        shadow_raw = {}
       nc_raw = int(v2['NORMALIZED_CLOSING_RAW'])
       nc_sigma_raw = int(v2['NORMALIZED_CLOSING_SIGMA_RAW'])
       life = int(v2['LIFECYCLE_RAW'])
@@ -882,6 +989,7 @@ class RadarInterface(RadarInterfaceBase):
         'object_valid': object_valid,
         'range_sigma_raw': range_sigma_raw,
         'existence_raw': existence_raw,
+        **shadow_raw,
         'direct_vrel_raw': direct_vrel_raw,
         'direct_vrel_uncertainty_raw': direct_vrel_uncertainty_raw,
         'range_ratio_raw': range_ratio_raw,
@@ -1126,6 +1234,8 @@ class RadarInterface(RadarInterfaceBase):
         if accepted_fresh and point is not None:
           point.measured = False
           point.ncValid = False
+          if self.shadow_telemetry:
+            self._shadow_clear(point)
         else:
           self.pts.pop(track_id, None)
         track.prev_frame_idx = idx0
@@ -1253,6 +1363,8 @@ class RadarInterface(RadarInterfaceBase):
           point.measured = False
           point.ncValid = False
           point.existence = observation['existence_raw'] / 127.0
+          if self.shadow_telemetry:
+            self._shadow_clear(point)
         elif (self.newborn_range_publish and high_u10_live_vrel and range_anchor is None and
               track.last_trusted_vrel is None):
           # A newborn high-u10 identity: keep its ranges outside the accepted history and publish the
@@ -1274,6 +1386,8 @@ class RadarInterface(RadarInterfaceBase):
             point.measured = False
             point.ncValid = False
             point.existence = observation['existence_raw'] / 127.0
+            if self.shadow_telemetry:
+              self._shadow_clear(point)
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1322,6 +1436,8 @@ class RadarInterface(RadarInterfaceBase):
           point.measured = False
           point.ncValid = False
           point.existence = observation['existence_raw'] / 127.0
+          if self.shadow_telemetry:
+            self._shadow_clear(point)
         elif point is not None:
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
@@ -1382,6 +1498,9 @@ class RadarInterface(RadarInterfaceBase):
         # (ONPATH_ADOPT_MIN_MEDIAN_EXISTENCE). Informational only here: it gates no point in this file.
         self.pts[track_id].existence = observation['existence_raw'] / 127.0
         self.pts[track_id].recovered = track.recovered
+        # Shadow telemetry only (yLeft/yRight/azRate/yvRel/vRelFromRatio); no gate reads it. D-127.
+        if self.shadow_telemetry:
+          self._shadow_set(pt, observation, dRel, yRel, azimuth_rad, vRel, direct_vrel is None)
       else:
         self.pts.pop(track_id, None)
 

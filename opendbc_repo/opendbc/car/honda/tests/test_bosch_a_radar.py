@@ -73,8 +73,13 @@ def make_f0(frame_idx=0, status=0x7, range_raw=0, angle_raw=0, range_sigma_raw=1
   return bytes([B0, B1, B2, B3, B4, B5, 0, 0])
 
 
-def make_f1(frame_idx=0, existence_raw=126):
-  return bytes([0, 0, 0, (frame_idx & 0xF) << 1, 0, existence_raw & 0x7F, 0, 0])
+def make_f1(frame_idx=0, existence_raw=126, width_raw=2047, az_rate_raw=511):
+  # ANGULAR_WIDTH_RAW is BE 23|11 (B2 + top 3 bits of B3); AZIMUTH_RATE_RAW is BE 39|9 (B4 + top bit of B5).
+  B2 = (width_raw >> 3) & 0xFF
+  B3 = ((width_raw & 0x7) << 5) | ((frame_idx & 0xF) << 1)
+  B4 = (az_rate_raw >> 1) & 0xFF
+  B5 = ((az_rate_raw & 0x1) << 7) | (existence_raw & 0x7F)
+  return bytes([0, 0, B2, B3, B4, B5, 0, 0])
 
 
 def make_f2(frame_idx=0, life=0, nc_raw=512, nc_sigma_raw=0):
@@ -110,13 +115,14 @@ def make_aux(frame_idx=0, rawc9=0, rawca=0, direct_vrel_raw=BOSCH_A_DIRECT_VREL_
 
 
 def make_main_frames(slot, frame_idx, status, range_raw, angle_raw, life, track_id=1,
-                     range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
+                     range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0,
+                     width_raw=2047, az_rate_raw=511, edge_a_raw=0, edge_b_raw=0):
   f0, f1, f2, f3 = BOSCH_A_MAIN_IDS[slot]
   return [
     CanData(f0, make_f0(frame_idx, status, range_raw, angle_raw, range_sigma_raw), BUS),
-    CanData(f1, make_f1(frame_idx, existence_raw), BUS),
+    CanData(f1, make_f1(frame_idx, existence_raw, width_raw, az_rate_raw), BUS),
     CanData(f2, make_f2(frame_idx, life, nc_raw, nc_sigma_raw), BUS),
-    CanData(f3, make_f3(frame_idx, track_id=track_id), BUS),
+    CanData(f3, make_f3(frame_idx, edge_a_raw, edge_b_raw, track_id=track_id), BUS),
   ]
 
 
@@ -157,7 +163,8 @@ def _stamp(frame: CanData) -> CanData:
 
 def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux=False, aux_frame_idx=None,
           rawc9=0, rawca=BOSCH_A_RANGE_RATIO_INVALID, extra_slots=(), track_id=1, direct_vrel_raw=BOSCH_A_DIRECT_VREL_INVALID,
-          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0):
+          direct_vrel_uncertainty_raw=0x3FF, range_sigma_raw=1, existence_raw=126, nc_raw=512, nc_sigma_raw=0,
+          width_raw=2047, az_rate_raw=511, edge_a_raw=0, edge_b_raw=0):
   """Build one update() input: a full main-frame set for `slot` (+ optional aux), plus the trigger
   frame (slot 15's f3) so update() always processes the cycle unless the caller is testing slot 15
   itself or an incomplete-frame scenario via extra_slots."""
@@ -166,6 +173,7 @@ def sweep(slot, frame_idx, status, range_raw, angle_raw, life, t_nanos, with_aux
   frames = make_main_frames(
     slot, frame_idx, status, range_raw, angle_raw, life, track_id,
     range_sigma_raw=range_sigma_raw, existence_raw=existence_raw, nc_raw=nc_raw, nc_sigma_raw=nc_sigma_raw,
+    width_raw=width_raw, az_rate_raw=az_rate_raw, edge_a_raw=edge_a_raw, edge_b_raw=edge_b_raw,
   )
   if with_aux:
     frames.append(CanData(aux, make_aux(aux_frame_idx if aux_frame_idx is not None else frame_idx, rawc9, rawca,
@@ -364,7 +372,7 @@ class TestDbcBitGeometry:
 
         semantic_aliases = {
           'RANGE_SIGMA_RAW', 'OBJECT_EXISTENCE_PROBABILITY_RAW',
-          'ANGULAR_WIDTH_RAW', 'ANGULAR_WIDTH_DEG',
+          'ANGULAR_WIDTH_RAW', 'ANGULAR_WIDTH_RAD', 'AZIMUTH_RATE_RAW', 'AZIMUTH_RATE_RADPS',
           'NORMALIZED_CLOSING_RAW', 'NORMALIZED_CLOSING', 'NORMALIZED_CLOSING_SIGMA_RAW',
         }
         existing_bits = set()
@@ -2425,3 +2433,205 @@ class TestNewbornLeadsToggle:
     first = next(points for points in published if points)
     assert first[0].measured is False
     assert first[0].vRel == pytest.approx(-19.8, abs=0.5)  # the range fit (-20), bounded at -vEgo
+
+
+# --- shadow telemetry: yLeft / yRight / azRate / yvRel / vRelFromRatio (2026-10-20, static/replay only) ----------
+
+def make_shadow_radar_interface():
+  """A parser with the BoschARadarShadow toggle on, the way card sets it (D-127)."""
+  ri = make_radar_interface()
+  assert ri.shadow_telemetry is False  # default OFF
+  ri.shadow_telemetry = True
+  return ri
+
+
+class TestShadowTelemetry:
+  """Published geometry/vRel/lifecycle are covered by the rest of this file; these tests only pin the new fields.
+
+  All of these run with the BoschARadarShadow toggle ON (RadarInterface.shadow_telemetry, D-127)."""
+
+  RANGE_RAW = 1000
+
+  def _publish(self, angle_raw=1024, u11=864, rawca=BOSCH_A_RANGE_RATIO_INVALID, shadow=True, **kw):
+    ri = make_shadow_radar_interface() if shadow else make_radar_interface()
+    for t, idx, life in ((0, 0, 1), (50_000_000, 1, 3)):
+      rr = ri.update(sweep(0, idx, 0x7, self.RANGE_RAW, angle_raw, life, t, with_aux=True, direct_vrel_raw=u11,
+                           direct_vrel_uncertainty_raw=0, rawca=rawca, **kw))
+    assert len(rr.points) == 1
+    return rr.points[0]
+
+  @staticmethod
+  def _d():
+    return BOSCH_A_RANGE_SCALE_M * TestShadowTelemetry.RANGE_RAW + BOSCH_A_RANGE_OFFSET_M
+
+  def test_edges_bracket_the_centre(self):
+    pt = self._publish(edge_a_raw=1124, edge_b_raw=924)
+    d = self._d()
+    assert pt.yRel == pytest.approx(0.0, abs=1e-6)
+    assert pt.yLeft == pytest.approx(d * math.tan(100 / 2048), rel=1e-5)
+    assert pt.yLeft > 0
+    assert pt.yRight == pytest.approx(-pt.yLeft, rel=1e-5)
+    assert pt.yRight <= pt.yRel <= pt.yLeft
+
+  @pytest.mark.parametrize('angle_raw', [410, 1124, 1638])
+  def test_clamped_edge_falls_back_to_the_width(self, angle_raw):
+    pt = self._publish(angle_raw=angle_raw, edge_a_raw=2047, edge_b_raw=1000, width_raw=200)
+    d = self._d()
+    # Recover boundary angles from published Cartesian coordinates; their midpoint
+    # and separation must equal the independent encoded centre and angular width.
+    left = math.atan2(pt.yLeft, d)
+    right = math.atan2(pt.yRight, d)
+    assert left - right == pytest.approx(200 / 2048, rel=1e-5)
+    assert (left + right) / 2 == pytest.approx((angle_raw - 1024) / 2048, rel=1e-5)
+    assert pt.yRight <= pt.yRel <= pt.yLeft
+
+  def test_clamped_edge_with_invalid_width_is_nan(self):
+    pt = self._publish(edge_a_raw=2047, edge_b_raw=1000, width_raw=2047)
+    assert math.isnan(pt.yLeft) and math.isnan(pt.yRight)
+
+  def test_az_rate_decode_and_absent_raws(self):
+    assert self._publish(az_rate_raw=250).azRate == pytest.approx(0.0, abs=1e-6)
+    assert self._publish(az_rate_raw=300).azRate == pytest.approx(0.25, abs=1e-6)
+    for raw in (510, 511):
+      pt = self._publish(az_rate_raw=raw)
+      assert math.isnan(pt.azRate)
+      assert math.isnan(pt.yvRel)
+
+  @pytest.mark.parametrize('angle_raw', [410, 1638])
+  @pytest.mark.parametrize('rate_raw', [230, 270])
+  @pytest.mark.parametrize('u11', [720, 1008])
+  def test_yvrel_matches_independent_analytic_trajectory(self, angle_raw, rate_raw, u11):
+    pt = self._publish(angle_raw=angle_raw, az_rate_raw=rate_raw, u11=u11)
+    theta, rate, dx = (angle_raw - 1024) / 2048, (rate_raw - 250) / 200, (u11 - 864) / 72
+    # Central difference of a trajectory, rather than repeating the production expression.
+    h = 1e-5
+    y_before = (self._d() - dx * h) * math.tan(theta - rate * h)
+    y_after = (self._d() + dx * h) * math.tan(theta + rate * h)
+    assert pt.yvRel == pytest.approx((y_after - y_before) / (2 * h), rel=1e-5, abs=1e-5)
+
+  @pytest.mark.parametrize('u11', [0, 1728])
+  def test_longitudinal_rail_keeps_point_and_rate_but_yvrel_is_unavailable(self, u11):
+    pt = self._publish(u11=u11, az_rate_raw=270, edge_a_raw=1324, edge_b_raw=1124)
+    assert pt.measured and pt.trackId == 1
+    assert abs(pt.vRel) == pytest.approx(12.0)
+    assert pt.azRate == pytest.approx(0.1)
+    assert math.isfinite(pt.yLeft) and math.isfinite(pt.yRight)
+    assert math.isnan(pt.yvRel)
+
+  @pytest.mark.parametrize('u11', [1, 1727])
+  def test_one_count_inside_raw_rail_remains_eligible(self, u11):
+    pt = self._publish(u11=u11, az_rate_raw=270)
+    assert pt.measured
+    assert math.isfinite(pt.yvRel)
+
+  def test_finite_to_rail_and_back_does_not_leave_stale_yvrel(self):
+    ri = make_shadow_radar_interface()
+    for i, raw in enumerate([1008, 1008, 0, 1008]):
+      rr = ri.update(sweep(0, i, 0x7, self.RANGE_RAW, 1124, 1 + 2 * i, i * 50_000_000,
+                           with_aux=True, direct_vrel_raw=raw, direct_vrel_uncertainty_raw=0,
+                           az_rate_raw=270, edge_a_raw=1224, edge_b_raw=1024))
+      if i == 0:
+        continue
+      assert len(rr.points) == 1 and rr.points[0].measured
+      assert math.isnan(rr.points[0].yvRel) if raw == 0 else math.isfinite(rr.points[0].yvRel)
+
+  def test_actual_coast_clears_previously_finite_lateral_velocity(self):
+    ri = make_shadow_radar_interface()
+    for i, uncertainty in enumerate([0, 0, 600]):
+      rr = ri.update(sweep(0, i, 0x7, self.RANGE_RAW, 1124, 1 + 2 * i, i * 50_000_000,
+                           with_aux=True, direct_vrel_raw=1008, direct_vrel_uncertainty_raw=uncertainty,
+                           az_rate_raw=270, edge_a_raw=1224, edge_b_raw=1024))
+      if i == 1:
+        assert rr.points[0].measured and math.isfinite(rr.points[0].yvRel)
+    assert len(rr.points) == 1 and not rr.points[0].measured
+    assert all(math.isnan(getattr(rr.points[0], k)) for k in ('azRate', 'yvRel', 'yLeft', 'yRight'))
+
+  def test_v_rel_from_ratio_flag(self):
+    ratio_pt = self._publish(u11=BOSCH_A_DIRECT_VREL_INVALID, rawca=520, az_rate_raw=270)
+    assert ratio_pt.measured is True
+    assert ratio_pt.vRelFromRatio is True
+    assert ratio_pt.azRate == pytest.approx(0.1)
+    assert math.isnan(ratio_pt.yvRel)
+    u11_pt = self._publish()
+    assert u11_pt.measured is True
+    assert u11_pt.vRelFromRatio is False
+
+  def test_shadow_fields_never_change_the_published_point(self):
+    base = self._publish(shadow=False)
+    shadow = self._publish(width_raw=200, az_rate_raw=300, edge_a_raw=1124, edge_b_raw=924)
+    for field in ('dRel', 'yRel', 'vRel', 'measured', 'ncVRel', 'ncValid', 'ncSigma', 'existence', 'trackId'):
+      assert getattr(shadow, field) == getattr(base, field) or (
+        math.isnan(getattr(shadow, field)) and math.isnan(getattr(base, field)))
+
+
+# --- BoschARadarShadow OFF: byte-identical to a parser without the shadow helpers (D-127) -------------------------
+
+def _shadow_scenario_frames():
+  """A measured run, a railed U11 sweep, a ratio-fallback sweep and a degraded-U10 coast, with every shadow raw input
+  set to a non-default value, so any leak of shadow data into the published points would show up in the bytes."""
+  kw = dict(width_raw=200, az_rate_raw=270, edge_a_raw=1224, edge_b_raw=1024)
+  plan = [(1008, 0, 0x3FF), (1008, 0, 0x3FF), (0, 0, 0x3FF), (BOSCH_A_DIRECT_VREL_INVALID, 0, 520), (1008, 600, 0x3FF),
+          (1008, 0, 0x3FF)]
+  return [sweep(0, i, 0x7, 1000, 1124, 1 + 2 * i, i * 50_000_000, with_aux=True, direct_vrel_raw=u11,
+                direct_vrel_uncertainty_raw=unc, rawca=rawca, **kw)
+          for i, (u11, unc, rawca) in enumerate(plan)]
+
+
+def _run_bytes(ri, frames):
+  out = []
+  for frame in frames:
+    rr = ri.update(frame)
+    out.append(None if rr is None else rr.copy().to_bytes())
+  return out
+
+
+class TestShadowToggleOff:
+  def _boom(self, *args, **kwargs):
+    raise AssertionError("shadow helper called with BoschARadarShadow off")
+
+  def test_toggle_off_never_calls_a_shadow_helper_and_output_is_byte_identical(self, monkeypatch):
+    frames = _shadow_scenario_frames()
+    reference = _run_bytes(make_radar_interface(), frames)
+
+    # "No-shadow run": the same parser with every shadow helper removed (any call fails the test).
+    for name in ('_bosch_a_set_shadow', '_bosch_a_clear_shadow', '_bosch_a_edges_m', '_bosch_a_lateral_vrel'):
+      monkeypatch.setattr(radar_interface_module, name, self._boom)
+    no_shadow = _run_bytes(make_radar_interface(), frames)
+    assert no_shadow == reference
+    assert any(b is not None for b in reference)
+
+  def test_toggle_off_leaves_new_fields_at_schema_defaults(self):
+    ri = make_radar_interface()
+    published = [ri.update(f) for f in _shadow_scenario_frames()]
+    points = [pt for rr in published if rr is not None for pt in rr.points]
+    assert points and any(pt.measured for pt in points) and any(not pt.measured for pt in points)
+    for pt in points:
+      assert (pt.yLeft, pt.yRight, pt.azRate, pt.vRelFromRatio) == (0.0, 0.0, 0.0, False)
+      assert math.isnan(pt.yvRel)  # unchanged from before the shadow port
+
+  def test_toggle_on_changes_no_published_non_shadow_field(self):
+    frames = _shadow_scenario_frames()
+    ri_off, ri_on = make_radar_interface(), make_shadow_radar_interface()
+    for frame in frames:
+      a, b = ri_off.update(frame), ri_on.update(frame)
+      assert (a is None) == (b is None)
+      if a is None:
+        continue
+      assert len(a.points) == len(b.points)
+      for pa, pb in zip(a.points, b.points, strict=True):
+        for field in ('trackId', 'dRel', 'yRel', 'vRel', 'aRel', 'measured', 'ncVRel', 'ncValid', 'ncSigma',
+                      'existence', 'recovered'):
+          va, vb = getattr(pa, field), getattr(pb, field)
+          assert va == vb or (isinstance(va, float) and math.isnan(va) and math.isnan(vb)), field
+
+  def test_a_raising_shadow_helper_keeps_the_point_and_logs_once(self, monkeypatch):
+    calls = []
+    monkeypatch.setattr(radar_interface_module, '_bosch_a_set_shadow', self._boom)
+    monkeypatch.setattr(radar_interface_module.carlog, 'exception', lambda msg, *a, **k: calls.append(msg))
+    frames = _shadow_scenario_frames()
+    reference = _run_bytes(make_radar_interface(), frames)
+    ri = make_shadow_radar_interface()
+    raised = _run_bytes(ri, frames)
+    # Every point is still published, with the same measured geometry; the failed shadow leaves the fields unset.
+    assert [b is None for b in raised] == [b is None for b in reference]
+    assert len(calls) == 1

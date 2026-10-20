@@ -3151,3 +3151,100 @@ on-path shadow MPC gets the guard too. `solve_time` is the sum of both solves.
 - Not checked closed loop. There is no closed-loop gap result for 1871.
 
 **Lever:** `MPC_QP_CAP_RESOLVE`.
+
+## D-127 — Gate Bosch-A lateral velocity telemetry on a direct, unsaturated longitudinal estimate (STATUS 259, 2026-10-20, static tests + offline replay only, not driven, toggle default off)
+
+Owner requested a more gated lateral-velocity estimate after the shadow evaluation. This changes only
+`RadarPoint.yvRel` availability and its Cartesian derivative; no matcher or braking consumer is added.
+
+Use the derivative of the parser's own `yRel = dRel*tan(azimuth)`:
+`yvRel = dRel*sec(azimuth)^2*azRate + tan(azimuth)*vRel`. The old small-angle expression omitted sec².
+Publish it only on the existing fresh measured path with finite inputs, positive range, usable azimuth
+rate, direct U11, a known u10 within the existing ceiling of 511, and raw U11 strictly between 0 and 1728.
+The exact endpoints remain published as longitudinal bounds under D-041, while yvRel becomes NaN.
+Ratio fallback and coasts also have unavailable yvRel; azRate remains independently available on measured
+points even when the lateral estimate is suppressed. Do not replace unavailable velocity with zero or a
+held prior value. No empirical 11.9 m/s margin, tighter u10 threshold, motion classifier or yaw gate is added.
+
+Evidence is offline only. firmware-analysis-kit commit 1545d79 records an additional 17-segment case study on
+`000003a3--4f6ecdb929`, `0000039c--6eddcb4316`, `0000039a--952012df10`, `00000361--59b892c2ab`,
+and `00000363--159e8c5db6`: near-rail lateral signs agree on 520/836 pairs versus 6783/6939 interior pairs.
+The final 85-segment source-hashed replay covers those named in the retained original manifest (seven
+routes, including `0000033c--476e8185eb`). It keeps every established point field/set plus edges/azRate
+identical, publishes finite yvRel on 111,054/121,426 measured samples, and leaves no finite yvRel on rails
+or coasts. Against a seven-sample derivative, retained yvRel has R² 0.8846 and sign agreement 96.36%.
+The comparison shares track position history and is not independent target-motion ground truth.
+
+The change is on review branch `codex/bosch-a-gated-lateral-velocity`, based on committed shadow baseline
+1dc044833d (the exact previously dirty source snapshot); replay hashes identify the final source.
+Validation: 189 parser tests passed; 158 consumer tests passed; entire Honda suite 410 passed with the same
+pre-existing FakeParams.get_bool failure (firmware-analysis-kit eps-121). Replacing the exact derivative
+in memory with the old expression fails all eight independent trajectory tests. No live timing or
+closed-loop validation occurred. The estimate stays in the rotating sensor/ego frame: an eventual cut-in
+consumer still needs yaw/path semantics and its own replay. The separate edge-clamp correction remains open.
+
+## D-128 — Observe edge/path overlap beside the existing matcher; no selection change (STATUS 259, 2026-10-20, static tests + offline replay only, not driven, toggle default off)
+
+Owner requested a shadow path-overlap score and a Claude handoff. [CONFIRMED static/unit/offline replay]
+Publish `radarState.boschAOverlapShadow`, Bosch-A only. The existing selector, point lifecycle,
+longitudinal bounds, range assist and planner do not read these fields. Invalid diagnostic inputs fail
+toward unavailable scores or centre-based counterfactual matching, never point deletion.
+
+At model mesh x = radar dRel + RADAR_TO_CAMERA, interpolate model position.y without extrapolation,
+then negate its right-positive sign to radar left-positive. This uses the model lead's established
+longitudinal origin convention; the older onpath adopter's unshifted interpolation is unchanged.
+Compare the measured return bracket to a +/-1 m model-path corridor. That half-width is a declared
+diagnostic scale, chosen to match the strict vision matcher's lateral floor, not a measured car width.
+Report intersection length/fraction, path offsets, bracket distance and exp(-distance/1 m) scores for
+the centre and nearest edge. This is a lateral cross-section, not an orthogonal swept footprint.
+
+Separately, log a counterfactual matcher that replaces only the lateral centre PDF/gate with distance
+to the bracket, retaining distance/velocity/newborn checks and strict-best-then-preferred fallback.
+Path overlap does not gate either matcher. Log both matcher IDs, the actual selected lead ID (which can
+differ because of low-speed override), candidate scores/gates and a changed marker. Capture preference
+after staleness checks and before the real selection updates it. Unusable edges fall back to centre
+matching; no old extent is held on coasts or duplicate sweeps. Path arrays must be finite, increasing,
+equal-length, and cover the converted x. Zero-width/reversed/non-bracketing extents are unavailable.
+No velocity projection, yaw compensation or motion classification is introduced.
+
+Correct the clamped-edge fallback to x*tan(atan2(y,x) +/- angular_width/2), rejecting an invalid width,
+nonpositive/nonfinite geometry or angles crossing +/-pi/2. The old Cartesian half-width approximation
+is retired. Unclamped decode and all established point fields remain unchanged. Returned extents have
+not been proved to be physical body edges. Wide returns can win interval ranking spuriously.
+
+Evidence (source hashes retained in firmware-analysis-kit `radar-re/parser-shadow/overlap-shadow/replay.json`):
+`00000323--c20feb1f4b/4`, `0000033c--476e8185eb/14` and `/24`, `00000325--da2c095247/54`.
+Real CAN -> RadarInterface -> model-cycle RadarD, last received messages only; fixed .35 threshold,
+adjacent/human-lane toggles off, newborn semantics on. Against radard source f60e19d543: 3,187 cycles,
+2,373 sweeps (one CAN error), zero differences in established RadarState/StarPilot fields or preferred
+IDs. 3,386 valid path rows, 32 extra corridor overlaps, seven changed lead-slot matches on track 25 in
+33c/24. All seven have zero or unavailable path overlap, so no better association or cut-in is claimed.
+All newly used raw inputs were pre-existing caches mounted read-only; no downloads or deletions.
+
+Validation: 184 consumer tests including 26 new diagnostic tests; 191 parser tests; full Honda suite
+412 passed and the same unrelated FakeParams.get_bool failure (eps-121). Mutation probes reject centre
+distance substituted for interval distance, a diagnostic Track mutation, and the old clamp formula
+(three off-axis angle tests). No device binaries built, no real-time/closed-loop check or deployment.
+Active adoption, protected braking replay, physical target labels, yaw/path motion semantics and device
+timing remain open (eps-120). See `docs/bosch_a_overlap_handoff.md` for review/replay instructions.
+
+**Port to this tree (2026-10-20, STATUS 259; applies to D-127 and D-128).** Codex wrote these as D-089/D-090
+on `codex/bosch-a-gated-lateral-velocity` (1dc044833, f60e19d54, 4425d1404 on c6dbe85c74). This tree already
+had an unrelated D-089, so they are renumbered. Ported to `bosch-a-shadow-telemetry` from `iq-nav-on-pr10`:
+- Behind `BoschARadarShadow` (PERSISTENT, BOOL, default "0"), shown only when Bosch-A is available.
+  card.py sets `RadarInterface.shadow_telemetry`; radard reads the param at start, ANDed with `BoschARadar`.
+  Restart required.
+- Off: the parser does not read the four extra raw signals, does not call the shadow helpers, and leaves
+  `yLeft/yRight/azRate/vRelFromRatio` at schema defaults (0.0/False, not NaN) and `yvRel` as iq-nav sets it; radard does not
+  call `bosch_a_overlap_shadow` and leaves `boschAOverlapShadow` unset. Static tests show parser and radard
+  bytes identical to a no-shadow run; a one-off compare against `origin/iq-nav-on-pr10` sources was
+  byte-identical too (parser 6 sweeps, radard 20 frames).
+- On: the shadow calls are wrapped in try/except, logged once, field left unset, point still published.
+  The overlap shadow scores the same `sel_tracks` the selector sees, and its preferred fallback mirrors
+  this tree's RAIL_RANGE_VEL_CHECK (a preferred track with a rail-range vRel is not re-adopted).
+- Nothing in control reads any of these fields. No existing radar_interface.py constant changed.
+- The committed aarch64 `params_pyx.so` does not know the key until the next device rebuild; until then
+  reads fall back to off and the Galaxy/raylib rows stay unusable.
+- The Codex replay evidence above was not rerun here (the route caches are not on this VM; cached
+  qlogs lack the full CAN/carParams the tool needs). VM timing with the toggle on: parser shadow
+  ~0.1 ms per 32-point sweep, radard shadow ~1.4 ms per 32-track cycle. Not device timing.

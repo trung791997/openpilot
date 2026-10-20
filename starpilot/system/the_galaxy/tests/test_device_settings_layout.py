@@ -3,6 +3,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 LAYOUT_PATH = REPO_ROOT / "starpilot/common/assets/device_settings_layout.json"
@@ -601,15 +603,15 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
   assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
 
 
-def test_bosch_a_gate_is_kept_but_empty():
+def test_bosch_a_gate_holds_only_the_shadow_telemetry_row():
   # The Bosch-A TEST rows are built in now (RangeDerivedVrel, RangeVisionAssist, BoschARailInterval).
-  # Galaxy keeps its BoschARadarAvailable gate, empty, so a future Bosch-A-only row has one place to go.
+  # Galaxy keeps its BoschARadarAvailable gate; its only row is BoschARadarShadow (D-127/D-128, logging only).
   frontend = (
     REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings.js"
   ).read_text(encoding="utf-8")
   gate = re.search(r"const BOSCH_A_REQUIRED_KEYS = new Set\(\[([^\]]*)\]\)", frontend)
   assert gate is not None, "Galaxy lost the Bosch-A key set"
-  assert set(re.findall(r'"([^"]+)"', gate.group(1))) == set()
+  assert set(re.findall(r'"([^"]+)"', gate.group(1))) == {"BoschARadarShadow"}
   assert "BOSCH_A_REQUIRED_KEYS.has(param.key) && !state.values.BoschARadarAvailable" in frontend
 
 
@@ -675,3 +677,23 @@ def test_center_boost_is_gone_from_both_uis():
   removed = {"HondaCenterBoostThreshold", "NrdrOverrideThresholdCenterBoost"}
   assert not removed & {p["key"] for p in params}
   assert not removed & _raylib_nrdr_setting_keys()
+
+
+def test_bosch_a_shadow_row_is_off_by_default_offroad_and_says_it_does_not_change_driving():
+  params = {p["key"]: p for section in _layout() for p in section.get("params", [])}
+  row = params["BoschARadarShadow"]
+  assert row["parent_key"] == params["BoschARadar"]["parent_key"]
+  assert row["requires_offroad"] is True
+  assert row["description"].startswith(
+    "Logs extra radar edge and lateral-speed data for analysis. Does not change driving.")
+  assert "BoschARadarShadow" in _all_declared_keys()
+  assert _declared_default("BoschARadarShadow") == "0"
+
+
+# BoschARadarShadow is declared in params_keys.h but the committed aarch64 params_pyx.so predates it; it needs the
+# binary-only device rebuild (cf. 8fd49f886). When this XPASSes, move the key into _galaxy_toggle_keys() and drop this test.
+@pytest.mark.xfail(strict=True, reason="committed device params_pyx.so predates BoschARadarShadow; needs a device rebuild")
+def test_bosch_a_shadow_key_is_in_the_committed_device_params_binary():
+  blob = subprocess.run(["git", "show", "HEAD:common/params_pyx.so"], cwd=REPO_ROOT, capture_output=True,
+                        check=True).stdout
+  assert b"BoschARadarShadow" in set(re.findall(rb"[\x20-\x7e]{4,}", blob))
