@@ -345,9 +345,9 @@ struct RadarData @0x888ad6581cf0aacb {
     # Honda Bosch-A only, shadow telemetry (D-127; static/replay evidence only). Filled only when the
     # BoschARadarShadow param is on; otherwise left at the schema defaults. NaN when unavailable.
     # Nothing consumes these to gate, drop or coast a point.
-    yLeft @12 :Float32;  # m, left edge = dRel*tan(edgeA); same sign convention as yRel (left positive)
-    yRight @13 :Float32; # m, right edge = dRel*tan(edgeB); yRight <= yRel <= yLeft
-    azRate @14 :Float32; # rad/s, sensor-frame azimuth rate (raw*0.005 - 1.25), NaN when raw is 510 or 511
+    yLeft @12 :Float32 = nan;  # m, left edge = dRel*tan(edgeA); same sign convention as yRel (left positive)
+    yRight @13 :Float32 = nan; # m, right edge = dRel*tan(edgeB); yRight <= yRel <= yLeft
+    azRate @14 :Float32 = nan; # rad/s, sensor-frame azimuth rate (raw*0.005 - 1.25), NaN when raw is 510 or 511
     vRelFromRatio @15 :Bool; # true when vRel was taken from the RANGE_RATIO fallback instead of U11
   }
 

@@ -6,6 +6,7 @@ import pytest
 from opendbc.can.dbc import DBC as DbcFile
 from opendbc.can.parser import get_raw_value
 from opendbc.car.can_definitions import CanData
+from opendbc.car import structs
 from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.radar_interface import (
@@ -2606,8 +2607,15 @@ class TestShadowToggleOff:
     points = [pt for rr in published if rr is not None for pt in rr.points]
     assert points and any(pt.measured for pt in points) and any(not pt.measured for pt in points)
     for pt in points:
-      assert (pt.yLeft, pt.yRight, pt.azRate, pt.vRelFromRatio) == (0.0, 0.0, 0.0, False)
-      assert math.isnan(pt.yvRel)  # unchanged from before the shadow port
+      # NaN schema defaults: a 0.0 here read as a real zero-width edge at the boresight and
+      # produced false yRight <= yRel <= yLeft violations in offline analysis (Jason, 2026-10-20).
+      assert all(math.isnan(v) for v in (pt.yLeft, pt.yRight, pt.azRate, pt.yvRel))
+      assert pt.vRelFromRatio is False
+
+  def test_default_radar_point_reads_nan_shadow_fields(self):
+    # yvRel @5 is upstream (default 0.0, other cars rely on it); the Bosch-A parser writes NaN itself.
+    pt = structs.RadarData.RadarPoint.new_message()
+    assert all(math.isnan(v) for v in (pt.yLeft, pt.yRight, pt.azRate))
 
   def test_toggle_on_changes_no_published_non_shadow_field(self):
     frames = _shadow_scenario_frames()
