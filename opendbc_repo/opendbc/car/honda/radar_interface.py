@@ -479,10 +479,17 @@ def _bosch_a_edges_m(d_rel: float, y_rel: float, edge_a_raw: int, edge_b_raw: in
   nan = float('nan')
   clamped = edge_a_raw >= BOSCH_A_EDGE_CLAMP_HIGH or edge_b_raw <= BOSCH_A_EDGE_CLAMP_LOW
   if clamped:
-    if width_raw == BOSCH_A_ANGULAR_WIDTH_INVALID:
+    if (width_raw == BOSCH_A_ANGULAR_WIDTH_INVALID or d_rel <= 0 or
+        not all(math.isfinite(v) for v in (d_rel, y_rel))):
       return nan, nan
-    half = d_rel * math.tan(0.5 * width_raw * BOSCH_A_AZIMUTH_SCALE_RAD)
-    return y_rel + half, y_rel - half
+    # D-090: width is angular, so reconstruct the angles before projecting. Adding
+    # x*tan(width/2) to y was a small-angle approximation (up to 0.2285 m error
+    # in the retained raw-bank study). These remain return extents, not body edges.
+    centre = math.atan2(y_rel, d_rel)
+    half = 0.5 * width_raw * BOSCH_A_AZIMUTH_SCALE_RAD
+    if half < 0 or not -math.pi / 2 < centre - half <= centre + half < math.pi / 2:
+      return nan, nan
+    return d_rel * math.tan(centre + half), d_rel * math.tan(centre - half)
   return (d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_a_raw - BOSCH_A_AZIMUTH_CENTER)),
           d_rel * math.tan(BOSCH_A_AZIMUTH_SCALE_RAD * (edge_b_raw - BOSCH_A_AZIMUTH_CENTER)))
 

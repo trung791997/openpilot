@@ -5,7 +5,17 @@
 Update the date above whenever this file changes. If it is stale, trust `git log` over this
 file.
 
-**Latest radar telemetry update:** D-089, review branch `codex/bosch-a-gated-lateral-velocity`.
+**Latest radar telemetry update:** D-090, review branch `codex/bosch-a-gated-lateral-velocity`.
+`radarState.boschAOverlapShadow` now records model-path cross-section overlap plus an edge-distance
+vision-matcher counterfactual beside the unchanged selector. The angular-width clamp fallback is
+corrected before scoring. Read `docs/bosch_a_overlap_handoff.md` and D-090. [CONFIRMED offline replay]
+Four cached segments, 3,187 model cycles: zero selected-state differences against f60e19d543; 32 extra
+diagnostic-corridor overlaps and seven counterfactual lead-slot differences. All seven choose track 25
+on `0000033c--476e8185eb/24`, with unavailable or zero path overlap: they are not recovered leads.
+184 consumer tests (including 26 new shadow tests) and 191 parser tests pass. Full Honda: 412 pass,
+same pre-existing FakeParams.get_bool failure. No live timing, closed-loop validation or deployment.
+
+**Prior lateral telemetry update:** D-089.
 The prior dirty shadow implementation is retained as baseline 1dc044833d. Lateral velocity now uses the
 exact derivative of dRel*tan(azimuth), and is NaN for U11 saturation endpoints, ratio fallback, unavailable
 rate/inputs, and coasts. It retains the existing direct-velocity quality ceiling without retuning.
@@ -14,8 +24,8 @@ Established RadarPoint fields/sets, longitudinal bounds, azRate and edges are un
 sign agreement against a windowed position derivative is 96.36%; this is same-source offline consistency,
 not independent target-motion or closed-loop validation. Parser tests 189 passed; consumer tests 158 passed;
 full Honda 410 passed with the existing unrelated FakeParams.get_bool test failure. Nothing reads the new
-telemetry in radard, and no device was deployed. Evidence and follow-up: firmware-analysis-kit
-`radar-re/parser-shadow/GATED_YVREL.md`; edge-clamp geometry and active consumer validation remain open.
+motion telemetry in radard, and no device was deployed. Evidence and follow-up: firmware-analysis-kit
+`radar-re/parser-shadow/GATED_YVREL.md`; D-090 now fixes edge-clamp geometry. Active consumer validation remains open.
 
 Repo: StarPilot / openpilot fork `openpilot-radar`. Working branch
 `ns-bosch-radar-testing`. (`claude/radar-testing-state-88vt2t` used to mirror it; it was deleted on

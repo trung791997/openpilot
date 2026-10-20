@@ -2420,12 +2420,17 @@ class TestShadowTelemetry:
     assert pt.yRight == pytest.approx(-pt.yLeft, rel=1e-5)
     assert pt.yRight <= pt.yRel <= pt.yLeft
 
-  def test_clamped_edge_falls_back_to_the_width(self):
-    angle_raw = 1124
+  @pytest.mark.parametrize('angle_raw', [410, 1124, 1638])
+  def test_clamped_edge_falls_back_to_the_width(self, angle_raw):
     pt = self._publish(angle_raw=angle_raw, edge_a_raw=2047, edge_b_raw=1000, width_raw=200)
     d = self._d()
-    assert pt.yLeft - pt.yRight == pytest.approx(2 * d * math.tan(100 / 2048), rel=1e-5)
-    assert (pt.yLeft + pt.yRight) / 2 == pytest.approx(pt.yRel, rel=1e-5)
+    # Recover boundary angles from published Cartesian coordinates; their midpoint
+    # and separation must equal the independent encoded centre and angular width.
+    left = math.atan2(pt.yLeft, d)
+    right = math.atan2(pt.yRight, d)
+    assert left - right == pytest.approx(200 / 2048, rel=1e-5)
+    assert (left + right) / 2 == pytest.approx((angle_raw - 1024) / 2048, rel=1e-5)
+    assert pt.yRight <= pt.yRel <= pt.yLeft
 
   def test_clamped_edge_with_invalid_width_is_nan(self):
     pt = self._publish(edge_a_raw=2047, edge_b_raw=1000, width_raw=2047)

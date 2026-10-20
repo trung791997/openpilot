@@ -2046,3 +2046,48 @@ pre-existing FakeParams.get_bool failure (firmware-analysis-kit eps-121). Replac
 in memory with the old expression fails all eight independent trajectory tests. No live timing or
 closed-loop validation occurred. The estimate stays in the rotating sensor/ego frame: an eventual cut-in
 consumer still needs yaw/path semantics and its own replay. The separate edge-clamp correction remains open.
+
+## D-090 — Observe edge/path overlap beside the existing matcher; no selection change
+
+Owner requested a shadow path-overlap score and a Claude handoff. [CONFIRMED static/unit/offline replay]
+Publish `radarState.boschAOverlapShadow`, Bosch-A only. The existing selector, point lifecycle,
+longitudinal bounds, range assist and planner do not read these fields. Invalid diagnostic inputs fail
+toward unavailable scores or centre-based counterfactual matching, never point deletion.
+
+At model mesh x = radar dRel + RADAR_TO_CAMERA, interpolate model position.y without extrapolation,
+then negate its right-positive sign to radar left-positive. This uses the model lead's established
+longitudinal origin convention; the older onpath adopter's unshifted interpolation is unchanged.
+Compare the measured return bracket to a +/-1 m model-path corridor. That half-width is a declared
+diagnostic scale, chosen to match the strict vision matcher's lateral floor, not a measured car width.
+Report intersection length/fraction, path offsets, bracket distance and exp(-distance/1 m) scores for
+the centre and nearest edge. This is a lateral cross-section, not an orthogonal swept footprint.
+
+Separately, log a counterfactual matcher that replaces only the lateral centre PDF/gate with distance
+to the bracket, retaining distance/velocity/newborn checks and strict-best-then-preferred fallback.
+Path overlap does not gate either matcher. Log both matcher IDs, the actual selected lead ID (which can
+differ because of low-speed override), candidate scores/gates and a changed marker. Capture preference
+after staleness checks and before the real selection updates it. Unusable edges fall back to centre
+matching; no old extent is held on coasts or duplicate sweeps. Path arrays must be finite, increasing,
+equal-length, and cover the converted x. Zero-width/reversed/non-bracketing extents are unavailable.
+No velocity projection, yaw compensation or motion classification is introduced.
+
+Correct the clamped-edge fallback to x*tan(atan2(y,x) +/- angular_width/2), rejecting an invalid width,
+nonpositive/nonfinite geometry or angles crossing +/-pi/2. The old Cartesian half-width approximation
+is retired. Unclamped decode and all established point fields remain unchanged. Returned extents have
+not been proved to be physical body edges. Wide returns can win interval ranking spuriously.
+
+Evidence (source hashes retained in firmware-analysis-kit `radar-re/parser-shadow/overlap-shadow/replay.json`):
+`00000323--c20feb1f4b/4`, `0000033c--476e8185eb/14` and `/24`, `00000325--da2c095247/54`.
+Real CAN -> RadarInterface -> model-cycle RadarD, last received messages only; fixed .35 threshold,
+adjacent/human-lane toggles off, newborn semantics on. Against radard source f60e19d543: 3,187 cycles,
+2,373 sweeps (one CAN error), zero differences in established RadarState/StarPilot fields or preferred
+IDs. 3,386 valid path rows, 32 extra corridor overlaps, seven changed lead-slot matches on track 25 in
+33c/24. All seven have zero or unavailable path overlap, so no better association or cut-in is claimed.
+All newly used raw inputs were pre-existing caches mounted read-only; no downloads or deletions.
+
+Validation: 184 consumer tests including 26 new diagnostic tests; 191 parser tests; full Honda suite
+412 passed and the same unrelated FakeParams.get_bool failure (eps-121). Mutation probes reject centre
+distance substituted for interval distance, a diagnostic Track mutation, and the old clamp formula
+(three off-axis angle tests). No device binaries built, no real-time/closed-loop check or deployment.
+Active adoption, protected braking replay, physical target labels, yaw/path motion semantics and device
+timing remain open (eps-120). See `docs/bosch_a_overlap_handoff.md` for review/replay instructions.
