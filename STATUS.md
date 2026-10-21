@@ -11732,3 +11732,7 @@ veto. So it either never entered, or dropped back to experimental once we matche
   - Stopping again or disengaging still hands back immediately.
   - Not covered: a genuinely new red light or stop within 20 m of the stop just left. Chill does not react to it until
     20 m, and the driver brakes.
+- **Job follow-up (log evidence: two drives, 9 engaged launches, 2 engaged creeps; not a threshold validation).**
+  - The engaged queue creeps peaked at 0.62 and 0.65 m/s, so with the 1.5 m/s engage speed they stay in experimental.
+    No engaged creep went above 1.0 m/s. Unengaged parking-lot creeps peaked at 0.67-1.22 m/s.
+  - On the 9 engaged launches, 0.5 → 1.5 m/s took 0.60-1.23 s, so the new engage speed switches to Chill about 1 s later.
