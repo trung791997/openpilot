@@ -375,7 +375,9 @@ def test_ccm_launch_assist_enters_chill_behind_lead_at_light_with_stale_stop_fla
   # Light turns green, the lead pulls off; some flags lag behind the scene.
   sm["starpilotPlan"].redLight = False
   sm["longitudinalPlan"].shouldStop = False
-  planner.lead_one.vLead = 2.0
+  detector.slow_lead_detected = False
+  planner.lead_one.vLead = 3.0
+  planner.lead_one.aLeadK = 1.0
   drive(ccm, sm, toggles, clock, 1.6)
 
   assert not ccm.experimental_mode
@@ -383,6 +385,7 @@ def test_ccm_launch_assist_enters_chill_behind_lead_at_light_with_stale_stop_fla
 
   # Stale flags, and a flag clearing then coming back, do not end the launch inside the intersection.
   for v in (2.0, 3.0, 4.0):
+    planner.lead_one.vLead = v + 0.5
     detector.stop_light_detected = v != 3.0
     drive(ccm, sm, toggles, clock, v, steps=4)
     assert not ccm.experimental_mode
@@ -425,14 +428,18 @@ def test_ccm_launch_assist_holds_chill_until_launch_speed_then_hands_back(monkey
   drive(ccm, sm, toggles, clock, 0.0, steps=5)
   sm["starpilotPlan"].redLight = False
   detector.stop_light_detected = False
+  detector.slow_lead_detected = False
   planner.model_stopped = False
+  planner.lead_one.aLeadK = 1.0
 
   for mph in range(4, 15):
+    planner.lead_one.vLead = (mph + 1) * CV.MPH_TO_MS
     drive(ccm, sm, toggles, clock, mph * CV.MPH_TO_MS, steps=4)
     assert not ccm.experimental_mode, mph
     assert ccm.status_value == CCStatus["LEAD"], mph
 
   # Past 15 mph the normal rules apply again: a slow lead and adjacent car are vetoes.
+  detector.slow_lead_detected = True
   drive(ccm, sm, toggles, clock, 16 * CV.MPH_TO_MS)
   assert ccm.experimental_mode
   assert ccm.status_value == CCStatus["OFF"]
@@ -465,6 +472,72 @@ def test_ccm_launch_assist_exits_on_new_red_light_past_the_intersection(monkeypa
   drive(ccm, sm, toggles, clock, 5.0)
   assert ccm.experimental_mode
   assert ccm.status_value == CCStatus["OFF"]
+
+
+def queued_lead(planner, detector, v_lead, a_lead):
+  detector.slow_lead_detected = False
+  planner.tracking_lead = True
+  planner.lead_one.status = True
+  planner.lead_one.dRel = 8.0
+  planner.lead_one.vLead = v_lead
+  planner.lead_one.vRel = 0.0
+  planner.lead_one.aLeadK = a_lead
+  planner.lead_one.radar = True
+
+
+def test_ccm_launch_assist_queue_lead_slowing_hands_back_and_stays_experimental(monkeypatch):
+  # STATUS 261 311 replay: Chill follows a crawling queue ~1.5 m closer than experimental.
+  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
+  queued_lead(planner, detector, 0.0, 0.0)
+  drive(ccm, sm, toggles, clock, 0.0, steps=10)
+
+  queued_lead(planner, detector, 3.0, 0.8)
+  drive(ccm, sm, toggles, clock, 1.6)
+  assert not ccm.experimental_mode
+  assert ccm.status_value == CCStatus["LEAD"]
+
+  queued_lead(planner, detector, 3.0, -0.6)
+  drive(ccm, sm, toggles, clock, 2.5)
+  assert ccm.experimental_mode
+  assert ccm.status_value == CCStatus["OFF"]
+
+  # The lead speeds up again before we stop: no re-entry until the next stop.
+  queued_lead(planner, detector, 5.0, 1.0)
+  drive(ccm, sm, toggles, clock, 3.0, steps=20)
+  assert ccm.experimental_mode
+
+
+def test_ccm_launch_assist_closing_on_queue_lead_hands_back(monkeypatch):
+  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
+  drive(ccm, sm, toggles, clock, 0.0, steps=5)
+  queued_lead(planner, detector, 2.0, 0.0)
+  drive(ccm, sm, toggles, clock, 2.0)
+  assert not ccm.experimental_mode
+
+  drive(ccm, sm, toggles, clock, 3.1)
+  assert ccm.experimental_mode
+
+
+def test_ccm_launch_assist_waits_while_queue_lead_is_not_pulling_away(monkeypatch):
+  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
+  drive(ccm, sm, toggles, clock, 0.0, steps=5)
+  queued_lead(planner, detector, 1.0, -0.8)
+  drive(ccm, sm, toggles, clock, 1.6, steps=4)
+  assert ccm.experimental_mode
+
+  queued_lead(planner, detector, 3.0, 0.8)
+  drive(ccm, sm, toggles, clock, 2.0)
+  assert not ccm.experimental_mode
+  assert ccm.status_value == CCStatus["LEAD"]
+
+
+def test_ccm_launch_assist_slow_lead_detector_blocks_launch(monkeypatch):
+  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
+  drive(ccm, sm, toggles, clock, 0.0, steps=5)
+  queued_lead(planner, detector, 3.0, 0.5)
+  detector.slow_lead_detected = True
+  drive(ccm, sm, toggles, clock, 1.6, steps=4)
+  assert ccm.experimental_mode
 
 
 def test_ccm_launch_assist_ends_if_car_stops_again_and_rearms(monkeypatch):

@@ -11779,3 +11779,11 @@ veto. So it either never entered, or dropped back to experimental once we matche
   - **Stops inside the first 20 m** (3 of 11) are unchanged by design.
   - **The law is back to dabff8ef9** (the device build).
   - **Cause:** the closer gap is how Chill follows a crawling lead, not a stopping-only effect.
+- **Option 2: with a lead, Chill only while it is pulling away (2026-10-21, Peter; static tests only).**
+  - The launch enters Chill, or stays in it, only while lead one is pulling away: aLeadK > -0.5, closing ≤ 1.0 m/s,
+    and the slow-lead detector is not firing. This applies from the first meter.
+  - If the lead is not pulling away at 1.5 m/s, the launch stays armed and enters if it does before 15 mph.
+  - Once handed back, it does not re-enter until the car stops again.
+  - With no lead, behaviour is unchanged.
+  - Job replay requested on 311 (arm D) and on the normal launches (3a7/3a3 and the 44-route set) before the device
+    gets it.

@@ -46,10 +46,20 @@ class ConditionalChillMode:
   # is ignored for the first CHILL_LAUNCH_STOP_FLAG_DISTANCE (the intersection just left). After that a
   # stop flag hands back to experimental. 20 m below 15 mph is at least 3 s in Chill, so no separate
   # minimum hold is needed.
+  #
+  # Job 311 jam replay (STATUS 261): Chill follows a crawling queue closer than experimental (stopped
+  # gap 3.2-3.8 m vs 4.9-5.5 m, min 2.46 m), and handing back only once the lead was under 2 m/s came
+  # too late (gap already closed, one stop -4.8 vs -4.0). Peter chose option 2: with a lead, Chill only
+  # while that lead is pulling away. A lead that is slowing (aLeadK <= CHILL_LAUNCH_LEAD_MAX_DECEL),
+  # that we are closing on by more than CHILL_LAUNCH_LEAD_MAX_CLOSING, or that the slow-lead detector
+  # flags keeps or sends the launch to experimental, from the first meter. Once handed back, the
+  # launch does not re-enter until the car stops again.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS
   CHILL_LAUNCH_ARM_SPEED = 0.3
   CHILL_LAUNCH_START_SPEED = 1.5
   CHILL_LAUNCH_STOP_FLAG_DISTANCE = 20.0
+  CHILL_LAUNCH_LEAD_MAX_DECEL = -0.5
+  CHILL_LAUNCH_LEAD_MAX_CLOSING = 1.0
 
   STABLE_LEAD_MIN_MODEL_PROB = 0.9
   STABLE_LEAD_MAX_BRAKE = 0.2
@@ -274,7 +284,7 @@ class ConditionalChillMode:
         self._end_launch()
         return CCStatus["OFF"]
 
-      if stopped or self._launch_exit_required(sm):
+      if stopped or self._launch_exit_required(v_ego, sm):
         self._end_launch()
         self._launch_forced_exit = True
         self._launch_armed = stopped
@@ -287,6 +297,14 @@ class ConditionalChillMode:
       return CCStatus["OFF"]
 
     if not self._launch_armed or v_ego < self.CHILL_LAUNCH_START_SPEED:
+      return CCStatus["OFF"]
+
+    if v_ego >= self.CHILL_LAUNCH_EXIT_SPEED:
+      self._launch_armed = False
+      return CCStatus["OFF"]
+
+    # Stay armed: a queue lead that is not pulling away yet may still do so before 15 mph.
+    if not self._launch_lead_pulling_away(v_ego):
       return CCStatus["OFF"]
 
     selfdrive_state = self._get_sm_service(sm, "selfdriveState")
@@ -320,9 +338,24 @@ class ConditionalChillMode:
     }
     return any(flags.values())
 
-  def _launch_exit_required(self, sm):
+  def _launch_lead_pulling_away(self, v_ego):
+    if self.detector.slow_lead_detected:
+      return False
+
+    lead = getattr(self.starpilot_planner, "lead_one", None)
+    if not bool(getattr(lead, "status", False)):
+      return True
+
+    lead_speed = float(getattr(lead, "vLead", 0.0))
+    lead_accel = float(getattr(lead, "aLeadK", 0.0))
+    return lead_accel > self.CHILL_LAUNCH_LEAD_MAX_DECEL and (v_ego - lead_speed) <= self.CHILL_LAUNCH_LEAD_MAX_CLOSING
+
+  def _launch_exit_required(self, v_ego, sm):
     selfdrive_state = self._get_sm_service(sm, "selfdriveState")
     if selfdrive_state is None or not bool(getattr(selfdrive_state, "enabled", False)):
+      return True
+
+    if not self._launch_lead_pulling_away(v_ego):
       return True
 
     if self._launch_distance < self.CHILL_LAUNCH_STOP_FLAG_DISTANCE:
