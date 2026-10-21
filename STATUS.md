@@ -11681,3 +11681,36 @@ faithful episodes.
 - M5, and routes beyond the four.
 - How often this pattern occurs across routes.
 - Loosening the onpath coast allowance is not proposed (D-094). This applies default ON and is on the comma since 2026-10-21.
+
+## 261. Launch assist now switches to Chill on every pull-away from a stop (2026-10-21). Static tests only; not driven, not on the device.
+
+**Problem (Peter).** With Conditional Chill's Launch Assist on, the car almost never switched to Chill when pulling away
+from a stop. Peter wants it to switch whether the stop was behind a lead, at a light or at a stop sign.
+
+**Cause (static).** The old law needed all of these, re-checked every cycle up to 15 mph:
+- a departing lead (vLead≥0.35, accel≥0.08, faster than us by 0.2);
+- no stop light, stop sign, model-stop, redLight or forcingStop flag;
+- ego ≤1.0 m/s to enter.
+A stopped lead also tripped the slow-lead veto, and cars in the next lane at an intersection tripped the adjacent-lead
+veto. So it either never entered, or dropped back to experimental once we matched the lead's speed.
+
+**Change (`conditional_chill_mode.py`, toggle unchanged).**
+- **Arm and enter.** Launch assist arms while stopped (standstill or under 0.3 m/s). Chill engages only once the car is
+  rolling (0.5 m/s or more), with no confirm delay. Experimental, or the driver, still decides when to go, so Chill never
+  pulls away from a red light.
+- **Hold.** Chill holds (LEAD with a lead, else SPEED) until 15 mph, then hands back to the normal Chill rules without
+  forcing experimental.
+- **Ignored during the launch:** the slow/stopped lead, adjacent-lane cars, low-speed stop scene, and the lead-departure
+  thresholds.
+- **Stop flags.** These are stop light, model stop light, (raw) model_stopped, stop_sign_confirmed, forcing_stop,
+  redLight and forcingStop. Flags already up at launch belong to the stop just left and are ignored for the first 20 m.
+- **Back to experimental, immediately:**
+  - a stop flag that rises during the launch;
+  - any stop flag after 20 m;
+  - the car stopping again (which re-arms);
+  - disengaging.
+- **Still vetoes:** blinkers, curve, traffic mode, SLC-experimental.
+
+**Open.**
+- Job to log-check real launches: flag states at the moment of pull-away, and whether stale flags clear within 20 m.
+- Whether Peter wants Chill on blinker launches (turns from a stop) too.

@@ -33,14 +33,18 @@ class ConditionalChillMode:
   CHILL_EXIT_BUFFER_TIME = 0.35
   CHILL_MIN_DWELL_TIME = 1.2
 
+  # Launch assist (2026-10-21, Peter: "switch to chill from stop regardless of launching behind a lead,
+  # at a light, at a stop sign"). The old law needed a departing lead and a clean stop scene, so it
+  # almost never fired: a stopped lead tripped the slow-lead veto, and the lead-departure thresholds
+  # were re-checked every cycle. Now: arm while stopped, switch to Chill only once the car is actually
+  # rolling (experimental or the driver decides when to go, so Chill never pulls away from a red
+  # light), and hold Chill to CHILL_LAUNCH_EXIT_SPEED. Stop flags that were already up at launch belong
+  # to the stop just left and are ignored for the first CHILL_LAUNCH_STALE_FLAG_DISTANCE; a stop flag
+  # that rises during the launch, or any stop flag past that distance, hands back to experimental.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS
-  CHILL_LAUNCH_MAX_ENTRY_SPEED = 1.0
-  CHILL_LAUNCH_MAX_BRAKE = 0.2
-  CHILL_LAUNCH_MAX_CLOSING_SPEED = 0.75
-  CHILL_LAUNCH_MIN_LEAD_SPEED = 0.35
-  CHILL_LAUNCH_MIN_LEAD_DELTA = 0.2
-  CHILL_LAUNCH_MIN_LEAD_VREL = 0.2
-  CHILL_LAUNCH_MIN_LEAD_ACCEL = 0.08
+  CHILL_LAUNCH_ARM_SPEED = 0.3
+  CHILL_LAUNCH_START_SPEED = 0.5
+  CHILL_LAUNCH_STALE_FLAG_DISTANCE = 20.0
 
   STABLE_LEAD_MIN_MODEL_PROB = 0.9
   STABLE_LEAD_MAX_BRAKE = 0.2
@@ -72,6 +76,10 @@ class ConditionalChillMode:
     self._prev_cc_status = None
     self._launch_active = False
     self._launch_forced_exit = False
+    self._launch_armed = False
+    self._launch_stale_flags = frozenset()
+    self._launch_distance = 0.0
+    self._launch_last_time = 0.0
 
   def update(self, v_ego, v_cruise, sm, starpilot_toggles):
     now = time.monotonic()
@@ -81,6 +89,7 @@ class ConditionalChillMode:
 
     if is_manual_cc_status(self.status_value):
       self._reset_timers()
+      self._launch_armed = False
       self.experimental_mode = self.status_value == CCStatus["USER_EXPERIMENTAL"]
       self._write_status(self.status_value)
       return
@@ -140,6 +149,7 @@ class ConditionalChillMode:
 
   def deactivate(self):
     self._reset_timers()
+    self._launch_armed = False
     self.experimental_mode = True
     self._prev_cc_status = None
 
@@ -169,7 +179,15 @@ class ConditionalChillMode:
     if self.starpilot_planner.starpilot_vcruise.slc.experimental_mode:
       return True
 
-    if self.detector.curve_detected or self.detector.slow_lead_detected or self.detector.stop_light_detected:
+    if self.detector.curve_detected:
+      return True
+
+    # During a launch the stopped/slow lead, stop light/sign and adjacent-lane cars are the scene the
+    # car just pulled away from; _launch_exit_required decides which stop flags are fresh.
+    if allow_launch:
+      return False
+
+    if self.detector.slow_lead_detected or self.detector.stop_light_detected:
       return True
 
     if self.starpilot_planner.starpilot_vcruise.stop_sign_confirmed or self.starpilot_planner.starpilot_vcruise.forcing_stop:
@@ -239,79 +257,77 @@ class ConditionalChillMode:
     return CCStatus["LEAD"], False
 
   def _get_launch_status(self, v_ego, sm):
-    if self._launch_active and self._launch_exit_required(v_ego, sm):
-      self._launch_active = False
-      self._launch_forced_exit = True
-      return CCStatus["OFF"]
+    now = time.monotonic()
+    standstill = bool(sm["carState"].standstill)
+    stopped = standstill or v_ego < self.CHILL_LAUNCH_ARM_SPEED
 
     if self._launch_active:
+      self._launch_distance += max(0.0, v_ego) * max(0.0, min(now - self._launch_last_time, 0.5))
+      self._launch_last_time = now
+
+      if v_ego >= self.CHILL_LAUNCH_EXIT_SPEED:
+        # Launch done: hand back to the normal Chill rules without forcing experimental.
+        self._end_launch()
+        return CCStatus["OFF"]
+
+      if stopped or self._launch_exit_required(sm):
+        self._end_launch()
+        self._launch_forced_exit = True
+        self._launch_armed = stopped
+        return CCStatus["OFF"]
+
       return self._get_launch_cc_status()
 
-    if not self._launch_scene_eligible(v_ego, sm):
+    if stopped:
+      self._launch_armed = True
       return CCStatus["OFF"]
 
-    self._launch_forced_exit = False
-    self._launch_active = True
-    return self._get_launch_cc_status()
-
-  def _launch_scene_eligible(self, v_ego, sm):
-    if v_ego > self.CHILL_LAUNCH_MAX_ENTRY_SPEED and not self._launch_active:
-      return False
+    if not self._launch_armed or v_ego < self.CHILL_LAUNCH_START_SPEED:
+      return CCStatus["OFF"]
 
     selfdrive_state = self._get_sm_service(sm, "selfdriveState")
-    longitudinal_plan = self._get_sm_service(sm, "longitudinalPlan")
+    if selfdrive_state is None or not bool(getattr(selfdrive_state, "enabled", False)):
+      self._launch_armed = False
+      return CCStatus["OFF"]
+
+    self._launch_armed = False
+    self._launch_forced_exit = False
+    self._launch_active = True
+    self._launch_stale_flags = self._launch_stop_flags(sm)
+    self._launch_distance = 0.0
+    self._launch_last_time = now
+    return self._get_launch_cc_status()
+
+  def _end_launch(self):
+    self._launch_active = False
+    self._launch_stale_flags = frozenset()
+    self._launch_distance = 0.0
+
+  def _launch_stop_flags(self, sm):
     starpilot_plan = self._get_sm_service(sm, "starpilotPlan")
-    if selfdrive_state is None or longitudinal_plan is None:
-      return False
+    vcruise = self.starpilot_planner.starpilot_vcruise
+    flags = {
+      "stop_light": self.detector.stop_light_detected,
+      "stop_light_model": self.detector.stop_light_model_detected,
+      "raw_model_stopped": self.starpilot_planner.raw_model_stopped,
+      "model_stopped": self.starpilot_planner.model_stopped,
+      "stop_sign": vcruise.stop_sign_confirmed,
+      "forcing_stop": vcruise.forcing_stop,
+      "red_light": bool(getattr(starpilot_plan, "redLight", False)),
+      "plan_forcing_stop": bool(getattr(starpilot_plan, "forcingStop", False)),
+    }
+    return frozenset(name for name, active in flags.items() if active)
 
-    if not bool(getattr(selfdrive_state, "enabled", False)):
-      return False
-
-    if (
-      self.detector.stop_light_detected or
-      self.detector.stop_light_model_detected or
-      self.starpilot_planner.raw_model_stopped or
-      self.starpilot_planner.model_stopped or
-      self.starpilot_planner.starpilot_vcruise.stop_sign_confirmed or
-      self.starpilot_planner.starpilot_vcruise.forcing_stop or
-      bool(getattr(starpilot_plan, "redLight", False)) or
-      bool(getattr(starpilot_plan, "forcingStop", False))
-    ):
-      return False
-
-    if bool(getattr(longitudinal_plan, "shouldStop", False)) or not bool(getattr(longitudinal_plan, "allowThrottle", False)):
-      return False
-
-    lead = getattr(self.starpilot_planner, "lead_one", None)
-    lead_status = bool(getattr(lead, "status", False))
-    tracking_lead = bool(getattr(self.starpilot_planner, "tracking_lead", False))
-    if not lead_status and not tracking_lead:
+  def _launch_exit_required(self, sm):
+    selfdrive_state = self._get_sm_service(sm, "selfdriveState")
+    if selfdrive_state is None or not bool(getattr(selfdrive_state, "enabled", False)):
       return True
 
-    lead_speed = float(getattr(lead, "vLead", 0.0))
-    lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
-    lead_accel = float(getattr(lead, "aLeadK", 0.0))
-    lead_delta = lead_speed - float(v_ego)
-    lead_vrel = float(getattr(lead, "vRel", lead_delta))
-    closing_speed = max(0.0, v_ego - lead_speed)
+    active_flags = self._launch_stop_flags(sm)
+    if self._launch_distance >= self.CHILL_LAUNCH_STALE_FLAG_DISTANCE:
+      return bool(active_flags)
 
-    return (
-      lead_speed >= self.CHILL_LAUNCH_MIN_LEAD_SPEED and
-      lead_delta >= self.CHILL_LAUNCH_MIN_LEAD_DELTA and
-      lead_vrel >= self.CHILL_LAUNCH_MIN_LEAD_VREL and
-      lead_accel >= self.CHILL_LAUNCH_MIN_LEAD_ACCEL and
-      lead_brake <= self.CHILL_LAUNCH_MAX_BRAKE and
-      closing_speed <= self.CHILL_LAUNCH_MAX_CLOSING_SPEED
-    )
-
-  def _launch_exit_required(self, v_ego, sm):
-    if v_ego >= self.CHILL_LAUNCH_EXIT_SPEED:
-      return True
-
-    if not self._launch_scene_eligible(v_ego, sm):
-      return True
-
-    return False
+    return bool(active_flags - self._launch_stale_flags)
 
   def _get_launch_cc_status(self):
     lead = getattr(self.starpilot_planner, "lead_one", None)
