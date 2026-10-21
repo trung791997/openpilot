@@ -54,9 +54,9 @@ class ConditionalChillMode:
   # that we are closing on by more than CHILL_LAUNCH_LEAD_MAX_CLOSING, or that the slow-lead detector
   # flags keeps or sends the launch to experimental, from the first meter. Once handed back, the
   # launch does not re-enter until the car stops again.
-  # Job 44-route scan of this law: 8 of 14 decel hand-backs had aLeadK -0.50..-0.54 on leads still
-  # faster than us (vLead 5.6-8.75 m/s, e.g. 3a3 t=929: lead 8.75 vs ego 5.5, gap 23 m). That is
-  # estimator noise on a lead that is pulling away. A lead faster than us by
+  # Job 44-route scan of this law: about 10 of 14 decel hand-backs had aLeadK -0.50..-0.54, and 3 of
+  # those were on a lead at least 1 m/s faster than us (2f8 t=1097, 2f8 t=1401, 3a3 t=929: lead 8.75
+  # vs ego 5.5, gap 23 m). That is estimator noise on a lead that is pulling away. A lead faster than us by
   # CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING or more is opening the gap, so its decel does not hand
   # back; the jam decel hand-backs (L2, L22) were all on leads we were closing on, and still apply.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS

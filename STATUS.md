@@ -11803,9 +11803,20 @@ veto. So it either never entered, or dropped back to experimental once we matche
     the real detector. L11a is closing 1.01 against sim vEgo. L20 is a lead switch to a farther track. In L11 and
     L22, about 1 m of gap is lost inside Chill (0.1-0.2 m per Chill-second). The L12 deficit comes after the hand-back.
   - **Part 2, normal launches (44 routes, 136 engaged; log reapply):** all 136 still enter, none late. 109 (80%) hold
-    to 15 mph; 24 hand back early (decel 14, slow lead 8, closing 2), 15 of them in jam route 311. 8 of the 14 decel
-    hand-backs had aLeadK -0.50 to -0.54 on leads faster than us (vLead 5.6-8.75 m/s). Example: 3a3 t=929, lead
-    8.75 vs ego 5.5, gap 23 m; the stills show a lead pulling away.
+    to 15 mph; 24 hand back early (decel 14, slow lead 8, closing 2), 15 of them in jam route 311. About 10 of the
+    14 decel hand-backs had aLeadK -0.50 to -0.54, but only 3 were on a lead at least 1 m/s faster than us (2f8
+    t=1097, 2f8 t=1401, 3a3 t=929). In the 3a3 case, the lead was at 8.75 vs ego 5.5 with a gap of 23 m, and the
+    stills show it pulling away. (Correction: the 9911920e8 commit message says "8 of 14 on faster leads"; that is
+    Job's first count and is wrong.)
   - **Fix (static tests only):** a lead faster than us by 1 m/s or more is opening the gap, so its decel no longer
     hands back (`CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING`). The jam decel hand-backs were on leads we were closing
-    on, so they still apply. Closing and slow-lead are unchanged. A rescan is with Job.
+    on, so they still apply. Closing and slow-lead are unchanged.
+  - **Rescan with the fix (Job, law_e.py; log reapply plus the 311 replay):**
+    - Early hand-backs went from 24 to 21. The 3 freed launches now run to 15 mph. In them the lead's worst aLeadK
+      was -0.60/-0.87/-0.90, the min gap 16.5-23.7 m, and ego accel stayed positive. None stays in Chill while the
+      lead brakes for real.
+    - The 311 replay is identical to D to the digit (no jam hand-back has a lead faster than us by 1 m/s or more).
+    - Remaining 21: slow lead 8 (Job's approximation), decel 8, closing 5; 14 of them are in 311. Six of the 8
+      decel cases are still in the -0.50..-0.52 noise band, but on leads we are not pulling away from, so the
+      hand-back stays by design.
+    - Fidelity is unchanged; L2 is the weak episode (corr 0.84, vRMSE 1.85).
