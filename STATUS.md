@@ -11736,3 +11736,18 @@ veto. So it either never entered, or dropped back to experimental once we matche
   - The engaged queue creeps peaked at 0.62 and 0.65 m/s, so with the 1.5 m/s engage speed they stay in experimental.
     No engaged creep went above 1.0 m/s. Unengaged parking-lot creeps peaked at 0.67-1.22 m/s.
   - On the 9 engaged launches, 0.5 → 1.5 m/s took 0.60-1.23 s, so the new engage speed switches to Chill about 1 s later.
+- **Job stop-and-go scan (dabff8ef9 law applied per frame to 44 routes, about 19 h of rlogs; log evidence only, no
+  replay).**
+  - **Outcomes of 136 launches:**
+    - 115 handed off at 15 mph after 2.1-3.0 s in Chill;
+    - 12 stopped again in Chill, all on 311 (the only real jam), after 3.4-98 s with peaks of 1.8-6.4 m/s;
+    - 4 blinker vetoes;
+    - 3 flag exits;
+    - 2 disengages.
+  - **Mode switching:** 311's jams switch modes 1.72 times a minute, about once per stop-go cycle. There was no
+    launch under 3 s, and about 340 creeps stayed under 1.5 m/s.
+  - **Flag exits:** all 3 were redLight 22-45 m in, and the stills say all 3 were spurious (green or moving traffic).
+    These are missed Chill, not a regression: the drive was in experimental anyway.
+  - **Open:** on 311 the stops behind a queued lead would now be done in Chill. In the logs, where the car was in
+    experimental, the minimum gap was 4.1-5.6 m and the hardest braking was -4.9 (t=3899, -2.85 at t=3450). Whether
+    Chill would brake the same is not known without a closed-loop replay.
