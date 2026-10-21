@@ -11571,7 +11571,7 @@ No existing `radar_interface.py` constant changed.
   - Job's latest per-cut-in table puts every event time against the selector switch (0.0 s), which gives proj leads of 0.47, 0.62 and 0.78 s at T=1.0. That matches the earlier table. The "relative to the line-cross" label in that message is a mislabel.
   - Paused here. Next is a full-frame-rate check of 3a0 seg05/09, or older daytime routes, if more cut-ins are wanted.
 
-## 260. A car far ahead no longer reads as almost stopped when the model's lead track drops out (2026-10-21). Static tests; replay of 313 pending; not driven.
+## 260. A car far ahead no longer reads as almost stopped when the model's lead track drops out (2026-10-21). Static tests and closed-loop replay (313/2f5/2f2/24f); not driven.
 
 **Problem (replay, Job, SP7 comparison).** At 00000313 13381 on the highway, the replayed planner braked to -3.5 for about
 3 s behind a car 124 m ahead doing 36 m/s, slightly faster than us. The logged car on the same build held about -0.2. This
@@ -11595,5 +11595,17 @@ counter starting at 10**6 instead, 40 existing planner tests change, because the
 - `test_mpc_lead_keeps_a_lower_filtered_speed_across_a_short_model_stretch` pins the kept-low case.
 - `selfdrive/controls/tests/` fail set is identical to HEAD (2 pre-existing latcontrol failures).
 
-**Open.** A closed-loop replay of 313 w0035 and of the SP7-comparison gate windows with the fix (Job). This applies
-default ON.
+**Evidence (replay, Job, closed loop, SIM_MAXACCEL_RAMP=1 SIM_RESID=1, OURS@6db22115e vs OURS + this hunk).**
+- 313 w0035, n=230..390: min output -3.5 -> -0.183 (logged min actuators.accel -0.183). Cycles under -1.0: 60 -> 0.
+- All 267 SP7-comparison windows: 23 change, all on 313. 20 get shallower by more than 0.2 (w0024 -3.5 -> -0.21,
+  w0069 -5.12 -> -0.28, w0096 -4.4 -> -0.03, w0041 -5.35 -> -2.0, w0056 -3.5 -> -1.21). **No window gets deeper by more than 0.2.**
+- Fidelity gate on the OURS replay: 61 -> 66 of 267 pass (gains: 313 w0043/59/63/65/82); pooled vRMSE 1.96 -> 1.08,
+  worst 2 s 30.7 -> 7.6. The 313 event still fails the gate. The hunk does not apply to the logged commits (they predate
+  `lead_filter_live`), so the logged-commit + fix replay was not run.
+- M1-M4 on the 96 logged-commit passing windows are unchanged (M1 0.150, M2 rms 0.370, M3 n=83, M4 1.06/10 min).
+  On the 171 failing windows: M1 0.246 -> 0.211, M2 rms 1.289 -> 1.090, M4 12 -> 10 cycles.
+- Filter-path calls with `lead_v_filter` more than 5 m/s below vLead (warm from window start): 242 -> 38. The 38 that
+  remain are short-dropout cases kept on purpose.
+
+**Open.** The w0041 (-2.0) and w0056 (-1.21) remainders, and whether the 38 short-dropout cases brake. M5, and routes
+beyond the four. This applies default ON and is on the comma since 2026-10-21.
