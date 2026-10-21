@@ -11533,3 +11533,11 @@ No existing `radar_interface.py` constant changed.
 - Device CPU and log size with the toggle on are not measured. RadarPoint grows by four fields on the
   wire even with the toggle off.
 - An active consumer still needs everything in D-128's open list (eps-120).
+
+**259 follow-up: yvRel plan step 2 (2026-10-21; log evidence and offline decode, Job). Nothing feeds the planner.**
+- Shadow logging was on for 000003a4 and 000003a5 (2f789d6aa, BoschARadarShadow=1). The fields are sane: yLeft and yRight are finite on every measured point, azRate on 97-98%, and unmeasured points are NaN.
+- 361/363/380/3a3 were decoded offline from raw radar CAN. Of 79 radar-to-radar lead switches, the camera (-6..+2 s strips) shows no clean cut-in or cut-out. There are 2 likely cut-ins (361_14 and 361_20), and yvRel flagged only 361_20, 1.4 s early. Real cut-ins run about 1 per 25 min, so there is no lead-time figure yet.
+- False alarms while following on a straight road at |yvRel| > 1.0 m/s for 3 sweeps: about 2.1/min pooled (361 2.55, 363 2.94, 380 1.13, 3a3 1.47, 3a5 0.68). At 0.5 m/s it is 3-11/min. Too high for any gate as it stands.
+- Ego-yaw compensation over-corrects. The fitted yvRel-vs-yaw slope is only -0.1..-0.18 m/s per rad/s, so leave it uncompensated.
+- Overlap shadow: earlier than the current selector on 1 of 4 first switches (by 0.13 s), and the two 3a5 "early" picks were artifacts on camera. No advantage shown.
+- Next: cut-ins have to be picked by camera first (or bookmarked by Peter), not from radar events.
