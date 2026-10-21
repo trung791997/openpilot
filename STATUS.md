@@ -11648,8 +11648,17 @@ study is upstream: the 1.5 s when the lead was missing (n530-560), which kept th
   70% measured, lead missing or vision). 3 have min aEgo at or below -2.4, and about 12 more are at -1.3..-2.2.
   Classification (cause, stills, need vs actual) is running.
 
+**Episode classification and oracle replay (Job).**
+- 16 episodes were classified: D-043 is the leading coast cause in 12, high-u10 in 3. A lost lead is the main cause in only
+  1 (39b-55); the rest had a camera-confirmed lead.
+- Closed loop, car-matched, on the 6 episodes where Base is faithful (accel corr >= 0.85, min within about 0.5):
+  replacing coasted vRel with the trailing 1 s range slope changes min accel by <= 0.01. A "perfect radar" arm (lead
+  from a centred 1 s range fit) brakes as hard or harder on 5 of 6.
+- So the 1.6-2x brake against the constant-decel need comes from the planner's follow law and jerk ramp, not from radar
+  coasts. No radar gate change is proposed. The other 9 episodes are not build-matched (noise).
+
 **Open.**
-- Pick the lever from the classified episodes; no gate change before that.
+- Whether to soften the planner's far-closing response. That is an owner question (near-stock preference).
+- M5, and routes beyond the four.
 - How often this pattern occurs across routes.
-- Loosening the onpath coast allowance is not proposed until both are known (D-094).
-- M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
+- Loosening the onpath coast allowance is not proposed (D-094). This applies default ON and is on the comma since 2026-10-21.
