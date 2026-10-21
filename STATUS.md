@@ -11787,3 +11787,15 @@ veto. So it either never entered, or dropped back to experimental once we matche
   - With no lead, behaviour is unchanged.
   - Job replay requested on 311 (arm D) and on the normal launches (3a7/3a3 and the 44-route set) before the device
     gets it.
+- **Arm D, 311 replay (Job; replay only).**
+  - **Better than B/C.**
+    - No launch stops inside Chill any more.
+    - 8 of 11 episodes are within about 0.1 m of experimental.
+    - L20's harder brake is gone: it hands back after 0.7 s and the result is identical to A.
+    - Nothing brakes more than 0.5 harder than A (worst L11 -2.06 vs -1.79).
+    - The accel step at hand-back is under 1 m/s² (worst about -0.9).
+  - **Still about 1 m closer than A:** L11 2.63, L12 2.55 and L22 2.57 m min gap. These are the episodes where the lead
+    pulled away for 5-13 s in Chill before slowing.
+  - **Open:** some hand-backs fired with aLeadK > -0.5 and closing under 1 (L5). The sub-condition that tripped them
+    is not logged yet.
+  - The normal-launch check (part 2) is pending.
