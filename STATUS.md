@@ -11714,3 +11714,12 @@ veto. So it either never entered, or dropped back to experimental once we matche
 **Open.**
 - Job to log-check real launches: flag states at the moment of pull-away, and whether stale flags clear within 20 m.
 - Whether Peter wants Chill on blinker launches (turns from a stop) too.
+- **Job log check (2026-10-21; 3a7 and 3a3; log evidence, no replay).**
+  - 26 pull-aways. 9 were engaged at 0.5 m/s, and all 9 would stay in Chill to 15 mph, reaching it 3.3-6.5 s after
+    0.5 m/s. No flag rose during those 9.
+  - redLight, forcingStop and stopSign were never up at 0.5 m/s, so the 20 m stale-flag window was not exercised.
+  - Two queue creeps would have spent about 1.2 s in Chill, then gone back to experimental (stop-and-go switching).
+  - In two unengaged light launches (3a7 at 25 s and 90 s), redLight rose False→True at 5.7 m and 7.1 m. Engaged,
+    that would have sent the car back to experimental right after the switch to Chill (a false re-rise).
+  - Detector-level stop flags (stop_light_detected, model_stopped and the rest) are not logged.
+  - These routes have no stop-sign launches.
