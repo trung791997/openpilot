@@ -11657,8 +11657,18 @@ study is upstream: the 1.5 s when the lead was missing (n530-560), which kept th
 - So the 1.6-2x brake against the constant-decel need comes from the planner's follow law and jerk ramp, not from radar
   coasts. No radar gate change is proposed. The other 9 episodes are not build-matched (noise).
 
+**Against Peter's reference planner (replay, Job, owner OK).** Closed loop, bpos plant, logged radar leads, on the 6
+faithful episodes.
+- Setup: OURS is build-matched at each logged commit (corr 0.85-0.98, vRMSE 0.09-1.21). MVL is mvl-boston
+  sp-honda-dev-202608: its planner, MPC and weights, delay 0.25 s, and the route's personality tFollow.
+- Result: MVL brakes harder on all 6 (min -2.66..-4.27 against OURS -1.20..-2.53), with more jerk (up to 7.2 against 3.3)
+  and a lower min TTC on all 6.
+- So the reference planner is not gentler on radar leads. Its on-road smoothness most likely comes from its smooth vision
+  leads (stock radar_interface on the Bosch Civic), not its planner law. The piece-swap arms were not run.
+- Caveats: its longcontrol is not in the loop (the plant takes the plan), and the adapter drops e2e and allow_throttle.
+
 **Open.**
-- Whether to soften the planner's far-closing response. That is an owner question (near-stock preference).
+- No planner change is proposed from this. Softening further would move away from both stock and the reference.
 - M5, and routes beyond the four.
 - How often this pattern occurs across routes.
 - Loosening the onpath coast allowance is not proposed (D-094). This applies default ON and is on the comma since 2026-10-21.
