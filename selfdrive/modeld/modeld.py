@@ -1327,6 +1327,12 @@ def main(demo=False):
   chestnut_state = ChestnutState(pm, external_gpu_active) if external_gpu_requested else None
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_FREQ)
+  # jetlink's hand-back share counts only the drops after a frame modeld itself took longer than a camera
+  # period on. A gap that follows an on-time frame was never delivered (camerad sync failure, main/extra
+  # resync): the small model loses it too. Route 3a7 2026-10-21: three hand-backs for "lag", each 0.3 s
+  # after an IFE sync failure, with no Jetlink frame over 38 ms.
+  jetlink_lag_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_FREQ)
+  last_cycle_s = 0.
   frame_id = 0
   last_vipc_frame_id = 0
   run_count = 0
@@ -1392,6 +1398,7 @@ def main(demo=False):
       # Use single camera
       buf_extra = buf_main
       meta_extra = meta_main
+    cycle_t0 = time.monotonic()
 
     sm.update(0)
 
@@ -1435,9 +1442,12 @@ def main(demo=False):
     # tracked dropped frames
     vipc_dropped_frames = max(0, meta_main.frame_id - last_vipc_frame_id - 1)
     frames_dropped = frame_dropped_filter.update(min(vipc_dropped_frames, 10))
+    lag_frames_dropped = jetlink_lag_filter.update(min(vipc_dropped_frames, 10) if last_cycle_s > DT_MDL else 0)
     if run_count < 10: # let frame drops warm up
       frame_dropped_filter.x = 0.
       frames_dropped = 0.
+      jetlink_lag_filter.x = 0.
+      lag_frames_dropped = 0.
     run_count = run_count + 1
 
     if model_lab_active and run_count % ModelConstants.MODEL_FREQ == 0 and not usbgpu_present():
@@ -1489,7 +1499,7 @@ def main(demo=False):
     # not lag, nor are the drops of the frame it happens on
     jetlink_joined = isinstance(model, Joined)
     if jetlink_joined:
-      model.frame_drop_ratio = frame_drop_ratio
+      model.frame_drop_ratio = lag_frames_dropped / (1 + lag_frames_dropped)
       handovers = getattr(model, 'handovers', 0)
       if model.big != jetlink_big_published:
         jetlink_big_published = model.big
@@ -1670,6 +1680,7 @@ def main(demo=False):
       pm.send('drivingModelData', drivingdata_send)
       pm.send('cameraOdometry', posenet_send)
     last_vipc_frame_id = meta_main.frame_id
+    last_cycle_s = time.monotonic() - cycle_t0
 
     # Update planner-driven parameters
     if sm.updated['starpilotPlan']:
