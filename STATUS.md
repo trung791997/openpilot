@@ -11619,5 +11619,15 @@ within 0.17 from n570 to n650. The cause is a real lead re-acquired late. A 21.7
 to -1.94 over 1 s. The constant decel needed to settle at the follow distance is about 1.1, so the brake was about 2x
 that. Night stills are inconclusive. **This is a separate, real-road early/hard-brake case, not this fix.**
 
-**Open.** Why the planner asks about -2.0 when about -1.1 suffices on the w0041 re-acquire (aLeadK on the new radar
-lead, or the MPC's closing cost). M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
+**w0041 cause (replay, Job).** The cause is the stock MPC follow cost, not the lead's a.
+- The obstacle gap (94 m + 21.7²/5 = 187 m) sits inside 0.75 × the desired 283 m at 33.5 m/s, so the danger-zone slack
+  cost is active from n572. The plan reaches -2.0 within 2 s, and the jerk limit ramps the command to it.
+- The lead's a at t=0 is about 0 on the model path. Clamping aLeadK to 0 changes nothing.
+- With lead_v_filter pinned to the measured v, it brakes deeper (-2.29).
+- The lead is also ignored for 0.35 s at re-acquire (n563-569; the MPC gets the cruise placeholder; cause not yet found).
+
+Capping the follow term would move the planner away from stock, which Peter prefers, so it is not pursued. The lever under
+study is upstream: the 1.5 s when the lead was missing (n530-560), which kept the car from starting to slow earlier.
+
+**Open.** Whether radar tracked the w0041 lead during the 1.5 s gap and which radard gate dropped it, and the n563-569
+planner gap. M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
