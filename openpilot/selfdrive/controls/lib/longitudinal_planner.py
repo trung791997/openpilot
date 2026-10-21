@@ -267,7 +267,9 @@ class LongitudinalPlanner:
       ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego))
     if self.human_driving:
       acceleration_cap = human_acceleration.cap(human_accel_base, v_cruise, v_ego)
-    self.mpc.update(self.bosch_a_long.planner_radar_state(sm['radarState'], float(sm['carState'].aEgo)), personality=sm['selfdriveState'].personality,
+    # D-080: the MPC and the enhancement's stock-feel law read the same bounded leads, as in openpilot-radar.
+    planner_radar_state = self.bosch_a_long.planner_radar_state(sm['radarState'], float(sm['carState'].aEgo))
+    self.mpc.update(planner_radar_state, personality=sm['selfdriveState'].personality,
                     follow_seconds=follow if follow is not None else
                     (self.last_profile.follow_seconds if self.last_profile is not None else None),
                     acceleration_max=acceleration_cap,
@@ -457,7 +459,7 @@ class LongitudinalPlanner:
       # Throttle side only: the cap is >= 0, so a braking target passes through.
       output_a_target = min(output_a_target, human_acceleration.cap(human_accel_base, v_cruise, v_ego))
     output_a_target = self.bosch_a_long.step(
-      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
+      lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, prev=float(a_prev),
       target=float(output_a_target), v_ego=v_ego,
       stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
       standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
