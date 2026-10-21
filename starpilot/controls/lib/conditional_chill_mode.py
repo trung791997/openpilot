@@ -38,13 +38,18 @@ class ConditionalChillMode:
   # almost never fired: a stopped lead tripped the slow-lead veto, and the lead-departure thresholds
   # were re-checked every cycle. Now: arm while stopped, switch to Chill only once the car is actually
   # rolling (experimental or the driver decides when to go, so Chill never pulls away from a red
-  # light), and hold Chill to CHILL_LAUNCH_EXIT_SPEED. Stop flags that were already up at launch belong
-  # to the stop just left and are ignored for the first CHILL_LAUNCH_STALE_FLAG_DISTANCE; a stop flag
-  # that rises during the launch, or any stop flag past that distance, hands back to experimental.
+  # light), and hold Chill to CHILL_LAUNCH_EXIT_SPEED. Stopping again always hands back to experimental.
+  #
+  # Job log check (STATUS 261, 3a7/3a3): queue creeps stopped again ~1.2 s / 0.6 m after 0.5 m/s, so a
+  # 0.5 m/s start flipped modes on every creep; CHILL_LAUNCH_START_SPEED is 1.5 so creeps stay in
+  # experimental. Pulling away on green, redLight came back on at 5.7 m and 7.1 m, so every stop flag
+  # is ignored for the first CHILL_LAUNCH_STOP_FLAG_DISTANCE (the intersection just left). After that a
+  # stop flag hands back to experimental. 20 m below 15 mph is at least 3 s in Chill, so no separate
+  # minimum hold is needed.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS
   CHILL_LAUNCH_ARM_SPEED = 0.3
-  CHILL_LAUNCH_START_SPEED = 0.5
-  CHILL_LAUNCH_STALE_FLAG_DISTANCE = 20.0
+  CHILL_LAUNCH_START_SPEED = 1.5
+  CHILL_LAUNCH_STOP_FLAG_DISTANCE = 20.0
 
   STABLE_LEAD_MIN_MODEL_PROB = 0.9
   STABLE_LEAD_MAX_BRAKE = 0.2
@@ -77,7 +82,6 @@ class ConditionalChillMode:
     self._launch_active = False
     self._launch_forced_exit = False
     self._launch_armed = False
-    self._launch_stale_flags = frozenset()
     self._launch_distance = 0.0
     self._launch_last_time = 0.0
 
@@ -293,17 +297,15 @@ class ConditionalChillMode:
     self._launch_armed = False
     self._launch_forced_exit = False
     self._launch_active = True
-    self._launch_stale_flags = self._launch_stop_flags(sm)
     self._launch_distance = 0.0
     self._launch_last_time = now
     return self._get_launch_cc_status()
 
   def _end_launch(self):
     self._launch_active = False
-    self._launch_stale_flags = frozenset()
     self._launch_distance = 0.0
 
-  def _launch_stop_flags(self, sm):
+  def _launch_has_stop_flag(self, sm):
     starpilot_plan = self._get_sm_service(sm, "starpilotPlan")
     vcruise = self.starpilot_planner.starpilot_vcruise
     flags = {
@@ -316,18 +318,17 @@ class ConditionalChillMode:
       "red_light": bool(getattr(starpilot_plan, "redLight", False)),
       "plan_forcing_stop": bool(getattr(starpilot_plan, "forcingStop", False)),
     }
-    return frozenset(name for name, active in flags.items() if active)
+    return any(flags.values())
 
   def _launch_exit_required(self, sm):
     selfdrive_state = self._get_sm_service(sm, "selfdriveState")
     if selfdrive_state is None or not bool(getattr(selfdrive_state, "enabled", False)):
       return True
 
-    active_flags = self._launch_stop_flags(sm)
-    if self._launch_distance >= self.CHILL_LAUNCH_STALE_FLAG_DISTANCE:
-      return bool(active_flags)
+    if self._launch_distance < self.CHILL_LAUNCH_STOP_FLAG_DISTANCE:
+      return False
 
-    return bool(active_flags - self._launch_stale_flags)
+    return self._launch_has_stop_flag(sm)
 
   def _get_launch_cc_status(self):
     lead = getattr(self.starpilot_planner, "lead_one", None)

@@ -11723,3 +11723,12 @@ veto. So it either never entered, or dropped back to experimental once we matche
     that would have sent the car back to experimental right after the switch to Chill (a false re-rise).
   - Detector-level stop flags (stop_light_detected, model_stopped and the rest) are not logged.
   - These routes have no stop-sign launches.
+- **Revised after the log check (2026-10-21; static tests only).**
+  - Chill now engages at 1.5 m/s, not 0.5, so a queue creep stays in experimental instead of flipping modes. It still
+    re-arms whenever the car is under 0.3 m/s.
+  - Every stop flag is ignored for the first 20 m, whether or not it was up at launch, so a red light coming back on
+    while crossing the intersection no longer ends the launch. After 20 m, any stop flag hands back to experimental.
+    20 m below 15 mph is at least 3 s, so there is no separate minimum hold.
+  - Stopping again or disengaging still hands back immediately.
+  - Not covered: a genuinely new red light or stop within 20 m of the stop just left. Chill does not react to it until
+    20 m, and the driver brakes.
