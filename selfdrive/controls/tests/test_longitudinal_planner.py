@@ -5536,6 +5536,41 @@ def test_mpc_lead_handed_back_from_model_path_starts_at_its_measured_speed():
   assert lead_xv[0, 1] == pytest.approx(8.0, abs=0.2)
 
 
+def _model_lead(d_rel, v_lead, prob):
+  return SimpleNamespace(prob=prob, x=[d_rel + v_lead * t for t in LEAD_T_IDXS_MODEL], v=[v_lead] * len(LEAD_T_IDXS_MODEL))
+
+
+def test_mpc_lead_dropped_by_model_path_after_a_long_model_stretch_starts_at_its_measured_speed():
+  # STATUS 260, 00000313 13381 (replay): both leads had used the model path, so lead_v_filter still held 0.0. The
+  # model lead prob dipped to 0.34 and the radar lead at 124 m doing 36 m/s reached the MPC at 1.5 m/s (plan -3.5).
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(36.0, 0.0)
+  lead = make_lead(status=True, d_rel=124.0, v_lead=36.4, model_prob=0.6, radar=True)
+  for _ in range(100):
+    mpc.process_lead(lead, lead_index=0, model_lead=_model_lead(124.0, 36.4, 0.6))
+    mpc.process_lead(lead, lead_index=1, model_lead=_model_lead(124.0, 36.4, 0.6))
+  lead_xv = mpc.process_lead(lead, lead_index=0, model_lead=_model_lead(124.0, 36.4, 0.34))
+  assert lead_xv[0, 1] == pytest.approx(36.4, abs=0.5)
+
+
+def test_mpc_lead_keeps_a_lower_filtered_speed_across_a_short_model_stretch():
+  # STATUS 260: a stale value below vLead from a short dropout is earlier braking and is kept.
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  slow = make_lead(status=True, d_rel=40.0, v_lead=10.0, model_prob=0.2, radar=True)
+  for _ in range(60):
+    mpc.process_lead(slow, lead_index=0, model_lead=_model_lead(40.0, 10.0, 0.2))
+    mpc.process_lead(slow, lead_index=1, model_lead=_model_lead(40.0, 10.0, 0.2))
+  held = mpc.lead_v_filter.x
+  faster = make_lead(status=True, d_rel=40.0, v_lead=16.0, model_prob=0.6, radar=True)
+  for _ in range(5):  # 0.25 s on the model path, lead two also on it, so the filter does not run
+    mpc.process_lead(faster, lead_index=0, model_lead=_model_lead(40.0, 16.0, 0.6))
+    mpc.process_lead(faster, lead_index=1, model_lead=_model_lead(40.0, 16.0, 0.6))
+  lead_xv = mpc.process_lead(faster, lead_index=0, model_lead=_model_lead(40.0, 16.0, 0.2))
+  assert held < 15.0
+  assert lead_xv[0, 1] < 15.0
+
+
 def test_close_lead_cap_uses_measured_speed_not_the_cluster_speed():
   # STATUS 256, 000003a0 23:29.7: braking at vEgo 4.37 while Honda's cluster speed still read 5.81; vision lead
   # 8.3 m ahead at 1.25 m/s. The cap read the cluster speed and went to -3.50; at the measured speed it is about -1.35.

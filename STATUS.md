@@ -11570,3 +11570,30 @@ No existing `radar_interface.py` constant changed.
   - Straight-road proj false alarms per minute at T=1.0 on routes with at least 5 min of following: 368 0.72, 37f 0.14, 39d 0.14, 3a0 0.26. At T=0.5 they are 1.7-3.3.
   - Job's latest per-cut-in table puts every event time against the selector switch (0.0 s), which gives proj leads of 0.47, 0.62 and 0.78 s at T=1.0. That matches the earlier table. The "relative to the line-cross" label in that message is a mislabel.
   - Paused here. Next is a full-frame-rate check of 3a0 seg05/09, or older daytime routes, if more cut-ins are wanted.
+
+## 260. A car far ahead no longer reads as almost stopped when the model's lead track drops out (2026-10-21). Static tests; replay of 313 pending; not driven.
+
+**Problem (replay, Job, SP7 comparison).** At 00000313 13381 on the highway, the replayed planner braked to -3.5 for about
+3 s behind a car 124 m ahead doing 36 m/s, slightly faster than us. The logged car on the same build held about -0.2. This
+happens on both the logged 680975fef and 6db22115e. SP7-OFF shows a milder dip of -1.33, at a different time. SP7-ALL does not.
+
+**Cause.** Both leads had used the model lead path (FrogPilot HumanFollowing) since the replay window began, so the
+shared `lead_v_filter` never ran and still held its 0.0 start. The model lead prob then dipped to 0.33-0.34, under the
+0.35 gate, and lead one fell back to the radar filter path. The STATUS 255 entry seed (1ee280a39) only reseeds when the
+filter is higher than vLead, so the MPC saw the lead at 1.5 -> 3.0 -> 4.4 m/s and planned -3.3..-4.4. A second onset at
+about 13383.6 (leadOne radar=False, dRel 122 -> 130) went the same way. On the car the filter was warm. The same thing can
+happen on the road whenever the filter's last input was a slower car and both leads then stayed on the model path for a while.
+
+**Fix.** In `long_mpc.py`, `LEAD_FILTER_STALE_S = 1.0`. A lead entering the filtered path also starts from its measured
+speed when the shared filter has not run for over 1 s. A lower value from a shorter dropout is still kept (earlier
+braking). The counter starts at 0, so a lead on a new planner's first cycles keeps the historical start-up path. With the
+counter starting at 10**6 instead, 40 existing planner tests change, because they build a lead into a fresh planner.
+
+**Evidence (static).**
+- `test_mpc_lead_dropped_by_model_path_after_a_long_model_stretch_starts_at_its_measured_speed`: 2.14 m/s before the
+  fix, 36.4 after.
+- `test_mpc_lead_keeps_a_lower_filtered_speed_across_a_short_model_stretch` pins the kept-low case.
+- `selfdrive/controls/tests/` fail set is identical to HEAD (2 pre-existing latcontrol failures).
+
+**Open.** A closed-loop replay of 313 w0035 and of the SP7-comparison gate windows with the fix (Job). This applies
+default ON.

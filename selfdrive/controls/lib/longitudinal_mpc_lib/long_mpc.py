@@ -164,6 +164,13 @@ FCW_MAX_TTC = 4.0
 MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC = 2.0
 MODEL_LEAD_TRAJECTORY_MIN_CLOSING_SPEED = 0.75
 DEFAULT_LEAD_DETECTION_PROBABILITY = 0.35
+# A lead entering the filtered path starts from its measured speed when the shared lead filter has not run for this
+# long, even if the stale value is lower (STATUS 260). 00000313 13381 (replay of the logged 680975fef and of 6db22115e):
+# both leads had used the model lead path since the window began, so the filter still held its 0.0 start. The model
+# lead prob then dipped to 0.33-0.34, under 0.35, and the radar lead at 124 m doing 36 m/s reached the MPC at
+# 1.5 -> 3.0 -> 4.4 m/s, which planned -3.3..-4.4 (output -3.5 for 3 s). The logged car on the same build had a warm
+# filter and held about -0.2. A stale low value from a short dropout is still kept, so earlier braking is not lost.
+LEAD_FILTER_STALE_S = 1.0
 
 
 # Fewer timestamps don't hurt performance and lead to
@@ -462,6 +469,9 @@ class LongitudinalMpc:
     self.lead_v_filter = FirstOrderFilter(0.0, self.current_filter_time, self.dt)
     # Per lead: did the last call run this lead through lead_v_filter? (STATUS 255)
     self.lead_filter_live = [False, False]
+    # MPC cycles since lead_v_filter last ran, so a stale value can be told from a short dropout (STATUS 260). Starts
+    # at 0: a lead on the very first cycles keeps the historical start-up path.
+    self.lead_filter_idle_cycles = 0
     self.duplicate_lead_x_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_a_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_v_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
@@ -656,6 +666,8 @@ class LongitudinalMpc:
                    smooth_duplicate_vision=False, model_lead=None,
                    lead_detection_probability=DEFAULT_LEAD_DETECTION_PROBABILITY):
     v_ego = self.x0[1]
+    if lead_index == 0:  # once per MPC cycle
+      self.lead_filter_idle_cycles += 1
     lead_active = lead is not None and lead.status and tracking_lead
 
     if lead_active:
@@ -685,11 +697,13 @@ class LongitudinalMpc:
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
-    if lead_active and not self.lead_filter_live[lead_index] and self.lead_v_filter.x > v_lead:
+    filter_stale = self.lead_filter_idle_cycles * self.dt > LEAD_FILTER_STALE_S
+    if lead_active and not self.lead_filter_live[lead_index] and (self.lead_v_filter.x > v_lead or filter_stale):
       # This lead just entered the filtered path (it appeared, or the model lead path dropped it), and the
       # shared filter still holds another input, usually the fake far lead (vEgo + 10). Above 47 mph that read
       # a new lead ~10 m/s fast for ~2 s (00000380 3:50.3: vLead 20.1, MPC 30.8 at 107 m), which brakes late.
-      # Start from the measured values. A stale value below vLead (earlier braking) is left as it was.
+      # Start from the measured values. A stale value below vLead (earlier braking) is left as it was, unless the filter
+      # has not run for LEAD_FILTER_STALE_S, when it no longer describes any car.
       self.lead_a_filter.x = a_lead
       self.lead_v_filter.x = v_lead
     self.lead_filter_live[lead_index] = bool(lead_active)
@@ -698,6 +712,7 @@ class LongitudinalMpc:
       # path cannot introduce a state discontinuity.
       self.lead_a_filter.update(a_lead)
       self.lead_v_filter.update(v_lead)
+      self.lead_filter_idle_cycles = 0
 
       filter_time = self.current_filter_time
       filter_time = max(filter_time, DUPLICATE_VISION_LEAD_FILTER_TIME)
@@ -720,6 +735,7 @@ class LongitudinalMpc:
       # Preserve the historical planner path outside the qualified comfort scene.
       self.lead_a_filter.update(a_lead)
       self.lead_v_filter.update(v_lead)
+      self.lead_filter_idle_cycles = 0
       a_lead = self.lead_a_filter.x
       v_lead = self.lead_v_filter.x
       self.duplicate_lead_x_filters[lead_index].initialized = False
