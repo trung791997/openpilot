@@ -11576,6 +11576,16 @@ No existing `radar_interface.py` constant changed.
     passed vehicles, and far noise.
   - One ambiguous event, a pickup entering through an intersection at 12 m (seg18), fired 0.08 s after the selector switch.
   - No clean cut-in on the route. The confirmed count stays at 4, and 0.86/min is still too frequent for a trigger.
+- **Route 000003ab (2026-10-21, 30 segments; Job, log analysis only).**
+  - **One cut-in:** seg19, track 37, a dark SUV merging from the right at 8-12 m. Radar first saw it at 8.4 m. The
+    Proj-T1.0 alarm fired 3 sweeps later (the earliest it can), about 1.0 s before it became leadOne and about 1.9 s
+    before the brake began. Braking bottomed at -2.01 m/s^2; the gap stayed about 11.6 m or more.
+  - The car was first tracked at 8.4 m, so this signal could not have warned from farther out.
+  - **False alarms:** Proj-T1.0 fired 1.72/min over 23.2 min above 5 m/s, and the raw yvRel > 1.0 for 3 sweeps
+    rule fired 10.07/min. The seg6 alarms were a red-light queue approach.
+  - Stills are on Job's machine in `~/longsim_frames/yv3ab/stills/` (cutin_37, FA_worst3, cut_s6). The 3 worst false
+    alarms are not yet labeled by eye.
+  - Confirmed cut-ins: 5. The decision below stands: 1 s of lead at 1.7/min false alarms is not a usable trigger.
 - **Decision (Peter, 2026-10-21).** Active cut-in-warning work stops. The radar yvRel logging stays on (log only;
   nothing consumes it) so new cut-ins can be checked as drives come in. A camera-only lateral velocity is not pursued:
   the model reports a lead only once it is in our path, so it cannot warn before the selector does.
