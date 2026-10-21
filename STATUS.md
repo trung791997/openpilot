@@ -11583,8 +11583,12 @@ No existing `radar_interface.py` constant changed.
   - The car was first tracked at 8.4 m, so this signal could not have warned from farther out.
   - **False alarms:** Proj-T1.0 fired 1.72/min over 23.2 min above 5 m/s, and the raw yvRel > 1.0 for 3 sweeps
     rule fired 10.07/min. The seg6 alarms were a red-light queue approach.
-  - Stills are on Job's machine in `~/longsim_frames/yv3ab/stills/` (cutin_37, FA_worst3, cut_s6). The 3 worst false
-    alarms are not yet labeled by eye.
+  - Stills are on Job's machine in `~/longsim_frames/yv3ab/stills/` (cutin_37, FA_worst3, cut_s6).
+  - **The 3 worst false alarms, labeled by eye** (none is a cut-in; the sources are Job's reading of the stills, not
+    checked against the track's dRel/yRel):
+    - seg5 t=356: straight road, lead 40-60 m ahead, nothing entering.
+    - seg11 t=697: residential junction, probably a cross-street or parked car.
+    - seg25 t=1509: arterial, probably the truck holding the adjacent lane, or junction traffic.
   - Confirmed cut-ins: 5. The decision below stands: 1 s of lead at 1.7/min false alarms is not a usable trigger.
 - **Decision (Peter, 2026-10-21).** Active cut-in-warning work stops. The radar yvRel logging stays on (log only;
   nothing consumes it) so new cut-ins can be checked as drives come in. A camera-only lateral velocity is not pursued:
