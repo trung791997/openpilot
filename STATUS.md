@@ -11570,6 +11570,12 @@ No existing `radar_interface.py` constant changed.
   - Straight-road proj false alarms per minute at T=1.0 on routes with at least 5 min of following: 368 0.72, 37f 0.14, 39d 0.14, 3a0 0.26. At T=0.5 they are 1.7-3.3.
   - Job's latest per-cut-in table puts every event time against the selector switch (0.0 s), which gives proj leads of 0.47, 0.62 and 0.78 s at T=1.0. That matches the earlier table. The "relative to the line-cross" label in that message is a mislabel.
   - Paused here. Next is a full-frame-rate check of 3a0 seg05/09, or older daytime routes, if more cut-ins are wanted.
+- **Route 000003a7 (2026-10-21, 29 segments, logged with yvRel on, commit 95d689d5c; Job).**
+  - Proj-T1.0 fired 19 times in 22 min above 5 m/s (0.86/min); Base was 4.95/min and Edge 0.91/min. 0 of 19 were cut-ins.
+  - 7 of the 19 were one track (tid12) on a straight road with an empty lane. The rest were roadside objects, adjacent or
+    passed vehicles, and far noise.
+  - One ambiguous event, a pickup entering through an intersection at 12 m (seg18), fired 0.08 s after the selector switch.
+  - No clean cut-in on the route. The confirmed count stays at 4, and 0.86/min is still too frequent for a trigger.
 
 ## 260. A car far ahead no longer reads as almost stopped when the model's lead track drops out (2026-10-21). Static tests and closed-loop replay (313/2f5/2f2/24f); not driven.
 
