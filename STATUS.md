@@ -11541,3 +11541,23 @@ No existing `radar_interface.py` constant changed.
 - Ego-yaw compensation over-corrects. The fitted yvRel-vs-yaw slope is only -0.1..-0.18 m/s per rad/s, so leave it uncompensated.
 - Overlap shadow: earlier than the current selector on 1 of 4 first switches (by 0.13 s), and the two 3a5 "early" picks were artifacts on camera. No advantage shown.
 - Next: cut-ins have to be picked by camera first (or bookmarked by Peter), not from radar events.
+
+**259 follow-up 2: camera-first cut-in scan (2026-10-21; log evidence and offline decode, Job). Nothing feeds the planner.**
+- 4 cut-ins were confirmed on camera: 361 s23, 361 s35, 361 s36 (camera ambiguous) and 363 s08. 3a4, 3a5, 361 and 363 were scanned in full. 380 (night) and 3a3 s10-s21 (dark) are inconclusive.
+- yvRel was early on 3 of 4, by 0.3-1.4+ s before the line cross at the 1.0 m/s threshold. Against the current lead selector:
+  - #1: 0.7 s earlier at 0.5 m/s.
+  - #2: no gain, because the selector had already switched from vision.
+  - #4: 1.9 s earlier at 0.5 m/s and 1.0 s earlier at 1.0 m/s.
+- #3 had no radar track before 0.4 s ahead of the line cross, a track-birth miss that yvRel cannot fix.
+- False alarms per minute while following on a straight road, at the 1.0 m/s threshold:
+
+  | Route | Raw | Yaw-compensated |
+  |---|---|---|
+  | 361 | 2.6 | 3.7 |
+  | 363 | 2.9 | 7.0 |
+  | 380 | 1.1 | 3.3 |
+  | 3a3 | 1.6 | 2.2 |
+  | 3a5 | 0.7 | 0.3 |
+
+  At 0.5 m/s the rate is 3-11 per minute. Yaw compensation does not reliably help.
+- With n=4 there is no miss rate. yvRel alone cannot be a trigger. Any use has to be combined with yRel entering our lane band, and that is not tested.
