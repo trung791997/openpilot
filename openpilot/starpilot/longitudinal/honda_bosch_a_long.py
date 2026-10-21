@@ -1,6 +1,6 @@
 """Honda Bosch A Long Enhancement: longitudinal behaviour that is active whenever the Bosch-A radar is on.
 
-Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad, selfdrive/controls/lib/longitudinal_planner.py).
+Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, selfdrive/controls/lib/longitudinal_planner.py).
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch (STOCK_BRAKE_FEEL, STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY, BIRTH_RAIL_ENABLED); all are off for now.
@@ -49,6 +49,9 @@ STOCK_FEEL_LEAD_STOP_MAX_T = 20.0  # s
 STOCK_FEEL_EMERGENCY = True
 STOCK_FEEL_EMERGENCY_A_LEAD = -2.0  # m/s^2
 STOCK_FEEL_EMERGENCY_NEED = 2.0  # m/s^2
+# The aLeadK path only latches when the worst TTC is at most this (openpilot-radar STATUS 258, 6db22115e8): 3a3
+# 17:28.35 aLeadK -2.09 at TTC 21.7 s latched and stayed on through a separate build 15 s later that ran to -3.03.
+STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC = 10.0  # s
 
 # ---- Stop ease (owner 2026-10-07, 2f2: every hard stop reached standstill still braking -1.6..-1.7, the clunk) ------
 STOP_EASE = True
@@ -131,7 +134,8 @@ def stock_feel_emergency(leads, v_ego: float, active: bool) -> bool:
   if active:
     return True
   for lead in leads:
-    if _present(lead) and -float(lead.vRel) > STOCK_FEEL_MIN_CLOSING and float(lead.aLeadK) <= STOCK_FEEL_EMERGENCY_A_LEAD:
+    if _present(lead) and -float(lead.vRel) > STOCK_FEEL_MIN_CLOSING and float(lead.aLeadK) <= STOCK_FEEL_EMERGENCY_A_LEAD and \
+       ttc <= STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC:
       return True
   need = lead_stop_need(leads, v_ego)
   depth = float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, STOCK_FEEL_DEPTH_V))
