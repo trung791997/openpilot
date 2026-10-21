@@ -11629,5 +11629,17 @@ that. Night stills are inconclusive. **This is a separate, real-road early/hard-
 Capping the follow term would move the planner away from stock, which Peter prefers, so it is not pursued. The lever under
 study is upstream: the 1.5 s when the lead was missing (n530-560), which kept the car from starting to slow earlier.
 
-**Open.** Whether radar tracked the w0041 lead during the 1.5 s gap and which radard gate dropped it, and the n563-569
-planner gap. M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
+**w0041 lead loss (log, Job).**
+- Radar track 47 had the car from n509 (110-119 m, path offset 0.2-0.7 m, closing about 11.8 m/s, existence 0.98).
+- leadOne dropped because the model prob fell to 0.11-0.41, under the 0.35 gate in get_lead. While that gate is shut,
+  radar is never consulted.
+- At re-acquire (n561), the 0.5 s trackingLead debounce (starpilot_planner.py) held the lead from the MPC until n569.
+- leadOnpath never fired. Track 47 was unmeasured (coasted) on most sweeps, and the measured runs were broken by coasts
+  longer than 0.15 s, so the 1.0 s run never completed. Path offset, closing, range fit, existence and dRel all passed.
+  Separately, while leadOne was vision at 101-114 m the track was farther than it, so the vision margin also blocks it.
+
+**Open.**
+- Why a clean closing track at 110 m was unmeasured on most sweeps (the per-sweep radar_interface coast cause).
+- How often this pattern occurs across routes.
+- Loosening the onpath coast allowance is not proposed until both are known (D-094).
+- M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
