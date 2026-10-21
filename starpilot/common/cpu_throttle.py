@@ -41,33 +41,11 @@ def _online_cpu_usage(cpu_usage, cores=None) -> list[float]:
   return usage
 
 
-class OwnCpuPercent:
-  """This process's CPU use, in percent of one core, low-passed over ~tau s so it spans hardwared's psutil window."""
-
-  def __init__(self, tau=1.0, clock=time.monotonic, cpu=time.process_time):
-    self.tau, self._clock, self._cpu = tau, clock, cpu
-    self._last = None
-    self.percent = 0.0
-
-  def update(self):
-    now, cpu = self._clock(), self._cpu()
-    if self._last is not None and now > self._last[0]:
-      dt = now - self._last[0]
-      self.percent += (1.0 - math.exp(-dt / self.tau)) * (100.0 * (cpu - self._last[1]) / dt - self.percent)
-    self._last = (now, cpu)
-    return self.percent
-
-
-def device_cpu_throttle_factor(cpu_usage, name="vision", cores=None, own_percent=0.0):
-  """Return a process-local, low-pass-filtered CPU throttle factor.
-  own_percent: the caller's own CPU (percent of one core, OwnCpuPercent), spread evenly over the cores and taken out,
-  so a process confined to its cores backs off for the others' load and not for its own (V-ASM, 2026-10-19: alone on
-  core 2 it read its own ~30% and stretched its interval ~1.5x on a 76-80% busy core)."""
+def device_cpu_throttle_factor(cpu_usage, name="vision", cores=None):
+  """Return a process-local, low-pass-filtered CPU throttle factor."""
   usage = _online_cpu_usage(cpu_usage, cores=cores)
   if not usage:
     return 1.0
-  if own_percent > 0.0:
-    usage = [max(0.0, u - own_percent / len(usage)) for u in usage]
 
   now = time.monotonic()
   state = _throttle_state.setdefault(name, {

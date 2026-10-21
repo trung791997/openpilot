@@ -14,7 +14,7 @@ import numpy as np
 from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity, Ratekeeper
 from openpilot.system.hardware import PC
-from openpilot.starpilot.common.cpu_throttle import OwnCpuPercent, device_cpu_throttle_factor
+from openpilot.starpilot.common.cpu_throttle import device_cpu_throttle_factor
 from openpilot.starpilot.system.adj_spot_monitor_vision_inference import VASMInference, V_ASM_MODEL_PATH
 from openpilot.starpilot.common.vasm_assist import (CAR_TO_IMAGE, FOCUS_INTERVAL, PassHold, focus_sides,
                                                     lead_from_capnp, pick_image_side)
@@ -22,12 +22,7 @@ from openpilot.starpilot.common.vasm_assist import (CAR_TO_IMAGE, FOCUS_INTERVAL
 V_ASM_AFFINITY_CORES = [2]
 V_ASM_SOLO_AFFINITY_CORES = [0, 1, 2]
 
-# Steady scan, sides alternating, so each side is seen every 2 * BASE_INTERVAL. Was 1.0 (each side every 2 s). Owner,
-# 2026-10-19: cars passing on the highway were missed. Replay, run12 at 0.80 on routes 361+363 (425 run12-dense events,
-# not owner-labelled): expected missed 144 at 1.0 s, ~99 at 0.5 s, 52 at 0.3 s. On the comma (offroad clocks) one
-# inference costs ~375 ms CPU, so 0.3 s would need 125% of core 2; 0.5 s is ~75%. The daemon runs at nice 19 and the
-# cpu throttle below still backs it off when core 2 is busy. The real fix for 0.3 s is a smaller model input.
-BASE_INTERVAL = 0.500
+BASE_INTERVAL = 1.000
 FOLLOWUP_INTERVAL = 0.300
 FOLLOWUP_WINDOW = 1.0
 # Night gate (owner, 2026-10-14). Below this crop brightness the owner could not make out cars in the side crops, and
@@ -85,7 +80,6 @@ class VASMDaemon:
     self._last_status_log = 0.0
     self._inference_count = 0
     self._throttle_factor = 1.0
-    self._own_cpu = OwnCpuPercent()
 
     self._affinity_set = False
     self._prev_other_running = None
@@ -214,7 +208,7 @@ class VASMDaemon:
       base = min(base, FOCUS_INTERVAL)
     cpu_usage = list(self.sm["deviceState"].cpuUsagePercent) if self.sm.valid.get("deviceState", False) else []
     affinity_cores = V_ASM_AFFINITY_CORES if self._slv_enabled else V_ASM_SOLO_AFFINITY_CORES
-    factor = device_cpu_throttle_factor(cpu_usage, name="VASM", cores=affinity_cores, own_percent=self._own_cpu.update())
+    factor = device_cpu_throttle_factor(cpu_usage, name="VASM", cores=affinity_cores)
     self._throttle_factor = factor
     interval = base * factor
     self._throttle_reason = f"cpu_{factor:.1f}x" if factor > 1.05 else ("followup" if in_followup else ("focus" if self._focus_image else "steady"))
@@ -334,7 +328,7 @@ class VASMDaemon:
           cpu = list(self.sm["deviceState"].cpuUsagePercent) if self.sm.valid.get("deviceState", False) else []
           cpu_str = f"avg={sum(cpu)/len(cpu):.0f}% cores={','.join(f'{c:.0f}' for c in cpu)}" if cpu else "?"
           status = f"[VASM] {self._inference_count} inf {self._throttle_reason} | {cpu_str}"
-          status += f" | factor={self._throttle_factor:.1f}x own={self._own_cpu.percent:.0f}% | L={self.inference.left_confidence:.3f}"
+          status += f" | factor={self._throttle_factor:.1f}x | L={self.inference.left_confidence:.3f}"
           status += f" R={self.inference.right_confidence:.3f}"
           status += f" | luma L={self.inference.luma['left']:.0f} R={self.inference.luma['right']:.0f}"
           status += " DARK (radar hold only)" if dark else ""
