@@ -186,6 +186,10 @@ def long_control_state_trans_old_long(CP, active, long_control_state, v_ego, v_t
 
 class LongControl:
   def __init__(self, CP):
+    # Load the planner (long_mpc -> casadi) now, not at the STOP_EASE import in update(): on the
+    # first rolling stop of each drive that import blocked controlsd 433 ms and grew it 24 MB
+    # (stall watchdog, 2026-10-21), tripping commIssue -> softDisable. Deferred: the planner imports this module.
+    from openpilot.selfdrive.controls.lib import longitudinal_planner  # noqa: F401
     self.CP = CP
     self.params = Params()
     self.long_control_state = LongCtrlState.off
