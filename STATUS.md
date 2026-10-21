@@ -11576,6 +11576,9 @@ No existing `radar_interface.py` constant changed.
     passed vehicles, and far noise.
   - One ambiguous event, a pickup entering through an intersection at 12 m (seg18), fired 0.08 s after the selector switch.
   - No clean cut-in on the route. The confirmed count stays at 4, and 0.86/min is still too frequent for a trigger.
+- **Decision (Peter, 2026-10-21).** Active cut-in-warning work stops. The radar yvRel logging stays on (log only;
+  nothing consumes it) so new cut-ins can be checked as drives come in. A camera-only lateral velocity is not pursued:
+  the model reports a lead only once it is in our path, so it cannot warn before the selector does.
 
 ## 260. A car far ahead no longer reads as almost stopped when the model's lead track drops out (2026-10-21). Static tests and closed-loop replay (313/2f5/2f2/24f); not driven.
 
