@@ -11561,3 +11561,8 @@ No existing `radar_interface.py` constant changed.
 
   At 0.5 m/s the rate is 3-11 per minute. Yaw compensation does not reliably help.
 - With n=4 there is no miss rate. yvRel alone cannot be a trigger. Any use has to be combined with yRel entering our lane band, and that is not tested.
+- **Combined-condition test (same data, 3 sweeps, raw).** Here *proj* means |yvRel|>T, yvRel moving toward our path, and |yRel + yvRel*1.0 s| < 1.0 m. *Edge* uses the near yLeft/yRight edge inside +-1.0 m instead of the projection.
+  - **False alarms.** On a straight road at T=1.0 they drop from 0.7-2.9/min (base) to 0.2-0.9/min with proj. Edge is about the same as proj.
+  - **Lead time over the selector switch with proj.** At T=0.5 it is +0.3 to +0.8 s on all 4 cut-ins. At T=1.0 it is +0.47, +0.62 and +0.78 s on 3 of 4, and the 4th never fires.
+  - **Edge gives less lead time.** It is only -0.06 to +0.45 s, firing after the switch on #1.
+  - **Verdict.** proj at T=1.0 is the candidate, but n=4 and 0.2-0.9 false alarms/min is still too often for a brake trigger. At most it could pre-arm a gas lift, which is untested.
