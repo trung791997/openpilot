@@ -11577,7 +11577,9 @@ No existing `radar_interface.py` constant changed.
   - One ambiguous event, a pickup entering through an intersection at 12 m (seg18), fired 0.08 s after the selector switch.
   - No clean cut-in on the route. The confirmed count stays at 4, and 0.86/min is still too frequent for a trigger.
 - **Route 000003ab (2026-10-21, 30 segments; Job, log analysis only).**
-  - **One cut-in:** seg19, track 37, a dark SUV merging from the right at 8-12 m. Radar first saw it at 8.4 m. The
+  - **Disputed (Peter, 2026-10-21):** the only cut-in Peter sees on this route is around seg8, a car merging well ahead.
+    The seg19 event below may not be a cut-in, and Job is re-checking both. Do not quote the seg19 numbers.
+  - **Job's first pick:** seg19, track 37, a dark SUV merging from the right at 8-12 m. Radar first saw it at 8.4 m. The
     Proj-T1.0 alarm fired 3 sweeps later (the earliest it can), about 1.0 s before it became leadOne and about 1.9 s
     before the brake began. Braking bottomed at -2.01 m/s^2; the gap stayed about 11.6 m or more.
   - The car was first tracked at 8.4 m, so this signal could not have warned from farther out.
@@ -11589,7 +11591,7 @@ No existing `radar_interface.py` constant changed.
     - seg5 t=356: straight road, lead 40-60 m ahead, nothing entering.
     - seg11 t=697: residential junction, probably a cross-street or parked car.
     - seg25 t=1509: arterial, probably the truck holding the adjacent lane, or junction traffic.
-  - Confirmed cut-ins: 5. The decision below stands: 1 s of lead at 1.7/min false alarms is not a usable trigger.
+  - Confirmed cut-ins: 4, plus the seg8 event once Job checks it. The decision below stands: 1 s of lead at 1.7/min false alarms is not a usable trigger.
 - **Decision (Peter, 2026-10-21).** Active cut-in-warning work stops. The radar yvRel logging stays on (log only;
   nothing consumes it) so new cut-ins can be checked as drives come in. A camera-only lateral velocity is not pursued:
   the model reports a lead only once it is in our path, so it cannot warn before the selector does.
