@@ -11577,21 +11577,17 @@ No existing `radar_interface.py` constant changed.
   - One ambiguous event, a pickup entering through an intersection at 12 m (seg18), fired 0.08 s after the selector switch.
   - No clean cut-in on the route. The confirmed count stays at 4, and 0.86/min is still too frequent for a trigger.
 - **Route 000003ab (2026-10-21, 30 segments; Job, log analysis only).**
-  - **Disputed (Peter, 2026-10-21):** the only cut-in Peter sees on this route is around seg8, a car merging well ahead.
-    The seg19 event below may not be a cut-in, and Job is re-checking both. Do not quote the seg19 numbers.
-  - **Job's first pick:** seg19, track 37, a dark SUV merging from the right at 8-12 m. Radar first saw it at 8.4 m. The
-    Proj-T1.0 alarm fired 3 sweeps later (the earliest it can), about 1.0 s before it became leadOne and about 1.9 s
-    before the brake began. Braking bottomed at -2.01 m/s^2; the gap stayed about 11.6 m or more.
-  - The car was first tracked at 8.4 m, so this signal could not have warned from farther out.
-  - **False alarms:** Proj-T1.0 fired 1.72/min over 23.2 min above 5 m/s, and the raw yvRel > 1.0 for 3 sweeps
-    rule fired 10.07/min. The seg6 alarms were a red-light queue approach.
-  - Stills are on Job's machine in `~/longsim_frames/yv3ab/stills/` (cutin_37, FA_worst3, cut_s6).
-  - **The 3 worst false alarms, labeled by eye** (none is a cut-in; the sources are Job's reading of the stills, not
-    checked against the track's dRel/yRel):
-    - seg5 t=356: straight road, lead 40-60 m ahead, nothing entering.
-    - seg11 t=697: residential junction, probably a cross-street or parked car.
-    - seg25 t=1509: arterial, probably the truck holding the adjacent lane, or junction traffic.
-  - Confirmed cut-ins: 4, plus the seg8 event once Job checks it. The decision below stands: 1 s of lead at 1.7/min false alarms is not a usable trigger.
+  - **Peter's cut-in (seg8, a grey SUV from the right lane, about 31 m ahead; Job's track 37 at 479-483 s):**
+    - RAW3 fired 1.3 s before it became leadOne, and Proj-T1.0 0.76 s before (about 0.45 s before it crossed the lane line).
+    - No braking was needed: min aEgo -0.34, and the gap opened from 31 to 40 m.
+    - The track was continuous from 468 s; the same-car-throughout match is by radar only.
+  - **Seg19 track 37 (Job's first pick):** a dark SUV entering our lane from the right at about 10 m, possibly from a
+    turn lane or driveway. Peter did not count it as a cut-in, so treat it as unconfirmed. If it is excluded, it is
+    one of the false alarms.
+  - **False alarms:** Proj-T1.0 fired 40 times (1.72/min over 23.2 min above 5 m/s), 39 of them false (1.68/min).
+    The raw yvRel > 1.0 for 3 sweeps rule fired 10.07/min.
+  - Confirmed cut-ins: 5 (seg8 added). The seg8 warning came 0.76 s before leadOne (seg19: about 1.0 s). The decision
+    below stands.
 - **Decision (Peter, 2026-10-21).** Active cut-in-warning work stops. The radar yvRel logging stays on (log only;
   nothing consumes it) so new cut-ins can be checked as drives come in. A camera-only lateral velocity is not pursued:
   the model reports a lead only once it is in our path, so it cannot warn before the selector does.
