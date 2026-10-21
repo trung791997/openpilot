@@ -11638,8 +11638,18 @@ study is upstream: the 1.5 s when the lead was missing (n530-560), which kept th
   longer than 0.15 s, so the 1.0 s run never completed. Path offset, closing, range fit, existence and dRel all passed.
   Separately, while leadOne was vision at 101-114 m the track was farther than it, so the vision margin also blocks it.
 
+**Why track 47 was unmeasured (CAN re-run, Job; HEAD = 6db22115e on every sweep).** Of 58 sweeps, 16 were measured.
+- 20 sweeps: high-u10 newborn untrusted for about 2 s (16 coast, 4 dropped); 1 dropped on the low rail.
+- 21 sweeps: D-043 coasts. The lagging U11 (-11) over-closed the range slope (-1..-5); the lead was speeding up
+  (vLead 25 at n590). The held -11.3 over-closed too, which feeds the over-brake.
+- The two-sided coast bound that would undo that was rejected earlier (it softened 9 protected brakes;
+  `_bosch_a_coast_vrel`), and one case does not reopen it.
+- Log scan of 79 routes (Job): 61 similar episodes in 27 routes (on-path track at 60-120 m, closing at least 3 m/s, under
+  70% measured, lead missing or vision). 3 have min aEgo at or below -2.4, and about 12 more are at -1.3..-2.2.
+  Classification (cause, stills, need vs actual) is running.
+
 **Open.**
-- Why a clean closing track at 110 m was unmeasured on most sweeps (the per-sweep radar_interface coast cause).
+- Pick the lever from the classified episodes; no gate change before that.
 - How often this pattern occurs across routes.
 - Loosening the onpath coast allowance is not proposed until both are known (D-094).
 - M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
