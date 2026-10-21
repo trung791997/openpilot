@@ -8,6 +8,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, DT_MDL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.hardware import PC
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.chrysler.values import pacifica_hybrid_aol_stock_acc_mode
@@ -37,6 +38,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_honda_accord_steer_ratio_scale,
 )
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.stall_watchdog import StallWatchdog
 from openpilot.selfdrive.car.cruise_state import should_cancel_stock_cruise
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS, get_car_lateral_smooth_seconds
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -1084,19 +1086,21 @@ class Controls:
     cc_send.carControl = CC
     self.pm.send('carControl', cc_send)
 
-  def run(self):
+  def run(self, watchdog: StallWatchdog | None = None):
     rk = Ratekeeper(100, print_delay_threshold=None)
     while True:
       self.update()
       CC, lac_log = self.state_control()
       self.publish(CC, lac_log)
       rk.monitor_time()
+      if watchdog is not None:
+        watchdog.tick()
 
 
 def main():
   config_realtime_process(4, Priority.CTRL_HIGH)
   controls = Controls()
-  controls.run()
+  controls.run(None if PC else StallWatchdog())
 
 
 if __name__ == "__main__":
