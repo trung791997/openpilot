@@ -11566,3 +11566,7 @@ No existing `radar_interface.py` constant changed.
   - **Lead time over the selector switch with proj.** At T=0.5 it is +0.3 to +0.8 s on all 4 cut-ins. At T=1.0 it is +0.47, +0.62 and +0.78 s on 3 of 4, and the 4th never fires.
   - **Edge gives less lead time.** It is only -0.06 to +0.45 s, firing after the switch on #1.
   - **Verdict.** proj at T=1.0 is the candidate, but n=4 and 0.2-0.9 false alarms/min is still too often for a brake trigger. At most it could pre-arm a gas lift, which is untested.
+- **More routes (2026-10-21).** yvRel was decoded offline from raw CAN on 368, 37f, 39b, 39c, 39d, 3a0 and 3a2. 366 has no radar CAN, and 3a1 has no tracks. The camera scan of 39d and 3a0 found no new cut-ins (intersection ghosts, glare, and 4 inconclusive dense-traffic segments). The other five routes were not camera-scanned. The confirmed count stays at 4.
+  - Straight-road proj false alarms per minute at T=1.0 on routes with at least 5 min of following: 368 0.72, 37f 0.14, 39d 0.14, 3a0 0.26. At T=0.5 they are 1.7-3.3.
+  - Job's latest per-cut-in table puts every event time against the selector switch (0.0 s), which gives proj leads of 0.47, 0.62 and 0.78 s at T=1.0. That matches the earlier table. The "relative to the line-cross" label in that message is a mislabel.
+  - Paused here. Next is a full-frame-rate check of 3a0 seg05/09, or older daytime routes, if more cut-ins are wanted.
