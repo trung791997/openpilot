@@ -11765,3 +11765,8 @@ veto. So it either never entered, or dropped back to experimental once we matche
     - Accel step at the Chill→experimental switch is 0 to -0.4.
     - Max accel during the launch was 0.2-1.4.
     - Jerk is unresolved: plant-noise floor; 4078 B 27 vs A 13.
+- **Hand back for the stop (2026-10-21, Peter; static tests only).**
+  - Past the first 20 m, the launch also ends when lead one is stopping. That means the slow-lead detector fires,
+    vLead < 1.0, or vLead < 2.0 with aLeadK ≤ -0.3. Experimental then does the stop at its usual gap.
+  - Inside the first 20 m a slow lead does not end it.
+  - Thresholds are first guesses; a re-run of the 311 replay with this law is requested from Job.
