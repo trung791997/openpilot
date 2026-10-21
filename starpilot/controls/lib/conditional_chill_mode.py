@@ -46,19 +46,10 @@ class ConditionalChillMode:
   # is ignored for the first CHILL_LAUNCH_STOP_FLAG_DISTANCE (the intersection just left). After that a
   # stop flag hands back to experimental. 20 m below 15 mph is at least 3 s in Chill, so no separate
   # minimum hold is needed.
-  #
-  # Job 311 jam replay (STATUS 261): stopping behind a queued lead in Chill never braked harder than
-  # experimental but stopped ~1.5 m closer (3.2-3.8 m vs 4.9-5.5 m, min 2.46 m). Peter: hand back to
-  # experimental for the stop. Past CHILL_LAUNCH_STOP_FLAG_DISTANCE, a lead that is stopped (slow-lead
-  # detector, or under CHILL_LAUNCH_LEAD_STOPPED_SPEED) or slowing to a stop (under
-  # CHILL_LAUNCH_LEAD_STOPPING_SPEED and decelerating) ends the launch.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS
   CHILL_LAUNCH_ARM_SPEED = 0.3
   CHILL_LAUNCH_START_SPEED = 1.5
   CHILL_LAUNCH_STOP_FLAG_DISTANCE = 20.0
-  CHILL_LAUNCH_LEAD_STOPPED_SPEED = 1.0
-  CHILL_LAUNCH_LEAD_STOPPING_SPEED = 2.0
-  CHILL_LAUNCH_LEAD_STOPPING_DECEL = -0.3
 
   STABLE_LEAD_MIN_MODEL_PROB = 0.9
   STABLE_LEAD_MAX_BRAKE = 0.2
@@ -337,22 +328,7 @@ class ConditionalChillMode:
     if self._launch_distance < self.CHILL_LAUNCH_STOP_FLAG_DISTANCE:
       return False
 
-    return self._launch_has_stop_flag(sm) or self._launch_lead_stopping()
-
-  def _launch_lead_stopping(self):
-    if self.detector.slow_lead_detected:
-      return True
-
-    lead = getattr(self.starpilot_planner, "lead_one", None)
-    if not bool(getattr(lead, "status", False)):
-      return False
-
-    lead_speed = float(getattr(lead, "vLead", float("inf")))
-    lead_accel = float(getattr(lead, "aLeadK", 0.0))
-    return (
-      lead_speed < self.CHILL_LAUNCH_LEAD_STOPPED_SPEED or
-      (lead_speed < self.CHILL_LAUNCH_LEAD_STOPPING_SPEED and lead_accel <= self.CHILL_LAUNCH_LEAD_STOPPING_DECEL)
-    )
+    return self._launch_has_stop_flag(sm)
 
   def _get_launch_cc_status(self):
     lead = getattr(self.starpilot_planner, "lead_one", None)

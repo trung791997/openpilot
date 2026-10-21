@@ -11770,3 +11770,12 @@ veto. So it either never entered, or dropped back to experimental once we matche
     vLead < 1.0, or vLead < 2.0 with aLeadK ≤ -0.3. Experimental then does the stop at its usual gap.
   - Inside the first 20 m a slow lead does not end it.
   - Thresholds are first guesses; a re-run of the 311 replay with this law is requested from Job.
+- **Hand back reverted (2026-10-21; replay, Job arm C on 311).**
+  - **It did not restore the experimental gap.** Final gaps stayed at 2.9-4.7 m vs A's 3.3-7.5 m.
+  - **The hand-back comes too late.** It fires at lead ≈2 m/s, 23-79 m in, after Chill has already closed the gap.
+    Experimental does not reopen it.
+  - **At L20 it braked harder:** min accel -4.81 vs A -4.01 (jerk 60). At L22 it switched with the lead already at
+    -1.5.
+  - **Stops inside the first 20 m** (3 of 11) are unchanged by design.
+  - **The law is back to dabff8ef9** (the device build).
+  - **Cause:** the closer gap is how Chill follows a crawling lead, not a stopping-only effect.

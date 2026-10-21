@@ -467,65 +467,6 @@ def test_ccm_launch_assist_exits_on_new_red_light_past_the_intersection(monkeypa
   assert ccm.status_value == CCStatus["OFF"]
 
 
-def lead_ahead(planner, v_lead, a_lead=0.0):
-  planner.tracking_lead = True
-  planner.lead_one.status = True
-  planner.lead_one.dRel = 12.0
-  planner.lead_one.vLead = v_lead
-  planner.lead_one.vRel = 0.0
-  planner.lead_one.aLeadK = a_lead
-  planner.lead_one.radar = True
-
-
-def test_ccm_launch_assist_hands_back_when_queued_lead_slows_to_a_stop(monkeypatch):
-  # STATUS 261 311 replay: Chill stopped ~1.5 m closer behind a queued lead than experimental.
-  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
-  lead_ahead(planner, 0.0)
-  detector.slow_lead_detected = True
-  drive(ccm, sm, toggles, clock, 0.0, steps=10)
-
-  lead_ahead(planner, 4.0, 0.5)
-  detector.slow_lead_detected = False
-  drive(ccm, sm, toggles, clock, 1.6)
-  assert not ccm.experimental_mode
-  drive(ccm, sm, toggles, clock, 4.0, dt=0.1, steps=60)
-  assert not ccm.experimental_mode
-  assert ccm.status_value == CCStatus["LEAD"]
-
-  # Lead slowing but still above the stopping speed: stay in Chill.
-  lead_ahead(planner, 2.5, -1.0)
-  drive(ccm, sm, toggles, clock, 3.5)
-  assert not ccm.experimental_mode
-
-  lead_ahead(planner, 1.8, -1.0)
-  drive(ccm, sm, toggles, clock, 3.0)
-  assert ccm.experimental_mode
-  assert ccm.status_value == CCStatus["OFF"]
-
-
-def test_ccm_launch_assist_keeps_chill_behind_slow_lead_inside_intersection(monkeypatch):
-  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
-  lead_ahead(planner, 0.0)
-  detector.slow_lead_detected = True
-  drive(ccm, sm, toggles, clock, 0.0, steps=10)
-
-  lead_ahead(planner, 1.5, -0.5)
-  drive(ccm, sm, toggles, clock, 1.6)
-  drive(ccm, sm, toggles, clock, 2.0, dt=0.1, steps=20)
-  assert not ccm.experimental_mode
-  assert ccm.status_value == CCStatus["LEAD"]
-
-
-def test_ccm_launch_assist_steady_slow_lead_past_intersection_stays_chill(monkeypatch):
-  planner, _detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
-  drive(ccm, sm, toggles, clock, 0.0, steps=5)
-  lead_ahead(planner, 1.8, 0.0)
-  drive(ccm, sm, toggles, clock, 1.6)
-  drive(ccm, sm, toggles, clock, 2.0, dt=0.1, steps=150)
-  assert not ccm.experimental_mode
-  assert ccm.status_value == CCStatus["LEAD"]
-
-
 def test_ccm_launch_assist_ends_if_car_stops_again_and_rearms(monkeypatch):
   _planner, _detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
   drive(ccm, sm, toggles, clock, 0.0, steps=5)
