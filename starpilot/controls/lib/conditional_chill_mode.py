@@ -54,12 +54,18 @@ class ConditionalChillMode:
   # that we are closing on by more than CHILL_LAUNCH_LEAD_MAX_CLOSING, or that the slow-lead detector
   # flags keeps or sends the launch to experimental, from the first meter. Once handed back, the
   # launch does not re-enter until the car stops again.
+  # Job 44-route scan of this law: 8 of 14 decel hand-backs had aLeadK -0.50..-0.54 on leads still
+  # faster than us (vLead 5.6-8.75 m/s, e.g. 3a3 t=929: lead 8.75 vs ego 5.5, gap 23 m). That is
+  # estimator noise on a lead that is pulling away. A lead faster than us by
+  # CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING or more is opening the gap, so its decel does not hand
+  # back; the jam decel hand-backs (L2, L22) were all on leads we were closing on, and still apply.
   CHILL_LAUNCH_EXIT_SPEED = 15 * CV.MPH_TO_MS
   CHILL_LAUNCH_ARM_SPEED = 0.3
   CHILL_LAUNCH_START_SPEED = 1.5
   CHILL_LAUNCH_STOP_FLAG_DISTANCE = 20.0
   CHILL_LAUNCH_LEAD_MAX_DECEL = -0.5
   CHILL_LAUNCH_LEAD_MAX_CLOSING = 1.0
+  CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING = 1.0
 
   STABLE_LEAD_MIN_MODEL_PROB = 0.9
   STABLE_LEAD_MAX_BRAKE = 0.2
@@ -348,7 +354,10 @@ class ConditionalChillMode:
 
     lead_speed = float(getattr(lead, "vLead", 0.0))
     lead_accel = float(getattr(lead, "aLeadK", 0.0))
-    return lead_accel > self.CHILL_LAUNCH_LEAD_MAX_DECEL and (v_ego - lead_speed) <= self.CHILL_LAUNCH_LEAD_MAX_CLOSING
+    closing = v_ego - lead_speed
+    if closing > self.CHILL_LAUNCH_LEAD_MAX_CLOSING:
+      return False
+    return lead_accel > self.CHILL_LAUNCH_LEAD_MAX_DECEL or -closing >= self.CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING
 
   def _launch_exit_required(self, v_ego, sm):
     selfdrive_state = self._get_sm_service(sm, "selfdriveState")

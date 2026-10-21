@@ -507,6 +507,25 @@ def test_ccm_launch_assist_queue_lead_slowing_hands_back_and_stays_experimental(
   assert ccm.experimental_mode
 
 
+def test_ccm_launch_assist_ignores_decel_noise_on_faster_lead(monkeypatch):
+  # STATUS 261 scan, 3a3 t=929: aLeadK -0.51 on a lead at 8.75 m/s vs ego 5.5 handed back for nothing.
+  planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
+  drive(ccm, sm, toggles, clock, 0.0, steps=5)
+  queued_lead(planner, detector, 3.0, 0.8)
+  drive(ccm, sm, toggles, clock, 2.0)
+  assert not ccm.experimental_mode
+
+  queued_lead(planner, detector, 8.75, -0.51)
+  drive(ccm, sm, toggles, clock, 5.5, steps=5)
+  assert not ccm.experimental_mode
+  assert ccm.status_value == CCStatus["LEAD"]
+
+  # Same decel once the lead is no longer clearly faster: hand back.
+  queued_lead(planner, detector, 6.0, -0.51)
+  drive(ccm, sm, toggles, clock, 5.5)
+  assert ccm.experimental_mode
+
+
 def test_ccm_launch_assist_closing_on_queue_lead_hands_back(monkeypatch):
   planner, detector, ccm, sm, toggles, clock = launch_ccm(monkeypatch)
   drive(ccm, sm, toggles, clock, 0.0, steps=5)

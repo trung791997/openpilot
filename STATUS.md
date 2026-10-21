@@ -11798,4 +11798,14 @@ veto. So it either never entered, or dropped back to experimental once we matche
     pulled away for 5-13 s in Chill before slowing.
   - **Open:** some hand-backs fired with aLeadK > -0.5 and closing under 1 (L5). The sub-condition that tripped them
     is not logged yet.
-  - The normal-launch check (part 2) is pending.
+  - **Hand-back reasons (Job, logged at the trip frame; replay):** L2 and L22 are a decel step (aLeadK -0.62, -0.51)
+    on a lead we were closing on. L5, L11b and L12 are Job's slow-lead approximation (vLead < 1, dRel < 40), not
+    the real detector. L11a is closing 1.01 against sim vEgo. L20 is a lead switch to a farther track. In L11 and
+    L22, about 1 m of gap is lost inside Chill (0.1-0.2 m per Chill-second). The L12 deficit comes after the hand-back.
+  - **Part 2, normal launches (44 routes, 136 engaged; log reapply):** all 136 still enter, none late. 109 (80%) hold
+    to 15 mph; 24 hand back early (decel 14, slow lead 8, closing 2), 15 of them in jam route 311. 8 of the 14 decel
+    hand-backs had aLeadK -0.50 to -0.54 on leads faster than us (vLead 5.6-8.75 m/s). Example: 3a3 t=929, lead
+    8.75 vs ego 5.5, gap 23 m; the stills show a lead pulling away.
+  - **Fix (static tests only):** a lead faster than us by 1 m/s or more is opening the gap, so its decel no longer
+    hands back (`CHILL_LAUNCH_LEAD_DECEL_IGNORE_OPENING`). The jam decel hand-backs were on leads we were closing
+    on, so they still apply. Closing and slow-lead are unchanged. A rescan is with Job.
