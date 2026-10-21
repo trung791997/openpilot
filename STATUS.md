@@ -11607,5 +11607,11 @@ counter starting at 10**6 instead, 40 existing planner tests change, because the
 - Filter-path calls with `lead_v_filter` more than 5 m/s below vLead (warm from window start): 242 -> 38. The 38 that
   remain are short-dropout cases kept on purpose.
 
-**Open.** The w0041 (-2.0) and w0056 (-1.21) remainders, and whether the 38 short-dropout cases brake. M5, and routes
-beyond the four. This applies default ON and is on the comma since 2026-10-21.
+**Remainders (replay, Job).** w0041 (-2.0) and w0056 (-1.21) are on the model lead path with both leads (prob
+0.6-0.95), so the filter is not used and this fix cannot touch them. w0056 is steady closing on a slower lead (26 -> 22 m/s,
+55 -> 43 m). w0041 brakes as the model lead is re-acquired after a model/no-lead flicker at 93 m. The 38 low-filter calls
+(29 per-cycle entries) all have the filter running (idle 0): window-start warm-up from 0 plus one lag case. None is a kept
+short dropout, and none is followed by a brake under -1.0 (worst -0.80).
+
+**Open.** Whether w0041's -2.0 is warranted against the logged speeds (a model-path question, not this fix). M5, and
+routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
