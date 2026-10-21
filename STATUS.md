@@ -11613,5 +11613,11 @@ counter starting at 10**6 instead, 40 existing planner tests change, because the
 (29 per-cycle entries) all have the filter running (idle 0): window-start warm-up from 0 plus one lag case. None is a kept
 short dropout, and none is followed by a brake under -1.0 (worst -0.80).
 
-**Open.** Whether w0041's -2.0 is warranted against the logged speeds (a model-path question, not this fix). M5, and
-routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
+**w0041 against the log (Job).** The logged car braked too: min actuators.accel -1.94, replay -2.00. The two match
+within 0.17 from n570 to n650. The cause is a real lead re-acquired late. A 21.7 m/s lead (ego 33) was lost for about
+1.5 s (camera prob 0.42 -> 0, one radar blip). It came back radar-sourced at 94 m with vRel -11.3, and the brake ramped
+to -1.94 over 1 s. The constant decel needed to settle at the follow distance is about 1.1, so the brake was about 2x
+that. Night stills are inconclusive. **This is a separate, real-road early/hard-brake case, not this fix.**
+
+**Open.** Why the planner asks about -2.0 when about -1.1 suffices on the w0041 re-acquire (aLeadK on the new radar
+lead, or the MPC's closing cost). M5, and routes beyond the four. This applies default ON and is on the comma since 2026-10-21.
