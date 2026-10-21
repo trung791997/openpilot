@@ -11751,3 +11751,17 @@ veto. So it either never entered, or dropped back to experimental once we matche
   - **Open:** on 311 the stops behind a queued lead would now be done in Chill. In the logs, where the car was in
     experimental, the minimum gap was 4.1-5.6 m and the hardest braking was -4.9 (t=3899, -2.85 at t=3450). Whether
     Chill would brake the same is not known without a closed-loop replay.
+- **311 jam closed-loop replay (Job, dabff8ef9 planner and ConditionalChillMode, fitted plant; replay only).**
+  - **Setup and fidelity:**
+    - A = experimental (log-faithful baseline), B = launch-assist Chill.
+    - The A baseline is faithful on 10 of 12 episodes (aEgo corr 0.86-0.97, vEgo RMSE ≤0.31).
+    - t=2255 is not faithful, and 3486 had no radar data.
+  - **Chill never braked harder.** B's min accel was equal to or softer than A's in 9 of 11 episodes, and never more
+    than 0.5 harder. At 3899, A -4.01 vs B -3.55; at 4078, A -2.47 vs B -2.11. Brake onset is about the same.
+  - **Chill stops closer behind the queued car.**
+    - Final gap: 3.2-3.8 m in Chill vs 4.9-5.5 m in experimental, about 1.5 m less.
+    - Min gap below 3 m: 3317 (2.81), 3338 (2.77), 3899 (2.93), 4078 (2.46).
+  - **Other measures:**
+    - Accel step at the Chill→experimental switch is 0 to -0.4.
+    - Max accel during the launch was 0.2-1.4.
+    - Jerk is unresolved: plant-noise floor; 4078 B 27 vs A 13.
