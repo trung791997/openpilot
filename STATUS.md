@@ -11836,3 +11836,26 @@ veto. So it either never entered, or dropped back to experimental once we matche
     and L22 is a red SUV creeping on a side street. In both, the same car is ahead the whole time and no one cuts
     in, so the roughly 1 m closer gap is the Chill follow itself, not a lead swap. L12 and L20 sheets are from
     earlier. They are in `~/longsim_frames/la2/stills/` on Job's machine.
+
+## 262. Human-like lane changes: baseline of how the car handles the target-lane car today (2026-10-22, Peter: "that would be a human like lane change experience"). Log study only; nothing built.
+
+**Question.** When the car changes lanes behind a car that is slower or faster than us, how hard does it brake, and how
+long does it take to match? Since D-067, `HumanLaneChanges` only publishes `leadLeft`/`leadRight` and the planner does
+not read them.
+
+**Baseline (Job, 1363 segments, 311 lane changes; logs and stills).**
+- **By the target-lane car:** 42 slower than us, 51 faster, 26 matched, and 192 with no car within 80 m.
+- **Slower target car:** min aEgo in the 5 s after crossing was median -0.77, p10 -2.37. 19 were below -1.0 and 9
+  below -2.0. The driver pressed the gas in 25 and the brake in 19, so these numbers are not yet openpilot alone.
+- **Faster target car:** a median of 9.3 s to get within 1 m/s of it (n = 45). 13 took over 20 s, and 6 never got there.
+- **Warning time:** leadLeft/leadRight showed the target car a median of about 2.2-2.4 s before crossing (mean 4-5 s).
+- **Hardest 5 slower cases, by eye:** 4 real cars ahead after the change; 1 unclear.
+- **Adjacent-lead pick quality:** of 6 suspected wrong picks, 2 were cars that never came into our lane, 1 was a
+  likely phantom, 2 were unclear, and 1 was a correct pick. A feature acting on leadLeft/leadRight therefore needs a
+  stable, in-lane track gate first.
+
+**Next (Job).**
+- Openpilot-only slower cases (no pedal from crossing-2 s to +5 s): split braking before vs after the new car becomes
+  leadOne.
+- Blinker-on to crossing time, which is the real window for easing off early.
+- Stills for the faster cases that took over 20 s.
