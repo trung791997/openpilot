@@ -1231,6 +1231,22 @@
       "artifact_sha256": "397e0a555c66143b2507b45a55e24a8d638634ad2f40abaa857a857226b20b0c",
       "artifact_size": 804589195,
       "artifact_chunk_count": 18
+    },
+    {
+      "id": "novaspark",
+      "name": "NovaSpark",
+      "version": "v16",
+      "series": "Local",
+      "released": "2026-10-04",
+      "community_favorite": false,
+      "model_size": "small",
+      "uses_external_gpu": false,
+      "local_only": true,
+      "tinygrad_runtime": "f6fc4e3f2c3db5fae1e19cbfbc3ad9fc579a12ae",
+      "artifact_format": "tinygrad_single_v1_arena",
+      "artifact_sha256": "9b4a8d2c73e83ff2d4da16c057651d9fa30e23f2c2dbca0896754ab1b2d9f1c0",
+      "artifact_size": 126035929,
+      "artifact_chunk_count": 0
     }
   ]
 }

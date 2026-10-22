@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
+from openpilot.starpilot.models.recovery import F6_FALLBACK_EXIT, STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.models.recovery_process import ModeldProcess
 from openpilot.starpilot.models.tests.test_recovery import BASE
 from openpilot.starpilot.models.tests.test_recovery_process import Feed
@@ -12,6 +12,9 @@ from openpilot.starpilot.models.tests.test_recovery_process import Feed
 @pytest.mark.parametrize('alive,exitcode,fresh,started,same_drive,shutting,small_only', [
   (False, STARTUP_FALLBACK_EXIT, True, True, True, False, False),
   (True, STARTUP_FALLBACK_EXIT, True, True, True, False, False),
+  (False, F6_FALLBACK_EXIT, True, True, True, False, False),
+  (False, F6_FALLBACK_EXIT, True, True, True, False, True),
+  (False, 73, True, True, True, False, False),
   (False, 1, True, True, True, False, False),
   (False, -9, True, True, True, False, False),
   (False, None, True, True, True, False, False),
@@ -37,7 +40,7 @@ def test_startup_restart_requires_owned_exit_and_current_drive(alive, exitcode, 
        patch('openpilot.starpilot.models.recovery_process.process_start_ticks', return_value=456), \
        patch('openpilot.starpilot.models.recovery_process.read_receipt', return_value=None):
     owner.observe(feed, started)
-  qualifies = not alive and exitcode == STARTUP_FALLBACK_EXIT and fresh and started and same_drive and not shutting and not small_only
+  qualifies = not alive and exitcode in (STARTUP_FALLBACK_EXIT, F6_FALLBACK_EXIT) and fresh and started and same_drive and not shutting and not small_only
   if qualifies:
     child.join.assert_called_once_with(timeout=0)
     assert owner.proc is None

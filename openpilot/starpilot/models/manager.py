@@ -244,7 +244,8 @@ def randomize_next_start(chestnut_available: bool, *, root: Path = ROOT, chooser
     entries = catalog(root)
     blocked = set(prefs["blacklistedModels"])
     choices = [mid for mid in entries if mid not in blocked and
-               entries[mid].get("uses_external_gpu", False) == (profile == "big") and verified_artifact(mid, entries, root) is not None]
+               entries[mid].get("uses_external_gpu", False) == (profile == "big") and "tinygrad_runtime" not in entries[mid] and
+               verified_artifact(mid, entries, root) is not None]
     if profile == "small" and DEFAULT_SMALL not in blocked and DEFAULT_SMALL not in choices and shipped_default() is not None:
       choices.append(DEFAULT_SMALL)
     alternatives = [mid for mid in choices if mid != prefs[profile]]
@@ -253,11 +254,14 @@ def randomize_next_start(chestnut_available: bool, *, root: Path = ROOT, chooser
     return prefs
 
 
-def resolve_runtime(chestnut_available: bool, *, root: Path = ROOT, randomize: bool = False) -> RuntimeSelection:
+def resolve_runtime(chestnut_available: bool, *, root: Path = ROOT, randomize: bool = False,
+                    tinygrad_runtime: str | None = None) -> RuntimeSelection:
+  """tinygrad_runtime is the runtime this process selected (None = the 9d0446 bundle); a small model built for
+  another runtime cannot load in it and resolves to the shipped default."""
   prefs = randomize_next_start(chestnut_available, root=root) if randomize else preferences(root)
   entries = catalog(root)
   small, big = prefs["small"], prefs["big"]
-  small_path = verified_artifact(small, entries, root)
+  small_path = verified_artifact(small, entries, root) if entries.get(small, {}).get("tinygrad_runtime") == tinygrad_runtime else None
   shipped = small == DEFAULT_SMALL and small_path is None
   if shipped:
     small_path = shipped_default()
@@ -699,6 +703,8 @@ class ModelManager:
   def _download(self, mid: str, entry: dict, variant: str = "standard") -> None:
     if "artifact_sha256" not in entry:
       raise ModelError("This model is not available for this software version yet")
+    if entry.get("local_only"):
+      raise ModelError("This model is installed locally, not downloaded")
     destination = artifact_path(mid, self.root, variant)
     destination.parent.mkdir(parents=True, exist_ok=True)
     size, chunks = entry["artifact_size"], entry["artifact_chunk_count"]

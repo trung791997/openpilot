@@ -12,6 +12,8 @@ CAMERA_MAX_AGE_NS = 200_000_000
 INT_GRACE_NS = 500_000_000
 KILL_GRACE_NS = 1_000_000_000
 STARTUP_FALLBACK_EXIT = 75
+# NovaSpark (f6 runtime) failed to start; a fresh process loads the default model.
+F6_FALLBACK_EXIT = 77
 
 
 @dataclass(frozen=True)

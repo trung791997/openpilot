@@ -6,7 +6,7 @@ from multiprocessing import Process
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.models.receipt import process_start_ticks, read_receipt
-from openpilot.starpilot.models.recovery import KILL_GRACE_NS, STARTUP_FALLBACK_EXIT, ModelRecoveryOwner, RecoveryEvidence
+from openpilot.starpilot.models.recovery import F6_FALLBACK_EXIT, KILL_GRACE_NS, STARTUP_FALLBACK_EXIT, ModelRecoveryOwner, RecoveryEvidence
 from openpilot.starpilot.models.status import ModelVariant
 from openpilot.system.manager.process import PythonProcess, join_process, launcher
 
@@ -52,9 +52,10 @@ class ModeldProcess(PythonProcess):
                     0 < int(sm.logMonoTime['deviceState']) <= now <= int(sm.logMonoTime['deviceState']) + 1_000_000_000)
     self.context_ready = bool(device_fresh and started)
     if (self.context_ready and self.proc is not None and not alive and not self.shutting_down and
-        self.proc.exitcode == STARTUP_FALLBACK_EXIT and self.recovery.phase == 'monitor' and
+        self.proc.exitcode in (STARTUP_FALLBACK_EXIT, F6_FALLBACK_EXIT) and self.recovery.phase == 'monitor' and
         not self.recovery.small_only and 0 < self.launch_drive_id == evidence.drive_id):
       # Only our explicitly failed startup may request this one fresh process.
+      # After 77 the NovaSpark failed marker is set, so the fresh process loads the default model.
       # Never reuse the old GPU context or retry an arbitrary Small crash.
       self.proc.join(timeout=0)
       self.proc = None

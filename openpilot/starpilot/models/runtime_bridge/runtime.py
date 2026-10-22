@@ -2,7 +2,8 @@
 import hashlib
 from pathlib import Path
 
-from openpilot.starpilot.models.runtime_bridge.bootstrap import LEGACY_REVISION, activate
+from openpilot.starpilot.models.recovery import F6_FALLBACK_EXIT
+from openpilot.starpilot.models.runtime_bridge.bootstrap import LEGACY_REVISION, NOVASPARK_REVISION, activate
 
 BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacy9d'
 MANIFEST_SHA256 = "20ca9e77010c1ab788f2adb824103db3d595b0da8c4069d6e32b1266f7977b1f"
@@ -10,9 +11,16 @@ _GUARD_HASHES = {
   'libbounded_wait.so': '24ed559861c8636c1026cad9a244854bb2236b5ee8b91bf21c5efbf688fa4a69',
   'libusb_guards.so': '66a3dfe48ac17899862ab80160cf6dac2c9b9707234527ba0d808f3b68404114',
 }
-_POLICY_SHA256 = '39c3387f44b570895aab440c6afa52eeb1996c99510205c92ea774565d881b66'
+_POLICY_SHA256 = '6b9bf91f34d64ea46b62cc6d5501cb6877e0b5d47563c819207f58676790066b'
+# NovaSpark only runs on the f6fc4e3 tinygrad runtime. It is selected per start and falls back to
+# the 9d0446 runtime (and the shipped default model) once a start with it has failed.
+F6_BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacyf6'
+F6_MANIFEST_SHA256 = '282aa933d48c143a8d0ccef274cea68ed648ab8280a01c9d5a314d42f5e68417'
+F6_GUARD_SHA256 = 'c58fbc0cbb74f51d5d06ac786fceaa206f0ae01952a836e122e0a0353c9325cc'
+MARKER_DIR = Path('/data/starpilot-model-runtime')
 _selection = None
 _protection = None
+_f6_sha = None
 
 
 def prepare(role):
@@ -27,9 +35,81 @@ def prepare(role):
       raise RuntimeError('A model child cannot change its execution role')
     return _selection
   _verify_policy()
-  cache = Path('/data/starpilot-model-runtime')
-  _selection = activate(BUNDLE, MANIFEST_SHA256, LEGACY_REVISION, role, cache)
+  sha = _f6_candidate() if role == 'driving' else None
+  if sha is not None:
+    try:
+      _selection = _activate_f6(sha)
+    except Exception:
+      try:
+        MARKER_DIR.mkdir(mode=0o700, exist_ok=True)
+        _marker('failed', sha).write_bytes(b'')
+        _marker('attempt', sha).unlink(missing_ok=True)
+      except OSError:
+        pass
+      raise SystemExit(F6_FALLBACK_EXIT) from None
+    return _selection
+  _selection = activate(BUNDLE, MANIFEST_SHA256, LEGACY_REVISION, role, MARKER_DIR)
   return _selection
+
+
+def _marker(kind, sha):
+  return MARKER_DIR / f'f6-{kind}-{sha}'
+
+
+def _f6_candidate():
+  """The NovaSpark artifact sha256 when this driving start should use the f6 runtime, else None."""
+  try:
+    from openpilot.starpilot.models import manager
+    prefs = manager.preferences()
+    if prefs['randomizer'] or prefs['big']:
+      return None
+    entries = manager.catalog()
+    row = entries.get(prefs['small'], {})
+    if row.get('tinygrad_runtime') != NOVASPARK_REVISION:
+      return None
+    sha = row['artifact_sha256']
+    if _marker('failed', sha).exists():
+      return None
+    if _marker('attempt', sha).exists():
+      # The last f6 start never finished loading: record it and use the default runtime.
+      _marker('attempt', sha).replace(_marker('failed', sha))
+      return None
+    return sha if manager.verified_artifact(prefs['small'], entries) is not None else None
+  except Exception:
+    return None
+
+
+def _activate_f6(sha):
+  global _f6_sha
+  guard = Path(__file__).with_name('legacy_hcq.py')
+  if guard.is_symlink() or not guard.is_file() or hashlib.sha256(guard.read_bytes()).hexdigest() != F6_GUARD_SHA256:
+    raise RuntimeError('NovaSpark bounded wait changed')
+  MARKER_DIR.mkdir(mode=0o700, exist_ok=True)
+  # Written first: a start that dies anywhere before f6_loaded() leaves it behind and the next start falls back.
+  _marker('attempt', sha).write_bytes(b'')
+  selection = activate(F6_BUNDLE, F6_MANIFEST_SHA256, NOVASPARK_REVISION, 'driving', MARKER_DIR)
+  from openpilot.starpilot.models.runtime_bridge import legacy_hcq
+  legacy_hcq.install(F6_BUNDLE)
+  _f6_sha = sha
+  legacy_hcq.on_fatal = f6_failed
+  return selection
+
+
+def active_revision():
+  """The tinygrad runtime selected for this process as the catalog names it (None = the 9d0446 bundle)."""
+  return NOVASPARK_REVISION if _f6_sha is not None else None
+
+
+def f6_failed():
+  """Record that NovaSpark failed, so the next start uses the default runtime and model."""
+  if _f6_sha is not None:
+    _marker('failed', _f6_sha).write_bytes(b'')
+    _marker('attempt', _f6_sha).unlink(missing_ok=True)
+
+
+def f6_loaded():
+  if _f6_sha is not None:
+    _marker('attempt', _f6_sha).unlink(missing_ok=True)
 
 
 def prepare_compiler():
@@ -170,6 +250,8 @@ def load_oob(path, chestnut=False):
     raise RuntimeError('A device model loader requires the selected runtime')
   if _selection.get('purpose') == 'compiler':
     raise RuntimeError('A model compiler cannot load inference artifacts')
+  if _f6_sha is not None:
+    return _load_f6(path, chestnut)
   monitoring = _selection['role'] == 'monitoring'
   authenticated = _stock_bytes(path) if monitoring else None
   from tinygrad import Context, Device
@@ -192,6 +274,27 @@ def load_oob(path, chestnut=False):
   if len(captures) != 1 or artifact.get('run') is not captures[0]:
     raise ValueError('Unexpected monitoring capture layout')
   protect_capture(captures[0], protection)
+  return artifact
+
+
+def _load_f6(path, chestnut):
+  # The f6 runtime has no submission guard; its waits are bounded by legacy_hcq instead.
+  import pickle
+  from tinygrad import Device
+  from tinygrad.runtime.ops_qcom import QCOMDevice
+  from openpilot.starpilot.models.catalog import ARTIFACT_ABI, COMPILER_REVISION
+  if chestnut or _selection['role'] != 'driving':
+    raise ValueError('NovaSpark runs only as the QCOM driving model')
+  if not isinstance(Device['QCOM'], QCOMDevice):
+    raise RuntimeError('Expected the native QCOM device')
+  with open(path, 'rb') as f:
+    artifact = pickle.load(f)
+  if (not isinstance(artifact, dict) or not isinstance(artifact.get('metadata'), dict) or
+      not isinstance(artifact['metadata'].get('model'), dict) or 'run_policy' not in artifact):
+    raise ValueError('Unexpected NovaSpark artifact layout')
+  # Present it to the runner as a v16 single artifact; the runner reads only these labels.
+  artifact.update(artifact_abi=ARTIFACT_ABI, compiler_revision=COMPILER_REVISION, behavior_version='v16',
+                  execution_device='QCOM', warp_device='QCOM')
   return artifact
 
 

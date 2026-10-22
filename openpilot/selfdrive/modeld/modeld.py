@@ -8,6 +8,7 @@ import os
 os.environ['GMMU'] = '0' # for chestnut fast loading, noop for qcom
 os.environ.setdefault('AM_POWER_LIMIT', '100')
 from openpilot.starpilot.models.runtime_bridge.runtime import prepare as prepare_model_runtime, selected_legacy
+from openpilot.starpilot.models.runtime_bridge import runtime as model_runtime
 prepare_model_runtime('driving')
 from tinygrad.device import Buffer, Device
 from tinygrad.dtype import DType, dtypes
@@ -288,7 +289,8 @@ def main(demo=False):
   # a Jetson, PC or phone on the port looks like a chestnut to cable_connected(): the cable counts with Jetlink off only
   chestnut_available = chestnut_present() or (cable_connected() and not jetlink_adapter.link_on())
   recovery_small_only = os.getenv("STARPILOT_MODELD_RECOVERY_SMALL_ONLY") == "1"
-  selection = resolve_runtime(chestnut_available=chestnut_available and not recovery_small_only, randomize=not recovery_small_only)
+  selection = resolve_runtime(chestnut_available=chestnut_available and not recovery_small_only, randomize=not recovery_small_only,
+                              tinygrad_runtime=model_runtime.active_revision())
   requested_model_id = requested_runtime_id(chestnut_available)
   CHESTNUT = selection.allow_big and selection.big_path is not None
   if CHESTNUT:
@@ -357,6 +359,20 @@ def main(demo=False):
   big_prepared = None
 
   def load_small():
+    if model_runtime.active_revision() is not None:
+      # This runtime cannot load the shipped default; record the failure and restart on the default runtime.
+      try:
+        if selection.small_path is None or selection.small_id == DEFAULT_SMALL:
+          raise RuntimeError("NovaSpark resolved to a model its runtime cannot load")
+        selected, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
+                                                 selection.small_path, selection.small_version, False,
+                                                 selection.small_id, selection.small_sha256)
+      except Exception:
+        cloudlog.exception("NovaSpark load failed; the next start uses the default model")
+        model_runtime.f6_failed()
+        raise SystemExit(model_runtime.F6_FALLBACK_EXIT) from None
+      model_runtime.f6_loaded()
+      return selected, prepared, False
     if selection.small_path is not None:
       try:
         selected, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,

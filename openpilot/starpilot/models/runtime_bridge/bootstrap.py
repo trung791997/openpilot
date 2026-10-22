@@ -11,6 +11,12 @@ import stat
 import sys
 
 LEGACY_REVISION = '9d0446a4ba8a532c8b674fb6ad795af015cd9dcf'
+NOVASPARK_REVISION = 'f6fc4e3f2c3db5fae1e19cbfbc3ad9fc579a12ae'
+# Each pinned compiler revision maps to its exact adapter and role/device table.
+IDENTITIES = {
+  LEGACY_REVISION: ('bounded-host-v2', {'driving': ['QCOM', 'USB+AMD:LLVM'], 'monitoring': ['QCOM']}),
+  NOVASPARK_REVISION: ('legacy-hcq-v1', {'driving': ['QCOM']}),
+}
 IMPORT_FAMILIES = ('tinygrad', 'tinygrad_repo', 'examples', 'extra')
 _ENV_KEYS = ('CACHEDB', 'XDG_CACHE_HOME', 'PYTHONDONTWRITEBYTECODE', 'PYTHONPYCACHEPREFIX')
 
@@ -99,7 +105,8 @@ def _check_source_package(name, expected):
 
 
 def activate(bundle, manifest_sha256, compiler_revision, role, cache_root):
-  if compiler_revision != LEGACY_REVISION or role not in ('driving', 'monitoring'):
+  identity = IDENTITIES.get(compiler_revision) if isinstance(compiler_revision, str) else None
+  if identity is None or role not in identity[1]:
     raise ValueError('Unsupported model runtime role or compiler identity')
   if not isinstance(manifest_sha256, str) or re.fullmatch('[0-9a-f]{64}', manifest_sha256) is None:
     raise ValueError('Invalid pinned runtime manifest hash')
@@ -119,8 +126,7 @@ def activate(bundle, manifest_sha256, compiler_revision, role, cache_root):
     raise ValueError('Runtime manifest changed')
   manifest = json.loads(raw)
   if (not isinstance(manifest, dict) or manifest.get('compiler_revision') != compiler_revision or
-      manifest.get('adapter') != 'bounded-host-v2' or
-      manifest.get('roles') != {'driving': ['QCOM', 'USB+AMD:LLVM'], 'monitoring': ['QCOM']}):
+      manifest.get('adapter') != identity[0] or manifest.get('roles') != identity[1]):
     raise ValueError('Runtime identity mismatch')
   files = manifest.get('files')
   if not isinstance(files, dict) or not files:
@@ -180,6 +186,6 @@ def activate(bundle, manifest_sha256, compiler_revision, role, cache_root):
         os.environ[key] = value
     importlib.invalidate_caches()
     raise
-  return {'compiler_revision': compiler_revision, 'manifest_sha256': manifest_sha256,
+  return {'compiler_revision': compiler_revision, 'manifest_sha256': manifest_sha256, 'adapter': identity[0],
           'role': role, 'tinygrad_origin': str(tg_root / 'tinygrad/__init__.py'),
           'cache': str(cache), 'runtime_files': len(files)}
