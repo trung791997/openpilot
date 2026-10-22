@@ -11832,3 +11832,7 @@ veto. So it either never entered, or dropped back to experimental once we matche
       decel cases are still in the -0.50..-0.52 noise band, but on leads we are not pulling away from, so the
       hand-back stays by design.
     - Fidelity is unchanged; L2 is the weak episode (corr 0.84, vRMSE 1.85).
+  - **Stills for the closer stops (Job, by eye):** L11 is a white minivan in stop-go traffic on an elevated road,
+    and L22 is a red SUV creeping on a side street. In both, the same car is ahead the whole time and no one cuts
+    in, so the roughly 1 m closer gap is the Chill follow itself, not a lead swap. L12 and L20 sheets are from
+    earlier. They are in `~/longsim_frames/la2/stills/` on Job's machine.
