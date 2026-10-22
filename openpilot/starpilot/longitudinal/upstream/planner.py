@@ -33,7 +33,8 @@ def get_max_accel(v_ego):
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
-def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle):
+def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
+                     *, jerk_limit=True):  # BOSCH-A: jerk_limit=False only for the engage init (hook 3/3)
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
 
   if not e2e:
@@ -47,6 +48,8 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
       max_accel = min(max_accel, coast_limit)
 
   target_accel = np.clip(v_cruise - v_ego, A_CRUISE_MIN, max_accel)
+  if not jerk_limit:
+    return float(target_accel)
   j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
   target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
@@ -178,6 +181,15 @@ class LongitudinalPlanner:
     # the Stock Brake Feel step). Skipped entirely when the toggles are off. ----
     if self.bosch_a_model_leads is not None:
       output_a_target = min(output_a_target, bosch_a_mpc['acceleration_max'])  # >= 0: braking passes through
+    if self.bosch_a_long is not None and self.bosch_a_long.stock_feel and reset_state:
+      # Engage init (Stock Brake Feel only): while long is off, a_cruise starts the first engaged frame at
+      # min(aEgo, cruise target) instead of aEgo (jerk-limited around aEgo), so it does not ramp down from a positive
+      # aEgo at j_cruise while already at/above the set speed. When target >= aEgo this is the stock value. Bounded:
+      # lowers only, never below the cruise floor (A_CRUISE_MIN); output_a_target and the MPC state are unchanged;
+      # after engage get_cruise_accel jerk-limits from here and step() still limits brake onset.
+      self.a_cruise = min(self.a_cruise, get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
+                                                          self.a_cruise, steer_angle_without_offset, self.CP,
+                                                          self.dt, accel_coast, self.allow_throttle, jerk_limit=False))
     if self.bosch_a_long is not None:
       output_a_target = self.bosch_a_long.step(
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
