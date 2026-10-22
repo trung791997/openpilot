@@ -11884,4 +11884,15 @@ not read them.
 - **299:** the alpha planner alone never brakes hard (-0.78); the coast adds 9.6 m of gap.
 - **Outcome:** lc-coast is not shipped, per Peter's rule ("unless the coast only version resolved the issue"), and
   stays on the side branch. Job's baseline mixed stock-ACC and alpha-long drives, so the open question is whether
-  alpha long has a lane-change hard-brake problem at all. Next: redo the slower-target baseline on longActive drives only.
+  alpha long has a lane-change hard-brake problem at all.
+
+**Alpha-long-only baseline (Job; logs, longActive 1 and no pedal from t1-2 s to t1+5 s).**
+- 25 of 93 events qualify.
+- **Slower target car (n = 9):** min aEgo median -0.58, worst -2.37. Below -1.5: 1; below -1.0: 2.
+- **Faster target car (n = 16):** worst -0.59.
+- **Hard brakes:** the only one below -1.5 is 309 s10, for our own-lane lead braking at up to -5.8. The target car was
+  71 m away and not braking. The runner-up, 3ab s19 at -1.39, is ambiguous (a lead braking -1.8 at 14 m).
+- All the hard cases in the earlier lists (25b, 299, 26f) were stock ACC.
+- **Conclusion (log evidence, small n):** under openpilot longitudinal, lane changes behind a slower car do not show a
+  target-lane hard-brake problem. Nothing to build. lc-coast stays parked on its branch; revisit if a new alpha-long
+  drive shows one.
