@@ -201,3 +201,33 @@ def test_honda_slc_controls_only_with_openpilot_long():
     assert not slc_runtime_settings(params, stock, {}).enabled
     assert not slc_transport_capable(honda(dashcamOnly=True), {})
     assert not enabled(params, honda(dashcamOnly=True), 'slc', {})
+
+
+def test_upstream_planner_selection_turns_conditional_off_everywhere():
+  # Conditional's only consumer is StarPilot plannerd; with the upstream planner a claim
+  # on the distance long press would drop it (2026-10-22, Peter's UseStarPilotLongitudinalPlanner=0).
+  from openpilot.starpilot.feature_runtime import card_conditional_runtime
+  replay = {'CONDITIONAL_MODE_REPLAY_RUNTIME': '1'}
+  with TemporaryDirectory() as temporary:
+    params = Files(Path(temporary))
+    (params.root / 'ConditionalModeConfig').write_bytes(encode_preferences(SavedPreferences(mode=ModeChoice.CEM)))
+    (params.root / 'CurveSpeedController').write_bytes(b'1')
+    selection = params.root / 'UseStarPilotLongitudinalPlanner'
+    for raw in (None, b'1', b'garbage'):  # Absent/On/invalid all keep the StarPilot planner.
+      if raw is None:
+        selection.unlink(missing_ok=True)
+      else:
+        selection.write_bytes(raw)
+      assert enabled(params, long_cp(), 'conditional', {})
+      assert enabled(params, None, 'conditional', replay)
+      assert card_conditional_runtime(params, {}) and card_conditional_runtime(params, replay)
+    selection.write_bytes(b'0')
+    assert requested(params, 'conditional')  # The saved document is untouched...
+    assert not enabled(params, long_cp(), 'conditional', {})  # ...but no owner starts for it.
+    assert not enabled(params, None, 'conditional', replay)  # The replay opt-in cannot add a consumer.
+    assert not card_conditional_runtime(params, {}) and not card_conditional_runtime(params, replay)
+    assert enabled(params, long_cp(), 'curve', {})  # Other features ignore the planner choice.
+    assert not enabled(params, stock_cp(), 'curve', {})
+    for feature, flag in (('curve', 'CURVE_REPLAY_RUNTIME'), ('profile', 'LONG_PLANNER_REPLAY_RUNTIME'),
+                          ('slc', 'SLC_REPLAY_RUNTIME')):
+      assert enabled(params, None, feature, {flag: '1'})

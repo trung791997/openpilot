@@ -74,7 +74,7 @@ from openpilot.starpilot.conditional_mode.runtime_settings import ConditionalSet
 from openpilot.starpilot.conditional_mode.card_settings import CardSettingsWorker
 from openpilot.starpilot.conditional_mode.status import settings_fingerprint
 from openpilot.starpilot.feature_runtime import (requested as feature_requested, enabled as feature_enabled,
-                                               slc_runtime_settings, slc_transport_capable)
+                                               card_conditional_runtime, slc_runtime_settings, slc_transport_capable)
 from openpilot.starpilot.saved_source import read_saved
 from openpilot.starpilot.vehicle_selection import startup_candidate
 from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
@@ -163,7 +163,8 @@ class Car:
     self.slc_replay = os.getenv('SLC_REPLAY_RUNTIME') == '1' or feature_requested(self.params, 'slc')
     self.curve_replay = os.getenv('CURVE_REPLAY_RUNTIME') == '1' or feature_requested(self.params, 'curve')
     self.aol_replay = os.getenv('AOL_REPLAY_RUNTIME') == '1' or feature_requested(self.params, 'aol')
-    self.conditional_replay = os.getenv('CONDITIONAL_MODE_REPLAY_RUNTIME') == '1' or feature_requested(self.params, 'conditional')
+    # Off with the upstream planner (no Conditional consumer), so gestures reach the plain wheel action.
+    self.conditional_replay = card_conditional_runtime(self.params, os.environ)
     subscribed_services = ['pandaStates', 'carControl', 'onroadEvents', 'deviceState']
     if self.aol_replay:
       subscribed_services.extend(('aolSafetyWire', 'managerState', 'aolAxisState', 'selfdriveState'))

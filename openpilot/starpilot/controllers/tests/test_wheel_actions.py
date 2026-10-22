@@ -133,3 +133,59 @@ def test_actual_card_published_distance_off_cannot_trigger_unconditional_persona
   serialized = next(messaging.log_from_bytes(raw).carState for name, raw in instance.pm.events if name == 'carState')
   assert len(serialized.buttonEvents) == 0
   assert len(physical.buttonEvents) == 1
+
+
+@pytest.mark.parametrize('starpilot_planner', (False, True))
+def test_distance_long_press_reaches_experimental_unless_starpilot_conditional_claims_it(context, monkeypatch, starpilot_planner):
+  # 2026-10-22: with UseStarPilotLongitudinalPlanner=0 a configured CEM used to claim the
+  # long press (Card blocked the key) although upstream plannerd never consumes conditionalMode.
+  import json
+  from openpilot.starpilot.conditional_mode.card_input import conditional_manual_candidate
+  from openpilot.starpilot.conditional_mode.manual import ButtonTracker
+  from openpilot.starpilot.conditional_mode.policy import ModeChoice
+  from openpilot.starpilot.conditional_mode.preferences import SavedPreferences, encode_preferences
+  from openpilot.starpilot.conditional_mode.runtime_settings import ConditionalSettingsOwner
+  from openpilot.starpilot.controllers.wheel_actions import key_for
+  from openpilot.starpilot.feature_runtime import card_conditional_runtime, enabled
+  from openpilot.starpilot.ui import runtime_app
+  params, cp = context
+  assert cp.openpilotLongitudinalControl
+  params.put('ConditionalModeConfig', json.loads(encode_preferences(SavedPreferences(mode=ModeChoice.CEM))), block=True)
+  params.put('UseStarPilotLongitudinalPlanner', starpilot_planner, block=True)
+  params.put('LongDistanceButtonControl', 5, block=True)  # Saved as on the device (Experimental).
+  # Card, selfdrived and the UI all read the same planner-aware gate.
+  gate = card_conditional_runtime(params, {})
+  assert gate is starpilot_planner
+  assert enabled(params, cp, 'conditional', {}) is starpilot_planner
+  monkeypatch.setattr(runtime_app, 'ui_state', NS(params=params, CP=cp))
+  assert runtime_app.StarShellSession._conditional_favorite_active(None) is starpilot_planner
+  # Mirror of Car.update(): the Conditional manual claim runs only when gated, then blocks its key.
+  tracker, settings = (ButtonTracker(), ConditionalSettingsOwner(params)) if gate else (None, None)
+  sm, owner = services(cp), WheelPublisher()
+  receipts, commands = [], []
+  for frame in range(CRUISE_LONG_PRESS + 3):
+    now = NOW + frame * 10_000_000
+    sm.logMonoTime = dict.fromkeys(sm.logMonoTime, now)
+    physical = state(True) if frame == 1 else state()
+    blocked = set()
+    if gate:
+      receipt = conditional_manual_candidate(physical, tracker, params, settings, cp, sm, now_ns=now)
+      if receipt is not None:
+        tracker.claim(receipt[0], receipt[1], receipt[2])
+        receipts.append(receipt)
+        blocked.add(key_for(receipt[0]))
+    commands.extend(command for command in owner.observe(params, cp, physical, now_ns=now, drive_id=DRIVE,
+                                                         blocked_keys=blocked) if command[1])
+  if starpilot_planner:
+    # Unchanged: StarPilot plannerd owns the CEM gesture (Card publishes a conditionalMode event for it).
+    assert len(receipts) == 1 and receipts[0][3] == ModeChoice.CEM
+    assert ('LongDistanceButtonControl', 5) not in commands
+    return
+  assert receipts == []  # No manual receipt -> Card publishes no conditionalMode event.
+  assert commands == [('LongDistanceButtonControl', 5)]
+  publisher = Publisher()
+  owner.publish(tuple(commands), cp, publisher, now_ns=NOW, drive_id=DRIVE, source_car_ns=NOW, source_control_ns=NOW)
+  kinds = [str(messaging.log_from_bytes(raw).slcCruiseEvent.kind) for _, raw in publisher.events]
+  assert kinds == ['wheelAction']
+  received = WheelConsumer().accept(messaging.log_from_bytes(publisher.events[0][1]), params, cp, services(cp), now_ns=NOW)
+  assert (received.key, received.action) == ('LongDistanceButtonControl', 5)  # The UI's plain Experimental toggle.

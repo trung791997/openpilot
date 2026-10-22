@@ -14,6 +14,7 @@ from openpilot.starpilot.aol.intent import independent_axis_requested, read_sett
 from openpilot.starpilot.aol.vehicle import policy_for as aol_policy_for
 from openpilot.starpilot.feature_capabilities import display_supported, longitudinal_supported
 from openpilot.starpilot.longitudinal.profile_runtime import read_settings as read_profile_settings, selected_profiles_requested, read_global_powertrain_preset
+from openpilot.starpilot.longitudinal.planner_selection import read_selection as read_planner_selection
 from openpilot.starpilot.longitudinal.profile_preferences import read_document_value
 from openpilot.starpilot.saved_source import read_saved
 from openpilot.starpilot.speed_limits.runtime_settings import Settings as SlcSettings, read_params as read_slc_settings
@@ -60,6 +61,22 @@ def requested(params, feature: str, *, include_auxiliary: bool = False, saved_sl
   raise ValueError('unknown optional feature')
 
 
+def conditional_planner_selected(params) -> bool:
+  """Conditional's only consumer is StarPilot plannerd; upstream plannerd has none.
+
+  With the upstream planner selected, a Conditional claim on a wheel gesture would
+  drop the press (Card blocks the key, nobody consumes the conditionalMode event).
+  Unreadable/invalid selections keep the default StarPilot planner, as plannerd does.
+  """
+  return read_planner_selection(params).starpilot
+
+
+def card_conditional_runtime(params, environment: Mapping[str, str]) -> bool:
+  """Card's pre-fingerprint Conditional gate; agrees with enabled() on the planner."""
+  return conditional_planner_selected(params) and (
+    environment.get('CONDITIONAL_MODE_REPLAY_RUNTIME') == '1' or requested(params, 'conditional'))
+
+
 def enabled(params, cp, feature: str, environment: Mapping[str, str], *, saved_slc: SlcSettings | None = None) -> bool:
   """Preserve explicit replay opt-ins and each vehicle capability."""
   flags = {'conditional': 'CONDITIONAL_MODE_REPLAY_RUNTIME', 'curve': 'CURVE_REPLAY_RUNTIME',
@@ -74,6 +91,9 @@ def enabled(params, cp, feature: str, environment: Mapping[str, str], *, saved_s
                 (environment.get(flags[feature]) == '1' or
                  (policy.normal_runtime_supported and (policy.full_axis_runtime_required or policy.physical_stalk_owner or requested(params, feature,
                     include_auxiliary=policy.intent_supported and not policy.explicit_latch)))))
+  if feature == 'conditional' and not conditional_planner_selected(params):
+    # Before the replay opt-in: the opt-in cannot create a consumer upstream plannerd lacks.
+    return False
   if feature == 'vision' and environment.get('SLC_REPLAY_RUNTIME') == '1' and environment.get(flags[feature]) == '1':
     return True
   if feature != 'vision' and environment.get(flags[feature]) == '1':
