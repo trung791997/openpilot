@@ -36,6 +36,8 @@ from openpilot.starpilot.ui.onroad_torque import TorqueBarWidget
 from openpilot.starpilot.ui.onroad_navigation import NavigationCard
 from openpilot.starpilot.ui.onroad_navigation_favorites import NavigationFavorites
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile
+from openpilot.starpilot.ui.large_speed_geometry import ACTION_TEXT
+from openpilot.starpilot.ui.speed_limit_widget import MUTED, draw_ink, draw_line, draw_text
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 
 
@@ -43,6 +45,18 @@ CameraLayer = Callable[[rl.Rectangle, OnroadState], None]
 OverlayLayer = Callable[[rl.Rectangle, OnroadState], None]
 PipLayer = Callable[[rl.Rectangle, OnroadState], None]
 ProjectionControlLayer = Callable[[OnroadState], None]
+
+def _load_fade(path: Path) -> rl.Texture:
+  entry = next(item for item in json.loads(Path(__file__).with_name('onroad-assets.json').read_text())['files']
+               if Path(item['file']).name == path.name)
+  with path.open('rb') as stream:
+    data = stream.read(entry['bytes'] + 1)
+  if len(data) != entry['bytes'] or hashlib.sha256(data).hexdigest() != entry['sha256']:
+    raise ValueError(f'Unreviewed onroad fade art: {path.name}')
+  texture = rl.load_texture(str(path))
+  if not texture.id:
+    raise RuntimeError(f'Unable to load onroad fade art: {path.name}')
+  return texture
 
 
 def driving_mode_description(state: OnroadState) -> str:
@@ -119,6 +133,11 @@ class OnroadView:
     self.alert = AlertRenderer(fonts)
     self.navigation = NavigationCard(fonts, clock=self.wall_clock)
     self.navigation_favorites = NavigationFavorites(fonts)
+    if projection_viewport is not None:
+      from openpilot.starpilot.ui.onroad_now_playing import NowPlayingWidget
+      self.now_playing = NowPlayingWidget(fonts)
+      from openpilot.starpilot.ui.onroad_jetlink import JetlinkStatusWidget
+      self.jetlink_status = JetlinkStatusWidget(fonts)
     self.torque_bar = TorqueBarWidget()
     if fonts.profile == Profile.LARGE:
       self.unified_speed = UnifiedSpeedWidget(fonts)
@@ -132,16 +151,8 @@ class OnroadView:
       self._fade: rl.Texture | None = None
 
   def _prepare_compact_fade(self) -> None:
-    if self._fade is not None:
-      return
-    entry = next(item for item in json.loads(Path(__file__).with_name("onroad-assets.json").read_text())["files"]
-                 if item["file"] == "icons_mici/onroad/onroad_fade.png")
-    data = self._fade_path.read_bytes()
-    if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
-      raise ValueError("Unreviewed compact fade art")
-    self._fade = rl.load_texture(str(self._fade_path))
-    if not self._fade.id:
-      raise RuntimeError("Unable to load compact fade art")
+    if self._fade is None:
+      self._fade = _load_fade(self._fade_path)
 
   def render(self, state: OnroadState) -> None:
     if state.camera_available and self.camera_layer is None:
@@ -153,47 +164,33 @@ class OnroadView:
 
   def _slc_actions(self, state: OnroadState) -> None:
     controls = slc_controls(self.fonts.profile, state)
-    if not placement(state.customization, self.fonts.profile, 'speed_limit_actions')['enabled']:
+    feedback = state.speed_limit.action_feedback
+    if (self.fonts.profile == Profile.LARGE and feedback and state.alert.size == AlertSize.NONE and
+        placement(state.customization, self.fonts.profile, 'speed_limit_actions')['enabled']):
+      saved = placement(state.customization, self.fonts.profile, 'speed_limit_actions')
+      draw_ink(self.fonts, feedback, FontRole.MEDIUM, 30, saved['x'], saved['y'] + (122 if controls else 48), MUTED)
+    if not controls:
       return
-    if not controls and not (self.fonts.profile == Profile.LARGE and state.speed_limit.action_feedback and state.alert.size == AlertSize.NONE):
-      return
-    if self.fonts.profile == Profile.COMPACT:
-      pending = state.speed_limit.pending_speed_limit_mps
-      if pending is not None:
-        value = round(pending * (3.6 if state.metric else 2.2369362921))
-        dx, dy = offset(state.customization, "compact", "speed_limit_actions")
-        button_y = 180 + dy
-        header_y = button_y - 32 if button_y >= 32 else button_y + 62
-        self.fonts.draw(f'NEW LIMIT {value}', FontRole.SEMI_BOLD, 20, 180 + dx, header_y)
-    if self.fonts.profile == Profile.LARGE:
-      from openpilot.starpilot.ui.large_speed_geometry import ACTION_X, ACTION_Y
-      dx, dy = offset(state.customization, 'large', 'speed_limit_actions')
-      pending = state.speed_limit.pending_speed_limit_mps
-      heading = state.speed_limit.action_feedback or (
-        f'New road limit {round(pending * (3.6 if state.metric else 2.2369362921))}' if pending is not None else '')
-      if heading:
-        ink_top, _ = self.fonts.vertical_ink(heading, FontRole.MEDIUM, 30)
-        self.fonts.draw(heading, FontRole.MEDIUM, 30, ACTION_X + dx + 32, ACTION_Y + dy - ink_top)
+    large = self.fonts.profile == Profile.LARGE
+    size, cy = ACTION_TEXT[self.fonts.profile]
+    _, dy = offset(state.customization, self.fonts.profile, 'speed_limit_actions')
+    cy += dy
+    role = FontRole.MEDIUM
+    a, b = self.fonts.vertical_ink('Accept Decline', role, size)
+    color = rl.Color(*rgba(state.customization, 'text', self.fonts.profile, 'speed_limit_actions'))
+    if len(controls) == 2:
+      center_x = (controls[0].bounds[2] + controls[1].bounds[0]) / 2
+      extent = 26 if large else 18
+      draw_line(self.fonts.profile, rl.Vector2(center_x, cy - extent), rl.Vector2(center_x, cy + extent),
+                2 if large else 1, rl.Color(155, 178, 173, 170))
     for control in controls:
-      left, top, right, bottom = control.bounds
-      rect = rl.Rectangle(left, top, right - left, bottom - top)
-      rounding = .15 if self.fonts.profile == Profile.LARGE else .22
-      border_width = 1 if self.fonts.profile == Profile.LARGE else 2
-      rl.draw_rectangle_rounded(rect, rounding, 8, rl.Color(*rgba(state.customization, "cardFill", self.fonts.profile, "speed_limit_actions")))
-      rl.draw_rectangle_rounded_lines_ex(rect, rounding, 8, border_width,
-                                       rl.Color(*rgba(state.customization, "cardBorder", self.fonts.profile, "speed_limit_actions")))
-      pressed = getattr(self, 'pressed_action', lambda: None)() == control.request
-      if pressed:
-        rl.draw_rectangle_rounded(rect, .22, 8, rl.Color(197, 163, 255, 55))
-      size = 32 if self.fonts.profile == Profile.LARGE else 20
-      role = FontRole.MEDIUM if self.fonts.profile == Profile.LARGE else FontRole.SEMI_BOLD
-      while size > 12 and self.fonts.measure(control.label, role, size).width > rect.width - 20:
-        size -= 1
+      left, _, right, _ = control.bounds
       measured = self.fonts.measure(control.label, role, size)
-      self.fonts.draw(control.label, role, size,
-                      rect.x + (rect.width - measured.width) / 2,
-                      rect.y + (rect.height - measured.height) / 2,
-                      rl.Color(*rgba(state.customization, "text", self.fonts.profile, "speed_limit_actions")))
+      x = (left + right - measured.width) / 2
+      draw_text(self.fonts, control.label, role, size, x, cy - (b - a) / 2 - a, color)
+      if getattr(self, 'pressed_action', lambda: None)() == control.request:
+        y = cy + (b - a) / 2 + (8 if large else 4)
+        draw_line(self.fonts.profile, rl.Vector2(x, y), rl.Vector2(x + measured.width, y), 3 if large else 2, color)
 
   def _preview_badge(self, state: OnroadState) -> None:
     """Keep synthetic replay visibly identified even over a full alert."""
@@ -293,6 +290,12 @@ class OnroadView:
       for key in ("nav_home", "nav_work", "bookmark"):
         if key in state.customization["layouts"]["large"]:
           submit(key, lambda key=key: self.navigation_favorites.render(key, state))
+      if "now_playing" in state.customization["layouts"]["large"]:
+        if now_playing := getattr(self, "now_playing", None):
+          submit("now_playing", lambda: now_playing.render(state))
+      if "jetlink_status" in state.customization["layouts"]["large"]:
+        if jetlink := getattr(self, "jetlink_status", None):
+          submit("jetlink_status", lambda: jetlink.render(state))
       if "car_exit" in state.customization["layouts"]["large"]:
         if exit_layer := getattr(self, "projection_exit_layer", None):
           submit("car_exit", lambda: exit_layer(state))
@@ -400,6 +403,10 @@ class OnroadView:
       if not ordered:
         for key in ("nav_home", "nav_work", "bookmark"):
           self.navigation_favorites.render(key, state)
+        if now_playing := getattr(self, "now_playing", None):
+          now_playing.render(state)
+        if jetlink := getattr(self, "jetlink_status", None):
+          jetlink.render(state)
         self._driving_mode(state, right_shift / 2)
         self._clock(state, right_shift / 2)
         if exit_layer := getattr(self, "projection_exit_layer", None):

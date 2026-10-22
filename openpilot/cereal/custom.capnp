@@ -90,6 +90,30 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
     }
     version @12 :UInt16;
   }
+
+  phoneGps @3 :StarPilotCarState.Gps;  # sourceMonoTime is comma receive time minus the phone's fix age
+
+
+  struct PreapRadarStartup {
+    version @0 :UInt16;
+    kind @1 :UInt16;
+    carParamsSha256 @2 :Data;
+    safetyModel @3 :UInt16;
+    safetyParam @4 :UInt16;
+    lateralOffset @5 :Float32;
+  }
+
+  struct PreapPedalStartup {
+    version @0 :UInt16;
+    kind @1 :UInt16;
+    carParamsSha256 @2 :Data;
+    safetyModel @3 :UInt16;
+    safetyParam @4 :UInt16;
+    factor @5 :Float32;  # original DI units per physical pedal unit
+    zero @6 :Float32;  # original physical pedal unit offset
+    pedalBus @7 :UInt16;
+    sourceMonoTime @8 :UInt64;  # CLOCK_MONOTONIC ns from actual Card startup
+  }
 }
 struct StarPilotCarParams @0xaedffd8f31e7b55d {
   alternativeExperience @0 :Int16;
@@ -278,6 +302,12 @@ struct SlcState @0xa1680744031fdb2d {
   overrideBasis @48 :Text; # none/pedal/persistent; qualified contribution only
   retainedOverride @49 :Bool;
   commandActionSequenceId @50 :UInt64; # UI sequence that issued this command
+  automaticAdoptionPending @51 :Bool;
+  pendingSinceMonoTime @52 :UInt64;
+  # Presentation only; zero means no limit received in this session.
+  lastReceivedSpeedLimit @53 :Float32;
+  lastReceivedSource @54 :Text;
+  lastReceivedAdjustedLimit @55 :Float32;
   struct SourceReading {
     source @0 :Text;
     enabled @1 :Bool;
@@ -813,10 +843,12 @@ struct SlcCruiseCommand @0xbd443b539493bc68 {
   expiresMonoTime @11 :UInt64;
   expectedSelectedMps @12 :Float32;
   targetMps @13 :Float32;
+  source @14 :Text;
 
   enum Kind {
     unknown @0;
     adoptAcceptedHigherLimit @1;
+    adoptAcceptedLimit @2;
   }
 }
 
@@ -926,6 +958,7 @@ struct AolAxisState @0xfc6241ed8877b611 {
     direction @9 :Direction;
     autoConfigured @10 :Bool;
     engaged @11 :Bool;
+    turnDirection @12 :Direction;  # the turn desire modeld gave this model frame (navigation or Force turn desires)
 
     enum Phase {
       manualRequired @0;

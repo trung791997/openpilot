@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
+import pytest
 from unittest.mock import Mock, patch
 
 import pyray as rl
@@ -59,8 +60,9 @@ class TestOnroadAxes(unittest.TestCase):
         fonts.horizontal_ink.return_value = (0, 20)
         with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
           UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-        label_color = fonts.draw.call_args_list[0].args[-1]
-        self.assertEqual(rgba(label_color), (172, 190, 203, 255))
+        from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+        label_color = foreground_calls(fonts.draw)[0].args[-1]
+        self.assertEqual(rgba(label_color), (190, 208, 202, 255))
         compact = CompactHudRenderer(fonts, Path("/unused"))
         with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
              patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
@@ -88,19 +90,21 @@ class TestOnroadAxes(unittest.TestCase):
     self.ui.sm.logMonoTime['selfdriveState'] = NOW - 300_000_000
     self.assertFalse(self.state(True, False).longitudinal_overridden)
 
-  def test_driver_inputs_gray_active_axes_and_clear_on_release(self):
+  def test_driver_inputs_only_gray_their_active_axis_and_clear_on_release(self):
     car = self.ui.sm['carState']
-    for lateral, longitudinal in ((False, False), (True, False), (False, True), (True, True)):
+    gray, blue, cyan, pink = (145, 155, 149, 255), (18, 40, 57, 255), (10, 186, 181, 255), (255, 105, 180, 255)
+    for lateral, longitudinal, colors in ((False, False, (blue, blue, blue)), (True, False, (cyan, gray, gray)),
+                                           (False, True, (gray, pink, gray)), (True, True, (gray, gray, gray))):
       self.ui.sm['selfdriveState'].enabled = longitudinal
-      for gas, steering in ((True, False), (False, True), (True, True)):
+      for (gas, steering), color in zip(((True, False), (False, True), (True, True)), colors, strict=True):
         with self.subTest(lateral=lateral, longitudinal=longitudinal, gas=gas, steering=steering):
           car.gasPressed, car.steeringPressed = gas, steering
           state = self.state(lateral, longitudinal)
-          self.assertEqual(state.driver_override_active, lateral or longitudinal)
+          self.assertEqual(state.driver_override_active, color == gray)
           self.assertEqual((state.lateral_active, state.longitudinal_active), (lateral, longitudinal))
           self.assertFalse(state.longitudinal_overridden)
           self.assertEqual(state.cruise_active, longitudinal)
-          self.assertEqual(rgba(axis_status_color(state)), (145, 155, 149, 255) if state.engaged else (18, 40, 57, 255))
+          self.assertEqual(rgba(axis_status_color(state)), color)
           car.gasPressed = car.steeringPressed = False
           released = self.state(lateral, longitudinal)
           self.assertFalse(released.driver_override_active)
@@ -111,17 +115,70 @@ class TestOnroadAxes(unittest.TestCase):
     self.ui.sm['selfdriveState'].enabled = False
     for field in ('gasPressed', 'steeringPressed'):
       with self.subTest(field=field):
+        longitudinal = field == 'gasPressed'
         setattr(car, field, True)
-        self.assertTrue(self.state(True, False).driver_override_active)
+        self.assertTrue(self.state(True, longitudinal).driver_override_active)
         for service in ('carState', 'carControl'):
           self.ui.sm.logMonoTime[service] = NOW - 300_000_000
-          self.assertFalse(self.state(True, False).driver_override_active)
+          self.assertFalse(self.state(True, longitudinal).driver_override_active)
           self.ui.sm.logMonoTime[service] = NOW
         for valid, timeout in ((False, False), (True, True)):
           car.canValid, car.canTimeout = valid, timeout
-          self.assertFalse(self.state(True, False).driver_override_active)
+          self.assertFalse(self.state(True, longitudinal).driver_override_active)
         car.canValid, car.canTimeout = True, False
         setattr(car, field, False)
+
+  def test_independent_long_request_distinguishes_pause_from_pedal_override(self):
+    self.ui.aol_runtime = True
+    self.ui.sm['selfdriveState'].state = 'overriding'
+    axis = NS(qualified=True, sessionId='ui-axis', observedMonoTime=NOW, validUntilMonoTime=NOW + 30_000_000,
+              nativeAcknowledged=True, desiredLongitudinal=False)
+    self.ui.sm.put('aolAxisState', axis)
+    car = self.ui.sm['carState']
+    for requested, gas, steering, gray, pedal in (
+        (False, False, False, False, False), (False, True, False, False, False),
+        (False, False, True, True, False), (False, True, True, True, False),
+        (True, False, False, False, False), (True, True, False, True, True),
+        (True, False, True, True, False), (True, True, True, True, True)):
+      with self.subTest(requested=requested, gas=gas, steering=steering):
+        axis.desiredLongitudinal = requested
+        car.gasPressed, car.steeringPressed = gas, steering
+        state = self.state(True, False)
+        self.assertEqual(state.longitudinal_overridden, pedal)
+        self.assertEqual(state.driver_override_active, gray)
+        self.assertEqual(state.cruise_active, pedal)
+        self.assertEqual(driving_mode_description(state), 'ACC - Override' if pedal else 'Always On Lateral')
+        self.assertEqual(rgba(axis_status_color(state)), (145, 155, 149, 255) if gray else (10, 186, 181, 255))
+
+  def test_independent_pedal_override_requires_current_axis_request(self):
+    self.ui.aol_runtime = True
+    self.ui.sm['selfdriveState'].state = 'overriding'
+    self.ui.sm['carState'].gasPressed = True
+    self.assertFalse(self.state(True, False).longitudinal_overridden)
+    axis = NS(qualified=True, sessionId='ui-axis', observedMonoTime=NOW, validUntilMonoTime=NOW + 30_000_000,
+              nativeAcknowledged=True, desiredLongitudinal=True)
+    self.ui.sm.put('aolAxisState', axis)
+    self.assertTrue(self.state(True, False).longitudinal_overridden)
+    for field, value in (('qualified', False), ('sessionId', ''), ('observedMonoTime', NOW + 1),
+                         ('validUntilMonoTime', NOW - 1), ('nativeAcknowledged', False)):
+      with self.subTest(field=field):
+        original = getattr(axis, field)
+        setattr(axis, field, value)
+        state = self.state(True, False)
+        self.assertFalse(state.longitudinal_overridden or state.driver_override_active or state.cruise_active)
+        setattr(axis, field, original)
+    for stamp in (NOW + 1, NOW - 31_000_000):
+      self.ui.sm.logMonoTime['aolAxisState'] = stamp
+      self.assertFalse(self.state(True, False).longitudinal_overridden)
+    self.ui.sm.logMonoTime['aolAxisState'] = NOW
+    self.ui.sm.recv_frame['aolAxisState'] = self.ui.started_frame
+    self.assertFalse(self.state(True, False).longitudinal_overridden)
+    self.ui.sm.recv_frame['aolAxisState'] = self.ui.started_frame + 1
+    for flags in (self.ui.sm.valid, self.ui.sm.alive, self.ui.sm.seen):
+      flags['aolAxisState'] = False
+      self.assertFalse(self.state(True, False).longitudinal_overridden)
+      flags['aolAxisState'] = True
+    self.assertTrue(self.state(True, False).longitudinal_overridden)
 
   def test_traffic_returns_after_conditional_stop_without_changing_intent(self):
     from openpilot.starpilot.conditional_mode.policy import ModeChoice
@@ -248,7 +305,8 @@ class TestOnroadAxes(unittest.TestCase):
     fonts.horizontal_ink.return_value = (0, 20)
     with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
       UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-    self.assertEqual(rgba(fonts.draw.call_args_list[0].args[-1]), (172, 190, 203, 255))
+    from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+    self.assertEqual(rgba(foreground_calls(fonts.draw)[0].args[-1]), (190, 208, 202, 255))
     compact = CompactHudRenderer(fonts, Path("/unused"))
     with patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(state)
@@ -277,6 +335,7 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertEqual(requests, [])
     fonts = Mock()
     fonts.measure.return_value = NS(width=20, height=10)
+    fonts.vertical_ink.return_value = (0, 10)
     compact = CompactHudRenderer(fonts, Path("/unused"))
     with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
          patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
@@ -332,3 +391,9 @@ class TestOnroadAxes(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+@pytest.fixture(autouse=True)
+def mock_sign_graphics(monkeypatch):
+  for name in ('draw_rectangle_rounded_lines_ex', 'draw_circle', 'draw_ring'):
+    monkeypatch.setattr('openpilot.starpilot.ui.speed_limit_widget.rl.' + name, Mock())

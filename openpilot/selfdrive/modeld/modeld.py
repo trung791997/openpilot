@@ -64,7 +64,7 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
-BIG_MODEL_TIMEOUT = 60
+BIG_MODEL_TIMEOUT = 120
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
@@ -343,8 +343,13 @@ def main(demo=False):
   cloudlog.info("modeld got CarParams: %s", CP.brand)
   # A car on LatControlHondaEps tells the model its calibration's measured delay schedule instead of lagd's, as controlsd
   # does for the controller (Night Star port; the schedule and the command delay are sized together).
-  from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import lateral_delay_schedule, scheduled_lateral_delay
+  from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import lateral_delay_schedule, lateral_smooth_seconds, \
+    scheduled_lateral_delay
   lat_delay_schedule = lateral_delay_schedule(CP)
+  # ... and keeps vfn's 0.1 s curvature smoothing; every runner's action (bundled, catalog, Jetlink) reads this module's
+  # LAT_SMOOTH_SECONDS, and the manager runs modeld by its module name, so they all see it
+  global LAT_SMOOTH_SECONDS
+  LAT_SMOOTH_SECONDS = lateral_smooth_seconds(CP, LAT_SMOOTH_SECONDS)
 
   st = time.monotonic()
   cloudlog.warning("loading model")
@@ -384,7 +389,7 @@ def main(demo=False):
       try:
         wait_for_chestnut()
         if not demo:
-          wait_for_chestnut_power(CP, timeout=BIG_MODEL_TIMEOUT / 2)
+          wait_for_chestnut_power(CP, timeout=min(30., BIG_MODEL_TIMEOUT / 2))
         if selection.big_path is not None:
           m, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                             big_path, selection.big_version, True, selection.big_id, selection.big_sha256)
@@ -427,6 +432,9 @@ def main(demo=False):
     # the joining model drives as small_model until the big model is ready
     model = HOOKS.attach(model, small_model, vipc_client_main.width, vipc_client_main.height)
     jetlink_model = model if model is not small_model else None
+    if jetlink_model is not None:
+      from openpilot.starpilot.models.jetlink_status import start_latency_writer
+      start_latency_writer(jetlink_model)
   params.put_bool("ChestnutLoading", False)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
   release_compile_pool()
@@ -653,7 +661,9 @@ def main(demo=False):
       lane_status = LaneChangeStatus(lane_status_session, lane_status_sequence,
                                      int(modelv2_send.modelV2.frameId), int(modelv2_send.modelV2.timestampEof),
                                      mono_now_ns, mono_now_ns + 150_000_000, phase, status_direction,
-                                     runtime_lane_policy.auto_lane_change, engaged)
+                                     runtime_lane_policy.auto_lane_change, engaged,
+                                     StatusDirection.LEFT if desire == log.Desire.turnLeft else
+                                     StatusDirection.RIGHT if desire == log.Desire.turnRight else StatusDirection.NONE)
       lane_status_sequence += 1
       lane_status_msg = None
       status_bytes = encode_lane_status(lane_status)

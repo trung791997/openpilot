@@ -10,6 +10,7 @@ from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK
                                                          CEM_GAUGE_FRAME, CEM_GAUGE_INSET, SPEED_ALIGNMENTS, customization_metadata, validate_widget_order)
 from openpilot.starpilot.ui.onroad_stopped_timer import timer_size
 from openpilot.starpilot.ui.onroad_torque_geometry import maximum_footprint
+from openpilot.starpilot.ui.onroad_customization import SPEED_LAYOUT_V7, migrate_speed_layout
 
 MAX_BYTES = 16384
 DOCUMENT_KEY = 'projection'
@@ -28,7 +29,14 @@ FAVORITE_SIZE = (320, 110)
 FAVORITE_ICON_SIZE = 110
 CAR_EXIT_SIZE = (96, 96)
 CAR_EXIT_MIN_OPACITY = 25
-PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, CAR_EXIT)
+NOW_PLAYING_WIDGET = 'now_playing'
+NOW_PLAYING_SIZE = (520, 96)
+NOW_PLAYING_OPACITY = (0, 100, 85)  # percent: min, max, default
+JETLINK_WIDGET = 'jetlink_status'
+JETLINK_SIZE = (420, 84)
+JETLINK_OPACITY = (0, 100, 85)  # percent: min, max, default
+CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}  # background opacity only
+PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT)
 NAV_CARD_SIZE = (560, 195)
 MAP_MIN_SIZE = (280, 200)
 MAP_OPACITY = (15, 100, 50)  # percent: min, max, default
@@ -105,6 +113,18 @@ def layout_metadata_for_viewport(viewport):
                               'iconSize': FAVORITE_ICON_SIZE,
                               'note': 'Save a bookmark in the current drive recording.',
                               'default': {'x': width - 30 - FAVORITE_SIZE[0], 'y': 155, 'enabled': False, 'display': 'words'}}
+  widgets[NOW_PLAYING_WIDGET] = {'label': 'Now playing', 'kind': NOW_PLAYING_WIDGET,
+                                 'width': NOW_PLAYING_SIZE[0], 'height': NOW_PLAYING_SIZE[1], 'colors': {},
+                                 'note': 'The song playing from Spotify or your phone over Bluetooth. Opacity sets the card background.',
+                                 'opacity': {'min': NOW_PLAYING_OPACITY[0], 'max': NOW_PLAYING_OPACITY[1], 'default': NOW_PLAYING_OPACITY[2]},
+                                 'collapseToggle': True,
+                                 'default': {'x': width - 30 - NOW_PLAYING_SIZE[0], 'y': height - 30 - NOW_PLAYING_SIZE[1],
+                                             'enabled': True, 'opacity': NOW_PLAYING_OPACITY[2], 'collapse': False}}
+  widgets[JETLINK_WIDGET] = {'label': 'Jetlink status', 'kind': JETLINK_WIDGET,
+                             'width': JETLINK_SIZE[0], 'height': JETLINK_SIZE[1], 'colors': {},
+                             'note': 'Shown while Jetlink is on: connection, device and host processing time. Opacity sets the card background.',
+                             'opacity': {'min': JETLINK_OPACITY[0], 'max': JETLINK_OPACITY[1], 'default': JETLINK_OPACITY[2]},
+                             'default': {'x': 30, 'y': 650, 'enabled': False, 'opacity': JETLINK_OPACITY[2]}}
   exit_w, exit_h = CAR_EXIT_SIZE
   widgets[CAR_EXIT] = {'label': 'Exit to car', 'kind': CAR_EXIT, 'width': exit_w, 'height': exit_h, 'colors': {},
                        'required': True, 'frontmost': True,
@@ -117,7 +137,7 @@ def layout_metadata_for_viewport(viewport):
   # Background opacity for the cruise and speed-limit card; its text stays solid.
   widgets['cruise_limits'].update(opacity={'min': 0, 'max': 100, 'default': 100})
   widgets['cruise_limits']['default'].update(opacity=100)
-  profile["widgetOrder"] = [NAV_MAP, *profile["widgetOrder"], STOPPED_TIMER_WIDGET, NAV_CARD, *DISPLAY_WIDGETS, CAR_EXIT]
+  profile["widgetOrder"] = [NAV_MAP, *profile["widgetOrder"], STOPPED_TIMER_WIDGET, NAV_CARD, *DISPLAY_WIDGETS, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT]
   return profile
 
 
@@ -166,7 +186,7 @@ def default_layout(screen, display=None):
 def default_layout_for_viewport(viewport, display=None):
   metadata = layout_metadata_for_viewport(viewport)
   display = {**DISPLAY_DEFAULTS, **{key: value for key, value in (display or {}).items() if key in DISPLAY_DEFAULTS}}
-  return {'version': 3, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
+  return {'version': 4, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
           'widgets': {key: {**widget['default'], **({'size': 192} if key == 'steering_wheel' else {})}
                       for key, widget in metadata['widgets'].items()}}
 
@@ -191,19 +211,15 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
   if type(value) is dict and type(value.get('version')) is int and value['version'] == 1 and not _legacy_geometry:
     result = validate_layout_for_viewport(value, viewport, _legacy_geometry=True)
     card, actions = result['widgets']['cruise_limits'], result['widgets']['speed_limit_actions']
-    if actions['x'] == card['x'] and actions['y'] - card['y'] in (372, 425):
-      actions['y'] = card['y'] + 492
-    for key in ('cruise_limits', 'speed_limit_actions'):
-      widget, saved = metadata['widgets'][key], result['widgets'][key]
-      for axis, extent in (('x', 'width'), ('y', 'height')):
-        saved[axis] = min(saved[axis], metadata['bounds'][axis] + metadata['bounds'][extent] - widget[extent])
+    gap = actions['y'] - card['y']
+    migrate_speed_layout(result['widgets'], 'large', metadata['bounds'], gap if gap in (372, 425) else 232)
     result['version'] = 2
     return validate_layout_for_viewport(result, viewport)
   fields = {'version', 'canvas', 'widgets'}
   if type(value) is dict:
     fields |= {field for field in ('widgetOrder', 'clock24Hour', 'largeUiGammaTrial', *DISPLAY_DEFAULTS) if field in value}
   if (type(value) is not dict or set(value) != fields or
-      type(value['version']) is not int or value['version'] not in (1, 2, 3) or
+      type(value['version']) is not int or value['version'] not in (1, 2, 3, 4) or
       value['canvas'] != {key: metadata[key] for key in ('width', 'height')} or
       type(value['widgets']) is not dict or not set(value['widgets']) <= set(metadata['widgets']) or
       not set(metadata['widgets']) - set(value['widgets']) <= {CEM_GAUGE_WIDGET, MODE_WIDGET, CLOCK_WIDGET, *PROJECTION_WIDGETS}):
@@ -241,6 +257,10 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       placement.setdefault('background', True)
     if key == 'cruise_limits' and type(placement) is dict:
       placement.setdefault('opacity', 100)
+    if key in CARD_WIDGETS and type(placement) is dict:
+      placement.setdefault('opacity', CARD_WIDGETS[key][2])
+    if key == NOW_PLAYING_WIDGET and type(placement) is dict:
+      placement.setdefault('collapse', False)
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:
       for axis in ('x', 'y'):
         if type(placement.get(axis)) in (int, float):
@@ -249,7 +269,8 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     fields = ({'x', 'y', 'enabled'} | ({'size'} if widget.get('resizable') else set()) |
               ({'display'} if key in DISPLAY_WIDGETS else set()) |
               ({'opacity', 'background'} if key in ACTION_WIDGETS else set()) |
-              ({'opacity'} if key == 'cruise_limits' else set()) |
+              ({'opacity'} if key == 'cruise_limits' or key in CARD_WIDGETS else set()) |
+              ({'collapse'} if key == NOW_PLAYING_WIDGET else set()) |
               ({'width', 'height', 'opacity'} if key == NAV_MAP else set()))
     if type(placement) is not dict or set(placement) != fields or type(placement['enabled']) is not bool:
       raise ValueError('Invalid projection widget')
@@ -262,6 +283,11 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       raise ValueError('Invalid action widget appearance')
     if key == 'cruise_limits' and (type(placement['opacity']) is not int or not 0 <= placement['opacity'] <= 100):
       raise ValueError('Invalid cruise card opacity')
+    if key in CARD_WIDGETS and (type(placement['opacity']) is not int or
+                                not CARD_WIDGETS[key][0] <= placement['opacity'] <= CARD_WIDGETS[key][1]):
+      raise ValueError('Invalid card opacity')
+    if key == NOW_PLAYING_WIDGET and type(placement['collapse']) is not bool:
+      raise ValueError('Invalid now playing collapse setting')
     if key == CAR_EXIT and placement['opacity'] < CAR_EXIT_MIN_OPACITY:
       raise ValueError('Exit to car opacity must be at least 25%')
     if widget.get('resizable'):
@@ -275,6 +301,8 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
           type(placement['opacity']) is not int or not opacity['min'] <= placement['opacity'] <= opacity['max']):
         raise ValueError('Invalid map overlay size or opacity')
     dimensions = placement_size(key, widget, placement)
+    if value['version'] < 4 and key in SPEED_LAYOUT_V7['large']:
+      dimensions = SPEED_LAYOUT_V7['large'][key][:2]
     # Version 2 and older saved the CEM gauge's full drawing frame; check that, then move to the inset box.
     old_gauge = key == CEM_GAUGE_WIDGET and value['version'] < 3 and key in value['widgets']
     if old_gauge:
@@ -294,7 +322,11 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     if old_gauge and not _legacy_geometry:
       placement.update(x=placement['x'] + CEM_GAUGE_INSET[0], y=placement['y'] + CEM_GAUGE_INSET[1])
   if not _legacy_geometry:
-    result['version'] = 3
+    if value['version'] < 4:
+      card, actions = result['widgets']['cruise_limits'], result['widgets']['speed_limit_actions']
+      gap = actions['y'] - card['y']
+      migrate_speed_layout(result['widgets'], 'large', bounds, gap if gap in (232, 492) else 232)
+    result['version'] = 4
   if len(json.dumps(result, separators=(',', ':'), allow_nan=False).encode()) > MAX_BYTES:
     raise ValueError('Projection layout too large')
   return result

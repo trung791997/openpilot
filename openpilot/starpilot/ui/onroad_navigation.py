@@ -1,35 +1,19 @@
 from collections import OrderedDict
 from datetime import datetime, timedelta
 import hashlib
-import json
-from pathlib import Path
 
 import pyray as rl
 
 from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice
+from openpilot.starpilot.ui.navigation_icons import ASSETS, MANIFEST, icon_name
 from openpilot.starpilot.ui.navigation_state import distance_text
 from openpilot.starpilot.ui.presentation import FontRole, Profile
 
 
-ASSETS = Path(__file__).parent / 'assets/navigation'
-MANIFEST = {row['file']: row for row in json.loads(Path(__file__).with_name('navigation-assets.json').read_text())['files']}
-
-
-def icon_name(maneuver_type: str, modifier: str) -> str:
-  kind = {'rotary': 'roundabout', 'new name': 'turn', 'continue': 'turn'}.get(maneuver_type, maneuver_type).replace(' ', '_')
-  suffix = {'slightLeft': 'slight_left', 'slightRight': 'slight_right', 'sharpLeft': 'sharp_left',
-            'sharpRight': 'sharp_right'}.get(modifier, modifier).replace(' ', '_')
-  candidate = 'direction_uturn.png' if suffix == 'uturn' else f'direction_{kind}{"_" + suffix if suffix else ""}.png'
-  return candidate if candidate in MANIFEST else 'direction_turn_straight.png'
-
-
 def _overlaps_slc_actions(rect, profile, state) -> bool:
-  from openpilot.starpilot.ui.large_speed_geometry import ACTION_HEADER_HEIGHT
   from openpilot.starpilot.ui.onroad_state import slc_controls
   for control in slc_controls(profile, state):
-    # Include the decision header drawn above the buttons.
     left, top, right, bottom = control.bounds
-    top -= ACTION_HEADER_HEIGHT
     if left < rect.x + rect.width and rect.x < right and top < rect.y + rect.height and rect.y < bottom:
       return True
   return False

@@ -20,7 +20,8 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_angle import STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.lateral_controller_factory import create_lateral_controller
-from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import LatControlHondaEps, get_rack_map, lateral_delay_schedule, \
+from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import LatControlHondaEps, ModelActionRamp, get_rack_map, \
+  lateral_delay_schedule, lateral_smooth_seconds, \
   scheduled_lateral_delay, write_eps_state
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
@@ -30,7 +31,8 @@ from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.lateral.pause import LateralPause, read_settings as read_lateral_pause
 from openpilot.starpilot.lateral.model_turn_assist import ModelTurnAssist, update_twitch_guard
-from openpilot.starpilot.aol.runtime import current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged
+from openpilot.starpilot.aol.runtime import (current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged,
+                                            refresh_expired_lateral_snapshot)
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed, allow_lateral_onset
 from openpilot.starpilot.lateral.lane_centering import (
   LaneCenteringController, LaneCenteringInput, LaneCenteringRequest, LaneCenteringResult,
@@ -56,6 +58,11 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
 class Controls:
+  # Night Star port: defaults for the Honda EPS controller's hooks, so a Controls built without __init__ (tests that set
+  # their own state) runs the stock path
+  rack_map = None
+  lat_delay_schedule = None
+
   def __init__(self) -> None:
     self.params = Params()
     cloudlog.info("controlsd is waiting for CarParams")
@@ -130,6 +137,9 @@ class Controls:
     honda_eps = isinstance(self.LaC, LatControlHondaEps)
     self.rack_map = get_rack_map(self.CP, self.LaC.calibration) if honda_eps else None
     self.lat_delay_schedule = lateral_delay_schedule(self.CP) if honda_eps else None
+    # and keeps vfn's model-curvature smoothing: the 0.1 s low-pass's delay here, and the action ramped across each frame
+    self.lat_smooth_seconds = lateral_smooth_seconds(self.CP, LAT_SMOOTH_SECONDS)
+    self.model_action_ramp = ModelActionRamp() if honda_eps else None
 
     from openpilot.starpilot.lateral.controller_selection import model_turn_assist_supported
     assist_enabled = self.vehicle_startup_preferences.turn_assist and model_turn_assist_supported(self.CP)
@@ -166,6 +176,10 @@ class Controls:
       self.LaC.__dict__.pop(name, None)
 
   def state_control(self, *, lane_centering: LaneCenteringRequest | None = None):
+    lateral_inputs_refreshed = False
+    if (self.aol_replay and os.getenv('REPLAY') != '1' and
+        getattr(self, 'aol_previous_lateral_active', False)):
+      lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=time.monotonic_ns())
     CS = self.sm['carState']
     self.flm_native_witness = None
     if self.lateral_gain_owner is not None:
@@ -233,6 +247,12 @@ class Controls:
                           ordinary_axis_acknowledged(self.sm, self.CP, now_ns=now_ns,
                             on_validated_native=lambda native: setattr(self, 'flm_native_witness', native)))
 
+    if lateral_inputs_refreshed:
+      # A newly received physical veto wins over an older admitted axis. This
+      # LAT-only refresh cannot enable ordinary LONG; its next normal cycle owns that transition.
+      CC.latActive = bool(CC.latActive and CS.canValid and not CS.canTimeout)
+      CC.longActive = False
+
     fault_latch = getattr(self, 'hyundai_lateral_fault', None)
     if fault_latch is not None:
       latched = fault_latch.update(requested=lateral_requested, temporary_fault=bool(CS.steerFaultTemporary),
@@ -296,6 +316,9 @@ class Controls:
     # accel PID loop
     publish_takeoff_state = getattr(self.LoC, 'takeoff_starting', False)
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    from opendbc.car.tesla.preap.pedal_profile import accel_limits as preap_pedal_limits
+    pid_accel_limits = preap_pedal_limits(self.CP, CS.vEgo,
+      getattr(self.sm['selfdriveState'].personality, 'raw', 1), pid_accel_limits)
     longitudinal_output = self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
                                           context=self.longitudinal_inputs.context(CC.longActive))
     actuators.accel = final_output(longitudinal_output)
@@ -309,6 +332,8 @@ class Controls:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      if getattr(self, 'model_action_ramp', None) is not None:
+        new_desired_curvature = self.model_action_ramp.update(new_desired_curvature, self.sm.updated['modelV2'], CC.latActive)
     assist = self.turn_assist_enabled()
     rolling = math.isfinite(CS.vEgo) and CS.vEgo > max(.1 * CV.MPH_TO_MS, self.CP.minSteerSpeed)
     if (assist and rolling and self.sm.all_checks(['modelV2']) and CC.latActive and not CS.standstill and not CS.steerFaultTemporary and
@@ -359,7 +384,7 @@ class Controls:
       self.lane_centering_applied = self.desired_curvature - baseline_curvature
     lateral_delay = scheduled_lateral_delay(self.lat_delay_schedule, CS.vEgo) if self.lat_delay_schedule else \
       self.sm["lateralDelay"].lateralDelay
-    lat_delay = lateral_delay + LAT_SMOOTH_SECONDS
+    lat_delay = lateral_delay + getattr(self, 'lat_smooth_seconds', LAT_SMOOTH_SECONDS)
 
     actuators.curvature = self.desired_curvature
     automatic = getattr(self, 'global_learning', None)
