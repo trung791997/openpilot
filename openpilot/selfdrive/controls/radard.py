@@ -15,6 +15,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.adjacent_leads import AdjacentRailMonitor, get_adjacent_lead
 from openpilot.starpilot.conditional_mode.adjacent import (
   CLOCK_PAIR_MAX_SKEW_NS, MODEL_EOF_MAX_AGE_NS, MODEL_MAX_AGE_NS, SOURCE_MAX_AGE_NS,
   AdjacentFrame, AdjacentObservation, AdjacentTrack, MonoSource, UNKNOWN, evaluate,
@@ -201,8 +202,14 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
 class RadarD:
   def __init__(self, delay: float = 0.0, *, adjacent_enabled: bool = False, radar_available: bool = False,
-               clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False):
+               clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False,
+               adjacent_leads: bool = False):
     self.use_voacc = use_voacc
+    # leadLeft/leadRight (lib/adjacent_leads.py). Published only inside starpilotRadarState, i.e. with adjacent_enabled.
+    self.adjacent_leads = adjacent_leads
+    self.adjacent_rail_monitor = AdjacentRailMonitor()
+    self.lead_left: dict[str, Any] | None = None
+    self.lead_right: dict[str, Any] | None = None
     self.tracks: dict[int, Track] = {}
     self.honda_bosch_a = None
     if honda_bosch_a_radar:
@@ -365,6 +372,22 @@ class RadarD:
     if self.adjacent_enabled:
       self._qualified_adjacent(sm, rr)
 
+    # === leadLeft/leadRight: port of iq-nav-on-pr10 radard get_adjacent_lead (see lib/adjacent_leads.py). ===
+    # Labels only: self.tracks, leadOne/leadTwo and qualifiedAdjacent are not changed. The one consumer on this tree is
+    # the V-ASM radar pass hold. The source excluded Track.leadTrackID, which its get_lead leaves at leadTwo's id.
+    self.lead_left = self.lead_right = None
+    if self.adjacent_leads:
+      self.adjacent_rail_monitor.update(self.tracks, sm.logMonoTime['radarTracks'] * 1e-9)
+      if self.ready:
+        lead_two = self.radar_state.leadTwo
+        lead_track_id = int(lead_two.radarTrackId) if (len(leads_v3) > 1 and lead_two.present) else -1
+        standstill = bool(sm['carState'].standstill)
+        honda_bosch_a = self.honda_bosch_a is not None
+        self.lead_left, self.lead_right = (
+          get_adjacent_lead(self.tracks, standstill, sm['modelV2'], left=left, honda_bosch_a=honda_bosch_a,
+                            monitor=self.adjacent_rail_monitor, lead_track_id=lead_track_id)
+          for left in (True, False))
+
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
 
@@ -398,6 +421,10 @@ class RadarD:
         wire.distanceM = candidate.distance_m
         wire.lateralM = candidate.lateral_m
         wire.speedMps = candidate.speed_mps
+    if self.lead_left is not None:
+      adjacent_msg.starpilotRadarState.leadLeft = self.lead_left
+    if self.lead_right is not None:
+      adjacent_msg.starpilotRadarState.leadRight = self.lead_right
     pm.send('starpilotRadarState', adjacent_msg)
 
 
@@ -418,8 +445,12 @@ def main() -> None:
 
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
   honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
+  try:
+    adjacent_leads = bool(params.get_bool("VASMRadarAssist"))  # the leadLeft/leadRight consumer's toggle; read once
+  except Exception:
+    adjacent_leads = False
   RD = RadarD(CP.radarDelay, adjacent_enabled=adjacent_enabled, radar_available=not CP.radarUnavailable,
-              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP))
+              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP), adjacent_leads=adjacent_leads)
   set_core_affinity([3, 5])
 
   while 1:
