@@ -139,6 +139,9 @@ class BigCircleToggle(BigCircleButton):
 class BigButton(BaseButton):
   LABEL_HORIZONTAL_PADDING = 40
   LABEL_VERTICAL_PADDING = 23  # visually matches 30 in figma
+  # Long titles step the font down until they fit: 2 lines above a value, else the card height
+  FIT_LABEL = True
+  MIN_LABEL_FONT_SIZE = 30
 
   """A lightweight stand-in for the Qt BigButton, drawn & updated each frame."""
 
@@ -157,6 +160,7 @@ class BigButton(BaseButton):
     self._grow_animation_until: float | None = None
 
     self._rotate_icon_t: float | None = None
+    self._fit_key: tuple | None = None
 
     self._label = UnifiedLabel(text, font_size=self._get_label_font_size(), font_weight=FontWeight.BOLD,
                                text_color=LABEL_COLOR, alignment_vertical=TextAlignmentVertical.BOTTOM, scroll=scroll,
@@ -199,11 +203,28 @@ class BigButton(BaseButton):
       return 42
 
   def _update_label_layout(self):
+    self._fit_key = None
     self._label.set_font_size(self._get_label_font_size())
     if self.value:
       self._label.set_alignment_vertical(TextAlignmentVertical.TOP)
     else:
       self._label.set_alignment_vertical(TextAlignmentVertical.BOTTOM)
+
+  def _label_fits(self, width: int, max_height: float) -> bool:
+    if self._label.get_content_height(width) > max_height:
+      return False
+    return not self.value or len(self._label._cached_wrapped_lines) <= 2
+
+  def _fit_label_font(self, width: int, max_height: float):
+    key = (self.text, self.value, width, max_height)
+    if not self.FIT_LABEL or self._scroll or key == self._fit_key:
+      return
+    self._fit_key = key
+    size = self._get_label_font_size()
+    self._label.set_font_size(size)
+    while size > self.MIN_LABEL_FONT_SIZE and not self._label_fits(width, max_height):
+      size -= 2
+      self._label.set_font_size(size)
 
   def set_text(self, text: str):
     self.text = text
@@ -252,6 +273,7 @@ class BigButton(BaseButton):
     self._label.set_color(label_color)
     label_rect = rl.Rectangle(label_x, btn_y + self.LABEL_VERTICAL_PADDING, self._title_width_hint(),
                               self._rect.height - self.LABEL_VERTICAL_PADDING * 2)
+    self._fit_label_font(int(label_rect.width), label_rect.height)
     self._label.render(label_rect)
 
     if self.value:
@@ -360,6 +382,8 @@ class BigMultiToggle(BigToggle):
 
 class GreyBigButton(BigButton):
   """Users should manage newlines with this class themselves"""
+
+  FIT_LABEL = False
 
   LABEL_HORIZONTAL_PADDING = 30
 
