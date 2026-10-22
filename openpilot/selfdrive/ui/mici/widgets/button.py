@@ -142,6 +142,10 @@ class BigButton(BaseButton):
   # Long titles step the font down until they fit: 2 lines above a value, else the card height
   FIT_LABEL = True
   MIN_LABEL_FONT_SIZE = 30
+  # Shrink a long value until it fits its box instead of eliding it with "...".
+  FIT_VALUE = False
+  VALUE_FONT_SIZE = COMPLICATION_SIZE
+  MIN_VALUE_FONT_SIZE = 26
 
   """A lightweight stand-in for the Qt BigButton, drawn & updated each frame."""
 
@@ -161,6 +165,7 @@ class BigButton(BaseButton):
 
     self._rotate_icon_t: float | None = None
     self._fit_key: tuple | None = None
+    self._value_fit_key: tuple | None = None
 
     self._label = UnifiedLabel(text, font_size=self._get_label_font_size(), font_weight=FontWeight.BOLD,
                                text_color=LABEL_COLOR, alignment_vertical=TextAlignmentVertical.BOTTOM, scroll=scroll,
@@ -226,6 +231,17 @@ class BigButton(BaseButton):
       size -= 2
       self._label.set_font_size(size)
 
+  def _fit_value_font(self, width: int, max_height: float):
+    key = (self.value, width, max_height)
+    if not self.FIT_VALUE or key == self._value_fit_key:
+      return
+    self._value_fit_key = key
+    size = self.VALUE_FONT_SIZE
+    self._sub_label.set_font_size(size)
+    while size > self.MIN_VALUE_FONT_SIZE and self._sub_label.get_content_height(width) > max_height:
+      size -= 2
+      self._sub_label.set_font_size(size)
+
   def set_text(self, text: str):
     self.text = text
     self._label.set_text(text)
@@ -280,6 +296,7 @@ class BigButton(BaseButton):
       label_y = label_rect.y + self._label.get_content_height(int(label_rect.width))
       sub_label_height = btn_y + self._rect.height - self.LABEL_VERTICAL_PADDING - label_y
       sub_label_rect = rl.Rectangle(label_x, label_y, self._subtitle_width_hint(), sub_label_height)
+      self._fit_value_font(int(sub_label_rect.width), sub_label_rect.height)
       self._draw_subtitle(sub_label_rect)
 
     # ICON -------------------------------------------------------------------
@@ -384,6 +401,7 @@ class GreyBigButton(BigButton):
   """Users should manage newlines with this class themselves"""
 
   FIT_LABEL = False
+  FIT_VALUE = True
 
   LABEL_HORIZONTAL_PADDING = 30
 
