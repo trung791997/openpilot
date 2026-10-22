@@ -18,7 +18,7 @@ MAX_BYTES = 8192
 class Preferences:
   enabled: bool = False
   annotation: Annotation | None = None
-  confidence: float = 0.94
+  confidence: float = 0.90
   smooth_seconds: float = 0.2
 
 

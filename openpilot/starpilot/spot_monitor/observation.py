@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 import re
 
-from openpilot.starpilot.spot_monitor.inference import MODEL_SHA256
+from openpilot.starpilot.spot_monitor.inference import known_models
 
 
 CAMERA_ADMISSION_NS = 500_000_000
@@ -165,7 +165,7 @@ class ObservationReader:
       eof = int(wire.sourceFrameEofBootTime)
       frame_id = int(wire.sourceFrameId)
       expires = int(wire.validUntilBootTime)
-      if str(wire.modelSha256) != MODEL_SHA256 or str(wire.settingsFingerprint) != settings_fingerprint or \
+      if str(wire.modelSha256) not in known_models() or str(wire.settingsFingerprint) != settings_fingerprint or \
          not (0 < observed_mono <= now_mono_ns and now_mono_ns - observed_mono <= CAMERA_ADMISSION_NS) or \
          not (0 < eof <= observed_boot <= now_boot_ns and now_boot_ns - eof <= CAMERA_ADMISSION_NS) or \
          expires != eof + CAMERA_ADMISSION_NS or now_boot_ns > expires or \

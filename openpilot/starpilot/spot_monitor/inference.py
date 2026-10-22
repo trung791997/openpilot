@@ -16,19 +16,41 @@ from openpilot.starpilot.spot_monitor.policy import (
 # states AGPL-3.0/Ultralytics; the bundled bytes must match this identity.
 MODEL_SIZE_BYTES = 6_166_229
 MODEL_SHA256 = "5d20cdbb457ba18db51a537ee2e305bbe442264b1613956068d473e35d15900d"
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[3] / "starpilot/assets/vision_models/v_asm_model.onnx"
+# Owner fine-tune "run12" (3-seed soup, radar-timed labels, 2026-10-14; ported from iq-nav-on-pr10 6eaab47739).
+# Same tri-class contract as the stock asset: input images [1,3,352,352] float32 RGB/255, output [1,3] with
+# class 1 = car (checked with onnxruntime 2026-10-21). No metadata is embedded in this export.
+FT_MODEL_SIZE_BYTES = 6_151_161
+FT_MODEL_SHA256 = "cf2f2c83b12bae5672e94af8109051f9f03ea9a131157a407c00c332db0eeff1"
+_ASSETS = Path(__file__).resolve().parents[3] / "starpilot/assets/vision_models"
+STOCK_MODEL_PATH = _ASSETS / "v_asm_model.onnx"
+FT_MODEL_PATH = _ASSETS / "v_asm_model_ft.onnx"
 
 
-def _verified_model_bytes(path: Path) -> bytes:
+def known_models() -> dict[str, int]:
+  """Exact sha256 -> size of every admitted V-ASM asset (read at call time so tests can pin a fixture)."""
+  return {MODEL_SHA256: MODEL_SIZE_BYTES, FT_MODEL_SHA256: FT_MODEL_SIZE_BYTES}
+
+
+def default_model_path() -> Path:
+  """Prefer the run12 fine-tune when it is installed; otherwise the stock asset. STARPILOT_VASM_MODEL_PATH overrides."""
+  return FT_MODEL_PATH if FT_MODEL_PATH.is_file() else STOCK_MODEL_PATH
+
+
+DEFAULT_MODEL_PATH = default_model_path()
+
+
+def _verified_model_bytes(path: Path) -> tuple[bytes, str]:
+  models = known_models()
   fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
   with os.fdopen(fd, "rb") as source:
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size != MODEL_SIZE_BYTES:
+    if not stat.S_ISREG(info.st_mode) or info.st_size not in models.values():
       raise ValueError("Unsupported V-ASM model size or file type")
-    raw = source.read(MODEL_SIZE_BYTES + 1)
-    if len(raw) != MODEL_SIZE_BYTES or hashlib.sha256(raw).hexdigest() != MODEL_SHA256:
+    raw = source.read(info.st_size + 1)
+    digest = hashlib.sha256(raw).hexdigest()
+    if models.get(digest) != len(raw) or len(raw) != info.st_size:
       raise ValueError("V-ASM model hash changed")
-    return raw
+    return raw, digest
 
 
 def prepare_nv12(frame: np.ndarray, *, width: int, height: int, annotation: Annotation, side: str, cv2_module) -> np.ndarray:
@@ -66,7 +88,7 @@ class VASMInference:
     self.net = None
     self.loaded_sha256 = None
     try:
-      raw = _verified_model_bytes(self.model_path)
+      raw, digest = _verified_model_bytes(self.model_path)
       if self.cv2 is None:
         import cv2  # optional runtime dependency; no model load on import
         self.cv2 = cv2
@@ -75,7 +97,7 @@ class VASMInference:
       net.setPreferableBackend(self.cv2.dnn.DNN_BACKEND_OPENCV)
       net.setPreferableTarget(self.cv2.dnn.DNN_TARGET_CPU)
       self.net = net
-      self.loaded_sha256 = MODEL_SHA256
+      self.loaded_sha256 = digest
       self.last_error = ""
       return True
     except Exception as error:  # OpenCV raises its own extension exception type.

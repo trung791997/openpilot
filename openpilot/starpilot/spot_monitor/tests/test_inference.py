@@ -167,3 +167,29 @@ def test_wrong_frame_and_unconfigured_side_fail_without_model_output(tiny_model)
   assert model.infer_nv12(np.zeros((32, 32), dtype=np.uint8), width=32, height=32,
                           annotation=annotation, side="left") is None
   assert net.blob is None
+
+
+def test_run12_asset_is_the_default_and_loads_under_its_own_identity():
+  ft = inference.FT_MODEL_PATH
+  assert ft.is_file()
+  raw = ft.read_bytes()
+  assert len(raw) == inference.FT_MODEL_SIZE_BYTES
+  assert hashlib.sha256(raw).hexdigest() == inference.FT_MODEL_SHA256
+  assert inference.known_models()[inference.FT_MODEL_SHA256] == inference.FT_MODEL_SIZE_BYTES
+  assert inference.default_model_path() == ft == inference.DEFAULT_MODEL_PATH
+  cv2 = FakeCV2(FakeNet())
+  model = inference.VASMInference(ft, cv2_module=cv2)
+  assert model.load()
+  assert model.loaded_sha256 == inference.FT_MODEL_SHA256
+  assert cv2.dnn.loaded == raw
+
+
+def test_default_falls_back_to_stock_without_run12(tmp_path, monkeypatch):
+  monkeypatch.setattr(inference, "FT_MODEL_PATH", tmp_path / "missing.onnx")
+  assert inference.default_model_path() == inference.STOCK_MODEL_PATH
+
+
+def test_run12_identity_does_not_admit_other_bytes_of_its_size(tmp_path):
+  path = tmp_path / "model.onnx"
+  path.write_bytes(b"x" * inference.FT_MODEL_SIZE_BYTES)
+  assert not inference.VASMInference(path, cv2_module=FakeCV2(FakeNet())).load()

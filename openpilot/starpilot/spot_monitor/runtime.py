@@ -21,6 +21,7 @@ from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
 from openpilot.starpilot.spot_monitor.inference import DEFAULT_MODEL_PATH, VASMInference
 from openpilot.starpilot.spot_monitor.policy import WarningPolicy, WarningState
 from openpilot.starpilot.spot_monitor.preferences import SavedPreferences, read_preferences
+from openpilot.starpilot.spot_monitor.radar_pass_hold import RadarPassHold
 from openpilot.starpilot.vision_cpu import LITTLE_CORES, VASM_WITH_VISION
 
 
@@ -178,6 +179,7 @@ class VASMRuntime:
     self.model: VASMInference | None = None
     self.last_model_attempt_ns = -MODEL_RETRY_NS
     self.policy = WarningPolicy()
+    self.radar_pass_hold = RadarPassHold()  # D-118/D-121, toggle VASMRadarAssist; see the PASS HOLD hook in tick()
     self.cpu_budget = CpuBudget()
     self.client = None
     self.last_pair_offset_ns: int | None = None
@@ -200,6 +202,8 @@ class VASMRuntime:
       if pair is not None:
         self.camera_after_boot_ns = max(self.camera_after_boot_ns, pair[1])
     self.policy.reset()
+    if status != "stale":  # a dropped/duplicate frame keeps a running pass hold; losing drive authority does not
+      self.radar_pass_hold.reset()
     self.client = None
     self.session = uuid.uuid4().hex if changed else self.session
     if changed:
@@ -257,6 +261,7 @@ class VASMRuntime:
       set_core_affinity(list(self.inference_cores))
     except OSError:
       pass
+    self.radar_pass_hold.refresh(self.params)
     saved = read_preferences(self.params)
     if saved != self.saved:
       self.saved = saved
@@ -277,6 +282,10 @@ class VASMRuntime:
       if not self._fresh_authority(now_ns):
         self._reset("unavailable", now_ns)
         return None
+      # PASS HOLD hook 1/2 (radar_pass_hold.py): advance the radar hold every tick, fed the camera's own car-frame
+      # verdict (camera-left is the car's right). Inert without VASMRadarAssist or radar leadLeft/leadRight.
+      self.radar_pass_hold.step(self.messages, now_ns / 1e9,
+                                {"left": self.policy.active["right"], "right": self.policy.active["left"]})
       if self.model is None:
         if now_ns - self.last_model_attempt_ns < MODEL_RETRY_NS:
           return None
@@ -353,6 +362,8 @@ class VASMRuntime:
       state = self.policy.state(source_mono_ns / 1e9)
       if state.display_left or state.display_right:
         self.followup_until_ns = after[0] + FOLLOWUP_WINDOW_NS
+      # PASS HOLD hook 2/2: OR the radar holds into the published sides (adds "occupied" only; cadence stays camera's).
+      state = self.radar_pass_hold.apply(state)
       self.status = "valid"
       self.sequence += 1
       observation = self._observation("valid", after[0], after[1], eof_boot_ns, frame_id, side, state)
@@ -384,7 +395,7 @@ def main() -> None:
     signal.signal(number, lambda _signal, _frame: stop.set())
   path = os.getenv("STARPILOT_VASM_MODEL_PATH", str(DEFAULT_MODEL_PATH))
   model_path = Path(path) if path and Path(path).is_absolute() else None
-  messages = messaging.SubMaster(["deviceState", "carState"])
+  messages = messaging.SubMaster(["deviceState", "carState", "starpilotRadarState"])
   pm = messaging.PubMaster(["spotMonitorState"])
   runtime = VASMRuntime(Params(), messages,
                         lambda: cabin_client_factory(VisionIpcClient, VisionStreamType),

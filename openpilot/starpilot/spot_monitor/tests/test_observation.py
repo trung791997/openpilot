@@ -4,7 +4,7 @@ import math
 import unittest
 
 from openpilot.cereal import log
-from openpilot.starpilot.spot_monitor.inference import MODEL_SHA256
+from openpilot.starpilot.spot_monitor.inference import FT_MODEL_SHA256, MODEL_SHA256
 from openpilot.starpilot.spot_monitor.observation import ObservationReader
 
 
@@ -75,6 +75,12 @@ class ObservationWireTest(unittest.TestCase):
     self.assertTrue(read(reader, first, now=1401*M).display_left.warning)
     self.assertFalse(reader.current_at(now_mono_ns=3901*M, now_boot_ns=3901*M,
                                        settings_fingerprint=FINGERPRINT).display_left.warning)
+
+  def test_run12_model_identity_admitted_unknown_rejected(self):
+    for sha, admitted in ((MODEL_SHA256, True), (FT_MODEL_SHA256, True), ("e" * 64, False)):
+      msg = packet()
+      msg.spotMonitorState.observation.modelSha256 = sha
+      self.assertEqual(read(ObservationReader(), msg).display_left.warning, admitted, sha)
 
   def test_new_frame_does_not_renew_other_side_hold(self):
     reader = ObservationReader()

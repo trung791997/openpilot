@@ -22,10 +22,19 @@ The reference artifact is 6,166,229 bytes with SHA-256
 `5d20cdbb457ba18db51a537ee2e305bbe442264b1613956068d473e35d15900d`.
 Its embedded metadata identifies Ultralytics and AGPL-3.0, with classes
 `0_nocar`, `1_car`, and `2_distant_or_rear`. Class 1 drives the visual-warning
-score. Default smoothing is 0.2 seconds, with 0.94/0.79
-activation/release thresholds. Camera left maps to displayed right, preserving
-the reference's orientation. Invalid or reversed timestamps reset warning
-history, and each side expires after three seconds.
+score. Default smoothing is 0.2 seconds, with 0.90/0.75
+activation/release thresholds for a new `VASMPreferences` document (saved documents keep their own value).
+Camera left maps to displayed right, preserving the reference's orientation. Invalid or reversed timestamps reset
+warning history, and each side expires after three seconds.
+
+When `starpilot/assets/vision_models/v_asm_model_ft.onnx` (owner fine-tune run12, 6,151,161 bytes, SHA-256
+`cf2f2c83b12bae5672e94af8109051f9f03ea9a131157a407c00c332db0eeff1`, same `[1,3,352,352]` -> `[1,3]` tri-class
+contract) is installed, it is the default model; otherwise the reference asset above. Only these two exact identities
+load, and only they are admitted by the observation reader.
+
+`radar_pass_hold.py` (D-118/D-121 port, toggle `VASMRadarAssist`, default on) ORs a radar pass hold into the published
+sides after radar loses a car being passed. It only adds "occupied", and it needs `starpilotRadarState`
+`leadLeft`/`leadRight`, which this tree's radard does not fill yet, so it is inert here.
 
 The manager requires device hardware, onroad state, a model file, and a valid
 enabled `VASMPreferences` document. `STARPILOT_VASM_MODEL_PATH` can override

@@ -40,7 +40,7 @@ def test_absent_disabled_and_valid_exact_document(tmp_path):
 
 def test_explicit_disabled_unconfigured_reset_roundtrip_and_enable_refusal():
   raw = encode(Preferences())
-  assert json.loads(raw) == {"annotation": None, "confidence": 0.94, "enabled": False,
+  assert json.loads(raw) == {"annotation": None, "confidence": 0.90, "enabled": False,
                              "smoothSeconds": 0.2, "version": 1}
   assert decode(raw) == Preferences()
   assert decode(raw.replace(b'"enabled":false', b'"enabled":true')) is None

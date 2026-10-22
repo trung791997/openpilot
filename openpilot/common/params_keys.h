@@ -325,6 +325,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OffroadPowerPreferences", {PERSISTENT | DONT_LOG, JSON}},
     {"SentryMotionPreferences", {PERSISTENT | DONT_LOG, JSON}},
     {"VASMPreferences", {PERSISTENT | DONT_LOG, JSON}},
+    {"VASMRadarAssist", {PERSISTENT, BOOL, "1"}},
     {"LaneChangePreferences", {PERSISTENT | DONT_LOG, JSON}},
     {"SLCPriority1", {PERSISTENT, STRING, "Vision"}},
     {"SLCPriority2", {PERSISTENT, STRING, "Dashboard"}},
