@@ -11854,8 +11854,20 @@ not read them.
   likely phantom, 2 were unclear, and 1 was a correct pick. A feature acting on leadLeft/leadRight therefore needs a
   stable, in-lane track gate first.
 
-**Next (Job).**
-- Openpilot-only slower cases (no pedal from crossing-2 s to +5 s): split braking before vs after the new car becomes
-  leadOne.
-- Blinker-on to crossing time, which is the real window for easing off early.
-- Stills for the faster cases that took over 20 s.
+**Follow-ups (Job, logs and stills).**
+- **Openpilot-only slower cases** (no pedal from t1-2 s to t1+5 s): 14 of 42. Three were hard:
+  - 25b s22: -4.45 m/s^2, target 61 m ahead and closing 6.7 m/s.
+  - 309 s10: -2.37.
+  - 299 s5: -2.19, a slower sedan 24 m ahead.
+  The rest were -1.6 to +0.9. Min aEgo comes 3-5 s after crossing and 1.5-4 s after the target becomes leadOne,
+  so the braking is a late response to the new lead. leadOne switched 0.6-2.4 s after crossing. In 3 of the top 5
+  the target never became leadOne in the window, so that braking was for something else.
+- **Window:** blinker-on to crossing is median 0.5 s (p75 1.1 s). The same adjacent track id is held a median of
+  2.4 s before crossing, and under 1 s in about a quarter of events. There is almost no time to ease off before
+  crossing.
+- **Faster target car over 20 s (19 events):** 12 had a slower car back in front, 6 were capped by set speed, and 1
+  was the driver. Stills of the 3 slowest show traffic. Nothing for the feature to fix on the faster side.
+- **Design implication:** the usable gain is reacting at the crossing instead of when the car becomes leadOne,
+  0.6-2.4 s earlier, on the slower side only. That covers about 3 hard openpilot-only cases in 1363 segments.
+  Proposed: from blinker-on through the lane change, a slower, stably tracked target-lane car that we are closing
+  on only removes throttle (coast, no braking). Braking stays with leadOne. Awaiting Peter.
