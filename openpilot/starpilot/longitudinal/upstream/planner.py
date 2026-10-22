@@ -75,6 +75,9 @@ class LongitudinalPlanner:
       from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
       enhancement = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=True)
       self.bosch_a_long = enhancement if enhancement.enabled else None
+    # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
+    from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
+    self.bosch_a_smooth = BoschASmooth(CP, dt)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
@@ -152,7 +155,7 @@ class LongitudinalPlanner:
     # Save starting point for next iteration
     a_prev = self.output_a_target
 
-    action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
+    action_t = self.bosch_a_smooth.action_t(self.CP.longitudinalActuatorDelay)
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
@@ -180,6 +183,8 @@ class LongitudinalPlanner:
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
         target=float(output_a_target), v_ego=v_ego, stopping=bool(self.output_should_stop),
         standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+    output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
+                                               reset=bool(reset_state or sm['carState'].standstill))
     # ---- end BOSCH-A HOOK ----
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 

@@ -13,8 +13,8 @@
     "planner.py": {
       "upstream_path": "openpilot/selfdrive/controls/lib/longitudinal_planner.py",
       "upstream_sha256": "d81425700cf7152ef4f617ec1517fb4137fc5af9188047f48b31aff62dc652f4",
-      "adapted_sha256": "3677f269bdec81f62c4b11f3555bd4204c522294ec7375e87cd76f0b402b6260",
-      "adaptation": "Only planner/MPC import paths redirected; no arithmetic/state/publisher changes when both Bosch-A toggles are off (bit-identical, test_bosch_a_toggles). BOSCH-A HOOK 1/3 (__init__): arms HumanFollowing/HumanAcceleration and the Stock Brake Feel enhancement only when the toggle is on and the car is a verified Bosch-A Honda with openpilot longitudinal (lazy imports). HOOK 2/3 (before mpc.update): HumanAcceleration cap and model lead paths passed to the MPC. HOOK 3/3 (after output_should_stop, before the final clip): min with the HumanAcceleration cap, then honda_bosch_a_long step()"
+      "adapted_sha256": "4de9f54b5981cecdb969d4a6cd339cce8874dfce88aaeb2e6302215053275c1e",
+      "adaptation": "Only planner/MPC import paths redirected; no arithmetic/state/publisher changes when both Bosch-A toggles are off (bit-identical, test_bosch_a_toggles). BOSCH-A HOOK 1/3 (__init__): arms HumanFollowing/HumanAcceleration and the Stock Brake Feel enhancement only when the toggle is on and the car is a verified Bosch-A Honda with openpilot longitudinal (lazy imports). HOOK 2/3 (before mpc.update): HumanAcceleration cap and model lead paths passed to the MPC. HOOK 3/3 (after output_should_stop, before the final clip): min with the HumanAcceleration cap, then honda_bosch_a_long step() BOSCH-A SMOOTH: bosch_a_smooth.BoschASmooth (Bosch-A Hondas only, always on) shortens action_t to min(0.30, delay+DT_MDL) and applies a brake release limit + 2-tick dwell to output_a_target before the final clip"
     },
     "mpc.py": {
       "upstream_path": "openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py",
