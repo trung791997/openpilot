@@ -202,5 +202,32 @@ class BoundedWaitFatalTest(unittest.TestCase):
     fatal.assert_called_once_with(legacy_hcq.EXIT_DEADLINE)
 
 
+
+class BlinkerReleaseFlushTest(unittest.TestCase):
+  def state(self, enabled):
+    from openpilot.starpilot.models.runner import CatalogModelState
+    queue = SimpleNamespace(cleared=0)
+    queue.assign = lambda value: setattr(queue, 'cleared', queue.cleared + 1)
+    model = object.__new__(CatalogModelState)
+    model.__dict__.update(flush_desire_on_blinker_release=enabled, blinker_on=False, prev_blinker_on=False,
+                          desire_key='desire_q', input_queues={'desire_q': queue})
+    return model, queue
+
+  def drive(self, model, blinker):
+    for on in blinker:
+      model.blinker_on = on
+      model._flush_desire_on_blinker_release()
+
+  def test_flush_only_on_falling_edge(self):
+    model, queue = self.state(True)
+    self.drive(model, [False, True, True, False, False, True, False])
+    self.assertEqual(queue.cleared, 2)
+
+  def test_other_models_never_flush(self):
+    model, queue = self.state(False)
+    self.drive(model, [True, False, True, False])
+    self.assertEqual(queue.cleared, 0)
+
+
 if __name__ == '__main__':
   unittest.main()

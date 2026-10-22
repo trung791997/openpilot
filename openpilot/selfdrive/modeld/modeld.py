@@ -372,6 +372,7 @@ def main(demo=False):
         model_runtime.f6_failed()
         raise SystemExit(model_runtime.F6_FALLBACK_EXIT) from None
       model_runtime.f6_loaded()
+      selected.flush_desire_on_blinker_release = True
       return selected, prepared, False
     if selection.small_path is not None:
       try:
@@ -594,6 +595,8 @@ def main(demo=False):
       inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
 
     model.lat_delay = lat_delay
+    model.blinker_on = (bool(sm['carState'].leftBlinker or sm['carState'].rightBlinker) or
+                        DH.lane_change_state in (log.LaneChangeState.laneChangeStarting, log.LaneChangeState.laneChangeFinishing))
     model.frame_drop_ratio = frame_drop_ratio
     mt1 = time.perf_counter()
     try:

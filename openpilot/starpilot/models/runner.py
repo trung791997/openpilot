@@ -151,6 +151,8 @@ class CatalogModelState:
     artifact = load_oob(artifact_path, chestnut)
     validate_artifact(artifact, behavior_version, (cam_w, cam_h))
     self.chestnut = chestnut
+    self.flush_desire_on_blinker_release = False
+    self.blinker_on = False
     self.behavior_version = behavior_version
     self.model_type = artifact["model_type"]
     self.metadata = artifact["metadata"]
@@ -201,6 +203,7 @@ class CatalogModelState:
       self.input_queues, self.npy = make_split_input_queues(self.metadata["vision"]["input_shapes"], self.policy_input_shapes,
                                                          self.frame_skip, self.queue_device)
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
+    self.prev_blinker_on = False
     self._blob_cache: dict[tuple[str, int], Tensor] = {}
     self.last_warp: SharedCameraWarp | None = None
     self._last_shared_warp: SharedCameraWarp | None = None
@@ -248,6 +251,12 @@ class CatalogModelState:
     return action_from_outputs(outputs, self.behavior_version, previous, lat_action_t, long_action_t, v_ego,
                                LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS)
 
+  def _flush_desire_on_blinker_release(self) -> None:
+    released = self.prev_blinker_on and not self.blinker_on
+    self.prev_blinker_on = self.blinker_on
+    if released and self.flush_desire_on_blinker_release:
+      self.input_queues[self.desire_key].assign(0)
+
   def warmup(self) -> None:
     frames = {name: np.zeros(self.frame_buf_size, dtype=np.uint8) for name in self.vision_input_names}
     self._blob_cache.update({(name, frame.ctypes.data): Tensor(frame, device=self.warp_device).realize()
@@ -266,6 +275,10 @@ class CatalogModelState:
     if shared_warp is not None:
       self._validate_shared_warp(shared_warp, pointers, transform_signature)
       self._last_shared_warp = shared_warp
+    # NovaSpark only (its source runtime does this): the policy keeps ~5 s of desire
+    # history in its queue, so flush it when the blinker turns off. modeld keeps
+    # blinker_on set while a lane change is still in progress.
+    self._flush_desire_on_blinker_release()
     desire = inputs["desire_pulse"].copy()
     desire[0] = 0
     self.npy["desire"][:] = np.where(desire - self.prev_desire > 0.99, desire, 0)
