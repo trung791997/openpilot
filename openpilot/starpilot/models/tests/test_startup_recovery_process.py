@@ -83,8 +83,9 @@ def _failed_gpu_startup():
 
 
 def test_real_failed_startup_exits_with_live_daemon_before_small_can_start():
-  from multiprocessing import Process
-  child = Process(target=_failed_gpu_startup)
+  # fork, as on the device (Linux); macOS defaults to spawn, which cannot re-import this test module.
+  from multiprocessing import get_context
+  child = get_context('fork').Process(target=_failed_gpu_startup)
   child.start()
   try:
     child.join(timeout=3)
