@@ -205,7 +205,7 @@ class RadarD:
                clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False,
                adjacent_leads: bool = False):
     self.use_voacc = use_voacc
-    # leadLeft/leadRight (lib/adjacent_leads.py). Published only inside starpilotRadarState, i.e. with adjacent_enabled.
+    # leadLeft/leadRight (lib/adjacent_leads.py). Published inside starpilotRadarState; main() enables it for VASMRadarAssist too.
     self.adjacent_leads = adjacent_leads
     self.adjacent_rail_monitor = AdjacentRailMonitor()
     self.lead_left: dict[str, Any] | None = None
@@ -440,15 +440,17 @@ def main() -> None:
 
   # *** setup messaging
   sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
-  adjacent_enabled = feature_enabled(params, CP, 'conditional', os.environ) and 'REPLAY' not in os.environ
-  pm = messaging.PubMaster(['radarState', 'starpilotRadarState'] if adjacent_enabled else ['radarState'])
-
-  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
   try:
     adjacent_leads = bool(params.get_bool("VASMRadarAssist"))  # the leadLeft/leadRight consumer's toggle; read once
   except Exception:
     adjacent_leads = False
+  # starpilotRadarState runs for Conditional mode, or for the V-ASM radar pass hold whenever the car has radar.
+  adjacent_enabled = ((feature_enabled(params, CP, 'conditional', os.environ) or (adjacent_leads and not CP.radarUnavailable))
+                      and 'REPLAY' not in os.environ)
+  pm = messaging.PubMaster(['radarState', 'starpilotRadarState'] if adjacent_enabled else ['radarState'])
+
+  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
+  honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
   RD = RadarD(CP.radarDelay, adjacent_enabled=adjacent_enabled, radar_available=not CP.radarUnavailable,
               honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP), adjacent_leads=adjacent_leads)
   set_core_affinity([3, 5])
