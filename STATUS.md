@@ -11870,4 +11870,18 @@ not read them.
 - **Design implication:** the usable gain is reacting at the crossing instead of when the car becomes leadOne,
   0.6-2.4 s earlier, on the slower side only. That covers about 3 hard openpilot-only cases in 1363 segments.
   Proposed: from blinker-on through the lane change, a slower, stably tracked target-lane car that we are closing
-  on only removes throttle (coast, no braking). Braking stays with leadOne. Awaiting Peter.
+  on only removes throttle (coast, no braking). Braking stays with leadOne.
+
+**Coast-only replay (John; closed-loop replay, branch `lc-coast` 7d9dbb101 vs base 1c4565279; not on the car).**
+- **Not resolved, and 2 of the 3 hard brakes were not openpilot's.** On 25b and 299 the car was on stock Honda ACC
+  (openpilotLongitudinalControl False, longActive 0), so those brakes were stock ACC's and the replays are
+  counterfactuals. 309 was the only alpha-long case.
+- **25b:** the coast fired 0.35 s before crossing and held 7.8 s, but min accel was -4.27 vs -4.20 for base. The new
+  lead itself braked at -4.5 after we were behind it. Coasting gained +2.7 m of gap and 0.7 m/s.
+- **309:** the coast did not fire (TTC 12.3 s vs the 12.0 limit). The brake was for our own-lane lead braking at
+  -4.5, with the planner already below the coast accel, so a coast could not have changed it. Both arms gave -2.14.
+  Fidelity on base: v rmse 0.45 m/s, a rmse 0.24, min a -2.14 sim vs -2.33 log.
+- **299:** the alpha planner alone never brakes hard (-0.78); the coast adds 9.6 m of gap.
+- **Outcome:** lc-coast is not shipped, per Peter's rule ("unless the coast only version resolved the issue"), and
+  stays on the side branch. Job's baseline mixed stock-ACC and alpha-long drives, so the open question is whether
+  alpha long has a lane-change hard-brake problem at all. Next: redo the slower-target baseline on longActive drives only.
