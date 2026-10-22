@@ -44,6 +44,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StarPilotFavoriteSlots", {PERSISTENT, JSON, R"([{"enabled":false,"show_onroad":false,"key":null,"label":""},{"enabled":false,"show_onroad":false,"key":null,"label":""},{"enabled":false,"show_onroad":false,"key":null,"label":""}])"}},
     {"StarPilotControllerBindings", {PERSISTENT | DONT_LOG, JSON}},
     {"UseStarPilotLongitudinalPlanner", {PERSISTENT, BOOL, "1"}},
+    {"BoschAStockBrakeFeel", {PERSISTENT, BOOL, "0"}},  // Bosch-A Honda stock ACC brake feel, either planner
+    {"BoschAHumanFollowing", {PERSISTENT, BOOL, "0"}},  // Bosch-A HumanFollowing + HumanAcceleration, either planner
     {"UseVOACC", {PERSISTENT, BOOL, "0"}},
     {"CustomPersonalities", {PERSISTENT, BOOL, "0"}},
     {"SettingsRetirementState", {PERSISTENT | DONT_LOG, JSON}},
@@ -52,6 +54,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ReverseCruise", {PERSISTENT, BOOL, "0"}},
     {"ForceStops", {PERSISTENT, BOOL, "0"}},
     {"AlwaysAllowUploads", {PERSISTENT, BOOL, "0"}},
+    {"UploadRlogs", {PERSISTENT, BOOL, "0"}},
     {"UsageStatsState", {PERSISTENT | DONT_LOG, JSON}},
     {"UsageStatsStatus", {CLEAR_ON_MANAGER_START | DONT_LOG, JSON}},
     {"TeslaAOLScreenTap", {PERSISTENT, BOOL, "0"}},
@@ -370,6 +373,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"JetlinkChargePhone", {PERSISTENT, BOOL, "0"}},
     {"JetlinkSpec", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkPointers", {PERSISTENT | DONT_LOG, JSON}},
+    {"JetlinkBigModel", {PERSISTENT, JSON}},  // owner-picked Jetson big model; unset = jetlink default
+    {"JetlinkCatalog", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkProgress", {CLEAR_ON_MANAGER_START | DONT_LOG, JSON}},
     {"Version", {PERSISTENT, STRING}},
 

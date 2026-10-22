@@ -2,17 +2,19 @@
 import json
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
 import pytest
 
 from openpilot.starpilot.models import jetlink_adapter as adapter, jetlink_status
-from openpilot.starpilot.models.jetlink_status import JetlinkStatus, JetlinkStatusFeed, read_status
+from openpilot.starpilot.models.jetlink_status import JetlinkStatus, JetlinkStatusFeed, home_label, hud_icon, read_status
 
 
 def status(**kw):
-  base = {'enabled': True, 'mode': 'usb', 'present': True, 'port_state': 'connected', 'active': False, 'reason': None, 'running': None}
+  base = {'enabled': True, 'mode': 'usb', 'present': True, 'port_state': 'connected', 'active': False, 'reason': None, 'running': None,
+          'active_model': None, 'model': None, 'progress': None}
   return NS(**{**base, **kw})
 
 
@@ -43,7 +45,55 @@ def test_off_reads_nothing_of_jetlink():
   ({'enabled': False}, JetlinkStatus()),
 ])
 def test_states(kw, expected):
-  assert read(status(**kw)) == expected
+  assert replace(read(status(**kw)), hud='off', model=None, progress=None) == expected
+
+
+# jetlink/openpilot/status.py: Status.active (green), present/reason (crossed), progress['stage'] and running
+@pytest.mark.parametrize('kw,icon', [
+  ({'active': True, 'running': 'running'}, 'active'),
+  ({'running': 'ready'}, 'linked'),
+  ({'running': None, 'progress': {'stage': 'ready', 'frac': 1.0}}, 'linked'),
+  ({'running': 'joining'}, 'loading'),
+  ({'running': 'retrying'}, 'loading'),
+  ({'progress': {'stage': 'download', 'frac': 0.4}}, 'loading'),
+  ({'progress': {'stage': 'connect', 'frac': 0.}}, 'loading'),
+  ({'progress': {'stage': 'failed', 'frac': 0.}}, 'crossed'),
+  ({'reason': 'service stopped'}, 'crossed'),
+  ({'present': False}, 'crossed'),
+])
+def test_hud_icon(kw, icon):
+  assert hud_icon(read(status(**kw))) == icon
+
+
+def test_hud_icon_falls_through_to_chestnut_when_off():
+  assert hud_icon(JetlinkStatus()) is None
+  assert read(status(enabled=False)).hud == 'off'
+  assert hud_icon(JetlinkStatus(state='unavailable')) == 'crossed'  # unreadable or stale
+  assert hud_icon(read(None)) == 'crossed'
+
+
+@pytest.mark.parametrize('kw,label', [
+  ({'active': True, 'running': 'running', 'model': 'Pick', 'active_model': 'Pick'}, 'Jetlink: Pick'),
+  # not built yet: the stand-in drives once linked (Status.active_model), else the pick it will run
+  ({'running': 'ready', 'model': 'Pick', 'active_model': 'Standin'}, 'Jetlink: Standin'),
+  ({'running': None, 'model': 'Pick'}, 'Jetlink: Pick'),
+  ({'running': None}, 'Jetlink ready'),
+  ({'progress': {'stage': 'download', 'frac': 0.427}, 'model': 'Pick'}, 'Jetlink 42%'),
+  ({'progress': {'stage': 'build', 'frac': 0.}}, 'Jetlink loading'),
+  ({'progress': {'stage': 'download', 'frac': 1.}}, 'Jetlink loading'),
+  ({'running': 'joining'}, 'Jetlink loading'),
+  ({'progress': {'stage': 'failed', 'frac': 0.5}}, 'Jetlink error'),
+  ({'reason': 'service stopped'}, 'Jetlink error'),
+  ({'present': False}, 'Jetlink: no host'),
+  ({'enabled': False}, ''),
+])
+def test_home_label(kw, label):
+  assert home_label(read(status(**kw))) == label
+
+
+def test_home_label_off_and_unreadable():
+  assert home_label(JetlinkStatus()) == ''
+  assert home_label(read(None)) == 'Jetlink error'
 
 
 def test_no_usable_jetlink_is_unavailable():

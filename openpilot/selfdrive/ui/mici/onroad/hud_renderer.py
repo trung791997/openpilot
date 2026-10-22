@@ -10,6 +10,7 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.cereal import log
+from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed, hud_icon
 
 EventName = log.OnroadEvent.EventName
 
@@ -96,6 +97,27 @@ class TurnIntent(Widget):
       self._turn_intent_rotation_filter.update(0)
 
 
+def loading_pulse(t: float) -> float:
+  return 0.35 + 0.65 * (0.5 - 0.5 * math.cos(t * 6.0))
+
+
+# jetlink_status.hud_icon() -> (icons_mici texture, opacity at time t, drawn without the fade)
+JETLINK_ICONS = {
+  'active': 'egpu_green',     # the big model drives
+  'linked': 'egpu_orange',    # a host is on the link and the comma model drives
+  'loading': 'egpu_loading',  # provisioning or a join, pulsing
+  'crossed': 'egpu_crossed',  # an error, no host, or a status that could not be read
+}
+
+
+def jetlink_icon_style(icon: str, t: float) -> tuple[str, float, bool]:
+  if icon == 'loading':
+    return JETLINK_ICONS[icon], loading_pulse(t), True
+  if icon == 'crossed':
+    return JETLINK_ICONS[icon], 0.65, True
+  return JETLINK_ICONS[icon], 1.0, False
+
+
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
@@ -129,6 +151,14 @@ class HudRenderer(Widget):
     self._txt_chestnut_orange: rl.Texture = gui_app.texture('icons_mici/chestnut_orange.png', 75, 44)
     self._txt_chestnut_crossed: rl.Texture = gui_app.texture('icons_mici/egpu_crossed.png', 60, 52)
     self._chestnut_icon: rl.Texture | None = None
+    self._txt_jetlink = {
+      'egpu_green': gui_app.texture('icons_mici/egpu_green.png', 60, 44),
+      'egpu_orange': gui_app.texture('icons_mici/egpu_orange.png', 75, 44),
+      'egpu_loading': gui_app.texture('icons_mici/egpu_loading.png', 60, 44),
+      'egpu_crossed': self._txt_chestnut_crossed,
+    }
+    # polled at 1 Hz off the drawing thread; with the link off each poll is one file read (jetlink_adapter.link_on)
+    self._jetlink_feed: JetlinkStatusFeed | None = None
     self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
     self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
 
@@ -194,12 +224,27 @@ class HudRenderer(Widget):
 
     self._draw_steering_wheel(rect)
 
+  def _jetlink_icon(self) -> str | None:
+    if self._jetlink_feed is None:
+      self._jetlink_feed = JetlinkStatusFeed()
+      self._jetlink_feed.set_enabled(True)
+    return hud_icon(self._jetlink_feed.snapshot())
+
+  def _draw_jetlink(self, rect: rl.Rectangle, jetlink: str) -> None:
+    name, opacity, persistent = jetlink_icon_style(jetlink, rl.get_time())
+    self._draw_source_icon(rect, self._txt_jetlink[name], opacity, persistent)
+
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
+    # Jetlink on (the setting, with no Chestnut fitted: jetlink's Status.enabled) owns the icon; else Chestnut's
+    jetlink = self._jetlink_icon()
+    if jetlink is not None:
+      self._draw_jetlink(rect, jetlink)
+      return
     loading = ui_state.chestnut_state == ChestnutState.LOADING
     self._small_model_engaged &= ui_state.chestnut_state in (ChestnutState.FAILED, ChestnutState.DISCONNECTED)
     if loading:
       icon = self._txt_chestnut
-      opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
+      opacity = loading_pulse(rl.get_time())
     elif self._small_model_engaged:
       icon = self._txt_chestnut_crossed
       opacity = 0.65
@@ -211,11 +256,13 @@ class HudRenderer(Widget):
       opacity = 1.0
     else:
       return
+    self._draw_source_icon(rect, icon, opacity, loading)
 
+  def _draw_source_icon(self, rect: rl.Rectangle, icon: rl.Texture, opacity: float, persistent: bool) -> None:
     if icon is not self._chestnut_icon:
       self._chestnut_fade_time = rl.get_time()
       self._chestnut_icon = icon
-    visible = loading or rl.get_time() - self._chestnut_fade_time < SET_SPEED_PERSISTENCE
+    visible = persistent or rl.get_time() - self._chestnut_fade_time < SET_SPEED_PERSISTENCE
     alpha = self._chestnut_alpha_filter.update(visible)
     if alpha < 1e-2:
       return

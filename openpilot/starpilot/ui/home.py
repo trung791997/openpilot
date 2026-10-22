@@ -25,6 +25,15 @@ BLUETOOTH_COLORS = {"off": rl.Color(255, 255, 255, 102), "on": rl.Color(255, 255
 JETLINK_COLORS = {"plugged": rl.Color(160, 160, 160, 255), "connected": rl.Color(70, 200, 110, 255)}
 
 
+def model_row(state: HomeState) -> str:
+  """The compact home's model line: the local model, then Jetlink's line; Jetlink's first while its model drives,
+  so the shrink-then-ellipsis fit cuts the other one."""
+  parts = [state.model_label, state.jetlink_label]
+  if state.jetlink_active:
+    parts.reverse()
+  return "  ·  ".join(p for p in parts if p)
+
+
 def draw_jetlink(rect: rl.Rectangle, state: str) -> None:
   """Jetlink's home icon: a tablet outline with a link dot."""
   color = JETLINK_COLORS.get(state)
@@ -115,6 +124,7 @@ class HomeView:
     self._sidebar(state)
     header = rl.Rectangle(340, 40, 1780, 80)
     detail = (" " + state.description if state.description else "") + (" - " + state.model_label if state.model_label else "")
+    detail += " - " + state.jetlink_label if state.jetlink_label else ""
     size = 48
     brand = self._measure("StarPilot", FontRole.BRAND, size + 2)
     model = self._measure(detail, FontRole.MEDIUM, size)
@@ -226,7 +236,7 @@ class HomeView:
     white = rl.Color(255, 255, 255, 229)
     self._text("StarPilot", FontRole.BRAND, 64, 6, 8, white)
     version_branch = f"{state.version}  {state.branch}".strip()
-    for text, y, color in ((version_branch, 98, rl.GRAY), (state.model_label, 140, white)):
+    for text, y, color in ((version_branch, 98, rl.GRAY), (model_row(state), 140, white)):
       size = 30
       while size > 22 and self._measure(text, FontRole.ROMAN, size).width > 520:
         size -= 1

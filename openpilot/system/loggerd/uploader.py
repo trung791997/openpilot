@@ -19,6 +19,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
+from openpilot.system.loggerd.rlog_upload import RLOG_NAMES, ensure_anchor, get_anchor, in_upload_window
 from openpilot.common.swaglog import cloudlog
 
 NetworkType = log.DeviceState.NetworkType
@@ -93,6 +94,11 @@ class Uploader:
 
     self.immediate_folders = ["crash/", "boot/"]
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.ts": 1}
+    # StarPilot: rlogs go after every pending qlog/qcamera; metered is ignored because phone hotspots report
+    # metered. Which drives' rlogs, and when: see rlog_upload.py
+    self.rlog_names = RLOG_NAMES
+    self.scan_anchor: str | None = None  # rlog anchor the last list_upload_files scan used
+    self.scan_rlogs_allowed = False  # whether the last scan counted pending rlogs
 
     # Routes whose uploadable files are all uploaded, keyed by name -> directory mtime. Rescanning
     # hundreds of finished routes (stat + getxattr per file) every few seconds cost ~40% of a core.
@@ -100,10 +106,20 @@ class Uploader:
     # Seconds to yield after scanning each unsettled route (set by main() while driving).
     self.scan_pause = 0.0
 
+  def rlogs_allowed(self) -> bool:
+    return self.params.get_bool("UploadRlogs") or self.params.get_bool("IsOffroad")
+
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
     r = self.params.get("AthenadRecentlyViewedRoutes")
     requested_routes = [] if r is None else [route for route in r.split(",") if route]
 
+    # an unuploaded rlog in the anchor window keeps its route unsettled, else it would never be rescanned
+    anchor = self.scan_anchor = get_anchor(self.root)
+    # pending rlogs only hold a route open while they can be sent; when sending becomes allowed, rescan everything
+    rlogs_allowed = self.rlogs_allowed()
+    if rlogs_allowed and not self.scan_rlogs_allowed:
+      self.settled.clear()
+    self.scan_rlogs_allowed = rlogs_allowed
     logdirs = listdir_by_creation(self.root)
     recent = set(logdirs[-3:])  # the routes still being written are always rescanned
     for logdir in logdirs:
@@ -150,6 +166,8 @@ class Uploader:
         if name in self.immediate_priority:
           priority_files += 1
           priority_pending += not is_uploaded
+        elif rlogs_allowed and name in self.rlog_names and not is_uploaded and in_upload_window(logdir, anchor):
+          priority_pending += 1
         if is_uploaded:
           continue
 
@@ -177,6 +195,17 @@ class Uploader:
     for name, key, fn in upload_files:
       if name in self.immediate_priority:
         return name, key, fn
+
+    # StarPilot: UploadRlogs sends rlogs on any drive state; with it off they still go up whenever the device is parked
+    if self.rlogs_allowed():
+      anchor = ensure_anchor(self.root)
+      if anchor != self.scan_anchor:
+        # the anchor was just set: routes settled without it may hold rlogs in the window
+        self.settled.clear()
+        upload_files = list(self.list_upload_files(metered))
+      for name, key, fn in upload_files:
+        if name in self.rlog_names and in_upload_window(key.split('/')[0], anchor):
+          return name, key, fn
 
     return None
 

@@ -46,18 +46,48 @@ def aol_in_control(intent, alive, axes, waiting=False) -> bool:
   return any(axes)
 
 
+BIG_MODEL_KEY = "JetlinkBigModel"
+CATALOG_KEY = "JetlinkCatalog"
+
+
+def default_bundle() -> dict:
+  """jetlink's default big model as a catalog bundle, at the selector version Models.catalog() keeps."""
+  from jetlink.registry.catalog import DEFAULT_BIG_MODEL_NAME, DEFAULT_BIG_MODEL_REF, REQUIRED_SELECTOR_VERSION
+  return {"ref": DEFAULT_BIG_MODEL_REF, "display_name": DEFAULT_BIG_MODEL_NAME,
+          "minimum_selector_version": REQUIRED_SELECTOR_VERSION, "index": 0}
+
+
+def with_default_bundle(catalog):
+  """The stored catalog, or one listing only jetlink's default while none with bundles is stored."""
+  if isinstance(catalog, dict) and catalog.get("bundles"):
+    return catalog
+  return {**(catalog if isinstance(catalog, dict) else {}), "bundles": [default_bundle()]}
+
+
 @functools.cache
 def _adapter_class():
   from jetlink.openpilot.interface import Keys
   from jetlink.openpilot.stock import Stock
+  from jetlink.registry.catalog import REQUIRED_SELECTOR_VERSION
 
   class StarPilotAdapter(Stock):
-    # No big-model slot or catalog: jetlink provisions its default model
+    # The big-model slot and catalog are StarPilot's own JSON params (params_keys.h): the slot is the owner's pick,
+    # {ref, displayName}, unset for jetlink's default; the catalog is refresh_catalog()'s {bundles}
     KEYS = Keys(link="JetlinkMode", offroad="IsOffroad", progress="JetlinkProgress", spec="JetlinkSpec",
-                pointers="JetlinkPointers", charge_phone="JetlinkChargePhone")
+                pointers="JetlinkPointers", big_model=BIG_MODEL_KEY, catalog=CATALOG_KEY,
+                charge_phone="JetlinkChargePhone")
+    # Models.catalog() keeps only bundles at this selector version; merge_catalogs() retypes newer ones to it
+    CATALOG_SELECTOR = REQUIRED_SELECTOR_VERSION
     IN_CONTROL_SERVICES = ("carControl", "selfdriveState")
     _aol = None
     _aol_since = 0.
+
+    def get(self, key):
+      # With Keys.catalog set, Models.default_model() answers None from an empty catalog and nothing provisions
+      # until refresh_catalog() has fetched one (jetlink/openpilot/models.py default_model). Until then the
+      # catalog reads as jetlink's own default, the model it ran with no catalog key at all
+      value = super().get(key)
+      return with_default_bundle(value) if key == CATALOG_KEY else value
 
     def model_root(self):
       from openpilot.starpilot.models.manager import ROOT
@@ -163,3 +193,95 @@ class _NoJetlink:
 
   def swap_events(self, tick_s):
     return None
+
+  def model_state(self, ref):
+    return None
+
+  def should_extend_catalog(self):
+    return False
+
+  def extend_catalog(self, catalog):
+    return catalog
+
+
+def _guarded(default):
+  """The model picker's calls never raise into the model manager or Galaxy: logged, then `default`."""
+  def wrap(fn):
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+      try:
+        return fn(*args, **kwargs)
+      except Exception:
+        try:
+          _cloudlog().exception("jetlink: %s() failed", fn.__name__)
+        except Exception:
+          pass
+        return default() if callable(default) else default
+    return call
+  return wrap
+
+
+def _params(store):
+  if store is not None:
+    return store
+  from openpilot.common.params import Params
+  return Params()
+
+
+@_guarded(False)
+def refresh_catalog(store=None, link=None) -> bool:
+  """The model manager's refresh: fetch the big-model catalogs and keep them in CATALOG_KEY. Network; a failed
+  fetch keeps the last catalog (Models.big_catalog). Skipped with a chestnut fitted (should_extend_catalog). True
+  when the stored catalog changed. Reads the raw param, never the default-bundle stand-in."""
+  link = hooks() if link is None else link
+  if not link.should_extend_catalog():
+    return False
+  store = _params(store)
+  cached = store.get(CATALOG_KEY)
+  cached = cached if isinstance(cached, dict) else {}
+  merged = link.extend_catalog(cached)
+  if not isinstance(merged, dict) or not merged.get("bundles") or merged == cached:
+    return False
+  store.put(CATALOG_KEY, merged, block=True)
+  return True
+
+
+@_guarded(list)
+def models(store=None, link=None) -> list[dict]:
+  """The picker's rows, newest first: {ref, name, state, selected}. The same filter as Models.catalog() (40-hex
+  ref, selector version REQUIRED_SELECTOR_VERSION, index descending), deduplicated. state is jetlink's
+  model_state(): 'ready' (built on the Jetson), 'downloaded' (on the comma) or None. Records only, no network."""
+  from jetlink.registry.catalog import REQUIRED_SELECTOR_VERSION, is_ref
+  store = _params(store)
+  link = hooks() if link is None else link
+  bundles = with_default_bundle(store.get(CATALOG_KEY))["bundles"]
+  pick = store.get(BIG_MODEL_KEY)
+  picked = pick.get("ref") if isinstance(pick, dict) else None
+  rows: list[dict] = []
+  for b in sorted((b for b in bundles if isinstance(b, dict)), key=lambda b: int(b.get("index", 0) or 0), reverse=True):
+    ref = b.get("ref")
+    try:
+      selector = int(b.get("minimum_selector_version", 0))
+    except (TypeError, ValueError):
+      continue
+    if not is_ref(ref) or selector != REQUIRED_SELECTOR_VERSION or any(r["ref"] == ref for r in rows):
+      continue
+    rows.append({"ref": ref, "name": str(b.get("display_name") or ref[:10]), "state": link.model_state(ref),
+                 "selected": ref == picked})
+  return rows
+
+
+@_guarded(False)
+def select_model(ref, store=None, link=None) -> bool:
+  """Pick the big model jetlink runs, by catalog ref; None or '' goes back to jetlink's default (the slot
+  removed). Offroad only: the caller checks. False for a ref the catalog does not list. jetlink's settings watcher
+  re-provisions on the slot's change (jetlink/openpilot/settings.py, watched keys)."""
+  store = _params(store)
+  if not ref:
+    store.remove(BIG_MODEL_KEY)
+    return True
+  row = next((r for r in models(store, link) if r["ref"] == ref), None)
+  if row is None:
+    return False
+  store.put(BIG_MODEL_KEY, {"ref": ref, "displayName": row["name"]}, block=True)
+  return True

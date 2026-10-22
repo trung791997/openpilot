@@ -79,6 +79,9 @@ class HomeState:
   metric: bool = False
   temperature_high: bool = False
   jetlink: str = "off"
+  # jetlink_status.home_label(): "Jetlink: <model>", "Jetlink NN%", ...; "" with the link off
+  jetlink_label: str = ""
+  jetlink_active: bool = False  # the big model drives (its label leads the model row)
 
 
 @dataclass(frozen=True)

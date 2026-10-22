@@ -25,6 +25,9 @@ class MemoryParams:
 
   put_bool = put
 
+  def remove(self, key):
+    self.values.pop(key, None)
+
 
 class TestJetlinkSettings(unittest.TestCase):
   def setUp(self):
@@ -34,7 +37,7 @@ class TestJetlinkSettings(unittest.TestCase):
     self.status = Status(enabled=True, mode="usb", transport="USB", present=True, port=None, ready=True, reason=None,
                          progress={"stage": "ready"}, model="remote", default_model="remote")
     self.owner = JetlinkSettings(params=self.params, device_type=lambda: self.device,
-                                chestnut=lambda: self.chestnut, link=lambda: SimpleNamespace(status=lambda: self.status))
+                                chestnut=lambda: self.chestnut, link=lambda: SimpleNamespace(status=lambda: self.status, model_state=lambda ref: None))
 
   def test_prepared_is_not_execution(self):
     self.owner.configure({"mode": "usb"})
@@ -85,3 +88,28 @@ class TestJetlinkSettings(unittest.TestCase):
       with self.assertRaisesRegex(ValueError, "vehicle off"):
         manager.action("jetlink", {"mode": "off"})
       self.assertEqual(self.params.values["JetlinkMode"], 1)
+
+  def test_big_model_pick(self):
+    listed, newer = "a" * 40, "c" * 40
+    self.params.values["JetlinkCatalog"] = {"bundles": [
+      {"ref": listed, "display_name": "Listed", "minimum_selector_version": 19, "index": 1},
+      {"ref": newer, "display_name": "Newer", "minimum_selector_version": 20, "index": 2}]}
+    with tempfile.TemporaryDirectory() as tmp:
+      parked = [True]
+      manager = ModelManager(root=Path(tmp), parked=lambda: parked[0], gpu_present=lambda: False, jetlink=self.owner)
+      manager.action("jetlink", {"bigModel": listed})
+      self.assertEqual(self.params.values["JetlinkBigModel"], {"ref": listed, "displayName": "Listed"})
+      self.assertEqual(self.owner.snapshot()["selectedModel"], listed)
+      for ref in ("b" * 40, newer):
+        with self.assertRaisesRegex(ValueError, "not in the Jetlink catalog"):
+          manager.action("jetlink", {"bigModel": ref})
+      self.assertEqual(self.params.values["JetlinkBigModel"]["ref"], listed)
+      parked[0] = False
+      with self.assertRaisesRegex(ValueError, "vehicle off"):
+        manager.action("jetlink", {"bigModel": None})
+      self.assertIn("JetlinkBigModel", self.params.values)
+      parked[0] = True
+      for empty in ("", None):
+        self.params.values["JetlinkBigModel"] = {"ref": listed, "displayName": "Listed"}
+        manager.action("jetlink", {"bigModel": empty})
+        self.assertNotIn("JetlinkBigModel", self.params.values)

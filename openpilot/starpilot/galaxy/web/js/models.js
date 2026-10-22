@@ -409,6 +409,20 @@ export const ModelsPage = {
         if (result) this.message = result.message
       } finally { this.pendingChoice = null; this.busy = "" }
     },
+    async configureJetlinkModel(bigModel) {
+      // "" goes back to jetlink's default model; the manager checks the ref against the catalog, parked only
+      if (!this.canAction("jetlink")) return
+      this.pendingChoice = { action: "jetlinkModel", value: bigModel }
+      this.busy = "jetlink:"
+      try {
+        const result = await this.manager.action("jetlink", null, { bigModel })
+        if (result) this.message = result.message
+      } finally { this.pendingChoice = null; this.busy = "" }
+    },
+    jetlinkModelLabel(row) {
+      const state = row.state === "ready" ? " (built)" : row.state === "downloaded" ? " (downloaded)" : ""
+      return row.name + state
+    },
     async runAction(action, model = null) {
       if (this.disposed || !this.canAction(action, model)) return
       if (action.startsWith("select-")) this.pendingChoice = { action, value: model?.value || "" }
@@ -469,7 +483,14 @@ export const ModelsPage = {
                 <option value="ios" :disabled="!status.jetlink.supported || status.jetlink.chestnut">iPhone / iPad</option>
               </GalaxySelect>
             </div>
-            <p class="gx-note" role="status"><span class="gx-chip">{{ status.jetlink.state }}</span><span v-if="status.jetlink.model && !status.jetlink.active"> · selected: {{ status.jetlink.model }}</span></p>
+            <div class="gx-field-group">
+              <label for="gx-jetlink-model" class="gx-row__label">Big model</label>
+              <GalaxySelect id="gx-jetlink-model" class="gx-field" :value="pendingChoice?.action === 'jetlinkModel' ? pendingChoice.value : (status.jetlink.selectedModel || '')" :disabled="!actionAvailable('jetlink')" @change="configureJetlinkModel($event.target.value)">
+                <option value="">Default{{ status.jetlink.defaultModel ? ' (' + status.jetlink.defaultModel + ')' : '' }}</option>
+                <option v-for="row in (status.jetlink.models || [])" :key="row.ref" :value="row.ref">{{ jetlinkModelLabel(row) }}</option>
+              </GalaxySelect>
+            </div>
+            <p class="gx-note" role="status"><span class="gx-chip">{{ status.jetlink.state }}</span><span v-if="status.jetlink.active && status.jetlink.activeModel"> · running: {{ status.jetlink.activeModel }}</span><span v-else-if="status.jetlink.model"> · selected: {{ status.jetlink.model }}</span></p>
             <p v-if="status.jetlink.progress">{{ status.jetlink.progress }}</p>
             <p v-if="status.jetlink.reason" class="gx-model-reason">{{ status.jetlink.reason }}</p>
             <p v-if="status.jetlink.chestnut" class="gx-model-reason">Chestnut is connected. Jetlink stays off while Chestnut is fitted.</p>

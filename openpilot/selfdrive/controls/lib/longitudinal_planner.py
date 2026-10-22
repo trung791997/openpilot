@@ -37,6 +37,7 @@ from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
+from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -96,15 +97,17 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
 
 
 class LongitudinalPlanner:
-  def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, clock_ns: Callable[[], int] = time.monotonic_ns):
+  def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, clock_ns: Callable[[], int] = time.monotonic_ns,
+               *, bosch_a: BoschAToggles = BOSCH_A_OFF):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
     # Optional owners (hooks): HumanFollowing/HumanAcceleration (Bosch-A Hondas, radar or vision) and the
-    # Honda Bosch A Long Enhancement (radar on).
-    self.human_driving = human_following.enabled_for(CP)
+    # Honda Bosch A Long Enhancement (radar on). `bosch_a` holds the owner toggles plannerd read at start
+    # (BoschAHumanFollowing, BoschAStockBrakeFeel); both default Off. The upstream planner applies the same two.
+    self.human_driving = human_following.enabled_for(CP, bosch_a.human_following)
     if self.human_driving:
       human_following.install(self.mpc)
-    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)
+    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=bosch_a.stock_brake_feel)
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
     self.dt = dt

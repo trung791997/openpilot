@@ -277,9 +277,13 @@ def resolve_runtime(chestnut_available: bool, *, root: Path = ROOT, randomize: b
 
 class ModelManager:
   def __init__(self, *, root: Path = ROOT, parked: Callable[[], bool] | None = None,
-               gpu_present: Callable[[], bool] | None = None, opener=urlopen, jetlink=None, refresh_catalog: bool = False):
+               gpu_present: Callable[[], bool] | None = None, opener=urlopen, jetlink=None, refresh_catalog: bool = False,
+               jetlink_catalog: Callable[[], bool] | None = None):
     self.root, self.opener = root, opener
     self.refresh_catalog = refresh_catalog
+    # Jetlink's big-model catalog, fetched with every manifest refresh; only the Galaxy server's manager (the one
+    # with refresh_catalog) fetches it unless a caller passes its own
+    self.jetlink_catalog = jetlink_catalog
     self.last_refresh_attempt: float | None = None
     self.jetlink = jetlink
     self.parked = parked or (lambda: False)
@@ -642,6 +646,19 @@ class ModelManager:
         return {"message": "Downloaded model deleted"}
       raise ModelError("Unknown model action")
 
+  def _refresh_jetlink_catalog(self) -> None:
+    # Jetlink's picker lists what this fetched (jetlink_adapter.refresh_catalog); never fails the manifest refresh,
+    # and runs on the worker thread, outside the snapshot lock
+    fetch = self.jetlink_catalog
+    if fetch is None and self.refresh_catalog:
+      from openpilot.starpilot.models.jetlink_adapter import refresh_catalog as fetch
+    if fetch is None:
+      return
+    try:
+      fetch()
+    except Exception:
+      pass
+
   def _refresh(self) -> None:
     url = f"{RESOURCE_URL}/manifests/model_names_{GENERATION}.json"
     with self.opener(url, timeout=30) as response:
@@ -656,6 +673,8 @@ class ModelManager:
     failed = True
     try:
       self._check_cancelled()
+      if action == "refresh_manifest":
+        self._refresh_jetlink_catalog()
       self._refresh()
       self._check_cancelled()
       entries = catalog(self.root)

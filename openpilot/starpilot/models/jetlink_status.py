@@ -21,6 +21,61 @@ class JetlinkStatus:
   state: str = 'off'  # off, disconnected, connected, connecting, ready, active, unavailable
   latency_ms: float | None = None
   port: str | None = None  # jetlink's port_state: 'connected' (host on the link), 'device' (plugged in), else None
+  # the onroad GPU icon, read through hud_icon(): off (the Chestnut path draws), active (green: the big model drives), linked (orange: a
+  # host is on the link and the comma model drives), loading (pulsing), crossed (an error or no host)
+  hud: str = 'off'
+  model: str | None = None  # Status.active_model (the pick once built, else the stand-in), else Status.model
+  progress: float | None = None  # Status.progress['frac'] while a stage runs, strictly between 0 and 1
+
+
+def hud_state(status) -> str:
+  """The GPU icon for a jetlink Status with the link enabled, the onroad half of Status.icon() decided from the
+  records alone (jetlink/openpilot/status.py Status.icon/phase): no host, or a reason, is crossed; the runtime
+  record's active is green; a failed stage is crossed; a join (running joining/retrying) or a stage still running
+  is loading; anything else is a host on the link while the comma model drives."""
+  if not status.present or status.reason:
+    return 'crossed'
+  if status.active:
+    return 'active'
+  stage = str((status.progress or {}).get('stage') or '')
+  if stage == 'failed':
+    return 'crossed'
+  if status.running in ('joining', 'retrying') or stage not in ('', 'ready'):
+    return 'loading'
+  return 'linked'
+
+
+def hud_icon(status: JetlinkStatus) -> str | None:
+  """What the onroad GPU icon draws for a polled status: None with the link off (the Chestnut path draws), else
+  active, linked, loading or crossed. A status that could not be read, or went stale, is crossed."""
+  if status.state == 'off':
+    return None
+  if status.state == 'unavailable':
+    return 'crossed'
+  return status.hud if status.hud in ('active', 'linked', 'loading', 'crossed') else 'crossed'
+
+
+def _progress(status) -> float | None:
+  progress = status.progress if isinstance(status.progress, dict) else {}
+  frac = progress.get('frac')
+  if str(progress.get('stage') or '') in ('', 'ready', 'failed') or type(frac) not in (int, float):
+    return None
+  return float(frac) if 0. < frac < 1. else None
+
+
+def home_label(status: JetlinkStatus) -> str:
+  """The home screen's Jetlink line, from the polled status: '' with the link off."""
+  if status.state == 'off':
+    return ''
+  if status.state == 'unavailable':
+    return 'Jetlink error'
+  if status.hud == 'crossed':
+    return 'Jetlink: no host' if status.state == 'disconnected' else 'Jetlink error'
+  if status.progress is not None:
+    return f'Jetlink {int(status.progress * 100)}%'
+  if status.hud == 'loading':
+    return 'Jetlink loading'
+  return f'Jetlink: {status.model}' if status.model else 'Jetlink ready'
 
 
 def _write_latency(model, path) -> None:
@@ -70,13 +125,14 @@ def read_status() -> JetlinkStatus:
     return JetlinkStatus()  # a Chestnut is fitted
   device = 'iPhone' if status.mode == 'ios' else 'Computer'
   port = status.port_state if status.port_state in ('connected', 'device') else None
+  extra = {'hud': hud_state(status), 'model': status.active_model or status.model, 'progress': _progress(status)}
   if not status.present:
-    return JetlinkStatus(device, 'disconnected', port=port)
+    return JetlinkStatus(device, 'disconnected', port=port, **extra)
   if status.active:
-    return JetlinkStatus(device, 'active', read_latency(), port)
+    return JetlinkStatus(device, 'active', read_latency(), port, **extra)
   if status.reason:
-    return JetlinkStatus(device, 'unavailable', port=port)
-  return JetlinkStatus(device, RUNNING.get(status.running, 'connected'), port=port)
+    return JetlinkStatus(device, 'unavailable', port=port, **extra)
+  return JetlinkStatus(device, RUNNING.get(status.running, 'connected'), port=port, **extra)
 
 
 class JetlinkStatusFeed:

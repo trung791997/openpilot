@@ -18,6 +18,10 @@ MIN_ON_TIME_S = 3600
 DELAY_SHUTDOWN_TIME_S = 300 # Wait at least DELAY_SHUTDOWN_TIME_S seconds after offroad_time to shutdown.
 VOLTAGE_SHUTDOWN_MIN_OFFROAD_TIME_S = 60
 
+# StarPilot: rlog upload (always on while parked): the offroad timer waits for unfinished rlogs (rlog_upload.py), with
+# no time cap. Low voltage and battery-exhausted shutdowns are never held, so the hold ends when the car battery is low.
+RLOG_UPLOAD_CHECK_S = 30.0
+
 class PowerMonitoring:
   def __init__(self):
     self.params = Params()
@@ -30,6 +34,8 @@ class PowerMonitoring:
     self.integration_lock = threading.Lock()
     self._saved_power_policy = PowerPolicy()
     self._power_policy_read_at = float("-inf")
+    self.rlogs_pending = False
+    self.rlogs_checked_at: float | None = None
 
     car_battery_capacity_uWh = self.params.get("CarBatteryCapacity") or 0
 
@@ -124,7 +130,10 @@ class PowerMonitoring:
     timeout_s = policy.delay_hours * 3600 if policy.enabled else MAX_TIME_OFFROAD_S
     low_voltage_shutdown = (self.car_voltage_mV < voltage_cutoff and
                             offroad_time > VOLTAGE_SHUTDOWN_MIN_OFFROAD_TIME_S)
-    should_shutdown |= offroad_time > timeout_s
+    timed_out = offroad_time > timeout_s
+    if timed_out and not low_voltage_shutdown and self.car_battery_capacity_uWh > 0:
+      timed_out = not self.hold_for_rlog_upload(now, offroad_time - timeout_s)
+    should_shutdown |= timed_out
     should_shutdown |= low_voltage_shutdown
     should_shutdown |= (self.car_battery_capacity_uWh <= 0)
     should_shutdown &= not ignition
@@ -134,3 +143,20 @@ class PowerMonitoring:
     should_shutdown |= self.params.get_bool("ForcePowerDown")
     should_shutdown &= started_seen or (now > MIN_ON_TIME_S)
     return should_shutdown
+
+  def hold_for_rlog_upload(self, now: float, time_past_timeout: float) -> bool:
+    if self.rlogs_checked_at is None or now - self.rlogs_checked_at >= RLOG_UPLOAD_CHECK_S or now < self.rlogs_checked_at:
+      self.rlogs_checked_at = now
+      try:
+        # lazy: keeps the connect provider out of hardwared's import path until the timer actually expires
+        from openpilot.common.hardware.hw import Paths
+        from openpilot.starpilot.connect.provider import active_provider, owns_recording
+        from openpilot.system.loggerd.rlog_upload import rlogs_pending
+        root = Paths.log_root()
+        self.rlogs_pending = rlogs_pending(root, active_provider().upload_attribute, lambda fn: owns_recording(fn, root))
+      except Exception:
+        cloudlog.exception("rlog upload hold check failed")
+        self.rlogs_pending = False
+      if self.rlogs_pending:
+        cloudlog.event("offroad_timeout held for rlog upload", time_past_timeout=time_past_timeout)
+    return self.rlogs_pending

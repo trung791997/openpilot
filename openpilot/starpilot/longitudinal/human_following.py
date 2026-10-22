@@ -1,8 +1,10 @@
 """HumanFollowing: the MPC lead path follows the model's lead trajectory instead of the aLeadK extrapolation.
 
 Ported from openpilot-radar (ns-bosch-radar-testing, STATUS 62/63/118/120), which follows FrogPilot-Testing
-728f65472 `process_lead`. The planner calls `install(mpc)` when `enabled_for(CP)`; otherwise StarPilot's own
-guarded `build_model_lead_trajectory` stays in place. long_mpc.py is not edited (it is a codegen source).
+728f65472 `process_lead`. The StarPilot planner calls `install(mpc)` when `enabled_for(CP, toggle)`; otherwise StarPilot's own
+guarded `build_model_lead_trajectory` stays in place. long_mpc.py is not edited (it is a codegen source). The upstream
+planner (upstream/planner.py) has no model-lead input, so it calls `upstream_lead_paths()` and hands the result to its
+MPC (same builder, same freshness-qualified model leads).
 
 Differences from StarPilot's builder:
 - The model lead counts above LEAD_DETECTION_PROBABILITY (0.35) rather than 0.5.
@@ -28,15 +30,18 @@ from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
 LEAD_DETECTION_PROBABILITY = 0.35
 MAX_CLOSING_TTC = 2.0
 MIN_CLOSING_SPEED = 0.75
-# Off (owner 2026-10-20: drive James's night-star7 as shipped first). Also switches HumanAcceleration, which shares
-# enabled_for().
-ENABLED = False
+# Switch: the owner toggle `BoschAHumanFollowing` (bosch_a_toggles.py, default Off; owner 2026-10-20 drove night-star7 as
+# shipped first, 2026-10-22 asked for a toggle usable with either planner). It also switches HumanAcceleration, which
+# shares enabled_for(). Read once when plannerd starts and passed in as `toggle`.
 
 
-def enabled_for(CP) -> bool:
-  """Honda cars with a verified Bosch-A radar, with the radar on or off (vision-only shares it)."""
+def enabled_for(CP, toggle: bool = False) -> bool:
+  """The toggle is on and the car is a Honda with a verified Bosch-A radar and openpilot longitudinal, radar on or off
+  (vision-only shares it)."""
+  if toggle is not True:
+    return False
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  return bool(ENABLED and CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
+  return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
 
 
 def _horizon_matches(model_lead, lead, v_ego, model_v_ego) -> bool:
@@ -112,6 +117,24 @@ def build_trajectory(model_lead, radar_lead, v_ego, model_v_ego=None):
   x_lead_max = x_lead_mpc[0] + np.cumsum(T_DIFFS[1:] * (v_lead_mpc[:-1] + v_lead_mpc[1:]) / 2)
   x_lead_mpc[1:] = np.minimum(x_lead_mpc[1:], x_lead_max)
   return np.column_stack((x_lead_mpc, v_lead_mpc))
+
+
+def upstream_lead_paths(model, radar_state, v_ego):
+  """(path for leadOne, path for leadTwo) for the upstream MPC; None for a lead keeps its raw aLeadK extrapolation.
+
+  `model` must come from long_mpc.qualified_model_leads (the StarPilot planner's freshness check); None gives
+  (None, None). Mirrors StarPilot's long_mpc.update pairing: model leadsV3[0] with leadOne, [1] with leadTwo, and
+  model_v_ego = model.velocity.x[0]."""
+  if model is None:
+    return None, None
+  try:
+    model_leads = getattr(model, 'leadsV3', ())
+    velocity = getattr(getattr(model, 'velocity', None), 'x', ())
+    model_v_ego = velocity[0] if len(velocity) else None
+    return tuple(build_trajectory(model_leads[i] if len(model_leads) > i else None, lead, v_ego, model_v_ego)
+                 for i, lead in enumerate((radar_state.leadOne, radar_state.leadTwo)))
+  except (AttributeError, IndexError, TypeError, ValueError):
+    return None, None
 
 
 def install(mpc):

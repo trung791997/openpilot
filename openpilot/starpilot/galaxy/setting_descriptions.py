@@ -36,6 +36,12 @@ DESCRIPTIONS = {
   'SteerLatAccel': 'Sets the legacy lateral-acceleration-to-torque conversion. Review the vehicle-specific tuning profile before applying it.',
   'SteerFriction': 'Sets legacy steering friction compensation. Review the vehicle-specific tuning profile before applying it.',
   'UseStarPilotLongitudinalPlanner': 'Selects the StarPilot acceleration, braking and following planner. Off selects the upstream planner.',
+  'BoschAStockBrakeFeel': ('Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. ' +
+                           'It never brakes harder than the planner asks and works with either planner. ' +
+                           'It acts only on verified Bosch-A Hondas with openpilot longitudinal.'),
+  'BoschAHumanFollowing': ('Follows the driving model\u2019s predicted path for the car ahead instead of a straight-line guess, and ' +
+                           'eases acceleration at low set speeds and near the set speed. It works with either planner and acts ' +
+                           'only on verified Bosch-A Hondas with openpilot longitudinal.'),
   'CustomCruise': 'Sets how much a short cruise-button press changes the set speed.',
   'CustomCruiseLong': 'Sets how much holding a cruise button changes the set speed.',
   'ReverseCruise': 'Swaps the Toyota short-press and held-press cruise-speed increments.',
@@ -61,6 +67,8 @@ DESCRIPTIONS = {
   'slc_adopt': 'Keeps the current speed-limit offset schedule fixed when display units change.',
   'slc_reset': 'Resets saved speed-limit offsets while retaining valid configured speed ranges.',
   'AlwaysAllowUploads': 'Allows queued full logs and videos to upload over metered networks. This uses mobile data.',
+  'UploadRlogs': ('Uploads the full rlog of every finished segment while driving, on any connection including phone hotspots. ' +
+                  'Uses a lot of mobile data and some CPU. When off, rlogs still upload once parked.'),
   'UseVOACC': ('Use vision-only adaptive cruise control instead of radar-assisted lead detection. ' +
                'Requires StarPilot longitudinal control. Applies next drive; radar faults and safety checks remain active.'),
   'ToyotaRadarMode': 'Chooses the supported Toyota front radar configuration, including the optional ARS510 retrofit.',
@@ -140,6 +148,8 @@ INITIALIZATION = {
   'LateralControllerSelection': ('Applies when driving processes next start: the controller class, vehicle policy and ' +
     'PID/filter state are constructed together.'),
   'UseStarPilotLongitudinalPlanner': 'Applies when the planner next starts: each choice runs a different planner process with its own subscriptions and state.',
+  'BoschAStockBrakeFeel': 'Applies on the next drive: the planner reads this setting once when it starts.',
+  'BoschAHumanFollowing': 'Applies on the next drive: the planner reads this setting once when it starts.',
   'TurnAssist': ('Applies when driving processes next start: the selected torque controller creates its ' +
     'low-speed feedback controller and filter state at initialization.'),
   'ToyotaRadarMode': 'Chooses the supported Toyota front radar configuration, including the optional ARS510 retrofit.',

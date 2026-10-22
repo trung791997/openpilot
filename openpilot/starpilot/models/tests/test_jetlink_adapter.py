@@ -38,8 +38,10 @@ def test_interface_keys():
   op = adapter.adapter()
   assert adapter.owner_config().adapter == adapter.__name__
   assert op.keys.link == "JetlinkMode"
-  # nothing writes a big-model slot or catalog: jetlink's default model, so a fresh Jetson is provisioned
-  assert op.keys.big_model is None and op.keys.catalog is None
+  # the owner's pick and refresh_catalog()'s catalog, both StarPilot JSON params (params_keys.h)
+  assert op.keys.big_model == "JetlinkBigModel" and op.keys.catalog == "JetlinkCatalog"
+  from jetlink.registry.catalog import REQUIRED_SELECTOR_VERSION
+  assert op.catalog_selector == REQUIRED_SELECTOR_VERSION
 
 
 def test_guard_answers_link_off_without_a_usable_jetlink():

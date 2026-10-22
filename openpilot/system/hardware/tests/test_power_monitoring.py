@@ -195,3 +195,32 @@ class TestPowerMonitoring(OpenpilotTestCase):
                                        offroad_timestamp,
                                        started_seen), \
                     f"Should shutdown after {DELAY_SHUTDOWN_TIME_S} seconds offroad time"
+
+  # StarPilot: rlog upload (on whenever parked, whatever UploadRlogs says) holds only the offroad timer,
+  # only while rlogs from the anchor route onward are pending, with no time cap
+  def _past_timeout(self, mocker, pending, past_timeout):
+    pm_patch(mocker, "MAX_TIME_OFFROAD_S", 3600, constant=True)
+    mocker.patch("openpilot.system.loggerd.rlog_upload.rlogs_pending", return_value=pending)
+    pm = PowerMonitoring()
+    pm.car_battery_capacity_uWh = CAR_BATTERY_CAPACITY_uWh
+    pm.car_voltage_mV = GOOD_VOLTAGE
+    return pm, ssb - 3600 - past_timeout
+
+  def test_offroad_timeout_held_while_rlogs_pending(self, mocker):
+    for past in (60, 10 * 3600):
+      pm, offroad_timestamp = self._past_timeout(mocker, True, past)
+      assert not pm.should_shutdown(False, True, offroad_timestamp, True)
+
+  def test_offroad_timeout_not_held_without_pending(self, mocker):
+    pm, offroad_timestamp = self._past_timeout(mocker, False, 60)
+    assert pm.should_shutdown(False, True, offroad_timestamp, True)
+
+  def test_rlog_hold_never_blocks_low_voltage(self, mocker):
+    pm, offroad_timestamp = self._past_timeout(mocker, True, 60)
+    pm.car_voltage_mV = VOLTAGE_BELOW_PAUSE_CHARGING
+    assert pm.should_shutdown(False, True, offroad_timestamp, True)
+
+  def test_rlog_hold_never_blocks_battery_exhausted(self, mocker):
+    pm, offroad_timestamp = self._past_timeout(mocker, True, 60)
+    pm.car_battery_capacity_uWh = 0
+    assert pm.should_shutdown(False, True, offroad_timestamp, True)

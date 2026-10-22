@@ -3,7 +3,9 @@
 Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, selfdrive/controls/lib/longitudinal_planner.py).
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
-switch (STOCK_BRAKE_FEEL, STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY, BIRTH_RAIL_ENABLED); all are off for now.
+switch: Stock Brake Feel is the owner toggle `BoschAStockBrakeFeel` (bosch_a_toggles.py, default Off, read once when
+plannerd starts and passed in as `stock_brake_feel`); STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY and BIRTH_RAIL_ENABLED are
+constants and stay off. Both longitudinal planners (StarPilot's and the upstream one) call it the same way.
 
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
@@ -62,7 +64,9 @@ STOP_EASE_MIN_GAP = 2.0  # m
 
 
 # ---- Switches (owner 2026-10-20: drive James's night-star7 as shipped first, so every switch is off) -----------------
-# STOCK_BRAKE_FEEL: the stock-ACC depth/jerk law and the emergency latch (step()).
+# Stock Brake Feel (the stock-ACC depth/jerk law and the emergency latch, step()) is no longer a constant here: owner
+#   2026-10-22 asked for it as a toggle usable with either planner, so it is the `BoschAStockBrakeFeel` param (default
+#   Off), passed to HondaBoschALongEnhancement as `stock_brake_feel`. Still gated by active_for(CP).
 # STOP_EASE_ENABLED: the planner-side brake ease at the stop (step()).
 # RADAR_LEAD_RECOVERY groups D-089 (far-range recovery), D-075 (newborn range publish) and D-080 (newborn aLeadK
 #   bound). Only D-080 is ported (planner_radar_state()). D-089 and D-075 live in the decoder
@@ -70,7 +74,6 @@ STOP_EASE_MIN_GAP = 2.0  # m
 #   gates (RECOVERED_CAM_GATE, NEWBORN_*) plus RadarPoint fields (`measured`, `recovered`) that 7.0 does not have, so
 #   this switch does NOT turn them on. Turning those decoder constants on without the gates is the rejected
 #   configuration (STATUS 225; D-075 phantom brakes on 280/294/2ae/284).
-STOCK_BRAKE_FEEL = False
 STOP_EASE_ENABLED = False
 RADAR_LEAD_RECOVERY = False
 
@@ -201,9 +204,11 @@ def stop_eased_target(prev: float, target: float, floor: float | None, dt: float
 
 
 class HondaBoschALongEnhancement:
-  def __init__(self, CP, dt: float):
+  def __init__(self, CP, dt: float, stock_brake_feel: bool = False):
+    """`stock_brake_feel` is the owner's BoschAStockBrakeFeel toggle (bosch_a_toggles.read_toggles); it only arms the law,
+    active_for(CP) still decides."""
     active = active_for(CP)
-    self.stock_feel = active and STOCK_BRAKE_FEEL
+    self.stock_feel = active and stock_brake_feel is True
     self.stop_ease = active and STOP_EASE_ENABLED
     self.enabled = self.stock_feel or self.stop_ease
     self.newborn_hold = NewbornLeadHold() if active and RADAR_LEAD_RECOVERY else None

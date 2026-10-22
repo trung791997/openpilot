@@ -23,6 +23,9 @@ from openpilot.starpilot.longitudinal.profile_runtime import TRAFFIC_CRUISE_BRAK
 from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_APPROACH_KEY
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
+from openpilot.starpilot.longitudinal.bosch_a_toggles import (HUMAN_FOLLOWING_KEY as BOSCH_A_HUMAN_FOLLOWING_KEY,
+                                                               STOCK_BRAKE_FEEL_KEY as BOSCH_A_STOCK_BRAKE_FEEL_KEY,
+                                                               vehicle_supported as bosch_a_vehicle_supported)
 
 from openpilot.starpilot.longitudinal.profile_document import (
   ACCELERATION_PRESETS, ACCELERATION_SPEEDS_MPH, BRAKING_PRESETS, FOLLOWING_PRESETS, CURVE_BOUNDS,
@@ -74,7 +77,7 @@ from openpilot.starpilot.controllers.toyota_cruise import capability as toyota_c
 
 
 BOOL_DEFAULTS = {
-  "GMPedalLongitudinal": False, "ForceStops": False, "AlwaysAllowUploads": False, "TurnAssist": True,
+  "GMPedalLongitudinal": False, "ForceStops": False, "AlwaysAllowUploads": False, "UploadRlogs": False, "TurnAssist": True,
   "ReverseCruise": False, "ToyotaAutoHold": False, "JeepBrakeHold": False, "VoltSNG": False, "GMAutoHold": False, "VoltOnePedalMode": False,
   "RemapCancelToDistance": False, "LongPitch": True, "DisableOpenpilotLongitudinal": False,
   "SpeedLimitController": False, "ShowSpeedLimits": True,
@@ -82,6 +85,7 @@ BOOL_DEFAULTS = {
   "PauseLateralOnSignal": False,
   "LaneCentering": False, "LaneCenteringPauseOnSignal": True,
   "CustomPersonalities": False, PLANNER_SELECTION_KEY: True,
+  BOSCH_A_STOCK_BRAKE_FEEL_KEY: False, BOSCH_A_HUMAN_FOLLOWING_KEY: False,
   LEAD_APPROACH_KEY: False,
   LEAD_TAKEOFF_KEY: False,
   CURVE_MASTER_KEY: False, CURVE_NO_LEAD_KEY: False,
@@ -725,7 +729,9 @@ class FeatureSettingsOwner:
     if page == "data":
       title = "Data Uploads"
       rows = [self._bool_row("AlwaysAllowUploads", "Always Allow Uploads", self.authority("preferences"),
-                             "Allow queued full logs and videos on metered networks. Uses mobile data.")]
+                             "Allow queued full logs and videos on metered networks. Uses mobile data."),
+              self._bool_row("UploadRlogs", "Upload rlogs while driving", self.authority("preferences"),
+                             "Upload full rlogs while driving, on any connection. Uses a lot of mobile data. When off, rlogs still upload once parked.")]
     elif page == FeaturePage.HUB:
       rows = [FeatureRow("", "Curve Speed Controller", "Adjust how speed is reduced for curves ahead", page=FeaturePage.CURVE, available=True),
               FeatureRow("", "Speed Limit Controller", "Choose speed-limit sources, offsets, and confirmation behavior", page=FeaturePage.SLC, available=True),
@@ -1026,6 +1032,19 @@ class FeatureSettingsOwner:
       title = "Long Planner"
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
+      bosch_a_supported = bosch_a_vehicle_supported(self.vehicle_params())
+      for bosch_a_key, bosch_a_label, bosch_a_reason in (
+          (BOSCH_A_STOCK_BRAKE_FEEL_KEY, "Stock Brake Feel (Bosch-A)",
+           ("Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. " +
+            "It never brakes harder than the planner asks. Works with either planner. Changes apply on the next drive. " +
+            "Acts only on verified Bosch-A Hondas with openpilot longitudinal.")),
+          (BOSCH_A_HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
+           ("Follows the driving model's predicted path for the car ahead instead of a straight-line guess, and eases " +
+            "acceleration at low set speeds and near the set speed. Works with either planner. Changes apply on the next drive. " +
+            "Acts only on verified Bosch-A Hondas with openpilot longitudinal."))):
+        bosch_a_enabled, _, _ = self._value(bosch_a_key)
+        rows.append(self._bool_row(bosch_a_key, bosch_a_label, self.authority("preferences") and
+                                   (bosch_a_supported or bosch_a_enabled == "1"), reason=bosch_a_reason))
       allowed = configurable and system_long
       if self.show_cruise_intervals or toyota_cruise_capability(self.vehicle_params()) is not None:
         rows.extend(self._cruise_rows(configurable))
@@ -1156,7 +1175,7 @@ class FeatureSettingsOwner:
                                    default_value=str(round(max(low, min(high, default_curve[index])), 4))))
     fingerprint = self.vehicle_fingerprint()
     rows = [replace(row, vehicle_fingerprint=None if row.key in (PLANNER_SELECTION_KEY, LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY,
-                                                              "ShowSpeedLimits", "AlwaysAllowUploads") or
+                                                              "ShowSpeedLimits", "AlwaysAllowUploads", "UploadRlogs") or
                     row.key.startswith('conditional:') and not row.key.startswith(BUTTON_PREFIX) else fingerprint)
             for row in rows]
     subtitle = (
@@ -1304,7 +1323,11 @@ class FeatureSettingsOwner:
       source_key = key
       long_key = (key in ("CustomPersonalities", "ForceStops", "ForceStopDistanceOffset") or "Personality" in key or
                   key.endswith(("Follow", "FollowHigh")) or "Jerk" in key)
-      if key in ("ShowSpeedLimits", "AlwaysAllowUploads", SLC_PRIORITY, SLC_SECONDARY) or (key == "ForceStops" and request.value == "Off"):
+      if key in ("ShowSpeedLimits", "AlwaysAllowUploads", "UploadRlogs", SLC_PRIORITY, SLC_SECONDARY) or (key == "ForceStops" and request.value == "Off"):
+        group = "preferences"
+      elif key in (BOSCH_A_STOCK_BRAKE_FEEL_KEY, BOSCH_A_HUMAN_FOLLOWING_KEY):
+        if request.value == "On" and not bosch_a_vehicle_supported(self.vehicle_params()):
+          return False
         group = "preferences"
       elif key in LANE_LIVE_KEYS and not self.authority("lane"):
         group = "lane_live"
@@ -1314,7 +1337,7 @@ class FeatureSettingsOwner:
       return False
     try:
       profile_master_source = self._raw("CustomPersonalities") if source_key == PERSONALITY_PROFILES_PARAM else None
-      if ((request.vehicle_fingerprint is not None if key in ("ShowSpeedLimits", "AlwaysAllowUploads") else
+      if ((request.vehicle_fingerprint is not None if key in ("ShowSpeedLimits", "AlwaysAllowUploads", "UploadRlogs") else
            not request.vehicle_fingerprint or self.vehicle_fingerprint() != request.vehicle_fingerprint) or
           not self.authority(group) or self._raw(source_key) != request.expected or
           not self._readable(source_key)):
@@ -1465,7 +1488,7 @@ class FeatureSettingsOwner:
         from openpilot.starpilot.lateral.lane_runtime import runtime_supported
         if not runtime_supported(self.vehicle_params()):
           return False
-      if ((request.vehicle_fingerprint is not None if key in ("ShowSpeedLimits", "AlwaysAllowUploads") else
+      if ((request.vehicle_fingerprint is not None if key in ("ShowSpeedLimits", "AlwaysAllowUploads", "UploadRlogs") else
            self.vehicle_fingerprint() != request.vehicle_fingerprint) or
           not self.authority(group) or self._raw(source_key) != request.expected or
           key == "reset_profiles" and not self.authority("parked_preferences") or
