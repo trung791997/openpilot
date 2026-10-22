@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 import threading
 
+FRPC_LOG = 'frpc.log'
+FRPC_LOG_MAX_BYTES = 256 * 1024
+
 from openpilot.starpilot.galaxy.remote import RemotePairing
 from openpilot.starpilot.galaxy.frpc_asset import bundled_frpc_path
 
@@ -18,10 +21,29 @@ def frpc_binary() -> str | None:
   return bundled_frpc_path() or shutil.which('frpc')
 
 
+def _remove_stale_configs(root: Path) -> None:
+  # galaxy is often killed without its finally block running; the old configs hold the slug
+  for stale in Path(root).glob('.frpc-*.toml'):
+    stale.unlink(missing_ok=True)
+
+
+def _open_log(root: Path):
+  # frpc output, kept small: truncated whenever a launch finds it over the cap
+  path = Path(root) / FRPC_LOG
+  try:
+    if path.stat().st_size > FRPC_LOG_MAX_BYTES:
+      path.unlink()
+  except OSError:
+    pass
+  fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+  return os.fdopen(fd, 'ab', buffering=0)
+
+
 def supervise_tunnel(stop: threading.Event, pairing: RemotePairing, *, remote_port: int = 8084, auth_port: int = 8083) -> None:
   process = None
   active_slug = None
   config_path = None
+  _remove_stale_configs(pairing.root)
   try:
     while not stop.wait(1):
       record = pairing.read()
@@ -45,8 +67,16 @@ def supervise_tunnel(stop: threading.Event, pairing: RemotePairing, *, remote_po
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
           stream.write(pairing.frpc_config(slug, remote_port, auth_port))
-        process = subprocess.Popen([binary, '-c', config_path], stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+          log = _open_log(pairing.root)
+        except OSError:
+          log = None
+        try:
+          process = subprocess.Popen([binary, '-c', config_path], stdin=subprocess.DEVNULL,
+                                     stdout=log or subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        finally:
+          if log is not None:
+            log.close()
         active_slug = slug
   finally:
     if process is not None and process.poll() is None:

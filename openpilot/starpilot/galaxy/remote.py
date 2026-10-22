@@ -208,6 +208,7 @@ class RemotePairing:
       raise ValueError("Invalid Galaxy slug")
     return f'''serverAddr = "galaxy.firestar.link"
 serverPort = 7000
+loginFailExit = false
 
 [transport]
 tls.enable = true
