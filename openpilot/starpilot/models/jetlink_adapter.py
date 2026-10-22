@@ -112,15 +112,57 @@ def _adapter_class():
 
     def small_reset(self, small):
       # CatalogModelState's history zeroed in place: GPU queues, numpy inputs (prev_feat, packed inputs) and
-      # the desire edge. Never _reset_state(), which makes tensors the run JIT was not captured with
+      # the desire edge. Never _reset_state(), which makes tensors the run JIT was not captured with.
+      # Not jetlink's reset_queues either: its TinyJit clear() compiles a fresh QCOM kernel, which the driving
+      # fresh-compile guard refuses ("Unexpected fresh QCOM submission"), so every attach failed. The queues
+      # are CPU-mapped, so they are zeroed through their host views with no compile and no submission.
       from openpilot.starpilot.models.runner import CatalogModelState
       if not isinstance(small, CatalogModelState):
         return None
-      from jetlink.openpilot.warp import reset_queues
+      # Never None from here: joining.py falls back to prepare_reset(), which compiles
       queues = [q for name, q in small.input_queues.items() if q.device != "NPY" and name not in FRAME_INPUTS]
-      return reset_queues(queues, small.npy.values(), small.prev_desire)
+      return host_zero_reset(queues, list(small.npy.values()), small.prev_desire)
 
   return StarPilotAdapter
+
+
+def _host_view(q):
+  # the zero-copy host bytes of a realized queue buffer; refuse rather than fall back to a kernel or a copy
+  import numpy as np
+  buf = q.uop.base.buffer
+  if not buf.is_allocated():
+    raise RuntimeError(f"small_reset: {q.device} queue buffer is not allocated")
+  if hasattr(buf, "_host_mv"):  # 9d runtime
+    mv = buf._host_mv()
+  elif hasattr(buf.allocator, "_as_buffer"):  # f6 runtime
+    mv = buf.allocator._as_buffer(buf._buf)
+  else:
+    mv = None
+  if mv is None:
+    raise RuntimeError(f"small_reset: {q.device} queue buffer has no host mapping; refusing to compile a reset")
+  view = np.frombuffer(mv, dtype=np.uint8)
+  if view.nbytes != buf.nbytes:
+    raise RuntimeError(f"small_reset: host view is {view.nbytes} bytes, buffer is {buf.nbytes}")
+  if not view.flags.writeable:
+    raise RuntimeError(f"small_reset: {q.device} host view is read-only")
+  return buf, view
+
+
+def host_zero_reset(queues, arrays, prev_desire):
+  # captured once, at prepare; the returned reset() compiles, allocates and submits nothing
+  from tinygrad import Device
+  views = [_host_view(q) for q in queues]
+  devices = sorted({buf.device for buf, _ in views})
+
+  def reset():
+    for device in devices:  # no GPU work may still be writing the history being cleared
+      Device[device].synchronize()
+    for _, view in views:
+      view.fill(0)
+    for array in arrays:
+      array.fill(0)
+    prev_desire.fill(0)
+  return reset
 
 
 def adapter():
