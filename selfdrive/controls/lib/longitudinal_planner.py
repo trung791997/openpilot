@@ -151,6 +151,29 @@ LC_MERGE_RELEASE_LEAD_BRAKE = -1.0
 # faster than this on the lead; the -0.4 floor still applies.
 LC_MERGE_PUSH_MAX_CLOSING = 3.0
 
+# Lane-change coast (HumanLaneChanges; STATUS 262, log study only, not driven). On 1363 segments, the hard brakes
+# after a lane change behind a slower car came 3-5 s after crossing and 1.5-4 s after that car became leadOne
+# (25b s22 -4.45 behind a car 61 m ahead closing 6.7 m/s; 299 s5 -2.19 at 24 m). The blinker comes on only ~0.5 s
+# before crossing, so there is no time to brake early, but there is time to lift off. From the blinker through the
+# lane change, a target-lane car (starpilotRadarState.leadLeft/leadRight) that radar has held on the same track for
+# LC_COAST_STABLE_TIME, that lies within one lane of our lane line, and that we are closing on, closes the throttle
+# gate (allowThrottle False, output capped at the coast accel). It never adds braking: braking stays with leadOne.
+LC_COAST_STATES = (
+  LaneChangeState.preLaneChange,
+  LaneChangeState.laneChangeStarting,
+  LaneChangeState.laneChangeFinishing,
+)
+LC_COAST_STABLE_TIME = 0.5
+LC_COAST_MIN_CLOSING = 1.0
+LC_COAST_MAX_DIST = 100.0
+LC_COAST_MAX_TTC = 12.0
+LC_COAST_MAX_HEADWAY = 2.0
+LC_COAST_LANE_WIDTH = 4.0
+LC_COAST_MIN_SPEED = 8.0
+# Hold once fired, so the coast covers the 0.6-2.4 s between crossing and the new car becoming leadOne.
+LC_COAST_POST_HOLD = 2.0
+LC_COAST_MAX_HOLD = 8.0
+
 A_CRUISE_MAX_BP = [0.0, 5., 10., 15., 20., 25., 40.]
 A_CRUISE_MAX_VALS = [1.125, 1.125, 1.125, 1.125, 1.25, 1.25, 1.5]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
@@ -1716,6 +1739,11 @@ class LongitudinalPlanner:
     self.model_allow_throttle_transition_t = 0.0
     self.allow_throttle = True
     self.mode = 'acc'
+    self.lc_coast_side_ids = [-1, -1]
+    self.lc_coast_side_time = [0.0, 0.0]
+    self.lc_coast_active = False
+    self.lc_coast_hold_t = 0.0
+    self.lc_coast_post_t = 0.0
     self.is_preap = (
       CP.brand == "tesla" and CP.carFingerprint == "TESLA_MODEL_S_PREAP" and
       CP.openpilotLongitudinalControl and not CP.pcmCruise
@@ -3276,6 +3304,76 @@ class LongitudinalPlanner:
     self.fast_closing_lead_track = track
     return True
 
+  def _lc_coast_target(self, lead, left, model_meta_lane_lines, v_ego):
+    # True if this adjacent lead is a car in the next lane that we are closing on.
+    if not bool(getattr(lead, "status", False)):
+      return False
+    d_rel = float(lead.dRel)
+    closing = v_ego - float(lead.vLead)
+    if d_rel <= 0.0 or d_rel > LC_COAST_MAX_DIST or closing < LC_COAST_MIN_CLOSING:
+      return False
+    if d_rel / closing > LC_COAST_MAX_TTC and d_rel > LC_COAST_MAX_HEADWAY * v_ego:
+      return False
+    # radard already requires it beyond our lane line; keep it within one lane of that line (no outer bound there).
+    line = model_meta_lane_lines[1 if left else 2]
+    if len(line.x) == 0:
+      return False
+    line_y = float(np.interp(d_rel, line.x, line.y))
+    offset = line_y + float(lead.yRel) if left else -float(lead.yRel) - line_y
+    return 0.0 <= offset <= LC_COAST_LANE_WIDTH
+
+  def update_lane_change_coast(self, sm, starpilot_toggles, scene_v_ego):
+    # True while the lane-change coast closes the throttle gate (see LC_COAST_*).
+    try:
+      radar_state = sm['starpilotRadarState']
+    except (KeyError, IndexError, TypeError, AttributeError):
+      radar_state = None
+    sides = (getattr(radar_state, "leadLeft", None), getattr(radar_state, "leadRight", None))
+
+    # Track-id stability runs all the time, so a car already beside us before the blinker counts.
+    for i, lead in enumerate(sides):
+      track_id = int(getattr(lead, "radarTrackId", -1)) if lead is not None and bool(getattr(lead, "status", False)) else -1
+      if track_id >= 0 and track_id == self.lc_coast_side_ids[i]:
+        self.lc_coast_side_time[i] += self.dt
+      else:
+        self.lc_coast_side_time[i] = 0.0
+      self.lc_coast_side_ids[i] = track_id
+
+    CS = sm['carState']
+    meta = sm['modelV2'].meta
+    enabled = (bool(getattr(starpilot_toggles, "human_lane_changes", False)) and radar_state is not None and
+               not CS.standstill and not bool(getattr(CS, "brakePressed", False)) and scene_v_ego >= LC_COAST_MIN_SPEED)
+    in_lane_change = meta.laneChangeState in LC_COAST_STATES
+    if not enabled:
+      self.lc_coast_active = False
+      return False
+
+    if self.lc_coast_active:
+      self.lc_coast_hold_t += self.dt
+      self.lc_coast_post_t = 0.0 if in_lane_change else self.lc_coast_post_t + self.dt
+      if self.lc_coast_hold_t > LC_COAST_MAX_HOLD or self.lc_coast_post_t > LC_COAST_POST_HOLD:
+        self.lc_coast_active = False
+      return self.lc_coast_active
+
+    if not in_lane_change:
+      return False
+    direction = meta.laneChangeDirection
+    if direction == LaneChangeDirection.left:
+      i, left = 0, True
+    elif direction == LaneChangeDirection.right:
+      i, left = 1, False
+    else:
+      return False
+    if self.lc_coast_side_time[i] + 1e-6 < LC_COAST_STABLE_TIME:
+      return False
+    if not self._lc_coast_target(sides[i], left, sm['modelV2'].laneLines, scene_v_ego):
+      return False
+
+    self.lc_coast_active = True
+    self.lc_coast_hold_t = 0.0
+    self.lc_coast_post_t = 0.0
+    return True
+
   def get_lane_change_merge_accel_floor(self, sm, starpilot_toggles, scene_v_ego, v_cruise, action_t, blocked,
                                         mpc_demand=None):
     # Accel floor (m/s^2) to apply as max(output_a_target, floor) while merging out, else None.
@@ -3436,6 +3534,8 @@ class LongitudinalPlanner:
       else:
         self.model_allow_throttle_transition_t = 0.0
     self.allow_throttle = self.model_allow_throttle and not sm['starpilotPlan'].disableThrottle
+    if self.update_lane_change_coast(sm, starpilot_toggles, scene_v_ego):
+      self.allow_throttle = False
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_limits_turns[0])

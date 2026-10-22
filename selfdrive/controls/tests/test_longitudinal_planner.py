@@ -5583,3 +5583,64 @@ def test_close_lead_cap_uses_measured_speed_not_the_cluster_speed():
   measured = planner.get_close_lead_brake_cap(lead, v_ego, -3.5)
   assert measured is not None and measured > -2.0
   assert planner.close_lead_brake_cap_value == pytest.approx(measured, abs=0.05)
+
+
+def _lc_coast_sm(state=log.LaneChangeState.laneChangeStarting, direction=log.LaneChangeDirection.left,
+                 left_lead=None, right_lead=None):
+  meta = SimpleNamespace(laneChangeState=state, laneChangeDirection=direction)
+  xs = [0.0, 50.0, 100.0]
+  lane_lines = [SimpleNamespace(x=xs, y=[-5.4] * 3), SimpleNamespace(x=xs, y=[-1.8] * 3),
+                SimpleNamespace(x=xs, y=[1.8] * 3), SimpleNamespace(x=xs, y=[5.4] * 3)]
+  none = SimpleNamespace(status=False)
+  return {
+    'modelV2': SimpleNamespace(meta=meta, laneLines=lane_lines),
+    'carState': SimpleNamespace(standstill=False, brakePressed=False),
+    'starpilotRadarState': SimpleNamespace(leadLeft=left_lead or none, leadRight=right_lead or none),
+  }
+
+
+def _adjacent_lead(d_rel=61.0, v_lead=18.0, y_rel=3.6, track_id=7):
+  return SimpleNamespace(status=True, dRel=d_rel, vLead=v_lead, yRel=y_rel, radarTrackId=track_id)
+
+
+def _run_lc_coast(planner, sm, v_ego=24.7, ticks=1, toggles=None):
+  toggles = toggles or SimpleNamespace(human_lane_changes=True)
+  out = None
+  for _ in range(ticks):
+    out = planner.update_lane_change_coast(sm, toggles, v_ego)
+  return out
+
+
+def test_lane_change_coast_lifts_off_for_slower_target_lane_car():
+  # STATUS 262, 25b s22: a car 61 m ahead in the target lane, closing 6.7 m/s, braked -4.45 after the change.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  lead = _adjacent_lead()
+  # Seen beside us before the blinker: track stability accrues outside the lane change.
+  assert not _run_lc_coast(planner, _lc_coast_sm(state=log.LaneChangeState.off, left_lead=lead), ticks=12)
+  assert _run_lc_coast(planner, _lc_coast_sm(left_lead=lead))
+
+
+@pytest.mark.parametrize("case", ["new_track", "not_closing", "two_lanes_over", "wrong_side", "toggle_off", "slow_ego"])
+def test_lane_change_coast_stays_out(case):
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  lead = _adjacent_lead(v_lead=25.0 if case == "not_closing" else 18.0, y_rel=7.0 if case == "two_lanes_over" else 3.6)
+  side = {"right_lead": lead} if case == "wrong_side" else {"left_lead": lead}
+  toggles = SimpleNamespace(human_lane_changes=case != "toggle_off")
+  v_ego = 6.0 if case == "slow_ego" else 24.7
+  ticks = 2 if case == "new_track" else 12
+  assert not _run_lc_coast(planner, _lc_coast_sm(state=log.LaneChangeState.off, **side), v_ego=v_ego, ticks=ticks, toggles=toggles)
+  assert not _run_lc_coast(planner, _lc_coast_sm(**side), v_ego=v_ego, toggles=toggles)
+
+
+def test_lane_change_coast_holds_past_the_change_then_releases():
+  # The new car becomes leadOne 0.6-2.4 s after crossing; the coast covers that gap and then lets go.
+  planner = LongitudinalPlanner(CarInterface.get_non_essential_params(CAR.HONDA_CIVIC))
+  lead = _adjacent_lead()
+  _run_lc_coast(planner, _lc_coast_sm(state=log.LaneChangeState.off, left_lead=lead), ticks=12)
+  assert _run_lc_coast(planner, _lc_coast_sm(left_lead=lead))
+  # Crossed: the car is now in our lane, so it is no longer leadLeft.
+  done = _lc_coast_sm(state=log.LaneChangeState.off)
+  hold_ticks = int(longitudinal_planner_module.LC_COAST_POST_HOLD / planner.dt)
+  assert _run_lc_coast(planner, done, ticks=hold_ticks - 1)
+  assert not _run_lc_coast(planner, done, ticks=3)
+
