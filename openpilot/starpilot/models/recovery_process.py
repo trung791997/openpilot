@@ -28,6 +28,7 @@ class ModeldProcess(PythonProcess):
     self.recovery = ModelRecoveryOwner()
     self.context_ready = False
     self.launch_drive_id = 0
+    self.f6_restart_drive = 0
 
   def observe(self, sm, started):
     now = time.monotonic_ns()
@@ -57,9 +58,16 @@ class ModeldProcess(PythonProcess):
       # Only our explicitly failed startup may request this one fresh process.
       # After 77 the NovaSpark failed marker is set, so the fresh process loads the default model.
       # Never reuse the old GPU context or retry an arbitrary Small crash.
+      exitcode = self.proc.exitcode
       self.proc.join(timeout=0)
       self.proc = None
       self.recovery.drive_id = evidence.drive_id
+      if exitcode == F6_FALLBACK_EXIT and self.f6_restart_drive != evidence.drive_id:
+        # NovaSpark failed: the marker already forces the default model, so restart normally.
+        # Small-only would also stop Jetlink from attaching. Once per drive; a second 77 falls through to Small.
+        self.f6_restart_drive = evidence.drive_id
+        cloudlog.event('modeld.recovery', action='fresh-after-f6-exit', pid=pid, drive=evidence.drive_id)
+        return
       self.recovery.small_only = True
       self.recovery.phase = 'small'
       cloudlog.event('modeld.recovery', action='small-after-startup-exit', pid=pid, drive=evidence.drive_id)

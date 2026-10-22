@@ -44,10 +44,11 @@ def test_startup_restart_requires_owned_exit_and_current_drive(alive, exitcode, 
   if qualifies:
     child.join.assert_called_once_with(timeout=0)
     assert owner.proc is None
-    assert owner.recovery.small_only
+    small = exitcode == STARTUP_FALLBACK_EXIT  # NovaSpark failure restarts normally so Jetlink can attach
+    assert owner.recovery.small_only == small
     with patch('openpilot.starpilot.models.recovery_process.Process') as spawn:
       owner.start()
-      assert spawn.call_args.kwargs['args'] == ('module', 'modeld', True)
+      assert spawn.call_args.kwargs['args'] == ('module', 'modeld', small)
       spawn.return_value.start.assert_called_once_with()
       owner.start()
       spawn.assert_called_once()
@@ -106,3 +107,21 @@ def test_real_failed_startup_exits_with_live_daemon_before_small_can_start():
       child.kill()
       child.join(timeout=3)
     child.close()
+
+
+def test_second_f6_exit_in_one_drive_falls_back_to_small():
+  owner = ModeldProcess('modeld', 'module', lambda *args: True)
+  owner.launch_drive_id = BASE
+  owner.recovery.drive_id = BASE
+  results = []
+  for _ in range(2):
+    child = Mock(pid=123, exitcode=F6_FALLBACK_EXIT)
+    child.is_alive.return_value = False
+    owner.proc = child
+    with patch('openpilot.starpilot.models.recovery_process.time.monotonic_ns', return_value=BASE + 2_000_000_000), \
+         patch('openpilot.starpilot.models.recovery_process.process_start_ticks', return_value=456), \
+         patch('openpilot.starpilot.models.recovery_process.read_receipt', return_value=None):
+      owner.observe(Feed(2.), True)
+    assert owner.proc is None
+    results.append(owner.recovery.small_only)
+  assert results == [False, True]
