@@ -158,7 +158,8 @@ def test_distance_long_press_reaches_experimental_unless_starpilot_conditional_c
   assert gate is starpilot_planner
   assert enabled(params, cp, 'conditional', {}) is starpilot_planner
   monkeypatch.setattr(runtime_app, 'ui_state', NS(params=params, CP=cp))
-  assert runtime_app.StarShellSession._conditional_favorite_active(None) is starpilot_planner
+  session = runtime_app.StarShellSession.__new__(runtime_app.StarShellSession)
+  assert session._conditional_favorite_active() is starpilot_planner
   # Mirror of Car.update(): the Conditional manual claim runs only when gated, then blocks its key.
   tracker, settings = (ButtonTracker(), ConditionalSettingsOwner(params)) if gate else (None, None)
   sm, owner = services(cp), WheelPublisher()

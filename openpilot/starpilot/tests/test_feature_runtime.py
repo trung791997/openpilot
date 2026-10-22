@@ -231,3 +231,35 @@ def test_upstream_planner_selection_turns_conditional_off_everywhere():
     for feature, flag in (('curve', 'CURVE_REPLAY_RUNTIME'), ('profile', 'LONG_PLANNER_REPLAY_RUNTIME'),
                           ('slc', 'SLC_REPLAY_RUNTIME')):
       assert enabled(params, None, feature, {flag: '1'})
+
+
+def test_drive_selection_holds_the_drive_start_planner_until_offroad():
+  # The drive processes (card, plannerd, selfdrived, radard) read the planner once when they
+  # start; the UI outlives the drive, so it must hold the same answer (2026-10-22).
+  from openpilot.starpilot.feature_runtime import card_conditional_runtime
+  from openpilot.starpilot.longitudinal.planner_selection import DriveSelection
+  with TemporaryDirectory() as temporary:
+    params = Files(Path(temporary))
+    (params.root / 'ConditionalModeConfig').write_bytes(encode_preferences(SavedPreferences(mode=ModeChoice.CEM)))
+    selection = params.root / 'UseStarPilotLongitudinalPlanner'
+    latch = DriveSelection()
+
+    def ui(drive):
+      return enabled(params, long_cp(), 'conditional', {}, planner=latch.get(params, drive))
+
+    for start, flipped in ((b'1', b'0'), (b'0', b'1')):
+      selection.write_bytes(start)
+      assert ui(None) == (start == b'1')  # Offroad follows the saved value.
+      card = card_conditional_runtime(params, {})  # Drive processes latch at their start.
+      assert ui(1) == card == (start == b'1')
+      selection.write_bytes(flipped)  # Settings change mid-drive...
+      for _ in range(3):
+        assert ui(1) == card  # ...every UI read keeps the drive-start planner.
+      assert enabled(params, long_cp(), 'conditional', {}) != card  # (an unlatched read would disagree)
+      assert ui(None) == (flipped == b'1')  # Offroad: the new value applies...
+      assert ui(2) == card_conditional_runtime(params, {}) == (flipped == b'1')  # ...and holds next drive.
+      selection.write_bytes(start)
+      assert ui(2) == (flipped == b'1')
+      # A new drive token without an observed offroad still re-reads.
+      assert ui(3) == (start == b'1')
+      latch.get(params, None)

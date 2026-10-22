@@ -333,6 +333,7 @@ class TestOnroadFavorites(unittest.TestCase):
     from openpilot.starpilot.conditional_mode.policy import ModeChoice
     session = runtime_app.StarShellSession.__new__(runtime_app.StarShellSession)
     params = NS(get=Mock(return_value=encode_preferences(SavedPreferences(mode=ModeChoice.STOCK))))
+    session._drive_planner = Mock(return_value=None)  # Planner gating is covered by the drive-start test.
     with patch.object(runtime_app, 'ui_state', NS(params=params, CP=object())), patch.object(runtime_app, 'feature_enabled', return_value=True):
       assert not session._conditional_favorite_active()
       params.get.return_value = None
@@ -340,6 +341,52 @@ class TestOnroadFavorites(unittest.TestCase):
       params.get.return_value = b'{'
       assert session._conditional_favorite_active()
 
+
+  def test_conditional_shortcut_keeps_the_drive_start_planner(self):
+    # Flipping UseStarPilotLongitudinalPlanner mid-drive must not reroute the Experimental
+    # favorite: card/plannerd keep the planner they started with until the next drive.
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    from opendbc.car.toyota.interface import CarInterface
+    from opendbc.car.toyota.values import CAR
+    from openpilot.starpilot.ui import runtime_app
+    from openpilot.starpilot.conditional_mode.preferences import SavedPreferences, encode_preferences
+    from openpilot.starpilot.conditional_mode.policy import ModeChoice
+
+    class Files:
+      def __init__(self, root):
+        self.root = root
+
+      def get_param_path(self, key):
+        return str(self.root / key)
+
+      def get(self, key):
+        path = self.root / key
+        return path.read_bytes() if path.exists() else None
+
+    cp = CarInterface.get_non_essential_params(CAR.TOYOTA_RAV4_TSS2)
+    session = runtime_app.StarShellSession.__new__(runtime_app.StarShellSession)
+    with TemporaryDirectory() as temporary:
+      params = Files(Path(temporary))
+      (params.root / 'ConditionalModeConfig').write_bytes(encode_preferences(SavedPreferences(mode=ModeChoice.CEM)))
+      selection = params.root / 'UseStarPilotLongitudinalPlanner'
+      ui = NS(params=params, CP=cp, started=False, started_frame=0)
+      with patch.object(runtime_app, 'ui_state', ui):
+        selection.write_bytes(b'1')
+        assert session._conditional_favorite_active()
+        ui.started, ui.started_frame = True, 10
+        assert session._conditional_favorite_active()
+        selection.write_bytes(b'0')
+        assert session._conditional_favorite_active()  # Mid-drive: still the drive's StarPilot planner.
+        ui.started = False
+        assert not session._conditional_favorite_active()  # Offroad follows the saved Off.
+        ui.started, ui.started_frame = True, 20
+        assert not session._conditional_favorite_active()
+        selection.write_bytes(b'1')
+        assert not session._conditional_favorite_active()  # Mid-drive: still upstream.
+        ui.started = False
+        assert session._conditional_favorite_active()
 
   def test_collapsed_favorites_yield_to_existing_controls_0(self):
     claimed = True

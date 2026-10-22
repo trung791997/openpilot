@@ -23,6 +23,29 @@ def read_selection(params):
   return PlannerSelection(raw != b'0' or not readable, valid, raw)
 
 
+class DriveSelection:
+  """The selection in effect for the current drive, for processes that outlive one.
+
+  plannerd, card, selfdrived and radard start with the drive and read the selection
+  once. A process that runs across drives (ui) asks here instead: offroad
+  (drive=None) re-reads every call; the first call for a drive token reads once and
+  that answer holds until the token changes, so a mid-drive settings change waits
+  for the next drive exactly as it does for the drive processes.
+  """
+  def __init__(self, reader=None):
+    self._reader = read_selection if reader is None else reader
+    self._drive = None
+    self._selection: PlannerSelection | None = None
+
+  def get(self, params, drive) -> PlannerSelection:
+    if drive is None:
+      self._drive, self._selection = None, None
+      return self._reader(params)
+    if self._selection is None or self._drive != drive:
+      self._selection, self._drive = self._reader(params), drive
+    return self._selection
+
+
 def run_selected(params, starpilot_main, *, importer=import_module):
   selection = read_selection(params)
   if selection.starpilot:

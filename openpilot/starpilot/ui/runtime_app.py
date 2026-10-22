@@ -84,6 +84,7 @@ from openpilot.starpilot.favorites.state import FavoriteAction
 from openpilot.starpilot.favorites.layout_actions import layout_actions
 from openpilot.starpilot.saved_source import read_saved
 from openpilot.starpilot.feature_runtime import enabled as feature_enabled
+from openpilot.starpilot.longitudinal.planner_selection import DriveSelection
 from openpilot.starpilot.conditional_mode.preferences import PreferenceError, SavedPreferences, decode_preferences
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.ui_action import ConditionalUiActionOwner
@@ -573,8 +574,16 @@ class StarShellSession:
       self.conditional_actions = ConditionalUiActionOwner(ui_state.params)
     return self.conditional_actions
 
+  def _drive_planner(self):
+    # The drive processes read the planner once when they start; hold the same answer for this drive.
+    latch = getattr(self, "_planner_selection", None)
+    if latch is None:
+      latch = self._planner_selection = DriveSelection()
+    drive = getattr(ui_state, "started_frame", 0) if getattr(ui_state, "started", False) else None
+    return latch.get(ui_state.params, drive)
+
   def _conditional_favorite_active(self):
-    if not feature_enabled(ui_state.params, ui_state.CP, "conditional", os.environ):
+    if not feature_enabled(ui_state.params, ui_state.CP, "conditional", os.environ, planner=self._drive_planner()):
       return False
     try:
       raw = ui_state.params.get("ConditionalModeConfig")
