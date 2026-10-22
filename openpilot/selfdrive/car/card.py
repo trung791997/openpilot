@@ -366,7 +366,11 @@ class Car:
     self.aol_qualified = bool(self.aol_settings is not None and
                               (aol_policy.full_axis_runtime_required or aol_policy.physical_stalk_owner or independent_axis_requested(self.aol_settings,
                                 include_auxiliary=aol_policy.intent_supported and not aol_policy.explicit_latch)) and
-                              aol_policy.intent_supported and not self.CP.passive)
+                              aol_policy.intent_supported and not self.CP.passive and
+                              # Only arm the panda's AOL mode when selfdrived will send it axis requests;
+                              # otherwise the panda blocks every steer and gas command (cruise fault, 2026-10-22).
+                              (os.getenv('AOL_REPLAY_RUNTIME') == '1' or aol_policy.normal_runtime_supported or
+                               aol_policy.ordinary_axis_ack_required))
     self.aol_card_intent = (create_aol_intent(self.CP, self.aol_settings, aol_policy)
                             if self.aol_qualified and self.aol_settings is not None else None)
     self.distance_personality_tracker = ButtonTracker() if aol_policy.distance_personality else None

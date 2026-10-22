@@ -1,5 +1,6 @@
 """Honda AOL host qualification and serialized integration tests."""
 
+import os
 import time
 import unittest
 from unittest import mock
@@ -346,6 +347,34 @@ class HondaNidecInterceptorAolTests(unittest.TestCase):
     cp = self.interceptor_cp()
     cp.safetyConfigs[0].safetyParam = 36
     self.assertFalse(qualified_nidec_interceptor(cp))
+
+  def test_card_does_not_arm_panda_aol_when_selfdrived_will_not_request_axes(self):
+    # 2026-10-22: alpha-long Civic with AlwaysOnLateral on and no replay env. selfdrived publishes no
+    # aolAxisState for this CP, so arming the panda's AOL mode (bit 32) blocked every steer and gas command.
+    class FakeHonda:
+      CC = object()
+      CS = object()
+
+      def __init__(self):
+        self.CP = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False)
+
+      def init(self, _cp, _recv, _send):
+        pass
+
+    class FakeRadar(RadarInterfaceBase):
+      def update(self, can_packets):
+        return None
+
+    with OpenpilotPrefix(), mock.patch.dict('os.environ', {'SIMULATION': '1'}):
+      os.environ.pop('AOL_REPLAY_RUNTIME', None)
+      messaging.reset_context()
+      params = Params()
+      params.put_bool('OpenpilotEnabledToggle', True, block=True)
+      params.put_bool('AlwaysOnLateral', True, block=True)
+      honda = FakeHonda()
+      card = Car(honda, FakeRadar(honda.CP))
+      self.assertFalse(card.aol_qualified)
+      self.assertEqual(card.CP.safetyConfigs[0].safetyParam & 32, 0)
 
   def test_card_opts_in_from_saved_request_without_replay_env(self):
     test = self
