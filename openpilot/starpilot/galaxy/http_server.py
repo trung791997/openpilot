@@ -92,7 +92,10 @@ class _LocalHTTPServer(ThreadingHTTPServer):
           cleanup.callback(close)
 
 
-LOCAL_NETWORKS = tuple(ip_network(network) for network in ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16'))
+# Tailscale addresses (100.64.0.0/10) count as local: the owner reaches Galaxy from their own tailnet devices.
+TAILSCALE_NETWORK = ip_network('100.64.0.0/10')
+LOCAL_NETWORKS = tuple(ip_network(network) for network in ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+                                                            '169.254.0.0/16')) + (TAILSCALE_NETWORK,)
 
 
 def direct_local_connection(peer: str, destination: str, headers) -> bool:
@@ -121,6 +124,15 @@ def allowed_authority(host: str, local_address: str, port: int) -> bool:
   """Accept only the literal address reached by this socket, or loopback's name."""
   if host == f'localhost:{port}' and local_address == '127.0.0.1':
     return True
+  # Userspace-networking Tailscale hands tailnet connections to loopback, so the browser's Host
+  # is the device's Tailscale IP while the socket is 127.0.0.1. Accept only a literal tailnet IP.
+  if local_address == '127.0.0.1' and host.endswith(f':{port}'):
+    try:
+      tailnet = ip_address(host[:-len(f':{port}')])
+    except ValueError:
+      tailnet = None
+    if isinstance(tailnet, IPv4Address) and tailnet in TAILSCALE_NETWORK:
+      return True
   if host != f'{local_address}:{port}':
     return False
   try:

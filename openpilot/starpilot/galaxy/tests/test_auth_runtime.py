@@ -26,6 +26,12 @@ class AuthRuntimeTest(unittest.TestCase):
     self.assertFalse(allowed_authority('localhost:8082', '192.168.4.21', port))
     self.assertFalse(allowed_authority('0.0.0.0:8082', '0.0.0.0', port))
     self.assertFalse(allowed_authority('192.168.4.21:9999', '192.168.4.21', port))
+    # userspace Tailscale: tailnet IP in Host, loopback socket
+    self.assertTrue(allowed_authority('100.121.253.10:8082', '127.0.0.1', port))
+    self.assertFalse(allowed_authority('100.121.253.10:9999', '127.0.0.1', port))
+    self.assertFalse(allowed_authority('100.128.0.1:8082', '127.0.0.1', port))
+    self.assertFalse(allowed_authority('device.ts.net:8082', '127.0.0.1', port))
+    self.assertFalse(allowed_authority('100.121.253.10:8082', '192.168.4.21', port))
 
   def test_wildcard_bound_server_retains_password_and_origin_guards(self):
     self.stop()
@@ -113,11 +119,11 @@ class AuthRuntimeTest(unittest.TestCase):
   def test_passwordless_boundary_requires_local_peer_destination_and_no_proxy_headers(self):
     for peer, destination in (('127.0.0.1', '127.0.0.1'), ('192.168.3.2', '192.168.50.20'),
                               ('10.1.2.3', '10.1.2.4'), ('172.16.0.2', '172.31.0.3'),
-                              ('169.254.1.2', '169.254.1.3')):
+                              ('169.254.1.2', '169.254.1.3'), ('100.64.1.2', '100.64.1.3')):
       with self.subTest(peer=peer, destination=destination):
         self.assertTrue(direct_local_connection(peer, destination, {}))
     for peer, destination in (('8.8.8.8', '192.168.50.20'), ('192.168.3.2', '8.8.8.8'),
-                              ('100.64.1.2', '100.64.1.3'), ('172.32.0.2', '172.16.0.3'),
+                              ('100.128.1.2', '100.64.1.3'), ('172.32.0.2', '172.16.0.3'),
                               ('invalid', '127.0.0.1'), ('::1', '127.0.0.1'), ('127.0.0.1', '0.0.0.0')):
       with self.subTest(peer=peer, destination=destination):
         self.assertFalse(direct_local_connection(peer, destination, {}))
