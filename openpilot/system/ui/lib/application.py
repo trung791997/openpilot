@@ -48,6 +48,8 @@ RECORD_OUTPUT = str(Path(os.getenv("RECORD_OUTPUT", "output")).with_suffix(".mp4
 RECORD_QUALITY = int(os.getenv("RECORD_QUALITY", "23"))  # Dynamic bitrate quality level (CRF); 0 is lossless (bigger size), max is 51, default is 23 for x264
 RECORD_BITRATE = os.getenv("RECORD_BITRATE", "")  # Target bitrate e.g. "2000k" (overrides RECORD_QUALITY when set)
 RECORD_SPEED = int(os.getenv("RECORD_SPEED", "1"))  # Speed multiplier
+SNAPSHOT_REQUEST = "/tmp/ui_snapshot_request"
+SNAPSHOT_PATH = "/tmp/ui_snapshot.png"
 OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offline rendering
 
 GL_VERSION = """
@@ -762,6 +764,18 @@ class GuiApplication:
 
         if self._grid_size > 0:
           self._draw_grid()
+
+        # screen snapshot on request (for viewing the device screen remotely): touch SNAPSHOT_REQUEST,
+        # read SNAPSHOT_PATH. Checked every 15 frames; costs nothing unless requested.
+        if self._frame % 15 == 0 and os.path.exists(SNAPSHOT_REQUEST):
+          try:
+            os.unlink(SNAPSHOT_REQUEST)
+            image = rl.load_image_from_screen()
+            rl.export_image(image, SNAPSHOT_PATH + ".tmp.png")
+            rl.unload_image(image)
+            os.replace(SNAPSHOT_PATH + ".tmp.png", SNAPSHOT_PATH)
+          except Exception:
+            cloudlog.exception("ui snapshot failed")
 
         rl.end_drawing()
         if collect_timing:
