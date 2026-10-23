@@ -20,6 +20,16 @@ from openpilot.starpilot.sentry_mode.status import RuntimeStatus
 PERIPHERAL_TTL_NS = 1_500_000_000  # C++ 2 Hz publisher; one missed frame.
 SAMPLE_TTL_NS = 500_000_000
 TICK_SECONDS = 0.1
+# A clip takes up to ~40 s, so it records on its own thread and trusts the motion loop's latest parked and armed check
+# for this long. Recording inside tick() stalled the loop past MAX_UPDATE_GAP_SECONDS, which disarmed Sentry for the
+# 90 s arming delay after every event and reset the count the alarm needs.
+AUTHORITY_TTL_NS = 500_000_000
+
+
+def start_thread(target: Callable[[], None]) -> threading.Thread:
+  thread = threading.Thread(target=target, name="sentry-record", daemon=True)
+  thread.start()
+  return thread
 
 
 def boot_time_ns() -> int:
@@ -29,8 +39,15 @@ def boot_time_ns() -> int:
 class SentryRuntime:
   def __init__(self, params: Params, messages: Any, *, mono_clock: Callable[[], int] = time.monotonic_ns,
                boot_clock: Callable[[], int] = boot_time_ns,
-               record: Callable[[str, int, Callable[[], bool]], Any] | None = None, status: RuntimeStatus | None = None):
+               record: Callable[[str, int, Callable[[], bool]], Any] | None = None, status: RuntimeStatus | None = None,
+               start: Callable[[Callable[[], None]], Any] = start_thread):
     self.params, self.messages = params, messages
+    self.start = start
+    self.authorized: tuple[bytes, int] | None = None  # (saved preferences, MONO ns) of the last permitted tick
+    self.lock = threading.Lock()
+    self.recording = False
+    self.pending: tuple[str, int, bytes] | None = None
+    self.worker = None
     self.mono_clock, self.boot_clock = mono_clock, boot_clock
     self.record = record
     self.status = status
@@ -137,15 +154,39 @@ class SentryRuntime:
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       return None
 
-  def _permitted(self, expected_raw: bytes) -> bool:
-    self.messages.update(0)
-    offroad, ignition_off, voltage_ok, fresh, now_ns = self._authority()
-    self._sample(now_ns)
-    saved = read_preferences(self.params)
-    return (saved.readable and saved.valid and saved.preferences.enabled and saved.raw == expected_raw and
-            offroad and ignition_off and voltage_ok and fresh and
-            self.policy.arm_started is not None and self.policy.last_sample_time is not None and
-            0 <= now_ns - self.last_sample_ns <= SAMPLE_TTL_NS)
+  def _authorized(self, expected_raw: bytes) -> bool:
+    authorized = self.authorized
+    return authorized is not None and authorized[0] == expected_raw and 0 <= self.mono_clock() - authorized[1] <= AUTHORITY_TTL_NS
+
+  def _queue(self, kind: str, stamp: int, expected_raw: bytes) -> None:
+    with self.lock:
+      if self.recording:
+        # One event waits for the current recording; an alarm outranks a waiting warning.
+        if self.pending is None or kind == "alarm":
+          self.pending = (kind, stamp, expected_raw)
+        return
+      self.recording = True
+    try:
+      self.worker = self.start(lambda: self._record_events((kind, stamp, expected_raw)))
+    except RuntimeError:
+      with self.lock:
+        self.recording, self.pending = False, None
+      self._recording_state("unavailable")
+
+  def _record_events(self, job: tuple[str, int, bytes] | None) -> None:
+    while job is not None:
+      kind, stamp, expected_raw = job
+      if self._authorized(expected_raw):
+        try:
+          receipt = self.record(kind, stamp, lambda raw=expected_raw: self._authorized(raw))
+          self._recording_state("stored" if getattr(receipt, "durable", False) else "durability_unknown")
+        except Exception:
+          # No retry: storage may have published before its durability result failed.
+          self._recording_state("unavailable")
+      with self.lock:
+        job, self.pending = self.pending, None
+        if job is None:
+          self.recording = False
 
   def tick(self) -> Any:
     self.messages.update(0)
@@ -159,18 +200,21 @@ class SentryRuntime:
     sample = self._sample(now_ns) if active else None
     decision = self.policy.update(now_ns / 1e9, Inputs(active, offroad, voltage_ok, fresh, ignition_off, sample))
     expected_raw = saved.raw
-    if decision.event is not None and self.record is not None and expected_raw is not None and self._permitted(expected_raw):
-      try:
-        receipt = self.record(decision.event, now_ns, lambda: self._permitted(expected_raw))
-        self._recording_state("stored" if getattr(receipt, "durable", False) else "durability_unknown")
-      except Exception:
-        # No retry: storage may have published before its durability result failed.
-        self._recording_state("unavailable")
+    permitted = (active and expected_raw is not None and offroad and ignition_off and voltage_ok and fresh and
+                 self.policy.arm_started is not None and self.policy.last_sample_time is not None and
+                 0 <= now_ns - self.last_sample_ns <= SAMPLE_TTL_NS)
+    self.authorized = (expected_raw, now_ns) if permitted else None
+    if decision.event is not None and self.record is not None and permitted:
+      self._queue(decision.event, now_ns, expected_raw)
     if self.status is not None:
       self.status.publish(decision, saved.raw, self.recording_state)
     return decision
 
   def close(self) -> None:
+    self.authorized = None  # A running capture stops at its next permission check.
+    join = getattr(self.worker, "join", None)
+    if join is not None:
+      join(timeout=5)
     for socket in getattr(self.messages, "sock", {}).values():
       close = getattr(socket, "close", None)
       if close is not None:

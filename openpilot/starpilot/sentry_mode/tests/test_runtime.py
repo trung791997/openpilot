@@ -74,7 +74,8 @@ class TestRuntime(unittest.TestCase):
     self.events = []
     self.runtime = SentryRuntime(self.params, self.messages, mono_clock=lambda: self.clock.mono,
                                  boot_clock=self.clock.boot,
-                                 record=lambda kind, stamp, permitted: self.events.append((kind, stamp, permitted())))
+                                 record=lambda kind, stamp, permitted: self.events.append((kind, stamp, permitted())),
+                                 start=lambda target: target())
 
   def tick(self, *, stamp=None, acceleration=(0.0, 0.0, 9.81)):
     self.clock.mono += 100_000_000
@@ -175,17 +176,37 @@ class TestRuntime(unittest.TestCase):
     self.assertNotEqual(self.tick().state, "armed")
     self.assertEqual(len(self.events), 1)
 
-  def test_store_callback_rechecks_saved_revision_and_sample_age(self):
+  def test_recording_permission_follows_the_motion_loop(self):
     self.tick()
-    self.runtime.policy.arm_started = self.clock.mono / 1e9 - 90
-    self.runtime.policy.last_sample_time = self.clock.mono / 1e9 - 0.02
     original = Path(self.params.get_param_path(KEY)).read_bytes()
-    self.assertTrue(self.runtime._permitted(original))
+    self.assertTrue(self.runtime._authorized(original))
     Path(self.params.get_param_path(KEY)).write_bytes(encode(Preferences(True, self.runtime.policy.settings.__class__(0.05, 1.0))))
-    self.assertFalse(self.runtime._permitted(original))
+    self.tick()
+    self.assertFalse(self.runtime._authorized(original))
     Path(self.params.get_param_path(KEY)).write_bytes(original)
+    self.tick()
+    self.assertTrue(self.runtime._authorized(original))
     self.clock.mono += 600_000_000
-    self.assertFalse(self.runtime._permitted(original))
+    self.assertFalse(self.runtime._authorized(original))
+
+  def test_recording_runs_beside_the_motion_loop_and_alarm_follows(self):
+    jobs = []
+    self.runtime.start = jobs.append
+    for _ in range(901):
+      self.tick()
+    states = [self.tick(acceleration=(0.0, 0.0, 10.0 if index % 2 else 9.81)).state for index in range(320)]
+    self.assertEqual(set(states), {"armed"})  # Sentry stays armed while the warning records.
+    self.assertEqual(len(jobs), 1)
+    self.assertEqual(self.events, [])
+    jobs[0]()
+    self.assertEqual([(kind, allowed) for kind, _, allowed in self.events], [("warning", True), ("alarm", True)])
+    self.assertFalse(self.runtime.recording)
+    self.params.put_bool("DoShutdown", True, block=True)
+    self.tick()
+    self.runtime.pending = None
+    self.runtime._queue("warning", 1, Path(self.params.get_param_path(KEY)).read_bytes())
+    jobs[1]()
+    self.assertEqual(len(self.events), 2)  # Revoked before it started: nothing recorded.
 
 
 class TestMainShutdown(unittest.TestCase):
