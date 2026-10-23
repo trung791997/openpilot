@@ -203,10 +203,8 @@ class LiveLaneChangePolicy:
 
   @classmethod
   def _from_saved(cls, saved):
-    # An unreadable file disables assistance. A readable document this build does
-    # not recognise uses the defaults (nudge lane changes, no automatic ones), so a
-    # schema change can no longer silently switch every lane change off.
-    return effective(saved) if saved.readable else cls._disabled()
+    # An unreadable or unrecognised document disables assistance.
+    return effective(saved) if saved.readable and saved.valid else cls._disabled()
 
   @staticmethod
   def _disabled():

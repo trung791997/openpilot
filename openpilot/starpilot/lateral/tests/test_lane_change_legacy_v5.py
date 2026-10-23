@@ -35,11 +35,11 @@ class _Params:
     return str(self.path)
 
 
-def test_unrecognised_document_uses_defaults_not_disabled(tmp_path):
+def test_unrecognised_document_disables_lane_changes(tmp_path):
   path = tmp_path / "LaneChangePreferences"
   path.write_bytes(b'{"version": 9}')
   policy = LiveLaneChangePolicy(_Params(path), now_ns=1).applied
-  assert policy.enabled and policy.turn_signal_guidance and not policy.auto_lane_change
+  assert not policy.enabled and not policy.turn_signal_guidance and not policy.auto_lane_change
 
 
 def test_legacy_document_enables_auto_lane_change_live(tmp_path):
