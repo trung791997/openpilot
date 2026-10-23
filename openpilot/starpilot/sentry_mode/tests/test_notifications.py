@@ -263,7 +263,7 @@ def test_clip_events_attach_mp4_with_upload_time(tmp_path):
     response = SimpleNamespace(status_code=204, close=lambda: None)
     with __import__('unittest.mock').mock.patch('requests.post', return_value=response) as post:
       owner._send('discord', {'url': 'https://example.test/x', 'token': ''}, None, {'eventId': 'a' * 32, 'kind': 'warning', 'created': 1.0}, 'k', '')
-    assert post.call_args.kwargs['timeout'] == (3, 60)
+    assert post.call_args.kwargs['timeout'] == (30, 60)
   finally:
     owner.close()
 

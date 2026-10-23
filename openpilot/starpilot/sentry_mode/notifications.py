@@ -452,8 +452,9 @@ class NotificationOwner:
       if cfg['token']:
         headers['Authorization'] = 'Bearer ' + cfg['token']
       files = self._attachments(job)
-      # Two 5 s clips are ~6 MB; give the upload time on a parked LTE link.
-      timeout = (3, 60) if any(file[1][2] == 'video/mp4' for file in files) else (3, 10)
+      # Two 5 s clips are ~6 MB; give the upload time on a parked LTE link. urllib3 2.x applies the connect timeout to
+      # every body write, and a 3 s LTE stall aborted the clip upload on the device (2026-10-23), so raise both.
+      timeout = (30, 60) if any(file[1][2] == 'video/mp4' for file in files) else (3, 10)
       if name == 'discord':
         content = {'content': 'StarPilot Sentry Mode: ' + message}
         if files:
