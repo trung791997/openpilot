@@ -56,6 +56,18 @@ class EventStoreTest(unittest.TestCase):
       self.store.record("warning", 1, permitted=lambda: True, images={"wide": b"\xff\xd8\xff\xd9"})
     self.assertEqual(len(self.store.snapshot()["events"]), 3)
 
+  def test_drop_clips_keeps_event_and_pictures(self):
+    clip = bytes(4) + b"ftyp" + bytes(100)
+    receipt = self.store.record("warning", 1, permitted=lambda: True, images={"wide": b"\xff\xd8\xff\xd9"}, clips={"wide": clip, "cabin": clip})
+    self.store.drop_clips(receipt.event_id)
+    self.store.drop_clips(receipt.event_id)
+    self.assertEqual(self.store.clips(receipt.event_id), [])
+    self.assertEqual(self.store.images(receipt.event_id), ["wide"])
+    self.assertEqual([event["eventId"] for event in self.store.snapshot()["events"]], [receipt.event_id])
+    self.store.drop_clips("b" * 32)  # unknown event: nothing to do
+    with self.assertRaises(ValueError):
+      self.store.drop_clips("../x")
+
   def test_onroad_before_or_during_write_does_not_publish(self):
     for decisions in ((False,), (True, False)):
       with self.assertRaises(storage.StorageUnavailable):

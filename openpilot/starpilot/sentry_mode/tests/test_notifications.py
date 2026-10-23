@@ -269,6 +269,29 @@ def test_clip_events_attach_mp4_with_upload_time(tmp_path):
     owner.close()
 
 
+def test_clips_dropped_once_discord_and_every_other_channel_finish(tmp_path):
+  clock = [1000.0]
+  event = {'eventId': 'a' * 32, 'kind': 'warning', 'wallTimeNs': int(1001e9)}
+  dropped, outcomes = [], {'discord': [500, 204], 'webhook': [204]}
+  events = SimpleNamespace(snapshot=lambda: {'events': [event]}, images=lambda event_id: [], image=None,
+                           clips=lambda event_id: [] if dropped else ['wide'], clip=lambda event_id, camera: b'',
+                           drop_clips=dropped.append)
+  owner = NotificationOwner(tmp_path / 'notifications', events, clock=lambda: clock[0],
+                            transport=lambda name, *args: outcomes[name].pop(0))
+  try:
+    configure(owner, 'discord')
+    configure(owner, 'webhook')
+    clock[0] = 1002.
+    for _ in range(2):
+      owner.tick()
+    assert dropped == []  # Discord failed once: clips kept for the retry
+    clock[0] = 1100.
+    owner.tick()
+    assert dropped == ['a' * 32]
+  finally:
+    owner.close()
+
+
 def test_upload_timeout_scales_with_clip_size():
   jpg = [('files[0]', ('wide.jpg', bytes(500_000), 'image/jpeg'))]
   assert upload_timeout(jpg) == (3, 10)

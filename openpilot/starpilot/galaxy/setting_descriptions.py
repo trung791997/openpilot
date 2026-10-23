@@ -137,7 +137,7 @@ DESCRIPTIONS = {
   'sentry:enabled': 'Monitors parked motion and stores detected events when fresh parked sensor evidence is available.',
   'sentry:sensitivity': 'Sets how large an acceleration change must be to count as parked motion. Lower values detect smaller changes.',
   'sentry:warning': 'Sets how long detected motion must persist before a warning is recorded.',
-  'sentry:capture': 'Chooses still pictures or a 5, 10 or 15 second video clip from each camera for motion events. Clips are larger and darker at night.',
+  'sentry:capture': 'Pictures or a 5, 10 or 15 second clip per camera for motion events. Clips are darker at night and deleted once on Discord.',
   'sentry:reset': 'Turns off parked motion monitoring and restores its sensitivity, warning persistence and capture defaults.',
   'conditional:mode': 'Chooses Chill, Experimental or automatic switching based on the configured driving conditions.',
   'conditional:reset': 'Restores the default conditional driving-mode settings.',

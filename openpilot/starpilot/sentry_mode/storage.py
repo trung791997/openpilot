@@ -258,6 +258,36 @@ class EventStore:
       raise StorageUnavailable('Event cleanup could not be completed') from error
     return {'more': more}
 
+  def drop_clips(self, event_id: str) -> None:
+    """Remove an event's videos and keep its record and pictures. Used once Discord has the clips (Peter, 2026-10-23)."""
+    if type(event_id) is not str or ID.fullmatch(event_id) is None:
+      raise ValueError('Invalid event selection')
+    try:
+      with self._directory() as directory:
+        lock = os.open('.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+          if not _private(os.fstat(lock)):
+            raise StorageUnavailable('Event lock is unavailable')
+          fcntl.flock(lock, fcntl.LOCK_EX)
+          media = os.open(event_id, DIR_FLAGS, dir_fd=directory)
+          try:
+            if not _private(os.fstat(media), directory=True):
+              raise StorageUnavailable('Invalid image directory')
+            for camera in ('wide', 'cabin'):
+              try:
+                os.unlink(camera + '.mp4', dir_fd=media)
+              except FileNotFoundError:
+                pass
+            os.fsync(media)
+          finally:
+            os.close(media)
+        finally:
+          os.close(lock)
+    except FileNotFoundError:
+      pass
+    except OSError as error:
+      raise StorageUnavailable('Clip cleanup could not be completed') from error
+
   def snapshot(self) -> dict:
     result: dict = {"version": 1, "events": [], "incomplete": False, "capacity": MAX_EVENTS, "storageBytes": 0, "storageIncomplete": False}
     try:

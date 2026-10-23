@@ -436,8 +436,22 @@ class NotificationOwner:
             job['state'] = 'failed'
           job['next'] = now + RETRY_SECONDS[job['attempts'] - 1]
         self._save()
+        self._release_clips(job['eventId'])
         return  # At most one HTTP attempt per tick, per owner.
       self._save()
+
+  def _release_clips(self, event_id: str) -> None:
+    """Videos are kept for Discord: once it has them and no other channel still needs them, free the space on the
+    device. Pictures and the event stay. A failed Discord send keeps the clips (MAX_CLIP_STORE_BYTES bounds them)."""
+    jobs = [j for j in self.state['jobs'].values() if j['eventId'] == event_id]
+    if not any(j['channel'] == 'discord' and j['state'] == 'sent' for j in jobs) or \
+       any(j['state'] in ('queued', 'sending') for j in jobs):
+      return
+    try:
+      if self.store.clips(event_id):
+        self.store.drop_clips(event_id)
+    except Exception:
+      pass  # Cleanup never blocks alerts.
 
   def _attachments(self, job: dict) -> list:
     """Camera images and clips saved with the event, one files[n] field each (Discord keeps one file per field name)."""
