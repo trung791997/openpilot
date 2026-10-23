@@ -17,9 +17,13 @@ STREAMS = {"cabin": VisionStreamType.VISION_STREAM_CABIN, "wide": VisionStreamTy
            "narrow": VisionStreamType.VISION_STREAM_NARROW_ROAD}
 CABIN_SETTLE_NS = 10_000_000_000
 # Road cameras start dark when the lease cold-starts camerad: the first fresh frame comes before auto exposure has
-# ramped (sentry wide images 2026-10-22 22:10 and 23:48 were flat black, median 25 / p99 26). The stock snapshot waits
-# 4 s of frames for the same reason.
+# ramped (sentry wide images 2026-10-22 22:10 and 23:48 were flat black, median 25 / p99 26). Take the frame once
+# camerad reports its measured grey at its target for a few frames running, which is quick in daylight; in the dark
+# the sensor tops out below target, so wait up to the 4 s the stock snapshot uses.
 ROAD_SETTLE_NS = 4_000_000_000
+SETTLED_TOLERANCE = 0.2  # |measured / target - 1|
+SETTLED_FRAMES = 3       # camerad applies exposure 3 frames late; one frame on target can be a pass-through
+CAMERA_STATES = {"wide": "wideRoadCameraState", "narrow": "roadCameraState"}
 # camerad exposes for the driving model (grey target 0.1-0.4), not for people: stretch and lift road snapshots.
 MAX_STRETCH = 4.0
 TARGET_MEDIAN = 0.4
@@ -28,6 +32,31 @@ MAX_LIFT = 3.0  # shadow gain of the lift curve is 1 + lift; with MAX_STRETCH, n
 
 def boot_ns():
   return time.clock_gettime_ns(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC))
+
+
+class ExposureWatch:
+  """Has camerad's auto exposure reached its target? Falls back to the timer if camera states are unavailable."""
+  def __init__(self, camera):
+    from openpilot.cereal import messaging
+    self.service = CAMERA_STATES[camera]
+    self.messages = messaging.SubMaster([self.service])
+    self.run = 0
+
+  def settled(self):
+    self.messages.update(0)
+    if self.messages.updated[self.service]:
+      state = self.messages[self.service]
+      target, measured = state.targetGreyFraction, state.measuredGreyFraction
+      on_target = target > 0 and measured > 0 and abs(measured / target - 1) <= SETTLED_TOLERANCE
+      self.run = self.run + 1 if on_target else 0
+    return self.run >= SETTLED_FRAMES
+
+
+def _exposure_watch(camera):
+  try:
+    return ExposureWatch(camera)
+  except Exception:
+    return None
 
 
 def brighten(rgb):
@@ -43,8 +72,9 @@ def brighten(rgb):
   return np.round(255 * curve).astype(np.uint8)[rgb]
 
 
-def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns):
+def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_factory=_exposure_watch):
   started = clock()
+  exposure = exposure_factory(camera) if camera != "cabin" else None
   client = client_factory("camerad", STREAMS[camera], True)
   while not client.connect(False):
     if clock() - started > 9_000_000_000:
@@ -59,7 +89,8 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns):
       continue
     if camera != "cabin" and frame is not None:
       first_frame = now if first_frame is None else first_frame
-      if now - first_frame < ROAD_SETTLE_NS:
+      settled = exposure is not None and exposure.settled()
+      if not settled and now - first_frame < ROAD_SETTLE_NS:
         continue
     # Native camerad does not populate VIPC extra.valid; use capture freshness.
     if frame is None or not started < client.timestamp_sof <= client.timestamp_eof <= now:

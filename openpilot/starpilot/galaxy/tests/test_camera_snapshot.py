@@ -126,7 +126,7 @@ class CameraSnapshotTest(unittest.TestCase):
 
 
 class RoadSnapshotTest(unittest.TestCase):
-  def test_wide_waits_for_exposure_before_converting(self):
+  def _wide(self, exposure_factory):
     now = [1_000_000_000]
     frame = SimpleNamespace(width=4, height=4, stride=4, uv_offset=16, data=np.full(80, 128, dtype=np.uint8))
     converted_at = []
@@ -141,9 +141,33 @@ class RoadSnapshotTest(unittest.TestCase):
       converted_at.append(now[0])
       return np.full((4, 4, 3), 60, dtype=np.uint8)
     with patch('openpilot.starpilot.galaxy.camera_snapshot_worker.extract_image', side_effect=convert):
-      result = capture('wide', client_factory=lambda *args: Client(), clock=lambda: now[0])
+      result = capture('wide', client_factory=lambda *args: Client(), clock=lambda: now[0], exposure_factory=exposure_factory)
     self.assertIsNotNone(result)
-    self.assertGreaterEqual(converted_at[0] - 1_000_000_000, 4_000_000_000)
+    return (converted_at[0] - 1_000_000_000) / 1e9
+
+  def _watch(self, greys):
+    from openpilot.starpilot.galaxy.camera_snapshot_worker import ExposureWatch
+    states = iter(greys)
+    class Messages(dict):
+      updated = {'wideRoadCameraState': True}
+      def update(self, timeout):
+        self['wideRoadCameraState'] = SimpleNamespace(targetGreyFraction=0.2, measuredGreyFraction=next(states, 0.05))
+    watch = ExposureWatch.__new__(ExposureWatch)
+    watch.service, watch.messages, watch.run = 'wideRoadCameraState', Messages(), 0
+    return watch
+
+  def test_bright_scene_is_taken_once_exposure_reaches_target(self):
+    waited = self._wide(lambda camera: self._watch([0.02, 0.08, 0.15, 0.19, 0.21, 0.2]))
+    self.assertLess(waited, 0.5)
+
+  def test_single_on_target_frame_is_not_enough(self):
+    self.assertGreaterEqual(self._wide(lambda camera: self._watch([0.05, 0.2, 0.05, 0.2, 0.2, 0.05])), 4.0)
+
+  def test_dark_scene_waits_the_full_settle_time(self):
+    self.assertGreaterEqual(self._wide(lambda camera: self._watch([0.02] * 500)), 4.0)
+
+  def test_no_camera_state_falls_back_to_the_timer(self):
+    self.assertGreaterEqual(self._wide(lambda camera: None), 4.0)
 
   def test_brighten_lifts_a_dark_scene_and_caps_gain_on_a_flat_one(self):
     rng = np.random.default_rng(0)
