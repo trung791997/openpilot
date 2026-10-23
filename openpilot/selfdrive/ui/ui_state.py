@@ -630,9 +630,12 @@ class Device:
     self._screen_off_started = ui_state.started
     critical = (ui_state.sm.valid.get('selfdriveState', False) and ui_state.sm.alive.get('selfdriveState', False) and
                 ui_state.sm['selfdriveState'].alertStatus == log.SelfdriveState.AlertStatus.critical)
-    if not ui_state.started or road_changed or touched or critical:
+    # A speed limit that is about to change, or waits for Accept/Decline, wakes the screen.
+    slc_pending = (ui_state.started and ui_state.sm.valid.get('slcState', False) and ui_state.sm.alive.get('slcState', False) and
+                   ui_state.sm['slcState'].hasPending)
+    if not ui_state.started or road_changed or touched or critical or slc_pending:
       self._screen_off = False
-    if critical:
+    if critical or slc_pending:
       self._reset_interactive_timeout()
     gpu_loading = (ui_state.started and self._display_preferences.keep_screen_on_gpu_loading and ui_state.chestnut_loading)
     if gpu_loading:
@@ -643,7 +646,7 @@ class Device:
         callback()
     self._prev_timed_out = interaction_timeout
 
-    auto_screen_off = ui_state.started and self._display_preferences.turn_off_screen and interaction_timeout and not critical and not gpu_loading
+    auto_screen_off = ui_state.started and self._display_preferences.turn_off_screen and interaction_timeout and not critical and not gpu_loading and not slc_pending
     self._set_awake(not self._screen_off and not auto_screen_off and (ui_state.started or not interaction_timeout or PC))
     # The entire wake gesture belongs to the display, including its release.
     # Widgets were not rendered while asleep, so their touch state can be stale.

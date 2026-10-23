@@ -57,3 +57,36 @@ def test_actual_native_wake_gpu_is_onroad_only_and_manual_off_wins(started, load
 def test_gpu_row_absent_on_unsupported_device(tmp_path):
   owner = DisplayOwner(Params(str(tmp_path)), lambda: True, gpu_capable=False)
   assert all(row.key != GPU_LOADING for row in owner.snapshot(Profile.LARGE).rows)
+
+
+class _SM(NS):
+  def __getitem__(self, name):
+    return self.msgs[name]
+
+
+@pytest.mark.parametrize(
+  'started,pending,manual_off,expected', [(True, True, False, True), (True, True, True, True), (True, False, False, False), (False, True, False, False)]
+)
+def test_actual_native_wake_for_pending_speed_limit_overrides_timeout_and_manual_off(started, pending, manual_off, expected):
+  device = native.Device.__new__(native.Device)
+  device._ignition = False
+  device._awake = False
+  device._screen_off = manual_off
+  device._screen_off_started = started
+  device._override_interactive_timeout = None
+  device._interaction_time = 0
+  device._prev_timed_out = False
+  device._interactive_timeout_callbacks = []
+  device._wake_touch_active = False
+  device._display_preferences = DisplayPreferences(turn_off_screen=True)
+  device._set_awake = Mock()
+  sm = _SM(valid={'slcState': True}, alive={'slcState': True}, msgs={'slcState': NS(hasPending=pending)})
+  ui = NS(started=started, ignition=False, chestnut_loading=False, sm=sm)
+  with (
+    patch.object(native, 'ui_state', ui),
+    patch.object(native, 'PC', False),
+    patch.object(native.gui_app, '_mouse_events', []),
+    patch.object(native.time, 'monotonic', return_value=10),
+  ):
+    device._update_wakefulness()
+  device._set_awake.assert_called_once_with(expected)

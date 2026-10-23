@@ -10,15 +10,29 @@ from openpilot.starpilot.speed_limits.runtime_settings import MPH_TO_MPS, parse,
 
 
 class RuntimeSettingsTests(unittest.TestCase):
-  def test_confirmation_master_controls_both_directions_regardless_of_legacy_flags(self):
+  def test_confirmation_master_asks_both_ways_and_automatic_keeps_direction_flags(self):
     for enabled in (False, True):
-      for legacy in ({}, {'SLCConfirmationLower': False, 'SLCConfirmationHigher': False},
-                     {'SLCConfirmationLower': True, 'SLCConfirmationHigher': False},
-                     {'SLCConfirmationLower': False, 'SLCConfirmationHigher': True}):
-        with self.subTest(enabled=enabled, legacy=legacy):
-          settings = parse({'SpeedLimitController': True, 'SLCConfirmation': enabled, **legacy})
+      for lower, higher in ((False, False), (True, False), (False, True), (True, True)):
+        flags = {'SLCConfirmationLower': lower, 'SLCConfirmationHigher': higher}
+        with self.subTest(enabled=enabled, flags=flags):
+          settings = parse({'SpeedLimitController': True, 'SLCConfirmation': enabled, **flags})
           self.assertFalse(settings.errors)
-          self.assertEqual((settings.acceptance.confirm_lower, settings.acceptance.confirm_higher), (enabled, enabled))
+          expected = (True, True) if enabled else (lower, higher)
+          self.assertEqual((settings.acceptance.confirm_lower, settings.acceptance.confirm_higher), expected)
+
+  def test_automatic_with_confirm_lower_asks_for_lower_and_adopts_higher(self):
+    active = acc.Authority(acc.Mode.COMBINED, acc.LongitudinalOwner.SYSTEM, True, True, False, False)
+    policy = parse({'SpeedLimitController': True, 'SLCConfirmation': False, 'SLCConfirmationLower': True}).acceptance
+    previous = acc.Candidate('map', acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value='accepted'), 20.)
+    history = acc.AcceptedLimit(previous, 'drive', 0)
+    for speed, asks in ((9., True), (25., False)):
+      with self.subTest(speed=speed):
+        candidate = acc.Candidate('map', acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value='new'), speed)
+        result = acc.step(acc.new_session('drive', history), acc.Observation(acc.ObservationKind.VALID, candidate),
+                          active, policy, now_ns=1)
+        self.assertEqual(result.state.accepted, history)
+        self.assertIsNotNone(result.state.pending)
+        self.assertEqual(result.state.pending.automatic, not asks)
 
   def test_confirmation_on_never_autoaccepts_first_changed_or_disengaged_limits(self):
     active = acc.Authority(acc.Mode.COMBINED, acc.LongitudinalOwner.SYSTEM, True, True, False, False)

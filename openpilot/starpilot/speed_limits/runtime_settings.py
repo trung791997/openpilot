@@ -79,8 +79,13 @@ def parse(values: Mapping[str, object]) -> Settings:
       raise ValueError("invalid saved SLC override")
     # Only accepted-history fallback belongs to this control domain. Saved set
     # speed and experimental fallback choices never create a source observation.
+    # SLCConfirmation on asks for every new limit. With it off (automatic adoption), the
+    # per-direction toggles still ask, as on ns-bosch-radar-testing: "confirm lower limits"
+    # stops a school zone from setting 20 mph unasked. An unanswered prompt keeps the
+    # current speed after 10 seconds.
     confirmation = _bool(values, "SLCConfirmation")
-    policy = acc.Policy(confirm_lower=confirmation, confirm_higher=confirmation,
+    policy = acc.Policy(confirm_lower=confirmation or _bool(values, "SLCConfirmationLower"),
+                        confirm_higher=confirmation or _bool(values, "SLCConfirmationHigher"),
                         fallback_previous=fallback == 2, display_only=not control)
     offsets = (document if isinstance(document, od.OffsetDocument) else
                od.adopt_legacy(metric, tuple(_number(values, f"Offset{i + 1}") for i in range(7)))).schedule()
@@ -95,7 +100,7 @@ def parse(values: Mapping[str, object]) -> Settings:
 
 
 SAVED_KEYS = ("SpeedLimitController", "ShowSpeedLimits", "IsMetric", "SLCPriority1", "SLCPriority2",
-              "SLCFallback", "SLCOverride", "SLCConfirmation",
+              "SLCFallback", "SLCOverride", "SLCConfirmation", "SLCConfirmationLower", "SLCConfirmationHigher",
               *(f"Offset{i}" for i in range(1, 8)))
 
 

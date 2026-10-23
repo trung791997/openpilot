@@ -63,14 +63,15 @@ class TestCanonicalRecovery(TestCase):
     self.assertTrue(recovery.confirm(pending['intent'], self.session, self.generation)['saved'])
     self.assertEqual(recovery.snapshot(self.session, self.generation)['count'], 0)
 
-  def test_legacy_confirmation_flags_do_not_create_hidden_customization(self):
+  def test_direction_confirmation_flags_are_visible_resettable_customization(self):
     self.params.put_bool('SLCConfirmation', False, block=True)
     self.params.put_bool('SLCConfirmationLower', True, block=True)
     self.params.put_bool('SLCConfirmationHigher', True, block=True)
     recovery = self.recovery()
     view = recovery.snapshot(self.session, self.generation)
     children = [row for row in view['rows'] if row['label'] in ('Confirm lower limits', 'Confirm higher limits')]
-    self.assertEqual(children, [])
+    self.assertEqual([(row['label'], row['current'], row['default'], row['modified']) for row in children],
+                     [('Confirm lower limits', 'On', 'Off', True), ('Confirm higher limits', 'On', 'Off', True)])
     self.assertFalse(self.params.get_bool('SLCConfirmation'))
     self.assertTrue(self.params.get_bool('SLCConfirmationLower'))
     self.assertTrue(self.params.get_bool('SLCConfirmationHigher'))
