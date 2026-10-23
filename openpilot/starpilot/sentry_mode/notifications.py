@@ -420,20 +420,21 @@ class NotificationOwner:
       self._save()
 
   def _attachments(self, job: dict) -> list:
-    """Camera images saved with the event, one files[n] field each (Discord keeps one file per field name)."""
+    """Camera images and clips saved with the event, one files[n] field each (Discord keeps one file per field name)."""
     if job['kind'] == 'test':
       return []
     files = []
-    try:
-      cameras = self.store.images(job['eventId'])
-    except Exception:
-      return []
-    for camera in cameras:
+    for listing, read, extension, mime in (('images', 'image', '.jpg', 'image/jpeg'), ('clips', 'clip', '.mp4', 'video/mp4')):
       try:
-        body = self.store.image(job['eventId'], camera)
+        cameras = getattr(self.store, listing)(job['eventId'])
       except Exception:
-        continue  # A missing or invalid image never blocks the text alert.
-      files.append((f'files[{len(files)}]', (camera + '.jpg', body, 'image/jpeg')))
+        continue
+      for camera in cameras:
+        try:
+          body = getattr(self.store, read)(job['eventId'], camera)
+        except Exception:
+          continue  # Missing or invalid media never blocks the text alert.
+        files.append((f'files[{len(files)}]', (camera + extension, body, mime)))
     return files
 
   def _send(self, name: str, cfg: dict, subscription: dict | None, job: dict, key: str, pem: str) -> int:
@@ -451,19 +452,21 @@ class NotificationOwner:
       if cfg['token']:
         headers['Authorization'] = 'Bearer ' + cfg['token']
       files = self._attachments(job)
+      # Two 5 s clips are ~6 MB; give the upload time on a parked LTE link.
+      timeout = (3, 60) if any(file[1][2] == 'video/mp4' for file in files) else (3, 10)
       if name == 'discord':
         content = {'content': 'StarPilot Sentry Mode: ' + message}
         if files:
           # Discord takes multipart attachments with the message in payload_json.
           response = requests.post(cfg['url'], data={'payload_json': json.dumps(content)}, files=files,
-                                   headers=headers, timeout=(3, 10), allow_redirects=False, stream=True)
+                                   headers=headers, timeout=timeout, allow_redirects=False, stream=True)
         else:
           response = requests.post(cfg['url'], json=content, headers=headers, timeout=(3, 10), allow_redirects=False, stream=True)
       elif name == 'webhook':
         # Preserve the original general-webhook content/event form contract.
         response = requests.post(cfg['url'], data={'content': 'StarPilot Sentry Mode: ' + message,
                                   'event': json.dumps(event, separators=(',', ':'))}, files=files or None,
-                                 headers=headers, timeout=(3, 10), allow_redirects=False, stream=True)
+                                 headers=headers, timeout=timeout, allow_redirects=False, stream=True)
       else:
         headers.update({'Title': 'StarPilot Sentry Mode', 'Priority': 'urgent', 'Tags': 'warning,car'})
         response = requests.post(cfg['url'], data=message.encode(), headers=headers, timeout=(3, 10), allow_redirects=False, stream=True)

@@ -11,7 +11,7 @@ from openpilot.common.params import Params
 from openpilot.starpilot.sentry_mode.actions import commit
 from openpilot.starpilot.sentry_mode.preferences import KEY, Preferences, decode, encode
 from openpilot.starpilot.ui.feature_settings_state import FeatureSettingsRequest
-from openpilot.starpilot.ui.sentry_owner import ENABLED, RESET, SENSITIVITY, WARNING, SentryOwner
+from openpilot.starpilot.ui.sentry_owner import CAPTURE, ENABLED, RESET, SENSITIVITY, WARNING, SentryOwner
 
 
 class SentryActionsTest(unittest.TestCase):
@@ -27,12 +27,26 @@ class SentryActionsTest(unittest.TestCase):
     state = owner.snapshot()
     self.assertFalse(self.path.exists())
     self.assertIn("Off: Motion monitoring is disabled", state.subtitle)
-    self.assertEqual([row.value for row in state.rows], ["Off", "0.040", "1.0"])
+    self.assertEqual([row.value for row in state.rows], ["Off", "0.040", "1.0", "Pictures"])
     self.assertFalse(owner.apply(FeatureSettingsRequest(ENABLED, None, "On")))
     self.assertFalse(self.path.exists())
     self.assertTrue(owner.apply(FeatureSettingsRequest(ENABLED, None, "On", confirmation=True)))
     self.assertTrue(owner.last_write.committed and owner.last_write.verified)
     self.assertIn(b'"enabled":true', self.path.read_bytes())
+
+  def test_capture_choice_round_trips_and_pictures_keeps_old_bytes(self):
+    owner = SentryOwner(self.params, lambda: True)
+    self.path.write_bytes(encode(Preferences(True)))
+    old = self.path.read_bytes()
+    self.assertNotIn(b"capture", old)
+    self.assertFalse(owner.apply(FeatureSettingsRequest(CAPTURE, old, "Movie", confirmation=True)))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(CAPTURE, old, "5 s video", confirmation=True)))
+    clip = self.path.read_bytes()
+    self.assertIn(b'"capture":"clip"', clip)
+    self.assertEqual(decode(clip).capture, "clip")
+    self.assertEqual(owner.snapshot().rows[-1].value, "5 s video")
+    self.assertTrue(owner.apply(FeatureSettingsRequest(CAPTURE, clip, "Pictures", confirmation=True)))
+    self.assertEqual(self.path.read_bytes(), old)
 
   def test_live_status_does_not_change_edit_sources_and_parked_loss_hides_armed(self):
     self.path.write_bytes(encode(Preferences(True)))

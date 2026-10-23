@@ -17,6 +17,10 @@ from openpilot.starpilot.stored_artifacts import DeletionLimit, remove_entry, us
 
 
 MAX_EVENTS = 512
+MAX_IMAGE_BYTES = 1_000_000
+MAX_CLIP_BYTES = 4_600_000  # camera_clip.MAX_CLIP_BYTES
+# Two 5 s clips are ~6 MB, so 512 clip events could take 3 GB of /data. Past this many, events keep pictures instead.
+MAX_CLIP_EVENTS = 64
 MAX_EVENT_BYTES = 512
 ID = re.compile(r"[0-9a-f]{32}\Z")
 FIELDS = {"version", "eventId", "sessionId", "kind", "monoTimeNs", "wallTimeNs"}
@@ -26,6 +30,18 @@ FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 class StorageUnavailable(Exception):
   """No event was published by this call; recording cannot continue."""
+
+
+class ClipStorageFull(StorageUnavailable):
+  """No event was published; MAX_CLIP_EVENTS events already hold clips. The event can still be recorded with pictures."""
+
+
+def _valid_media(extension: str, body: object) -> bool:
+  if not isinstance(body, bytes):
+    return False
+  if extension == "jpg":
+    return 4 <= len(body) <= MAX_IMAGE_BYTES and body.startswith(b"\xff\xd8") and body.endswith(b"\xff\xd9")
+  return 64 <= len(body) <= MAX_CLIP_BYTES and body[4:8] == b"ftyp"
 
 
 @dataclass(frozen=True)
@@ -117,7 +133,8 @@ class EventStore:
     finally:
       os.close(fd)
 
-  def record(self, kind: str, mono_time_ns: int, *, permitted: Callable[[], bool], images: dict | None = None) -> RecordReceipt:
+  def record(self, kind: str, mono_time_ns: int, *, permitted: Callable[[], bool], images: dict | None = None,
+             clips: dict | None = None) -> RecordReceipt:
     event_id = uuid.uuid4().hex
     value = {"version": 1, "eventId": event_id, "sessionId": self.session_id, "kind": kind,
              "monoTimeNs": mono_time_ns, "wallTimeNs": time.time_ns()}
@@ -138,10 +155,12 @@ class EventStore:
           fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
           # Unknown entries and interrupted writes also consume capacity. Never
           # delete evidence, or scan an unbounded directory to admit a new event.
-          count = 0
+          count = clip_events = 0
           with os.scandir(directory) as entries:
             for entry in entries:
               if ID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False):
+                if clips and any(self._has(directory, entry.name, camera + ".mp4") for camera in ("wide", "cabin")):
+                  clip_events += 1
                 try:
                   metadata = os.stat(entry.name + ".json", dir_fd=directory, follow_symlinks=False)
                   if _private(metadata):
@@ -152,16 +171,20 @@ class EventStore:
                 count += 1
                 if count >= MAX_EVENTS:
                   raise StorageUnavailable("Event storage is full")
-          for camera, body in (images or {}).items():
-            if (camera not in ("wide", "cabin") or not isinstance(body, bytes) or not 4 <= len(body) <= 1_000_000 or
-                not body.startswith(b"\xff\xd8") or not body.endswith(b"\xff\xd9")):
-              raise ValueError("Invalid event image")
-          if images:
+          if clips and clip_events >= MAX_CLIP_EVENTS:
+            raise ClipStorageFull("Clip storage is full")
+          media = [(camera + ".jpg", body) for camera, body in (images or {}).items()]
+          media += [(camera + ".mp4", body) for camera, body in (clips or {}).items()]
+          for name, body in media:
+            camera, extension = name.split(".")
+            if camera not in ("wide", "cabin") or not _valid_media(extension, body):
+              raise ValueError("Invalid event media")
+          if media:
             os.mkdir(event_id, mode=0o700, dir_fd=directory)
             image_directory = os.open(event_id, DIR_FLAGS, dir_fd=directory)
             try:
-              for camera, body in images.items():
-                fd = os.open(camera + ".jpg", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=image_directory)
+              for name, body in media:
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=image_directory)
                 with os.fdopen(fd, "wb") as output:
                   output.write(body)
                   output.flush()
@@ -190,6 +213,8 @@ class EventStore:
     except (OSError, StorageUnavailable) as error:
       if published:
         return RecordReceipt(event_id, durable=False)
+      if isinstance(error, ClipStorageFull):
+        raise
       raise StorageUnavailable(str(error)) from error
     return RecordReceipt(event_id, durable=True)
 
@@ -275,11 +300,19 @@ class EventStore:
     result["events"].sort(key=lambda event: (event["wallTimeNs"], event["eventId"]), reverse=True)
     return result
 
-  def image(self, event_id: str, camera: str) -> bytes:
+  @staticmethod
+  def _has(directory: int, event_id: str, name: str) -> bool:
+    try:
+      return _private(os.stat(os.path.join(event_id, name), dir_fd=directory, follow_symlinks=False))
+    except OSError:
+      return False
+
+  def _media(self, event_id: str, camera: str, extension: str) -> bytes:
     if ID.fullmatch(event_id) is None or camera not in ("wide", "cabin"):
-      raise StorageUnavailable("Unknown event image")
+      raise StorageUnavailable("Unknown event media")
+    limit = MAX_IMAGE_BYTES if extension == "jpg" else MAX_CLIP_BYTES
     with self._directory() as directory:
-      # Only published events can expose images.
+      # Only published events can expose media.
       event_fd = os.open(event_id + ".json", FILE_FLAGS, dir_fd=directory)
       try:
         if not _private(os.fstat(event_fd)):
@@ -290,22 +323,30 @@ class EventStore:
       try:
         if not _private(os.fstat(images), directory=True):
           raise StorageUnavailable("Invalid image directory")
-        fd = os.open(camera + ".jpg", FILE_FLAGS, dir_fd=images)
+        fd = os.open(camera + "." + extension, FILE_FLAGS, dir_fd=images)
         try:
           if not _private(os.fstat(fd)):
-            raise StorageUnavailable("Invalid image")
-          body = os.read(fd, 1_000_001)
+            raise StorageUnavailable("Invalid media")
+          chunks, size = [], 0
+          while size <= limit:
+            chunk = os.read(fd, limit + 1 - size)
+            if not chunk:
+              break
+            chunks.append(chunk)
+            size += len(chunk)
+          body = b"".join(chunks)
         finally:
           os.close(fd)
       finally:
         os.close(images)
-    if not 4 <= len(body) <= 1_000_000 or not body.startswith(b"\xff\xd8") or not body.endswith(b"\xff\xd9"):
-      raise StorageUnavailable("Invalid image")
+    if not _valid_media(extension, body):
+      raise StorageUnavailable("Invalid media")
     return body
 
-  def images(self, event_id: str) -> list[str]:
+  def _listing(self, event_id: str, extension: str) -> list[str]:
     if ID.fullmatch(event_id) is None:
       return []
+    limit = MAX_IMAGE_BYTES if extension == "jpg" else MAX_CLIP_BYTES
     try:
       with self._directory() as directory:
         images = os.open(event_id, DIR_FLAGS, dir_fd=directory)
@@ -315,8 +356,8 @@ class EventStore:
           result = []
           for camera in ("wide", "cabin"):
             try:
-              info = os.stat(camera + ".jpg", dir_fd=images, follow_symlinks=False)
-              if _private(info) and 4 <= info.st_size <= 1_000_000:
+              info = os.stat(camera + "." + extension, dir_fd=images, follow_symlinks=False)
+              if _private(info) and 4 <= info.st_size <= limit:
                 result.append(camera)
             except OSError:
               pass
@@ -325,3 +366,15 @@ class EventStore:
           os.close(images)
     except (OSError, StorageUnavailable):
       return []
+
+  def image(self, event_id: str, camera: str) -> bytes:
+    return self._media(event_id, camera, "jpg")
+
+  def images(self, event_id: str) -> list[str]:
+    return self._listing(event_id, "jpg")
+
+  def clip(self, event_id: str, camera: str) -> bytes:
+    return self._media(event_id, camera, "mp4")
+
+  def clips(self, event_id: str) -> list[str]:
+    return self._listing(event_id, "mp4")

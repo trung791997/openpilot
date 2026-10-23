@@ -85,3 +85,12 @@ def frame_available(clock=boot_ns, path=None):
     return 0 <= clock() - _read(path or _path('cabin-frame')) <= FRAME_TTL_NS
   except (OSError, ValueError):
     return False
+
+
+def request_clip(clock=boot_ns, path=None):
+  """Also run the livestream encoder while parked. Renew it with the camera lease for as long as a clip records."""
+  _write(path or _path('clip-lease'), clock() + TTL_NS)
+
+
+def clip_requested(clock=boot_ns, path=None):
+  return requested(clock, path or _path('clip-lease'))

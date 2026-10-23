@@ -211,5 +211,40 @@ class TestMainShutdown(unittest.TestCase):
         self.assertIs(installed[signal.SIGTERM], prior)
 
 
+class RecordEventTest(unittest.TestCase):
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.params = Params(temporary.name)
+    self.store = Mock()
+    self.camera = Mock()
+    self.camera.capture.side_effect = lambda name, permitted: name.encode()
+    self.clip = Mock()
+
+  def choose(self, capture):
+    Path(self.params.get_param_path(KEY)).write_bytes(encode(Preferences(True, capture=capture)))
+
+  def test_pictures_by_default_and_clips_when_chosen(self):
+    runtime_module.record_event(self.store, self.params, self.camera, self.clip, "warning", 1, lambda: True)
+    self.assertEqual(self.store.record.call_args.kwargs["images"], {"wide": b"wide", "cabin": b"cabin"})
+    self.clip.capture.assert_not_called()
+    self.choose("clip")
+    self.clip.capture.return_value = {"wide": b"clip"}
+    runtime_module.record_event(self.store, self.params, self.camera, self.clip, "warning", 1, lambda: True)
+    self.assertEqual(self.store.record.call_args.kwargs, {"permitted": unittest.mock.ANY, "clips": {"wide": b"clip"}})
+
+  def test_failed_clip_falls_back_to_pictures_unless_revoked(self):
+    from openpilot.starpilot.galaxy.camera_snapshot import SnapshotDenied, SnapshotUnavailable
+    self.choose("clip")
+    self.clip.capture.side_effect = SnapshotUnavailable
+    runtime_module.record_event(self.store, self.params, self.camera, self.clip, "warning", 1, lambda: True)
+    self.assertEqual(set(self.store.record.call_args.kwargs["images"]), {"wide", "cabin"})
+    self.store.reset_mock()
+    self.clip.capture.side_effect = SnapshotDenied
+    with self.assertRaises(SnapshotDenied):
+      runtime_module.record_event(self.store, self.params, self.camera, self.clip, "warning", 1, lambda: False)
+    self.store.record.assert_not_called()
+
+
 if __name__ == "__main__":
   unittest.main()

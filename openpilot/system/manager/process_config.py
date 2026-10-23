@@ -10,7 +10,7 @@ from openpilot.starpilot.maps.shadow_lifecycle import MapdShadowProcess
 from openpilot.starpilot.models.recovery_process import ModeldProcess
 from openpilot.starpilot.system.jetlink.process import JetlinkProcess
 from openpilot.starpilot.sentry_mode.preferences import enabled as sentry_enabled
-from openpilot.starpilot.galaxy.camera_request import requested as camera_requested
+from openpilot.starpilot.galaxy.camera_request import clip_requested, requested as camera_requested
 from openpilot.starpilot.spot_monitor.preferences import enabled as vasm_enabled
 from openpilot.starpilot.spot_monitor.inference import DEFAULT_MODEL_PATH
 
@@ -111,6 +111,10 @@ def parked_camera(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started and camera_requested()
 
 
+def parked_clip(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return not started and clip_requested()
+
+
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
@@ -125,7 +129,7 @@ procs = [
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
   NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], only_onroad),
-  NativeProcess("stream_encoderd", "openpilot/system/loggerd", ["./encoderd", "--stream"], or_(livestream, notcar)),
+  NativeProcess("stream_encoderd", "openpilot/system/loggerd", ["./encoderd", "--stream"], or_(or_(livestream, notcar), parked_clip)),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
 
   NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(or_(driverview, livestream), parked_camera), enabled=not WEBCAM),

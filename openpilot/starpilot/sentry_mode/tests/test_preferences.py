@@ -20,10 +20,22 @@ class TestPreferences(unittest.TestCase):
       b'{"version":1,"enabled":true,"sensitivity":0.04,"warningTimeSeconds":1e400}',
       b'{"version":1,"enabled":1,"sensitivity":0.04,"warningTimeSeconds":1}',
       b'[' * 250 + b'0' + b']' * 250,
+      b'{"capture":"video","enabled":true,"sensitivity":0.04,"version":1,"warningTimeSeconds":1}',
+      # Pictures is the implicit default; writing it out would make two byte forms for one choice.
+      b'{"capture":"pictures","enabled":true,"sensitivity":0.04,"version":1,"warningTimeSeconds":1}',
     )
     for raw in corrupt:
       with self.subTest(raw=raw[:30]):
         self.assertIsNone(decode(raw))
+
+  def test_capture_choice_is_optional_and_only_written_for_clips(self):
+    old = b'{"enabled":true,"sensitivity":0.04,"version":1,"warningTimeSeconds":1.0}'
+    self.assertEqual(decode(old).capture, "pictures")
+    self.assertEqual(encode(decode(old)), old)
+    clip = Preferences(True, Settings(0.04, 1.0), "clip")
+    self.assertEqual(decode(encode(clip)), clip)
+    with self.assertRaises(ValueError):
+      encode(Preferences(True, capture="video"))
 
   def test_actual_params_absent_corrupt_and_oversized_are_off_without_rewrite(self):
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, PARAMS_ROOT=directory, OPENPILOT_PREFIX="sentrytest"):

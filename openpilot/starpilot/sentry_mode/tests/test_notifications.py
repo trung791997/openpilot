@@ -251,6 +251,23 @@ def test_motion_alerts_attach_saved_camera_images(tmp_path):
     server.shutdown()
 
 
+def test_clip_events_attach_mp4_with_upload_time(tmp_path):
+  clip = bytes(4) + b'ftyp' + bytes(60)
+  events = SimpleNamespace(snapshot=lambda: {'events': []}, images=lambda event_id: [], image=None,
+                           clips=lambda event_id: ['wide', 'cabin'], clip=lambda event_id, camera: clip + camera.encode())
+  owner = NotificationOwner(tmp_path / 'notifications', events)
+  try:
+    files = owner._attachments({'eventId': 'a' * 32, 'kind': 'warning'})
+    assert files == [('files[0]', ('wide.mp4', clip + b'wide', 'video/mp4')),
+                     ('files[1]', ('cabin.mp4', clip + b'cabin', 'video/mp4'))]
+    response = SimpleNamespace(status_code=204, close=lambda: None)
+    with __import__('unittest.mock').mock.patch('requests.post', return_value=response) as post:
+      owner._send('discord', {'url': 'https://example.test/x', 'token': ''}, None, {'eventId': 'a' * 32, 'kind': 'warning', 'created': 1.0}, 'k', '')
+    assert post.call_args.kwargs['timeout'] == (3, 60)
+  finally:
+    owner.close()
+
+
 def test_unreadable_image_still_sends_text(tmp_path):
   calls = []
   def image(event_id, camera):

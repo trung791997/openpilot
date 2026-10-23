@@ -11,12 +11,15 @@ from openpilot.starpilot.sentry_mode.policy import Settings
 
 KEY = "SentryMotionPreferences"
 MAX_BYTES = 512
+CAPTURES = ("pictures", "clip")  # event capture: still pictures (default) or a 5 s video clip per camera
+BASE_KEYS = {"version", "enabled", "sensitivity", "warningTimeSeconds"}
 
 
 @dataclass(frozen=True)
 class Preferences:
   enabled: bool = False
   settings: Settings = field(default_factory=Settings)
+  capture: str = "pictures"
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,7 @@ def decode(raw: bytes) -> Preferences | None:
   try:
     data = json.loads(raw, object_pairs_hook=_unique,
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite")))
-    if not isinstance(data, dict) or set(data) != {"version", "enabled", "sensitivity", "warningTimeSeconds"}:
+    if not isinstance(data, dict) or set(data) not in (BASE_KEYS, BASE_KEYS | {"capture"}):
       return None
     if type(data["version"]) is not int or data["version"] != 1 or type(data["enabled"]) is not bool:
       return None
@@ -50,17 +53,24 @@ def decode(raw: bytes) -> Preferences | None:
     if (type(sensitivity) not in (float, int) or type(warning) not in (float, int) or
         not math.isfinite(sensitivity) or not math.isfinite(warning)):
       return None
-    return Preferences(data["enabled"], Settings(float(sensitivity), float(warning)))
+    capture = data.get("capture", "pictures")
+    if capture not in CAPTURES or capture == "pictures" and "capture" in data:
+      return None
+    return Preferences(data["enabled"], Settings(float(sensitivity), float(warning)), capture)
   except (UnicodeDecodeError, ValueError, TypeError, OverflowError, RecursionError):
     return None
 
 
 def encode(preferences: Preferences) -> bytes:
-  if not isinstance(preferences, Preferences) or type(preferences.enabled) is not bool:
+  if (not isinstance(preferences, Preferences) or type(preferences.enabled) is not bool or
+      preferences.capture not in CAPTURES):
     raise ValueError("invalid Sentry preferences")
   settings = Settings(preferences.settings.sensitivity, preferences.settings.warning_time_seconds)
   data = {"version": 1, "enabled": preferences.enabled,
           "sensitivity": settings.sensitivity, "warningTimeSeconds": settings.warning_time_seconds}
+  if preferences.capture != "pictures":
+    # Pictures stays implicit, so saved bytes from before the choice existed still compare equal.
+    data["capture"] = preferences.capture
   raw = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
   if len(raw) > MAX_BYTES:
     raise ValueError("oversized Sentry preferences")

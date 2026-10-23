@@ -34,6 +34,28 @@ class EventStoreTest(unittest.TestCase):
       self.assertEqual(path.stat().st_mode & 0o777, 0o600)
       self.assertLessEqual(path.stat().st_size, storage.MAX_EVENT_BYTES)
 
+  def test_clips_store_and_read_beside_pictures(self):
+    clip = bytes(4) + b"ftyp" + bytes(100)
+    receipt = self.store.record("warning", 1, permitted=lambda: True, clips={"wide": clip, "cabin": clip + b"c"})
+    self.assertEqual(self.store.clips(receipt.event_id), ["wide", "cabin"])
+    self.assertEqual(self.store.clip(receipt.event_id, "cabin"), clip + b"c")
+    self.assertEqual(self.store.images(receipt.event_id), [])
+    with self.assertRaises(OSError):
+      self.store.image(receipt.event_id, "wide")
+    for bad in ({"wide": b"\xff\xd8\xff\xd9" * 20}, {"rear": clip}, {"wide": clip + bytes(storage.MAX_CLIP_BYTES)}):
+      with self.assertRaises(ValueError):
+        self.store.record("warning", 1, permitted=lambda: True, clips=bad)
+
+  def test_clip_events_are_capped_but_pictures_still_record(self):
+    clip = bytes(4) + b"ftyp" + bytes(100)
+    with patch.object(storage, "MAX_CLIP_EVENTS", 2):
+      for _ in range(2):
+        self.store.record("warning", 1, permitted=lambda: True, clips={"wide": clip})
+      with self.assertRaises(storage.ClipStorageFull):
+        self.store.record("warning", 1, permitted=lambda: True, clips={"wide": clip})
+      self.store.record("warning", 1, permitted=lambda: True, images={"wide": b"\xff\xd8\xff\xd9"})
+    self.assertEqual(len(self.store.snapshot()["events"]), 3)
+
   def test_onroad_before_or_during_write_does_not_publish(self):
     for decisions in ((False,), (True, False)):
       with self.assertRaises(storage.StorageUnavailable):

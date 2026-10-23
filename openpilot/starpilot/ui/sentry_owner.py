@@ -14,6 +14,8 @@ RESET = "sentry:reset"
 ENABLED = "sentry:enabled"
 SENSITIVITY = "sentry:sensitivity"
 WARNING = "sentry:warning"
+CAPTURE = "sentry:capture"
+CAPTURE_LABELS = {"pictures": "Pictures", "clip": "5 s video"}
 
 
 class SentryOwner:
@@ -29,7 +31,7 @@ class SentryOwner:
     label, reason = self.status.runtime_snapshot(saved)
     if not parked and (label == "Monitoring motion" or label.startswith("Arming")):
       label, reason = "Not armed", "Waiting for confirmation that the car is parked"
-    monitor = f"{label}: {reason}. Motion events can include camera snapshots. Notification settings are in Cameras & Monitoring."
+    monitor = f"{label}: {reason}. Motion events can include camera pictures or short video clips. Notification settings are in Cameras & Monitoring."
     rows: list[FeatureRow] = []
     if not saved.readable:
       rows.append(FeatureRow("", "Saved motion settings", "Unavailable",
@@ -49,9 +51,13 @@ class SentryOwner:
                               reason="Lower values detect smaller acceleration changes" if allowed else reason),
                    FeatureRow(WARNING, "Warning persistence", f"{settings.warning_time_seconds:.1f}", saved.raw,
                               step=0.1, minimum=0.1, maximum=10.0, unit="s", available=allowed,
-                              reason="Controls how much motion is needed before a warning" if allowed else reason)))
+                              reason="Controls how much motion is needed before a warning" if allowed else reason),
+                   FeatureRow(CAPTURE, "Event capture", CAPTURE_LABELS[saved.preferences.capture], saved.raw,
+                              tuple(CAPTURE_LABELS.values()), available=allowed,
+                              reason="Video clips are larger, slower to send and darker at night" if allowed else reason)))
     initial = Preferences()
-    defaults = {ENABLED: 'Off', SENSITIVITY: f'{initial.settings.sensitivity:.3f}', WARNING: f'{initial.settings.warning_time_seconds:.1f}'}
+    defaults = {ENABLED: 'Off', SENSITIVITY: f'{initial.settings.sensitivity:.3f}', WARNING: f'{initial.settings.warning_time_seconds:.1f}',
+                CAPTURE: CAPTURE_LABELS[initial.capture]}
     rows = [replace(row, default_value=defaults[row.key]) if row.key in defaults else row for row in rows]
     return FeatureSettingsState(page="sentry", title="Sentry motion settings",
                                 subtitle=monitor,
@@ -84,6 +90,11 @@ class SentryOwner:
         except (ValueError, TypeError, OverflowError):
           return False
         target = replace(preferences, settings=settings)
+      elif request.key == CAPTURE:
+        captures = {label: capture for capture, label in CAPTURE_LABELS.items()}
+        if request.value not in captures:
+          return False
+        target = replace(preferences, capture=captures[request.value])
       else:
         return False
     self.last_write = commit(self.params, encode(target), saved.raw, self.parked)

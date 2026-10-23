@@ -177,6 +177,28 @@ class SentryRuntime:
         close()
 
 
+def record_event(store, params, camera, clip, kind, stamp, permitted):
+  """Store one event with the chosen capture: 5 s clips, or wide and cabin pictures."""
+  from openpilot.starpilot.galaxy.camera_snapshot import SnapshotUnavailable
+  from openpilot.starpilot.sentry_mode.preferences import read_preferences
+  from openpilot.starpilot.sentry_mode.storage import ClipStorageFull
+  if read_preferences(params).preferences.capture == "clip":
+    try:
+      return store.record(kind, stamp, permitted=permitted, clips=clip.capture(permitted=permitted))
+    except (SnapshotUnavailable, ClipStorageFull):
+      if not permitted():
+        raise
+    # No clip (encoder did not start, or clip storage is full): the event still gets pictures.
+  images = {}
+  for name in ("wide", "cabin"):
+    try:
+      images[name] = camera.capture(name, permitted=permitted)
+    except SnapshotUnavailable:
+      if not permitted():
+        raise
+  return store.record(kind, stamp, permitted=permitted, images=images)
+
+
 def main() -> None:
   from openpilot.cereal import messaging
   from openpilot.starpilot.sentry_mode.storage import EventStore
@@ -187,18 +209,13 @@ def main() -> None:
     signal.signal(number, lambda _signal, _frame: stop.set())
   messages = messaging.SubMaster(["accelerometer", "deviceState", "pandaStates", "peripheralState"])
   store = EventStore()
-  from openpilot.starpilot.galaxy.camera_snapshot import CameraSnapshot, SnapshotUnavailable
-  camera = CameraSnapshot()
+  from openpilot.starpilot.galaxy.camera_clip import CameraClip
+  from openpilot.starpilot.galaxy.camera_snapshot import CameraSnapshot
+  params = Params()
+  camera, clip = CameraSnapshot(), CameraClip()
   def record(kind, stamp, permitted):
-    images = {}
-    for name in ("wide", "cabin"):
-      try:
-        images[name] = camera.capture(name, permitted=permitted)
-      except SnapshotUnavailable:
-        if not permitted():
-          raise
-    return store.record(kind, stamp, permitted=permitted, images=images)
-  runtime = SentryRuntime(Params(), messages, record=record, status=RuntimeStatus())
+    return record_event(store, params, camera, clip, kind, stamp, permitted)
+  runtime = SentryRuntime(params, messages, record=record, status=RuntimeStatus())
   try:
     while not stop.is_set():
       started = time.monotonic()
