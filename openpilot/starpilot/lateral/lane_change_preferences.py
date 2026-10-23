@@ -48,6 +48,9 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
   return value
 
 
+LEGACY_TURN_FIELDS = frozenset({"turnDesires", "turnDesireSpeedMps"})
+
+
 def decode(raw: bytes) -> LaneChangePolicy | None:
   if len(raw) > MAX_BYTES:
     return None
@@ -68,6 +71,14 @@ def decode(raw: bytes) -> LaneChangePolicy | None:
     fields |= {"durationS"}
   if version == 5:
     fields |= {"turnSignalGuidance"}
+  if version == 5 and set(data) == (fields - {"turnSignalGuidance"}) | LEGACY_TURN_FIELDS:
+    # Pre-StarPilot-7.0 v5 documents named the turn setting turnDesires. The turn
+    # speed is now fixed (desire_helper), so the old speed is validated and dropped.
+    turn, turn_speed = data["turnDesires"], data["turnDesireSpeedMps"]
+    if type(turn) is not bool or type(turn_speed) not in (int, float) or not math.isfinite(turn_speed):
+      return None
+    data = {k: v for k, v in data.items() if k not in LEGACY_TURN_FIELDS}
+    data["turnSignalGuidance"] = turn
   if set(data) != fields:
     return None
   enabled = data["enabled"]
@@ -186,9 +197,16 @@ class LiveLaneChangePolicy:
   def __init__(self, params, *, now_ns=0):
     self.params = params
     saved = read_saved(params)
-    self.requested = effective(saved) if saved.readable and saved.valid else self._disabled()
+    self.requested = self._from_saved(saved)
     self.applied = self.requested
     self.last_read_ns = now_ns if type(now_ns) is int and now_ns > 0 else 0
+
+  @classmethod
+  def _from_saved(cls, saved):
+    # An unreadable file disables assistance. A readable document this build does
+    # not recognise uses the defaults (nudge lane changes, no automatic ones), so a
+    # schema change can no longer silently switch every lane change off.
+    return effective(saved) if saved.readable else cls._disabled()
 
   @staticmethod
   def _disabled():
@@ -201,7 +219,7 @@ class LiveLaneChangePolicy:
       return self.applied
     if not self.last_read_ns or now_ns - self.last_read_ns >= self.REFRESH_NS:
       saved = read_saved(self.params)
-      self.requested = effective(saved) if saved.readable and saved.valid else self._disabled()
+      self.requested = self._from_saved(saved)
       self.last_read_ns = now_ns
     if not self.requested.enabled:
       self.applied = replace(self.applied, enabled=False, auto_lane_change=False)
