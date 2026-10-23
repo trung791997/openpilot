@@ -126,7 +126,7 @@ class CameraSnapshotTest(unittest.TestCase):
 
 
 class RoadSnapshotTest(unittest.TestCase):
-  def _wide(self, exposure_factory):
+  def _wide(self, exposure_factory, level=60, conversions=None):
     now = [1_000_000_000]
     frame = SimpleNamespace(width=4, height=4, stride=4, uv_offset=16, data=np.full(80, 128, dtype=np.uint8))
     converted_at = []
@@ -139,10 +139,12 @@ class RoadSnapshotTest(unittest.TestCase):
         return frame
     def convert(buf):
       converted_at.append(now[0])
-      return np.full((4, 4, 3), 60, dtype=np.uint8)
+      return np.full((4, 4, 3), level, dtype=np.uint8)
     with patch('openpilot.starpilot.galaxy.camera_snapshot_worker.extract_image', side_effect=convert):
       result = capture('wide', client_factory=lambda *args: Client(), clock=lambda: now[0], exposure_factory=exposure_factory)
     self.assertIsNotNone(result)
+    if conversions is not None:
+      conversions.append(len(converted_at))
     return (converted_at[0] - 1_000_000_000) / 1e9
 
   def _watch(self, greys):
@@ -165,6 +167,13 @@ class RoadSnapshotTest(unittest.TestCase):
 
   def test_dark_scene_waits_the_full_settle_time(self):
     self.assertGreaterEqual(self._wide(lambda camera: self._watch([0.02] * 500)), 4.0)
+
+  def test_dark_scene_averages_frames_and_bright_scene_takes_one(self):
+    from openpilot.starpilot.galaxy.camera_snapshot_worker import AVERAGE_FRAMES
+    dark, bright = [], []
+    self._wide(lambda camera: None, level=30, conversions=dark)
+    self._wide(lambda camera: None, level=120, conversions=bright)
+    self.assertEqual((dark, bright), ([AVERAGE_FRAMES], [1]))
 
   def test_no_camera_state_falls_back_to_the_timer(self):
     self.assertGreaterEqual(self._wide(lambda camera: None), 4.0)

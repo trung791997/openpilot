@@ -27,7 +27,12 @@ CAMERA_STATES = {"wide": "wideRoadCameraState", "narrow": "roadCameraState"}
 # camerad exposes for the driving model (grey target 0.1-0.4), not for people: stretch and lift road snapshots.
 MAX_STRETCH = 4.0
 TARGET_MEDIAN = 0.4
-MAX_LIFT = 3.0  # shadow gain of the lift curve is 1 + lift; with MAX_STRETCH, no step gets more than 16x
+MAX_LIFT = 2.0  # shadow gain of the lift curve is 1 + lift; with MAX_STRETCH, no step gets more than 12x
+# At night camerad runs the sensor at full gain and the lift multiplies that grain (sentry test 2026-10-23 00:33 CDT,
+# lift 3.0, single frame: speckled). The car is parked, so average consecutive frames when the scene is dark: 8 frames
+# (~0.4 s) cut sensor noise to ~1/3 at the cost of a slight smear on anything moving. Bright scenes keep one frame.
+AVERAGE_FRAMES = 8
+AVERAGE_BELOW_MEDIAN = 64
 
 
 def boot_ns():
@@ -82,6 +87,7 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_f
     time.sleep(.1)
   connected = clock()
   first_frame = None
+  frames = []
   while clock() - started < (22_000_000_000 if camera == "cabin" else 15_000_000_000):
     frame = client.recv(timeout_ms=100)
     now = clock()
@@ -106,7 +112,10 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_f
     image = Image.fromarray(extract_image(frame))
     image.thumbnail((1280, 720))
     if camera != "cabin":
-      image = Image.fromarray(brighten(np.asarray(image)))
+      frames.append(np.asarray(image, dtype=np.float32))
+      if len(frames) < AVERAGE_FRAMES and np.median(frames[0]) < AVERAGE_BELOW_MEDIAN:
+        continue
+      image = Image.fromarray(brighten(np.round(np.mean(frames, axis=0)).astype(np.uint8)))
     output = BytesIO()
     image.save(output, format="JPEG", quality=85)
     body = output.getvalue()
