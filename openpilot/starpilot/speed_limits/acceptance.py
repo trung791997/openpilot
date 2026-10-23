@@ -427,11 +427,13 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
     return finish("rejected", target=previous_target())
 
   previous_speed = state.accepted.candidate.speed_mps if state.accepted is not None else None
-  if not new_limit and old.pending is None and candidate.speed_mps == previous_speed:
+  if candidate.speed_mps == previous_speed:
+    # The limit in force needs no answer. Asking again after a brief A->B->A source
+    # flicker left a prompt that neither button could clear: rejecting the limit
+    # in force keeps it, and the next flicker forgot the rejection.
     state = replace(state, pending=None, timer_running=False)
     return finish("accepted", target=previous_target())
-  confirmation = policy.confirm_higher if previous_speed is None or candidate.speed_mps > previous_speed else (
-    policy.confirm_lower if candidate.speed_mps < previous_speed else policy.confirm_lower or policy.confirm_higher)
+  confirmation = policy.confirm_higher if previous_speed is None or candidate.speed_mps > previous_speed else policy.confirm_lower
   if not new_limit and old.pending is not None and old.pending.automatic == (not confirmation):
     pending = replace(old.pending, candidate=candidate)
     if old.timer_running:

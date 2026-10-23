@@ -97,8 +97,7 @@ def test_expired_adoption_does_not_retry_after_driver_or_authority_changes(drive
 
 
 @pytest.mark.parametrize('failure', ['rejected', 'expired'])
-@pytest.mark.parametrize('response', ['reject', 'timeout'])
-def test_returned_limit_cannot_retry_an_older_adoption_after_decline(drive, failure, response):
+def test_returned_limit_cannot_retry_an_older_adoption(drive, failure):
   sm, cp = drive
   runtime = Runtime(parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard', 'SLCConfirmation': True}))
   pending = tick(runtime, sm, cp, 0).message.slcState
@@ -108,19 +107,17 @@ def test_returned_limit_cannot_retry_an_older_adoption_after_decline(drive, fail
   receipt = command_receipt(runtime, command, 1.05, 60., 60., applied=False) if failure == 'rejected' else None
   tick(runtime, sm, cp, 1.05, cruise_event=receipt)
   sm['slcDashboardObservation'].speedMps = 25.
-  pending = tick(runtime, sm, cp, 4).message.slcState
-  action = Action(runtime.session_id, 2, pending.decisionId, pending.presentationId, 'reject') if response == 'reject' else None
-  seconds = 5 if action else 14
-  declined = tick(runtime, sm, cp, seconds, request=action)
-  assert declined.result.acceptance.basis == ('driver_reject' if action else 'timeout_reject')
-  assert declined.command is None
-  held = tick(runtime, sm, cp, seconds + .1)
+  # The limit in force returns: no prompt to answer, and no silent retry of the old adoption.
+  returned = tick(runtime, sm, cp, 4)
+  assert not returned.message.slcState.hasPending
+  assert returned.result.acceptance.basis == 'accepted'
+  assert returned.command is None
+  held = tick(runtime, sm, cp, 14)
   assert not held.result.errors and not runtime.state.reset_required and held.command is None
   assert sm['carState'].vCruise == 60.
-  # An explicit later adoption remains available after declining the new decision.
-  current = declined.message.slcState
-  readopted = tick(runtime, sm, cp, seconds + .2,
-    request=Action(runtime.session_id, 3, 0, current.presentationId, 'adopt'))
+  # An explicit later adoption remains available.
+  current = held.message.slcState
+  readopted = tick(runtime, sm, cp, 14.1, request=Action(runtime.session_id, 2, 0, current.presentationId, 'adopt'))
   assert readopted.command is not None and readopted.command.slcCruiseCommand.targetMps == 25.
 
 

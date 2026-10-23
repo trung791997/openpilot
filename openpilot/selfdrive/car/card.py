@@ -580,7 +580,7 @@ class Car:
     if self.slc_replay:
       pending = slc_physical.pending_confirmation(
         self.sm, now_ns, long_active=slc_long_active, after_ns=floor_ns)
-    self.update_cruise_speed(CS, pending)
+    self.update_cruise_speed(CS, pending, now_ns=now_ns)
     if self.controller_cruise_sock is not None:
       for _ in range(8):
         request = messaging.recv_one_or_none(self.controller_cruise_sock)
@@ -828,16 +828,21 @@ class Car:
 
     return CS, RD
 
-  def update_cruise_speed(self, CS, pending=None):
+  def update_cruise_speed(self, CS, pending=None, now_ns=None):
+    slc_enabled = getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False))
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric, pending,
-                                       slc_enabled=getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False)))
+                                       slc_enabled=slc_enabled)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
+      slc_target = None
+      if slc_enabled and self.CP.openpilotLongitudinalControl:
+        slc_target = slc_physical.engage_target_mps(self.sm, time.monotonic_ns() if now_ns is None else now_ns)
       # Initialization owns this edge; evaluate commands against its final speed.
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,
                                             resume=self.vehicle_startup.consume_cruise_resume(),
                                             initial_speed=engage_initial_speed(self.initial_cruise_speed, self.experimental_mode,
                                                                                getattr(self, 'stock_planner', False)),
-                                            keep_speed=engage_keeps_speed(self.experimental_mode, getattr(self, 'stock_planner', False)))
+                                            keep_speed=engage_keeps_speed(self.experimental_mode, getattr(self, 'stock_planner', False)),
+                                            slc_target_mps=slc_target, is_metric=self.is_metric)
 
   def aol_cancel_source(self, CS, now_ns: int) -> int:
     """Bind Cancel to this parsed CAN batch and its local monotonic receipt."""

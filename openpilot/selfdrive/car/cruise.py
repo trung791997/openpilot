@@ -286,7 +286,7 @@ class VCruiseHelper:
     self.v_cruise_cluster_kph = self.v_cruise_kph
 
   def initialize_v_cruise(self, CS, experimental_mode: bool, *, resume: bool | None = None, initial_speed: object = V_CRUISE_INITIAL,
-                          keep_speed: bool = False) -> None:
+                          keep_speed: bool = False, slc_target_mps: float | None = None, is_metric: bool = False) -> None:
     # initializing is handled by the PCM
     if self.CP.pcmCruise:
       return
@@ -300,6 +300,10 @@ class VCruiseHelper:
     self.pending_resume_ns = 0
     if resume and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
+    elif slc_target_mps is not None and math.isfinite(slc_target_mps) and slc_target_mps > 0:
+      # SET with a speed limit in force engages at that limit plus its offset.
+      self.apply_slc_target(slc_target_mps, is_metric)
+      return
     elif keep_speed and CS.vEgo * CV.MS_TO_KPH >= V_CRUISE_MIN:
       self.v_cruise_kph = int(round(np.clip(CS.vEgo * CV.MS_TO_KPH, V_CRUISE_MIN, V_CRUISE_MAX)))
     else:

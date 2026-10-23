@@ -430,6 +430,13 @@ class Runtime:
   def _command(self, result: comp.Result, sm, now_ns: int, old_pending,
                action: acc.DriverAction | None, adopt: acc.AdoptRequest | None):
     decision = result.acceptance
+    if (decision is not None and decision.state.accepted is not None and
+        self.commanded_acceptance == decision.state.accepted and self.command_status in ('issued', 'rejected', 'expired') and
+        (decision.state.pending is not None or result.selection is None or result.selection.observation.candidate is None or
+         result.selection.observation.candidate.speed_mps != decision.state.accepted.candidate.speed_mps)):
+      # The limit moved away before its adoption was applied. Its return must not retry the
+      # old command silently; only a new decision or an explicit adopt can.
+      self.command_status = 'abandoned'
     if (decision is None or decision.basis not in ('accepted', 'driver_accept', 'driver_adopt') or
         decision.state.accepted is None or decision.state.pending is not None or decision.authority is None or
         not decision.authority.can_control or result.coordinate is None or
@@ -444,7 +451,7 @@ class Runtime:
         selected_kph >= 255 or not V_CRUISE_MIN / 3.6 <= target <= V_CRUISE_MAX / 3.6):
       return None
     if self.commanded_acceptance == decision.state.accepted and decision.adoption is None:
-      if self.command_status in ('issued', 'applied') or abs(selected_kph / 3.6 - self.command_expected_mps) > 0.1:
+      if self.command_status in ('issued', 'applied', 'abandoned') or abs(selected_kph / 3.6 - self.command_expected_mps) > 0.1:
         return None
     if abs(target - selected_kph / 3.6) <= 0.1:
       self.commanded_acceptance = decision.state.accepted

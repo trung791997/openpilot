@@ -132,16 +132,16 @@ class CompositionTests(unittest.TestCase):
   def test_late_error_preserves_consumed_action_receipt_and_history(self):
     pending_policy = replace(POLICY, confirm_lower=True)
     self.run_frame(frame(0, speed=25.0))
-    pending = self.run_frame(frame(1, speed=15.0, policy=pending_policy))
+    pending = self.run_frame(frame(1, speed=10.0, policy=pending_policy))
     self.assertIsNotNone(pending.acceptance.state.pending)
     action = acc.DriverAction(SESSION, 1, pending.acceptance.state.pending.decision_id, acc.ActionKind.ACCEPT)
     bad_offset = sd.OffsetSchedule(())
-    failed = self.run_frame(frame(2, speed=15.0, policy=pending_policy, action=action, offset=bad_offset))
+    failed = self.run_frame(frame(2, speed=10.0, policy=pending_policy, action=action, offset=bad_offset))
     self.assertIsNone(failed.ceiling)
     self.assertTrue(failed.errors)
     self.assertTrue(failed.state.reset_required)
     self.assertTrue(failed.acceptance.action_receipt.consumed)
-    self.assertEqual(failed.acceptance.state.accepted.candidate.speed_mps, 15.0)
+    self.assertEqual(failed.acceptance.state.accepted.candidate.speed_mps, 10.0)
     self.assertEqual(failed.state.acceptance, failed.acceptance.state)
 
   def test_rejected_lower_limit_survives_absent_fallback_and_reconnect(self):

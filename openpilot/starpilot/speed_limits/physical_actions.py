@@ -44,6 +44,15 @@ def _current_state(sm, now_ns: int):
   return state
 
 
+def engage_target_mps(sm, now_ns: int) -> float | None:
+  """The accepted limit plus offset, in cluster m/s, when a fresh planner state has one."""
+  state = _current_state(sm, now_ns)
+  if state is None or not state.hasAccepted or not state.hasEffectiveClusterTarget:
+    return None
+  target = float(state.effectiveClusterTarget)
+  return target if finite_speed(target) and target > 0 else None
+
+
 def state_current(sm, observation, producer_session: str, now_ns: int):
   state = _current_state(sm, now_ns)
   if state is None:

@@ -113,7 +113,8 @@ class TestAcceptance(unittest.TestCase):
     self.assertEqual(pending.control_target_mps, first.speed_mps)
     self.assertIsNotNone(pending.state.pending)
     recovered = step(pending.state, valid(first), ACTIVE, policy, now_ns=3 * NS)
-    self.assertIsNotNone(recovered.state.pending)
+    self.assertIsNone(recovered.state.pending)
+    self.assertEqual(recovered.basis, 'accepted')
     self.assertFalse(step(recovered.state, valid(first), ACTIVE, policy, now_ns=4 * NS).errors)
     for kind in ActionKind:
       action = DriverAction('drive', 1, pending.state.pending.decision_id, kind)
@@ -432,16 +433,33 @@ class TestAcceptance(unittest.TestCase):
     self.assertIs(result.state, state)
     self.assertEqual(result.state.accepted.candidate, HIGH)
 
-  def test_rejecting_a_returned_limit_preserves_its_earlier_accepted_history(self):
+  def test_returning_to_the_limit_in_force_never_prompts(self):
+    # A brief A->B->A source flicker must not ask the driver about A, which is
+    # already in force. Before, the prompt could not be cleared: rejecting A kept
+    # A, and the next flicker forgot the rejection and asked again.
+    for policy in (Policy(), Policy(True, False), Policy(False, True), Policy(False, False)):
+      with self.subTest(policy=policy):
+        state, now = saved(), 0
+        for _ in range(3):
+          other = step(state, valid(LOW), ACTIVE, policy, now_ns=now)
+          returned = step(other.state, valid(HIGH), ACTIVE, policy, now_ns=now + NS)
+          self.assertFalse(returned.errors)
+          self.assertIsNone(returned.state.pending)
+          self.assertEqual(returned.basis, 'accepted')
+          self.assertEqual(returned.control_target_mps, HIGH.speed_mps)
+          self.assertEqual(returned.state.accepted.candidate, HIGH)
+          self.assertIsNone(returned.history_write)
+          state, now = returned.state, now + 2 * NS
+
+  def test_returned_limit_cancels_a_pending_different_limit(self):
     other = self.pending()
-    returned = self.pending(candidate=HIGH, state=other.state, now_ns=NS)
-    declined = self.act(returned.state, ActionKind.REJECT, now_ns=2 * NS)
-    held = step(declined.state, valid(HIGH), ACTIVE, Policy(), now_ns=3 * NS)
-    self.assertFalse(held.errors)
-    self.assertEqual(held.basis, 'rejected')
-    self.assertEqual(held.state.accepted, returned.state.accepted)
-    self.assertIn(HIGH, held.state.rejected)
-    self.assertIsNone(held.state.pending)
+    self.assertIsNotNone(other.state.pending)
+    returned = step(other.state, valid(HIGH), ACTIVE, Policy(), now_ns=NS)
+    self.assertIsNone(returned.state.pending)
+    late = DriverAction('drive', 0, other.state.pending.decision_id, ActionKind.ACCEPT)
+    acted = step(returned.state, valid(HIGH), ACTIVE, Policy(), now_ns=2 * NS, action=late)
+    self.assertEqual(acted.state.accepted.candidate, HIGH)
+    self.assertFalse(acted.action_receipt.consumed)
 
   def test_changed_limits_do_not_accumulate_obsolete_rejections(self):
     state = saved()
