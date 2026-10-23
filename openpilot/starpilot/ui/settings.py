@@ -87,6 +87,32 @@ class SettingsView:
       self.fonts.draw(text, FontRole.MEDIUM, 65, round(400 - size.width), round(300 + index * 110 + (110 - size.height) / 2),
                       rl.WHITE if destination == selected else rl.Color(128, 128, 128, 255))
 
+  def _compact_title(self, text: str, first_line_width: float) -> tuple[tuple[str, ...], int]:
+    """Card title lines and font size: one line at 64, else the most even two-line split at 56.
+
+    Shrinking a long title to one line made it far smaller than its neighbours, so titles wrap first and
+    only shrink (in 2 px steps, down to 30) when no split fits.
+    """
+    full_width = 402 - 80
+
+    def fits(line: str, width: float, size: int) -> bool:
+      return self.fonts.measure(line, FontRole.BOLD, size).width <= width
+
+    if fits(text, full_width, 64):  # a single line sits below the icon, so it gets the full width
+      return (text,), 64
+    words = text.split(" ")
+    if len(words) == 1:
+      size = 62
+      while size > 30 and not fits(text, full_width, size):
+        size -= 2
+      return (text,), size
+    splits = [(" ".join(words[:i]), " ".join(words[i:])) for i in range(1, len(words))]
+    for size in range(56, 29, -2):
+      fitting = [s for s in splits if fits(s[0], first_line_width, size) and fits(s[1], full_width, size)]
+      if fitting:
+        return min(fitting, key=lambda s: abs(len(s[0]) - len(s[1]))), size
+    return splits[len(splits) // 2], 30
+
   def _compact(self, state: SettingsState):
     y = state.compact_y
     viewport = rl.Rectangle(0, y, 536, 240)
@@ -102,14 +128,13 @@ class SettingsView:
         if x >= 536 or x + 402 <= 0:
           continue
         rl.draw_texture_ex(background, rl.Vector2(x, top), 0, 1, rl.WHITE)
-        font_size = 40 if destination == Destination.FORCE_DRIVE else 42 if destination == Destination.DRIVING_MODEL else (
-          48 if destination in (Destination.GALAXY, Destination.PAIR) else 64)
-        measured = self.fonts.measure(text, FontRole.BOLD, font_size)
-        while font_size > 30 and measured.width > 402 - 80:  # one line inside the card padding
-          font_size -= 2
-          measured = self.fonts.measure(text, FontRole.BOLD, font_size)
-        self.fonts.draw(text, FontRole.BOLD, font_size, x + 40, top + 180 - 23 - measured.height,
-                        rl.Color(255, 255, 255, 229))
+        # The first line sits beside the top-right icon, so it gets less width than the second.
+        lines, font_size = self._compact_title(text, 402 - 30 - width - 50 if filename is not None else 402 - 80)
+        bottom = top + 180 - 23
+        for line in reversed(lines):
+          measured = self.fonts.measure(line, FontRole.BOLD, font_size)
+          bottom -= measured.height
+          self.fonts.draw(line, FontRole.BOLD, font_size, x + 40, bottom, rl.Color(255, 255, 255, 229))
         if filename is not None:
           icon = self.assets.image(filename, width, height)
           width, height = icon.width, icon.height
