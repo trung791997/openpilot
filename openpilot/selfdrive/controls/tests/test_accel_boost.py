@@ -82,7 +82,9 @@ def test_clears_when_disabled():
 def test_output_shape():
   b = AccelBoost()
   b.total_boost = 0.2
-  f = lambda e2e: b.update(make_sm(), e2e, 9.0, 9.0)
+  def f(e2e):
+    return b.update(make_sm(), e2e, 9.0, 9.0)
+
   assert f(-1.5) == -1.5  # at or below -1.0: no boost
   assert f(-1.0) == pytest.approx(-1.0)
   assert f(-0.5) == pytest.approx(-0.3)

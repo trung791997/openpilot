@@ -49,6 +49,15 @@ def validated_initial_cruise_speed(value: object) -> int:
   return V_CRUISE_INITIAL
 
 
+# Peter's call (2026-10-22): with the stock planner in Experimental Mode, a fresh engage sets 66 mph,
+# or the current speed if faster. Chill and the StarPilot planner keep the saved initial speed.
+E2E_ENGAGE_SPEED_KPH = int(round(66 * CV.MPH_TO_KPH))
+
+
+def engage_initial_speed(saved: object, experimental_mode: bool, stock_planner: bool) -> object:
+  return E2E_ENGAGE_SPEED_KPH if experimental_mode and stock_planner else saved
+
+
 class VCruiseHelper:
   def __init__(self, CP):
     self.CP = CP
