@@ -3,6 +3,7 @@
 from io import BytesIO
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -31,8 +32,10 @@ MAX_LIFT = 2.0  # shadow gain of the lift curve is 1 + lift; with MAX_STRETCH, n
 # At night camerad runs the sensor at full gain and the lift multiplies that grain (sentry test 2026-10-23 00:33 CDT,
 # lift 3.0, single frame: speckled). The car is parked, so average consecutive frames when the scene is dark: 8 frames
 # (~0.4 s) cut sensor noise to ~1/3 at the cost of a slight smear on anything moving. Bright scenes keep one frame.
+# Average the raw NV12 buffers (<1 ms each) and convert once: extract_image takes ~0.5 s per wide frame on the comma,
+# and converting all 8 took the wide capture to 12 s (test 2026-10-23 00:50 CDT).
 AVERAGE_FRAMES = 8
-AVERAGE_BELOW_MEDIAN = 64
+AVERAGE_BELOW_MEDIAN = 64  # Y-plane median, 0-255
 
 
 def boot_ns():
@@ -87,7 +90,7 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_f
     time.sleep(.1)
   connected = clock()
   first_frame = None
-  frames = []
+  total = count = dark = None
   while clock() - started < (22_000_000_000 if camera == "cabin" else 15_000_000_000):
     frame = client.recv(timeout_ms=100)
     now = clock()
@@ -109,13 +112,22 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_f
         not width <= stride <= 8192 or stride % 2 or not stride * height <= uv_offset <= stride * 4096 or
         uv_offset % stride or len(frame.data) < uv_offset + stride * uv_height):
       return None
+    if camera != "cabin":
+      raw = np.frombuffer(frame.data, dtype=np.uint8, count=uv_offset + stride * uv_height)
+      if total is None:
+        total, count = raw.astype(np.uint16), 1
+        dark = np.median(raw[:uv_offset].reshape(-1, stride)[:height:8, :width:8]) < AVERAGE_BELOW_MEDIAN
+      else:
+        total += raw
+        count += 1
+      if dark and count < AVERAGE_FRAMES:
+        continue
+      frame = SimpleNamespace(width=width, height=height, stride=stride, uv_offset=uv_offset,
+                              data=((total + count // 2) // count).astype(np.uint8))
     image = Image.fromarray(extract_image(frame))
     image.thumbnail((1280, 720))
     if camera != "cabin":
-      frames.append(np.asarray(image, dtype=np.float32))
-      if len(frames) < AVERAGE_FRAMES and np.median(frames[0]) < AVERAGE_BELOW_MEDIAN:
-        continue
-      image = Image.fromarray(brighten(np.round(np.mean(frames, axis=0)).astype(np.uint8)))
+      image = Image.fromarray(brighten(np.asarray(image)))
     output = BytesIO()
     image.save(output, format="JPEG", quality=85)
     body = output.getvalue()
