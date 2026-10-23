@@ -97,34 +97,28 @@ def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
               0 <= instruction.distanceMeters <= min(250., max(30., 15. + max(0., cs.vEgo) * 12.)))
 
 
-PLAN_MAX_AGE_NS = 150_000_000
-
-
 class TurnIntent:
-  def __init__(self):
+  def __init__(self, params=None, cp=None):
+    from openpilot.starpilot.lateral.auto_lane_change import steering_capable
+    from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
+    self.guidance = LiveLaneChangePolicy(params) if params is not None else None
+    self.steering_capable = steering_capable(cp)
+    self.signal_stop_hold = False
     self.key = None
     self.stop_hold = False
-    self.forced_active = False
 
-  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, forced_turn_speed_mps: float | None = None):
-    desire = self._navigation(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
-    if desire != current_desire:
-      self.forced_active = False
-      return desire
-    return self._forced(sm, now_ns, current_desire, supported=supported, model_stop=model_stop, speed_mps=forced_turn_speed_mps)
-
-  def _navigation(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
+  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
     nav = current_instruction(sm, now_ns) if supported else None
     key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
     if key != self.key:
       self.key, self.stop_hold = key, False
     if nav is None:
-      return current_desire
+      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
     cs = sm['carState']
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
       plan_valid = (sm.valid['longitudinalPlan'] and sm.alive['longitudinalPlan'] and
-                    nav.startedMonoTime <= stamp <= now_ns <= stamp + PLAN_MAX_AGE_NS and
+                    nav.startedMonoTime <= stamp <= now_ns <= stamp + 150_000_000 and
                     nav.startedMonoTime <= plan.modelMonoTime <= stamp)
     except (KeyError, AttributeError, TypeError):
       plan_valid = False
@@ -134,19 +128,41 @@ class TurnIntent:
       self.stop_hold = True
     if self.stop_hold or not plan_valid:
       return current_desire
-    return turn_desire(sm, now_ns, current_desire, supported=supported)
+    selected = turn_desire(sm, now_ns, current_desire, supported=supported)
+    if selected != log.Desire.none:
+      return selected
+    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
 
-  def _forced(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, speed_mps: float | None):
-    """Force turn desires, as vfn's TurnDesires: any lone blinker below the turn desire speed while lateral is active and
-    the car is moving asks the model to turn, over a lane change too. It drops at a standstill and comes back as the car
-    moves off, so a stop re-pulses it. (A hold through the approach to a stop, tried first, latched whenever the car
-    crept through a turn without a full stop and withheld the desire for 30-60% of those turns: routes
-    aa72d9572459015c/00000018 and 00000019.)"""
-    cs = sm['carState']
-    left = bool(cs.leftBlinker and not cs.rightBlinker)
-    self.forced_active = bool(
-      speed_mps is not None and supported and cs.leftBlinker != cs.rightBlinker and sm['carControl'].latActive and
-      not cs.standstill and math.isfinite(cs.vEgo) and cs.vEgo < speed_mps)
-    if not self.forced_active:
+  def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop):
+    if self.guidance is None:
       return current_desire
-    return log.Desire.turnLeft if left else log.Desire.turnRight
+    try:
+      cs, cc, device, plan = (sm[name] for name in ('carState', 'carControl', 'deviceState', 'longitudinalPlan'))
+      signaling = bool(cs.leftBlinker or cs.rightBlinker)
+      policy = self.guidance.sample(now_ns, signaling=signaling,
+                                    maneuver_active=current_desire != log.Desire.none)
+      if not signaling or cs.standstill:
+        self.signal_stop_hold = False
+      if model_stop or plan.shouldStop:
+        self.signal_stop_hold = True
+      if (not supported or not self.steering_capable or not policy.turn_signal_guidance or
+          current_desire != log.Desire.none or self.signal_stop_hold or not cc.latActive or
+          not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive' or cs.standstill or
+          not math.isfinite(cs.vEgo) or not 0.1 < cs.vEgo < 20 * CV.MPH_TO_MS or
+          cs.leftBlinker == cs.rightBlinker or not device.started):
+        return current_desire
+      for service, age in (('carState', 100_000_000), ('carControl', 100_000_000),
+                           ('longitudinalPlan', 150_000_000), ('deviceState', 2_000_000_000)):
+        stamp = sm.logMonoTime[service]
+        if (not sm.valid[service] or not sm.alive[service] or
+            not 0 < device.startedMonoTime <= stamp <= now_ns <= stamp + age):
+          return current_desire
+      if not device.startedMonoTime <= plan.modelMonoTime <= sm.logMonoTime['longitudinalPlan']:
+        return current_desire
+      if cs.leftBlinker and not cs.leftBlindspot:
+        return log.Desire.turnLeft
+      if cs.rightBlinker and not cs.rightBlindspot:
+        return log.Desire.turnRight
+    except (KeyError, AttributeError, TypeError, ValueError):
+      pass
+    return current_desire

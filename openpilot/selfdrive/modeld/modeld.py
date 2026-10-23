@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 import base64
 import ctypes
 import gc
@@ -16,6 +17,8 @@ from tinygrad.engine.realize import lower_and_compile
 from tinygrad.tensor import Tensor
 from tinygrad.helpers import all_int, round_up
 from tinygrad.uop.ops import UOp
+if TYPE_CHECKING:
+  from openpilot.starpilot.models.runtime_bridge.legacy_types import LegacyBuffer, LegacyUOpFactory
 import math
 import pickle
 import threading
@@ -161,8 +164,8 @@ class FrameMeta:
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
   from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
   if selected_legacy():
-    view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
-    return Tensor(UOp.from_buffer(view)).reshape(shape)
+    view = cast("LegacyBuffer", buffer).view(math.prod(shape), dtype, offset).ensure_allocated()
+    return Tensor(cast("LegacyUOpFactory", UOp).from_buffer(view)).reshape(shape)
   view = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
 
@@ -240,7 +243,8 @@ class ModelState:
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
     self.run_model(output_buffers=self.outputs, **self.input_queues)
-    if self.chestnut and not selected_legacy() and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
+    if (self.chestnut and not selected_legacy() and
+        (err := Device[cast(str, self.outputs['outputs'].device)].error_state.host.view(fmt='q')[0])):
       raise RuntimeError(f"chestnut failed with {err}")
     if after_enqueue is not None:
       after_enqueue()
@@ -497,7 +501,7 @@ def main(demo=False):
   initial_mono_ns, initial_boot_ns, initial_skew_ns = paired_clocks_ns()
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy, nudge_torque=lane_change_nudge_torque(CP))
-  navigation_turn = TurnIntent()
+  navigation_turn = TurnIntent(params, CP)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -537,9 +541,7 @@ def main(demo=False):
     sm.update(0)
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
-                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop),
-                                     forced_turn_speed_mps=(runtime_lane_policy.turn_desire_speed_mps
-                                                            if runtime_lane_policy.turn_desires else None))
+                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop))
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
@@ -669,7 +671,7 @@ def main(demo=False):
       engaged = bool(sm['carControl'].latActive)
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported) or navigation_turn.forced_active)
+                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 
@@ -680,9 +682,7 @@ def main(demo=False):
       lane_status = LaneChangeStatus(lane_status_session, lane_status_sequence,
                                      int(modelv2_send.modelV2.frameId), int(modelv2_send.modelV2.timestampEof),
                                      mono_now_ns, mono_now_ns + 150_000_000, phase, status_direction,
-                                     runtime_lane_policy.auto_lane_change, engaged,
-                                     StatusDirection.LEFT if desire == log.Desire.turnLeft else
-                                     StatusDirection.RIGHT if desire == log.Desire.turnRight else StatusDirection.NONE)
+                                     runtime_lane_policy.auto_lane_change, engaged)
       lane_status_sequence += 1
       lane_status_msg = None
       status_bytes = encode_lane_status(lane_status)

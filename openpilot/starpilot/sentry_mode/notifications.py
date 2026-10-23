@@ -485,7 +485,7 @@ class NotificationOwner:
     else:
       if cfg['token']:
         headers['Authorization'] = 'Bearer ' + cfg['token']
-      files = self._attachments(job)
+      files = self._attachments(job) if name in ('discord', 'webhook') else []
       timeout = upload_timeout(files)
       if name == 'discord':
         live = self.live_link()

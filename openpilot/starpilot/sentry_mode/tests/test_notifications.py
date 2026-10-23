@@ -224,7 +224,8 @@ def test_motion_alerts_attach_saved_camera_images(tmp_path):
     def log_message(self, *args, **kwargs):
       pass
   server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-  threading.Thread(target=server.serve_forever, daemon=True).start()
+  thread = threading.Thread(target=server.serve_forever, daemon=True)
+  thread.start()
   jpgs = {'wide': b'\xff\xd8wide\xff\xd9', 'cabin': b'\xff\xd8cabin\xff\xd9'}
   clock = [1000.0]
   event = {'eventId': 'a' * 32, 'kind': 'warning', 'wallTimeNs': int((clock[0] + 1) * 1e9)}  # after configure
@@ -239,7 +240,7 @@ def test_motion_alerts_attach_saved_camera_images(tmp_path):
       owner.tick()
     paths = {path: (headers, body) for path, headers, body in received}
     assert set(paths) == {'/discord', '/webhook'}
-    for path, (headers, body) in paths.items():
+    for _path, (headers, body) in paths.items():
       assert headers['Content-Type'].startswith('multipart/form-data')
       assert b'name="files[0]"; filename="wide.jpg"' in body and jpgs['wide'] in body
       assert b'name="files[1]"; filename="cabin.jpg"' in body and jpgs['cabin'] in body
@@ -249,6 +250,8 @@ def test_motion_alerts_attach_saved_camera_images(tmp_path):
   finally:
     owner.close()
     server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
 
 
 def test_clip_events_attach_mp4_with_upload_time(tmp_path):
@@ -317,7 +320,6 @@ def test_discord_text_carries_live_link_only_when_known(tmp_path):
 
 
 def test_unreadable_image_still_sends_text(tmp_path):
-  calls = []
   def image(event_id, camera):
     raise OSError('gone')
   events = SimpleNamespace(snapshot=lambda: {'events': []}, images=lambda event_id: ['wide'], image=image)
@@ -325,5 +327,53 @@ def test_unreadable_image_still_sends_text(tmp_path):
   try:
     assert owner._attachments({'eventId': 'a' * 32, 'kind': 'warning'}) == []
     assert owner._attachments({'eventId': 'a' * 32, 'kind': 'test'}) == []
+  finally:
+    owner.close()
+
+
+@pytest.mark.parametrize('name,kind', [('ntfy', 'warning'), ('discord', 'test'), ('webhook', 'test')])
+def test_text_only_delivery_does_not_load_event_images(tmp_path, monkeypatch, name, kind):
+  reads = []
+  calls = []
+  def images(event_id):
+    reads.append(event_id)
+    return ['wide']
+  events = SimpleNamespace(snapshot=lambda: {'events': []}, images=images, image=lambda *args: b'private')
+  response = SimpleNamespace(status_code=204, close=lambda: None)
+  monkeypatch.setattr('openpilot.starpilot.sentry_mode.notifications.requests.post', lambda *args, **kwargs: calls.append(kwargs) or response)
+  owner = NotificationOwner(tmp_path / 'notifications', events)
+  try:
+    owner._send(name, {'token': '', 'url': 'https://example.test'}, None,
+                {'eventId': 'a' * 32, 'kind': kind, 'created': 1000.0}, 'key', '')
+    assert reads == []
+    assert len(calls) == 1 and not calls[0].get('files')
+  finally:
+    owner.close()
+
+
+@pytest.mark.parametrize('failure', ['listing', 'reading'])
+@pytest.mark.parametrize('name', ['discord', 'webhook'])
+def test_missing_saved_images_send_original_text_contract(tmp_path, monkeypatch, failure, name):
+  calls = []
+  def images(event_id):
+    if failure == 'listing':
+      raise OSError('gone')
+    return ['wide', 'cabin']
+  def image(event_id, camera):
+    raise OSError('gone')
+  events = SimpleNamespace(snapshot=lambda: {'events': []}, images=images, image=image)
+  response = SimpleNamespace(status_code=204, close=lambda: None)
+  monkeypatch.setattr('openpilot.starpilot.sentry_mode.notifications.requests.post', lambda *args, **kwargs: calls.append(kwargs) or response)
+  owner = NotificationOwner(tmp_path / 'notifications', events)
+  try:
+    assert owner._send(name, {'token': 'token', 'url': 'https://example.test'}, None,
+                       {'eventId': 'a' * 32, 'kind': 'warning', 'created': 1000.0}, 'key', '') == 204
+    sent = calls[0]
+    assert not sent.get('files')
+    if name == 'discord':
+      assert sent['json']['content'] == 'StarPilot Sentry Mode: Parked motion detected (warning).'
+    else:
+      assert sent['data']['content'] == 'StarPilot Sentry Mode: Parked motion detected (warning).'
+      assert json.loads(sent['data']['event']) == {'eventId': 'a' * 32, 'kind': 'warning', 'systemTimeMs': 1000000}
   finally:
     owner.close()

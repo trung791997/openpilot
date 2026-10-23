@@ -1,9 +1,14 @@
 """Load existing bank and stock artifacts with one explicitly selected runtime."""
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from openpilot.starpilot.models.recovery import F6_FALLBACK_EXIT
 from openpilot.starpilot.models.runtime_bridge.bootstrap import LEGACY_REVISION, NOVASPARK_REVISION, activate
+
+if TYPE_CHECKING:
+  from tinygrad.uop.ops import UOp
+  from openpilot.starpilot.models.runtime_bridge.legacy_types import LegacyBuffer, LegacyBufferFactory, LegacyHCQModule, LegacyPersistentUnpickler
 
 BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacy9d'
 MANIFEST_SHA256 = "20ca9e77010c1ab788f2adb824103db3d595b0da8c4069d6e32b1266f7977b1f"
@@ -11,7 +16,7 @@ _GUARD_HASHES = {
   'libbounded_wait.so': '24ed559861c8636c1026cad9a244854bb2236b5ee8b91bf21c5efbf688fa4a69',
   'libusb_guards.so': '66a3dfe48ac17899862ab80160cf6dac2c9b9707234527ba0d808f3b68404114',
 }
-_POLICY_SHA256 = '6b9bf91f34d64ea46b62cc6d5501cb6877e0b5d47563c819207f58676790066b'
+_POLICY_SHA256 = '20b17eee1bccd28648a17ea1ebf917f95148d2fe3133158c1072065e38a385a1'
 # NovaSpark only runs on the f6fc4e3 tinygrad runtime. It is selected per start and falls back to
 # the 9d0446 runtime (and the shipped default model) once a start with it has failed.
 F6_BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacyf6'
@@ -182,14 +187,15 @@ def _guard(chestnut):
       from tinygrad.runtime.support import hcq2
       from tinygrad.uop.ops import Ops, ProgramInfo
       candidate = Protection(_library('libbounded_wait.so'))
-      original = hcq2.lower_and_compile
-      def checked(linear):
+      legacy_hcq = cast("LegacyHCQModule", hcq2)
+      original = legacy_hcq.lower_and_compile
+      def checked(linear: "UOp") -> "UOp":
         if any(u.op is Ops.CALL and (u.body.op is Ops.SINK or
                (u.body.op is Ops.PROGRAM and not (isinstance(u.body.arg, ProgramInfo) and
                 u.body.src and u.body.src[-1].op is Ops.BINARY))) for u in linear.toposort()):
           raise ValueError('Unexpected fresh monitoring submission compilation')
         return original(linear)
-      hcq2.lower_and_compile = checked
+      legacy_hcq.lower_and_compile = checked
     _protection = candidate
   return _protection
 
@@ -239,10 +245,35 @@ def _load_monitoring(data):
   end = 8 + opcode_size
   if end == len(data):
     return pickle.loads(data[8:end])
-  arena = Buffer(Device.DEFAULT, len(data) - end, dtypes.uchar, initial_value=data[end:])
+  arena = cast("LegacyBufferFactory", Buffer)(Device.DEFAULT, len(data) - end, dtypes.uchar, initial_value=data[end:])
   unpickler = pickle.Unpickler(io.BytesIO(data[8:end]))
-  unpickler.persistent_load = lambda record: arena.view(*record)
+  cast("LegacyPersistentUnpickler", unpickler).persistent_load = lambda record: arena.view(*record)
   return unpickler.load()
+
+
+def _load_chestnut(path):
+  import io
+  import pickle
+  import struct
+  from tinygrad import Device, Tensor
+  from tinygrad.device import Buffer
+  from tinygrad.dtype import dtypes
+  with open(path, "rb") as f:
+    opcodes = f.read(struct.unpack('<q', f.read(8))[0])
+    if f.tell() == Path(path).stat().st_size:
+      return pickle.loads(opcodes)
+    buffers = cast("LegacyBuffer", Tensor(Path(path))[f.tell():].uop.buffer).ensure_allocated()
+
+  arena, chunk_size = cast("LegacyBufferFactory", Buffer)(Device.DEFAULT, buffers.nbytes, dtypes.uchar, preallocate=True), 8 << 20
+  for off in range(0, buffers.nbytes, chunk_size):
+    size = min(chunk_size, buffers.nbytes-off)
+    arena.view(size, dtypes.uchar, off).ensure_allocated().copy_from(buffers.view(size, dtypes.uchar, off).ensure_allocated())
+
+  def persistent_load(pid): return arena.view(*pid)
+
+  u = pickle.Unpickler(io.BytesIO(opcodes))
+  cast("LegacyPersistentUnpickler", u).persistent_load = persistent_load
+  return u.load()
 
 
 def load_oob(path, chestnut=False):
@@ -261,7 +292,12 @@ def load_oob(path, chestnut=False):
   from tinygrad_repo.examples.openpilot.helpers import load_pickle
   protection = _guard(chestnut)
   with Context(DEV='USB+AMD:LLVM' if chestnut else 'QCOM'):
-    artifact = _load_monitoring(authenticated) if monitoring else load_pickle(path, out_of_band=True)
+    if monitoring:
+      artifact = _load_monitoring(authenticated)
+    elif chestnut:
+      artifact = _load_chestnut(path)
+    else:
+      artifact = load_pickle(path, out_of_band=True)
   if isinstance(artifact, dict) and artifact.get('artifact_abi') == 'tinygrad_single_v1_arena':
     if chestnut:
       return protection.artifact(artifact)
