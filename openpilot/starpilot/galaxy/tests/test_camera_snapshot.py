@@ -9,7 +9,7 @@ from PIL import Image
 import numpy as np
 
 from openpilot.starpilot.galaxy.camera_snapshot import CameraSnapshot, SnapshotDenied, SnapshotUnavailable
-from openpilot.starpilot.galaxy.camera_snapshot_worker import capture
+from openpilot.starpilot.galaxy.camera_snapshot_worker import brighten, capture
 
 
 class CameraSnapshotTest(unittest.TestCase):
@@ -123,3 +123,34 @@ class CameraSnapshotTest(unittest.TestCase):
         with patch('openpilot.starpilot.galaxy.camera_snapshot_worker.extract_image') as convert:
           self.assertIsNone(capture('cabin', client_factory=lambda *args: Client(), clock=lambda now=now: now[0]))
           convert.assert_not_called()
+
+
+class RoadSnapshotTest(unittest.TestCase):
+  def test_wide_waits_for_exposure_before_converting(self):
+    now = [1_000_000_000]
+    frame = SimpleNamespace(width=4, height=4, stride=4, uv_offset=16, data=np.full(80, 128, dtype=np.uint8))
+    converted_at = []
+    class Client:
+      timestamp_sof = timestamp_eof = 0
+      def connect(self, blocking): return True
+      def recv(self, timeout_ms):
+        now[0] += 50_000_000
+        self.timestamp_sof, self.timestamp_eof = now[0] - 20_000_000, now[0] - 10_000_000
+        return frame
+    def convert(buf):
+      converted_at.append(now[0])
+      return np.full((4, 4, 3), 60, dtype=np.uint8)
+    with patch('openpilot.starpilot.galaxy.camera_snapshot_worker.extract_image', side_effect=convert):
+      result = capture('wide', client_factory=lambda *args: Client(), clock=lambda: now[0])
+    self.assertIsNotNone(result)
+    self.assertGreaterEqual(converted_at[0] - 1_000_000_000, 4_000_000_000)
+
+  def test_brighten_lifts_a_dark_scene_and_caps_gain_on_a_flat_one(self):
+    rng = np.random.default_rng(0)
+    dark = rng.integers(10, 80, size=(40, 40, 3)).astype(np.uint8)
+    self.assertGreater(np.median(brighten(dark)), 2 * np.median(dark))
+    flat = np.full((40, 40, 3), 25, dtype=np.uint8)
+    flat[0, 0] = 27
+    self.assertLessEqual(int(brighten(flat).max()) - int(brighten(flat).min()), 16 * 2 + 1)
+    bright = rng.integers(0, 256, size=(40, 40, 3)).astype(np.uint8)
+    self.assertLess(np.abs(brighten(bright).astype(int) - bright).mean(), 20)
