@@ -147,6 +147,8 @@ def test_approaching_turn_does_not_start_or_replace_lane_change(sm):
   helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0.))
   turn = matching_turn_signal(sm, NOW, supported=True)
   assert turn
+  # With turn desires on, lane changes are off below 20 mph (8.94 m/s), so check them just above it.
+  cs.vEgo = 9.
   helper.update(cs, True, 1., navigation_turn=turn)
   assert helper.lane_change_state == log.LaneChangeState.off
   helper.lane_change_state = log.LaneChangeState.preLaneChange
