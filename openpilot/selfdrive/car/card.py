@@ -32,7 +32,7 @@ from opendbc.car.hyundai.ioniq6_media import Ioniq6MediaButtons
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
-from openpilot.selfdrive.car.cruise import VCruiseHelper, SlcPendingConfirmation, engage_initial_speed
+from openpilot.selfdrive.car.cruise import VCruiseHelper, SlcPendingConfirmation, engage_initial_speed, engage_keeps_speed
 from openpilot.starpilot.longitudinal.planner_selection import read_selection as read_planner_selection
 from openpilot.starpilot.speed_limits import physical_actions as slc_physical
 from openpilot.starpilot.aol.intent import AolProcessFaultContext, independent_axis_requested, read_settings
@@ -794,7 +794,8 @@ class Car:
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,
                                             resume=self.vehicle_startup.consume_cruise_resume(),
                                             initial_speed=engage_initial_speed(self.initial_cruise_speed, self.experimental_mode,
-                                                                               getattr(self, 'stock_planner', False)))
+                                                                               getattr(self, 'stock_planner', False)),
+                                            keep_speed=engage_keeps_speed(self.experimental_mode, getattr(self, 'stock_planner', False)))
 
   def aol_cancel_source(self, CS, now_ns: int) -> int:
     """Bind Cancel to this parsed CAN batch and its local monotonic receipt."""

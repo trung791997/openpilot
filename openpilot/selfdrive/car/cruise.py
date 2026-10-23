@@ -58,6 +58,13 @@ def engage_initial_speed(saved: object, experimental_mode: bool, stock_planner: 
   return E2E_ENGAGE_SPEED_KPH if experimental_mode and stock_planner else saved
 
 
+# Peter's call (2026-10-22): with the stock planner in Chill, a fresh engage keeps the current speed even
+# below the 25 mph initial speed, so lifting off after SET does not brake back up to 25 mph. Below
+# V_CRUISE_MIN (about 5 mph) the saved initial speed still applies.
+def engage_keeps_speed(experimental_mode: bool, stock_planner: bool) -> bool:
+  return stock_planner and not experimental_mode
+
+
 class VCruiseHelper:
   def __init__(self, CP):
     self.CP = CP
@@ -274,7 +281,8 @@ class VCruiseHelper:
     self.v_cruise_kph = float(np.clip(round(target_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX))
     self.v_cruise_cluster_kph = self.v_cruise_kph
 
-  def initialize_v_cruise(self, CS, experimental_mode: bool, *, resume: bool | None = None, initial_speed: object = V_CRUISE_INITIAL) -> None:
+  def initialize_v_cruise(self, CS, experimental_mode: bool, *, resume: bool | None = None, initial_speed: object = V_CRUISE_INITIAL,
+                          keep_speed: bool = False) -> None:
     # initializing is handled by the PCM
     if self.CP.pcmCruise:
       return
@@ -288,6 +296,8 @@ class VCruiseHelper:
     self.pending_resume_ns = 0
     if resume and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
+    elif keep_speed and CS.vEgo * CV.MS_TO_KPH >= V_CRUISE_MIN:
+      self.v_cruise_kph = int(round(np.clip(CS.vEgo * CV.MS_TO_KPH, V_CRUISE_MIN, V_CRUISE_MAX)))
     else:
       self.v_cruise_kph = int(round(np.clip(max(CS.vEgo * CV.MS_TO_KPH, validated_initial_cruise_speed(initial_speed)), V_CRUISE_INITIAL, V_CRUISE_MAX)))
 
