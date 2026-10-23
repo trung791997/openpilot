@@ -14,6 +14,7 @@ from openpilot.starpilot.longitudinal.upstream.mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -81,6 +82,7 @@ class LongitudinalPlanner:
     # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
     from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
     self.bosch_a_smooth = BoschASmooth(CP, dt)
+    self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
@@ -170,6 +172,10 @@ class LongitudinalPlanner:
                                      accel_coast, self.allow_throttle)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
+    # Accel Boost: in Experimental Mode, a gas press while the model is the slowest source adds up to +0.2 m/s^2
+    # to the e2e target for the rest of the engagement (scaled off below 10 mph).
+    output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if sm['selfdriveState'].experimentalMode:
@@ -224,5 +230,6 @@ class LongitudinalPlanner:
     longitudinalPlan.shouldStop = bool(self.output_should_stop)
     longitudinalPlan.allowBrake = True
     longitudinalPlan.allowThrottle = bool(self.allow_throttle)
+    longitudinalPlan.accelBoost = float(self.accel_boost.total_boost)
 
     pm.send('longitudinalPlan', plan_send)
