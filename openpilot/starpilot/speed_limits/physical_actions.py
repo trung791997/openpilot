@@ -47,9 +47,18 @@ def _current_state(sm, now_ns: int):
 def engage_target_mps(sm, now_ns: int) -> float | None:
   """The accepted limit plus offset, in cluster m/s, when a fresh planner state has one."""
   state = _current_state(sm, now_ns)
-  if state is None or not state.hasAccepted or not state.hasEffectiveClusterTarget:
+  if state is None or not state.hasAccepted:
     return None
-  target = float(state.effectiveClusterTarget)
+  # Before engagement there is no set speed, so the domain context (and with it
+  # effectiveClusterTarget) is unavailable. acceptedAdjustedLimit is the same
+  # cluster-domain accepted limit + offset (speed_domain.adjusted_limit), published
+  # whenever the offset schedule has a band for the accepted limit.
+  if state.hasEffectiveClusterTarget:
+    target = float(state.effectiveClusterTarget)
+  elif state.hasAcceptedAdjustedLimit:
+    target = float(state.acceptedAdjustedLimit)
+  else:
+    return None
   return target if finite_speed(target) and target > 0 else None
 
 

@@ -126,7 +126,7 @@ class TestVisionProducer(unittest.TestCase):
     core.observe.assert_called_once()
     self.assertEqual(str(messages[0].status), 'valid')
     self.assertEqual(messages[0].observedMonoTime, 1_000_000_000)
-    self.assertEqual(messages[0].validUntilMonoTime, 3_000_000_000)
+    self.assertEqual(messages[0].validUntilMonoTime, 4_000_000_000)
     self.assertEqual(messages[0].cameraFrameEofBootTime, 5_000_000_000)
     self.assertEqual(core.observe.call_args.kwargs['now'], 1.)
 

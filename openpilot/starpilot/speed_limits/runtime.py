@@ -15,7 +15,7 @@ from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
 from openpilot.starpilot.speed_limits.map_observation import MapSource, copy_frame
-from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns, vision_observation
+from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, clock_pair_ns, vision_observation
 
 
 def _number(value, *, positive=False) -> bool:
@@ -30,6 +30,15 @@ def _fresh(sm, service: str, now_ns: int) -> bool:
   max_age_ns = int(10e9 / frequency) if frequency > 0 else 0
   return (bool(sm.valid.get(service, False)) and bool(sm.alive.get(service, False)) and
           0 < timestamp <= now_ns and now_ns - timestamp <= max_age_ns)
+
+
+def _vision_fresh(sm, now_ns: int) -> bool:
+  # Sign results publish about once a second (replay p99 gap 2.38 s), so the 6 Hz
+  # ten-period window (1.67 s) would drop a held sign between normal publishes.
+  # vision_observation still bounds receipt, frame and validUntil age to SIGN_HOLD_NS.
+  timestamp = sm.logMonoTime.get('slcVisionObservation', 0)
+  return (bool(sm.valid.get('slcVisionObservation', False)) and
+          0 < timestamp <= now_ns and now_ns - timestamp <= SIGN_HOLD_NS)
 
 
 def _paired_card_frame(sm, source_log_ns: int, now_ns: int, *, max_skew_service: str) -> bool:
@@ -293,7 +302,7 @@ class Runtime:
           evidence, car_fingerprint=str(CP.carFingerprint), session_id=self.session_id, now_ns=now_ns)
     elif sm.logMonoTime.get("carState", 0) or sm.logMonoTime.get('slcDashboardObservation', 0):
       values[sel.Source.DASHBOARD] = acc.Observation(acc.ObservationKind.STALE)
-    if self.vision_enabled and _fresh(sm, 'slcVisionObservation', now_ns):
+    if self.vision_enabled and _vision_fresh(sm, now_ns):
       pair = clock_pair_ns() if now_boot_ns is None else (now_ns, now_boot_ns)
       if pair is not None:
         evidence = sm['slcVisionObservation'].vision

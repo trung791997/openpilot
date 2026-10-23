@@ -10,7 +10,8 @@ import uuid
 import numpy as np
 
 from openpilot.starpilot.speed_limits.vision.model import VisionModelCore, cv2
-from openpilot.starpilot.speed_limits.vision.observation import MODEL_ID, MAX_FRAME_AGE_NS, MAX_RESULT_AGE_NS, MAX_PAIR_SKEW_NS, clock_pair_ns
+from openpilot.starpilot.speed_limits.vision.observation import (MODEL_ID, MAX_FRAME_AGE_NS, MAX_RESULT_AGE_NS, MAX_PAIR_SKEW_NS,
+                                                                SIGN_HOLD_NS, clock_pair_ns)
 from openpilot.starpilot.spot_monitor.preferences import enabled as vasm_enabled
 from openpilot.starpilot.vision_cpu import LITTLE_CORES, VISION_WITH_VASM
 
@@ -108,7 +109,7 @@ def _send(pm, *, session: str, status: str, stream: str, observed_ns: int = 0,
     event.confidence = confidence
     event.supportCount = support
     event.episode = episode
-    event.validUntilMonoTime = observed_ns + MAX_RESULT_AGE_NS if valid_until_ns is None else valid_until_ns
+    event.validUntilMonoTime = observed_ns + SIGN_HOLD_NS if valid_until_ns is None else valid_until_ns
   pm.send('slcVisionObservation', msg)
 
 
@@ -276,7 +277,7 @@ def main() -> None:
       sign_observed_ns = int(core.last_published_support_at * 1e9) if result is not None else source_observed_ns
       _send(pm, session=session, status='valid' if result is not None else 'unknown', stream=stream,
             observed_ns=sign_observed_ns, eof_boot_ns=eof_boot_ns, frame_id=frame_id, result=result,
-            valid_until_ns=source_observed_ns + MAX_RESULT_AGE_NS)
+            valid_until_ns=source_observed_ns + SIGN_HOLD_NS)
     except Exception as error:
       cloudlog.error('vision SLC camera unavailable: %s', error)
       _send(pm, session=session, status='unavailable', stream=stream)

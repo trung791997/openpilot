@@ -14,7 +14,7 @@ from openpilot.starpilot.speed_limits.acceptance import ObservationKind
 from openpilot.starpilot.speed_limits.vision import model
 from openpilot.starpilot.speed_limits.vision import producer
 from openpilot.starpilot.speed_limits.vision.model import Detection, VisionModelCore
-from openpilot.starpilot.speed_limits.vision.observation import MODEL_ID, vision_observation
+from openpilot.starpilot.speed_limits.vision.observation import MODEL_ID, SIGN_HOLD_NS, vision_observation
 from openpilot.starpilot.speed_limits.runtime import Runtime
 from openpilot.starpilot.speed_limits.runtime import Action
 from openpilot.starpilot.speed_limits.runtime_settings import parse
@@ -138,8 +138,12 @@ class TestVision(unittest.TestCase):
     valid = vision_observation(decoded, **kw)
     self.assertIs(valid.kind, ObservationKind.VALID)
     self.assertAlmostEqual(valid.candidate.speed_mps, 24.5872, places=4)
+    # The camera frame stays usable for SIGN_HOLD_NS after its end of frame.
     self.assertIs(vision_observation(decoded, receipt_mono_ns=1_020_000_000, now_mono_ns=1_030_000_000,
-                                     now_boot_ns=7_000_000_001, car_fingerprint='IONIQ6',
+                                     now_boot_ns=8_000_000_000, car_fingerprint='IONIQ6',
+                                     drive_session='drive-a').kind, ObservationKind.VALID)
+    self.assertIs(vision_observation(decoded, receipt_mono_ns=1_020_000_000, now_mono_ns=1_030_000_000,
+                                     now_boot_ns=8_000_000_001, car_fingerprint='IONIQ6',
                                      drive_session='drive-a').kind, ObservationKind.STALE)
     self.assertIs(vision_observation(decoded, receipt_mono_ns=1_020_000_000, now_mono_ns=1_300_000_000,
                                      now_boot_ns=5_050_000_000, car_fingerprint='IONIQ6',
@@ -186,14 +190,41 @@ class TestVision(unittest.TestCase):
   def test_slow_vision_result_uses_original_frame_deadline(self):
     message = self._event()
     event = message.slcVisionObservation.vision
-    event.validUntilMonoTime = 3_000_000_000
+    event.validUntilMonoTime = 1_000_000_000 + SIGN_HOLD_NS
     decoded = messaging.log_from_bytes(message.to_bytes()).slcVisionObservation.vision
     kw: ObservationContext = {'receipt_mono_ns': 1_500_000_000, 'now_mono_ns': 1_500_000_000,
           'now_boot_ns': 5_500_000_000, 'car_fingerprint': 'IONIQ6', 'drive_session': 'drive-a'}
     self.assertIs(vision_observation(decoded, **kw).kind, ObservationKind.VALID)
-    self.assertIs(vision_observation(decoded, receipt_mono_ns=kw['receipt_mono_ns'], now_mono_ns=3_000_000_001,
-                                     now_boot_ns=7_000_000_001, car_fingerprint=kw['car_fingerprint'],
+    self.assertIs(vision_observation(decoded, receipt_mono_ns=kw['receipt_mono_ns'], now_mono_ns=4_000_000_000,
+                                     now_boot_ns=8_000_000_000, car_fingerprint=kw['car_fingerprint'],
+                                     drive_session=kw['drive_session']).kind, ObservationKind.VALID)
+    self.assertIs(vision_observation(decoded, receipt_mono_ns=kw['receipt_mono_ns'], now_mono_ns=4_000_000_001,
+                                     now_boot_ns=8_000_000_001, car_fingerprint=kw['car_fingerprint'],
                                      drive_session=kw['drive_session']).kind, ObservationKind.STALE)
+
+  def test_normal_publish_gaps_hold_and_a_missing_publish_goes_stale(self):
+    # Replay of one drive: publishes every 1.08 s median, p99 2.38 s, ~0.5 s after the frame.
+    boot_offset_ns = 4_000_000_000
+    for lag_ns, gap_ns, kind in ((500_000_000, 1_100_000_000, ObservationKind.VALID),
+                                 (500_000_000, 2_400_000_000, ObservationKind.VALID),
+                                 (500_000_000, 3_100_000_000, ObservationKind.STALE),
+                                 (0, 3_100_000_000, ObservationKind.STALE)):
+      with self.subTest(lag_ns=lag_ns, gap_ns=gap_ns):
+        message = self._event()
+        event = message.slcVisionObservation.vision
+        frame_ns = 10_000_000_000
+        receipt_ns = frame_ns + lag_ns
+        # Producer stamps: sign support time, end of frame, and its validUntil horizon.
+        event.observedMonoTime = frame_ns
+        event.cameraFrameEofBootTime = frame_ns + boot_offset_ns
+        event.validUntilMonoTime = frame_ns + SIGN_HOLD_NS
+        decoded = messaging.log_from_bytes(message.to_bytes()).slcVisionObservation.vision
+        # The last instant before the next publish arrives.
+        now_ns = receipt_ns + gap_ns - 1
+        observation = vision_observation(decoded, receipt_mono_ns=receipt_ns, now_mono_ns=now_ns,
+                                         now_boot_ns=now_ns + boot_offset_ns, car_fingerprint='IONIQ6',
+                                         drive_session='drive-a')
+        self.assertIs(observation.kind, kind)
 
   def test_runtime_slow_vision_supports_display_and_control(self):
     message = self._event()
@@ -231,10 +262,13 @@ class TestVision(unittest.TestCase):
           'now_boot_ns': 64_100_000_000, 'car_fingerprint': 'IONIQ6', 'drive_session': 'drive-a'}
     self.assertIs(vision_observation(event, **kw).kind, ObservationKind.VALID)
     self.assertEqual(event.observedMonoTime, 1_000_000_000)
-    self.assertIs(vision_observation(event, receipt_mono_ns=59_000_000_000, now_mono_ns=kw['now_mono_ns'],
-                                     now_boot_ns=kw['now_boot_ns'], car_fingerprint=kw['car_fingerprint'],
-                                     drive_session=kw['drive_session']).kind, ObservationKind.STALE)
-    event.cameraFrameEofBootTime = 61_000_000_000
+    for receipt_ns, kind in ((57_100_000_000, ObservationKind.VALID), (57_099_999_999, ObservationKind.STALE)):
+      self.assertIs(vision_observation(event, receipt_mono_ns=receipt_ns, now_mono_ns=kw['now_mono_ns'],
+                                       now_boot_ns=kw['now_boot_ns'], car_fingerprint=kw['car_fingerprint'],
+                                       drive_session=kw['drive_session']).kind, kind)
+    event.cameraFrameEofBootTime = 61_100_000_000
+    self.assertIs(vision_observation(event, **kw).kind, ObservationKind.VALID)
+    event.cameraFrameEofBootTime = 61_099_999_999
     self.assertIs(vision_observation(event, **kw).kind, ObservationKind.STALE)
     event.status = 'unavailable'
     self.assertIs(vision_observation(event, **kw).kind, ObservationKind.UNKNOWN)
@@ -469,3 +503,19 @@ class TestVision(unittest.TestCase):
     self.assertTrue(missing.message.slcState.hasCeiling)
     self.assertEqual(missing.result.acceptance.basis, 'previous_accepted')
     self.assertEqual(missing.result.acceptance.state.accepted, chosen.result.acceptance.state.accepted)
+
+
+def test_vision_transport_window_is_the_sign_hold_not_the_6hz_alive_window():
+  from types import SimpleNamespace
+  from openpilot.starpilot.speed_limits.runtime import _vision_fresh
+  from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS
+  now = 100_000_000_000
+
+  def sm(age_ns, valid=True):
+    return SimpleNamespace(logMonoTime={'slcVisionObservation': now - age_ns},
+                           valid={'slcVisionObservation': valid}, alive={'slcVisionObservation': False})
+  assert _vision_fresh(sm(2_400_000_000), now)  # normal gap past the 1.67 s alive window
+  assert _vision_fresh(sm(SIGN_HOLD_NS), now)
+  assert not _vision_fresh(sm(SIGN_HOLD_NS + 1), now)
+  assert not _vision_fresh(sm(1_000_000_000, valid=False), now)
+  assert not _vision_fresh(SimpleNamespace(logMonoTime={}, valid={}, alive={}), now)
