@@ -15,6 +15,7 @@ def test_duration_document_roundtrip_and_previous_versions():
   old = to_value(LaneChangePolicy())
   old['version'] = 3
   old.pop('durationS')
+  old.pop('turnSignalGuidance')
   assert decode(json.dumps(old).encode()).duration_s == LaneChangePolicy().duration_s
   for value in (2.9, 8.1, True, float('nan')):
     current = to_value(LaneChangePolicy()) | {'durationS': value}
