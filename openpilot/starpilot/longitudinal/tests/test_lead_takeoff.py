@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import patch
 import pytest
 
-from openpilot.starpilot.longitudinal.lead_takeoff import Frame, Lead, LeadTakeoff, project
+from openpilot.starpilot.longitudinal.lead_takeoff import Frame, Lead, LeadTakeoff, TAKEOFF_RAMP_RATE, project
 from openpilot.starpilot.longitudinal.force_stop import StopPlan
 
 NOW = 100_000_000_000
@@ -20,13 +20,19 @@ def test_confirmed_departure_releases_stopped_plan_in_normal_acc():
   policy = LeadTakeoff()
   for tick in range(7):
     assert policy.step(True, frame(tick), 0., True) == (0., True)
-  assert policy.step(True, frame(7), 0., True) == (.35, False)
+  # The .35 floor now ramps in: one .25 frame, then the floor (was an instant .35 step).
+  assert policy.step(True, frame(7), 0., True) == (.25, False)
+  assert policy.step(True, frame(8), 0., True) == (.35, False)
 
 
 def test_departing_lead_breakaway_holds_profile_ceiling_only_while_stationary():
   departing = replace(frame().leads[0], distance=5., speed=1., acceleration=.5)
-  assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2.), .2, False) == (2., False)
-  assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=1.2), .2, False) == (1.2, False)
+  # The ceiling is now reached through the ramp (was an instant step to 2.0 / 1.2 on frame 0).
+  for cap in (2., 1.2):
+    policy = LeadTakeoff()
+    outputs = [policy.step(True, frame(tick, leads=(departing,), acceleration_max=cap), .2, False) for tick in range(10)]
+    assert outputs[0] == (pytest.approx(.45), False)
+    assert outputs[-1] == (cap, False)
   rolling = LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2., standstill=False, speed=.3), .2, False)
   assert rolling[0] < 1. and rolling[1] is False
   close = replace(departing, distance=3.6)
@@ -105,7 +111,7 @@ def test_native_planner_stopped_release_and_off_trajectory_equivalence(selected_
     cp = Toyota.get_non_essential_params(ToyotaCar.TOYOTA_COROLLA_TSS2)
   cp.openpilotLongitudinalControl = True
   native, off, enabled = (LongitudinalPlanner(cp) for _ in range(3))
-  released = False
+  released, peak = False, 0.
   for tick in range(12):
     now = NOW + tick * 50_000_000
     sm = NativeFrame()
@@ -133,11 +139,13 @@ def test_native_planner_stopped_release_and_off_trajectory_equivalence(selected_
     assert enabled.last_profile is None
     if selected_cap is not None:
       assert enabled.output_a_target <= selected_cap
+    # The release itself is still immediate; the boost above native now ramps in (was an instant >= .35 step).
     if (native.output_should_stop and not enabled.output_should_stop and
-        enabled.output_a_target > native.output_a_target and
-        enabled.output_a_target >= (.35 if selected_cap is None else selected_cap)):
+        enabled.output_a_target > native.output_a_target):
       released = True
+    peak = max(peak, enabled.output_a_target)
   assert released  # Old partial port cannot release a stopped normal-ACC plan.
+  assert peak >= (.35 if selected_cap is None else selected_cap)
 
 
 def test_force_stops_off_still_exposes_current_red_light_and_never_owns_control(tmp_path):
@@ -250,3 +258,89 @@ def test_actual_takeoff_metadata_uses_fresh_prefix_without_force_stop_authority(
   sm.valid['modelV2'] = False
   assert owner.sample(sm, cp, now_ns=sm.stamp+1_000_000, now_boot_ns=sm.stamp+2_001_000_000,
                       drive_id=STOP_DRIVE, follow_seconds=1.45, traffic_mode=False, takeoff_enabled=True) == StopPlan()
+
+
+RAMP_STEP = TAKEOFF_RAMP_RATE * .05
+
+
+def _breakaway_run(bases, standstill):
+  """Feed a base sequence with the breakaway active only where standstill[i]; return (old, new)."""
+  departing = Lead(0, 7, True, .99, 5., 1., .5, 0.)
+  old_policy, new_policy, old, new = LeadTakeoff(), LeadTakeoff(), [], []
+  for tick, (base, still) in enumerate(zip(bases, standstill, strict=True)):
+    f = frame(tick, leads=(departing,), acceleration_max=2., standstill=still, speed=0. if still else .3)
+    new.append(new_policy.step(True, f, base, False)[0])
+    with patch.object(LeadTakeoff, '_ramp', lambda self, now, base, raw, cap, falling: raw):
+      old.append(old_policy.step(True, f, base, False)[0])
+  return old, new
+
+
+@pytest.mark.parametrize('bases,standstill', [
+  # 0000039d/8-like: base .84, breakaway for 2 frames, then base ~1.05.
+  ([.84, .84, .84, 1.05, 1.05, 1.05, 1.05, 1.05], [True, True, True, False, False, False, False, False]),
+  # 000003ab/6-like: base .07, short breakaway, release to .88, re-engage from .74.
+  ([.07, .07, .07, .88, .88, .74, .74, .74, .74, .9, .9, .9, .9, .9],
+   [True, True, True, False, False, True, True, True, True, False, False, False, False, False]),
+])
+def test_breakaway_ramps_in_and_out_within_step_limit(bases, standstill):
+  old, new = _breakaway_run(bases, standstill)
+  assert max(abs(b - a) for a, b in zip(old, old[1:], strict=False)) > .8  # the old latch did step
+  previous_out, previous_base = bases[0], bases[0]
+  for base, out, prior in zip(bases, new, old, strict=True):
+    # The output moves at most one ramp step per frame beyond the base's own move (base is never slewed).
+    assert abs(out - previous_out) <= RAMP_STEP + abs(base - previous_base) + 1e-9
+    assert base <= out <= max(prior, previous_out)
+    previous_out, previous_base = out, base
+  assert new[-1] == bases[-1]  # released boost converges back to the base
+
+
+def test_ramp_output_stays_between_base_and_old_output_while_owned():
+  bases = [.07, .07, .07, .07, .07, .07, .07, .07, .07, .07]
+  old, new = _breakaway_run(bases, [True] * len(bases))
+  assert all(base <= out <= prior for base, out, prior in zip(bases, new, old, strict=True))
+  assert new[-1] == old[-1] == 2.
+
+
+@pytest.mark.parametrize('brake', [-.5, -.01])
+def test_braking_base_passes_through_ramp_instantly(brake):
+  departing = Lead(0, 7, True, .99, 5., 1., .5, 0.)
+  policy = LeadTakeoff()
+  for tick in range(8):
+    policy.step(True, frame(tick, leads=(departing,), acceleration_max=2.), .2, False)
+  assert policy.ramp_output is not None and policy.ramp_output > 1.
+  # Negative MPC (mpc_accel < 0) resets the owner; a negative incoming target alone also bypasses the ramp.
+  assert policy.step(True, frame(8, leads=(departing,), acceleration_max=2., mpc_accel=brake), brake, False) == (brake, False)
+  assert policy.ramp_output is None
+  policy2 = LeadTakeoff()
+  for tick in range(8):
+    policy2.step(True, frame(tick, leads=(departing,), acceleration_max=2.), .2, False)
+  out = policy2.step(True, frame(8, leads=(departing,), acceleration_max=2., standstill=False, speed=.3), brake, False)
+  assert out[0] < 1. and out[0] <= max(brake, .55)
+
+
+def test_closing_lead_and_stop_skip_the_release_ramp():
+  departing = Lead(0, 7, True, .99, 5., 1., .5, 0.)
+  policy = LeadTakeoff()
+  for tick in range(8):
+    policy.step(True, frame(tick, leads=(departing,), acceleration_max=2.), .2, False)
+  braking_lead = replace(departing, acceleration=-.5)
+  assert policy.step(True, frame(8, leads=(braking_lead,), acceleration_max=2.), .2, False) == (.2, False)
+  assert policy.ramp_output is None
+  for tick in range(8):
+    policy.step(True, frame(10 + tick, leads=(departing,), acceleration_max=2.), .2, False)
+  assert policy.step(True, frame(18, leads=(departing,), acceleration_max=2.), 0., True)[0] <= 2.
+  assert policy.step(True, frame(19, leads=(departing,), blocked=True), 0., True) == (0., True)
+  assert policy.ramp_output is None
+
+
+def test_ramp_state_resets_on_disengage_and_new_drive():
+  departing = Lead(0, 7, True, .99, 5., 1., .5, 0.)
+  policy = LeadTakeoff()
+  for tick in range(8):
+    policy.step(True, frame(tick, leads=(departing,), acceleration_max=2.), .2, False)
+  assert policy.step(False, frame(8, leads=(departing,)), .2, False) == (.2, False)
+  assert vars(policy) == vars(LeadTakeoff())
+  for tick in range(8):
+    policy.step(True, frame(9 + tick, leads=(departing,), acceleration_max=2.), .2, False)
+  out = policy.step(True, frame(17, leads=(departing,), acceleration_max=2., drive_id=DRIVE + 1), .2, False)
+  assert out[0] == pytest.approx(.2 + RAMP_STEP)

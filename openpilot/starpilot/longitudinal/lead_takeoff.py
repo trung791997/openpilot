@@ -8,6 +8,12 @@ import math
 
 BREAKAWAY_MIN_DISTANCE = 3.75
 BREAKAWAY_MIN_LEAD_SPEED = .6
+# Boost above the base (incoming) target slews at 5 m/s^3 rising and falling. plannerd steps on
+# modelV2 (20 Hz, 50 ms), so one frame moves at most .25 m/s^2; replay showed a 2.0 m/s^2
+# breakaway latch stepping +1.1..1.7 on and -0.9..1.0 off. dt is capped at one frame so a late
+# frame cannot take a bigger step. Braking, stop and closing-lead outputs bypass the slew.
+TAKEOFF_RAMP_RATE = 5.
+TAKEOFF_RAMP_DT = .05
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,26 @@ class LeadTakeoff:
     self.release_since = None
     self.release_until = 0
     self.previous_should_stop = False
+    self.ramp_output = None
+    self.ramp_ns = 0
+
+  def _ramp(self, now_ns, base, raw, cap, falling_allowed):
+    """Slew the boost (raw - base >= 0) without ever going below base or rising above raw."""
+    if base < 0 or (raw < (base if self.ramp_output is None else self.ramp_output) and not falling_allowed):
+      self.ramp_output = None
+      return raw
+    if self.ramp_output is None:
+      previous, dt = base, TAKEOFF_RAMP_DT
+    else:
+      previous, dt = self.ramp_output, min(max((now_ns - self.ramp_ns) * 1e-9, 0.), TAKEOFF_RAMP_DT)
+    limit = TAKEOFF_RAMP_RATE * dt
+    if raw >= previous:
+      output = min(raw, previous + limit)
+    else:
+      output = min(max(raw, previous - limit), max(raw, cap))
+    output = max(base, output)
+    self.ramp_output, self.ramp_ns = (None, 0) if output <= base else (output, now_ns)
+    return output
 
   def step(self, enabled, frame: Frame | None, target, should_stop):
     # Keep the native numeric/type path untouched when the preference is absent.
@@ -138,13 +164,17 @@ class LeadTakeoff:
       floor = max(computed, floor or 0.)
       if f.standstill:
         self.hold_floor, self.hold_until = floor, f.now_ns + 1_200_000_000
-    if floor is None and self.hold_floor is not None and f.now_ns <= self.hold_until:
-      if (lead.distance >= 3.75 and lead.acceleration >= -.2 and max(f.speed - lead.speed, 0.) <= .45 and
-          lead.distance / max(f.speed, .001) - f.follow_seconds >= .1):
-        floor = self.hold_floor
+    clear = (lead.distance >= 3.75 and lead.acceleration >= -.2 and max(f.speed - lead.speed, 0.) <= .45 and
+             lead.distance / max(f.speed, .001) - f.follow_seconds >= .1)
+    if floor is None and self.hold_floor is not None and f.now_ns <= self.hold_until and clear:
+      floor = self.hold_floor
     if floor is None:
       self.previous_should_stop = should_stop
-      return target, should_stop
+      # Release: decay the previous boost toward the base; a closing lead or braking passes through.
+      if self.ramp_output is None or should_stop:
+        self.ramp_output = None
+        return target, should_stop
+      return self._ramp(f.now_ns, target, target, f.acceleration_max, clear), should_stop
     bounded = min(floor, f.acceleration_max)
     result = max(target, bounded)
     # Modern stop threshold is .1 m/s²: a lower saved/physical cap cannot prove release.
@@ -155,7 +185,10 @@ class LeadTakeoff:
     if self.previous_should_stop and not output_stop and release_ready:
       self.release_until = f.now_ns + 1_500_000_000
     self.previous_should_stop = output_stop
-    return result, output_stop
+    if output_stop:
+      self.ramp_output = None
+      return result, output_stop
+    return self._ramp(f.now_ns, target, result, f.acceleration_max, clear), output_stop
 
 
 def project(sm, cp, *, now_ns, drive_id, stop_plan, acceleration_max, mpc_accel, follow_seconds, blocked=False):
