@@ -205,3 +205,11 @@ def test_galaxy_identity_stays_physical_when_konik_config_is_corrupt(environment
     assert p.galaxy_device_id(params) == '0123456789abcdef'
     (root / 'provider.json').write_text('{')
     assert p.galaxy_device_id(params) == '0123456789abcdef'
+
+
+def test_live_url_needs_a_cloud_and_a_registered_device():
+  with patch.object(p, 'recording_device_id', return_value='0123456789abcdef'):
+    assert p.live_url(None, p.PROVIDERS['konik']) == 'https://stable.konik.ai/0123456789abcdef/live'
+    assert p.live_url(None, p.OFFLINE) is None
+  with patch.object(p, 'recording_device_id', return_value=None):
+    assert p.live_url(None, p.PROVIDERS['konik']) is None

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from openpilot.starpilot.galaxy import camera_request, mp4
 from openpilot.starpilot.galaxy.camera_clip import CameraClip, valid_clip
-from openpilot.starpilot.galaxy.camera_clip_worker import CLIP_NS, KEYFRAME, Track, decode, encode, record
+from openpilot.starpilot.galaxy.camera_clip_worker import KEYFRAME, Track, decode, encode, record
 from openpilot.starpilot.galaxy.camera_snapshot import SnapshotDenied, SnapshotUnavailable
 
 SPS = b"\x67\x64\x00\x1f\xac\xd9"
@@ -109,8 +109,15 @@ class WorkerTest(unittest.TestCase):
       now += FRAME_NS
     self.assertTrue(track.done)
     self.assertEqual(track.frames[0][0], 20 * FRAME_NS)  # settled at 1 s, which is a keyframe
-    self.assertEqual(len(track.frames), CLIP_NS // FRAME_NS)
+    self.assertEqual(len(track.frames), 5_000_000_000 // FRAME_NS)
     self.assertTrue(valid_clip(track.clip()))
+
+  def test_track_runs_the_chosen_length(self):
+    track = Track(0, SimpleNamespace(settled=lambda: True), 15_000_000_000)
+    for index in range(400):
+      track.add(index * FRAME_NS, message(index))
+    self.assertTrue(track.done)
+    self.assertEqual(len(track.frames), 15_000_000_000 // FRAME_NS)
 
   def test_track_starts_early_when_exposure_settles_and_needs_header(self):
     track = Track(10_000_000_000, SimpleNamespace(settled=lambda: True))
@@ -169,6 +176,16 @@ class CameraClipTest(unittest.TestCase):
     clips = CameraClip(spawn=self.writer(encode({"wide": clip, "cabin": b"not a clip"}))).capture(permitted=lambda: True)
     self.assertEqual(clips, {"wide": clip})
     self.assertTrue(self.request_mock.called and self.request_clip_mock.called)
+
+  def test_length_reaches_the_worker_and_odd_lengths_are_refused(self):
+    launched = []
+    def spawn(args, **kwargs):
+      launched.append(args)
+      return self.writer(encode({"wide": bytes(4) + b"ftyp" + bytes(100)}))(args, **kwargs)
+    CameraClip(spawn=spawn).capture(permitted=lambda: True, seconds=15)
+    self.assertEqual(launched[0][-1], "15")
+    with self.assertRaises(ValueError):
+      CameraClip(spawn=lambda *a, **k: self.fail("launched")).capture(permitted=lambda: True, seconds=30)
 
   def test_denied_empty_and_revoked(self):
     with self.assertRaises(SnapshotDenied):

@@ -32,8 +32,9 @@ class TestPreferences(unittest.TestCase):
     old = b'{"enabled":true,"sensitivity":0.04,"version":1,"warningTimeSeconds":1.0}'
     self.assertEqual(decode(old).capture, "pictures")
     self.assertEqual(encode(decode(old)), old)
-    clip = Preferences(True, Settings(0.04, 1.0), "clip")
-    self.assertEqual(decode(encode(clip)), clip)
+    for capture in ("clip", "clip10", "clip15"):
+      clip = Preferences(True, Settings(0.04, 1.0), capture)
+      self.assertEqual(decode(encode(clip)), clip)
     with self.assertRaises(ValueError):
       encode(Preferences(True, capture="video"))
 

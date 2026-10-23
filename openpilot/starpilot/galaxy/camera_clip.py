@@ -6,8 +6,9 @@ import time
 
 from openpilot.starpilot.galaxy.camera_snapshot import _CAPTURE_LOCK, SnapshotDenied, SnapshotUnavailable
 
-MAX_CLIP_BYTES = 4_600_000  # the worker stops at 4.5 MB of frames; the MP4 boxes add a little
-DEADLINE_SECONDS = 30  # worker gives up at 24 s; the encoder needs a few seconds to start
+MAX_CLIP_BYTES = 12_000_000  # the worker stops at 11.9 MB of frames; the MP4 boxes add a little
+DEADLINE_MARGIN_SECONDS = 25  # worker gives up 19 s past the clip length; the encoder needs a few seconds to start
+CLIP_SECONDS = (5, 10, 15)
 RENEW_SECONDS = 5
 
 
@@ -19,7 +20,9 @@ class CameraClip:
   def __init__(self, *, spawn=subprocess.Popen, clock=time.monotonic):
     self.spawn, self.clock = spawn, clock
 
-  def capture(self, *, permitted) -> dict:
+  def capture(self, *, permitted, seconds=5) -> dict:
+    if seconds not in CLIP_SECONDS:
+      raise ValueError("Unsupported clip length")
     if not permitted():
       raise SnapshotDenied
     if not _CAPTURE_LOCK.acquire(blocking=False):
@@ -28,9 +31,9 @@ class CameraClip:
     try:
       from openpilot.starpilot.galaxy.camera_request import request, request_clip
       from openpilot.starpilot.galaxy.camera_clip_worker import decode
-      deadline = self.clock() + DEADLINE_SECONDS
+      deadline = self.clock() + DEADLINE_MARGIN_SECONDS + seconds
       renewed = float('-inf')
-      process = self.spawn([sys.executable, '-m', 'openpilot.starpilot.galaxy.camera_clip_worker'],
+      process = self.spawn([sys.executable, '-m', 'openpilot.starpilot.galaxy.camera_clip_worker', str(seconds)],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
       while self.clock() < deadline:
         if not permitted():

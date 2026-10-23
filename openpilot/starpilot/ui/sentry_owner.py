@@ -15,7 +15,7 @@ ENABLED = "sentry:enabled"
 SENSITIVITY = "sentry:sensitivity"
 WARNING = "sentry:warning"
 CAPTURE = "sentry:capture"
-CAPTURE_LABELS = {"pictures": "Pictures", "clip": "5 s video"}
+CAPTURE_LABELS = {"pictures": "Pictures", "clip": "5 s video", "clip10": "10 s video", "clip15": "15 s video"}
 
 
 class SentryOwner:

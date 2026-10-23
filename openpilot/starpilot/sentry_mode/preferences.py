@@ -11,7 +11,9 @@ from openpilot.starpilot.sentry_mode.policy import Settings
 
 KEY = "SentryMotionPreferences"
 MAX_BYTES = 512
-CAPTURES = ("pictures", "clip")  # event capture: still pictures (default) or a 5 s video clip per camera
+# Event capture: still pictures (default) or a video clip per camera. "clip" (5 s) predates the longer choices.
+CLIP_SECONDS = {"clip": 5, "clip10": 10, "clip15": 15}
+CAPTURES = ("pictures", *CLIP_SECONDS)
 BASE_KEYS = {"version", "enabled", "sensitivity", "warningTimeSeconds"}
 
 

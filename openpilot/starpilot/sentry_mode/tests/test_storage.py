@@ -46,9 +46,9 @@ class EventStoreTest(unittest.TestCase):
       with self.assertRaises(ValueError):
         self.store.record("warning", 1, permitted=lambda: True, clips=bad)
 
-  def test_clip_events_are_capped_but_pictures_still_record(self):
+  def test_clip_bytes_are_capped_but_pictures_still_record(self):
     clip = bytes(4) + b"ftyp" + bytes(100)
-    with patch.object(storage, "MAX_CLIP_EVENTS", 2):
+    with patch.object(storage, "MAX_CLIP_STORE_BYTES", 2 * len(clip) + 50):
       for _ in range(2):
         self.store.record("warning", 1, permitted=lambda: True, clips={"wide": clip})
       with self.assertRaises(storage.ClipStorageFull):

@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 import pytest
 
-from openpilot.starpilot.sentry_mode.notifications import NotificationOwner, NotificationUnavailable, CHANNELS
+from openpilot.starpilot.sentry_mode.notifications import NotificationOwner, NotificationUnavailable, CHANNELS, upload_timeout
 from openpilot.starpilot.sentry_mode import web_push
 
 
@@ -255,7 +255,7 @@ def test_clip_events_attach_mp4_with_upload_time(tmp_path):
   clip = bytes(4) + b'ftyp' + bytes(60)
   events = SimpleNamespace(snapshot=lambda: {'events': []}, images=lambda event_id: [], image=None,
                            clips=lambda event_id: ['wide', 'cabin'], clip=lambda event_id, camera: clip + camera.encode())
-  owner = NotificationOwner(tmp_path / 'notifications', events)
+  owner = NotificationOwner(tmp_path / 'notifications', events, live_link=lambda: 'https://stable.konik.ai/0123456789abcdef/live')
   try:
     files = owner._attachments({'eventId': 'a' * 32, 'kind': 'warning'})
     assert files == [('files[0]', ('wide.mp4', clip + b'wide', 'video/mp4')),
@@ -263,9 +263,34 @@ def test_clip_events_attach_mp4_with_upload_time(tmp_path):
     response = SimpleNamespace(status_code=204, close=lambda: None)
     with __import__('unittest.mock').mock.patch('requests.post', return_value=response) as post:
       owner._send('discord', {'url': 'https://example.test/x', 'token': ''}, None, {'eventId': 'a' * 32, 'kind': 'warning', 'created': 1.0}, 'k', '')
-    assert post.call_args.kwargs['timeout'] == (30, 60)
+    assert post.call_args.kwargs['timeout'] == upload_timeout(files)
+    assert 'Live view: <https://stable.konik.ai/0123456789abcdef/live>' in post.call_args.kwargs['data']['payload_json']
   finally:
     owner.close()
+
+
+def test_upload_timeout_scales_with_clip_size():
+  jpg = [('files[0]', ('wide.jpg', bytes(500_000), 'image/jpeg'))]
+  assert upload_timeout(jpg) == (3, 10)
+  clips = [('files[0]', ('wide.mp4', bytes(9_000_000), 'video/mp4')), ('files[1]', ('cabin.mp4', bytes(9_000_000), 'video/mp4'))]
+  assert upload_timeout(clips) == (210, 60)
+  assert upload_timeout(clips * 3)[0] == 300
+
+
+def test_discord_text_carries_live_link_only_when_known(tmp_path):
+  events = SimpleNamespace(snapshot=lambda: {'events': []}, images=lambda event_id: [], image=None)
+  response = SimpleNamespace(status_code=204, close=lambda: None)
+  job = {'eventId': 'a' * 32, 'kind': 'warning', 'created': 1.0}
+  live = 'https://stable.konik.ai/0123456789abcdef/live'
+  text = 'Parked motion detected (warning).'
+  for link, expected in ((live, text + f'\nLive view: <{live}>'), (None, text)):
+    owner = NotificationOwner(tmp_path / f'n{bool(link)}', events, live_link=lambda link=link: link)
+    try:
+      with __import__('unittest.mock').mock.patch('requests.post', return_value=response) as post:
+        owner._send('discord', {'url': 'https://example.test/x', 'token': ''}, None, job, 'k', '')
+      assert post.call_args.kwargs['json']['content'] == 'StarPilot Sentry Mode: ' + expected
+    finally:
+      owner.close()
 
 
 def test_unreadable_image_still_sends_text(tmp_path):

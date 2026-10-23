@@ -318,6 +318,13 @@ def owns_recording(path, log_root, provider=None):
     return False
 
 
+def live_url(params, provider=None):
+  """The cloud's live camera view for this device, or None when offline or unregistered."""
+  provider = provider or active_provider()
+  dongle = recording_device_id(provider.name, params) if provider.web else None
+  return f'{provider.web}/{dongle}/live' if dongle else None
+
+
 def cloudlog_root():
   base = Path(Paths.swaglog_root())
   provider = active_provider().name

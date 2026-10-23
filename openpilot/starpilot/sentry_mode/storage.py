@@ -18,9 +18,10 @@ from openpilot.starpilot.stored_artifacts import DeletionLimit, remove_entry, us
 
 MAX_EVENTS = 512
 MAX_IMAGE_BYTES = 1_000_000
-MAX_CLIP_BYTES = 4_600_000  # camera_clip.MAX_CLIP_BYTES
-# Two 5 s clips are ~6 MB, so 512 clip events could take 3 GB of /data. Past this many, events keep pictures instead.
-MAX_CLIP_EVENTS = 64
+MAX_CLIP_BYTES = 12_000_000  # camera_clip.MAX_CLIP_BYTES
+# Clips run ~0.6 MB/s per camera, so two 15 s clips are ~18 MB and 512 clip events could take 9 GB of /data. Past this
+# much stored clip video, events keep pictures instead.
+MAX_CLIP_STORE_BYTES = 1_000_000_000
 MAX_EVENT_BYTES = 512
 ID = re.compile(r"[0-9a-f]{32}\Z")
 FIELDS = {"version", "eventId", "sessionId", "kind", "monoTimeNs", "wallTimeNs"}
@@ -33,7 +34,7 @@ class StorageUnavailable(Exception):
 
 
 class ClipStorageFull(StorageUnavailable):
-  """No event was published; MAX_CLIP_EVENTS events already hold clips. The event can still be recorded with pictures."""
+  """No event was published; stored clips already reach MAX_CLIP_STORE_BYTES. The event can still be recorded with pictures."""
 
 
 def _valid_media(extension: str, body: object) -> bool:
@@ -155,12 +156,12 @@ class EventStore:
           fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
           # Unknown entries and interrupted writes also consume capacity. Never
           # delete evidence, or scan an unbounded directory to admit a new event.
-          count = clip_events = 0
+          count = clip_bytes = 0
           with os.scandir(directory) as entries:
             for entry in entries:
               if ID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False):
-                if clips and any(self._has(directory, entry.name, camera + ".mp4") for camera in ("wide", "cabin")):
-                  clip_events += 1
+                if clips:
+                  clip_bytes += sum(self._size(directory, entry.name, camera + ".mp4") for camera in ("wide", "cabin"))
                 try:
                   metadata = os.stat(entry.name + ".json", dir_fd=directory, follow_symlinks=False)
                   if _private(metadata):
@@ -171,7 +172,7 @@ class EventStore:
                 count += 1
                 if count >= MAX_EVENTS:
                   raise StorageUnavailable("Event storage is full")
-          if clips and clip_events >= MAX_CLIP_EVENTS:
+          if clips and clip_bytes + sum(len(body) for body in clips.values() if isinstance(body, bytes)) > MAX_CLIP_STORE_BYTES:
             raise ClipStorageFull("Clip storage is full")
           media = [(camera + ".jpg", body) for camera, body in (images or {}).items()]
           media += [(camera + ".mp4", body) for camera, body in (clips or {}).items()]
@@ -301,11 +302,12 @@ class EventStore:
     return result
 
   @staticmethod
-  def _has(directory: int, event_id: str, name: str) -> bool:
+  def _size(directory: int, event_id: str, name: str) -> int:
     try:
-      return _private(os.stat(os.path.join(event_id, name), dir_fd=directory, follow_symlinks=False))
+      metadata = os.stat(os.path.join(event_id, name), dir_fd=directory, follow_symlinks=False)
     except OSError:
-      return False
+      return 0
+    return metadata.st_size if _private(metadata) else 0
 
   def _media(self, event_id: str, camera: str, extension: str) -> bytes:
     if ID.fullmatch(event_id) is None or camera not in ("wide", "cabin"):

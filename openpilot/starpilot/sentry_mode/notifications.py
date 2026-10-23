@@ -60,9 +60,29 @@ def wall_seconds() -> float:
   return time.time_ns() / 1e9
 
 
+def device_live_url() -> str | None:
+  try:
+    from openpilot.common.params import Params
+    from openpilot.starpilot.connect.provider import live_url
+    return live_url(Params())
+  except Exception:
+    return None
+
+
+def upload_timeout(files: list) -> tuple[float, float]:
+  """requests sends a multipart body in one sendall, and the socket timeout (the connect value under urllib3 2.x) caps
+  that whole send. A 30 s cap aborted 18.7 MB on the parked comma that curl sent in 38 s (LTE, 2026-10-23), so allow
+  100 kB/s: two 15 s clips (~18 MB) get 210 s. Pictures keep the short timeout."""
+  if not any(file[1][2] == 'video/mp4' for file in files):
+    return (3, 10)
+  return (min(300.0, 30 + sum(len(file[1][1]) for file in files) / 100_000), 60)
+
+
 class NotificationOwner:
-  def __init__(self, root: Path | None = None, store=None, *, clock=wall_seconds, transport=None, allow_http: bool = False):
+  def __init__(self, root: Path | None = None, store=None, *, clock=wall_seconds, transport=None, allow_http: bool = False,
+               live_link=device_live_url):
     self.root = Path(root) if root is not None else starpilot_storage_root() / "sentry/notifications"
+    self.live_link = live_link
     self.store = store if store is not None else EventStore()
     self.clock, self.allow_http = clock, allow_http
     self.transport = transport if transport is not None else self._send
@@ -452,11 +472,10 @@ class NotificationOwner:
       if cfg['token']:
         headers['Authorization'] = 'Bearer ' + cfg['token']
       files = self._attachments(job)
-      # Two 5 s clips are ~6 MB; give the upload time on a parked LTE link. urllib3 2.x applies the connect timeout to
-      # every body write, and a 3 s LTE stall aborted the clip upload on the device (2026-10-23), so raise both.
-      timeout = (30, 60) if any(file[1][2] == 'video/mp4' for file in files) else (3, 10)
+      timeout = upload_timeout(files)
       if name == 'discord':
-        content = {'content': 'StarPilot Sentry Mode: ' + message}
+        live = self.live_link()
+        content = {'content': 'StarPilot Sentry Mode: ' + message + (f'\nLive view: <{live}>' if live else '')}
         if files:
           # Discord takes multipart attachments with the message in payload_json.
           response = requests.post(cfg['url'], data={'payload_json': json.dumps(content)}, files=files,

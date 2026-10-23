@@ -1,7 +1,7 @@
 """Parked Sentry clips from the livestream encoder (stream_encoderd), repacked to MP4. Run as a subprocess.
 
 The wide clip waits for auto exposure like the still picture (at most 4 s); the cabin clip waits the cabin's 10 s
-settle. Each clip starts on a keyframe (every 5th frame) and runs 5 s. The encoder sees single frames, so night clips
+settle. Each clip starts on a keyframe (every 5th frame) and runs 5, 10 or 15 s. The encoder sees single frames, so night clips
 get none of the still picture's frame averaging: expect them darker and grainier than night pictures.
 """
 import struct
@@ -13,16 +13,17 @@ from openpilot.starpilot.galaxy.camera_snapshot_worker import CABIN_SETTLE_NS, R
 
 CAMERAS = ("wide", "cabin")
 SERVICES = {"wide": "livestreamWideRoadEncodeData", "cabin": "livestreamCabinEncodeData"}
-CLIP_NS = 5_000_000_000
+CLIP_SECONDS = (5, 10, 15)
 MIN_FRAMES = 20  # 1 s at 20 Hz; anything shorter is not worth sending
-MAX_CLIP_BYTES = 4_500_000  # 5 s at the 5 Mbps stream bitrate is ~3.1 MB; two clips stay under Discord's 10 MB
-DEADLINE_NS = 24_000_000_000
+# 15 s at the 5 Mbps stream bitrate measured 9.1 MB wide, 8.9 MB cabin on the parked comma (2026-10-23)
+MAX_CLIP_BYTES = 11_900_000
+DEADLINE_MARGIN_NS = 19_000_000_000  # up to 10 s cabin settle and encoder start, past the clip itself
 KEYFRAME = 0x8  # V4L2_BUF_FLAG_KEYFRAME
 
 
 class Track:
-  def __init__(self, settle_ns, exposure=None):
-    self.settle_ns, self.exposure = settle_ns, exposure
+  def __init__(self, settle_ns, exposure=None, clip_ns=5_000_000_000):
+    self.settle_ns, self.exposure, self.clip_ns = settle_ns, exposure, clip_ns
     self.first = None
     self.frames = []
     self.header = b""
@@ -40,7 +41,7 @@ class Track:
         return
       self.header, self.width, self.height = bytes(message.header), message.width, message.height
     stamp, data = message.idx.timestampEof, bytes(message.data)
-    if self.frames and stamp - self.frames[0][0] >= CLIP_NS or self.size + len(data) > MAX_CLIP_BYTES:
+    if self.frames and stamp - self.frames[0][0] >= self.clip_ns or self.size + len(data) > MAX_CLIP_BYTES:
       self.done = True
       return
     self.frames.append((stamp, key, data))
@@ -53,11 +54,11 @@ class Track:
     return mp4.mux(self.width, self.height, *sets, self.frames) if sets is not None else None
 
 
-def record(receive, *, clock=boot_ns, sleep=time.sleep, exposure_factory=_exposure_watch):
+def record(receive, *, seconds=5, clock=boot_ns, sleep=time.sleep, exposure_factory=_exposure_watch):
   """receive(camera) -> EncodeData messages since the last call. Both cameras record at once."""
-  started = clock()
-  tracks = {"wide": Track(ROAD_SETTLE_NS, exposure_factory("wide")), "cabin": Track(CABIN_SETTLE_NS)}
-  while clock() - started < DEADLINE_NS and not all(track.done for track in tracks.values()):
+  started, clip_ns = clock(), seconds * 1_000_000_000
+  tracks = {"wide": Track(ROAD_SETTLE_NS, exposure_factory("wide"), clip_ns), "cabin": Track(CABIN_SETTLE_NS, clip_ns=clip_ns)}
+  while clock() - started < DEADLINE_MARGIN_NS + clip_ns and not all(track.done for track in tracks.values()):
     received = False
     for camera, track in tracks.items():
       for message in receive(camera):
@@ -92,11 +93,14 @@ def decode(raw):
 
 
 def main():
+  seconds = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+  if seconds not in CLIP_SECONDS:
+    sys.exit(1)
   from openpilot.cereal import messaging
   sockets = {camera: messaging.sub_sock(service, conflate=False) for camera, service in SERVICES.items()}
   def receive(camera):
     return [getattr(event, SERVICES[camera]) for event in messaging.drain_sock(sockets[camera])]
-  clips = record(receive)
+  clips = record(receive, seconds=seconds)
   if not clips:
     sys.exit(1)
   sys.stdout.buffer.write(encode(clips))

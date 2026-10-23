@@ -178,13 +178,14 @@ class SentryRuntime:
 
 
 def record_event(store, params, camera, clip, kind, stamp, permitted):
-  """Store one event with the chosen capture: 5 s clips, or wide and cabin pictures."""
+  """Store one event with the chosen capture: wide and cabin clips, or wide and cabin pictures."""
   from openpilot.starpilot.galaxy.camera_snapshot import SnapshotUnavailable
-  from openpilot.starpilot.sentry_mode.preferences import read_preferences
+  from openpilot.starpilot.sentry_mode.preferences import CLIP_SECONDS, read_preferences
   from openpilot.starpilot.sentry_mode.storage import ClipStorageFull
-  if read_preferences(params).preferences.capture == "clip":
+  seconds = CLIP_SECONDS.get(read_preferences(params).preferences.capture)
+  if seconds is not None:
     try:
-      return store.record(kind, stamp, permitted=permitted, clips=clip.capture(permitted=permitted))
+      return store.record(kind, stamp, permitted=permitted, clips=clip.capture(permitted=permitted, seconds=seconds))
     except (SnapshotUnavailable, ClipStorageFull):
       if not permitted():
         raise
