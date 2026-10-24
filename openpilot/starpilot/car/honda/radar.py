@@ -9,6 +9,7 @@ import capnp
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.simple_kalman import KF1D
+from openpilot.starpilot.car.honda.radar_corroboration import RadarCorroboration
 
 if TYPE_CHECKING:
   from openpilot.selfdrive.controls.radard import KalmanParams
@@ -323,6 +324,7 @@ class BoschALeadPolicy:
     self._post_standstill_candidate_id = -1
     self._post_standstill_candidate_frames = 0
     self._last_tracks_frame = -1
+    self.corroboration = RadarCorroboration()
 
   def update_tracks(self, sm, rr, radar):
     self.ready = radar.ready
@@ -364,6 +366,20 @@ class BoschALeadPolicy:
       for index in range(2)
     ]
     output[0] = self._filter_post_standstill_lead(output[0])
+    # D-048: a radar lead that vision says is less severe brakes less hard; it is never dropped (radar_corroboration.py).
+    self.corroboration.prune(self.tracks)
+    observed: set[int] = set()
+    for index, lead in enumerate(output):
+      identifier = int(lead.get('radarTrackId', -1))
+      track = self.tracks.get(identifier) if lead.get('present', False) and lead.get('radar', False) else None
+      lead_prob = radar.lead_prob_filters[index].x
+      if track is None or not self.ready:
+        self.corroboration.weights[index] = 0.0
+        continue
+      if identifier not in observed:
+        self.corroboration.observe(track, leads[index], self.v_ego, model_v_ego, lead_prob)
+        observed.add(identifier)
+      output[index] = self.corroboration.bound(index, lead, leads[index], self.v_ego, model_v_ego, lead_prob)
     for index, lead in enumerate(output):
       if lead.get('present', False) and lead.get('radar', False):
         identifier = int(lead.get('radarTrackId', -1))
