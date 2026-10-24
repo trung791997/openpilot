@@ -12,14 +12,17 @@ BOSCH_BRAKE_FORCE_ON = -0.12
 BOSCH_BRAKE_FORCE_RELEASE = -0.02
 # Civic Bosch stop-and-go brake cycling (STATUS 263/265, route 0000001f--39b2448f7d). At 2-4 m/s with a command of
 # -0.1..-0.3 the brake request toggled 15-25 times a minute: brake-on cut the gas from ~30-40 to 0, and every release
-# jumped the gas straight to the 60-unit cap. Replay of the brake-edge state machine on the logged command (90.4 %
-# frame match to the logged BRAKE_REQUEST; no closed-loop gap or jerk numbers):
+# jumped the gas straight to the 60-unit cap. Replay of this class on 1f's logged command, open loop, 50 Hz, with
+# long-control drops resetting it, against the old path on the same harness (the state machine reproduces the
+# logged BRAKE_REQUEST on 90.4 % of frames; no closed-loop gap or jerk numbers):
 #   CIVIC_BRAKE_FORCE_ON: brake request only below -0.20, the bottom of the gas lookup, so the band between it and
-#     -0.12 coasts with the gas off instead of braking. The only change that cut toggles: 3.70 -> 2.11 per minute.
+#     -0.12 coasts with the gas off instead of braking. The only change that cuts toggles: 3.69 -> 3.17 per minute
+#     (an earlier sim that ignored long-control drops said 2.11).
 #   CIVIC_BRAKE_MIN_HOLD_S: once on, the request stays on this long unless the command asks for real acceleration
-#     (above CIVIC_BRAKE_HOLD_ESCAPE). Brake taps under 1.5 s went from 24 % to 0 %.
+#     (above CIVIC_BRAKE_HOLD_ESCAPE). Holds under 1.5 s 27.6 % -> 16.7 %; the rest are long-control drops and the
+#     escape (about 0.2 per minute, each shortening a hold by 0.04-0.4 s).
 #   CIVIC_RELEASE_GAS_START / _RAMP_S: after a release the gas starts at most at 35 and reaches the lookup over 1 s,
-#     instead of the 60 cap. Gas over the first second after release ~119 -> ~83.
+#     instead of the 60 cap. Gas on the release frame 60 -> 35; mean over the first second 121 -> 81.
 # Stopping still forces the request on, and a long-control drop still clears it, exactly as before.
 CIVIC_BRAKE_FORCE_ON = -0.20
 CIVIC_BRAKE_MIN_HOLD_S = 1.5
