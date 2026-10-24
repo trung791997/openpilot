@@ -583,6 +583,35 @@ def test_session_keeps_unsolicited_focus_grant(identity):
   assert hu.error is None and hu.start_indications == [1]
 
 
+def test_session_opens_car_data_and_bluetooth_like_a_phone(identity):
+  hu = FakeHeadUnit(identity, phone_services=True)
+  session = connect(hu, identity)
+  session.phone_address = "39:90:21:64:07:00"
+  session.authenticate()
+  session.start("StarPilot", "comma.ai")
+  pump_until(session, lambda: session.focused and session.sensor_events)
+  session.shutdown()
+  session.peer.close()
+  hu.thread.join(5)
+  assert hu.error is None
+  assert {5, 8} <= set(hu.opened)
+  assert hu.sensor_requests == [13, 10]  # driving status and night only; never location
+  assert hu.pairing_requests == [("39:90:21:64:07:00", 2)]
+  assert session.stats()["sensor_events"] == 1
+
+
+def test_session_projects_without_a_bluetooth_address(identity):
+  hu = FakeHeadUnit(identity, phone_services=True)
+  session = connect(hu, identity)
+  session.authenticate()
+  session.start("StarPilot", "comma.ai")
+  pump_until(session, lambda: session.focused)
+  session.shutdown()
+  session.peer.close()
+  hu.thread.join(5)
+  assert hu.error is None and 8 in hu.opened and hu.pairing_requests == []
+
+
 HONDA_SCREEN_TAKEBACK_S = 3.0  # the Civic gives its screen back after this long without video
 
 

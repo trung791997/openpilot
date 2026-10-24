@@ -1271,12 +1271,21 @@ class Supervisor:
         self._wait(1.0 + attempt * 0.5)
     raise RuntimeError(f"Car did not accept the projection connection: {last_error}")
 
+  def _adapter_address(self) -> str:
+    """This comma's Bluetooth address for the head unit's pairing request; empty when BlueZ is not up."""
+    try:
+      phone = getattr(self._bluez, "phone", self._bluez)  # LeaseAwarePhone wraps the BluezPhone
+      return str(phone.adapter()[1].get("Address", "")).upper() if phone is not None else ""
+    except Exception:  # DBus errors vary; the pairing request is optional
+      return ""
+
   def _project(self, result, lease, ident, connect=None, fragment_acks: bool = False) -> None:
     config = self.config
     sock = connect() if connect is not None else self._connect_tcp(result, lease)
     ca = ident.root if config.get("verify_head_unit", False) else None
     session = ProjectionSession(sock, ident.cert, ident.key, self.log, ca)
     session.fragment_acks = fragment_acks
+    session.phone_address = self._adapter_address()
     self._stage("authenticating")
     session.authenticate()
     self._stage("negotiating")
