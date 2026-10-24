@@ -132,8 +132,6 @@ def _galaxy_access_owner() -> GalaxyAccessOwner:
   return default_owner()
 
 
-@dataclass
-
 def _wheel_debug(message):
   # Temporary: find why a distance-button personality press does not change the setting.
   try:
@@ -142,6 +140,8 @@ def _wheel_debug(message):
   except OSError:
     pass
 
+
+@dataclass
 class _AolSave:
   context: tuple
   group: str
