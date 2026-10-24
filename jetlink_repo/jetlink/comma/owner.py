@@ -172,6 +172,7 @@ class Owner:
     # parked, and when the pick and the built model last changed
     self.settings = settings
     self.transport = None
+    self.vasm_ep0 = -1                  # /dev/ffs-vasm/ep0 while the gadget has it (vasm_ep0)
     self.stop = False
     self.dormant = False
     # the link mode the root tuning was applied for, None while stock
@@ -250,6 +251,14 @@ class Owner:
         transport.close()
       except Exception:
         gadget.log.exception("jetlink: error closing the link")
+    # after Jetlink's: the gadget is already down, and the next open_link
+    # describes the interface again for its bind
+    vasm_fd, self.vasm_ep0 = self.vasm_ep0, -1
+    if vasm_fd >= 0:
+      try:
+        os.close(vasm_fd)
+      except OSError:
+        gadget.log.exception("jetlink: error closing the V-ASM ep0")
 
   def lendable(self) -> bool:
     """Is the gadget in a state a borrower can take the endpoints over from?"""
@@ -300,7 +309,13 @@ class Owner:
     if self.transport is not None:
       return True
     try:
+      from jetlink.comma import vasm_ep0
       from jetlink.transport.ffs import FfsTransport
+      # before FfsTransport, whose bind fails while a linked ffs.vasm has no
+      # descriptors; held for the owner's life, as closing it drops the gadget
+      if self.vasm_ep0 < 0 and vasm_ep0.present():
+        self.vasm_ep0 = vasm_ep0.open_ep0()
+        gadget.log.warning("jetlink: V-ASM interface described")
       self.transport = FfsTransport(str(gadget.FFS_MOUNT), gadget=str(gadget.GADGET_PATH))
       gadget.log.warning("jetlink: gadget presented, waiting for a jetson")
       self.net_ready = False

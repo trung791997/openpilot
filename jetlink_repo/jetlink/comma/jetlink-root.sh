@@ -49,6 +49,13 @@ set -euo pipefail
 GADGET=${JETLINK_GADGET:-/sys/kernel/config/usb_gadget/jetlink}
 FFS_MOUNT=/dev/ffs-jetlink
 FFS_NAME=jetlink
+# Optional second vendor interface for V-ASM crops to the Jetson
+# (tools/jetson_vasm). Opt-in: built only while $VASM_MARKER exists, and only on
+# the USB (not iOS) gadget. The owner writes its descriptors before every bind
+# (jetlink.comma.vasm_ep0); a linked ffs.vasm without them would fail the bind.
+VASM_NAME=vasm
+VASM_MOUNT=/dev/ffs-vasm
+VASM_MARKER=/data/jetlink-vasm
 CONFIGFS=/sys/kernel/config
 # who openpilot runs as: the owner opens the endpoints and binds the UDC as it
 OPENPILOT_USER=comma
@@ -396,6 +403,15 @@ cmd_gadget() {
     ln -s "$GADGET/functions/ffs.$FFS_NAME" "configs/c.1/ffs.$FFS_NAME" ||
     fail "could not link ffs.$FFS_NAME into configs/c.1"
 
+  # V-ASM's interface, interface 1, after ffs.$FFS_NAME. Linking into a bound
+  # config force-unbinds the UDC, so only while it is unbound: a gadget built
+  # without it gets it at the next build after the marker appears (a reboot).
+  if [[ $ios -eq 0 && -e "$VASM_MARKER" && ! -L "configs/c.1/ffs.$VASM_NAME" && -z "$(cat UDC 2>/dev/null)" ]]; then
+    mkdir -p "functions/ffs.$VASM_NAME" || fail "could not create ffs.$VASM_NAME"
+    ln -s "$GADGET/functions/ffs.$VASM_NAME" "configs/c.1/ffs.$VASM_NAME" ||
+      fail "could not link ffs.$VASM_NAME into configs/c.1"
+  fi
+
   # The network interface, for an iPhone only. A USB gadget left with one from an
   # iOS boot loses it here: unlinking it force-unbinds the UDC, which is why the
   # owner switches only while parked. The 4.9 kernel picks the interface's MAC
@@ -418,6 +434,12 @@ cmd_gadget() {
   gid=$(id -g "$OPENPILOT_USER")
   mountpoint -q "$FFS_MOUNT" || mount -t functionfs -o "uid=$uid,gid=$gid" "$FFS_NAME" "$FFS_MOUNT" ||
     fail "could not mount functionfs at $FFS_MOUNT"
+
+  if [[ -L "configs/c.1/ffs.$VASM_NAME" ]]; then
+    mkdir -p "$VASM_MOUNT"
+    mountpoint -q "$VASM_MOUNT" || mount -t functionfs -o "uid=$uid,gid=$gid" "$VASM_NAME" "$VASM_MOUNT" ||
+      fail "could not mount functionfs at $VASM_MOUNT"
+  fi
 
   # the check that proves the chain: ep0 is what the owner opens to write the
   # descriptors and bind the controller
@@ -459,6 +481,7 @@ cmd_teardown() {
   if [[ -d "$GADGET" ]]; then
     echo "" > "$GADGET/UDC" 2>/dev/null || true
     rm -f "$GADGET/configs/c.1/ffs.$FFS_NAME" 2>/dev/null || true
+    rm -f "$GADGET/configs/c.1/ffs.$VASM_NAME" 2>/dev/null || true
     rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
     # a config with a function still linked cannot go, and trying is a
     # configfs error worth not making
@@ -471,6 +494,7 @@ cmd_teardown() {
       echo "jetlink: configs/c.1 still has a function linked; left in place" >&2
     fi
     rmdir "$GADGET/functions/ffs.$FFS_NAME" 2>/dev/null || true
+    rmdir "$GADGET/functions/ffs.$VASM_NAME" 2>/dev/null || true
     rmdir "$GADGET/strings/0x409" 2>/dev/null || true
     rmdir "$GADGET" 2>/dev/null || true
   fi
@@ -478,6 +502,8 @@ cmd_teardown() {
   # with endpoints open; lazy-detach unhooks it now and lets the kernel finish.
   umount -l "$FFS_MOUNT" 2>/dev/null || umount "$FFS_MOUNT" 2>/dev/null || true
   rmdir "$FFS_MOUNT" 2>/dev/null || true
+  umount -l "$VASM_MOUNT" 2>/dev/null || umount "$VASM_MOUNT" 2>/dev/null || true
+  rmdir "$VASM_MOUNT" 2>/dev/null || true
   status "error: gadget torn down"
   net_status "error: gadget torn down"
   echo "jetlink gadget torn down"
