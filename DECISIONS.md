@@ -462,6 +462,37 @@ evidence. Before any code:
 
 Until then this is a design, and the repo carries it as one.
 
+### Gate item 1 result, 2026-10-24: no velocity-disagreement discriminator exists (replay/log, limited road evidence)
+
+41 Civic Bosch-A alpha-long routes plus route 20: 15.95 h long-active, 7.8 h of radar lead with model prob > 0.5,
+561k frames (Job, `d048_frames.csv.gz` / `d048_events_final.csv`, not committed).
+- Trigger dv = radar vLead − vision vLead ≤ −3 m/s, sustained ≥ 0.5 s at d ≥ 40 m: **343 events**. 326 were
+  benign (no aTarget ≤ −2 within 3 s); 17 were followed by a hard brake.
+- **Far, young tracks disagree with vision constantly.** Sustained dv < −3 occurs on 22.8 % of frames at d ≥ 70 m
+  with age 1–3 s, and 11 % at 50–70 m with age ≤ 3 s. Track mortality does not separate (25.9 % vs 21.6 %), so the
+  label this gate proposed is dead.
+- A candidate layer (dv-EMA trigger, 3 s trust with 1 s grace, W_MAX 0.6, urgency off below 35–50 m / TTC 4–6 s;
+  branch `d048-corroboration` a0d0bf865) ran open loop over the corpus. It would bound authority on 2.98 % of
+  radar-lead frames, **42 events/h**. The trust term did not help: far tracks rarely earn trust.
+- **Handover** (leadOne id change ≤ 1 s before onset) appears in 33 % of all events, so it does not separate either.
+  **Model-x continuity** does not separate: a step > 3 m per tick appears in 82 % of events.
+- **Decisive:** every one of the 17 hard events was labelled from qcamera stills (T−1…+2 s). None shows the radar
+  wrong.
+  - Fresh acquires 2ae T1046.8 and 2f8 T90.2: radar RIGHT. A closing car was visible before the camera lead
+    ramped in. Any velocity-disagreement bound would have softened both.
+  - 2ed T2224.5: a correct 35 s lead with ordinary far-range bias.
+  - 313 T10656.4: unresolved.
+  - Route 20 T285.3 itself: plausible real lead change in Job's sheet (id 54→23, dark car in lane). This conflicts
+    with the STATUS 263 reading of the radar on the truck's bumper; by eye it is not resolvable at 70 m.
+  - Video-to-log alignment is unverified.
+
+**Decision: the layer is shelved, not shipped.** The trigger that catches the faults also fires on true
+positives that the radar saw first. Softening those is exactly what property 3 forbids. D-048 stays a design
+(and it remains blocked). Re-open only with a discriminator that leaves 2ae and 2f8 untouched. Two things that
+have NOT been tried:
+- ground truth from a second witness (the lateral position of the radar point against the model's lane lines);
+- the driver-override rate as an outcome label, over many more hours.
+
 ## D-049 — The incarnation boundary is not published; the lead KF reset rides on one message
 **Recorded 2026-09-15 from static analysis and tests against `bdf98de`. NOT IMPLEMENTED — the
 fix is not the obvious one; see below.**

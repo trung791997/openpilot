@@ -11927,3 +11927,16 @@ BRAKE_REQ limit cycle.** At 2–4 m/s, with cmd −0.1…−0.3: brake-on drops 
 within 0.5 s); release jumps gas to 60–65; rebrake 1.5–4 s later; 15–25 toggles per minute. Plan and command are
 smooth (aTarget jerk p95 0.4–0.8); the lead is steady. Job is building a brake-edge plant layer to score: later
 release, 1.5 s minimum hold, later brake-on, and a gas ramp in on release. Nothing changed yet.
+
+## 264. D-048 tried and shelved: no way found to tell the radar's far-lead mistakes from its correct early warnings (2026-10-24). Log, replay and qcamera stills (Job); nothing shipped.
+Peter approved trying D-048 after route 20. Branch `d048-corroboration` (a0d0bf865) bounds a far radar lead's vLead,
+aLeadK and dRel part of the way toward vision when they disagree. It has static tests only and is **not on V-ASM**.
+Gate item 1 over 41 routes (7.8 h of radar lead) refuted it:
+- Run open loop, it would act **42 times per hour**.
+- In all 17 far-lead hard brakes, the stills show the radar right or unresolved.
+- On two of them (2ae, 2f8) the radar saw a real closing car before the camera did, and the layer would have softened
+  those.
+
+The route 20 event is itself ambiguous on Job's stills. See the D-048 addendum for the numbers and what to try next.
+Route 1f (7B) is now next in Job's queue, scored on the brake-edge machine alone.
+
