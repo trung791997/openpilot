@@ -129,6 +129,18 @@ def codec_config(access_unit: bytes) -> bytes:
   return b"".join(units)
 
 
+def wire_frame(access_unit: bytes, *, drop_config: bool) -> bytes:
+  """The picture NAL units as Android's encoder sends them: no AUD, and no SPS/PPS when the codec config went separately."""
+  starts = list(START_CODE.finditer(access_unit))
+  drop = {9, 7, 8} if drop_config else {9}
+  units = []
+  for index, match in enumerate(starts):
+    end = starts[index + 1].start() if index + 1 < len(starts) else len(access_unit)
+    if match.end() < end and access_unit[match.end()] & 31 not in drop:
+      units.append(b"\x00\x00\x00\x01" + access_unit[match.end():end])
+  return b"".join(units) or access_unit
+
+
 @dataclass(frozen=True)
 class VideoMode:
   channel: int
@@ -570,7 +582,8 @@ class ProjectionSession(Session):
   # its screen back without video.
   ACK_TIMEOUT = 2.5
   ACK_DRAIN_SECONDS = 0.1  # before calling an ACK late, read what already arrived, for at most this long
-  MAX_WINDOW = 2
+  # The car's offered window, as on the wired path (3393941be): at 2 the Civic acked one message and went silent.
+  MAX_WINDOW = 30
   nav = None
   # HeadunitPad acknowledges every fragment (codec config included) rather than every frame.
   fragment_acks = False
@@ -935,12 +948,14 @@ class ProjectionSession(Session):
       raise ValueError("A fresh media epoch must start with SPS/PPS and an IDR frame")
     assert self.mode is not None
     fragments = 0
+    config = b""
     if self.needs_keyframe:
       config = codec_config(data)
       if config:
         fragments += self.send(self.mode.channel, AV_MEDIA_CODEC_CONFIG, config)
         if not self.fragment_acks:
           self.config_ack_slack += 1
+    data = wire_frame(data, drop_config=bool(config))
     fragments += self.send(self.mode.channel, AV_MEDIA_WITH_TIMESTAMP, struct.pack(">Q", timestamp_us) + data)
     if self.fragment_acks:
       self.frame_fragments.append(fragments)

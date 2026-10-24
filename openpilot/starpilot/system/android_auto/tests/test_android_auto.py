@@ -12,7 +12,8 @@ import pytest
 from openpilot.starpilot.system.android_auto import bootstrap as bs
 from openpilot.starpilot.system.android_auto import hfp, sdp
 from openpilot.starpilot.system.android_auto.frame_source import FrameConsumer, FrameProducer, FrameRequest, fit_content
-from openpilot.starpilot.system.android_auto.session import (AuthenticationRejected, ProjectionSession, VideoMode, choose_video_mode)
+from openpilot.starpilot.system.android_auto.session import (AuthenticationRejected, ProjectionSession, START_CODE, VideoMode,
+                                                             choose_video_mode)
 from openpilot.starpilot.system.android_auto.tests.fake_head_unit import FakeHeadUnit, make_identity, rfcomm_head_unit
 from openpilot.starpilot.system.android_auto.wire import field, one, parse_fields, signed
 
@@ -567,6 +568,8 @@ def test_session_sends_codec_config_before_each_epoch(identity, ack_codec_config
   assert hu.error is None, hu.error
   sps_pps = b"\x00\x00\x00\x01\x67\x42\x00\x00\x00\x01\x68\xce"
   assert hu.codec_configs == [(1, sps_pps, 0), (2, sps_pps, 4)]  # one per epoch, before its keyframe
+  for _, frame in hu.frames:  # like a phone: no AUD, no repeated SPS/PPS in the picture data
+    assert frame and all(frame[m.end()] & 31 not in (7, 8, 9) for m in START_CODE.finditer(frame))
 
 
 def test_session_keeps_unsolicited_focus_grant(identity):
