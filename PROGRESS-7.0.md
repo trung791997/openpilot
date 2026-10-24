@@ -17,9 +17,10 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Civic brake-onset relief back in (smaller gaps accepted for smoother brakes) | 093fd404d | a553e4157 | replay |
 | Force Stop: a red light seen late brakes steadily | 7f9bdb4e7 | 6701db95f | replay + static tests |
 | Force Stop: a gas tap keeps Force Stop out for its full 10 s | 2e869b83d | e384f2b12 | static tests |
-| Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (`CivicBrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
+| Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (now `BoschABrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
+| Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 
-**The comma** runs V-ASM at 4f46c0a86, which predates the stop-and-go fix. It will be updated when it is parked.
+**The comma** runs V-ASM dc025f5 (has the stop-and-go fix). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
@@ -34,6 +35,24 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 2 — 2026-10-24 — Brake fixes are a Bosch-A harness fix
+
+**Problem.** The brake-onset relief and the stop-and-go brake fix were tied to the Civic. Peter wants them on every car that runs the Bosch-A radar.
+
+**Change.** `bosch_a_harness(cp)` in `bosch_longitudinal.py` uses the same car gate as `BoschARadar`:
+- a verified Bosch-A car (Civic Bosch, CR-V 5G);
+- with its radar available;
+- with no radarless, CAN-FD or alt-radar flag.
+
+Both fixes run when it passes. They are always on, with no toggle. `CivicBrakeEdge` is renamed `BoschABrakeEdge`, and it now also runs in the shared (non-Civic) path. That path's gas force also includes the wind road load, so the -0.20 threshold means the same thing there.
+
+**Not taken.** Job's patch 109f9e5fd would have put both fixes behind the Stock Brake Feel toggle. That toggle is off on the comma, so the patch would have switched both fixes off on the Civic.
+
+**Evidence.**
+- **Civic:** behaviour unchanged.
+- **CR-V 5G:** static only. The fits are from the Civic, and the CR-V has not been replayed or driven.
+- **Tests:** the honda suite shows the same 190 environment failures before and after; the 2 new tests pass.
 
 ### 1 — 2026-10-24 — Stop-and-go brake cycling on the Civic (carried over from STATUS 265)
 
