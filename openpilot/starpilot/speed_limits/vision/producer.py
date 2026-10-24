@@ -133,6 +133,10 @@ def main() -> None:
     if cv2 is not None:
       cv2.setNumThreads(1)
     core = VisionModelCore(is_metric=params.get_bool('IsMetric'))
+    # the detector and classifier on the Jetson when the gadget has ffs.slv; the CPU nets on any doubt
+    from openpilot.starpilot.speed_limits.vision.jetson_net import attach
+    if attach(core) is not None:
+      cloudlog.warning('vision SLC: Jetson interface present, CPU nets as fallback')
   except Exception as error:
     cloudlog.error('vision SLC model unavailable: %s', error)
   last_inference_ns = 0
