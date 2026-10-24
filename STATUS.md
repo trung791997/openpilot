@@ -11896,3 +11896,34 @@ not read them.
 - **Conclusion (log evidence, small n):** under openpilot longitudinal, lane changes behind a slower car do not show a
   target-lane hard-brake problem. Nothing to build. lc-coast stays parked on its branch; revisit if a new alpha-long
   drive shows one.
+
+## 263. Long check of six Civic routes; three fixes shipped to the V-ASM branch; route 20 is a second D-048 instance (2026-10-24). Replay and log analysis (Job); limited road evidence.
+
+**Shipped to `night-star7-vasm-jetson` e384f2b12 and the comma (Peter: "let's try both", then "whichever one is smoother").**
+- **Civic brake-onset relief** (`opendbc/car/honda/brake_onset.py`, 11052916f). Inverts the fitted overshoot
+  (aEgo ≈ u + C·(u_f − LP(u_f)), C 0.35, tau 1.0 s, cap 0.5, fades to 0 at −3.0…−3.5). Replay on 9 events (bpos/bpos2):
+  smaller gaps on 8 of 9 (worst 0f t=1626 23.6 → 18.6 m, TTC 3.53 → 3.09 s); peak jerk lower on 6 of 9, higher on
+  0d_404, 0f_1626, 13_648 (all inside the logged 4–7 m/s³); removes the 13_648 rebrake dip (4.1 → 0). Peter
+  accepted the gap cost for smoothness.
+- **Force Stop late-light entry** (7f9bdb4e7): above the 0.65 profile by more than 1 m/s, latch the constant decel
+  from (v − 0.5) to the handoff (cap 2.5). **No-op in the 0e replay** (another candidate already braked harder); kept as
+  harmless, unproven.
+- **Force Stop gas tap keeps its 10 s release** (`force_stop_runtime.py`): the gas-caused longActive drop called
+  `policy.reset()` and wiped `override_until_ns`, so 0e re-armed 1.3 s after the tap (177.23 → 178.5). Replay: equal on
+  bpos, peak jerk 2.58 → 1.80 on bpos2; the other 10 taps on 0d/0e/0f/1a unchanged.
+
+**Route 20 (00000020--b3f743be5f, end of seg 4, T≈286.9, stock planner, e384f2b12): a second D-048 fault, not a
+braking lead.** Track id23 was born at 73.7 m and became leadOne at once. Its first U11 under-read closure (−5.6 vs
+range rate −11…−14 at u10 430–470), then range and U11 swung to a ≈16 m/s target (range 73 → 54 → 64 m over
+285–292). The model lead (leadsV3, prob ≥ 0.94) held x 58–67 m, v 21–25 m/s the whole time. vLead 22.1 → 16.3 in
+0.65 s drove aLeadK to its −3.0 clamp and the plan to −3.5 in 0.6 s; the car gave −4.7. That car never slowed (it
+settled at ≈ 22 m/s), and Peter pressed gas at 290.25. Replay: planner vs log corr 0.995. Flooring aLeadK at −1.0
+still gives −3.27, so the vLead/dRel transient itself carries the brake. **Same signature as the D-048 founding
+fault (231 t=9–11).** No fix: D-048's validation gate is still unmet; this is a second labelled instance for it.
+Not caused by today's changes (relief is zero at the clamp; Force Stop not involved).
+
+**Route 1f (0000001f--39b2448f7d, stock planner per its params snapshot, not StarPilot): stop-and-go jerk is a
+BRAKE_REQ limit cycle.** At 2–4 m/s, with cmd −0.1…−0.3: brake-on drops gas from 28–41 to 0 (aEgo −0.3…−0.8
+within 0.5 s); release jumps gas to 60–65; rebrake 1.5–4 s later; 15–25 toggles per minute. Plan and command are
+smooth (aTarget jerk p95 0.4–0.8); the lead is steady. Job is building a brake-edge plant layer to score: later
+release, 1.5 s minimum hold, later brake-on, and a gas ramp in on release. Nothing changed yet.
