@@ -131,3 +131,74 @@ def test_normal_scheduling_pins_without_sched_idle(monkeypatch, events):
   assert kernel.policy is None and kernel.niced == 0
   assert all(mask == {6} for mask in kernel.masks.values())
   assert events[0]["policy"] == "normal"
+
+
+def test_renderer_moves_to_core_7_only_after_the_jetson_has_driven_for_a_while(monkeypatch, events):
+  kernel = FakeKernel(monkeypatch, threads=(100, 101))
+  drives = [False]
+  p = kernel.make(events, jetson_drives=lambda: drives[0])
+  p.start()
+  t0 = 1000.0  # time.monotonic() in the renderer
+  p.maintain(t0)
+  assert all(mask == {6} for mask in kernel.masks.values())
+
+  drives[0] = True
+  p.maintain(t0 + 1)
+  p.maintain(t0 + 1 + placement.JETSON_SETTLE - 1)
+  assert all(mask == {6} for mask in kernel.masks.values())  # not settled yet
+
+  p.maintain(t0 + 1 + placement.JETSON_SETTLE)
+  assert all(mask == {7} for mask in kernel.masks.values())
+  assert {"event": "cpu_placement", "core": 7, "reason": "jetson drives"} in events
+  assert events[-1] == {"event": "cpu_placement", "pinned": True, "cores": [7]}
+
+  drives[0] = False  # modeld runs its own model: back to core 6 at the first check
+  p.maintain(t0 + 2 + placement.JETSON_SETTLE)
+  assert all(mask == {6} for mask in kernel.masks.values())
+  assert events[-1] == {"event": "cpu_placement", "pinned": True, "cores": [6]}
+
+  drives[0] = True  # the settle restarts
+  p.maintain(t0 + 3 + placement.JETSON_SETTLE)
+  assert all(mask == {6} for mask in kernel.masks.values())
+
+
+def test_start_never_moves_on_its_own_clock(monkeypatch, events):
+  kernel = FakeKernel(monkeypatch)
+  p = kernel.make(events, jetson_drives=lambda: True)
+  p.start()
+  p.maintain(5000.0)  # first real check: the settle starts here, not at start()'s 0
+  assert kernel.masks[100] == {6}
+
+
+def test_android_autod_never_follows_the_jetson(monkeypatch, events):
+  kernel = FakeKernel(monkeypatch)
+  p = kernel.make(events, idle=False, jetson_drives=lambda: True)
+  p.start()
+  for t in range(1, 20):
+    p.maintain(float(t))
+  assert kernel.masks[100] == {6}
+
+
+def test_core_7_offline_waits_like_core_6(monkeypatch, events):
+  kernel = FakeKernel(monkeypatch)
+  p = kernel.make(events, jetson_drives=lambda: True)
+  p.start()
+  p.maintain(100.0)
+  kernel.online[placement.JETSON_CORE] = False
+  p.maintain(100.0 + placement.JETSON_SETTLE)
+  assert kernel.masks[100] == {6} and events[-1] == {"event": "cpu_placement", "core": 7, "reason": "jetson drives"}
+  kernel.online[placement.JETSON_CORE] = True
+  p.maintain(101.0 + placement.JETSON_SETTLE)
+  assert kernel.masks[100] == {7}
+
+
+def test_no_jetlink_reads_as_not_driving(monkeypatch):
+  import builtins
+  real = builtins.__import__
+
+  def no_jetlink(name, *args, **kwargs):
+    if name.startswith("jetlink"):
+      raise ImportError(name)
+    return real(name, *args, **kwargs)
+  monkeypatch.setattr(builtins, "__import__", no_jetlink)
+  assert placement._jetson_drives() is False
