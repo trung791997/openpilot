@@ -1279,6 +1279,33 @@ class Supervisor:
     except Exception:  # DBus errors vary; the pairing request is optional
       return ""
 
+  def _start_phone_link(self, session) -> None:
+    """Connect the phone-calls (hands-free) link to the car the head unit named, when no car is chosen yet.
+
+    The 2019 Civic kept its own screen and answered "not paired" while the comma held only an audio link to it; its
+    own hands-free connect was refused because no car was chosen (2026-10-24, session-000007). Only the address the
+    head unit sends, already paired with the comma and offering hands-free, is admitted (prepare_companion checks).
+    """
+    car = getattr(session, "car_address", "")
+    if not car or self._shared_bluetooth_owner is None or self.config.get("companion_address") or \
+       car == self.config["receiver_address"].upper():
+      return
+    threading.Thread(target=self._connect_phone_link, args=(session, car), name="aa-phone-link", daemon=True).start()
+
+  def _connect_phone_link(self, session, car: str) -> None:
+    try:
+      device = self._shared_bluetooth_owner.prepare_companion(car, lambda: car, connect=True)
+    except Exception as error:  # BluetoothRejected, DBus errors: projection carries on without it
+      self.log("phone_link_failed", address=car, error=str(error))
+      return
+    with self._lock:
+      # Saved like Galaxy's Connect, so the next session brings the link up before it asks for the screen.
+      if not self.config.get("companion_address"):
+        self.config.update(companion_address=device["address"], companion_name=device.get("name", ""))
+        identity_store.save_config(self.config)
+    self.log("companion_car_connected", address=car, source="head_unit")
+    session.phone_link_ready = True
+
   def _project(self, result, lease, ident, connect=None, fragment_acks: bool = False) -> None:
     config = self.config
     sock = connect() if connect is not None else self._connect_tcp(result, lease)
@@ -1290,6 +1317,7 @@ class Supervisor:
     session.authenticate()
     self._stage("negotiating")
     mode = session.start(config["device_name"], "comma.ai")
+    self._start_phone_link(session)
     self._set(mode=mode.as_dict(), error="")
     self.log("projection_ready", mode=mode.as_dict(), head_unit_subject=session.head_unit_subject)
     try:

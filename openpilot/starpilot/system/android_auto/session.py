@@ -602,6 +602,8 @@ class ProjectionSession(Session):
     self.sensor_channel: int | None = None
     self.sensor_events: dict[int, int] = {}
     self.bluetooth_channel: int | None = None
+    self.car_address = ""  # the car's Bluetooth address, from its Bluetooth service descriptor
+    self.phone_link_ready = False  # set by the supervisor's thread once the hands-free link to the car is up
     self.nav = None  # NavStatus, attached by the supervisor when the head unit offers turn-by-turn
     self.audio = None  # MediaAudio, attached by the supervisor when Spotify plays through Android Auto
     self.input_events = 0
@@ -694,11 +696,30 @@ class ProjectionSession(Session):
     if bluetooth is not None and self._open_optional(bluetooth, "bluetooth"):
       self.bluetooth_channel = bluetooth["id"]
       methods = bluetooth["bluetooth"].get("pairing_methods") or []
-      if self.phone_address:
-        method = methods[0] if methods else 2
-        self.send(bluetooth["id"], BLUETOOTH_PAIRING_REQUEST, field(1, self.phone_address) + field(2, method))
+      self.car_address = str(bluetooth["bluetooth"].get("car_address", "")).upper()
+      self._send_pairing_request()
       self.event("bluetooth_opened", channel=bluetooth["id"], phone_address=self.phone_address,
                  car_address=bluetooth["bluetooth"].get("car_address", ""), pairing_methods=methods)
+
+  def _send_pairing_request(self) -> None:
+    channel = next((ch for ch in self.channels if ch["id"] == self.bluetooth_channel), None)
+    if channel is None or not self.phone_address:
+      return
+    methods = channel["bluetooth"].get("pairing_methods") or []
+    method = methods[0] if methods else 2
+    self.send(channel["id"], BLUETOOTH_PAIRING_REQUEST, field(1, self.phone_address) + field(2, method))
+
+  def retry_phone_link(self) -> None:
+    """The hands-free link to the car came up after setup: tell the car again and ask for the screen again.
+
+    The 2019 Civic answered the first pairing request "not paired" (status 1) and kept its own screen while that link
+    was down (2026-10-24, session-000007).
+    """
+    self.phone_link_ready = False
+    self._send_pairing_request()
+    if self.mode is not None and not self.focused:
+      self.request_projection()
+    self.event("phone_link_retry", focused=self.focused)
 
   def request_projection(self) -> None:
     """Ask for display focus; the Mazda donor needed this, DHU grants it unsolicited."""
@@ -888,6 +909,8 @@ class ProjectionSession(Session):
     return bool(self.focused and self.pending and now - self.pending[0] > self.ACK_TIMEOUT)
 
   def check_progress(self, now: float | None = None) -> None:
+    if self.phone_link_ready:
+      self.retry_phone_link()
     measured = now is None
     now = time.monotonic() if measured else now
     if self._ack_overdue(now):

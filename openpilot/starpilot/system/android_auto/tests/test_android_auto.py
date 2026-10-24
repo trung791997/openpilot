@@ -612,6 +612,25 @@ def test_session_projects_without_a_bluetooth_address(identity):
   assert hu.error is None and 8 in hu.opened and hu.pairing_requests == []
 
 
+def test_session_tells_the_car_again_once_the_phone_link_is_up(identity):
+  hu = FakeHeadUnit(identity, phone_services=True)
+  session = connect(hu, identity)
+  session.phone_address = "39:90:21:64:07:00"
+  session.authenticate()
+  session.start("StarPilot", "comma.ai")
+  pump_until(session, lambda: session.focused)
+  assert session.car_address == "F8:36:9B:0A:7D:C8"
+  session.focused = False  # the Civic kept its own screen
+  session.phone_link_ready = True
+  session.check_progress()
+  pump_until(session, lambda: len(hu.pairing_requests) == 2 and len(hu.focus_requests) == 2)
+  session.shutdown()
+  session.peer.close()
+  hu.thread.join(5)
+  assert hu.error is None and not session.phone_link_ready
+  assert hu.pairing_requests == [("39:90:21:64:07:00", 2)] * 2
+
+
 HONDA_SCREEN_TAKEBACK_S = 3.0  # the Civic gives its screen back after this long without video
 
 
