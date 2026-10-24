@@ -72,6 +72,8 @@ def layout_metadata_for_viewport(viewport):
   for widget in widgets.values():
     for field in ('bounds', 'anchorShift', 'expandable'):
       widget.pop(field, None)
+  for key in ('speed_limit_actions', CEM_GAUGE_WIDGET):
+    widgets[key]['default']['enabled'] = False
   widgets['current_speed']['default']['x'] += (width - 1860) / 2
   widgets[MODE_WIDGET]['default']['x'] += (width - 1860) / 2
   widgets[CLOCK_WIDGET]['default']['x'] += (width - 1860) / 2
