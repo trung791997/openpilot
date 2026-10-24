@@ -36,6 +36,29 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 3 — 2026-10-24 — Weak-Lead Cap Ease not ported: 7.0 launches don't have its jolt
+
+**Question (Peter).** Weak-Lead Cap Ease from 6.7.9 (`WEAK_LEAD_CAP_EASE_JERK` on ns-bosch-radar-testing) smoothed launches behind a car pulling away. Should it be ported into Stock Brake Feel if it helps stop-and-go?
+
+**Answer: no, not on the data we have.**
+- **Route 1f:** the ease only shapes *positive* acceleration requests. On 1f openpilot's request stayed between -0.1 and -0.3; the jolt there came from the car's brake and gas handling, which entry 1 fixes.
+- **7.0 code:** 7.0 has no weak-lead cap at all, so there is nothing for the ease to attach to.
+
+**Job's scan.** Log-based (limited road evidence), dongle 11c8fa231c0499ed, routes 0d/0e/0f/10/13/1a/1f/20: 72 launches at under 5 m/s behind a lead pulling away.
+- **Cap shape** (request held low, then a jump of at least 0.5): 0 of 72.
+- **Rises:** the largest rise within 0.25 s has a median of about 0.2 m/s². The worst low-to-positive crossing is 0d 32198, -0.21 -> +0.55, gradual.
+- **Jerk:** command jerk p95 has a median of about 0.7 m/s³.
+- **Outliers:** the jerk outliers are near-zero-speed stop/start handoffs, not rises.
+- **Newborn radar lead:** 13 of 72 launches had one; none clamped.
+- **6.7.9 reference:** on route 332 the same detector flags the cap shape on 00/02/05, with jerk p95 3.3-8.4.
+
+**Caveats.**
+- About 1.5 h of long-active driving, almost all Experimental Mode.
+- No camera stills, because there was no step to look at.
+- The scan shows there is nothing to fix on 7.0. It does not show that the ease couldn't help.
+
+**Reopen** if a 7.0 launch shows a held-low request followed by a step.
+
 ### 2 — 2026-10-24 — Brake fixes are a Bosch-A harness fix
 
 **Problem.** The brake-onset relief and the stop-and-go brake fix were tied to the Civic. Peter wants them on every car that runs the Bosch-A radar.
