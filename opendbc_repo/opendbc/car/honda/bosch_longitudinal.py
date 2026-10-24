@@ -2,7 +2,8 @@ import math
 
 import numpy as np
 
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, structs
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, structs
+from opendbc.car.honda.brake_onset import BrakeOnsetCompensation
 from opendbc.car.honda.bosch_gas_learner import CivicGasLearner, LEARN_VERSION, gas_lookup_accel
 from opendbc.car.honda.values import CAR, HondaFlags
 
@@ -74,6 +75,8 @@ class BoschLongitudinal:
     # Civic Bosch runs the ns live gas learner (bosch_gas_learner.py); every other car keeps the shared learner below.
     self.civic_learner = CivicGasLearner() if cp.carFingerprint == CAR.HONDA_CIVIC_BOSCH else None
     self.learner_version = LEARN_VERSION if self.civic_learner is not None else None
+    # Civic Bosch only: the fit in brake_onset.py is from this car. update() runs every other control frame.
+    self.brake_onset = BrakeOnsetCompensation(2 * DT_CTRL) if cp.carFingerprint == CAR.HONDA_CIVIC_BOSCH else None
     self.set_factors(1.0, 1.0)
 
   def set_factors(self, gas, wind):
@@ -98,6 +101,10 @@ class BoschLongitudinal:
     wind_brake_mps2 = get_honda_bosch_wind_brake_mps2(CS.out.vEgo)
     min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
     self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+    if self.brake_onset is not None:
+      self.accel = self.brake_onset.update(self.accel, active=bool(
+        CC.longActive and actuators.longControlState == LongCtrlState.pid and
+        not CS.out.gasPressed and not CS.out.brakePressed))
     if self.civic_learner is not None:
       return self._update_civic(CC, CS, hill_brake, wind_brake_mps2, min_gas)
     gas_pedal_force = self.accel + hill_brake
