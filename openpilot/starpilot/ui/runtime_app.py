@@ -133,6 +133,15 @@ def _galaxy_access_owner() -> GalaxyAccessOwner:
 
 
 @dataclass
+
+def _wheel_debug(message):
+  # Temporary: find why a distance-button personality press does not change the setting.
+  try:
+    with open("/tmp/wheel_debug.log", "a") as log:
+      log.write(f"{time.time():.3f} {message}\n")
+  except OSError:
+    pass
+
 class _AolSave:
   context: tuple
   group: str
@@ -553,13 +562,24 @@ class StarShellSession:
         self._wheel_pending.append(event)
         continue
       command = self._wheel_consumer.accept(event, ui_state.params, ui_state.CP, ui_state.sm, now_ns=now_ns)
-      if command is None or command.action == 0 or not self._favorite_authority(allow_personality_notice=command.action == 1):
+      if command is None:
+        _wheel_debug(f"consumer rejected age_ms={(now_ns - int(wire.observedMonoTime)) / 1e6:.0f} "
+                     f"key={wire.buttonKey} action={int(wire.actionCode)}")
+        continue
+      if command.action == 0:
+        continue
+      if not self._favorite_authority(allow_personality_notice=command.action == 1):
+        _wheel_debug(f"authority denied action={command.action} mode={self._mode} replay={getattr(ui_state, 'replay_clock', None) is not None}")
         continue
       actions = self._native_favorite_actions()
       try:
         if command.action == 1:
-          if self._wheel_personality is not None:
-            self._wheel_personality()
+          if self._wheel_personality is None:
+            _wheel_debug("personality callback missing")
+          else:
+            _wheel_debug(f"personality result={self._wheel_personality()} "
+                         f"cp={ui_state.CP is not None} long={ui_state.has_longitudinal_control} "
+                         f"safe={ui_state.params.get_bool('SafeMode')} saved={ui_state.params.get('LongitudinalPersonality')}")
         elif command.action in (5, 7, 8):
           key = {5: EXPERIMENTAL, 6: TRAFFIC, 7: SWITCHBACK, 8: BOOKMARK}[command.action]
           action = actions.get(key)
@@ -575,8 +595,8 @@ class StarShellSession:
           slot = self.favorites_owner.snapshot().slots[command.action - 11]
           if slot.available and slot.request is not None:
             self.favorites_owner.invoke(slot.request)
-      except (OSError, RuntimeError, ValueError, TypeError):
-        pass
+      except (OSError, RuntimeError, ValueError, TypeError) as error:
+        _wheel_debug(f"action {command.action} raised {error!r}")
 
   def _conditional_action_owner(self):
     if self.conditional_actions is None:
