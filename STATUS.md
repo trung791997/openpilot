@@ -11940,3 +11940,29 @@ Gate item 1 over 41 routes (7.8 h of radar lead) refuted it:
 The route 20 event is itself ambiguous on Job's stills. See the D-048 addendum for the numbers and what to try next.
 Route 1f (7B) is now next in Job's queue, scored on the brake-edge machine alone.
 
+
+## 265. Civic stop-and-go brake cycling: later brake-on, 1.5 s minimum hold, gas eased in after release (2026-10-24). On V-ASM 5b7c73e20 (+ comment fix 2af60a652), default on; replay only, not yet driven.
+Peter: "as long as it reduces the excessive jerk". This is for the route 1f limit cycle (STATUS 263). `CivicBrakeEdge` in
+`opendbc_repo/opendbc/car/honda/bosch_longitudinal.py` (Civic Bosch only):
+- brake request on below -0.20 (was -0.12); release unchanged at -0.02;
+- a hold of at least 1.5 s, unless gas_pedal_force > +0.2;
+- after release, the gas rises from 35 to the lookup over 1 s.
+
+Stopping and long-control drops behave as before.
+
+**Measured.** Job ran the shipped class open loop on 1f's logged command (w = 0.18, 50 Hz, long-control drops reset
+it), against the old path on the same harness:
+
+| | Old path | Shipped class |
+|---|---|---|
+| Toggles/min | 3.69 | 3.17 (-14 %) |
+| Holds < 1.5 s | 27.6 % | 16.7 % |
+| Release-frame gas | 60 | 35 |
+| Gas, mean over 1 s after release | 121 | 81 |
+
+The escape fires about 0.2/min.
+
+**Correction to 5b7c73e20's message.** It quoted 3.70 -> 2.11 and 0 % short holds. That came from Job's first state
+machine, which carried state through long-control drops and had no escape. The gas-surge part holds up; the
+toggle cut is real but small. No closed-loop gap or jerk numbers; the brake-edge plant layer failed its
+fidelity gate. Judge it on Peter's next stop-and-go drive.
