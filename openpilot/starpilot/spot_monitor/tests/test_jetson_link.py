@@ -91,6 +91,11 @@ def test_absent_interface(tmp_path):
   assert not J.JetsonLink(SHA, mount=str(tmp_path / "nope")).available()
 
 
+def test_a_yielding_hello_sends_nothing(mount):
+  link = _link(mount, J._RESP.pack(J.RESP_MAGIC, J.HELLO_SEQ, J.STATUS_YIELD, int(SHA[:8], 16), 0.0, 0.0, 0.0))
+  assert link.infer(0, np.zeros(J.CROP_SHAPE, np.uint8)) is None
+  assert link.stats['yields'] == 1 and link.stats['sent'] == 0
+
 
 def test_cadence_uses_the_jetson_only_while_it_answers():
   assert J.check_interval_ns(1_000_000_000, True) == J.JETSON_INTERVAL_NS == 200_000_000

@@ -5,7 +5,9 @@ tools/jetson_slv/slv_usb_server.py is answering with both models this process ve
 of each ONNX sha256, in its hello). Any doubt and forward() runs the OpenCV net as before:
   - no hello in HELLO_FRESH_S, or a hello naming other models,
   - no answer within REPLY_TIMEOUT_S, or an answer of the wrong size,
-  - a send still in flight from an earlier call.
+  - a send still in flight from an earlier call,
+  - the Jetson yielding its GPU to the driving model (STATUS_YIELD, tools/jetson_vasm/yield_gate.py):
+    nothing is sent until its next plain hello.
 
 JetsonNet stands in for a cv2.dnn net (setInput/forward), so VisionModelCore's sign logic is unchanged:
 only the forward pass moves. The blob blobFromImage made (u8 * 1/255, swapRB, NCHW) goes as the u8 it
@@ -38,7 +40,7 @@ OUT_SHAPES = {DETECTOR: (1, 5, 1344), CLASSIFIER: (1, 19)}
 _REQ = struct.Struct("<4sIBxxxI")
 _RESP = struct.Struct("<4sIiII")
 REQ_MAGIC, RESP_MAGIC = b"SLQ1", b"SLR1"
-STATUS_OK, STATUS_HELLO, HELLO_SEQ = 0, 100, 0xFFFFFFFF
+STATUS_OK, STATUS_HELLO, STATUS_YIELD, HELLO_SEQ = 0, 100, 101, 0xFFFFFFFF
 
 HELLO_FRESH_S = 2.5
 REPLY_TIMEOUT_S = 0.05
@@ -61,7 +63,7 @@ class SlvLink:
     self.tags = (tag(detector_sha256), tag(classifier_sha256))
     self.last_hello = 0.0
     self.hello_matches = False
-    self.stats = {'sent': 0, 'answered': 0, 'timeouts': 0, 'skipped_busy': 0, 'wrong_model_hellos': 0, 'bad_answers': 0}
+    self.stats = {'sent': 0, 'answered': 0, 'timeouts': 0, 'skipped_busy': 0, 'wrong_model_hellos': 0, 'bad_answers': 0, 'yields': 0}
     self._lock = threading.Lock()
     self._seq = 0
     self._waiting: dict[int, list] = {}
@@ -166,10 +168,14 @@ class SlvLink:
       magic, seq, status, server_us, nfloats = _RESP.unpack_from(buf)
       if magic != RESP_MAGIC:
         continue
-      if seq == HELLO_SEQ and status == STATUS_HELLO:
-        self.hello_matches = (server_us, nfloats) == self.tags
-        if not self.hello_matches:
-          self.stats['wrong_model_hellos'] += 1
+      if status == STATUS_YIELD:
+        self.hello_matches = False   # the driving model needs the GPU: wait for a plain hello
+        self.stats['yields'] += 1
+      if seq == HELLO_SEQ and status in (STATUS_HELLO, STATUS_YIELD):
+        if status == STATUS_HELLO:
+          self.hello_matches = (server_us, nfloats) == self.tags
+          if not self.hello_matches:
+            self.stats['wrong_model_hellos'] += 1
         self.last_hello = time.monotonic()
         continue
       self.last_hello = time.monotonic()

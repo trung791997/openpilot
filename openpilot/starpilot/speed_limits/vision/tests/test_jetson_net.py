@@ -24,7 +24,7 @@ def mount(tmp_path):
   return tmp_path
 
 
-def _server(mount, hello, answer=True, nfloats=None):
+def _server(mount, hello, answer=True, nfloats=None, yield_then_hello=False):
   to_comma = os.open(mount / "ep1", os.O_WRONLY)
   from_comma = os.open(mount / "ep2", os.O_RDONLY)
   os.write(to_comma, hello)
@@ -42,7 +42,11 @@ def _server(mount, hello, answer=True, nfloats=None):
     img = np.frombuffer(body, np.uint8)
     count = int(np.prod(J.OUT_SHAPES[kind])) if nfloats is None else nfloats
     out = np.full(count, img.mean() / 255.0 + kind, np.float32)  # proves the image and the kind arrived
-    if answer:
+    if yield_then_hello:
+      os.write(to_comma, J._RESP.pack(J.RESP_MAGIC, seq, J.STATUS_YIELD, 0, 0))
+      time.sleep(0.05)
+      os.write(to_comma, hello)
+    elif answer:
       time.sleep(0.002)
       os.write(to_comma, J._RESP.pack(J.RESP_MAGIC, seq, J.STATUS_OK, 900, count) + out.tobytes())
 
@@ -163,3 +167,19 @@ def test_vision_core_reads_the_same_through_jetson_net_on_cpu(tmp_path):
   frame = np.random.default_rng(1).integers(0, 256, (1208, 1928, 3), dtype=np.uint8)
   assert plain._collect_detector_classifier_proposals(frame) == wrapped._collect_detector_classifier_proposals(frame)
   assert wrapped.net.stats == {'jetson': 0, 'cpu': 1}
+
+
+def test_a_yielding_hello_sends_nothing(mount):
+  link = _link(mount, J._RESP.pack(J.RESP_MAGIC, J.HELLO_SEQ, J.STATUS_YIELD, J.tag(DET_SHA), J.tag(CLS_SHA)))
+  assert link.infer(J.DETECTOR, np.zeros((3, 256, 256), np.uint8)) is None
+  assert link.stats['yields'] == 1 and link.stats['sent'] == 0
+
+
+def test_a_yield_answer_stops_sends_until_a_plain_hello(mount):
+  link = _link(mount, _hello(), yield_then_hello=True)
+  assert link.infer(J.CLASSIFIER, np.zeros((3, 128, 128), np.uint8)) is None
+  assert link.stats['yields'] == 1 and not link.hello_matches
+  deadline = time.monotonic() + 1
+  while not link.ready() and time.monotonic() < deadline:
+    time.sleep(0.01)
+  assert link.ready()

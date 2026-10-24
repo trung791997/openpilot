@@ -6,7 +6,9 @@ infer() returns None, and the caller runs its own CPU model as before:
   - no hello from the Jetson in HELLO_FRESH_S, or the hello names another model
     than the one this process verified (first 4 bytes of the ONNX sha256),
   - no answer within REPLY_TIMEOUT_S,
-  - a send still in flight from an earlier call.
+  - a send still in flight from an earlier call,
+  - the Jetson yielding its GPU to the driving model (STATUS_YIELD, tools/jetson_vasm/yield_gate.py):
+    nothing is sent until its next plain hello.
 
 Jetlink's owner holds this interface's ep0 (jetlink.comma.vasm_ep0); this
 module opens only ep1 (Jetson -> comma) and ep2 (comma -> Jetson), never ep0.
@@ -36,7 +38,7 @@ CROP_NBYTES = 352 * 352 * 3
 _REQ = struct.Struct("<4sIBxxxI")
 _RESP = struct.Struct("<4sIiI3f")
 REQ_MAGIC, RESP_MAGIC = b"VAQ1", b"VAR1"
-STATUS_OK, STATUS_HELLO, HELLO_SEQ = 0, 100, 0xFFFFFFFF
+STATUS_OK, STATUS_HELLO, STATUS_YIELD, HELLO_SEQ = 0, 100, 101, 0xFFFFFFFF
 
 HELLO_FRESH_S = 2.5
 REPLY_TIMEOUT_S = 0.05
@@ -63,7 +65,7 @@ class JetsonLink:
     self.model_tag = int(model_sha256[:8], 16)
     self.last_hello = 0.0
     self.hello_matches = False
-    self.stats = {'sent': 0, 'answered': 0, 'timeouts': 0, 'skipped_busy': 0, 'wrong_model_hellos': 0}
+    self.stats = {'sent': 0, 'answered': 0, 'timeouts': 0, 'skipped_busy': 0, 'wrong_model_hellos': 0, 'yields': 0}
     self._lock = threading.Lock()
     self._seq = 0
     self._waiting: dict[int, list] = {}
@@ -164,10 +166,14 @@ class JetsonLink:
       magic, seq, status, server_us, p0, p1, p2 = _RESP.unpack(buf)
       if magic != RESP_MAGIC:
         continue
-      if seq == HELLO_SEQ and status == STATUS_HELLO:
-        self.hello_matches = server_us == self.model_tag
-        if not self.hello_matches:
-          self.stats['wrong_model_hellos'] += 1
+      if status == STATUS_YIELD:
+        self.hello_matches = False   # the driving model needs the GPU: wait for a plain hello
+        self.stats['yields'] += 1
+      if seq == HELLO_SEQ and status in (STATUS_HELLO, STATUS_YIELD):
+        if status == STATUS_HELLO:
+          self.hello_matches = server_us == self.model_tag
+          if not self.hello_matches:
+            self.stats['wrong_model_hellos'] += 1
         self.last_hello = time.monotonic()
         continue
       self.last_hello = time.monotonic()   # an answer is as good as a hello

@@ -1,0 +1,5 @@
+# Let the Jetson's login user open the comma's Jetlink gadget (1209:0001) for
+# vasm_usb_server.py. usbfs claims are per interface, so this does not touch
+# jetlink-server's interface 0. Install: sudo cp 99-jetlink-vasm.rules /etc/udev/rules.d/
+# && sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="usb", ATTR{idVendor}=="1209", ATTR{idProduct}=="0001", MODE="0660", GROUP="plugdev"
