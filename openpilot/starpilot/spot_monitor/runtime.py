@@ -19,6 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.feature_runtime import requested as feature_requested
 from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
 from openpilot.starpilot.spot_monitor.inference import DEFAULT_MODEL_PATH, VASMInference
+from openpilot.starpilot.spot_monitor.jetson_link import check_interval_ns
 from openpilot.starpilot.spot_monitor.policy import WarningPolicy, WarningState
 from openpilot.starpilot.spot_monitor.preferences import SavedPreferences, read_preferences
 from openpilot.starpilot.spot_monitor.radar_pass_hold import RadarPassHold
@@ -306,9 +307,11 @@ class VASMRuntime:
         self.client = self.client_factory()
         self.client.connect(False)
         return None
-      base_interval_ns = FOLLOWUP_INTERVAL_NS if now_ns < self.followup_until_ns else BASE_INTERVAL_NS
+      jetson = getattr(self.model, "jetson", None)
+      base_ns = FOLLOWUP_INTERVAL_NS if now_ns < self.followup_until_ns else BASE_INTERVAL_NS
+      base_ns = check_interval_ns(base_ns, jetson is not None and jetson.ready())
       cpu_usage = getattr(self.messages["deviceState"], "cpuUsagePercent", None)
-      interval_ns = int(base_interval_ns * self.cpu_budget.update(
+      interval_ns = int(base_ns * self.cpu_budget.update(
         cpu_usage, now_mono_ns=now_ns, cores=self.inference_cores))
       if self.last_processed_ns and now_ns - self.last_processed_ns < interval_ns:
         return None

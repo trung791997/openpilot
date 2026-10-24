@@ -89,3 +89,12 @@ def test_no_hello_no_send(mount):
 
 def test_absent_interface(tmp_path):
   assert not J.JetsonLink(SHA, mount=str(tmp_path / "nope")).available()
+
+
+
+def test_cadence_uses_the_jetson_only_while_it_answers():
+  assert J.check_interval_ns(1_000_000_000, True) == J.JETSON_INTERVAL_NS == 200_000_000
+  assert J.check_interval_ns(1_000_000_000, False) == 1_000_000_000
+  assert J.check_interval_ns(300_000_000, False) == 300_000_000
+  # per side every 2 * 0.2 s, not below WarningPolicy's 0.2 s smoothing: each check still counts in full
+  assert 2 * J.JETSON_INTERVAL_NS / 1e9 >= 0.2

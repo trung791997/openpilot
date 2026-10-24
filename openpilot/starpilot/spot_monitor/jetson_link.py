@@ -43,6 +43,14 @@ REPLY_TIMEOUT_S = 0.05
 REOPEN_S = 5.0
 WRITE_CHUNK = 8192
 READ_SIZE = 1024
+# While the Jetson answers, a check costs the comma only the crop, not the ~375 ms model, so runtime checks
+# every 200 ms: each side every 0.4 s instead of every 2 s. That is above WarningPolicy's 0.2 s smoothing,
+# so every check still counts in full (alpha = 1), as at 1 s. runtime's CpuBudget still scales it.
+JETSON_INTERVAL_NS = 200_000_000
+
+
+def check_interval_ns(cpu_interval_ns: int, jetson_ready: bool) -> int:
+  return min(cpu_interval_ns, JETSON_INTERVAL_NS) if jetson_ready else cpu_interval_ns
 
 
 def _mask_signals():
