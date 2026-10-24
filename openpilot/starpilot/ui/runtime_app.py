@@ -545,7 +545,12 @@ class StarShellSession:
     finally:
       self._projection_tap = False
 
-  def _poll_wheel(self, now_ns):
+  def _poll_wheel_screen_off(self, now_ns):
+    # The render path polls the wheel only while the screen draws; events live 250 ms, so with the screen off they expired unread.
+    if not native_device.awake:
+      self._poll_wheel(now_ns, screen_off=True)
+
+  def _poll_wheel(self, now_ns, screen_off=False):
     if getattr(ui_state, "replay_clock", None) is not None:
       return
     for _ in range(32):
@@ -568,11 +573,17 @@ class StarShellSession:
         continue
       if command.action == 0:
         continue
-      if not self._favorite_authority(allow_personality_notice=command.action == 1):
+      if screen_off:
+        # With the screen off only the personality cycle is safe to run: it needs live onroad state, not a page.
+        if command.action != 1 or not (ui_state.started and display_message(
+            ui_state.sm, 'carState', now_ns, after_frame=ui_state.started_frame) is not None):
+          continue
+      elif not self._favorite_authority(allow_personality_notice=command.action == 1):
         _wheel_debug(f"authority denied action={command.action} mode={self._mode} replay={getattr(ui_state, 'replay_clock', None) is not None}")
         continue
-      actions = self._native_favorite_actions()
+      self._projection_tap = screen_off
       try:
+        actions = self._native_favorite_actions()
         if command.action == 1:
           if self._wheel_personality is None:
             _wheel_debug("personality callback missing")
@@ -597,6 +608,8 @@ class StarShellSession:
             self.favorites_owner.invoke(slot.request)
       except (OSError, RuntimeError, ValueError, TypeError) as error:
         _wheel_debug(f"action {command.action} raised {error!r}")
+      finally:
+        self._projection_tap = False
 
   def _conditional_action_owner(self):
     if self.conditional_actions is None:

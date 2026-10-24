@@ -23,6 +23,7 @@ def update_frame(preview=None, controllers=None, star=None):
     # or another widget covers the StarPilot page.
     star._poll_projection_bookmark(time.monotonic_ns())
     star._poll_projection_slc(time.monotonic_ns())
+    star._poll_wheel_screen_off(time.monotonic_ns())
   if controllers is not None:
     gui_app.measure_frame_phase("controllers", controllers.poll)
   if preview is not None:
