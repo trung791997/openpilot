@@ -175,6 +175,10 @@ class ProjectionOnroad:
       self._resources.callback(self.fonts.close)
       self.camera = native.camera()
       self.camera.large_ui_gamma_trial = bool((customization or {}).get('largeUiGammaTrial', False))
+      model_renderer = getattr(self.camera, 'model_renderer', None)
+      if model_renderer is not None:
+        # The lead distance label otherwise asks gui_app for a font this process never loads (crashed 2026-10-24).
+        model_renderer.lead_font = self.fonts.font(native.font_role.SEMI_BOLD)
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)

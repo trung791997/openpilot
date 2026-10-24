@@ -184,6 +184,17 @@ class TestProjectionOnroad(unittest.TestCase):
     self.assertEqual(events[-3:], ['view_closed', 'camera_closed', 'fonts_closed'])
     self.assertEqual(native.ui_state._offroad_transition_callbacks, [])
 
+  def test_lead_label_uses_the_car_screens_own_font(self):
+    # 2026-10-24: the label asked gui_app for a font this process never loads and the car screen fell back.
+    native, _ = self.dependencies()
+    native.fonts.font = lambda _self, role: ('font', role)
+    native.font_role.SEMI_BOLD = 'semi_bold'
+    camera = native.camera
+    native.camera = lambda: setattr(made := camera(), 'model_renderer', SimpleNamespace(lead_font=None)) or made
+    view = projection.ProjectionOnroad(dependencies=native)
+    self.addCleanup(view.close)
+    self.assertEqual(view.camera.model_renderer.lead_font, ('font', 'semi_bold'))
+
   def test_standby_logo_loads_once_and_is_freed_on_close(self):
     native, _ = self.dependencies()
     logo = SimpleNamespace(width=300, height=250)

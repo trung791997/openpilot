@@ -63,6 +63,7 @@ class ModelRenderer(Widget):
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     # (show marker, LeadInfoMode, metric) from a screen with its own lead choices; None keeps the stock chevrons.
     self.lead_display: tuple[bool, int, bool | None] | None = None
+    self.lead_font: rl.Font | None = None  # the car screen never loads gui_app's fonts and passes its own
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -379,7 +380,7 @@ class ModelRenderer(Widget):
 
   def _draw_lead_info(self, lead: LeadVehicle, text: str) -> None:
     # Centered just above the chevron's glow, kept on screen.
-    font = gui_app.font(FontWeight.SEMI_BOLD)
+    font = self.lead_font if self.lead_font is not None else gui_app.font(FontWeight.SEMI_BOLD)
     size = measure_text_cached(font, text, 48)
     tip_x, tip_y = lead.glow[1]
     x = min(max(tip_x - size.x / 2, self._rect.x), self._rect.x + self._rect.width - size.x)
