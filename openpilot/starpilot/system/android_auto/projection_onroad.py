@@ -107,9 +107,7 @@ def native_dependencies():
         return super()._update_texture_color_filtering()
       # The comma UI fades the engaged road camera to 20% color (30477f3cef). On the car
       # screen that reads as black and white, so keep the plain look: non-road shader path.
-      self._engaged_val[0] = 0
       self._road_camera_val[0] = 0
-      rl.set_shader_value(self.shader, self._engaged_loc, self._engaged_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
       rl.set_shader_value(self.shader, self._road_camera_loc, self._road_camera_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
   def standby_logo(height):
