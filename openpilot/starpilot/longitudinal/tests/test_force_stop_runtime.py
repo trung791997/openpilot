@@ -168,6 +168,25 @@ class ForceStopRuntimeTests(unittest.TestCase):
     self.params.put_bool('ForceStops', False, block=True)
     self.assertFalse(self.sample(Frame(80)).forcing)
 
+  def test_gas_tap_release_survives_the_long_control_drop_it_causes(self):
+    # 0e t=177.2: the tap dropped longActive, which wiped the 10 s release and
+    # re-armed the stop about a second later.
+    for tick in range(40):
+      plan = self.sample(Frame(tick))
+    self.assertTrue(plan.forcing)
+    tap = Frame(40)
+    tap['carState'].gasPressed = True
+    self.assertFalse(self.sample(tap).forcing)
+    drop = Frame(41)
+    drop['carState'].gasPressed = True
+    drop['carControl'].longActive = False
+    drop['carControl'].latActive = True
+    self.sample(drop)
+    for tick in range(42, 80):
+      plan = self.sample(Frame(tick))
+      self.assertFalse(plan.forcing)
+      self.assertIsNone(plan.speed_ceiling_mps)
+
   def test_bad_sources_and_driver_brake_never_hold_a_stop(self):
     for defect in ('gas', 'brake', 'can', 'off', 'stock', 'old_drive', 'stale', 'dead', 'eof', 'suspend'):
       with self.subTest(defect=defect):

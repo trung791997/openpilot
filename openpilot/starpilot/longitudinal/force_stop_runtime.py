@@ -164,8 +164,12 @@ class ForceStopRuntime:
       # Keep model perception warm during AOL and a manual brake stop. Only
       # actual longitudinal ownership may produce a stop target or hold.
       if not control.longActive or not state.enabled or car.brakePressed:
+        # A gas tap drops longActive; keep the 10 s release it started so the
+        # stop does not re-arm about a second after the driver pressed.
+        override = self.policy.override_until_ns if car.gasPressed and state.enabled and not car.brakePressed else 0
         self.resume.reset()
         self.policy.reset()
+        self.policy.override_until_ns = override
         self.plan = StopPlan()
         return self.plan
       frame = StopFrame(stamp, float(car.vEgo), horizon, light_context, horizon is not None and horizon < 50,
