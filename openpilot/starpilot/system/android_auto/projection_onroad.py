@@ -70,6 +70,10 @@ def native_dependencies():
   from openpilot.starpilot.ui.pip_preferences import read_pip
   from openpilot.starpilot.ui.pip_render import PiPRenderer
   from openpilot.starpilot.ui.pip_sidecam import Rect, Signals
+  from openpilot.starpilot.ui.pip_warning import PiPWarningSource
+  from openpilot.starpilot.spot_monitor.preferences import read_preferences as read_vasm_preferences
+  from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
+  from opendbc.car.structs import car as car_schema
   from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile, default_font_directory
   from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
   from openpilot.starpilot.ui.shell import ShellMode
@@ -135,7 +139,8 @@ def native_dependencies():
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
                          alert=OnroadAlert, alert_size=AlertSize, map_overlay=MapOverlay, map_feed=MapFeed,
                          favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
-                         jetlink_feed=JetlinkStatusFeed)
+                         jetlink_feed=JetlinkStatusFeed, vasm_source=PiPWarningSource,
+                         read_vasm=read_vasm_preferences, clock_pair=clock_pair_ns, car_schema=car_schema)
 
 
 class ProjectionOnroad:
@@ -215,6 +220,11 @@ class ProjectionOnroad:
         self.pip = native.pip_renderer("bubble")
         self._resources.callback(self.pip.close)
         self.onroad.pip_layer = self._pip_layer
+      self.vasm = native.vasm_source() if getattr(native, 'vasm_source', None) is not None else None
+      if self.vasm is not None:
+        self._resources.callback(self.vasm.close)
+      self._vasm_saved = None
+      self._vasm_read_ns = None
       self.map = None
       self.map_feed = None
       self._map_lease = MapLeaseWriter()
@@ -265,9 +275,26 @@ class ProjectionOnroad:
     if appearance is not None and appearance.show_lead_indicator:
       lead = self.native.ui_state.sm['radarState'].leadOne
       self._theme.lead_badge(self.fonts, content, bool(lead.present))
-    left, right = self._theme.side_colors(state)
+    left, right = self._theme.side_colors(state, *self._vasm_warning())
     self._theme.side_glow(left, content.x, content.y, content.width, content.height, True)
     self._theme.side_glow(right, content.x, content.y, content.width, content.height, False)
+
+  def _vasm_warning(self):
+    native = self.native
+    if self.vasm is None:
+      return False, False
+    ui = native.ui_state
+    now_ns = time.monotonic_ns()
+    if self._vasm_read_ns is None or not 0 <= now_ns - self._vasm_read_ns < 1_000_000_000:
+      self._vasm_saved = native.read_vasm(ui.params)
+      self._vasm_read_ns = now_ns
+    car = native.display_message(ui.sm, 'carState', now_ns, after_frame=ui.started_frame)
+    saved = self._vasm_saved
+    pair = native.clock_pair() if car is not None else None
+    enabled = (car is not None and car.canValid and car.gearShifter == native.car_schema.CarState.GearShifter.drive and
+               pair is not None and saved is not None and saved.readable and saved.valid and saved.preferences.enabled)
+    return self.vasm.sample(enabled=enabled, settings_fingerprint=saved.fingerprint if enabled else '',
+                            now_mono_ns=pair[0] if pair is not None else 0, now_boot_ns=pair[1] if pair is not None else 0)
 
   def _camera_layer(self, rect, state):
     # The car screen's own lead choices; without them the marker stays off rather than following the comma.

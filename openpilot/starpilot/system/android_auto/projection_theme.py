@@ -128,14 +128,15 @@ def edge_glow(color, x, y, width, height, span=GLOW_SPAN, alpha=150):
   rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
 
 
-def side_colors(state):
-  """(left, right) warning colors: red for a blind spot, yellow for a turn signal, None when quiet."""
+def side_colors(state, vasm_left=False, vasm_right=False):
+  """(left, right) warning colors: red for a blind spot (car or V-ASM), yellow for a turn signal, None when quiet."""
   signals = getattr(state, 'border_signals', None)
   if signals is None or not state.camera_available or state.alert.critical:
     return None, None
   def pick(blindspot, blinker):
     return RED if blindspot else YELLOW if blinker else None
-  return pick(signals.left_blindspot, signals.left_blinker), pick(signals.right_blindspot, signals.right_blinker)
+  return (pick(signals.left_blindspot or vasm_left, signals.left_blinker),
+          pick(signals.right_blindspot or vasm_right, signals.right_blinker))
 
 
 def side_glow(color, x, y, width, height, left, now=None):
