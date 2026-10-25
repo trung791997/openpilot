@@ -437,7 +437,8 @@ class OnroadView:
     self._traffic_badge(state, 56 + 45 * int(label is not None))
     render_glow(content, state, border_width=30, time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
     rl.draw_rectangle_lines_ex(frame, 30, rl.BLACK)
-    rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, 30, edge)
+    if not self.projection_viewport:
+      rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, 30, edge)
     render_large_half_borders(state, state.observed_ns / 1e9 if state.observed_ns else rl.get_time(), content, int(height))
     self._preview_badge(state)
 
