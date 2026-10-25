@@ -1,6 +1,7 @@
 """Car-screen look for Android Auto: set-speed/limit card, atom badge, edge glow, orange road."""
 
 import math
+import time
 
 import pyray as rl
 
@@ -10,6 +11,8 @@ from openpilot.starpilot.ui.presentation import FontRole
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
 
 ORANGE = rl.Color(255, 140, 30, 255)
+RED = rl.Color(235, 40, 50, 255)
+YELLOW = rl.Color(255, 205, 0, 255)
 BLUE = rl.Color(40, 130, 255, 255)
 GREEN = rl.Color(40, 200, 90, 255)
 LABEL = rl.Color(176, 168, 255, 255)
@@ -120,3 +123,29 @@ def edge_glow(color, x, y, width, height, span=GLOW_SPAN, alpha=150):
   rl.draw_rectangle_gradient_v(x, y + height - span, width, span, fade, edge)
   rl.draw_rectangle_gradient_h(x, y, span, height, edge, fade)
   rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
+
+
+def side_colors(state):
+  """(left, right) warning colors: red for a blind spot, yellow for a turn signal, None when quiet."""
+  signals = getattr(state, 'border_signals', None)
+  if signals is None or not state.camera_available or state.alert.critical:
+    return None, None
+  def pick(blindspot, blinker):
+    return RED if blindspot else YELLOW if blinker else None
+  return pick(signals.left_blindspot, signals.left_blinker), pick(signals.right_blindspot, signals.right_blinker)
+
+
+def side_glow(color, x, y, width, height, left, now=None):
+  if color is None:
+    return
+  now = time.monotonic() if now is None else now
+  period = .5 if color is RED else .9
+  level = .5 + .5 * math.sin(now / period * 2 * math.pi)
+  span = int(GLOW_SPAN * 2.2)
+  edge = rl.Color(color.r, color.g, color.b, int(110 + 145 * level))
+  fade = rl.Color(color.r, color.g, color.b, 0)
+  x, y, width, height = int(x), int(y), int(width), int(height)
+  if left:
+    rl.draw_rectangle_gradient_h(x, y, span, height, edge, fade)
+  else:
+    rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
