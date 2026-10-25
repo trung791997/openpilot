@@ -120,11 +120,20 @@ def cmd_trt(args):
   sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
   from slv_server import Engine, SIZES, OUT_SHAPES
   from vasm_trt import _Cuda
+  from yield_gate import YieldGate
+  import time
   cuda = _Cuda()
+  gate = YieldGate()   # onroad: the driving model keeps the GPU; one paced pass at a time
   for kind, path in ((DETECTOR, args.detector), (CLASSIFIER, args.classifier)):
     eng = Engine(path, cuda, SIZES[kind], OUT_SHAPES[kind])
     d = np.load(os.path.join(args.dump, f'{NAMES[kind]}.npz'))
-    out = np.stack([eng.infer(u8) for u8 in d['u8']])
+    out = []
+    for u8 in d['u8']:
+      while gate.yielding():
+        time.sleep(0.5)
+      out.append(eng.infer(u8))
+      time.sleep(args.gap_ms / 1000)
+    out = np.stack(out)
     np.save(os.path.join(args.dump, f'{NAMES[kind]}_trt_{args.tag}.npy'), out)
     print(f'{NAMES[kind]}: {len(out)} outputs')
 
@@ -201,6 +210,7 @@ def main():
   t.add_argument('--detector', required=True)
   t.add_argument('--classifier', required=True)
   t.add_argument('--tag', required=True)
+  t.add_argument('--gap-ms', type=float, default=50.0, help='pause after each pass (GPU share for the driving model)')
   c = sub.add_parser('compare')
   c.add_argument('--dump', required=True)
   c.add_argument('--tag', help='TensorRT run to compare; omitted: the rebuilt-u8 OpenCV run (input path only)')
