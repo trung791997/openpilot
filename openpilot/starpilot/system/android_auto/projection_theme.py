@@ -39,8 +39,9 @@ def limit_relation(max_text, limit_text):
 class SpeedLimitCard:
   """Replaces the shared cruise/limit card on the car screen; same placement key, own look."""
 
-  def __init__(self, fonts):
+  def __init__(self, fonts, outline_color=None):
     self.fonts = fonts
+    self.outline_color = outline_color
 
   def close(self):
     pass
@@ -64,7 +65,8 @@ class SpeedLimitCard:
     height = (20 + (190 if has_max else 0) + (230 if has_limit else 0) + 20)
     rect = rl.Rectangle(x, y, CARD_WIDTH, height)
     rl.draw_rectangle_rounded(rect, .08, 12, CARD_FILL)
-    rl.draw_rectangle_rounded_lines_ex(rect, .08, 12, 3, rl.Color(255, 140, 30, 110))
+    base = self.outline_color(state) if self.outline_color else ORANGE
+    rl.draw_rectangle_rounded_lines_ex(rect, .08, 12, 3, rl.Color(base.r, base.g, base.b, 150))
     pad = 28
     top = y + 20
     if has_max:

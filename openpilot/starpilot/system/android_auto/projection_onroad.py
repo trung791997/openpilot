@@ -185,7 +185,8 @@ class ProjectionOnroad:
       self._resources.callback(self._close_onroad)
       from openpilot.starpilot.system.android_auto import projection_theme
       self._theme = projection_theme
-      self.onroad.unified_speed = projection_theme.SpeedLimitCard(self.fonts)
+      self.onroad.unified_speed = projection_theme.SpeedLimitCard(
+        self.fonts, lambda state: projection_theme.glow_color(driving_mode_label(state)))
       self.onroad.steering_wheel = projection_theme.AtomBadge()
       self.onroad.extra_overlays = self._theme_overlay
       self.now_playing_feed = None
