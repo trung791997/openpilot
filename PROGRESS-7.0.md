@@ -20,7 +20,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (now `BoschABrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 
-**The comma** runs V-ASM dc025f5 (has the stop-and-go fix). `BoschAStockBrakeFeel` is 0 on it.
+**The comma** runs V-ASM b95b393 (has the Bosch-A harness brake fixes, f361d7d4e). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
@@ -35,6 +35,40 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 4 — 2026-10-25 — Smoothing the radar lead's braking estimate: no gain, not shipped
+
+**Question (Peter).** Route 23 (`11c8fa231c0499ed/00000023--9d20e00d2f`, vision-only ACC, Experimental) felt very smooth. Can it improve Bosch-A radar long tuning?
+
+**Answer: not with what we tried.** Log and replay (limited road evidence).
+
+**What route 23 showed (log).**
+- Radar was off for the whole drive: 0 radar-sourced lead frames. It was 0.21 h of long-active driving.
+- Behind a slowing lead, command jerk p95 was 0.65 on route 23, against 1.13 on the radar routes 0d–20. Median jerk and the share of time coasting (48 %) were the same.
+- Confounds: Stock Brake Feel was 0 on route 23 and 1 on the radar routes, and route 23 is short.
+- Radar's lead-acceleration estimate (aLeadK) is noisier than the model's: high-pass noise 0.104 against 0.072.
+- The roughest frames were the handovers from a radar lead to a model lead: jerk p95 1.04.
+
+**Variants screened on the signal (log, all bound-only, no radar point removed).**
+- V1 (use model accel when it agrees with radar): rougher. Dropped.
+- V2 (low-pass aLeadK, tau 0.5 s): fails the onset rule (more than 0.2 s late at -1.0). Dropped.
+- V2b (same filter, but drops below -1.0 pass straight through within 0.1 s): passes, and cuts aLeadK jitter about 45 %. It is up to 2 s late crossing -0.5 on the D-048 faults.
+- V2c (pass-through at -0.6), and HO (blend the radar-to-model handover over 0.5 s).
+
+**Planner replay (7.0 planner, each route's own params and code, x86).**
+- Fidelity is too low for absolutes:
+  - route 23: 90.4 % within 0.05 overall, lead frames 58–70 %;
+  - route 13: 67.7 % overall, lead0 37.3 %;
+  - route 0f: 83.6 % overall, radar-lead frames 43.3 %.
+- Under replay, plannerd skips the conditional/traffic host. The error runs both ways, so it looks like state and timing rather than a gain.
+- As relative deltas against BASE on routes 13 and 0f, the variants are near no-ops:
+  - jerk p95 moves by -0.13 to +0.04;
+  - coast % and brake rate are unchanged or slightly worse;
+  - onset delay at -1.0 is +0.00 s for every variant.
+
+**Not shipped, and Stage B (closed loop) not run.** The far hard brakes, the 2ae/2f8 cases and the 31 onset events were not replayed at plan level.
+
+**Reopen** if a replay reaches about 80 % or better fidelity on radar-lead frames, or if a drive shows rough braking that traces to aLeadK jitter or a radar-to-model handover.
 
 ### 3 — 2026-10-24 — Weak-Lead Cap Ease not ported: 7.0 launches don't have its jolt
 
