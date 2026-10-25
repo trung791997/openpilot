@@ -138,7 +138,7 @@ def layout_metadata_for_viewport(viewport):
 # Android Auto display switches, independent of the comma screen's preferences.
 DISPLAY_DEFAULTS = {'blindSpotBorder': False, 'signalBorder': False, 'blindSpotCamera': False,
                     'hidePersonalityAlerts': False, 'wheelPedalFeedback': False,
-                    'leadIndicator': False, 'leadInfo': 'Off', 'speedSources': False,
+                    'leadIndicator': True, 'leadInfo': 'Distance', 'speedSources': False,
                     'speedSourcesCard': False, 'speedAlign': 'left'}
 # Lead info shown above the lead marker, in LeadInfoMode order.
 LEAD_INFO_CHOICES = ('Off', 'Distance', 'Speed')
@@ -148,8 +148,8 @@ def projection_appearance(appearance, document):
   """The comma's onroad appearance with every car-screen choice taken from the AA layout instead."""
   from dataclasses import replace
   from openpilot.starpilot.ui.appearance_preferences import LeadInfoMode
-  lead_indicator = document.get('leadIndicator', False) is True
-  lead_info = document.get('leadInfo', 'Off')
+  lead_indicator = document.get('leadIndicator', True) is True
+  lead_info = document.get('leadInfo', 'Distance')
   # Like the comma, lead info only shows with the lead marker on.
   lead_info_mode = LeadInfoMode(LEAD_INFO_CHOICES.index(lead_info)) if lead_indicator and lead_info in LEAD_INFO_CHOICES else LeadInfoMode.OFF
   # Camera View remains the shared saved choice; this layout has no camera override.

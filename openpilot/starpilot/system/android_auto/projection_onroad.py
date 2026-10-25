@@ -182,6 +182,11 @@ class ProjectionOnroad:
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)
+      from openpilot.starpilot.system.android_auto import projection_theme
+      self._theme = projection_theme
+      self.onroad.unified_speed = projection_theme.SpeedLimitCard(self.fonts)
+      self.onroad.steering_wheel = projection_theme.AtomBadge()
+      self.onroad.extra_overlays = self._theme_overlay
       self.now_playing_feed = None
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
@@ -252,6 +257,9 @@ class ProjectionOnroad:
       wheel._texture = None
     self.onroad.close()
 
+  def _theme_overlay(self, content, state):
+    self._theme.edge_glow(self._theme.ORANGE, content.x, content.y, content.width, content.height)
+
   def _camera_layer(self, rect, state):
     # The car screen's own lead choices; without them the marker stays off rather than following the comma.
     appearance = getattr(state, 'appearance', None)
@@ -259,7 +267,7 @@ class ProjectionOnroad:
                     if appearance is not None else (False, 0, None))
     self.camera.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
                                           reverse_driver=state.reverse_driver_camera,
-                                          road_style=state.customization['roadColors']['large'], lead_display=lead_display)
+                                          road_style=self._theme.road_style(state.customization['roadColors']['large']), lead_display=lead_display)
     # The camera can switch narrow/wide while rendering. Pace the stream actually
     # drawn, not the previous selection (whose next frame may arrive later).
     self.camera_stream = self.camera.stream_type
