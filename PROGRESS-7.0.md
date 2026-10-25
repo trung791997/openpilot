@@ -68,6 +68,12 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Not shipped, and Stage B (closed loop) not run.** The far hard brakes, the 2ae/2f8 cases and the 31 onset events were not replayed at plan level.
 
+**Where the roughest radar-drive jerk comes from (log, 4 worst windows, stills checked).** The radar drives' worst slowdowns peak at 11.7–16.7 m/s³ of aTarget jerk, against 1–5 on route 23. In each window the stills show a real in-lane lead slowing toward a light or through a work zone.
+- **0d s4 @43.2:** a two-frame step, -0.35 to -1.44. The lead flickers between radar track 38 at 44 m and a far model lead at 60 m. The step lands right after a flip. The track ID does not change.
+- **0d s20 @10.2 and 0f s7 @22.8:** the step is in the e2e (Experimental) output. The radar lead's fields are smooth, the track ID is constant, and modelProb is 1.0.
+- **0d s21 @11.9:** no lead at all. It is a cruise-source release oscillation.
+- Net: the jerk is mostly the Experimental e2e output, not radar's lead numbers. That is why filtering aLeadK did nothing. The one radar-related case is a flicker between radar and model lead, a single example. Nothing is built on it.
+
 **Reopen** if a replay reaches about 80 % or better fidelity on radar-lead frames, or if a drive shows rough braking that traces to aLeadK jitter or a radar-to-model handover.
 
 ### 3 — 2026-10-24 — Weak-Lead Cap Ease not ported: 7.0 launches don't have its jolt
