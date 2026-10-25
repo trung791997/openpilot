@@ -2,9 +2,10 @@
 """Jetson side: answer speed-limit vision's detector and classifier passes with TensorRT, over the comma's
 ffs.slv interface (class FF/53/4C), next to Jetlink's interface 0 and V-ASM's.
 
-  python3 slv_server.py --detector det_fp16.engine --classifier cls_fp16.engine \
+  python3 slv_server.py --detector detector_fp32.engine --classifier value_classifier_fp32.engine \
       --detector-sha256 82408b68... --classifier-sha256 07c6696e...
 
+fp32, not fp16: on route 21 sign frames it differs from the comma's OpenCV about a third as much (equiv.py, 2026-10-24).
 Copy next to tools/jetson_vasm's vasm_trt.py, vasm_usb_server.py and yield_gate.py (it reuses their CUDA, USB
 and yield code). It yields the GPU to the driving model as V-ASM's server does (yield_gate.py).
 Like V-ASM's server it claims only its own interface and never sets the configuration or resets the device.
