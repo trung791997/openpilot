@@ -36,6 +36,40 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 5 — 2026-10-25 — Tonight's drives after the brake fixes: calmer on radar, one hard brake at a red light
+
+**Question (Peter).** How is long now on tonight's drives after the fixes? There was no stop-and-go.
+
+**Routes and settings** (dongle 11c8fa231c0499ed; build and settings from each route's initData):
+- All four routes ran a V-ASM build that includes f361d7d4e, with Experimental on.
+- **24:** vision-only ACC (radar off), personality 0, 0.14 h long-active.
+- **25:** radar, personality 0, 0.31 h.
+- **27:** radar, personality 1, 0.22 h.
+- **2a:** radar, personality 1, 0.02 h, so no usable lead frames.
+- Stock Brake Feel was not read from these logs. It is 1 on the comma now.
+
+**Results (log, limited road evidence; Job's definitions; radar routes 25 + 27 + 2a pooled).** This is 0.55 h, against 1.74 h for the radar baseline (routes 0d–20).
+
+| Measure | Tonight, radar | Radar baseline 0d–20 | Route 23 (vision-only) |
+|---|---|---|---|
+| Lead-slowing jerk p50 / p95 | 0.13 / 0.67 | 0.15 / 1.13 | 0.13 / 0.65 |
+| Coasting while the lead slows | 59 % | 48 % | 48 % |
+| Brake onsets per hour | 3.6 | 17.8 | 4.8 |
+| Hard brakes (below -3.0) per hour | 1.8 (1 event) | 2.9 | 4.8 |
+| Driver overrides per hour | 9.1 | 14.4 | 4.8 |
+
+- **The one hard brake:** route 27 at 2094 s, -3.16 at 10 m/s, no lead. The stills show a red light on an empty road, and the car stopped at the line. It was a correct stop that braked firmly late in the approach.
+- **Brake on/off outside stop-and-go:** unchanged. Toggles per minute 16.1 against 15.7; runs under 1.5 s 55 % against 54 %. The brake-edge fix only targets the stop-and-go pattern.
+- **Gas after a brake release:** p90 over the next 1 s is 0.17, against 0.26 in the baseline.
+- **Jerk spikes (above 8):** three windows. One is a 0.07 s blip during a flicker between radar and model lead (27 seg29). One has no lead. One is a step from another plan source.
+- **Overrides on route 24 (vision-only):** six in 0.14 h. They are not radar, and were not looked at further.
+
+**Caveats.**
+- About half an hour of radar driving, with 3 brake onsets and 1 hard brake.
+- Personality and route mix differ from the baseline.
+- Brake-request rate was approximated by onset rate.
+- Nothing was replayed. Nothing is built from this.
+
 ### 4 — 2026-10-25 — Smoothing the radar lead's braking estimate: no gain, not shipped
 
 **Question (Peter).** Route 23 (`11c8fa231c0499ed/00000023--9d20e00d2f`, vision-only ACC, Experimental) felt very smooth. Can it improve Bosch-A radar long tuning?
