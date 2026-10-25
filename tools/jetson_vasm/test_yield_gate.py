@@ -123,3 +123,56 @@ def test_the_summary_splits_an_open_yield_across_windows():
   gate.tick()
   assert lines[-1].startswith(f'yielded {G.HOLD_S:.1f} s')   # the whole episode, not the part after the summary
   assert gate._window['yield_s'] == G.HOLD_S - 1.0           # only its part after the summary counts again
+
+
+def _stats(p99, slow=0, t=1000.0):
+  return {'event': 'stats', 'served_ms': {'p99': p99, 'mean': p99 - 0.1, 'max': p99 + 0.1}, 'slow': slow, 't': t}
+
+
+def test_driving_model_frames_near_budget_yield_briefly():
+  gate, clock = _gate()
+  gate.on_stats(_stats(18.3), now_epoch=1000.5)
+  assert gate.latency_live() and not gate.yielding()
+  gate.on_stats(_stats(G.P99_MAX_MS + 1), now_epoch=1000.5)
+  assert gate.yielding() and gate.stats['latency_yields'] == 1
+  clock.t += G.LATENCY_HOLD_S + 0.01
+  assert not gate.yielding()
+  gate.on_stats(_stats(20.0, slow=1), now_epoch=1000.5)   # a frame Jetlink counted slow
+  assert gate.yielding() and gate.stats['latency_yields'] == 2
+
+
+def test_with_live_stats_load_and_slow_passes_do_not_yield():
+  gate, clock = _gate()
+  for _ in range(20):
+    gate.note(0, 3000)
+  for _ in range(100):
+    clock.t += 0.05
+    gate.on_stats(_stats(18.3), now_epoch=1000.5)
+    gate.sample(1.0)
+    gate.note(0, 9000)
+  assert not gate.yielding() and gate.stats == {'load_yields': 0, 'slow_yields': 0, 'latency_yields': 0}
+
+
+def test_stale_stats_fall_back_to_load_and_slow_passes():
+  gate, clock = _gate()
+  gate.on_stats(_stats(18.3), now_epoch=1000.5)
+  clock.t += G.STATS_FRESH_S
+  assert not gate.latency_live()
+  for _ in range(20):
+    gate.note(0, 3000)
+  gate.note(0, 9000)
+  assert gate.yielding() and gate.stats['slow_yields'] == 1
+
+
+def test_replayed_and_malformed_stats_are_ignored():
+  gate, _ = _gate()
+  gate.on_stats(_stats(99.0, t=1000.0), now_epoch=1000.0 + G.STATS_FRESH_S + 1)   # from the two-minute replay
+  gate.on_stats({'event': 'stats', 't': 1000.0}, now_epoch=1000.5)
+  assert not gate.latency_live() and not gate.yielding()
+
+
+def test_no_password_file_starts_no_stats_thread(tmp_path):
+  import threading
+  gate = G.YieldGate(path='/nonexistent', start=True, password_file=str(tmp_path / 'missing'))
+  assert not gate.latency_live()
+  assert 'yield-gate-stats' not in {t.name for t in threading.enumerate()}
