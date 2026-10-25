@@ -23,7 +23,7 @@ that StarPilot has switched to it. Set up parked, with both devices online.
 The host program is the upstream **Jetlink** application, developed by Zeph
 Leggett / ZoomPilot. Its download identifiers and commands keep their upstream
 names; installing the host does not require installing ZoomPilot on the comma.
-The bundled client uses Jetlink protocol 3 (package 0.8.7). A different host
+The bundled client uses Jetlink protocol 3 (package 0.8.8). A different host
 release still needs a successful compatible handshake and device validation.
 
 ### Jetson and Linux PC
