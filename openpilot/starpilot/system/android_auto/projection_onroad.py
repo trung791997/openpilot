@@ -258,7 +258,7 @@ class ProjectionOnroad:
     self.onroad.close()
 
   def _theme_overlay(self, content, state):
-    self._theme.edge_glow(self._theme.ORANGE, content.x, content.y, content.width, content.height)
+    self._theme.edge_glow(self._theme.glow_color(driving_mode_label(state)), content.x, content.y, content.width, content.height)
 
   def _camera_layer(self, rect, state):
     # The car screen's own lead choices; without them the marker stays off rather than following the comma.

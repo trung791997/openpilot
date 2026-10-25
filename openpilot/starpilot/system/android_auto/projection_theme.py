@@ -10,6 +10,8 @@ from openpilot.starpilot.ui.presentation import FontRole
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
 
 ORANGE = rl.Color(255, 140, 30, 255)
+BLUE = rl.Color(40, 130, 255, 255)
+GREEN = rl.Color(40, 200, 90, 255)
 LABEL = rl.Color(176, 168, 255, 255)
 CARD_FILL = rl.Color(18, 20, 31, 235)
 CARD_WIDTH = 346
@@ -102,6 +104,12 @@ class AtomBadge:
     for degrees in (0, 60, 120):
       self._ellipse(cx, cy, radius * .62, radius * .24, math.radians(degrees - 30), color, max(4., radius * .1))
     rl.draw_circle(int(cx), int(cy), radius * .12, color)
+
+
+def glow_color(mode_label):
+  if mode_label == 'Chill Mode':
+    return GREEN
+  return ORANGE if mode_label == 'Experimental Mode' else BLUE
 
 
 def edge_glow(color, x, y, width, height, span=GLOW_SPAN, alpha=150):
