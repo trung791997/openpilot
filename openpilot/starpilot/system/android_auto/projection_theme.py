@@ -65,7 +65,7 @@ class SpeedLimitCard:
     height = (20 + (190 if has_max else 0) + (230 if has_limit else 0) + 20)
     rect = rl.Rectangle(x, y, CARD_WIDTH, height)
     rl.draw_rectangle_rounded(rect, .08, 12, CARD_FILL)
-    base = self.outline_color(state) if self.outline_color else ORANGE
+    base = (self.outline_color(state) if self.outline_color else ORANGE) or GRAY
     rl.draw_rectangle_rounded_lines_ex(rect, .08, 12, 3, rl.Color(base.r, base.g, base.b, 150))
     pad = 28
     top = y + 20
@@ -112,13 +112,27 @@ class AtomBadge:
     rl.draw_circle(int(cx), int(cy), radius * .12, color)
 
 
+GRAY = rl.Color(145, 155, 149, 255)
+
+
 def glow_color(mode_label):
   if mode_label == 'Chill Mode':
     return GREEN
   return ORANGE if mode_label == 'Experimental Mode' else BLUE
 
 
+def state_glow(state, mode_label):
+  """Mirror the comma screen's engagement: none when off, gray on override, blue lateral-only, mode color with long."""
+  if getattr(state, 'driver_override_active', False) or getattr(state, 'longitudinal_overridden', False):
+    return GRAY
+  if getattr(state, 'longitudinal_active', False):
+    return glow_color(mode_label)
+  return BLUE if getattr(state, 'lateral_active', False) else None
+
+
 def edge_glow(color, x, y, width, height, span=GLOW_SPAN, alpha=150):
+  if color is None:
+    return
   edge = rl.Color(color.r, color.g, color.b, alpha)
   fade = rl.Color(color.r, color.g, color.b, 0)
   x, y, width, height = int(x), int(y), int(width), int(height)
