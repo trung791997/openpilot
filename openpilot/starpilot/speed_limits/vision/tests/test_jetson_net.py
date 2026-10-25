@@ -166,16 +166,20 @@ def test_vision_core_reads_the_same_through_jetson_net_on_cpu(tmp_path):
   wrapped.classifier_net = J.JetsonNet(wrapped.classifier_net, J.CLASSIFIER, link)
   frame = np.random.default_rng(1).integers(0, 256, (1208, 1928, 3), dtype=np.uint8)
   assert plain._collect_detector_classifier_proposals(frame) == wrapped._collect_detector_classifier_proposals(frame)
-  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1, 'loads': 0, 'unloads': 0}
+  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1, 'loads': 0, 'unloads': 0, 'yield_skips': 0}
 
 
 class _ScriptedLink:
   """infer() answers from a list: an array is the Jetson's answer, None sends the pass to the CPU."""
-  def __init__(self, answers):
+  def __init__(self, answers, yielding=False):
     self.answers = list(answers)
+    self.is_yielding = yielding
 
   def infer(self, kind, image_u8):
     return self.answers.pop(0)
+
+  def yielding(self):
+    return self.is_yielding
 
 
 def test_lazy_net_is_built_on_the_first_cpu_pass_and_dropped_after_jetson_only_passes():
@@ -198,7 +202,7 @@ def test_lazy_net_is_built_on_the_first_cpu_pass_and_dropped_after_jetson_only_p
   net.forward()
   assert net.net is None and net.stats['unloads'] == 1                      # Jetson-only for UNLOAD_AFTER_S
   net.forward()
-  assert net.net is built[1] and net.stats == {'jetson': 3, 'cpu': 2, 'loads': 2, 'unloads': 1}
+  assert net.net is built[1] and net.stats == {'jetson': 3, 'cpu': 2, 'loads': 2, 'unloads': 1, 'yield_skips': 0}
 
 
 def test_jetson_net_needs_a_net_or_a_loader():
@@ -243,3 +247,51 @@ def test_a_yield_answer_stops_sends_until_a_plain_hello(mount):
   while not link.ready() and time.monotonic() < deadline:
     time.sleep(0.01)
   assert link.ready()
+
+
+def test_a_yielding_jetson_skips_the_pass_and_builds_no_cpu_net(mount):
+  link = _link(mount, J._RESP.pack(J.RESP_MAGIC, J.HELLO_SEQ, J.STATUS_YIELD, J.tag(DET_SHA), J.tag(CLS_SHA)))
+  assert link.yielding()
+  built = []
+  net = J.JetsonNet(None, J.DETECTOR, link, loader=lambda: built.append(1))
+  net.setInput(np.zeros((1, 3, 256, 256), np.float32))
+  with pytest.raises(J.Yielding):
+    net.forward()
+  assert built == [] and net.stats == {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 1}
+
+
+def test_a_yield_answer_is_not_a_bad_answer_and_lasts_until_a_plain_hello(mount):
+  link = _link(mount, _hello(), yield_then_hello=True)
+  assert link.infer(J.CLASSIFIER, np.zeros((3, 128, 128), np.uint8)) is None
+  assert link.yielding() and link.stats['bad_answers'] == 0
+  deadline = time.monotonic() + 1
+  while link.yielding() and time.monotonic() < deadline:
+    time.sleep(0.01)
+  assert not link.yielding() and link.ready()
+
+
+def test_a_yielding_hello_for_other_models_still_runs_the_cpu_net(mount):
+  link = _link(mount, J._RESP.pack(J.RESP_MAGIC, J.HELLO_SEQ, J.STATUS_YIELD, 1, 2))
+  assert not link.yielding()
+  net = J.JetsonNet(_CpuNet((1, 19)), J.CLASSIFIER, link)
+  net.setInput(np.zeros((1, 3, 128, 128), np.float32))
+  net.forward()
+  assert net.stats['cpu'] == 1
+
+
+def test_a_silent_jetson_is_not_yielding(mount):
+  link = _link(mount, J._RESP.pack(J.RESP_MAGIC, J.HELLO_SEQ, J.STATUS_YIELD, J.tag(DET_SHA), J.tag(CLS_SHA)))
+  link.last_hello -= J.HELLO_FRESH_S   # unplugged mid-yield: the CPU takes over
+  assert not link.yielding()
+
+
+def test_a_yield_skipped_frame_keeps_the_held_sign_and_the_history(tmp_path):
+  core = VisionModelCore(is_metric=False, load_nets=False)
+  link = _ScriptedLink([None] * 4, yielding=True)
+  core.net = J.JetsonNet(None, J.DETECTOR, link, loader=core.load_detector)
+  core.classifier_net = J.JetsonNet(None, J.CLASSIFIER, link, loader=core.load_classifier)
+  core.published_speed_limit_mph, core.published_confidence, core.published_support_count = 35, 0.9, 4
+  history = list(core.history)
+  frame = np.zeros((1208, 1928, 3), np.uint8)
+  assert core.observe(frame, now=100.0) == (35, 0.9, 4, core.episode)
+  assert list(core.history) == history and core.net.net is None and core.net.stats['yield_skips'] == 1

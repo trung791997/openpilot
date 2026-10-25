@@ -10,6 +10,8 @@ import time
 
 import numpy as np
 
+from openpilot.starpilot.speed_limits.vision.jetson_net import Yielding
+
 try:
   import cv2
 except ImportError:  # Keep inference unavailable when OpenCV is absent.
@@ -366,7 +368,10 @@ class VisionModelCore:
     """Return the last confirmed limit until replacement or camera-session reset."""
     if not math.isfinite(now) or now <= 0:
       raise ValueError("Invalid observation time")
-    detection = self.infer(frame_bgr)
+    try:
+      detection = self.infer(frame_bgr)
+    except Yielding:   # jetson_net.py: the Jetson's GPU is the driving model's; this frame is not read
+      detection = None
     if detection is not None and math.isfinite(detection.confidence) and 0 <= detection.confidence <= 1:
       self.history.append(HistoryEntry(detection.speed_limit_mph, detection.confidence, now, detection.strong_consensus))
       self._prune_history(now)

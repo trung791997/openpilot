@@ -7,7 +7,9 @@ of each ONNX sha256, in its hello). Any doubt and forward() runs the OpenCV net 
   - no answer within REPLY_TIMEOUT_S, or an answer of the wrong size,
   - a send still in flight from an earlier call,
   - the Jetson yielding its GPU to the driving model (STATUS_YIELD, tools/jetson_vasm/yield_gate.py):
-    nothing is sent until its next plain hello.
+    nothing is sent until its next plain hello, and forward() raises Yielding instead of running the CPU net,
+    so the pass is skipped (VisionModelCore.observe: a frame with no detection) and a lazily built core does
+    not rebuild its nets for it. The gate holds a yield for at least HOLD_S (5 s): no new sign is read then.
 
 JetsonNet stands in for a cv2.dnn net (setInput/forward), so VisionModelCore's sign logic is unchanged:
 only the forward pass moves. With a loader (a core made with load_nets=False) the OpenCV net is built on the
@@ -54,6 +56,10 @@ UNLOAD_AFTER_S = 60.0   # Jetson-only passes before a lazily built CPU net is dr
 READ_SIZE = 32768   # the largest answer, the detector's, is 20 + 6720 * 4 = 26900 bytes: one transfer
 
 
+class Yielding(RuntimeError):
+  """The Jetson lent its GPU to the driving model: skip this pass, do not run it on the CPU."""
+
+
 def _mask_signals():
   signal.pthread_sigmask(signal.SIG_BLOCK, signal.valid_signals())
 
@@ -68,6 +74,7 @@ class SlvLink:
     self.tags = (tag(detector_sha256), tag(classifier_sha256))
     self.last_hello = 0.0
     self.hello_matches = False
+    self.yield_seen = False
     self.stats = {'sent': 0, 'answered': 0, 'timeouts': 0, 'skipped_busy': 0, 'wrong_model_hellos': 0, 'bad_answers': 0, 'yields': 0}
     self._lock = threading.Lock()
     self._seq = 0
@@ -83,6 +90,10 @@ class SlvLink:
 
   def ready(self) -> bool:
     return self.hello_matches and time.monotonic() - self.last_hello < HELLO_FRESH_S and not self._writing.is_set()
+
+  def yielding(self) -> bool:
+    """The Jetson, still there and running these models, said it is yielding and has not said otherwise."""
+    return self.yield_seen and time.monotonic() - self.last_hello < HELLO_FRESH_S
 
   def infer(self, kind: int, image_u8: np.ndarray) -> np.ndarray | None:
     """The model's output, OUT_SHAPES[kind] float32, from the Jetson; None for the caller to run its own."""
@@ -111,6 +122,8 @@ class SlvLink:
       self.stats['timeouts'] += 1
       return None
     status, out = slot[1]
+    if status == STATUS_YIELD:
+      return None
     shape = OUT_SHAPES[kind]
     if status != STATUS_OK or out.size != int(np.prod(shape)) or not np.isfinite(out).all():
       self.stats['bad_answers'] += 1
@@ -144,6 +157,7 @@ class SlvLink:
   def _close(self):
     fds, self._fd_in, self._fd_out = (self._fd_in, self._fd_out), -1, -1
     self.hello_matches = False
+    self.yield_seen = False
     for fd in fds:
       if fd >= 0:
         try:
@@ -175,10 +189,12 @@ class SlvLink:
         continue
       if status == STATUS_YIELD:
         self.hello_matches = False   # the driving model needs the GPU: wait for a plain hello
+        self.yield_seen = (server_us, nfloats) == self.tags if seq == HELLO_SEQ else True   # an answer: we only send to our models
         self.stats['yields'] += 1
       if seq == HELLO_SEQ and status in (STATUS_HELLO, STATUS_YIELD):
         if status == STATUS_HELLO:
           self.hello_matches = (server_us, nfloats) == self.tags
+          self.yield_seen = False
           if not self.hello_matches:
             self.stats['wrong_model_hellos'] += 1
         self.last_hello = time.monotonic()
@@ -238,7 +254,7 @@ class JetsonNet:
     self.net, self.kind, self.link, self.loader, self.clock = net, kind, link, loader, clock
     self.blob = None
     self.last_cpu = 0.0
-    self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0}
+    self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 0}
 
   def setInput(self, blob):  # noqa: N802 (cv2's name)
     self.blob = blob
@@ -252,6 +268,9 @@ class JetsonNet:
         self.stats['unloads'] += 1
         _trim()
       return out
+    if self.link.yielding():
+      self.stats['yield_skips'] += 1
+      raise Yielding('the Jetson is yielding its GPU to the driving model')
     self.stats['cpu'] += 1
     if self.net is None:
       self.net = self.loader()

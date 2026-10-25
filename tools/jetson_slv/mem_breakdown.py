@@ -59,7 +59,7 @@ def _overlay():
   overlay = os.environ.get('SLV_OVERLAY')
   if not overlay:
     return
-  for name in ('model', 'jetson_net'):
+  for name in ('jetson_net', 'model'):   # model imports jetson_net
     full = f'openpilot.starpilot.speed_limits.vision.{name}'
     spec = importlib.util.spec_from_file_location(full, os.path.join(overlay, f'{name}.py'))
     module = importlib.util.module_from_spec(spec)
