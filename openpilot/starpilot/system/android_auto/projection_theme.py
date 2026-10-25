@@ -13,6 +13,7 @@ from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_sp
 ORANGE = rl.Color(255, 140, 30, 255)
 RED = rl.Color(235, 40, 50, 255)
 YELLOW = rl.Color(255, 205, 0, 255)
+LEAD_YELLOW = rl.Color(255, 196, 36, 255)
 BLUE = rl.Color(40, 130, 255, 255)
 GREEN = rl.Color(40, 200, 90, 255)
 LABEL = rl.Color(176, 168, 255, 255)
@@ -20,7 +21,7 @@ CARD_FILL = rl.Color(18, 20, 31, 235)
 CARD_WIDTH = 346
 GLOW_SPAN = 64
 
-ROAD_STYLE = {'pathMode': 'color', 'path': '#FF8A1FA0', 'pathEdge': '#FF9A2EFF', 'laneLines': '#FF9A2EFF'}
+ROAD_STYLE = {'pathMode': 'color', 'path': '#FF8A1FD0', 'pathEdge': '#FF9A2EFF', 'laneLines': '#FF9A2EFF'}
 
 
 def road_style(saved):
@@ -149,3 +150,26 @@ def side_glow(color, x, y, width, height, left, now=None):
     rl.draw_rectangle_gradient_h(x, y, span, height, edge, fade)
   else:
     rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
+
+
+def lead_badge(fonts, content, present):
+  """The video's fixed yellow LEAD badge: a road wedge with a car, and the word LEAD under it."""
+  if not present:
+    return
+  unit = content.width * .05
+  cx, top = content.x + content.width * .28, content.y + content.height * .12
+  half_top, half_bottom, height = unit * .38, unit * .62, unit * .78
+  a, b = rl.Vector2(cx - half_top, top), rl.Vector2(cx + half_top, top)
+  c, d = rl.Vector2(cx + half_bottom, top + height), rl.Vector2(cx - half_bottom, top + height)
+  fill = rl.Color(YELLOW.r, 190, 20, 70)
+  rl.draw_triangle(a, d, c, fill)
+  rl.draw_triangle(a, c, b, fill)
+  stroke = max(3., unit * .06)
+  for p, q in ((a, b), (b, c), (c, d), (d, a)):
+    rl.draw_line_ex(p, q, stroke, LEAD_YELLOW)
+  body = rl.Rectangle(cx - unit * .22, top + height * .52, unit * .44, unit * .22)
+  rl.draw_rectangle_rounded(body, .4, 6, LEAD_YELLOW)
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - unit * .15, top + height * .30, unit * .30, unit * .2), .5, 6, LEAD_YELLOW)
+  size = max(24, int(unit * .56))
+  width = fonts.measure('LEAD', FontRole.BOLD, size).width
+  fonts.draw('LEAD', FontRole.BOLD, size, cx - width / 2, top + height + unit * .12, LEAD_YELLOW)

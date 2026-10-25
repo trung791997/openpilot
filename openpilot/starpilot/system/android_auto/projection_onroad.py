@@ -179,6 +179,7 @@ class ProjectionOnroad:
       if model_renderer is not None:
         # The lead distance label otherwise asks gui_app for a font this process never loads (crashed 2026-10-24).
         model_renderer.lead_font = self.fonts.font(native.font_role.SEMI_BOLD)
+        model_renderer.lead_chevron_color = native.rl.Color(255, 140, 30, 255)
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)
@@ -259,6 +260,10 @@ class ProjectionOnroad:
 
   def _theme_overlay(self, content, state):
     self._theme.edge_glow(self._theme.glow_color(driving_mode_label(state)), content.x, content.y, content.width, content.height)
+    appearance = getattr(state, 'appearance', None)
+    if appearance is not None and appearance.show_lead_indicator:
+      lead = self.native.ui_state.sm['radarState'].leadOne
+      self._theme.lead_badge(self.fonts, content, bool(lead.present))
     left, right = self._theme.side_colors(state)
     self._theme.side_glow(left, content.x, content.y, content.width, content.height, True)
     self._theme.side_glow(right, content.x, content.y, content.width, content.height, False)
