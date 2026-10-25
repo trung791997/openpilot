@@ -16,10 +16,29 @@ from openpilot.starpilot.spot_monitor.preferences import enabled as vasm_enabled
 from openpilot.starpilot.vision_cpu import LITTLE_CORES, VISION_WITH_VASM
 
 UNAVAILABLE_RETRY_SECONDS = 1.0
+JETSON_STATS_SECONDS = 60.0
+JETSON_STATS_PATH = '/tmp/slv_jetson_stats.json'
 INFERENCE_INTERVAL_NS = 166_666_667
 # Retain a cooldown even when processing reaches the result-age budget.
 BUSY_INFERENCE_INTERVAL_NS = MAX_RESULT_AGE_NS * 3 // 2
 
+
+
+def _log_jetson_stats(core, link) -> None:
+  """Every JETSON_STATS_SECONDS: how the Jetson answered and whether the lazy CPU nets are built (JetsonNet)."""
+  import json
+  from openpilot.common.swaglog import cloudlog
+  nets = {name: getattr(core, attr, None) for name, attr in (('detector', 'net'), ('classifier', 'classifier_net'))}
+  stats = {'t': time.monotonic(), 'link': dict(link.stats),
+           **{name: {**net.stats, 'built': net.net is not None} for name, net in nets.items() if hasattr(net, 'stats')}}
+  cloudlog.info('vision SLC jetson stats: %s', json.dumps(stats))
+  try:
+    tmp = JETSON_STATS_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+      json.dump(stats, f)
+    os.replace(tmp, JETSON_STATS_PATH)
+  except OSError:
+    pass
 
 def _configure_process() -> None:
   from openpilot.common.hardware import PC
@@ -128,6 +147,7 @@ def main() -> None:
   stream = 'unknown'
   client = None
   core = None
+  link = None
   last_unavailable = 0.0
   try:
     if cv2 is not None:
@@ -136,10 +156,12 @@ def main() -> None:
     # only when a pass needs them (jetson_net.JetsonNet) so a comma whose Jetson answers never holds them
     from openpilot.starpilot.speed_limits.vision.jetson_net import attach, present
     core = VisionModelCore(is_metric=params.get_bool('IsMetric'), load_nets=not present())
-    if attach(core) is not None:
+    link = attach(core)
+    if link is not None:
       cloudlog.warning('vision SLC: Jetson interface present, CPU nets built on demand')
   except Exception as error:
     cloudlog.error('vision SLC model unavailable: %s', error)
+  last_jetson_stats = time.monotonic()
   last_inference_ns = 0
   inference_interval_ns = INFERENCE_INTERVAL_NS
   last_placement_check = -2.0
@@ -150,6 +172,9 @@ def main() -> None:
     if now - last_placement_check >= 2.0:
       _place_inference(params)
       last_placement_check = now
+    if link is not None and core is not None and now - last_jetson_stats >= JETSON_STATS_SECONDS:
+      last_jetson_stats = now
+      _log_jetson_stats(core, link)
     if core is None:
       now = time.monotonic()
       if now - last_unavailable >= UNAVAILABLE_RETRY_SECONDS:
