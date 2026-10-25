@@ -8,7 +8,7 @@ SLV_OVERLAY=DIR loads model.py and jetson_net.py from DIR instead (DIR/assets ->
 measure a change before it is deployed.
 
 Run it offroad: each child adds what the real process would (about 130 MB at most).
-Each row is the process's own /proc/self/smaps_rollup after that stage: Rss, Pss, and Private (clean + dirty),
+Each row is the process's own /proc/self/smaps_rollup (summed smaps where there is none) after that stage: Rss, Pss, and Private (clean + dirty),
 the memory that goes away when the process does. Pss/Private matter more than Rss, which counts every
 shared library page in full.
 
@@ -21,6 +21,7 @@ Children:
 """
 import ctypes
 import gc
+import os
 import subprocess
 import sys
 import time
@@ -29,12 +30,13 @@ FRAME_W, FRAME_H = 1928, 1208
 
 
 def mem() -> dict:
-  out = {}
-  with open('/proc/self/smaps_rollup') as f:
+  out: dict[str, int] = {}
+  path = '/proc/self/smaps_rollup' if os.path.exists('/proc/self/smaps_rollup') else '/proc/self/smaps'  # comma: no rollup
+  with open(path) as f:
     for line in f:
       parts = line.split()
       if len(parts) >= 2 and parts[0].endswith(':') and parts[1].isdigit():
-        out[parts[0][:-1]] = int(parts[1])
+        out[parts[0][:-1]] = out.get(parts[0][:-1], 0) + int(parts[1])
   return {'rss': out.get('Rss', 0), 'pss': out.get('Pss', 0),
           'private': out.get('Private_Clean', 0) + out.get('Private_Dirty', 0)}
 
@@ -54,7 +56,6 @@ def trim():
 
 def _overlay():
   import importlib.util
-  import os
   overlay = os.environ.get('SLV_OVERLAY')
   if not overlay:
     return
