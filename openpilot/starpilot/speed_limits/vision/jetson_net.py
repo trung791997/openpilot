@@ -10,8 +10,11 @@ of each ONNX sha256, in its hello). Any doubt and forward() runs the OpenCV net 
     nothing is sent until its next plain hello.
 
 JetsonNet stands in for a cv2.dnn net (setInput/forward), so VisionModelCore's sign logic is unchanged:
-only the forward pass moves. The blob blobFromImage made (u8 * 1/255, swapRB, NCHW) goes as the u8 it
-came from, rint(blob * 255), which is exact for those values (tests/test_jetson_net.py).
+only the forward pass moves. With a loader (a core made with load_nets=False) the OpenCV net is built on the
+first pass the Jetson does not answer, inside that pass, and dropped again once the Jetson has answered
+every pass for UNLOAD_AFTER_S: the comma holds the CPU nets only while it needs them.
+The blob blobFromImage made (u8 * 1/255, swapRB, NCHW) goes as the u8 it came from, rint(blob * 255), which is
+exact for those values (tests/test_jetson_net.py).
 
 Jetlink's owner holds this interface's ep0 (jetlink.comma.vasm_ep0.SLV); this module opens only ep1
 (Jetson -> comma) and ep2 (comma -> Jetson). I/O threads block every signal and write in 8 KB pieces,
@@ -24,6 +27,7 @@ Wire format (tools/jetson_slv/slv_wire.py, kept in step by hand):
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import signal
@@ -46,6 +50,7 @@ HELLO_FRESH_S = 2.5
 REPLY_TIMEOUT_S = 0.05
 REOPEN_S = 5.0
 WRITE_CHUNK = 8192
+UNLOAD_AFTER_S = 60.0   # Jetson-only passes before a lazily built CPU net is dropped again
 READ_SIZE = 32768   # the largest answer, the detector's, is 20 + 6720 * 4 = 26900 bytes: one transfer
 
 
@@ -214,13 +219,26 @@ def blob_to_u8(blob: np.ndarray) -> np.ndarray:
   return np.rint(blob[0] * 255.0).clip(0, 255).astype(np.uint8)
 
 
-class JetsonNet:
-  """A cv2.dnn net whose forward() asks the Jetson first."""
+def _trim():
+  """Hand the dropped net's heap back to the kernel; glibc keeps freed arenas otherwise."""
+  try:
+    ctypes.CDLL('libc.so.6').malloc_trim(0)
+  except (OSError, AttributeError):
+    pass
 
-  def __init__(self, net, kind: int, link: SlvLink):
-    self.net, self.kind, self.link = net, kind, link
+
+class JetsonNet:
+  """A cv2.dnn net whose forward() asks the Jetson first.
+
+  net: the CPU net, or None with a loader that builds it (verified and ABI-checked) when a pass needs it."""
+
+  def __init__(self, net, kind: int, link: SlvLink, loader=None, clock=time.monotonic):
+    if net is None and loader is None:
+      raise ValueError('JetsonNet needs a net or a loader')
+    self.net, self.kind, self.link, self.loader, self.clock = net, kind, link, loader, clock
     self.blob = None
-    self.stats = {'jetson': 0, 'cpu': 0}
+    self.last_cpu = 0.0
+    self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0}
 
   def setInput(self, blob):  # noqa: N802 (cv2's name)
     self.blob = blob
@@ -229,17 +247,34 @@ class JetsonNet:
     out = self.link.infer(self.kind, blob_to_u8(self.blob))
     if out is not None:
       self.stats['jetson'] += 1
+      if self.loader is not None and self.net is not None and self.clock() - self.last_cpu >= UNLOAD_AFTER_S:
+        self.net = None
+        self.stats['unloads'] += 1
+        _trim()
       return out
     self.stats['cpu'] += 1
+    if self.net is None:
+      self.net = self.loader()
+      self.stats['loads'] += 1
+    self.last_cpu = self.clock()
     self.net.setInput(self.blob)
     return self.net.forward()
 
 
+def present(mount: str = MOUNT) -> bool:
+  """The gadget has ffs.slv: make the core with load_nets=False and attach() it."""
+  return os.path.exists(os.path.join(mount, 'ep0'))
+
+
 def attach(core, mount: str = MOUNT) -> SlvLink | None:
-  """Route core's detector and classifier through the Jetson when the gadget has ffs.slv; None otherwise."""
+  """Route core's detector and classifier through the Jetson when the gadget has ffs.slv; None otherwise.
+  A core made with load_nets=False gets loaders instead of nets; without ffs.slv it is given its nets here."""
   link = SlvLink(core.DETECTOR_SHA256, core.CLASSIFIER_SHA256, mount=mount)
   if not link.available():
+    if getattr(core, 'nets_deferred', False) is True:
+      core.net, core.classifier_net = core.load_detector(), core.load_classifier()
+      core.nets_deferred = False
     return None
-  core.net = JetsonNet(core.net, DETECTOR, link)
-  core.classifier_net = JetsonNet(core.classifier_net, CLASSIFIER, link)
+  core.net = JetsonNet(core.net, DETECTOR, link, loader=core.load_detector)
+  core.classifier_net = JetsonNet(core.classifier_net, CLASSIFIER, link, loader=core.load_classifier)
   return link

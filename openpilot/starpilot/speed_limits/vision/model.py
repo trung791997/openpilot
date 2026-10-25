@@ -276,13 +276,23 @@ class VisionModelCore:
   DETECTOR_SIZE = 256
   CLASSIFIER_SIZE = 128
 
-  def __init__(self, *, is_metric: bool):
+  DETECTOR_ASSET = "speed_limit_us_detector.onnx"
+  CLASSIFIER_ASSET = "speed_limit_us_value_classifier.onnx"
+
+  def __init__(self, *, is_metric: bool, load_nets: bool = True):
+    """load_nets=False verifies both assets but builds neither net: jetson_net.attach builds each one on the
+    first pass the Jetson does not answer, so a comma whose Jetson answers never holds the OpenCV nets."""
     if cv2 is None:
       raise RuntimeError("OpenCV DNN is unavailable")
     self.is_metric = is_metric
-    self.net = self._load_net("speed_limit_us_detector.onnx", self.DETECTOR_SHA256)
-    self.classifier_net = self._load_net("speed_limit_us_value_classifier.onnx", self.CLASSIFIER_SHA256)
-    self._validate_model_abi()
+    self.nets_deferred = not load_nets
+    if load_nets:
+      self.net = self.load_detector()
+      self.classifier_net = self.load_classifier()
+    else:
+      self._verified_path(self.DETECTOR_ASSET, self.DETECTOR_SHA256)
+      self._verified_path(self.CLASSIFIER_ASSET, self.CLASSIFIER_SHA256)
+      self.net = self.classifier_net = None
     self.detector_input_size = self.DETECTOR_SIZE
     self.classifier_input_size = self.CLASSIFIER_SIZE
     self.last_detector_forward_count = 0
@@ -313,25 +323,39 @@ class VisionModelCore:
     self.episode = 0
 
   @classmethod
-  def _load_net(cls, name: str, expected_sha256: str):
+  def _verified_path(cls, name: str, expected_sha256: str) -> Path:
     path = cls.ASSET_DIR / name
     with path.open("rb") as stream:
       actual = hashlib.file_digest(stream, "sha256").hexdigest()
     if actual != expected_sha256:
       raise ValueError(f"Vision model identity mismatch: {name}")
-    net = cv2.dnn.readNetFromONNX(str(path))
+    return path
+
+  @classmethod
+  def _load_net(cls, name: str, expected_sha256: str):
+    net = cv2.dnn.readNetFromONNX(str(cls._verified_path(name, expected_sha256)))
     net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
     net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     return net
 
-  def _validate_model_abi(self) -> None:
-    self.net.setInput(np.zeros((1, 3, self.DETECTOR_SIZE, self.DETECTOR_SIZE), dtype=np.float32))
-    detector_output = self.net.forward()
-    self.classifier_net.setInput(np.zeros((1, 3, self.CLASSIFIER_SIZE, self.CLASSIFIER_SIZE), dtype=np.float32))
-    classifier_output = self.classifier_net.forward()
-    if (detector_output.shape != (1, 5, 1344) or classifier_output.shape != (1, 19) or
-        not np.isfinite(detector_output).all() or not np.isfinite(classifier_output).all()):
+  @staticmethod
+  def _validate_net(net, size: int, shape: tuple) -> None:
+    net.setInput(np.zeros((1, 3, size, size), dtype=np.float32))
+    output = net.forward()
+    if output.shape != shape or not np.isfinite(output).all():
       raise ValueError("Unsupported Vision model output shape or nonfinite output")
+
+  def load_detector(self):
+    """The verified detector net, after its ABI forward."""
+    net = self._load_net(self.DETECTOR_ASSET, self.DETECTOR_SHA256)
+    self._validate_net(net, self.DETECTOR_SIZE, (1, 5, 1344))
+    return net
+
+  def load_classifier(self):
+    """The verified value classifier net, after its ABI forward."""
+    net = self._load_net(self.CLASSIFIER_ASSET, self.CLASSIFIER_SHA256)
+    self._validate_net(net, self.CLASSIFIER_SIZE, (1, 19))
+    return net
 
   def infer(self, frame_bgr: np.ndarray) -> Detection | None:
     if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3 or frame_bgr.size == 0:

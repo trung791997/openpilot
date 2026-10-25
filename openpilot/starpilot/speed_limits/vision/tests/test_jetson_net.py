@@ -166,7 +166,67 @@ def test_vision_core_reads_the_same_through_jetson_net_on_cpu(tmp_path):
   wrapped.classifier_net = J.JetsonNet(wrapped.classifier_net, J.CLASSIFIER, link)
   frame = np.random.default_rng(1).integers(0, 256, (1208, 1928, 3), dtype=np.uint8)
   assert plain._collect_detector_classifier_proposals(frame) == wrapped._collect_detector_classifier_proposals(frame)
-  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1}
+  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1, 'loads': 0, 'unloads': 0}
+
+
+class _ScriptedLink:
+  """infer() answers from a list: an array is the Jetson's answer, None sends the pass to the CPU."""
+  def __init__(self, answers):
+    self.answers = list(answers)
+
+  def infer(self, kind, image_u8):
+    return self.answers.pop(0)
+
+
+def test_lazy_net_is_built_on_the_first_cpu_pass_and_dropped_after_jetson_only_passes():
+  now = [100.0]
+  built = []
+  def loader():
+    built.append(_CpuNet((1, 19)))
+    return built[-1]
+  jetson_out = np.full((1, 19), 3.0, np.float32)
+  link = _ScriptedLink([jetson_out, None, jetson_out, jetson_out, None])
+  net = J.JetsonNet(None, J.CLASSIFIER, link, loader=loader, clock=lambda: now[0])
+  net.setInput(np.zeros((1, 3, 128, 128), np.float32))
+  assert net.forward() is jetson_out and net.net is None and built == []   # the Jetson answers: nothing built
+  net.forward()
+  assert net.net is built[0] and net.stats['loads'] == 1                    # first CPU pass builds it
+  now[0] += J.UNLOAD_AFTER_S - 1
+  net.forward()
+  assert net.net is built[0]                                                # kept: a CPU pass was recent
+  now[0] += 1
+  net.forward()
+  assert net.net is None and net.stats['unloads'] == 1                      # Jetson-only for UNLOAD_AFTER_S
+  net.forward()
+  assert net.net is built[1] and net.stats == {'jetson': 3, 'cpu': 2, 'loads': 2, 'unloads': 1}
+
+
+def test_jetson_net_needs_a_net_or_a_loader():
+  with pytest.raises(ValueError):
+    J.JetsonNet(None, J.DETECTOR, _ScriptedLink([]))
+
+
+def test_lazy_core_verifies_assets_and_builds_no_nets():
+  core = VisionModelCore(is_metric=False, load_nets=False)
+  assert core.net is None and core.classifier_net is None
+
+
+def test_lazy_core_without_interface_gets_its_nets_at_attach(tmp_path):
+  core = VisionModelCore(is_metric=False, load_nets=False)
+  assert J.attach(core, mount=str(tmp_path / "nope")) is None
+  assert not isinstance(core.net, J.JetsonNet) and core.net is not None and core.classifier_net is not None
+
+
+def test_lazy_core_reads_the_same_as_plain_when_the_jetson_never_answers(tmp_path):
+  plain = VisionModelCore(is_metric=False)
+  lazy = VisionModelCore(is_metric=False, load_nets=False)
+  os.makedirs(tmp_path / "ffs")
+  open(tmp_path / "ffs" / "ep0", "w").close()
+  assert J.attach(lazy, mount=str(tmp_path / "ffs")) is not None
+  assert isinstance(lazy.net, J.JetsonNet) and lazy.net.net is None
+  frame = np.random.default_rng(1).integers(0, 256, (1208, 1928, 3), dtype=np.uint8)
+  assert plain._collect_detector_classifier_proposals(frame) == lazy._collect_detector_classifier_proposals(frame)
+  assert lazy.net.stats['loads'] == 1 and lazy.net.net is not None
 
 
 def test_a_yielding_hello_sends_nothing(mount):
