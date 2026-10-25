@@ -192,7 +192,7 @@ def main():
   link = TcpLink(args.tcp) if args.tcp else UsbLink()
   log(f"ready on {'tcp ' + args.tcp if args.tcp else 'usb %04x:%04x class %02x/%02x/%02x' % (USB_VID, USB_PID, *VASM_IFACE_CLASS)}")
   try:
-    gate = None if args.no_yield else YieldGate()
+    gate = None if args.no_yield else YieldGate(log=log)
     serve(link, model, W.pack_hello(args.model_sha256), gate, W.pack_hello(args.model_sha256, W.STATUS_YIELD))
   except KeyboardInterrupt:
     link.close()

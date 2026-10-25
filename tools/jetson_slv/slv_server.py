@@ -163,7 +163,7 @@ def main():
   link = SlvUsbLink()
   log("ready on usb class %02x/%02x/%02x" % SlvUsbLink.IFACE_CLASS)
   try:
-    gate = None if args.no_yield else YieldGate()
+    gate = None if args.no_yield else YieldGate(log=log)
     serve(link, engines, pack_hello(args.detector_sha256, args.classifier_sha256), gate,
           pack_hello(args.detector_sha256, args.classifier_sha256, STATUS_YIELD))
   except KeyboardInterrupt:
