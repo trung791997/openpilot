@@ -1,0 +1,25 @@
+# V-ASM on the Jetson's GPU, started at boot. vasm_usb_server.py waits for the comma's gadget
+# (1209:0001, ffs.vasm) itself and rescans every second, so nothing has to watch for the comma.
+# It yields the GPU to jetlink-server's driving model (yield_gate.py); the comma then runs V-ASM on
+# its CPU, as it does whenever this server is down or the Jetson is unplugged.
+#
+# Files in /home/trung791997/jetson_vasm: vasm_usb_server.py vasm_trt.py vasm_wire.py yield_gate.py
+# and run12_fp16_b1.engine. Needs 99-jetlink-vasm.rules for the USB access. Install:
+#   sudo cp jetlink-vasm.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+#     && sudo systemctl enable --now jetlink-vasm
+# Logs: journalctl -u jetlink-vasm
+[Unit]
+Description=V-ASM TensorRT server for the comma (yields to jetlink-server)
+After=jetlink-server.service
+Wants=jetlink-server.service
+
+[Service]
+User=trung791997
+WorkingDirectory=/home/trung791997/jetson_vasm
+ExecStart=/usr/bin/python3 -u vasm_usb_server.py --engine run12_fp16_b1.engine --model-sha256 cf2f2c83b12bae5672e94af8109051f9f03ea9a131157a407c00c332db0eeff1
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
