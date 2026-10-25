@@ -9,7 +9,8 @@ of each ONNX sha256, in its hello). Any doubt and forward() runs the OpenCV net 
   - the Jetson yielding its GPU to the driving model (STATUS_YIELD, tools/jetson_vasm/yield_gate.py):
     nothing is sent until its next plain hello, and forward() raises Yielding instead of running the CPU net,
     so the pass is skipped (VisionModelCore.observe: a frame with no detection) and a lazily built core does
-    not rebuild its nets for it. The gate holds a yield for at least HOLD_S (5 s): no new sign is read then.
+    not rebuild its nets for it. A yield lasts as long as the gate holds it: 1 s past the driving model's last slow
+    window while jetlink-server's stats are live, at least HOLD_S (5 s) on the GPU-load fallback.
 
 JetsonNet stands in for a cv2.dnn net (setInput/forward), so VisionModelCore's sign logic is unchanged:
 only the forward pass moves. With a loader (a core made with load_nets=False) the OpenCV net is built on the
@@ -38,6 +39,8 @@ import threading
 import time
 
 import numpy as np
+
+from openpilot.starpilot.spot_monitor.jetson_link import RoundTrips
 
 MOUNT = '/dev/ffs-slv'
 DETECTOR, CLASSIFIER = 0, 1
@@ -84,6 +87,7 @@ class SlvLink:
     self._fd_in = self._fd_out = -1
     self._next_open = 0.0
     self._threads_started = False
+    self.round_trips = RoundTrips()
 
   def available(self) -> bool:
     return os.path.exists(os.path.join(self.mount, 'ep0'))
@@ -110,6 +114,7 @@ class SlvLink:
       seq = self._seq
       slot = [threading.Event(), None]
       self._waiting[seq] = slot
+    t0 = time.monotonic_ns()
     msg = _REQ.pack(REQ_MAGIC, seq, kind, image_u8.nbytes) + np.ascontiguousarray(image_u8).tobytes()
     try:
       self._requests.put_nowait(msg)
@@ -121,13 +126,14 @@ class SlvLink:
       self._drop(seq)
       self.stats['timeouts'] += 1
       return None
-    status, out = slot[1]
+    status, server_us, out = slot[1]
     if status == STATUS_YIELD:
       return None
     shape = OUT_SHAPES[kind]
     if status != STATUS_OK or out.size != int(np.prod(shape)) or not np.isfinite(out).all():
       self.stats['bad_answers'] += 1
       return None
+    self.round_trips.add((time.monotonic_ns() - t0) // 1000, server_us)
     self.stats['answered'] += 1
     return out.reshape(shape)
 
@@ -207,7 +213,7 @@ class SlvLink:
       with self._lock:
         slot = self._waiting.pop(seq, None)
       if slot is not None:
-        slot[1] = (status, out)
+        slot[1] = (status, server_us, out)
         slot[0].set()
 
   def _write_loop(self):

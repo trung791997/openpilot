@@ -103,3 +103,35 @@ def test_cadence_uses_the_jetson_only_while_it_answers():
   assert J.check_interval_ns(300_000_000, False) == 300_000_000
   # per side every 2 * 0.2 s, not below WarningPolicy's 0.2 s smoothing: each check still counts in full
   assert 2 * J.JETSON_INTERVAL_NS / 1e9 >= 0.2
+
+
+def test_round_trips_time_each_answer_and_split_out_the_jetsons_share(mount):
+  link = _link(mount, _hello())
+  for _ in range(3):
+    assert link.infer(0, np.zeros(J.CROP_SHAPE, np.uint8)) is not None
+  rt = link.round_trips.take()
+  assert rt['n'] == 3
+  assert rt['jetson_ms'] == {'mean': 1.0, 'p50': 1.0, 'p99': 1.0, 'max': 1.0}   # the fake server says 1000 us
+  assert rt['total_ms']['p50'] >= 2.0   # it sleeps 2 ms before answering
+  assert rt['link_ms']['mean'] == pytest.approx(rt['total_ms']['mean'] - 1.0, abs=0.02)
+  assert link.round_trips.take() == {'n': 0}
+
+
+def test_timeouts_are_not_round_trips(mount):
+  link = _link(mount, _hello(), answer=False)
+  assert link.infer(0, np.zeros(J.CROP_SHAPE, np.uint8)) is None
+  assert link.stats['timeouts'] == 1 and link.round_trips.take() == {'n': 0}
+
+
+def test_report_writes_counters_and_round_trips(mount, tmp_path, monkeypatch):
+  import json
+  path = tmp_path / "stats.json"
+  monkeypatch.setattr(J, "TIMING_PATH", str(path))
+  link = _link(mount, _hello())
+  assert link.infer(0, np.zeros(J.CROP_SHAPE, np.uint8)) is not None
+  link._next_report = 0.0
+  link._maybe_report()
+  report = json.loads(path.read_text())
+  assert report['link']['answered'] == 1 and report['round_trips']['n'] == 1
+  link._maybe_report()   # not due again for TIMING_SECONDS
+  assert json.loads(path.read_text())['t'] == report['t']

@@ -23,6 +23,8 @@ hand, it is three structs.
 """
 from __future__ import annotations
 
+import collections
+import json
 import os
 import queue
 import signal
@@ -49,6 +51,37 @@ READ_SIZE = 1024
 # every 200 ms: each side every 0.4 s instead of every 2 s. That is above WarningPolicy's 0.2 s smoothing,
 # so every check still counts in full (alpha = 1), as at 1 s. runtime's CpuBudget still scales it.
 JETSON_INTERVAL_NS = 200_000_000
+TIMING_SECONDS = 60
+TIMING_PATH = '/tmp/vasm_jetson_stats.json'
+
+
+class RoundTrips:
+  """Answered requests' round trips as this process sees them, from packing the request to holding the
+  answer, with the Jetson's own server_us (receive to send) in each: total - server is the cable both ways and
+  the I/O threads. Timeouts (> REPLY_TIMEOUT_S) are not in it: the links count them."""
+
+  def __init__(self, keep: int = 4096):
+    self.total_us: collections.deque = collections.deque(maxlen=keep)
+    self.server_us: collections.deque = collections.deque(maxlen=keep)
+
+  def add(self, total_us: int, server_us: int):
+    self.total_us.append(total_us)
+    self.server_us.append(server_us)
+
+  def take(self) -> dict:
+    """ms summaries of the round trips since the last take(), and start over."""
+    total = np.asarray(self.total_us, np.float64) / 1000.0
+    server = np.asarray(self.server_us, np.float64) / 1000.0
+    self.total_us.clear()
+    self.server_us.clear()
+    if total.size == 0:
+      return {'n': 0}
+
+    def summary(ms):
+      return {'mean': round(float(ms.mean()), 2), 'p50': round(float(np.percentile(ms, 50)), 2),
+              'p99': round(float(np.percentile(ms, 99)), 2), 'max': round(float(ms.max()), 2)}
+    return {'n': int(total.size), 'total_ms': summary(total), 'jetson_ms': summary(server),
+            'link_ms': summary(total - server)}
 
 
 def check_interval_ns(cpu_interval_ns: int, jetson_ready: bool) -> int:
@@ -74,6 +107,8 @@ class JetsonLink:
     self._fd_in = self._fd_out = -1   # ep1 read, ep2 write
     self._next_open = 0.0
     self._threads_started = False
+    self.round_trips = RoundTrips()
+    self._next_report = time.monotonic() + TIMING_SECONDS
 
   # -- public ------------------------------------------------------------
   def available(self) -> bool:
@@ -85,6 +120,7 @@ class JetsonLink:
   def infer(self, side: int, crop_u8: np.ndarray) -> list[float] | None:
     """Class scores [3] from the Jetson, or None for the caller to run its own."""
     self._ensure_open()
+    self._maybe_report()
     if not self.ready():
       if self._writing.is_set():
         self.stats['skipped_busy'] += 1
@@ -96,6 +132,7 @@ class JetsonLink:
       seq = self._seq
       slot = [threading.Event(), None]
       self._waiting[seq] = slot
+    t0 = time.monotonic_ns()
     msg = _REQ.pack(REQ_MAGIC, seq, side, CROP_NBYTES) + np.ascontiguousarray(crop_u8).tobytes()
     try:
       self._requests.put_nowait(msg)
@@ -107,11 +144,32 @@ class JetsonLink:
       self._drop(seq)
       self.stats['timeouts'] += 1
       return None
-    status, probs = slot[1]
+    status, server_us, probs = slot[1]
     if status != STATUS_OK:
       return None
+    self.round_trips.add((time.monotonic_ns() - t0) // 1000, server_us)
     self.stats['answered'] += 1
     return list(probs)
+
+  def _maybe_report(self):
+    """Every TIMING_SECONDS: the counters and the round trips since the last report, to cloudlog and TIMING_PATH."""
+    now = time.monotonic()
+    if now < self._next_report:
+      return
+    self._next_report = now + TIMING_SECONDS
+    report = {'t': now, 'link': dict(self.stats), 'round_trips': self.round_trips.take()}
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.info('V-ASM jetson stats: %s', json.dumps(report))
+    except ImportError:
+      pass
+    try:
+      tmp = TIMING_PATH + '.tmp'
+      with open(tmp, 'w') as f:
+        json.dump(report, f)
+      os.replace(tmp, TIMING_PATH)
+    except OSError:
+      pass
 
   # -- internals ---------------------------------------------------------
   def _drop(self, seq: int):
@@ -180,7 +238,7 @@ class JetsonLink:
       with self._lock:
         slot = self._waiting.pop(seq, None)
       if slot is not None:
-        slot[1] = (status, (p0, p1, p2))
+        slot[1] = (status, server_us, (p0, p1, p2))
         slot[0].set()
 
   def _write_loop(self):

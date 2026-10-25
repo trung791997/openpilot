@@ -295,3 +295,16 @@ def test_a_yield_skipped_frame_keeps_the_held_sign_and_the_history(tmp_path):
   frame = np.zeros((1208, 1928, 3), np.uint8)
   assert core.observe(frame, now=100.0) == (35, 0.9, 4, core.episode)
   assert list(core.history) == history and core.net.net is None and core.net.stats['yield_skips'] == 1
+
+
+def test_round_trips_cover_both_models_and_carry_the_jetsons_time(mount):
+  link = _link(mount, _hello())
+  det = J.JetsonNet(_CpuNet((1, 5, 1344)), J.DETECTOR, link)
+  det.setInput(np.zeros((1, 3, 256, 256), np.float32))
+  det.forward()
+  cls = J.JetsonNet(_CpuNet((1, 19)), J.CLASSIFIER, link)
+  cls.setInput(np.zeros((1, 3, 128, 128), np.float32))
+  cls.forward()
+  rt = link.round_trips.take()
+  assert rt['n'] == 2 and rt['jetson_ms']['max'] == 0.9   # the fake server says 900 us
+  assert rt['total_ms']['max'] >= rt['jetson_ms']['max'] and rt['link_ms']['mean'] >= 0
