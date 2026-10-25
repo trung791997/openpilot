@@ -13,6 +13,8 @@ Three steps, on recorded road video (fcamera.hevc) of drives with signs; route d
            from the TensorRT outputs (looked up by input hash), frame by frame against the OpenCV reads.
            An input the TensorRT run never saw (the sign logic took another path) is counted, never guessed.
              python3 tools/jetson_slv/equiv.py compare --dump DIR --tag fp16 SEG_DIR [SEG_DIR ...]
+           Inputs never seen go to *_extra.npz: run trt --extra on them and compare again until none are left.
+           Only then is every pass in the replay a real TensorRT answer.
 """
 from __future__ import annotations
 
@@ -126,7 +128,10 @@ def cmd_trt(args):
   gate = YieldGate()   # onroad: the driving model keeps the GPU; one paced pass at a time
   for kind, path in ((DETECTOR, args.detector), (CLASSIFIER, args.classifier)):
     eng = Engine(path, cuda, SIZES[kind], OUT_SHAPES[kind])
-    d = np.load(os.path.join(args.dump, f'{NAMES[kind]}.npz'))
+    src = f'{NAMES[kind]}_extra.npz' if args.extra else f'{NAMES[kind]}.npz'
+    if not os.path.exists(os.path.join(args.dump, src)):
+      continue
+    d = np.load(os.path.join(args.dump, src))
     out = []
     for u8 in d['u8']:
       while gate.yielding():
@@ -134,13 +139,13 @@ def cmd_trt(args):
       out.append(eng.infer(u8))
       time.sleep(args.gap_ms / 1000)
     out = np.stack(out)
-    np.save(os.path.join(args.dump, f'{NAMES[kind]}_trt_{args.tag}.npy'), out)
+    np.save(os.path.join(args.dump, f'{NAMES[kind]}{"_extra" if args.extra else ""}_trt_{args.tag}.npy'), out)
     print(f'{NAMES[kind]}: {len(out)} outputs')
 
 
 class _Answer:
-  def __init__(self, table, kind, misses):
-    self.table, self.kind, self.misses = table, kind, misses
+  def __init__(self, table, kind, misses, missed):
+    self.table, self.kind, self.misses, self.missed = table, kind, misses, missed
     self.blob = None
 
   def setInput(self, blob):  # noqa: N802
@@ -149,9 +154,11 @@ class _Answer:
   def forward(self):
     from openpilot.starpilot.speed_limits.vision.jetson_net import blob_to_u8
     from openpilot.starpilot.speed_limits.vision.jetson_net import OUT_SHAPES
-    k = _key(blob_to_u8(self.blob))
+    u8 = blob_to_u8(self.blob)
+    k = _key(u8)
     if k not in self.table:
       self.misses[self.kind] += 1
+      self.missed.setdefault(k, u8)
       return np.zeros(OUT_SHAPES[self.kind], np.float32)
     return self.table[k].reshape(OUT_SHAPES[self.kind])
 
@@ -177,23 +184,52 @@ def cmd_compare(args):
       trt = np.load(os.path.join(args.dump, f'{name}_trt_{args.tag}.npy'))
       _raw_report(name, d['cv2'], trt, f'TensorRT {args.tag}')
       tables[kind] = {_key(u8): o for u8, o in zip(d['u8'], trt)}
+      extra = os.path.join(args.dump, f'{name}_extra.npz')
+      if os.path.exists(extra):
+        xt = np.load(os.path.join(args.dump, f'{name}_extra_trt_{args.tag}.npy'))
+        xu = np.load(extra)['u8']
+        if len(xt) != len(xu):
+          print(f'{name}: {len(xu)} extra inputs but {len(xt)} TensorRT outputs, run trt --extra again')
+          return 1
+        tables[kind].update({_key(u8): o for u8, o in zip(xu, xt)})
+        print(f'{name}: {len(xu)} extra inputs from earlier rounds')
     else:
       tables[kind] = {_key(u8): o for u8, o in zip(d['u8'], d['cv2_from_u8'])}
   core = _core()
   misses = {DETECTOR: 0, CLASSIFIER: 0}
-  core.net = _Answer(tables[DETECTOR], DETECTOR, misses)
-  core.classifier_net = _Answer(tables[CLASSIFIER], CLASSIFIER, misses)
-  reads = _observe_all(core, args.segs)
+  missed = {DETECTOR: {}, CLASSIFIER: {}}
+  first_miss = []
+  core.net = _Answer(tables[DETECTOR], DETECTOR, misses, missed[DETECTOR])
+  core.classifier_net = _Answer(tables[CLASSIFIER], CLASSIFIER, misses, missed[CLASSIFIER])
+
+  def on_frame(seg, i):   # misses so far all came before this frame
+    if not any(misses.values()):
+      first_miss[:] = [(os.path.basename(os.path.normpath(seg)), i)]
+  reads = _observe_all(core, args.segs, on_frame)
+  if args.tag:
+    for kind, name in NAMES.items():
+      if not missed[kind]:
+        continue
+      extra = os.path.join(args.dump, f'{name}_extra.npz')
+      old = list(np.load(extra)['u8']) if os.path.exists(extra) else []
+      np.savez(extra, u8=np.stack(old + list(missed[kind].values())))
+      print(f'{name}: {len(missed[kind])} new inputs saved for the next round (trt --extra), {len(old)} before')
   with open(os.path.join(args.dump, 'reads_cv2.json')) as f:
     ref = json.load(f)
   if len(ref) != len(reads):
     print(f'FRAME COUNT DIFFERS: {len(ref)} vs {len(reads)}')
     return 1
+  with open(os.path.join(args.dump, f'reads_{args.tag or "u8"}.json'), 'w') as f:
+    json.dump(reads, f)
   speed_diff = [(a, b) for a, b in zip(ref, reads) if a[2] != b[2]]
   any_diff = [(a, b) for a, b in zip(ref, reads)
               if a[2] != b[2] or a[4:] != b[4:] or abs(a[3] - b[3]) > 1e-6]   # mph, support/episode, confidence
   print(f'{len(reads)} frames: published mph differs on {len(speed_diff)}, any field on {len(any_diff)}; '
         f'inputs the other run never saw: detector {misses[DETECTOR]}, classifier {misses[CLASSIFIER]}')
+  if first_miss and any(misses.values()):
+    print(f'first input the TensorRT run never saw: seg {first_miss[0][0]} frame {first_miss[0][1]}')
+  if speed_diff:
+    print(f'first published mph difference: seg {speed_diff[0][0][0]} frame {speed_diff[0][0][1]}')
   for a, b in speed_diff[:20]:
     print(f'  seg {a[0]} frame {a[1]}: OpenCV {a[2]} mph, other {b[2]} mph')
   return 0 if not speed_diff and not any(misses.values()) else 1
@@ -210,6 +246,7 @@ def main():
   t.add_argument('--detector', required=True)
   t.add_argument('--classifier', required=True)
   t.add_argument('--tag', required=True)
+  t.add_argument('--extra', action='store_true', help='the inputs compare saved as never seen (*_extra.npz)')
   t.add_argument('--gap-ms', type=float, default=50.0, help='pause after each pass (GPU share for the driving model)')
   c = sub.add_parser('compare')
   c.add_argument('--dump', required=True)
