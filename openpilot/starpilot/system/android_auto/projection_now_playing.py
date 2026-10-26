@@ -1,4 +1,5 @@
 """Read-only now-playing snapshot for the car screen, polled away from Android Auto's drawing thread."""
+import io
 import threading
 import urllib.request
 
@@ -16,8 +17,20 @@ def image_type(data):
   return next((kind for magic, kind in IMAGE_TYPES if data.startswith(magic)), None)
 
 
+def as_png(data):
+  """PNG bytes for the card. The comma's raylib is built without JPEG ("Data format not supported"), and Spotify's
+  covers are all JPEG, so the card stayed blank on the car while the dev VM's raylib drew them. PNG passes through."""
+  if image_type(data) != '.jpg':
+    return data
+  from PIL import Image
+  with Image.open(io.BytesIO(data)) as image:
+    out = io.BytesIO()
+    image.convert('RGB').save(out, format='PNG')
+  return out.getvalue()
+
+
 def fetch_artwork(url):
-  """The cover's bytes, or None. Only Spotify's image hosts, at most 512 KB, JPEG or PNG."""
+  """The cover as PNG bytes, or None. Only Spotify's image hosts, at most 512 KB, JPEG or PNG."""
   if not now_playing.artwork_url(url):
     return None
   request = urllib.request.Request(url, headers={'User-Agent': 'starpilot-android-auto'})
@@ -25,7 +38,7 @@ def fetch_artwork(url):
     if not now_playing.artwork_url(response.geturl()):
       return None  # redirected off Spotify's image hosts
     data = response.read(MAX_ARTWORK_BYTES + 1)
-  return data if len(data) <= MAX_ARTWORK_BYTES and image_type(data) else None
+  return as_png(data) if len(data) <= MAX_ARTWORK_BYTES and image_type(data) else None
 
 
 class ProjectionNowPlayingFeed:

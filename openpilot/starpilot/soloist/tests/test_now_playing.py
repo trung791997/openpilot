@@ -122,3 +122,17 @@ def test_feed_downloads_each_cover_once_and_drops_failures():
   assert projection_now_playing.fetch_artwork('https://evil.example/a.jpg') is None
   assert projection_now_playing.image_type(b'\x89PNG\r\n\x1a\n...') == '.png' and projection_now_playing.image_type(b'GIF89a') is None
   feed.close()
+
+
+def test_jpeg_covers_reach_the_card_as_png():
+  from openpilot.starpilot.system.android_auto import projection_now_playing
+  # The comma's raylib cannot decode JPEG, and every Spotify cover is JPEG.
+  import io
+  from PIL import Image
+  jpeg = io.BytesIO()
+  Image.new('RGB', (8, 8), (200, 30, 60)).save(jpeg, format='JPEG')
+  png = projection_now_playing.as_png(jpeg.getvalue())
+  assert projection_now_playing.image_type(png) == '.png'
+  with Image.open(io.BytesIO(png)) as image:
+    assert image.size == (8, 8) and abs(image.getpixel((4, 4))[0] - 200) < 20
+  assert projection_now_playing.as_png(png) is png
