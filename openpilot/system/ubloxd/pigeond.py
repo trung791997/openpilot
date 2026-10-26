@@ -26,6 +26,12 @@ UBLOX_SOS_ACK = b"\xb5\x62\x09\x14\x08\x00\x02\x00\x00\x00\x01\x00\x00\x00"
 UBLOX_SOS_NACK = b"\xb5\x62\x09\x14\x08\x00\x02\x00\x00\x00\x00\x00\x00\x00"
 UBLOX_BACKUP_RESTORE_MSG = b"\xb5\x62\x09\x14\x08\x00\x03"
 UBLOX_ASSIST_ACK = b"\xb5\x62\x13\x60\x08\x00"
+UBX_SYNC = b"\xb5\x62"
+
+# Peter's Civic, route 00000034--010fbd6343 (2026-10-26): a read starting with a stray 0x00 power-cycled the
+# chip 19 times in 21 minutes with ~11 satellites up and jamInd ~7/255; each reset cost 10-60 s of fix.
+# A chip that really dropped to 9600 baud keeps sending garbage, so it still gets re-inited after this long.
+INVALID_REINIT_SECONDS = 3.0
 
 def set_power(enabled: bool) -> None:
   gpio_init(GPIO.UBLOX_SAFEBOOT_N, True)
@@ -305,6 +311,29 @@ def init(pigeon: TTYPigeon) -> None:
     except Exception:
       cloudlog.exception("failed to send time and position to ublox")
 
+class ReceiveGuard:
+  """Decides when bad serial data means the ublox needs a power cycle, instead of on the first stray zero byte."""
+  def __init__(self, now: float):
+    self.reset(now)
+
+  def reset(self, now: float) -> None:
+    self.last_good = now
+    self.bad = False
+
+  def check(self, dat: bytes, now: float) -> tuple[bytes, bool, bool]:
+    """(bytes to publish, first bad read since good data, re-init now)."""
+    if dat[0] != 0x00:
+      self.reset(now)
+      return dat, False, False
+    payload = dat.lstrip(b"\x00")
+    if UBX_SYNC in payload:
+      self.reset(now)
+      return payload, True, False
+    first = not self.bad
+    self.bad = True
+    return payload, first, now - self.last_good > INVALID_REINIT_SECONDS
+
+
 def run_receiving(duration: int = 0):
   pm = messaging.PubMaster(['ubloxRaw'])
 
@@ -312,6 +341,7 @@ def run_receiving(duration: int = 0):
   init(pigeon)
 
   start_time = time.monotonic()
+  guard = ReceiveGuard(start_time)
   last_almanac_save = time.monotonic()
   assist_attempted = False
   assist_messages = None
@@ -342,10 +372,16 @@ def run_receiving(duration: int = 0):
 
     dat = pigeon.receive()
     if len(dat) > 0:
-      if dat[0] == 0x00:
+      dat, first_bad, reinit = guard.check(dat, time.monotonic())
+      if reinit:
         cloudlog.warning("received invalid data from ublox, re-initing!")
         init(pigeon)
+        guard.reset(time.monotonic())
         assist_attempted = False
+        continue
+      if first_bad:
+        cloudlog.warning("skipped stray zero bytes from ublox")
+      if len(dat) == 0:
         continue
 
       # send out to socket
