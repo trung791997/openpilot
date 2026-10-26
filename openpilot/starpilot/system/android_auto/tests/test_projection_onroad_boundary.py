@@ -130,7 +130,7 @@ class TestProjectionOnroad(unittest.TestCase):
     native.ui_state.started = True
     view._state = SimpleNamespace(customization=projection_customization(layout, default_document()), alert=SimpleNamespace(size='none'),
                                   viewport_width=1860)
-    view.onroad.now_playing = SimpleNamespace(track=track)
+    view.onroad.now_playing = SimpleNamespace(track=track, showing=lambda: track)
     return view, native, owner
 
   def tap(self, view, x, y):

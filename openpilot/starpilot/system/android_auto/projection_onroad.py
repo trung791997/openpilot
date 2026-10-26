@@ -211,7 +211,7 @@ class ProjectionOnroad:
       self.now_playing_touch = None
       if self.now_playing_feed is not None and getattr(native, 'now_playing_control', None) is not None:
         from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
-        self.now_playing_touch = NowPlayingTouch(native.now_playing_control)
+        self.now_playing_touch = NowPlayingTouch(native.now_playing_control, getattr(self.onroad, 'now_playing', None))
       self.jetlink_feed = None
       if getattr(native, 'jetlink_feed', None) is not None:
         self.jetlink_feed = native.jetlink_feed()
@@ -620,7 +620,7 @@ class ProjectionOnroad:
       return False
     state = self._state if self.native.ui_state.started else None
     placed = state.customization['layouts']['large'].get('now_playing') if state is not None else None
-    return touch.touch(kind, x, y, state, placed, self.onroad.now_playing.track)
+    return touch.touch(kind, x, y, state, placed, self.onroad.now_playing.showing())  # the card holds a song through a skip
 
   def _slc_touch(self, kind, x, y) -> bool:
     """Speed-limit Apply/Keep/Use-limit taps; True while one owns the touch."""

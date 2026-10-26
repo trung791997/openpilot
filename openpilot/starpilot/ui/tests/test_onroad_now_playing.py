@@ -296,7 +296,12 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   assert (box.x, box.y, box.width, box.height) == (0, 88, 300, 124)
   assert card._cover[2].r == 235  # the seek bar and toggles take the cover's red
   assert not any(name == 'draw_rectangle_rounded' and args[0].height == 264 for name, args in drawn)  # no plain fill
-  card.artwork = ('', None)
+  now = [100.0]
+  card.ticks = lambda: now[0]
+  card.artwork = ('', None)  # between songs the feed has no cover for a moment: the old one stays
+  card.render(state())
+  assert unloads == []
+  now[0] += 3
   drawn.clear()
   card.render(state())
   assert unloads == [1] and count(drawn, 'draw_texture_pro') == 1  # just the Spotify mark
@@ -379,3 +384,152 @@ def test_decomposed_accents_are_composed_before_drawing(widget):
   card.track = {**TRACK, 'title': 'Về', 'artist': 'Khôi'}
   card.render(state())
   assert texts[1:3] == ['Về', 'Khôi']
+
+
+class Clock:
+  def __init__(self):
+    self.now = 100.0
+
+  def __call__(self):
+    return self.now
+
+
+@pytest.fixture
+def timed(widget):
+  card, drawn, texts = widget
+  card.ticks = clock = Clock()
+  return card, drawn, texts, clock
+
+
+def spinning(drawn):
+  return count(drawn, 'draw_ring') == 1
+
+
+def test_card_holds_the_last_song_while_the_player_buffers_the_next(timed):
+  card, drawn, texts, clock = timed
+  card.track = TRACK
+  card.render(state())
+  card.track = None  # Spotify says "buffering" between songs; the feed has no song
+  clock.now += 1
+  texts.clear()
+  drawn.clear()
+  card.render(state())
+  assert 'Midnight City' in texts and spinning(drawn) and card.showing() is TRACK
+  clock.now += 4
+  drawn.clear()
+  card.render(state())
+  assert drawn == [] and card.showing() is None
+
+
+def test_play_button_spins_until_the_player_answers_a_skip(timed):
+  from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+  card, drawn, _, clock = timed
+  card.track = TRACK
+  touch = NowPlayingTouch(lambda *call: None, card)
+  tap(touch, state(), TRACK, BUTTONS['next'], ROW)
+  card.render(state())
+  assert spinning(drawn)
+  card.track = {**TRACK, 'title': 'Wait'}
+  drawn.clear()
+  card.render(state())
+  assert not spinning(drawn) and count(drawn, 'draw_rectangle_rounded') > 0
+  tap(touch, state(), card.track, BUTTONS['play_pause'], ROW)
+  clock.now += 3  # the player never answered: stop spinning
+  drawn.clear()
+  card.render(state())
+  assert not spinning(drawn)
+
+
+def test_shuffle_tap_does_not_spin_the_play_button(timed):
+  from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+  card, drawn, _, _ = timed
+  card.track = TRACK
+  tap(NowPlayingTouch(lambda *call: None, card), state(), TRACK, BUTTONS['shuffle'], ROW)
+  card.render(state())
+  assert not spinning(drawn)
+
+
+def press_circles(drawn, x):
+  return [args for name, args in drawn if name == 'draw_circle_v' and abs(args[0].x - x) < 2 and abs(args[0].y - ROW) < 2 and args[1] > 36]
+
+
+def test_a_gray_circle_opens_behind_the_pressed_button_and_fades_after_the_lift(timed):
+  from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+  card, drawn, _, clock = timed
+  card.track = TRACK
+  placed = state().customization['layouts']['large']['now_playing']
+  touch = NowPlayingTouch(lambda *call: None, card)
+  touch.touch('down', BUTTONS['previous'], ROW, state(), placed, TRACK)
+  clock.now += .2
+  card.render(state())
+  (held,) = press_circles(drawn, BUTTONS['previous'])
+  assert held[1] == 46 and held[2].a == 70
+  touch.touch('up', BUTTONS['previous'], ROW, state(), placed, TRACK)
+  clock.now += .2
+  drawn.clear()
+  card.render(state())
+  (fading,) = press_circles(drawn, BUTTONS['previous'])
+  assert 0 < fading[2].a < 70
+  clock.now += .2
+  drawn.clear()
+  card.render(state())
+  assert press_circles(drawn, BUTTONS['previous']) == [] and card._press is None
+
+
+def test_new_song_title_fades_in_and_rises_into_place(timed, monkeypatch):
+  card, _, _, clock = timed
+  lines = []
+  monkeypatch.setattr(card.text, 'draw', lambda text, role, size, x, y, color, key: lines.append((text, y, color.a)))
+  card.track = TRACK
+  card.render(state())
+  assert lines[0][2] == 245 + 10  # the first song is simply there
+  lines.clear()
+  card.track = {**TRACK, 'title': 'Wait'}
+  card.render(state())
+  start = next(line for line in lines if line[0] == 'Wait')
+  clock.now += .3
+  lines.clear()
+  card.render(state())
+  middle = next(line for line in lines if line[0] == 'Wait')
+  clock.now += .3
+  lines.clear()
+  card.render(state())
+  end = next(line for line in lines if line[0] == 'Wait')
+  assert start[2] == 0 and 0 < middle[2] < 255 and end[2] == 255
+  assert start[1] == end[1] + 10 and end[1] < middle[1] < start[1]
+
+
+def test_new_cover_fades_in_over_the_old_one_which_is_then_freed(timed, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  rl = onroad_now_playing.rl
+  card, drawn, _, clock = timed
+  unloads = []
+  textures = iter(range(1, 10))
+  monkeypatch.setattr(rl, 'load_image_from_memory', lambda *args: SimpleNamespace(width=300, height=300))
+  for name in ('image_crop', 'image_resize', 'unload_image', 'unload_image_colors', 'set_texture_filter'):
+    monkeypatch.setattr(rl, name, lambda *args: None)
+  monkeypatch.setattr(rl, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
+  monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=640, height=264, id=next(textures)))
+  monkeypatch.setattr(rl, 'is_window_ready', lambda: True)
+  monkeypatch.setattr(rl, 'unload_texture', lambda texture: unloads.append(texture.id))
+
+  def covers():
+    return {(args[0].id, args[5].a) for name, args in drawn if name == 'draw_texture_pro' and not hasattr(args[0], 'path')}
+
+  card.track = TRACK
+  card.artwork = ('https://i.scdn.co/image/a', b'\xff\xd8\xff\xe0 jpeg')
+  card.render(state())
+  card.track = {**TRACK, 'title': 'Wait'}
+  card.artwork = ('https://i.scdn.co/image/b', b'\xff\xd8\xff\xe0 jpeg')
+  card.render(state())  # the new cover starts fading in
+  clock.now += .4
+  drawn.clear()
+  card.render(state())
+  alphas = dict(covers())
+  assert unloads == [] and 0 < alphas[2] < round(255 * .85) and alphas[1] > 0
+  clock.now += .8
+  drawn.clear()
+  card.render(state())
+  assert unloads == [1] and covers() == {(2, round(255 * .85))}
+  card.close()
+  assert unloads == [1, 2]

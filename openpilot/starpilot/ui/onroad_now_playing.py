@@ -39,6 +39,17 @@ TRACK_FONTS = {FontRole.SEMI_BOLD: 'Inter-SemiBold.ttf', FontRole.NORMAL: 'Inter
 TRACK_FONT_PX = 48  # drawn at 27-37 px; same Inter metrics as the bitmap atlases to within 0.3 px
 # Always cut ASCII as well: raylib 5.5 segfaulted packing a four-glyph atlas ("EVxg" at 64 px) on the dev VM.
 ASCII = range(32, 127)
+# Changing songs: Spotify reports "buffering" for a moment, which the feed drops, so the card holds the last song
+# instead of blinking out; the play button spins until the player answers a tap; the new cover and title fade in.
+HOLD = 4.0  # s the last song stays up while the feed has none
+COVER_HOLD = 3.0  # s the old cover stays while the new song has no cover yet
+COVER_FADE = .8
+TITLE_FADE = .6
+TITLE_SLIDE = 10  # px the new title rises while it fades in
+PRESS_GROW = .15  # s for the gray circle behind a tapped button to open
+PRESS_FADE = .35  # s for it to fade once the finger lifts
+PRESS_MAX = 2.0  # s a held finger keeps it up
+PENDING = 3.0  # s at most the play button spins waiting for the player to answer
 
 
 def card_layout(placed, track, viewport_width):
@@ -57,11 +68,23 @@ def card_layout(placed, track, viewport_width):
                 for index, name in enumerate(CONTROLS)}
 
 
-def _play_pause(center: rl.Vector2, playing: bool, r: float = BUTTON_R, disc=DISC, ink=TEXT) -> None:
-  """A disc with the pause bars while playing, else the play triangle."""
+def _ease(t: float) -> float:
+  t = min(1.0, max(0.0, t))
+  return t * t * (3 - 2 * t)
+
+
+def _faded(color: rl.Color, alpha: float) -> rl.Color:
+  return rl.Color(color.r, color.g, color.b, round(color.a * alpha))
+
+
+def _play_pause(center: rl.Vector2, playing: bool, r: float = BUTTON_R, disc=DISC, ink=TEXT, spin: float | None = None) -> None:
+  """A disc with the pause bars while playing, else the play triangle; a turning arc while the player is busy."""
   rl.draw_circle_v(center, r, disc)
   k = r / BUTTON_R
-  if playing:
+  if spin is not None:
+    start = spin * 360 % 360
+    rl.draw_ring(center, 13 * k, 17 * k, start, start + 270, 24, ink)
+  elif playing:
     for dx in (-10, 3):
       rl.draw_rectangle_rounded(rl.Rectangle(center.x + dx * k, center.y - 13 * k, 7 * k, 26 * k), .5, 4, ink)
   else:
@@ -281,12 +304,50 @@ class NowPlayingWidget:
     self.track = None
     self.artwork = ('', None)  # (url, image bytes) from the feed thread
     self._cover = None  # (url, blurred texture or None, accent or None), built on the render thread
+    self._old_cover = None  # (texture, start): the last song's cover, fading out under the new one
+    self._bare_since = None  # when the cover url went empty while a cover was up
+    self._shown = None  # (track, when): the last song the feed had, held through a skip
+    self._line = None  # ((title, artist), start of its fade-in)
+    self._press = None  # (button, down, up or None) for the gray circle behind a tapped button
+    self._pending = None  # (song key, start): a skip or play/pause the player has not answered yet
+
+  def press(self, name):
+    """The finger went down on a button."""
+    self._press = (name, self.ticks(), None)
+
+  def release(self, fired):
+    """The finger lifted; ``fired`` is the button it sent, or None."""
+    now = self.ticks()
+    if self._press is not None:
+      self._press = (self._press[0], self._press[1], now)
+    if fired in ('previous', 'next', 'play_pause') and (track := self.showing()):
+      self._pending = (_song_key(track), now)
+
+  def showing(self):
+    """The song on the card: the feed's, or the last one for HOLD seconds after the feed lost it."""
+    if self.track:
+      return self.track
+    if self._shown is not None and self.ticks() - self._shown[1] < HOLD:
+      return self._shown[0]
+    return None
 
   def _cover_art(self):
     """(background texture, accent color); either is None without usable art. One card-sized texture per cover."""
     url, data = self.artwork
+    now = self.ticks()
+    if url or self._cover is None or self._cover[1] is None:
+      self._bare_since = None
+    else:
+      # Between songs the feed has no cover for a moment; keep the old one up rather than flash the plain card.
+      self._bare_since = now if self._bare_since is None else self._bare_since
+      if now - self._bare_since < COVER_HOLD:
+        return self._cover[1:]
     if self._cover is not None and self._cover[0] == url:
       return self._cover[1:]
+    if url and self._cover is not None and self._cover[1] is not None:
+      self._drop_old_cover()
+      self._old_cover = (self._cover[1], now)  # fades out under the new cover, then is freed
+      self._cover = None
     self._drop_cover()
     texture = accent = None
     if url and data and (kind := image_type(data)):
@@ -308,12 +369,18 @@ class NowPlayingWidget:
 
   def close(self):
     self._drop_cover()
+    self._drop_old_cover()
     self.text.close()
 
   def _drop_cover(self):
     if self._cover is not None and self._cover[1] is not None and rl.is_window_ready():
       rl.unload_texture(self._cover[1])
     self._cover = None
+
+  def _drop_old_cover(self):
+    if self._old_cover is not None and rl.is_window_ready():
+      rl.unload_texture(self._old_cover[0])
+    self._old_cover = None
 
   def _scrolling(self, text, line_width, draw, x, y, width, height):
     """Run ``draw(left)`` once when the line fits ``width``; otherwise scroll it left inside a clip, then repeat."""
@@ -332,6 +399,20 @@ class NowPlayingWidget:
     finally:
       clip.end_scissor_mode()
 
+  def _covers(self, rect, texture, opacity):
+    """The cover behind the card, the last song's cover fading out under a new one."""
+    if self._old_cover is None:
+      self._background(rect, texture, opacity)
+      return
+    fade = _ease((self.ticks() - self._old_cover[1]) / COVER_FADE)
+    if fade >= 1:
+      self._drop_old_cover()
+      self._background(rect, texture, opacity)
+      return
+    new = opacity * fade
+    self._background(rect, self._old_cover[0], opacity * (1 - fade) / (1 - new))  # together they stay at opacity
+    self._background(rect, texture, new)
+
   def _background(self, rect, texture, opacity):
     if texture is None:
       rl.draw_rectangle_rounded(rect, 2 * CORNER / min(rect.width, rect.height), 24, rl.Color(15, 13, 23, round(235 * opacity)))
@@ -343,20 +424,26 @@ class NowPlayingWidget:
                           rl.Rectangle(rect.x + inset, rect.y + y, rect.width - 2 * inset, height), rl.Vector2(0, 0), 0, tint)
 
   def _title_line(self, rect, track):
-    """The "title • artist" line, centered; a line too wide scrolls, like the phone."""
+    """The "title • artist" line, centered; a line too wide scrolls, like the phone. A new song's line fades in."""
     title, artist = nfc(track['title']), nfc(track['artist'] or track['album'] or '')
+    now = self.ticks()
+    if self._line is None or self._line[0] != (title, artist):
+      self._line = ((title, artist), now if self._line is not None else now - TITLE_FADE)  # the first song is just there
+    fade = _ease((now - self._line[1]) / TITLE_FADE)
+    color = _faded(TEXT, fade)
     size, dot = 28, 34
     title_width = self.text.measure(title, FontRole.SEMI_BOLD, size, 'title').width
     artist_width = self.text.measure(artist, FontRole.SEMI_BOLD, size, 'artist').width if artist else 0
     line_width = title_width + (dot + artist_width if artist else 0)
     width = rect.width - 2 * PAD
     top = rect.y + LINE_Y - 18
+    rise = TITLE_SLIDE * (1 - fade)
 
     def draw(x):
-      self.text.draw(title, FontRole.SEMI_BOLD, size, x, top, TEXT, 'title')
+      self.text.draw(title, FontRole.SEMI_BOLD, size, x, top + rise, color, 'title')
       if artist:
-        rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, rect.y + LINE_Y), 3.5, TEXT)
-        self.text.draw(artist, FontRole.SEMI_BOLD, size, x + title_width + dot, top, TEXT, 'artist')
+        rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, rect.y + LINE_Y + rise), 3.5, color)
+        self.text.draw(artist, FontRole.SEMI_BOLD, size, x + title_width + dot, top + rise, color, 'artist')
 
     left = rect.x + PAD if line_width > width else rect.x + rect.width / 2 - line_width / 2
     self._scrolling(f'{title}\n{artist}', line_width, draw, left, top - 4, width, 44)
@@ -385,7 +472,10 @@ class NowPlayingWidget:
 
   def render(self, state):
     placed = state.customization['layouts']['large'].get(NOW_PLAYING_WIDGET)
-    track = self.track
+    now = self.ticks()
+    if self.track:
+      self._shown = (self.track, now)
+    track = self.showing()
     if state.alert.size != 'none' or (shape := card_layout(placed, track, getattr(state, 'viewport_width', 0))) is None:
       return
     rect, buttons = shape
@@ -393,22 +483,48 @@ class NowPlayingWidget:
     if len(buttons) == 1:
       center = _center(rect)
       rl.draw_circle_v(center, rect.width / 2, rl.Color(15, 13, 23, round(235 * opacity)))
-      _play_pause(center, False, rect.width * .36, self._cover_art()[1] or ACCENT, INK)
+      _play_pause(center, False, rect.width * .36, self._cover_art()[1] or ACCENT, INK, now if self._busy(track, now) else None)
       return
     texture, accent = self._cover_art()
     accent = accent or ACCENT
-    self._background(rect, texture, opacity)
+    self._covers(rect, texture, opacity)
     label = nfc(track.get('device') or ('Phone' if track.get('source') == 'phone' else 'Spotify'))
     self.text.draw(label, FontRole.SEMI_BOLD, 20, rect.x + PAD, rect.y + 20, MUTED, 'device')
     if track.get('source') == 'spotify':
       _spotify(rl.Vector2(rect.x + rect.width - PAD - 10, rect.y + 32), 13)  # clear of the top edge and the corner
     self._title_line(rect, track)
     self._seek_bar(rect, track, accent)
+    self._press_circle(buttons, now)
     _shuffle(_center(buttons['shuffle']), track.get('shuffle'), track.get('smartShuffle') is True)
     _skip(_center(buttons['previous']), False)
-    _play_pause(_center(buttons['play_pause']), track['status'] == 'playing')
+    _play_pause(_center(buttons['play_pause']), track['status'] == 'playing', spin=now if self._busy(track, now) else None)
     _skip(_center(buttons['next']), True)
     _repeat(_center(buttons['repeat']), track.get('repeat'))
+
+  def _busy(self, track, now):
+    """Spin the play button while the card holds a song the feed lost, or until the player answers a tap."""
+    if track is not self.track:
+      return True
+    if self._pending is not None and (_song_key(track) != self._pending[0] or now - self._pending[1] >= PENDING):
+      self._pending = None
+    return self._pending is not None
+
+  def _press_circle(self, buttons, now):
+    """A gray circle opens behind a pressed button and fades once the finger lifts, like the phone's card."""
+    if self._press is None:
+      return
+    name, down, up = self._press
+    alpha = 1.0 if up is None else 1 - (now - up) / PRESS_FADE
+    if alpha <= 0 or name not in buttons or (up is None and now - down >= PRESS_MAX):
+      self._press = None if alpha <= 0 or up is None else self._press
+      return
+    radius = BUTTON_R + 10 * _ease((now - down) / PRESS_GROW)
+    rl.draw_circle_v(_center(buttons[name]), radius, rl.Color(255, 255, 255, round(70 * alpha)))
+
+
+def _song_key(track):
+  """What changes when the player answers a skip or play/pause: the song, play state or position anchor."""
+  return track.get('title'), track.get('artist'), track.get('status'), track.get('position')
 
 
 def _center(box: rl.Rectangle) -> rl.Vector2:
@@ -417,11 +533,17 @@ def _center(box: rl.Rectangle) -> rl.Vector2:
 
 class NowPlayingTouch:
   """Card taps: a button fires when the finger lifts on the button it went down on. Taps on the card never fall through."""
-  def __init__(self, send):
+  def __init__(self, send, feedback=None):
     self.send = send
+    self.feedback = feedback  # the card: press(button) and release(button sent or None) animate it
     self.pressed = None
 
   def cancel(self):
+    self._lift(None)
+
+  def _lift(self, fired):
+    if self.pressed is not None and self.feedback is not None:
+      self.feedback.release(fired)
     self.pressed = None
 
   def touch(self, kind, x, y, state, placed, track) -> bool:
@@ -429,15 +551,17 @@ class NowPlayingTouch:
     shape = None if kind == 'cancel' or state is None or state.alert.size != 'none' else card_layout(placed, track, state.viewport_width)
     if shape is None:
       claimed = self.pressed is not None
-      self.pressed = None
+      self._lift(None)
       return claimed
     point = rl.Vector2(x, y)
     hit = next((name for name, box in shape[1].items() if rl.check_collision_point_rec(point, box)), None)
     if kind == 'down':
       self.pressed = hit
+      if hit is not None and self.feedback is not None:
+        self.feedback.press(hit)
       return rl.check_collision_point_rec(point, shape[0])
     if kind == 'up':
-      pressed, self.pressed = self.pressed, None
+      pressed, fired = self.pressed, None
       if pressed is not None and pressed == hit:
         if pressed == 'shuffle':
           if track.get('shuffle') is not None:
@@ -447,5 +571,7 @@ class NowPlayingTouch:
             self.send('repeat', {'mode': REPEAT_NEXT[track['repeat']]})
         else:
           self.send(pressed, {})
+          fired = pressed
+      self._lift(fired)
       return pressed is not None or rl.check_collision_point_rec(point, shape[0])
     return self.pressed is not None

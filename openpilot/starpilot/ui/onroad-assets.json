@@ -16,6 +16,11 @@
       "file": "icons_mici/onroad/onroad_fade.png",
       "bytes": 38317,
       "sha256": "2aa6d04ba038f15a92868de6e6c7b04f624b4fe89d03bc3e9c4cd44cb729b24e"
+    },
+    {
+      "file": "icons/spotify.png",
+      "bytes": 7140,
+      "sha256": "abe4fed929d9250388d189dc1f083ca27aaa4d0aff3f2e760d0c64723ee46883"
     }
   ]
 }
