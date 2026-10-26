@@ -24,6 +24,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Open items
 
+- **Curve brake fix (entry 7).** Waiting on Job's 7.0 planner replay of route 30 and the real-brake controls before it goes to V-ASM and the comma.
 - **Stop-and-go fix.** Judge it on Peter's next stop-and-go drive: brake toggles per minute, short holds, gas surge after release.
 - **D-048 radar-lead corroboration is shelved.**
   - The unshipped code is on branch `d048-corroboration` at a0d0bf865.
@@ -35,6 +36,25 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 7 — 2026-10-26 — Curve brake fix: a radar lead that flips from speeding up to braking within 1.5 s gets less braking authority
+
+**Problem.** On route 30 (11c8fa231c0499ed/00000030--70508f00bd, T1421–1424) the Civic braked hard to -2.87 while following a car through an S-curve. The car ahead was not slowing. Radar track 60 read the lead as speeding up at +4 m/s², then braking at -3 m/s², all within 1 s. A vision-only drive would not have braked: the model kept the lead at 47–52 m and about 21–22 m/s.
+
+**Change.** `ReversalBound` in `openpilot/starpilot/car/honda/radar_reversal_bound.py`, called from `BoschALeadPolicy.leads()`. It is Bosch-A only and default ON.
+- **Trigger:** the published lead's aLeadK on one radar track goes above +2.0, then below -2.0, within 1.5 s. Only that order counts.
+- **Latch:** that track is distrusted for 4 s. A new reversal extends the latch.
+- **Bound:** while latched, vLead/vLeadK/vRel and aLeadK move 60 % of the way toward the model lead. They only move when the model lead is the less severe one, and only when the model lead prob is at least 0.35.
+- **What is never changed:** dRel. The point is always published (D-041/D-042).
+- **Bypass:** none of this applies when the radar range is under 30 m or its TTC is under 4 s.
+
+**Evidence** (limited road evidence, log level):
+- **Positive case:** route 30 is the only one found. Across 18 radar routes, radar leads had 18 reversals and the model lead had 0. Only route 30's reversal was followed by lead0 braking the plan below -1.0.
+- **Real brakes:** 0 of the 58 engaged lead0 brakes below -1.5 had a reversal in the 4 s before them.
+- **Route 30 estimate:** about -2.87 → -1.3. This comes from a regression on that route's rows, **not a replay**. At T1422.3, Job's blended fields were vLead 15.67 → 19.16 and aLeadK -3.0 → -1.42.
+- **Tests (static):** 11 new tests in `tests/test_radar_reversal_bound.py`. The Honda radar suite (22) and radard `test_leads.py` pass.
+
+**Not verified:** no planner replay yet, and not driven. Next: Job replays the 7.0 planner on route 30 and on the real-brake controls. It goes to V-ASM and the comma only after that.
 
 ### 6 — 2026-10-26 — Curve brake on route 30: radar misread the lead in an S-curve; no fix yet
 
