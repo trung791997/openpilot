@@ -533,3 +533,17 @@ def test_new_cover_fades_in_over_the_old_one_which_is_then_freed(timed, monkeypa
   assert unloads == [1] and covers() == {(2, round(255 * .85))}
   card.close()
   assert unloads == [1, 2]
+
+
+
+def test_torque_bar_steps_aside_only_while_the_card_is_on_screen(timed):
+  card, drawn, texts, clock = timed
+  assert not card.on_screen(state())  # no song: the torque bar stays
+  card.track = TRACK
+  assert card.on_screen(state()) and not card.on_screen(state(enabled=False)) and not card.on_screen(state(alert='full'))
+  card.render(state())
+  card.track = None  # between songs the card holds the last one, so the bar stays away
+  clock.now += 1
+  assert card.on_screen(state())
+  clock.now += 4
+  assert not card.on_screen(state())

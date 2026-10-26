@@ -168,6 +168,11 @@ class OnroadView:
     else:
       self._compact(state)
 
+  def _now_playing_on_screen(self, state: OnroadState) -> bool:
+    """The Spotify card sits over the torque bar's spot, so the bar hides while the card shows."""
+    now_playing = getattr(self, "now_playing", None)
+    return now_playing is not None and now_playing.on_screen(state)
+
   def _slc_actions(self, state: OnroadState) -> None:
     controls = slc_controls(self.fonts.profile, state)
     feedback = state.speed_limit.action_feedback
@@ -317,7 +322,7 @@ class OnroadView:
       if state.alert.size == AlertSize.NONE:
         if placement(state.customization, profile, "steering_wheel")["enabled"]:
           submit("steering_wheel", lambda: self.steering_wheel.render(content, state))
-        if placement(state.customization, profile, "torque_bar")["enabled"]:
+        if placement(state.customization, profile, "torque_bar")["enabled"] and not self._now_playing_on_screen(state):
           submit("torque_bar", lambda: self.torque_bar.render(content, state, width if self.projection_viewport else 2160))
         if state.stopped_duration_s is not None:
           submit(STOPPED_TIMER_WIDGET, lambda: self._stopped_timer(state, state.stopped_duration_s))
@@ -389,7 +394,7 @@ class OnroadView:
         if state.alert.size == AlertSize.NONE:
           if placement(state.customization, "large", "steering_wheel")["enabled"]:
             self.steering_wheel.render(content, state)
-          if placement(state.customization, "large", "torque_bar")["enabled"]:
+          if placement(state.customization, "large", "torque_bar")["enabled"] and not self._now_playing_on_screen(state):
             self.torque_bar.render(content, state, width if self.projection_viewport else 2160)
           if state.stopped_duration_s is not None:
             self._stopped_timer(state, state.stopped_duration_s)

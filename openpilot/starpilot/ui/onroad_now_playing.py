@@ -331,6 +331,11 @@ class NowPlayingWidget:
       return self._shown[0]
     return None
 
+  def on_screen(self, state):
+    """Whether the card is drawn this frame; the torque bar steps aside for it."""
+    placed = state.customization['layouts']['large'].get(NOW_PLAYING_WIDGET)
+    return state.alert.size == 'none' and card_layout(placed, self.showing(), getattr(state, 'viewport_width', 0)) is not None
+
   def _cover_art(self):
     """(background texture, accent color); either is None without usable art. One card-sized texture per cover."""
     url, data = self.artwork
