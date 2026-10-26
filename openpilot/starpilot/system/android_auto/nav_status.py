@@ -171,8 +171,10 @@ def modern_maneuver(maneuver_type: str, modifier: str) -> int:
 
 
 def notification_message(road: str, maneuver: int) -> bytes:
-  # NavigationNotification.steps[].{maneuver.type, instruction.text}
-  return field(1, field(1, field(1, maneuver)) + field(2, field(1, road[:128])))
+  # NavigationState.steps[].{maneuver.type, road.name, cue.alternate_text}. Head units that draw their
+  # own cluster text (Honda) read the cue, not road.name: with road.name alone the arrow showed blank.
+  road = road[:128]
+  return field(1, field(1, field(1, maneuver)) + field(2, field(1, road)) + (field(4, field(1, road)) if road else b''))
 
 
 def current_position_message(meters: float, seconds: float, metric: bool) -> bytes:
