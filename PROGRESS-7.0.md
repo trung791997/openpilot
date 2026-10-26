@@ -19,12 +19,13 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Force Stop: a gas tap keeps Force Stop out for its full 10 s | 2e869b83d | e384f2b12 | static tests |
 | Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (now `BoschABrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
+| Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
 
-**The comma** runs V-ASM b95b393 (has the Bosch-A harness brake fixes, f361d7d4e). `BoschAStockBrakeFeel` is 0 on it.
+**The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
-- **Curve brake fix (entry 7).** Waiting on Job's 7.0 planner replay of route 30 and the real-brake controls before it goes to V-ASM and the comma.
+- **Curve brake fix (entry 7).** On the comma since 2026-10-26. Check the next drives for curve brakes and for a real brake that came out weaker than it should.
 - **Stop-and-go fix.** Judge it on Peter's next stop-and-go drive: brake toggles per minute, short holds, gas surge after release.
 - **D-048 radar-lead corroboration is shelved.**
   - The unshipped code is on branch `d048-corroboration` at a0d0bf865.
@@ -54,7 +55,20 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **Route 30 estimate:** about -2.87 → -1.3. This comes from a regression on that route's rows, **not a replay**. At T1422.3, Job's blended fields were vLead 15.67 → 19.16 and aLeadK -3.0 → -1.42.
 - **Tests (static):** 11 new tests in `tests/test_radar_reversal_bound.py`. The Honda radar suite (22) and radard `test_leads.py` pass.
 
-**Not verified:** no planner replay yet, and not driven. Next: Job replays the 7.0 planner on route 30 and on the real-brake controls. It goes to V-ASM and the comma only after that.
+**Replay** (Job, 7.0 planner, bound applied to the logged leads, not radard rerun from CAN):
+
+| Case | Base | Fix |
+|---|---|---|
+| Route 30 curve brake, aTarget min (log -2.87) | -2.20 | -0.72 |
+| 13 real engaged hard brakes (aT -2.0 to -3.5, dRel 8.7–61.9 m) | — | identical, max change 0.0 |
+| Other reversals where it changed anything | 30_23 T167.7 -1.68 → -0.92; 30_24 T203.9 -0.65 → -0.10; 0d_5 T307.8 -0.30 → -0.05 | never braked harder |
+
+- **Fidelity** (route 30 seg 23, base run): aTarget corr 0.992, RMSE 0.20; aEgo corr 0.945. The sim brakes less than the log at the event (-2.20 vs -2.87).
+- On 30_23 T167.7 the sim base itself is off: the log reads -0.03.
+- A 14th control (0f/38) clipped to one frame and is excluded.
+- Only per-event fidelity on route 30 was checked.
+
+**Shipped:** V-ASM 30e08d987, on the comma 2026-10-26. **Not verified:** not driven.
 
 ### 6 — 2026-10-26 — Curve brake on route 30: radar misread the lead in an S-curve; no fix yet
 
