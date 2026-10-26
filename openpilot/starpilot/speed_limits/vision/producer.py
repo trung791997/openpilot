@@ -29,7 +29,7 @@ def _log_jetson_stats(core, link) -> None:
   import json
   from openpilot.common.swaglog import cloudlog
   nets = {name: getattr(core, attr, None) for name, attr in (('detector', 'net'), ('classifier', 'classifier_net'))}
-  stats = {'t': time.monotonic(), 'link': dict(link.stats), 'round_trips': link.round_trips.take(),
+  stats = {'t': time.monotonic(), 'link': dict(link.stats), 'round_trips': link.take_round_trips(),
            **{name: {**net.stats, 'built': net.net is not None} for name, net in nets.items() if hasattr(net, 'stats')}}
   cloudlog.info('vision SLC jetson stats: %s', json.dumps(stats))
   try:

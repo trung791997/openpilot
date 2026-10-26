@@ -87,7 +87,10 @@ class SlvLink:
     self._fd_in = self._fd_out = -1
     self._next_open = 0.0
     self._threads_started = False
-    self.round_trips = RoundTrips()
+    self.round_trips = {DETECTOR: RoundTrips(), CLASSIFIER: RoundTrips()}
+
+  def take_round_trips(self) -> dict:
+    return {'detector': self.round_trips[DETECTOR].take(), 'classifier': self.round_trips[CLASSIFIER].take()}
 
   def available(self) -> bool:
     return os.path.exists(os.path.join(self.mount, 'ep0'))
@@ -133,7 +136,7 @@ class SlvLink:
     if status != STATUS_OK or out.size != int(np.prod(shape)) or not np.isfinite(out).all():
       self.stats['bad_answers'] += 1
       return None
-    self.round_trips.add((time.monotonic_ns() - t0) // 1000, server_us)
+    self.round_trips[kind].add((time.monotonic_ns() - t0) // 1000, server_us)
     self.stats['answered'] += 1
     return out.reshape(shape)
 

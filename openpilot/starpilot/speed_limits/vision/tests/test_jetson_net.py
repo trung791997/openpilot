@@ -297,7 +297,7 @@ def test_a_yield_skipped_frame_keeps_the_held_sign_and_the_history(tmp_path):
   assert list(core.history) == history and core.net.net is None and core.net.stats['yield_skips'] == 1
 
 
-def test_round_trips_cover_both_models_and_carry_the_jetsons_time(mount):
+def test_round_trips_are_kept_per_model_and_carry_the_jetsons_time(mount):
   link = _link(mount, _hello())
   det = J.JetsonNet(_CpuNet((1, 5, 1344)), J.DETECTOR, link)
   det.setInput(np.zeros((1, 3, 256, 256), np.float32))
@@ -305,6 +305,11 @@ def test_round_trips_cover_both_models_and_carry_the_jetsons_time(mount):
   cls = J.JetsonNet(_CpuNet((1, 19)), J.CLASSIFIER, link)
   cls.setInput(np.zeros((1, 3, 128, 128), np.float32))
   cls.forward()
-  rt = link.round_trips.take()
-  assert rt['n'] == 2 and rt['jetson_ms']['max'] == 0.9   # the fake server says 900 us
-  assert rt['total_ms']['max'] >= rt['jetson_ms']['max'] and rt['link_ms']['mean'] >= 0
+  det.setInput(np.zeros((1, 3, 256, 256), np.float32))
+  det.forward()
+  rt = link.take_round_trips()
+  assert rt['detector']['n'] == 2 and rt['classifier']['n'] == 1
+  for model in rt.values():
+    assert model['jetson_ms']['max'] == 0.9   # the fake server says 900 us
+    assert model['total_ms']['max'] >= model['jetson_ms']['max'] and model['link_ms']['mean'] >= 0
+  assert link.take_round_trips() == {'detector': {'n': 0}, 'classifier': {'n': 0}}
