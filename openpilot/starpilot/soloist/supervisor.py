@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from openpilot.common.time_helpers import system_time_valid
 from openpilot.starpilot.soloist import backend, bluealsa_runtime, bugsink_report, credentials, package, preferences, phone_audio
 from openpilot.starpilot.soloist import now_playing as now_playing_module
 from openpilot.starpilot.soloist.client import PlayerClient
@@ -130,10 +131,10 @@ class Supervisor:
   def __init__(self, layout: Layout | None = None, *, output: BluetoothOutput | None = None,
                spawn: Callable[..., subprocess.Popen] = subprocess.Popen, clock: Callable[[], float] = time.monotonic,
                make_client: Callable[[Path], PlayerClient] | None = None,
-               network: Callable[[], bool] = network_ready):
+               network: Callable[[], bool] = network_ready, time_valid: Callable[[], bool] = system_time_valid):
     self.layout = layout or Layout.default()
     self.output = output or BluetoothOutput()
-    self.spawn, self.clock, self.network = spawn, clock, network
+    self.spawn, self.clock, self.network, self.time_valid = spawn, clock, network, time_valid
     self.make_client = make_client or (lambda data: PlayerClient(data))
     self.server: subprocess.Popen | None = None
     self.player: subprocess.Popen | None = None
@@ -389,6 +390,11 @@ class Supervisor:
       return
     if not self.network():
       self._set('waiting_network', 'Waiting for the comma’s network…')
+      return
+    if not self.time_valid():
+      # Soloist signs in once at launch and does not retry. Launched at boot with the comma's clock still
+      # at its build date (July 28), the sign-in failed and Starpilot Auto never showed in Spotify Connect.
+      self._set('waiting_network', 'Waiting for the comma’s clock…')
       return
     if prefs.output == 'bluetooth' and not self.phone_profile:
       try:

@@ -177,7 +177,7 @@ def ready_layout(layout, monkeypatch, *, expired=False):
   preferences.save(preferences.Preferences(output='test'), layout)
 
 
-def make_supervisor(layout, spawned, logged_in=True):
+def make_supervisor(layout, spawned, logged_in=True, time_valid=lambda: True):
   def spawn(argv, **kwargs):
     process = FakeProcess(argv, **kwargs)
     spawned.append(process)
@@ -186,7 +186,8 @@ def make_supervisor(layout, spawned, logged_in=True):
     return process
   now = [100.0]
   make_client = type('Client', (FakeClient,), {'logged_in': logged_in})
-  sup = supervisor.Supervisor(layout, spawn=spawn, clock=lambda: now[0], make_client=make_client, network=lambda: True)  # ty: ignore[invalid-argument-type]
+  sup = supervisor.Supervisor(layout, spawn=spawn, clock=lambda: now[0], make_client=make_client, network=lambda: True,
+                                time_valid=time_valid)  # ty: ignore[invalid-argument-type]
   sup.run_async = lambda fn: fn()
   return sup, now
 
@@ -407,6 +408,20 @@ def test_supervisor_waits_for_network_before_starting(layout, monkeypatch):
   assert sup.status()['state'] == 'waiting_network'
   assert sup.fast_failures == 0
   up[0] = True
+  sup.tick()
+  assert [Path(p.argv[0]).name for p in spawned] == ['pulseaudio', 'soloist']
+
+
+def test_supervisor_waits_for_a_valid_clock_before_signing_in(layout, monkeypatch):
+  # At boot the comma's clock reads its build date; soloist signed in then, failed, and never retried.
+  ready_layout(layout, monkeypatch)
+  spawned = []
+  synced = [False]
+  sup, _ = make_supervisor(layout, spawned, time_valid=lambda: synced[0])
+  sup.tick()
+  assert spawned == []
+  assert sup.status()['state'] == 'waiting_network'
+  synced[0] = True
   sup.tick()
   assert [Path(p.argv[0]).name for p in spawned] == ['pulseaudio', 'soloist']
 
