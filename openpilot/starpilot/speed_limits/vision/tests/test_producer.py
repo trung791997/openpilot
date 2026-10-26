@@ -11,7 +11,7 @@ from openpilot.cereal import messaging
 from openpilot.cereal.visionipc import VisionStreamType
 from openpilot.starpilot.speed_limits.vision import producer
 from openpilot.starpilot.speed_limits.vision.model import Detection, VisionModelCore
-from openpilot.starpilot.speed_limits.vision.observation import vision_observation
+from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, vision_observation
 from openpilot.starpilot.speed_limits.acceptance import ObservationKind
 
 place_inference = producer._place_inference
@@ -351,8 +351,8 @@ class TestVisionProducer(unittest.TestCase):
         self.assertEqual(messages[1].supportCount, 2)
         self.assertEqual(messages[1].observedMonoTime, 1_100_000_000)
         self.assertEqual(messages[2].observedMonoTime, 1_100_000_000)
-        self.assertEqual(messages[1].validUntilMonoTime, 3_100_000_000)
-        self.assertEqual(messages[2].validUntilMonoTime, 3_300_000_000)
+        self.assertEqual(messages[1].validUntilMonoTime, 1_100_000_000 + SIGN_HOLD_NS)
+        self.assertEqual(messages[2].validUntilMonoTime, 1_300_000_000 + SIGN_HOLD_NS)
         self.assertEqual(core.last_detection_at, 1.1)
         self.assertEqual(messages[1].confidence, messages[2].confidence)
 
@@ -456,7 +456,7 @@ class TestVisionProducer(unittest.TestCase):
     self.assertTrue(heartbeats)
     for event, _ in heartbeats:
       self.assertEqual(event.observedMonoTime, 1_000_000_000)
-      self.assertEqual(event.validUntilMonoTime, 3_000_000_000)
+      self.assertEqual(event.validUntilMonoTime, 1_000_000_000 + SIGN_HOLD_NS)
       self.assertEqual((event.speedMps, event.confidence, event.supportCount, event.episode),
                        (first.speedMps, first.confidence, first.supportCount, first.episode))
       self.assertEqual(event.producerSessionId, first.producerSessionId)
@@ -464,7 +464,7 @@ class TestVisionProducer(unittest.TestCase):
     self.assertTrue(all(b[1]-a[1] >= producer.INFERENCE_INTERVAL_NS for a, b in zip(heartbeats, heartbeats[1:], strict=False)))
     # No background heartbeat can hide an actually stopped or blocked producer.
     final, receipt = messages[-1]
-    stopped = receipt + 1_000_000_001
+    stopped = receipt + SIGN_HOLD_NS + 1   # this branch: receipt age bound is the 3 s sign hold
     self.assertIs(vision_observation(final, receipt_mono_ns=receipt, now_mono_ns=stopped,
                                     now_boot_ns=stopped+4_000_000_000,
                                     car_fingerprint='IONIQ6', drive_session='drive').kind, ObservationKind.STALE)
@@ -477,11 +477,16 @@ class TestVisionProducer(unittest.TestCase):
         self.assertTrue(all(event.status != 'valid' for event, _ in invalid[1:]))
     # A new camera receipt cannot extend the last completed inference's deadline.
     expired = self.cooldown_messages(processing_ns=1_200_000_000)
-    self.assertEqual([stamp for _, stamp in expired], [2_200_000_000, 2_400_000_000, 2_800_000_000, 5_200_000_000])
+    self.assertEqual([stamp for _, stamp in expired], [2_200_000_000, 2_400_000_000, 2_800_000_000, 3_050_000_000, 5_200_000_000])
     old, receipt = expired[-2]
-    self.assertEqual(old.validUntilMonoTime, 3_000_000_000)
+    self.assertEqual(old.validUntilMonoTime, 1_000_000_000 + SIGN_HOLD_NS)
+    # This branch holds signs SIGN_HOLD_NS (3 s), not upstream's 2 s: still valid at 3.2 s, stale past the hold.
     self.assertIs(vision_observation(old, receipt_mono_ns=receipt, now_mono_ns=3_200_000_000,
                                     now_boot_ns=7_200_000_000, car_fingerprint='IONIQ6',
+                                    drive_session='drive').kind, ObservationKind.VALID)
+    past = 1_000_000_000 + SIGN_HOLD_NS + 200_000_000
+    self.assertIs(vision_observation(old, receipt_mono_ns=receipt, now_mono_ns=past,
+                                    now_boot_ns=past + 4_000_000_000, car_fingerprint='IONIQ6',
                                     drive_session='drive').kind, ObservationKind.STALE)
 
   def test_same_client_reconnect_starts_new_consensus_and_session(self):
