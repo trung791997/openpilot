@@ -18,6 +18,7 @@ def widget(monkeypatch):
   for name in ('draw_rectangle_rounded', 'draw_triangle', 'draw_circle_v', 'draw_line_ex', 'draw_ring', 'draw_texture_pro',
                'draw_rectangle_rec'):
     monkeypatch.setattr(onroad_now_playing.rl, name, lambda *args, name=name: drawn.append((name, args)))
+  monkeypatch.setattr(onroad_now_playing, '_spotify_texture', lambda size: SimpleNamespace(path='icons/spotify.png', width=size, height=size))
   texts = []
   fonts = SimpleNamespace(measure=lambda text, role, size: SimpleNamespace(width=len(text) * size * .5),
                           draw=lambda text, *args: texts.append(text))
@@ -90,9 +91,9 @@ def test_spotify_mark_sits_top_right_and_only_for_spotify(widget):
     drawn.clear()
     card.track = {**TRACK, 'source': source}
     card.render(state())
-    discs = [args for name, args in drawn if name == 'draw_circle_v' and args[1] == 17]
-    assert len(discs) == marks and all((d[0].x, d[0].y) == (10 + 640 - 46 - 4, 20 + 31) for d in discs)
-    assert count(drawn, 'draw_ring') == 3 * marks  # no small mark left in the title line
+    logos = [args for name, args in drawn if name == 'draw_texture_pro' and getattr(args[0], 'path', '') == 'icons/spotify.png']
+    assert len(logos) == marks  # one mark, top right; none in the title line
+    assert all((d[2].x + d[2].width / 2, d[2].y + d[2].height / 2) == (10 + 640 - 46 - 4, 20 + 31) for d in logos)
 
 
 def test_repeat_shows_a_dot_when_on_and_a_bar_for_one_song(widget):
@@ -287,7 +288,7 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   card.track = TRACK
   card.artwork = ('https://i.scdn.co/image/a', b'\xff\xd8\xff\xe0 jpeg')
   card.render(state())
-  strips = [args[2] for name, args in drawn if name == 'draw_texture_pro']
+  strips = [args[2] for name, args in drawn if name == 'draw_texture_pro' and not hasattr(args[0], 'path')]  # not the logo
   card.render(state())
   assert loads == ['.jpg'] and steps == ['image_crop', 'image_resize', 'colors freed']
   assert sum(dest.height for dest in strips) == pytest.approx(264) and min(dest.x for dest in strips) == 10
@@ -298,7 +299,7 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   card.artwork = ('', None)
   drawn.clear()
   card.render(state())
-  assert unloads == [1] and count(drawn, 'draw_texture_pro') == 0
+  assert unloads == [1] and count(drawn, 'draw_texture_pro') == 1  # just the Spotify mark
 
 
 def test_bytes_that_are_not_an_image_get_the_plain_card(widget, monkeypatch):

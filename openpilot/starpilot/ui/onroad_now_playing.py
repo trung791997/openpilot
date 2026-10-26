@@ -140,12 +140,16 @@ def _repeat(center: rl.Vector2, state) -> None:
     rl.draw_circle_v(rl.Vector2(x, y + 24), 3, color)
 
 
+def _spotify_texture(size: float) -> rl.Texture:
+  from openpilot.system.ui.lib.application import gui_app  # its texture cache loads the PNG once; imported late, it is the whole UI stack
+  return gui_app.texture("icons/spotify.png", size, size)
+
+
 def _spotify(center: rl.Vector2, r: float = 13) -> None:
-  """Spotify's mark: a disc with three bowed lines."""
-  rl.draw_circle_v(center, r, TEXT)
-  for dy, half, thick in ((-4.5, .62, 2.6), (.5, .52, 2.2), (5, .42, 1.9)):
-    rl.draw_ring(rl.Vector2(center.x, center.y + dy + r * 1.6), r * 1.6 - thick / 2, r * 1.6 + thick / 2,
-                 180 + 90 - math.degrees(half), 180 + 90 + math.degrees(half), 12, INK)
+  """Spotify's own mark (icons/spotify.png, rasterized from the official vector logo), centered on center."""
+  texture = _spotify_texture(2 * r)
+  rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height),
+                      rl.Rectangle(center.x - r, center.y - r, 2 * r, 2 * r), rl.Vector2(0, 0), 0, rl.WHITE)
 
 
 def _wave(left, right, y, accent, phase) -> None:
