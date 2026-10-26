@@ -73,6 +73,28 @@ def test_shuffle_dot_only_when_on(widget):
   assert count(drawn, 'draw_circle_v') == off + 1
 
 
+def test_smart_shuffle_adds_the_star(widget):
+  card, drawn, _ = widget
+  card.track = {**TRACK, 'shuffle': True}
+  card.render(state())
+  plain = count(drawn, 'draw_triangle')
+  drawn.clear()
+  card.track = {**TRACK, 'shuffle': True, 'smartShuffle': True}
+  card.render(state())
+  assert count(drawn, 'draw_triangle') == plain + 8
+
+
+def test_spotify_mark_sits_top_right_and_only_for_spotify(widget):
+  card, drawn, _ = widget
+  for source, marks in (('spotify', 1), ('phone', 0)):
+    drawn.clear()
+    card.track = {**TRACK, 'source': source}
+    card.render(state())
+    discs = [args for name, args in drawn if name == 'draw_circle_v' and args[1] == 17]
+    assert len(discs) == marks and all((d[0].x, d[0].y) == (10 + 640 - 46 - 4, 20 + 31) for d in discs)
+    assert count(drawn, 'draw_ring') == 3 * marks  # no small mark left in the title line
+
+
 def test_repeat_shows_a_dot_when_on_and_a_bar_for_one_song(widget):
   card, drawn, _ = widget
   shown = {}
@@ -218,7 +240,7 @@ def test_long_song_line_scrolls_inside_a_clip_and_short_one_does_not(widget, mon
   texts.clear()
   card.render(state())
   assert texts[1:-2] == [card.track['title'], card.track['artist']]  # a new name starts held again
-  # The clip is the card between its side paddings; the Spotify mark scrolls with the line.
+  # The clip is the card between its side paddings.
   assert clips[0] == (10 + 46, 20 + 70 - 22, 640 - 2 * 46, 44)
 
 

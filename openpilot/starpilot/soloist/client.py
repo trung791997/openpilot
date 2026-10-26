@@ -83,7 +83,7 @@ class PlayerState:
 
   def reset(self) -> None:
     self.value: dict[str, Any] = {'connected': False, 'loggedIn': False, 'active': False, 'deviceName': '', 'status': 'idle', 'track': None,
-                  'position': None, 'volume': None, 'shuffle': False, 'repeat': 'off', 'modes': [], 'actions': [], 'updated': 0.0}
+                  'position': None, 'volume': None, 'shuffle': False, 'smartShuffle': False, 'repeat': 'off', 'modes': [], 'actions': [], 'updated': 0.0}
 
   def apply(self, message: dict) -> None:
     kind = message.get('type')
@@ -135,6 +135,9 @@ class PlayerState:
       # Undocumented playback modes (smart shuffle may surface here); names only, for the status log.
       modes = options.get('modes')
       self.value['modes'] = sorted(_text(key)[:40] for key in modes)[:8] if isinstance(modes, dict) else []
+      # Smart Shuffle reads {"context_enhancement": "RECOMMENDATION"} (plain shuffle or off: "NONE"). Soloist 1.3.10 has
+      # no command to set it (set_shuffle ignores extra fields), so the car can show it and turn it off, not turn it on.
+      self.value['smartShuffle'] = isinstance(modes, dict) and modes.get('context_enhancement') == 'RECOMMENDATION'
 
 
 def commands(action: str, args: dict) -> list[dict]:

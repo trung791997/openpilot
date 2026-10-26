@@ -116,6 +116,13 @@ def test_player_state_normalizes_untrusted_events():
   assert value['track'] == {'title': 'My Song', 'artists': 'A, B', 'album': 'Album', 'artwork': 'https://i.scdn.co/image/x',
                             'kind': 'track', 'durationMs': 210000}
   assert value['actions'] == ['pause', 'skip_next'] and value['shuffle'] and value['repeat'] == 'context'
+  assert value['smartShuffle'] is False
+  state.apply({'type': 'playback_state', 'status': 'playing', 'item': ENTITY,
+               'options': {'shuffle': True, 'modes': {'context_enhancement': 'RECOMMENDATION'}}})
+  assert value['shuffle'] and value['smartShuffle'] is True
+  state.apply({'type': 'playback_state', 'status': 'playing', 'item': ENTITY,
+               'options': {'shuffle': True, 'modes': {'context_enhancement': 'NONE'}}})
+  assert value['smartShuffle'] is False
   state.apply({'type': 'volume_changed', 'volume': 900})
   assert value['volume'] == 65
   state.apply({'type': 'playback_changed', 'status': 'paused'})

@@ -32,15 +32,17 @@ def artwork_url(value: Any) -> str:
 
 def snapshot(source: str, status: str, title: str, artist: str, album: str, duration_ms: int | None,
              position: dict | None, shuffle: bool | None = None, artwork: str = '', repeat: str | None = None,
-             device: str = '') -> dict | None:
+             device: str = '', smart_shuffle: bool = False) -> dict | None:
   """``shuffle`` and ``repeat`` are None when the player cannot report or change them. ``artwork`` is '' without a
-  cover (phone audio). ``device`` is the name the player plays under, e.g. the Spotify Connect name."""
+  cover (phone audio). ``device`` is the name the player plays under, e.g. the Spotify Connect name. ``smart_shuffle``
+  is Spotify's Smart Shuffle, which also has ``shuffle`` on."""
   title = _text(title)
   if not title or status not in ('playing', 'paused'):
     return None
   return {'source': source, 'status': status, 'title': title, 'artist': _text(artist), 'album': _text(album),
           'durationMs': duration_ms, 'position': position, 'shuffle': shuffle, 'artwork': artwork_url(artwork),
-          'repeat': repeat if repeat in REPEATS else None, 'device': _text(device)[:40]}
+          'repeat': repeat if repeat in REPEATS else None, 'device': _text(device)[:40],
+          'smartShuffle': bool(smart_shuffle and shuffle)}
 
 
 def from_spotify(player: dict | None) -> dict | None:
@@ -52,7 +54,7 @@ def from_spotify(player: dict | None) -> dict | None:
   return snapshot('spotify', player['status'], track.get('title'), track.get('artists'), track.get('album'),
                   _whole(track.get('durationMs')), player.get('position'), player.get('shuffle') is True,
                   track.get('artwork'), player.get('repeat') if player.get('repeat') in REPEATS else 'off',
-                  player.get('deviceName'))
+                  player.get('deviceName'), player.get('smartShuffle') is True)
 
 
 def from_phone(props: dict | None, now_ms: int | None = None) -> dict | None:

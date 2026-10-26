@@ -41,6 +41,13 @@ def test_shuffle_state_is_reported_and_none_when_the_phone_has_no_setting():
     assert present(now_playing.from_phone({**props, 'Shuffle': value} if value is not None else props))['shuffle'] is shown
 
 
+def test_smart_shuffle_is_reported_only_while_shuffle_is_on():
+  assert present(now_playing.from_spotify({**PLAYER, 'shuffle': True, 'smartShuffle': True}))['smartShuffle'] is True
+  assert present(now_playing.from_spotify({**PLAYER, 'shuffle': False, 'smartShuffle': True}))['smartShuffle'] is False
+  assert present(now_playing.from_spotify({**PLAYER, 'shuffle': True, 'smartShuffle': 'yes'}))['smartShuffle'] is False
+  assert present(now_playing.from_phone({'Status': 'playing', 'Track': {'Title': 'Song'}, 'Shuffle': 'alltracks'}))['smartShuffle'] is False
+
+
 def test_repeat_and_device_come_from_spotify_and_are_blank_for_phone_audio():
   found = present(now_playing.from_spotify({**PLAYER, 'repeat': 'track', 'deviceName': 'Starpilot Auto'}))
   assert (found['repeat'], found['device']) == ('track', 'Starpilot Auto')

@@ -18,6 +18,7 @@ TEXT = rl.Color(245, 242, 252, 255)
 MUTED = rl.Color(214, 210, 224, 255)
 DIM = rl.Color(184, 178, 200, 90)
 DISC = rl.Color(255, 255, 255, 46)
+OFF = rl.Color(196, 192, 206, 255)  # a shuffle or repeat that is off; opaque, so overlapping strokes do not show
 # One UI 9's media card: device line, centered "title • artist", a thick seek bar with times under it, and a row of
 # shuffle, previous, play/pause, next and repeat over the darkened cover art.
 CONTROLS = ('shuffle', 'previous', 'play_pause', 'next', 'repeat')
@@ -78,24 +79,54 @@ def _skip(center: rl.Vector2, forward: bool) -> None:
   rl.draw_rectangle_rounded(rl.Rectangle(tip + (0 if forward else -5), center.y - 12, 5, 24), .5, 4, TEXT)
 
 
-def _toggle_color(state, on, accent):
-  return DIM if state is None else accent if on else TEXT
+def _toggle_color(state, on):
+  # On is white with a dot under it, as on One UI's card; the cover's accent color could vanish into the cover.
+  return DIM if state is None else TEXT if on else OFF
 
 
-def _shuffle(center: rl.Vector2, state, accent=ACCENT) -> None:
-  """Two crossing arrows: accent with a dot when on, white when off, dim when the player cannot shuffle."""
-  color = _toggle_color(state, state, accent)
-  x, y = center.x, center.y
+def _bezier(p0, p1, p2, p3, steps=10):
+  return [rl.Vector2(*((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d
+                       for a, b, c, d in zip((p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y), strict=True)))
+          for t in (i / steps for i in range(steps + 1))]
+
+
+def _stroke(points, thick, color) -> None:
+  """A round-capped polyline."""
+  for a, b in zip(points, points[1:], strict=False):
+    rl.draw_line_ex(a, b, thick, color)
+  for point in points[::len(points) - 1]:
+    rl.draw_circle_v(point, thick / 2, color)
+
+
+def _sparkle(center: rl.Vector2, r: float, color) -> None:
+  """Spotify's four-point Smart Shuffle star: long points on the axes, pinched sides."""
+  points = []
+  for i in range(8):
+    angle = i * math.pi / 4
+    reach = r if i % 2 == 0 else r * .4
+    points.append(rl.Vector2(center.x + reach * math.cos(angle), center.y - reach * math.sin(angle)))
+  for i in range(8):
+    rl.draw_triangle(center, points[i], points[(i + 1) % 8], color)
+
+
+def _shuffle(center: rl.Vector2, state, smart=False) -> None:
+  """Spotify's shuffle: two crossing curves with open arrowheads; a star for Smart Shuffle. A dot when on, dim when the
+  player cannot shuffle."""
+  color = _toggle_color(state, state)
+  x, y = center.x + (6 if smart else 2), center.y + (4 if smart else 0)  # the star takes the top-left corner
   for y0, y1 in ((-10, 10), (10, -10)):
-    rl.draw_line_ex(rl.Vector2(x - 17, y + y0), rl.Vector2(x + 13, y + y1), 4, color)
-    rl.draw_triangle(rl.Vector2(x + 10, y + y1 - 7), rl.Vector2(x + 10, y + y1 + 7), rl.Vector2(x + 20, y + y1), color)
+    _stroke(_bezier(rl.Vector2(x - 18, y + y0), rl.Vector2(x - 2, y + y0), rl.Vector2(x - 2, y + y1),
+                    rl.Vector2(x + 16, y + y1)), 3.5, color)
+    _stroke([rl.Vector2(x + 11, y + y1 - 6), rl.Vector2(x + 17, y + y1), rl.Vector2(x + 11, y + y1 + 6)], 3.5, color)
+  if smart:
+    _sparkle(rl.Vector2(x - 22, y - 23), 10, color)
   if state:
-    rl.draw_circle_v(rl.Vector2(x, y + 24), 3, color)
+    rl.draw_circle_v(rl.Vector2(center.x, center.y + 26), 3, color)
 
 
-def _repeat(center: rl.Vector2, state, accent=ACCENT) -> None:
-  """A loop of two arrows: accent with a dot when on, plus a small bar for repeating one song; dim without a player."""
-  color = _toggle_color(state, state in ('context', 'track'), accent)
+def _repeat(center: rl.Vector2, state) -> None:
+  """A loop of two arrows: white with a dot when on, plus a small bar for repeating one song; dim without a player."""
+  color = _toggle_color(state, state in ('context', 'track'))
   x, y = center.x, center.y
   rl.draw_line_ex(rl.Vector2(x - 14, y - 9), rl.Vector2(x + 12, y - 9), 4, color)
   rl.draw_line_ex(rl.Vector2(x + 14, y + 9), rl.Vector2(x - 12, y + 9), 4, color)
@@ -115,13 +146,6 @@ def _spotify(center: rl.Vector2, r: float = 13) -> None:
   for dy, half, thick in ((-4.5, .62, 2.6), (.5, .52, 2.2), (5, .42, 1.9)):
     rl.draw_ring(rl.Vector2(center.x, center.y + dy + r * 1.6), r * 1.6 - thick / 2, r * 1.6 + thick / 2,
                  180 + 90 - math.degrees(half), 180 + 90 + math.degrees(half), 12, INK)
-
-
-def _output(center: rl.Vector2) -> None:
-  """The media-output mark in the top corner, a play triangle in an open ring. It shows where audio goes; not a button."""
-  x, y = center.x, center.y
-  rl.draw_ring(rl.Vector2(x, y), 14, 17.5, -65, 65, 16, TEXT)
-  rl.draw_triangle(rl.Vector2(x - 13, y - 10), rl.Vector2(x - 13, y + 10), rl.Vector2(x + 4, y), TEXT)
 
 
 def _wave(left, right, y, accent, phase) -> None:
@@ -315,26 +339,21 @@ class NowPlayingWidget:
                           rl.Rectangle(rect.x + inset, rect.y + y, rect.width - 2 * inset, height), rl.Vector2(0, 0), 0, tint)
 
   def _title_line(self, rect, track):
-    """Spotify's mark, then "title • artist", centered; a line too wide scrolls, mark and all, like the phone."""
+    """The "title • artist" line, centered; a line too wide scrolls, like the phone."""
     title, artist = nfc(track['title']), nfc(track['artist'] or track['album'] or '')
     size, dot = 28, 34
     title_width = self.text.measure(title, FontRole.SEMI_BOLD, size, 'title').width
     artist_width = self.text.measure(artist, FontRole.SEMI_BOLD, size, 'artist').width if artist else 0
     line_width = title_width + (dot + artist_width if artist else 0)
-    logo = 38 if track.get('source') == 'spotify' else 0
     width = rect.width - 2 * PAD
     top = rect.y + LINE_Y - 18
 
     def draw(x):
-      if logo:
-        _spotify(rl.Vector2(x + 13, rect.y + LINE_Y))
-        x += logo
       self.text.draw(title, FontRole.SEMI_BOLD, size, x, top, TEXT, 'title')
       if artist:
         rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, rect.y + LINE_Y), 3.5, TEXT)
         self.text.draw(artist, FontRole.SEMI_BOLD, size, x + title_width + dot, top, TEXT, 'artist')
 
-    line_width += logo
     left = rect.x + PAD if line_width > width else rect.x + rect.width / 2 - line_width / 2
     self._scrolling(f'{title}\n{artist}', line_width, draw, left, top - 4, width, 44)
 
@@ -377,14 +396,15 @@ class NowPlayingWidget:
     self._background(rect, texture, opacity)
     label = nfc(track.get('device') or ('Phone' if track.get('source') == 'phone' else 'Spotify'))
     self.text.draw(label, FontRole.SEMI_BOLD, 20, rect.x + PAD, rect.y + 20, MUTED, 'device')
-    _output(rl.Vector2(rect.x + rect.width - PAD - 12, rect.y + 34))
+    if track.get('source') == 'spotify':
+      _spotify(rl.Vector2(rect.x + rect.width - PAD - 4, rect.y + 31), 17)
     self._title_line(rect, track)
     self._seek_bar(rect, track, accent)
-    _shuffle(_center(buttons['shuffle']), track.get('shuffle'), accent)
+    _shuffle(_center(buttons['shuffle']), track.get('shuffle'), track.get('smartShuffle') is True)
     _skip(_center(buttons['previous']), False)
     _play_pause(_center(buttons['play_pause']), track['status'] == 'playing')
     _skip(_center(buttons['next']), True)
-    _repeat(_center(buttons['repeat']), track.get('repeat'), accent)
+    _repeat(_center(buttons['repeat']), track.get('repeat'))
 
 
 def _center(box: rl.Rectangle) -> rl.Vector2:
