@@ -401,7 +401,7 @@ class NowPlayingWidget:
     label = nfc(track.get('device') or ('Phone' if track.get('source') == 'phone' else 'Spotify'))
     self.text.draw(label, FontRole.SEMI_BOLD, 20, rect.x + PAD, rect.y + 20, MUTED, 'device')
     if track.get('source') == 'spotify':
-      _spotify(rl.Vector2(rect.x + rect.width - PAD - 4, rect.y + 31), 17)
+      _spotify(rl.Vector2(rect.x + rect.width - PAD - 10, rect.y + 32), 13)  # clear of the top edge and the corner
     self._title_line(rect, track)
     self._seek_bar(rect, track, accent)
     _shuffle(_center(buttons['shuffle']), track.get('shuffle'), track.get('smartShuffle') is True)

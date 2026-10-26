@@ -93,7 +93,7 @@ def test_spotify_mark_sits_top_right_and_only_for_spotify(widget):
     card.render(state())
     logos = [args for name, args in drawn if name == 'draw_texture_pro' and getattr(args[0], 'path', '') == 'icons/spotify.png']
     assert len(logos) == marks  # one mark, top right; none in the title line
-    assert all((d[2].x + d[2].width / 2, d[2].y + d[2].height / 2) == (10 + 640 - 46 - 4, 20 + 31) for d in logos)
+    assert all((d[2].x + d[2].width / 2, d[2].y + d[2].height / 2) == (10 + 640 - 46 - 10, 20 + 32) for d in logos)
 
 
 def test_repeat_shows_a_dot_when_on_and_a_bar_for_one_song(widget):
