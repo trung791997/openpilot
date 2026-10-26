@@ -6,6 +6,9 @@ This presentation catalog supplies the purpose before any genuine prerequisite.
 from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HELP
 
 DESCRIPTIONS = {
+  'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
+  'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
+                              'Applies after the next startup; exact vehicle takeover checks remain required.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',
   'lane_change:pace': 'Sets how quickly steering moves into the adjacent lane. Higher values change lanes more quickly; lower values make steering gentler.',
   'lane_change:speed': 'Sets the lowest speed at which lane-change assistance can begin.',
@@ -15,6 +18,8 @@ DESCRIPTIONS = {
   'lane_change:width': 'Sets the minimum detected width of the adjacent lane for an automatic lane change.',
   'lane_change:close_gap': 'Temporarily reduces following time during a lane change when the lane and lead gap are clear.',
   'lane_change:close_gap_seconds': 'Sets following time while Close lane-change gap is active. Higher values leave more space.',
+  'lane_change:turn_desires': 'Asks the driving model to turn when you signal below the turn desire speed, without a navigation route.',
+  'lane_change:turn_desire_speed': 'Sets the speed below which a turn signal asks the driving model to turn.',
   'lane_change:reset': 'Restores the default lane-change assistance, signal timing, pace and gap settings.',
   'LaneCentering': 'Uses detected lane lines to help keep the vehicle centered in its lane.',
   'LaneCenteringPauseOnSignal': 'Pauses lane-centering correction while a turn signal is on.',

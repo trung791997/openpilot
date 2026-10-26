@@ -16,7 +16,7 @@ _GUARD_HASHES = {
   'libbounded_wait.so': '24ed559861c8636c1026cad9a244854bb2236b5ee8b91bf21c5efbf688fa4a69',
   'libusb_guards.so': '66a3dfe48ac17899862ab80160cf6dac2c9b9707234527ba0d808f3b68404114',
 }
-_POLICY_SHA256 = '20b17eee1bccd28648a17ea1ebf917f95148d2fe3133158c1072065e38a385a1'
+_POLICY_SHA256 = 'aa6883ca3804a4daa56764a24ff8874afdc801a92177e9168cc4515f9c5a16c2'
 # NovaSpark only runs on the f6fc4e3 tinygrad runtime. It is selected per start and falls back to
 # the 9d0446 runtime (and the shipped default model) once a start with it has failed.
 F6_BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacyf6'

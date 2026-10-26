@@ -3,7 +3,7 @@
 Capture only; no native/current/profile authority. Original source and native
 replay must independently verify every apply before creating a verified tape.
 """
-from dataclasses import asdict, dataclass, replace, Field, _FIELD
+from dataclasses import asdict, dataclass, replace, fields, Field, _FIELD
 import math
 import re
 import struct
@@ -48,10 +48,18 @@ def applied_digest(applied):
   from opendbc.car.steering_projection import TorqueProjection, projection_to_dict
   if type(applied) is not AppliedEvidence or type(applied.projection) is not TorqueProjection:
     raise ValueError('exact typed held applied evidence')
-  projection = projection_to_dict(applied.projection)
+  witness = applied.projection
+  projection = projection_to_dict(witness)
   if projection is None:
     raise ValueError('bounded actual projection body')
-  return _digest({**asdict(applied),'projection':projection})
+  body = {field.name: getattr(applied, field.name) for field in fields(applied) if field.name != 'projection'}
+  # Validated primitive projections need no discarded recursive copy. Preserve
+  # original deepcopy behavior for custom operands or limit-name callbacks.
+  if (applied.projection is not witness or any(type(row[0]) is not str for row in witness.limits) or
+      any(value is not None and type(value) not in (bool, int, float, str, bytes) for value in body.values())):
+    body = asdict(applied)
+  body['projection'] = projection
+  return _digest(body)
 
 
 @dataclass(frozen=True)
@@ -175,13 +183,14 @@ class CardFeedbackCapture:
     # it survived assignment, never discovers which apply supplied this output.
     applied = self.applied
     known = self.output is not None and applied is not None and self.associated_serial == self.assignment_serial
-    if known and actual.to_dict() != self.output.to_dict():
+    actual_body = actual.to_dict()
+    if known and actual_body != self.output.to_dict():
       self.invalidate()
       raise ValueError('held owner output changed before CO publication')
     row = CoPublication(1,self.session,self.sequence,header,self.source_epoch,self.cp_sha256,known,
       0 if not known else applied.control_ns,0 if not known else applied.state_ns,
       0 if not known else applied.apply_ns,0 if not known else applied.carrier_frame,
-      f32(float(actual.torque)),bool(event.valid),co_body(header,bool(event.valid),actual.to_dict()),
+      f32(float(actual.torque)),bool(event.valid),co_body(header,bool(event.valid),actual_body),
       '' if not known else applied_digest(applied),'',0 if not known else applied.carrier_observed_ns)
     return validate_publication(row)
 
@@ -197,7 +206,7 @@ def card_capture_for(owner, now_ns):
     # ignores it there. Observational capture must check its REAL bits directly.
     service = 'autoSteeringLearning'
     stamp = int(sm.logMonoTime[service])
-    receipt = int(sm.recv_time[service]*1e9)
+    receipt = int(round(sm.recv_time[service]*1e9))
     if (type(now_ns) is not int or not now_ns > 0 or
         not all((sm.seen[service],sm.valid[service],sm.alive[service],sm.freq_ok[service])) or
         not 0 < stamp <= now_ns <= stamp+500_000_000 or
@@ -234,7 +243,7 @@ def capture_controls(owner, cc, *, control_ns, input_limited):
   sm = owner.sm
   header = int(sm.logMonoTime['carOutput'])
   output = sm['carOutput'].actuatorsOutput
-  row = CoConsumption(1,control_ns,header,int(sm.recv_frame['carOutput']),int(sm.recv_time['carOutput']*1e9),
+  row = CoConsumption(1,control_ns,header,int(sm.recv_frame['carOutput']),int(round(sm.recv_time['carOutput']*1e9)),
     bool(sm.seen['carOutput']),bool(sm.valid['carOutput']),co_body(header,bool(sm.valid['carOutput']),output.to_dict()),
     f32(float(output.torque)),f32(float(cc.actuators.torque)),bool(cc.latActive),bool(input_limited),
     bool(owner.steer_limited_by_safety),int(getattr(owner,'learning_feedback_prior_publish_ns',0)),
