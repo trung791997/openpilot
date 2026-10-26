@@ -28,6 +28,12 @@ class Feed:
   def close(self): self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def legacy_on(monkeypatch):
+  monkeypatch.setattr(ns, 'SEND_LEGACY', True)
+  monkeypatch.setattr(ns, '_legacy_blocked', False)
+
+
 @pytest.fixture
 def nav():
   session, feed, now = Session(), Feed(), [100.0]
@@ -137,7 +143,7 @@ def test_route_guidance_then_updates_then_end(nav):
   status, turn, notification, distance, position = session.sent
   assert (status[1], parse_fields(status[2])) == (ns.NAV_STATUS, {1: [ns.STATUS_ACTIVE]})
   assert turn[1] == ns.NAV_TURN
-  assert parse_fields(turn[2]) == {1: [b'Main Street'], 2: [7], 3: [ns.SIDE_LEFT]}
+  assert parse_fields(turn[2]) == {1: [b'Main Street'], 2: [ns.SIDE_LEFT], 3: [ns.EVENT_TURN]}
   assert distance[1] == ns.NAV_DISTANCE
   assert parse_fields(distance[2]) == {1: [400], 2: [40], 3: [200], 4: [ns.UNIT_MILES_P1]}
   session.sent.clear()
@@ -286,8 +292,9 @@ def test_modern_maneuver_wire_values(kind, modifier, wire_value):
 
 
 def test_navigation_wire_schema_golden_bytes():
-  # Independent literals from the proto field numbers: left turn = Maneuver.TYPE_TURN_NORMAL_LEFT (7).
-  assert ns.turn_message('Main', 7, 1) == bytes.fromhex('0a044d61696e10071801')
+  # Independent literals from the proto field numbers. Legacy turn: road = 1, turn_side = 2 (LEFT = 1),
+  # event = 3 (TURN = 4). Notification: Maneuver.TYPE_TURN_NORMAL_LEFT (7).
+  assert ns.turn_message('Main', ns.EVENT_TURN, ns.SIDE_LEFT) == bytes.fromhex('0a044d61696e10011804')
   assert ns.notification_message('Main', 7) == bytes.fromhex('0a0c0a02080712060a044d61696e')
   assert ns.current_position_message(400, 40, False) == bytes.fromhex('0a0e0a0a0890031203302e3218051028')
   # Zero-distance display is valid; it must not disappear at the actual turn.
@@ -307,11 +314,60 @@ def test_rerouting_resends_unchanged_instruction(nav):
   assert [kind for _, kind, _ in session.sent] == [0x8003, 0x8004, 0x8006, 0x8005, 0x8007]
 
 
-def test_honda_descriptor_uses_next_turn_image_without_dimensions():
-  # Honda T20 discovery from session 000066: channel 9, interval 1000, type 2.
+def test_honda_descriptor_is_an_enum_cluster():
+  # Honda T20 discovery from session 000066: channel 9, interval 1000, type 2 = InstrumentClusterType.ENUM.
   options = ns.parse_navigation(bytes.fromhex('08e8071002'))
-  assert options['type'] == ns.TYPE_IMAGE
-  assert ns.TYPE_ENUM == 1
+  assert options['type'] == ns.TYPE_ENUM
+  assert (ns.TYPE_IMAGE, ns.TYPE_ENUM) == (1, 2)
   session = Session(navigation=options)
   stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=Feed())
-  assert stream.image_size is None  # no invented size; semantic guidance is still sent
+  assert stream.image_size is None
+
+
+def test_legacy_turn_carries_side_then_legacy_event(nav):
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = {**GUIDING, 'type': 'continue', 'modifier': 'straight'}
+  tick(stream, now)
+  turn = parse_fields(next(body for _, kind, body in session.sent if kind == ns.NAV_TURN))
+  assert (turn[2][0], turn[3][0]) == (ns.SIDE_UNSPECIFIED, ns.EVENT_STRAIGHT) == (3, 14)
+
+
+def test_legacy_turn_and_distance_are_on_by_default():
+  assert ns.SEND_LEGACY is True
+
+
+def test_legacy_off_sends_status_and_modern_only(monkeypatch, nav):
+  monkeypatch.setattr(ns, 'SEND_LEGACY', False)
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now, ns.START_GRACE + 1)
+  assert [kind for _, kind, _ in session.sent] == [ns.NAV_STATUS, ns.NAV_NOTIFICATION, ns.NAV_CURRENT_POSITION]
+
+
+def test_projection_ending_soon_after_legacy_blocks_it_until_restart(nav):
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  now[0] += 6
+  stream.close(TimeoutError('Video acknowledgement older than 2.5 s'))
+  assert ns._legacy_blocked
+  session2, now2 = Session(), [200.0]
+  stream2 = ns.NavStatus.create(session2, lambda *a, **k: None, feed=feed, clock=lambda: now2[0])
+  start(stream2, session2, now2)
+  tick(stream2, now2)
+  kinds = [kind for _, kind, _ in session2.sent]
+  assert ns.NAV_NOTIFICATION in kinds and ns.NAV_TURN not in kinds and ns.NAV_DISTANCE not in kinds
+
+
+def test_late_or_clean_session_end_keeps_legacy(nav):
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  stream.close()
+  now[0] += ns.LEGACY_PROBATION + 1
+  stream.close(TimeoutError('late'))
+  assert not ns._legacy_blocked

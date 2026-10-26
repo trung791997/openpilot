@@ -22,6 +22,7 @@ import math
 import os
 import queue
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -1384,7 +1385,7 @@ class Supervisor:
       if session.audio is not None:
         session.audio.close()
       if getattr(session, "nav", None) is not None:
-        session.nav.close()
+        session.nav.close(sys.exc_info()[1])
       watch.stop()
       source.close()
       encoder.close()

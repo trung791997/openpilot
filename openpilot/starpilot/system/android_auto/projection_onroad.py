@@ -81,11 +81,16 @@ def native_dependencies():
   from openpilot.starpilot.ui.pip_preferences import read_pip
   from openpilot.starpilot.ui.pip_render import PiPRenderer
   from openpilot.starpilot.ui.pip_sidecam import Rect, Signals
+  from openpilot.starpilot.ui.pip_warning import PiPWarningSource
+  from openpilot.starpilot.spot_monitor.preferences import read_preferences as read_vasm_preferences
+  from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
+  from opendbc.car.structs import car as car_schema
   from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile, default_font_directory
   from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
   from openpilot.starpilot.ui.shell import ShellMode
   from openpilot.starpilot.system.android_auto.projection_favorites import ProjectionFavorites
   from openpilot.starpilot.system.android_auto.projection_now_playing import ProjectionNowPlayingFeed
+  from openpilot.starpilot.system.android_auto.media_audio import music_control
   from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
 
   class ProjectionRoadCamera(AugmentedRoadView):
@@ -143,7 +148,9 @@ def native_dependencies():
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
                          alert=OnroadAlert, alert_size=AlertSize, map_overlay=MapOverlay, map_feed=MapFeed,
                          favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
-                         jetlink_feed=JetlinkStatusFeed)
+                         now_playing_control=music_control,
+                         jetlink_feed=JetlinkStatusFeed, vasm_source=PiPWarningSource,
+                         read_vasm=read_vasm_preferences, clock_pair=clock_pair_ns, car_schema=car_schema)
 
 
 class ProjectionOnroad:
@@ -187,13 +194,24 @@ class ProjectionOnroad:
       if model_renderer is not None:
         # The lead distance label otherwise asks gui_app for a font this process never loads (crashed 2026-10-24).
         model_renderer.lead_font = self.fonts.font(native.font_role.SEMI_BOLD)
+        model_renderer.lead_chevron_color = native.rl.Color(255, 140, 30, 255)
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)
+      from openpilot.starpilot.system.android_auto import projection_theme
+      self._theme = projection_theme
+      self.onroad.unified_speed = projection_theme.SpeedLimitCard(
+        self.fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)))
+      self.onroad.steering_wheel = projection_theme.AtomBadge()
+      self.onroad.extra_overlays = self._theme_overlay
       self.now_playing_feed = None
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
         self._resources.callback(self.now_playing_feed.close)
+      self.now_playing_touch = None
+      if self.now_playing_feed is not None and getattr(native, 'now_playing_control', None) is not None:
+        from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+        self.now_playing_touch = NowPlayingTouch(native.now_playing_control)
       self.jetlink_feed = None
       if getattr(native, 'jetlink_feed', None) is not None:
         self.jetlink_feed = native.jetlink_feed()
@@ -216,6 +234,11 @@ class ProjectionOnroad:
         self.pip = native.pip_renderer("bubble")
         self._resources.callback(self.pip.close)
         self.onroad.pip_layer = self._pip_layer
+      self.vasm = native.vasm_source() if getattr(native, 'vasm_source', None) is not None else None
+      if self.vasm is not None:
+        self._resources.callback(self.vasm.close)
+      self._vasm_saved = None
+      self._vasm_read_ns = None
       self.map = None
       self.map_feed = None
       self._map_lease = MapLeaseWriter()
@@ -260,6 +283,33 @@ class ProjectionOnroad:
       wheel._texture = None
     self.onroad.close()
 
+  def _theme_overlay(self, content, state):
+    self._theme.edge_glow(self._theme.state_glow(state, driving_mode_label(state)), content.x, content.y, content.width, content.height)
+    appearance = getattr(state, 'appearance', None)
+    if appearance is not None and appearance.show_lead_indicator:
+      lead = self.native.ui_state.sm['radarState'].leadOne
+      self._theme.lead_badge(self.fonts, content, bool(lead.present))
+    left, right = self._theme.side_colors(state, *self._vasm_warning())
+    self._theme.side_glow(left, content.x, content.y, content.width, content.height, True)
+    self._theme.side_glow(right, content.x, content.y, content.width, content.height, False)
+
+  def _vasm_warning(self):
+    native = self.native
+    if self.vasm is None:
+      return False, False
+    ui = native.ui_state
+    now_ns = time.monotonic_ns()
+    if self._vasm_read_ns is None or not 0 <= now_ns - self._vasm_read_ns < 1_000_000_000:
+      self._vasm_saved = native.read_vasm(ui.params)
+      self._vasm_read_ns = now_ns
+    car = native.display_message(ui.sm, 'carState', now_ns, after_frame=ui.started_frame)
+    saved = self._vasm_saved
+    pair = native.clock_pair() if car is not None else None
+    enabled = (car is not None and car.canValid and car.gearShifter == native.car_schema.CarState.GearShifter.drive and
+               pair is not None and saved is not None and saved.readable and saved.valid and saved.preferences.enabled)
+    return self.vasm.sample(enabled=enabled, settings_fingerprint=saved.fingerprint if enabled else '',
+                            now_mono_ns=pair[0] if pair is not None else 0, now_boot_ns=pair[1] if pair is not None else 0)
+
   def _camera_layer(self, rect, state):
     # The car screen's own lead choices; without them the marker stays off rather than following the comma.
     appearance = getattr(state, 'appearance', None)
@@ -267,7 +317,7 @@ class ProjectionOnroad:
                     if appearance is not None else (False, 0, None))
     self.camera.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
                                           reverse_driver=state.reverse_driver_camera,
-                                          road_style=state.customization['roadColors']['large'], lead_display=lead_display)
+                                          road_style=self._theme.road_style(state.customization['roadColors']['large']), lead_display=lead_display)
     # The camera can switch narrow/wide while rendering. Pace the stream actually
     # drawn, not the previous selection (whose next frame may arrive later).
     self.camera_stream = self.camera.stream_type
@@ -350,6 +400,7 @@ class ProjectionOnroad:
       placed = (self.customization or {}).get('widgets', {}).get('now_playing', {})
       self.now_playing_feed.set_enabled(bool(placed.get('enabled')))
       self.onroad.now_playing.track = self.now_playing_feed.snapshot()
+      self.onroad.now_playing.artwork = self.now_playing_feed.artwork()
     if self.jetlink_feed is not None:
       placed = (self.customization or {}).get('widgets', {}).get('jetlink_status', {})
       self.jetlink_feed.set_enabled(bool(placed.get('enabled') and self.native.ui_state.started))
@@ -552,12 +603,24 @@ class ProjectionOnroad:
         if self.favorites is not None:
           self.favorites.cancel()
         continue
+      if self._now_playing_touch(event.kind, x, y):
+        if self.favorites is not None:
+          self.favorites.cancel()
+        continue
       if self.favorites is None:
         continue
       if self._state is None or not self.native.ui_state.started:
         self.favorites.cancel()
         continue
       self.favorites.touch(event.kind, x, y, self._state, self.native.ui_state.started_frame)
+
+  def _now_playing_touch(self, kind, x, y) -> bool:
+    touch = self.now_playing_touch
+    if touch is None:
+      return False
+    state = self._state if self.native.ui_state.started else None
+    placed = state.customization['layouts']['large'].get('now_playing') if state is not None else None
+    return touch.touch(kind, x, y, state, placed, self.onroad.now_playing.track)
 
   def _slc_touch(self, kind, x, y) -> bool:
     """Speed-limit Apply/Keep/Use-limit taps; True while one owns the touch."""
@@ -581,6 +644,8 @@ class ProjectionOnroad:
 
   def cancel_touch(self):
     self.exit.cancel()
+    if self.now_playing_touch is not None:
+      self.now_playing_touch.cancel()
     if self._slc_input is not None:
       self._slc_input.cancel()
     if self.favorites is not None:

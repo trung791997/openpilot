@@ -5,6 +5,9 @@ import json
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+from openpilot.starpilot.soloist.client import ARTWORK_HOSTS
 
 MAX_TEXT = 120
 STALE_SECONDS = 10.0
@@ -18,13 +21,23 @@ def _whole(value: Any, limit: int = 86400000) -> int | None:
   return int(value) if type(value) in (int, float) and 0 <= value < limit else None
 
 
+def artwork_url(value: Any) -> str:
+  """A Spotify cover URL on its image hosts, else ''. Checked again here because the car screen downloads it."""
+  if not isinstance(value, str) or len(value) > 512:
+    return ''
+  parts = urlsplit(value)
+  ok = parts.scheme == 'https' and parts.hostname in ARTWORK_HOSTS and not parts.username and parts.port is None
+  return value if ok else ''
+
+
 def snapshot(source: str, status: str, title: str, artist: str, album: str, duration_ms: int | None,
-             position: dict | None) -> dict | None:
+             position: dict | None, shuffle: bool | None = None, artwork: str = '') -> dict | None:
+  """``shuffle`` is None when the player cannot report or change it. ``artwork`` is '' without a cover (phone audio)."""
   title = _text(title)
   if not title or status not in ('playing', 'paused'):
     return None
   return {'source': source, 'status': status, 'title': title, 'artist': _text(artist), 'album': _text(album),
-          'durationMs': duration_ms, 'position': position}
+          'durationMs': duration_ms, 'position': position, 'shuffle': shuffle, 'artwork': artwork_url(artwork)}
 
 
 def from_spotify(player: dict | None) -> dict | None:
@@ -34,11 +47,12 @@ def from_spotify(player: dict | None) -> dict | None:
   if not isinstance(track, dict) or player.get('status') not in ('playing', 'paused') or not player.get('active'):
     return None
   return snapshot('spotify', player['status'], track.get('title'), track.get('artists'), track.get('album'),
-                  _whole(track.get('durationMs')), player.get('position'))
+                  _whole(track.get('durationMs')), player.get('position'), player.get('shuffle') is True,
+                  track.get('artwork'))
 
 
 def from_phone(props: dict | None, now_ms: int | None = None) -> dict | None:
-  """BlueZ MediaPlayer1 properties: Track {Title, Artist, Album, Duration ms}, Status, Position ms."""
+  """BlueZ MediaPlayer1 properties: Track {Title, Artist, Album, Duration ms}, Status, Position ms, Shuffle."""
   if not isinstance(props, dict) or not isinstance(props.get('Track'), dict):
     return None
   status = {'playing': 'playing', 'paused': 'paused'}.get(str(props.get('Status', '')).lower())
@@ -51,7 +65,13 @@ def from_phone(props: dict | None, now_ms: int | None = None) -> dict | None:
               'speed': 1.0 if status == 'playing' else 0.0}
   duration = _whole(track.get('Duration'))
   return snapshot('phone', status or '', track.get('Title'), track.get('Artist'), track.get('Album'),
-                  duration if duration else None, anchor)
+                  duration if duration else None, anchor, phone_shuffle(props))
+
+
+def phone_shuffle(props: dict) -> bool | None:
+  """AVRCP shuffle: off, alltracks or group; None when the phone does not offer it."""
+  value = props.get('Shuffle')
+  return None if not isinstance(value, str) or value not in ('off', 'alltracks', 'group') else value != 'off'
 
 
 def elapsed_ms(now_playing: dict, now_ms: float | None = None) -> int:

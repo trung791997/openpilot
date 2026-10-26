@@ -22,7 +22,11 @@ metadata.widgets.car_exit = { label: "Exit to car", kind: "car_exit", width: 96,
   default: { x: 30, y: 954, enabled: true, opacity: 75, background: false } }
 metadata.widgets.jetlink_status = { label: "Jetlink status", kind: "jetlink_status", width: 420, height: 84, colors: {},
   opacity: { min: 0, max: 100, default: 85 }, available: true, default: { x: 30, y: 650, enabled: false, opacity: 85 } }
-metadata.widgetOrder = [...(metadata.widgetOrder || Object.keys(native.metadata.profiles.large.widgets)), "jetlink_status", "car_exit"]
+metadata.widgets.now_playing = { label: "Now playing", kind: "now_playing", width: 520, height: 96, colors: {},
+  opacity: { min: 0, max: 100, default: 85 }, collapseToggle: true,
+  note: "The song playing from Spotify or your phone over Bluetooth. Opacity sets the card background.",
+  default: { x: 2330, y: 954, enabled: true, opacity: 85, collapse: false } }
+metadata.widgetOrder = [...(metadata.widgetOrder || Object.keys(native.metadata.profiles.large.widgets)), "jetlink_status", "now_playing", "car_exit"]
 const widgets = Object.fromEntries(Object.entries(metadata.widgets).map(([id, widget]) => [id,
   { ...widget.default, ...(widget.resizable ? { size: widget.resizable.default } : {}) }]))
 const doc = { version: 5, clock24Hour: false, largeUiGammaTrial: false, blindSpotBorder: false, signalBorder: false, blindSpotCamera: false, hidePersonalityAlerts: false, wheelPedalFeedback: false, leadIndicator: false, leadInfo: "Off", speedSources: false, speedSourcesCard: false, speedAlign: "center", canvas: { width: 2880, height: 1080 }, widgets }
@@ -259,6 +263,7 @@ draft.layouts.large.current_speed.x += 20
 assert.equal(await feed.save(draft), true)
 assert.equal(requests[0].url, "./api/android-auto/layout")
 assert.equal(requests[1].body.document.version, 5)
+assert.deepEqual(requests[1].body.document.widgets.now_playing, { x: 2330, y: 954, enabled: true, opacity: 85, collapse: false })
 assert.deepEqual(Object.keys(requests[1].body.document).sort(), ["blindSpotBorder", "blindSpotCamera", "canvas", "clock24Hour", "hidePersonalityAlerts", "largeUiGammaTrial", "leadIndicator", "leadInfo", "signalBorder", "speedAlign", "speedSources", "speedSourcesCard", "version", "wheelPedalFeedback", "widgets"])
 assert.equal(requests[1].body.document.widgets.current_speed.x, 1170)
 assert.equal(requests[1].body.document.speedAlign, "center")

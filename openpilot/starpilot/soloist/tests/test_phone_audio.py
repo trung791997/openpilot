@@ -376,3 +376,38 @@ def test_pairing_window_failure_is_reported_without_holding_the_profile(music, m
   monkeypatch.setattr(phone_audio, 'profile', fail)
   result = sup.handle({'command': 'prepare_phone_pairing'})
   assert result['ok'] is False and 'Unsupported' in result['error'] and not sup.phone_profile
+
+
+def test_phone_shuffle_sets_the_avrcp_setting_only_where_the_player_offers_it():
+  from openpilot.starpilot.bluetooth.owner import DEVICE
+  path = '/org/bluez/hci0/dev_11_22_33_44_55_66'
+  objects: dict = {path: {DEVICE: {'Address': PHONE}}, path + '/player0': {phone_audio.MEDIA_PLAYER: {'Shuffle': 'off'}},
+                   '/other/player0': {phone_audio.MEDIA_PLAYER: {'Shuffle': 'off'}}}
+  class BlueZ:
+    def __init__(self): self.calls = []
+    def _objects(self): return objects
+    def _call(self, *args, **kwargs): self.calls.append(args)
+  phone = phone_audio.PhoneInput()
+  phone.client = BlueZ()  # ty: ignore[invalid-assignment]  # test double
+  assert phone.shuffle(PHONE, True) and phone.shuffle(PHONE, False)
+  set_call = (path + '/player0', 'org.freedesktop.DBus.Properties', 'Set', 'ssv')
+  assert phone.client.calls == [(*set_call, (phone_audio.MEDIA_PLAYER, 'Shuffle', ('s', mode))) for mode in ('alltracks', 'off')]
+  del objects[path + '/player0'][phone_audio.MEDIA_PLAYER]['Shuffle']
+  assert not phone.shuffle(PHONE, True) and len(phone.client.calls) == 2
+  phone.client = None
+  assert not phone.shuffle(PHONE, True)
+
+
+def test_car_shuffle_reaches_the_phone_and_reports_a_phone_without_it(music):
+  sup = music[0]
+  sup.tick()
+  results = []
+  sup.phone.shuffle = lambda address, enabled: results.append((address, enabled)) or len(results) == 1
+  assert sup.handle({'command': 'control', 'action': 'shuffle', 'args': {'enabled': True}}) == {'ok': True}
+  assert results == [(PHONE, True)]
+  assert sup.handle({'command': 'control', 'action': 'shuffle', 'args': {'enabled': False}})['error'] == \
+    'Your phone does not offer shuffle over Bluetooth'
+  for args in ({'enabled': 1}, {}, {'enabled': True, 'mode': 'smart'}):
+    assert not sup.handle({'command': 'control', 'action': 'shuffle', 'args': args})['ok']
+  assert len(results) == 2
+  sup.stop_children()

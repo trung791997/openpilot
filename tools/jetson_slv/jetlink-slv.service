@@ -1,0 +1,26 @@
+# Speed-limit vision on the Jetson's GPU, started at boot, as jetlink-vasm.service. slv_server.py waits
+# for the comma's ffs.slv interface (FF/53/4C, only on a comma with /data/jetlink-slv) and rescans every
+# second. It yields the GPU to jetlink-server's driving model (yield_gate.py); the comma then runs its
+# OpenCV nets, as it does whenever this server is down or the Jetson is unplugged.
+#
+# fp32 engines: the full replay (equiv.py, 2026-10-24) published the same mph as OpenCV on 1600/1600 frames.
+# Files in /home/trung791997/jetson_vasm: slv_server.py next to vasm_usb_server.py vasm_trt.py vasm_wire.py
+# yield_gate.py, with detector_fp32.engine and value_classifier_fp32.engine. Install:
+#   sudo cp jetlink-slv.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+#     && sudo systemctl enable --now jetlink-slv
+# Logs: journalctl -u jetlink-slv
+[Unit]
+Description=Speed-limit vision TensorRT server for the comma (yields to jetlink-server)
+After=jetlink-server.service
+Wants=jetlink-server.service
+
+[Service]
+User=trung791997
+WorkingDirectory=/home/trung791997/jetson_vasm
+ExecStart=/usr/bin/python3 -u slv_server.py --detector detector_fp32.engine --classifier value_classifier_fp32.engine --detector-sha256 82408b68c79c269296f0af942130c5383cace4ee06c78e2a4690e8488720116a --classifier-sha256 07c6696e530eb940d2757d5849b4bc0f1d785cda704e5296e18c0a94959f30a5
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

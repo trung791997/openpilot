@@ -63,6 +63,7 @@ class ModelRenderer(Widget):
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     # (show marker, LeadInfoMode, metric) from a screen with its own lead choices; None keeps the stock chevrons.
     self.lead_display: tuple[bool, int, bool | None] | None = None
+    self.lead_chevron_color: rl.Color | None = None  # the car screen's open chevron; None keeps the stock filled one
     self.lead_font: rl.Font | None = None  # the car screen never loads gui_app's fonts and passes its own
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -375,6 +376,14 @@ class ModelRenderer(Widget):
       if not lead.glow or not lead.chevron:
         continue
 
+      if self.lead_chevron_color is not None:
+        left, tip, right = lead.chevron[2], lead.chevron[1], lead.chevron[0]
+        width = max(6.0, (right[0] - left[0]) * 0.11)
+        color = rl.Color(self.lead_chevron_color.r, self.lead_chevron_color.g, self.lead_chevron_color.b, 255)
+        for a, b in ((left, tip), (tip, right)):
+          rl.draw_line_ex(rl.Vector2(*a), rl.Vector2(*b), width, color)
+        rl.draw_circle_v(rl.Vector2(*tip), width / 2, color)
+        continue
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
 

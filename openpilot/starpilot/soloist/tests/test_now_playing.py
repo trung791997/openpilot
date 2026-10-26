@@ -32,6 +32,15 @@ def test_phone_snapshot_reads_bluez_media_player():
     assert now_playing.from_phone(bad) is None
 
 
+def test_shuffle_state_is_reported_and_none_when_the_phone_has_no_setting():
+  assert present(now_playing.from_spotify(PLAYER))['shuffle'] is False
+  assert present(now_playing.from_spotify({**PLAYER, 'shuffle': True}))['shuffle'] is True
+  props = {'Status': 'playing', 'Track': {'Title': 'Song'}}
+  expected = {None: None, 'off': False, 'alltracks': True, 'group': True, 'smart': None, 1: None}
+  for value, shown in expected.items():
+    assert present(now_playing.from_phone({**props, 'Shuffle': value} if value is not None else props))['shuffle'] is shown
+
+
 def test_untrusted_text_is_cleaned_and_bounded():
   found = present(now_playing.from_phone({'Status': 'playing', 'Track': {'Title': 'A\x00B' + 'x' * 500, 'Artist': 7}}))
   assert found['title'].startswith('AB') and len(found['title']) == now_playing.MAX_TEXT and found['artist'] == ''
@@ -67,4 +76,41 @@ def test_feed_only_reads_while_enabled():
   assert feed.snapshot() == {'title': 'x'}
   feed.set_enabled(False)
   assert feed.snapshot() is None
+  feed.close()
+
+
+def test_spotify_cover_is_kept_only_on_spotify_image_hosts():
+  cover = 'https://i.scdn.co/image/ab67616d0000b273'
+  found = present(now_playing.from_spotify({**PLAYER, 'track': {**PLAYER['track'], 'artwork': cover}}))
+  assert found['artwork'] == cover
+  for bad in ('http://i.scdn.co/image/a', 'https://evil.example/a.jpg', 'https://i.scdn.co:8443/a', 'https://u@i.scdn.co/a',
+              'https://i.scdn.co/' + 'a' * 600, None, 7):
+    assert present(now_playing.from_spotify({**PLAYER, 'track': {**PLAYER['track'], 'artwork': bad}}))['artwork'] == ''
+  props = {'Status': 'playing', 'Track': {'Title': 'Song'}}
+  assert present(now_playing.from_phone(props))['artwork'] == ''
+
+
+def test_feed_downloads_each_cover_once_and_drops_failures():
+  from openpilot.starpilot.system.android_auto import projection_now_playing
+  value = {'title': 'x', 'artwork': 'https://i.scdn.co/image/a'}
+  fetched = []
+  def fetch(url):
+    fetched.append(url)
+    if url.endswith('/bad'):
+      raise OSError('timed out')
+    return b'\xff\xd8\xff jpeg'
+  feed = ProjectionNowPlayingFeed(read=lambda: value, fetch=fetch)
+  feed._enabled = True
+  feed.poll()
+  feed.poll()
+  assert fetched == [value['artwork']] and feed.artwork() == (value['artwork'], b'\xff\xd8\xff jpeg')
+  value = {'title': 'y', 'artwork': 'https://i.scdn.co/image/bad'}
+  feed.poll()
+  feed.poll()
+  assert feed.artwork() == (value['artwork'], None) and len(fetched) == 2
+  value = {'title': 'z', 'artwork': ''}
+  feed.poll()
+  assert feed.artwork() == ('', None) and len(fetched) == 2
+  assert projection_now_playing.fetch_artwork('https://evil.example/a.jpg') is None
+  assert projection_now_playing.image_type(b'\x89PNG\r\n\x1a\n...') == '.png' and projection_now_playing.image_type(b'GIF89a') is None
   feed.close()

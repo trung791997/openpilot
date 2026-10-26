@@ -4,6 +4,8 @@ Only head units that advertise the navigation status service receive it, and onl
 guiding. The route is polled on its own thread; the session loop just compares and sends.
 
 Wire facts: mrmees/open-android-auto ``oaa/navigation`` and ``oaa/control/ChannelDescriptorData`` (reference only).
+The legacy turn/distance pair and the cluster type follow opencardev/aasdk ``aap_protobuf/service/navigationstatus``
+(NavigationNextTurnEvent, NavigationStatusService), which matches the captured phone distance packet.
 """
 from __future__ import annotations
 
@@ -28,15 +30,22 @@ NAV_NOTIFICATION = 0x8006
 NAV_CURRENT_POSITION = 0x8007
 
 NAVIGATION_SERVICE = 8  # ChannelDescriptor.navigation_channel
-TYPE_ENUM, TYPE_IMAGE = 1, 2
+TYPE_IMAGE, TYPE_ENUM = 1, 2  # NavigationStatusService.InstrumentClusterType
 STATUS_ACTIVE, STATUS_INACTIVE, STATUS_REROUTING = 1, 2, 3
-SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 0
+SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 3
 (EVENT_DEPART, EVENT_NAME_CHANGE, EVENT_SLIGHT_TURN, EVENT_TURN, EVENT_SHARP_TURN, EVENT_U_TURN, EVENT_ON_RAMP,
  EVENT_OFF_RAMP, EVENT_FORK, EVENT_MERGE, EVENT_ROUNDABOUT_ENTER, EVENT_ROUNDABOUT_EXIT,
  EVENT_ROUNDABOUT_ENTER_AND_EXIT, EVENT_STRAIGHT) = range(1, 15)
 EVENT_DESTINATION = 19
 UNIT_METERS, UNIT_KILOMETERS, UNIT_KILOMETERS_P1, UNIT_MILES, UNIT_MILES_P1, UNIT_FEET = 1, 2, 3, 4, 5, 6
 
+# The Civic cluster (type ENUM) reads the legacy turn/distance pair. Session-000036 (2026-10-26) dropped video ~6 s
+# after it 3 of 3 times, but that turn had the side and event in each other's fields and a modern maneuver number
+# (36 = straight) where the legacy event belongs; this encoder fixes that. If projection still ends within
+# LEGACY_PROBATION of the first legacy turn, the pair is switched off until the daemon restarts.
+SEND_LEGACY = True
+LEGACY_PROBATION = 20.0
+_legacy_blocked = False
 STEP_TIMEOUT = 3.0
 START_GRACE = 2.0  # some head units never send the start request
 CHECK_EVERY = 0.25
@@ -124,7 +133,8 @@ def status_message(status: int) -> bytes:
 
 
 def turn_message(road: str, event: int, side: int, image: bytes | None = None) -> bytes:
-  return (field(1, road[:128]) + field(2, event) + field(3, side) + (field(4, image) if image else b''))
+  # NavigationNextTurnEvent: road = 1, turn_side = 2, event = 3 (legacy NextTurnEnum), image = 4
+  return (field(1, road[:128]) + field(2, side) + field(3, event) + (field(4, image) if image else b''))
 
 
 def distance_message(meters: float, seconds: float, metric: bool) -> bytes:
@@ -240,6 +250,7 @@ class NavStatus:
     self.next_distance = 0.0
     self.focus_requested = False
     self.focus = None
+    self.legacy_since = None  # first legacy turn this session
     self._reset()
 
   def _reset(self) -> None:
@@ -287,6 +298,11 @@ class NavStatus:
         self.log('nav_focus_requested', focus=FOCUS_NATIVE)
 
   def _send(self, kind: int, body: bytes) -> None:
+    if kind in (NAV_TURN, NAV_DISTANCE):
+      if not SEND_LEGACY or _legacy_blocked:
+        return
+      if self.legacy_since is None:
+        self.legacy_since = self.clock()
     self.session.send(self.channel_id, kind, body)
 
   def _update(self, snap: dict | None, now: float) -> None:
@@ -306,14 +322,15 @@ class NavStatus:
       self.sent_status = STATUS_ACTIVE
     turn = (snap['road'], snap['type'], snap['modifier'])
     if turn != self.shown_turn:
-      _, side = maneuver_event(snap['type'], snap['modifier'])
-      event = modern_maneuver(snap['type'], snap['modifier'])
+      legacy_event, side = maneuver_event(snap['type'], snap['modifier'])
+      maneuver = modern_maneuver(snap['type'], snap['modifier'])
       image = turn_image(snap['type'], snap['modifier'], *self.image_size) if self.image_size else None
       # Older receivers use the flat messages; newer ones consume 0x8006/0x8007.
-      # Discovery does not expose a reliable PDK version, so publish both formats.
-      self._send(NAV_TURN, turn_message(snap['road'], event, side, image))
-      self._send(NAV_NOTIFICATION, notification_message(snap['road'], event))
-      self.log('nav_guidance_sent', maneuver=event, legacy=True, modern=True, image=image is not None)
+      self._send(NAV_TURN, turn_message(snap['road'], legacy_event, side, image))
+      self._send(NAV_NOTIFICATION, notification_message(snap['road'], maneuver))
+      legacy = SEND_LEGACY and not _legacy_blocked
+      self.log('nav_guidance_sent', maneuver=maneuver, event=legacy_event, side=side, legacy=legacy, modern=True,
+               image=legacy and image is not None)
       self.shown_turn, self.shown_distance = turn, None
     metric = bool(snap.get('metric'))
     shown = display_distance(snap['distance'], metric)
@@ -351,6 +368,10 @@ class NavStatus:
       self._reset()
     return True
 
-  def close(self) -> None:
+  def close(self, error: BaseException | None = None) -> None:
+    global _legacy_blocked
+    if error is not None and self.legacy_since is not None and self.clock() - self.legacy_since < LEGACY_PROBATION:
+      _legacy_blocked = True
+      self.log('nav_legacy_blocked', after_s=round(self.clock() - self.legacy_since, 1), error=f'{type(error).__name__}: {error}')
     if hasattr(self.feed, 'close'):
       self.feed.close()

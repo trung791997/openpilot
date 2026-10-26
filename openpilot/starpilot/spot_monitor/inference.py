@@ -82,6 +82,9 @@ class VASMInference:
     self.cv2 = cv2_module
     self.net = None
     self.loaded_sha256: str | None = None
+    # Jetson over the gadget's V-ASM interface, when the gadget has one; bound
+    # to the model sha this process verified (jetson_link.JetsonLink)
+    self.jetson = None
     self.last_error = ""
 
   def load(self) -> bool:
@@ -98,6 +101,9 @@ class VASMInference:
       net.setPreferableTarget(self.cv2.dnn.DNN_TARGET_CPU)
       self.net = net
       self.loaded_sha256 = digest
+      from openpilot.starpilot.spot_monitor.jetson_link import JetsonLink
+      link = JetsonLink(digest)
+      self.jetson = link if link.available() else None
       self.last_error = ""
       return True
     except Exception as error:  # OpenCV raises its own extension exception type.
@@ -112,8 +118,16 @@ class VASMInference:
       # Later file changes cannot alter this loaded network; reloading
       # requires a new exact-hash verification in load().
       blob = prepare_nv12(frame, width=width, height=height, annotation=annotation, side=side, cv2_module=self.cv2)
-      self.net.setInput(blob)
-      output = np.asarray(self.net.forward())
+      remote = None
+      if self.jetson is not None:
+        # blob is uint8/255 in float32, so rint(*255) gives the crop back exactly
+        crop = np.rint(blob[0].transpose(1, 2, 0) * 255.0).astype(np.uint8)
+        remote = self.jetson.infer(1 if side == "right" else 0, crop)
+      if remote is not None:
+        output = np.asarray([remote], dtype=np.float32)
+      else:
+        self.net.setInput(blob)
+        output = np.asarray(self.net.forward())
       if output.shape != (1, 3) or not np.isfinite(output).all():
         raise ValueError("Unexpected tri-class V-ASM output")
       scores = output[0].tolist()

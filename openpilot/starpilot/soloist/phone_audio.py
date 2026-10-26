@@ -140,6 +140,21 @@ class PhoneInput:
           return action
     return None
 
+  def shuffle(self, address: str, enabled: bool) -> bool:
+    """Set the phone player's AVRCP shuffle; False when the phone offers no shuffle setting."""
+    if self.client is None:
+      return False
+    from openpilot.starpilot.bluetooth.owner import DEVICE
+    objects = self._objects()
+    device = next((path for path, interfaces in objects.items()
+                   if str(interfaces.get(DEVICE, {}).get('Address', '')).upper() == address), None)
+    for path, interfaces in objects.items():
+      if device and path.startswith(device + '/') and 'Shuffle' in interfaces.get(MEDIA_PLAYER, {}):
+        self._call(path, 'org.freedesktop.DBus.Properties', 'Set', 'ssv',
+                   (MEDIA_PLAYER, 'Shuffle', ('s', 'alltracks' if enabled else 'off')), timeout=2.0)
+        return True
+    return False
+
   def close(self):
     if self.client is not None:
       try:
