@@ -10,12 +10,15 @@ import math
 from pathlib import Path
 import time
 
-MAX_CLOCK_UNCERTAINTY_NS = 1_000_000
+# Each advertised clock resolution contributes to the conservative interval.
+# Two supported 1ms clocks already contribute 2ms before sampling overhead.
+MAX_CLOCK_RESOLUTION_NS = 1_000_000
+MAX_CLOCK_UNCERTAINTY_NS = 3_000_000
 PRODUCER_SOURCE_HASHES = (
   ('openpilot', 'system/camerad/cameras/spectra.cc', '4fa26c17f0fb792a4ab6815657beccddee1d641faa2fd02e5aa7393f717a2f3a'),
   ('openpilot', 'system/camerad/cameras/camera_qcom2.cc', 'b34c24c9984a0ac086f7b961cb7ff09d0501231da50aaad0e676bb3dc3f2edd9'),
   ('openpilot', 'system/camerad/cameras/camera_common.cc', 'bd9a416a6ee21047b4deec6df04276d8717cd92fe14de43f3e9daff86b62bb8f'),
-  ('openpilot', 'selfdrive/modeld/modeld.py', '59fe15e299b7418a5a7b708b3c7ab4542c45f2e6a278eafce7d8b6e5b6983696'),
+  ('openpilot', 'selfdrive/modeld/modeld.py', '25a0a0c477bd03dcb2fbf887bd8c881a3b28ce1a15d5a063557d289eb1d07c4c'),
   ('openpilot', 'selfdrive/modeld/fill_model_msg.py', 'b3916c34d1073d0c26a7a8adc51e7b148f63a1ac68b388226170fd0f8b8b56b4'),
   ('openpilot', 'system/sensord/sensord.py', '7c79ab07d775622a43001e5a9b9ccc9a7bafb065940185849b33eefc2fd26420'),
   ('openpilot', 'system/sensord/sensors/lsm6ds3_gyro.py', '3e561f3d8572e1477c9b4b810c7570837d51e81c5672fe21ec67a68cae00dd92'),
@@ -44,6 +47,10 @@ CLOSURE_SHA256 = hashlib.sha256(CLOSURE_BYTES).hexdigest()
 CONVENTION = 'mono_boot_equivalent_interval_v1'
 
 
+def clock_uncertainty_limit(source_domain):
+  return MAX_CLOCK_UNCERTAINTY_NS if source_domain == CONVENTION else MAX_CLOCK_RESOLUTION_NS
+
+
 def pinned_default_contract():
   """Startup-only bounded installed producer closure reads, never per control/pose work."""
   from openpilot.starpilot.flm.original_source_capture import OriginalSourceClockContract
@@ -59,7 +66,7 @@ def pinned_default_contract():
       roots[package] = Path(next(iter(spec.submodule_search_locations))).resolve()
     data = (roots[package] / relative).read_bytes()
     if not 0 < len(data) <= 1024 * 1024 or hashlib.sha256(data).hexdigest() != expected:
-      raise ValueError('unsupported original mixed-producer source closure')
+      raise ValueError(f'unsupported original mixed-producer source closure: {package}/{relative}')
   return OriginalSourceClockContract(CONVENTION, CLOSURE_SHA256, CLOSURE_SHA256, 'pinned-source-abi')
 
 
@@ -79,7 +86,7 @@ class ClockEquivalence:
 
 def equivalence_from_samples(samples, mono_resolution_ns, boot_resolution_ns):
   if (type(samples) is not tuple or len(samples) != 3 or
-      any(type(value) is not int or not 0 < value <= MAX_CLOCK_UNCERTAINTY_NS
+      any(type(value) is not int or not 0 < value <= MAX_CLOCK_RESOLUTION_NS
         for value in (mono_resolution_ns, boot_resolution_ns))):
     raise ValueError('three original samples and explicit clock resolutions required')
   intervals = []

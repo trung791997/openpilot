@@ -33,8 +33,11 @@ def start_original_capture(collector):
   adapter = collector.adapter
   try:
     collector.enable_original_source_capture(clock_contract=adapter.source_plant_clock)
-  except (OSError,ValueError):
+  except (OSError,ValueError) as error:
     adapter.source_plant_capture_error = 'original_source_clock_contract_unavailable'
+    from openpilot.starpilot.flm.source_observation_report import record_refusal
+    import time
+    record_refusal(collector, None, time.monotonic_ns(), adapter.source_plant_capture_error, error=error)
     adapter.current_physical_valid = False
     adapter.last_physical_ns = collector.last_qualified_response = 0
     return False
@@ -53,6 +56,8 @@ def observe(sm, cp, collector, now_ns, current_native):
     adapter.current_physical_valid = False
     adapter.last_physical_ns = collector.last_qualified_response = 0
   if not current_native:
+    from openpilot.starpilot.flm.source_observation_report import record_refusal
+    record_refusal(collector, sm, now_ns, 'current_native_unavailable')
     revoke()
     return
   row = original_source_pose_observer(sm,cp,collector,now_ns,distinguish_pending=True)
@@ -68,10 +73,16 @@ def observe(sm, cp, collector, now_ns, current_native):
   live_lag = live.optimizer.lag_ns if live is not None else getattr(collector, 'live_response_lag_ns', None)
   collector.live_response_pair = None
   if type(live_lag) is int and 0 <= live_lag <= 500_000_000:
-    lower = [(c,o) for c,o in collector.ready if o.apply_ns <= row.source_lower_ns-live_lag]
-    upper = [(c,o) for c,o in collector.ready if o.apply_ns <= row.source_upper_ns-live_lag]
-    if lower and upper and lower[-1][1].apply_ns == upper[-1][1].apply_ns:
-      collector.live_response_pair = (*lower[-1], row)
+    if live is not None:
+      collector.live_response_pair = None
+      pair = live.original_pose_pair(collector.ready, row)
+      if pair is not None:
+        collector.live_response_pair = (*pair, row)
+    else:
+      lower = [(c,o) for c,o in collector.ready if o.apply_ns <= row.source_lower_ns-live_lag]
+      upper = [(c,o) for c,o in collector.ready if o.apply_ns <= row.source_upper_ns-live_lag]
+      if lower and upper and lower[-1][1].apply_ns == upper[-1][1].apply_ns:
+        collector.live_response_pair = (*lower[-1], row)
     if live is not None:
       live.observe_original_pose(row, collector, now_ns=now_ns, current_native=current_native)
   model, binding = adapter.model, adapter.source_plant_binding

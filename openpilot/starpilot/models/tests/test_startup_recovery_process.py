@@ -125,3 +125,40 @@ def test_second_f6_exit_in_one_drive_falls_back_to_small():
     assert owner.proc is None
     results.append(owner.recovery.small_only)
   assert results == [False, True]
+
+
+@pytest.mark.parametrize("cleanup", ["daemon", "non_daemon", "atexit"])
+def test_actual_failed_startup_exits_without_waiting_for_cleanup(cleanup):
+  import ast
+  from pathlib import Path
+  import subprocess
+  import sys
+
+  source = Path(__file__).resolve().parents[3] / "selfdrive/modeld/modeld.py"
+  tree = ast.parse(source.read_text())
+  failure = next(node for node in ast.walk(tree) if isinstance(node, ast.If) and
+                 ast.unparse(node.test) == "model is None" and
+                 any(isinstance(child, ast.Constant) and
+                     child.value == "Chestnut startup failed; requesting isolated Small restart"
+                     for child in ast.walk(node)))
+  program = """
+import atexit, os, threading
+from types import SimpleNamespace
+blocker = threading.Event()
+cleanup = CLEANUP
+if cleanup == 'atexit':
+  atexit.register(blocker.wait)
+else:
+  threading.Thread(target=blocker.wait, daemon=cleanup == 'daemon').start()
+cloudlog = SimpleNamespace(error=lambda *args: None)
+STARTUP_FALLBACK_EXIT = EXIT_CODE
+model = None
+""".replace("CLEANUP", repr(cleanup)).replace("EXIT_CODE", str(STARTUP_FALLBACK_EXIT))
+  program += ast.unparse(failure)
+  child = subprocess.Popen([sys.executable, "-I", "-B", "-c", program])
+  try:
+    assert child.wait(timeout=3) == STARTUP_FALLBACK_EXIT
+  finally:
+    if child.poll() is None:
+      child.kill()
+    child.wait(timeout=3)

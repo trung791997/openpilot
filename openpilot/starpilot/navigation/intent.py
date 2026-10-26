@@ -106,14 +106,30 @@ class TurnIntent:
     self.signal_stop_hold = False
     self.key = None
     self.stop_hold = False
+    self.forced_active = False
 
-  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
+  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool,
+             forced_turn_speed_mps: float | None = None):
+    """A route's turn wins; then Force turn desires (Night Star, vfn's TurnDesires rule); then Turn Signal Guidance."""
+    desire, guidance_blocked = self._navigation(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
+    if desire != current_desire:
+      self.forced_active = False
+      return desire
+    forced = self._forced(sm, now_ns, current_desire, supported=supported, speed_mps=forced_turn_speed_mps)
+    if guidance_blocked:
+      return forced
+    # Guidance runs every frame so its stop hold keeps tracking; Force turn desires takes precedence when active.
+    guided = self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
+    return forced if self.forced_active else guided
+
+  def _navigation(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
+    """(desire, guidance_blocked): a route that is active but held or without a fresh plan blocks guidance, not Force."""
     nav = current_instruction(sm, now_ns) if supported else None
     key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
     if key != self.key:
       self.key, self.stop_hold = key, False
     if nav is None:
-      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
+      return current_desire, False
     cs = sm['carState']
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
@@ -127,11 +143,23 @@ class TurnIntent:
     elif model_stop or (plan_valid and plan.shouldStop):
       self.stop_hold = True
     if self.stop_hold or not plan_valid:
+      return current_desire, True
+    return turn_desire(sm, now_ns, current_desire, supported=supported), False
+
+  def _forced(self, sm, now_ns: int, current_desire, *, supported: bool, speed_mps: float | None):
+    """Force turn desires, as vfn's TurnDesires: any lone blinker below the turn desire speed while lateral is active and
+    the car is moving asks the model to turn, over a lane change too. It drops at a standstill and comes back as the car
+    moves off, so a stop re-pulses it. (A hold through the approach to a stop, tried first, latched whenever the car
+    crept through a turn without a full stop and withheld the desire for 30-60% of those turns: routes
+    aa72d9572459015c/00000018 and 00000019.)"""
+    cs = sm['carState']
+    left = bool(cs.leftBlinker and not cs.rightBlinker)
+    self.forced_active = bool(
+      speed_mps is not None and supported and cs.leftBlinker != cs.rightBlinker and sm['carControl'].latActive and
+      not cs.standstill and math.isfinite(cs.vEgo) and cs.vEgo < speed_mps)
+    if not self.forced_active:
       return current_desire
-    selected = turn_desire(sm, now_ns, current_desire, supported=supported)
-    if selected != log.Desire.none:
-      return selected
-    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
+    return log.Desire.turnLeft if left else log.Desire.turnRight
 
   def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop):
     if self.guidance is None:

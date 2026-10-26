@@ -356,6 +356,8 @@ def main(demo=False):
   # LAT_SMOOTH_SECONDS, and the manager runs modeld by its module name, so they all see it
   global LAT_SMOOTH_SECONDS
   LAT_SMOOTH_SECONDS = lateral_smooth_seconds(CP, LAT_SMOOTH_SECONDS)
+  from openpilot.starpilot.car.subaru.smoothing import read_frozen, seconds as subaru_smooth_seconds, filter_action
+  subaru_smoothing = read_frozen(CP, params)
 
   st = time.monotonic()
   cloudlog.warning("loading model")
@@ -433,7 +435,8 @@ def main(demo=False):
       # A timed-out loader can still mutate tinygrad's shared device state.
       # The manager must confirm this process has exited before starting Small.
       cloudlog.error("Chestnut startup failed; requesting isolated Small restart")
-      raise SystemExit(STARTUP_FALLBACK_EXIT)
+      # Avoid Python/native finalizers retaining this failed GPU context.
+      os._exit(STARTUP_FALLBACK_EXIT)
 
   if small_model is None:
     small_model, small_prepared, selected_small_failed = load_small()
@@ -541,12 +544,15 @@ def main(demo=False):
     sm.update(0)
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
-                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop))
+                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop),
+                                     forced_turn_speed_mps=(runtime_lane_policy.turn_desire_speed_mps
+                                                            if runtime_lane_policy.turn_desires else None))
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     lateral_delay = scheduled_lateral_delay(lat_delay_schedule, v_ego) if lat_delay_schedule else sm["lateralDelay"].lateralDelay
-    lat_delay = lateral_delay + LAT_SMOOTH_SECONDS
+    subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)
+    lat_delay = lateral_delay + LAT_SMOOTH_SECONDS + subaru_tau
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       # the virtual pair has the comma 4's cameras
@@ -634,12 +640,13 @@ def main(demo=False):
         receipt_owner.loaded(small_prepared, ModelVariant.SMALL, model_id=small_model.model_id)
       cloudlog.event("jetlinkHandover", state=HOOKS.state(model), handovers=model.handovers)
 
-    if model_output is not None:
+    if model_output is not None and vipc_dropped_frames == 0:
       modelv2_send = messaging.new_message('modelV2')
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      filter_action(action, prev_action, v_ego, subaru_tau)
       prev_action = action
       # Night Star port: the Honda EPS command delay follows where the steering comes from. It changes only when the
       # driving model does (a swap, a Chestnut stall that restarts the small model), so it rides on a param rather
@@ -671,7 +678,7 @@ def main(demo=False):
       engaged = bool(sm['carControl'].latActive)
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
+                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported) or navigation_turn.forced_active)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 
@@ -682,7 +689,9 @@ def main(demo=False):
       lane_status = LaneChangeStatus(lane_status_session, lane_status_sequence,
                                      int(modelv2_send.modelV2.frameId), int(modelv2_send.modelV2.timestampEof),
                                      mono_now_ns, mono_now_ns + 150_000_000, phase, status_direction,
-                                     runtime_lane_policy.auto_lane_change, engaged)
+                                     runtime_lane_policy.auto_lane_change, engaged,
+                                     StatusDirection.LEFT if desire == log.Desire.turnLeft else
+                                     StatusDirection.RIGHT if desire == log.Desire.turnRight else StatusDirection.NONE)
       lane_status_sequence += 1
       lane_status_msg = None
       status_bytes = encode_lane_status(lane_status)

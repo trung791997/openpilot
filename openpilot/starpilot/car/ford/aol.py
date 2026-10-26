@@ -1,6 +1,6 @@
 from dataclasses import replace
 from opendbc.car import structs
-from opendbc.car.ford.aol import qualified, AOL_WORDS, temporary_restriction
+from opendbc.car.ford.aol import qualified, AOL_WORDS, MANUAL, temporary_restriction, aol_safety_config, base_safety_param, ANGLE
 from openpilot.starpilot.aol.intent import AolCardIntent, AOL_TOGGLE
 from openpilot.starpilot.aol.policy import AolVehiclePolicy
 
@@ -9,7 +9,9 @@ def policy_for(cp):
   if qualified(cp):
     return AolVehiclePolicy(intent_supported=True, settings_supported=True, runtime_supported=True,
                             normal_runtime_supported=True, ordinary_axis_ack_required=qualified(cp, marked_only=True),
-                            explicit_latch=True, alternative_experience_addition=32)
+                            explicit_latch=True, alternative_experience_addition=32,
+                            safety_param_addition=(MANUAL if cp.transmissionType == structs.CarParams.TransmissionType.manual else 0) |
+                              (base_safety_param(cp) if aol_safety_config(cp).safetyParam & ANGLE else 0))
   return AolVehiclePolicy()
 
 
@@ -18,7 +20,14 @@ def native_profile_supported(model, param):
 
 
 def native_accepts_cp(cp, model, param):
-  return qualified(cp, marked_only=True) and native_profile_supported(model, param) and param == cp.safetyConfigs[0].safetyParam
+  return qualified(cp, marked_only=True) and native_profile_supported(model, param) and param == aol_safety_config(cp).safetyParam
+
+
+def early_native_long_withdrawal_supported(cp):
+  # Panda can observe a pedal before the parsed host sample. The existing
+  # independent-LAT proof remains mandatory; this never authorizes LONG.
+  return bool(qualified(cp, marked_only=True) and cp.openpilotLongitudinalControl and
+              aol_safety_config(cp).safetyParam & ANGLE)
 
 
 def native_latch_rejected(cp, native):
@@ -134,26 +143,26 @@ def create_intent(cp, settings):
 
 
 def temporary_eps_restriction(cp, state):
-  """Exact stock Ford physical EPS pause; intent only, no native permission."""
+  """Ford physical EPS pause after LONG is off; intent only, no native permission."""
   try:
-    return bool(qualified(cp, marked_only=True) and not cp.openpilotLongitudinalControl and
+    return bool(qualified(cp, marked_only=True) and
       state.steerFaultTemporary and not state.steerFaultPermanent and state.canValid and not state.canTimeout and
       state.cruiseState.available and not state.cruiseState.enabled and
       state.gearShifter == structs.CarState.GearShifter.drive and
-      not state.regenBraking and not state.gasPressed and
+      not state.regenBraking and
       not state.doorOpen and not state.seatbeltUnlatched and not state.accFaulted and
       not state.vehicleSensorsInvalid and not state.steeringDisengage and not state.buttonEvents)
   except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
     return False
 
 
-def temporary_eps_brake_recovery(cp, state):
-  """Stock LAT intent may outlive EPS loss while the brake remains held."""
+def temporary_eps_pedal_recovery(cp, state):
+  """Retain only existing LAT intent through EPS recovery with a pedal held."""
   try:
-    return bool(qualified(cp, marked_only=True) and not cp.openpilotLongitudinalControl and
-      state.brakePressed and not state.steerFaultTemporary and not state.steerFaultPermanent and
+    return bool(qualified(cp, marked_only=True) and
+      (state.brakePressed or state.gasPressed) and not state.steerFaultTemporary and not state.steerFaultPermanent and
       state.canValid and not state.canTimeout and state.cruiseState.available and not state.cruiseState.enabled and
-      state.gearShifter == structs.CarState.GearShifter.drive and not state.regenBraking and not state.gasPressed and
+      state.gearShifter == structs.CarState.GearShifter.drive and not state.regenBraking and
       not state.doorOpen and not state.seatbeltUnlatched and not state.accFaulted and
       not state.vehicleSensorsInvalid and not state.steeringDisengage and not state.buttonEvents)
   except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):

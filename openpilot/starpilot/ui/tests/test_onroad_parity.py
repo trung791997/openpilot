@@ -186,17 +186,21 @@ def test_valid_vision_limit_has_persistent_sign_without_action_receipt():
   shown = replace(road(), appearance=replace(road().appearance, show_speed_limit_sign=True), speed_limit=valid)
   with patch.object(rl, 'draw_rectangle_rounded') as fill, patch.object(rl, 'draw_rectangle_rounded_lines_ex') as outline:
     renderer._speed_limit_sign(shown)
-    fill.assert_called_once()
+    fill.assert_not_called()
     outline.assert_called_once()
-    assert [call.args[0] for call in foreground_calls(fonts.draw)] == ['SPEED', 'LIMIT', '55']
+    rect = outline.call_args.args[0]
+    assert (rect.width, rect.height) == (100, 116)
+    assert [call.args[0] for call in foreground_calls(fonts.draw)] == ['VISION', 'LIMIT', '55']
     outline.reset_mock()
     renderer._speed_limit_sign(replace(shown, speed_limit=SpeedLimitObservation(kind=ObservationKind.STALE)))
     outline.assert_not_called()
     renderer._speed_limit_sign(replace(road(speed_limit=valid), appearance=replace(shown.appearance, show_speed_limit_sign=False)))
     outline.assert_not_called()
+  fonts.draw.reset_mock()
   with patch.object(renderer._speed_limit_widget.shapes, 'circle') as circle:
     renderer._speed_limit_sign(replace(shown, appearance=replace(shown.appearance, use_vienna_sign=True)))
     circle.assert_called_once()
+    assert [call.args[0] for call in fonts.draw.call_args_list] == ['VISION', '55']
 
 
 def test_pending_confirmation_omits_redundant_speed_heading():
