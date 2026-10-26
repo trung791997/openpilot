@@ -56,7 +56,17 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Not built.** If more curve brakes happen on other roads, rerun the rule on them (Job: `rq3/hits.csv`). Any fix would only bound the radar lead's braking authority, never drop the point (D-041/D-042).
 
-**Also checked:** route `0000002e--efb7a0c7da`, the "strange stop and creep". Cruise was off and Peter was driving (seg 2 T143–178), so openpilot did not act.
+**All of Sunday Oct 25 (log + stills, limited road evidence).** Routes 2b, 2c, 2e, 2f, 31 and 32. 2d is not on the device.
+- Settings were the same on all six: radar on, Stock Brake Feel 1, Experimental 100 %.
+- Driving time: 1.27 h long-active, 0.63 h with a radar lead.
+- **Brakes:** 32 brakes below -1.5, 8 of them below -2.5. None is a route-30-type radar misread.
+- **The closest case,** 31 T354.6 (-2.87 at 9.4 m/s): radar range was 12 m shorter than the model's. The stills show a real car close ahead at a stop-sign intersection, so the radar range looks right.
+- **Route 32's three hard brakes** (-2.8 to -3.05): model-only, with no radar lead. They were red-light stops.
+- **The other hard lead brakes:** radar and model agree.
+- **The reversal rule** fires about 6 distinct times per hour on these routes. None of those hits lines up with a brake below -1.5.
+- So route 30 is still the only example, and the rule still does not separate it.
+
+**Also checked:** route `0000002e--efb7a0c7da`, the "strange stop and creep". Cruise was off and Peter was driving (seg 2 T143–178, which is seg 3 on a 1-based count), so openpilot did not act.
 
 ### 5 — 2026-10-25 — Tonight's drives after the brake fixes: calmer on radar, one hard brake at a red light
 
