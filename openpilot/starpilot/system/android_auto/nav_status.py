@@ -37,6 +37,10 @@ SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 0
 EVENT_DESTINATION = 19
 UNIT_METERS, UNIT_KILOMETERS, UNIT_KILOMETERS_P1, UNIT_MILES, UNIT_MILES_P1, UNIT_FEET = 1, 2, 3, 4, 5, 6
 
+# Off: with a route active the Civic head unit stops acknowledging video within seconds of the first guidance
+# packet (session-000033, 2026-10-26), so projection drops and reconnects in a loop. Find the message that does it
+# in a parked test before turning this back on.
+SEND_GUIDANCE = False
 STEP_TIMEOUT = 3.0
 START_GRACE = 2.0  # some head units never send the start request
 CHECK_EVERY = 0.25
@@ -267,7 +271,7 @@ class NavStatus:
       self._set('opening')
     elif self.state == 'opening' and now > self.deadline:
       self._set('unavailable')
-    elif self.state == 'open' and now >= self.next_check:
+    elif self.state == 'open' and SEND_GUIDANCE and now >= self.next_check:
       self.next_check = now + CHECK_EVERY
       snap = self.feed.snapshot()
       active = snap is not None

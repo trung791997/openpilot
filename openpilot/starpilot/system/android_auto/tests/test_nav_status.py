@@ -28,6 +28,11 @@ class Feed:
   def close(self): self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def guidance_on(monkeypatch):
+  monkeypatch.setattr(ns, 'SEND_GUIDANCE', True)
+
+
 @pytest.fixture
 def nav():
   session, feed, now = Session(), Feed(), [100.0]
@@ -315,3 +320,12 @@ def test_honda_descriptor_uses_next_turn_image_without_dimensions():
   session = Session(navigation=options)
   stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=Feed())
   assert stream.image_size is None  # no invented size; semantic guidance is still sent
+
+
+def test_guidance_is_off_by_default(monkeypatch, nav):
+  monkeypatch.setattr(ns, 'SEND_GUIDANCE', False)
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now, ns.START_GRACE + 1)
+  assert session.sent == [] and session.focus_sent == []
