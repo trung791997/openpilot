@@ -36,6 +36,28 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 6 — 2026-10-26 — Curve brake on route 30: radar misread the lead in an S-curve; no fix yet
+
+**Event (Peter).** `11c8fa231c0499ed/00000030--70508f00bd`, about T1422: a semi-hard brake while following a lead through a curve.
+
+**What happened (log + stills, limited road evidence).**
+- The road is a two-lane S-curve with guardrails on both sides. The lead was 4–6 m off-centre (yRel -4.35 to +6.4).
+- Radar track 60 is the same ID throughout. Its range swung from 45 to 54 m, then down to 39 m, over about 5 s. Over the same time the model lead held at 47–52 m with a flat a, and in the stills the lead is not closing.
+- Radar vLead went 22 → 27.6 → 16.1. aLeadK went +4.25 to -3.0 (clamped) in about 0.8 s.
+- The negative half took the plan (lead0) to aTarget -2.87. aEgo reached about -3.0, from 22.5 to 18.2 m/s. There was no override.
+- Not involved: curve speed, Conditional, Force Stop, a track swap, or a lane change.
+- This is the same class as D-048: the radar's numbers agree with each other but describe the wrong thing.
+
+**Candidate discriminator screened (log, Job).** Rule: on the same track, aLeadK goes above +2 and then below -2 within 1.5 s (or the mirror case).
+- Data: 12 radar routes (0d–2a, 30), 1.87 h engaged with a radar lead.
+- 16 radar hits, against 0 for the model lead under the same rule.
+- Outside route 30 it fires at about 2/h, mostly harmless. The route 20 T282 fault is one of those hits.
+- Adding |yRel| >= 3 m and curvature > 0.003 isolates route 30, but misses 20 T282. That would be fitted to one road.
+
+**Not built.** If more curve brakes happen on other roads, rerun the rule on them (Job: `rq3/hits.csv`). Any fix would only bound the radar lead's braking authority, never drop the point (D-041/D-042).
+
+**Also checked:** route `0000002e--efb7a0c7da`, the "strange stop and creep". Cruise was off and Peter was driving (seg 2 T143–178), so openpilot did not act.
+
 ### 5 — 2026-10-25 — Tonight's drives after the brake fixes: calmer on radar, one hard brake at a red light
 
 **Question (Peter).** How is long now on tonight's drives after the fixes? There was no stop-and-go.
