@@ -137,3 +137,66 @@ def test_alert_or_missing_card_releases_the_touch():
   assert touch.touch('up', 530, 130, state(alert='full'), placed, TRACK)
   assert not touch.touch('down', 530, 130, None, placed, TRACK)
   assert sent == []
+
+
+def test_scroll_holds_then_runs_one_pass_and_restarts():
+  from openpilot.starpilot.ui.onroad_now_playing import SCROLL_GAP, SCROLL_PAUSE, SCROLL_SPEED, scroll_offset
+  assert scroll_offset(100, 200, 5.0) == 0.0
+  assert scroll_offset(300, 200, SCROLL_PAUSE - .1) == 0.0
+  assert scroll_offset(300, 200, SCROLL_PAUSE + 1) == pytest.approx(SCROLL_SPEED)
+  cycle = SCROLL_PAUSE + (300 + SCROLL_GAP) / SCROLL_SPEED
+  assert scroll_offset(300, 200, cycle + .5) == 0.0
+
+
+def test_long_artist_scrolls_inside_a_clip_and_short_one_does_not(widget, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  card, _, texts = widget
+  clips = []
+  monkeypatch.setattr(onroad_now_playing.clip, 'begin_scissor_mode', lambda *args: clips.append(args))
+  monkeypatch.setattr(onroad_now_playing.clip, 'end_scissor_mode', lambda: clips.append('end'))
+  card.track = TRACK
+  card.render(state())
+  assert clips == []
+  card.track = {**TRACK, 'artist': 'A very long list of featured artists on this one track'}
+  texts.clear()
+  card.render(state())
+  assert texts[1:] == [card.track['artist']] * 2 and clips[-1] == 'end'
+  # The clip is the text column beside the cover: x + 96 to the right corner.
+  assert clips[0][:3] == (10 + 96, 20 + 44, 600 - 96 - 28)
+
+
+def test_cover_texture_is_built_once_per_cover_and_drawn(widget, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  rl = onroad_now_playing.rl
+  card, drawn, _ = widget
+  loads, unloads = [], []
+  image = SimpleNamespace(width=300, height=300)
+  monkeypatch.setattr(rl, 'load_image_from_memory', lambda kind, data, size: loads.append(kind) or image)
+  monkeypatch.setattr(rl, 'image_resize', lambda *args: None)
+  monkeypatch.setattr(rl, 'unload_image', lambda *args: None)
+  monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=120, height=120, id=len(loads)))
+  monkeypatch.setattr(rl, 'set_texture_filter', lambda *args: None)
+  monkeypatch.setattr(rl, 'is_window_ready', lambda: True)
+  monkeypatch.setattr(rl, 'unload_texture', lambda texture: unloads.append(texture.id))
+  monkeypatch.setattr(rl, 'draw_texture_pro', lambda *args: drawn.append(('draw_texture_pro', args)))
+  card.track = TRACK
+  card.artwork = ('https://i.scdn.co/image/a', b'\xff\xd8\xff\xe0 jpeg')
+  card.render(state())
+  card.render(state())
+  assert loads == ['.jpg'] and sum(name == 'draw_texture_pro' for name, _ in drawn) == 2
+  dest = next(args for name, args in drawn if name == 'draw_texture_pro')[2]
+  assert (dest.x, dest.y, dest.width, dest.height) == (30, 30, 60, 60)
+  card.artwork = ('', None)
+  drawn.clear()
+  card.render(state())
+  assert unloads == [1] and not any(name == 'draw_texture_pro' for name, _ in drawn)
+
+
+def test_bytes_that_are_not_an_image_get_the_placeholder(widget, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  card, _, _ = widget
+  monkeypatch.setattr(onroad_now_playing.rl, 'load_image_from_memory', lambda *args: pytest.fail('decoded a non-image'))
+  card.track = TRACK
+  card.artwork = ('https://i.scdn.co/image/a', b'<html>')
+  card.render(state())
+  assert card._cover == ('https://i.scdn.co/image/a', None)

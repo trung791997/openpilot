@@ -400,6 +400,7 @@ class ProjectionOnroad:
       placed = (self.customization or {}).get('widgets', {}).get('now_playing', {})
       self.now_playing_feed.set_enabled(bool(placed.get('enabled')))
       self.onroad.now_playing.track = self.now_playing_feed.snapshot()
+      self.onroad.now_playing.artwork = self.now_playing_feed.artwork()
     if self.jetlink_feed is not None:
       placed = (self.customization or {}).get('widgets', {}).get('jetlink_status', {})
       self.jetlink_feed.set_enabled(bool(placed.get('enabled') and self.native.ui_state.started))

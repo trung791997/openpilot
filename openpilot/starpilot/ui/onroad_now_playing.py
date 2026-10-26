@@ -3,7 +3,9 @@ import time
 
 import pyray as rl
 
+from openpilot.starpilot.ui import clip
 from openpilot.starpilot.soloist.now_playing import elapsed_ms
+from openpilot.starpilot.system.android_auto.projection_now_playing import image_type
 from openpilot.starpilot.system.android_auto.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
 from openpilot.starpilot.ui.presentation import FontRole
 
@@ -15,6 +17,11 @@ DIM = rl.Color(184, 178, 200, 90)
 BUTTON_R = 30
 CORNER = 28
 CONTROLS = ('shuffle', 'previous', 'play_pause', 'next')
+COVER = 60  # cover art square at (x + 20, y + 10); title and artist start at x + TEXT_LEFT
+TEXT_LEFT = 96
+SCROLL_SPEED = 40  # px/s for a name too wide to fit
+SCROLL_GAP = 60
+SCROLL_PAUSE = 2.0  # s held at the start of each pass
 
 
 def card_layout(placed, track, viewport_width):
@@ -68,15 +75,69 @@ def _shuffle(center: rl.Vector2, state) -> None:
     rl.draw_circle_v(rl.Vector2(x, y + 22), 3, color)
 
 
+def scroll_offset(text_width, width, seconds):
+  """How far a too-wide line has scrolled left: still for SCROLL_PAUSE, then one pass to where its repeat starts."""
+  if text_width <= width:
+    return 0.0
+  travel = text_width + SCROLL_GAP
+  return min(travel, max(0.0, seconds % (SCROLL_PAUSE + travel / SCROLL_SPEED) - SCROLL_PAUSE) * SCROLL_SPEED)
+
+
+def _note(box: rl.Rectangle) -> None:
+  """Placeholder cover for players without art (phone audio): a dim tile with a music note."""
+  rl.draw_rectangle_rounded(box, .2, 8, rl.Color(255, 255, 255, 28))
+  x, y = box.x + box.width / 2, box.y + box.height / 2
+  rl.draw_circle_v(rl.Vector2(x - 6, y + 12), 8, MUTED)
+  rl.draw_line_ex(rl.Vector2(x + 1, y + 12), rl.Vector2(x + 1, y - 17), 4, MUTED)
+  rl.draw_line_ex(rl.Vector2(x + 1, y - 15), rl.Vector2(x + 13, y - 8), 4, MUTED)
+
+
 class NowPlayingWidget:
   def __init__(self, fonts, clock=time.time):  # noqa: TID251 epoch-ms track anchors
     self.fonts = fonts
     self.clock = clock
     self.track = None
+    self.artwork = ('', None)  # (url, image bytes) from the feed thread
+    self._cover = None  # (url, texture or None), built on the render thread
 
   def _fit(self, text, role, size, width):
     measured = self.fonts.measure(text, role, size)
     return size * width / measured.width if measured.width > width else size
+
+  def _cover_texture(self):
+    url, data = self.artwork
+    if self._cover is not None and self._cover[0] == url:
+      return self._cover[1]
+    self.close()
+    texture = None
+    if url and data and (kind := image_type(data)):
+      image = rl.load_image_from_memory(kind, data, len(data))
+      if image.width > 0 and image.height > 0:
+        rl.image_resize(image, COVER * 2, COVER * 2)
+        texture = rl.load_texture_from_image(image)
+        rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+      rl.unload_image(image)
+    self._cover = (url, texture)
+    return texture
+
+  def close(self):
+    if self._cover is not None and self._cover[1] is not None and rl.is_window_ready():
+      rl.unload_texture(self._cover[1])
+    self._cover = None
+
+  def _scrolling(self, text, role, size, x, y, width, color):
+    text_width = self.fonts.measure(text, role, size).width
+    if text_width <= width:
+      self.fonts.draw(text, role, size, x, y, color)
+      return
+    offset = scroll_offset(text_width, width, time.monotonic())
+    clip.begin_scissor_mode(x, y, width, size + 8)
+    try:
+      for start in (x - offset, x - offset + text_width + SCROLL_GAP):
+        if start < x + width:
+          self.fonts.draw(text, role, size, start, y, color)
+    finally:
+      clip.end_scissor_mode()
 
   def render(self, state):
     placed = state.customization['layouts']['large'].get(NOW_PLAYING_WIDGET)
@@ -90,11 +151,17 @@ class NowPlayingWidget:
     if len(buttons) == 1:
       _play_pause(_center(rect), False)
       return
+    cover = rl.Rectangle(rect.x + 20, rect.y + 10, COVER, COVER)
+    if (texture := self._cover_texture()) is not None:
+      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height), cover, rl.Vector2(0, 0), 0, rl.WHITE)
+    else:
+      _note(cover)
+    text_x, text_width = rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - CORNER
+    title = track['title']
+    self.fonts.draw(title, FontRole.SEMI_BOLD, self._fit(title, FontRole.SEMI_BOLD, 30, text_width), text_x, rect.y + 10, TEXT)
+    if artist := track['artist'] or track['album']:
+      self._scrolling(artist, FontRole.NORMAL, 22, text_x, rect.y + 44, text_width, MUTED)
     left, width = rect.x + CORNER, rect.width - 2 * CORNER
-    rows = ((track['title'], FontRole.SEMI_BOLD, 30, 10, TEXT), (track['artist'] or track['album'], FontRole.NORMAL, 22, 44, MUTED))
-    for text, role, size, y, color in rows:
-      if text:
-        self.fonts.draw(text, role, self._fit(text, role, size, width), left, rect.y + y, color)
     bar = rl.Rectangle(left, rect.y + 76, width, 4)
     rl.draw_rectangle_rounded(bar, 1.0, 4, rl.Color(255, 255, 255, 50))
     duration = track.get('durationMs')
