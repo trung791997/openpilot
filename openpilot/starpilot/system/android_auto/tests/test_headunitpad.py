@@ -7,7 +7,7 @@ import pytest
 
 from openpilot.starpilot.system.android_auto import hw_encoder, identity as identity_store, supervisor as supervisor_module
 from openpilot.starpilot.system.android_auto.session import FRAGMENT_SIZE, ProjectionSession
-from openpilot.starpilot.system.android_auto.tests.fake_head_unit import FakeHeadUnit, make_identity
+from openpilot.starpilot.system.android_auto.tests.fake_head_unit import FakeHeadUnit, make_identity, use_fixture_encoder_without_h264
 
 
 @pytest.fixture(scope="module")
@@ -92,7 +92,8 @@ def test_per_frame_acks_unchanged_for_cars(identity):
 
 
 @pytest.mark.parametrize("connection", ["headunitpad", "openheadunit"])
-def test_supervisor_headunitpad_session_end_to_end(store, identity, connection):
+def test_supervisor_headunitpad_session_end_to_end(store, identity, connection, monkeypatch):
+  use_fixture_encoder_without_h264(monkeypatch)
   port = free_port()
   sup = supervisor_module.Supervisor(synthetic=True)
   sup.set_connection(connection)

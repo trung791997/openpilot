@@ -154,6 +154,8 @@ def test_supervisor_wired_session_end_to_end(tmp_path, monkeypatch):
   monkeypatch.setattr(identity_store, "CONFIG_PATH", data / "config.json")
   monkeypatch.setattr(identity_store, "LOG_DIR", data / "logs")
   monkeypatch.setattr(hw_encoder, "LIBRARY", tmp_path / "missing.so")
+  from openpilot.starpilot.system.android_auto.tests.fake_head_unit import use_fixture_encoder_without_h264
+  use_fixture_encoder_without_h264(monkeypatch)
   hu = FakeHeadUnit(identity)
   calls = []
 

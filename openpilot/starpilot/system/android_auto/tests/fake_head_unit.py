@@ -388,3 +388,40 @@ def rfcomm_head_unit(sock: socket.socket, endpoint: tuple[str, int], *, version_
       return seen
     elif message_id != bs.WIFI_PING_RESPONSE:
       raise AssertionError(f"unexpected {message_id}")
+
+
+class FixtureEncoder:
+  """Stand-in H.264 encoder for session plumbing tests: a valid keyframe/delta access unit per frame."""
+  backend = "fixture"
+  supports_nv12 = False
+  last_encode_ms = 0.0
+
+  def __init__(self, width: int, height: int):
+    self.width, self.height, self.frames = width, height, 0
+
+  def encode_rgba(self, pixels, *, keyframe=False):
+    assert len(pixels) == self.width * self.height * 4
+    self.frames += 1
+    tag = bytes([self.frames & 0xff])
+    if keyframe or self.frames == 1:
+      return b"\x00\x00\x00\x01\x09\xf0" + b"\x00\x00\x00\x01\x67\x42" + b"\x00\x00\x00\x01\x68\xce" + b"\x00\x00\x00\x01\x65" + tag, True
+    return b"\x00\x00\x00\x01\x09\xf0" + b"\x00\x00\x00\x01\x41" + tag, False
+
+  def close(self):
+    pass
+
+
+def use_fixture_encoder_without_h264(monkeypatch) -> bool:
+  """End-to-end session tests need an H.264 encoder. Off the device (no libaa_encoder.so, no PyAV with
+  libx264) supervisor retries video negotiation forever, so these tests timed out; use FixtureEncoder there.
+  On a comma the real encoder stays in place. Returns True when the fixture is in use."""
+  from openpilot.starpilot.system.android_auto import encoder, hw_encoder
+  if hw_encoder.LIBRARY.is_file():
+    return False
+  try:
+    encoder.import_av()
+    return False
+  except RuntimeError:
+    pass
+  monkeypatch.setattr(hw_encoder, "create_encoder", lambda width, height, **_kwargs: (FixtureEncoder(width, height), 15))
+  return True
