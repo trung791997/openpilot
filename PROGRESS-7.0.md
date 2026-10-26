@@ -38,6 +38,20 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
+
+**Problem.** On route 34 (11c8fa231c0499ed/00000034--010fbd6343, T479–481) the car braked to -1.9 for about 2 s behind a car about 60 m ahead that was holding its speed. The stills show the gap steady.
+
+**Cause.** Radar track 55 first reported the car at 76 m. The model had it at 64 m, at 13.8 m/s. In about 1 s the range settled to 55 m. The radar's speed filter read that settling as a car doing 6–8 m/s and braking at -3 m/s². The range fell about 20 m/s while the track's own vRel said about 10 m/s. The build had the curve brake fix (entry 7), but there was no + → − reversal, so it correctly did nothing.
+
+**Check** (Job, log level, 25 routes, 4.36 engaged h). The flag: a new lead0 track whose range rate disagrees with its own vRel by more than 5 m/s for at least 0.3 s, in its first 2 s.
+- It flags 21 of 403 new tracks, about 4.8/h. Only 5 were followed by aTarget < -1.0.
+- 3 of the 79 engaged brakes below -1.5 came within 3 s of a flag, not counting route 34 itself (2f t736, 10 t188, 0f t2190). Job counts all 3 as real early braking, but no stills were checked.
+- None of those 3 is under 30 m or under 4 s TTC, so the urgent bypass would not protect them.
+- At other thresholds (3 / 8 m/s, windows 1.5–3 s), true hits and real-brake hits rise and fall together.
+
+**Decision.** Not built. On its own, the flag would also soften real early brakes, the same reason D-048 was shelved (STATUS 264). Watch for more route-34-shaped taps. If more appear, try the flag together with a model speed disagreement, and check stills on 2f, 10 and 0f.
+
 ### 7 — 2026-10-26 — Curve brake fix: a radar lead that flips from speeding up to braking within 1.5 s gets less braking authority
 
 **Problem.** On route 30 (11c8fa231c0499ed/00000030--70508f00bd, T1421–1424) the Civic braked hard to -2.87 while following a car through an S-curve. The car ahead was not slowing. Radar track 60 read the lead as speeding up at +4 m/s², then braking at -3 m/s², all within 1 s. A vision-only drive would not have braked: the model kept the lead at 47–52 m and about 21–22 m/s.
