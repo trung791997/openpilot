@@ -19,10 +19,20 @@ def test_appearance_scales_ink_and_optional_background(key, display, background,
              alert=NS(size='none'))
   # A missing favorite also exercises the status badge's opacity and background.
   with patch('pyray.draw_rectangle_rounded') as fill, patch('pyray.draw_rectangle_rounded_lines_ex') as border, \
-       patch('pyray.draw_line_ex') as lines, patch('pyray.draw_circle') as badge:
+       patch('pyray.draw_line_ex') as lines, patch('pyray.draw_circle') as badge, \
+       patch('pyray.draw_circle_v') as disc, patch('pyray.draw_ring') as ring:
     card.render(key, state)
-  assert fill.call_count == border.call_count == int(background)
-  if background:
+  if display == 'icons':
+    # Icons are round glass buttons, like the driver-monitor circle and the now-playing card.
+    assert fill.call_count == border.call_count == 0
+    assert disc.call_count == ring.call_count == int(background)
+    if background:
+      assert disc.call_args.args[-1].a == round(225 * opacity / 100)
+      assert ring.call_args.args[-1].a == round(40 * opacity / 100)
+  else:
+    assert disc.call_count == ring.call_count == 0
+    assert fill.call_count == border.call_count == int(background)
+  if background and display == 'words':
     assert fill.call_args.args[-1].a == round(245 * opacity / 100)
     assert border.call_args.args[-1].a == round((255 if key == 'bookmark' else 170) * opacity / 100)
   assert all(call.args[-1].a == round(255 * opacity / 100) for call in fonts.draw.call_args_list)
@@ -45,9 +55,10 @@ def test_bookmark_stays_visible_during_navigation_and_needs_no_favorite(display)
   home = {'id': 'home', 'label': 'home'}
   card.document = {'favorites': [home], 'destination': home, 'enabled': True, 'token': 'key'}
   with patch('pyray.draw_rectangle_rounded') as background, patch('pyray.draw_rectangle_rounded_lines_ex'), \
-       patch('pyray.draw_line_ex') as lines:
+       patch('pyray.draw_line_ex') as lines, patch('pyray.draw_circle_v') as disc:
     card.render('bookmark', state)
   background.assert_not_called()
+  disc.assert_not_called()
   assert [call.args[0] for call in fonts.draw.call_args_list] == (['Bookmark', 'Save event'] if display == 'words' else [])
   if display == 'icons':
     assert lines.call_count == 5
@@ -109,16 +120,18 @@ def test_icon_rendering_preserves_navigation_status_without_word_card(key, statu
   card.document = {'favorites': [] if status == 'missing' else [place], 'destination': place if status == 'active' else None,
                    'enabled': status != 'disabled', 'token': 'key'}
   card.error = 'Try again' if status == 'error' else ''
-  with patch('pyray.draw_rectangle_rounded') as background, patch('pyray.draw_rectangle_rounded_lines_ex'), \
+  with patch('pyray.draw_circle_v') as background, patch('pyray.draw_ring') as ring, \
        patch('pyray.draw_line_ex') as lines, patch('pyray.draw_circle'):
     card.render(key, state)
-  rect = background.call_args.args[0]
-  assert (rect.x, rect.y, rect.width, rect.height) == (100, 200, 110, 110)
+  center, radius = background.call_args.args[:2]
+  assert (center.x, center.y, radius) == (155, 255, 55)
+  assert (ring.call_args.args[-1].r, ring.call_args.args[-1].g) == ((240, 150) if status == 'active' else (255, 255))
   assert lines.call_count > 0
   if status == 'active':
     assert lines.call_count == 2, 'the favorite icon is replaced by a full X'
   assert [call.args[0] for call in fonts.draw.call_args_list] == ([badge] if badge else [])
-  assert lines.call_args.args[-1].r == (240 if status == 'active' else 160 if status in ('disabled', 'missing') else 199)
+  ink = lines.call_args.args[-1]
+  assert (ink.r, ink.g) == ((240, 150) if status == 'active' else (160, 157) if status in ('disabled', 'missing') else (240, 238))
 
 
 @pytest.mark.parametrize('active', ['home', 'work'])
@@ -132,8 +145,9 @@ def test_other_favorite_is_hidden_until_route_ends(active, display):
   places = [{'id': label, 'label': label} for label in ('home', 'work')]
   card.document = {'favorites': places, 'destination': next(p for p in places if p['id'] == active), 'enabled': True, 'token': 'key'}
   other = 'nav_work' if active == 'home' else 'nav_home'
-  with patch('pyray.draw_rectangle_rounded') as background, patch('pyray.draw_rectangle_rounded_lines_ex'), \
-       patch('pyray.draw_line_ex'):
+  with patch('pyray.draw_rectangle_rounded') as card_fill, patch('pyray.draw_rectangle_rounded_lines_ex'), \
+       patch('pyray.draw_circle_v') as icon_fill, patch('pyray.draw_ring'), patch('pyray.draw_line_ex'):
+    background = icon_fill if display == 'icons' else card_fill
     card.render(other, state)
     background.assert_not_called()
     # Ending the route restores the other button without changing the saved layout.

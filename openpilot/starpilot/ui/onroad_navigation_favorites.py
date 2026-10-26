@@ -34,11 +34,14 @@ class NavigationFavorites:
     alpha = round(255 * opacity)
     background = placed.get('background', True)
     tint = rl.Color(240, 150, 150, alpha) if active else rl.Color(199, 174, 247, alpha)
-    if background:
-      rl.draw_rectangle_rounded(rect, .3, 8, rl.Color(15, 13, 23, round(245 * opacity)))
-      rl.draw_rectangle_rounded_lines_ex(rect, .3, 8, 3, tint if available else rl.Color(140, 140, 150, round(170 * opacity)))
-    ink = tint if available else rl.Color(160, 157, 167, alpha)
     if icons:
+      # Round glass like the driver-monitor circle and the now-playing card beside it, not an outlined square.
+      ink = (tint if active else rl.Color(240, 238, 248, alpha)) if available else rl.Color(160, 157, 167, alpha)
+      if background:
+        center = rl.Vector2(rect.x + rect.width / 2, rect.y + rect.height / 2)
+        rl.draw_circle_v(center, rect.width / 2, rl.Color(15, 13, 23, round(225 * opacity)))
+        ring = tint if active else rl.Color(255, 255, 255, round(40 * opacity))
+        rl.draw_ring(center, rect.width / 2 - 2.5, rect.width / 2, 0, 360, 64, ring)
       if active:
         for start, end in (((35, 35), (75, 75)), ((35, 75), (75, 35))):
           rl.draw_line_ex(rl.Vector2(rect.x + start[0], rect.y + start[1]),
@@ -52,6 +55,10 @@ class NavigationFavorites:
         measured = self.fonts.measure(badge, FontRole.SEMI_BOLD, 23)
         self.fonts.draw(badge, FontRole.SEMI_BOLD, 23, rect.x + 91 - measured.width / 2, rect.y + 4, ink)
       return
+    if background:
+      rl.draw_rectangle_rounded(rect, .3, 8, rl.Color(15, 13, 23, round(245 * opacity)))
+      rl.draw_rectangle_rounded_lines_ex(rect, .3, 8, 3, tint if available else rl.Color(140, 140, 150, round(170 * opacity)))
+    ink = tint if available else rl.Color(160, 157, 167, alpha)
     rows = ((title, FontRole.SEMI_BOLD, 34, 18), (detail, FontRole.NORMAL, 25, 64)) if bookmark else (
       (title, FontRole.NORMAL, 25, 18), (detail, FontRole.SEMI_BOLD, 34, 58))
     for text, role, size, offset in rows:
