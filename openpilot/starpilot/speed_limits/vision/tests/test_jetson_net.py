@@ -116,13 +116,14 @@ def test_other_models_are_never_used(mount):
   assert net.net.calls == 1 and link.stats['sent'] == 0 and link.stats['wrong_model_hellos'] == 1
 
 
-def test_silent_server_falls_back_fast(mount):
+def test_a_live_server_that_does_not_answer_skips_the_pass_fast(mount):
   link = _link(mount, _hello(), answer=False)
   net = J.JetsonNet(_CpuNet((1, 5, 1344)), J.DETECTOR, link)
   net.setInput(np.zeros((1, 3, 256, 256), np.float32))
   t0 = time.monotonic()
-  net.forward()
-  assert time.monotonic() - t0 < 0.2 and net.net.calls == 1 and link.stats['timeouts'] == 1
+  with pytest.raises(J.Missed):
+    net.forward()
+  assert time.monotonic() - t0 < 0.2 and net.net.calls == 0 and link.stats['timeouts'] == 1
 
 
 def test_a_split_answer_is_dropped_not_stitched(mount):
@@ -135,16 +136,18 @@ def test_a_split_answer_is_dropped_not_stitched(mount):
     time.sleep(0.01)
   net = J.JetsonNet(_CpuNet((1, 5, 1344)), J.DETECTOR, link)
   net.setInput(np.zeros((1, 3, 256, 256), np.float32))
-  out = net.forward()
-  assert net.net.calls == 1 and not out.any() and link.stats['answered'] == 0
+  with pytest.raises(J.Missed):
+    net.forward()
+  assert net.net.calls == 0 and link.stats['answered'] == 0
 
 
-def test_wrong_sized_answer_falls_back(mount):
+def test_a_wrong_sized_answer_is_never_used(mount):
   link = _link(mount, _hello(), nfloats=19)
   net = J.JetsonNet(_CpuNet((1, 5, 1344)), J.DETECTOR, link)
   net.setInput(np.zeros((1, 3, 256, 256), np.float32))
-  net.forward()
-  assert net.net.calls == 1 and link.stats['bad_answers'] == 1
+  with pytest.raises(J.Missed):
+    net.forward()
+  assert net.net.calls == 0 and link.stats['bad_answers'] == 1
 
 
 def test_no_interface_leaves_the_cpu_nets(tmp_path):
@@ -166,20 +169,24 @@ def test_vision_core_reads_the_same_through_jetson_net_on_cpu(tmp_path):
   wrapped.classifier_net = J.JetsonNet(wrapped.classifier_net, J.CLASSIFIER, link)
   frame = np.random.default_rng(1).integers(0, 256, (1208, 1928, 3), dtype=np.uint8)
   assert plain._collect_detector_classifier_proposals(frame) == wrapped._collect_detector_classifier_proposals(frame)
-  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1, 'loads': 0, 'unloads': 0, 'yield_skips': 0}
+  assert wrapped.net.stats == {'jetson': 0, 'cpu': 1, 'loads': 0, 'unloads': 0, 'yield_skips': 0, 'miss_skips': 0}
 
 
 class _ScriptedLink:
   """infer() answers from a list: an array is the Jetson's answer, None sends the pass to the CPU."""
-  def __init__(self, answers, yielding=False):
+  def __init__(self, answers, yielding=False, live=False):
     self.answers = list(answers)
     self.is_yielding = yielding
+    self.is_live = live
 
   def infer(self, kind, image_u8):
     return self.answers.pop(0)
 
   def yielding(self):
     return self.is_yielding
+
+  def live(self):
+    return self.is_live
 
 
 def test_lazy_net_is_built_on_the_first_cpu_pass_and_dropped_after_jetson_only_passes():
@@ -202,7 +209,7 @@ def test_lazy_net_is_built_on_the_first_cpu_pass_and_dropped_after_jetson_only_p
   net.forward()
   assert net.net is None and net.stats['unloads'] == 1                      # Jetson-only for UNLOAD_AFTER_S
   net.forward()
-  assert net.net is built[1] and net.stats == {'jetson': 3, 'cpu': 2, 'loads': 2, 'unloads': 1, 'yield_skips': 0}
+  assert net.net is built[1] and net.stats == {'jetson': 3, 'cpu': 2, 'loads': 2, 'unloads': 1, 'yield_skips': 0, 'miss_skips': 0}
 
 
 def test_jetson_net_needs_a_net_or_a_loader():
@@ -257,7 +264,7 @@ def test_a_yielding_jetson_skips_the_pass_and_builds_no_cpu_net(mount):
   net.setInput(np.zeros((1, 3, 256, 256), np.float32))
   with pytest.raises(J.Yielding):
     net.forward()
-  assert built == [] and net.stats == {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 1}
+  assert built == [] and net.stats == {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 1, 'miss_skips': 0}
 
 
 def test_a_yield_answer_is_not_a_bad_answer_and_lasts_until_a_plain_hello(mount):
@@ -313,3 +320,32 @@ def test_round_trips_are_kept_per_model_and_carry_the_jetsons_time(mount):
     assert model['jetson_ms']['max'] == 0.9   # the fake server says 900 us
     assert model['total_ms']['max'] >= model['jetson_ms']['max'] and model['link_ms']['mean'] >= 0
   assert link.take_round_trips() == {'detector': {'n': 0}, 'classifier': {'n': 0}}
+
+
+def test_a_live_jetson_missing_a_pass_skips_it_and_builds_no_cpu_net():
+  built = []
+  def loader():
+    built.append(_CpuNet((1, 19)))
+    return built[-1]
+  jetson_out = np.full((1, 19), 3.0, np.float32)
+  link = _ScriptedLink([None, jetson_out, None], live=True)
+  net = J.JetsonNet(None, J.CLASSIFIER, link, loader=loader)
+  net.setInput(np.zeros((1, 3, 128, 128), np.float32))
+  with pytest.raises(J.Missed):
+    net.forward()
+  assert net.forward() is jetson_out and net.misses == 0   # an answer starts the count over
+  with pytest.raises(J.Missed):
+    net.forward()
+  assert built == [] and net.stats == {'jetson': 1, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 0, 'miss_skips': 2}
+
+
+def test_a_live_jetson_missing_miss_limit_passes_in_a_row_runs_the_cpu_net():
+  link = _ScriptedLink([None] * (J.MISS_LIMIT + 1), live=True)
+  net = J.JetsonNet(None, J.CLASSIFIER, link, loader=lambda: _CpuNet((1, 19)))
+  net.setInput(np.zeros((1, 3, 128, 128), np.float32))
+  for _ in range(J.MISS_LIMIT):
+    with pytest.raises(J.Missed):
+      net.forward()
+  net.forward()
+  assert net.stats['cpu'] == 1 and net.stats['loads'] == 1 and net.stats['miss_skips'] == J.MISS_LIMIT
+

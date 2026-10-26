@@ -9,7 +9,11 @@ of each ONNX sha256, in its hello). Any doubt and forward() runs the OpenCV net 
   - the Jetson yielding its GPU to the driving model (STATUS_YIELD, tools/jetson_vasm/yield_gate.py):
     nothing is sent until its next plain hello, and forward() raises Yielding instead of running the CPU net,
     so the pass is skipped (VisionModelCore.observe: a frame with no detection) and a lazily built core does
-    not rebuild its nets for it. A yield lasts as long as the gate holds it: 1 s past the driving model's last slow
+    not rebuild its nets for it.
+  A Jetson that is still there (a fresh hello for these models) but missed one pass (timeout, send in flight,
+  bad answer) gets the same skip, Missed, for up to MISS_LIMIT passes in a row: 35 of 9995 passes timed out on
+  the 2026-10-25 drive, and each built the CPU nets for one pass. The CPU nets run only when the Jetson goes
+  silent, names other models, or misses MISS_LIMIT passes in a row. A yield lasts as long as the gate holds it: 1 s past the driving model's last slow
     window while jetlink-server's stats are live, at least HOLD_S (5 s) on the GPU-load fallback.
 
 JetsonNet stands in for a cv2.dnn net (setInput/forward), so VisionModelCore's sign logic is unchanged:
@@ -55,12 +59,17 @@ HELLO_FRESH_S = 2.5
 REPLY_TIMEOUT_S = 0.05
 REOPEN_S = 5.0
 WRITE_CHUNK = 8192
+MISS_LIMIT = 10        # passes in a row a live Jetson may miss before the CPU net runs (a few seconds)
 UNLOAD_AFTER_S = 60.0   # Jetson-only passes before a lazily built CPU net is dropped again
 READ_SIZE = 32768   # the largest answer, the detector's, is 20 + 6720 * 4 = 26900 bytes: one transfer
 
 
 class Yielding(RuntimeError):
   """The Jetson lent its GPU to the driving model: skip this pass, do not run it on the CPU."""
+
+
+class Missed(Yielding):
+  """The Jetson is there but missed this pass: skip it, as a yield, rather than build the CPU net for one pass."""
 
 
 def _mask_signals():
@@ -97,6 +106,10 @@ class SlvLink:
 
   def ready(self) -> bool:
     return self.hello_matches and time.monotonic() - self.last_hello < HELLO_FRESH_S and not self._writing.is_set()
+
+  def live(self) -> bool:
+    """A fresh hello naming these models: the Jetson is serving them, even if one answer was late."""
+    return self.hello_matches and time.monotonic() - self.last_hello < HELLO_FRESH_S
 
   def yielding(self) -> bool:
     """The Jetson, still there and running these models, said it is yielding and has not said otherwise."""
@@ -263,7 +276,8 @@ class JetsonNet:
     self.net, self.kind, self.link, self.loader, self.clock = net, kind, link, loader, clock
     self.blob = None
     self.last_cpu = 0.0
-    self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 0}
+    self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 0, 'miss_skips': 0}
+    self.misses = 0   # passes in a row the live Jetson missed
 
   def setInput(self, blob):  # noqa: N802 (cv2's name)
     self.blob = blob
@@ -271,6 +285,7 @@ class JetsonNet:
   def forward(self):
     out = self.link.infer(self.kind, blob_to_u8(self.blob))
     if out is not None:
+      self.misses = 0
       self.stats['jetson'] += 1
       if self.loader is not None and self.net is not None and self.clock() - self.last_cpu >= UNLOAD_AFTER_S:
         self.net = None
@@ -280,6 +295,11 @@ class JetsonNet:
     if self.link.yielding():
       self.stats['yield_skips'] += 1
       raise Yielding('the Jetson is yielding its GPU to the driving model')
+    if self.link.live() and self.misses < MISS_LIMIT:
+      self.misses += 1
+      self.stats['miss_skips'] += 1
+      raise Missed('the Jetson missed this pass')
+    self.misses = 0
     self.stats['cpu'] += 1
     if self.net is None:
       self.net = self.loader()
