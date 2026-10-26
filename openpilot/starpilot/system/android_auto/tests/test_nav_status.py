@@ -295,7 +295,9 @@ def test_navigation_wire_schema_golden_bytes():
   # Independent literals from the proto field numbers. Legacy turn: road = 1, turn_side = 2 (LEFT = 1),
   # event = 3 (TURN = 4). Notification: Maneuver.TYPE_TURN_NORMAL_LEFT (7).
   assert ns.turn_message('Main', ns.EVENT_TURN, ns.SIDE_LEFT) == bytes.fromhex('0a044d61696e10011804')
-  assert ns.notification_message('Main', 7) == bytes.fromhex('0a0c0a02080712060a044d61696e')
+  # NavigationStep: maneuver = 1, road = 2 {name = 1}, cue = 4 {alternate_text = 1}.
+  assert ns.notification_message('Main', 7) == bytes.fromhex('0a140a02080712060a044d61696e22060a044d61696e')
+  assert ns.notification_message('', 7) == bytes.fromhex('0a080a02080712020a00')
   assert ns.current_position_message(400, 40, False) == bytes.fromhex('0a0e0a0a0890031203302e3218051028')
   # Zero-distance display is valid; it must not disappear at the actual turn.
   assert ns.current_position_message(0, 0, False) == bytes.fromhex('0a0b0a07080012013018061000')
