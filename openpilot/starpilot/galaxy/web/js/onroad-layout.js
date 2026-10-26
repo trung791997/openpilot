@@ -193,14 +193,20 @@ export const LayoutWidgetPreview = {
           style="filter: drop-shadow(2px 2px 1px #000000aa)">{{ clock24Hour ? '18:00' : '12:00 PM' }}</text>
       </template>
       <g v-else-if="widget.kind === 'now_playing'">
-        <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
-        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="30" fill="#c7aef7" />
-        <rect :x="widget.height / 2 - 9" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <rect :x="widget.height / 2 + 3" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <text :x="widget.height + 4" y="40" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
-        <text :x="widget.height + 4" y="68" font-size="22" fill="#b8b2c8">M83</text>
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="widget.width - widget.height * 1.5 - 4" height="4" rx="2" fill="#ffffff" fill-opacity=".2" />
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="(widget.width - widget.height * 1.5 - 4) * .38" height="4" rx="2" fill="#c7aef7" />
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" rx="28" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
+        <text x="28" y="38" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
+        <text x="28" y="68" font-size="22" fill="#b8b2c8">M83</text>
+        <rect x="28" y="76" :width="widget.width - 56" height="4" rx="2" fill="#ffffff" fill-opacity=".2" />
+        <rect x="28" y="76" :width="(widget.width - 56) * .38" height="4" rx="2" fill="#c7aef7" />
+        <g :transform="'translate(' + widget.width / 8 + ' 110)'" stroke="#f5f2fc" stroke-width="4" fill="#f5f2fc">
+          <path d="M-17 -10 L13 10 M-17 10 L13 -10" fill="none" /><path d="M10 3 L20 10 L10 17 Z M10 -17 L20 -10 L10 -3 Z" stroke="none" />
+        </g>
+        <path :transform="'translate(' + widget.width * 3 / 8 + ' 110)'" d="M10 -13 L10 13 L-10 0 Z M-15 -13 H-10 V13 H-15 Z" fill="#f5f2fc" />
+        <g :transform="'translate(' + widget.width * 5 / 8 + ' 110)'">
+          <circle r="26" fill="#c7aef7" />
+          <rect x="-8" y="-10" width="5" height="20" rx="2.5" fill="#0f0d17" /><rect x="3" y="-10" width="5" height="20" rx="2.5" fill="#0f0d17" />
+        </g>
+        <path :transform="'translate(' + widget.width * 7 / 8 + ' 110)'" d="M-10 -13 L-10 13 L10 0 Z M10 -13 H15 V13 H10 Z" fill="#f5f2fc" />
       </g>
       <g v-else-if="widget.kind === 'jetlink_status'">
         <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
@@ -252,14 +258,20 @@ export const LayoutWidgetPreview = {
         </g>
       </g>
       <g v-else-if="widget.kind === 'now_playing'">
-        <rect :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
-        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="30" fill="#c7aef7" />
-        <rect :x="widget.height / 2 - 9" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <rect :x="widget.height / 2 + 3" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <text :x="widget.height + 4" y="38" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
-        <text :x="widget.height + 4" y="66" font-size="22" fill="#b8b2c8">M83</text>
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="widget.width - widget.height * 1.5 - 4" height="4" rx="2" fill="#ffffff32" />
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="(widget.width - widget.height * 1.5 - 4) * .4" height="4" rx="2" fill="#c7aef7" />
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" rx="28" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
+        <text x="28" y="38" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
+        <text x="28" y="68" font-size="22" fill="#b8b2c8">M83</text>
+        <rect x="28" y="76" :width="widget.width - 56" height="4" rx="2" fill="#ffffff" fill-opacity=".2" />
+        <rect x="28" y="76" :width="(widget.width - 56) * .38" height="4" rx="2" fill="#c7aef7" />
+        <g :transform="'translate(' + widget.width / 8 + ' 110)'" stroke="#f5f2fc" stroke-width="4" fill="#f5f2fc">
+          <path d="M-17 -10 L13 10 M-17 10 L13 -10" fill="none" /><path d="M10 3 L20 10 L10 17 Z M10 -17 L20 -10 L10 -3 Z" stroke="none" />
+        </g>
+        <path :transform="'translate(' + widget.width * 3 / 8 + ' 110)'" d="M10 -13 L10 13 L-10 0 Z M-15 -13 H-10 V13 H-15 Z" fill="#f5f2fc" />
+        <g :transform="'translate(' + widget.width * 5 / 8 + ' 110)'">
+          <circle r="26" fill="#c7aef7" />
+          <rect x="-8" y="-10" width="5" height="20" rx="2.5" fill="#0f0d17" /><rect x="3" y="-10" width="5" height="20" rx="2.5" fill="#0f0d17" />
+        </g>
+        <path :transform="'translate(' + widget.width * 7 / 8 + ' 110)'" d="M-10 -13 L-10 13 L10 0 Z M10 -13 H15 V13 H10 Z" fill="#f5f2fc" />
       </g>
       <g v-else-if="widget.kind === 'jetlink_status'">
         <rect :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />

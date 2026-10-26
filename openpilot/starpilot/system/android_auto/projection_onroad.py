@@ -90,6 +90,7 @@ def native_dependencies():
   from openpilot.starpilot.ui.shell import ShellMode
   from openpilot.starpilot.system.android_auto.projection_favorites import ProjectionFavorites
   from openpilot.starpilot.system.android_auto.projection_now_playing import ProjectionNowPlayingFeed
+  from openpilot.starpilot.system.android_auto.media_audio import music_control
   from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
 
   class ProjectionRoadCamera(AugmentedRoadView):
@@ -147,6 +148,7 @@ def native_dependencies():
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
                          alert=OnroadAlert, alert_size=AlertSize, map_overlay=MapOverlay, map_feed=MapFeed,
                          favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
+                         now_playing_control=music_control,
                          jetlink_feed=JetlinkStatusFeed, vasm_source=PiPWarningSource,
                          read_vasm=read_vasm_preferences, clock_pair=clock_pair_ns, car_schema=car_schema)
 
@@ -206,6 +208,10 @@ class ProjectionOnroad:
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
         self._resources.callback(self.now_playing_feed.close)
+      self.now_playing_touch = None
+      if self.now_playing_feed is not None and getattr(native, 'now_playing_control', None) is not None:
+        from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+        self.now_playing_touch = NowPlayingTouch(native.now_playing_control)
       self.jetlink_feed = None
       if getattr(native, 'jetlink_feed', None) is not None:
         self.jetlink_feed = native.jetlink_feed()
@@ -596,12 +602,24 @@ class ProjectionOnroad:
         if self.favorites is not None:
           self.favorites.cancel()
         continue
+      if self._now_playing_touch(event.kind, x, y):
+        if self.favorites is not None:
+          self.favorites.cancel()
+        continue
       if self.favorites is None:
         continue
       if self._state is None or not self.native.ui_state.started:
         self.favorites.cancel()
         continue
       self.favorites.touch(event.kind, x, y, self._state, self.native.ui_state.started_frame)
+
+  def _now_playing_touch(self, kind, x, y) -> bool:
+    touch = self.now_playing_touch
+    if touch is None:
+      return False
+    state = self._state if self.native.ui_state.started else None
+    placed = state.customization['layouts']['large'].get('now_playing') if state is not None else None
+    return touch.touch(kind, x, y, state, placed, self.onroad.now_playing.track)
 
   def _slc_touch(self, kind, x, y) -> bool:
     """Speed-limit Apply/Keep/Use-limit taps; True while one owns the touch."""
@@ -625,6 +643,8 @@ class ProjectionOnroad:
 
   def cancel_touch(self):
     self.exit.cancel()
+    if self.now_playing_touch is not None:
+      self.now_playing_touch.cancel()
     if self._slc_input is not None:
       self._slc_input.cancel()
     if self.favorites is not None:

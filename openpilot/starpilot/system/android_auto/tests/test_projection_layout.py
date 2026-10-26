@@ -447,6 +447,17 @@ class TestNowPlayingWidget(unittest.TestCase):
     del old['widgets']['now_playing']
     self.assertEqual(validate_layout(old, SCREEN)['widgets']['now_playing'], document['widgets']['now_playing'])
 
+  def test_saved_spot_slides_back_on_screen_when_the_card_grows(self):
+    document = default_layout(SCREEN)
+    bounds = layout_metadata(SCREEN)['bounds']
+    right, bottom = bounds['x'] + bounds['width'], bounds['y'] + bounds['height']
+    document['widgets']['now_playing'].update(x=right - 520, y=bottom - 96)  # flush to the corner at the old 520x96
+    placed = validate_layout(document, SCREEN)['widgets']['now_playing']
+    self.assertEqual((placed['x'], placed['y']), (right - 600, bottom - 140))
+    document['widgets']['now_playing'].update(x=bounds['x'], y=bounds['y'])
+    placed = validate_layout(document, SCREEN)['widgets']['now_playing']
+    self.assertEqual((placed['x'], placed['y']), (bounds['x'], bounds['y']))
+
   def test_collapse_on_pause_is_a_validated_option_older_layouts_default_off(self):
     document = default_layout(SCREEN)
     document['widgets']['now_playing']['collapse'] = True

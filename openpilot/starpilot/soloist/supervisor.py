@@ -488,8 +488,15 @@ class Supervisor:
     if command == 'control':
       phone_prefs = self.phone_prefs
       if phone_prefs is not None:
-        action = request.get('action')
-        if action not in (*phone_audio.PLAYER_METHODS, 'play_pause') or request.get('args', {}) != {}:
+        action, args = request.get('action'), request.get('args', {})
+        if action == 'shuffle' and isinstance(args, dict) and set(args) == {'enabled'} and type(args['enabled']) is bool:
+          try:
+            if self.phone.shuffle(phone_prefs.phone_address, args['enabled']):
+              return {'ok': True}
+            return {'ok': False, 'error': 'Your phone does not offer shuffle over Bluetooth'}
+          except (OSError, RuntimeError):
+            return {'ok': False, 'error': 'Phone playback control is unavailable'}
+        if action not in (*phone_audio.PLAYER_METHODS, 'play_pause') or args != {}:
           return {'ok': False, 'error': 'Use your phone for playback and volume controls'}
         try:
           sent = self.phone.control(phone_prefs.phone_address, action)

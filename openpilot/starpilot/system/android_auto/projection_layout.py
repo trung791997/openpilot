@@ -30,7 +30,7 @@ FAVORITE_ICON_SIZE = 110
 CAR_EXIT_SIZE = (96, 96)
 CAR_EXIT_MIN_OPACITY = 25
 NOW_PLAYING_WIDGET = 'now_playing'
-NOW_PLAYING_SIZE = (520, 96)
+NOW_PLAYING_SIZE = (600, 140)
 NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
 JETLINK_OPACITY = (0, 100, 85)
@@ -108,7 +108,7 @@ def layout_metadata_for_viewport(viewport):
                               'default': {'x': width - 30 - FAVORITE_SIZE[0], 'y': 155, 'enabled': False, 'display': 'words'}}
   widgets[NOW_PLAYING_WIDGET] = {'label': 'Now playing', 'kind': NOW_PLAYING_WIDGET,
                                  'width': NOW_PLAYING_SIZE[0], 'height': NOW_PLAYING_SIZE[1], 'colors': {},
-                                 'note': 'The song playing from Spotify or your phone over Bluetooth. Opacity sets the card background.',
+                                 'note': 'Spotify or phone audio, with shuffle, previous, play and next buttons. Opacity sets the card background.',
                                  'opacity': {'min': NOW_PLAYING_OPACITY[0], 'max': NOW_PLAYING_OPACITY[1], 'default': NOW_PLAYING_OPACITY[2]},
                                  'collapseToggle': True,
                                  'default': {'x': width - 30 - NOW_PLAYING_SIZE[0], 'y': height - 30 - NOW_PLAYING_SIZE[1],
@@ -255,6 +255,10 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       placement.setdefault('opacity', CARD_WIDGETS[key][2])
     if key == NOW_PLAYING_WIDGET and type(placement) is dict:
       placement.setdefault('collapse', False)
+      # The card grew (520x96 to 600x140) for its buttons; keep a saved spot by sliding it back on screen.
+      for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), NOW_PLAYING_SIZE, strict=True):
+        if type(placement.get(axis)) in (int, float) and math.isfinite(placement[axis]):
+          placement[axis] = min(placement[axis], bounds[axis] + bounds[extent] - dimension)
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:
       for axis in ('x', 'y'):
         if type(placement.get(axis)) in (int, float):

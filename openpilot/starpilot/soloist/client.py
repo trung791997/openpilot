@@ -77,7 +77,7 @@ class PlayerState:
 
   def reset(self) -> None:
     self.value: dict[str, Any] = {'connected': False, 'loggedIn': False, 'active': False, 'deviceName': '', 'status': 'idle', 'track': None,
-                  'position': None, 'volume': None, 'shuffle': False, 'repeat': 'off', 'actions': [], 'updated': 0.0}
+                  'position': None, 'volume': None, 'shuffle': False, 'repeat': 'off', 'modes': [], 'actions': [], 'updated': 0.0}
 
   def apply(self, message: dict) -> None:
     kind = message.get('type')
@@ -126,6 +126,9 @@ class PlayerState:
     if isinstance(options, dict):
       self.value['shuffle'] = options.get('shuffle') is True
       self.value['repeat'] = options.get('repeat') if options.get('repeat') in REPEATS else 'off'
+      # Undocumented playback modes (smart shuffle may surface here); names only, for the status log.
+      modes = options.get('modes')
+      self.value['modes'] = sorted(_text(key)[:40] for key in modes)[:8] if isinstance(modes, dict) else []
 
 
 def commands(action: str, args: dict) -> list[dict]:

@@ -32,6 +32,15 @@ def test_phone_snapshot_reads_bluez_media_player():
     assert now_playing.from_phone(bad) is None
 
 
+def test_shuffle_state_is_reported_and_none_when_the_phone_has_no_setting():
+  assert present(now_playing.from_spotify(PLAYER))['shuffle'] is False
+  assert present(now_playing.from_spotify({**PLAYER, 'shuffle': True}))['shuffle'] is True
+  props = {'Status': 'playing', 'Track': {'Title': 'Song'}}
+  expected = {None: None, 'off': False, 'alltracks': True, 'group': True, 'smart': None, 1: None}
+  for value, shown in expected.items():
+    assert present(now_playing.from_phone({**props, 'Shuffle': value} if value is not None else props))['shuffle'] is shown
+
+
 def test_untrusted_text_is_cleaned_and_bounded():
   found = present(now_playing.from_phone({'Status': 'playing', 'Track': {'Title': 'A\x00B' + 'x' * 500, 'Artist': 7}}))
   assert found['title'].startswith('AB') and len(found['title']) == now_playing.MAX_TEXT and found['artist'] == ''
