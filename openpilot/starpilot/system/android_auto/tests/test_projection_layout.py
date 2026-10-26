@@ -181,9 +181,9 @@ class TestProjectionLayout(unittest.TestCase):
         with self.subTest(key=key, value=value), self.assertRaises(ValueError):
           validate_layout({**document, key: value}, SCREEN)
 
-  def test_lead_info_starts_off_and_takes_only_known_choices(self):
+  def test_lead_info_starts_on_distance_and_takes_only_known_choices(self):
     document = default_layout(SCREEN)
-    self.assertEqual((document['leadIndicator'], document['leadInfo']), (False, 'Off'))
+    self.assertEqual((document['leadIndicator'], document['leadInfo']), (True, 'Distance'))
     older = {k: v for k, v in document.items() if k not in ('leadIndicator', 'leadInfo')}
     self.assertEqual(validate_layout(older, SCREEN), document, 'older layouts get the lead defaults')
     for choice in ('Off', 'Distance', 'Speed'):
@@ -281,7 +281,9 @@ class TestProjectionLayout(unittest.TestCase):
     converted = projection_customization(document, base)
     own = (*PROJECTION_WIDGETS, 'jetlink_status')
     native = {key: value for key, value in converted['layouts']['large'].items() if key not in own}
-    self.assertEqual(native, {key: value for key, value in base['layouts']['large'].items() if key not in own})
+    hidden_on_aa = ('speed_limit_actions', 'cem_gauge')
+    self.assertEqual(native, {key: ({**value, 'enabled': False} if key in hidden_on_aa else value)
+                              for key, value in base['layouts']['large'].items() if key not in own})
     shift = document['canvas']['width'] - 1860
     self.assertEqual(converted['layouts']['large'][NAV_MAP], {**document['widgets'][NAV_MAP], 'x': document['widgets'][NAV_MAP]['x'] - shift})
     document['widgets']['current_speed']['x'] += 100

@@ -333,9 +333,10 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
       view._camera_layer(None, rendered[-1])
       return rendered[-1].appearance.show_lead_indicator, rendered[-1].appearance.lead_info_mode, painted[-1]
 
-    self.assertEqual(lead(layout), (False, LeadInfoMode.OFF, (False, 0, False)), 'off on the car even with the comma on')
-    self.assertEqual(lead({**layout, 'leadInfo': 'Speed'}), (False, LeadInfoMode.OFF, (False, 0, False)), 'info needs the marker')
-    self.assertEqual(lead({**layout, 'leadIndicator': True}), (True, LeadInfoMode.OFF, (True, 0, False)))
+    self.assertEqual(lead(layout), (True, LeadInfoMode.DISTANCE, (True, 1, False)), 'AA default is marker on with distance')
+    self.assertEqual(lead({**layout, 'leadIndicator': False, 'leadInfo': 'Off'}), (False, LeadInfoMode.OFF, (False, 0, False)), 'off on the car even with the comma on')
+    self.assertEqual(lead({**layout, 'leadIndicator': False, 'leadInfo': 'Speed'}), (False, LeadInfoMode.OFF, (False, 0, False)), 'info needs the marker')
+    self.assertEqual(lead({**layout, 'leadIndicator': True, 'leadInfo': 'Off'}), (True, LeadInfoMode.OFF, (True, 0, False)))
     self.assertEqual(lead({**layout, 'leadIndicator': True, 'leadInfo': 'Speed'}), (True, LeadInfoMode.SPEED, (True, 2, False)))
     self.assertEqual(lead({**layout, 'leadIndicator': True, 'leadInfo': 'Distance'}), (True, LeadInfoMode.DISTANCE, (True, 1, False)))
 
