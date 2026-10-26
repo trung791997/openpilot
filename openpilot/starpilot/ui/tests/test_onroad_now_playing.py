@@ -75,6 +75,7 @@ def test_shuffle_dot_only_when_on(widget):
 
 
 def test_smart_shuffle_adds_the_star(widget):
+  from openpilot.starpilot.ui.onroad_now_playing import SPARKLE_STEPS, SPOTIFY_GREEN
   card, drawn, _ = widget
   card.track = {**TRACK, 'shuffle': True}
   card.render(state())
@@ -82,7 +83,8 @@ def test_smart_shuffle_adds_the_star(widget):
   drawn.clear()
   card.track = {**TRACK, 'shuffle': True, 'smartShuffle': True}
   card.render(state())
-  assert count(drawn, 'draw_triangle') == plain + 8
+  assert count(drawn, 'draw_triangle') == plain + SPARKLE_STEPS
+  assert any(args[-1] is SPOTIFY_GREEN for name, args in drawn if name == 'draw_triangle')
 
 
 def test_spotify_mark_sits_top_right_and_only_for_spotify(widget):

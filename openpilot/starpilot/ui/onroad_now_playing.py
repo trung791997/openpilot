@@ -18,6 +18,7 @@ TEXT = rl.Color(245, 242, 252, 255)
 MUTED = rl.Color(214, 210, 224, 255)
 DIM = rl.Color(184, 178, 200, 90)
 DISC = rl.Color(255, 255, 255, 46)
+SPOTIFY_GREEN = rl.Color(30, 215, 96, 255)  # Smart Shuffle is drawn in Spotify's green, as in its app
 OFF = rl.Color(196, 192, 206, 255)  # a shuffle or repeat that is off; opaque, so overlapping strokes do not show
 # One UI 9's media card: device line, centered "title • artist", a thick seek bar with times under it, and a row of
 # shuffle, previous, play/pause, next and repeat over the darkened cover art.
@@ -126,29 +127,42 @@ def _stroke(points, thick, color) -> None:
     rl.draw_circle_v(point, thick / 2, color)
 
 
+SPARKLE_STEPS = 48
+
+
 def _sparkle(center: rl.Vector2, r: float, color) -> None:
-  """Spotify's four-point Smart Shuffle star: long points on the axes, pinched sides."""
+  """Spotify's four-point Smart Shuffle star: points on the axes, sides curving in (a superellipse with p < 1)."""
+  p = .75
   points = []
-  for i in range(8):
-    angle = i * math.pi / 4
-    reach = r if i % 2 == 0 else r * .4
-    points.append(rl.Vector2(center.x + reach * math.cos(angle), center.y - reach * math.sin(angle)))
-  for i in range(8):
-    rl.draw_triangle(center, points[i], points[(i + 1) % 8], color)
+  for i in range(SPARKLE_STEPS):
+    angle = 2 * math.pi * i / SPARKLE_STEPS
+    c, s = math.cos(angle), math.sin(angle)
+    reach = r / (abs(c) ** p + abs(s) ** p) ** (1 / p)
+    points.append(rl.Vector2(center.x + reach * c, center.y - reach * s))
+  for i in range(SPARKLE_STEPS):
+    rl.draw_triangle(center, points[i], points[(i + 1) % SPARKLE_STEPS], color)
+
+
+def _shuffle_arrows(x: float, y: float, k: float, thick: float, color) -> None:
+  """Two crossing curves with open arrowheads, centered on (x, y) and scaled by k."""
+  for y0, y1 in ((-10, 10), (10, -10)):
+    _stroke(_bezier(rl.Vector2(x - 18 * k, y + y0 * k), rl.Vector2(x - 2 * k, y + y0 * k), rl.Vector2(x - 2 * k, y + y1 * k),
+                    rl.Vector2(x + 16 * k, y + y1 * k)), thick, color)
+    _stroke([rl.Vector2(x + 11 * k, y + (y1 - 6) * k), rl.Vector2(x + 17 * k, y + y1 * k),
+             rl.Vector2(x + 11 * k, y + (y1 + 6) * k)], thick, color)
 
 
 def _shuffle(center: rl.Vector2, state, smart=False) -> None:
-  """Spotify's shuffle: two crossing curves with open arrowheads; a star for Smart Shuffle. A dot when on, dim when the
-  player cannot shuffle."""
-  color = _toggle_color(state, state)
-  x, y = center.x + (6 if smart else 2), center.y + (4 if smart else 0)  # the star takes the top-left corner
-  for y0, y1 in ((-10, 10), (10, -10)):
-    _stroke(_bezier(rl.Vector2(x - 18, y + y0), rl.Vector2(x - 2, y + y0), rl.Vector2(x - 2, y + y1),
-                    rl.Vector2(x + 16, y + y1)), 3.5, color)
-    _stroke([rl.Vector2(x + 11, y + y1 - 6), rl.Vector2(x + 17, y + y1), rl.Vector2(x + 11, y + y1 + 6)], 3.5, color)
+  """Spotify's shuffle: two crossing curves with open arrowheads. A dot when on, dim when the player cannot shuffle.
+  Smart Shuffle is Spotify's own icon, all green: a large star top-left, small arrows bottom-right, the dot under them."""
   if smart:
-    _sparkle(rl.Vector2(x - 22, y - 23), 10, color)
-  if state:
+    color = SPOTIFY_GREEN
+    _sparkle(rl.Vector2(center.x - 14, center.y - 13), 15, color)
+    _shuffle_arrows(center.x + 12, center.y + 7, .8, 3.5, color)
+  else:
+    color = _toggle_color(state, state)
+    _shuffle_arrows(center.x + 2, center.y, 1, 3.5, color)
+  if state or smart:
     rl.draw_circle_v(rl.Vector2(center.x, center.y + 26), 3, color)
 
 
