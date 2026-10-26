@@ -246,8 +246,14 @@ class HondaNidecInterceptorAolTests(unittest.TestCase):
       params.put_bool('AlwaysOnLateral', True, block=True)
       honda = FakeHonda()
       card = Car(honda, FakeRadar(honda.CP))
-      self.assertFalse(card.aol_qualified)
-      self.assertEqual(card.CP.safetyConfigs[0].safetyParam & 32, 0)
+      # The invariant from 2026-10-22: card arms the panda's AOL mode only when selfdrived, reading the same
+      # params after card published CarParams, will publish aolAxisState. Since the StarPilot 7.0 syncs, card
+      # enrolls the AOL preference before CarParams, so selfdrived now enables AOL here and both sides arm.
+      from openpilot.selfdrive.selfdrived import selfdrived as selfdrived_module
+      selfdrived_publishes_axes = (selfdrived_module.feature_enabled(params, card.CP, 'aol', os.environ) or
+                                   selfdrived_module.axis_policy_for(card.CP).ordinary_axis_ack_required)
+      self.assertEqual(card.aol_qualified, selfdrived_publishes_axes)
+      self.assertEqual(bool(card.CP.safetyConfigs[0].safetyParam & 32), selfdrived_publishes_axes)
 
   def test_card_opts_in_from_saved_request_without_replay_env(self):
     test = self
