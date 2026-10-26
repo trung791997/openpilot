@@ -20,10 +20,14 @@ metadata.widgets.car_exit = { label: "Exit to car", kind: "car_exit", width: 96,
   opacity: { min: 25, max: 100, default: 75 }, backgroundToggle: true,
   note: "Returns to the car's own screen without disconnecting Android Auto. Always enabled and above other widgets.",
   default: { x: 30, y: 954, enabled: true, opacity: 75, background: false } }
-metadata.widgetOrder = [...(metadata.widgetOrder || Object.keys(native.metadata.profiles.large.widgets)), "car_exit"]
+metadata.widgets.now_playing = { label: "Now playing", kind: "now_playing", width: 520, height: 96, colors: {},
+  opacity: { min: 0, max: 100, default: 85 }, collapseToggle: true,
+  note: "The song playing from Spotify or your phone over Bluetooth. Opacity sets the card background.",
+  default: { x: 2330, y: 954, enabled: true, opacity: 85, collapse: false } }
+metadata.widgetOrder = [...(metadata.widgetOrder || Object.keys(native.metadata.profiles.large.widgets)), "now_playing", "car_exit"]
 const widgets = Object.fromEntries(Object.entries(metadata.widgets).map(([id, widget]) => [id,
   { ...widget.default, ...(widget.resizable ? { size: widget.resizable.default } : {}) }]))
-const doc = { version: 4, clock24Hour: false, largeUiGammaTrial: false, blindSpotBorder: false, signalBorder: false, blindSpotCamera: false, hidePersonalityAlerts: false, wheelPedalFeedback: false, leadIndicator: false, leadInfo: "Off", speedSources: false, speedSourcesCard: false, speedAlign: "center", canvas: { width: 2880, height: 1080 }, widgets }
+const doc = { version: 5, clock24Hour: false, largeUiGammaTrial: false, blindSpotBorder: false, signalBorder: false, blindSpotCamera: false, hidePersonalityAlerts: false, wheelPedalFeedback: false, leadIndicator: false, leadInfo: "Off", speedSources: false, speedSourcesCard: false, speedAlign: "center", canvas: { width: 2880, height: 1080 }, widgets }
 const raw = { version: 1, document: doc, defaults: copy(doc), metadata,
   screen: { width: 1280, height: 720, margin_width: 0, margin_height: 240 },
   revision: "aa-screen-and-layout", editable: true, valid: true,
@@ -236,7 +240,8 @@ const draft = copy(feed.data.document)
 draft.layouts.large.current_speed.x += 20
 assert.equal(await feed.save(draft), true)
 assert.equal(requests[0].url, "./api/android-auto/layout")
-assert.equal(requests[1].body.document.version, 4)
+assert.equal(requests[1].body.document.version, 5)
+assert.deepEqual(requests[1].body.document.widgets.now_playing, { x: 2330, y: 954, enabled: true, opacity: 85, collapse: false })
 assert.deepEqual(Object.keys(requests[1].body.document).sort(), ["blindSpotBorder", "blindSpotCamera", "canvas", "clock24Hour", "hidePersonalityAlerts", "largeUiGammaTrial", "leadIndicator", "leadInfo", "signalBorder", "speedAlign", "speedSources", "speedSourcesCard", "version", "wheelPedalFeedback", "widgets"])
 assert.equal(requests[1].body.document.widgets.current_speed.x, 1170)
 assert.equal(requests[1].body.document.speedAlign, "center")
