@@ -1,5 +1,7 @@
 """The Android Auto now-playing card; both live rendering and previews use this drawing."""
 import time
+import unicodedata
+from importlib.resources import as_file, files
 
 import pyray as rl
 
@@ -7,7 +9,7 @@ from openpilot.starpilot.ui import clip
 from openpilot.starpilot.soloist.now_playing import elapsed_ms
 from openpilot.starpilot.system.android_auto.projection_now_playing import image_type
 from openpilot.starpilot.system.android_auto.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
-from openpilot.starpilot.ui.presentation import FontRole
+from openpilot.starpilot.ui.presentation import FontRole, TextSize
 
 ACCENT = rl.Color(199, 174, 247, 255)
 INK = rl.Color(15, 13, 23, 255)
@@ -22,6 +24,10 @@ TEXT_LEFT = 96
 SCROLL_SPEED = 40  # px/s for a name too wide to fit
 SCROLL_GAP = 60
 SCROLL_PAUSE = 2.0  # s held at the start of each pass
+TRACK_FONTS = {FontRole.SEMI_BOLD: 'Inter-SemiBold.ttf', FontRole.NORMAL: 'Inter-Regular.ttf'}
+TRACK_FONT_PX = 48  # drawn at 27-37 px; same Inter metrics as the bitmap atlases to within 0.3 px
+# Always cut ASCII as well: raylib 5.5 segfaulted packing a four-glyph atlas ("EVxg" at 64 px) on the dev VM.
+ASCII = range(32, 127)
 
 
 def card_layout(placed, track, viewport_width):
@@ -92,9 +98,70 @@ def _note(box: rl.Rectangle) -> None:
   rl.draw_line_ex(rl.Vector2(x + 1, y - 15), rl.Vector2(x + 13, y - 8), 4, MUTED)
 
 
+class TrackText:
+  """Title and artist text. The bitmap atlases hold only ASCII, so a name with any other letter (Peter's Vietnamese
+  songs, "Em Về Tinh Khôi") is drawn from the Inter TTF cut to ASCII plus that name's letters: a 512 px atlas per role,
+  replaced when the name changes and freed with the card."""
+
+  def __init__(self, fonts):
+    self.fonts = fonts
+    self._cut = {}  # role -> (text, font or None when the bitmap atlas covers it or the TTF failed to load)
+
+  def _font(self, text, role):
+    covers = getattr(self.fonts, 'covers', None)
+    if covers is None or role not in TRACK_FONTS:
+      return None
+    cut = self._cut.get(role)
+    if cut is None or cut[0] != text:
+      self._unload(role)
+      self._cut[role] = (text, None if covers(text, role) else self._load(text, role))
+    return self._cut[role][1]
+
+  @staticmethod
+  def _load(text, role):
+    codepoints = sorted({*ASCII, *map(ord, text)})
+    buffer = rl.ffi.new("int[]", codepoints)
+    with as_file(files("openpilot.selfdrive").joinpath("assets/fonts", TRACK_FONTS[role])) as path:
+      font = rl.load_font_ex(str(path), TRACK_FONT_PX, rl.ffi.cast("int *", buffer), len(codepoints))
+    # A missing file gives back raylib's shared default font; never own or draw with it.
+    if font.texture.id in (0, rl.get_font_default().texture.id) or font.glyphCount == 0:
+      return None
+    rl.gen_texture_mipmaps(font.texture)
+    rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+    return font
+
+  def _unload(self, role):
+    cut = self._cut.pop(role, None)
+    if cut is not None and cut[1] is not None and rl.is_window_ready():
+      rl.unload_font(cut[1])
+
+  def close(self):
+    for role in list(self._cut):
+      self._unload(role)
+
+  def measure(self, text, role, size):
+    if (font := self._font(text, role)) is None:
+      return self.fonts.measure(text, role, size)
+    measured = rl.measure_text_ex(font, text, size * self.fonts.profile.font_scale, 0)  # noqa: TID251
+    return TextSize(measured.x, measured.y)
+
+  def draw(self, text, role, size, x, y, color):
+    if (font := self._font(text, role)) is None:
+      self.fonts.draw(text, role, size, x, y, color)
+      return
+    draw = getattr(rl, "_orig_draw_text_ex", rl.draw_text_ex)
+    draw(font, text, rl.Vector2(x, y), size * self.fonts.profile.font_scale, 0, color)
+
+
+def nfc(text):
+  """Composed letters: a name sent as e + combining marks would otherwise stack loose accents."""
+  return unicodedata.normalize('NFC', text)
+
+
 class NowPlayingWidget:
   def __init__(self, fonts, clock=time.time, ticks=time.monotonic):  # noqa: TID251 epoch-ms track anchors
     self.fonts = fonts
+    self.text = TrackText(fonts)
     self.clock = clock
     self.ticks = ticks
     self._scroll = None  # (text, start): a new name starts its scroll from the held start
@@ -103,14 +170,14 @@ class NowPlayingWidget:
     self._cover = None  # (url, texture or None), built on the render thread
 
   def _fit(self, text, role, size, width):
-    measured = self.fonts.measure(text, role, size)
+    measured = self.text.measure(text, role, size)
     return size * width / measured.width if measured.width > width else size
 
   def _cover_texture(self):
     url, data = self.artwork
     if self._cover is not None and self._cover[0] == url:
       return self._cover[1]
-    self.close()
+    self._drop_cover()
     texture = None
     if url and data and (kind := image_type(data)):
       image = rl.load_image_from_memory(kind, data, len(data))
@@ -123,14 +190,18 @@ class NowPlayingWidget:
     return texture
 
   def close(self):
+    self._drop_cover()
+    self.text.close()
+
+  def _drop_cover(self):
     if self._cover is not None and self._cover[1] is not None and rl.is_window_ready():
       rl.unload_texture(self._cover[1])
     self._cover = None
 
   def _scrolling(self, text, role, size, x, y, width, color):
-    text_width = self.fonts.measure(text, role, size).width
+    text_width = self.text.measure(text, role, size).width
     if text_width <= width:
-      self.fonts.draw(text, role, size, x, y, color)
+      self.text.draw(text, role, size, x, y, color)
       return
     now = self.ticks()
     if self._scroll is None or self._scroll[0] != text:
@@ -140,7 +211,7 @@ class NowPlayingWidget:
     try:
       for start in (x - offset, x - offset + text_width + SCROLL_GAP):
         if start < x + width:
-          self.fonts.draw(text, role, size, start, y, color)
+          self.text.draw(text, role, size, start, y, color)
     finally:
       clip.end_scissor_mode()
 
@@ -162,9 +233,9 @@ class NowPlayingWidget:
     else:
       _note(cover)
     text_x, text_width = rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - CORNER
-    title = track['title']
-    self.fonts.draw(title, FontRole.SEMI_BOLD, self._fit(title, FontRole.SEMI_BOLD, 30, text_width), text_x, rect.y + 10, TEXT)
-    if artist := track['artist'] or track['album']:
+    title = nfc(track['title'])
+    self.text.draw(title, FontRole.SEMI_BOLD, self._fit(title, FontRole.SEMI_BOLD, 30, text_width), text_x, rect.y + 10, TEXT)
+    if artist := nfc(track['artist'] or track['album'] or ''):
       self._scrolling(artist, FontRole.NORMAL, 22, text_x, rect.y + 44, text_width, MUTED)
     left, width = rect.x + CORNER, rect.width - 2 * CORNER
     bar = rl.Rectangle(left, rect.y + 76, width, 4)

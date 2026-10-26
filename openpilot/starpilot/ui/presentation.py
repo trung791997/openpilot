@@ -112,6 +112,7 @@ class BitmapFonts:
     self._vertical_ink: dict[tuple, tuple[float, float]] = {}
     self._horizontal_ink: dict[tuple, tuple[float, float]] = {}
     self._glyph_ink: dict[str, dict[int, tuple[int, int] | None]] = {}
+    self._codepoints: dict[str, frozenset[int]] = {}
     default_texture_id = rl.get_font_default().texture.id
     try:
       for filename in dict.fromkeys(font_filename(self.profile, role) for role in FontRole):
@@ -159,6 +160,14 @@ class BitmapFonts:
         self._measurements.clear()
       self._measurements[key] = TextSize(measured.x * width_scale + (weight if text else 0), measured.y)
     return self._measurements[key]
+
+  def covers(self, text: str, role: FontRole) -> bool:
+    """Whether every character has a glyph; the atlases hold ASCII and a few symbols, so accented names do not."""
+    filename = font_filename(self.profile, role)
+    if filename not in self._codepoints:
+      font = self.font(role)
+      self._codepoints[filename] = frozenset(font.glyphs[index].value for index in range(font.glyphCount))
+    return all(ord(char) in self._codepoints[filename] for char in text)
 
   def vertical_ink(self, text: str, role: FontRole, size: float) -> tuple[float, float]:
     """Visible glyph top/bottom, independent of the font's padded line box."""
@@ -248,6 +257,7 @@ class BitmapFonts:
     self._vertical_ink.clear()
     self._horizontal_ink.clear()
     self._glyph_ink.clear()
+    self._codepoints.clear()
     self._measurements.clear()
 
   def __enter__(self):

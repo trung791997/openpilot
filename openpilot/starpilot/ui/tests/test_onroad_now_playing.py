@@ -210,3 +210,72 @@ def test_bytes_that_are_not_an_image_get_the_placeholder(widget, monkeypatch):
   card.artwork = ('https://i.scdn.co/image/a', b'<html>')
   card.render(state())
   assert card._cover == ('https://i.scdn.co/image/a', None)
+
+
+class CoveringFonts:
+  """Bitmap fonts that, like the real atlases, have glyphs for ASCII only."""
+  profile = SimpleNamespace(font_scale=1.0)
+
+  def __init__(self):
+    self.drawn = []
+
+  def covers(self, text, role):
+    return text.isascii()
+
+  def measure(self, text, role, size):
+    return SimpleNamespace(width=len(text) * size * .5)
+
+  def draw(self, text, *args):
+    self.drawn.append(text)
+
+
+@pytest.fixture
+def cut_fonts(monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  loads, unloads, ttf_drawn = [], [], []
+  monkeypatch.setattr(onroad_now_playing.TrackText, '_load', staticmethod(lambda text, role: loads.append((text, role)) or f'font:{text}'))
+  monkeypatch.setattr(onroad_now_playing.rl, 'is_window_ready', lambda: True)
+  monkeypatch.setattr(onroad_now_playing.rl, 'unload_font', unloads.append)
+  monkeypatch.setattr(onroad_now_playing.rl, 'draw_text_ex', lambda font, text, *args: ttf_drawn.append(text))
+  monkeypatch.setattr(onroad_now_playing.rl, 'measure_text_ex', lambda font, text, size, spacing: SimpleNamespace(x=len(text) * size * .5, y=size))
+  monkeypatch.delattr(onroad_now_playing.rl, '_orig_draw_text_ex', raising=False)
+  return onroad_now_playing.TrackText(CoveringFonts()), loads, unloads, ttf_drawn
+
+
+def test_ascii_names_stay_on_the_bitmap_atlas(cut_fonts):
+  from openpilot.starpilot.ui.presentation import FontRole
+  text, loads, _, ttf_drawn = cut_fonts
+  text.draw('Midnight City', FontRole.SEMI_BOLD, 30, 0, 0, None)
+  assert text.fonts.drawn == ['Midnight City'] and loads == [] and ttf_drawn == []
+
+
+def test_vietnamese_name_is_cut_from_the_ttf_once_and_freed_on_the_next_song(cut_fonts):
+  from openpilot.starpilot.ui.presentation import FontRole
+  text, loads, unloads, ttf_drawn = cut_fonts
+  title = 'Em Về Tinh Khôi'
+  for _ in range(3):
+    text.measure(title, FontRole.SEMI_BOLD, 30)
+    text.draw(title, FontRole.SEMI_BOLD, 30, 0, 0, None)
+  assert loads == [(title, FontRole.SEMI_BOLD)] and ttf_drawn == [title] * 3 and text.fonts.drawn == []
+  text.draw('Midnight City', FontRole.SEMI_BOLD, 30, 0, 0, None)
+  assert unloads == [f'font:{title}'] and text.fonts.drawn == ['Midnight City']
+  text.draw('Nắng Ấm Xa Dần', FontRole.NORMAL, 22, 0, 0, None)
+  text.close()
+  assert unloads == [f'font:{title}', 'font:Nắng Ấm Xa Dần']
+
+
+def test_failed_ttf_load_falls_back_to_the_atlas(cut_fonts, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  from openpilot.starpilot.ui.presentation import FontRole
+  text, _, unloads, _ = cut_fonts
+  monkeypatch.setattr(onroad_now_playing.TrackText, '_load', staticmethod(lambda text, role: None))
+  text.draw('Khôi', FontRole.SEMI_BOLD, 30, 0, 0, None)
+  text.close()
+  assert text.fonts.drawn == ['Khôi'] and unloads == []
+
+
+def test_decomposed_accents_are_composed_before_drawing(widget):
+  card, _, texts = widget
+  card.track = {**TRACK, 'title': 'Về', 'artist': 'Khôi'}
+  card.render(state())
+  assert texts == ['Về', 'Khôi']
