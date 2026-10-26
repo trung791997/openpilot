@@ -33,6 +33,12 @@ def _name(entity: Any) -> str:
 
 
 def _artwork(entity: dict) -> str:
+  """The track's own cover, else its album's: songs usually carry the picture only on the album (parent)."""
+  parent = ((entity.get('decorations') or {}).get('parent') or {}).get('entity')
+  return _cover(entity) or (_cover(parent) if isinstance(parent, dict) else '')
+
+
+def _cover(entity: dict) -> str:
   covers = ((entity.get('decorations') or {}).get('visual_identity') or {}).get('cover') or []
   ranked = {'default': 0, 'large': 1, 'small': 2, 'xlarge': 3}
   for cover in sorted((c for c in covers if isinstance(c, dict)), key=lambda c: ranked.get(c.get('size'), 9)):

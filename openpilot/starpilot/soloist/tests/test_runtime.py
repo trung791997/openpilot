@@ -462,3 +462,12 @@ def test_network_ready_accepts_either_address_family(monkeypatch, ipv4, ipv6, ex
   from io import StringIO
   monkeypatch.setattr('builtins.open', lambda path: StringIO(ipv4 if path.endswith('/route') else ipv6))
   assert supervisor.network_ready() is expected
+
+
+def test_cover_falls_back_to_the_album_when_the_song_has_none():
+  album = {'decorations': {'identity': {'name': 'Album'},
+                           'visual_identity': {'cover': [{'url': 'https://i.scdn.co/image/album', 'size': 'default'}]}}}
+  bare = {**ENTITY, 'decorations': {**ENTITY['decorations'], 'visual_identity': {}, 'parent': {'entity': album}}}
+  assert client.track(bare)['artwork'] == 'https://i.scdn.co/image/album'
+  assert client.track({**ENTITY, 'decorations': {**ENTITY['decorations'], 'parent': {'entity': album}}})['artwork'] == 'https://i.scdn.co/image/x'
+  assert client.track({**bare, 'decorations': {**bare['decorations'], 'parent': {'entity': 'junk'}}})['artwork'] == ''
