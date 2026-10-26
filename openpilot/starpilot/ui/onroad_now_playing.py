@@ -93,9 +93,11 @@ def _note(box: rl.Rectangle) -> None:
 
 
 class NowPlayingWidget:
-  def __init__(self, fonts, clock=time.time):  # noqa: TID251 epoch-ms track anchors
+  def __init__(self, fonts, clock=time.time, ticks=time.monotonic):  # noqa: TID251 epoch-ms track anchors
     self.fonts = fonts
     self.clock = clock
+    self.ticks = ticks
+    self._scroll = None  # (text, start): a new name starts its scroll from the held start
     self.track = None
     self.artwork = ('', None)  # (url, image bytes) from the feed thread
     self._cover = None  # (url, texture or None), built on the render thread
@@ -130,7 +132,10 @@ class NowPlayingWidget:
     if text_width <= width:
       self.fonts.draw(text, role, size, x, y, color)
       return
-    offset = scroll_offset(text_width, width, time.monotonic())
+    now = self.ticks()
+    if self._scroll is None or self._scroll[0] != text:
+      self._scroll = (text, now)
+    offset = scroll_offset(text_width, width, now - self._scroll[1])
     clip.begin_scissor_mode(x, y, width, size + 8)
     try:
       for start in (x - offset, x - offset + text_width + SCROLL_GAP):

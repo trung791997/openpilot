@@ -158,9 +158,19 @@ def test_long_artist_scrolls_inside_a_clip_and_short_one_does_not(widget, monkey
   card.render(state())
   assert clips == []
   card.track = {**TRACK, 'artist': 'A very long list of featured artists on this one track'}
+  now = [100.0]
+  card.ticks = lambda: now[0]
+  texts.clear()
+  card.render(state())
+  assert texts[1:] == [card.track['artist']] and clips[-1] == 'end'  # held at the start: one copy
+  now[0] += onroad_now_playing.SCROLL_PAUSE + 6  # 240 px in: the next copy has come into view
   texts.clear()
   card.render(state())
   assert texts[1:] == [card.track['artist']] * 2 and clips[-1] == 'end'
+  card.track = {**card.track, 'artist': card.track['artist'] + ' and more'}
+  texts.clear()
+  card.render(state())
+  assert texts[1:] == [card.track['artist']]  # a new name starts held again
   # The clip is the text column beside the cover: x + 96 to the right corner.
   assert clips[0][:3] == (10 + 96, 20 + 44, 600 - 96 - 28)
 
