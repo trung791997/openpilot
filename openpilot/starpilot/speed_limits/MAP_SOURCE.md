@@ -1,4 +1,7 @@
-# Map source boundary (disabled)
+# Map source boundary
+
+**2026-10-26: Maps as Vision's fill-in.** Selecting Maps in an SLC priority slot starts the mapd shadow provider (`shadow_lifecycle.enabled`) and plannerd's `MapSource` turns a `matchedLimit` sample on a `current` way into a VALID candidate; the paragraphs below describe the original disabled boundary and its remaining caveats. With priorities Vision then Maps, `map_observation.SignFirst` keeps a seen sign in force: Vision is VALID only for `SIGN_HOLD_NS` after a sign, so afterwards the map is held UNKNOWN (acceptance keeps the sign's limit) until the map's own limit differs from the one it reported at the sign, which marks a new posted-limit stretch. Before any sign the map fills in directly. A map limit still passes the 3 s automatic hold and the driver's lower/higher confirmation settings. On the comma BOOTTIME and MONOTONIC differed by 10 us (2026-10-26, no suspend). Static evidence only: unit and runtime-to-card command tests; not yet driven or replayed on a route with `mapdOut`.
+
 
 `map_source.py` decodes v2 `mapdOut` events and checks source ordering, boot-time freshness, and structural consistency. V1 remains decodable but cannot produce a candidate because it treated Python GPS Event MONOTONIC timestamps as BOOTTIME. It is not subscribed from plannerd and does not create a valid or absent SLC observation. A matched road can therefore be inspected in isolated tests without becoming a cruise ceiling, accepted-history fallback, or geographic identity claim.
 

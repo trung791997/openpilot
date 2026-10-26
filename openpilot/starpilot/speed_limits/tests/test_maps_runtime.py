@@ -289,3 +289,77 @@ def test_actual_runtime_maps_display_only_publishes_sign_without_ceiling_or_comm
   assert not state.hasPending and not state.hasAccepted
   # Keep the real cereal envelopes live for the complete reader lifetime.
   assert len(envelopes) == 7 and dashboard.which() == 'slcDashboardObservation'
+
+
+def _valid(mps):
+  return acc.Observation(acc.ObservationKind.VALID, acc.Candidate('vision',
+    acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value=f'v{mps}'), mps))
+
+
+def test_sign_first_holds_a_seen_sign_until_the_map_limit_changes():
+  from openpilot.starpilot.speed_limits.map_observation import SignFirst
+  unknown = acc.Observation(acc.ObservationKind.UNKNOWN)
+  rule = SignFirst()
+  assert rule.step(unknown, _valid(29.)) == _valid(29.)  # no sign yet: the map fills in
+  assert rule.step(_valid(31.), _valid(29.)) == _valid(29.)  # vision wins in selection anyway
+  # Sign out of view, same map stretch: the map stays quiet so the sign's 70 mph holds.
+  assert rule.step(unknown, _valid(29.)).kind is acc.ObservationKind.UNKNOWN
+  assert rule.step(unknown, unknown).kind is acc.ObservationKind.UNKNOWN  # an ambiguous junction keeps the baseline
+  assert rule.step(unknown, _valid(29.2)).kind is acc.ObservationKind.UNKNOWN
+  assert rule.step(unknown, _valid(24.6)) == _valid(24.6)  # a new posted limit on the map
+  assert rule.step(unknown, _valid(29.)) == _valid(29.)  # and the map leads again until the next sign
+  # A sign seen where the map had no limit takes the map's first limit after it as the same road.
+  assert rule.step(_valid(20.), unknown) == unknown
+  assert rule.step(unknown, _valid(24.6)).kind is acc.ObservationKind.UNKNOWN
+  assert rule.step(unknown, _valid(13.4)) == _valid(13.4)
+
+
+def test_sign_first_applies_only_to_vision_then_maps():
+  cp = NS(carFingerprint='vehicle')
+  for first, second, held in (('Vision', 'Maps', True), ('Maps', 'Vision', False), ('Dashboard', 'Maps', False)):
+    runtime = Runtime(parse({'SpeedLimitController': True, 'SLCPriority1': first, 'SLCPriority2': second}), session_id='drive')
+    runtime.sign_first.sign_seen, runtime.sign_first.baseline_mps = True, 13.4112
+    assert (runtime._observations(SM(packet()), cp, MONO, BOOT)[sel.Source.MAP].kind is acc.ObservationKind.UNKNOWN) is held
+
+
+def test_map_fills_in_for_vision_and_card_applies_its_command():
+  """No sign in view: a map limit is adopted after the automatic hold and card accepts the command."""
+  from openpilot.cereal import messaging
+  from opendbc.car.honda.interface import CarInterface
+  from opendbc.car.honda.values import CAR
+  from openpilot.starpilot.longitudinal.tests.test_cruise_ceiling import messages
+  from openpilot.starpilot.speed_limits import physical_actions
+  from openpilot.starpilot.speed_limits.tests.test_runtime_replay import ReplaySM
+  cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  data, envelopes = messages()
+  dashboard = messaging.new_message('slcDashboardObservation')
+  data['slcDashboardObservation'] = dashboard.slcDashboardObservation
+  limit = 20.1168  # 45 mph, above the 40 km/h set speed, so no lower-limit confirmation applies
+  settings = parse({'SpeedLimitController': True, 'SLCPriority1': 'Vision', 'SLCPriority2': 'Maps',
+                    'SLCConfirmationLower': True})
+  runtime = Runtime(settings, session_id='map-drive')
+  command = None
+  events = []
+  for i in range(80):  # 4 s at 20 Hz
+    dt = i * 50_000_000
+    event = packet(speedLimit=limit, gpsMonoTime=BOOT + dt - 100_000_000, computedMonoTime=BOOT + dt)
+    event.logMonoTime = BOOT + dt
+    events.append(event)
+    data['mapdOut'] = event.mapdOut
+    sm = ReplaySM(data, MONO + dt)
+    sm.logMonoTime['mapdOut'] = BOOT + dt
+    sm['carState'].vCruise = sm['carState'].vCruiseCluster = 40.0
+    sm['carState'].vEgoCluster = 15.0
+    sm['carControl'].enabled = sm['carControl'].longActive = True
+    out = runtime.step(sm, cp, now_ns=MONO + dt, now_boot_ns=BOOT + dt)
+    if out.command is not None:
+      command, state, now = out.command.slcCruiseCommand, out.message.slcState, MONO + dt
+      break
+  assert command is not None and command.source == 'map'
+  assert dt >= 3_000_000_000  # the automatic adoption hold still applies
+  assert abs(state.acceptedSpeedLimit - limit) < .001
+  card_sm = ReplaySM({'slcState': state}, now)
+  current = physical_actions.state_current(card_sm, None, 'card-producer', now)
+  assert physical_actions.command_applicable(command, current, None, 'card-producer', now, 40.0 / 3.6,
+                                             long_active=True, button_event=False)
+  assert len(envelopes) == 7 and dashboard.which() == 'slcDashboardObservation'

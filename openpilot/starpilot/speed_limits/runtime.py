@@ -14,7 +14,7 @@ from openpilot.starpilot.speed_limits import lead_relaxation as lr
 from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
-from openpilot.starpilot.speed_limits.map_observation import MapSource, copy_frame
+from openpilot.starpilot.speed_limits.map_observation import MapSource, SignFirst, copy_frame
 from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, clock_pair_ns, vision_observation
 
 
@@ -140,6 +140,7 @@ class Runtime:
                vision_control_qualified: bool = False, vision_display_qualified: bool = False):
     self.settings = settings
     self.map_source = MapSource()
+    self.sign_first = SignFirst()
     self.vision_enabled = vision_enabled
     # Exact saved Vision opt-in may grant control; source identity and current
     # driver confirmation remain independent requirements for each episode.
@@ -171,6 +172,7 @@ class Runtime:
 
   def reset(self) -> None:
     self.map_source.reset()
+    self.sign_first.reset()
     self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
     self._last_vision_producer = ''
     self._last_vision_frame = 0
@@ -346,6 +348,8 @@ class Runtime:
       else:
         self.map_source.reset()
         values[sel.Source.MAP] = acc.Observation(acc.ObservationKind.STALE)
+      if self.settings.selection.mode is sel.SelectionMode.ORDERED and self.settings.selection.slots == (sel.Source.VISION, sel.Source.MAP):
+        values[sel.Source.MAP] = self.sign_first.step(values[sel.Source.VISION], values[sel.Source.MAP])
     # Vision still requires its independent source-specific qualification.
     return values
 

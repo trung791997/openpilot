@@ -44,3 +44,40 @@ class MapSource:
       accepted.generation, accepted.source, accepted.way_id), separators=(',', ':')).encode()).hexdigest()
     return acc.Observation(acc.ObservationKind.VALID, acc.Candidate('map',
       acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value=identity), accepted.speed_mps))
+
+
+SAME_LIMIT_MPS = 0.5  # map limits are whole mph/km/h; this only absorbs float rounding
+
+
+class SignFirst:
+  """Vision before Maps: a seen sign holds until the map's posted limit changes.
+
+  Vision is VALID only for SIGN_HOLD_NS after the car passes a sign. Plain ORDERED
+  selection would then hand the limit back to the map on the same road, undoing a
+  sign that disagrees with stale map data. After a sign, the map stays UNKNOWN
+  (acceptance keeps the sign's limit) until the map reports a different limit than
+  it did around the sign, which marks a new posted-limit stretch. Before any sign
+  this drive, the map fills in directly.
+  """
+
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.sign_seen = False
+    self.baseline_mps: float | None = None  # map limit when the sign was last seen
+
+  def step(self, vision: acc.Observation, map_observation: acc.Observation) -> acc.Observation:
+    map_mps = map_observation.candidate.speed_mps if map_observation.kind is acc.ObservationKind.VALID else None
+    if vision.kind is acc.ObservationKind.VALID:
+      self.sign_seen = True
+      self.baseline_mps = map_mps
+      return map_observation
+    if not self.sign_seen or map_mps is None:
+      return map_observation
+    if self.baseline_mps is None:
+      self.baseline_mps = map_mps  # the map had no limit at the sign; its first one is the same road
+    if abs(map_mps - self.baseline_mps) <= SAME_LIMIT_MPS:
+      return acc.Observation(acc.ObservationKind.UNKNOWN)
+    self.reset()
+    return map_observation
