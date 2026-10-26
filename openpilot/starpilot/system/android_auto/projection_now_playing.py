@@ -44,7 +44,7 @@ def fetch_artwork(url):
 class ProjectionNowPlayingFeed:
   """Only poll while placed. The renderer takes immutable snapshots without file or network IO."""
   def __init__(self, read=None, fetch=None):
-    self.read = read or (lambda: now_playing.read(Layout.default().status))
+    self.read = read or (lambda: now_playing.read_card(Layout.default().status))
     self.fetch = fetch or fetch_artwork
     self._artwork = ('', None)
     self._lock = threading.Lock()

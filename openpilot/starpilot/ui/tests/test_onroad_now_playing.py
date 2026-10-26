@@ -547,3 +547,41 @@ def test_torque_bar_steps_aside_only_while_the_card_is_on_screen(timed):
   assert card.on_screen(state())
   clock.now += 4
   assert not card.on_screen(state())
+
+
+ELSEWHERE = {'source': 'spotify', 'status': 'elsewhere', 'title': '', 'device': 'Starpilot Auto'}
+
+
+def pill_center(current):
+  from openpilot.starpilot.ui.onroad_now_playing import card_layout
+  box = card_layout(current.customization['layouts']['large']['now_playing'], ELSEWHERE, current.viewport_width)[1]['play_here']
+  return box.x + box.width / 2, box.y + box.height / 2
+
+
+def test_play_on_car_pill_shows_while_spotify_plays_elsewhere_and_hides_the_torque_bar(timed):
+  card, drawn, texts, _ = timed
+  card.track = ELSEWHERE
+  card.render(state(collapse=True))
+  assert texts == ['Play on car'] and not spinning(drawn)
+  assert card.on_screen(state())
+
+
+def test_play_on_car_tap_activates_spotify_here_and_spins_until_the_song_arrives(timed):
+  from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+  card, drawn, texts, clock = timed
+  card.track = ELSEWHERE
+  sent = []
+  touch = NowPlayingTouch(lambda *call: sent.append(call), card)
+  assert tap(touch, state(), ELSEWHERE, *pill_center(state())) == (True, True)
+  assert sent == [('activate', {})]
+  card.render(state())
+  assert spinning(drawn)
+  card.track = TRACK  # the car took playback: the card is back
+  texts.clear()
+  card.render(state())
+  assert 'Midnight City' in texts
+  card.track = ELSEWHERE
+  clock.now += 1
+  card.render(state())
+  card.track = None  # the pill does not bring the old song back when the feed goes quiet
+  assert card.showing() is None

@@ -7,7 +7,7 @@ from importlib.resources import as_file, files
 import pyray as rl
 
 from openpilot.starpilot.ui import clip
-from openpilot.starpilot.soloist.now_playing import elapsed_ms
+from openpilot.starpilot.soloist.now_playing import ELSEWHERE, elapsed_ms
 from openpilot.starpilot.system.android_auto.projection_now_playing import image_type
 from openpilot.starpilot.system.android_auto.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
 from openpilot.starpilot.ui.presentation import FontRole, TextSize
@@ -31,6 +31,7 @@ ROW_TOP = 164  # the button row: hit boxes from here to the bottom of the card, 
 SLOT = .16  # button spacing as a share of the card width
 BUTTON_R = 36
 COLLAPSED = 120  # the paused, collapsed card: just a play button this big
+PILL = (340, 96)  # "Play on car", while Spotify plays on another device
 REPEAT_NEXT = {'off': 'context', 'context': 'track', 'track': 'off'}
 SCROLL_SPEED = 40  # px/s for a name too wide to fit
 SCROLL_GAP = 60
@@ -57,6 +58,10 @@ def card_layout(placed, track, viewport_width):
   if not placed or not placed['enabled'] or not track:
     return None
   rect = rl.Rectangle(placed['x'], placed['y'], *NOW_PLAYING_SIZE)
+  if track['status'] == ELSEWHERE:
+    # Another device took Spotify: one pill at the bottom center of the card's place that takes playback back.
+    pill = rl.Rectangle(rect.x + (rect.width - PILL[0]) / 2, rect.y + rect.height - PILL[1], *PILL)
+    return pill, {'play_here': pill}
   if track['status'] != 'playing' and placed.get('collapse'):
     # Paused: just the play button, in the bottom corner nearer the screen edge.
     right = rect.x + rect.width / 2 > viewport_width / 2
@@ -320,7 +325,7 @@ class NowPlayingWidget:
     now = self.ticks()
     if self._press is not None:
       self._press = (self._press[0], self._press[1], now)
-    if fired in ('previous', 'next', 'play_pause') and (track := self.showing()):
+    if fired in ('previous', 'next', 'play_pause', 'play_here') and (track := self.showing()):
       self._pending = (_song_key(track), now)
 
   def showing(self):
@@ -479,12 +484,16 @@ class NowPlayingWidget:
     placed = state.customization['layouts']['large'].get(NOW_PLAYING_WIDGET)
     now = self.ticks()
     if self.track:
-      self._shown = (self.track, now)
+      # No held song behind the "Play on car" pill: it would come back for a moment if the feed then went quiet.
+      self._shown = (self.track, now) if self.track['status'] != ELSEWHERE else None
     track = self.showing()
     if state.alert.size != 'none' or (shape := card_layout(placed, track, getattr(state, 'viewport_width', 0))) is None:
       return
     rect, buttons = shape
     opacity = placed.get('opacity', 85) / 100
+    if 'play_here' in buttons:
+      self._play_here(rect, opacity, now, track)
+      return
     if len(buttons) == 1:
       center = _center(rect)
       rl.draw_circle_v(center, rect.width / 2, rl.Color(15, 13, 23, round(235 * opacity)))
@@ -505,6 +514,27 @@ class NowPlayingWidget:
     _play_pause(_center(buttons['play_pause']), track['status'] == 'playing', spin=now if self._busy(track, now) else None)
     _skip(_center(buttons['next']), True)
     _repeat(_center(buttons['repeat']), track.get('repeat'))
+
+  def _play_here(self, rect, opacity, now, track):
+    rl.draw_rectangle_rounded(rect, 1.0, 24, rl.Color(15, 13, 23, round(235 * opacity)))
+    if (pressed := self._press_alpha('play_here', now)) > 0:
+      rl.draw_rectangle_rounded(rect, 1.0, 24, rl.Color(255, 255, 255, round(50 * pressed)))
+    mark = rl.Vector2(rect.x + 30 + 22, rect.y + rect.height / 2)
+    if self._busy(track, now):
+      start = now * 360 % 360
+      rl.draw_ring(mark, 16, 21, start, start + 270, 24, TEXT)  # until the song shows up here
+    else:
+      _spotify(mark, 22)
+    self.text.draw('Play on car', FontRole.SEMI_BOLD, 34, mark.x + 22 + 20, rect.y + rect.height / 2 - 20, TEXT, 'play_here')
+
+  def _press_alpha(self, name, now):
+    """How strongly the tapped ``name`` is lit: 1 while held, fading once the finger lifts, else 0."""
+    if self._press is None or self._press[0] != name:
+      return 0.0
+    down, up = self._press[1:]
+    if up is None:
+      return 1.0 if now - down < PRESS_MAX else 0.0
+    return max(0.0, 1 - (now - up) / PRESS_FADE)
 
   def _busy(self, track, now):
     """Spin the play button while the card holds a song the feed lost, or until the player answers a tap."""
@@ -574,6 +604,9 @@ class NowPlayingTouch:
         elif pressed == 'repeat':
           if track.get('repeat') in REPEAT_NEXT:
             self.send('repeat', {'mode': REPEAT_NEXT[track['repeat']]})
+        elif pressed == 'play_here':
+          self.send('activate', {})  # Spotify Connect: this car becomes the playing device again
+          fired = pressed
         else:
           self.send(pressed, {})
           fired = pressed

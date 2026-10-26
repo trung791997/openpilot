@@ -81,6 +81,22 @@ def test_published_snapshot_is_ignored_when_stale_or_broken(tmp_path):
   assert now_playing.read(path, now=mtime + 1) is None
 
 
+
+def test_car_screen_offers_play_on_car_only_while_spotify_plays_on_another_device(tmp_path):
+  path = tmp_path / 'status.json'
+  inactive = {**PLAYER, 'active': False, 'connected': True, 'deviceName': 'Starpilot Auto'}
+  path.write_text(json.dumps({'nowPlaying': None, 'player': inactive}))
+  mtime = path.stat().st_mtime
+  assert now_playing.read(path, now=mtime + 1) is None  # other screens still see no song
+  assert now_playing.read_card(path, now=mtime + 1) == {'source': 'spotify', 'status': 'elsewhere', 'title': '',
+                                                        'device': 'Starpilot Auto'}
+  assert now_playing.read_card(path, now=mtime + 60) is None
+  for player in ({**inactive, 'loggedIn': False}, {**inactive, 'connected': False}, None):
+    path.write_text(json.dumps({'nowPlaying': None, 'player': player}))
+    assert now_playing.read_card(path, now=mtime + 1) is None
+  path.write_text(json.dumps({'nowPlaying': now_playing.from_spotify(PLAYER), 'player': PLAYER}))
+  assert now_playing.read_card(path, now=mtime + 1)['title'] == 'Midnight City'
+
 def test_feed_only_reads_while_enabled():
   reads = []
   feed = ProjectionNowPlayingFeed(read=lambda: reads.append(1) or {'title': 'x'})

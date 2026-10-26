@@ -11,6 +11,7 @@ from openpilot.starpilot.soloist.client import ARTWORK_HOSTS, REPEATS
 
 MAX_TEXT = 120
 STALE_SECONDS = 10.0
+ELSEWHERE = 'elsewhere'  # read_card's status while another Spotify device has playback
 
 
 def _text(value: Any) -> str:
@@ -89,12 +90,35 @@ def elapsed_ms(now_playing: dict, now_ms: float | None = None) -> int:
   return int(max(0, min(duration if duration else value, value)))
 
 
-def read(path: Path, now: float | None = None) -> dict | None:
-  """The supervisor's published snapshot; None when missing, malformed or the supervisor stopped updating."""
+def _published(path: Path, now: float | None) -> dict | None:
   try:
     if (time.time() if now is None else now) - path.stat().st_mtime > STALE_SECONDS:  # noqa: TID251 compared with mtime
       return None
-    found = json.loads(path.read_text()).get('nowPlaying')
-  except (OSError, ValueError, AttributeError):
+    found = json.loads(path.read_text())
+  except (OSError, ValueError):
     return None
+  return found if isinstance(found, dict) else None
+
+
+def _song(status: dict | None) -> dict | None:
+  found = status.get('nowPlaying') if status is not None else None
   return found if isinstance(found, dict) and found.get('title') and found.get('status') in ('playing', 'paused') else None
+
+
+def read(path: Path, now: float | None = None) -> dict | None:
+  """The supervisor's published snapshot; None when missing, malformed or the supervisor stopped updating."""
+  return _song(_published(path, now))
+
+
+def elsewhere(player: dict | None) -> dict | None:
+  """Spotify is signed in here but another device (usually the phone) took playback: the car screen offers to take it
+  back. Status 'elsewhere', no title. None in phone-audio mode, where Spotify is not running."""
+  if not isinstance(player, dict) or not (player.get('connected') and player.get('loggedIn')) or player.get('active'):
+    return None
+  return {'source': 'spotify', 'status': ELSEWHERE, 'title': '', 'device': _text(player.get('deviceName'))[:40]}
+
+
+def read_card(path: Path, now: float | None = None) -> dict | None:
+  """For the car screen: the song, or the 'elsewhere' offer when Spotify plays on another device."""
+  status = _published(path, now)
+  return _song(status) or (elsewhere(status.get('player')) if status is not None else None)
