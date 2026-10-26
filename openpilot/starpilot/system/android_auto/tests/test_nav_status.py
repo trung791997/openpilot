@@ -29,8 +29,8 @@ class Feed:
 
 
 @pytest.fixture(autouse=True)
-def guidance_on(monkeypatch):
-  monkeypatch.setattr(ns, 'SEND_GUIDANCE', True)
+def legacy_on(monkeypatch):
+  monkeypatch.setattr(ns, 'SEND_LEGACY', True)
 
 
 @pytest.fixture
@@ -322,10 +322,10 @@ def test_honda_descriptor_uses_next_turn_image_without_dimensions():
   assert stream.image_size is None  # no invented size; semantic guidance is still sent
 
 
-def test_guidance_is_off_by_default(monkeypatch, nav):
-  monkeypatch.setattr(ns, 'SEND_GUIDANCE', False)
+def test_legacy_turn_and_distance_are_off_by_default(monkeypatch, nav):
+  monkeypatch.setattr(ns, 'SEND_LEGACY', False)
   stream, session, feed, now = nav
   start(stream, session, now)
   feed.value = GUIDING
   tick(stream, now, ns.START_GRACE + 1)
-  assert session.sent == [] and session.focus_sent == []
+  assert [kind for _, kind, _ in session.sent] == [ns.NAV_STATUS, ns.NAV_NOTIFICATION, ns.NAV_CURRENT_POSITION]

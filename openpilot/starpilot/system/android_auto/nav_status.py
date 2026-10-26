@@ -37,10 +37,9 @@ SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 0
 EVENT_DESTINATION = 19
 UNIT_METERS, UNIT_KILOMETERS, UNIT_KILOMETERS_P1, UNIT_MILES, UNIT_MILES_P1, UNIT_FEET = 1, 2, 3, 4, 5, 6
 
-# Off: with a route active the Civic head unit stops acknowledging video within seconds of the first guidance
-# packet (session-000033, 2026-10-26), so projection drops and reconnects in a loop. Find the message that does it
-# in a parked test before turning this back on.
-SEND_GUIDANCE = False
+# Off: the Civic head unit stops acknowledging video ~6 s after the legacy turn/distance pair (0x8004/0x8005) and
+# drops projection on every reconnect (3 of 3, session-000036, 2026-10-26). Status, focus and the modern pair held.
+SEND_LEGACY = False
 STEP_TIMEOUT = 3.0
 START_GRACE = 2.0  # some head units never send the start request
 CHECK_EVERY = 0.25
@@ -271,7 +270,7 @@ class NavStatus:
       self._set('opening')
     elif self.state == 'opening' and now > self.deadline:
       self._set('unavailable')
-    elif self.state == 'open' and SEND_GUIDANCE and now >= self.next_check:
+    elif self.state == 'open' and now >= self.next_check:
       self.next_check = now + CHECK_EVERY
       snap = self.feed.snapshot()
       active = snap is not None
@@ -291,6 +290,8 @@ class NavStatus:
         self.log('nav_focus_requested', focus=FOCUS_NATIVE)
 
   def _send(self, kind: int, body: bytes) -> None:
+    if kind in (NAV_TURN, NAV_DISTANCE) and not SEND_LEGACY:
+      return
     self.session.send(self.channel_id, kind, body)
 
   def _update(self, snap: dict | None, now: float) -> None:
@@ -314,10 +315,9 @@ class NavStatus:
       event = modern_maneuver(snap['type'], snap['modifier'])
       image = turn_image(snap['type'], snap['modifier'], *self.image_size) if self.image_size else None
       # Older receivers use the flat messages; newer ones consume 0x8006/0x8007.
-      # Discovery does not expose a reliable PDK version, so publish both formats.
       self._send(NAV_TURN, turn_message(snap['road'], event, side, image))
       self._send(NAV_NOTIFICATION, notification_message(snap['road'], event))
-      self.log('nav_guidance_sent', maneuver=event, legacy=True, modern=True, image=image is not None)
+      self.log('nav_guidance_sent', maneuver=event, legacy=SEND_LEGACY, modern=True, image=SEND_LEGACY and image is not None)
       self.shown_turn, self.shown_distance = turn, None
     metric = bool(snap.get('metric'))
     shown = display_distance(snap['distance'], metric)
