@@ -74,7 +74,7 @@ class RouteRuntime:
     result = {'sessionId': self.session, 'frameMonoTime': now_ns, 'startedMonoTime': drive_id,
                   'revision': settings['revision'], 'enabled': settings['enabled'], 'status': base_status,
                   'destinationName': (settings['destination'] or {}).get('name', ''), 'instruction': {}, 'nextManeuver': {},
-                  'route': [], 'locationMonoTime': 0, 'controlValid': False}
+                  'route': [], 'locationMonoTime': 0, 'controlValid': False, 'speedLimit': 0.}
     if self.future is not None and self.future.done():
       try:
         route = self.future.result()
@@ -132,7 +132,8 @@ class RouteRuntime:
       self._end_route(settings['revision'])
     result.update(status='arrived' if arrived else 'guiding', instruction=progress.instruction,
                   nextManeuver=progress.next_maneuver, route=self.route.preview(),
-                  controlValid=bool(drive_id > 0 and not progress.off_route and not progress.arrived and stamp >= drive_id))
+                  controlValid=bool(drive_id > 0 and not progress.off_route and not progress.arrived and stamp >= drive_id),
+                  speedLimit=progress.speed_limit_mps or 0.)
     return result
 
   def _end_route(self, revision: str) -> None:

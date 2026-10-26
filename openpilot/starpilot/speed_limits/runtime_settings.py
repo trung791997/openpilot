@@ -93,7 +93,8 @@ def parse(values: Mapping[str, object]) -> Settings:
                             tuple(v * MPH_TO_MPS for v in (0.0, 5.0, 10.0, 15.0)),
                             (0.7, 0.9, 1.15, 1.35))
     # SLCOverride remains a validated legacy preference; only set-speed changes override SLC.
-    return Settings(control, display, sel.SelectionPolicy(mode, slots, False), policy, offsets,
+    # Online = the Mapbox route's posted limit while navigating; used only when both slots have none.
+    return Settings(control, display, sel.SelectionPolicy(mode, slots, True), policy, offsets,
                     lead_policy, fallback_choice=fallback, requested=control)
   except (ValueError, OverflowError) as error:
     return _disabled(str(error))

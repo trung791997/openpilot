@@ -15,6 +15,7 @@ from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
 from openpilot.starpilot.speed_limits.map_observation import MapSource, SignFirst, copy_frame
+from openpilot.starpilot.speed_limits.navigation_observation import navigation_observation
 from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, clock_pair_ns, vision_observation
 
 
@@ -141,6 +142,7 @@ class Runtime:
     self.settings = settings
     self.map_source = MapSource()
     self.sign_first = SignFirst()
+    self.sign_first_online = SignFirst()
     self.vision_enabled = vision_enabled
     # Exact saved Vision opt-in may grant control; source identity and current
     # driver confirmation remain independent requirements for each episode.
@@ -173,6 +175,7 @@ class Runtime:
   def reset(self) -> None:
     self.map_source.reset()
     self.sign_first.reset()
+    self.sign_first_online.reset()
     self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
     self._last_vision_producer = ''
     self._last_vision_frame = 0
@@ -350,6 +353,12 @@ class Runtime:
         values[sel.Source.MAP] = acc.Observation(acc.ObservationKind.STALE)
       if self.settings.selection.mode is sel.SelectionMode.ORDERED and self.settings.selection.slots == (sel.Source.VISION, sel.Source.MAP):
         values[sel.Source.MAP] = self.sign_first.step(values[sel.Source.VISION], values[sel.Source.MAP])
+    if self.settings.selection.online_fallback:
+      values[sel.Source.ONLINE] = navigation_observation(sm, now_ns=now_ns, drive_session=self.session_id,
+                                                         car_fingerprint=str(CP.carFingerprint))
+      if sel.Source.VISION in self.settings.selection.slots:
+        # Same rule as Maps: a sign seen this drive holds until the route's limit changes.
+        values[sel.Source.ONLINE] = self.sign_first_online.step(values[sel.Source.VISION], values[sel.Source.ONLINE])
     # Vision still requires its independent source-specific qualification.
     return values
 

@@ -49,3 +49,17 @@ history remains 65 for both longitudinal-only and combined authority. Unknown
 or stale sources retain that limit only when fallback is enabled; lateral-only or stock ownership
 cannot turn a selected speed into a system longitudinal target. These are
 deterministic policy tests, not native producer, planner, CAN or vehicle evidence.
+
+## Online source: the Mapbox route limit (2026-10-26)
+
+The online source is the posted limit Mapbox Directions returns for the route
+(`annotations=maxspeed`, one entry per route segment). Navigation publishes the
+limit of the segment the car is matched to as `starpilotNavigation.speedLimit`
+(m/s, 0 = unknown), and only while guiding and on the route; off the route it is
+0. `navigation_observation.py` turns that into the online observation: absent when
+not guiding, stale past 3 s, unknown at 0. `online_fallback` is now on, so the
+route limit is used only when neither priority slot has an eligible limit, and
+the sign shows "NAV". When Vision is in a slot, the route limit is held behind a
+sign seen this drive until the route's limit changes from its value at the sign
+(the same `SignFirst` rule as the map). Evidence: static tests only
+(`tests/test_navigation_limit.py`); not yet replayed on a navigated drive.
