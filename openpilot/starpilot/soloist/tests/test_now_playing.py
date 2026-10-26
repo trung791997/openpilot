@@ -41,6 +41,14 @@ def test_shuffle_state_is_reported_and_none_when_the_phone_has_no_setting():
     assert present(now_playing.from_phone({**props, 'Shuffle': value} if value is not None else props))['shuffle'] is shown
 
 
+def test_repeat_and_device_come_from_spotify_and_are_blank_for_phone_audio():
+  found = present(now_playing.from_spotify({**PLAYER, 'repeat': 'track', 'deviceName': 'Starpilot Auto'}))
+  assert (found['repeat'], found['device']) == ('track', 'Starpilot Auto')
+  assert present(now_playing.from_spotify({**PLAYER, 'repeat': 'sometimes'}))['repeat'] == 'off'
+  found = present(now_playing.from_phone({'Status': 'playing', 'Track': {'Title': 'Song'}}))
+  assert (found['repeat'], found['device']) == (None, '')
+
+
 def test_untrusted_text_is_cleaned_and_bounded():
   found = present(now_playing.from_phone({'Status': 'playing', 'Track': {'Title': 'A\x00B' + 'x' * 500, 'Artist': 7}}))
   assert found['title'].startswith('AB') and len(found['title']) == now_playing.MAX_TEXT and found['artist'] == ''

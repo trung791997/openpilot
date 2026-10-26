@@ -1,4 +1,5 @@
 """The Android Auto now-playing card; both live rendering and previews use this drawing."""
+import math
 import time
 import unicodedata
 from importlib.resources import as_file, files
@@ -11,16 +12,25 @@ from openpilot.starpilot.system.android_auto.projection_now_playing import image
 from openpilot.starpilot.system.android_auto.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
 from openpilot.starpilot.ui.presentation import FontRole, TextSize
 
-ACCENT = rl.Color(199, 174, 247, 255)
+ACCENT = rl.Color(199, 174, 247, 255)  # without cover art; with it the card takes its color from the art
 INK = rl.Color(15, 13, 23, 255)
 TEXT = rl.Color(245, 242, 252, 255)
-MUTED = rl.Color(184, 178, 200, 255)
+MUTED = rl.Color(214, 210, 224, 255)
 DIM = rl.Color(184, 178, 200, 90)
-BUTTON_R = 30
-CORNER = 28
-CONTROLS = ('shuffle', 'previous', 'play_pause', 'next')
-COVER = 60  # cover art square at (x + 20, y + 10); title and artist start at x + TEXT_LEFT
-TEXT_LEFT = 96
+DISC = rl.Color(255, 255, 255, 46)
+# One UI 9's media card: device line, centered "title • artist", a thick seek bar with times under it, and a row of
+# shuffle, previous, play/pause, next and repeat over the darkened cover art.
+CONTROLS = ('shuffle', 'previous', 'play_pause', 'next', 'repeat')
+CORNER = 64
+PAD = 46
+LINE_Y = 70  # center of the title line
+BAR_Y = 122
+TIMES_Y = 140
+ROW_TOP = 164  # the button row: hit boxes from here to the bottom of the card, icons centered in them
+SLOT = .16  # button spacing as a share of the card width
+BUTTON_R = 36
+COLLAPSED = 120  # the paused, collapsed card: just a play button this big
+REPEAT_NEXT = {'off': 'context', 'context': 'track', 'track': 'off'}
 SCROLL_SPEED = 40  # px/s for a name too wide to fit
 SCROLL_GAP = 60
 SCROLL_PAUSE = 2.0  # s held at the start of each pass
@@ -35,50 +45,117 @@ def card_layout(placed, track, viewport_width):
   if not placed or not placed['enabled'] or not track:
     return None
   rect = rl.Rectangle(placed['x'], placed['y'], *NOW_PLAYING_SIZE)
-  h = rect.height
   if track['status'] != 'playing' and placed.get('collapse'):
-    # Paused: just the play button, at whichever end of the card sits nearer the screen edge.
+    # Paused: just the play button, in the bottom corner nearer the screen edge.
     right = rect.x + rect.width / 2 > viewport_width / 2
-    button = rl.Rectangle(rect.x + rect.width - h if right else rect.x, rect.y, h, h)
+    button = rl.Rectangle(rect.x + rect.width - COLLAPSED if right else rect.x, rect.y + rect.height - COLLAPSED, COLLAPSED, COLLAPSED)
     return button, {'play_pause': button}
-  slot = rect.width / len(CONTROLS)
-  return rect, {name: rl.Rectangle(rect.x + index * slot, rect.y + 80, slot, h - 80) for index, name in enumerate(CONTROLS)}
+  slot = rect.width * SLOT
+  left = rect.x + rect.width / 2 - slot * len(CONTROLS) / 2
+  return rect, {name: rl.Rectangle(left + index * slot, rect.y + ROW_TOP, slot, rect.height - ROW_TOP)
+                for index, name in enumerate(CONTROLS)}
 
 
-def _center(box: rl.Rectangle) -> rl.Vector2:
-  return rl.Vector2(box.x + box.width / 2, box.y + box.height / 2)
-
-
-def _play_pause(center: rl.Vector2, playing: bool, r: float = BUTTON_R) -> None:
-  """An accent disc with the pause bars while playing, else the play triangle."""
-  rl.draw_circle_v(center, r, ACCENT)
+def _play_pause(center: rl.Vector2, playing: bool, r: float = BUTTON_R, disc=DISC, ink=TEXT) -> None:
+  """A disc with the pause bars while playing, else the play triangle."""
+  rl.draw_circle_v(center, r, disc)
   k = r / BUTTON_R
   if playing:
-    for dx in (-9, 3):
-      rl.draw_rectangle_rounded(rl.Rectangle(center.x + dx * k, center.y - 12 * k, 6 * k, 24 * k), .5, 4, INK)
+    for dx in (-10, 3):
+      rl.draw_rectangle_rounded(rl.Rectangle(center.x + dx * k, center.y - 13 * k, 7 * k, 26 * k), .5, 4, ink)
   else:
-    rl.draw_triangle(rl.Vector2(center.x - 7 * k, center.y - 13 * k), rl.Vector2(center.x - 7 * k, center.y + 13 * k),
-                     rl.Vector2(center.x + 13 * k, center.y), INK)
+    rl.draw_triangle(rl.Vector2(center.x - 8 * k, center.y - 14 * k), rl.Vector2(center.x - 8 * k, center.y + 14 * k),
+                     rl.Vector2(center.x + 14 * k, center.y), ink)
 
 
 def _skip(center: rl.Vector2, forward: bool) -> None:
-  """A triangle against a bar, pointing the skip direction."""
+  """A translucent disc with a triangle against a bar, pointing the skip direction."""
+  rl.draw_circle_v(center, BUTTON_R, DISC)
   d = 1 if forward else -1
-  tip, back = center.x + 10 * d, center.x - 10 * d
-  points = (rl.Vector2(back, center.y - 13), rl.Vector2(back, center.y + 13), rl.Vector2(tip, center.y))
+  tip, back = center.x + 9 * d, center.x - 9 * d
+  points = (rl.Vector2(back, center.y - 12), rl.Vector2(back, center.y + 12), rl.Vector2(tip, center.y))
   rl.draw_triangle(*(points if forward else (points[1], points[0], points[2])), TEXT)
-  rl.draw_rectangle_rounded(rl.Rectangle(tip + (0 if forward else -5), center.y - 13, 5, 26), .5, 4, TEXT)
+  rl.draw_rectangle_rounded(rl.Rectangle(tip + (0 if forward else -5), center.y - 12, 5, 24), .5, 4, TEXT)
 
 
-def _shuffle(center: rl.Vector2, state) -> None:
+def _toggle_color(state, on, accent):
+  return DIM if state is None else accent if on else TEXT
+
+
+def _shuffle(center: rl.Vector2, state, accent=ACCENT) -> None:
   """Two crossing arrows: accent with a dot when on, white when off, dim when the player cannot shuffle."""
-  color = DIM if state is None else ACCENT if state else TEXT
+  color = _toggle_color(state, state, accent)
   x, y = center.x, center.y
   for y0, y1 in ((-10, 10), (10, -10)):
     rl.draw_line_ex(rl.Vector2(x - 17, y + y0), rl.Vector2(x + 13, y + y1), 4, color)
     rl.draw_triangle(rl.Vector2(x + 10, y + y1 - 7), rl.Vector2(x + 10, y + y1 + 7), rl.Vector2(x + 20, y + y1), color)
   if state:
-    rl.draw_circle_v(rl.Vector2(x, y + 22), 3, color)
+    rl.draw_circle_v(rl.Vector2(x, y + 24), 3, color)
+
+
+def _repeat(center: rl.Vector2, state, accent=ACCENT) -> None:
+  """A loop of two arrows: accent with a dot when on, plus a small bar for repeating one song; dim without a player."""
+  color = _toggle_color(state, state in ('context', 'track'), accent)
+  x, y = center.x, center.y
+  rl.draw_line_ex(rl.Vector2(x - 14, y - 9), rl.Vector2(x + 12, y - 9), 4, color)
+  rl.draw_line_ex(rl.Vector2(x + 14, y + 9), rl.Vector2(x - 12, y + 9), 4, color)
+  rl.draw_line_ex(rl.Vector2(x - 16, y - 11), rl.Vector2(x - 16, y + 4), 4, color)
+  rl.draw_line_ex(rl.Vector2(x + 16, y + 11), rl.Vector2(x + 16, y - 4), 4, color)
+  rl.draw_triangle(rl.Vector2(x + 10, y - 16), rl.Vector2(x + 10, y - 2), rl.Vector2(x + 19, y - 9), color)
+  rl.draw_triangle(rl.Vector2(x - 10, y + 16), rl.Vector2(x - 10, y + 2), rl.Vector2(x - 19, y + 9), color)
+  if state == 'track':
+    rl.draw_rectangle_rounded(rl.Rectangle(x - 2, y - 5, 4, 10), .5, 4, color)
+  if state in ('context', 'track'):
+    rl.draw_circle_v(rl.Vector2(x, y + 24), 3, color)
+
+
+def _spotify(center: rl.Vector2, r: float = 13) -> None:
+  """Spotify's mark: a disc with three bowed lines."""
+  rl.draw_circle_v(center, r, TEXT)
+  for dy, half, thick in ((-4.5, .62, 2.6), (.5, .52, 2.2), (5, .42, 1.9)):
+    rl.draw_ring(rl.Vector2(center.x, center.y + dy + r * 1.6), r * 1.6 - thick / 2, r * 1.6 + thick / 2,
+                 180 + 90 - math.degrees(half), 180 + 90 + math.degrees(half), 12, INK)
+
+
+def _output(center: rl.Vector2) -> None:
+  """The media-output mark in the top corner, a play triangle in an open ring. It shows where audio goes; not a button."""
+  x, y = center.x, center.y
+  rl.draw_ring(rl.Vector2(x, y), 14, 17.5, -65, 65, 16, TEXT)
+  rl.draw_triangle(rl.Vector2(x - 13, y - 10), rl.Vector2(x - 13, y + 10), rl.Vector2(x + 4, y), TEXT)
+
+
+def _wave(left, right, y, accent, phase) -> None:
+  """One UI's soft wave riding on the played part of the seek bar: two slow, overlapping swells."""
+  for speed, length, height, alpha in ((1.0, 70, 14, 70), (-.7, 110, 10, 55)):
+    color = rl.Color((accent.r + 255) // 2, (accent.g + 255) // 2, (accent.b + 255) // 2, alpha)
+    x = left
+    while x < right:
+      rise = height * (.55 + .45 * math.sin(x / length * 2 * math.pi + phase * speed))
+      rise *= min(1.0, (x - left) / 30, (right - x) / 30)  # taper into the bar at both ends
+      rl.draw_rectangle_rec(rl.Rectangle(x, y - rise, min(2, right - x), rise), color)
+      x += 2
+
+
+def clock_text(ms):
+  seconds = max(0, int(ms // 1000))
+  return f'{seconds // 60:02d}:{seconds % 60:02d}'
+
+
+def accent_from(colors, count):
+  """The card color from cover pixels: the average weighted by how colorful each pixel is, lifted to a bright
+  shade so the seek bar reads over the dark card. None for a gray cover."""
+  total = r = g = b = 0.0
+  for index in range(count):
+    pixel = colors[index]
+    high, low = max(pixel.r, pixel.g, pixel.b), min(pixel.r, pixel.g, pixel.b)
+    weight = (high - low) * high / 255
+    total += weight
+    r, g, b = r + pixel.r * weight, g + pixel.g * weight, b + pixel.b * weight
+  if total < count * 6:
+    return None
+  r, g, b = r / total, g / total, b / total
+  lift = 235 / max(r, g, b, 1)
+  return rl.Color(round(min(255, r * lift)), round(min(255, g * lift)), round(min(255, b * lift)), 255)
 
 
 def scroll_offset(text_width, width, seconds):
@@ -89,33 +166,40 @@ def scroll_offset(text_width, width, seconds):
   return min(travel, max(0.0, seconds % (SCROLL_PAUSE + travel / SCROLL_SPEED) - SCROLL_PAUSE) * SCROLL_SPEED)
 
 
-def _note(box: rl.Rectangle) -> None:
-  """Placeholder cover for players without art (phone audio): a dim tile with a music note."""
-  rl.draw_rectangle_rounded(box, .2, 8, rl.Color(255, 255, 255, 28))
-  x, y = box.x + box.width / 2, box.y + box.height / 2
-  rl.draw_circle_v(rl.Vector2(x - 6, y + 12), 8, MUTED)
-  rl.draw_line_ex(rl.Vector2(x + 1, y + 12), rl.Vector2(x + 1, y - 17), 4, MUTED)
-  rl.draw_line_ex(rl.Vector2(x + 1, y - 15), rl.Vector2(x + 13, y - 8), 4, MUTED)
+def pill_rows(height, r, step=1):
+  """(y, height, inset) strips that fill a rounded rect of this height: the cover drawn strip by strip takes the
+  card's shape, so it needs no shader or mask."""
+  r = min(r, height / 2)
+  for top in (True, False):
+    if not top and height > 2 * r:
+      yield r, height - 2 * r, 0.0
+    y = 0.0
+    while y < r:
+      h = min(step, r - y)
+      dy = r - (y + h / 2)
+      yield (y if top else height - y - h), h, r - math.sqrt(r * r - dy * dy)
+      y += h
 
 
 class TrackText:
   """Title and artist text. The bitmap atlases hold only ASCII, so a name with any other letter (Peter's Vietnamese
-  songs, "Em Về Tinh Khôi") is drawn from the Inter TTF cut to ASCII plus that name's letters: a 512 px atlas per role,
+  songs, "Em Về Tinh Khôi") is drawn from the Inter TTF cut to ASCII plus that name's letters: a 512 px atlas per line,
   replaced when the name changes and freed with the card."""
 
   def __init__(self, fonts):
     self.fonts = fonts
-    self._cut = {}  # role -> (text, font or None when the bitmap atlas covers it or the TTF failed to load)
+    self._cut = {}  # (role, slot) -> (text, font or None when the bitmap atlas covers it or the TTF failed to load)
 
-  def _font(self, text, role):
+  def _font(self, text, role, slot):
     covers = getattr(self.fonts, 'covers', None)
     if covers is None or role not in TRACK_FONTS:
       return None
-    cut = self._cut.get(role)
+    key = (role, slot)
+    cut = self._cut.get(key)
     if cut is None or cut[0] != text:
-      self._unload(role)
-      self._cut[role] = (text, None if covers(text, role) else self._load(text, role))
-    return self._cut[role][1]
+      self._unload(key)
+      self._cut[key] = (text, None if covers(text, role) else self._load(text, role))
+    return self._cut[key][1]
 
   @staticmethod
   def _load(text, role):
@@ -130,23 +214,24 @@ class TrackText:
     rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
     return font
 
-  def _unload(self, role):
-    cut = self._cut.pop(role, None)
+  def _unload(self, key):
+    cut = self._cut.pop(key, None)
     if cut is not None and cut[1] is not None and rl.is_window_ready():
       rl.unload_font(cut[1])
 
   def close(self):
-    for role in list(self._cut):
-      self._unload(role)
+    for key in list(self._cut):
+      self._unload(key)
 
-  def measure(self, text, role, size):
-    if (font := self._font(text, role)) is None:
+  def measure(self, text, role, size, slot=None):
+    """``slot`` keeps one cut per line, so two lines in the same font do not swap atlases every frame."""
+    if (font := self._font(text, role, slot)) is None:
       return self.fonts.measure(text, role, size)
     measured = rl.measure_text_ex(font, text, size * self.fonts.profile.font_scale, 0)  # noqa: TID251
     return TextSize(measured.x, measured.y)
 
-  def draw(self, text, role, size, x, y, color):
-    if (font := self._font(text, role)) is None:
+  def draw(self, text, role, size, x, y, color, slot=None):
+    if (font := self._font(text, role, slot)) is None:
       self.fonts.draw(text, role, size, x, y, color)
       return
     draw = getattr(rl, "_orig_draw_text_ex", rl.draw_text_ex)
@@ -167,27 +252,31 @@ class NowPlayingWidget:
     self._scroll = None  # (text, start): a new name starts its scroll from the held start
     self.track = None
     self.artwork = ('', None)  # (url, image bytes) from the feed thread
-    self._cover = None  # (url, texture or None), built on the render thread
+    self._cover = None  # (url, blurred texture or None, accent or None), built on the render thread
 
-  def _fit(self, text, role, size, width):
-    measured = self.text.measure(text, role, size)
-    return size * width / measured.width if measured.width > width else size
-
-  def _cover_texture(self):
+  def _cover_art(self):
+    """(background texture, accent color); either is None without usable art. One card-sized texture per cover."""
     url, data = self.artwork
     if self._cover is not None and self._cover[0] == url:
-      return self._cover[1]
+      return self._cover[1:]
     self._drop_cover()
-    texture = None
+    texture = accent = None
     if url and data and (kind := image_type(data)):
       image = rl.load_image_from_memory(kind, data, len(data))
       if image.width > 0 and image.height > 0:
-        rl.image_resize(image, COVER * 2, COVER * 2)
+        # The middle band of the square cover, at the card's shape, so the picture is not squashed.
+        # Whole pixels only: raylib 5.5 corrupted the heap cropping 680x580 to a band starting at y 149.75 (dev VM).
+        band = min(image.height, round(image.width * NOW_PLAYING_SIZE[1] / NOW_PLAYING_SIZE[0]))
+        rl.image_crop(image, rl.Rectangle(0, (image.height - band) // 2, image.width, band))
+        rl.image_resize(image, *NOW_PLAYING_SIZE)  # 660 KB of texture, freed with the song
+        colors = rl.load_image_colors(image)
+        accent = accent_from(colors, NOW_PLAYING_SIZE[0] * NOW_PLAYING_SIZE[1])
+        rl.unload_image_colors(colors)
         texture = rl.load_texture_from_image(image)
         rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
       rl.unload_image(image)
-    self._cover = (url, texture)
-    return texture
+    self._cover = (url, texture, accent)
+    return texture, accent
 
   def close(self):
     self._drop_cover()
@@ -198,22 +287,78 @@ class NowPlayingWidget:
       rl.unload_texture(self._cover[1])
     self._cover = None
 
-  def _scrolling(self, text, role, size, x, y, width, color):
-    text_width = self.text.measure(text, role, size).width
-    if text_width <= width:
-      self.text.draw(text, role, size, x, y, color)
+  def _scrolling(self, text, line_width, draw, x, y, width, height):
+    """Run ``draw(left)`` once when the line fits ``width``; otherwise scroll it left inside a clip, then repeat."""
+    if line_width <= width:
+      draw(x)
       return
     now = self.ticks()
     if self._scroll is None or self._scroll[0] != text:
       self._scroll = (text, now)
-    offset = scroll_offset(text_width, width, now - self._scroll[1])
-    clip.begin_scissor_mode(x, y, width, size + 8)
+    offset = scroll_offset(line_width, width, now - self._scroll[1])
+    clip.begin_scissor_mode(x, y, width, height)
     try:
-      for start in (x - offset, x - offset + text_width + SCROLL_GAP):
+      for start in (x - offset, x - offset + line_width + SCROLL_GAP):
         if start < x + width:
-          self.text.draw(text, role, size, start, y, color)
+          draw(start)
     finally:
       clip.end_scissor_mode()
+
+  def _background(self, rect, texture, opacity):
+    if texture is None:
+      rl.draw_rectangle_rounded(rect, 2 * CORNER / min(rect.width, rect.height), 24, rl.Color(15, 13, 23, round(235 * opacity)))
+      return
+    tint = rl.Color(140, 140, 140, round(255 * opacity))  # darkened so white text reads on any cover
+    sx, sy = texture.width / rect.width, texture.height / rect.height
+    for y, height, inset in pill_rows(rect.height, CORNER):
+      rl.draw_texture_pro(texture, rl.Rectangle(inset * sx, y * sy, (rect.width - 2 * inset) * sx, height * sy),
+                          rl.Rectangle(rect.x + inset, rect.y + y, rect.width - 2 * inset, height), rl.Vector2(0, 0), 0, tint)
+
+  def _title_line(self, rect, track):
+    """Spotify's mark, then "title • artist", centered; a line too wide scrolls, mark and all, like the phone."""
+    title, artist = nfc(track['title']), nfc(track['artist'] or track['album'] or '')
+    size, dot = 28, 34
+    title_width = self.text.measure(title, FontRole.SEMI_BOLD, size, 'title').width
+    artist_width = self.text.measure(artist, FontRole.SEMI_BOLD, size, 'artist').width if artist else 0
+    line_width = title_width + (dot + artist_width if artist else 0)
+    logo = 38 if track.get('source') == 'spotify' else 0
+    width = rect.width - 2 * PAD
+    top = rect.y + LINE_Y - 18
+
+    def draw(x):
+      if logo:
+        _spotify(rl.Vector2(x + 13, rect.y + LINE_Y))
+        x += logo
+      self.text.draw(title, FontRole.SEMI_BOLD, size, x, top, TEXT, 'title')
+      if artist:
+        rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, rect.y + LINE_Y), 3.5, TEXT)
+        self.text.draw(artist, FontRole.SEMI_BOLD, size, x + title_width + dot, top, TEXT, 'artist')
+
+    line_width += logo
+    left = rect.x + PAD if line_width > width else rect.x + rect.width / 2 - line_width / 2
+    self._scrolling(f'{title}\n{artist}', line_width, draw, left, top - 4, width, 44)
+
+  def _seek_bar(self, rect, track, accent):
+    left, right, y = rect.x + 50, rect.x + rect.width - 50, rect.y + BAR_Y
+    rest = rl.Color(255, 255, 255, 60)
+    duration = track.get('durationMs')
+    if not duration:
+      rl.draw_rectangle_rounded(rl.Rectangle(left, y - 4, right - left, 8), 1.0, 6, rest)
+      return
+    elapsed = min(duration, elapsed_ms(track, self.clock() * 1000) if track.get('position') else 0)
+    thumb = left + (right - left) * elapsed / duration
+    if thumb - left > 4:
+      if track['status'] == 'playing':
+        _wave(left, thumb, y - 4, accent, self.ticks() * 2)
+      rl.draw_rectangle_rounded(rl.Rectangle(left, y - 4, thumb - left, 8), 1.0, 6, accent)
+    if right - thumb > 24:
+      rl.draw_rectangle_rounded(rl.Rectangle(thumb + 22, y - 4, right - thumb - 22, 8), 1.0, 6, rest)
+    rl.draw_circle_v(rl.Vector2(thumb, y), 22, rl.Color(accent.r, accent.g, accent.b, 45))
+    rl.draw_circle_v(rl.Vector2(thumb, y), 15, TEXT)
+    rl.draw_circle_v(rl.Vector2(thumb, y), 12, accent)
+    total = clock_text(duration)
+    self.fonts.draw(clock_text(elapsed), FontRole.NORMAL, 18, left, rect.y + TIMES_Y, MUTED)
+    self.fonts.draw(total, FontRole.NORMAL, 18, right - self.fonts.measure(total, FontRole.NORMAL, 18).width, rect.y + TIMES_Y, MUTED)
 
   def render(self, state):
     placed = state.customization['layouts']['large'].get(NOW_PLAYING_WIDGET)
@@ -221,34 +366,29 @@ class NowPlayingWidget:
     if state.alert.size != 'none' or (shape := card_layout(placed, track, getattr(state, 'viewport_width', 0))) is None:
       return
     rect, buttons = shape
-    background = rl.Color(15, 13, 23, round(235 * placed.get('opacity', 85) / 100))
-    playing = track['status'] == 'playing'
-    rl.draw_rectangle_rounded(rect, 2 * CORNER / min(rect.width, rect.height), 16, background)
+    opacity = placed.get('opacity', 85) / 100
     if len(buttons) == 1:
-      _play_pause(_center(rect), False)
+      center = _center(rect)
+      rl.draw_circle_v(center, rect.width / 2, rl.Color(15, 13, 23, round(235 * opacity)))
+      _play_pause(center, False, rect.width * .36, self._cover_art()[1] or ACCENT, INK)
       return
-    cover = rl.Rectangle(rect.x + 20, rect.y + 10, COVER, COVER)
-    if (texture := self._cover_texture()) is not None:
-      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height), cover, rl.Vector2(0, 0), 0, rl.WHITE)
-    else:
-      _note(cover)
-    text_x, text_width = rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - CORNER
-    title = nfc(track['title'])
-    self.text.draw(title, FontRole.SEMI_BOLD, self._fit(title, FontRole.SEMI_BOLD, 30, text_width), text_x, rect.y + 10, TEXT)
-    if artist := nfc(track['artist'] or track['album'] or ''):
-      self._scrolling(artist, FontRole.NORMAL, 22, text_x, rect.y + 44, text_width, MUTED)
-    left, width = rect.x + CORNER, rect.width - 2 * CORNER
-    bar = rl.Rectangle(left, rect.y + 76, width, 4)
-    rl.draw_rectangle_rounded(bar, 1.0, 4, rl.Color(255, 255, 255, 50))
-    duration = track.get('durationMs')
-    if duration and track.get('position'):
-      done = min(1.0, elapsed_ms(track, self.clock() * 1000) / duration)
-      if done > 0:
-        rl.draw_rectangle_rounded(rl.Rectangle(bar.x, bar.y, max(bar.height, bar.width * done), bar.height), 1.0, 4, ACCENT)
-    _shuffle(_center(buttons['shuffle']), track.get('shuffle'))
+    texture, accent = self._cover_art()
+    accent = accent or ACCENT
+    self._background(rect, texture, opacity)
+    label = nfc(track.get('device') or ('Phone' if track.get('source') == 'phone' else 'Spotify'))
+    self.text.draw(label, FontRole.SEMI_BOLD, 20, rect.x + PAD, rect.y + 20, MUTED, 'device')
+    _output(rl.Vector2(rect.x + rect.width - PAD - 12, rect.y + 34))
+    self._title_line(rect, track)
+    self._seek_bar(rect, track, accent)
+    _shuffle(_center(buttons['shuffle']), track.get('shuffle'), accent)
     _skip(_center(buttons['previous']), False)
-    _play_pause(_center(buttons['play_pause']), playing, 26)
+    _play_pause(_center(buttons['play_pause']), track['status'] == 'playing')
     _skip(_center(buttons['next']), True)
+    _repeat(_center(buttons['repeat']), track.get('repeat'), accent)
+
+
+def _center(box: rl.Rectangle) -> rl.Vector2:
+  return rl.Vector2(box.x + box.width / 2, box.y + box.height / 2)
 
 
 class NowPlayingTouch:
@@ -275,9 +415,13 @@ class NowPlayingTouch:
     if kind == 'up':
       pressed, self.pressed = self.pressed, None
       if pressed is not None and pressed == hit:
-        if pressed != 'shuffle':
+        if pressed == 'shuffle':
+          if track.get('shuffle') is not None:
+            self.send('shuffle', {'enabled': not track['shuffle']})
+        elif pressed == 'repeat':
+          if track.get('repeat') in REPEAT_NEXT:
+            self.send('repeat', {'mode': REPEAT_NEXT[track['repeat']]})
+        else:
           self.send(pressed, {})
-        elif track.get('shuffle') is not None:
-          self.send('shuffle', {'enabled': not track['shuffle']})
       return pressed is not None or rl.check_collision_point_rec(point, shape[0])
     return self.pressed is not None

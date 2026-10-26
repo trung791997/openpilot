@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from openpilot.starpilot.soloist.client import ARTWORK_HOSTS
+from openpilot.starpilot.soloist.client import ARTWORK_HOSTS, REPEATS
 
 MAX_TEXT = 120
 STALE_SECONDS = 10.0
@@ -31,13 +31,16 @@ def artwork_url(value: Any) -> str:
 
 
 def snapshot(source: str, status: str, title: str, artist: str, album: str, duration_ms: int | None,
-             position: dict | None, shuffle: bool | None = None, artwork: str = '') -> dict | None:
-  """``shuffle`` is None when the player cannot report or change it. ``artwork`` is '' without a cover (phone audio)."""
+             position: dict | None, shuffle: bool | None = None, artwork: str = '', repeat: str | None = None,
+             device: str = '') -> dict | None:
+  """``shuffle`` and ``repeat`` are None when the player cannot report or change them. ``artwork`` is '' without a
+  cover (phone audio). ``device`` is the name the player plays under, e.g. the Spotify Connect name."""
   title = _text(title)
   if not title or status not in ('playing', 'paused'):
     return None
   return {'source': source, 'status': status, 'title': title, 'artist': _text(artist), 'album': _text(album),
-          'durationMs': duration_ms, 'position': position, 'shuffle': shuffle, 'artwork': artwork_url(artwork)}
+          'durationMs': duration_ms, 'position': position, 'shuffle': shuffle, 'artwork': artwork_url(artwork),
+          'repeat': repeat if repeat in REPEATS else None, 'device': _text(device)[:40]}
 
 
 def from_spotify(player: dict | None) -> dict | None:
@@ -48,7 +51,8 @@ def from_spotify(player: dict | None) -> dict | None:
     return None
   return snapshot('spotify', player['status'], track.get('title'), track.get('artists'), track.get('album'),
                   _whole(track.get('durationMs')), player.get('position'), player.get('shuffle') is True,
-                  track.get('artwork'))
+                  track.get('artwork'), player.get('repeat') if player.get('repeat') in REPEATS else 'off',
+                  player.get('deviceName'))
 
 
 def from_phone(props: dict | None, now_ms: int | None = None) -> dict | None:

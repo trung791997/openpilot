@@ -103,7 +103,7 @@ class TestProjectionOnroad(unittest.TestCase):
     self.assertEqual(owner.touch.call_count, 1)
 
   def touch_view(self, display):
-    """Peter's saved AA layout on the 1860x1116 canvas: the 600x140 card bottom-right, Home/Work/Bookmark enabled."""
+    """Peter's saved AA layout on the 1860x1116 canvas: the 640x264 card bottom-right, Home/Work/Bookmark enabled."""
     from openpilot.starpilot.system.android_auto.projection_favorites import ProjectionFavorites
     from openpilot.starpilot.system.android_auto.projection_layout import (default_layout_for_viewport, projection_customization,
                                                                            validate_layout_for_viewport)
@@ -113,7 +113,7 @@ class TestProjectionOnroad(unittest.TestCase):
     owner.read.return_value = {'revision': 'r1', 'enabled': True, 'token': 't', 'destination': None,
                                'favorites': [{'id': 'h', 'label': 'home'}, {'id': 'w', 'label': 'work'}]}
     native.favorites = lambda authorized: ProjectionFavorites(authorized, owner)
-    track = {'status': 'playing', 'title': 'Song', 'artist': 'Artist', 'shuffle': False, 'source': 'spotify'}
+    track = {'status': 'playing', 'title': 'Song', 'artist': 'Artist', 'shuffle': False, 'repeat': 'off', 'source': 'spotify'}
     native.now_playing_feed = lambda: Mock(snapshot=Mock(return_value=track), artwork=Mock(return_value=('', None)))
     native.now_playing_control = Mock()
     layout = default_layout_for_viewport((1860, 1116))
@@ -141,12 +141,12 @@ class TestProjectionOnroad(unittest.TestCase):
     view, native, _ = self.touch_view('icons')
     placed = view._state.customization['layouts']['large']['now_playing']
     card, buttons = card_layout(placed, view.onroad.now_playing.track, 1860)
-    self.assertEqual((card.x, card.y, card.width, card.height), (1230, 946, 600, 140))
+    self.assertEqual((card.x, card.y, card.width, card.height), (1190, 822, 640, 264))  # 1230/946 slide back so the bigger card stays on screen
     for name in CONTROLS:
       native.now_playing_control.reset_mock()
       box = buttons[name]
       self.tap(view, box.x + box.width / 2, box.y + box.height / 2)
-      expected = ('shuffle', {'enabled': True}) if name == 'shuffle' else (name, {})
+      expected = {'shuffle': ('shuffle', {'enabled': True}), 'repeat': ('repeat', {'mode': 'context'})}.get(name, (name, {}))
       native.now_playing_control.assert_called_once_with(*expected)
     native.now_playing_control.reset_mock()
     self.tap(view, card.x + 300, card.y + 40)  # the title row is part of the card, not a button: no action, no fall-through
