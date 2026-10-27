@@ -58,6 +58,16 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **Why nothing caught it:** this is − then +, so the entry 7 latch correctly did nothing. The brake comes before any reversal could be seen. The track was old, so the route 34 new-track flag would not fire either.
 - **Rest of the scan:** Job checked the other 29 engaged brakes in dirs 4–20. None was route-34 shaped, and none tripped the mismatch flag.
 
+**Addendum — lead-leaving-lane scan and a combined rule** (Job, log level, 14 routes, 2.95 engaged h; 2026-10-27).
+- **Cut-out flag** (lead's radar offset from our path > 1.0 m and moving outward > 0.3 m/s for ≥ 0.3 s): about 23/h. Of the 8 brakes below -1.0 while flagged, only route 37 T903 was a car leaving with no brake. About 4 were cars turning off at intersections that really slowed, one with brake lights on (o31 T451.7). Those need their braking.
+- **Combined rule** (cut-out or new-track mismatch; model lead a > -0.5; radar and model speed differ by > 3 m/s; dRel ≥ 30; TTC ≥ 4): about 9.5/h.
+  - It catches route 34.
+  - It catches route 37 only 0.6 s after the plan was already at -1.84, so it would not have prevented that tap.
+  - Of the 64 engaged lead0 brakes below -1.5, it also hits 0f T2091 (camera ambiguous) and 32 T1248. On 32 T1248 the radar saw vLead fall 15.8 → 6.6 while the model lead did not see it. The stills are at night and inconclusive.
+  - About 5 of its other flags were turn-offs or exits that really slowed.
+
+**Decision.** Neither rule is built. Both fire on real slowdowns, mostly cars turning off, and the combined rule is too late for route 37. Both taps (34 and 37) stay open, logged as radar artefacts with no bound that spares real slowdowns yet.
+
 ### 7 — 2026-10-26 — Curve brake fix: a radar lead that flips from speeding up to braking within 1.5 s gets less braking authority
 
 **Problem.** On route 30 (11c8fa231c0499ed/00000030--70508f00bd, T1421–1424) the Civic braked hard to -2.87 while following a car through an S-curve. The car ahead was not slowing. Radar track 60 read the lead as speeding up at +4 m/s², then braking at -3 m/s², all within 1 s. A vision-only drive would not have braked: the model kept the lead at 47–52 m and about 21–22 m/s.
