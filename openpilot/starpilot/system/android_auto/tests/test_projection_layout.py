@@ -9,6 +9,7 @@ from openpilot.starpilot.system.android_auto.display_profile import record_scree
 from openpilot.starpilot.system.android_auto.projection_layout import (
   default_layout, validate_layout, decode_layout, layout_metadata, projection_customization, ProjectionLayoutSource,
   PROJECTION_WIDGETS, NAV_CARD, NAV_MAP, FAVORITE_WIDGETS, BOOKMARK_WIDGET, CAR_EXIT, ACTION_WIDGETS, placement_size,
+  NOW_PLAYING_SIZE,
 )
 from openpilot.starpilot.ui.onroad_customization import CLOCK_WIDGET, MODE_WIDGET, STOPPED_TIMER_WIDGET, default_document, customization_metadata
 from openpilot.starpilot.saved_document import commit_exact
@@ -453,7 +454,7 @@ class TestNowPlayingWidget(unittest.TestCase):
     right, bottom = bounds['x'] + bounds['width'], bounds['y'] + bounds['height']
     document['widgets']['now_playing'].update(x=right - 520, y=bottom - 96)  # flush to the corner at the old 520x96
     placed = validate_layout(document, SCREEN)['widgets']['now_playing']
-    self.assertEqual((placed['x'], placed['y']), (right - 600, bottom - 140))
+    self.assertEqual((placed['x'], placed['y']), (right - NOW_PLAYING_SIZE[0], bottom - NOW_PLAYING_SIZE[1]))
     document['widgets']['now_playing'].update(x=bounds['x'], y=bounds['y'])
     placed = validate_layout(document, SCREEN)['widgets']['now_playing']
     self.assertEqual((placed['x'], placed['y']), (bounds['x'], bounds['y']))

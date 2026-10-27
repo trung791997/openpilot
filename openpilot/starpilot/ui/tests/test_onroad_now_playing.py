@@ -247,6 +247,32 @@ def test_long_song_line_scrolls_inside_a_clip_and_short_one_does_not(widget, mon
   assert clips[0] == (10 + 46, 20 + 70 - 22, 640 - 2 * 46, 44)
 
 
+def test_long_line_is_drawn_once_then_slid_without_a_clip(widget, monkeypatch):
+  from openpilot.starpilot.ui import onroad_now_playing
+  card, drawn, texts = widget
+  clips = []
+  monkeypatch.setattr(onroad_now_playing.clip, 'begin_scissor_mode', lambda *args: clips.append(args))
+  monkeypatch.setattr(onroad_now_playing.clip, 'end_scissor_mode', lambda: clips.append('end'))
+  card.track = {**TRACK, 'artist': 'A very long list of featured artists on this one track'}
+  now = [100.0]
+  card.ticks = lambda: now[0]
+  card.render(state())
+  assert clips[-1] == 'end'  # the first frame clips, and asks for the texture
+  texture = SimpleNamespace(id=7, texture=SimpleNamespace(id=8, width=974, height=44))  # 972 px line + 2
+  card._line_texture = (card._line_wanted, texture)  # what prepare() draws before the next frame
+  drawn.clear(), clips.clear(), texts.clear()
+  now[0] += onroad_now_playing.SCROLL_PAUSE + 14  # 560 px in: the end of this copy and the start of the next
+  card.render(state())
+  copies = [(args[1].x, args[1].width, args[1].height, args[2].x, args[2].width) for name, args in drawn
+            if name == 'draw_texture_pro' and args[0] is texture.texture]
+  assert clips == [] and 'Midnight City' not in texts
+  # Flipped right side up, and nothing drawn outside the card's side paddings (56 to 604).
+  assert copies == [(560, 414, -44, 56, 414), (0, 76, -44, 528, 76)]
+  card._line_wanted = None
+  card.track = TRACK  # a short name fits: no texture is asked for, so the next prepare() lets it go
+  card.render(state())
+  assert card._line_wanted is None
+
 def test_card_shape_strips_cover_the_card_and_round_its_corners():
   from openpilot.starpilot.ui.onroad_now_playing import pill_rows
   rows = sorted(pill_rows(264, 64))
@@ -282,6 +308,7 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   monkeypatch.setattr(rl, 'image_crop', lambda image, box: steps.append('image_crop') or crops.append(box))
   monkeypatch.setattr(rl, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
   monkeypatch.setattr(rl, 'unload_image_colors', lambda colors: steps.append('colors freed'))
+  monkeypatch.setattr(onroad_now_playing, 'round_corners', lambda *args: steps.append('corners cut'))
   monkeypatch.setattr(rl, 'unload_image', lambda *args: None)
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=640, height=264, id=len(loads)))
   monkeypatch.setattr(rl, 'set_texture_filter', lambda *args: None)
@@ -292,8 +319,8 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   card.render(state())
   strips = [args[2] for name, args in drawn if name == 'draw_texture_pro' and not hasattr(args[0], 'path')]  # not the logo
   card.render(state())
-  assert loads == ['.jpg'] and steps == ['image_crop', 'image_resize', 'colors freed']
-  assert sum(dest.height for dest in strips) == pytest.approx(264) and min(dest.x for dest in strips) == 10
+  assert loads == ['.jpg'] and steps == ['image_crop', 'image_resize', 'colors freed', 'corners cut']
+  assert [(dest.x, dest.y, dest.width, dest.height) for dest in strips] == [(10, 20, 640, 264)]  # one copy per frame
   box = crops[0]  # 300 px cover: the middle 124 px band, on whole pixels (fractions corrupt raylib's heap)
   assert (box.x, box.y, box.width, box.height) == (0, 88, 300, 124)
   assert card._cover[2].r == 235  # the seek bar and toggles take the cover's red
@@ -510,6 +537,7 @@ def test_new_cover_fades_in_over_the_old_one_which_is_then_freed(timed, monkeypa
   monkeypatch.setattr(rl, 'load_image_from_memory', lambda *args: SimpleNamespace(width=300, height=300))
   for name in ('image_crop', 'image_resize', 'unload_image', 'unload_image_colors', 'set_texture_filter'):
     monkeypatch.setattr(rl, name, lambda *args: None)
+  monkeypatch.setattr(onroad_now_playing, 'round_corners', lambda *args: None)
   monkeypatch.setattr(rl, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=640, height=264, id=next(textures)))
   monkeypatch.setattr(rl, 'is_window_ready', lambda: True)
