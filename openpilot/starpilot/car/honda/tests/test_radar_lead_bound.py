@@ -1,5 +1,7 @@
-"""Unconfirmed / passed lead bound and its STATUS carrier (static). Shapes from route 34 T479 (STATUS 9) and route 37
-T903 (the model lead moved on past the radar lead and calls for no braking)."""
+"""Contradicted / passed lead bound and its STATUS carrier (static). Shapes from route 34 T479 (STATUS 9, and the
+camera's range contradicting the radar's closing), 2ed T338.6 (a real truck the camera saw late), route 37 T903 (the
+model lead moved on past the radar lead and calls for no braking)."""
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -10,21 +12,57 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.card import Car
 from openpilot.selfdrive.controls.radard import RadarD
 from openpilot.starpilot.car.honda import radar_point_status
-from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_CLOSING_MAX, CAMERA_DECEL_MIN, DISTANCE_W, RELEASE_S,
-                                                           RISE_S, UNCONFIRMED_W, WeakLeadBound, camera_passed_ratio,
-                                                           tell_weight)
+from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_CLOSING_MAX, CAMERA_DECEL_MIN, CAMERA_SELF_TOL,
+                                                           CONTRADICTION_FULL, CONTRADICTION_START, DISTANCE_W,
+                                                           RELEASE_S, RISE_S, TREND_MIN_SAMPLES, TREND_MIN_SPAN_S,
+                                                           UNCONFIRMED_W, WeakLeadBound, camera_contradiction,
+                                                           camera_passed_ratio, range_slope, tell_weight)
 from openpilot.starpilot.car.honda.radar_reversal_bound import W, ReversalBound
 from openpilot.starpilot.car.honda.tests.test_radar_reversal_bound import ABSENT, V_EGO, radar_lead, reverse, vision
 
 
 def test_tell_weight():
-  assert tell_weight(9, 0.0) == UNCONFIRMED_W
+  assert tell_weight(9, 0.0) == 0.0         # STATUS 9 alone: 8 % of lead time, under three real brakes
+  assert tell_weight(9, 0.0, 5.84) == 0.0   # 2ed T338.6, a real truck the camera saw late, at its peak
+  assert tell_weight(9, 0.0, 9.85) == UNCONFIRMED_W  # route 34 at +0.5 s
+  assert tell_weight(9, 0.0, (CONTRADICTION_START + CONTRADICTION_FULL) / 2) == pytest.approx(UNCONFIRMED_W / 2)
+  assert tell_weight(7, 0.0, 9.9) == 0.0    # confirmed
+  assert tell_weight(0, 0.0, 9.9) == 0.0    # status not known
+  assert tell_weight(3, 0.0, 9.9) == 0.0    # only 9 counts as unconfirmed
   assert tell_weight(7, 0.62) == 0.0  # the largest ratio among the four real far brakes
-  assert tell_weight(0, 0.62) == 0.0  # status not known
-  assert tell_weight(3, 0.0) == 0.0   # only 9 counts as unconfirmed
+  assert tell_weight(0, 0.62) == 0.0
   assert tell_weight(7, 0.875) == pytest.approx(DISTANCE_W / 2)
   assert tell_weight(7, 1.02) == DISTANCE_W  # route 37 at the start of the tap
-  assert tell_weight(9, 1.02) == max(UNCONFIRMED_W, DISTANCE_W)
+  assert tell_weight(9, 1.02, 9.9) == max(UNCONFIRMED_W, DISTANCE_W)
+
+
+def test_range_slope():
+  assert range_slope([88.0 - 0.75 * k for k in range(31)]) == pytest.approx(-15.0)
+  assert range_slope([88.0 - 0.75 * k if k % 3 else math.nan for k in range(31)]) == pytest.approx(-15.0)
+  assert math.isnan(range_slope([60.0] * (TREND_MIN_SAMPLES - 1)))
+  assert math.isnan(range_slope([60.0] * round(TREND_MIN_SPAN_S / DT_MDL)))  # 12 samples span 0.55 s
+  assert range_slope([60.0] * (round(TREND_MIN_SPAN_S / DT_MDL) + 1)) == 0.0
+  assert math.isnan(range_slope([math.nan] * 31))
+
+
+def test_camera_contradiction():
+  # (vRel, the track's range slope, the model lead's range slope, its closing, its a) from the logs at 20 Hz
+  # route 34 at 0 s: the radar closes 10-17 m/s, the model lead's range 1.3 m/s, matching its closing of 2.9
+  assert camera_contradiction(-10.08, -17.09, -1.26, 2.91, 0.04) == pytest.approx(8.82)
+  # 2ed T338.6 at 0 s, a real truck the camera saw late: just under the start
+  assert camera_contradiction(-8.06, -10.67, -2.22, 2.31, 0.0) == pytest.approx(5.84)
+  # 313 T2330.2 (leans real): vRel -11.3, but the track's own range fell 4.0 m/s, near the camera's 3.1
+  assert camera_contradiction(-11.28, -3.99, -3.07, 0.62, -0.02) == pytest.approx(0.92)
+  # 368 T657.1 (real, stopped traffic): at +1 s the model lead's range rose 17.3 m/s at closing 8.3, so it had jumped
+  # to a farther car and is no witness; at -0.7 s it was slowing at -1.14
+  assert camera_contradiction(-9.43, -12.53, 17.28, 8.34, -0.46) == 0.0
+  assert camera_contradiction(-11.43, -12.53, 10.52, 5.15, -1.14) == 0.0
+  assert camera_contradiction(-10.08, -17.09, -1.26, 1.26 + CAMERA_SELF_TOL + 0.1, 0.04) == 0.0
+  assert camera_contradiction(-10.08, -17.09, -1.26, 2.91, CAMERA_DECEL_MIN - 0.01) == 0.0
+  assert camera_contradiction(-10.08, math.nan, -1.26, 2.91, 0.04) == 0.0  # a track too young for a slope
+  assert camera_contradiction(-10.08, -17.09, math.nan, 2.91, 0.04) == 0.0
+  assert camera_contradiction(-3.0, -3.0, -2.0, 2.0, 0.0) == pytest.approx(1.0)
+  assert camera_contradiction(-1.0, -3.0, -2.0, 2.0, 0.0) == 0.0  # the camera closes faster than the radar
 
 
 def test_camera_passed_ratio():
@@ -39,13 +77,13 @@ def test_camera_passed_ratio():
   assert camera_passed_ratio(16.0, 18.0, 0.0, 0.0) == pytest.approx(0.4)  # the 5 m floor
 
 
-def update(bound, lead, status=7, ratio=0.0, prob=0.95):
-  return bound.update([lead, ABSENT], [status, 0], [ratio, 0.0], [prob, 0.0])[0]
+def update(bound, lead, status=7, ratio=0.0, prob=0.95, contradiction=0.0):
+  return bound.update([lead, ABSENT], [status, 0], [ratio, 0.0], [prob, 0.0], [contradiction, 0.0])[0]
 
 
 def test_new_track_takes_its_tell_at_once():
   bound = WeakLeadBound()
-  assert update(bound, radar_lead(55, 66.0, 15.0, -3.0), status=9) == UNCONFIRMED_W
+  assert update(bound, radar_lead(55, 66.0, 15.0, -3.0), status=9, contradiction=9.9) == UNCONFIRMED_W
   assert update(bound, radar_lead(56, 66.0, 15.0, -3.0), status=7) == 0.0  # and a new confirmed one drops it at once
 
 
@@ -67,12 +105,12 @@ def test_established_track_rises_and_releases_at_the_slew_rates():
 
 def test_urgent_unwitnessed_and_vision_leads_get_no_weight():
   bound = WeakLeadBound()
-  assert update(bound, radar_lead(55, 29.0, 15.0, -3.0), status=9) == 0.0           # range under 30 m
-  assert update(bound, radar_lead(55, 66.0, V_EGO - 17.0, -3.0), status=9) == 0.0   # TTC 3.9 s
-  assert update(bound, radar_lead(55, 66.0, 15.0, -3.0), status=9, prob=0.2) == 0.0
+  assert update(bound, radar_lead(55, 29.0, 15.0, -3.0), status=9, contradiction=9.9) == 0.0          # under 30 m
+  assert update(bound, radar_lead(55, 66.0, V_EGO - 17.0, -3.0), status=9, contradiction=9.9) == 0.0  # TTC 3.9 s
+  assert update(bound, radar_lead(55, 66.0, 15.0, -3.0), status=9, contradiction=9.9, prob=0.2) == 0.0
   vision_lead = {'present': True, 'radar': False, 'radarTrackId': -1, 'dRel': 66.0, 'vRel': -7.0,
                  'vLead': 15.0, 'vLeadK': 15.0, 'aLeadK': -3.0}
-  assert update(bound, vision_lead, status=9) == 0.0
+  assert update(bound, vision_lead, status=9, contradiction=9.9) == 0.0
 
 
 def test_floor_weight_blends_once_at_the_larger_weight():
@@ -187,16 +225,34 @@ def run_radard(statuses, ticks=60, shape=lambda tick: {}):
   return radar
 
 
+def route_34_shape(camera_range_rate, model_v):
+  def shape(tick):
+    # track 55 sweeps in at 15 m/s reading vRel -10.6; at the end 50.8 m, TTC 4.8 s, so never urgent
+    return {'d_rel': 95.0 - 0.75 * tick, 'model_x': 63.0 + 1.52 + camera_range_rate * tick * DT_MDL, 'model_v': model_v}
+  return shape
+
+
 def test_route_34_shape_through_radard():
-  # track 55 at 66 m read ~5 m/s against a model lead at 13.5 m/s, a 0; TTC 6.2 s, so not urgent
-  plain = run_radard(None).radar_state.leadOne
+  # route 34: the model lead's range holds at 63 m and it reads 13.5 m/s (closing 2.5), a 0
+  shape = route_34_shape(0.0, 13.5)
+  plain = run_radard(None, shape=shape).radar_state.leadOne
   assert plain.radar and plain.radarTrackId == 55
-  assert run_radard({55: 7}).radar_state.leadOne.to_dict() == plain.to_dict()  # confirmed: as before the carrier
-  unconfirmed = run_radard({55: 9})
+  confirmed = run_radard({55: 7}, shape=shape).radar_state.leadOne
+  assert confirmed.to_dict() == plain.to_dict()  # confirmed: as before the carrier
+  unconfirmed = run_radard({55: 9}, shape=shape)
   bounded = unconfirmed.radar_state.leadOne
   assert unconfirmed.tracks[55].objectStatus == 9
   assert bounded.radar and bounded.radarTrackId == 55 and bounded.dRel == plain.dRel
   assert bounded.vLead == pytest.approx(plain.vLead + UNCONFIRMED_W * (13.5 - plain.vLead), abs=0.05)
+
+
+def test_unconfirmed_lead_the_camera_backs_is_not_bounded():
+  # a real lead the camera sees late, like 2ed T338.6 (5.84 m/s there): its range falls 5 m/s at closing 3, so the
+  # radar's vRel -10.6 runs 5.6 m/s ahead of it, under the start
+  shape = route_34_shape(-5.0, 13.0)
+  plain = run_radard(None, shape=shape).radar_state.leadOne
+  assert plain.radar and plain.radarTrackId == 55
+  assert run_radard({55: 9}, shape=shape).radar_state.leadOne.to_dict() == plain.to_dict()
 
 
 def route_37_shape(model_v):

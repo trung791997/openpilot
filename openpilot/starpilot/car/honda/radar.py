@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -10,7 +11,8 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.simple_kalman import KF1D
 from openpilot.starpilot.car.honda import radar_point_status
-from openpilot.starpilot.car.honda.radar_lead_bound import WeakLeadBound, camera_passed_ratio
+from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_PROB_MIN, TREND_SAMPLES, WeakLeadBound,
+                                                           camera_contradiction, camera_passed_ratio, range_slope)
 from openpilot.starpilot.car.honda.radar_reversal_bound import ReversalBound
 
 if TYPE_CHECKING:
@@ -46,6 +48,7 @@ class Track:
     self.identifier = identifier
     self.cnt = 0
     self.objectStatus = 0  # Bosch-A F0 STATUS of the latest point, from card (radar_point_status); 0 = not known
+    self.range_history: deque[float] = deque(maxlen=TREND_SAMPLES)  # dRel per radard cycle, for the WeakLeadBound
     self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
     self.K_A = kalman_params.A
     self.K_C = kalman_params.C
@@ -54,6 +57,7 @@ class Track:
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool, measurement_update: bool | None = None):
     self.dRel = d_rel
+    self.range_history.append(float(d_rel))
     self.yRel = y_rel
     self.vRel = v_rel
     self.vLead = v_lead
@@ -139,6 +143,12 @@ def track_matches_vision(
 def weak_lead_distance_ratio(track: Track, lead: capnp._DynamicStructReader, model_v_ego: float) -> float:
   # the WeakLeadBound distance tell: how far the model lead is past this track, while it calls for no braking
   return camera_passed_ratio(track.dRel, lead.x[0] - RADAR_TO_CAMERA, model_v_ego - lead.v[0], lead.a[0])
+
+
+def weak_lead_contradiction(track: Track, camera_ranges, lead: capnp._DynamicStructReader, model_v_ego: float) -> float:
+  # the WeakLeadBound contradiction tell: how much faster this track closes than the model lead's range does
+  return camera_contradiction(track.vRel, range_slope(track.range_history), range_slope(camera_ranges),
+                              model_v_ego - lead.v[0], lead.a[0])
 
 
 def match_vision_to_track(
@@ -334,6 +344,7 @@ class BoschALeadPolicy:
     self._last_tracks_frame = -1
     self.reversal_bound = ReversalBound()
     self.weak_lead_bound = WeakLeadBound()
+    self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
 
   def update_tracks(self, sm, rr, radar):
     self.ready = radar.ready
@@ -361,6 +372,7 @@ class BoschALeadPolicy:
     leads = sm['modelV2'].leadsV3
     for index in range(2):
       self._update_honda_bosch_a_preferred_staleness(index, leads[index], radar.lead_prob_filters[index].x)
+      self.camera_ranges[index].append(float(leads[index].x[0]) if leads[index].prob >= CAMERA_PROB_MIN else math.nan)
     output = [
       get_lead(
         self.v_ego,
@@ -386,6 +398,8 @@ class BoschALeadPolicy:
       [weak_lead_distance_ratio(track, leads[index], model_v_ego) if track is not None else 0.0
        for index, track in enumerate(lead_tracks)],
       lead_probs,
+      [weak_lead_contradiction(track, self.camera_ranges[index], leads[index], model_v_ego) if track is not None else 0.0
+       for index, track in enumerate(lead_tracks)],
     )
     output = self.reversal_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs, self.tracks, floor_weights=weak_weights)
     for index, lead in enumerate(output):

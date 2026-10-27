@@ -1,14 +1,21 @@
-"""Bosch-A: bound the braking authority of a radar lead that the radar or the camera does not back.
+"""Bosch-A: bound the braking authority of a radar lead that the camera contradicts.
 
 Two far false brake taps behind a lead that was not slowing (2026-10-26 drive), each with its own tell:
 
-Route 34 (11c8fa231c0499ed/00000034--010fbd6343) T479, 16 m/s: radar track 55 was born at 119 m and its range walked
-119 -> 67 -> 90 -> 52 m while U11 read -10.6 m/s against a RANGE_RATIO of about -1.5. It became lead0 through the
-strict gate at 62-76 m with aLeadK already at the -3 clamp; the plan went to -1.91. The model lead held 61-64 m at
-13-14 m/s with a ~ 0. For the first 4.2 s of its life the track's F0 STATUS nibble was 9: lead0 from -0.40 s, the
-plan's -1.91 low at +1.25 s, STATUS 7 at +1.48 s. Every other track in the seven packs, the leads of the four real far
-brakes (2f T736, 10 T188, 32 T1248, 0f T2190) included, read 7 throughout, new ones from their first sweep; the only
-other non-7 track (2f track 6, STATUS 3) never became a lead.
+Route 34 (11c8fa231c0499ed/00000034--010fbd6343) T479, 16 m/s: radar track 55 swept in from 88 m to 52 m in 3 s
+(range falling 15-17 m/s around the tap) while its vRel read -8 to -10.6, and became lead0 through the strict gate at
+62-76 m with aLeadK already at the -3 clamp; the plan went to -1.91. The model lead held 61-66 m at 13-14 m/s with
+a ~ 0, and its own range fell only 1-2 m/s. The track's F0 STATUS nibble read 9 (not confirmed) until +1.48 s.
+
+STATUS 9 alone is not a tell: Job's census over the post-rebase routes found it on 8 % of engaged lead0 time and under
+39 of 747 brakes, and on his stills 3 of the 14 STATUS-9 brakes on routes 0c-368 were real (2ed T338.6 a truck,
+368 T657.1 stopped traffic, 0c T342.7) and 2 more lean real. A STATUS-only weight would have softened all five. What
+route 34 has and they don't is the camera's range contradicting the radar's closing: from 0 to +0.7 s, over the last
+1.5 s, the model lead's range fell 8.8-9.9 m/s slower than the radar lead's vRel said and slower than the track's own
+range fell, while the model lead's range slope stayed within 3 m/s of its own closing speed. In 2ed T338.6 the camera
+saw the truck late and the gap peaked at 5.8 m/s; in the other four it stayed under 1, and in the four real far
+brakes (2f T736, 10 T188, 32 T1248, 0f T2190) at 0 even with STATUS taken as 9. A model lead whose range slope and
+closing speed disagree by more than CAMERA_SELF_TOL (it jumped to another car: 25.6 m/s in 368 T657.1) is no witness.
 
 Route 37 (00000037--34e868f7ba) T903, 30 m/s: an SUV 45-50 m ahead moving out to the right. Radar track 32 (STATUS 7,
 old) dipped vLead 28.7 -> 24.8 (aLeadK -2.9) and went back to 31; the model lead held v 29, a 0 and moved on to the
@@ -23,19 +30,20 @@ the gap counts only while the model lead is past the radar lead and calls for no
 route 37 none of the six real slowdowns on the stills then gets any weight at its brake; T323, an SUV turning right at
 an intersection (ambiguous on the stills), gets at most 0.27 around its -1.12 (log emulation, not a replay).
 
-So while a published radar lead is unconfirmed (STATUS in UNCONFIRMED_STATUSES), or the model lead has moved on past
-it as above, its vLead/vLeadK/vRel and aLeadK are moved part of the way toward the model lead by the curve-brake
-bound's blend (radar_reversal_bound.ReversalBound.apply, floor_weights): only toward the less severe side, only with
-the model lead as a credible witness, never when the radar lead is urgent, dRel never moved, the point always
-published (D-041/D-042). Neither tell reads the radar lead's dynamics: the mismatch, cut-out and onset rules
-(PROGRESS-7.0 entry 8) did, and also fired on real slowdowns.
+So while a published radar lead is unconfirmed and its closing contradicted as above, or the model lead has moved on
+past it, its vLead/vLeadK/vRel and aLeadK are moved part of the way toward the model lead by the curve-brake bound's
+blend (radar_reversal_bound.ReversalBound.apply, floor_weights): only toward the less severe side, only with the
+model lead as a credible witness, never when the radar lead is urgent, dRel never moved, the point always published
+(D-041/D-042). Neither tell reads the radar lead's dynamics alone: the mismatch, cut-out and onset rules (PROGRESS-7.0
+entry 8) did, and also fired on real slowdowns.
 
 The weight is per lead index and rate limited so that a tell coming and going does not step the published lead
 (D-042): a new radar track takes its tell's weight at once, an established one rises over RISE_S and releases over
-RELEASE_S. Static and pack evidence only; replay pending.
+RELEASE_S. Static and log-emulation evidence only; replay pending.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from openpilot.common.realtime import DT_MDL
@@ -43,6 +51,14 @@ from openpilot.starpilot.car.honda.radar_reversal_bound import WITNESS_PROB, urg
 
 UNCONFIRMED_STATUSES = frozenset({9})  # route 34's phantom; 7 = confirmed, 0 = not provided (other radars, old logs)
 UNCONFIRMED_W = 0.6
+CONTRADICTION_START = 6.0    # m/s; 2ed T338.6 (a real truck the camera saw late) peaked at 5.8, the other real ones < 2
+CONTRADICTION_FULL = 9.0     # route 34: 6.2 at its lead0 start (-0.40 s), 8.8-9.9 from 0 to +0.7 s
+CAMERA_SELF_TOL = 4.0        # m/s; the model lead's range slope must match its closing speed this well (route 34: 3.0)
+TREND_S = 1.5                # range slopes are least-squares fits over this window
+TREND_MIN_SPAN_S = 0.6
+TREND_MIN_SAMPLES = 8
+TREND_SAMPLES = round(TREND_S / DT_MDL) + 1
+CAMERA_PROB_MIN = 0.5        # model lead ranges below this prob are left out of its slope
 DISTANCE_RATIO_START = 0.75  # real far brakes stayed under 0.65; route 37 crossed 0.77 -> 1.02 at the tap's start
 DISTANCE_RATIO_FULL = 1.0    # the strict gate's edge
 DISTANCE_W = 0.6
@@ -61,10 +77,38 @@ def camera_passed_ratio(d_rel: float, camera_d_rel: float, camera_closing: float
   return (camera_d_rel - d_rel) / max(abs(camera_d_rel) * 0.25, 5.0)
 
 
-def tell_weight(object_status: int, distance_ratio: float) -> float:
-  unconfirmed = UNCONFIRMED_W if int(object_status) in UNCONFIRMED_STATUSES else 0.0
-  ramp = (float(distance_ratio) - DISTANCE_RATIO_START) / (DISTANCE_RATIO_FULL - DISTANCE_RATIO_START)
-  return max(unconfirmed, DISTANCE_W * min(max(ramp, 0.0), 1.0))
+def range_slope(samples) -> float:
+  """Least-squares slope (m/s) of ranges sampled every DT_MDL, oldest first; NaN entries (no sample) are skipped.
+  NaN unless at least TREND_MIN_SAMPLES samples span at least TREND_MIN_SPAN_S."""
+  points = [(index * DT_MDL, float(value)) for index, value in enumerate(samples) if not math.isnan(value)]
+  if len(points) < TREND_MIN_SAMPLES or points[-1][0] - points[0][0] < TREND_MIN_SPAN_S - 1e-9:
+    return math.nan
+  mean_t = sum(t for t, _ in points) / len(points)
+  mean_x = sum(x for _, x in points) / len(points)
+  return sum((t - mean_t) * (x - mean_x) for t, x in points) / sum((t - mean_t) ** 2 for t, _ in points)
+
+
+def camera_contradiction(v_rel: float, radar_slope: float, camera_slope: float, camera_closing: float,
+                         camera_a: float) -> float:
+  """How much faster (m/s) the radar lead closes than the model lead's range does: the smaller of what its vRel and
+  its own range slope claim beyond the camera's range slope. 0 unless the model lead is a credible witness that calls
+  for no braking: its range slope matches its own closing speed within CAMERA_SELF_TOL and it slows no harder than
+  CAMERA_DECEL_MIN. NaN slopes (too little history) give 0."""
+  if math.isnan(radar_slope) or math.isnan(camera_slope) or camera_a < CAMERA_DECEL_MIN:
+    return 0.0
+  if abs(camera_slope + camera_closing) > CAMERA_SELF_TOL:
+    return 0.0
+  return max(min(camera_slope - v_rel, camera_slope - radar_slope), 0.0)
+
+
+def _ramp(value: float, start: float, full: float) -> float:
+  return min(max((float(value) - start) / (full - start), 0.0), 1.0)
+
+
+def tell_weight(object_status: int, distance_ratio: float, contradiction: float = 0.0) -> float:
+  unconfirmed = int(object_status) in UNCONFIRMED_STATUSES
+  contradicted = UNCONFIRMED_W * _ramp(contradiction, CONTRADICTION_START, CONTRADICTION_FULL) if unconfirmed else 0.0
+  return max(contradicted, DISTANCE_W * _ramp(distance_ratio, DISTANCE_RATIO_START, DISTANCE_RATIO_FULL))
 
 
 class WeakLeadBound:
@@ -74,7 +118,8 @@ class WeakLeadBound:
     self.track_ids = [-1, -1]
     self.weights = [0.0, 0.0]
 
-  def update(self, output: list[dict[str, Any]], object_statuses, distance_ratios, lead_probs) -> list[float]:
+  def update(self, output: list[dict[str, Any]], object_statuses, distance_ratios, lead_probs,
+             contradictions=(0.0, 0.0)) -> list[float]:
     rise = max(UNCONFIRMED_W, DISTANCE_W) * self.dt / RISE_S
     release = max(UNCONFIRMED_W, DISTANCE_W) * self.dt / RELEASE_S
     for index, lead in enumerate(output):
@@ -82,7 +127,7 @@ class WeakLeadBound:
       if track_id < 0 or float(lead_probs[index]) < WITNESS_PROB or urgent(lead):
         weight = 0.0
       else:
-        target = tell_weight(object_statuses[index], distance_ratios[index])
+        target = tell_weight(object_statuses[index], distance_ratios[index], contradictions[index])
         if track_id != self.track_ids[index]:
           weight = target
         else:
