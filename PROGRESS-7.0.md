@@ -68,6 +68,19 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Decision.** Neither rule is built. Both fire on real slowdowns, mostly cars turning off, and the combined rule is too late for route 37. Both taps (34 and 37) stay open, logged as radar artefacts with no bound that spares real slowdowns yet.
 
+**Addendum — far-lead brake onset ramp** (Job, replay, 2026-10-27).
+- **Rule tried:** for a new brake behind a radar lead at ≥ 30 m with TTC ≥ 4 s, braking may deepen only from -0.3 at J m/s³ for the first 2 s.
+- **Fidelity is low.** Across 67 events the median aEgo corr is 0.35, but the first 5 s track well (planner vs command corr 0.95, vEgo RMSE 0.30). Read the base-vs-J deltas, not the absolute numbers. Route 34 is not reproduced: the sim planner never goes below -1.
+
+| J (m/s³) | r37 time below -1.0 / min aEgo | Real brakes losing > 3 m of gap or TTC < 3 s |
+|---|---|---|
+| base | 1.15 s / -1.70 | — |
+| 0.5 | 0.25 s / -1.06 | 4 (c0f 719 -5.3 m, c0f 2092 -4.2 m, o2b 558 -3.0 m with TTC 2.94, o32 1250 -3.1 m) |
+| 0.8 | 0.75 s / -1.31 | 1 (c0f 2092 -3.3 m; its camera call was itself ambiguous) |
+| 1.2 | 1.00 s / -1.60 | 0 |
+
+**Decision.** Not built. Where the ramp helps the tap, it gives up gap on real brakes. Where it gives nothing up, it barely changes the tap. The fidelity is too low to pick J = 0.8 on one tap.
+
 ### 7 — 2026-10-26 — Curve brake fix: a radar lead that flips from speeding up to braking within 1.5 s gets less braking authority
 
 **Problem.** On route 30 (11c8fa231c0499ed/00000030--70508f00bd, T1421–1424) the Civic braked hard to -2.87 while following a car through an S-curve. The car ahead was not slowing. Radar track 60 read the lead as speeding up at +4 m/s², then braking at -3 m/s², all within 1 s. A vision-only drive would not have braked: the model kept the lead at 47–52 m and about 21–22 m/s.
