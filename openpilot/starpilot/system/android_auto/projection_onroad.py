@@ -200,12 +200,8 @@ class ProjectionOnroad:
       self._resources.callback(self._close_onroad)
       from openpilot.starpilot.system.android_auto import projection_theme
       self._theme = projection_theme
-      self.onroad.unified_speed = projection_theme.SpeedLimitCard(
-        self.fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)),
-        lambda: self._slc_input.pressed_action if self._slc_input is not None else None)
-      self.onroad._slc_actions = lambda state: None  # the card draws them, in its own bottom row
-      self.onroad.steering_wheel = projection_theme.AtomBadge()
-      self.onroad.extra_overlays = self._theme_overlay
+      self.apply_theme(self.onroad, self.fonts, self._theme_overlay,
+                       lambda: self._slc_input.pressed_action if self._slc_input is not None else None)
       self.now_playing_feed = None
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
@@ -266,6 +262,16 @@ class ProjectionOnroad:
     return view_factory(fonts, Path(__file__).parents[3] / 'selfdrive/assets',
                         projection_viewport=viewport, **layers)
 
+  @staticmethod
+  def apply_theme(view, fonts, overlay, pressed=lambda: None):
+    """The car screen's own look over the shared view, also used by The Galaxy's layout preview."""
+    from openpilot.starpilot.system.android_auto import projection_theme
+    view.unified_speed = projection_theme.SpeedLimitCard(
+      fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)), pressed)
+    view._slc_actions = lambda state: None  # the card draws them, in its own bottom row
+    view.steering_wheel = projection_theme.AtomBadge()
+    view.extra_overlays = overlay
+
   def _close_camera(self):
     callbacks = self.native.ui_state._offroad_transition_callbacks
     callback = self.camera._offroad_transition
@@ -286,14 +292,10 @@ class ProjectionOnroad:
     self.onroad.close()
 
   def _theme_overlay(self, content, state):
-    self._theme.edge_glow(self._theme.state_glow(state, driving_mode_label(state)), content.x, content.y, content.width, content.height)
     appearance = getattr(state, 'appearance', None)
-    if appearance is not None and appearance.show_lead_indicator:
-      lead = self.native.ui_state.sm['radarState'].leadOne
-      self._theme.lead_badge(self.fonts, content, bool(lead.present))
-    left, right = self._theme.side_colors(state, *self._vasm_warning())
-    self._theme.side_glow(left, content.x, content.y, content.width, content.height, True)
-    self._theme.side_glow(right, content.x, content.y, content.width, content.height, False)
+    lead_present = (appearance is not None and appearance.show_lead_indicator and
+                    bool(self.native.ui_state.sm['radarState'].leadOne.present))
+    self._theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present, self._vasm_warning())
 
   def _vasm_warning(self):
     native = self.native

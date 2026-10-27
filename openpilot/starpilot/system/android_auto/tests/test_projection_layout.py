@@ -30,7 +30,10 @@ class TestProjectionLayout(unittest.TestCase):
     migrated = validate_layout(document, SCREEN)
     self.assertEqual(document, before)
     self.assertEqual(migrated['version'], 5)
-    self.assertEqual(migrated['widgets']['cruise_limits']['y'], bottom - 168)
+    # The box is the car screen's own speed card, not the comma's 488x168 one.
+    card = layout_metadata(SCREEN)['widgets']['cruise_limits']
+    self.assertEqual((card['width'], card['height']), (346, 460))
+    self.assertEqual(migrated['widgets']['cruise_limits']['y'], bottom - 460)
     self.assertEqual(migrated['widgets']['speed_limit_actions'], document['widgets']['speed_limit_actions'])
     self.assertEqual(validate_layout(migrated, SCREEN), migrated)
 
