@@ -30,16 +30,22 @@ the gap counts only while the model lead is past the radar lead and calls for no
 route 37 none of the six real slowdowns on the stills then gets any weight at its brake; T323, an SUV turning right at
 an intersection (ambiguous on the stills), gets at most 0.27 around its -1.12 (log emulation, not a replay).
 
-So while a published radar lead is unconfirmed and its closing contradicted as above, or the model lead has moved on
-past it, its vLead/vLeadK/vRel and aLeadK are moved part of the way toward the model lead by the curve-brake bound's
-blend (radar_reversal_bound.ReversalBound.apply, floor_weights): only toward the less severe side, only with the
+So while a published radar lead is unconfirmed and its closing contradicted as above, its vLead/vLeadK/vRel and
+aLeadK are moved all the way to the model lead's, and while the model lead has moved on past it, 0.6 of the way, by
+the curve-brake bound's blend (radar_reversal_bound.ReversalBound.apply, floor_weights): only toward the less severe side, only with the
 model lead as a credible witness, never when the radar lead is urgent, dRel never moved, the point always published
 (D-041/D-042). Neither tell reads the radar lead's dynamics alone: the mismatch, cut-out and onset rules (PROGRESS-7.0
 entry 8) did, and also fired on real slowdowns.
 
 The weight is per lead index and rate limited so that a tell coming and going does not step the published lead
 (D-042): a new radar track takes its tell's weight at once, an established one rises over RISE_S and releases over
-RELEASE_S. Static and log-emulation evidence only; replay pending.
+RELEASE_S.
+
+Job's open-loop replay of the logged radarTracks through the full radard and the 7.0 planner (rebuilt replay; its
+base under-brakes the logged taps by 0.09/0.12): route 34's tap -1.82 -> -0.19 (the brake never starts; 0.6 gave
+-0.75), route 37's -1.73 -> -0.64 (1.0 on the camera-passed tell gave -0.60 at more cost on the ambiguous route 37
+T323, so it stays 0.6). The 19 real brakes (the four far ones, ev19, route 37's six slowdowns and T323, three
+turn-offs) keep their minimum within 0.04 and their onset. Replay evidence only, open loop; no road evidence yet.
 """
 from __future__ import annotations
 
@@ -50,7 +56,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.car.honda.radar_reversal_bound import WITNESS_PROB, urgent
 
 UNCONFIRMED_STATUSES = frozenset({9})  # route 34's phantom; 7 = confirmed, 0 = not provided (other radars, old logs)
-UNCONFIRMED_W = 0.6
+UNCONFIRMED_W = 1.0          # replay: 0.6 left route 34 at -0.75 (the 40 % left of the phantom's closing); 1.0 at -0.19
 CONTRADICTION_START = 6.0    # m/s; 2ed T338.6 (a real truck the camera saw late) peaked at 5.8, the other real ones < 2
 CONTRADICTION_FULL = 9.0     # route 34: 6.2 at its lead0 start (-0.40 s), 8.8-9.9 from 0 to +0.7 s
 CAMERA_SELF_TOL = 4.0        # m/s; the model lead's range slope must match its closing speed this well (route 34: 3.0)
@@ -66,6 +72,7 @@ CAMERA_CLOSING_MAX = 2.0     # m/s; route 37 T903 -0.2 to +1.5, real far brakes 
 CAMERA_DECEL_MIN = -0.5      # m/s^2; a model lead slowing harder than this calls for braking itself
 RISE_S = 0.25
 RELEASE_S = 1.0
+SLEW_W = max(UNCONFIRMED_W, DISTANCE_W)  # rise and release rates are this weight per RISE_S / RELEASE_S
 
 
 def camera_passed_ratio(d_rel: float, camera_d_rel: float, camera_closing: float, camera_a: float) -> float:
@@ -120,8 +127,8 @@ class WeakLeadBound:
 
   def update(self, output: list[dict[str, Any]], object_statuses, distance_ratios, lead_probs,
              contradictions=(0.0, 0.0)) -> list[float]:
-    rise = max(UNCONFIRMED_W, DISTANCE_W) * self.dt / RISE_S
-    release = max(UNCONFIRMED_W, DISTANCE_W) * self.dt / RELEASE_S
+    rise = SLEW_W * self.dt / RISE_S
+    release = SLEW_W * self.dt / RELEASE_S
     for index, lead in enumerate(output):
       track_id = int(lead.get('radarTrackId', -1)) if lead.get('present', False) and lead.get('radar', False) else -1
       if track_id < 0 or float(lead_probs[index]) < WITNESS_PROB or urgent(lead):

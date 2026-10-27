@@ -14,7 +14,7 @@ from openpilot.selfdrive.controls.radard import RadarD
 from openpilot.starpilot.car.honda import radar_point_status
 from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_CLOSING_MAX, CAMERA_DECEL_MIN, CAMERA_SELF_TOL,
                                                            CONTRADICTION_FULL, CONTRADICTION_START, DISTANCE_W,
-                                                           RELEASE_S, RISE_S, TREND_MIN_SAMPLES, TREND_MIN_SPAN_S,
+                                                           RELEASE_S, RISE_S, SLEW_W, TREND_MIN_SAMPLES, TREND_MIN_SPAN_S,
                                                            UNCONFIRMED_W, WeakLeadBound, camera_contradiction,
                                                            camera_passed_ratio, range_slope, tell_weight)
 from openpilot.starpilot.car.honda.radar_reversal_bound import W, ReversalBound
@@ -91,12 +91,12 @@ def test_established_track_rises_and_releases_at_the_slew_rates():
   bound = WeakLeadBound()
   lead = radar_lead(32, 47.0, 28.7, 0.0)
   assert update(bound, lead, ratio=0.5) == 0.0
-  rise = DISTANCE_W * DT_MDL / RISE_S
+  rise = SLEW_W * DT_MDL / RISE_S
   assert update(bound, lead, ratio=1.1) == pytest.approx(rise)
   for _ in range(round(RISE_S / DT_MDL)):
     weight = update(bound, lead, ratio=1.1)
   assert weight == pytest.approx(DISTANCE_W)
-  release = DISTANCE_W * DT_MDL / RELEASE_S
+  release = SLEW_W * DT_MDL / RELEASE_S
   assert update(bound, lead, ratio=0.5) == pytest.approx(DISTANCE_W - release)
   for _ in range(round(RELEASE_S / DT_MDL)):
     weight = update(bound, lead, ratio=0.5)
