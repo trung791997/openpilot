@@ -37,6 +37,9 @@ REPEAT_NEXT = {'off': 'context', 'context': 'track', 'track': 'off'}
 SCROLL_SPEED = 40  # px/s for a name too wide to fit
 SCROLL_GAP = 60
 SCROLL_PAUSE = 2.0  # s held at the start of each pass
+LINE_BOX = (4, 44)  # the scrolling line's clip: from 4 px above the text, this tall
+LINE_TEXTURE_MAX = 4096  # px; a name wider than this keeps scrolling inside a scissor clip
+WAVE_STEP = 6  # px per wave column: about 2 px on the car's 800 px screen
 TRACK_FONTS = {FontRole.SEMI_BOLD: 'Inter-SemiBold.ttf', FontRole.NORMAL: 'Inter-Regular.ttf'}
 TRACK_FONT_PX = 48  # drawn at 27-37 px; same Inter metrics as the bitmap atlases to within 0.3 px
 # Always cut ASCII as well: raylib 5.5 segfaulted packing a four-glyph atlas ("EVxg" at 64 px) on the dev VM.
@@ -202,8 +205,8 @@ def _wave(left, right, y, accent, phase) -> None:
     while x < right:
       rise = height * (.55 + .45 * math.sin(x / length * 2 * math.pi + phase * speed))
       rise *= min(1.0, (x - left) / 30, (right - x) / 30)  # taper into the bar at both ends
-      rl.draw_rectangle_rec(rl.Rectangle(x, y - rise, min(2, right - x), rise), color)
-      x += 2
+      rl.draw_rectangle_rec(rl.Rectangle(x, y - rise, min(WAVE_STEP, right - x), rise), color)
+      x += WAVE_STEP
 
 
 def clock_text(ms):
@@ -234,6 +237,15 @@ def scroll_offset(text_width, width, seconds):
     return 0.0
   travel = text_width + SCROLL_GAP
   return min(travel, max(0.0, seconds % (SCROLL_PAUSE + travel / SCROLL_SPEED) - SCROLL_PAUSE) * SCROLL_SPEED)
+
+
+def round_corners(image, width, height):
+  """Cut the card's rounded corners into the cover's alpha once, so each frame draws it in one call."""
+  mask = rl.gen_image_color(width, height, rl.BLANK)
+  for y, h, inset in pill_rows(height, CORNER):
+    rl.image_draw_rectangle_rec(mask, rl.Rectangle(round(inset), y, width - 2 * round(inset), h), rl.WHITE)
+  rl.image_alpha_mask(image, mask)
+  rl.unload_image(mask)
 
 
 def pill_rows(height, r, step=1):
@@ -329,6 +341,10 @@ class NowPlayingWidget:
     self._line = None  # ((title, artist), start of its fade-in)
     self._press = None  # (button, down, up or None) for the gray circle behind a tapped button
     self._pending = None  # (song key, start): a skip or play/pause the player has not answered yet
+    # A scrolling "title • artist" line drawn once into a texture, then slid along each frame: a scissor clip per
+    # frame flushed the GPU batch twice and cost about 12% of the car view's frame time while driving (10-26 profile).
+    self._line_texture = None  # (key, render texture)
+    self._line_wanted = None  # key the last frame scrolled; prepare() draws it before the next frame
 
   def press(self, name):
     """The finger went down on a button."""
@@ -385,6 +401,7 @@ class NowPlayingWidget:
         colors = rl.load_image_colors(image)
         accent = accent_from(colors, NOW_PLAYING_SIZE[0] * NOW_PLAYING_SIZE[1])
         rl.unload_image_colors(colors)
+        round_corners(image, *NOW_PLAYING_SIZE)
         texture = rl.load_texture_from_image(image)
         rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
       rl.unload_image(image)
@@ -394,7 +411,41 @@ class NowPlayingWidget:
   def close(self):
     self._drop_cover()
     self._drop_old_cover()
+    self._drop_line()
     self.text.close()
+
+  def prepare(self):
+    """Before the frame's render target is bound: draws the line the last frame scrolled into its texture."""
+    wanted, self._line_wanted = self._line_wanted, None
+    if wanted is None or not rl.is_window_ready():
+      self._drop_line()
+      return
+    if self._line_texture is not None and self._line_texture[0] == wanted:
+      return
+    self._drop_line()
+    title, artist, title_width, line_width, dot = wanted
+    texture = rl.load_render_texture(math.ceil(line_width) + 2, LINE_BOX[1])
+    if not texture.id or not texture.texture.id:
+      return
+    rl.set_texture_filter(texture.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+    rl.begin_texture_mode(texture)
+    try:
+      # Cleared to the text color, and coverage accumulated as alpha, so the edges are not darkened or thinned.
+      rl.clear_background(rl.Color(TEXT.r, TEXT.g, TEXT.b, 0))
+      rl.rl.rlSetBlendFactorsSeparate(0x0302, 0x0303, 1, 0x0303, 0x8006, 0x8006)
+      rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
+      try:
+        self._draw_line(title, artist, title_width, dot, 0, LINE_BOX[0], TEXT)
+      finally:
+        rl.end_blend_mode()
+    finally:
+      rl.end_texture_mode()
+    self._line_texture = (wanted, texture)
+
+  def _drop_line(self):
+    if self._line_texture is not None and rl.is_window_ready():
+      rl.unload_render_texture(self._line_texture[1])
+    self._line_texture = None
 
   def _drop_cover(self):
     if self._cover is not None and self._cover[1] is not None and rl.is_window_ready():
@@ -406,8 +457,9 @@ class NowPlayingWidget:
       rl.unload_texture(self._old_cover[0])
     self._old_cover = None
 
-  def _scrolling(self, text, line_width, draw, x, y, width, height):
-    """Run ``draw(left)`` once when the line fits ``width``; otherwise scroll it left inside a clip, then repeat."""
+  def _scrolling(self, text, line_width, draw, x, y, width, height, cached=None, tint=None):
+    """Run ``draw(left)`` once when the line fits ``width``; otherwise scroll it left, then repeat. ``cached`` is
+    the line already drawn into a texture: its visible part is copied, else the line is drawn inside a clip."""
     if line_width <= width:
       draw(x)
       return
@@ -415,6 +467,14 @@ class NowPlayingWidget:
     if self._scroll is None or self._scroll[0] != text:
       self._scroll = (text, now)
     offset = scroll_offset(line_width, width, now - self._scroll[1])
+    if cached is not None:
+      texture = cached.texture
+      for start in (x - offset, x - offset + line_width + SCROLL_GAP):
+        u0, u1 = max(0.0, x - start), min(float(texture.width), x + width - start)
+        if u1 > u0:  # a render texture is stored upside down: a negative source height flips it back
+          rl.draw_texture_pro(texture, rl.Rectangle(u0, 0, u1 - u0, -texture.height),
+                              rl.Rectangle(start + u0, y, u1 - u0, texture.height), rl.Vector2(0, 0), 0, tint)
+      return
     clip.begin_scissor_mode(x, y, width, height)
     try:
       for start in (x - offset, x - offset + line_width + SCROLL_GAP):
@@ -442,10 +502,8 @@ class NowPlayingWidget:
       rl.draw_rectangle_rounded(rect, 2 * CORNER / min(rect.width, rect.height), 24, rl.Color(15, 13, 23, round(235 * opacity)))
       return
     tint = rl.Color(140, 140, 140, round(255 * opacity))  # darkened so white text reads on any cover
-    sx, sy = texture.width / rect.width, texture.height / rect.height
-    for y, height, inset in pill_rows(rect.height, CORNER):
-      rl.draw_texture_pro(texture, rl.Rectangle(inset * sx, y * sy, (rect.width - 2 * inset) * sx, height * sy),
-                          rl.Rectangle(rect.x + inset, rect.y + y, rect.width - 2 * inset, height), rl.Vector2(0, 0), 0, tint)
+    # The corners are already cut into the cover's alpha (round_corners), so one copy draws the card's shape.
+    rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height), rect, rl.Vector2(0, 0), 0, tint)
 
   def _title_line(self, rect, track):
     """The "title • artist" line, centered; a line too wide scrolls, like the phone. A new song's line fades in."""
@@ -464,13 +522,23 @@ class NowPlayingWidget:
     rise = TITLE_SLIDE * (1 - fade)
 
     def draw(x):
-      self.text.draw(title, FontRole.SEMI_BOLD, size, x, top + rise, color, 'title')
-      if artist:
-        rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, rect.y + LINE_Y + rise), 3.5, color)
-        self.text.draw(artist, FontRole.SEMI_BOLD, size, x + title_width + dot, top + rise, color, 'artist')
+      self._draw_line(title, artist, title_width, dot, x, top + rise, color)
 
+    cached = None
+    if width < line_width <= LINE_TEXTURE_MAX:
+      key = (title, artist, title_width, line_width, dot)
+      self._line_wanted = key
+      if self._line_texture is not None and self._line_texture[0] == key:
+        cached = self._line_texture[1]
     left = rect.x + PAD if line_width > width else rect.x + rect.width / 2 - line_width / 2
-    self._scrolling(f'{title}\n{artist}', line_width, draw, left, top - 4, width, 44)
+    self._scrolling(f'{title}\n{artist}', line_width, draw, left, top - LINE_BOX[0] + rise * (cached is not None), width,
+                    LINE_BOX[1], cached, rl.Color(255, 255, 255, color.a))
+
+  def _draw_line(self, title, artist, title_width, dot, x, top, color):
+    self.text.draw(title, FontRole.SEMI_BOLD, 28, x, top, color, 'title')
+    if artist:
+      rl.draw_circle_v(rl.Vector2(x + title_width + dot / 2, top + 18), 3.5, color)
+      self.text.draw(artist, FontRole.SEMI_BOLD, 28, x + title_width + dot, top, color, 'artist')
 
   def _seek_bar(self, rect, track, accent):
     left, right, y = rect.x + 50, rect.x + rect.width - 50, rect.y + BAR_Y
