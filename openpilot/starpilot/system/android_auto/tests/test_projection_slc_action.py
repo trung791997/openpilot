@@ -183,3 +183,28 @@ def test_projected_taps_tolerate_touchscreen_drift():
   gesture.press(x, y, state)
   gesture.release(x + 40, y, state)
   assert len(emitted) == 1
+
+
+def test_use_limit_sits_in_the_speed_card_and_taps_land_there():
+  from dataclasses import replace
+  from openpilot.starpilot.system.android_auto import projection_theme
+  from openpilot.starpilot.system.android_auto.projection_layout import default_layout_for_viewport, projection_customization
+  from openpilot.starpilot.ui.onroad_customization import default_document, placement
+  from openpilot.starpilot.ui.onroad_state import OnroadInput, slc_controls
+  from openpilot.starpilot.ui.presentation import Profile
+  from openpilot.starpilot.ui.tests.test_slc_ui_actions import state
+  layout = default_layout_for_viewport((1920, 1080))
+  layout['widgets']['speed_limit_actions']['enabled'] = True
+  current = state(pending=False)
+  current = replace(current, speed_limit=replace(current.speed_limit, driver_override_active=True, speed_limit_mps=18.0),
+                    customization=projection_customization(layout, default_document()))
+  (loose,), (inside,) = slc_controls(Profile.LARGE, current), projection_theme.card_controls(Profile.LARGE, current)
+  assert inside.request == loose.request and inside.label == loose.label
+  card = placement(current.customization, 'large', 'cruise_limits')
+  left, top, right, bottom = inside.bounds
+  assert card['x'] < left < right < card['x'] + projection_theme.CARD_WIDTH and top > card['y']
+  emitted = []
+  touch = OnroadInput(emitted.append, Profile.LARGE, controls=projection_theme.card_controls)
+  touch.press((left + right) / 2, (top + bottom) / 2, current)
+  touch.release((left + right) / 2, (top + bottom) / 2, current)
+  assert emitted == [inside.request]
