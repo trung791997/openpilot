@@ -257,6 +257,9 @@ class HeadlessContext:
     rl.get_time = lambda: time.monotonic() - started
     rl.get_frame_time = lambda: self.frame_time
     rl.get_fps = lambda: max(1, round(1 / self._fps_frame_time))
+    # Widgets ask is_window_ready() before making or freeing GPU textures. Without a raylib
+    # window it is always False, so they skipped their caches and never freed old textures.
+    rl.is_window_ready = lambda: self._rlgl_ready
 
   def begin_frame(self, now: float) -> None:
     """Start a frame at ``now`` (time.monotonic()): what raylib's EndDrawing/BeginDrawing would time."""
