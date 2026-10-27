@@ -6,7 +6,8 @@ from dataclasses import replace
 
 import pyray as rl
 
-from openpilot.starpilot.ui.onroad_customization import placement
+from openpilot.starpilot.system.android_auto.projection_layout import SPEED_CARD_SIZE
+from openpilot.starpilot.ui.onroad_customization import placement, rgba
 from openpilot.starpilot.ui.onroad_state import AlertSize, slc_controls
 from openpilot.starpilot.ui.onroad_large_widgets import wheel_box
 from openpilot.starpilot.ui.presentation import FontRole, Profile
@@ -20,7 +21,7 @@ BLUE = rl.Color(40, 130, 255, 255)
 GREEN = rl.Color(40, 200, 90, 255)
 LABEL = rl.Color(176, 168, 255, 255)
 CARD_FILL = rl.Color(18, 20, 31, 235)
-CARD_WIDTH = 346
+CARD_WIDTH = SPEED_CARD_SIZE[0]
 CARD_PAD = 28
 BUTTON_HEIGHT = 72
 BUTTON_GAP = 12
@@ -53,6 +54,19 @@ def _card_body(state):
   has_limit = shown.mode in ('split', 'limit_only')
   has_max = shown.mode in ('split', 'max_only')
   return saved['x'], saved['y'], has_max, has_limit, 20 + (190 if has_max else 0) + (230 if has_limit else 0) + 20
+
+
+def card_height(state):
+  """The card's full drawn height, buttons and feedback line included; 0 while it is hidden."""
+  body = _card_body(state)
+  if body is None:
+    return 0
+  height = body[4]
+  if card_controls(Profile.LARGE, state):
+    height += BUTTON_HEIGHT + 20
+  if state.alert.size == AlertSize.NONE and state.speed_limit.action_feedback:
+    height += FEEDBACK_HEIGHT
+  return height
 
 
 def card_controls(profile, state):
@@ -97,12 +111,11 @@ class SpeedLimitCard:
     x, y, has_max, has_limit, height = body
     controls = card_controls(Profile.LARGE, state)
     feedback = state.speed_limit.action_feedback if state.alert.size == AlertSize.NONE else None
-    if controls:
-      height += BUTTON_HEIGHT + 20
-    if feedback:
-      height += FEEDBACK_HEIGHT
+    height = card_height(state)
     rect = rl.Rectangle(x, y, CARD_WIDTH, height)
-    rl.draw_rectangle_rounded(rect, .08, 12, CARD_FILL)
+    # The layout's Background opacity arrives as the card fill's alpha (fully opaque by default).
+    fill_alpha = rgba(state.customization, 'cardFill', 'large', 'cruise_limits')[3]
+    rl.draw_rectangle_rounded(rect, .08, 12, rl.Color(CARD_FILL.r, CARD_FILL.g, CARD_FILL.b, round(CARD_FILL.a * fill_alpha / 255)))
     base = (self.outline_color(state) if self.outline_color else ORANGE) or GRAY
     rl.draw_rectangle_rounded_lines_ex(rect, .08, 12, 3, rl.Color(base.r, base.g, base.b, 150))
     pad = CARD_PAD
@@ -215,6 +228,17 @@ def side_glow(color, x, y, width, height, left, now=None):
     rl.draw_rectangle_gradient_h(x, y, span, height, edge, fade)
   else:
     rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
+
+
+def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False)):
+  """Everything the car screen draws over the onroad view: mode glow, LEAD badge and side warnings."""
+  edge_glow(state_glow(state, mode_label), content.x, content.y, content.width, content.height)
+  appearance = getattr(state, 'appearance', None)
+  if appearance is not None and appearance.show_lead_indicator:
+    lead_badge(fonts, content, lead_present)
+  left, right = side_colors(state, *vasm)
+  side_glow(left, content.x, content.y, content.width, content.height, True)
+  side_glow(right, content.x, content.y, content.width, content.height, False)
 
 
 def lead_badge(fonts, content, present):

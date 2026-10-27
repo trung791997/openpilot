@@ -33,6 +33,8 @@ NOW_PLAYING_WIDGET = 'now_playing'
 NOW_PLAYING_SIZE = (640, 264)
 NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
+# projection_theme.SpeedLimitCard with both MAX SET and SLC LIMIT; its button row adds below this when shown.
+SPEED_CARD_SIZE = (346, 460)
 JETLINK_OPACITY = (0, 100, 85)
 CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}
 PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT)
@@ -130,6 +132,11 @@ def layout_metadata_for_viewport(viewport):
     widgets[key]['default'].update(opacity=opacity, background=key != CAR_EXIT)
   # Background opacity for the cruise and speed-limit card; its text stays solid.
   widgets['cruise_limits'].update(opacity={'min': 0, 'max': 100, 'default': 100})
+  # The car screen draws its own taller card (MAX SET over SLC LIMIT), without the source rows.
+  widgets['cruise_limits'].update(width=SPEED_CARD_SIZE[0], height=SPEED_CARD_SIZE[1])
+  widgets['cruise_limits'].pop('sourcesExtent', None)
+  widgets['speed_limit_actions']['note'] = ('On the car screen Use limit, Accept and Decline sit in a row at the bottom of the speed card; '
+                                            'this only turns them on or off.')
   widgets['cruise_limits']['default'].update(opacity=100)
   profile["widgetOrder"] = [NAV_MAP, *[key for key in profile["widgetOrder"] if key not in (NAV_MAP, NAV_CARD, STOPPED_TIMER_WIDGET)],
                             STOPPED_TIMER_WIDGET, NAV_CARD, *DISPLAY_WIDGETS, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT]
@@ -256,8 +263,11 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       placement.setdefault('opacity', CARD_WIDGETS[key][2])
     if key == NOW_PLAYING_WIDGET and type(placement) is dict:
       placement.setdefault('collapse', False)
-      # The card grew (520x96 to 600x140 to 640x264, One UI 9's media card); keep a saved spot by sliding it back on screen.
-      for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), NOW_PLAYING_SIZE, strict=True):
+    # Both cards grew (now playing 520x96 to 640x264, One UI 9's media card; the speed card to the car screen's
+    # own 346x460); keep a saved spot by sliding it back on screen.
+    if key in (NOW_PLAYING_WIDGET, 'cruise_limits') and type(placement) is dict and (key == NOW_PLAYING_WIDGET or value['version'] >= 5):
+      size = NOW_PLAYING_SIZE if key == NOW_PLAYING_WIDGET else SPEED_CARD_SIZE
+      for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), size, strict=True):
         if type(placement.get(axis)) in (int, float) and math.isfinite(placement[axis]):
           placement[axis] = min(placement[axis], bounds[axis] + bounds[extent] - dimension)
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:

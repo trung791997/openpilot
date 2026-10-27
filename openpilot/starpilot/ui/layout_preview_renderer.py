@@ -40,8 +40,8 @@ IDLE_SECONDS = 30.0
 ASSET_DIRECTORY = Path(__file__).parents[2] / "selfdrive/assets"
 
 
-def render_sample_road(rect: rl.Rectangle, state: OnroadState, profile: Profile) -> None:
-  style = state.customization["roadColors"][str(profile)]
+def render_sample_road(rect: rl.Rectangle, state: OnroadState, profile: Profile, style: dict | None = None) -> None:
+  style = state.customization["roadColors"][str(profile)] if style is None else style
 
   def points(values):
     return np.array([(rect.x + x * rect.width, rect.y + y * rect.height) for x, y in values], dtype=np.float32)
@@ -221,6 +221,7 @@ class _Canvas:
         self.view = ProjectionOnroad.create_view(OnroadView, self.fonts, viewport=viewport, **layers)
         from openpilot.starpilot.system.android_auto.projection_exit import ProjectionExit
         self.view.projection_exit_layer = ProjectionExit(rl).render
+        ProjectionOnroad.apply_theme(self.view, self.fonts, self._render_theme_overlay)
         self.view.now_playing.track = {'source': 'spotify', 'status': 'playing', 'title': 'Midnight City', 'artist': 'M83', 'album': '',
                                        'durationMs': 243000, 'position': {'ms': 92000, 'at': 0, 'speed': 0.0}}
       if profile == Profile.LARGE:
@@ -241,9 +242,18 @@ class _Canvas:
       raise
 
   def _render_background(self, rect: rl.Rectangle, state: OnroadState) -> None:
-    render_sample_road(rect, state, self.profile)
+    if self.viewport is None:
+      render_sample_road(rect, state, self.profile)
+    else:
+      from openpilot.starpilot.system.android_auto.projection_theme import road_style
+      render_sample_road(rect, state, self.profile, road_style(state.customization["roadColors"]["large"]))
     if not state.customization.get("widgetOrder", {}).get(str(self.profile)) and self.viewport is None:
       self._render_side_cameras(state)
+
+  def _render_theme_overlay(self, content: rl.Rectangle, state: OnroadState) -> None:
+    from openpilot.starpilot.system.android_auto import projection_theme
+    from openpilot.starpilot.system.android_auto.projection_onroad import driving_mode_label
+    projection_theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present=True)
 
   @staticmethod
   def _map_placement(state: OnroadState):
@@ -339,6 +349,17 @@ class _Canvas:
     captures = []
     for key in RUNTIME_PREVIEW_WIDGETS[str(self.profile)]:
       logical_width, logical_height = widget_size(state.customization, self.profile, key)
+      # General edit shows a representative CEM sample even though its backdrop
+      # remains engaged. Driving scenes always use their unmodified state.
+      samples = {'cem_gauge': 'cem_curve', 'speed_limit_actions': 'slc_pending'}
+      if self.viewport is not None and placement(state.customization, self.profile, 'speed_limit_actions')['enabled']:
+        samples['cruise_limits'] = 'slc_pending'  # the car screen draws the buttons inside the speed card
+      sample = samples.get(key) if general else None
+      widget_state = sample_state(sample, state.customization) if sample is not None else state
+      if self.viewport is not None and key == 'cruise_limits':
+        # The car screen's own card, sized as drawn: its button row comes and goes with the sample.
+        from openpilot.starpilot.system.android_auto import projection_theme
+        logical_width, logical_height = projection_theme.CARD_WIDTH, projection_theme.card_height(widget_state) or 1
       compact_offset = (self.profile == Profile.COMPACT and key == 'speed_limit' and
                         not state.appearance.use_vienna_sign and bool(resolve_unified_speed(state).offset_text))
       if compact_offset:
@@ -368,10 +389,6 @@ class _Canvas:
           if general and key == 'driver_monitor':
             self._render_driver_monitor(content, state, general=True)
           else:
-            # General edit shows a representative CEM sample even though its backdrop
-            # remains engaged. Driving scenes always use their unmodified state.
-            sample = {'cem_gauge': 'cem_curve', 'speed_limit_actions': 'slc_pending'}.get(key) if general else None
-            widget_state = sample_state(sample, state.customization) if sample is not None else state
             self._settle(widget_state)
             self.view._ordered_widgets(content, widget_state, only_widget=key)
         finally:
