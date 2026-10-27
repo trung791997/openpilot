@@ -208,3 +208,29 @@ def test_use_limit_sits_in_the_speed_card_and_taps_land_there():
   touch.press((left + right) / 2, (top + bottom) / 2, current)
   touch.release((left + right) / 2, (top + bottom) / 2, current)
   assert emitted == [inside.request]
+
+
+def test_car_screen_shows_accept_and_decline_without_tapping_the_sign_first():
+  from dataclasses import replace
+  from openpilot.starpilot.system.android_auto import projection_theme
+  from openpilot.starpilot.system.android_auto.projection_layout import default_layout_for_viewport, projection_customization
+  from openpilot.starpilot.ui.onroad_customization import default_document
+  from openpilot.starpilot.ui.onroad_state import OnroadInput, SlcActionKind
+  from openpilot.starpilot.ui.presentation import Profile
+  from openpilot.starpilot.ui.tests.test_slc_ui_actions import state
+  layout = default_layout_for_viewport((1920, 1080))
+  layout['widgets']['speed_limit_actions']['enabled'] = True
+  pending = replace(state(pending=True), slc_prompt_open=False, customization=projection_customization(layout, default_document()))
+  # The comma screen still waits for a tap on the sign; the car screen offers both buttons at once.
+  assert OnroadInput(lambda _: None, Profile.LARGE, controls=projection_theme.card_controls).present(pending).slc_prompt_open is False
+  emitted = []
+  touch = OnroadInput(emitted.append, Profile.LARGE, controls=projection_theme.card_controls, open_prompt=True)
+  shown = touch.present(pending)
+  accept, decline = projection_theme.card_controls(Profile.LARGE, shown)
+  assert (accept.request.kind, decline.request.kind) == (SlcActionKind.ACCEPT, SlcActionKind.REJECT)
+  left, top, right, bottom = decline.bounds
+  touch.press((left + right) / 2, (top + bottom) / 2, pending)
+  touch.release((left + right) / 2, (top + bottom) / 2, pending)
+  assert emitted == [decline.request]
+  # Nothing pending: no buttons.
+  assert not touch.present(state(pending=False)).slc_prompt_open

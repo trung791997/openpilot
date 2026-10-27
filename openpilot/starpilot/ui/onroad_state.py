@@ -351,8 +351,10 @@ class OnroadInput:
   """The onroad wheel emits intent only; the supplied state must be refreshed."""
 
   def __init__(self, emit: Callable[[OnroadRequest | SlcUiRequest], None], profile: Profile = Profile.LARGE, slop: float = 5,
-               controls: Callable[[Profile, OnroadState], tuple[SlcControl, ...]] | None = None):
+               controls: Callable[[Profile, OnroadState], tuple[SlcControl, ...]] | None = None, open_prompt: bool = False):
     self.emit = emit
+    # True shows Accept / Decline as soon as a limit is pending (the car screen); False waits for a tap on the sign.
+    self.open_prompt = open_prompt
     self.profile = profile
     self.controls = controls or slc_controls  # where the speed-limit buttons are drawn, so taps hit them
     self.slop = slop
@@ -370,7 +372,9 @@ class OnroadInput:
     return None
 
   def present(self, state: OnroadState) -> OnroadState:
-    if self._prompt != self._pending_context(state):
+    if self.open_prompt:
+      self._prompt = self._pending_context(state)
+    elif self._prompt != self._pending_context(state):
       self._prompt = None
     return replace(state, slc_prompt_open=self._prompt is not None)
 
