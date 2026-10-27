@@ -52,6 +52,12 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Decision.** Not built. On its own, the flag would also soften real early brakes, the same reason D-048 was shelved (STATUS 264). Watch for more route-34-shaped taps. If more appear, try the flag together with a model speed disagreement, and check stills on 2f, 10 and 0f.
 
+**Addendum — route 37 (11c8fa231c0499ed/00000037--34e868f7ba, T903–905), a different shape.**
+- **What happened:** at 30 m/s on the highway, a white SUV about 45–50 m ahead was moving out of the lane to the right (stills at T901, T903 and T904). Radar track 32 had been the lead for a while. Its vLead dipped 28.7 → 24.8 in 0.6 s, with aLeadK -2.9, then went back up to 31 (aLeadK +3.7) as the SUV left. The model lead held v 29 and a 0, and then jumped to the next car at 69 m.
+- **Effect:** the plan dipped to -1.8 for about 1.5 s, and the car slowed 29.8 → 28.2 m/s.
+- **Why nothing caught it:** this is − then +, so the entry 7 latch correctly did nothing. The brake comes before any reversal could be seen. The track was old, so the route 34 new-track flag would not fire either.
+- **Rest of the scan:** Job checked the other 29 engaged brakes in dirs 4–20. None was route-34 shaped, and none tripped the mismatch flag.
+
 ### 7 — 2026-10-26 — Curve brake fix: a radar lead that flips from speeding up to braking within 1.5 s gets less braking authority
 
 **Problem.** On route 30 (11c8fa231c0499ed/00000030--70508f00bd, T1421–1424) the Civic braked hard to -2.87 while following a car through an S-curve. The car ahead was not slowing. Radar track 60 read the lead as speeding up at +4 m/s², then braking at -3 m/s², all within 1 s. A vision-only drive would not have braked: the model kept the lead at 47–52 m and about 21–22 m/s.
