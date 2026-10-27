@@ -472,6 +472,8 @@ class _BoschATrackState:
   # shipped D-057 re-anchor would have needed, and by a lifecycle discontinuity.
   recovered: bool = False
   strict_clean_count: int = 0
+  # The F0 STATUS nibble of the latest valid observation (0 before the first one); see BoschARadar.point_statuses.
+  status: int = 0
   rejected_strict_dirty_t: float = -1e9  # last rejected sweep that only the relaxed window called clean
 
 
@@ -715,6 +717,9 @@ class BoschARadar(RadarInterfaceBase):
     self.trigger_msg = BOSCH_A_TRIGGER_MSG
     # Ego speed, set by card before each update (the reversing-coast bound). None until then.
     self.v_ego: float | None = None
+    # F0 STATUS per point of the last RadarData returned (7 confirmed; 9 on route 34 T479's phantom lead). card
+    # carries it to radard in starpilotCarState.radarPointStatus: car.capnp's RadarPoint is upstream-owned on 7.0.
+    self.point_statuses: dict[int, int] = {}
     self._slots = [_BoschASlotState() for _ in range(BOSCH_A_NUM_SLOTS)]
     self._tracks: dict[int, _BoschATrackState] = {}
     self._slot_track_ids: list[int | None] = [None] * BOSCH_A_NUM_SLOTS
@@ -840,6 +845,7 @@ class BoschARadar(RadarInterfaceBase):
         'track_id': track_id,
         'track_id_valid': track_id_valid,
         'object_valid': object_valid,
+        'status': status,
         'range_sigma_raw': range_sigma_raw,
         'existence_raw': existence_raw,
         'direct_vrel_raw': direct_vrel_raw,
@@ -934,6 +940,7 @@ class BoschARadar(RadarInterfaceBase):
         track.floor_run.clear()
         track.floor_seen = False
         self.pts.pop(track_id, None)
+      track.status = observation['status']
 
       v0 = self.rcp.vl[BOSCH_A_MAIN_IDS[slot][0]]
       range_raw = int(v0['RANGE_RAW'])
@@ -1422,5 +1429,7 @@ class BoschARadar(RadarInterfaceBase):
           self._slot_track_ids[old_slot] = None
       self._slot_track_ids[slot] = track_id
 
+    self.point_statuses = {track_id: (self._tracks[track_id].status if track_id in self._tracks else 0)
+                           for track_id in sorted(self.pts)}
     ret.points = [self.pts[track_id] for track_id in sorted(self.pts)]
     return ret

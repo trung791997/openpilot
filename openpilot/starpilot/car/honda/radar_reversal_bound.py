@@ -17,6 +17,9 @@ witness. dRel is never moved and the point is always published (D-041/D-042). Th
 bound when it is urgent (range or TTC short), so a real close-in brake keeps full authority. A false trigger costs
 nothing unless the radar lead is braking the plan inside the latch.
 Estimated effect on route 30 (regression on that route's lead0 rows, not a planner replay): -2.87 -> about -1.3.
+
+`apply` also takes per-lead floor weights from other tells (radar_lead_bound.WeakLeadBound); a lead is blended once,
+at the larger of the two weights, under the same witness and urgency rules.
 """
 from __future__ import annotations
 
@@ -61,12 +64,13 @@ class ReversalBound:
   def latched(self, track_id: int) -> bool:
     return self.latched_until.get(track_id, -math.inf) >= self.t
 
-  def _bound(self, lead: dict[str, Any], vision, v_ego: float, model_v_ego: float, lead_prob: float) -> tuple[dict[str, Any], float]:
-    if lead_prob < WITNESS_PROB or urgent(lead):
+  def _bound(self, lead: dict[str, Any], vision, v_ego: float, model_v_ego: float, lead_prob: float,
+             weight: float = W) -> tuple[dict[str, Any], float]:
+    if weight <= 0.0 or lead_prob < WITNESS_PROB or urgent(lead):
       return lead, 0.0
     vision_v = v_ego + (float(vision.v[0]) - model_v_ego)
-    dv = W * max(vision_v - float(lead['vLead']), 0.0)
-    da = W * max(float(vision.a[0]) - float(lead['aLeadK']), 0.0)
+    dv = weight * max(vision_v - float(lead['vLead']), 0.0)
+    da = weight * max(float(vision.a[0]) - float(lead['aLeadK']), 0.0)
     if dv <= 0.0 and da <= 0.0:
       return lead, 0.0
     out = dict(lead)
@@ -74,9 +78,10 @@ class ReversalBound:
     out['vLeadK'] = float(lead['vLeadK']) + dv
     out['vRel'] = float(lead['vRel']) + dv
     out['aLeadK'] = float(lead['aLeadK']) + da
-    return out, W
+    return out, weight
 
-  def apply(self, output: list[dict[str, Any]], model_leads, v_ego: float, model_v_ego: float, lead_probs, track_ids) -> list[dict[str, Any]]:
+  def apply(self, output: list[dict[str, Any]], model_leads, v_ego: float, model_v_ego: float, lead_probs, track_ids,
+            floor_weights=(0.0, 0.0)) -> list[dict[str, Any]]:
     self.t += self.dt
     seen = set()
     for lead in output:
@@ -93,7 +98,8 @@ class ReversalBound:
     bounded = []
     for index, lead in enumerate(output):
       self.weights[index] = 0.0
-      if lead.get('present', False) and lead.get('radar', False) and self.latched(int(lead.get('radarTrackId', -1))):
-        lead, self.weights[index] = self._bound(lead, model_leads[index], v_ego, model_v_ego, float(lead_probs[index]))
+      if lead.get('present', False) and lead.get('radar', False):
+        weight = max(W if self.latched(int(lead.get('radarTrackId', -1))) else 0.0, float(floor_weights[index]))
+        lead, self.weights[index] = self._bound(lead, model_leads[index], v_ego, model_v_ego, float(lead_probs[index]), weight)
       bounded.append(lead)
     return bounded

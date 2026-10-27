@@ -9,6 +9,8 @@ import capnp
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.simple_kalman import KF1D
+from openpilot.starpilot.car.honda import radar_point_status
+from openpilot.starpilot.car.honda.radar_lead_bound import WeakLeadBound, camera_passed_ratio
 from openpilot.starpilot.car.honda.radar_reversal_bound import ReversalBound
 
 if TYPE_CHECKING:
@@ -43,6 +45,7 @@ class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
     self.cnt = 0
+    self.objectStatus = 0  # Bosch-A F0 STATUS of the latest point, from card (radar_point_status); 0 = not known
     self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
     self.K_A = kalman_params.A
     self.K_C = kalman_params.C
@@ -131,6 +134,11 @@ def track_matches_vision(
   vel_sane = abs(track.vRel + v_ego - lead.v[0]) < vel_limit or v_ego + track.vRel > 3
   lat_sane = abs(track.yRel + lead.y[0]) < max(y_floor, y_std_scale * max(float(lead.yStd[0]), 0.2))
   return dist_sane and vel_sane and lat_sane
+
+
+def weak_lead_distance_ratio(track: Track, lead: capnp._DynamicStructReader, model_v_ego: float) -> float:
+  # the WeakLeadBound distance tell: how far the model lead is past this track, while it calls for no braking
+  return camera_passed_ratio(track.dRel, lead.x[0] - RADAR_TO_CAMERA, model_v_ego - lead.v[0], lead.a[0])
 
 
 def match_vision_to_track(
@@ -325,6 +333,7 @@ class BoschALeadPolicy:
     self._post_standstill_candidate_frames = 0
     self._last_tracks_frame = -1
     self.reversal_bound = ReversalBound()
+    self.weak_lead_bound = WeakLeadBound()
 
   def update_tracks(self, sm, rr, radar):
     self.ready = radar.ready
@@ -334,6 +343,7 @@ class BoschALeadPolicy:
     fresh = sm.recv_frame['radarTracks'] != self._last_tracks_frame
     self._last_tracks_frame = sm.recv_frame['radarTracks']
     points = {point.trackId: point for point in rr.points}
+    statuses = radar_point_status.read(sm)
     for identifier in list(self.tracks):
       if identifier not in points:
         del self.tracks[identifier]
@@ -345,6 +355,7 @@ class BoschALeadPolicy:
         self.tracks[identifier] = Track(identifier, v_lead, radar.kalman_params)
       measured = bool(point.deprecated.measured and fresh)
       self.tracks[identifier].update(point.dRel, point.yRel, point.vRel, v_lead, measured, measured)
+      self.tracks[identifier].objectStatus = statuses.get(identifier, 0)
 
   def leads(self, sm, radar, model_v_ego):
     leads = sm['modelV2'].leadsV3
@@ -366,8 +377,17 @@ class BoschALeadPolicy:
       for index in range(2)
     ]
     output[0] = self._filter_post_standstill_lead(output[0])
-    output = self.reversal_bound.apply(output, leads, self.v_ego, model_v_ego,
-                                       [radar.lead_prob_filters[index].x for index in range(2)], self.tracks)
+    lead_probs = [radar.lead_prob_filters[index].x for index in range(2)]
+    lead_tracks = [self.tracks.get(int(lead.get('radarTrackId', -1))) if lead.get('present', False) and lead.get('radar', False)
+                   else None for lead in output]
+    weak_weights = self.weak_lead_bound.update(
+      output,
+      [track.objectStatus if track is not None else 0 for track in lead_tracks],
+      [weak_lead_distance_ratio(track, leads[index], model_v_ego) if track is not None else 0.0
+       for index, track in enumerate(lead_tracks)],
+      lead_probs,
+    )
+    output = self.reversal_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs, self.tracks, floor_weights=weak_weights)
     for index, lead in enumerate(output):
       if lead.get('present', False) and lead.get('radar', False):
         identifier = int(lead.get('radarTrackId', -1))

@@ -34,6 +34,11 @@ class RadarInterface(RadarInterfaceBase):
     self.trigger_msg = 0x445
     self.updated_messages = set()
 
+  @property
+  def point_statuses(self) -> dict[int, int] | None:
+    """Bosch-A F0 STATUS per point of the last RadarData returned; None for other radars."""
+    return self.bosch_a.point_statuses if self.bosch_a is not None else None
+
   def update(self, can_strings):
     if self.bosch_a is not None:
       self.bosch_a.v_ego = self.v_ego

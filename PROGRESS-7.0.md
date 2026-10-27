@@ -26,6 +26,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 ## Open items
 
 - **Curve brake fix (entry 7).** On the comma since 2026-10-26. Check the next drives for curve brakes and for a real brake that came out weaker than it should.
+- **Far brake taps, routes 34 and 37 (entry 9).** The weak-lead bound is on branch `night-star7-longradar-weakbound`, waiting for Job's replay. It is not on the comma.
 - **Stop-and-go fix.** Judge it on Peter's next stop-and-go drive: brake toggles per minute, short holds, gas surge after release.
 - **D-048 radar-lead corroboration is shelved.**
   - The unshipped code is on branch `d048-corroboration` at a0d0bf865.
@@ -37,6 +38,59 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 9 — 2026-10-27 — Far brake taps (routes 34 and 37): a radar lead that the radar or the camera doesn't back gets less braking authority; side branch, replay pending
+
+**Problem.** Two brake taps behind a far car that was holding its speed:
+- route 34 T479: -1.9 for about 2 s, car about 60 m ahead (entry 8);
+- route 37 T903: -1.8 for about 1.5 s at 30 m/s, an SUV moving out of the lane (entry 8 addendum).
+
+Every rule in entry 8 read the radar lead's own motion, and every one also fired on real slowdowns.
+
+**New data** (Job, 2026-10-27): 20 Hz packs with every radar track and the raw radar CAN for both taps and the four real far brakes (2f T736, 10 T188, 32 T1248, 0f T2190); 10 Hz CSVs and stills for all 39 engaged brakes on route 37.
+
+**What the taps have and the real brakes don't.**
+- **Route 34: the radar had not confirmed the track.** Track 55's F0 STATUS nibble read 9 from its birth until +1.48 s. That covers its start as lead0 (-0.40 s) and the plan's -1.91 low (+1.25 s). Every other track in the seven packs read 7 throughout, the leads of the four real far brakes included. The only other non-7 track (2f track 6, STATUS 3) never became a lead.
+- **Route 37: the camera's lead had moved past the radar's and was not slowing.** Track 32 read 7. From the tap's start it held lead0 only through radard's relaxed gate: its range (45 m) was more than the strict window (0.25 × range, at least 5 m) short of the model lead's (59–72 m). The model lead was closing at -0.2 to +1.5 m/s, with a ≈ 0.
+- **The range gap alone is not a tell.** On the same drive (T273–278) a pickup slowing to turn left held lead0 at 82 m while the model lead had moved on to 110 m. The gap reached the window's edge, and the plan went to -2.21 for a real slowdown. There the model lead itself was closing at 11.7 m/s. In the four real far brakes it closed at 4.5 m/s or more (median 9–13), and the gap stayed under 0.65 of the window.
+
+**Fix** (`WeakLeadBound`, `starpilot/car/honda/radar_lead_bound.py`, default ON for Bosch-A). Each published radar lead gets a weight, the larger of:
+- 0.6 while its track's STATUS is 9;
+- 0.6 × a ramp from 0.75 to 1.0 of the strict window, but only while the model lead is past the radar lead, closing at ≤ 2 m/s and slowing no harder than -0.5 m/s².
+
+The lead's vLead/vLeadK/vRel and aLeadK move that fraction of the way toward the model lead, through the curve brake fix's blend (entry 7):
+- only toward the less severe side;
+- only while the model lead's prob is ≥ 0.35;
+- never while the lead is urgent (dRel < 30 m or TTC < 4 s);
+- dRel is never moved and the point is always published (D-041/D-042).
+
+A new track takes its weight at once. Otherwise the weight rises over 0.25 s and releases over 1 s.
+
+**STATUS transport.** car.capnp is pinned on 7.0. So card sends the decoder's STATUS rows in `starpilotCarState.radarPointStatus` (custom.capnp fields 38 and 39, additive), right after the radarTracks message they describe, stamped with its logMonoTime. radard pairs them within 250 ms. Missing, stale or unpaired rows read as empty, which turns the STATUS tell off. Routes recorded before this change have no rows.
+
+**Evidence** (log emulation, not a replay):
+
+| Case | Weight at the brake | Model lead closing (m/s) |
+|---|---|---|
+| r34 T479 (tap) | 0.6 from its lead0 start (STATUS) | +0.6 to +3.8 |
+| r37 T903 (tap) | 0.06 → 0.60 within 0.3 s, while the plan went -0.35 → -1.12 (low -1.84) | -0.2 to +1.5 |
+| 2f T736, 10 T188, 32 T1248, 0f T2190 (real) | 0 | +4.5 or more |
+| Route 37: the six real slowdowns on the stills, T273 pickup included | 0 | — |
+| Route 37 T323.6: SUV turning right, ambiguous on the stills | at most 0.27, around its -1.12 | — |
+
+**Tried and dropped on the way.**
+- The range gap without the camera check: it gave the T273 pickup 0.52 at its -2.21.
+- The radar's own velocity uncertainty (AUX): it rose on route 37 (78 → 260), but it also rose on the real 32 T1248 brake (194 → 452).
+
+**Remaining risk.** Suppose the camera's range is long by more than about 19 % (0.75 of the 25 % window) while a far lead really brakes and the camera does not yet see it closing. Then the bound could soften that early brake until the lead becomes urgent (30 m or TTC 4 s). Nothing like that is in the data so far.
+
+**Status.**
+- Static tests pass:
+  - the decoder's STATUS tests;
+  - 11 tests in `tests/test_radar_lead_bound.py`: the tells, the slew, the urgent bypass, the transport, and both taps' shapes run through radard.
+- The broad suite fails the same 219 env-only tests as its base, and no others.
+- On branch `night-star7-longradar-weakbound`, not yet on longradar or V-ASM.
+- Next: Job's replay, with STATUS rebuilt from CAN because older routes have no rows. It covers both taps, the four real far brakes, route 37's slowdowns and turn-offs, and the 64-brake control set. It ships only if the controls stay the same.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
 
