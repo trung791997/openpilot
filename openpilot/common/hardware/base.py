@@ -112,6 +112,12 @@ class HardwareBase(ABC):
   def get_network_strength(self, network_type):
     return NetworkStrength.unknown
 
+  def get_wifi_link_id(self):
+    return None
+
+  def disable_wifi_powersave(self) -> bool:
+    return False
+
   def get_network_metered(self, network_type) -> bool:
     return network_type not in (NetworkType.none, NetworkType.wifi, NetworkType.ethernet)
 

@@ -38,6 +38,8 @@ TETHERING_IP_ADDRESS = "192.168.43.1"
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 SIGNAL_QUEUE_SIZE = 10
 SCAN_PERIOD_SECONDS = 5
+# Each scan takes the single radio off-channel, so scan less often while connected to keep the link up
+CONNECTED_SCAN_PERIOD_SECONDS = 20
 
 DEBUG = False
 _dbus_call_idx = 0
@@ -500,7 +502,9 @@ class WifiManager:
   def _network_scanner(self):
     while not self._exit:
       if self._active:
-        if time.monotonic() - self._last_network_scan > SCAN_PERIOD_SECONDS:
+        connected = self._wifi_state.status == ConnectStatus.CONNECTED
+        scan_period = CONNECTED_SCAN_PERIOD_SECONDS if connected else SCAN_PERIOD_SECONDS
+        if time.monotonic() - self._last_network_scan > scan_period:
           self._request_scan()
           self._last_network_scan = time.monotonic()
       time.sleep(1 / 2.)

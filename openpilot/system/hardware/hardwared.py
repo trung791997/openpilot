@@ -183,6 +183,8 @@ def hw_state_thread(end_event, hw_queue):
   count = 0
   prev_hw_state = None
   prev_usb_topology = set()
+  prev_wifi_link = None
+  wifi_powersave_link = None
 
   while not end_event.is_set():
     usb_topology = get_usb_topology()
@@ -194,6 +196,17 @@ def hw_state_thread(end_event, hw_queue):
       try:
         phone_uplink = phone_uplink_active()
         network_type = NetworkType.cell4G if phone_uplink else HARDWARE.get_network_type()
+
+        # The Wi-Fi driver re-arms power save ~5 s after every association, adding ~10 ms to every round trip
+        # (12.5 -> 2.2 ms avg to the gateway on a comma 3X). Turn it off once the link has been stable for one check.
+        if network_type == NetworkType.wifi:
+          try:
+            wifi_link = HARDWARE.get_wifi_link_id()
+            if wifi_link == prev_wifi_link and wifi_link != wifi_powersave_link and HARDWARE.disable_wifi_powersave():
+              wifi_powersave_link = wifi_link
+            prev_wifi_link = wifi_link
+          except Exception:
+            cloudlog.exception("Error disabling Wi-Fi power save")
         modem_temps = HARDWARE.get_modem_temperatures()
         if len(modem_temps) == 0 and prev_hw_state is not None:
           modem_temps = prev_hw_state.modem_temps

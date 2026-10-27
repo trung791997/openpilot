@@ -185,6 +185,16 @@ class HardwareComma(HardwareBase):
     else:
       return NetworkStrength.great
 
+  def get_wifi_link_id(self):
+    # Changes on every (re)association and on a roam to another access point
+    with open("/sys/class/net/wlan0/carrier_changes") as f:
+      carrier_changes = f.read().strip()
+    return carrier_changes, wpa_supplicant_cmd("STATUS").get("bssid")
+
+  def disable_wifi_powersave(self) -> bool:
+    # qcacld ignores NetworkManager's 802-11-wireless.powersave, so ask the driver directly
+    return subprocess.call(["sudo", "iwpriv", "wlan0", "setPower", "2"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
   def get_network_strength(self, network_type):
     network_strength = NetworkStrength.unknown
 
