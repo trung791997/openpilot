@@ -350,9 +350,11 @@ def speed_limit_bounds(profile: Profile, state: OnroadState) -> tuple[float, flo
 class OnroadInput:
   """The onroad wheel emits intent only; the supplied state must be refreshed."""
 
-  def __init__(self, emit: Callable[[OnroadRequest | SlcUiRequest], None], profile: Profile = Profile.LARGE, slop: float = 5):
+  def __init__(self, emit: Callable[[OnroadRequest | SlcUiRequest], None], profile: Profile = Profile.LARGE, slop: float = 5,
+               controls: Callable[[Profile, OnroadState], tuple[SlcControl, ...]] | None = None):
     self.emit = emit
     self.profile = profile
+    self.controls = controls or slc_controls  # where the speed-limit buttons are drawn, so taps hit them
     self.slop = slop
     self._press: tuple[float, float, bool, str] | None = None
     self._slc_press: SlcControl | None = None
@@ -383,7 +385,7 @@ class OnroadInput:
   def press(self, x: float, y: float, state: OnroadState) -> None:
     self.cancel()
     state = self.present(state)
-    controls = slc_controls(self.profile, state)
+    controls = self.controls(self.profile, state)
     for control in controls:
       left, top, right, bottom = control.bounds
       if left <= x <= right and top <= y <= bottom:
@@ -410,7 +412,7 @@ class OnroadInput:
         self.cancel()
       return
     if self._slc_press:
-      current = next((item for item in slc_controls(self.profile, state) if item == self._slc_press), None)
+      current = next((item for item in self.controls(self.profile, state) if item == self._slc_press), None)
       in_control = current is not None and current.bounds[0] <= x <= current.bounds[2] and current.bounds[1] <= y <= current.bounds[3]
       if not in_control:
         self.cancel()

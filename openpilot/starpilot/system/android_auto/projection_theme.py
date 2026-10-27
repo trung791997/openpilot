@@ -2,12 +2,14 @@
 
 import math
 import time
+from dataclasses import replace
 
 import pyray as rl
 
 from openpilot.starpilot.ui.onroad_customization import placement
+from openpilot.starpilot.ui.onroad_state import AlertSize, slc_controls
 from openpilot.starpilot.ui.onroad_large_widgets import wheel_box
-from openpilot.starpilot.ui.presentation import FontRole
+from openpilot.starpilot.ui.presentation import FontRole, Profile
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
 
 ORANGE = rl.Color(255, 140, 30, 255)
@@ -19,6 +21,12 @@ GREEN = rl.Color(40, 200, 90, 255)
 LABEL = rl.Color(176, 168, 255, 255)
 CARD_FILL = rl.Color(18, 20, 31, 235)
 CARD_WIDTH = 346
+CARD_PAD = 28
+BUTTON_HEIGHT = 72
+BUTTON_GAP = 12
+FEEDBACK_HEIGHT = 40
+BUTTON_FILL = rl.Color(255, 255, 255, 30)
+BUTTON_PRESSED = rl.Color(255, 255, 255, 70)
 GLOW_SPAN = 64
 
 ROAD_STYLE = {'pathMode': 'color', 'path': '#FF8A1FD0', 'pathEdge': '#FF9A2EFF', 'laneLines': '#FF9A2EFF'}
@@ -36,12 +44,39 @@ def limit_relation(max_text, limit_text):
   return 'Matches set speed' if maximum == limit else 'Below set speed' if limit < maximum else 'Above set speed'
 
 
+def _card_body(state):
+  """(x, y, has_max, has_limit, height before any buttons) of the card, or None while it is hidden."""
+  shown = resolve_unified_speed(state)
+  if shown.mode == 'hidden':
+    return None
+  saved = placement(state.customization, 'large', 'cruise_limits')
+  has_limit = shown.mode in ('split', 'limit_only')
+  has_max = shown.mode in ('split', 'max_only')
+  return saved['x'], saved['y'], has_max, has_limit, 20 + (190 if has_max else 0) + (230 if has_limit else 0) + 20
+
+
+def card_controls(profile, state):
+  """The speed-limit buttons (Use limit, Accept / Decline) as a row at the bottom of the card, not loose over the
+  camera. Same controls and requests as the comma screen; only where they sit changes."""
+  controls = slc_controls(profile, state)
+  body = _card_body(state)
+  if not controls or body is None:
+    return controls
+  x, y, _, _, height = body
+  left, top = x + CARD_PAD, y + height - 4
+  width = (CARD_WIDTH - 2 * CARD_PAD - BUTTON_GAP * (len(controls) - 1)) / len(controls)
+  return tuple(replace(control, bounds=(round(left + i * (width + BUTTON_GAP)), top,
+                                        round(left + i * (width + BUTTON_GAP) + width), top + BUTTON_HEIGHT))
+               for i, control in enumerate(controls))
+
+
 class SpeedLimitCard:
   """Replaces the shared cruise/limit card on the car screen; same placement key, own look."""
 
-  def __init__(self, fonts, outline_color=None):
+  def __init__(self, fonts, outline_color=None, pressed=lambda: None):
     self.fonts = fonts
     self.outline_color = outline_color
+    self.pressed = pressed
 
   def close(self):
     pass
@@ -55,19 +90,22 @@ class SpeedLimitCard:
     fonts.draw(status, FontRole.NORMAL, 28, x, y + size + 40, LABEL)
 
   def render(self, content, state):
-    shown = resolve_unified_speed(state)
-    if shown.mode == 'hidden':
+    body = _card_body(state)
+    if body is None:
       return
-    saved = placement(state.customization, 'large', 'cruise_limits')
-    x, y = saved['x'], saved['y']
-    has_limit = shown.mode in ('split', 'limit_only')
-    has_max = shown.mode in ('split', 'max_only')
-    height = (20 + (190 if has_max else 0) + (230 if has_limit else 0) + 20)
+    shown = resolve_unified_speed(state)
+    x, y, has_max, has_limit, height = body
+    controls = card_controls(Profile.LARGE, state)
+    feedback = state.speed_limit.action_feedback if state.alert.size == AlertSize.NONE else None
+    if controls:
+      height += BUTTON_HEIGHT + 20
+    if feedback:
+      height += FEEDBACK_HEIGHT
     rect = rl.Rectangle(x, y, CARD_WIDTH, height)
     rl.draw_rectangle_rounded(rect, .08, 12, CARD_FILL)
     base = (self.outline_color(state) if self.outline_color else ORANGE) or GRAY
     rl.draw_rectangle_rounded_lines_ex(rect, .08, 12, 3, rl.Color(base.r, base.g, base.b, 150))
-    pad = 28
+    pad = CARD_PAD
     top = y + 20
     if has_max:
       self._block(x + pad, top, 'MAX SET', shown.max_text, shown.unit, shown.status if shown.max_text != '–' else 'Not set')
@@ -76,6 +114,16 @@ class SpeedLimitCard:
       relation = limit_relation(shown.max_text, shown.limit_text) or shown.status
       self._block(x + pad, top, 'SLC LIMIT', shown.limit_text, shown.unit, relation)
       self.fonts.draw(f'Road limit {shown.posted_text}', FontRole.NORMAL, 28, x + pad, top + 176, rl.WHITE)
+    for control in controls:
+      left, top, right, bottom = control.bounds
+      button = rl.Rectangle(left, top, right - left, bottom - top)
+      fill = BUTTON_PRESSED if self.pressed() == control.request else BUTTON_FILL
+      rl.draw_rectangle_rounded(button, 1, 12, fill)
+      width = self.fonts.measure(control.label, FontRole.SEMI_BOLD, 30).width
+      a, b = self.fonts.vertical_ink('Accept Decline', FontRole.SEMI_BOLD, 30)  # one baseline for both buttons
+      self.fonts.draw(control.label, FontRole.SEMI_BOLD, 30, (left + right - width) / 2, (top + bottom) / 2 - (b - a) / 2 - a, rl.WHITE)
+    if feedback:
+      self.fonts.draw(feedback, FontRole.NORMAL, 26, x + pad, y + height - FEEDBACK_HEIGHT - 8, LABEL)
 
 
 class AtomBadge:

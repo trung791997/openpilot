@@ -201,7 +201,9 @@ class ProjectionOnroad:
       from openpilot.starpilot.system.android_auto import projection_theme
       self._theme = projection_theme
       self.onroad.unified_speed = projection_theme.SpeedLimitCard(
-        self.fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)))
+        self.fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)),
+        lambda: self._slc_input.pressed_action if self._slc_input is not None else None)
+      self.onroad._slc_actions = lambda state: None  # the card draws them, in its own bottom row
       self.onroad.steering_wheel = projection_theme.AtomBadge()
       self.onroad.extra_overlays = self._theme_overlay
       self.now_playing_feed = None
@@ -225,7 +227,7 @@ class ProjectionOnroad:
       from openpilot.starpilot.ui.onroad_state import OnroadInput
       def emit_slc(request) -> None:
         self.slc_action(request)
-      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE, slop=30)
+      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE, slop=30, controls=projection_theme.card_controls)
       self.onroad.pressed_action = lambda: self._slc_input.pressed_action
       self.pip = None
       self._pip_saved = None
