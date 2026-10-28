@@ -20,7 +20,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (now `BoschABrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 | Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
-| Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 235a04037, 89129b264 | e59f6fe56 | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
+| Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
@@ -143,7 +143,7 @@ A new track takes its weight at once. Otherwise the weight rises over 0.25 s and
   - **The 149 post-rebase brakes below -1.5** (a subset of the 747): only the two taps move (by more than 0.05 or 0.1 s). 6 of the 149 carry a weight above 0.1 in T-2..T+1 with no change, or a change within 0.02 (r0f T2091.4 0.02 harder; r20 T285.56, a -3.50 brake, carries 0.74 with no change). Fidelity min/median 2 % / 58 %.
   - Job's script showed a weight with neither tell on r1e T333.89 and r31 T326.38. The weight there is the camera-passed tell 2.7-3.5 s after the brake; the script read the tells only in T-2..T+1. It is not a bound bug.
   - Not yet run: the route sweep (frames per engaged hour with a weight, per tell). Closed loop is not possible on 7.0 rlogs (no starpilotPlan / liveParameters).
-- On `night-star7-longradar` and `night-star7-vasm-jetson` (2026-10-28), default ON, no toggle. Judge it on Peter's next drives: far taps behind a lead that holds its speed, and any real far slowdown that brakes late.
+- On `night-star7-longradar` and `night-star7-vasm-jetson` (2026-10-28), default ON, no toggle: 90826c671, one commit on the synced head 0f9ad353f. The 7.0 sync took StarPilotCarState @38 (toyotaCruise), so the STATUS carrier is @39/@40 there. Judge it on Peter's next drives: far taps behind a lead that holds its speed, and any real far slowdown that brakes late.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
 
