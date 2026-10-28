@@ -10,7 +10,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Evidence words.** Every claim says *static*, *replay* or *limited road evidence*. Nothing below is road-validated unless an entry says so.
 
-## Where things stand (2026-10-24)
+## Where things stand (2026-10-28)
 
 | Change | longradar | V-ASM (`night-star7-vasm-jetson`) | Evidence |
 |---|---|---|---|
@@ -20,13 +20,14 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Civic stop-and-go: fewer brake on/off cycles, no gas surge after release (now `BoschABrakeEdge`) | 7c8e5eee1, 71f3cc035 | 5b7c73e20, 2af60a652 | replay (route 1f) + static tests |
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 | Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
+| Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 235a04037, 89129b264 | e59f6fe56 | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
 - **Curve brake fix (entry 7).** On the comma since 2026-10-26. Check the next drives for curve brakes and for a real brake that came out weaker than it should.
-- **Far brake taps, routes 34 and 37 (entry 9).** The weak-lead bound (camera-contradicted unconfirmed lead, or camera passed) is on branch `night-star7-longradar-weakbound`. Replay: route 34's tap gone, route 37's eased, the 19 real brakes unchanged. The 747-brake check moves 9 other brakes, all softer. None is a real in-lane slowdown on the stills; 313 T336.21 waits on the driver. It is not on the comma.
+- **Far brake taps, routes 34 and 37 (entry 9).** The weak-lead bound (camera-contradicted unconfirmed lead, or camera passed) is on branch `night-star7-longradar-weakbound`. Replay: route 34's tap gone, route 37's eased, the 19 real brakes unchanged. The 747-brake check moves 9 other brakes, all softer, none a real in-lane slowdown on the stills or by the driver's call. On longradar and V-ASM, default ON; replay only, no road evidence yet.
 - **Stop-and-go fix.** Judge it on Peter's next stop-and-go drive: brake toggles per minute, short holds, gas surge after release.
 - **D-048 radar-lead corroboration is shelved.**
   - The unshipped code is on branch `d048-corroboration` at a0d0bf865.
@@ -39,7 +40,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
-### 9 — 2026-10-27 — Far brake taps (routes 34 and 37): a radar lead the camera contradicts gets less braking authority; replay passes the 19 real brakes and the 747-brake check, one ambiguous brake waits on the driver
+### 9 — 2026-10-27 — Far brake taps (routes 34 and 37): a radar lead the camera contradicts gets less braking authority; replay passes the 19 real brakes and the 747-brake check; on longradar and V-ASM, default ON
 
 **Problem.** Two brake taps behind a far car that was holding its speed:
 - route 34 T479: -1.9 for about 2 s, car about 60 m ahead (entry 8);
@@ -137,11 +138,12 @@ A new track takes its weight at once. Otherwise the weight rises over 0.25 s and
         - The real lead (track 52, STATUS 7) is lost at T-2.6.
         - A STATUS-9 ghost (track 17, 50 m, vLead 22-25 while the camera lead is past it) holds lead0 for two frames at T-2.0 and T-1.8. V4 gives it a weight of 0.5-0.6 there.
         - From T-1.6 there is no lead and no weight. Base aT stays identical until T-0.2, then brakes to -1.05 at T0 with no lead present: planner state carried over from the ghost.
-        - Far red lights brighten at T+1, after the base brake. The driver's call is pending.
+        - Far red lights brighten at T+1, after the base brake. The driver: the braking lead was still far away. A false brake.
     - Fidelity is poor on several of these, so the magnitudes are rough (312 T1348.5 7 %).
   - **The 149 post-rebase brakes below -1.5** (a subset of the 747): only the two taps move (by more than 0.05 or 0.1 s). 6 of the 149 carry a weight above 0.1 in T-2..T+1 with no change, or a change within 0.02 (r0f T2091.4 0.02 harder; r20 T285.56, a -3.50 brake, carries 0.74 with no change). Fidelity min/median 2 % / 58 %.
-  - Not yet run: the route sweep. Closed loop is not possible on 7.0 rlogs (no starpilotPlan / liveParameters).
-- On branch `night-star7-longradar-weakbound`, not yet on longradar or V-ASM. It goes to longradar (default ON) once the driver rules on 313 T336.21.
+  - Job's script showed a weight with neither tell on r1e T333.89 and r31 T326.38. The weight there is the camera-passed tell 2.7-3.5 s after the brake; the script read the tells only in T-2..T+1. It is not a bound bug.
+  - Not yet run: the route sweep (frames per engaged hour with a weight, per tell). Closed loop is not possible on 7.0 rlogs (no starpilotPlan / liveParameters).
+- On `night-star7-longradar` and `night-star7-vasm-jetson` (2026-10-28), default ON, no toggle. Judge it on Peter's next drives: far taps behind a lead that holds its speed, and any real far slowdown that brakes late.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
 
