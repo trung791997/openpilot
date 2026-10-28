@@ -41,3 +41,17 @@ aspect, centered on black. Regions are read from `/data/local/tmp/aacast.txt` (r
 `card` (default), `map`, `both`, `full`, or `x,y,w,h;…` in 800×480 screen pixels. Change it live:
 `adb shell "echo both > /data/local/tmp/aacast.txt"`. Evidence: **static** (decompiled Honda Hack,
 offline preview from a head-unit screenshot); not yet installed.
+
+## Send Android Auto guidance as built-in navigation (`NavFake.java`, 2026-10-28)
+
+The TBT service (`com.mitsubishielectric.ada.appservice.navigation`) marks the guiding device
+in bit 7 of byte 4 of the guidance display message (BCAN `0x12f95955`): Android Auto's
+`setBCan*` path sets `0x80`, the built-in navigation's `ITBTInformation` path sets `0`
+(`TBTInformation.setGuideDevice`). The hook forces `0` so the cluster sees built-in
+navigation, and logs each new cluster guide reply (`aaroad: cluster guide reply …`).
+
+    adb shell "echo phone > /data/local/tmp/aanav.txt"    # back to stock marking, live
+    adb shell "echo builtin > /data/local/tmp/aanav.txt"  # default
+
+Evidence: static (smali read). Not yet run on the head unit; whether the cluster then stores
+guide points (reply 1) and shows the street name is the open question.

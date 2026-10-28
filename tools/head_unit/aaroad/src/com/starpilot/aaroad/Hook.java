@@ -29,6 +29,14 @@ public class Hook implements IXposedHookLoadPackage {
     } catch (Throwable t) {
       XposedBridge.log("aaroad: cast hook failed: " + t);
     }
+    if (NavFake.PKG.equals(lpparam.packageName)) {
+      try {
+        NavFake.install(lpparam.classLoader);
+      } catch (Throwable t) {
+        XposedBridge.log("aaroad: guidance device hook failed: " + t);
+      }
+      return;
+    }
     if (!PKG.equals(lpparam.packageName)) return;
     Class<?> nfm = XposedHelpers.findClass(NFM, lpparam.classLoader);
 
