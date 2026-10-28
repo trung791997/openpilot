@@ -32,9 +32,9 @@ CAM_SLOW_RANGE_FRAC = 0.2    # same object: |dRel - camera range| <= max(CAM_SLO
 CAM_SLOW_RANGE_M = 10.0
 CAM_SLOW_DV = 2.0            # camera speed at least this far below radar vLead (m/s)
 CAM_SLOW_HOLD_S = 0.5        # for this long before w starts to rise
-CAM_SLOW_W_MAX = 0.5         # never all the way to the camera speed
+CAM_SLOW_W_MAX = 0.8         # never all the way to the camera speed (0.5 gave 2f8 T1365.04 min -2.86, 0.8 -2.73, replay)
 CAM_SLOW_DV_MAX = 4.0        # never more than this off the radar vLead (m/s)
-CAM_SLOW_RAMP_IN = 0.5       # w per second
+CAM_SLOW_RAMP_IN = 2.0       # w per second (0.4 s to W_MAX; the dv itself is still capped at CAM_SLOW_DV_MAX)
 CAM_SLOW_RAMP_OUT = 1.0
 CAM_SLOW_MIN_D = 20.0        # radar range below this: radar speed as is
 CAM_SLOW_MIN_V_EGO = 5.0     # stop-and-go is left to the stop laws
