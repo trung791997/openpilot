@@ -63,3 +63,17 @@ who sends the position frame `0x12f8c155` (the NMEA receiver on `NAVI_DA`, the n
 model code, not navigation. The device bit above is the only nav-vs-phone marker the head
 unit sends. Do not fake `NAVI_DA_PLUS`: with no nav app it would stop the position frame.
 Native code and the CPU-com microcontroller were not searched.
+
+## Honda Hack meter nav panel (`Panel.java`, 2026-10-28)
+
+Honda Hack's custom Civic meter already draws on the cluster (compass, trip data) and has its own
+nav panel (`C0268ua`, `meter_civic.xml`: turn_icon, seg_dist, next_road). It listens, with no
+permission, for `cn.autohack.hondahack.START_NAVI` / `UPDATE_NAVI_WAZE` / `STOP_NAVI`. The Android
+Auto process now sends them: icon from the next-turn event and side (`left`, `right`, `exit_left`,
+`u_turn`, `roundabout_N`, `end`, ...), distance in ft (50 ft steps) under 0.1 mi then mi, street
+from the same `street()` cut as the cluster name. This does not depend on the Honda cluster storing
+the guide point.
+
+Static only, not seen on the car yet. `UPDATE_NAVI_WAZE` is dropped while Honda Hack's
+`enable_screen_cast` is on (`C0268ua.z`), so turn the screen cast off in Honda Hack's meter
+settings to see the panel. Logcat: `aaroad: panel start` / `panel stop`.

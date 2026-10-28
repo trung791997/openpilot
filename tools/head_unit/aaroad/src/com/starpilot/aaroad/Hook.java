@@ -130,6 +130,11 @@ public class Hook implements IXposedHookLoadPackage {
         }
       }
     });
+    try {
+      Panel.install(nfm);
+    } catch (Throwable t) {
+      XposedBridge.log("aaroad: panel hook failed: " + t);
+    }
     XposedBridge.log("aaroad: hooked " + NFM);
   }
 
