@@ -216,6 +216,7 @@ class Session:
     self.handshake_timeout = self._timeout(handshake_timeout)
     self.authenticated = False
     self.head_unit_subject: str = ""
+    self.protocol: tuple[int, int] | None = None  # negotiated (major, minor), set by the version exchange
     self.incoming = ssl.MemoryBIO()
     self.outgoing = ssl.MemoryBIO()
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -402,6 +403,7 @@ class Session:
     # Android Auto 17.6 answers any request above 1.7 with its own maximum and success;
     # newer head units (e.g. 2025 Honda, 4.1) hang up on anything else.
     reply = (1, min(minor, 5)) if (major, minor) <= (1, 7) else PHONE_MAX_VERSION
+    self.protocol = reply
     self.event("version", major=major, minor=minor, reply=f"{reply[0]}.{reply[1]}")
     self.send(0, MSG_VERSION_RESPONSE, struct.pack(">HHH", *reply, 0), encrypted=False)
     while True:
