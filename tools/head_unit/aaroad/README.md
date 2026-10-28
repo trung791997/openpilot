@@ -55,3 +55,11 @@ navigation, and logs each new cluster guide reply (`aaroad: cluster guide reply 
 
 Evidence: static (smali read). Not yet run on the head unit; whether the cluster then stores
 guide points (reply 1) and shows the street name is the open question.
+
+Search for a "navigation present" flag to the cluster (2026-10-28, static): none in the Java
+code. The unit type (`mNaviFunction`, unit info 9: `NAVI_DA` vs `NAVI_DA_PLUS`) only picks
+who sends the position frame `0x12f8c155` (the NMEA receiver on `NAVI_DA`, the nav app on
+`NAVI_DA_PLUS`) and what the steering-wheel nav key does. The guidance CAN ID is picked by
+model code, not navigation. The device bit above is the only nav-vs-phone marker the head
+unit sends. Do not fake `NAVI_DA_PLUS`: with no nav app it would stop the position frame.
+Native code and the CPU-com microcontroller were not searched.
