@@ -71,7 +71,11 @@ class CameraSlowBound:
         self.last_gap[index] = 0.0
       vision_v = self._witness_v(lead, model_leads[index], v_ego, model_v_ego, float(lead_probs[index])) if radar_lead else None
       gap = float(lead['vLead']) - vision_v if vision_v is not None else 0.0
-      self.slow_s[index] = self.slow_s[index] + self.dt if gap >= CAM_SLOW_DV else 0.0
+      # leaky: a one-frame dip under CAM_SLOW_DV (2f8 T1365.04 flickered 2.3 -> 1.9 -> 6.7) costs one frame, not the hold
+      if gap >= CAM_SLOW_DV:
+        self.slow_s[index] = min(self.slow_s[index] + self.dt, CAM_SLOW_HOLD_S)   # capped: a lost camera releases at once
+      else:
+        self.slow_s[index] = max(self.slow_s[index] - self.dt, 0.0)
       if vision_v is not None:
         self.last_gap[index] = max(gap, 0.0)
       gap = self.last_gap[index]
