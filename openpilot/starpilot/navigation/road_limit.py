@@ -14,6 +14,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import math
 
+from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS
 from openpilot.starpilot.navigation.owner import ValidationError, response_json
 from openpilot.starpilot.navigation.route_engine import MAX_SPEED_LIMIT_MPS, SPEED_UNITS, distance
 
@@ -105,7 +106,7 @@ class RoadLimit:
     stamp, coordinates, speed, bearing = position
     if not self.trace or distance(self.trace[-1][0], coordinates) >= TRACE_SPACING:
       self.trace = (self.trace + [(coordinates, bearing)])[-TRACE_POINTS:]
-    if self.future is None and now_ns >= self.next_request and speed >= MIN_SPEED and len(self.trace) >= 3:
+    if self.future is None and now_ns >= self.next_request and speed is not None and speed >= MIN_SPEED and len(self.trace) >= 3:
       self.next_request = now_ns + INTERVAL_NS
       self.pending = (coordinates, bearing, now_ns)
       self.future = self.executor.submit(self.matcher.fetch, settings['token'], [row[0] for row in self.trace])
@@ -116,4 +117,5 @@ class RoadLimit:
       if not turned and now_ns - answered_ns <= MAX_AGE_NS and distance(matched_at, coordinates) <= MAX_DISTANCE:
         limit = value
     return {'locationMonoTime': stamp, 'speedLimit': limit or 0.,
-            'controlValid': bool(limit and drive_id > 0 and stamp >= drive_id)}
+            'controlValid': bool(limit and speed is not None and now_ns <= stamp + GPS_MAX_AGE_NS and
+                                 drive_id > 0 and stamp >= drive_id)}

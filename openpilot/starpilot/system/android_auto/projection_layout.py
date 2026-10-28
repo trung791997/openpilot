@@ -11,7 +11,9 @@ from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK
                                                          SPEED_ALIGNMENTS, customization_metadata, validate_map_box, validate_widget_order)
 from openpilot.starpilot.ui.onroad_stopped_timer import timer_size
 from openpilot.starpilot.ui.onroad_torque_geometry import maximum_footprint
-from openpilot.starpilot.ui.onroad_customization import SPEED_LAYOUT_V7, migrate_speed_layout, migrate_large_sign_layout
+from openpilot.starpilot.ui.onroad_customization import (SPEED_LAYOUT_V7, migrate_speed_layout, migrate_large_sign_layout,
+                                                        place_attached_slc_actions, migrate_confirmation_layout)
+from openpilot.starpilot.ui.large_speed_geometry import ACTION_X, ACTION_Y, sources_extent
 
 MAX_BYTES = 16384
 DOCUMENT_KEY = 'projection'
@@ -83,6 +85,7 @@ def layout_metadata_for_viewport(viewport):
   widgets['driver_monitor']['default']['y'] += height - 1080
   x, y, w, h = maximum_footprint(30, 30, width - 60, height - 60, width)
   widgets['torque_bar'].update(width=w, height=h)
+  widgets['torque_bar'].pop('confirmationObstacle', None)
   widgets['torque_bar']['default'].update(x=x, y=y)
   timer_w, _ = timer_size('large')
   widgets[STOPPED_TIMER_WIDGET]['default'].update(x=(width - timer_w) / 2, y=520)
@@ -110,8 +113,8 @@ def layout_metadata_for_viewport(viewport):
                               'default': {'x': width - 30 - FAVORITE_SIZE[0], 'y': 155, 'enabled': False, 'display': 'words'}}
   widgets[NOW_PLAYING_WIDGET] = {'label': 'Now playing', 'kind': NOW_PLAYING_WIDGET,
                                  'width': NOW_PLAYING_SIZE[0], 'height': NOW_PLAYING_SIZE[1], 'colors': {},
-                                 'note': 'Spotify or phone audio over the darkened cover, with a seek bar and shuffle, previous, play, next and repeat buttons. '
-                                         'Opacity sets the card background.',
+                                 'note': 'Spotify or phone audio over the darkened cover, with a seek bar and shuffle, previous, play, next and '
+                                         'repeat buttons. Opacity sets the card background.',
                                  'opacity': {'min': NOW_PLAYING_OPACITY[0], 'max': NOW_PLAYING_OPACITY[1], 'default': NOW_PLAYING_OPACITY[2]},
                                  'collapseToggle': True,
                                  'default': {'x': width - 30 - NOW_PLAYING_SIZE[0], 'y': height - 30 - NOW_PLAYING_SIZE[1],
@@ -188,9 +191,11 @@ def default_layout(screen, display=None):
 def default_layout_for_viewport(viewport, display=None):
   metadata = layout_metadata_for_viewport(viewport)
   display = {**DISPLAY_DEFAULTS, **{key: value for key, value in (display or {}).items() if key in DISPLAY_DEFAULTS}}
-  return {'version': 5, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
+  result = {'version': 5, 'clock24Hour': False, 'largeUiGammaTrial': False, **display, 'canvas': {key: metadata[key] for key in ('width', 'height')},
           'widgets': {key: {**widget['default'], **({'size': 192} if key == 'steering_wheel' else {})}
                       for key, widget in metadata['widgets'].items()}}
+  place_attached_slc_actions(result['widgets'], metadata['bounds'], sources_extent(result))
+  return result
 
 
 def placement_size(key, widget, placement):
@@ -215,6 +220,9 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     card, actions = result['widgets']['cruise_limits'], result['widgets']['speed_limit_actions']
     gap = actions['y'] - card['y']
     migrate_speed_layout(result['widgets'], 'large', metadata['bounds'], gap if gap in (372, 425) else 232, widgets=metadata['widgets'])
+    # The intermediate v2 validator still uses its historical wider action box.
+    actions['x'] = min(actions['x'], metadata['bounds']['x'] + metadata['bounds']['width'] -
+                       max(metadata['widgets']['speed_limit_actions']['width'], SPEED_LAYOUT_V7['large']['speed_limit_actions'][0]))
     result['version'] = 2
     return validate_layout_for_viewport(result, viewport)
   fields = {'version', 'canvas', 'widgets'}
@@ -267,9 +275,15 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     # own 346x460); keep a saved spot by sliding it back on screen.
     if key in (NOW_PLAYING_WIDGET, 'cruise_limits') and type(placement) is dict and (key == NOW_PLAYING_WIDGET or value['version'] >= 5):
       size = NOW_PLAYING_SIZE if key == NOW_PLAYING_WIDGET else SPEED_CARD_SIZE
+      actions = result['widgets'].get('speed_limit_actions')
+      attached = (key == 'cruise_limits' and type(actions) is dict and
+                  (actions.get('x'), actions.get('y')) == (placement.get('x', 0) + ACTION_X - 88, placement.get('y', 0) + ACTION_Y - 75))
       for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), size, strict=True):
         if type(placement.get(axis)) in (int, float) and math.isfinite(placement[axis]):
-          placement[axis] = min(placement[axis], bounds[axis] + bounds[extent] - dimension)
+          moved = min(placement[axis], bounds[axis] + bounds[extent] - dimension)
+          if attached:  # attached actions move with the card, so place_attached_slc_actions still finds them
+            actions[axis] += moved - placement[axis]
+          placement[axis] = moved
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:
       for axis in ('x', 'y'):
         if type(placement.get(axis)) in (int, float):
@@ -335,7 +349,12 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       migrate_speed_layout(result['widgets'], 'large', bounds, gap if gap in (232, 492) else 232, widgets=metadata['widgets'])
     if value['version'] < 5:
       migrate_large_sign_layout(result['widgets'], bounds, widgets=metadata['widgets'])
+    actions = result['widgets']['speed_limit_actions']
+    if (actions['x'], actions['y']) == (100, 296):
+      actions.update(x=metadata['widgets']['speed_limit_actions']['default']['x'], y=metadata['widgets']['speed_limit_actions']['default']['y'])
     result['version'] = 5
+  migrate_confirmation_layout(result['widgets'], 'large', metadata['widgets'], bounds, extra_height=sources_extent(result))
+  place_attached_slc_actions(result['widgets'], bounds, sources_extent(result))
   if len(json.dumps(result, separators=(',', ':'), allow_nan=False).encode()) > MAX_BYTES:
     raise ValueError('Projection layout too large')
   return result

@@ -117,6 +117,8 @@ def execute(statements, env):
     raise SystemExit(code)
   env.setdefault("os", SimpleNamespace(getenv=lambda key: None, _exit=exit_process))
   env.setdefault("recovery_small_only", False)
+  env.setdefault("coherent_warp", None)
+  env.setdefault("set_core_affinity", Mock())
   from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
   env.setdefault("STARTUP_FALLBACK_EXIT", STARTUP_FALLBACK_EXIT)
   exec(compile(ast.fix_missing_locations(ast.Module(body=statements, type_ignores=[])), str(MODEL_SOURCE), "exec"), env)
@@ -165,7 +167,9 @@ def test_observed_availability_and_big_eligibility(monkeypatch, present, cable, 
 
 @pytest.mark.parametrize("timeout,worker_alive", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("custom", [False, True])
-def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive):
+def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive, monkeypatch):
+  from openpilot.starpilot.models import manager
+  monkeypatch.setattr(manager, "shipped_default", lambda: Path("bundled-small"))
   body = main_body()
   start = next(i for i, node in enumerate(body) if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "st")
   end = next(i for i, node in enumerate(body) if ast.unparse(node).startswith("config_realtime_process("))
@@ -199,7 +203,8 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
     events.append("big" if chestnut else "small")
     return SimpleNamespace(chestnut=chestnut, model_id="big" if chestnut else "small", warmup=Mock())
 
-  def verified(width, height, path, version, chestnut, model_id, sha):
+  def verified(width, height, path, version, chestnut, model_id, sha, **kwargs):
+    assert kwargs == ({} if chestnut else {"coherent_warp": None})
     return state(width, height, chestnut), "prepared-" + model_id
 
   params, receipt = Mock(), Mock()
@@ -220,7 +225,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
          "params": params, "requested_model_id": "big", "ModelVariant": ModelVariant,
          "CP": SimpleNamespace(brand="mock"), "demo": False,
          "wait_for_chestnut_power": lambda CP, timeout: events.append("power"),
-         "jetlink_adapter": SimpleNamespace(hooks=lambda: hooks), "drop_chestnut": Mock(),
+         "jetlink_adapter": SimpleNamespace(hooks=lambda: hooks, coherent_warp=lambda: None), "drop_chestnut": Mock(),
          "release_compile_pool": Mock(), "gc": Mock()}
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]
