@@ -778,6 +778,84 @@
           }
         }
       ]
+    },
+    "0xe4b42a95dcb60d90": {
+      "kind": "struct",
+      "before_name": "StarPilotCarControl.Navigation.Instruction",
+      "after_name": "StarPilotCarControl.Navigation.Instruction",
+      "old_field_count": 6,
+      "old_storage": {
+        "dataWordCount": 2,
+        "pointerCount": 3,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "new_storage": {
+        "dataWordCount": 2,
+        "pointerCount": 3,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "added_fields": [
+        {
+          "slot": {
+            "offset": 6,
+            "type": {
+              "uint16": null
+            },
+            "defaultValue": {
+              "uint16": 0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "exitDegrees",
+          "codeOrder": 6,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 6
+          }
+        },
+        {
+          "slot": {
+            "offset": 14,
+            "type": {
+              "uint8": null
+            },
+            "defaultValue": {
+              "uint8": 0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "exitNumber",
+          "codeOrder": 7,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 7
+          }
+        },
+        {
+          "slot": {
+            "offset": 120,
+            "type": {
+              "bool": null
+            },
+            "defaultValue": {
+              "bool": false
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "drivingLeft",
+          "codeOrder": 8,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 8
+          }
+        }
+      ]
     }
   },
   "published_addition_commits": {

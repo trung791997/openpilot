@@ -68,6 +68,14 @@ def max_speeds(data: dict, segments: int) -> list[float | None]:
   return limits
 
 
+def roundabout(primary: dict, maneuver: dict, step: dict) -> tuple[int, int, bool]:
+  """(exit angle, exit number, drives on the left) for a roundabout maneuver; zeros when Mapbox gives none."""
+  degrees, exit_number = primary.get('degrees'), maneuver.get('exit')
+  degrees = round(degrees) if type(degrees) in (int, float) and math.isfinite(degrees) and 0 < degrees <= 360 else 0
+  exit_number = exit_number if type(exit_number) is int and 0 < exit_number < 256 else 0
+  return degrees, exit_number, step.get('driving_side') == 'left'
+
+
 @dataclass(frozen=True)
 class Step:
   start: float
@@ -76,6 +84,9 @@ class Step:
   text: str
   maneuver_type: str
   modifier: str
+  exit_degrees: int = 0  # roundabout exit angle, 180 = straight through; 0 = not given
+  exit_number: int = 0
+  driving_left: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,13 +115,15 @@ class NavigationRoute:
       offset = 0.
       for index, step in enumerate(steps):
         end = offset + number(step['distance'])
-        maneuver = steps[min(index + 1, len(steps) - 1)]['maneuver']
+        upcoming = steps[min(index + 1, len(steps) - 1)]
+        maneuver = upcoming['maneuver']
         banners = step.get('bannerInstructions', [])
         primary = banners[0].get('primary', {}) if banners else {}
         text = str(primary.get('text') or maneuver.get('instruction', ''))[:256]
         self.steps.append(Step(offset, end, number(step['duration']), text,
                                str(primary.get('type') or maneuver['type'])[:40],
-                               modifier(primary.get('modifier') or maneuver.get('modifier', 'none'))[:40]))
+                               modifier(primary.get('modifier') or maneuver.get('modifier', 'none'))[:40],
+                               *roundabout(primary, maneuver, upcoming)))
         offset = end
       self.total_distance = number(data['distance'])
       self.total_duration = number(data['duration'])
@@ -145,7 +158,8 @@ class NavigationRoute:
     duration += sum(row.duration for row in self.steps[index + 1:])
     instruction = {'text': step.text, 'maneuverType': step.maneuver_type, 'maneuverModifier': step.modifier,
                        'distanceMeters': remaining, 'remainingDistanceMeters': max(0., self.steps[-1].end - along),
-                       'remainingDurationSeconds': duration}
+                       'remainingDurationSeconds': duration, 'exitDegrees': step.exit_degrees,
+                       'exitNumber': step.exit_number, 'drivingLeft': step.driving_left}
     upcoming = self.steps[min(index + 1, len(self.steps) - 1)]
     next_maneuver = {'maneuverType': upcoming.maneuver_type, 'maneuverModifier': upcoming.modifier,
                          'distanceMeters': max(0., upcoming.end - along)}

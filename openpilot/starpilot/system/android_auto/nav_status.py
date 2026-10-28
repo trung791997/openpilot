@@ -75,16 +75,26 @@ def _normal(value: str) -> str:
   return (value or '').replace(' ', '').replace('_', '').lower()
 
 
-def maneuver_event(maneuver_type: str, modifier: str) -> tuple[int, int]:
-  """Mapbox maneuver -> (event, turn side)."""
+ROUNDABOUTS = ('roundabout', 'rotary')
+# Exit angle from the modifier when Mapbox gives no degrees, right-hand traffic; mirrored for left-hand.
+EXIT_ANGLES = {'sharpright': 45, 'right': 90, 'slightright': 135, 'straight': 180, 'slightleft': 225, 'left': 270,
+               'sharpleft': 315, 'uturn': 360}
+
+
+def maneuver_event(maneuver_type: str, modifier: str, driving_left: bool = False) -> tuple[int, int]:
+  """Mapbox maneuver -> (event, turn side).
+
+  The Civic cluster (head unit NavigationFocusManager, jadx, static) draws on/off ramps, merges and forks as a
+  slight arrow whatever the modifier, and gives them the same point class as a plain turn, so ramps and merges go
+  out as the turn their modifier says. Forks keep their own class. Mapbox's 'roundabout turn' is a small
+  roundabout it says to show as an ordinary turn. For roundabouts the side is the traffic side, not the exit side.
+  """
   kind, mod = _normal(maneuver_type), _normal(modifier)
   side = SIDE_LEFT if 'left' in mod else SIDE_RIGHT if 'right' in mod else SIDE_UNSPECIFIED
-  if kind in ('roundabout', 'rotary', 'roundaboutturn'):
-    return EVENT_ROUNDABOUT_ENTER_AND_EXIT, side
-  if kind in ('exitroundabout', 'exitrotary'):
-    return EVENT_ROUNDABOUT_EXIT, side
-  fixed = {'depart': EVENT_DEPART, 'arrive': EVENT_DESTINATION, 'merge': EVENT_MERGE, 'onramp': EVENT_ON_RAMP,
-           'offramp': EVENT_OFF_RAMP, 'fork': EVENT_FORK}
+  if kind in ROUNDABOUTS or kind in ('exitroundabout', 'exitrotary'):
+    return (EVENT_ROUNDABOUT_ENTER_AND_EXIT if kind in ROUNDABOUTS else EVENT_ROUNDABOUT_EXIT,
+            SIDE_LEFT if driving_left else SIDE_RIGHT)
+  fixed = {'depart': EVENT_DEPART, 'arrive': EVENT_DESTINATION, 'fork': EVENT_FORK}
   if kind in fixed:
     return fixed[kind], side
   if mod == 'uturn':
@@ -96,6 +106,21 @@ def maneuver_event(maneuver_type: str, modifier: str) -> tuple[int, int]:
   if 'left' in mod or 'right' in mod:
     return EVENT_TURN, side
   return (EVENT_NAME_CHANGE if kind == 'newname' else EVENT_STRAIGHT), SIDE_UNSPECIFIED
+
+
+def roundabout_exit(maneuver_type: str, modifier: str, degrees: int = 0, driving_left: bool = False) -> int | None:
+  """Exit angle for a roundabout turn event, or None for anything else.
+
+  Mapbox and Android Auto both measure it in the direction of travel with 180 = straight through. The head unit
+  turns it into the arrow (right-hand traffic: 90 = right, 270 = left); with no angle it draws the arrow pointing
+  back, which is what every roundabout showed before this was sent.
+  """
+  if _normal(maneuver_type) not in ROUNDABOUTS:
+    return None
+  if 0 < degrees <= 360:
+    return degrees
+  angle = EXIT_ANGLES.get(_normal(modifier), 180)
+  return 360 - angle if driving_left and angle != 360 else angle
 
 
 def display_distance(meters: float, metric: bool) -> tuple[int, int]:
@@ -137,9 +162,12 @@ def status_message(status: int) -> bytes:
   return field(1, status)
 
 
-def turn_message(road: str, event: int, side: int, image: bytes | None = None) -> bytes:
-  # NavigationNextTurnEvent: road = 1, turn_side = 2, event = 3 (legacy NextTurnEnum), image = 4
-  return (field(1, road[:128]) + field(2, side) + field(3, event) + (field(4, image) if image else b''))
+def turn_message(road: str, event: int, side: int, image: bytes | None = None, angle: int | None = None,
+                 exit_number: int = 0) -> bytes:
+  # NavigationNextTurnEvent: road = 1, turn_side = 2, event = 3 (legacy NextTurnEnum), image = 4,
+  # turn_angle = 5, turn_number = 6 (roundabouts only)
+  return (field(1, road[:128]) + field(2, side) + field(3, event) + (field(4, image) if image else b'') +
+          (field(5, angle) if angle is not None else b'') + (field(6, exit_number) if angle is not None and exit_number else b''))
 
 
 def distance_message(meters: float, seconds: float, metric: bool) -> bytes:
@@ -219,7 +247,8 @@ class NavFeed:
       instruction = state.instruction
       snapshot.update(road=instruction.text, type=instruction.maneuverType, modifier=instruction.maneuverModifier,
                       distance=float(instruction.distanceMeters), remaining=float(instruction.remainingDistanceMeters),
-                      duration=float(instruction.remainingDurationSeconds))
+                      duration=float(instruction.remainingDurationSeconds), degrees=int(instruction.exitDegrees),
+                      exit=int(instruction.exitNumber), driving_left=bool(instruction.drivingLeft))
     return snapshot
 
   def _run(self) -> None:
@@ -337,17 +366,19 @@ class NavStatus:
       self.shown_turn, self.shown_distance = None, None
       self._send(NAV_STATUS, status_message(STATUS_ACTIVE))
       self.sent_status = STATUS_ACTIVE
-    turn = (snap['road'], snap['type'], snap['modifier'])
+    degrees, exit_number, driving_left = snap.get('degrees', 0), snap.get('exit', 0), snap.get('driving_left', False)
+    turn = (snap['road'], snap['type'], snap['modifier'], degrees, exit_number, driving_left)
     if turn != self.shown_turn:
-      legacy_event, side = maneuver_event(snap['type'], snap['modifier'])
+      legacy_event, side = maneuver_event(snap['type'], snap['modifier'], driving_left)
+      angle = roundabout_exit(snap['type'], snap['modifier'], degrees, driving_left)
       maneuver = modern_maneuver(snap['type'], snap['modifier'])
       image = turn_image(snap['type'], snap['modifier'], *self.image_size) if self.image_size else None
       # Older receivers use the flat messages; newer ones consume 0x8006/0x8007.
-      self._send(NAV_TURN, turn_message(snap['road'], legacy_event, side, image))
+      self._send(NAV_TURN, turn_message(snap['road'], legacy_event, side, image, angle, exit_number))
       self._send(NAV_NOTIFICATION, notification_message(snap['road'], maneuver))
       legacy = self._legacy()
       # Not event=: that is the log record's own name, and it hid every one of these lines on the drive.
-      self.log('nav_guidance_sent', maneuver=maneuver, legacy_event=legacy_event, side=side, legacy=legacy,
+      self.log('nav_guidance_sent', maneuver=maneuver, legacy_event=legacy_event, side=side, angle=angle, legacy=legacy,
                modern=self._modern(), image=legacy and image is not None, road_chars=len(snap['road']))
       self.shown_turn, self.shown_distance = turn, None
     metric = bool(snap.get('metric'))

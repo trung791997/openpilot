@@ -78,6 +78,21 @@ def route():
     {'distance': 0., 'duration': 0., 'maneuver': {'type': 'arrive', 'instruction': 'You have arrived'}}]}]})
 
 
+def test_roundabout_exit_angle_and_number_reach_the_instruction():
+  steps = [{'distance': 1112., 'duration': 100., 'maneuver': {'type': 'depart'}, 'bannerInstructions': [
+             {'primary': {'type': 'roundabout', 'modifier': 'right', 'degrees': 92.4, 'text': 'Main Street'}}]},
+           {'distance': 0., 'duration': 0., 'driving_side': 'left', 'maneuver': {'type': 'roundabout', 'exit': 1}}]
+  route = NavigationRoute({'distance': 1112., 'duration': 100., 'geometry': {'coordinates': [[0., 0.], [.01, 0.]]},
+                           'legs': [{'steps': steps}]})
+  instruction = route.progress((.005, 0.), 5., 90.).instruction
+  assert (instruction['exitDegrees'], instruction['exitNumber'], instruction['drivingLeft']) == (92, 1, True)
+  steps[0]['bannerInstructions'][0]['primary']['degrees'] = float('nan')
+  steps[1]['maneuver']['exit'] = True
+  instruction = NavigationRoute({'distance': 1112., 'duration': 100., 'geometry': {'coordinates': [[0., 0.], [.01, 0.]]},
+                                 'legs': [{'steps': steps}]}).progress((.005, 0.), 5., 90.).instruction
+  assert (instruction['exitDegrees'], instruction['exitNumber']) == (0, 0)
+
+
 def test_route_interpolation_preserves_distance_and_advice(route):
   progress = route.progress((.005, 0.), 5., 90.)
   assert abs(progress.instruction['distanceMeters'] - 556.) < .01

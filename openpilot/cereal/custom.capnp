@@ -87,6 +87,9 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
       distanceMeters @3 :Float32;
       remainingDistanceMeters @4 :Float32;
       remainingDurationSeconds @5 :Float32;
+      exitDegrees @6 :UInt16;  # roundabout exit angle in the direction of travel, 180 = straight through; 0 = not given
+      exitNumber @7 :UInt8;    # roundabout exit, 1 = first; 0 = not given
+      drivingLeft @8 :Bool;    # left-hand traffic (roundabouts run clockwise)
     }
     version @12 :UInt16;
     speedLimit @13 :Float32;  # m/s, Mapbox posted limit on the matched route segment; 0 = unknown

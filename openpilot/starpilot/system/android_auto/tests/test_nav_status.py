@@ -61,17 +61,60 @@ def tick(stream, now, seconds=1.0):
   ('turn', 'uturn', (ns.EVENT_U_TURN, ns.SIDE_UNSPECIFIED)),
   ('continue', 'straight', (ns.EVENT_STRAIGHT, ns.SIDE_UNSPECIFIED)),
   ('new name', 'none', (ns.EVENT_NAME_CHANGE, ns.SIDE_UNSPECIFIED)),
-  ('off ramp', 'right', (ns.EVENT_OFF_RAMP, ns.SIDE_RIGHT)),
-  ('on ramp', 'slight left', (ns.EVENT_ON_RAMP, ns.SIDE_LEFT)),
-  ('merge', 'left', (ns.EVENT_MERGE, ns.SIDE_LEFT)),
+  # The cluster draws ramps and merges as slight arrows whatever the side, so they go out as the turn they are.
+  ('off ramp', 'right', (ns.EVENT_TURN, ns.SIDE_RIGHT)),
+  ('off ramp', 'slight right', (ns.EVENT_SLIGHT_TURN, ns.SIDE_RIGHT)),
+  ('off ramp', 'straight', (ns.EVENT_STRAIGHT, ns.SIDE_UNSPECIFIED)),
+  ('on ramp', 'slight left', (ns.EVENT_SLIGHT_TURN, ns.SIDE_LEFT)),
+  ('merge', 'left', (ns.EVENT_TURN, ns.SIDE_LEFT)),
   ('fork', 'right', (ns.EVENT_FORK, ns.SIDE_RIGHT)),
+  # Roundabouts carry the traffic side (right-hand here), not the exit side.
   ('roundabout', 'right', (ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT, ns.SIDE_RIGHT)),
-  ('exit roundabout', 'left', (ns.EVENT_ROUNDABOUT_EXIT, ns.SIDE_LEFT)),
+  ('rotary', 'left', (ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT, ns.SIDE_RIGHT)),
+  ('exit roundabout', 'left', (ns.EVENT_ROUNDABOUT_EXIT, ns.SIDE_RIGHT)),
+  ('roundabout turn', 'left', (ns.EVENT_TURN, ns.SIDE_LEFT)),
   ('depart', 'none', (ns.EVENT_DEPART, ns.SIDE_UNSPECIFIED)),
   ('arrive', 'right', (ns.EVENT_DESTINATION, ns.SIDE_RIGHT)),
 ])
 def test_mapbox_maneuvers_map_to_the_cars_events(kind, modifier, expected):
   assert ns.maneuver_event(kind, modifier) == expected
+
+
+def cluster_arrow(angle, side):
+  # Head unit NavigationFocusManager.changeAngle + getArrowAngle (jadx, static): 16 arrows clockwise from up.
+  calc = ((1 if side == ns.SIDE_LEFT else -1) * (90 if angle == -1 else angle) + 180) % 360
+  return round(calc / 22.5) % 16
+
+
+@pytest.mark.parametrize('modifier,degrees,driving_left,arrow', [
+  ('right', 90, False, 4),        # first exit, right-hand traffic: right arrow
+  ('straight', 180, False, 0),
+  ('left', 270, False, 12),
+  ('uturn', 360, False, 8),
+  ('slight right', 0, False, 2),  # no degrees from Mapbox: from the modifier
+  ('sharp left', 0, False, 10),
+  ('right', 0, True, 4),          # left-hand traffic: same arrow for the same exit side
+  ('left', 90, True, 12),         # first exit, left-hand traffic, is on the left
+])
+def test_roundabout_exit_draws_the_exit_arrow(modifier, degrees, driving_left, arrow):
+  _, side = ns.maneuver_event('roundabout', modifier, driving_left)
+  assert cluster_arrow(ns.roundabout_exit('roundabout', modifier, degrees, driving_left), side) == arrow
+  assert ns.roundabout_exit('turn', modifier, degrees, driving_left) is None
+  assert ns.roundabout_exit('roundabout turn', modifier, degrees, driving_left) is None
+
+
+def test_roundabout_turn_carries_angle_and_exit(nav):
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = {**GUIDING, 'type': 'roundabout', 'modifier': 'right', 'degrees': 92, 'exit': 1}
+  tick(stream, now)
+  fields = ns.parse_fields(next(payload for _, kind, payload in session.sent if kind == ns.NAV_TURN))
+  assert fields[2] == [ns.SIDE_RIGHT] and fields[3] == [ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT]
+  assert fields[5] == [92] and fields[6] == [1]
+  session.sent.clear()
+  feed.value = {**GUIDING, 'type': 'roundabout', 'modifier': 'right', 'degrees': 180, 'exit': 2}
+  tick(stream, now)
+  assert ns.NAV_TURN in [kind for _, kind, _ in session.sent]
 
 
 @pytest.mark.parametrize('meters,metric,expected', [
@@ -295,6 +338,9 @@ def test_navigation_wire_schema_golden_bytes():
   # Independent literals from the proto field numbers. Legacy turn: road = 1, turn_side = 2 (LEFT = 1),
   # event = 3 (TURN = 4). Notification: Maneuver.TYPE_TURN_NORMAL_LEFT (7).
   assert ns.turn_message('Main', ns.EVENT_TURN, ns.SIDE_LEFT) == bytes.fromhex('0a044d61696e10011804')
+  # Roundabout: turn_angle = 5 (90), turn_number = 6 (2); ROUNDABOUT_ENTER_AND_EXIT = 13, RIGHT = 2.
+  assert ns.turn_message('Main', ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT, ns.SIDE_RIGHT, None, 90, 2) == \
+    bytes.fromhex('0a044d61696e1002180d285a3002')
   # NavigationStep: maneuver = 1, road = 2 {name = 1}, cue = 4 {alternate_text = 1}.
   assert ns.notification_message('Main', 7) == bytes.fromhex('0a140a02080712060a044d61696e22060a044d61696e')
   assert ns.notification_message('', 7) == bytes.fromhex('0a080a02080712020a00')

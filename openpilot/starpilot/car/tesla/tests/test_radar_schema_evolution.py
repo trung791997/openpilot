@@ -118,13 +118,20 @@ def populated(schema):
                 'locationMonoTime': 1100, 'controlValid': True, 'version': 1})
 
 
+def assert_shared_equal(a, b):
+  shared = a.keys() & b.keys()
+  for k in shared:
+    if isinstance(a[k], dict) and isinstance(b[k], dict):
+      assert_shared_equal(a[k], b[k])
+    else:
+      assert a[k] == b[k], k
+  # a field only one schema has (navigation.speedLimit, instruction.exitDegrees) must still be at its default
+  assert not any(v for k, v in (a | b).items() if k not in shared)
+
+
 def assert_occupied_equal(old, new):
   for field in ('hudControl', 'steeringLimitInfo', 'navigation'):
-    a, b = getattr(old, field).to_dict(), getattr(new, field).to_dict()
-    shared = a.keys() & b.keys()
-    assert {k: a[k] for k in shared} == {k: b[k] for k in shared}
-    # a field only one schema has (navigation.speedLimit) must still be at its default
-    assert not any(v for k, v in (a | b).items() if k not in shared)
+    assert_shared_equal(getattr(old, field).to_dict(), getattr(new, field).to_dict())
 
 
 def test_historical_occupied_fields_decode_under_current_schema(historical):
