@@ -52,8 +52,6 @@ def test_selected_place_routes_without_persisting_temporary_coordinates(owner):
   assert len(executor.jobs) == 1
   with pytest.raises(ValidationError):
     choose(owner, result)
-  with pytest.raises(ValidationError, match='cannot be saved'):
-    owner.favorite(status['destination'], status['revision'], True)
   unmarked = {key:value for key,value in status['destination'].items() if key != 'temporary'}
   with pytest.raises(ValidationError, match='cannot be saved'):
     owner.select(unmarked, status['revision'], True)
@@ -101,15 +99,39 @@ def test_favorite_edits_keep_route_and_labels_are_unique(owner):
   assert removed['destination']['name'] == 'Coffee Shop' and [row['name'] for row in removed['favorites']] == ['Coffee Shop']
 
 
-def test_suggestions_cannot_be_saved_but_remain_choosable(owner):
+PERMANENT = {'features':[{'properties':{'name':'125 Main St', 'full_address':'125 Main St, Springfield'},
+                          'geometry':{'coordinates':[-90.0001, 40.0001]}}]}
+
+
+def test_suggestion_star_saves_the_permanent_address_and_keeps_routing(owner):
   result, _, _ = suggest(owner)
   before = owner.read()
-  with patch('openpilot.starpilot.navigation.owner.response_json') as provider:
-    with pytest.raises(ValidationError, match='cannot be saved'):
-      owner.favorite_place(result['id'], result['searchId'], 'caller', before['revision'], True)
-    provider.assert_not_called()
-  assert owner.read() == before
-  assert choose(owner, result)[0]['destination']['temporary'] is True
+  with patch('openpilot.starpilot.navigation.owner.response_json', side_effect=[FEATURE, PERMANENT]) as provider:
+    saved = owner.favorite_place(result['id'], result['searchId'], 'caller', before['revision'], True, label='home')
+  reverse = provider.call_args_list[1].args
+  assert reverse[1].endswith('/geocode/v6/reverse') and reverse[2]['permanent'] == 'true'
+  assert (reverse[2]['longitude'], reverse[2]['latitude']) == ('-90.000000', '40.000000')
+  assert [(row['name'], row.get('label')) for row in saved['favorites']] == [('125 Main St', 'home')]
+  assert 'Coffee Shop' not in owner.path.read_text()
+
+
+@pytest.mark.parametrize('lookup', [PERMANENT, FEATURE])  # FEATURE: the address point equals the route point
+def test_temporary_destination_star_saves_permanent_address(owner, lookup):
+  status, _ = choose(owner, suggest(owner)[0])
+  with patch('openpilot.starpilot.navigation.owner.response_json', return_value=lookup):
+    saved = owner.favorite(status['destination'], status['revision'], True, label='work')
+  assert saved['destination']['temporary'] is True and saved['destination']['name'] == 'Coffee Shop'
+  assert len(saved['favorites']) == 1 and saved['favorites'][0]['label'] == 'work'
+  assert 'temporary' not in saved['favorites'][0]
+  assert owner.read_routing()['destination']['temporary'] is True
+
+
+def test_temporary_place_without_an_address_is_not_saved(owner):
+  status, _ = choose(owner, suggest(owner)[0])
+  with patch('openpilot.starpilot.navigation.owner.response_json', return_value={'features':[]}):
+    with pytest.raises(ValidationError, match='No street address'):
+      owner.favorite(status['destination'], status['revision'], True)
+  assert owner.read()['favorites'] == []
 
 
 def test_address_search_requests_permanent_results(owner):

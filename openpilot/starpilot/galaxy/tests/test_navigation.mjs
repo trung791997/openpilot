@@ -191,6 +191,11 @@ console.log("POI suggestions: validation, selected-only retrieval, destination s
   requests[2].resolve(response(snapshot("c"))); await flush()
   client.save({ ...place, address: "1 Main" })
   assert.deepEqual(JSON.parse(requests[3].options.body).destination, { name: "Library", latitude: 41, longitude: -88, address: "1 Main" })
+  requests[3].resolve(response(snapshot("d"))); await flush()
+  // A destination chosen from a suggestion is saved through the comma's permanent address lookup.
+  client.save({ ...place, temporary: true }, "home")
+  assert.deepEqual(JSON.parse(requests[4].options.body), { action: "favorite", revision: "d", label: "home",
+    destination: { name: "Library", latitude: 41, longitude: -88, temporary: true } })
   client.stop()
   assert(!validNavigation({ ...snapshot(), recents: [{ ...place, label: "gym" }] }))
   assert(!validNavigation({ ...snapshot(), recents: Array(11).fill(place) }))

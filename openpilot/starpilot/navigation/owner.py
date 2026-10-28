@@ -687,8 +687,31 @@ class NavigationOwner:
     selected = self._retrieve(identity, search_id, caller, expected_revision, authorized)
     return self._change(lambda doc: doc.update(destination=None, routeChoice=0), expected_revision, authorized, active_destination=selected)
 
+  def _permanent(self, place: dict) -> dict:
+    """A saveable copy of a temporary place: Mapbox's permanent street address at its coordinates.
+
+    Search suggestions and their coordinates may not be stored, so the star saves the
+    permanent-geocoding address there instead (shown under its Home/Work label)."""
+    token = self.read()['token']
+    if not token:
+      raise ValidationError('Add your Mapbox access token first')
+    self.geocode_budget.spend(enforce=False)
+    data = response_json(self.session, 'https://api.mapbox.com/search/geocode/v6/reverse',
+                         {'longitude': f"{place['longitude']:.6f}", 'latitude': f"{place['latitude']:.6f}", 'access_token': token,
+                          'types': 'address', 'limit': 1, 'permanent': 'true'})
+    try:
+      properties = data['features'][0]['properties']
+      coordinates = data['features'][0]['geometry']['coordinates']
+      address = properties.get('full_address') or properties.get('place_formatted')
+      return destination({'name': properties.get('name') or address, 'address': address,
+                          'longitude': coordinates[0], 'latitude': coordinates[1]})
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+      raise ValidationError('No street address was found for this place; search for its address to save it') from None
+
   def favorite_place(self, identity, search_id, caller, expected_revision, authorized, label=None):
-    raise ValidationError('Search suggestions can be used for a route but cannot be saved; search for an address instead')
+    self._validate_favorite_label(label)
+    return self._save_favorite(self._permanent(self._retrieve(identity, search_id, caller, expected_revision, authorized)),
+                               expected_revision, authorized, label, permanent=True)
 
   @staticmethod
   def _navigate(doc, selected):
@@ -724,11 +747,16 @@ class NavigationOwner:
 
   def favorite(self, value: dict, expected_revision: str, authorized, label=None) -> dict:
     self._validate_favorite_label(label)
-    if isinstance(value, dict) and value.get('temporary'):
-      raise ValidationError('This place can be used for a route but cannot be saved')
     selected = destination(value)
+    permanent = bool(value.get('temporary'))
+    if permanent:
+      selected = self._permanent(selected)
+    return self._save_favorite(selected, expected_revision, authorized, label, permanent=permanent)
+
+  def _save_favorite(self, selected, expected_revision, authorized, label, permanent=False):
     def update(doc):
-      self._reject_temporary_promotion(doc, selected)
+      if not permanent:  # a looked-up address may sit exactly on the temporary route point
+        self._reject_temporary_promotion(doc, selected)
       self._add_favorite(doc, selected)
       if label is not None:
         self._label_favorite(doc, selected['id'], label)
