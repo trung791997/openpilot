@@ -412,11 +412,11 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   belt = top + h * .45
   _fill(_rounded([at(-.27, 0), at(.27, 0), at(.42, .45), at(-.42, .45)], [w * .11, w * .11, w * .02, w * .02]),
         _shade((top, CAR_LIGHT), (belt, CAR_BODY)))
-  _fill(_rounded([at(-.225, .07), at(.225, .07), at(.355, .41), at(-.355, .41)], [w * .07, w * .07, w * .025, w * .025]),
-        _shade((top + h * .07, GLASS_TOP), (top + h * .41, CAR_GLASS)))
-  _fill([at(-.05, .09), at(.03, .09), at(-.16, .39), at(-.24, .39)], lambda y: _fade(CAR_LIGHT, 40))
+  _fill(_rounded([at(-.19, .11), at(.19, .11), at(.29, .37), at(-.29, .37)], [w * .05, w * .05, w * .02, w * .02]),
+        _shade((top + h * .11, GLASS_TOP), (top + h * .37, CAR_GLASS)))
+  _fill([at(-.04, .13), at(.03, .13), at(-.13, .355), at(-.20, .355)], lambda y: _fade(CAR_LIGHT, 40))
   if state == BRAKING:  # third brake light along the top of the rear glass
-    _fill(_rounded(box(-.09, .085, .09, .115), w * .012), lambda y: _mix(TAIL_DIM, LEAD_RED, pulse))
+    _fill(_rounded(box(-.08, .125, .08, .15), w * .012), lambda y: _mix(TAIL_DIM, LEAD_RED, pulse))
   for side in (-1, 1):
     _fill(_rounded([at(side * .40, .33), at(side * .55, .32), at(side * .55, .41), at(side * .41, .42)][::side], w * .03),
           _shade((top + h * .32, CAR_BODY), (top + h * .42, CAR_SHADE)))
