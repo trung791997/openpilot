@@ -142,9 +142,16 @@ def _adapter_class():
       buffers = [q.uop.base.buffer for q in queues]
       views = []
       for buffer in buffers:
-        if not buffer.is_allocated() or not hasattr(buffer.get_storage().host, "mv"):
+        if not buffer.is_allocated():
           raise ValueError("Small model history has no allocated host mapping")
-        view = buffer.as_memoryview(allow_zero_copy=True)
+        if hasattr(buffer, "get_storage"):
+          if not hasattr(buffer.get_storage().host, "mv"):
+            raise ValueError("Small model history has no allocated host mapping")
+          view = buffer.as_memoryview(allow_zero_copy=True)
+        else:  # legacyf6's Buffer has no get_storage; its QCOM allocator maps the buffer directly
+          view = buffer.allocator._as_buffer(buffer._buf) if hasattr(buffer.allocator, "_as_buffer") else None
+          if view is None:
+            raise ValueError("Small model history has no allocated host mapping")
         if view.readonly or view.nbytes != buffer.nbytes:
           raise ValueError("Small model history mapping is not writable or complete")
         views.append(np.frombuffer(view, dtype=np.uint8))

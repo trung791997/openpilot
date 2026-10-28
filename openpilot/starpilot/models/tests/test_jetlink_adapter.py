@@ -344,3 +344,24 @@ def test_small_reset_refuses_unusable_mapped_history(mapping):
       adapter.adapter().small_reset(small)
     assert np.all(small.prev_desire == 1)
     assert np.all(q.numpy() == 1)
+
+
+def test_small_reset_zeroes_legacyf6_history_without_get_storage():
+  # legacyf6's Buffer has no get_storage; its QCOM allocator's _as_buffer is the host view
+  from openpilot.starpilot.models.runner import CatalogModelState
+  history = bytearray(b"\x01" * 8)
+  class Allocator:
+    def _as_buffer(self, buf): return memoryview(buf)
+  class Buffer:
+    device, nbytes, allocator, _buf = "CPU", 8, Allocator(), history
+    def is_allocated(self): return True
+  class Base: buffer = Buffer()
+  class UOp: base = Base()
+  class Queue: uop, device = UOp(), "CPU"
+  small = CatalogModelState.__new__(CatalogModelState)
+  small.input_queues, small.npy, small.prev_desire = {"history": Queue()}, {}, np.ones(8, np.float32)
+  with patch("tinygrad.Device", {"CPU": SimpleNamespace(synchronize=lambda: None)}):
+    reset = adapter.adapter().small_reset(small)
+    reset()
+  assert history == bytearray(8)
+  assert np.all(small.prev_desire == 0)

@@ -30,9 +30,12 @@ class RuntimeSettingsTests(unittest.TestCase):
         candidate = acc.Candidate('map', acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value='new'), speed)
         result = acc.step(acc.new_session('drive', history), acc.Observation(acc.ObservationKind.VALID, candidate),
                           active, policy, now_ns=1)
-        self.assertEqual(result.state.accepted, history)
-        self.assertIsNotNone(result.state.pending)
-        self.assertEqual(result.state.pending.automatic, not asks)
+        if asks:
+          self.assertEqual(result.state.accepted, history)
+          self.assertFalse(result.state.pending.automatic)
+        else:  # automatic adoption is immediate: no pending hold
+          self.assertIsNone(result.state.pending)
+          self.assertEqual(result.state.accepted.candidate, candidate)
 
   def test_confirmation_on_never_autoaccepts_first_changed_or_disengaged_limits(self):
     active = acc.Authority(acc.Mode.COMBINED, acc.LongitudinalOwner.SYSTEM, True, True, False, False)
