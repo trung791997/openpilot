@@ -1,9 +1,14 @@
 """Compiled old/new occupied-field wire checks for optional preAP radar context."""
+import json
+from pathlib import Path
+
 import capnp
 import pytest
 
 from openpilot.cereal import custom
 from openpilot.starpilot.car.tesla.tests.schema_fixture import layout
+
+REVIEW = json.loads((Path(__file__).with_name('fixtures') / 'custom_reviewed_schema_additions.json').read_text())
 
 HISTORICAL_SCHEMA = '''@0xb526ba661d550a59;
 struct StarPilotCarControl @0x81c2f05a394cf4af {
@@ -153,4 +158,8 @@ def test_occupied_field_slots_and_types_remain_identical(historical):
     assert historical.schema.fields[name].proto.as_builder().to_bytes() == current.schema.fields[name].proto.as_builder().to_bytes()
   for nested in ('HUDControl', 'SteeringLimitInfo', 'Navigation'):
     old, new = getattr(historical, nested), getattr(current, nested)
-    assert layout(old.schema) == layout(new.schema)
+    old_layout, new_layout = layout(old.schema), layout(new.schema)
+    # Fields appended after this fixture (Navigation.speedLimit) must be in the reviewed additions
+    added = REVIEW['types'].get(hex(old.schema.node.id), {}).get('added_fields', [])
+    old_layout['fields'] += [f for f in added if f not in old_layout['fields']]
+    assert old_layout == new_layout

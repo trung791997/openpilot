@@ -75,7 +75,6 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
     nextManeuver @9 :Instruction;
     locationMonoTime @10 :UInt64;
     controlValid @11 :Bool;
-    speedLimit @13 :Float32;  # m/s, Mapbox posted limit on the matched route segment; 0 = unknown
 
     struct Coordinate {
       latitude @0 :Float64;
@@ -90,6 +89,7 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
       remainingDurationSeconds @5 :Float32;
     }
     version @12 :UInt16;
+    speedLimit @13 :Float32;  # m/s, Mapbox posted limit on the matched route segment; 0 = unknown
   }
 
   phoneGps @3 :StarPilotCarState.Gps;  # sourceMonoTime is comma receive time minus the phone's fix age

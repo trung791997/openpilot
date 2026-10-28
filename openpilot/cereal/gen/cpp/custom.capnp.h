@@ -76,6 +76,7 @@ CAPNP_DECLARE_ENUM(Family, b03bf8f7c878937a);
 CAPNP_DECLARE_SCHEMA(af3712fe799c76ce);
 CAPNP_DECLARE_SCHEMA(f35cc4560bbf6ec2);
 CAPNP_DECLARE_SCHEMA(911f05bba9c1fc1f);
+CAPNP_DECLARE_SCHEMA(95dadb4e861cc9ee);
 CAPNP_DECLARE_SCHEMA(918d19aa5875c92d);
 CAPNP_DECLARE_SCHEMA(de92e382e2400293);
 CAPNP_DECLARE_SCHEMA(da96579883444c35);
@@ -645,11 +646,12 @@ struct StarPilotCarState {
   class Builder;
   class Pipeline;
   struct ToyotaCruise;
+  struct RadarPointStatus;
   struct Gps;
   struct FeedbackPublication;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(f35cc4560bbf6ec2, 3, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(f35cc4560bbf6ec2, 4, 7)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -665,6 +667,21 @@ struct StarPilotCarState::ToyotaCruise {
 
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(911f05bba9c1fc1f, 4, 2)
+    #if !CAPNP_LITE
+    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    #endif  // !CAPNP_LITE
+  };
+};
+
+struct StarPilotCarState::RadarPointStatus {
+  RadarPointStatus() = delete;
+
+  class Reader;
+  class Builder;
+  class Pipeline;
+
+  struct _capnpPrivate {
+    CAPNP_DECLARE_STRUCT_HEADER(95dadb4e861cc9ee, 2, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -3456,6 +3473,11 @@ public:
   inline bool hasToyotaCruise() const;
   inline  ::cereal::StarPilotCarState::ToyotaCruise::Reader getToyotaCruise() const;
 
+  inline bool hasRadarPointStatus() const;
+  inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Reader getRadarPointStatus() const;
+
+  inline  ::uint64_t getRadarTracksMonoTime() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -3625,6 +3647,16 @@ public:
   inline void adoptToyotaCruise(::capnp::Orphan< ::cereal::StarPilotCarState::ToyotaCruise>&& value);
   inline ::capnp::Orphan< ::cereal::StarPilotCarState::ToyotaCruise> disownToyotaCruise();
 
+  inline bool hasRadarPointStatus();
+  inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Builder getRadarPointStatus();
+  inline void setRadarPointStatus( ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Builder initRadarPointStatus(unsigned int size);
+  inline void adoptRadarPointStatus(::capnp::Orphan< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>> disownRadarPointStatus();
+
+  inline  ::uint64_t getRadarTracksMonoTime();
+  inline void setRadarTracksMonoTime( ::uint64_t value);
+
 private:
   ::capnp::_::StructBuilder _builder;
   template <typename, ::capnp::Kind>
@@ -3765,6 +3797,87 @@ private:
 class StarPilotCarState::ToyotaCruise::Pipeline {
 public:
   typedef ToyotaCruise Pipelines;
+
+  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
+  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
+      : _typeless(kj::mv(typeless)) {}
+
+private:
+  ::capnp::AnyPointer::Pipeline _typeless;
+  friend class ::capnp::PipelineHook;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+};
+#endif  // !CAPNP_LITE
+
+class StarPilotCarState::RadarPointStatus::Reader {
+public:
+  typedef RadarPointStatus Reads;
+
+  Reader() = default;
+  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
+
+  inline ::capnp::MessageSize totalSize() const {
+    return _reader.totalSize().asPublic();
+  }
+
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const {
+    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
+  }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint64_t getTrackId() const;
+
+  inline  ::uint8_t getObjectStatus() const;
+
+private:
+  ::capnp::_::StructReader _reader;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::List;
+  friend class ::capnp::MessageBuilder;
+  friend class ::capnp::Orphanage;
+};
+
+class StarPilotCarState::RadarPointStatus::Builder {
+public:
+  typedef RadarPointStatus Builds;
+
+  Builder() = delete;  // Deleted to discourage incorrect usage.
+                       // You can explicitly initialize to nullptr instead.
+  inline Builder(decltype(nullptr)) {}
+  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
+  inline operator Reader() const { return Reader(_builder.asReader()); }
+  inline Reader asReader() const { return *this; }
+
+  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const { return asReader().toString(); }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint64_t getTrackId();
+  inline void setTrackId( ::uint64_t value);
+
+  inline  ::uint8_t getObjectStatus();
+  inline void setObjectStatus( ::uint8_t value);
+
+private:
+  ::capnp::_::StructBuilder _builder;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  friend class ::capnp::Orphanage;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+};
+
+#if !CAPNP_LITE
+class StarPilotCarState::RadarPointStatus::Pipeline {
+public:
+  typedef RadarPointStatus Pipelines;
 
   inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
@@ -17614,6 +17727,54 @@ inline ::capnp::Orphan< ::cereal::StarPilotCarState::ToyotaCruise> StarPilotCarS
       ::capnp::bounded<5>() * ::capnp::POINTERS));
 }
 
+inline bool StarPilotCarState::Reader::hasRadarPointStatus() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline bool StarPilotCarState::Builder::hasRadarPointStatus() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Reader StarPilotCarState::Reader::getRadarPointStatus() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Builder StarPilotCarState::Builder::getRadarPointStatus() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline void StarPilotCarState::Builder::setRadarPointStatus( ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>::Builder StarPilotCarState::Builder::initRadarPointStatus(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), size);
+}
+inline void StarPilotCarState::Builder::adoptRadarPointStatus(
+    ::capnp::Orphan< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>> StarPilotCarState::Builder::disownRadarPointStatus() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::StarPilotCarState::RadarPointStatus,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+
+inline  ::uint64_t StarPilotCarState::Reader::getRadarTracksMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t StarPilotCarState::Builder::getRadarTracksMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotCarState::Builder::setRadarTracksMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS, value);
+}
+
 inline  ::uint16_t StarPilotCarState::ToyotaCruise::Reader::getVersion() const {
   return _reader.getDataField< ::uint16_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
@@ -17764,6 +17925,34 @@ inline float StarPilotCarState::ToyotaCruise::Builder::getApprovedTargetMps() {
 inline void StarPilotCarState::ToyotaCruise::Builder::setApprovedTargetMps(float value) {
   _builder.setDataField<float>(
       ::capnp::bounded<6>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint64_t StarPilotCarState::RadarPointStatus::Reader::getTrackId() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t StarPilotCarState::RadarPointStatus::Builder::getTrackId() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotCarState::RadarPointStatus::Builder::setTrackId( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint8_t StarPilotCarState::RadarPointStatus::Reader::getObjectStatus() const {
+  return _reader.getDataField< ::uint8_t>(
+      ::capnp::bounded<8>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint8_t StarPilotCarState::RadarPointStatus::Builder::getObjectStatus() {
+  return _builder.getDataField< ::uint8_t>(
+      ::capnp::bounded<8>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotCarState::RadarPointStatus::Builder::setObjectStatus( ::uint8_t value) {
+  _builder.setDataField< ::uint8_t>(
+      ::capnp::bounded<8>() * ::capnp::ELEMENTS, value);
 }
 
 inline  ::uint64_t StarPilotCarState::Gps::Reader::getSourceMonoTime() const {
