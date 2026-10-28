@@ -18,7 +18,13 @@ Street filter and one-time resend added 2026-10-28 after a live capture: every s
 reply 2 (not stored, resend) and mRoad was instruction text ("Turn right"). Only street names are
 sent now ("onto X" / "on X", or a bare name); the present-location name gets the same filter.
 
-Evidence: **static** only (smali of the pulled AndroidAuto and Navigation apps, and the
+Live result 2026-10-28 16:48–16:50 (parked, route started): real street names went out
+("Westgate Way", "South State Highway 78 / TX 78"), each turn was resent once, and the cluster
+still answered every send 2,15 (not stored) and showed no text — same answer as the stock
+nameless sends. This cluster does not take guidance text in Android Auto mode; the module has
+no visible effect.
+
+Evidence before that: **static** only (smali of the pulled AndroidAuto and Navigation apps, and the
 decompiled bridge). Not yet installed or road-tested.
 
 Build (arm64 or x86 host): Android SDK `build-tools;34.0.0` (for `d8`) and
