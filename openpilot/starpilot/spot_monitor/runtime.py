@@ -387,8 +387,19 @@ class VASMRuntime:
         close()
 
 
+def _vision_slc(stop: threading.Event) -> None:
+  """The speed-limit sign reader shares this process (and its numpy/cv2) instead of running its own.
+  If it dies, V-ASM keeps going; the reader stays off until the next drive, as when it was its own process."""
+  try:
+    from openpilot.starpilot.speed_limits.vision import producer
+    producer.run(stop, producer.saved_car_wanted(Params()))
+  except Exception:
+    cloudlog.exception("vision SLC thread stopped")
+
+
 def main() -> None:
   from openpilot.cereal import messaging
+  from openpilot.common.hardware import PC
   from openpilot.cereal.visionipc import VisionStreamType
   from msgq.visionipc import VisionIpcClient
 
@@ -397,12 +408,13 @@ def main() -> None:
   for number in previous:
     signal.signal(number, lambda _signal, _frame: stop.set())
   path = os.getenv("STARPILOT_VASM_MODEL_PATH", str(DEFAULT_MODEL_PATH))
-  model_path = Path(path) if path and Path(path).is_absolute() else None
+  model_path = Path(path) if path and Path(path).is_absolute() and Path(path).is_file() and not PC else None
   messages = messaging.SubMaster(["deviceState", "carState", "starpilotRadarState"])
   pm = messaging.PubMaster(["spotMonitorState"])
   runtime = VASMRuntime(Params(), messages,
                         lambda: cabin_client_factory(VisionIpcClient, VisionStreamType),
                         lambda observation: publish_observation(pm, observation), model_path=model_path)
+  threading.Thread(target=_vision_slc, args=(stop,), name="vision_slc", daemon=True).start()
   try:
     while not stop.is_set():
       started = time.monotonic()
