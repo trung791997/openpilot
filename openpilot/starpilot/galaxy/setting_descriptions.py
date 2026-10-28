@@ -6,6 +6,7 @@ This presentation catalog supplies the purpose before any genuine prerequisite.
 from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HELP
 
 DESCRIPTIONS = {
+  'FordPrefSteerAngleCurvature': 'Uses steering pinion angle instead of yaw rate to estimate Ford steering curvature. Applies at the next vehicle startup.',
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
   'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
                               'Applies after the next startup; exact vehicle takeover checks remain required.'),
@@ -63,7 +64,7 @@ DESCRIPTIONS = {
   'curve_reset': 'Deletes saved cornering learning so Curve Speed Controller can learn your preferences again.',
   'SpeedLimitController': 'Adjusts the set speed to accepted speed limits using your source priority and offsets.',
   'ShowSpeedLimits': 'Shows recognized speed-limit signs on the driving screen.',
-  'SLCConfirmation': 'Adopts new limits after a 3-second flash. Confirm lower or higher limits still asks in that direction. With Automatic adoption off, every new limit asks: + accepts and − declines within 10 seconds, and no answer keeps the current speed.',
+  'SLCConfirmation': 'Auto adopts new limits immediately. Confirm lower or higher limits still asks in that direction. With Automatic adoption off, every new limit asks: + accepts and − declines within 10 seconds, and no answer keeps the current speed.',
   'SLCConfirmationLower': 'With Automatic adoption on, asks before a lower limit such as a school zone lowers cruise speed. No answer in 10 seconds keeps the current speed.',
   'SLCConfirmationHigher': 'With Automatic adoption on, asks before a higher limit raises cruise speed. No answer in 10 seconds keeps the current speed.',
   'SLCPriority1': 'Chooses the first source checked for a fresh speed limit.',
@@ -71,6 +72,7 @@ DESCRIPTIONS = {
   'SLCFallback': 'Keeps the previously accepted speed limit when sources are unavailable, until another limit is accepted.',
   'slc_adopt': 'Keeps the current speed-limit offset schedule fixed when display units change.',
   'slc_reset': 'Resets saved speed-limit offsets while retaining valid configured speed ranges.',
+  'reset_driver_monitoring': 'Clear saved wheel-side detection. Automatic detection restarts on the next drive.',
   'AlwaysAllowUploads': 'Allows queued full logs and videos to upload over metered networks. This uses mobile data.',
   'UploadRlogs': ('Uploads the full rlog of every finished segment while driving, on any connection including phone hotspots. ' +
                   'Uses a lot of mobile data and some CPU. When off, rlogs still upload once parked.'),

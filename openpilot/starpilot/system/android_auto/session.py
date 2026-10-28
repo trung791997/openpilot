@@ -68,9 +68,9 @@ INPUT_EVENT = 0x8001
 INPUT_BINDING_REQUEST = 0x8002
 INPUT_BINDING_RESPONSE = 0x8003
 
-# Car data (sensor) and Bluetooth channels, opened the way a phone does
-SENSOR_SERVICE = 2          # ChannelDescriptor.sensor_channel
-BLUETOOTH_SERVICE = 6       # ChannelDescriptor.bluetooth_channel
+# Car data (sensor) and Bluetooth channels, opened the way a phone does.
+SENSOR_SERVICE = 2
+BLUETOOTH_SERVICE = 6
 SENSOR_START_REQUEST = 0x8001
 SENSOR_START_RESPONSE = 0x8002
 SENSOR_EVENT = 0x8003
@@ -207,6 +207,9 @@ def choose_video_mode(channels: list[dict]) -> VideoMode:
 class Session:
   """TLS, framing and control-channel handshake; one instance per TCP connection."""
 
+  # Wireless adapters relay to the car, which can take a while (or wait for the driver) before it answers.
+  DISCOVERY_TIMEOUT = 60.0
+
   def __init__(self, peer, cert: str, key: str, log: Callable[..., None] | None = None, ca: str | None = None, *,
                receive_timeout: float = 3.0, send_timeout: float = 3.0, handshake_timeout: float = 15.0):
     self.peer = peer
@@ -292,10 +295,10 @@ class Session:
         self.peer.settimeout(previous_timeout)
     return -(-len(data) // FRAGMENT_SIZE)
 
-  def receive(self, *, deadline: float | None = None) -> tuple[int, int, bytes]:
+  def receive(self, *, deadline: float | None = None, patient: bool = False) -> tuple[int, int, bytes]:
     """Read one complete message within one deadline, tolerating partial reads."""
     message_deadline = time.monotonic() + (self.receive_timeout if self.authenticated else self.handshake_timeout)
-    deadline = message_deadline if deadline is None else min(deadline, message_deadline)
+    deadline = message_deadline if deadline is None else deadline if patient else min(deadline, message_deadline)
     timed_peer = hasattr(self.peer, "gettimeout") and hasattr(self.peer, "settimeout")
     previous_timeout = self.peer.gettimeout() if timed_peer else None
 
@@ -461,7 +464,7 @@ class Session:
 
   def discover(self, device_name: str, device_brand: str) -> list[dict]:
     self.send(0, MSG_SERVICE_DISCOVERY_REQUEST, field(4, device_name) + field(5, device_brand))
-    raw = self.wait_for(0, MSG_SERVICE_DISCOVERY_RESPONSE)
+    raw = self.wait_for(0, MSG_SERVICE_DISCOVERY_RESPONSE, timeout=self.DISCOVERY_TIMEOUT, patient=True)
     response = parse_fields(raw)
     channels = []
     for descriptor in response.get(1, []):
@@ -505,6 +508,16 @@ class Session:
           item["input_config"] = parse_input_config(one(fields, 4))
         except ValueError:
           item["input_config"] = InputConfig()
+      if isinstance(one(fields, SENSOR_SERVICE), bytes):
+        try:
+          item["sensors"] = [one(parse_fields(s), 1) for s in parse_fields(one(fields, SENSOR_SERVICE)).get(1, []) if isinstance(s, bytes)]
+        except ValueError:
+          item["sensors"] = []
+      if isinstance(one(fields, BLUETOOTH_SERVICE), bytes):
+        try:
+          item["bluetooth"] = parse_bluetooth(one(fields, BLUETOOTH_SERVICE))
+        except ValueError:
+          item["bluetooth"] = {}
       channels.append(item)
     # Everything but the channel list: make, model, year, software and, on newer units, headunit_info.
     head_unit = redact_head_unit(describe_fields({number: values for number, values in response.items() if number != 1}))
@@ -513,10 +526,10 @@ class Session:
                head_unit=head_unit)
     return channels
 
-  def wait_for(self, channel: int, kind: int, timeout: float = 10.0) -> bytes:
+  def wait_for(self, channel: int, kind: int, timeout: float = 10.0, patient: bool = False) -> bytes:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-      ch, message, data = self.receive()
+      ch, message, data = self.receive(deadline=deadline, patient=patient)
       if ch == channel and message == kind:
         return data
       self.dispatch(ch, message, data, expected=f"{channel}/{kind:#x}")
@@ -613,7 +626,10 @@ class ProjectionSession(Session):
     self.epoch_acked = 0
     self.video_confirmed = False
     self.input_channel: int | None = None
-    self.phone_address = ""  # this comma's Bluetooth address, set by the supervisor for the pairing request
+    self.max_window = self.MAX_WINDOW  # raised by the supervisor for adapters that need the car's full window
+    self.phone_services = False  # open the car-data and Bluetooth channels like a phone (adapter profile)
+    self.phone_frames = False  # send picture NAL units only (adapter profile)
+    self.phone_address = ""  # this comma's Bluetooth address, for the pairing request
     self.sensor_channel: int | None = None
     self.sensor_events: dict[int, int] = {}
     self.bluetooth_channel: int | None = None
@@ -637,7 +653,8 @@ class ProjectionSession(Session):
     self.mode = choose_video_mode(self.channels)
     self.open_video()
     self.open_input()
-    self.open_phone_services()
+    if self.phone_services:
+      self.open_phone_services()
     self.request_projection()
     return self.mode
 
@@ -656,7 +673,7 @@ class ProjectionSession(Session):
     configs = setup.get(3, [])
     if configs and mode.config_index not in configs:
       raise ValueError(f"Head unit did not accept video configuration {mode.config_index}: {json_fields(setup)}")
-    self.window = min(window, self.MAX_WINDOW)
+    self.window = min(window, self.max_window)
     self.event("video_setup", mode=mode.as_dict(), window=window, used_window=self.window)
 
   def open_input(self) -> None:
@@ -957,7 +974,8 @@ class ProjectionSession(Session):
         fragments += self.send(self.mode.channel, AV_MEDIA_CODEC_CONFIG, config)
         if not self.fragment_acks:
           self.config_ack_slack += 1
-    data = wire_frame(data, drop_config=bool(config))
+    if self.phone_frames:
+      data = wire_frame(data, drop_config=bool(config))
     fragments += self.send(self.mode.channel, AV_MEDIA_WITH_TIMESTAMP, struct.pack(">Q", timestamp_us) + data)
     if self.fragment_acks:
       self.frame_fragments.append(fragments)

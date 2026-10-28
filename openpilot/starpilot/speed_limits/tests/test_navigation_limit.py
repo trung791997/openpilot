@@ -158,7 +158,6 @@ def test_route_limit_fills_in_and_card_applies_its_command():
       command, state, now = out.command.slcCruiseCommand, out.message.slcState, MONO + dt
       break
   assert command is not None and command.source == 'online'
-  assert dt >= 3_000_000_000  # the automatic adoption hold still applies
   assert abs(state.acceptedSpeedLimit - limit) < .001
   current = physical_actions.state_current(ReplaySM({'slcState': state}, now), None, 'card-producer', now)
   assert physical_actions.command_applicable(command, current, None, 'card-producer', now, 40.0 / 3.6,
