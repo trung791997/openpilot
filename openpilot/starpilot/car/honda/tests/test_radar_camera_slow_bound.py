@@ -51,7 +51,7 @@ def test_route_2f8_shape_slows_lead_gradually_after_hold():
   assert out['vLead'] < 17.2
   out = run(cb, 3.0)
   assert cb.weights[0] == pytest.approx(CAM_SLOW_W_MAX)
-  assert out['vLead'] == pytest.approx(17.2 - CAM_SLOW_W_MAX * (17.2 - 11.9))
+  assert out['vLead'] == pytest.approx(17.2 - min(CAM_SLOW_W_MAX * (17.2 - 11.9), CAM_SLOW_DV_MAX))
   assert out['vRel'] == pytest.approx(out['vLead'] - V_EGO)
   assert out['vLeadK'] == pytest.approx(out['vLead'])
 
