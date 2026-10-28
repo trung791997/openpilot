@@ -24,6 +24,11 @@ public class Hook implements IXposedHookLoadPackage {
 
   @Override
   public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
+    try {
+      Cast.install(lpparam.packageName);
+    } catch (Throwable t) {
+      XposedBridge.log("aaroad: cast hook failed: " + t);
+    }
     if (!PKG.equals(lpparam.packageName)) return;
     Class<?> nfm = XposedHelpers.findClass(NFM, lpparam.classLoader);
 

@@ -31,3 +31,13 @@ Build (arm64 or x86 host): Android SDK `build-tools;34.0.0` (for `d8`) and
 `platforms;android-17` under `/tmp/hu/sdk`, `api-82.jar` at `/tmp/hu/api-82.jar`,
 plus `aapt`, `zipalign`, `apksigner` on PATH. `./build.sh` → `out/aaroad.apk`.
 The debug keystore is generated locally and not committed.
+
+## Cluster screen cast crop (`Cast.java`, 2026-10-28)
+
+Honda Hack's screen cast sends a 400×240 copy of the whole screen and `meter_civic.xml` draws it
+`fitXY` into a 584×191 area, so it is ~1.8× too wide. The module hooks `ImageView.setImageBitmap`,
+and for the view named `screen_cast` swaps in a frame cut to the chosen screen regions at their own
+aspect, centered on black. Regions are read from `/data/local/tmp/aacast.txt` (re-read every 2 s):
+`card` (default), `map`, `both`, `full`, or `x,y,w,h;…` in 800×480 screen pixels. Change it live:
+`adb shell "echo both > /data/local/tmp/aacast.txt"`. Evidence: **static** (decompiled Honda Hack,
+offline preview from a head-unit screenshot); not yet installed.
