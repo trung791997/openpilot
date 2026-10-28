@@ -137,3 +137,11 @@ def test_vision_only_lead_untouched():
   for _ in range(frames(4.0)):
     out = step(cb, lead)
   assert out['vLead'] == pytest.approx(17.2)
+
+
+def test_one_frame_dip_does_not_restart_hold():
+  # 2f8 T1365.04: the camera-slower gap dipped under CAM_SLOW_DV for single frames; the hold must not restart each time
+  cb = CameraSlowBound()
+  for i in range(frames(3.0)):
+    step(cb, radar_lead(), vision(v=16.0 if i % 6 == 5 else 11.9))
+  assert cb.weights[0] > 0.0
