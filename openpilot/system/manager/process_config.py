@@ -71,8 +71,8 @@ def reproject(started: bool, params: Params, CP: car.CarParams) -> bool:
   return select_reproject_session(params)
 
 def vision_slc_development(started: bool, params: Params, CP: car.CarParams) -> bool:
-  from openpilot.starpilot.feature_runtime import enabled as feature_enabled
-  return started and feature_enabled(params, CP, 'slc', os.environ) and feature_enabled(params, CP, 'vision', os.environ)
+  from openpilot.starpilot.speed_limits.vision.gate import wanted
+  return started and wanted(params, CP)
 
 def galaxy_local(started: bool, params: Params, CP: car.CarParams) -> bool:
   return os.getenv("STARPILOT_GALAXY_DISABLE") != "1"
@@ -103,6 +103,11 @@ def vasm_monitor(started: bool, params: Params, CP: car.CarParams) -> bool:
   model_path = os.getenv("STARPILOT_VASM_MODEL_PATH", str(DEFAULT_MODEL_PATH))
   return (started and bool(model_path) and os.path.isabs(model_path) and os.path.isfile(model_path) and
           vasm_enabled(params, development=True))
+
+def vasm_or_vision_slc(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # The speed-limit sign reader runs as a thread of the V-ASM process: one Python with numpy+cv2 instead of two
+  # saves about 30 MB on the comma. Either feature keeps the process up; each idles when its own toggle is off.
+  return (not PC and vasm_monitor(started, params, CP)) or vision_slc_development(started, params, CP)
 
 def sensord_run(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started or sentry_motion(started, params, CP)
@@ -144,12 +149,11 @@ procs = [
   PythonProcess("reprojectcalibd", "openpilot.selfdrive.modeld.reprojectcalibd", reproject, enabled=COMMA_HARDWARE),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
-  PythonProcess("vision_slc", "openpilot.starpilot.speed_limits.vision.producer", vision_slc_development),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 
   PythonProcess("sensord", "openpilot.system.sensord.sensord", sensord_run, enabled=not PC, restart_on_exit=True),
   PythonProcess("sentry_motion", "openpilot.starpilot.sentry_mode.runtime", sentry_motion, enabled=not PC),
-  PythonProcess("vasm_monitor", "openpilot.starpilot.spot_monitor.runtime", vasm_monitor, enabled=not PC),
+  PythonProcess("vasm_monitor", "openpilot.starpilot.spot_monitor.runtime", vasm_or_vision_slc),
   PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run, restart_on_exit=True),
   PythonProcess("navigationd", "openpilot.starpilot.navigation.runtime", always_run),
   PythonProcess("navtilesd", "openpilot.starpilot.navigation.navtilesd", always_run, enabled=platform.system() == "Linux"),

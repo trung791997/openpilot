@@ -1,6 +1,7 @@
 """Exercise the producer loop against the current camera API and typed wire."""
 
 from collections import deque
+from itertools import chain, repeat
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -532,6 +533,71 @@ class TestVisionProducer(unittest.TestCase):
     self.assertNotEqual(messages[0].producerSessionId, messages[1].producerSessionId)
     self.assertEqual(messages[1].producerSessionId, messages[2].producerSessionId)
     self.assertEqual(messages[2].supportCount, 2)
+
+
+  def test_paused_reader_holds_no_camera_publishes_nothing_and_resumes_on_a_new_session(self):
+    """Inside the V-ASM process the reader follows its own toggle: off drops the camera and the held sign."""
+    core = Mock(last_published_support_at=1., last_detection_at=0.)
+    core.observe.return_value = (55, 0.9, 2, 1)
+    client = Mock()
+    client.is_connected.return_value = True
+    camera = Mock(return_value=client)
+    road = {VisionStreamType.VISION_STREAM_NARROW_ROAD}
+    camera.available_streams.side_effect = [road, road, EndProducer()]
+    frames = [(np.zeros((2, 2, 3)), 5_000_000_000, 12), (np.zeros((2, 2, 3)), 9_000_000_000, 13)]
+    clocks = [(1_000_000_000, 5_000_000_000), (1_000_000_000, 5_000_000_000), (1_010_000_000, 5_010_000_000),
+              (5_000_000_000, 9_000_000_000), (5_000_000_000, 9_000_000_000), (5_010_000_000, 9_010_000_000)]
+    wanted = chain([True, False, False], repeat(True))
+    messages = []
+
+    def send(service, event):
+      messages.append(messaging.log_from_bytes(event.to_bytes()).slcVisionObservation.vision)
+
+    with patch('msgq.visionipc.VisionIpcClient', camera), \
+         patch('openpilot.common.params.Params', return_value=SimpleNamespace(get_bool=lambda _: False)), \
+         patch.object(messaging, 'PubMaster', return_value=SimpleNamespace(send=send)), \
+         patch.object(producer, 'VisionModelCore', return_value=core), \
+         patch.object(producer, 'WANTED_CHECK_SECONDS', 0.), \
+         patch.object(producer, '_camera_buffer', side_effect=[(object(), item[1], item[2]) for item in frames]), \
+         patch.object(producer, '_convert_camera_buffer', side_effect=frames), \
+         patch.object(producer, 'clock_pair_ns', side_effect=self.clock_pairs(clocks)), \
+         patch.object(producer.time, 'sleep') as sleep, \
+         self.assertRaises(EndProducer):
+      producer.run(should_run=lambda: next(wanted))
+
+    self.assertEqual([str(message.status) for message in messages], ['valid', 'valid'])
+    self.assertEqual([message.frameId for message in messages], [12, 13])
+    self.assertNotEqual(messages[0].producerSessionId, messages[1].producerSessionId)
+    self.assertEqual(camera.call_count, 2)  # the paused reader let go of its camera client
+    core.reset.assert_called()  # the sign seen before the pause cannot confirm a later one
+    self.assertEqual([call.args[0] for call in sleep.call_args_list], [producer.IDLE_SECONDS] * 2)
+
+  def test_stop_ends_the_reader_and_a_failing_gate_reads_as_off(self):
+    stop = Mock()
+    stop.is_set.side_effect = [False, False, True]
+    camera = Mock()
+    with patch('msgq.visionipc.VisionIpcClient', camera), \
+         patch('openpilot.common.params.Params', return_value=SimpleNamespace(get_bool=lambda _: False)), \
+         patch.object(messaging, 'PubMaster', return_value=SimpleNamespace(send=Mock())) as pm, \
+         patch.object(producer, 'VisionModelCore'), \
+         patch.object(producer, 'WANTED_CHECK_SECONDS', 0.), \
+         patch.object(producer.time, 'sleep'):
+      producer.run(stop, should_run=Mock(side_effect=OSError('params')))
+    camera.available_streams.assert_not_called()
+    pm.return_value.send.assert_not_called()
+
+  def test_saved_car_wanted_reads_the_saved_car_once(self):
+    from opendbc.car.structs import car
+    raw = car.CarParams.new_message(carFingerprint='HONDA_CIVIC').to_bytes()
+    params = Mock()
+    params.get.side_effect = [None, raw]
+    with patch('openpilot.starpilot.speed_limits.vision.gate.wanted', return_value=True) as gate:
+      check = producer.saved_car_wanted(params)
+      self.assertFalse(check())  # no CarParams yet
+      self.assertTrue(check())
+      self.assertTrue(check())
+    self.assertEqual(params.get.call_count, 2)
+    self.assertEqual(gate.call_args.args[1].carFingerprint, 'HONDA_CIVIC')
 
 
 if __name__ == '__main__':

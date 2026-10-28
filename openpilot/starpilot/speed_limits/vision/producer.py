@@ -23,6 +23,8 @@ FOLLOWUP_INFERENCE_INTERVAL_NS = 100_000_000
 FOLLOWUP_WINDOW_NS = 2_000_000_000
 # Retain a cooldown even when processing reaches the result-age budget.
 BUSY_INFERENCE_INTERVAL_NS = MAX_RESULT_AGE_NS * 3 // 2
+WANTED_CHECK_SECONDS = 2.0
+IDLE_SECONDS = 0.5
 
 
 def _log_jetson_stats(core, link) -> None:
@@ -141,7 +143,26 @@ def _send(pm, *, session: str, status: str, stream: str, observed_ns: int = 0,
   pm.send('slcVisionObservation', msg)
 
 
-def main() -> None:
+def saved_car_wanted(params):
+  """gate.wanted against the CarParams this drive saved; the manager's carParams arrives only every 50 s."""
+  import openpilot.cereal.messaging as messaging
+  from opendbc.car.structs import car
+  from openpilot.starpilot.speed_limits.vision.gate import wanted
+  cp = None
+
+  def check() -> bool:
+    nonlocal cp
+    if cp is None:
+      raw = params.get('CarParams')
+      if raw:
+        cp = messaging.log_from_bytes(raw, car.CarParams)
+    return cp is not None and wanted(params, cp)
+  return check
+
+
+def run(stop=None, should_run=None) -> None:
+  """Until stop is set. While should_run() is false (checked every WANTED_CHECK_SECONDS) the reader holds no camera
+  and publishes nothing, and starts a new session when it comes back."""
   import openpilot.cereal.messaging as messaging
   from openpilot.cereal.visionipc import VisionStreamType
   from msgq.visionipc import VisionIpcClient
@@ -181,8 +202,33 @@ def main() -> None:
   last_placement_check = -2.0
   last_clock_offset_ns = None
   model_paused = False
-  while True:
+  last_wanted_check = -WANTED_CHECK_SECONDS
+  active = True
+  while stop is None or not stop.is_set():
     now = time.monotonic()
+    if should_run is not None and now - last_wanted_check >= WANTED_CHECK_SECONDS:
+      last_wanted_check = now
+      try:
+        is_wanted = bool(should_run())
+      except Exception as error:
+        cloudlog.error('vision SLC gate unavailable: %s', error)
+        is_wanted = False
+      if not is_wanted and active:
+        if core is not None:
+          core.reset()
+        client = None
+        stream = 'unknown'
+        session = uuid.uuid4().hex
+        last_inference_ns = last_publish_ns = processing_interval_ns = 0
+        last_result = None
+        last_result_session = ''
+        last_result_observed_ns = last_result_valid_until_ns = 0
+        last_clock_offset_ns = None
+        model_paused = False
+      active = is_wanted
+    if not active:
+      time.sleep(IDLE_SECONDS)
+      continue
     if now - last_placement_check >= 2.0:
       _place_inference(params)
       last_placement_check = now
@@ -367,3 +413,7 @@ def main() -> None:
       session = uuid.uuid4().hex
       last_clock_offset_ns = None
       time.sleep(0.1)
+
+
+def main() -> None:
+  run()

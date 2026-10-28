@@ -84,3 +84,29 @@ def test_manager_predicate_requires_saved_doc_and_model(tmp_path, monkeypatch):
   assert not vasm_monitor(False, params, None)
   path.write_bytes(b"bad")
   assert not vasm_monitor(True, params, None)
+
+
+def test_one_process_serves_vasm_and_the_sign_reader(monkeypatch):
+  from openpilot.system.manager import process_config as pc
+
+  process = next(p for p in pc.procs if p.name == "vasm_monitor")
+  assert process.module == "openpilot.starpilot.spot_monitor.runtime" and process.enabled
+  assert not any(p.name == "vision_slc" for p in pc.procs)
+  for vasm, slv, expected in ((False, False, False), (True, False, not pc.PC), (False, True, True), (True, True, True)):
+    monkeypatch.setattr(pc, "vasm_monitor", lambda *_args, value=vasm: value)
+    monkeypatch.setattr(pc, "vision_slc_development", lambda *_args, value=slv: value)
+    assert pc.vasm_or_vision_slc(True, None, None) is expected
+
+
+def test_sign_reader_failure_leaves_vasm_running(monkeypatch):
+  import threading
+  from openpilot.starpilot.speed_limits.vision import producer
+  from openpilot.starpilot.spot_monitor import runtime
+
+  calls = []
+  monkeypatch.setattr(runtime, "Params", lambda: "params")
+  monkeypatch.setattr(producer, "saved_car_wanted", lambda params: calls.append(params) or "gate")
+  monkeypatch.setattr(producer, "run", lambda stop, should_run: calls.append((stop, should_run)) or 1 / 0)
+  stop = threading.Event()
+  runtime._vision_slc(stop)  # logs, does not raise or stop V-ASM
+  assert calls == ["params", (stop, "gate")] and not stop.is_set()
