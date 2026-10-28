@@ -360,6 +360,15 @@ def _fill(points, color_at):
   rl.rl_end()
 
 
+def _glow(x: float, y: float, radius: float, inner, outer) -> None:
+  # The comma's raylib takes a Vector2 centre, desktop raylib takes ints; the wrong one
+  # raises TypeError and kills the car view, leaving the head unit on the starting frame.
+  if len(rl.ffi.typeof(rl.rl.DrawCircleGradient).args) == 4:
+    rl.draw_circle_gradient(rl.Vector2(x, y), radius, inner, outer)
+  else:
+    rl.draw_circle_gradient(int(x), int(y), radius, inner, outer)
+
+
 def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   """LEAD badge in the style of the Honda cluster: a rear view of the lead car between two lane lines with gap bars
   under it. Yellow while the lead holds speed, red with lit brake lights while it brakes, teal while it pulls away."""
@@ -378,7 +387,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   stroke = max(2., unit * .05)
 
   # soft halo in the state color so the change reads at a glance
-  rl.draw_circle_gradient(int(cx), int(top + h * .55), w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
+  _glow(cx, top + h * .55, w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
 
   # lane lines fanning out from beside the car, and the gap bars on the road behind it
   road_top, road_bottom = top + h * .62, top + h * 1.85
@@ -433,7 +442,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
     lamp = [at(side * .17, .56), at(side * .495, .55), at(side * .48, .655), at(side * .21, .64)][::side]
     if state == BRAKING:
       lx, ly = at(side * .33, .60)
-      rl.draw_circle_gradient(int(lx), int(ly), w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
+      _glow(lx, ly, w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
     _fill(_rounded(lamp, w * .025), _shade((top + h * .55, _mix(tail, CAR_LIGHT, .25)), (top + h * .65, _mix(tail, TIRE, .25))))
     if state == BRAKING:
       _fill(_rounded([at(side * .25, .58), at(side * .44, .575), at(side * .43, .615), at(side * .27, .61)][::side], w * .015),

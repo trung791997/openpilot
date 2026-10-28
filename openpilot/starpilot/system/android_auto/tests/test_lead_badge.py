@@ -56,3 +56,17 @@ def test_lost_or_bad_lead_resets():
 @pytest.mark.parametrize('d_rel, v_ego, bars', ((40., 16., 3), (24., 16., 2), (13., 16., 1), (40., 0., 3), (20., 0., 2)))
 def test_gap_bars(d_rel, v_ego, bars):
   assert gap_bars(LeadView(d_rel, 0., 0., v_ego)) == bars
+
+
+@pytest.mark.parametrize('nargs', [4, 5])
+def test_glow_matches_either_raylib_gradient_signature(monkeypatch, nargs):
+  # The comma's raylib takes (Vector2, radius, inner, outer); passing ints there killed the car view.
+  from types import SimpleNamespace
+  from openpilot.starpilot.system.android_auto import projection_theme as theme
+  calls = []
+  fake = SimpleNamespace(ffi=SimpleNamespace(typeof=lambda fn: SimpleNamespace(args=[0] * nargs)),
+                         rl=SimpleNamespace(DrawCircleGradient=None), Vector2=lambda x, y: ('v', x, y),
+                         draw_circle_gradient=lambda *a: calls.append(a))
+  monkeypatch.setattr(theme, 'rl', fake)
+  theme._glow(10.6, 20.2, 5., 'in', 'out')
+  assert calls == [(('v', 10.6, 20.2), 5., 'in', 'out')] if nargs == 4 else [(10, 20, 5., 'in', 'out')]
