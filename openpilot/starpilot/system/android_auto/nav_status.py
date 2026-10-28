@@ -39,7 +39,12 @@ SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 3
 EVENT_DESTINATION = 19
 UNIT_METERS, UNIT_KILOMETERS, UNIT_KILOMETERS_P1, UNIT_MILES, UNIT_MILES_P1, UNIT_FEET = 1, 2, 3, 4, 5, 6
 
-# The Civic cluster (type ENUM) reads the legacy turn/distance pair. Session-000036 (2026-10-26) dropped video ~6 s
+# Head units below protocol 2 predate NavigationState (0x8006/0x8007); a phone sends them the legacy pair only.
+# Peter's 2019 Civic (1.3, image cluster 480x480) showed the arrow and distance but never the road name while
+# 0x8006 followed every legacy turn (session-000044, 2026-10-27; road text was set, e.g. 'East Plano Parkway').
+MODERN_MIN_PROTOCOL = (2, 0)
+
+# The Civic cluster reads the legacy turn/distance pair. Session-000036 (2026-10-26) dropped video ~6 s
 # after it 3 of 3 times, but that turn had the side and event in each other's fields and a modern maneuver number
 # (36 = straight) where the legacy event belongs; this encoder fixes that. If projection still ends within
 # LEGACY_PROBATION of the first legacy turn, the pair is switched off until the daemon restarts.
@@ -253,6 +258,8 @@ class NavStatus:
     self.focus_requested = False
     self.focus = None
     self.legacy_since = None  # first legacy turn this session
+    protocol = getattr(session, 'protocol', None)
+    self.modern_supported = protocol is None or tuple(protocol) >= MODERN_MIN_PROTOCOL
     self._reset()
 
   def _reset(self) -> None:
@@ -299,12 +306,20 @@ class NavStatus:
         self.focus_requested = False
         self.log('nav_focus_requested', focus=FOCUS_NATIVE)
 
+  def _legacy(self) -> bool:
+    return SEND_LEGACY and not _legacy_blocked
+
+  def _modern(self) -> bool:
+    return self.modern_supported or not self._legacy()  # the newer pair is the fallback when legacy is off
+
   def _send(self, kind: int, body: bytes) -> None:
     if kind in (NAV_TURN, NAV_DISTANCE):
-      if not SEND_LEGACY or _legacy_blocked:
+      if not self._legacy():
         return
       if self.legacy_since is None:
         self.legacy_since = self.clock()
+    elif kind in (NAV_NOTIFICATION, NAV_CURRENT_POSITION) and not self._modern():
+      return
     self.session.send(self.channel_id, kind, body)
 
   def _update(self, snap: dict | None, now: float) -> None:
@@ -330,9 +345,10 @@ class NavStatus:
       # Older receivers use the flat messages; newer ones consume 0x8006/0x8007.
       self._send(NAV_TURN, turn_message(snap['road'], legacy_event, side, image))
       self._send(NAV_NOTIFICATION, notification_message(snap['road'], maneuver))
-      legacy = SEND_LEGACY and not _legacy_blocked
-      self.log('nav_guidance_sent', maneuver=maneuver, event=legacy_event, side=side, legacy=legacy, modern=True,
-               image=legacy and image is not None)
+      legacy = self._legacy()
+      # Not event=: that is the log record's own name, and it hid every one of these lines on the drive.
+      self.log('nav_guidance_sent', maneuver=maneuver, legacy_event=legacy_event, side=side, legacy=legacy,
+               modern=self._modern(), image=legacy and image is not None, road_chars=len(snap['road']))
       self.shown_turn, self.shown_distance = turn, None
     metric = bool(snap.get('metric'))
     shown = display_distance(snap['distance'], metric)

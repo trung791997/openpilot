@@ -373,3 +373,40 @@ def test_late_or_clean_session_end_keeps_legacy(nav):
   now[0] += ns.LEGACY_PROBATION + 1
   stream.close(TimeoutError('late'))
   assert not ns._legacy_blocked
+
+
+@pytest.mark.parametrize('protocol,kinds', [
+  ((1, 3), [ns.NAV_STATUS, ns.NAV_TURN, ns.NAV_DISTANCE]),  # Peter's 2019 Civic
+  ((6, 1), [ns.NAV_STATUS, ns.NAV_TURN, ns.NAV_NOTIFICATION, ns.NAV_DISTANCE, ns.NAV_CURRENT_POSITION]),
+  (None, [ns.NAV_STATUS, ns.NAV_TURN, ns.NAV_NOTIFICATION, ns.NAV_DISTANCE, ns.NAV_CURRENT_POSITION]),
+])
+def test_old_head_units_get_only_the_legacy_pair(protocol, kinds):
+  session, feed, now = Session(), Feed(), [100.0]
+  session.protocol = protocol
+  stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=feed, clock=lambda: now[0])
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  assert [kind for _, kind, _ in session.sent] == kinds
+
+
+def test_old_head_unit_falls_back_to_modern_when_legacy_is_blocked(monkeypatch):
+  monkeypatch.setattr(ns, '_legacy_blocked', True)
+  session, feed, now = Session(), Feed(), [100.0]
+  session.protocol = (1, 3)
+  stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=feed, clock=lambda: now[0])
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  assert [kind for _, kind, _ in session.sent] == [ns.NAV_STATUS, ns.NAV_NOTIFICATION, ns.NAV_CURRENT_POSITION]
+
+
+def test_guidance_log_keeps_its_event_name(nav):
+  _, session, feed, now = nav
+  records = []
+  stream = ns.NavStatus.create(session, lambda name, **k: records.append((name, k)), feed=feed, clock=lambda: now[0])
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  name, fields = next(r for r in records if r[0] == 'nav_guidance_sent')
+  assert 'event' not in fields and fields['legacy_event'] == ns.EVENT_TURN and fields['road_chars'] == len('Main Street')
