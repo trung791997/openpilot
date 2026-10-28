@@ -9,6 +9,7 @@ The legacy turn/distance pair and the cluster type follow opencardev/aasdk ``aap
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -137,6 +138,26 @@ def display_distance(meters: float, metric: bool) -> tuple[int, int]:
     return round(feet / step) * step * 1000, UNIT_FEET
   miles = feet / 5280
   return (round(miles) * 1000, UNIT_MILES) if miles >= 10 else (round(miles * 10) * 100, UNIT_MILES_P1)
+
+
+def _java_round(x: float) -> int:
+  return math.floor(x + 0.5)  # Math.round, not Python's round-half-even
+
+
+def cluster_distance(meters: float) -> tuple[tuple[int, int], tuple[int, int]]:
+  """What a Honda head unit draws on the cluster, in feet/miles and in metres/km.
+
+  It ignores our rounded display value and redoes the rounding from distance_meters
+  (NavigationFocusManager.getRemainingDistance, static read of the Mitsubishi firmware):
+  100 ft steps under 1000 ft then 0.1 mi, or 10 m steps under 1000 m then 0.1 km. The
+  progress-bar buckets (getSegmentPercentage) change only where these numbers do. The
+  unit comes from the car's own setting, which we cannot see, so both are returned.
+  """
+  sent = max(0, round(meters))  # field 1 of the distance message
+  feet = _java_round(int(sent / 0.3048) / 100) * 100
+  imperial = (feet, 3) if feet < 1000 else (_java_round(feet / 5280 * 10), 4)
+  metric = (_java_round(sent / 10) * 10, 0) if sent < 1000 else (_java_round(sent / 100), 1)
+  return imperial, metric
 
 
 @lru_cache(maxsize=64)
@@ -382,7 +403,8 @@ class NavStatus:
                modern=self._modern(), image=legacy and image is not None, road_chars=len(snap['road']))
       self.shown_turn, self.shown_distance = turn, None
     metric = bool(snap.get('metric'))
-    shown = display_distance(snap['distance'], metric)
+    # Send whenever either the cluster's number or our own rounded value would change, at most once per interval.
+    shown = (display_distance(snap['distance'], metric), cluster_distance(snap['distance']))
     if shown != self.shown_distance and (self.shown_distance is None or now >= self.next_distance):
       pace = snap['remaining'] / snap['duration'] if snap.get('duration', 0) > 0 and snap.get('remaining', 0) > 0 else FALLBACK_SPEED
       seconds = snap['distance'] / max(pace, 1.0)

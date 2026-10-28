@@ -456,3 +456,45 @@ def test_guidance_log_keeps_its_event_name(nav):
   tick(stream, now)
   name, fields = next(r for r in records if r[0] == 'nav_guidance_sent')
   assert 'event' not in fields and fields['legacy_event'] == ns.EVENT_TURN and fields['road_chars'] == len('Main Street')
+
+
+@pytest.mark.parametrize('meters, expected', [
+  (14.0, ((0, 3), (10, 0))),
+  (16.0, ((100, 3), (20, 0))),  # 52 ft
+  (45.0, ((100, 3), (50, 0))),  # 147 ft
+  (46.0, ((200, 3), (50, 0))),  # 150 ft
+  (289.0, ((900, 3), (290, 0))),  # 948 ft
+  (290.0, ((2, 4), (290, 0))),  # 951 ft rounds to 1000 ft, shown as 0.2 mi
+  (999.0, ((6, 4), (1000, 0))),
+  (1000.0, ((6, 4), (10, 1))),
+  (24000.0, ((149, 4), (240, 1))),  # far out the cluster still steps in tenths
+])
+def test_cluster_distance_matches_the_head_units_rounding(meters, expected):
+  assert ns.cluster_distance(meters) == expected
+
+
+def test_far_distance_steps_with_the_clusters_tenths():
+  # Past 10 mi the comma card shows whole miles, but the Honda cluster shows 14.9, 14.8, ...
+  session, feed, now = Session(navigation={'min_interval_ms': 1000, 'type': ns.TYPE_ENUM}), Feed(), [100.0]
+  stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=feed, clock=lambda: now[0])
+  start(stream, session, now)
+  feed.value = {**GUIDING, 'distance': 24000.0}
+  tick(stream, now)
+  session.sent.clear()
+  feed.value = {**GUIDING, 'distance': 23830.0}
+  tick(stream, now, 1.0)
+  assert ns.display_distance(24000.0, False) == ns.display_distance(23830.0, False)
+  assert [kind for _, kind, _ in session.sent] == [ns.NAV_DISTANCE, ns.NAV_CURRENT_POSITION]
+  assert parse_fields(session.sent[0][2])[1] == [23830]
+
+
+def test_no_send_when_neither_the_cluster_nor_the_card_would_change():
+  session, feed, now = Session(navigation={'min_interval_ms': 1000, 'type': ns.TYPE_ENUM}), Feed(), [100.0]
+  stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=feed, clock=lambda: now[0])
+  start(stream, session, now)
+  feed.value = {**GUIDING, 'distance': 24000.0}
+  tick(stream, now)
+  session.sent.clear()
+  feed.value = {**GUIDING, 'distance': 23995.0}
+  tick(stream, now, 1.0)
+  assert session.sent == []
