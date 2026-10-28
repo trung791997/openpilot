@@ -200,6 +200,7 @@ class ProjectionOnroad:
       self._resources.callback(self._close_onroad)
       from openpilot.starpilot.system.android_auto import projection_theme
       self._theme = projection_theme
+      self._lead_trend = projection_theme.LeadTrend()
       self.apply_theme(self.onroad, self.fonts, self._theme_overlay,
                        lambda: self._slc_input.pressed_action if self._slc_input is not None else None)
       self.now_playing_feed = None
@@ -294,9 +295,16 @@ class ProjectionOnroad:
 
   def _theme_overlay(self, content, state):
     appearance = getattr(state, 'appearance', None)
-    lead_present = (appearance is not None and appearance.show_lead_indicator and
-                    bool(self.native.ui_state.sm['radarState'].leadOne.present))
-    self._theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present, self._vasm_warning())
+    lead_present, lead = False, None
+    if appearance is not None and appearance.show_lead_indicator:
+      sm = self.native.ui_state.sm
+      one = sm['radarState'].leadOne
+      lead_present = bool(one.present)
+      if lead_present:
+        lead = self._theme.LeadView(float(one.dRel), float(one.vRel), float(one.aLeadK), float(sm['carState'].vEgo))
+    trend = self._lead_trend.update(lead)
+    self._theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present, self._vasm_warning(),
+                        lead=lead, trend=trend)
 
   def _vasm_warning(self):
     native = self.native

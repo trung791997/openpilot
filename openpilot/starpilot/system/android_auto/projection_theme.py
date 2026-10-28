@@ -2,7 +2,7 @@
 
 import math
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import pyray as rl
 
@@ -230,35 +230,159 @@ def side_glow(color, x, y, width, height, left, now=None):
     rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
 
 
-def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False)):
+def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False), lead=None, trend=None):
   """Everything the car screen draws over the onroad view: mode glow, LEAD badge and side warnings."""
   edge_glow(state_glow(state, mode_label), content.x, content.y, content.width, content.height)
   appearance = getattr(state, 'appearance', None)
   if appearance is not None and appearance.show_lead_indicator:
-    lead_badge(fonts, content, lead_present)
+    lead_badge(fonts, content, lead_present, lead, trend)
   left, right = side_colors(state, *vasm)
   side_glow(left, content.x, content.y, content.width, content.height, True)
   side_glow(right, content.x, content.y, content.width, content.height, False)
 
 
-def lead_badge(fonts, content, present):
-  """The video's fixed yellow LEAD badge: a road wedge with a car, and the word LEAD under it."""
+LEAD_TEAL = rl.Color(70, 220, 160, 255)
+LEAD_RED = rl.Color(255, 64, 56, 255)
+CAR_BODY = rl.Color(214, 220, 232, 255)
+CAR_SHADE = rl.Color(150, 158, 175, 255)
+CAR_GLASS = rl.Color(28, 32, 44, 255)
+TAIL_DIM = rl.Color(170, 30, 36, 255)
+STEADY, BRAKING, PULLING_AWAY = 'steady', 'braking', 'pulling_away'
+
+
+@dataclass(frozen=True)
+class LeadView:
+  d_rel: float     # m to the lead
+  v_rel: float     # m/s, + when the lead pulls away
+  a_lead: float    # m/s^2, the radar's filtered lead acceleration
+  v_ego: float = 0.  # m/s
+
+
+class LeadTrend:
+  """Braking / pulling away / steady, held long enough that a noisy radar acceleration does not flicker the badge.
+
+  Red needs the lead braking at -1 m/s^2 or harder for 0.4 s and clears above -0.5 m/s^2; teal needs it speeding up
+  and the gap opening for 0.6 s. Either clears only after 0.8 s back in the dead band."""
+  BRAKE_ON, BRAKE_OFF = -1.0, -.5
+  AWAY_ON, AWAY_OFF, AWAY_GAP = .6, .25, .5
+  ENTER = {BRAKING: .4, PULLING_AWAY: .6}
+  LEAVE = .8
+
+  def __init__(self, clock=time.monotonic):
+    self.clock = clock
+    self.state = STEADY
+    self._candidate, self._since = STEADY, None
+
+  def reset(self):
+    self.state, self._candidate, self._since = STEADY, STEADY, None
+
+  def update(self, lead: LeadView | None) -> str:
+    if lead is None or not all(math.isfinite(v) for v in (lead.a_lead, lead.v_rel)):
+      self.reset()
+      return self.state
+    now = self.clock()
+    braking = lead.a_lead <= (self.BRAKE_OFF if self.state == BRAKING else self.BRAKE_ON)
+    away = (lead.a_lead >= (self.AWAY_OFF if self.state == PULLING_AWAY else self.AWAY_ON) and
+            lead.v_rel >= (0. if self.state == PULLING_AWAY else self.AWAY_GAP))
+    wanted = BRAKING if braking else PULLING_AWAY if away else STEADY
+    if wanted == self.state:
+      self._candidate, self._since = wanted, None
+      return self.state
+    if wanted != self._candidate or self._since is None:
+      self._candidate, self._since = wanted, now
+    # braking replaces pulling away (or steady) as soon as it qualifies; anything else waits out LEAVE first
+    wait = self.ENTER[wanted] if wanted != STEADY else self.LEAVE
+    if self.state != STEADY and wanted != BRAKING:
+      wait = max(wait, self.LEAVE)
+    if now - self._since >= wait:
+      self.state, self._since = wanted, None
+    return self.state
+
+
+def gap_bars(lead: LeadView | None) -> int:
+  """1-3 bars under the car for the time gap, like the cluster's own distance bars."""
+  if lead is None or lead.v_ego < 1. or not math.isfinite(lead.d_rel):
+    return 3 if lead is None or lead.d_rel > 30. else 2
+  gap = lead.d_rel / lead.v_ego
+  return 3 if gap >= 2. else 2 if gap >= 1.2 else 1
+
+
+def _mix(a, b, t):
+  return rl.Color(int(a.r + (b.r - a.r) * t), int(a.g + (b.g - a.g) * t), int(a.b + (b.b - a.b) * t), int(a.a + (b.a - a.a) * t))
+
+
+def _fade(color, alpha):
+  return rl.Color(color.r, color.g, color.b, int(alpha))
+
+
+def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
+  """LEAD badge in the style of the Honda cluster: a rear view of the lead car between two lane lines with gap bars
+  under it. Yellow while the lead holds speed, red with lit brake lights while it brakes, teal while it pulls away."""
   if not present:
     return
+  state = trend or STEADY
+  accent = LEAD_RED if state == BRAKING else LEAD_TEAL if state == PULLING_AWAY else LEAD_YELLOW
+  now = time.monotonic() if now is None else now
+  hard = state == BRAKING and lead is not None and lead.a_lead <= -2.5
+  pulse = .5 + .5 * math.sin(now / .45 * 2 * math.pi) if hard else 1.
+
   unit = content.width * .05
   cx, top = content.x + content.width * .28, content.y + content.height * .12
-  half_top, half_bottom, height = unit * .38, unit * .62, unit * .78
-  a, b = rl.Vector2(cx - half_top, top), rl.Vector2(cx + half_top, top)
-  c, d = rl.Vector2(cx + half_bottom, top + height), rl.Vector2(cx - half_bottom, top + height)
-  fill = rl.Color(YELLOW.r, 190, 20, 70)
-  rl.draw_triangle(a, d, c, fill)
-  rl.draw_triangle(a, c, b, fill)
-  stroke = max(3., unit * .06)
-  for p, q in ((a, b), (b, c), (c, d), (d, a)):
-    rl.draw_line_ex(p, q, stroke, LEAD_YELLOW)
-  body = rl.Rectangle(cx - unit * .22, top + height * .52, unit * .44, unit * .22)
-  rl.draw_rectangle_rounded(body, .4, 6, LEAD_YELLOW)
-  rl.draw_rectangle_rounded(rl.Rectangle(cx - unit * .15, top + height * .30, unit * .30, unit * .2), .5, 6, LEAD_YELLOW)
+  w = unit * 1.25  # car width
+  h = w * .74      # car height, roof to tires
+  stroke = max(2., unit * .05)
+
+  # soft halo in the state color so the change reads at a glance
+  rl.draw_circle_gradient(int(cx), int(top + h * .55), w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
+
+  # lane lines fanning out from beside the car, and the gap bars on the road behind it
+  road_top, road_bottom = top + h * .62, top + h * 1.85
+  for side in (-1, 1):
+    rl.draw_line_ex(rl.Vector2(cx + side * w * .64, road_top), rl.Vector2(cx + side * w * 1.02, road_bottom),
+                    stroke * 1.7, _fade(CAR_BODY, 215))
+  bars = gap_bars(lead)
+  bar_top = top + h * 1.08
+  for i in range(3):
+    t = i / 3
+    y = bar_top + (road_bottom - bar_top) * t
+    half = w * (.30 + .12 * t)
+    bar_height = (road_bottom - bar_top) / 3 * .58
+    rl.draw_rectangle_rec(rl.Rectangle(cx - half, y, half * 2, bar_height),
+                          _fade(CAR_BODY, 225) if i < bars else _fade(CAR_BODY, 40))
+
+  # car seen from behind: tires, cabin with rear glass, mirrors, body with tail lights, bumper and plate
+  for side in (-1, 1):
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + side * w * .36 - w * .09, top + h * .78, w * .18, h * .22), .4, 6,
+                              CAR_GLASS)
+  cabin_y, cabin_h = top, h * .46
+  cabin = (rl.Vector2(cx - w * .29, cabin_y), rl.Vector2(cx + w * .29, cabin_y),
+           rl.Vector2(cx + w * .40, cabin_y + cabin_h), rl.Vector2(cx - w * .40, cabin_y + cabin_h))
+  rl.draw_triangle(cabin[0], cabin[3], cabin[2], CAR_BODY)
+  rl.draw_triangle(cabin[0], cabin[2], cabin[1], CAR_BODY)
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .29, cabin_y, w * .58, cabin_h * .4), .8, 8, CAR_BODY)
+  inset = w * .06
+  glass = (rl.Vector2(cx - w * .29 + inset, cabin_y + inset), rl.Vector2(cx + w * .29 - inset, cabin_y + inset),
+           rl.Vector2(cx + w * .40 - inset * 1.1, cabin_y + cabin_h), rl.Vector2(cx - w * .40 + inset * 1.1, cabin_y + cabin_h))
+  rl.draw_triangle(glass[0], glass[3], glass[2], CAR_GLASS)
+  rl.draw_triangle(glass[0], glass[2], glass[1], CAR_GLASS)
+  for side in (-1, 1):
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + side * w * .49 - w * .08, top + h * .36, w * .16, h * .10), .6, 6,
+                              CAR_SHADE)
+  body = rl.Rectangle(cx - w * .5, top + h * .42, w, h * .42)
+  rl.draw_rectangle_rounded(body, .45, 10, CAR_BODY)
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .42, top + h * .70, w * .84, h * .11), .5, 6, CAR_SHADE)
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .12, top + h * .58, w * .24, h * .10), .3, 4, CAR_SHADE)
+  # tail lights: dim normally, lit with a glow (pulsing on a hard stop) while the lead brakes
+  tail = _mix(TAIL_DIM, LEAD_RED, pulse) if state == BRAKING else TAIL_DIM
+  for side in (-1, 1):
+    light = rl.Rectangle(cx + side * w * .33 - w * .13, top + h * .48, w * .26, h * .09)
+    if state == BRAKING:
+      rl.draw_circle_gradient(int(light.x + light.width / 2), int(light.y + light.height / 2), w * .24,
+                              _fade(LEAD_RED, 160 * pulse), _fade(LEAD_RED, 0))
+    rl.draw_rectangle_rounded(light, .6, 6, tail)
+  # thin outline in the state color ties the car to the label
+  rl.draw_rectangle_rounded_lines_ex(body, .45, 10, max(1.5, stroke * .7), _fade(accent, 230))
+
   size = max(24, int(unit * .56))
   width = fonts.measure('LEAD', FontRole.BOLD, size).width
-  fonts.draw('LEAD', FontRole.BOLD, size, cx - width / 2, top + height + unit * .12, LEAD_YELLOW)
+  fonts.draw('LEAD', FontRole.BOLD, size, cx - width / 2, road_bottom + unit * .12, accent)

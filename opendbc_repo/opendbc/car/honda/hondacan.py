@@ -173,7 +173,8 @@ def create_acc_hud(packer, bus, CP, enabled, pcm_speed, pcm_accel, hud_control, 
   return packer.make_can_msg("ACC_HUD", bus, acc_hud_values)
 
 
-def create_lkas_hud(packer, bus, CP, hud_control, lat_active, steering_available, alert_steer_required, lkas_hud):
+def create_lkas_hud(packer, bus, CP, hud_control, lat_active, steering_available, alert_steer_required, lkas_hud,
+                    lanes_active=None):
   commands = []
   # Classic/radarless AOL can steer while normal engagement is off.
   # Keep the upstream CAN-FD indication and ALT_RADAR overrides below.
@@ -205,6 +206,12 @@ def create_lkas_hud(packer, bus, CP, hud_control, lat_active, steering_available
   if CP.flags & HondaFlags.BOSCH_ALT_RADAR:
     lkas_hud_values['DASHED_LANES'] = steering_available
     lkas_hud_values['SOLID_LANES'] = lat_active
+  elif CP.flags & HondaFlags.BOSCH and not CP.flags & (HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD):
+    # Like the stock camera: a Civic Bosch camera that is ready but not steering sends DASHED_LANES without
+    # SOLID_LANES (outline lanes; its own LKAS_HUD on bus 2, 2026-10-28). Fill them only while openpilot steers
+    # and the driver is not turning the wheel, instead of whenever cruise is engaged.
+    lkas_hud_values['DASHED_LANES'] = steering_available
+    lkas_hud_values['SOLID_LANES'] = lat_active if lanes_active is None else lanes_active
 
   if CP.flags & HondaFlags.BOSCH_EXT_HUD and not CP.openpilotLongitudinalControl:
     commands.append(packer.make_can_msg('LKAS_HUD_A', bus, lkas_hud_values))
