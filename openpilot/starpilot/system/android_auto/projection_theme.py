@@ -246,6 +246,10 @@ LEAD_RED = rl.Color(255, 64, 56, 255)
 CAR_BODY = rl.Color(214, 220, 232, 255)
 CAR_SHADE = rl.Color(150, 158, 175, 255)
 CAR_GLASS = rl.Color(28, 32, 44, 255)
+CAR_LIGHT = rl.Color(248, 250, 253, 255)
+CAR_LOW = rl.Color(122, 130, 148, 255)
+GLASS_TOP = rl.Color(92, 104, 128, 255)
+TIRE = rl.Color(14, 16, 20, 255)
 TAIL_DIM = rl.Color(170, 30, 36, 255)
 STEADY, BRAKING, PULLING_AWAY = 'steady', 'braking', 'pulling_away'
 
@@ -315,6 +319,47 @@ def _fade(color, alpha):
   return rl.Color(color.r, color.g, color.b, int(alpha))
 
 
+def _rounded(points, radius, segments=5):
+  """Convex polygon with each corner filleted; radius is one value or one per corner."""
+  out = []
+  for i, (px, py) in enumerate(points):
+    r = radius[i] if isinstance(radius, (list, tuple)) else radius
+    ends = []
+    for qx, qy in (points[i - 1], points[(i + 1) % len(points)]):
+      d = math.hypot(qx - px, qy - py) or 1.
+      t = min(r, d / 2) / d
+      ends.append((px + (qx - px) * t, py + (qy - py) * t))
+    (sx, sy), (ex, ey) = ends
+    for k in range(segments + 1):
+      t = k / segments
+      out.append(((1 - t) ** 2 * sx + 2 * t * (1 - t) * px + t * t * ex, (1 - t) ** 2 * sy + 2 * t * (1 - t) * py + t * t * ey))
+  return out
+
+
+def _shade(*stops):
+  """Vertical gradient through (y, color) stops."""
+  def at(y):
+    if y <= stops[0][0]:
+      return stops[0][1]
+    for (y0, c0), (y1, c1) in zip(stops, stops[1:], strict=False):
+      if y <= y1:
+        return _mix(c0, c1, (y - y0) / max(y1 - y0, 1e-6))
+    return stops[-1][1]
+  return at
+
+
+def _fill(points, color_at):
+  """Convex polygon (clockwise on screen) as a triangle fan with a per-vertex vertical gradient."""
+  mx, my = sum(x for x, _ in points) / len(points), sum(y for _, y in points) / len(points)
+  rl.rl_begin(rl.RL_TRIANGLES)
+  for i in range(len(points)):
+    for x, y in ((mx, my), points[(i + 1) % len(points)], points[i]):
+      c = color_at(y)
+      rl.rl_color4ub(c.r, c.g, c.b, c.a)
+      rl.rl_vertex2f(x, y)
+  rl.rl_end()
+
+
 def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   """LEAD badge in the style of the Honda cluster: a rear view of the lead car between two lane lines with gap bars
   under it. Yellow while the lead holds speed, red with lit brake lights while it brakes, teal while it pulls away."""
@@ -350,38 +395,57 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
     rl.draw_rectangle_rec(rl.Rectangle(cx - half, y, half * 2, bar_height),
                           _fade(CAR_BODY, 225) if i < bars else _fade(CAR_BODY, 40))
 
-  # car seen from behind: tires, cabin with rear glass, mirrors, body with tail lights, bumper and plate
+  # car seen from behind, lit from above: shadow on the road, tires, cabin with tinted rear glass, mirrors,
+  # trunk deck catching the light over a darker rear panel, wrap-around tail lights, plate and bumper
+  def at(fx, fy):
+    return cx + fx * w, top + fy * h
+
+  def box(x0, y0, x1, y1):
+    return [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)]
+
+  rl.draw_ellipse(int(cx), int(top + h * .99), w * .62, h * .09, _fade(TIRE, 70))
+  rl.draw_ellipse(int(cx), int(top + h * .985), w * .54, h * .06, _fade(TIRE, 140))
   for side in (-1, 1):
-    rl.draw_rectangle_rounded(rl.Rectangle(cx + side * w * .36 - w * .09, top + h * .78, w * .18, h * .22), .4, 6,
-                              CAR_GLASS)
-  cabin_y, cabin_h = top, h * .46
-  cabin = (rl.Vector2(cx - w * .29, cabin_y), rl.Vector2(cx + w * .29, cabin_y),
-           rl.Vector2(cx + w * .40, cabin_y + cabin_h), rl.Vector2(cx - w * .40, cabin_y + cabin_h))
-  rl.draw_triangle(cabin[0], cabin[3], cabin[2], CAR_BODY)
-  rl.draw_triangle(cabin[0], cabin[2], cabin[1], CAR_BODY)
-  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .29, cabin_y, w * .58, cabin_h * .4), .8, 8, CAR_BODY)
-  inset = w * .06
-  glass = (rl.Vector2(cx - w * .29 + inset, cabin_y + inset), rl.Vector2(cx + w * .29 - inset, cabin_y + inset),
-           rl.Vector2(cx + w * .40 - inset * 1.1, cabin_y + cabin_h), rl.Vector2(cx - w * .40 + inset * 1.1, cabin_y + cabin_h))
-  rl.draw_triangle(glass[0], glass[3], glass[2], CAR_GLASS)
-  rl.draw_triangle(glass[0], glass[2], glass[1], CAR_GLASS)
+    _fill(_rounded(box(side * .36 - .105, .70, side * .36 + .105, 1.), w * .045),
+          _shade((top + h * .7, rl.Color(58, 62, 74, 255)), (top + h, TIRE)))
+
+  belt = top + h * .45
+  _fill(_rounded([at(-.27, 0), at(.27, 0), at(.42, .45), at(-.42, .45)], [w * .11, w * .11, w * .02, w * .02]),
+        _shade((top, CAR_LIGHT), (belt, CAR_BODY)))
+  _fill(_rounded([at(-.225, .07), at(.225, .07), at(.355, .41), at(-.355, .41)], [w * .07, w * .07, w * .025, w * .025]),
+        _shade((top + h * .07, GLASS_TOP), (top + h * .41, CAR_GLASS)))
+  _fill([at(-.05, .09), at(.03, .09), at(-.16, .39), at(-.24, .39)], lambda y: _fade(CAR_LIGHT, 40))
+  if state == BRAKING:  # third brake light along the top of the rear glass
+    _fill(_rounded(box(-.09, .085, .09, .115), w * .012), lambda y: _mix(TAIL_DIM, LEAD_RED, pulse))
   for side in (-1, 1):
-    rl.draw_rectangle_rounded(rl.Rectangle(cx + side * w * .49 - w * .08, top + h * .36, w * .16, h * .10), .6, 6,
-                              CAR_SHADE)
-  body = rl.Rectangle(cx - w * .5, top + h * .42, w, h * .42)
-  rl.draw_rectangle_rounded(body, .45, 10, CAR_BODY)
-  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .42, top + h * .70, w * .84, h * .11), .5, 6, CAR_SHADE)
-  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * .12, top + h * .58, w * .24, h * .10), .3, 4, CAR_SHADE)
-  # tail lights: dim normally, lit with a glow (pulsing on a hard stop) while the lead brakes
+    _fill(_rounded([at(side * .40, .33), at(side * .55, .32), at(side * .55, .41), at(side * .41, .42)][::side], w * .03),
+          _shade((top + h * .32, CAR_BODY), (top + h * .42, CAR_SHADE)))
+
+  _fill(_rounded([at(-.44, .43), at(.44, .43), at(.5, .53), at(.49, .76), at(-.49, .76), at(-.5, .53)],
+                 [w * .06, w * .06, w * .03, w * .06, w * .06, w * .03]),
+        _shade((top + h * .43, CAR_LIGHT), (top + h * .51, CAR_BODY), (top + h * .76, CAR_LOW)))
+  # crease where the trunk deck turns down into the rear panel: a bright edge over a soft shadow
+  rl.draw_line_ex(rl.Vector2(*at(-.47, .525)), rl.Vector2(*at(.47, .525)), max(1., h * .012), _fade(CAR_LIGHT, 230))
+  rl.draw_line_ex(rl.Vector2(*at(-.46, .54)), rl.Vector2(*at(.46, .54)), max(1., h * .014), _fade(CAR_LOW, 150))
+
   tail = _mix(TAIL_DIM, LEAD_RED, pulse) if state == BRAKING else TAIL_DIM
   for side in (-1, 1):
-    light = rl.Rectangle(cx + side * w * .33 - w * .13, top + h * .48, w * .26, h * .09)
+    lamp = [at(side * .17, .56), at(side * .495, .55), at(side * .48, .655), at(side * .21, .64)][::side]
     if state == BRAKING:
-      rl.draw_circle_gradient(int(light.x + light.width / 2), int(light.y + light.height / 2), w * .24,
-                              _fade(LEAD_RED, 160 * pulse), _fade(LEAD_RED, 0))
-    rl.draw_rectangle_rounded(light, .6, 6, tail)
-  # thin outline in the state color ties the car to the label
-  rl.draw_rectangle_rounded_lines_ex(body, .45, 10, max(1.5, stroke * .7), _fade(accent, 230))
+      lx, ly = at(side * .33, .60)
+      rl.draw_circle_gradient(int(lx), int(ly), w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
+    _fill(_rounded(lamp, w * .025), _shade((top + h * .55, _mix(tail, CAR_LIGHT, .25)), (top + h * .65, _mix(tail, TIRE, .25))))
+    if state == BRAKING:
+      _fill(_rounded([at(side * .25, .58), at(side * .44, .575), at(side * .43, .615), at(side * .27, .61)][::side], w * .015),
+            lambda y: _fade(rl.Color(255, 196, 186, 255), 230 * pulse))
+
+  _fill(_rounded(box(-.14, .585, .14, .705), w * .02), _shade((top + h * .585, CAR_LOW), (top + h * .705, CAR_SHADE)))
+  _fill(_rounded(box(-.115, .605, .115, .69), w * .012), _shade((top + h * .605, CAR_LIGHT), (top + h * .69, CAR_BODY)))
+
+  _fill(_rounded([at(-.49, .72), at(.49, .72), at(.48, .86), at(-.47, .86)], [w * .04, w * .04, w * .07, w * .07]),
+        _shade((top + h * .72, CAR_BODY), (top + h * .86, CAR_LOW)))
+  rl.draw_line_ex(rl.Vector2(*at(-.47, .725)), rl.Vector2(*at(.47, .725)), max(1., h * .012), _fade(CAR_GLASS, 140))
+  _fill(_rounded(box(-.40, .83, .40, .875), w * .02), lambda y: rl.Color(46, 50, 62, 255))
 
   size = max(24, int(unit * .56))
   width = fonts.measure('LEAD', FontRole.BOLD, size).width
