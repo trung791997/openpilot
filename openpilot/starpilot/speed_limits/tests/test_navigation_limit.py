@@ -163,3 +163,133 @@ def test_route_limit_fills_in_and_card_applies_its_command():
   current = physical_actions.state_current(ReplaySM({'slcState': state}, now), None, 'card-producer', now)
   assert physical_actions.command_applicable(command, current, None, 'card-producer', now, 40.0 / 3.6,
                                              long_active=True, button_event=False)
+
+
+# Road speed limit add-on (navigation/road_limit.py): Mapbox limit without a destination.
+
+def matching(maxspeed, *, confidence=.9, last_matched=True):
+  return {'code': 'Ok', 'matchings': [{'confidence': confidence, 'legs': [
+    {'annotation': {'maxspeed': [{'speed': 25, 'unit': 'mph'}]}}, {'annotation': {'maxspeed': maxspeed}}]}],
+    'tracepoints': [{'matchings_index': 0, 'waypoint_index': 0}, {'matchings_index': 0, 'waypoint_index': 1},
+                    {'matchings_index': 0, 'waypoint_index': 2} if last_matched else None]}
+
+
+def test_matched_limit_reads_the_newest_points_road_only():
+  from openpilot.starpilot.navigation.road_limit import matched_limit
+  assert matched_limit(matching([{'unknown': True}, {'speed': 45, 'unit': 'mph'}])) == pytest.approx(45 * MPH)
+  assert matched_limit(matching([{'speed': 45, 'unit': 'mph'}, {'unknown': True}])) is None  # newest segment unknown
+  assert matched_limit(matching([{'none': True}])) is None
+  assert matched_limit(matching([{'speed': 45, 'unit': 'mph'}], last_matched=False)) is None  # off any known road
+  assert matched_limit(matching([{'speed': 45, 'unit': 'mph'}], confidence=4.6e-10)) == pytest.approx(45 * MPH)
+  assert matched_limit({'code': 'NoMatch'}) is None and matched_limit({'code': 'Ok'}) is None
+
+
+class SyncExecutor:
+  def submit(self, fn, *args):
+    from concurrent.futures import Future
+    future = Future()
+    try:
+      future.set_result(fn(*args))
+    except Exception as exc:
+      future.set_exception(exc)
+    return future
+
+
+class Matcher:
+  def __init__(self, limit=45 * MPH):
+    self.limit, self.calls = limit, []
+
+  def fetch(self, token, trace):
+    self.calls.append(trace)
+    if isinstance(self.limit, Exception):
+      raise self.limit
+    return self.limit
+
+
+SETTINGS = {'token': 'pk.test', 'roadSpeedLimit': True}
+DEG_PER_M = 1 / 111_195
+
+
+def drive(road, start_ns, *, seconds, speed=15., bearing=90., x0=0., settings=SETTINGS, drive_id=1):
+  out = None
+  for i in range(seconds):
+    now = start_ns + i * 1_000_000_000
+    out = road.update(now, settings, (now, (x0 + i * speed * DEG_PER_M, 0.), speed, bearing), drive_id)
+  return out, x0 + seconds * speed * DEG_PER_M
+
+
+def road_limit(matcher):
+  from openpilot.starpilot.navigation.road_limit import RoadLimit
+  return RoadLimit(matcher, lambda settings: settings['roadSpeedLimit'], SyncExecutor())
+
+
+def test_road_limit_is_published_while_moving_and_asks_every_ten_seconds():
+  matcher = Matcher()
+  road = road_limit(matcher)
+  out, _ = drive(road, MONO, seconds=30)
+  assert out['controlValid'] and out['speedLimit'] == pytest.approx(45 * MPH)
+  assert len(matcher.calls) == 3 and all(3 <= len(trace) <= 6 for trace in matcher.calls)
+
+
+def test_road_limit_off_or_without_key_asks_nothing_and_publishes_nothing():
+  matcher = Matcher()
+  for settings in ({'token': 'pk.test', 'roadSpeedLimit': False}, {'token': '', 'roadSpeedLimit': True}):
+    assert drive(road_limit(matcher), MONO, seconds=30, settings=settings)[0] == {}
+  assert matcher.calls == []
+
+
+def test_road_limit_is_dropped_after_a_turn_or_far_from_the_match_and_kept_at_a_light():
+  road = road_limit(Matcher())
+  _, x = drive(road, MONO, seconds=5)
+  assert road.update(MONO + 6_000_000_000, SETTINGS, (MONO + 6_000_000_000, (x, 0.), 0., 90.), 1)['controlValid']
+  # Stopped at a light for a minute: nothing is asked and the limit stays.
+  out, _ = drive(road, MONO + 7_000_000_000, seconds=60, speed=0., x0=x)
+  assert out['controlValid']
+  turned = road.update(MONO + 70_000_000_000, SETTINGS, (MONO + 70_000_000_000, (x, 0.), 5., 180.), 1)
+  assert not turned['controlValid'] and turned['speedLimit'] == 0.
+  road = road_limit(Matcher())
+  _, x = drive(road, MONO, seconds=5)
+  far = road.update(MONO + 6_000_000_000, SETTINGS, (MONO + 6_000_000_000, (x + 600 * DEG_PER_M, 0.), 0., 90.), 1)
+  assert not far['controlValid']
+
+
+def test_road_limit_unknown_failures_and_previous_drive_publish_no_limit():
+  assert not drive(road_limit(Matcher(None)), MONO, seconds=30)[0]['controlValid']
+  matcher = Matcher(OSError('offline'))
+  out, _ = drive(road_limit(matcher), MONO, seconds=30)
+  assert not out['controlValid'] and len(matcher.calls) == 1  # waits 30 s after a failure
+  assert not drive(road_limit(Matcher()), MONO, seconds=30, drive_id=0)[0]['controlValid']  # not driving
+
+
+def test_road_limit_reaches_slc_as_the_online_fallback_only_without_a_destination():
+  road = nav_message(45 * MPH, status='noDestination')
+  valid = observe(road)
+  assert valid.kind is acc.ObservationKind.VALID and valid.candidate.source == 'online'
+  # Off, or no limit here: absent, exactly as before the add-on.
+  assert observe(nav_message(0., status='noDestination', control_valid=False)).kind is acc.ObservationKind.ABSENT
+  assert observe(nav_message(45 * MPH, status='disabled')).kind is acc.ObservationKind.ABSENT
+  settings = parse({'SpeedLimitController': True, 'SLCPriority1': 'Vision', 'SLCPriority2': 'Dashboard'})
+  unknown = acc.Observation(acc.ObservationKind.UNKNOWN)
+  values = {sel.Source.DASHBOARD: unknown, sel.Source.VISION: unknown, sel.Source.MAP: unknown, sel.Source.ONLINE: valid}
+  assert sel.select_limit(values, settings.selection).selected_source is sel.Source.ONLINE
+
+
+def test_navigation_runtime_merges_the_road_limit_only_without_a_destination(tmp_path):
+  from openpilot.starpilot.navigation.owner import NavigationOwner
+  from openpilot.starpilot.navigation.runtime import RouteRuntime
+  owner = NavigationOwner(tmp_path)
+  settings = {**owner.read(), 'enabled': True, 'token': 'pk.test'}
+  owner.read_routing = lambda: dict(settings)
+  assert settings['roadSpeedLimit'] is True  # on by default
+  matcher = Matcher()
+  from openpilot.starpilot.navigation.road_limit import RoadLimit
+  runtime = RouteRuntime(owner, engine=object(), executor=SyncExecutor(),
+                         road_limit=RoadLimit(matcher, lambda s: s['roadSpeedLimit'], SyncExecutor()))
+  result = None
+  for i in range(5):
+    now = MONO + i * 1_000_000_000
+    result = runtime.update(now, (now, (i * 15 * DEG_PER_M, 0.), 15., 90.), 1)
+  assert result['status'] == 'noDestination' and result['controlValid'] and result['speedLimit'] == pytest.approx(45 * MPH)
+  settings['roadSpeedLimit'] = False
+  result = runtime.update(MONO + 6_000_000_000, (MONO + 6_000_000_000, (0., 0.), 15., 90.), 1)
+  assert not result['controlValid'] and result['speedLimit'] == 0.

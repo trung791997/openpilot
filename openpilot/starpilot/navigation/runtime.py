@@ -27,11 +27,16 @@ def location(sm, now_ns: int, phone_fix=None):
 
 
 class RouteRuntime:
-  def __init__(self, owner: NavigationOwner, engine=None, executor=None):
+  def __init__(self, owner: NavigationOwner, engine=None, executor=None, road_limit=None):
     self.owner = owner
     if engine is None:
       from openpilot.starpilot.navigation.mapbox_budget import MonthlyBudget
+      from openpilot.starpilot.navigation.road_limit import MapboxMatcher, RoadLimit
+      from openpilot.starpilot.navigation.owner import ROAD_SPEED_LIMIT
       engine = MapboxRouteEngine(owner.session, MonthlyBudget('directions', owner.root / 'mapbox-usage'))
+      road_limit = RoadLimit(MapboxMatcher(owner.session, MonthlyBudget('mapMatching', owner.root / 'mapbox-usage')),
+                             lambda settings: settings[ROAD_SPEED_LIMIT])
+    self.road_limit = road_limit  # StarPilot add-on: road speed limit without a destination (road_limit.py)
     self.engine = engine
     self.executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix='route')
     self.key = None
@@ -96,6 +101,8 @@ class RouteRuntime:
       if selected_route is not self.route:
         self.off_route_since = self.arrived_since = 0
       self.route = selected_route
+    if base_status == 'noDestination' and self.road_limit is not None:
+      result.update(self.road_limit.update(now_ns, settings, position, drive_id))
     if base_status != 'waitingForLocation':
       return result
     if position is None:
