@@ -14,6 +14,10 @@ Package name is `cn.autohack.coolui` on purpose. Honda Hack's own XposedBridge
 CoolUI is not installed on this head unit, so that slot is free. Modules load in zygote:
 the head unit must reboot after install or uninstall. Remove with `pm uninstall cn.autohack.coolui`.
 
+Street filter and one-time resend added 2026-10-28 after a live capture: every send got cluster
+reply 2 (not stored, resend) and mRoad was instruction text ("Turn right"). Only street names are
+sent now ("onto X" / "on X", or a bare name); the present-location name gets the same filter.
+
 Evidence: **static** only (smali of the pulled AndroidAuto and Navigation apps, and the
 decompiled bridge). Not yet installed or road-tested.
 
