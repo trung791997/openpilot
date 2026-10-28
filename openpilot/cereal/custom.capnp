@@ -228,6 +228,16 @@ struct StarPilotCarState @0xf35cc4560bbf6ec2 {
     approvedTargetMps @7 :Float32;
   }
 
+  # Honda Bosch-A: the F0 STATUS nibble of each point of one radarTracks message (7 confirmed; 9 on route 34's
+  # phantom lead). car.capnp's RadarPoint is upstream-owned, so card carries it here. Empty for other radars.
+  radarPointStatus @39 :List(RadarPointStatus);
+  radarTracksMonoTime @40 :UInt64;  # logMonoTime of that radarTracks message; 0 = no radar point status
+
+  struct RadarPointStatus {
+    trackId @0 :UInt64;
+    objectStatus @1 :UInt8;
+  }
+
   struct Gps {
     sourceMonoTime @0 :UInt64;  # CAN observation converted to CLOCK_MONOTONIC
     latitude @1 :Float64;

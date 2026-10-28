@@ -1128,6 +1128,10 @@ class Car:
         companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))
       companion.starpilotCarState.sourceCarStateMonoTime = int(cs_send.logMonoTime)
       self.v_cruise_helper.toyota.publish(companion.starpilotCarState.toyotaCruise)
+    if companion is not None and getattr(self, 'radar_point_status', None) is not None:
+      # radard reads the latest starpilotCarState: every one card sends carries the latest radar point statuses
+      from openpilot.starpilot.car.honda import radar_point_status
+      radar_point_status.write(companion.starpilotCarState, *self.radar_point_status)
     self.car_gps_publisher.update(self.CI.CS, self.pm, companion)
     self.pm.send('carState', cs_send)
     if getattr(self, 'learning_stamp_observer', None) is not None:
@@ -1225,6 +1229,13 @@ class Car:
       tracks_msg.valid = not any(RD.errors.to_dict().values())
       tracks_msg.radarTracks = RD
       self.pm.send('radarTracks', tracks_msg)
+      statuses = getattr(self.RI, 'point_statuses', None)
+      if statuses is not None:
+        from openpilot.starpilot.car.honda import radar_point_status
+        self.radar_point_status = (int(tracks_msg.logMonoTime), dict(statuses))
+        status_msg = messaging.new_message('starpilotCarState', valid=bool(tracks_msg.valid))
+        radar_point_status.write(status_msg.starpilotCarState, *self.radar_point_status)
+        self.pm.send('starpilotCarState', status_msg)
 
   def publish_traffic_receipt(self, cs_send):
     traffic_receipt = getattr(self, 'traffic_receipt', None)

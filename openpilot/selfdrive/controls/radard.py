@@ -438,8 +438,14 @@ def main() -> None:
   CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("radard got CarParams")
 
+  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
+  honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
+
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
+  # Honda Bosch-A: card's starpilotCarState carries the radar points' F0 STATUS (radar_point_status); not a validity input
+  status_carrier = ['starpilotCarState'] if honda_bosch_a else []
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'] + status_carrier, poll='modelV2',
+                           ignore_alive=status_carrier, ignore_avg_freq=status_carrier, ignore_valid=status_carrier)
   try:
     adjacent_leads = bool(params.get_bool("VASMRadarAssist"))  # the leadLeft/leadRight consumer's toggle; read once
   except Exception:
@@ -449,8 +455,6 @@ def main() -> None:
                       and 'REPLAY' not in os.environ)
   pm = messaging.PubMaster(['radarState', 'starpilotRadarState'] if adjacent_enabled else ['radarState'])
 
-  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
   RD = RadarD(CP.radarDelay, adjacent_enabled=adjacent_enabled, radar_available=not CP.radarUnavailable,
               honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP), adjacent_leads=adjacent_leads)
   set_core_affinity([3, 5])
