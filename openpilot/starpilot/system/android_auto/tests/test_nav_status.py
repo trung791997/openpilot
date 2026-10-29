@@ -421,6 +421,17 @@ def test_late_or_clean_session_end_keeps_legacy(nav):
   assert not ns._legacy_blocked
 
 
+def test_losing_the_cars_wifi_soon_after_legacy_keeps_it(nav):
+  # session-000055 (2026-10-29): the head unit rebooted 0.9 s after a legacy turn and the cluster stayed blank all day
+  stream, session, feed, now = nav
+  start(stream, session, now)
+  feed.value = GUIDING
+  tick(stream, now)
+  now[0] += 0.9
+  stream.close(ns.LinkLost("Lost the car's Wi-Fi network"))
+  assert not ns._legacy_blocked
+
+
 @pytest.mark.parametrize('protocol,kinds', [
   ((1, 3), [ns.NAV_STATUS, ns.NAV_TURN, ns.NAV_DISTANCE]),  # Peter's 2019 Civic
   ((6, 1), [ns.NAV_STATUS, ns.NAV_TURN, ns.NAV_NOTIFICATION, ns.NAV_DISTANCE, ns.NAV_CURRENT_POSITION]),

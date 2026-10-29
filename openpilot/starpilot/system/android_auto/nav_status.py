@@ -49,6 +49,8 @@ MODERN_MIN_PROTOCOL = (2, 0)
 # after it 3 of 3 times, but that turn had the side and event in each other's fields and a modern maneuver number
 # (36 = straight) where the legacy event belongs; this encoder fixes that. If projection still ends within
 # LEGACY_PROBATION of the first legacy turn, the pair is switched off until the daemon restarts.
+# Losing the car's Wi-Fi does not count: session-000055 (2026-10-29) lost it 0.9 s after a legacy turn while the
+# head unit rebooted, and the block left the cluster blank for every drive until the comma restarted.
 SEND_LEGACY = True
 LEGACY_PROBATION = 20.0
 _legacy_blocked = False
@@ -58,6 +60,10 @@ CHECK_EVERY = 0.25
 MIN_INTERVAL = 1.0
 STALE_AFTER = 3.0
 FALLBACK_SPEED = 13.4  # m/s, for the time to the turn when the route gives no pace
+
+
+class LinkLost(RuntimeError):
+  """The car's Wi-Fi network went away; it says nothing about what the head unit made of a turn."""
 
 
 def navigation_channel(channels: list[dict]) -> dict | None:
@@ -441,7 +447,8 @@ class NavStatus:
 
   def close(self, error: BaseException | None = None) -> None:
     global _legacy_blocked
-    if error is not None and self.legacy_since is not None and self.clock() - self.legacy_since < LEGACY_PROBATION:
+    if (error is not None and not isinstance(error, LinkLost) and self.legacy_since is not None
+        and self.clock() - self.legacy_since < LEGACY_PROBATION):
       _legacy_blocked = True
       self.log('nav_legacy_blocked', after_s=round(self.clock() - self.legacy_since, 1), error=f'{type(error).__name__}: {error}')
     if hasattr(self.feed, 'close'):

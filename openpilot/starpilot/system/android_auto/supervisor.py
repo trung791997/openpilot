@@ -40,6 +40,7 @@ from openpilot.starpilot.system.android_auto.bootstrap import NAMES, BootstrapEr
 from openpilot.starpilot.system.android_auto.bugsink_report import PairingAttempt
 from openpilot.starpilot.system.android_auto.frame_source import (DEFAULT_PATH as DEFAULT_FRAME_PATH, FLAG_ASYNC_READBACK, FLAG_NV12,
                                                                   FORMAT_NV12, FrameRequest)
+from openpilot.starpilot.system.android_auto.nav_status import LinkLost
 from openpilot.starpilot.system.android_auto.projection_control import DEFAULT_CONTROL_SOCKET, NATIVE_FOCUS
 from openpilot.starpilot.system.android_auto.touch import DEFAULT_TOUCH_SOCKET
 from openpilot.starpilot.system.android_auto.view import CAR_FRAME_PATH, ViewSource, renderer_available
@@ -1624,7 +1625,7 @@ class Supervisor:
       if now >= next_check:
         next_check = now + 1.0
         if watch.lost:
-          raise RuntimeError(watch.lost)
+          raise LinkLost(watch.lost)
         label = source.label
         source.check(now, focused=session.focused)
         if source.label != label:
