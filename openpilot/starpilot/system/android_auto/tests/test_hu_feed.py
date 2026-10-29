@@ -158,3 +158,10 @@ def test_datagrams_fit_one_frame():
 def test_private_addresses():
   assert hf.private('10.122.1.2') and hf.private('192.168.43.5') and hf.private('172.20.0.1')
   assert not hf.private('8.8.8.8') and not hf.private('172.32.0.1') and not hf.private('bogus')
+
+
+def test_a_stop_keeps_the_heading_it_arrived_with():
+  assert hf.hold_heading(92.0, 8.0, None) == (92.0, 92.0)
+  assert hf.hold_heading(None, 0.0, 92.0) == (92.0, 92.0)  # stopped: GPS has no bearing
+  assert hf.hold_heading(None, 0.0, None) == (None, None)
+  assert hf.hold_heading(None, 5.0, 92.0) == (None, None)  # moving without a bearing: the old one is stale

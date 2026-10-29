@@ -62,6 +62,20 @@ def mode_of(enabled: bool, experimental: bool, lat_active: bool, desired_long: b
   return 'aol' if lat_active else 'off'
 
 
+# GPS has no heading at a stop (a bearing needs motion), so the pose stopped and the cluster went back to the arrow.
+# The car cannot turn without moving: a stop keeps the heading it arrived with.
+STOPPED_SPEED = 1.0
+
+
+def hold_heading(heading: float | None, speed: float, held: float | None) -> tuple[float | None, float | None]:
+  """(heading to send, heading to keep for the next read)."""
+  if heading is not None:
+    return heading, heading
+  if held is not None and speed < STOPPED_SPEED:
+    return held, held
+  return None, None
+
+
 def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
   """The fix (stamp_ns, lat, lon, bearing_deg) moved on to now at speed (m/s) and yaw_rate (deg/s, + right)."""
   stamp, lat, lon, bearing = fix
@@ -141,6 +155,7 @@ class CerealReader:
     self.sm = messaging.SubMaster(list(self.SERVICES))
     self.params = Params()
     self._metric = (-math.inf, False)
+    self._heading: float | None = None
 
   def metric(self, now: float) -> bool:
     if now - self._metric[0] >= 5.:
@@ -167,7 +182,7 @@ class CerealReader:
     location = select_location(sm, now_ns)
     if location is not None:
       stamp, gps = location
-      heading = bearing(gps)
+      heading, self._heading = hold_heading(bearing(gps), value['speed'], self._heading)
       if heading is not None:
         value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
     stamp = sm.logMonoTime['starpilotNavigation']
