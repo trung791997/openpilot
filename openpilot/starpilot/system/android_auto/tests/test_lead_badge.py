@@ -53,9 +53,15 @@ def test_lost_or_bad_lead_resets():
   assert trend.update(LeadView(30., float('nan'), -2., 20.)) == STEADY
 
 
-@pytest.mark.parametrize('d_rel, v_ego, bars', ((40., 16., 3), (24., 16., 2), (13., 16., 1), (40., 0., 3), (20., 0., 2)))
-def test_gap_bars(d_rel, v_ego, bars):
-  assert gap_bars(LeadView(d_rel, 0., 0., v_ego)) == bars
+@pytest.mark.parametrize('personality, bars', (('aggressive', 1), ('standard', 2), ('relaxed', 3), (0, 1), (1, 2), (2, 3), (None, 2)))
+def test_gap_bars_follow_the_personality(personality, bars):
+  assert gap_bars(personality) == bars
+
+
+def test_gap_bars_take_the_capnp_enum():
+  from cereal import log
+  for name, bars in (('aggressive', 1), ('standard', 2), ('relaxed', 3)):
+    assert gap_bars(log.LongitudinalPersonality.schema.enumerants[name]) == bars
 
 
 @pytest.mark.parametrize('nargs', [4, 5])

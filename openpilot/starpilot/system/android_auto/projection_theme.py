@@ -230,12 +230,13 @@ def side_glow(color, x, y, width, height, left, now=None):
     rl.draw_rectangle_gradient_h(x + width - span, y, span, height, fade, edge)
 
 
-def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False), lead=None, trend=None):
+def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False), lead=None, trend=None,
+            personality=None):
   """Everything the car screen draws over the onroad view: mode glow, LEAD badge and side warnings."""
   edge_glow(state_glow(state, mode_label), content.x, content.y, content.width, content.height)
   appearance = getattr(state, 'appearance', None)
   if appearance is not None and appearance.show_lead_indicator:
-    lead_badge(fonts, content, lead_present, lead, trend)
+    lead_badge(fonts, content, lead_present, lead, trend, personality=personality)
   left, right = side_colors(state, *vasm)
   side_glow(left, content.x, content.y, content.width, content.height, True)
   side_glow(right, content.x, content.y, content.width, content.height, False)
@@ -303,12 +304,14 @@ class LeadTrend:
     return self.state
 
 
-def gap_bars(lead: LeadView | None) -> int:
-  """1-3 bars under the car for the time gap, like the cluster's own distance bars."""
-  if lead is None or lead.v_ego < 1. or not math.isfinite(lead.d_rel):
-    return 3 if lead is None or lead.d_rel > 30. else 2
-  gap = lead.d_rel / lead.v_ego
-  return 3 if gap >= 2. else 2 if gap >= 1.2 else 1
+def gap_bars(personality) -> int:
+  """1-3 bars under the car for the following-distance setting, like the Honda cluster's own distance bars:
+  aggressive 1, standard 2, relaxed 3. They used to show the time gap to the lead, which at low speed stays near
+  2 s even for a close car, so the bars sat at 3 (or 2 when stopped) however close the lead was (Peter, 2026-10-29)."""
+  # ui_state holds the capnp ordinal (aggressive 0, standard 1, relaxed 2); a reader may also hold the name
+  name = {0: 'aggressive', 1: 'standard', 2: 'relaxed'}.get(personality, str(personality)) if isinstance(personality, int) \
+    else str(personality)
+  return 1 if name == 'aggressive' else 3 if name == 'relaxed' else 2
 
 
 def _mix(a, b, t):
@@ -369,7 +372,7 @@ def _glow(x: float, y: float, radius: float, inner, outer) -> None:
     rl.draw_circle_gradient(int(x), int(y), radius, inner, outer)
 
 
-def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
+def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None):
   """LEAD badge in the style of the Honda cluster: a rear view of the lead car between two lane lines with gap bars
   under it. Yellow while the lead holds speed, red with lit brake lights while it brakes, teal while it pulls away."""
   if not present:
@@ -394,7 +397,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   for side in (-1, 1):
     rl.draw_line_ex(rl.Vector2(cx + side * w * .64, road_top), rl.Vector2(cx + side * w * 1.02, road_bottom),
                     stroke * 1.7, _fade(CAR_BODY, 215))
-  bars = gap_bars(lead)
+  bars = gap_bars(personality)
   bar_top = top + h * 1.08
   for i in range(3):
     t = i / 3

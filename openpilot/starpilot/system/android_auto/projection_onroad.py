@@ -304,7 +304,7 @@ class ProjectionOnroad:
         lead = self._theme.LeadView(float(one.dRel), float(one.vRel), float(one.aLeadK), float(sm['carState'].vEgo))
     trend = self._lead_trend.update(lead)
     self._theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present, self._vasm_warning(),
-                        lead=lead, trend=trend)
+                        lead=lead, trend=trend, personality=getattr(self.native.ui_state, 'personality', None))
 
   def _vasm_warning(self):
     native = self.native
