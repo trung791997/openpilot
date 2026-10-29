@@ -735,7 +735,7 @@ final class MapView extends View {
   // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
   // left over the arrival time
 
-  private static final float COL = 150, COL_X = 76, BAR_X = 10, BAR_W = 20;  // left column width, and the centre line its text stacks on
+  private static final float COL = 150, COL_X = 76, BAR_X = 10, BAR_W = 20, DIST_Y = 107;  // left column width, and the centre line its text stacks on
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -762,12 +762,15 @@ final class MapView extends View {
     }
 
     // the column stacks up from the bottom: arrival time across the full column, then time left and the
-    // distance side by side with the bar standing at the left edge beside them (Peter 2026-10-29: the bar
-    // under the distance left black space either side of it); above the stock vehicle data row when it shows
+    // distance side by side with the bar standing at the left edge beside them, spread over all the height
+    // under the turn arrow (Peter 2026-10-29: the bar under the distance left black space either side of
+    // it, and packed together the rows looked cramped); above the stock vehicle data row when it shows
     View vd = find("vehicle_data_layout");
     boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
     float y = low ? navi.getTop() + vd.getTop() - 4 : 206;
     float rowX = COL_X + BAR_W / 2 + 2;  // the rows beside the bar centre in what it leaves
+    // the distance's baseline as high as DIST_Y (its top 14 px under the arrow), never closer than 70 px
+    float span = Math.max(70, y - DIST_Y), gapEta = span * 0.47f;
 
     if (Feed.remainingSec >= 0) {
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
@@ -775,13 +778,13 @@ final class MapView extends View {
       String n = min >= 60 ? (min / 60) + " h " + (min % 60) : String.valueOf(min);
       String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
       canvas.drawText(at, COL_X - etaClock.measureText(at) / 2, y, etaClock);
-      y -= 26;
+      y -= gapEta;
       float x = rowX - (eta.measureText(n) + etaDim.measureText(" min")) / 2;
       canvas.drawText(n, x, y, eta);
       canvas.drawText(" min", x + eta.measureText(n), y, etaDim);
     }
     float rowBottom = y;  // the distance keeps its place whether or not the bar or the time is up
-    y -= 44;
+    y -= Feed.remainingSec >= 0 ? span - gapEta : span;
 
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
