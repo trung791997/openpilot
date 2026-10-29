@@ -83,7 +83,9 @@ showed, distance did not. Android Auto repeats `onNextTurn` about once a second 
 sent no `distance`, which makes Honda Hack hide seg_dist. A repeat of the same turn now keeps the
 last distance; only a new turn drops it until `onNextTurnDistance`.
 
-`Meter.java` (externaldisplay processes) restacks the panel like the stock nav direction page:
-arrow on top, distance centered under it, street centered under that, instead of Honda Hack's
-top-left text column. Static only; the stock page was not photographed, so the stack is a guess.
+`Meter.java` (externaldisplay processes) lays the panel out like the stock nav direction page
+(2026-10-29 photo): arrow in the middle, a ten-segment distance bar left of it with the distance
+above, street centered under the arrow instead of Honda Hack's top-left column (its first letter
+ran under the speedometer ring). The bar shows from 500 ft, one segment per 50 ft, read back from
+the distance text. Static only.
 Log: `aaroad: meter nav laid out like the stock page`.
