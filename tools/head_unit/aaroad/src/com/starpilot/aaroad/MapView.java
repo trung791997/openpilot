@@ -50,8 +50,9 @@ final class MapView extends View {
   private static final float BOX_R = 430;          // display metres: covers the box from the car
   private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
   private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, STUB_PX = 18, SIDE_PX = 40, GRID_DM = 50;
-  private static final double NEAR = 152.4, TURN_LEN = 40;   // hold the turn in view from 500 ft
-  private static final double TAU = 0.8;                     // s, zoom smoothing
+  private static final double NEAR = 152.4, TURN_LEN = 40;   // side roads full width inside 500 ft; road shown past the turn
+  private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
+  private static final double TAU_IN = 0.8, TAU_OUT = 2.0;   // s, zoom smoothing: in briskly, back out gently
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
@@ -450,13 +451,14 @@ final class MapView extends View {
     float cn = (float) (-(w[1] - s.ay) * s.mpt + Math.cos(h) * ahead);
     float ch = (float) Math.cos(h), sh = (float) Math.sin(h);
 
-    // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top
+    // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
+    // view closes in on the turn as the car reaches it and pulls back out once the next maneuver is far
     double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
     double rng = Math.max(200, Math.min(600, spd * 20));
-    if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, NEAR);
+    if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
     double dt = lastFrame == 0 ? 10 : (now - lastFrame) / 1000.0;
     lastFrame = now;
-    k += (rng / R0 - k) * (1 - Math.exp(-dt / TAU));
+    k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
     float ik = (float) (1 / k), reach = (float) (BOX_R * k);
 
     routePath.rewind();
