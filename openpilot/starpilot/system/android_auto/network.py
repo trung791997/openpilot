@@ -38,13 +38,8 @@ NM_IP4_CONFIG_IFACE = "org.freedesktop.NetworkManager.IP4Config"
 NM_WIRELESS_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
 NM_AP_IFACE = "org.freedesktop.NetworkManager.AccessPoint"
 DEVICE_TYPE_WIFI = 2
-DEVICE_STATE_UNMANAGED = 10
 DEVICE_STATE_DISCONNECTED = 30
 DEVICE_READY_TIMEOUT_S = 5.0
-# After a cold start NetworkManager left all Wi-Fi unmanaged until 53 s, and the car's session made aa0 at 47 s, so aa0
-# missed its 5 s and the car took wlan0 off the network the head unit is on (2026-10-29 session 58). While wlan0 is still
-# unmanaged, an unmanaged aa0 says nothing about aa0, so its 5 s wait for NetworkManager starts once Wi-Fi is up.
-WIFI_STARTUP_TIMEOUT_S = 120.0
 ACTIVE_STATE_ACTIVATED = 2
 ACTIVE_STATE_DEACTIVATED = 4
 # The car sends its Wi-Fi details ~4 s after ignition, but a Honda's access point took ~55 s from ignition to appear
@@ -156,7 +151,6 @@ class NetworkLease:
     self.previous_connection = ""
     self.local_ip = ""
     self.device_ready = False
-    self.waited_for_wifi = False
     self.autoconnect_paused = False
     self.marker = AUTOCONNECT_MARKER
     self._lock = threading.Lock()
@@ -315,36 +309,19 @@ class NetworkLease:
       pass
     return radio
 
-  def _wifi_starting(self) -> bool:
-    """NetworkManager has not taken wlan0 yet, as in the first minute after a cold start."""
-    try:
-      path = next((path for path, name in self._wifi_devices() if name == "wlan0"), "")
-      return bool(path) and self._get(path, NM_DEVICE_IFACE, "State") <= DEVICE_STATE_UNMANAGED
-    except NetworkError:
-      return False
-
-  def _wait_step(self, deadline: float, cancelled: Callable[[], bool], failure: str, startup: float) -> float:
-    """Sleep one step and return the deadline, pushed back while Wi-Fi is still starting, up to ``startup``."""
+  def _wait_step(self, deadline: float, cancelled: Callable[[], bool], failure: str) -> None:
     if cancelled():
       raise NetworkError("cancelled")
-    now = time.monotonic()
-    if now < startup and self._wifi_starting():
-      if not self.waited_for_wifi:
-        self.waited_for_wifi = True
-        self.log("wifi_waiting_for_networkmanager", interface=self.interface)
-      deadline = max(deadline, min(now + DEVICE_READY_TIMEOUT_S, startup))
-    if now >= deadline:
+    if time.monotonic() >= deadline:
       raise DedicatedUnavailable(failure)
     time.sleep(0.25)
-    return deadline
 
   def _prepare_device(self, cancelled: Callable[[], bool]) -> None:
     if self.device_ready:
       return
-    start = time.monotonic()
-    deadline, startup = start + DEVICE_READY_TIMEOUT_S, start + WIFI_STARTUP_TIMEOUT_S
+    deadline = time.monotonic() + DEVICE_READY_TIMEOUT_S
     while not (path := next((path for path, name in self._wifi_devices() if name == self.interface), "")):
-      deadline = self._wait_step(deadline, cancelled, f"{self.interface} is not a NetworkManager Wi-Fi device", startup)
+      self._wait_step(deadline, cancelled, f"{self.interface} is not a NetworkManager Wi-Fi device")
     self.device_path = path
     # Before the device is ready, so a saved network can never autoconnect on it.
     if self._get(path, NM_DEVICE_IFACE, "Autoconnect"):
@@ -353,7 +330,7 @@ class NetworkLease:
       except NetworkError as error:
         raise DedicatedUnavailable(f"Cannot stop saved networks joining {self.interface}") from error
     while self._get(path, NM_DEVICE_IFACE, "State") < DEVICE_STATE_DISCONNECTED:
-      deadline = self._wait_step(deadline, cancelled, f"NetworkManager did not take {self.interface}", startup)
+      self._wait_step(deadline, cancelled, f"NetworkManager did not take {self.interface}")
     self.device_ready = True
     # A new interface has never scanned, so the car's BSSID would be rejected until a scan finds it.
     try:
