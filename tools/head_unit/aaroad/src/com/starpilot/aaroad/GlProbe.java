@@ -39,11 +39,28 @@ final class GlProbe {
         try {
           Thread.sleep(DELAY_MS);
           // the meter view carries Honda Hack's context, whose folders this process cannot write (EACCES on the
-          // first run, 2026-10-29); the marker goes in the cluster app's own cache folder
+          // first run, 2026-10-29), and the cluster app's cache folder failed the same way on the second; the
+          // marker goes in the first of these this process can write, and the probe stays off if none
           Application app = AndroidAppHelper.currentApplication();
-          File marker = new File((app != null ? app : ctx).getCacheDir(), MARKER);
-          if (marker.exists()) return;
-          marker.createNewFile();
+          Context own = app != null ? app : ctx;
+          File[] dirs = {own.getCacheDir(), own.getFilesDir(), new File("/data/data/" + own.getPackageName()),
+                         ctx.getCacheDir(), new File("/data/local/tmp")};
+          String tried = "uid " + android.os.Process.myUid() + " app " + (app != null ? app.getPackageName() : "none");
+          File marker = null;
+          for (File d : dirs) {
+            if (d == null) continue;
+            File f = new File(d, MARKER);
+            if (f.exists()) return;
+            try {
+              if (f.createNewFile()) { marker = f; break; }
+            } catch (java.io.IOException e) { /* next folder */ }
+            tried += ", " + d;
+          }
+          if (marker == null) {
+            XposedBridge.log("aaroad: gl probe skipped, nowhere to keep its marker (" + tried + ")");
+            return;
+          }
+          XposedBridge.log("aaroad: gl probe marker " + marker);
           XposedBridge.log("aaroad: gl probe " + probe());
         } catch (Throwable t) {
           XposedBridge.log("aaroad: gl probe failed: " + t);
