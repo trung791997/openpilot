@@ -39,7 +39,10 @@ NM_WIRELESS_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
 NM_AP_IFACE = "org.freedesktop.NetworkManager.AccessPoint"
 DEVICE_TYPE_WIFI = 2
 DEVICE_STATE_DISCONNECTED = 30
-DEVICE_READY_TIMEOUT_S = 5.0
+# NetworkManager is slow to take a new Wi-Fi interface in the first minute after the comma boots: 2026-10-29 cold start,
+# wlan0 took 32 s and aa0 16 s from creation to ready. At 5 s every cold start gave up on aa0 and joined the car on
+# wlan0, which leaves the head unit's network and its map feed. Long after boot aa0 is ready in under a second.
+DEVICE_READY_TIMEOUT_S = 40.0
 ACTIVE_STATE_ACTIVATED = 2
 ACTIVE_STATE_DEACTIVATED = 4
 # The car sends its Wi-Fi details ~4 s after ignition, but a Honda's access point took ~55 s from ignition to appear

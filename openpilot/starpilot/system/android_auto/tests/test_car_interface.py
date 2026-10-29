@@ -176,11 +176,12 @@ def test_session_stop_cancels_a_slow_aa0_setup():
 
 
 class FakeNM:
-  def __init__(self, devices=None, autoconnect=True, overlap=False, appears_after=0):
+  def __init__(self, devices=None, autoconnect=True, overlap=False, appears_after=0, state=lambda path: 30):
     self.devices = devices if devices is not None else {"/dev/wlan0": "wlan0", "/dev/aa0": "aa0"}
     self.autoconnect = autoconnect
     self.overlap = overlap
     self.appears_after = appears_after  # GetDevices calls before NetworkManager lists aa0
+    self.state = state
     self.calls = []
     self.set = []
 
@@ -208,7 +209,7 @@ class FakeNM:
       return [{"address": ("s", "192.168.180.183"), "prefix": ("u", 24)}]
     if name == "Frequency":
       return 5745 if path == "/ap/aa0" else 2437
-    return {"WirelessEnabled": True, "DeviceType": 2, "ActiveConnection": "/active/home", "State": 30 if path.startswith("/dev") else 2,
+    return {"WirelessEnabled": True, "DeviceType": 2, "ActiveConnection": "/active/home", "State": self.state(path) if path.startswith("/dev") else 2,
             "Autoconnect": self.autoconnect, "Connection": "/settings/home", "ActiveAccessPoint": "/ap/" + path.rsplit("/", 1)[-1]}[name]
 
   def set_property(self, path, interface, name, signature, value):
@@ -253,6 +254,27 @@ def test_dedicated_network_lease_waits_for_networkmanager_to_list_aa0(monkeypatc
   lease.acquire(credentials(), timeout=2.0)
   assert nm.calls.count("AddAndActivateConnection2") == nm.calls.count("RequestScan") == 1
   assert nm.calls.index("RequestScan") < nm.calls.index("AddAndActivateConnection2")
+
+
+def test_dedicated_network_lease_waits_for_a_cold_start(monkeypatch):
+  # 2026-10-29 cold start: NetworkManager took aa0 16 s after the comma created it.
+  clock = [0.0]
+  monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+  monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+  nm = FakeNM(autoconnect=False, state=lambda path: 30 if path != "/dev/aa0" or clock[0] >= 16 else 10)
+  lease = nm_lease(nm)
+  lease.prepare_device()
+  assert lease.device_ready and 16 <= clock[0] < 17
+
+
+def test_dedicated_network_lease_gives_up_on_aa0_after_the_ready_timeout(monkeypatch):
+  clock = [0.0]
+  monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+  monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+  lease = nm_lease(FakeNM(autoconnect=False, state=lambda path: 10 if path == "/dev/aa0" else 30))
+  with pytest.raises(DedicatedUnavailable, match="did not take aa0"):
+    lease.prepare_device()
+  assert network.DEVICE_READY_TIMEOUT_S <= clock[0] < network.DEVICE_READY_TIMEOUT_S + 1
 
 
 def test_dedicated_network_lease_never_falls_back_to_another_device(monkeypatch):
