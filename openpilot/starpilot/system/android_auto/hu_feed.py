@@ -65,18 +65,33 @@ def mode_of(enabled: bool, experimental: bool, lat_active: bool, desired_long: b
   return 'aol' if lat_active else 'off'
 
 
-# GPS has no heading at a stop (a bearing needs motion), so the pose stopped and the cluster went back to the arrow.
-# The car cannot turn without moving: a stop keeps the heading it arrived with.
+# The heading turns the whole heading-up map, so its noise shows as the road swinging under the car (2026-10-29 video,
+# a few degrees frame to frame at 48 mph). Below walking speed GPS has no real heading (the comma's still read about
+# 40 deg accuracy and wandered 5 deg at a stop) and the car cannot turn, so a stop keeps the heading it arrived with.
+# Moving, the gyro carries the heading between fixes and each GPS bearing pulls it only part of the way.
 STOPPED_SPEED = 1.0
+BEARING_GAIN = 0.3
+MAX_GYRO_GAP = 1.  # s: past this the held heading is too old to carry
 
 
-def hold_heading(heading: float | None, speed: float, held: float | None) -> tuple[float | None, float | None]:
-  """(heading to send, heading to keep for the next read)."""
-  if heading is not None:
-    return heading, heading
-  if held is not None and speed < STOPPED_SPEED:
-    return held, held
-  return None, None
+class HeadingFilter:
+  def __init__(self):
+    self.heading: float | None = None
+    self.stamp = 0
+
+  def __call__(self, bearing: float | None, speed: float, yaw_rate: float, now_ns: int) -> float | None:
+    """Heading (deg) to send with the fix, None when there is none. yaw_rate in deg/s, + right."""
+    if self.heading is not None and speed < STOPPED_SPEED:
+      self.stamp = now_ns
+      return self.heading
+    dt = (now_ns - self.stamp) * 1e-9
+    if bearing is None or self.heading is None or not 0 <= dt <= MAX_GYRO_GAP:
+      self.heading = bearing  # nothing to carry: start again from the GPS, or have no heading
+    else:
+      predicted = self.heading + yaw_rate * dt
+      self.heading = (predicted + BEARING_GAIN * ((bearing - predicted + 180) % 360 - 180)) % 360
+    self.stamp = now_ns
+    return self.heading
 
 
 def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
@@ -158,7 +173,7 @@ class CerealReader:
     self.sm = messaging.SubMaster(list(self.SERVICES))
     self.params = Params()
     self._metric = (-math.inf, False)
-    self._heading: float | None = None
+    self._heading = HeadingFilter()
 
   def metric(self, now: float) -> bool:
     if now - self._metric[0] >= 5.:
@@ -185,7 +200,7 @@ class CerealReader:
     location = select_location(sm, now_ns)
     if location is not None:
       stamp, gps = location
-      heading, self._heading = hold_heading(bearing(gps), value['speed'], self._heading)
+      heading = self._heading(bearing(gps), value['speed'], value['yaw_rate'], now_ns)
       if heading is not None:
         value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
     stamp = sm.logMonoTime['starpilotNavigation']

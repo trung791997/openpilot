@@ -161,10 +161,22 @@ def test_private_addresses():
 
 
 def test_a_stop_keeps_the_heading_it_arrived_with():
-  assert hf.hold_heading(92.0, 8.0, None) == (92.0, 92.0)
-  assert hf.hold_heading(None, 0.0, 92.0) == (92.0, 92.0)  # stopped: GPS has no bearing
-  assert hf.hold_heading(None, 0.0, None) == (None, None)
-  assert hf.hold_heading(None, 5.0, 92.0) == (None, None)  # moving without a bearing: the old one is stale
+  heading, second = hf.HeadingFilter(), 1_000_000_000
+  assert heading(92.0, 8.0, 0., second) == 92.0
+  assert heading(None, 0.0, 0., 2 * second) == 92.0     # stopped: GPS has no bearing
+  assert heading(120.0, 0.0, 0., 3 * second) == 92.0    # nor a real one when it reports one
+  assert hf.HeadingFilter()(None, 0.0, 0., second) is None
+  assert heading(None, 5.0, 0., 4 * second) is None     # moving without a bearing: the old one is stale
+
+
+def test_heading_noise_is_damped_and_the_gyro_carries_turns():
+  heading, tenth = hf.HeadingFilter(), 100_000_000
+  heading(90.0, 20.0, 0., tenth)
+  assert heading(95.0, 20.0, 0., 2 * tenth) == 91.5       # a noisy bearing moves it 30 percent
+  assert round(heading(92.5, 20.0, 10., 3 * tenth), 6) == 92.5  # a 10 deg/s right turn over 0.1 s
+  wrap = hf.HeadingFilter()
+  wrap(359.0, 20.0, 0., tenth)
+  assert round(wrap(9.0, 20.0, 0., 2 * tenth), 6) == 2.0  # across north the short way
 
 
 def test_the_route_goes_again_as_soon_as_nav_comes_back():
