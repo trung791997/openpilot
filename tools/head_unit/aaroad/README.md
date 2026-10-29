@@ -74,6 +74,16 @@ Auto process now sends them: icon from the next-turn event and side (`left`, `ri
 from the same `street()` cut as the cluster name. This does not depend on the Honda cluster storing
 the guide point.
 
-Static only, not seen on the car yet. `UPDATE_NAVI_WAZE` is dropped while Honda Hack's
-`enable_screen_cast` is on (`C0268ua.z`), so turn the screen cast off in Honda Hack's meter
-settings to see the panel. Logcat: `aaroad: panel start` / `panel stop`.
+`UPDATE_NAVI_WAZE` is dropped while Honda Hack's `enable_screen_cast` is on (`C0268ua.z`), so turn
+the screen cast off in Honda Hack's meter settings to see the panel. Logcat: `aaroad: panel start`
+/ `panel stop`.
+
+2026-10-28, parked with a Google Maps route (limited road evidence): arrow and "Presidents Blvd"
+showed, distance did not. Android Auto repeats `onNextTurn` about once a second and each repeat
+sent no `distance`, which makes Honda Hack hide seg_dist. A repeat of the same turn now keeps the
+last distance; only a new turn drops it until `onNextTurnDistance`.
+
+`Meter.java` (externaldisplay processes) restacks the panel like the stock nav direction page:
+arrow on top, distance centered under it, street centered under that, instead of Honda Hack's
+top-left text column. Static only; the stock page was not photographed, so the stack is a guess.
+Log: `aaroad: meter nav laid out like the stock page`.

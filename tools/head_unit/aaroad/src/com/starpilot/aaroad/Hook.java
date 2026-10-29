@@ -29,6 +29,11 @@ public class Hook implements IXposedHookLoadPackage {
     } catch (Throwable t) {
       XposedBridge.log("aaroad: cast hook failed: " + t);
     }
+    try {
+      Meter.install(lpparam.processName);
+    } catch (Throwable t) {
+      XposedBridge.log("aaroad: meter hook failed: " + t);
+    }
     if (NavFake.PKG.equals(lpparam.packageName)) {
       try {
         NavFake.install(lpparam.classLoader);
@@ -170,6 +175,10 @@ public class Hook implements IXposedHookLoadPackage {
       }
     }
     String l = s.toLowerCase(java.util.Locale.US);
+    if (l.startsWith("toward ")) {
+      s = s.substring(7);
+      l = l.substring(7);
+    }
     i = l.indexOf(" toward ");
     if (i >= 0) s = s.substring(0, i);
     l = s.toLowerCase(java.util.Locale.US).trim();

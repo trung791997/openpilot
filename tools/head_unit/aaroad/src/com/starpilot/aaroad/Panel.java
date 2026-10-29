@@ -19,6 +19,7 @@ final class Panel {
   private static final double FEET_PER_METER = 3.28084, METERS_PER_MILE = 1609.344;
 
   private static String icon, street;
+  private static int meters = -1;
   private static boolean active;
 
   static void install(Class<?> nfm) {
@@ -28,11 +29,16 @@ final class Panel {
       protected void afterHookedMethod(MethodHookParam param) {
         try {
           Object o = param.thisObject;
-          icon = icon(String.valueOf(XposedHelpers.getObjectField(o, "mEvent")),
-                      String.valueOf(XposedHelpers.getObjectField(o, "mTurnSide")), (Integer) param.args[5]);
+          String i = icon(String.valueOf(XposedHelpers.getObjectField(o, "mEvent")),
+                          String.valueOf(XposedHelpers.getObjectField(o, "mTurnSide")), (Integer) param.args[5]);
           String s = Hook.street((String) param.args[0]);
-          street = s == null ? "" : s;
-          send(-1);  // mDistanceMeters still holds the previous turn until onNextTurnDistance
+          if (s == null) s = "";
+          // Android Auto repeats the same turn about once a second; keep its distance. A new turn
+          // drops it until onNextTurnDistance, since mDistanceMeters still holds the previous turn.
+          if (!i.equals(icon) || !s.equals(street)) meters = -1;
+          icon = i;
+          street = s;
+          send();
         } catch (Throwable t) {
           XposedBridge.log("aaroad: panel turn failed: " + t);
         }
@@ -43,7 +49,8 @@ final class Panel {
       @Override
       protected void afterHookedMethod(MethodHookParam param) {
         try {
-          if (icon != null) send((Integer) param.args[0]);
+          meters = (Integer) param.args[0];
+          if (icon != null) send();
         } catch (Throwable t) {
           XposedBridge.log("aaroad: panel distance failed: " + t);
         }
@@ -56,7 +63,10 @@ final class Panel {
           boolean now = "ACTIVE".equals(String.valueOf(XposedHelpers.getObjectField(param.thisObject, "mStatus")));
           if (now == active) return;
           active = now;
-          if (!now) icon = street = null;
+          if (!now) {
+            icon = street = null;
+            meters = -1;
+          }
           broadcast(new Intent(HH + (now ? "START_NAVI" : "STOP_NAVI")));
           XposedBridge.log("aaroad: panel " + (now ? "start" : "stop"));
         } catch (Throwable t) {
@@ -66,7 +76,7 @@ final class Panel {
     });
   }
 
-  private static void send(int meters) {
+  private static void send() {
     Intent i = new Intent(HH + "UPDATE_NAVI_WAZE");
     i.putExtra("icon", icon);
     i.putExtra("street", street);
