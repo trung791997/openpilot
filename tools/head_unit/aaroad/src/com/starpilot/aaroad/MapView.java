@@ -337,8 +337,9 @@ final class MapView extends View {
         int[] starts = tile.starts[c];
         if (pts == null || starts == null) continue;
         for (int l = 0; l + 1 < starts.length; l++) {
-          if (r != null) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
-          else around(s, tile, pts, starts[l], starts[l + 1], roads);
+          // with a route, every road around the car shows as in free drive, and farther out the roads along the route
+          if (r == null) around(s, tile, pts, starts[l], starts[l + 1], roads);
+          else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
         }
       }
     }
@@ -476,17 +477,18 @@ final class MapView extends View {
     if (run.size > 2) out.add(run.take());
   }
 
-  private static void around(Scene s, Feed.Tile tile, float[] pts, int from, int to, List<float[]> out) {
+  private static boolean around(Scene s, Feed.Tile tile, float[] pts, int from, int to, List<float[]> out) {
     Run run = new Run();
     for (int i = from; i < to; i++) {
       double e = ((tile.x + pts[2 * i] / Feed.EXTENT) - s.ax) * s.mpt;
       double n = -((tile.y + pts[2 * i + 1] / Feed.EXTENT) - s.ay) * s.mpt;
       run.add(e, n);
     }
-    if (run.size < 2) return;
+    if (run.size < 2) return true;
     float[] b = boxes(new float[][] {run.peek()})[0];
-    if (b[2] < -ROADS_R || b[0] > ROADS_R || b[3] < -ROADS_R || b[1] > ROADS_R) return;
+    if (b[2] < -ROADS_R || b[0] > ROADS_R || b[3] < -ROADS_R || b[1] > ROADS_R) return false;
     out.add(run.take());
+    return true;
   }
 
   private static float[][] boxes(float[][] runs) {
