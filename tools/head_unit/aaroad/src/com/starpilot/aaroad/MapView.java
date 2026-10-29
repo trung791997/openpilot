@@ -121,7 +121,7 @@ final class MapView extends View {
     grid.setStyle(Paint.Style.STROKE);
     grid.setStrokeWidth(0);  // hairline in screen pixels
     fill.setAntiAlias(true);
-    mask.setShader(new LinearGradient(0, 0, 184, 0, new int[] {0xff050505, 0xff050505, 0x00050505},
+    mask.setShader(new LinearGradient(0, 0, COL, 0, new int[] {0xff050505, 0xff050505, 0x00050505},
                                       new float[] {0, 0.87f, 1}, Shader.TileMode.CLAMP));
     fog.setShader(new LinearGradient(0, 0, 0, 78, new int[] {0xff050505, 0xe6050505, 0x00050505},
                                      new float[] {0, 0.6f, 1}, Shader.TileMode.CLAMP));
@@ -732,10 +732,13 @@ final class MapView extends View {
     return true;
   }
 
-  // ---- Layout B text: distance and bar in the left column, street on top, speed limit, arrival
+  // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
+  // left over the arrival time
+
+  private static final float COL = 150, COL_X = 76;  // left column width, and the centre line its text stacks on
 
   private void overlay(Canvas canvas, long now, boolean free) {
-    if (!free) canvas.drawRect(0, 0, 184, 215, mask);
+    if (!free) canvas.drawRect(0, 0, COL, 215, mask);
     canvas.drawRect(0, 0, 584, 78, fog);
 
     View lanes = find("drive_way_layout");
@@ -744,10 +747,37 @@ final class MapView extends View {
     TextView road = (TextView) find("next_road");
     CharSequence name = road != null && road.getVisibility() == VISIBLE ? road.getText() : null;
     if (!TextUtils.isEmpty(name)) {
-      float maxw = hasSign ? 356 : 380, size = 24;
+      // centred over the map, between the column and the sign
+      float left = free ? 0 : COL, right = hasSign ? 466 : 584;
+      float maxw = Math.min(right - left - 16, free && hasSign ? 356 : 400), size = 24;
+      float cx = free && hasSign ? 292 : (left + right) / 2;
       street.setTextSize(size);
       while (street.measureText(name.toString()) > maxw && size > 17) street.setTextSize(--size);
-      canvas.drawText(TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString(), 292, streetY, street);
+      canvas.drawText(TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString(), cx, streetY, street);
+    }
+
+    if (hasSign) {
+      double v = Feed.limitMs * (Feed.metric ? 3.6 : 2.23694);
+      speedSign(canvas, String.valueOf(Math.round(v)), 474, 30, 40, 52);
+    }
+
+    // the column stacks up from the bottom: arrival time, time left, bar, distance; above the stock vehicle
+    // data row when it shows
+    View vd = find("vehicle_data_layout");
+    boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
+    float y = low ? navi.getTop() + vd.getTop() - 4 : 206;
+
+    if (Feed.remainingSec >= 0) {
+      double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
+      long min = Math.round(left / 60);
+      String n = min >= 60 ? (min / 60) + " h " + (min % 60) : String.valueOf(min);
+      String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
+      canvas.drawText(at, COL_X - etaClock.measureText(at) / 2, y, etaClock);
+      y -= 26;
+      float x = COL_X - (eta.measureText(n) + etaDim.measureText(" min")) / 2;
+      canvas.drawText(n, x, y, eta);
+      canvas.drawText(" min", x + eta.measureText(n), y, etaDim);
+      y -= 28;
     }
 
     TextView dist = (TextView) find("seg_dist");
@@ -756,30 +786,15 @@ final class MapView extends View {
       String t = d.toString().trim();
       int sp = t.lastIndexOf(' ');
       String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
-      canvas.drawText(num, 120, 108, big);
-      canvas.drawText(u, 124, 108, unit);
       double ft = Meter.feet(d);
-      if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), 92, 118, 24, 64);
-    }
-
-    if (hasSign) {
-      double v = Feed.limitMs * (Feed.metric ? 3.6 : 2.23694);
-      speedSign(canvas, String.valueOf(Math.round(v)), 474, 30, 40, 52);
-    }
-
-    if (Feed.remainingSec >= 0) {
-      double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
-      long min = Math.round(left / 60);
-      String n = min >= 60 ? (min / 60) + " h " + (min % 60) : String.valueOf(min);
-      String rest = " · " + clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
-      View vd = find("vehicle_data_layout");
-      boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
-      float x = low ? 128 : 64, y = low ? navi.getTop() + vd.getTop() - 4 : 205;
-      canvas.drawText(n, x, y, eta);
-      x += eta.measureText(n);
-      canvas.drawText(" min", x, y, etaDim);
-      x += etaDim.measureText(" min");
-      canvas.drawText(rest, x, y, etaClock);
+      float h = Math.min(60, y - 92);  // the bar gives way first when the column is short
+      if (h >= 44) {  // the distance keeps its place whether or not the bar is up
+        if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), COL_X - 12, y - h, 24, h);
+        y -= h + 8;
+      }
+      float nw = big.measureText(num), x = COL_X - (nw + 4 + unit.measureText(u)) / 2 + nw;
+      canvas.drawText(num, x, y, big);
+      canvas.drawText(u, x + 4, y, unit);
     }
   }
 
