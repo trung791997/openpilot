@@ -14,8 +14,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 // mRoad is often Google's instruction text ("Turn right", "Your destination is on the
 // right"), which stock also sends as the present-location name. Only a street name is
 // sent: "onto X" / "on X" is cut out, other instruction text becomes no name.
-// The cluster answered every send on 2026-10-28 with reply 2 (not stored, resend) and
-// nothing resends in Android Auto mode, so the turn is replayed once per new turn.
+// The cluster answers every send with reply 2 (not stored). A replay of the turn on reply 2
+// (2026-10-28) never got it stored, and since Android Auto repeats the turn every second it
+// replayed every second; each replay carries no distance, so the stock distance bar flickered
+// to 0 (Peter, 2026-10-29). Removed.
 public class Hook implements IXposedHookLoadPackage {
   private static final String PKG = "com.mitsubishielectric.ada.app.androidauto";
   private static final String NFM = PKG + ".navigation.NavigationFocusManager";
@@ -106,35 +108,10 @@ public class Hook implements IXposedHookLoadPackage {
         int.class, int.class, new XC_MethodHook() {
       @Override
       protected void beforeHookedMethod(MethodHookParam param) {
-        if (replaying) return;
-        lastTurn = param.args.clone();
-        resent = false;
         XposedBridge.log("aaroad: street \"" + street((String) param.args[0]) + "\"");
       }
     });
 
-    XposedHelpers.findAndHookMethod(NFM + "$4$1", lpparam.classLoader, "run", new XC_MethodHook() {
-      @Override
-      protected void afterHookedMethod(MethodHookParam param) {
-        try {
-          Object info = XposedHelpers.getObjectField(param.thisObject, "val$info");
-          int reply = (Integer) XposedHelpers.callMethod(info, "getGuidancePointInfoReply");
-          if (reply != 2 || resent || lastTurn == null) return;
-          resent = true;
-          Object[] a = lastTurn;
-          Object nfmObj = XposedHelpers.getObjectField(XposedHelpers.getObjectField(param.thisObject, "this$1"), "this$0");
-          XposedBridge.log("aaroad: cluster reply 2, resending turn once");
-          replaying = true;
-          try {
-            XposedHelpers.callMethod(nfmObj, "onNextTurn", a);
-          } finally {
-            replaying = false;
-          }
-        } catch (Throwable t) {
-          XposedBridge.log(t);
-        }
-      }
-    });
     try {
       Panel.install(nfm);
     } catch (Throwable t) {
@@ -142,10 +119,6 @@ public class Hook implements IXposedHookLoadPackage {
     }
     XposedBridge.log("aaroad: hooked " + NFM);
   }
-
-  private static volatile Object[] lastTurn;
-  private static volatile boolean resent;
-  private static volatile boolean replaying;
 
   private static final String[] INSTRUCTION = {
     "turn ", "continue", "keep ", "take ", "merge", "head ", "make ", "slight ", "sharp ", "exit",
