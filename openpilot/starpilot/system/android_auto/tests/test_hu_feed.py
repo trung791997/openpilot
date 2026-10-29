@@ -165,3 +165,19 @@ def test_a_stop_keeps_the_heading_it_arrived_with():
   assert hf.hold_heading(None, 0.0, 92.0) == (92.0, 92.0)  # stopped: GPS has no bearing
   assert hf.hold_heading(None, 0.0, None) == (None, None)
   assert hf.hold_heading(None, 5.0, 92.0) == (None, None)  # moving without a bearing: the old one is stale
+
+
+def test_the_route_goes_again_as_soon_as_nav_comes_back():
+  nav = {'icon': 'turn_left', 'distance': 400}
+  value = snapshot(nav=nav, route=('s:1', [(33.0, -117.0), (33.0, -116.99)]))
+  feed, sock, now, reads = make(value)
+  sock.hello()
+  feed.tick()
+  assert sock.kinds().count('r') == 1
+  value.update(nav=None, route=None)  # the head unit drops its route
+  now[0] += 1
+  feed.tick()
+  value.update(nav=nav, route=('s:1', [(33.0, -117.0), (33.0, -116.99)]))
+  now[0] += 1
+  feed.tick()
+  assert sock.kinds().count('r') == 2  # not five seconds later

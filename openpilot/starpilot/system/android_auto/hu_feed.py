@@ -44,6 +44,9 @@ TILE_CHUNK = 1000          # tile bytes per datagram, about 1.4 kB once base64'd
 TILE_CHUNKS_PER_TICK = 20  # 400 datagrams a second at most
 TILE_SCAN_EVERY = 1.       # s between looks for a tile the head unit lacks
 TILE_RETRY = 3.            # s after sending a tile before it goes again, if the hellos still lack it
+# navigationd publishes once a second but can pause for a few seconds while it reroutes. A missing nav makes the
+# cluster drop the route and fall back to every nearby street in grey, so a pause shorter than this keeps the last turn.
+NAV_HOLD_NS = 10_000_000_000
 MAX_CARRY = 1.             # s: past this a fix is too old to carry forward
 METERS_PER_DEG = 111_320.
 MODES = ('exp', 'chill', 'aol', 'off')
@@ -187,7 +190,7 @@ class CerealReader:
         value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
     stamp = sm.logMonoTime['starpilotNavigation']
     state = navigation_state(sm['starpilotNavigation']) if sm.seen['starpilotNavigation'] else None
-    if state is not None and state.status == 'guiding' and 0 < stamp <= now_ns <= stamp + 3_000_000_000:
+    if state is not None and state.status == 'guiding' and 0 < stamp <= now_ns <= stamp + NAV_HOLD_NS:
       value['nav'] = {**instruction(state.instruction),
                       'then': instruction(state.nextManeuver) if state.nextManeuver.maneuverType else None,
                       'remaining': round(float(state.instruction.remainingDistanceMeters)),
@@ -301,7 +304,9 @@ class HeadUnitFeed:
       self._send('s', state)
       self.sent_state, self.last_state = state, now
     route = value.get('route')
-    if route is not None and (route[0] != self.sent_route or now - self.last_route >= ROUTE_EVERY):
+    if route is None:
+      self.sent_route = None  # the head unit drops the route with the nav, so it goes again the moment nav is back
+    elif (route[0] != self.sent_route or now - self.last_route >= ROUTE_EVERY):
       key, points = route
       route_id = zlib.crc32(key.encode()) & 0xffffffff
       chunks = [points[i:i + ROUTE_CHUNK] for i in range(0, len(points), ROUTE_CHUNK)]
