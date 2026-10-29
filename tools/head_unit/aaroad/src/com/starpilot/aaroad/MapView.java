@@ -53,6 +53,13 @@ final class MapView extends View {
   private static final double NEAR = 152.4, TURN_LEN = 40;   // side roads full width inside 500 ft; road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
   private static final double TAU_IN = 0.8, TAU_OUT = 2.0;   // s, zoom smoothing: in briskly, back out gently
+  // Stopping at an intersection with no turn there: close in on it like a turn. Slowing means braking harder than
+  // STOP_DECEL with the stop (v^2 / 2a) landing near the junction, or already crawling below CRAWL within STOP_NEAR.
+  private static final double STOP_LOOK = 150, STOP_DECEL = 0.7, CRAWL = 4, STOP_NEAR = 50;
+  // stopped within ON_ROUTE m of the route, the car points along it: GPS has no heading at a stop, and one taken
+  // there (a comma start at a light, 2026-10-29 photo) turned the whole map about 80 degrees
+  private static final double HOLD_SPEED = 1, ON_ROUTE = 12;
+  private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
@@ -79,7 +86,8 @@ final class MapView extends View {
 
   private volatile Scene scene;
   private volatile boolean building;
-  private long builtAt, lastFrame, drawMs, drawSum;
+  private long builtAt, lastFrame, drawMs, drawSum, spdAt;
+  private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
   private boolean live;
   private double k = 600 / R0;
@@ -94,6 +102,7 @@ final class MapView extends View {
     int tilesVersion;
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
+    float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
   }
 
   MapView(Context context, ViewGroup navi, String pkg) {
@@ -339,7 +348,90 @@ final class MapView extends View {
     s.routeBox = boxes(s.route);
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
+    if (r != null) s.junctions = junctions(s.route, s.stubs);
     return s;
+  }
+
+  // Where a side road crosses the route or ends on it (a T), merged within JUNCTION_MERGE m. A road running
+  // along the route (its own road in the tiles) is skipped by the angle test.
+  private static float[] junctions(float[][] route, float[][] stubs) {
+    HashMap<Long, List<float[]>> segs = new HashMap<Long, List<float[]>>();
+    for (float[] p : route) {
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        float[] g = {p[i], p[i + 1], p[i + 2], p[i + 3]};
+        int e0 = (int) Math.floor(Math.min(g[0], g[2]) / JCELL), e1 = (int) Math.floor(Math.max(g[0], g[2]) / JCELL);
+        int n0 = (int) Math.floor(Math.min(g[1], g[3]) / JCELL), n1 = (int) Math.floor(Math.max(g[1], g[3]) / JCELL);
+        for (int a = e0; a <= e1; a++) {
+          for (int b = n0; b <= n1; b++) {
+            Long key = ((long) a << 32) ^ (b & 0xffffffffL);
+            List<float[]> l = segs.get(key);
+            if (l == null) segs.put(key, l = new ArrayList<float[]>());
+            l.add(g);
+          }
+        }
+      }
+    }
+    List<float[]> found = new ArrayList<float[]>();
+    for (float[] p : stubs) {
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        float ax = p[i], ay = p[i + 1], dx = p[i + 2] - ax, dy = p[i + 3] - ay;
+        float len = (float) Math.hypot(dx, dy);
+        if (len < 0.5f) continue;
+        // the ends of the side road reach JUNCTION_GAP m further, so a T that stops short of the route centre counts
+        float ext = JUNCTION_GAP / len, lo = i == 0 ? -ext : 0, hi = i + 4 >= p.length ? 1 + ext : 1;
+        int ca = (int) Math.floor((Math.min(ax, ax + dx) - JUNCTION_GAP) / JCELL), cb = (int) Math.floor((Math.max(ax, ax + dx) + JUNCTION_GAP) / JCELL);
+        int cc = (int) Math.floor((Math.min(ay, ay + dy) - JUNCTION_GAP) / JCELL), cd = (int) Math.floor((Math.max(ay, ay + dy) + JUNCTION_GAP) / JCELL);
+        for (int a = ca; a <= cb; a++) {
+          for (int b = cc; b <= cd; b++) {
+            List<float[]> l = segs.get(((long) a << 32) ^ (b & 0xffffffffL));
+            if (l == null) continue;
+            for (float[] g : l) {
+              float ex = g[2] - g[0], ey = g[3] - g[1], den = dx * ey - dy * ex;
+              float glen = (float) Math.hypot(ex, ey);
+              if (glen < 0.5f || Math.abs(den) < 0.5f * len * glen) continue;  // within 30 degrees of the route: alongside it
+              float t = ((g[0] - ax) * ey - (g[1] - ay) * ex) / den, u = ((g[0] - ax) * dy - (g[1] - ay) * dx) / den;
+              if (t < lo || t > hi || u < 0 || u > 1) continue;
+              float je = ax + t * dx, jn = ay + t * dy;
+              boolean dup = false;
+              for (float[] f : found) dup |= Math.hypot(f[0] - je, f[1] - jn) < JUNCTION_MERGE;
+              if (!dup) found.add(new float[] {je, jn});
+            }
+          }
+        }
+      }
+    }
+    float[] out = new float[2 * found.size()];
+    for (int i = 0; i < found.size(); i++) {
+      out[2 * i] = found.get(i)[0];
+      out[2 * i + 1] = found.get(i)[1];
+    }
+    return out;
+  }
+
+  // Compass direction (radians) of the route segment nearest (e, n), or NaN when none is within ON_ROUTE m.
+  private static double routeHeading(float[][] route, float e, float n) {
+    double best = ON_ROUTE * ON_ROUTE, out = Double.NaN;
+    for (float[] p : route) {
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        double dx = p[i + 2] - p[i], dy = p[i + 3] - p[i + 1], l2 = dx * dx + dy * dy;
+        if (l2 < 1) continue;
+        double t = Math.max(0, Math.min(1, ((e - p[i]) * dx + (n - p[i + 1]) * dy) / l2));
+        double ex = p[i] + t * dx - e, ny = p[i + 1] + t * dy - n, d2 = ex * ex + ny * ny;
+        if (d2 < best) { best = d2; out = Math.atan2(dx, dy); }
+      }
+    }
+    return out;
+  }
+
+  // Distance ahead to the nearest junction in front of the car and close to its line of travel, or -1.
+  private static double junctionAhead(Scene s, float ce, float cn, float ch, float sh) {
+    double best = -1;
+    for (int i = 0; i + 1 < s.junctions.length; i += 2) {
+      float de = s.junctions[i] - ce, dn = s.junctions[i + 1] - cn;
+      double ahead = de * sh + dn * ch, side = Math.abs(de * ch - dn * sh);
+      if (ahead > -JUNCTION_PAST && ahead < STOP_LOOK && side < JUNCTION_SIDE && (best < 0 || ahead < best)) best = Math.max(0, ahead);
+    }
+    return best;
   }
 
   private static long cell(double e, double n) {
@@ -449,6 +541,10 @@ final class MapView extends View {
     double[] w = Feed.world(Feed.lat, Feed.lon);
     float ce = (float) ((w[0] - s.ax) * s.mpt + Math.sin(h) * ahead);
     float cn = (float) (-(w[1] - s.ay) * s.mpt + Math.cos(h) * ahead);
+    if (spd < HOLD_SPEED) {
+      double r = routeHeading(s.route, ce, cn);
+      if (!Double.isNaN(r)) h = r;
+    }
     float ch = (float) Math.cos(h), sh = (float) Math.sin(h);
 
     // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
@@ -456,6 +552,19 @@ final class MapView extends View {
     double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
     double rng = Math.max(200, Math.min(600, spd * 20));
     if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
+    if (Feed.poseAt != spdAt) {
+      double gap = (Feed.poseAt - spdAt) / 1000.0;
+      if (lastSpd >= 0 && gap > 0 && gap < 1) decel += ((lastSpd - spd) / gap - decel) * Math.min(1, gap / 0.5);
+      else decel = 0;
+      lastSpd = spd;
+      spdAt = Feed.poseAt;
+    }
+    double jn = s.route.length > 0 ? junctionAhead(s, ce, cn, ch, sh) : -1;
+    if (jn >= 0) {
+      double stopAt = decel > STOP_DECEL ? spd * spd / (2 * decel) : -1;
+      boolean stopping = (stopAt >= 0 && Math.abs(stopAt - jn) < Math.max(25, 0.4 * jn)) || (spd < CRAWL && jn < STOP_NEAR);
+      if (stopping && jn + TURN_LEN < rng) rng = Math.max(jn + TURN_LEN, CLOSE);
+    }
     double dt = lastFrame == 0 ? 10 : (now - lastFrame) / 1000.0;
     lastFrame = now;
     k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
