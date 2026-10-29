@@ -629,6 +629,32 @@ def test_session_opens_car_data_and_bluetooth_like_a_phone(identity):
   assert session.stats()["sensor_events"] == 1
 
 
+def test_session_takes_the_cars_gps_when_given_somewhere_to_put_it(identity, tmp_path):
+  from openpilot.starpilot.gps.head_unit import HeadUnitGps, read_head_unit_gps
+  location = field(1, 77) + field(2, 401_234_567) + field(3, -1_101_234_567) + field(4, 4_000) + field(6, 20_000) + field(7, 90_000_000)
+  hu = FakeHeadUnit(identity, phone_services=True, location=location)
+  session = connect(hu, identity)
+  session.phone_services = True
+  session.location = HeadUnitGps(path=tmp_path / "gps.json", mono_clock=lambda: 5_000_000_000)
+  events = []
+  session.event = lambda name, **values: events.append((name, values))
+  session.authenticate()
+  session.start("StarPilot", "comma.ai")
+  pump_until(session, lambda: session.focused and session.location.accepted)
+  session.shutdown()
+  session.peer.close()
+  hu.thread.join(5)
+  assert hu.error is None
+  assert hu.sensor_requests == [13, 10, 1]
+  assert session.stats()["location"] == {"received": 1, "accepted": 1, "repeated": 0, "rejected": 0, "last_error": ""}
+  # Logs say which fields the car fills in, never where it is.
+  assert ("sensor_event", {"field": 1, "present": [1, 2, 3, 4, 6, 7]}) in events
+  assert "401234567" not in repr(events) and "40.123" not in repr(events)
+  stamp, gps = read_head_unit_gps(5_000_000_000, tmp_path / "gps.json")
+  assert stamp == 5_000_000_000 and (gps.latitude, gps.longitude) == (40.1234567, -110.1234567)
+  assert (gps.horizontalAccuracy, gps.speed, gps.bearingDeg) == (4., 20., 90.)
+
+
 def test_session_leaves_car_data_alone_by_default(identity):
   hu = FakeHeadUnit(identity, phone_services=True)
   session = connect(hu, identity)

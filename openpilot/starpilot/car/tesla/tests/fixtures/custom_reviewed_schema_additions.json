@@ -856,6 +856,50 @@
           }
         }
       ]
+    },
+    "0x81c2f05a394cf4af": {
+      "kind": "struct",
+      "before_name": "StarPilotCarControl",
+      "after_name": "StarPilotCarControl",
+      "old_field_count": 4,
+      "old_storage": {
+        "dataWordCount": 0,
+        "pointerCount": 4,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "new_storage": {
+        "dataWordCount": 0,
+        "pointerCount": 5,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "added_fields": [
+        {
+          "slot": {
+            "offset": 4,
+            "type": {
+              "struct": {
+                "typeId": 10488067326635002157
+              }
+            },
+            "defaultValue": {
+              "schemaValueHex": "00000000040000000000000002000100100000000000000000000000000000000000000000000000"
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "headUnitGps",
+          "codeOrder": 4,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 4
+          }
+        }
+      ]
     }
   },
   "published_addition_commits": {

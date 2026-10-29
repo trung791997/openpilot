@@ -46,6 +46,7 @@ class Messages:
         value["gps"] = SimpleNamespace(**getattr(event, service).gps.to_dict())
       if service == "starpilotNavigation":
         value["phoneGps"] = SimpleNamespace(**getattr(event, service).phoneGps.to_dict())
+        value["headUnitGps"] = SimpleNamespace(**getattr(event, service).headUnitGps.to_dict())
       self.data[service] = SimpleNamespace(**value)
       self.valid[service] = event.valid
       self.logMonoTime[service] = event.logMonoTime

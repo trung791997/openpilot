@@ -77,7 +77,7 @@ SENSOR_EVENT = 0x8003
 BLUETOOTH_PAIRING_REQUEST = 0x8001
 BLUETOOTH_PAIRING_RESPONSE = 0x8002
 BLUETOOTH_AUTH_DATA = 0x8003
-SENSOR_NIGHT, SENSOR_DRIVING_STATUS = 10, 13
+SENSOR_LOCATION, SENSOR_NIGHT, SENSOR_DRIVING_STATUS = 1, 10, 13
 
 CODEC_H264_BP = 3
 SETUP_STATUS_READY = 2
@@ -632,6 +632,7 @@ class ProjectionSession(Session):
     self.phone_address = ""  # this comma's Bluetooth address, for the pairing request
     self.sensor_channel: int | None = None
     self.sensor_events: dict[int, int] = {}
+    self.location = None  # HeadUnitGps, attached by the supervisor; takes the car's own GPS fixes
     self.bluetooth_channel: int | None = None
     self.car_address = ""  # the car's Bluetooth address, from its Bluetooth service descriptor
     self.phone_link_ready = False  # set by the supervisor's thread once the hands-free link to the car is up
@@ -719,8 +720,11 @@ class ProjectionSession(Session):
     sensors = next((ch for ch in self.channels if "sensors" in ch), None)
     if sensors is not None and self._open_optional(sensors, "sensors"):
       self.sensor_channel = sensors["id"]
-      # Only what decides whether the screen may project. Location would put the car's position in the session log.
+      # What decides whether the screen may project, plus the car's GPS when navigation can use it. Location fixes go
+      # to the GPS handoff only; the session log gets counts, never a position.
       wanted = [t for t in (SENSOR_DRIVING_STATUS, SENSOR_NIGHT) if t in sensors["sensors"]]
+      if self.location is not None and SENSOR_LOCATION in sensors["sensors"]:
+        wanted.append(SENSOR_LOCATION)
       for sensor_type in wanted:
         self.send(sensors["id"], SENSOR_START_REQUEST, field(1, sensor_type) + field(2, 0))
       self.event("sensors_opened", channel=sensors["id"], requested=wanted)
@@ -844,8 +848,12 @@ class ProjectionSession(Session):
         for number, values in fields.items():
           first = number not in self.sensor_events
           self.sensor_events[number] = self.sensor_events.get(number, 0) + len(values)
-          if first:  # one line per kind of car data; the counts go in stats
-            self.event("sensor_event", field=number, data=describe_fields(fields))
+          if number == SENSOR_LOCATION:
+            present = self._location(values)
+            if first:  # which LocationData fields this head unit fills in, never their values
+              self.event("sensor_event", field=number, present=present)
+          elif first:  # one line per kind of car data; the counts go in stats
+            self.event("sensor_event", field=number, data=describe_fields({number: values}))
       else:
         self.ignored("sensor_ignored", channel, kind, data)
     elif channel is not None and channel == self.bluetooth_channel:
@@ -1007,4 +1015,20 @@ class ProjectionSession(Session):
     return {"frames_sent": self.frames_sent, "frames_acked": self.acked, "pending": self.unacked,
             "focus_epoch": self.focus_epoch, "focused": self.focused, "max_ack_ms": round(self.max_ack_seconds * 1000),
             "input_events": self.input_events, "touch": self.touch is not None,
-            "sensor_events": sum(self.sensor_events.values())}
+            "sensor_events": sum(self.sensor_events.values()),
+            **({"location": self.location.stats()} if self.location is not None else {})}
+
+  def _location(self, values: list) -> list[int]:
+    """Hand each LocationData to the GPS handoff; returns the field numbers the first one carries."""
+    present: list[int] = []
+    for value in values:
+      if not isinstance(value, bytes):
+        continue
+      try:
+        location = parse_fields(value)
+      except ValueError:
+        continue
+      present = present or sorted(location)
+      if self.location is not None:
+        self.location.publish(location)
+    return present

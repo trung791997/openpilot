@@ -2,17 +2,24 @@ import json
 import math
 import time
 
-GPS_SOURCES = {"gpsLocationExternal": "ublox", "gpsLocation": "qcomdiag", "starpilotCarState": "car", "phoneGps": "phone"}
-GPS_PRIORITY = {"gpsLocationExternal": 2, "gpsLocation": 2, "starpilotCarState": 1, "phoneGps": 0}
-WRAPPED_SOURCES = ("starpilotCarState", "phoneGps")
+GPS_SOURCES = {"gpsLocationExternal": "ublox", "gpsLocation": "qcomdiag", "starpilotCarState": "car", "headUnitGps": "headUnit",
+               "phoneGps": "phone"}
+GPS_PRIORITY = {"gpsLocationExternal": 2, "gpsLocation": 2, "starpilotCarState": 1, "headUnitGps": 1, "phoneGps": 0}
+# Fixes carried inside another message, and the field that holds them.
+WRAPPED_FIELDS = {"starpilotCarState": "gps", "headUnitGps": "headUnitGps", "phoneGps": "phoneGps"}
+WRAPPED_SOURCES = tuple(WRAPPED_FIELDS)
 MAX_HORIZONTAL_ACCURACY = 25.0
 GPS_MAX_AGE_NS = 2_500_000_000
 PHONE_MAX_AGE_NS = 10_000_000_000  # phones in the background send sparsely; keep the last fix this long
-SOURCE_SERVICES = {"phoneGps": "starpilotNavigation"}  # rides inside the navigation message
+HEAD_UNIT_MAX_AGE_NS = 3_000_000_000  # the head unit sends about once a second; allow two misses
+# These ride inside the navigation message.
+SOURCE_SERVICES = {"headUnitGps": "starpilotNavigation", "phoneGps": "starpilotNavigation"}
 GPS_SERVICES = tuple(dict.fromkeys(SOURCE_SERVICES.get(name, name) for name in GPS_SOURCES))
 # backup: phone only without comma or car GPS; comma: never the phone; phone: the phone whenever it has a fix.
+# Car GPS is the CAN fix or the head unit's, which is the same car receiver over Android Auto.
 GPS_MODES = ("backup", "comma", "phone")
-SOURCE_NAMES = {"gpsLocationExternal": "comma", "gpsLocation": "comma", "starpilotCarState": "car", "phoneGps": "phone"}
+SOURCE_NAMES = {"gpsLocationExternal": "comma", "gpsLocation": "comma", "starpilotCarState": "car", "headUnitGps": "car",
+                "phoneGps": "phone"}
 _mode: list = [-math.inf, "backup"]
 
 
@@ -38,7 +45,7 @@ def gps_priority(service, mode):
 
 
 def max_age_ns(service):
-  return PHONE_MAX_AGE_NS if service == "phoneGps" else GPS_MAX_AGE_NS
+  return {"phoneGps": PHONE_MAX_AGE_NS, "headUnitGps": HEAD_UNIT_MAX_AGE_NS}.get(service, GPS_MAX_AGE_NS)
 
 
 def valid_fix(gps, stamp, envelope, now_ns, max_age):
@@ -52,7 +59,7 @@ def valid_fix(gps, stamp, envelope, now_ns, max_age):
 def observation(sm, service, now_ns):
   try:
     carrier = SOURCE_SERVICES.get(service, service)
-    gps = (sm[carrier].phoneGps if service == "phoneGps" else sm[carrier].gps if service in WRAPPED_SOURCES else sm[carrier])
+    gps = getattr(sm[carrier], WRAPPED_FIELDS[service]) if service in WRAPPED_FIELDS else sm[carrier]
     envelope = int(sm.logMonoTime[carrier])
     stamp = int(gps.sourceMonoTime) if service in WRAPPED_SOURCES else envelope
     if not sm.valid[carrier] or valid_fix(gps, stamp, envelope, now_ns, max_age_ns(service)) is None:
@@ -64,7 +71,7 @@ def observation(sm, service, now_ns):
     return None
 
 
-def select_source(sm, now_ns, mode=None, phone_fix=None):
+def select_source(sm, now_ns, mode=None, phone_fix=None, head_unit_fix=None):
   """The chosen fix and where it came from: (comma|car|phone, (stamp, gps)), or None."""
   mode = mode or gps_mode()
   phone = None if mode == "comma" else phone_fix or observation(sm, "phoneGps", now_ns)
@@ -76,12 +83,14 @@ def select_source(sm, now_ns, mode=None, phone_fix=None):
     return "comma", max(native, key=lambda fix: fix[0])
   if (car := observation(sm, "starpilotCarState", now_ns)) is not None:
     return "car", car
+  if (car := head_unit_fix or observation(sm, "headUnitGps", now_ns)) is not None:
+    return "car", car
   return ("phone", phone) if phone is not None else None
 
 
-def select_location(sm, now_ns, mode=None, phone_fix=None):
-  """phone_fix: the navigation process's own phone fix, which it has before it publishes it."""
-  selected = select_source(sm, now_ns, mode, phone_fix)
+def select_location(sm, now_ns, mode=None, phone_fix=None, head_unit_fix=None):
+  """phone_fix, head_unit_fix: the navigation process's own fixes, which it has before it publishes them."""
+  selected = select_source(sm, now_ns, mode, phone_fix, head_unit_fix)
   return selected[1] if selected is not None else None
 
 

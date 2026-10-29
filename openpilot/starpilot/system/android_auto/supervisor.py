@@ -1462,6 +1462,11 @@ class Supervisor:
     if tuning["phone_services"]:
       session.phone_services = True
       session.phone_address = self._adapter_address()
+      try:
+        from openpilot.starpilot.gps.head_unit import HeadUnitGps
+        session.location = HeadUnitGps()  # the car's GPS, a backup for navigation when the comma has no fix
+      except Exception as error:  # optional; projection must never depend on it
+        self.log("head_unit_gps_unavailable", error=str(error))
     self._stage("authenticating")
     session.authenticate()
     self._stage("negotiating")

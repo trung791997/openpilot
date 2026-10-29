@@ -86,8 +86,9 @@ class FakeHeadUnit:
   def __init__(self, identity: dict[str, Path], *, window: int = 4, reject_auth: bool = False, require_client_cert: bool = True,
                unsolicited_focus: bool = False, version: tuple[int, int] = (1, 7), ack_codec_config: bool | int = True,
                connect_to: tuple[str, int] | None = None, ack_fragments: bool = False,
-               phone_services: bool = False):
+               phone_services: bool = False, location: bytes | None = None):
     self.phone_services = phone_services
+    self.location = location  # LocationData sent when the car's GPS is asked for
     self.opened: list[int] = []
     self.sensor_requests: list[int] = []
     self.pairing_requests: list[tuple[str, int]] = []
@@ -248,6 +249,8 @@ class FakeHeadUnit:
         self._send(SENSOR_CHANNEL, 0x8002, field(1, 0))
         if one(fields, 1) == 13:
           self._send(SENSOR_CHANNEL, 0x8003, field(13, field(1, 0)))  # driving status: unrestricted
+        if one(fields, 1) == 1 and self.location is not None:
+          self._send(SENSOR_CHANNEL, 0x8003, field(1, self.location))
       elif self.phone_services and channel == BLUETOOTH_CHANNEL and kind == 0x8001:
         address = one(fields, 1, b"")
         self.pairing_requests.append((address.decode() if isinstance(address, bytes) else "", int(one(fields, 2, 0) or 0)))

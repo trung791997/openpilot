@@ -57,8 +57,9 @@ def test_navigation_forwards_new_phone_fixes_without_waiting_for_heartbeat(monke
   monkeypatch.setattr(module, 'RouteRuntime', lambda _owner: runtime)
   monkeypatch.setattr(module.time, 'monotonic_ns', now)
   monkeypatch.setattr(module, 'read_phone_gps', read_phone)
-  monkeypatch.setattr(module, 'location', lambda _sm, _now, fix: fix)
-  monkeypatch.setattr(module, 'publish_status', lambda _pm, _value, fix: published.append((frame[0], fix)))
+  monkeypatch.setattr(module, 'read_head_unit_gps', lambda _now: None)
+  monkeypatch.setattr(module, 'location', lambda _sm, _now, fix, head_unit_fix: fix)
+  monkeypatch.setattr(module, 'publish_status', lambda _pm, _value, fix, head_unit_fix: published.append((frame[0], fix)))
   monkeypatch.setattr(messaging, 'SubMaster', lambda _services: Master())
   monkeypatch.setattr(messaging, 'PubMaster', lambda _services: None)
   with pytest.raises(Finished):

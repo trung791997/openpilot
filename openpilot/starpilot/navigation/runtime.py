@@ -9,6 +9,7 @@ import uuid
 from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, ROUTE_AVOIDANCES
 from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine
 
+from openpilot.starpilot.gps.head_unit import read_head_unit_gps
 from openpilot.starpilot.gps.phone import read_phone_gps
 from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS, GPS_SERVICES, bearing, select_location
 
@@ -16,8 +17,8 @@ ARRIVED_NS = 5_000_000_000      # stopped at the destination this long shows "Yo
 END_ROUTE_NS = 15_000_000_000   # ...and this long ends navigation, like tapping End navigation
 
 
-def location(sm, now_ns: int, phone_fix=None):
-  fix = select_location(sm, now_ns, phone_fix=phone_fix)
+def location(sm, now_ns: int, phone_fix=None, head_unit_fix=None):
+  fix = select_location(sm, now_ns, phone_fix=phone_fix, head_unit_fix=head_unit_fix)
   if fix is None:
     return None
   stamp, gps = fix
@@ -157,19 +158,20 @@ class RouteRuntime:
       self.ended_revision = revision
 
 
-def phone_gps_dict(phone_fix) -> dict | None:
-  if phone_fix is None:
+def gps_dict(fix) -> dict | None:
+  if fix is None:
     return None
-  gps = dict(vars(phone_fix[1]))
+  gps = dict(vars(fix[1]))
   gps["vNED"] = list(gps.get("vNED", ()))
   return gps
 
 
-def publish_status(pm, value: dict, phone_fix=None) -> None:
+def publish_status(pm, value: dict, phone_fix=None, head_unit_fix=None) -> None:
   from openpilot.cereal import messaging
   message = messaging.new_message('starpilotNavigation', valid=True)
   from openpilot.starpilot.navigation.wire import navigation_envelope
-  message.starpilotNavigation = {**navigation_envelope(value), **({'phoneGps': gps} if (gps := phone_gps_dict(phone_fix)) else {})}
+  fixes = {name: gps for name, fix in (('phoneGps', phone_fix), ('headUnitGps', head_unit_fix)) if (gps := gps_dict(fix))}
+  message.starpilotNavigation = {**navigation_envelope(value), **fixes}
   pm.send('starpilotNavigation', message)
 
 
@@ -181,10 +183,10 @@ def main():
   runtime = RouteRuntime(owner)
   sm = messaging.SubMaster(['deviceState', *(service for service in GPS_SERVICES if service != 'starpilotNavigation')])
   pm = messaging.PubMaster(['starpilotNavigation'])
-  # Forward new phone measurements promptly; held fixes still need only a 1 Hz heartbeat.
+  # Forward new phone and head-unit measurements promptly; held fixes still need only a 1 Hz heartbeat.
   rate = Ratekeeper(5.)
   next_update_ns = 0
-  last_phone_stamp = 0
+  last_stamps = (0, 0)
   try:
     while True:
       sm.update(0)
@@ -194,13 +196,13 @@ def main():
       drive_id = (device.startedMonoTime if sm.valid['deviceState'] and device.started and
                   0 < device.startedMonoTime <= device_stamp <= now <= device_stamp + 2_000_000_000 else 0)
       try:
-        phone_fix = read_phone_gps(now)
-        phone_stamp = phone_fix[0] if phone_fix is not None else 0
-        if now >= next_update_ns or phone_stamp != last_phone_stamp:
+        phone_fix, head_unit_fix = read_phone_gps(now), read_head_unit_gps(now)
+        stamps = tuple(fix[0] if fix is not None else 0 for fix in (phone_fix, head_unit_fix))
+        if now >= next_update_ns or stamps != last_stamps:
           next_update_ns = now + 1_000_000_000
-          last_phone_stamp = phone_stamp
-          value = runtime.update(now, location(sm, now, phone_fix), drive_id)
-          publish_status(pm, value, phone_fix)
+          last_stamps = stamps
+          value = runtime.update(now, location(sm, now, phone_fix, head_unit_fix=head_unit_fix), drive_id)
+          publish_status(pm, value, phone_fix, head_unit_fix=head_unit_fix)
       except (ValidationError, OSError, ValueError):
         cloudlog.warning('navigation settings or route unavailable')
       rate.keep_time()

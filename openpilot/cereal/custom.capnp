@@ -96,6 +96,7 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
   }
 
   phoneGps @3 :StarPilotCarState.Gps;  # sourceMonoTime is comma receive time minus the phone's fix age
+  headUnitGps @4 :StarPilotCarState.Gps;  # the car's GPS from the head unit over Android Auto; sourceMonoTime is comma receive time
 
 
   struct PreapRadarStartup {

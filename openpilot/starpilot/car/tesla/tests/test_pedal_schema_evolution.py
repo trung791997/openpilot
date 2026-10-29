@@ -58,9 +58,9 @@ def test_all_incumbent_custom_type_ids_fields_and_layouts_are_preserved(historic
     approved = REVIEW['types'].get(hex(old.schema.node.id))
     current_name = approved['after_name'] if approved else name
     compare_node(old, getattr(custom, current_name))
-  # Startup capsules have no parent slots; published phone GPS@3 stays occupied.
+  # Startup capsules have no parent slots; published phone GPS@3 stays occupied; head-unit GPS@4 is a reviewed append.
   assert set(custom.StarPilotCarControl.schema.fields) == {
-    'hudControl', 'steeringLimitInfo', 'navigation', 'phoneGps'}
+    'hudControl', 'steeringLimitInfo', 'navigation', 'phoneGps', 'headUnitGps'}
   assert custom.StarPilotCarControl.PreapPedalStartup.schema.node.id not in {
     getattr(historical, name).schema.node.id for name in
     re.findall(r'^struct (\w+)', FIXTURE.read_text(), re.MULTILINE)}
