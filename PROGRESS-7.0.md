@@ -22,11 +22,13 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
 | Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
 | Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower (entry 10) | see entry 10 | see entry 10 | replay (6 of Peter's hard brakes + 8:57 phantom) + static tests; new-brake cost not yet measured |
+| Stop-and-go: stay stopped behind a stopped car; no gas while crawling inside the 6 m stop gap (entry 11) | see entry 11 | see entry 11 | log check (route 46 segs 14-16, open loop) + static tests |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
+- **Stop-and-go hold and crawl cap (entry 11).** On the next stop-and-go drive: no roll-off while stopped behind a car, no creeping under about 4 m, and takeoffs no later when the car ahead leaves. Watch for a car that stays stopped after the car ahead has pulled off (a radar lead that never reads 0.6 m/s).
 - **Early gentle brake (entry 10).** Pushed at Peter's request before Job's new-brake check finished. Watch the next drives for early slowdowns behind a steady car; Job's sweep (new brakes with stills, w>0 rate on steady following, the 19 protected brakes) is still running.
 - **Curve brake fix (entry 7).** On the comma since 2026-10-26. Check the next drives for curve brakes and for a real brake that came out weaker than it should.
 - **Far brake taps, routes 34 and 37 (entry 9).** The weak-lead bound (camera-contradicted unconfirmed lead, or camera passed) is on branch `night-star7-longradar-weakbound`. Replay: route 34's tap gone, route 37's eased, the 19 real brakes unchanged. The 747-brake check moves 9 other brakes, all softer, none a real in-lane slowdown on the stills or by the driver's call. On longradar and V-ASM, default ON; replay only, no road evidence yet.
@@ -41,6 +43,25 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 11 — 2026-10-29 — Stop-and-go: stay stopped behind a stopped car, and no gas while crawling inside the stop gap; on longradar and V-ASM, default ON
+
+**Problem.** Route 46 (00000046--852fb6caa2, 15:30-15:55), Peter: "comma still got a little too close at times", behind a white Audi braking over and over at walking speed. From the car's log (seg 15 rlog, sendcan ACC_CONTROL):
+- 15:37.92: stopped 4.1 m behind the stopped Audi. The model's shouldStop dropped for 2 frames and the MPC's own stop flag was false, so longcontrol went stopping -> pid -> stopping. Those 0.1 s sent STANDSTILL_RELEASE=1, no brake request and gas 35-38. Back in stopping, the brake restarted from -0.06 at 0.3 m/s^3. At 15:38.40, with no pedal pressed, the car rolled off to 0.73 m/s and stopped again at 2.98 m. Not a radar flicker: radar vLead stayed <= 0.42.
+- 15:39 and 15:52: crawling at 0.55-0.82 m/s, 3.6 m behind the Audi rolling at 0.7. The planner's own speed (the MPC start state) read 0.07-0.29, so the MPC saw nothing to brake for; the model asked +0.11 at 3.67 m and the car closed to 2.86 m. Stills: the same Audi, brake lights on, filling the frame at 15:53.7.
+
+**Change.** `BoschAStopGap` in `openpilot/starpilot/longitudinal/bosch_a_stop_gap.py`, the last shaper in both planners (after `bosch_a_smooth`). Bosch-A Hondas with the radar on; radar leads only.
+1. Stop hold: stopped (or under 0.3 m/s) with the closest radar lead under 8 m and slower than 0.6 m/s, shouldStop stays on and the target stays at or under -0.25 until that lead is at least 0.6 m/s and 0.25 m/s faster than us, or the radar loses it. 0.6 is Dom's breakaway lead speed.
+2. Crawl cap: under 2 m/s, the target is capped at -0.25 (just under the Bosch gas floor -0.2, so no gas) inside 4.5 m unless the lead pulls away 0.25 m/s faster than us, and from 4.5 to 6 m only while the lead is 0.2 m/s or more slower than us.
+Both only add braking. dRel, vLead and the radar points are untouched (D-041/D-042).
+
+**Log check** (open loop on the logged leads and targets; no closed-loop planner on this VM, so the car's response is not simulated):
+- Seg 15: the hold covers 15:37.65-15:47.24, so the 15:38 roll-off has no gas and no release. It lets go at 15:47.24 when the Audi reaches 0.62 m/s; the logged takeoff was 15:47.35, so not later.
+- Seg 15: the crawl cap cuts the gas at 15:51.61-15:52.60 (largest cut 0.37) and for one frame at 15:48.65 (+0.13, the lead 0.23 faster).
+- Segs 14 and 16: no frame changed.
+- First tries that were dropped: the cap across the whole 6 m cut the gas while following at matched speed (15:26, 15:31); a 0.3 m/s pull-away margin cut 15:48.50, where the lead was 0.28 faster and accelerating.
+
+**Tests.** `tests/test_bosch_a_stop_gap.py` (12, static), starpilot longitudinal + Honda tests 808 passed. Upstream planner provenance hash updated.
 
 ### 10 — 2026-10-29 — Early gentle brake: when a confident camera sees the radar lead slowing first, start braking sooner and softer; on longradar and V-ASM, default ON
 
