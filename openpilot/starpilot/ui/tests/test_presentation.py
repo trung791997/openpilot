@@ -6,7 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile, font_filename, font_path, validate_bitmap_font
+import pyray as rl
+
+from openpilot.starpilot.ui.presentation import (BitmapFonts, FontRole, Profile, default_font_directory, font_filename, font_path,
+                                                 free_glyph_images, validate_bitmap_font)
 
 
 class TestBitmapFonts(unittest.TestCase):
@@ -82,6 +85,75 @@ class TestBitmapFonts(unittest.TestCase):
       fonts.draw("sample", FontRole.ROMAN, 36, 10, 20)
       scaled_draw.assert_not_called()
       self.assertAlmostEqual(raw_draw.call_args.args[3], 36 * 1.16)
+
+  def test_freeing_glyph_images_frees_each_cpu_bitmap_once(self):
+    glyphs = rl.ffi.new("GlyphInfo[3]")
+    pixels = [rl.ffi.new("unsigned char[4]"), rl.ffi.new("unsigned char[4]")]
+    glyphs[0].image.data, glyphs[2].image.data = pixels
+    font = SimpleNamespace(glyphCount=3, glyphs=glyphs)
+    freed = []
+    with patch("openpilot.starpilot.ui.presentation.rl.unload_image", side_effect=lambda image: freed.append(image.data)):
+      free_glyph_images(font)
+      free_glyph_images(font)
+    self.assertEqual(freed, [rl.ffi.cast("void *", pixel) for pixel in pixels])
+    self.assertTrue(all(glyphs[index].image.data == rl.ffi.NULL for index in range(3)))
+
+  def test_glyph_release_is_opt_in_and_trims_the_heap_once(self):
+    for release in (False, True):
+      loaded = []
+
+      def load(_, loaded=loaded):
+        loaded.append(SimpleNamespace(texture=SimpleNamespace(id=len(loaded) + 1), glyphCount=1))
+        return loaded[-1]
+
+      with patch("openpilot.starpilot.ui.presentation.rl.is_window_ready", return_value=True), \
+           patch("openpilot.starpilot.ui.presentation.validate_bitmap_font"), \
+           patch("openpilot.starpilot.ui.presentation.rl.get_font_default", return_value=SimpleNamespace(texture=SimpleNamespace(id=99))), \
+           patch.object(Path, "is_file", return_value=True), \
+           patch("openpilot.starpilot.ui.presentation.rl.load_font", side_effect=load), \
+           patch("openpilot.starpilot.ui.presentation.rl.gen_texture_mipmaps"), \
+           patch("openpilot.starpilot.ui.presentation.rl.set_texture_filter"), \
+           patch("openpilot.starpilot.ui.presentation.free_glyph_images") as free, \
+           patch("openpilot.starpilot.ui.presentation.return_freed_heap") as trim:
+        BitmapFonts(Profile.LARGE, Path("unused"), release_glyph_images=release)
+      self.assertEqual([call.args[0] for call in free.call_args_list], loaded if release else [])
+      self.assertEqual(trim.call_count, int(release))
+
+  def test_fonts_without_cpu_glyph_copies_draw_and_measure_the_same(self):
+    owns_context = not rl.is_window_ready()
+    if owns_context:
+      rl.init_window(64, 64, "Glyph release fixture")
+    if not rl.is_window_ready():
+      self.skipTest("no graphics context on this host")
+    width, height = 900, 160
+    target = rl.load_render_texture(width, height)
+    try:
+      def snapshot(fonts):
+        measured, pixels = [], []
+        for role in FontRole:
+          for text in ("Starting navigation 0.3 mi", "Hello 123 km/h"):
+            size = fonts.measure(text, role, 48)
+            measured.append((role, text, size.width, size.height, fonts.horizontal_ink(text, role, 48), fonts.vertical_ink(text, role, 48)))
+          rl.begin_texture_mode(target)
+          rl.clear_background(rl.BLANK)
+          fonts.draw("Starting navigation 0.3 mi 123", role, 48, 10, 40)
+          rl.end_texture_mode()
+          image = rl.load_image_from_texture(target.texture)
+          pixels.append(bytes(rl.ffi.buffer(image.data, width * height * 4)))
+          rl.unload_image(image)
+        return measured, pixels
+
+      with BitmapFonts(Profile.LARGE, default_font_directory()) as kept:
+        expected = snapshot(kept)
+      self.assertTrue(all(any(pixels) for pixels in expected[1]), 'the fixture must draw visible text')
+      with BitmapFonts(Profile.LARGE, default_font_directory(), release_glyph_images=True) as released:
+        self.assertTrue(all(font.glyphs[index].image.data == rl.ffi.NULL
+                            for font in released._fonts.values() for index in range(font.glyphCount)))
+        self.assertEqual(snapshot(released), expected)
+    finally:
+      rl.unload_render_texture(target)
+      if owns_context:
+        rl.close_window()
 
 
 if __name__ == "__main__":

@@ -191,8 +191,9 @@ class TestProjectionOnroad(unittest.TestCase):
                          sm=object(), started_frame=0, is_onroad=lambda: False)
 
     class Fonts:
-      def __init__(self, profile, directory, *, headless_context):
+      def __init__(self, profile, directory, *, headless_context, release_glyph_images=False):
         self.profile = profile
+        self.release_glyph_images = release_glyph_images
         events.append(('fonts', profile, headless_context))
 
       def draw(self, *_): events.append('draw')
@@ -240,6 +241,7 @@ class TestProjectionOnroad(unittest.TestCase):
     self.assertEqual((view.width, view.height), (1860, 1240))
     self.assertEqual(view.onroad.viewport, (1860, 1240))
     self.assertEqual(events[:4], [('fonts', 'large', True), 'camera', 'view', 'adapter'])
+    self.assertTrue(view.fonts.release_glyph_images, 'the car screen draws from the atlas; CPU glyph copies are freed')
     view.render()
     self.assertIn('draw', events)
     self.assertNotIn('road_render', events)
@@ -600,9 +602,11 @@ class TestProjectionOnroad(unittest.TestCase):
     self.assertIn('CameraView.__init__(self', composition)
     self.assertNotIn('AugmentedRoadView.__init__(self', composition)
     self.assertIn('headless_context=True', composition)
+    self.assertIn('release_glyph_images=True', composition)
     self.assertIn('if self.projection_read_only:', UI_STATE.read_text())
     self.assertIn('if ui_state.projection_read_only:', UI_STATE.read_text())
     self.assertIn('headless_context: bool = False', PRESENTATION.read_text())
+    self.assertIn('release_glyph_images: bool = False', PRESENTATION.read_text())
 
   def test_projection_update_skips_prime_thread_and_device_power(self):
     tree = ast.parse(UI_STATE.read_text())

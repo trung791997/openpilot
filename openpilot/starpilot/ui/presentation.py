@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+import ctypes
 import hashlib
 import json
 
@@ -92,6 +93,28 @@ def validate_bitmap_font(path: Path) -> None:
     raise ValueError(f"Invalid bitmap font {path.name}: {error}") from error
 
 
+def free_glyph_images(font: rl.Font) -> None:
+  """Free the CPU copy of every glyph bitmap that raylib's LoadBMFont keeps beside the atlas.
+
+  Drawing and measuring use only the atlas texture, its rectangles and the glyph metrics;
+  nothing here renders text on the CPU (ImageText). UnloadFont frees each glyph image
+  again, which is then free(NULL), a no-op.
+  """
+  for index in range(font.glyphCount):
+    image = font.glyphs[index].image  # a view into raylib's own glyph array
+    if image.data != rl.ffi.NULL:
+      rl.unload_image(image)
+      image.data = rl.ffi.NULL
+
+
+def return_freed_heap() -> None:
+  """Hand freed heap pages back to the system; glibc keeps holes between live allocations otherwise."""
+  try:
+    ctypes.CDLL('libc.so.6').malloc_trim(0)
+  except (OSError, AttributeError):
+    pass  # not glibc (macOS development)
+
+
 class BitmapFonts:
   """Own font textures without changing global text APIs or loading device services.
 
@@ -101,7 +124,7 @@ class BitmapFonts:
   text wrapper. Text containing emoji is outside this component's contract.
   """
 
-  def __init__(self, profile: Profile, directory: Path, *, headless_context: bool = False):
+  def __init__(self, profile: Profile, directory: Path, *, headless_context: bool = False, release_glyph_images: bool = False):
     if not (rl.is_window_ready() or headless_context):
       raise RuntimeError("Bitmap fonts require an initialized graphics context")
     self._headless_context = headless_context
@@ -129,9 +152,13 @@ class BitmapFonts:
         if filename != "unifont.fnt":
           rl.gen_texture_mipmaps(font.texture)
           rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+        if release_glyph_images:
+          free_glyph_images(font)
     except Exception:
       self.close()
       raise
+    if release_glyph_images:
+      return_freed_heap()
 
   def font(self, role: FontRole, *, fallback: bool = False) -> rl.Font:
     if not self._fonts:

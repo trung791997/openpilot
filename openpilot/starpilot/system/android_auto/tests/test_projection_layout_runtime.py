@@ -206,8 +206,8 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
     self.assertIs(view.customization, saved)
     self.assertIsNone(view._projection_customization, 'the cached projected layout is rebuilt')
     self.assertIs(view.camera.large_ui_gamma_trial, True)
-    self.assertIsInstance(view.map, FakeMap, 'turning the map on in Galaxy builds it without reconnecting')
-    self.assertEqual(view.onroad.map_layer, view._map_layer)
+    self.assertIsInstance(view.map_feed, FakeFeed, 'turning the map on in Galaxy takes effect without reconnecting')
+    self.assertIsNone(view.map, 'the road map itself waits for navigation')
 
   def test_screen_writer_lock_contention_preserves_previous_receipt(self):
     with tempfile.TemporaryDirectory() as directory:
