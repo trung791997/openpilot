@@ -176,8 +176,9 @@ def test_session_stop_cancels_a_slow_aa0_setup():
 
 
 class FakeNM:
-  def __init__(self, devices=None, autoconnect=True, overlap=False, appears_after=0):
+  def __init__(self, devices=None, autoconnect=True, overlap=False, appears_after=0, state=None):
     self.devices = devices if devices is not None else {"/dev/wlan0": "wlan0", "/dev/aa0": "aa0"}
+    self.state = state  # path -> NetworkManager device state, or None for the default
     self.autoconnect = autoconnect
     self.overlap = overlap
     self.appears_after = appears_after  # GetDevices calls before NetworkManager lists aa0
@@ -208,6 +209,8 @@ class FakeNM:
       return [{"address": ("s", "192.168.180.183"), "prefix": ("u", 24)}]
     if name == "Frequency":
       return 5745 if path == "/ap/aa0" else 2437
+    if name == "State" and self.state and (state := self.state(path)) is not None:
+      return state
     return {"WirelessEnabled": True, "DeviceType": 2, "ActiveConnection": "/active/home", "State": 30 if path.startswith("/dev") else 2,
             "Autoconnect": self.autoconnect, "Connection": "/settings/home", "ActiveAccessPoint": "/ap/" + path.rsplit("/", 1)[-1]}[name]
 
@@ -262,6 +265,64 @@ def test_dedicated_network_lease_never_falls_back_to_another_device(monkeypatch)
   with pytest.raises(DedicatedUnavailable):
     lease.acquire(credentials(), timeout=2.0)
   assert lease.interface == "aa0" and "wifi_retry_without_bssid" not in lease.log.names()
+
+
+class Clock:
+  def __init__(self):
+    self.now = 1000.0
+
+  def monotonic(self):
+    return self.now
+
+  def sleep(self, seconds):
+    self.now += seconds
+
+
+def booting_nm(clock, wifi_up_at, aa0_taken_after=1.0):
+  """NetworkManager leaving all Wi-Fi unmanaged until ``wifi_up_at`` s, then taking aa0 ``aa0_taken_after`` s later."""
+  start = clock.now
+  def state(path):
+    up = clock.now - start >= wifi_up_at
+    if path == "/dev/wlan0":
+      return 30 if up else 10
+    return 30 if up and clock.now - start >= wifi_up_at + aa0_taken_after else 10
+  return FakeNM(autoconnect=False, state=state)
+
+
+def test_dedicated_network_lease_waits_for_wifi_to_start_after_a_cold_start(monkeypatch):
+  clock = Clock()
+  monkeypatch.setattr(network, "time", clock)
+  lease = nm_lease(booting_nm(clock, wifi_up_at=6.5))  # the 2026-10-29 cold start: aa0 at 47 s, Wi-Fi up at 53.5 s
+  lease.prepare_device()
+  assert lease.device_ready and lease.log.names().count("wifi_waiting_for_networkmanager") == 1
+
+
+def test_dedicated_network_lease_gives_aa0_its_own_wait_once_wifi_is_up(monkeypatch):
+  clock = Clock()
+  monkeypatch.setattr(network, "time", clock)
+  lease = nm_lease(booting_nm(clock, wifi_up_at=20.0, aa0_taken_after=1e9))
+  with pytest.raises(DedicatedUnavailable, match="did not take aa0"):
+    lease.prepare_device()
+  assert 20.0 + network.DEVICE_READY_TIMEOUT_S - 0.5 <= clock.now - 1000.0 <= 20.0 + network.DEVICE_READY_TIMEOUT_S + 0.5
+
+
+def test_dedicated_network_lease_stops_waiting_for_wifi_that_never_starts(monkeypatch):
+  clock = Clock()
+  monkeypatch.setattr(network, "time", clock)
+  lease = nm_lease(booting_nm(clock, wifi_up_at=1e9))
+  with pytest.raises(DedicatedUnavailable):
+    lease.prepare_device()
+  assert network.WIFI_STARTUP_TIMEOUT_S <= clock.now - 1000.0 <= network.WIFI_STARTUP_TIMEOUT_S + 0.5
+
+
+def test_dedicated_network_lease_gives_up_on_aa0_after_its_wait_when_wifi_is_up(monkeypatch):
+  clock = Clock()
+  monkeypatch.setattr(network, "time", clock)
+  lease = nm_lease(booting_nm(clock, wifi_up_at=0.0, aa0_taken_after=1e9))
+  with pytest.raises(DedicatedUnavailable, match="did not take aa0"):
+    lease.prepare_device()
+  assert clock.now - 1000.0 <= network.DEVICE_READY_TIMEOUT_S + 0.5
+  assert "wifi_waiting_for_networkmanager" not in lease.log.names()
 
 
 def test_dedicated_network_lease_rejects_overlapping_subnet_without_a_second_join():
