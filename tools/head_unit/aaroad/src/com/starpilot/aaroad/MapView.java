@@ -32,8 +32,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 // The continuous map on Honda Hack's meter nav page (Layout B of the 2026-10-29 mockup, map2.py): a heading-up
-// map tilted away like a road seen from above and behind the car, the route as a road with a carpet in openpilot's
-// mode colour, the roads around it, narrower and darker, and Peter's Civic where the car is. Honda Hack's arrow moves
+// map tilted away like a road seen from above and behind the car, every road to the same scale, the route marked
+// only by a line in openpilot's mode colour, and Peter's Civic where the car is. Honda Hack's arrow moves
 // to the left column; the distance, the 500 ft bar, the street, the speed limit and the arrival time are drawn here.
 //
 // It sits behind navi_layout in the meter's root and only shows while the nav page is up and the comma's feed
@@ -50,8 +50,16 @@ final class MapView extends View {
   private static final float BOX_R = 430;          // display metres: covers the box from the car
   private static final float FREE_X = 292;  // the meter's centre
   private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
-  private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, SIDE_PX = 40, GRID_DM = 50;
-  private static final double NEAR = 152.4, TURN_LEN = 40;   // side roads full width inside 500 ft; road shown past the turn
+  private static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
+  // Every road at its real width, so an intersection looks like the one out of the windscreen (Peter 2026-10-29:
+  // the route drawn wider than the roads around it looked wrong; the orange line alone marks the route). Metres
+  // kerb to kerb, both directions, by tile class: motorway, major, street, link; the route itself as a street
+  // under its own road, where the tile has it. The orange line is about two lanes wide, between LINE_MIN_PX and
+  // LINE_MAX_PX on screen. All of them are drawn ROAD_SCALE times as wide, the same for every road so they keep
+  // their real proportions: at real width a street is a hairline beside the car icon.
+  private static final float[] ROAD_M = {28 * 2, 18 * 2, 10 * 2, 6 * 2};  // x ROAD_SCALE 2
+  private static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
+  private static final double TURN_LEN = 40;   // m of road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
   private static final double TAU_IN = 0.8, TAU_OUT = 2.0;   // s, zoom smoothing: in briskly, back out gently
   // Stopping at an intersection with no turn there: close in on it like a turn. Slowing means braking harder than
@@ -75,14 +83,14 @@ final class MapView extends View {
   private final String pkg;
   private final Map<String, View> views = new HashMap<String, View>();
   private final Matrix camera = new Matrix();
-  private final Paint grid = new Paint(), kerb = stroke(0xff9a9a9a, LOCAL_PX + 2 * KERB_PX), road = stroke(0xff454545, LOCAL_PX),
-      carpet = stroke(Color.WHITE, ROUTE_PX),
-      sideKerb = stroke(0xff6a6a6a, SIDE_PX + 2 * KERB_PX), side = stroke(0xff383838, SIDE_PX),
+  private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
+      carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
       fill = new Paint(), mask = new Paint(), fog = new Paint();
   private final TextPaint big = text(36, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
       eta = text(25, true, Color.WHITE), etaDim = text(17, false, 0xffb0b0b0), etaClock = text(23, true, 0xffe6e6e6), sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
-  private final Path routePath = new Path(), carpetPath = new Path(), stubPath = new Path(), gridPath = new Path();
+  private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path();
+  private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path()};
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
   private volatile Scene scene;
@@ -102,6 +110,7 @@ final class MapView extends View {
     long routeId = -1;
     int tilesVersion;
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
+    int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
   }
@@ -304,6 +313,7 @@ final class MapView extends View {
     s.mpt = Feed.metersPerTile(lat);
     s.tilesVersion = version;
     List<float[]> route = new ArrayList<float[]>(), stubs = new ArrayList<float[]>(), roads = new ArrayList<float[]>();
+    List<Integer> stubsCls = new ArrayList<Integer>(), roadsCls = new ArrayList<Integer>();
     HashSet<Long> cells = new HashSet<Long>();
     if (r != null) {
       s.routeId = r.id;
@@ -341,12 +351,16 @@ final class MapView extends View {
           // with a route, every road around the car shows as in free drive, and farther out the roads along the route
           if (r == null) around(s, tile, pts, starts[l], starts[l + 1], roads);
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
+          while (roadsCls.size() < roads.size()) roadsCls.add(c);
+          while (stubsCls.size() < stubs.size()) stubsCls.add(c);
         }
       }
     }
     s.route = route.toArray(new float[0][]);
     s.stubs = stubs.toArray(new float[0][]);
     s.roads = roads.toArray(new float[0][]);
+    s.stubsCls = ints(stubsCls);
+    s.roadsCls = ints(roadsCls);
     s.routeBox = boxes(s.route);
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
@@ -356,6 +370,12 @@ final class MapView extends View {
 
   // Where a side road crosses the route or ends on it (a T), merged within JUNCTION_MERGE m. A road running
   // along the route (its own road in the tiles) is skipped by the angle test.
+  private static int[] ints(List<Integer> l) {
+    int[] a = new int[l.size()];
+    for (int i = 0; i < a.length; i++) a[i] = l.get(i);
+    return a;
+  }
+
   private static float[] junctions(float[][] route, float[][] stubs) {
     HashMap<Long, List<float[]>> segs = new HashMap<Long, List<float[]>>();
     for (float[] p : route) {
@@ -576,13 +596,13 @@ final class MapView extends View {
 
     routePath.rewind();
     carpetPath.rewind();
-    stubPath.rewind();
+    for (Path p : stubPaths) p.rewind();
     gridPath.rewind();
     gridLines(s, ce, cn, ch, sh, ik);
     paths(s.route, s.routeBox, routePath, ce, cn, ch, sh, ik, reach);
-    paths(s.stubs, s.stubsBox, stubPath, ce, cn, ch, sh, ik, reach);
+    if (s.route.length > 0) paths(s.stubs, s.stubsCls, s.stubsBox, ce, cn, ch, sh, ik, reach);
     if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
-    else paths(s.roads, s.roadsBox, stubPath, ce, cn, ch, sh, ik, reach);
+    else paths(s.roads, s.roadsCls, s.roadsBox, ce, cn, ch, sh, ik, reach);
 
     // with no route there is no turn text, so the map takes the whole meter: the car at its centre
     boolean free = s.route.length == 0;
@@ -591,24 +611,26 @@ final class MapView extends View {
     canvas.save();
     canvas.concat(camera);
     canvas.drawPath(gridPath, grid);
-    // side roads are full width at the closest zoom and thin out as the view zooms out, instead of filling it
-    float sw = Math.min(1, (float) (NEAR / R0) * ik);
-    sideKerb.setStrokeWidth(dm(SIDE_PX + 2 * KERB_PX) * sw);
-    side.setStrokeWidth(dm(SIDE_PX) * sw);
+    // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
+    float floor = dm(MIN_ROAD_PX);
+    kerb.setStrokeWidth(Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
+    road.setStrokeWidth(Math.max(floor, ROUTE_M * ik));
+    // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
+    for (int c = 0; c < 4; c++) {
+      sideKerb.setStrokeWidth(Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      canvas.drawPath(stubPaths[c], sideKerb);
+    }
+    if (s.route.length > 0) canvas.drawPath(routePath, kerb);
+    for (int c = 0; c < 4; c++) {
+      side.setStrokeWidth(Math.max(floor, ROAD_M[c] * ik));
+      canvas.drawPath(stubPaths[c], side);
+    }
     if (s.route.length > 0) {
-      // the roads around the route as roads, so the intersections and the road going on past a turn show:
-      // every kerb first and then every surface, so the side roads open into the route instead of being cut by its kerb
-      canvas.drawPath(stubPath, sideKerb);
-      canvas.drawPath(routePath, kerb);
-      canvas.drawPath(stubPath, side);
       canvas.drawPath(routePath, road);
+      carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
       carpet.setColor(modeColor(Feed.mode));
       carpet.setAlpha(242);
       canvas.drawPath(carpetPath, carpet);
-    } else {
-      // free drive: every road around the car as a road, as the side roads look in route mode
-      canvas.drawPath(stubPath, sideKerb);
-      canvas.drawPath(stubPath, side);
     }
     canvas.restore();
 
@@ -661,6 +683,15 @@ final class MapView extends View {
       float[] b = boxes[r];
       if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
       line(runs[r], 0, path, ce, cn, ch, sh, ik, Float.NaN, 0);
+    }
+  }
+
+  // tile roads into one path per class, each drawn at its own width
+  private void paths(float[][] runs, int[] cls, float[][] boxes, float ce, float cn, float ch, float sh, float ik, float reach) {
+    for (int r = 0; r < runs.length; r++) {
+      float[] b = boxes[r];
+      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
+      line(runs[r], 0, stubPaths[cls[r]], ce, cn, ch, sh, ik, Float.NaN, 0);
     }
   }
 
