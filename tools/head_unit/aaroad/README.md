@@ -18,6 +18,10 @@ Street filter and one-time resend added 2026-10-28 after a live capture: every s
 reply 2 (not stored, resend) and mRoad was instruction text ("Turn right"). Only street names are
 sent now ("onto X" / "on X", or a bare name); the present-location name gets the same filter.
 
+The resend was removed 2026-10-29: Android Auto repeats the turn every second, so it replayed
+every second, and each replay carries no distance, which made the stock cluster distance bar
+flicker between 0 and the real distance (Peter, on the car). It never got the turn stored.
+
 Live result 2026-10-28 16:48–16:50 (parked, route started): real street names went out
 ("Westgate Way", "South State Highway 78 / TX 78"), each turn was resent once, and the cluster
 still answered every send 2,15 (not stored) and showed no text — same answer as the stock
