@@ -291,7 +291,19 @@ def deinitialize_and_exit(pigeon: TTYPigeon | None):
   set_power(False)
   sys.exit(0)
 
-def init(pigeon: TTYPigeon) -> None:
+def send_time_and_position(pigeon: TTYPigeon) -> bool:
+  """Aid a cold start with the clock and the last saved position. False when the clock is not valid yet."""
+  if not system_time_valid():
+    return False
+  try:
+    send_time(pigeon)
+    send_position(pigeon)
+  except Exception:
+    cloudlog.exception("failed to send time and position to ublox")
+  return True
+
+def init(pigeon: TTYPigeon) -> bool:
+  """Power-cycle and configure the ublox. True when it was also given the time and position."""
   # register exit handler
   signal.signal(signal.SIGINT, lambda sig, frame: deinitialize_and_exit(pigeon))
 
@@ -303,13 +315,23 @@ def init(pigeon: TTYPigeon) -> None:
 
   init_baudrate(pigeon)
   init_pigeon(pigeon)
+  return send_time_and_position(pigeon)
 
-  if system_time_valid():
-    try:
-      send_time(pigeon)
-      send_position(pigeon)
-    except Exception:
-      cloudlog.exception("failed to send time and position to ublox")
+class LateAiding:
+  """After a reboot with the car already on, pigeond starts before the clock is set and the ublox cold-starts blind:
+  2026-10-29 it stayed at GPS week 0 with no fix for a whole drive. Send the time and position once the clock is valid."""
+  def __init__(self, aided: bool, now: float):
+    self.reset(aided, now)
+
+  def reset(self, aided: bool, now: float) -> None:
+    self.aided, self.last_check = aided, now
+
+  def due(self, now: float) -> bool:
+    """True at most once a second while the ublox still waits for aiding."""
+    if self.aided or now - self.last_check < 1.:
+      return False
+    self.last_check = now
+    return True
 
 class ReceiveGuard:
   """Decides when bad serial data means the ublox needs a power cycle, instead of on the first stray zero byte."""
@@ -338,10 +360,11 @@ def run_receiving(duration: int = 0):
   pm = messaging.PubMaster(['ubloxRaw'])
 
   pigeon = TTYPigeon()
-  init(pigeon)
+  aided = init(pigeon)
 
   start_time = time.monotonic()
   guard = ReceiveGuard(start_time)
+  late_aiding = LateAiding(aided, start_time)
   last_almanac_save = time.monotonic()
   assist_attempted = False
   assist_messages = None
@@ -360,6 +383,10 @@ def run_receiving(duration: int = 0):
   threading.Thread(target=download_assistnow, daemon=True).start()
 
   while (duration == 0) or (time.monotonic() - start_time < duration):
+    if late_aiding.due(time.monotonic()) and send_time_and_position(pigeon):
+      late_aiding.aided = True
+      cloudlog.warning("clock became valid, sent time and position to ublox")
+
     if assist_messages is not None and not assist_attempted:
       assist_attempted = True
       try:
@@ -375,7 +402,7 @@ def run_receiving(duration: int = 0):
       dat, first_bad, reinit = guard.check(dat, time.monotonic())
       if reinit:
         cloudlog.warning("received invalid data from ublox, re-initing!")
-        init(pigeon)
+        late_aiding.reset(init(pigeon), time.monotonic())
         guard.reset(time.monotonic())
         assist_attempted = False
         continue
