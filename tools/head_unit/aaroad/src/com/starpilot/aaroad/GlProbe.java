@@ -1,5 +1,7 @@
 package com.starpilot.aaroad;
 
+import android.app.AndroidAppHelper;
+import android.app.Application;
 import android.content.Context;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
@@ -22,7 +24,7 @@ import de.robv.android.xposed.XposedBridge;
 // read-back times. It runs once per marker version: the marker is written before the first GL call, so if the
 // Tegra driver takes the cluster process down, the probe does not run again when it restarts.
 final class GlProbe {
-  private static final String MARKER = "aaroad_glprobe_1";
+  private static final String MARKER = "aaroad_glprobe_2";
   private static final int W = 584, H = 215, GRID = 87, FRAMES = 20;  // 2 * 86 * 86 = 14792 triangles
   private static final long DELAY_MS = 30000;
 
@@ -36,7 +38,10 @@ final class GlProbe {
       public void run() {
         try {
           Thread.sleep(DELAY_MS);
-          File marker = new File(ctx.getFilesDir(), MARKER);
+          // the meter view carries Honda Hack's context, whose folders this process cannot write (EACCES on the
+          // first run, 2026-10-29); the marker goes in the cluster app's own cache folder
+          Application app = AndroidAppHelper.currentApplication();
+          File marker = new File((app != null ? app : ctx).getCacheDir(), MARKER);
           if (marker.exists()) return;
           marker.createNewFile();
           XposedBridge.log("aaroad: gl probe " + probe());

@@ -766,7 +766,8 @@ final class MapView extends View {
   // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
   // left over the arrival time
 
-  private static final float COL = 150, COL_X = 76, BAR_X = 10, BAR_W = 20, DIST_Y = 107;  // left column width, and the centre line its text stacks on
+  private static final float COL = 150, COL_X = 76, BAR_X = 40, BAR_W = 14, DIST_Y = 107;  // left column width, and the centre line its text stacks on
+  // the bar starts 40 px in: left of that the tach needle rests on it at idle (Peter's photo 2026-10-29)
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -799,7 +800,7 @@ final class MapView extends View {
     View vd = find("vehicle_data_layout");
     boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
     float y = low ? navi.getTop() + vd.getTop() - 4 : 206;
-    float rowX = COL_X + BAR_W / 2 + 2;  // the rows beside the bar centre in what it leaves
+    float rowX = (BAR_X + BAR_W + 8 + COL) / 2;  // the rows beside the bar centre in what it leaves
     // the distance's baseline as high as DIST_Y (its top 14 px under the arrow), never closer than 70 px
     float span = Math.max(70, y - DIST_Y), gapEta = span * 0.47f;
 
