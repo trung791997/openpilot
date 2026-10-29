@@ -9,6 +9,7 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -77,7 +78,8 @@ final class MapView extends View {
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout"};
-  private static final int ICON = 80, ICON_PAD = 4, ICON_LEFT = 36, ICON_TOP = -14;  // arrow 72 px, centred x 76 over the time column
+  // arrow 52 px at the top of the turn card, centred on it (Peter 2026-10-29: loose over the map it looked out of place)
+  private static final int ICON = 60, ICON_PAD = 4, ICON_LEFT = 75, ICON_TOP = 12;
 
   static volatile String modulePath;
   private static Bitmap car;
@@ -89,7 +91,7 @@ final class MapView extends View {
   private final Matrix camera = new Matrix();
   private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
-      fill = new Paint(), mask = new Paint(), fog = new Paint();
+      fill = new Paint(), mask = new Paint(), fog = new Paint(), cardEdge = stroke(0x40ffffff, 1.5f);
   private final TextPaint big = text(36, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
       eta = text(25, true, Color.WHITE), etaDim = text(17, false, 0xffb0b0b0), etaClock = text(23, true, 0xffe6e6e6), sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
@@ -781,7 +783,7 @@ final class MapView extends View {
   // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
   // left over the arrival time
 
-  private static final float COL = 150, COL_X = 76, BAR_X = 40, BAR_W = 14, DIST_Y = 107;  // left column width, and the centre line its text stacks on
+  private static final float COL = 150, COL_X = 76, BAR_X = 40, BAR_W = 14, DIST_Y = 118;  // left column width, and the centre line its text stacks on
   // the bar starts 40 px in: left of that the tach needle rests on it at idle (Peter's photo 2026-10-29)
 
   private void overlay(Canvas canvas, long now, boolean free) {
@@ -811,12 +813,12 @@ final class MapView extends View {
     // the column stacks up from the bottom: arrival time across the full column, then time left and the
     // distance side by side with the bar standing at the left edge beside them, spread over all the height
     // under the turn arrow (Peter 2026-10-29: the bar under the distance left black space either side of
-    // it, and packed together the rows looked cramped); above the stock vehicle data row when it shows
-    View vd = find("vehicle_data_layout");
-    boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
-    float y = low ? navi.getTop() + vd.getTop() - 4 : 206;
+    // it, and packed together the rows looked cramped)
+    // the arrival time sits on the map's bottom edge, level with the stock row's text beside it (Peter 2026-10-29:
+    // above that row it floated, and the column looked crowded at the top)
+    float y = 207;
     float rowX = (BAR_X + BAR_W + 8 + COL) / 2;  // the rows beside the bar centre in what it leaves
-    // the distance's baseline as high as DIST_Y (its top 14 px under the arrow), never closer than 70 px
+    // the distance's baseline as high as DIST_Y (under the arrow in the card), never closer than 70 px
     float span = Math.max(70, y - DIST_Y), gapEta = span * 0.47f;
 
     if (Feed.remainingSec >= 0) {
@@ -833,6 +835,16 @@ final class MapView extends View {
     float rowBottom = y;  // the distance keeps its place whether or not the bar or the time is up
     y -= Feed.remainingSec >= 0 ? span - gapEta : span;
 
+    // the turn card: the arrow (the stock icon, moved to its top) over the distance, one rounded box
+    View icon = find("turn_icon");
+    float cardL = BAR_X + BAR_W + 4, cardR = COL - 2;
+    float cardT = Math.max(3, icon != null && icon.isShown() ? navi.getTop() + icon.getTop() : y - 40);
+    if (y > cardT) {
+      RectF card = new RectF(cardL, cardT, cardR, y + 9);
+      fill.setColor(0xff1b1d21);
+      canvas.drawRoundRect(card, 8, 8, fill);
+      canvas.drawRoundRect(card, 8, 8, cardEdge);
+    }
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     if (!TextUtils.isEmpty(d)) {
@@ -844,8 +856,8 @@ final class MapView extends View {
       if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), BAR_X, top, BAR_W, rowBottom - top);
       float size = 36;  // a long distance shrinks to fit beside the bar
       big.setTextSize(size);
-      while (big.measureText(num) + 4 + unit.measureText(u) > COL - BAR_X - BAR_W - 8 && size > 24) big.setTextSize(--size);
-      float nw = big.measureText(num), x = rowX - (nw + 4 + unit.measureText(u)) / 2 + nw;
+      while (big.measureText(num) + 4 + unit.measureText(u) > cardR - cardL - 12 && size > 24) big.setTextSize(--size);
+      float nw = big.measureText(num), x = (cardL + cardR - nw - 4 - unit.measureText(u)) / 2 + nw;
       canvas.drawText(num, x, y, big);
       canvas.drawText(u, x + 4, y, unit);
     }
