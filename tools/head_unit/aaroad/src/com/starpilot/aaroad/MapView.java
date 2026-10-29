@@ -9,7 +9,6 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.Region;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -34,7 +33,7 @@ import java.util.zip.ZipFile;
 
 // The continuous map on Honda Hack's meter nav page (Layout B of the 2026-10-29 mockup, map2.py): a heading-up
 // map tilted away like a road seen from above and behind the car, the route as a road with a carpet in openpilot's
-// mode colour, faint stubs where other roads cross it, and Peter's Civic where the car is. Honda Hack's arrow moves
+// mode colour, the roads around it, narrower and darker, and Peter's Civic where the car is. Honda Hack's arrow moves
 // to the left column; the distance, the 500 ft bar, the street, the speed limit and the arrival time are drawn here.
 //
 // It sits behind navi_layout in the meter's root and only shows while the nav page is up and the comma's feed
@@ -50,7 +49,7 @@ final class MapView extends View {
   private static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
   private static final float BOX_R = 430;          // display metres: covers the box from the car
   private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
-  private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, STUB_PX = 18, STUB_LEN_PX = 40, GRID_DM = 50;
+  private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, STUB_PX = 18, SIDE_PX = 40, GRID_DM = 50;
   private static final double NEAR = 152.4, TURN_LEN = 40;   // hold the turn in view from 500 ft
   private static final double TAU = 0.8;                     // s, zoom smoothing
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
@@ -68,13 +67,13 @@ final class MapView extends View {
   private final Map<String, View> views = new HashMap<String, View>();
   private final Matrix camera = new Matrix();
   private final Paint grid = new Paint(), kerb = stroke(0xff9a9a9a, LOCAL_PX + 2 * KERB_PX), road = stroke(0xff454545, LOCAL_PX),
-      carpet = stroke(Color.WHITE, ROUTE_PX), stub = stroke(0xff454545, STUB_PX), band = stroke(Color.BLACK, 0),
+      carpet = stroke(Color.WHITE, ROUTE_PX), stub = stroke(0xff454545, STUB_PX),
+      sideKerb = stroke(0xff6a6a6a, SIDE_PX + 2 * KERB_PX), side = stroke(0xff383838, SIDE_PX),
       fill = new Paint(), mask = new Paint(), fog = new Paint();
   private final TextPaint big = text(28, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
       eta = text(17, true, Color.WHITE), etaDim = text(13, false, 0xff9a9a9a), sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
-  private final Path routePath = new Path(), carpetPath = new Path(), stubPath = new Path(), gridPath = new Path(),
-      outer = new Path(), inner = new Path();
+  private final Path routePath = new Path(), carpetPath = new Path(), stubPath = new Path(), gridPath = new Path();
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
   private volatile Scene scene;
@@ -110,7 +109,6 @@ final class MapView extends View {
     grid.setColor(0xff2a2a2a);
     grid.setStyle(Paint.Style.STROKE);
     grid.setStrokeWidth(0);  // hairline in screen pixels
-    band.setStyle(Paint.Style.STROKE);
     fill.setAntiAlias(true);
     mask.setShader(new LinearGradient(0, 0, 184, 0, new int[] {0xff050505, 0xff050505, 0x00050505},
                                       new float[] {0, 0.87f, 1}, Shader.TileMode.CLAMP));
@@ -348,8 +346,8 @@ final class MapView extends View {
   }
 
   private static boolean nearRoute(HashSet<Long> cells, double e, double n) {
-    for (int i = -1; i <= 1; i++) {
-      for (int j = -1; j <= 1; j++) {
+    for (int i = -2; i <= 2; i++) {  // two cells either way, so a side road is cut past the edge of the screen
+      for (int j = -2; j <= 2; j++) {
         if (cells.contains(cell(e + i * CELL, n + j * CELL))) return true;
       }
     }
@@ -475,21 +473,15 @@ final class MapView extends View {
     canvas.concat(camera);
     canvas.drawPath(gridPath, grid);
     if (s.route.length > 0) {
+      // the roads around the route as roads, so the intersections and the road going on past a turn show:
+      // every kerb first and then every surface, so the side roads open into the route instead of being cut by its kerb
+      // side roads are full width at the closest zoom and thin out as the view zooms out, instead of filling it
+      float sw = Math.min(1, (float) (NEAR / R0) * ik);
+      sideKerb.setStrokeWidth(dm(SIDE_PX + 2 * KERB_PX) * sw);
+      side.setStrokeWidth(dm(SIDE_PX) * sw);
+      canvas.drawPath(stubPath, sideKerb);
       canvas.drawPath(routePath, kerb);
-      // cross streets: short and fading out from the road edge, the road drawn over their inner ends
-      corridor(routePath, LOCAL_PX / 2 + KERB_PX + STUB_LEN_PX, outer);
-      corridor(routePath, LOCAL_PX / 2 + KERB_PX + STUB_LEN_PX / 2, inner);
-      canvas.save();
-      canvas.clipPath(outer);
-      canvas.clipPath(inner, Region.Op.DIFFERENCE);
-      stub.setAlpha(56);
-      canvas.drawPath(stubPath, stub);
-      canvas.restore();
-      canvas.save();
-      canvas.clipPath(inner);
-      stub.setAlpha(128);
-      canvas.drawPath(stubPath, stub);
-      canvas.restore();
+      canvas.drawPath(stubPath, side);
       canvas.drawPath(routePath, road);
       carpet.setColor(modeColor(Feed.mode));
       carpet.setAlpha(242);
@@ -525,14 +517,6 @@ final class MapView extends View {
     if ("chill".equals(mode)) return Color.rgb(40, 200, 90);
     if ("aol".equals(mode)) return Color.rgb(40, 130, 255);
     return Color.rgb(235, 235, 235);
-  }
-
-  private void corridor(Path route, float halfPx, Path out) {
-    out.rewind();
-    band.setStrokeWidth(dm(2 * halfPx));
-    band.setStrokeJoin(Paint.Join.ROUND);
-    band.setStrokeCap(Paint.Cap.ROUND);
-    band.getFillPath(route, out);
   }
 
   // World grid every 50 display metres, fixed to the ground so it slides by as the car moves.
