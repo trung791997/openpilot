@@ -55,3 +55,10 @@ their translucent purple pulse stays below the source and speed.
 Both onroad profiles use these US and Vienna signs. Large UI scales their geometry
 by 1.25 and normalizes font sizes to preserve the compact sign's proportions,
 including its fitted offsets, joined arrows and confirmation pulses.
+
+`lead_civic.png` and `lead_civic_brake.png` are the Android Auto lead-car badge:
+a rear view of a Crystal Black Civic Sport sedan, tail lamps dim and the same
+frame with the brake lamps lit. They are authored in this repo, drawn from the
+vector 3D model in `tools/head_unit/civic/civic3d.py` and written by
+`tools/head_unit/civic/render_lead_sprites.py`, which reproduces these files
+exactly. No photograph or third-party artwork is embedded.

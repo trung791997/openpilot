@@ -1,6 +1,12 @@
 """Static: the LEAD badge's braking / pulling-away state, held so a noisy radar acceleration does not flicker it."""
+import gc
+import struct
+from types import SimpleNamespace
+
+import pyray
 import pytest
 
+from openpilot.starpilot.system.android_auto import projection_theme as theme
 from openpilot.starpilot.system.android_auto.projection_theme import (BRAKING, PULLING_AWAY, STEADY, LeadTrend,
                                                                        LeadView, gap_bars)
 
@@ -67,8 +73,6 @@ def test_gap_bars_take_the_capnp_enum():
 @pytest.mark.parametrize('nargs', [4, 5])
 def test_glow_matches_either_raylib_gradient_signature(monkeypatch, nargs):
   # The comma's raylib takes (Vector2, radius, inner, outer); passing ints there killed the car view.
-  from types import SimpleNamespace
-  from openpilot.starpilot.system.android_auto import projection_theme as theme
   calls = []
   fake = SimpleNamespace(ffi=SimpleNamespace(typeof=lambda fn: SimpleNamespace(args=[0] * nargs)),
                          rl=SimpleNamespace(DrawCircleGradient=None), Vector2=lambda x, y: ('v', x, y),
@@ -76,3 +80,165 @@ def test_glow_matches_either_raylib_gradient_signature(monkeypatch, nargs):
   monkeypatch.setattr(theme, 'rl', fake)
   theme._glow(10.6, 20.2, 5., 'in', 'out')
   assert calls == [(('v', 10.6, 20.2), 5., 'in', 'out')] if nargs == 4 else [(10, 20, 5., 'in', 'out')]
+
+
+# Static: the badge mimics the Honda cluster's following-distance display with a render of Peter's Civic.
+CONTENT = SimpleNamespace(x=40., y=30., width=1200., height=500.)
+
+
+class Fonts:
+  """Stands in for BitmapFonts (one per graphics context, weakref-able); any text drawn through it is recorded."""
+  def __init__(self):
+    self.text = []
+
+  def __getattr__(self, name):
+    return lambda *a, **k: self.text.append((name, a))
+
+
+class Raylib:
+  """Real pyray types and constants; every draw / load / unload call is recorded instead of touching a GL context."""
+  def __init__(self):
+    self.calls = []
+
+  def __getattr__(self, name):
+    if name.startswith(('draw_', 'rl_', 'unload_', 'load_', 'image_', 'set_texture')):
+      return lambda *a: self.calls.append((name, a))
+    return getattr(pyray, name)
+
+  def named(self, name):
+    return [a for n, a in self.calls if n == name]
+
+
+@pytest.fixture
+def rl(monkeypatch):
+  fake = Raylib()
+  monkeypatch.setattr(theme, 'rl', fake)
+  return fake
+
+
+def texture(width, height=None):
+  return SimpleNamespace(id=1, width=width, height=round(width * 247 / 256) if height is None else height)
+
+
+@pytest.mark.parametrize('personality', ['aggressive', 'standard', 'relaxed'])
+def test_one_bar_per_distance_setting(personality):
+  assert len(theme.badge_geometry(CONTENT, personality)['bars']) == gap_bars(personality)
+
+
+def test_car_is_closer_and_larger_at_one_bar():
+  near, mid, far = (theme.badge_geometry(CONTENT, p) for p in ('aggressive', 'standard', 'relaxed'))
+  assert near['car_width'] > mid['car_width'] > far['car_width']
+  assert near['car_ground'] > mid['car_ground'] > far['car_ground']  # lower on screen is nearer
+
+
+@pytest.mark.parametrize('personality', ['aggressive', 'standard', 'relaxed'])
+def test_car_sits_just_past_the_last_bar(personality):
+  g = theme.badge_geometry(CONTENT, personality)
+  next_bar = 1 + len(g['bars']) * theme.GAP_STEP  # the car's tyres stand where one more bar would start
+  assert g['y'](next_bar + theme.BAR_DEPTH) < g['car_ground'] < g['y'](next_bar) < g['y'](g['bars'][-1][1])
+  near_edges = [g['y'](near) for near, _ in g['bars']]
+  assert near_edges == sorted(near_edges, reverse=True)  # the first bar is the nearest one
+
+
+def test_no_lead_word(rl, monkeypatch):
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: texture(width))
+  fonts = Fonts()
+  for personality in ('aggressive', 'relaxed'):
+    for state in (theme.STEADY, theme.BRAKING, theme.PULLING_AWAY):
+      theme.lead_badge(fonts, CONTENT, True, LeadView(30., -1., -3., 20.), state, now=0., personality=personality)
+  assert fonts.text == [] and not [n for n, _ in rl.calls if 'text' in n.split('_')]
+
+
+def test_nothing_drawn_without_a_lead(rl):
+  theme.lead_badge(Fonts(), CONTENT, False, personality='standard')
+  assert rl.calls == []
+
+
+def test_sprite_stands_on_the_road_inside_the_screen(rl, monkeypatch):
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: texture(width))
+  for personality in ('aggressive', 'standard', 'relaxed'):
+    rl.calls.clear()
+    theme.lead_badge(Fonts(), CONTENT, True, None, theme.STEADY, now=0., personality=personality)
+    (sprite, _, dest, _, _, tint), = rl.named('draw_texture_pro')
+    g = theme.badge_geometry(CONTENT, personality)
+    assert dest.y + dest.height * theme.SPRITE_GROUND == pytest.approx(g['car_ground'], abs=1.)
+    assert dest.width * theme.SPRITE_CAR_WIDTH == pytest.approx(g['car_width'], abs=1.)
+    assert dest.y >= CONTENT.y and abs(dest.x + dest.width / 2 - g['cx']) <= 1.
+    assert (tint.r, tint.g, tint.b, tint.a) == (255, 255, 255, 255)
+
+
+def test_brake_lamps_light_and_pulse_when_braking_hard(rl, monkeypatch):
+  loaded = []
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: loaded.append(path.name) or texture(width))
+  fonts = Fonts()
+  theme.lead_badge(fonts, CONTENT, True, LeadView(30., -1., -1., 20.), theme.BRAKING, now=0., personality='standard')
+  base, lit = rl.named('draw_texture_pro')
+  assert loaded == [theme.LEAD_SPRITE, theme.LEAD_SPRITE_BRAKE] and lit[5].a == 255
+  rl.calls.clear()
+  theme.lead_badge(fonts, CONTENT, True, LeadView(30., -1., -3., 20.), theme.BRAKING, now=.45 * .75,
+                   personality='standard')
+  assert rl.named('draw_texture_pro')[1][5].a == 0  # hard braking: the lit frame pulses
+
+
+def test_vector_car_when_the_sprite_will_not_load(rl, monkeypatch):
+  drawn = []
+  monkeypatch.setattr(theme, '_vector_car', lambda *a: drawn.append(a))
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: None)
+  theme.lead_badge(Fonts(), CONTENT, True, None, theme.STEADY, now=0., personality='standard')
+  assert len(drawn) == 1 and rl.named('draw_texture_pro') == []
+
+
+def test_vector_car_when_loading_raises_and_no_retry_each_frame(rl, monkeypatch):
+  tries, drawn = [], []
+  def boom(path, width):
+    tries.append(width)
+    raise OSError('no GL context')
+  monkeypatch.setattr(theme, '_vector_car', lambda *a: drawn.append(a))
+  monkeypatch.setattr(theme, '_load_sprite', boom)
+  fonts = Fonts()
+  for _ in range(5):
+    theme.lead_badge(fonts, CONTENT, True, None, theme.STEADY, now=0., personality='standard')
+  assert len(drawn) == 5 and len(tries) == 1
+
+
+def test_vector_car_when_the_fonts_cannot_key_the_cache(rl, monkeypatch):
+  drawn = []
+  monkeypatch.setattr(theme, '_vector_car', lambda *a: drawn.append(a))
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: texture(width))
+  theme.lead_badge(SimpleNamespace(), CONTENT, True, None, theme.STEADY, now=0., personality='standard')
+  assert len(drawn) == 1
+
+
+def test_sprite_cache_is_per_context_and_bounded(rl, monkeypatch):
+  loads = []
+  monkeypatch.setattr(theme, '_load_sprite', lambda path, width: loads.append(width) or texture(width))
+  first, second = Fonts(), Fonts()
+  a = theme.lead_sprite(first, theme.LEAD_SPRITE, 100)
+  assert theme.lead_sprite(first, theme.LEAD_SPRITE, 100.4) is a and loads == [100]
+  assert theme.lead_sprite(second, theme.LEAD_SPRITE, 100) is not a and loads == [100, 100]
+  for width in range(101, 101 + theme.SPRITE_CACHE):
+    theme.lead_sprite(first, theme.LEAD_SPRITE, width)
+  assert rl.named('unload_texture') == [(a,)] and len(theme._sprites[first]) == theme.SPRITE_CACHE
+  del first
+  gc.collect()
+  assert len(theme._sprites) == 1  # the closed context's textures are not kept
+
+
+def test_load_shrinks_on_the_cpu_and_frees_the_image(rl, monkeypatch):
+  image = SimpleNamespace(data=object(), width=256, height=247)
+  calls = []
+  monkeypatch.setattr(rl, 'load_image', lambda path: calls.append(('load', path)) or image, raising=False)
+  monkeypatch.setattr(rl, 'load_texture_from_image', lambda img: SimpleNamespace(id=9), raising=False)
+  tex = theme._load_sprite(theme.LEAD_SPRITE_DIR / theme.LEAD_SPRITE, 128)
+  assert tex.id == 9 and rl.named('image_resize') == [(image, 128, 124)] and rl.named('unload_image') == [(image,)]
+  assert rl.named('set_texture_filter') == [(tex, pyray.TextureFilter.TEXTURE_FILTER_BILINEAR)]
+  monkeypatch.setattr(rl, 'load_texture_from_image', lambda img: SimpleNamespace(id=0), raising=False)
+  assert theme._load_sprite(theme.LEAD_SPRITE_DIR / theme.LEAD_SPRITE, 128) is None
+  assert theme._load_sprite(theme.LEAD_SPRITE_DIR / 'missing.png', 128) is None and len(calls) == 2
+
+
+@pytest.mark.parametrize('name', [theme.LEAD_SPRITE, theme.LEAD_SPRITE_BRAKE])
+def test_sprites_ship_as_matching_rgba_pngs(name):
+  head = (theme.LEAD_SPRITE_DIR / name).read_bytes()[:26]
+  assert head[:8] == b'\x89PNG\r\n\x1a\n'
+  assert struct.unpack('>II', head[16:24]) == (256, 247) and head[25] == 6  # 8-bit RGBA, one crop for both

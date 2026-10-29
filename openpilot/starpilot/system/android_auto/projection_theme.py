@@ -2,7 +2,9 @@
 
 import math
 import time
+import weakref
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pyray as rl
 
@@ -372,41 +374,86 @@ def _glow(x: float, y: float, radius: float, inner, outer) -> None:
     rl.draw_circle_gradient(int(x), int(y), radius, inner, outer)
 
 
-def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None):
-  """LEAD badge in the style of the Honda cluster: a rear view of the lead car between two lane lines with gap bars
-  under it. Yellow while the lead holds speed, red with lit brake lights while it brakes, teal while it pulls away."""
-  if not present:
-    return
-  state = trend or STEADY
-  accent = LEAD_RED if state == BRAKING else LEAD_TEAL if state == PULLING_AWAY else LEAD_YELLOW
-  now = time.monotonic() if now is None else now
-  hard = state == BRAKING and lead is not None and lead.a_lead <= -2.5
-  pulse = .5 + .5 * math.sin(now / .45 * 2 * math.pi) if hard else 1.
+# Rear view of Peter's Crystal Black Civic Sport, rendered from the 3D model in tools/head_unit/civic
+# (render_lead_sprites.py): tail lamps dim, and the same frame with the brake lamps lit.
+LEAD_SPRITE_DIR = Path(__file__).parents[2] / 'ui/assets'
+LEAD_SPRITE, LEAD_SPRITE_BRAKE = 'lead_civic.png', 'lead_civic_brake.png'
+SPRITE_CAR_WIDTH = .898        # share of the sprite's width that is the car (the rest is rim light and shadow)
+SPRITE_GROUND = .814           # tyre contact, as a share of the sprite's height
+SPRITE_LAMPS = ((.152, .457), (.844, .457))
+BAR_FILL = rl.Color(236, 240, 246, 230)
+SPRITE_TINT = rl.Color(255, 255, 255, 255)  # rl.WHITE is a tuple in some pyray builds; _fade needs a Color
 
+# Following-distance road, in depth units from the near edge (1) away from us; on screen everything scales by 1/z.
+GAP_STEP = .45                 # one bar plus the space after it
+BAR_DEPTH = GAP_STEP * .4
+CAR_CLEAR = .06                # space between the last bar and the car's tyres
+ROAD_FAR = 1 + 3 * GAP_STEP + .25
+
+# Sprite textures live in the graphics context. The fonts are made per context and closed before it is destroyed, so
+# a cache keyed on them never hands an old texture to a newer context (Android Auto reconnects make a new one).
+_sprites = weakref.WeakKeyDictionary()
+SPRITE_CACHE = 6
+
+
+def _load_sprite(path, width):
+  """The sprite shrunk once on the CPU to the width it is drawn at; None if it cannot be loaded."""
+  if not path.is_file():
+    return None
+  image = rl.load_image(str(path))
+  try:
+    if image.data == rl.ffi.NULL or image.width <= 0 or image.height <= 0:
+      return None
+    rl.image_resize(image, width, max(1, round(image.height * width / image.width)))
+    texture = rl.load_texture_from_image(image)
+  finally:
+    if image.data != rl.ffi.NULL:
+      rl.unload_image(image)
+  if texture.id == 0:
+    return None
+  rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+  return texture
+
+
+def lead_sprite(fonts, name, width):
+  """Texture of `name` exactly `width` px wide for this graphics context, or None to draw the vector car instead."""
+  try:
+    cache = _sprites.setdefault(fonts, {})
+    key = (name, int(width))
+    if key not in cache:
+      if len(cache) >= SPRITE_CACHE:  # the content size changed: drop the oldest size
+        old = cache.pop(next(iter(cache)))
+        if old is not None:
+          rl.unload_texture(old)
+      cache[key] = None  # a load that raises is not retried every frame
+      if key[1] > 0:
+        cache[key] = _load_sprite(LEAD_SPRITE_DIR / name, key[1])
+    return cache[key]
+  except Exception:
+    return None
+
+
+def badge_geometry(content, personality):
+  """Where the lead badge draws, like the Honda cluster's distance display: the road runs away from us and the lead
+  car sits just past the last bar, so it is close and large at 1 bar and further away and smaller at 3."""
   unit = content.width * .05
+  w = unit * 1.25
   cx, top = content.x + content.width * .28, content.y + content.height * .12
-  w = unit * 1.25  # car width
-  h = w * .74      # car height, roof to tires
-  stroke = max(2., unit * .05)
-
-  # soft halo in the state color so the change reads at a glance
-  _glow(cx, top + h * .55, w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
-
-  # lane lines fanning out from beside the car, and the gap bars on the road behind it
-  road_top, road_bottom = top + h * .62, top + h * 1.85
-  for side in (-1, 1):
-    rl.draw_line_ex(rl.Vector2(cx + side * w * .64, road_top), rl.Vector2(cx + side * w * 1.02, road_bottom),
-                    stroke * 1.7, _fade(CAR_BODY, 215))
+  horizon, depth = top - w * .2, w * 2.
   bars = gap_bars(personality)
-  bar_top = top + h * 1.08
-  for i in range(3):
-    t = i / 3
-    y = bar_top + (road_bottom - bar_top) * t
-    half = w * (.30 + .12 * t)
-    bar_height = (road_bottom - bar_top) / 3 * .58
-    rl.draw_rectangle_rec(rl.Rectangle(cx - half, y, half * 2, bar_height),
-                          _fade(CAR_BODY, 225) if i < bars else _fade(CAR_BODY, 40))
 
+  def y(z):
+    return horizon + depth / z
+
+  car_z = 1 + bars * GAP_STEP + CAR_CLEAR
+  return {
+    'cx': cx, 'unit': unit, 'y': y, 'lane': w * 1.15, 'car_width': w * 1.7 / car_z, 'car_ground': y(car_z),
+    'bars': [(1 + i * GAP_STEP, 1 + i * GAP_STEP + BAR_DEPTH) for i in range(bars)],
+  }
+
+
+def _vector_car(cx, top, w, h, braking, pulse):
+  """The drawn car, for when the Civic sprite cannot be loaded."""
   # car seen from behind, lit from above: shadow on the road, tires, cabin with tinted rear glass, mirrors,
   # trunk deck catching the light over a darker rear panel, wrap-around tail lights, plate and bumper
   def at(fx, fy):
@@ -427,7 +474,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None, persona
   _fill(_rounded([at(-.19, .11), at(.19, .11), at(.29, .37), at(-.29, .37)], [w * .05, w * .05, w * .02, w * .02]),
         _shade((top + h * .11, GLASS_TOP), (top + h * .37, CAR_GLASS)))
   _fill([at(-.04, .13), at(.03, .13), at(-.13, .355), at(-.20, .355)], lambda y: _fade(CAR_LIGHT, 40))
-  if state == BRAKING:  # third brake light along the top of the rear glass
+  if braking:  # third brake light along the top of the rear glass
     _fill(_rounded(box(-.08, .125, .08, .15), w * .012), lambda y: _mix(TAIL_DIM, LEAD_RED, pulse))
   for side in (-1, 1):
     _fill(_rounded([at(side * .40, .33), at(side * .55, .32), at(side * .55, .41), at(side * .41, .42)][::side], w * .03),
@@ -440,14 +487,14 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None, persona
   rl.draw_line_ex(rl.Vector2(*at(-.47, .525)), rl.Vector2(*at(.47, .525)), max(1., h * .012), _fade(CAR_LIGHT, 230))
   rl.draw_line_ex(rl.Vector2(*at(-.46, .54)), rl.Vector2(*at(.46, .54)), max(1., h * .014), _fade(CAR_LOW, 150))
 
-  tail = _mix(TAIL_DIM, LEAD_RED, pulse) if state == BRAKING else TAIL_DIM
+  tail = _mix(TAIL_DIM, LEAD_RED, pulse) if braking else TAIL_DIM
   for side in (-1, 1):
     lamp = [at(side * .17, .56), at(side * .495, .55), at(side * .48, .655), at(side * .21, .64)][::side]
-    if state == BRAKING:
+    if braking:
       lx, ly = at(side * .33, .60)
       _glow(lx, ly, w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
     _fill(_rounded(lamp, w * .025), _shade((top + h * .55, _mix(tail, CAR_LIGHT, .25)), (top + h * .65, _mix(tail, TIRE, .25))))
-    if state == BRAKING:
+    if braking:
       _fill(_rounded([at(side * .25, .58), at(side * .44, .575), at(side * .43, .615), at(side * .27, .61)][::side], w * .015),
             lambda y: _fade(rl.Color(255, 196, 186, 255), 230 * pulse))
 
@@ -459,6 +506,55 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None, persona
   rl.draw_line_ex(rl.Vector2(*at(-.47, .725)), rl.Vector2(*at(.47, .725)), max(1., h * .012), _fade(CAR_GLASS, 140))
   _fill(_rounded(box(-.40, .83, .40, .875), w * .02), lambda y: rl.Color(46, 50, 62, 255))
 
-  size = max(24, int(unit * .56))
-  width = fonts.measure('LEAD', FontRole.BOLD, size).width
-  fonts.draw('LEAD', FontRole.BOLD, size, cx - width / 2, road_bottom + unit * .12, accent)
+
+def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None):
+  """Lead car on the following-distance bars, like the Honda cluster: the Civic sits closer at 1 bar and further away
+  at 3. A soft halo carries the state: yellow while the lead holds speed, red with its brake lamps lit while it brakes
+  (pulsing when it brakes hard), teal while it pulls away."""
+  if not present:
+    return
+  state = trend or STEADY
+  braking = state == BRAKING
+  accent = LEAD_RED if braking else LEAD_TEAL if state == PULLING_AWAY else LEAD_YELLOW
+  now = time.monotonic() if now is None else now
+  hard = braking and lead is not None and lead.a_lead <= -2.5
+  pulse = .5 + .5 * math.sin(now / .45 * 2 * math.pi) if hard else 1.
+
+  g = badge_geometry(content, personality)
+  cx, y, lane = g['cx'], g['y'], g['lane']
+  car_w, ground = g['car_width'], g['car_ground']
+  car_h = car_w * .875  # roof to tyres
+
+  _glow(cx, ground - car_h * .45, car_w * .95, _fade(accent, 85 * pulse), _fade(accent, 0))
+
+  # lane lines from the near edge into the distance, fading as they go
+  stroke = max(1.5, g['unit'] * .085)
+  steps = 8
+  for side in (-1, 1):
+    for i in range(steps):
+      z0 = 1 + (ROAD_FAR - 1) * i / steps
+      z1 = 1 + (ROAD_FAR - 1) * (i + 1) / steps
+      rl.draw_line_ex(rl.Vector2(cx + side * lane / z0, y(z0)), rl.Vector2(cx + side * lane / z1, y(z1)),
+                      max(1., stroke / z0), _fade(BAR_FILL, 200 - 150 * i / steps))
+
+  # one bar per distance step, drawn on the road in perspective
+  for near, far in g['bars']:
+    half_near, half_far = lane * .8 / near, lane * .8 / far
+    _fill([(cx - half_far, y(far)), (cx + half_far, y(far)), (cx + half_near, y(near)), (cx - half_near, y(near))],
+          lambda _: BAR_FILL)
+
+  sprite_w = round(car_w / SPRITE_CAR_WIDTH)
+  sprite = lead_sprite(fonts, LEAD_SPRITE, sprite_w)
+  if sprite is None:
+    _vector_car(cx, ground - car_w * .74, car_w, car_w * .74, braking, pulse)
+    return
+  x0, y0 = round(cx - sprite.width / 2), round(ground - sprite.height * SPRITE_GROUND)
+  source = rl.Rectangle(0, 0, sprite.width, sprite.height)
+  dest = rl.Rectangle(x0, y0, sprite.width, sprite.height)
+  rl.draw_texture_pro(sprite, source, dest, rl.Vector2(0, 0), 0., SPRITE_TINT)
+  if braking:
+    lit = lead_sprite(fonts, LEAD_SPRITE_BRAKE, sprite_w)
+    if lit is not None:
+      rl.draw_texture_pro(lit, source, dest, rl.Vector2(0, 0), 0., _fade(SPRITE_TINT, 255 * pulse))
+    for fx, fy in SPRITE_LAMPS:
+      _glow(x0 + sprite.width * fx, y0 + sprite.height * fy, car_w * .2, _fade(LEAD_RED, 120 * pulse), _fade(LEAD_RED, 0))
