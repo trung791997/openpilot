@@ -47,6 +47,7 @@ final class Meter {
           root.addView(new MapView(root.getContext(), navi, pkg), 0,
               new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
           Feed.start();
+          GlProbe.startOnce(root.getContext());
           XposedBridge.log("aaroad: meter map added");
         } catch (Throwable t) {
           XposedBridge.log("aaroad: meter map failed: " + t);
