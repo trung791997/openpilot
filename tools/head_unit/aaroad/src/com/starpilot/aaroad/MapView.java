@@ -79,7 +79,7 @@ final class MapView extends View {
       carpet = stroke(Color.WHITE, ROUTE_PX),
       sideKerb = stroke(0xff6a6a6a, SIDE_PX + 2 * KERB_PX), side = stroke(0xff383838, SIDE_PX),
       fill = new Paint(), mask = new Paint(), fog = new Paint();
-  private final TextPaint big = text(28, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
+  private final TextPaint big = text(36, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
       eta = text(25, true, Color.WHITE), etaDim = text(17, false, 0xffb0b0b0), etaClock = text(23, true, 0xffe6e6e6), sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
   private final Path routePath = new Path(), carpetPath = new Path(), stubPath = new Path(), gridPath = new Path();
@@ -735,7 +735,7 @@ final class MapView extends View {
   // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
   // left over the arrival time
 
-  private static final float COL = 150, COL_X = 76;  // left column width, and the centre line its text stacks on
+  private static final float COL = 150, COL_X = 76, BAR_X = 10, BAR_W = 20;  // left column width, and the centre line its text stacks on
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -761,11 +761,13 @@ final class MapView extends View {
       speedSign(canvas, String.valueOf(Math.round(v)), 474, 30, 40, 52);
     }
 
-    // the column stacks up from the bottom: arrival time, time left, bar, distance; above the stock vehicle
-    // data row when it shows
+    // the column stacks up from the bottom: arrival time across the full column, then time left and the
+    // distance side by side with the bar standing at the left edge beside them (Peter 2026-10-29: the bar
+    // under the distance left black space either side of it); above the stock vehicle data row when it shows
     View vd = find("vehicle_data_layout");
     boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
     float y = low ? navi.getTop() + vd.getTop() - 4 : 206;
+    float rowX = COL_X + BAR_W / 2 + 2;  // the rows beside the bar centre in what it leaves
 
     if (Feed.remainingSec >= 0) {
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
@@ -774,11 +776,12 @@ final class MapView extends View {
       String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
       canvas.drawText(at, COL_X - etaClock.measureText(at) / 2, y, etaClock);
       y -= 26;
-      float x = COL_X - (eta.measureText(n) + etaDim.measureText(" min")) / 2;
+      float x = rowX - (eta.measureText(n) + etaDim.measureText(" min")) / 2;
       canvas.drawText(n, x, y, eta);
       canvas.drawText(" min", x + eta.measureText(n), y, etaDim);
-      y -= 28;
     }
+    float rowBottom = y;  // the distance keeps its place whether or not the bar or the time is up
+    y -= 44;
 
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
@@ -787,12 +790,12 @@ final class MapView extends View {
       int sp = t.lastIndexOf(' ');
       String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
       double ft = Meter.feet(d);
-      float h = Math.min(60, y - 92);  // the bar gives way first when the column is short
-      if (h >= 44) {  // the distance keeps its place whether or not the bar is up
-        if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), COL_X - 12, y - h, 24, h);
-        y -= h + 8;
-      }
-      float nw = big.measureText(num), x = COL_X - (nw + 4 + unit.measureText(u)) / 2 + nw;
+      float top = y - 27;  // cap height of the distance
+      if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), BAR_X, top, BAR_W, rowBottom - top);
+      float size = 36;  // a long distance shrinks to fit beside the bar
+      big.setTextSize(size);
+      while (big.measureText(num) + 4 + unit.measureText(u) > COL - BAR_X - BAR_W - 8 && size > 24) big.setTextSize(--size);
+      float nw = big.measureText(num), x = rowX - (nw + 4 + unit.measureText(u)) / 2 + nw;
       canvas.drawText(num, x, y, big);
       canvas.drawText(u, x + 4, y, unit);
     }
