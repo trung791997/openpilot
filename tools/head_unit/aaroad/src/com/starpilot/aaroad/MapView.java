@@ -65,7 +65,7 @@ final class MapView extends View {
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout"};
-  private static final int ICON = 80, ICON_PAD = 4, ICON_LEFT = 14, ICON_TOP = -14;  // arrow 72 px, centred x 100
+  private static final int ICON = 80, ICON_PAD = 4, ICON_LEFT = 36, ICON_TOP = -14;  // arrow 72 px, centred x 76 over the time column
 
   static volatile String modulePath;
   private static Bitmap car;
