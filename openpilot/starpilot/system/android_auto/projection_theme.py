@@ -238,7 +238,7 @@ def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False)
   edge_glow(state_glow(state, mode_label), content.x, content.y, content.width, content.height)
   appearance = getattr(state, 'appearance', None)
   if appearance is not None and appearance.show_lead_indicator:
-    lead_badge(fonts, content, lead_present, lead, trend, personality=personality)
+    lead_badge(fonts, content, lead_present, lead, trend, personality=personality, avoid=card_rect(state))
   left, right = side_colors(state, *vasm)
   side_glow(left, content.x, content.y, content.width, content.height, True)
   side_glow(right, content.x, content.y, content.width, content.height, False)
@@ -389,6 +389,8 @@ GAP_STEP = .45                 # one bar plus the space after it
 BAR_DEPTH = GAP_STEP * .4
 CAR_CLEAR = .06                # space between the last bar and the car's tyres
 ROAD_FAR = 1 + 3 * GAP_STEP + .25
+CARD_CLEARANCE = 24            # px kept between the badge's road and the speed card (2026-10-29 photo: the near bar
+                               # and left lane line ran into the card's right edge on the 800x480 car screen)
 
 # Sprite textures live in the graphics context. The fonts are made per context and closed before it is destroyed, so
 # a cache keyed on them never hands an old texture to a newer context (Android Auto reconnects make a new one).
@@ -433,21 +435,42 @@ def lead_sprite(fonts, name, width):
     return None
 
 
-def badge_geometry(content, personality):
+def card_rect(state):
+  """(left, top, right, bottom) of the speed card as drawn, buttons included, or None while it is hidden."""
+  body = _card_body(state)
+  if body is None or not placement(state.customization, 'large', 'cruise_limits').get('enabled', True):
+    return None
+  x, y = body[0], body[1]
+  return x, y, x + CARD_WIDTH, y + card_height(state)
+
+
+def badge_geometry(content, personality, avoid=None):
   """Where the lead badge draws, like the Honda cluster's distance display: the road runs away from us and the lead
-  car sits just past the last bar, so it is close and large at 1 bar and further away and smaller at 3."""
+  car sits just past the last bar, so it is close and large at 1 bar and further away and smaller at 3. If its spot
+  overlaps `avoid` (the speed card's rect), it slides sideways off the card rather than drawing over it."""
   unit = content.width * .05
   w = unit * 1.25
   cx, top = content.x + content.width * .28, content.y + content.height * .12
   horizon, depth = top - w * .2, w * 2.
   bars = gap_bars(personality)
+  lane = w * 1.15
 
   def y(z):
     return horizon + depth / z
 
+  if avoid is not None:
+    # widest at the near edge (lane lines plus half their stroke); the top is the highest car roof over all three
+    # settings, so the badge does not hop sideways when the distance setting changes
+    half = lane + max(1.5, unit * .085) / 2
+    roofs = [y(z) - w * 1.7 / z * 1.1 for z in (1 + n * GAP_STEP + CAR_CLEAR for n in (1, 2, 3))]
+    extent_top, extent_bottom = min(roofs), y(1) + unit * .1
+    left, card_top, right, card_bottom = avoid
+    if left < cx + half and right > cx - half and card_top < extent_bottom and card_bottom > extent_top:
+      cx = right + CARD_CLEARANCE + half if (left + right) / 2 <= cx else left - CARD_CLEARANCE - half
+
   car_z = 1 + bars * GAP_STEP + CAR_CLEAR
   return {
-    'cx': cx, 'unit': unit, 'y': y, 'lane': w * 1.15, 'car_width': w * 1.7 / car_z, 'car_ground': y(car_z),
+    'cx': cx, 'unit': unit, 'y': y, 'lane': lane, 'car_width': w * 1.7 / car_z, 'car_ground': y(car_z),
     'bars': [(1 + i * GAP_STEP, 1 + i * GAP_STEP + BAR_DEPTH) for i in range(bars)],
   }
 
@@ -507,7 +530,7 @@ def _vector_car(cx, top, w, h, braking, pulse):
   _fill(_rounded(box(-.40, .83, .40, .875), w * .02), lambda y: rl.Color(46, 50, 62, 255))
 
 
-def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None):
+def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None, avoid=None):
   """Lead car on the following-distance bars, like the Honda cluster: the Civic sits closer at 1 bar and further away
   at 3. A soft halo carries the state: yellow while the lead holds speed, red with its brake lamps lit while it brakes
   (pulsing when it brakes hard), teal while it pulls away."""
@@ -520,7 +543,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None, persona
   hard = braking and lead is not None and lead.a_lead <= -2.5
   pulse = .5 + .5 * math.sin(now / .45 * 2 * math.pi) if hard else 1.
 
-  g = badge_geometry(content, personality)
+  g = badge_geometry(content, personality, avoid)
   cx, y, lane = g['cx'], g['y'], g['lane']
   car_w, ground = g['car_width'], g['car_ground']
   car_h = car_w * .875  # roof to tyres

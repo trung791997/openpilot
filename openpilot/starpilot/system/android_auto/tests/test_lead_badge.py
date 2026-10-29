@@ -140,6 +140,67 @@ def test_car_sits_just_past_the_last_bar(personality):
   assert near_edges == sorted(near_edges, reverse=True)  # the first bar is the nearest one
 
 
+
+# Static: on Peter's 800x480 car screen (a 1860x1116 canvas) with the speed card where he placed it, the badge's near
+# bar and left lane line ran into the card's right edge (2026-10-29 photo).
+SCREEN = SimpleNamespace(x=0., y=0., width=1860., height=1116.)
+PETER_CARD = (81, 210, 81 + theme.CARD_WIDTH, 210 + 460 + theme.BUTTON_HEIGHT + 20)
+
+
+def road_span(g):
+  half = g['lane'] + max(1.5, g['unit'] * .085) / 2
+  return g['cx'] - half, g['cx'] + half
+
+
+def test_badge_used_to_overlap_the_speed_card():
+  assert road_span(theme.badge_geometry(SCREEN, 'standard'))[0] < PETER_CARD[2]
+
+
+@pytest.mark.parametrize('personality', ['aggressive', 'standard', 'relaxed'])
+def test_badge_slides_right_off_the_speed_card(personality):
+  g = theme.badge_geometry(SCREEN, personality, PETER_CARD)
+  assert road_span(g)[0] == pytest.approx(PETER_CARD[2] + theme.CARD_CLEARANCE)
+  assert g['cx'] == theme.badge_geometry(SCREEN, 'standard', PETER_CARD)['cx']  # no hop when the setting changes
+
+
+def test_badge_stays_put_when_the_card_is_clear_of_it():
+  home = theme.badge_geometry(SCREEN, 'standard')['cx']
+  below = (81, 700, 81 + theme.CARD_WIDTH, 1100)
+  assert theme.badge_geometry(SCREEN, 'standard', below)['cx'] == home
+  assert theme.badge_geometry(SCREEN, 'standard', None)['cx'] == home
+
+
+def test_badge_slides_left_off_a_card_on_its_right():
+  home = theme.badge_geometry(SCREEN, 'standard')['cx']
+  card = (home - 40, 150, home - 40 + theme.CARD_WIDTH, 650)
+  assert road_span(theme.badge_geometry(SCREEN, 'standard', card))[1] == pytest.approx(card[0] - theme.CARD_CLEARANCE)
+
+
+def test_card_rect_only_while_the_card_draws(monkeypatch):
+  shown = {'enabled': True}
+  monkeypatch.setattr(theme, '_card_body', lambda state: (81, 210, True, True, 480))
+  monkeypatch.setattr(theme, 'card_height', lambda state: 560)
+  monkeypatch.setattr(theme, 'placement', lambda customization, profile, key: shown)
+  state = SimpleNamespace(customization={})
+  assert theme.card_rect(state) == (81, 210, 81 + theme.CARD_WIDTH, 770)
+  shown['enabled'] = False
+  assert theme.card_rect(state) is None
+  monkeypatch.setattr(theme, '_card_body', lambda state: None)
+  shown['enabled'] = True
+  assert theme.card_rect(state) is None
+
+
+def test_overlay_passes_the_card_to_the_badge(monkeypatch):
+  seen = []
+  monkeypatch.setattr(theme, 'edge_glow', lambda *a: None)
+  monkeypatch.setattr(theme, 'state_glow', lambda *a: None)
+  monkeypatch.setattr(theme, 'side_colors', lambda *a: (None, None))
+  monkeypatch.setattr(theme, 'card_rect', lambda state: PETER_CARD)
+  monkeypatch.setattr(theme, 'lead_badge', lambda *a, **k: seen.append(k['avoid']))
+  state = SimpleNamespace(appearance=SimpleNamespace(show_lead_indicator=True))
+  theme.overlay(Fonts(), SCREEN, state, 'chill', True)
+  assert seen == [PETER_CARD]
+
 def test_no_lead_word(rl, monkeypatch):
   monkeypatch.setattr(theme, '_load_sprite', lambda path, width: texture(width))
   fonts = Fonts()
