@@ -68,6 +68,10 @@ final class MapView extends View {
   // stopped within ON_ROUTE m of the route, the car points along it: GPS has no heading at a stop, and one taken
   // there (a comma start at a light, 2026-10-29 photo) turned the whole map about 80 degrees
   private static final double HOLD_SPEED = 1, ON_ROUTE = 12;
+  // stopped off the route (a parking lot, 2026-10-29 video), the map swam: GPS heading and position wander a few
+  // metres and many degrees a second at a standstill. Stopped, the car keeps the heading it last moved with and
+  // stays put while the fix wanders within HOLD_DRIFT m.
+  private static final double HOLD_DRIFT = 10;
   private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
@@ -96,6 +100,8 @@ final class MapView extends View {
   private volatile Scene scene;
   private volatile boolean building;
   private long builtAt, lastFrame, drawMs, drawSum, spdAt;
+  private double heldH = Double.NaN;  // radians, the GPS heading while last moving
+  private double[] heldW;              // world position held at a standstill
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
   private boolean live;
@@ -562,6 +568,15 @@ final class MapView extends View {
     double h = Math.toRadians(Feed.hdg), spd = Math.max(0, Feed.spd);
     double ahead = Math.min(0.5, Math.max(0, (now - Feed.poseAt) / 1000.0)) * spd;
     double[] w = Feed.world(Feed.lat, Feed.lon);
+    if (spd >= HOLD_SPEED) {
+      heldH = h;
+      heldW = null;
+    } else {
+      if (heldW == null || Math.hypot(w[0] - heldW[0], w[1] - heldW[1]) * s.mpt > HOLD_DRIFT) heldW = w;
+      w = heldW;
+      if (Double.isNaN(heldH)) heldH = h;  // parked since the map came up: the first heading, held
+      h = heldH;
+    }
     float ce = (float) ((w[0] - s.ax) * s.mpt + Math.sin(h) * ahead);
     float cn = (float) (-(w[1] - s.ay) * s.mpt + Math.cos(h) * ahead);
     if (spd < HOLD_SPEED) {
