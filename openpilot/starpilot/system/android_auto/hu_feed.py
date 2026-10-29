@@ -14,7 +14,8 @@ unit asking, nothing about the drive leaves the comma and the sensors are never 
 Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
   b  beacon, broadcast, 1 Hz: {"port"}
   h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...]} road tiles it holds; no "have", no tiles
-  s  state, 1 Hz and on change: {"mode", "metric", "nav"}; nav is null unless a route is guiding
+  s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit"}; nav is null unless a route is guiding; limit (m/s)
+     is the speed limit openpilot goes by, or null
   r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
   p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py)
@@ -165,7 +166,7 @@ def tiles_around(lat: float, lon: float) -> list[str]:
 class CerealReader:
   """Everything the feed sends, from cereal; opened on the first hello so an idle feed costs no sockets."""
   SERVICES = ('selfdriveState', 'carControl', 'carState', 'aolAxisState', 'deviceMotion', 'starpilotNavigation',
-              'gpsLocationExternal', 'gpsLocation', 'starpilotCarState')
+              'gpsLocationExternal', 'gpsLocation', 'starpilotCarState', 'slcState')
 
   def __init__(self):
     from openpilot.cereal import messaging
@@ -203,6 +204,7 @@ class CerealReader:
       heading = self._heading(bearing(gps), value['speed'], value['yaw_rate'], now_ns)
       if heading is not None:
         value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
+    value['limit'] = posted_limit(sm['slcState']) if sm.seen['slcState'] else None
     stamp = sm.logMonoTime['starpilotNavigation']
     state = navigation_state(sm['starpilotNavigation']) if sm.seen['starpilotNavigation'] else None
     if state is not None and state.status == 'guiding' and 0 < stamp <= now_ns <= stamp + NAV_HOLD_NS:
@@ -215,6 +217,16 @@ class CerealReader:
       if points:
         value['route'] = (f'{state.sessionId}:{state.revision}', points)
     return value
+
+
+def posted_limit(slc) -> float | None:
+  """The speed limit openpilot is going by (m/s), for the cluster's sign when there is no route: the one it accepted,
+  else the one it sees now."""
+  if slc.hasAccepted and slc.acceptedSpeedLimit > 0:
+    return round(float(slc.acceptedSpeedLimit), 2)
+  if slc.observationKind == 'valid' and slc.speedLimit > 0:
+    return round(float(slc.speedLimit), 2)
+  return None
 
 
 def instruction(step) -> dict:
@@ -314,7 +326,7 @@ class HeadUnitFeed:
     if self._read is None:
       self._read = CerealReader()
     value = self._read()
-    state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav']}
+    state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav'], 'limit': value.get('limit')}
     if state != self.sent_state or now - self.last_state >= STATE_EVERY:
       self._send('s', state)
       self.sent_state, self.last_state = state, now

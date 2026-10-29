@@ -48,8 +48,9 @@ final class MapView extends View {
   private static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
   private static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
   private static final float BOX_R = 430;          // display metres: covers the box from the car
+  private static final float FREE_X = 292;  // the meter's centre
   private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
-  private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, STUB_PX = 18, SIDE_PX = 40, GRID_DM = 50;
+  private static final float LOCAL_PX = 88, KERB_PX = 2, ROUTE_PX = 22, SIDE_PX = 40, GRID_DM = 50;
   private static final double NEAR = 152.4, TURN_LEN = 40;   // side roads full width inside 500 ft; road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
   private static final double TAU_IN = 0.8, TAU_OUT = 2.0;   // s, zoom smoothing: in briskly, back out gently
@@ -75,7 +76,7 @@ final class MapView extends View {
   private final Map<String, View> views = new HashMap<String, View>();
   private final Matrix camera = new Matrix();
   private final Paint grid = new Paint(), kerb = stroke(0xff9a9a9a, LOCAL_PX + 2 * KERB_PX), road = stroke(0xff454545, LOCAL_PX),
-      carpet = stroke(Color.WHITE, ROUTE_PX), stub = stroke(0xff454545, STUB_PX),
+      carpet = stroke(Color.WHITE, ROUTE_PX),
       sideKerb = stroke(0xff6a6a6a, SIDE_PX + 2 * KERB_PX), side = stroke(0xff383838, SIDE_PX),
       fill = new Paint(), mask = new Paint(), fog = new Paint();
   private final TextPaint big = text(28, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
@@ -552,7 +553,8 @@ final class MapView extends View {
     // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
     // view closes in on the turn as the car reaches it and pulls back out once the next maneuver is far
     double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
-    double rng = Math.max(200, Math.min(600, spd * 20));
+    // with no route nothing lies far ahead to show, so the view stays close: about 12 s of road, 120 to 300 m
+    double rng = s.route.length == 0 ? Math.max(120, Math.min(300, spd * 12)) : Math.max(200, Math.min(600, spd * 20));
     if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
     if (Feed.poseAt != spdAt) {
       double gap = (Feed.poseAt - spdAt) / 1000.0;
@@ -582,16 +584,20 @@ final class MapView extends View {
     if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
     else paths(s.roads, s.roadsBox, stubPath, ce, cn, ch, sh, ik, reach);
 
+    // with no route there is no turn text, so the map takes the whole meter: the car at its centre
+    boolean free = s.route.length == 0;
+    canvas.save();
+    if (free) canvas.translate(FREE_X - CAR_X, 0f);
     canvas.save();
     canvas.concat(camera);
     canvas.drawPath(gridPath, grid);
+    // side roads are full width at the closest zoom and thin out as the view zooms out, instead of filling it
+    float sw = Math.min(1, (float) (NEAR / R0) * ik);
+    sideKerb.setStrokeWidth(dm(SIDE_PX + 2 * KERB_PX) * sw);
+    side.setStrokeWidth(dm(SIDE_PX) * sw);
     if (s.route.length > 0) {
       // the roads around the route as roads, so the intersections and the road going on past a turn show:
       // every kerb first and then every surface, so the side roads open into the route instead of being cut by its kerb
-      // side roads are full width at the closest zoom and thin out as the view zooms out, instead of filling it
-      float sw = Math.min(1, (float) (NEAR / R0) * ik);
-      sideKerb.setStrokeWidth(dm(SIDE_PX + 2 * KERB_PX) * sw);
-      side.setStrokeWidth(dm(SIDE_PX) * sw);
       canvas.drawPath(stubPath, sideKerb);
       canvas.drawPath(routePath, kerb);
       canvas.drawPath(stubPath, side);
@@ -600,8 +606,9 @@ final class MapView extends View {
       carpet.setAlpha(242);
       canvas.drawPath(carpetPath, carpet);
     } else {
-      stub.setAlpha(160);
-      canvas.drawPath(stubPath, stub);
+      // free drive: every road around the car as a road, as the side roads look in route mode
+      canvas.drawPath(stubPath, sideKerb);
+      canvas.drawPath(stubPath, side);
     }
     canvas.restore();
 
@@ -617,7 +624,8 @@ final class MapView extends View {
       p.close();
       canvas.drawPath(p, fill);
     }
-    overlay(canvas, now);
+    canvas.restore();
+    overlay(canvas, now, free);
 
     long ms = SystemClock.uptimeMillis() - now;
     drawMs = (drawMs * 7 + ms) / 8;
@@ -726,8 +734,8 @@ final class MapView extends View {
 
   // ---- Layout B text: distance and bar in the left column, street on top, speed limit, arrival
 
-  private void overlay(Canvas canvas, long now) {
-    canvas.drawRect(0, 0, 184, 215, mask);
+  private void overlay(Canvas canvas, long now, boolean free) {
+    if (!free) canvas.drawRect(0, 0, 184, 215, mask);
     canvas.drawRect(0, 0, 584, 78, fog);
 
     View lanes = find("drive_way_layout");

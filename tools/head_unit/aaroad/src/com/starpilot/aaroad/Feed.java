@@ -235,7 +235,7 @@ final class Feed {
       metric = m.optBoolean("metric");
       JSONObject nav = m.optJSONObject("nav");
       turnMeters = nav != null ? nav.optDouble("distance", -1) : -1;
-      limitMs = nav != null && !nav.isNull("limit") ? nav.optDouble("limit", -1) : -1;
+      limitMs = nav != null && !nav.isNull("limit") ? nav.optDouble("limit", -1) : m.isNull("limit") ? -1 : m.optDouble("limit", -1);
       remainingSec = nav != null ? nav.optDouble("duration", -1) : -1;
       if (nav == null) route = null;
     } else if (t.equals("r")) {

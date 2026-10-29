@@ -193,3 +193,10 @@ def test_the_route_goes_again_as_soon_as_nav_comes_back():
   now[0] += 1
   feed.tick()
   assert sock.kinds().count('r') == 2  # not five seconds later
+
+
+def test_sign_shows_the_accepted_limit_then_the_one_seen_and_nothing_unknown():
+  from types import SimpleNamespace as N
+  assert hf.posted_limit(N(hasAccepted=True, acceptedSpeedLimit=13.4112, observationKind='unknown', speedLimit=0)) == 13.41
+  assert hf.posted_limit(N(hasAccepted=False, acceptedSpeedLimit=0, observationKind='valid', speedLimit=15.6464)) == 15.65
+  assert hf.posted_limit(N(hasAccepted=False, acceptedSpeedLimit=0, observationKind='unknown', speedLimit=15.6)) is None
