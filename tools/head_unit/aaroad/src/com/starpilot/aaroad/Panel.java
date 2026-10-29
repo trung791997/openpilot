@@ -20,7 +20,8 @@ final class Panel {
 
   private static String icon, street;
   private static int meters = -1;
-  private static boolean active;
+  private static boolean active, noContextLogged;
+  private static Context context;  // NavigationFocusManager's, in case the process has no Application
 
   static void install(Class<?> nfm) {
     XposedHelpers.findAndHookMethod(nfm, "onNextTurn", String.class, int.class, int.class, byte[].class,
@@ -35,10 +36,12 @@ final class Panel {
           if (s == null) s = "";
           // Android Auto repeats the same turn about once a second; keep its distance. A new turn
           // drops it until onNextTurnDistance, since mDistanceMeters still holds the previous turn.
-          if (!i.equals(icon) || !s.equals(street)) meters = -1;
+          boolean fresh = !i.equals(icon) || !s.equals(street);
+          if (fresh) meters = -1;
           icon = i;
           street = s;
-          send();
+          keepContext(o);
+          if (send() && fresh) XposedBridge.log("aaroad: panel turn " + i + " \"" + s + "\" sent");
         } catch (Throwable t) {
           XposedBridge.log("aaroad: panel turn failed: " + t);
         }
@@ -50,6 +53,7 @@ final class Panel {
       protected void afterHookedMethod(MethodHookParam param) {
         try {
           meters = (Integer) param.args[0];
+          keepContext(param.thisObject);
           if (icon != null) send();
         } catch (Throwable t) {
           XposedBridge.log("aaroad: panel distance failed: " + t);
@@ -63,12 +67,14 @@ final class Panel {
           boolean now = "ACTIVE".equals(String.valueOf(XposedHelpers.getObjectField(param.thisObject, "mStatus")));
           if (now == active) return;
           active = now;
+          keepContext(param.thisObject);
           if (!now) {
             icon = street = null;
             meters = -1;
           }
-          broadcast(new Intent(HH + (now ? "START_NAVI" : "STOP_NAVI")));
-          XposedBridge.log("aaroad: panel " + (now ? "start" : "stop"));
+          boolean sent = broadcast(new Intent(HH + (now ? "START_NAVI" : "STOP_NAVI")));
+          XposedBridge.log("aaroad: panel " + (now ? "start" : "stop") + (sent ? "" : " not sent")
+                           + " (pid " + android.os.Process.myPid() + ")");
         } catch (Throwable t) {
           XposedBridge.log("aaroad: panel status failed: " + t);
         }
@@ -76,7 +82,7 @@ final class Panel {
     });
   }
 
-  private static void send() {
+  private static boolean send() {
     Intent i = new Intent(HH + "UPDATE_NAVI_WAZE");
     i.putExtra("icon", icon);
     i.putExtra("street", street);
@@ -85,12 +91,30 @@ final class Panel {
       i.putExtra("distance", d[0]);
       i.putExtra("distUnit", d[1]);
     }
-    broadcast(i);
+    return broadcast(i);
   }
 
-  private static void broadcast(Intent i) {
+  private static void keepContext(Object nfm) {
+    try {
+      Object c = XposedHelpers.getObjectField(nfm, "mContext");
+      if (c instanceof Context) context = (Context) c;
+    } catch (Throwable ignored) {
+      // the turn still goes out if the process has an Application
+    }
+  }
+
+  // Foreground queue: the background one also carries Honda Hack's own once-a-second updates.
+  private static boolean broadcast(Intent i) {
     Context c = AndroidAppHelper.currentApplication();
-    if (c != null) c.sendBroadcast(i);
+    if (c == null) c = context;
+    if (c == null) {
+      if (!noContextLogged) XposedBridge.log("aaroad: panel has no context to send from");
+      noContextLogged = true;
+      return false;
+    }
+    i.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+    c.sendBroadcast(i);
+    return true;
   }
 
   // Honda Hack drawable suffix (car_big_trans_direction_<x>, car_big_trans_directions_roundabout*)
