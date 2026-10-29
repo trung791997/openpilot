@@ -71,7 +71,7 @@ final class MapView extends View {
       sideKerb = stroke(0xff6a6a6a, SIDE_PX + 2 * KERB_PX), side = stroke(0xff383838, SIDE_PX),
       fill = new Paint(), mask = new Paint(), fog = new Paint();
   private final TextPaint big = text(28, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
-      eta = text(17, true, Color.WHITE), etaDim = text(13, false, 0xff9a9a9a), sign = text(8.5f, true, 0xff111111),
+      eta = text(25, true, Color.WHITE), etaDim = text(17, false, 0xffb0b0b0), etaClock = text(23, true, 0xffe6e6e6), sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
   private final Path routePath = new Path(), carpetPath = new Path(), stubPath = new Path(), gridPath = new Path();
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
@@ -650,7 +650,7 @@ final class MapView extends View {
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
       long min = Math.round(left / 60);
       String n = min >= 60 ? (min / 60) + " h " + (min % 60) : String.valueOf(min);
-      String rest = "  ·  " + clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
+      String rest = " · " + clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
       View vd = find("vehicle_data_layout");
       boolean low = vd != null && vd.isShown() && vd.getHeight() > 0;
       float x = low ? 128 : 64, y = low ? navi.getTop() + vd.getTop() - 4 : 205;
@@ -658,9 +658,7 @@ final class MapView extends View {
       x += eta.measureText(n);
       canvas.drawText(" min", x, y, etaDim);
       x += etaDim.measureText(" min");
-      etaDim.setTextSize(14);
-      canvas.drawText(rest, x, y, etaDim);
-      etaDim.setTextSize(13);
+      canvas.drawText(rest, x, y, etaClock);
     }
   }
 
