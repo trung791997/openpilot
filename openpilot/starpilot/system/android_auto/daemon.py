@@ -250,6 +250,13 @@ def main() -> int:
             pass
 
     threading.Thread(target=housekeeping, daemon=True).start()
+    if COMMA_HARDWARE:
+      try:
+        from openpilot.starpilot.system.android_auto.hu_feed import HeadUnitFeed
+        hu_feed = HeadUnitFeed(log=lambda event, **fields: print(json.dumps({"event": event, **fields}), flush=True)).start()
+        cleanup.callback(hu_feed.close)
+      except Exception as error:  # the cluster map feed is optional; projection must never depend on it
+        print(json.dumps({"event": "hu_feed_unavailable", "error": str(error)}), flush=True)
     from openpilot.starpilot.system.android_auto.bugsink_report import Reporter
     cleanup.callback(Reporter(parked=lambda: _offroad() and not supervisor.status()["running"]).start().close)
     server = Server(ANDROID_AUTO_SOCKET_PATH, supervisor, source_verifier, authority.configuration_allowed)

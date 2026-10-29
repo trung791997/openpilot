@@ -1,0 +1,324 @@
+"""Turn guidance, openpilot's mode and the car's position for the head unit's cluster map (tools/head_unit/aaroad).
+
+The cluster map colours the route by what openpilot is doing (exp orange, chill green, lateral-only blue,
+white when openpilot is not driving) and draws the car on the road map around it. Android Auto's own nav
+channel carries only the next turn as text and a picture, about once a second, and only while the comma is
+the head unit's Android Auto source, so this rides on the LAN the two share instead.
+
+The comma reaches the head unit's Android Auto over the AAWireless dongle, which gives no IP route to the
+head unit; both are on the phone hotspot, so this uses that network. A beacon goes out once a second on
+each broadcast-capable interface and says only "a comma is here". A head unit that wants the feed answers
+with a hello; the comma then sends to that address alone, and stops when the hellos stop. With no head
+unit asking, nothing about the drive leaves the comma and the sensors are never read.
+
+Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
+  b  beacon, broadcast, 1 Hz: {"port"}
+  h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...]} road tiles it holds; no "have", no tiles
+  s  state, 1 Hz and on change: {"mode", "metric", "nav"}; nav is null unless a route is guiding
+  r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
+  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
+  m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py)
+"""
+from __future__ import annotations
+
+import base64
+import fcntl
+import json
+import math
+import socket
+import struct
+import threading
+import time
+import zlib
+from collections.abc import Callable
+
+PORT = 47312
+VERSION = 1
+POSE_HZ = 20.
+STATE_EVERY = 1.
+BEACON_EVERY = 1.
+ROUTE_EVERY = 5.
+PEER_TIMEOUT = 5.
+ROUTE_CHUNK = 50           # points per datagram, under 1.3 kB
+TILE_CHUNK = 1000          # tile bytes per datagram, about 1.4 kB once base64'd
+TILE_CHUNKS_PER_TICK = 20  # 400 datagrams a second at most
+TILE_SCAN_EVERY = 1.       # s between looks for a tile the head unit lacks
+TILE_RETRY = 3.            # s after sending a tile before it goes again, if the hellos still lack it
+MAX_CARRY = 1.             # s: past this a fix is too old to carry forward
+METERS_PER_DEG = 111_320.
+MODES = ('exp', 'chill', 'aol', 'off')
+
+_IFF_UP, _IFF_BROADCAST = 0x1, 0x2
+_SIOCGIFFLAGS, _SIOCGIFADDR, _SIOCGIFBRDADDR = 0x8913, 0x8915, 0x8919
+# aa0 is the AAWireless dongle's Wi-Fi: the head unit is behind its USB side, never on that network.
+_SKIP = ('lo', 'aa')
+
+
+def mode_of(enabled: bool, experimental: bool, lat_active: bool, desired_long: bool | None) -> str:
+  """What openpilot is doing, as the driver sees it. desired_long: the AOL axis's longitudinal intent while
+  AOL runs (None without a fresh axis), since AOL keeps selfdrive enabled for lateral alone."""
+  if enabled and desired_long is not False:
+    return 'exp' if experimental else 'chill'
+  return 'aol' if lat_active else 'off'
+
+
+def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
+  """The fix (stamp_ns, lat, lon, bearing_deg) moved on to now at speed (m/s) and yaw_rate (deg/s, + right)."""
+  stamp, lat, lon, bearing = fix
+  age = (now_ns - stamp) * 1e-9
+  if not 0 <= age <= MAX_CARRY:
+    return None
+  speed = speed if math.isfinite(speed) and speed > 0 else 0.
+  yaw_rate = yaw_rate if math.isfinite(yaw_rate) else 0.
+  heading = bearing + yaw_rate * age
+  if speed:
+    mean = math.radians(bearing + yaw_rate * age / 2)
+    lat += speed * age * math.cos(mean) / METERS_PER_DEG
+    lon += speed * age * math.sin(mean) / (METERS_PER_DEG * max(0.01, math.cos(math.radians(lat))))
+  return {'lat': round(lat, 7), 'lon': round(lon, 7), 'hdg': round(heading % 360, 1), 'spd': round(speed, 2),
+          'age': round(age, 3)}
+
+
+def private(address: str) -> bool:
+  try:
+    a, b = (int(part) for part in address.split('.')[:2])
+  except ValueError:
+    return False
+  return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+
+
+def broadcast_addresses() -> list[str]:
+  """Directed broadcast address of each up, broadcast-capable interface (wlan0 on the phone hotspot)."""
+  result = []
+  probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  try:
+    for _, name in socket.if_nameindex():
+      if name.startswith(_SKIP):
+        continue
+      packed = struct.pack('256s', name.encode()[:15])
+      try:
+        flags = struct.unpack('H', fcntl.ioctl(probe.fileno(), _SIOCGIFFLAGS, packed)[16:18])[0]
+        if flags & (_IFF_UP | _IFF_BROADCAST) != _IFF_UP | _IFF_BROADCAST:
+          continue
+        fcntl.ioctl(probe.fileno(), _SIOCGIFADDR, packed)  # raises with no IPv4 address
+        result.append(socket.inet_ntoa(fcntl.ioctl(probe.fileno(), _SIOCGIFBRDADDR, packed)[20:24]))
+      except OSError:
+        continue
+  finally:
+    probe.close()
+  return result
+
+
+def tile_reader() -> Callable[[str], bytes | None]:
+  from openpilot.starpilot.navigation.offline_roads import TileStore
+  from openpilot.starpilot.navigation.road_tiles import DATA_ZOOM, TileKey
+  store = TileStore()
+
+  def read(name: str) -> bytes | None:
+    x, y = (int(part) for part in name.split('/'))
+    return store.read(TileKey(DATA_ZOOM, x, y))
+  return read
+
+
+def tiles_around(lat: float, lon: float) -> list[str]:
+  """The tile under the car and its eight neighbours, nearest first."""
+  from openpilot.starpilot.navigation.road_tiles import world_xy
+  x, y = world_xy(lat, lon)
+  cx, cy = int(x), int(y)
+  ring = sorted(((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)),
+                key=lambda d: (cx + d[0] + 0.5 - x) ** 2 + (cy + d[1] + 0.5 - y) ** 2)
+  return [f'{cx + dx}/{cy + dy}' for dx, dy in ring]
+
+
+class CerealReader:
+  """Everything the feed sends, from cereal; opened on the first hello so an idle feed costs no sockets."""
+  SERVICES = ('selfdriveState', 'carControl', 'carState', 'aolAxisState', 'deviceMotion', 'starpilotNavigation',
+              'gpsLocationExternal', 'gpsLocation', 'starpilotCarState')
+
+  def __init__(self):
+    from openpilot.cereal import messaging
+    from openpilot.common.params import Params
+    self.sm = messaging.SubMaster(list(self.SERVICES))
+    self.params = Params()
+    self._metric = (-math.inf, False)
+
+  def metric(self, now: float) -> bool:
+    if now - self._metric[0] >= 5.:
+      self._metric = (now, self.params.get_bool('IsMetric'))
+    return self._metric[1]
+
+  def __call__(self) -> dict:
+    from openpilot.starpilot.aol.runtime import current_axis
+    from openpilot.starpilot.gps.source import bearing, select_location
+    from openpilot.starpilot.navigation.wire import navigation_state
+    sm = self.sm
+    sm.update(0)
+    now_ns = time.monotonic_ns()
+    selfdrive, control = sm['selfdriveState'], sm['carControl']
+    axis = current_axis(sm, now_ns=now_ns) if sm.seen['aolAxisState'] else None
+    mode = mode_of(bool(sm.seen['selfdriveState'] and selfdrive.enabled), bool(selfdrive.experimentalMode),
+                   bool(sm.seen['carControl'] and control.latActive),
+                   bool(axis.nativeAcknowledged and axis.desiredLongitudinal) if axis is not None else None)
+    value = {'mode': mode, 'metric': self.metric(time.monotonic()), 'nav': None, 'route': None, 'fix': None,
+             'speed': float(sm['carState'].vEgo) if sm.seen['carState'] else 0., 'yaw_rate': 0.}
+    motion = sm['deviceMotion'].angularVelocityDevice
+    if sm.seen['deviceMotion'] and motion.valid and abs(motion.z) < 1.:
+      value['yaw_rate'] = math.degrees(motion.z)  # device z points down: + is a right turn, as compass heading runs
+    location = select_location(sm, now_ns)
+    if location is not None:
+      stamp, gps = location
+      heading = bearing(gps)
+      if heading is not None:
+        value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
+    stamp = sm.logMonoTime['starpilotNavigation']
+    state = navigation_state(sm['starpilotNavigation']) if sm.seen['starpilotNavigation'] else None
+    if state is not None and state.status == 'guiding' and 0 < stamp <= now_ns <= stamp + 3_000_000_000:
+      value['nav'] = {**instruction(state.instruction),
+                      'then': instruction(state.nextManeuver) if state.nextManeuver.maneuverType else None,
+                      'remaining': round(float(state.instruction.remainingDistanceMeters)),
+                      'duration': round(float(state.instruction.remainingDurationSeconds)),
+                      'limit': round(float(state.speedLimit), 2) if state.speedLimit > 0 else None}
+      points = [(round(point.latitude, 6), round(point.longitude, 6)) for point in state.route]
+      if points:
+        value['route'] = (f'{state.sessionId}:{state.revision}', points)
+    return value
+
+
+def instruction(step) -> dict:
+  return {'type': step.maneuverType, 'modifier': step.maneuverModifier, 'distance': round(float(step.distanceMeters), 1),
+          'exit': int(step.exitNumber), 'degrees': int(step.exitDegrees), 'left': bool(step.drivingLeft),
+          'text': step.text}
+
+
+class HeadUnitFeed:
+  def __init__(self, read: Callable[[], dict] | None = None, sock: socket.socket | None = None,
+               broadcasts: Callable[[], list[str]] = broadcast_addresses, tiles: Callable[[str], bytes | None] | None = None,
+               around: Callable[[float, float], list[str]] = tiles_around, clock: Callable[[], float] = time.monotonic,
+               clock_ns: Callable[[], int] = time.monotonic_ns, log: Callable[..., None] = lambda *_, **__: None):
+    self._read, self.broadcasts, self._tiles, self.around = read, broadcasts, tiles, around
+    self.clock, self.clock_ns, self.log = clock, clock_ns, log
+    if sock is None:
+      sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      sock.bind(('0.0.0.0', PORT))
+    sock.setblocking(False)
+    self.sock = sock
+    self.peer: tuple[str, int] | None = None
+    self.peer_seen = -math.inf
+    self.have: set[str] | None = None  # None: this head unit takes no road tiles
+    self.last_beacon = self.last_state = self.last_route = -math.inf
+    self.sent_state: dict | None = None
+    self.sent_route: str | None = None
+    self.sending: list[bytes] = []  # datagrams of the tile on its way
+    self.tile_sent: dict[str, float] = {}
+    self.last_tile_scan = -math.inf
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+
+  def start(self) -> HeadUnitFeed:
+    self._thread = threading.Thread(target=self._run, name='aa-hu-feed', daemon=True)
+    self._thread.start()
+    return self
+
+  def close(self) -> None:
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=2)
+    self.sock.close()
+
+  def _run(self) -> None:
+    while not self._stop.is_set():
+      try:
+        idle = self.tick()
+      except Exception as error:  # never take Android Auto down with it
+        self.log('hu_feed_error', error=f'{type(error).__name__}: {error}')
+        idle = True
+      self._stop.wait(BEACON_EVERY / 4 if idle else 1 / POSE_HZ)
+
+  def _send(self, kind: str, body: dict, to: tuple[str, int] | None = None) -> None:
+    data = json.dumps({'v': VERSION, 't': kind, **body}, separators=(',', ':')).encode()
+    try:
+      self.sock.sendto(data, to or self.peer)
+    except OSError:
+      pass
+
+  def receive(self, now: float) -> None:
+    while True:
+      try:
+        data, address = self.sock.recvfrom(4096)
+      except (BlockingIOError, InterruptedError):
+        return
+      except OSError:
+        return
+      try:
+        message = json.loads(data)
+      except ValueError:
+        continue
+      if not (isinstance(message, dict) and message.get('v') == VERSION and message.get('t') == 'h' and private(address[0])):
+        continue
+      if self.peer != address:
+        self.log('hu_feed_peer', port=address[1])
+        self.peer, self.sent_state, self.sent_route, self.last_route = address, None, None, -math.inf
+        self.sending, self.tile_sent = [], {}
+      self.peer_seen = now
+      have = message.get('have')
+      self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
+
+  def tick(self) -> bool:
+    """One pass; True when there is no head unit to feed."""
+    now = self.clock()
+    self.receive(now)
+    if now - self.last_beacon >= BEACON_EVERY:
+      self.last_beacon = now
+      for address in self.broadcasts():
+        self._send('b', {'port': PORT}, (address, PORT))
+    if self.peer is not None and now - self.peer_seen > PEER_TIMEOUT:
+      self.log('hu_feed_peer_lost')
+      self.peer = None
+    if self.peer is None:
+      return True
+    if self._read is None:
+      self._read = CerealReader()
+    value = self._read()
+    state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav']}
+    if state != self.sent_state or now - self.last_state >= STATE_EVERY:
+      self._send('s', state)
+      self.sent_state, self.last_state = state, now
+    route = value.get('route')
+    if route is not None and (route[0] != self.sent_route or now - self.last_route >= ROUTE_EVERY):
+      key, points = route
+      route_id = zlib.crc32(key.encode()) & 0xffffffff
+      chunks = [points[i:i + ROUTE_CHUNK] for i in range(0, len(points), ROUTE_CHUNK)]
+      for i, chunk in enumerate(chunks):
+        self._send('r', {'id': route_id, 'i': i, 'n': len(chunks), 'pts': chunk})
+      self.sent_route, self.last_route = key, now
+    pose = carry(value['fix'], value['speed'], value['yaw_rate'], self.clock_ns()) if value['fix'] else None
+    if pose is not None:
+      self._send('p', pose)
+      if self.have is not None:
+        self.send_tiles(pose['lat'], pose['lon'], now)
+    return False
+
+  def send_tiles(self, lat: float, lon: float, now: float) -> None:
+    if not self.sending and now - self.last_tile_scan >= TILE_SCAN_EVERY:
+      self.last_tile_scan = now
+      if self._tiles is None:
+        self._tiles = tile_reader()
+      for key in self.around(lat, lon):
+        # A lost datagram leaves the tile out of the next hellos, and it goes again after TILE_RETRY.
+        if key in self.have or now - self.tile_sent.get(key, -math.inf) < TILE_RETRY:
+          continue
+        raw = self._tiles(key)
+        if raw:
+          parts = [base64.b64encode(raw[i:i + TILE_CHUNK]).decode() for i in range(0, len(raw), TILE_CHUNK)]
+          self.sending = [json.dumps({'v': VERSION, 't': 'm', 'k': key, 'i': i, 'n': len(parts), 'b': part},
+                                     separators=(',', ':')).encode() for i, part in enumerate(parts)]
+          self.tile_sent[key] = now
+          break
+    for data in self.sending[:TILE_CHUNKS_PER_TICK]:
+      try:
+        self.sock.sendto(data, self.peer)
+      except OSError:
+        pass
+    del self.sending[:TILE_CHUNKS_PER_TICK]

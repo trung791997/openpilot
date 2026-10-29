@@ -93,3 +93,37 @@ above, street centered under the arrow instead of Honda Hack's top-left column (
 ran under the speedometer ring). The bar shows from 500 ft, one segment per 50 ft, read back from
 the distance text. Static only.
 Log: `aaroad: meter nav laid out like the stock page`.
+
+## Cluster map feed from the comma (`hu_feed.py`, 2026-10-29)
+
+The cluster map (heading-up route, 3D close-up near the turn, carpet in openpilot's mode colour) needs
+more than Android Auto's nav channel carries: openpilot's mode, the whole route and the car's position.
+The comma sends them from `openpilot/starpilot/system/android_auto/hu_feed.py`, started by the Android
+Auto daemon. The comma's `aa0` reaches the head unit only through the AAWireless dongle's USB side, so
+there is no IP route to the head unit there; the feed uses the phone hotspot both are on, UDP port
+47312. It does nothing when the head unit is on another network.
+
+One JSON object per datagram, `{"v": 1, "t": kind, ...}`, each under 1472 bytes:
+
+| kind | way, rate | body |
+|---|---|---|
+| `b` beacon | comma broadcast, 1 Hz, every up interface but `lo` and `aa*` | `port` only, no drive data |
+| `h` hello | head unit to comma, about 1 Hz | `have`: road tiles held, `["x/y", ...]`; leave it out to get no tiles |
+| `s` state | 1 Hz and on change | `mode` (`exp` `chill` `aol` `off`), `metric`, `nav` (null unless a route is guiding) |
+| `r` route | on change and every 5 s | `id`, `i`, `n`, `pts` `[[lat, lon], ...]`, 50 per datagram, about 512 in all |
+| `p` pose | 20 Hz | `lat`, `lon`, `hdg` (deg, compass), `spd` (m/s), `age` (s): the last GPS fix carried forward, at most 1 s |
+| `m` road tile | one tile at a time, 3x3 around the car, nearest first | `k` `"x/y"`, `i`, `n`, `b` base64 of 1000-byte pieces of the zoom-14 file (`navigation/road_tiles.py`) |
+
+`nav`: `type`, `modifier`, `distance` (m), `exit`, `degrees`, `left`, `text`, `then`,
+`remaining` (m), `duration` (s), `limit` (m/s). Mode: `exp`/`chill` while openpilot drives both axes,
+`aol` while it steers alone, `off` otherwise.
+
+The comma answers only hellos from private addresses, one head unit at a time, and stops 5 s after the
+hellos stop; with no head unit asking it sends only the beacon and reads nothing. Any device on the
+hotspot can ask for the feed. A tile the hellos still lack 3 s after it went out is sent again. Road
+tiles exist only while navigating and carry road class, not lane counts, so the head unit uses
+per-class lane defaults. The route is the planner's route cut to 512 points, so turns on a long route
+are coarse until the head unit snaps them to the tiles.
+
+Head unit side (not built yet): a listener in `Meter.java` that answers the beacon and draws the map.
+Comma side: static tests only (`tests/test_hu_feed.py`).
