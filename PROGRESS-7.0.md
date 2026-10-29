@@ -10,7 +10,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Evidence words.** Every claim says *static*, *replay* or *limited road evidence*. Nothing below is road-validated unless an entry says so.
 
-## Where things stand (2026-10-28)
+## Where things stand (2026-10-29)
 
 | Change | longradar | V-ASM (`night-star7-vasm-jetson`) | Evidence |
 |---|---|---|---|
@@ -21,11 +21,13 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 | Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
 | Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
+| Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower (entry 10) | see entry 10 | see entry 10 | replay (6 of Peter's hard brakes + 8:57 phantom) + static tests; new-brake cost not yet measured |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
 ## Open items
 
+- **Early gentle brake (entry 10).** Pushed at Peter's request before Job's new-brake check finished. Watch the next drives for early slowdowns behind a steady car; Job's sweep (new brakes with stills, w>0 rate on steady following, the 19 protected brakes) is still running.
 - **Curve brake fix (entry 7).** On the comma since 2026-10-26. Check the next drives for curve brakes and for a real brake that came out weaker than it should.
 - **Far brake taps, routes 34 and 37 (entry 9).** The weak-lead bound (camera-contradicted unconfirmed lead, or camera passed) is on branch `night-star7-longradar-weakbound`. Replay: route 34's tap gone, route 37's eased, the 19 real brakes unchanged. The 747-brake check moves 9 other brakes, all softer, none a real in-lane slowdown on the stills or by the driver's call. On longradar and V-ASM, default ON; replay only, no road evidence yet.
 - **Stop-and-go fix.** Judge it on Peter's next stop-and-go drive: brake toggles per minute, short holds, gas surge after release.
@@ -39,6 +41,26 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 10 — 2026-10-29 — Early gentle brake: when a confident camera sees the radar lead slowing first, start braking sooner and softer; on longradar and V-ASM, default ON
+
+**Problem.** Peter labelled seven hard brakes on qcamera video (2026-10-28). Six were real cars that the car braked for late, then hard (2f8 22:45 "way too hard", 309 7:27 a cut-out revealing a stopped car, 268 11:46 and c 25:08 "could have braked earlier and softer"). One, 2f8 8:57, was a phantom. On every real one the camera lead saw the slowdown before the radar's speed caught up.
+
+**Change.** `CameraSlowBound` in `openpilot/starpilot/car/honda/radar_camera_slow_bound.py`, after the reversal bound in `radar.py`. While a camera lead with prob ≥ 0.9 sits at the radar lead's range (within max(10 m, 20 %)) and reads it at least 2 m/s slower for 0.5 s (leaky: a one-frame dip costs one frame), the published vLead/vLeadK/vRel move up to 80 % toward the camera speed, at most 4 m/s, ramping in at 2/s and out at 1/s. Only slower, never faster. dRel, aLeadK and the point are untouched (D-041/D-042). Off under 20 m and under 5 m/s. Bosch-A radar leads only; vision-only leads untouched.
+
+**Replay** (Job, open loop, onset < -0.5 / min aT, relative to the hard brake):
+
+| Event | Base | Fix |
+|---|---|---|
+| 2f8 22:45 (T1365) | -1.15 s / -3.04 | -2.13 s / -2.73 |
+| 309 7:27, 2f8 4:26, 268 11:46, c 25:08 | unchanged | unchanged |
+| 2f8 8:57 phantom | min -0.24 | min -0.24 |
+
+Planner fidelity (mean abs aT vs logged aEgo) on 1365: 0.407 base, 0.362 fix. The other windows are within 0.02.
+
+**Why only one moves.** 309: camera range (58-82 m) disagrees with the radar's (45-62 m), and we don't trust far camera range, so the range gate stays. 266/268/700.91/c1508: the lead is vision-only, or the camera is not confident yet. A radar-side bound cannot reach these; that would need a vision-lead path (not started).
+
+**Not verified.** The new-brake cost on normal driving has not been measured (Job's sweep is running). No road evidence. Static: 14 tests pass, ruff clean.
 
 ### 9 — 2026-10-27 — Far brake taps (routes 34 and 37): a radar lead the camera contradicts gets less braking authority; replay passes the 19 real brakes and the 747-brake check; on longradar and V-ASM, default ON
 
