@@ -82,6 +82,9 @@ class LongitudinalPlanner:
     # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
     from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
     self.bosch_a_smooth = BoschASmooth(CP, dt)
+    # Bosch-A stop hold + no gas inside the stop gap (always on for Bosch-A Hondas with the radar; bosch_a_stop_gap.py).
+    from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
+    self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
     self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
@@ -203,6 +206,10 @@ class LongitudinalPlanner:
         standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
+    output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
+      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target),
+      should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),
+      reset_state=bool(reset_state))
     # ---- end BOSCH-A HOOK ----
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 

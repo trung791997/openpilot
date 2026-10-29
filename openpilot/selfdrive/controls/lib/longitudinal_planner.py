@@ -42,6 +42,7 @@ from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApp
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
 from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
+from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
 from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
@@ -116,6 +117,7 @@ class LongitudinalPlanner:
       human_following.install(self.mpc)
     self.bosch_a_long = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=bosch_a.stock_brake_feel)
     self.bosch_a_smooth = BoschASmooth(CP, dt)  # always on for Bosch-A Hondas; bosch_a_smooth.py
+    self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
     self.dt = dt
@@ -518,6 +520,10 @@ class LongitudinalPlanner:
       standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
+    output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
+      lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
+      should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),
+      reset_state=bool(reset_state))
     if self.ford_stop_approach is not None:
       output_a_target, self.output_should_stop = self.ford_stop_approach.sample(
         sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
