@@ -87,12 +87,9 @@ showed, distance did not. Android Auto repeats `onNextTurn` about once a second 
 sent no `distance`, which makes Honda Hack hide seg_dist. A repeat of the same turn now keeps the
 last distance; only a new turn drops it until `onNextTurnDistance`.
 
-`Meter.java` (externaldisplay processes) lays the panel out like the stock nav direction page
-(2026-10-29 photo): arrow in the middle, a ten-segment distance bar left of it with the distance
-above, street centered under the arrow instead of Honda Hack's top-left column (its first letter
-ran under the speedometer ring). The bar shows from 500 ft, one segment per 50 ft, read back from
-the distance text. Static only.
-Log: `aaroad: meter nav laid out like the stock page`.
+`Meter.java` (externaldisplay processes) adds the continuous map (`MapView.java`) behind
+`navi_layout` on the first nav text Honda Hack sets. The 2026-10-28 stock-page rearrangement never
+ran (seg_dist and next_road sit in a LinearLayout) and is gone. Log: `aaroad: meter map added`.
 
 ## Cluster map feed from the comma (`hu_feed.py`, 2026-10-29)
 
@@ -125,5 +122,18 @@ tiles exist only while navigating and carry road class, not lane counts, so the 
 per-class lane defaults. The route is the planner's route cut to 512 points, so turns on a long route
 are coarse until the head unit snaps them to the tiles.
 
-Head unit side (not built yet): a listener in `Meter.java` that answers the beacon and draws the map.
+Head unit side (`Feed.java`, `Relay.java`, `MapView.java`, 2026-10-29):
+- `Feed` answers the beacon with a hello (only while the nav page shows) and keeps the pose, state,
+  route and up to 25 tiles. If the meter's process may not open the UDP port, it asks `Relay`, which
+  runs in Honda Hack's process (it has INTERNET) and passes datagrams over the local socket
+  `aaroad.feed`. Logs: `map feed listening [through Honda Hack]`, `map relay carrying the feed`.
+- `MapView` shows only while the nav page is up and the pose is under 2 s old; otherwise Honda Hack's
+  page is left as it was. Layout B of the mockup: heading-up tilted map (car at 369,180), route road
+  with the carpet in the mode colour, faint cross-street stubs, Peter's Civic (`assets/civic_map.png`,
+  read from the module apk), Honda Hack's arrow moved to the top left, distance + 500 ft bar,
+  street, speed limit, arrival. Zoom about 20 s ahead (200 to 600 m), held on the turn from 500 ft.
+  Logs: `meter map showing` / `hidden`, `map draw N ms average` (it draws less often past 33 ms).
+- Static only: a desktop run of the real `MapView` against stub Android drawing on a synthetic street
+  grid. Not yet run on the head unit.
+Module log: `/data/data/cn.autohack.hondahack/log/error.log` (su).
 Comma side: static tests only (`tests/test_hu_feed.py`).

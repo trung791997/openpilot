@@ -1,6 +1,7 @@
 package com.starpilot.aaroad;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.IXposedHookZygoteInit;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -18,14 +19,24 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 // (2026-10-28) never got it stored, and since Android Auto repeats the turn every second it
 // replayed every second; each replay carries no distance, so the stock distance bar flickered
 // to 0 (Peter, 2026-10-29). Removed.
-public class Hook implements IXposedHookLoadPackage {
+public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
   private static final String PKG = "com.mitsubishielectric.ada.app.androidauto";
   private static final String NFM = PKG + ".navigation.NavigationFocusManager";
   private static final int MAX_CHARS = 31;  // 5-bit length field, same cap as present location
   private static final int MAX_BYTES = 36;  // CanFormatAnalyze.replyBcanNavGuide4 truncates here
 
   @Override
+  public void initZygote(StartupParam startupParam) {
+    MapView.modulePath = startupParam.modulePath;  // the map's car icon is read from the module apk
+  }
+
+  @Override
   public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
+    try {
+      Relay.install(lpparam.packageName, lpparam.processName);
+    } catch (Throwable t) {
+      XposedBridge.log("aaroad: map relay failed: " + t);
+    }
     try {
       Cast.install(lpparam.packageName);
     } catch (Throwable t) {
