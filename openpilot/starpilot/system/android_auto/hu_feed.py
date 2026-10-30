@@ -311,7 +311,7 @@ def posted_limit(slc) -> float | None:
 def instruction(step) -> dict:
   return {'type': step.maneuverType, 'modifier': step.maneuverModifier, 'distance': round(float(step.distanceMeters), 1),
           'exit': int(step.exitNumber), 'degrees': int(step.exitDegrees), 'left': bool(step.drivingLeft),
-          'text': step.text}
+          'text': step.text, 'road': step.roadName}
 
 
 class HeadUnitFeed:

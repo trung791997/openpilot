@@ -883,8 +883,9 @@ final class MapView extends View {
     View lanes = find("drive_way_layout");
     float streetY = lanes != null && lanes.isShown() ? navi.getTop() + lanes.getBottom() + 22 : 48;
     boolean hasSign = Feed.limitMs > 0;
-    TextView road = (TextView) find("next_road");
-    CharSequence name = road != null && road.getVisibility() == VISIBLE ? road.getText() : null;
+    // the road the car is on, from the comma's route. Android Auto's next_road is the next turn's street, already on the
+    // turn card; over the map it read as the current road (Peter's photo 2026-10-30, East Bethany Drive was the next turn)
+    CharSequence name = Feed.road;
     if (!TextUtils.isEmpty(name)) {
       // a tag centred over the map between the cards and the sign, pointing down at the road
       float left = free ? 0 : CARD_R, right = hasSign ? 466 : 584;
