@@ -119,7 +119,8 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         int.class, int.class, new XC_MethodHook() {
       @Override
       protected void beforeHookedMethod(MethodHookParam param) {
-        XposedBridge.log("aaroad: street \"" + street((String) param.args[0]) + "\"");
+        // the raw text too: a turn with no street (2026-10-30, parking lot) left no way to tell what the phone sent
+        XposedBridge.log("aaroad: street \"" + street((String) param.args[0]) + "\" from \"" + param.args[0] + "\"");
       }
     });
 

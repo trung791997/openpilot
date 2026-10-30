@@ -9,7 +9,11 @@ import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
 import android.opengl.GLES20;
+import android.graphics.PixelFormat;
 import android.os.SystemClock;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.ViewGroup;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -23,14 +27,19 @@ import de.robv.android.xposed.XposedBridge;
 // 584x215 pbuffer draws a 15k-triangle mesh, about the size of the mockup close-ups, and logs the frame and
 // read-back times. It runs once per marker version: the marker is written before the first GL call, so if the
 // Tegra driver takes the cluster process down, the probe does not run again when it restarts.
+//
+// The first run (2026-10-30, Tegra 3) drew the mesh in 3.2 ms but took 62.5 ms to read the frame back for a
+// software canvas. The second check draws to the dash screen directly instead: a SurfaceView over the meter is its
+// own layer, put together with the rest by the display hardware, so it needs no read-back and no GPU-drawn window.
+// It draws the same mesh fully transparent, so nothing shows, logs the time per frame, and takes the view away.
 final class GlProbe {
-  private static final String MARKER = "aaroad_glprobe_2";
+  private static final String MARKER = "aaroad_glprobe_2", SCREEN_MARKER = "aaroad_glscreen_1";
   private static final int W = 584, H = 215, GRID = 87, FRAMES = 20;  // 2 * 86 * 86 = 14792 triangles
   private static final long DELAY_MS = 30000;
 
   private static boolean started;
 
-  static synchronized void startOnce(final Context ctx) {
+  static synchronized void startOnce(final Context ctx, final ViewGroup root) {
     if (started) return;
     started = true;
     Thread t = new Thread(new Runnable() {
@@ -50,22 +59,22 @@ final class GlProbe {
                          proc != null ? new File("/data/data/" + proc) : null,
                          own.getCacheDir(), own.getFilesDir(), ctx.getCacheDir(), new File("/data/local/tmp")};
           String tried = "uid " + android.os.Process.myUid() + " app " + (app != null ? app.getPackageName() : "none");
-          File marker = null;
+          File dir = null;
           for (File d : dirs) {
             if (d == null) continue;
-            File f = new File(d, MARKER);
-            if (f.exists()) return;
+            if (new File(d, MARKER).exists() || new File(d, SCREEN_MARKER).exists()) { dir = d; break; }
+            File f = new File(d, ".aaroad_w");
             try {
-              if (f.createNewFile()) { marker = f; break; }
+              if (f.createNewFile() || f.exists()) { f.delete(); dir = d; break; }
             } catch (java.io.IOException e) { /* next folder */ }
             tried += ", " + d;
           }
-          if (marker == null) {
+          if (dir == null) {
             XposedBridge.log("aaroad: gl probe skipped, nowhere to keep its marker (" + tried + ")");
             return;
           }
-          XposedBridge.log("aaroad: gl probe marker " + marker);
-          XposedBridge.log("aaroad: gl probe " + probe());
+          if (mark(dir, MARKER)) XposedBridge.log("aaroad: gl probe " + probe(null));
+          if (root != null && mark(dir, SCREEN_MARKER)) onScreen(root);
         } catch (Throwable t) {
           XposedBridge.log("aaroad: gl probe failed: " + t);
         }
@@ -75,26 +84,82 @@ final class GlProbe {
     t.start();
   }
 
-  private static String probe() {
+  private static boolean mark(File dir, String name) {
+    try {
+      return new File(dir, name).createNewFile();
+    } catch (java.io.IOException e) {
+      return false;
+    }
+  }
+
+  // A transparent SurfaceView over the meter, drawn from its own thread, then taken away.
+  private static void onScreen(final ViewGroup root) {
+    root.post(new Runnable() {
+      @Override
+      public void run() {
+        final SurfaceView sv = new SurfaceView(root.getContext());
+        sv.setZOrderOnTop(true);
+        sv.getHolder().setFormat(PixelFormat.TRANSLUCENT);
+        sv.getHolder().addCallback(new SurfaceHolder.Callback() {
+          boolean ran;
+          @Override
+          public void surfaceCreated(final SurfaceHolder holder) {
+            if (ran) return;
+            ran = true;
+            new Thread(new Runnable() {
+              @Override
+              public void run() {
+                String r;
+                try {
+                  r = probe(holder);
+                } catch (Throwable t) {
+                  r = "failed: " + t;
+                }
+                XposedBridge.log("aaroad: gl screen " + r);
+                root.post(new Runnable() {
+                  @Override
+                  public void run() {
+                    root.removeView(sv);
+                  }
+                });
+              }
+            }, "aaroad-glscreen").start();
+          }
+          @Override
+          public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {}
+          @Override
+          public void surfaceDestroyed(SurfaceHolder holder) {}
+        });
+        root.addView(sv, new ViewGroup.LayoutParams(W, H));
+        XposedBridge.log("aaroad: gl screen view added");
+      }
+    });
+  }
+
+  // window null: off screen, with read-back; else straight to that surface on the dash screen
+  private static String probe(SurfaceHolder window) {
     EGLDisplay dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
     int[] ver = new int[2];
     if (!EGL14.eglInitialize(dpy, ver, 0, ver, 1)) return "no EGL display";
     EGLSurface surf = EGL14.EGL_NO_SURFACE;
     EGLContext ctx = EGL14.EGL_NO_CONTEXT;
     try {
-      int[] attrs = {EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
-                     EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_DEPTH_SIZE, 16,
-                     EGL14.EGL_NONE};
+      int[] attrs = {EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                     EGL14.EGL_SURFACE_TYPE, window == null ? EGL14.EGL_PBUFFER_BIT : EGL14.EGL_WINDOW_BIT,
+                     EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
+                     EGL14.EGL_DEPTH_SIZE, 16, EGL14.EGL_NONE};
       EGLConfig[] cfg = new EGLConfig[1];
       int[] n = new int[1];
-      if (!EGL14.eglChooseConfig(dpy, attrs, 0, cfg, 0, 1, n, 0) || n[0] < 1) return "no GLES2 pbuffer config";
+      if (!EGL14.eglChooseConfig(dpy, attrs, 0, cfg, 0, 1, n, 0) || n[0] < 1) return "no GLES2 " + (window == null ? "pbuffer" : "window") + " config";
       ctx = EGL14.eglCreateContext(dpy, cfg[0], EGL14.EGL_NO_CONTEXT, new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE}, 0);
       if (ctx == null || ctx == EGL14.EGL_NO_CONTEXT) return "no GLES2 context";
-      surf = EGL14.eglCreatePbufferSurface(dpy, cfg[0], new int[]{EGL14.EGL_WIDTH, W, EGL14.EGL_HEIGHT, H, EGL14.EGL_NONE}, 0);
-      if (surf == null || surf == EGL14.EGL_NO_SURFACE) return "no pbuffer";
+      surf = window == null
+          ? EGL14.eglCreatePbufferSurface(dpy, cfg[0], new int[]{EGL14.EGL_WIDTH, W, EGL14.EGL_HEIGHT, H, EGL14.EGL_NONE}, 0)
+          : EGL14.eglCreateWindowSurface(dpy, cfg[0], window, new int[]{EGL14.EGL_NONE}, 0);
+      if (surf == null || surf == EGL14.EGL_NO_SURFACE) return "no " + (window == null ? "pbuffer" : "window surface");
       if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx)) return "makeCurrent failed";
       String gpu = GLES20.glGetString(GLES20.GL_RENDERER) + " / " + GLES20.glGetString(GLES20.GL_VERSION);
-      return gpu + ": " + draw();
+      return gpu + ": " + draw(window == null ? null : dpy, surf);
     } finally {
       EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
       if (surf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, surf);
@@ -103,13 +168,14 @@ final class GlProbe {
     }
   }
 
-  private static String draw() {
+  // dpy null: read each frame back; else swap it onto the screen, every pixel transparent
+  private static String draw(EGLDisplay dpy, EGLSurface surf) {
     int prog = program(
         "uniform float t; attribute vec3 p; varying float s;\n"
         + "void main() { float z = p.y * 0.9 + 0.1; s = p.z;\n"
         + "  gl_Position = vec4((p.x - 0.5 + 0.02 * sin(t)) * 2.0 / z * 0.3, 1.0 - 1.6 * p.y, z, 1.0); }",
-        "precision mediump float; varying float s;\n"
-        + "void main() { gl_FragColor = vec4(s * 0.3, s * 0.3, 0.35 + s * 0.3, 1.0); }");
+        "precision mediump float; uniform float a; varying float s;\n"
+        + "void main() { gl_FragColor = a * vec4(s * 0.3, s * 0.3, 0.35 + s * 0.3, 1.0); }");
     if (prog == 0) return "shader compile failed";
 
     // a grid mesh as indexed triangles, the shape of a lane-level road scene
@@ -139,6 +205,7 @@ final class GlProbe {
 
     GLES20.glUseProgram(prog);
     int p = GLES20.glGetAttribLocation(prog, "p"), t = GLES20.glGetUniformLocation(prog, "t");
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "a"), dpy == null ? 1 : 0);
     GLES20.glEnableVertexAttribArray(p);
     GLES20.glVertexAttribPointer(p, 3, GLES20.GL_FLOAT, false, 12, 0);
     GLES20.glViewport(0, 0, W, H);
@@ -148,14 +215,18 @@ final class GlProbe {
     long drawSum = 0, drawMax = 0, readSum = 0;
     for (int f = 0; f <= FRAMES; f++) {
       long a = SystemClock.elapsedRealtimeNanos();
-      GLES20.glClearColor(0, 0, 0, 1);
+      GLES20.glClearColor(0, 0, 0, dpy == null ? 1 : 0);
       GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
       GLES20.glUniform1f(t, f * 0.1f);
       GLES20.glDrawElements(GLES20.GL_TRIANGLES, idx.length, GLES20.GL_UNSIGNED_SHORT, 0);
       GLES20.glFinish();
       long b = SystemClock.elapsedRealtimeNanos();
-      px.position(0);
-      GLES20.glReadPixels(0, 0, W, H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, px);
+      if (dpy == null) {
+        px.position(0);
+        GLES20.glReadPixels(0, 0, W, H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, px);
+      } else {
+        EGL14.eglSwapBuffers(dpy, surf);
+      }
       long c = SystemClock.elapsedRealtimeNanos();
       if (f == 0) continue;  // the first frame pays for uploads and shader setup
       drawSum += b - a; drawMax = Math.max(drawMax, b - a); readSum += c - b;
@@ -164,8 +235,9 @@ final class GlProbe {
     int err = GLES20.glGetError();
     GLES20.glDeleteBuffers(2, buf, 0);
     GLES20.glDeleteProgram(prog);
-    return idx.length / 3 + " triangles, draw " + ms(drawSum / FRAMES) + " ms avg " + ms(drawMax) + " max, read-back "
-        + ms(readSum / FRAMES) + " ms, centre px " + (px.get((H / 2 * W + W / 2) * 4) & 0xff) + ", glError " + err;
+    return idx.length / 3 + " triangles, draw " + ms(drawSum / FRAMES) + " ms avg " + ms(drawMax) + " max, "
+        + (dpy == null ? "read-back " : "swap ") + ms(readSum / FRAMES) + " ms"
+        + (dpy == null ? ", centre px " + (px.get((H / 2 * W + W / 2) * 4) & 0xff) : "") + ", glError " + err;
   }
 
   private static String processName() {
