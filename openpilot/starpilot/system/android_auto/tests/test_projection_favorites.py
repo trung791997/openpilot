@@ -10,10 +10,10 @@ import pytest
 
 from openpilot.starpilot.navigation.owner import NavigationOwner, destination
 from openpilot.starpilot.system.android_auto.current_car_ui import projected_touches
-from openpilot.starpilot.system.android_auto.projection_favorites import ProjectionFavorites, destination_label
+from openpilot.starpilot.system.android_auto.projection_favorites import CANCEL_ROUTE, ProjectionFavorites, destination_label
 from openpilot.starpilot.system.android_auto.projection_geometry import projection_geometry
 from openpilot.starpilot.system.android_auto.projection_layout import (
-  BOOKMARK_WIDGET, CAR_EXIT, FAVORITE_WIDGETS, default_layout_for_viewport, layout_metadata_for_viewport, projection_customization,
+  BOOKMARK_WIDGET, CAR_EXIT, FAVORITE_ICON_SIZE, FAVORITE_WIDGETS, default_layout_for_viewport, layout_metadata_for_viewport, projection_customization,
   validate_layout_for_viewport,
 )
 from openpilot.starpilot.system.android_auto.touch import InputConfig, TouchMapper, TouchReceiver, TouchSender
@@ -248,6 +248,105 @@ def test_old_layout_migrates_favorites_without_enabling_or_reordering_existing_w
   assert layout == original
   migrated['widgets']['nav_home'].update(x=100, y=200, enabled=True)
   assert validate_layout_for_viewport(migrated, VIEWPORT) == migrated
+
+
+
+def guiding(favorites, *, card=True):
+  """A projected state with a route on screen; the turn card sits where its placement puts it."""
+  view = state()
+  view.viewport_width, view.navigation, view.reverse_driver_camera = VIEWPORT[0], NS(key='route'), False
+  placed = view.customization['layouts']['large']['nav_card']
+  rect = NS(x=placed['x'] + VIEWPORT[0] - 1860, y=placed['y'], width=560, height=195)
+  favorites.card_bounds = lambda _state: rect if card else None
+  return view, rect
+
+
+def tap_cancel(favorites, view):
+  x, y, size = favorites.cancel_bounds(view)
+  favorites.touch('down', x + size / 2, y + size / 2, view, 1)
+  favorites.touch('up', x + size / 2, y + size / 2, view, 1)
+
+
+def test_cancel_x_shows_only_while_navigating_and_beside_the_card(favorites):
+  view, rect = guiding(favorites)
+  idle = state()
+  idle.viewport_width = VIEWPORT[0]
+  assert favorites.cancel_bounds(idle) is None, 'no route, no destination: no X'
+  x, y, size = favorites.cancel_bounds(view)
+  assert size >= FAVORITE_ICON_SIZE
+  assert (x + size, y) == (rect.x + rect.width, rect.y + rect.height + 16) and y + size <= VIEWPORT[1]
+  assert favorites.hit(x + 1, y + 1, view) == CANCEL_ROUTE
+  assert favorites.hit(rect.x + 1, rect.y + 1, view) != CANCEL_ROUTE
+  view.alert.size = 'full'
+  assert favorites.cancel_bounds(view) is None
+  hidden, _ = guiding(favorites, card=False)
+  assert favorites.cancel_bounds(hidden) is None, 'a hidden turn card hides the X'
+
+
+def test_cancel_x_moves_above_a_low_card(favorites):
+  view, rect = guiding(favorites)
+  rect.y = VIEWPORT[1] - rect.height
+  x, y, size = favorites.cancel_bounds(view)
+  assert x + size == rect.x + rect.width and y + size + 16 == rect.y
+
+
+def test_cancel_x_ends_a_selected_destination_before_the_route_arrives(favorites):
+  view = state()
+  view.viewport_width = VIEWPORT[0]
+  tap(favorites, view, 'nav_home')
+  assert favorites.owner.read()['destination']['name'] == 'My home'
+  assert favorites.cancel_bounds(view) is not None, 'a destination alone shows the X'
+  tap_cancel(favorites, view)
+  assert favorites.owner.read()['destination'] is None
+  assert favorites.cancel_bounds(view) is None
+
+
+def test_cancel_x_ends_a_searched_place_the_document_does_not_name(favorites):
+  view, _ = guiding(favorites)
+  before = favorites.owner.read()
+  assert before['destination'] is None
+  tap_cancel(favorites, view)
+  after = favorites.owner.read()
+  assert after['revision'] != before['revision'] and after['destination'] is None
+
+
+@pytest.mark.parametrize('change', ['drag', 'offroad', 'alert', 'external_route', 'card_hidden'])
+def test_cancel_x_press_that_changes_does_not_clear(favorites, change):
+  view, _ = guiding(favorites)
+  favorites.owner.select(favorites.document['favorites'][0], 'initial', True)
+  favorites.refresh(force=True)
+  x, y, size = favorites.cancel_bounds(view)
+  x, y = x + size / 2, y + size / 2
+  favorites.touch('down', x, y, view, 1)
+  if change == 'drag':
+    favorites.touch('move', x + 40, y, view, 1)
+  elif change == 'offroad':
+    favorites.authorized = lambda: False
+  elif change == 'alert':
+    view.alert.size = 'full'
+  elif change == 'external_route':
+    favorites.owner.select(favorites.document['favorites'][1], favorites.document['revision'], True)
+  elif change == 'card_hidden':
+    favorites.card_bounds = lambda _state: None
+  expected = favorites.owner.read()
+  favorites.touch('up', x, y, view, 1)
+  assert favorites.owner.read() == expected
+
+
+def test_cancel_x_draws_only_while_shown():
+  rl = Mock()
+  control = ProjectionFavorites(lambda: True, Mock())
+  control.draw_cancel(rl, None)
+  control.document = {'revision': 'r', 'destination': None}
+  idle = state()
+  idle.viewport_width = VIEWPORT[0]
+  control.draw_cancel(rl, idle)
+  rl.draw_circle_v.assert_not_called()
+  control.document['destination'] = {'id': 'x'}
+  control.draw_cancel(rl, idle)
+  rl.draw_circle_v.assert_called_once()
+  assert rl.draw_line_ex.call_count == 2
+  rl.load_texture.assert_not_called()
 
 
 def test_head_unit_touch_packet_reaches_real_navigation_owner(favorites):

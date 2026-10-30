@@ -620,6 +620,8 @@ class ProjectionOnroad:
       if self._slc_input is not None:
         self._state = self._slc_input.present(self._state)
       self.onroad.render(self._state)
+      if self.favorites is not None:
+        self.favorites.draw_cancel(self.native.rl, self._state)
       self.fonts.draw('StarPilot', self.native.font_role.BRAND, 30, self.width - 210, self.height - 90)
     else:
       self._state = None

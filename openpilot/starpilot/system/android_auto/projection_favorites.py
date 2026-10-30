@@ -6,6 +6,10 @@ from openpilot.starpilot.system.android_auto.projection_layout import BOOKMARK_W
 from openpilot.starpilot.ui.onroad_customization import widget_order
 from openpilot.starpilot.ui.navigation_favorites_state import favorite_visible
 
+# The round X that ends the route sits under the turn card, the size of a Home/Work icon.
+CANCEL_ROUTE = 'nav_cancel'
+CANCEL_ROUTE_GAP = 16
+
 
 def destination_label(document):
   """"Home" or "Work" when the active destination is that favorite, else its place name; '' when not navigating."""
@@ -45,6 +49,9 @@ class ProjectionFavorites:
     if key == BOOKMARK_WIDGET:
       return ('bookmark',)
     doc = self.document
+    if key == CANCEL_ROUTE:
+      # Galaxy's clear: it also ends a searched (temporary) place, which the document does not name.
+      return ('end', doc['revision'], doc['destination']) if doc is not None else None
     if doc is None or key not in FAVORITE_WIDGETS:
       return None
     label = key.removeprefix('nav_')
@@ -56,7 +63,33 @@ class ProjectionFavorites:
       return None
     return ('end' if active else 'start', doc['revision'], place)
 
+  def cancel_bounds(self, state):
+    """The X's (x, y, size) while a route guides or a destination is set; None otherwise."""
+    if state.alert.size != 'none' or self.document is None:
+      return None
+    navigation = getattr(state, 'navigation', None)
+    if navigation is None and self.document['destination'] is None:
+      return None
+    rect = self.card_bounds(state) if self.card_bounds is not None and navigation is not None else None
+    if rect is not None:
+      right, top, bottom = rect.x + rect.width, rect.y, rect.y + rect.height
+    else:
+      # Guiding with the card hidden (driver camera, reverse): no X either. Before the first
+      # route arrives, the X waits where the card will open.
+      placed = state.customization['layouts']['large'].get('nav_card')
+      if navigation is not None or getattr(state, 'reverse_driver_camera', False) or (placed is not None and not placed['enabled']):
+        return None
+      x, top = (placed['x'], placed['y']) if placed is not None else (1230, 415)
+      right, bottom = x + getattr(state, 'viewport_width', 1860) - 1860 + 560, top + 195
+    size = FAVORITE_ICON_SIZE
+    # Under the card on its right edge, which a collapsed card keeps; above it when the card sits low.
+    if bottom + CANCEL_ROUTE_GAP + size <= 1080:
+      return right - size, bottom + CANCEL_ROUTE_GAP, size
+    return right - size, top - CANCEL_ROUTE_GAP - size, size
+
   def bounds(self, key, state):
+    if key == CANCEL_ROUTE:
+      return self.cancel_bounds(state)
     if state.alert.size != 'none':
       return None
     placements = state.customization['layouts']['large']
@@ -66,6 +99,11 @@ class ProjectionFavorites:
     return placed if placed is not None and placed['enabled'] else None
 
   def hit(self, x, y, state):
+    # Drawn over every widget, so it takes the touch first.
+    if (placed := self.cancel_bounds(state)) is not None:
+      px, py, size = placed
+      if px <= x < px + size and py <= y < py + size:
+        return CANCEL_ROUTE
     order = state.customization.get('widgetOrder', {}).get('large')
     if order is None:
       order = [*widget_order(state.customization, 'large'), *DISPLAY_WIDGETS]
@@ -128,6 +166,19 @@ class ProjectionFavorites:
     except (OSError, ValueError, PermissionError):
       self.error = 'Try again'
     self.refresh(force=True)
+
+  def draw_cancel(self, rl, state):
+    """The X, drawn like an active Home/Work icon's "End route"."""
+    placed = self.cancel_bounds(state) if state is not None else None
+    if placed is None:
+      return
+    x, y, size = placed
+    center = rl.Vector2(x + size / 2, y + size / 2)
+    tint = rl.Color(240, 150, 150, 255)
+    rl.draw_circle_v(center, size / 2, rl.Color(15, 13, 23, 225))
+    rl.draw_ring(center, size / 2 - 2.5, size / 2, 0, 360, 64, tint)
+    for start, end in (((35, 35), (75, 75)), ((35, 75), (75, 35))):
+      rl.draw_line_ex(rl.Vector2(x + start[0], y + start[1]), rl.Vector2(x + end[0], y + end[1]), 6, tint)
 
   def cancel(self):
     self._press = None
