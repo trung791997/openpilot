@@ -109,7 +109,7 @@ final class MapView extends View {
   // the cards' shapes and rims never move, so they are built once
   private final Path turnCard = card(CARD_L, TURN_T, CARD_R, TURN_B), tripCard = card(CARD_L, TRIP_T, TRIP_R, TRIP_B),
       songCard = card(CARD_L, SONG_T, SONG_R, SONG_B), turnRim = leftEnd(CARD_L, TURN_T, TURN_B),
-      songRim = rightEnd(SONG_R, SONG_T, SONG_B), logoWaves = spotifyWaves(SONG_X + LOGO_R, SONG_T + 10, LOGO_R);
+      logoWaves = spotifyWaves(SONG_X + LOGO_R, SONG_T + 10, LOGO_R);
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
@@ -854,24 +854,41 @@ final class MapView extends View {
   private static final float SONG_T = 160, SONG_B = 208, SONG_R = 250, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
   private static final float GLYPH_X = 218, GLYPH_R = 14;
   private static final int SPOTIFY = 0xff1ed760;
-  private static final float LOGO_R = 6;
+  private static final float LOGO_R = 7;
 
-  // Spotify's three sound waves across its green disc, widest on top, each tilted down to the right; the stroke
-  // is filled into a shape once so the frame only draws a path
+  // the three sound waves of Spotify's logo (simple-icons' 24-unit outline, disc centred at 12,12), cut out of its
+  // green disc: 0 move x y, 1 curve x1 y1 x2 y2 x y, 2 close
+  private static final float[] SPOTIFY_WAVES = {
+      0f, 17.521f, 17.34f, 1f, 17.281f, 17.699f, 16.861f, 17.82f, 16.5f, 17.58f, 1f, 13.68f, 15.84f, 10.14f,
+      15.479f, 5.939f, 16.439f, 1f, 5.521f, 16.561f, 5.16f, 16.26f, 5.04f, 15.9f, 1f, 4.92f, 15.479f, 5.22f,
+      15.12f, 5.58f, 15f, 1f, 10.14f, 13.979f, 14.1f, 14.4f, 17.22f, 16.32f, 1f, 17.64f, 16.5f, 17.699f,
+      16.979f, 17.521f, 17.34f, 2f, 0, 18.961f, 14.04f, 1f, 18.66f, 14.46f, 18.12f, 14.64f, 17.699f, 14.34f,
+      1f, 14.46f, 12.36f, 9.54f, 11.76f, 5.76f, 12.96f, 1f, 5.281f, 13.08f, 4.74f, 12.84f, 4.62f, 12.36f, 1f,
+      4.5f, 11.88f, 4.74f, 11.339f, 5.22f, 11.219f, 1f, 9.6f, 9.9f, 15f, 10.561f, 18.72f, 12.84f, 1f,
+      19.081f, 13.021f, 19.26f, 13.62f, 18.961f, 14.04f, 2f, 0, 19.081f, 10.68f, 1f, 15.24f, 8.4f, 8.82f,
+      8.16f, 5.16f, 9.301f, 1f, 4.56f, 9.48f, 3.96f, 9.12f, 3.78f, 8.58f, 1f, 3.6f, 7.979f, 3.96f, 7.38f,
+      4.5f, 7.199f, 1f, 8.76f, 5.939f, 15.78f, 6.179f, 20.221f, 8.82f, 1f, 20.76f, 9.12f, 20.94f, 9.84f,
+      20.64f, 10.38f, 1f, 20.341f, 10.801f, 19.62f, 10.979f, 19.081f, 10.68f, 2f};
+
   private static Path spotifyWaves(float cx, float cy, float r) {
     Path out = new Path();
-    float[][] w = {{-0.62f, -0.22f, -0.50f, 0.64f, 0.02f, 0.20f}, {-0.50f, 0.10f, -0.16f, 0.52f, 0.30f, 0.16f},
-                   {-0.40f, 0.40f, 0.16f, 0.42f, 0.56f, 0.13f}};  // x0, y0, control y, x1, y1, width (in r)
-    Paint stroke = new Paint();
-    stroke.setStyle(Paint.Style.STROKE);
-    stroke.setStrokeCap(Paint.Cap.ROUND);
-    for (float[] a : w) {
-      Path arc = new Path(), shape = new Path();
-      arc.moveTo(cx + a[0] * r, cy + a[1] * r);
-      arc.quadTo(cx, cy + a[2] * r, cx + a[3] * r, cy + a[4] * r);
-      stroke.setStrokeWidth(a[5] * r);
-      stroke.getFillPath(arc, shape);
-      out.addPath(shape);
+    float k = r / 12;
+    for (int i = 0; i < SPOTIFY_WAVES.length; ) {
+      float op = SPOTIFY_WAVES[i++];
+      if (op == 0) {
+        out.moveTo(cx + (SPOTIFY_WAVES[i] - 12) * k, cy + (SPOTIFY_WAVES[i + 1] - 12) * k);
+        i += 2;
+      } else if (op == 1) {
+        float[] c = new float[6];
+        for (int j = 0; j < 6; j += 2) {
+          c[j] = cx + (SPOTIFY_WAVES[i + j] - 12) * k;
+          c[j + 1] = cy + (SPOTIFY_WAVES[i + j + 1] - 12) * k;
+        }
+        out.cubicTo(c[0], c[1], c[2], c[3], c[4], c[5]);
+        i += 6;
+      } else {
+        out.close();
+      }
     }
     return out;
   }
@@ -986,10 +1003,6 @@ final class MapView extends View {
       canvas.restore();
     }
     canvas.drawPath(songCard, edge);
-    if (spotify) {
-      rim.setColor(SPOTIFY);
-      canvas.drawPath(songRim, rim);
-    }
 
     RectF art = new RectF(COVER_L, COVER_T, COVER_L + COVER_PX, COVER_T + COVER_PX);
     Bitmap cover = Feed.cover;
