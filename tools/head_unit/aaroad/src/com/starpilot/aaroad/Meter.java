@@ -17,10 +17,11 @@ import java.util.regex.Pattern;
 // not the RelativeLayout it waited for. Replaced by the continuous map (MapView, Layout B of the
 // 2026-10-29 mockup), which draws the distance, bar and street itself from Honda Hack's text views.
 //
-// The map is added behind navi_layout once per meter view, on the first nav text Honda Hack sets;
-// Honda Hack re-creates the meter when its settings change. Any failure leaves its layout untouched.
+// The map is added behind navi_layout once per meter view, on the first text Honda Hack sets inside it (the
+// speed and compass update with no route). It used to wait for a nav text, so the map only came up once a route
+// started (Peter 2026-10-30), although navi_layout shows with nav off too. Honda Hack re-creates the meter when
+// its settings change. Any failure leaves its layout untouched.
 final class Meter {
-  private static final String[] NAV_TEXT = {"seg_dist", "next_road", "cur_road", "route_remain"};
   private static final double FEET_PER_METER = 3.28084;
   private static final Pattern DIST = Pattern.compile("^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(ft|mi|m|km)\\b");
 
@@ -37,7 +38,6 @@ final class Meter {
       protected void afterHookedMethod(MethodHookParam param) {
         TextView v = (TextView) param.thisObject;
         try {
-          if (!navText(name(v))) return;
           ViewGroup navi = navi(v);
           if (navi == null || mapped.containsKey(navi)) return;
           mapped.put(navi, Boolean.TRUE);
@@ -53,14 +53,6 @@ final class Meter {
         }
       }
     });
-  }
-
-  private static boolean navText(String name) {
-    if (name == null) return false;
-    for (String n : NAV_TEXT) {
-      if (n.equals(name)) return true;
-    }
-    return false;
   }
 
   private static ViewGroup navi(View v) {
