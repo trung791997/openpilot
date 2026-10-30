@@ -52,6 +52,12 @@ final class MapView extends View {
   private static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
   private static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
   private static final float BOX_R = 430;          // display metres: covers the box from the car
+  // Road shapes are kept between frames (Peter 2026-10-30: building them was 46 of 158 ms a frame on the Tegra): each
+  // run is cut into pieces of at most CHUNK_M m, each a Path in world metres built with the scene, and a frame only
+  // picks the pieces in view and draws them through a matrix. A piece reaching nearer than NEAR_Z display metres is
+  // still turned and clipped point by point: the camera's horizon line behind the car is at z -264, and anything past
+  // it would come out on the wrong side of the screen.
+  private static final float CHUNK_M = 150, NEAR_Z = -200;
   private static final float FREE_X = 292;  // the meter's centre
   private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
   private static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
@@ -132,6 +138,22 @@ final class MapView extends View {
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
+  // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
+  private final Path[] stubWorld = {new Path(), new Path(), new Path(), new Path(), new Path()};
+  private final Path routeWorld = new Path();
+  private final Path[] routeWorlds = {routeWorld}, routeFrames = {routePath};
+  private final Matrix world = new Matrix();  // world metres to the car's frame, this frame
+  private final float[] worldV = new float[9], drawEN = new float[2], tickEN = new float[2];
+  // What the last frame showed, so the tick only asks for a frame when something on screen would change (Peter
+  // 2026-10-30): the car moved a pixel or turned, the zoom is still easing, or anything else drawn changed (stamp()).
+  private Scene drawnScene;
+  private float drawnE, drawnN;
+  private double drawnH, drawnK, drawnBase;
+  private boolean drawnMoving, zoomSettled, logDue, loggedCanvas;
+  private long drawnAt, drawnStamp;
+  private int checks, skipped;
+  private static final double MOVE_PX = 1, TURN_DEG = 0.4, ZOOM_EPS = 0.01;
+  private static final long REDRAW_MS = 1000;  // the clock, the trip countdown and the song ring tick on their own
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
   private volatile Scene scene;
@@ -165,6 +187,15 @@ final class MapView extends View {
     String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
+    Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
+  }
+
+  // The runs cut into pieces of at most CHUNK_M m (neighbours share their end point), each kept as a Path in world
+  // metres (x east, y north), with its points, its box (min e, min n, max e, max n) and its class.
+  private static final class Chunks {
+    Path[] path = new Path[0];
+    float[][] pts = new float[0][], box = new float[0][];
+    int[] cls = new int[0];
   }
 
   MapView(Context context, ViewGroup navi, String pkg) {
@@ -295,7 +326,9 @@ final class MapView extends View {
         setLive(shown && Feed.poseAt > 0 && now - Feed.poseAt < STALE_MS);
         if (live) {
           rebuildIfNeeded(now);
-          invalidate();
+          if (changed(now)) invalidate();
+          else skipped++;
+          if (++checks % 900 == 150) logDue = true;  // with the next frame's timing
         }
       } catch (Throwable t) {
         XposedBridge.log("aaroad: map tick failed: " + t);
@@ -339,12 +372,101 @@ final class MapView extends View {
     }
     live = on;
     lastFrame = 0;
+    drawnAt = 0;
     setVisibility(on ? VISIBLE : INVISIBLE);
     for (String n : HIDE) {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
     }
     XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden"));
+  }
+
+  // Whether a frame now would look different from the last one drawn (Peter 2026-10-30: most frames at a light or on
+  // a straight redrew the same picture). Reads the held pose, never sets it; at a standstill the car does not move
+  // on screen unless the fix wanders past HOLD_DRIFT.
+  private boolean changed(long now) {
+    Scene s = scene;
+    if (s == null) return false;
+    if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
+    double spd = Math.max(0, Feed.spd);
+    boolean moving = spd >= HOLD_SPEED;
+    if (moving != drawnMoving || Math.abs(zoomTarget(s, spd, now) / drawnBase - 1) > ZOOM_EPS) return true;
+    if (!moving) {
+      double[] held = heldW, w = Feed.world(Feed.lat, Feed.lon);
+      return held == null || Math.hypot(w[0] - held[0], w[1] - held[1]) * s.mpt > HOLD_DRIFT;
+    }
+    double h = pose(s, now, spd, false, tickEN);
+    double px = Math.hypot(tickEN[0] - drawnE, tickEN[1] - drawnN) * PX_DM / drawnK;
+    return px > MOVE_PX || Math.abs(Math.IEEEremainder(h - drawnH, 2 * Math.PI)) > Math.toRadians(TURN_DEG);
+  }
+
+  // Everything drawn besides the car's place and the zoom, folded into one number: the feed's state (mode, limit,
+  // trip, street, song), the cover, Honda Hack's distance, next street and arrow, the lane bar, a song line's scroll.
+  private long stamp(long now) {
+    long h = Feed.stateAt;
+    h = h * 31 + Double.doubleToLongBits(Feed.limitMs);
+    h = h * 31 + hash(Feed.mode);
+    h = h * 31 + hash(Feed.road);
+    h = h * 31 + hash(Feed.mediaStatus);
+    h = h * 31 + hash(Feed.mediaTitle);
+    h = h * 31 + Feed.coverId;
+    h = h * 31 + hash(onRoad);
+    View v = find("seg_dist");
+    if (v instanceof TextView) h = h * 31 + (v.getVisibility() == VISIBLE ? hash(((TextView) v).getText()) : 1);
+    v = find("next_road");
+    if (v instanceof TextView) h = h * 31 + (v.getVisibility() == VISIBLE ? hash(((TextView) v).getText()) : 1);
+    v = find("turn_icon");
+    if (v != null) {
+      Drawable d = v.isShown() && v instanceof ImageView ? ((ImageView) v).getDrawable() : null;
+      h = h * 31 + (v.isShown() ? 1 : 2);
+      if (d != null) h = (h * 31 + System.identityHashCode(d)) * 31 + d.getLevel();
+    }
+    v = find("drive_way_layout");
+    if (v != null) h = h * 31 + (v.isShown() ? 1 : 2);
+    return (h * 31 + titleRoll.shift(now)) * 31 + artistRoll.shift(now);
+  }
+
+  private static int hash(CharSequence c) {
+    if (c == null) return 0;
+    if (c instanceof String) return c.hashCode();
+    int h = 1;
+    for (int i = 0; i < c.length(); i++) h = h * 31 + c.charAt(i);
+    return h;
+  }
+
+  // Where the car is now: the last fix carried forward at speed spd, at most half a second; e, n into en, and the
+  // heading returned. hold (onDraw only): at a standstill the car keeps the heading it last moved with, stays put
+  // while the fix wanders within HOLD_DRIFT, and near the route points along it. The tick passes false: no change.
+  private double pose(Scene s, long now, double spd, boolean hold, float[] en) {
+    double h = Math.toRadians(Feed.hdg);
+    double ahead = Math.min(0.5, Math.max(0, (now - Feed.poseAt) / 1000.0)) * spd;
+    double[] w = Feed.world(Feed.lat, Feed.lon);
+    if (hold && spd >= HOLD_SPEED) {
+      heldH = h;
+      heldW = null;
+    } else if (hold) {
+      if (heldW == null || Math.hypot(w[0] - heldW[0], w[1] - heldW[1]) * s.mpt > HOLD_DRIFT) heldW = w;
+      w = heldW;
+      if (Double.isNaN(heldH)) heldH = h;  // parked since the map came up: the first heading, held
+      h = heldH;
+    }
+    en[0] = (float) ((w[0] - s.ax) * s.mpt + Math.sin(h) * ahead);
+    en[1] = (float) (-(w[1] - s.ay) * s.mpt + Math.cos(h) * ahead);
+    if (hold && spd < HOLD_SPEED) {
+      double r = routeHeading(s.route, en[0], en[1]);
+      if (!Double.isNaN(r)) h = r;
+    }
+    return h;
+  }
+
+  // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
+  // view closes in on the turn as the car reaches it and pulls back out once the next maneuver is far
+  private static double zoomTarget(Scene s, double spd, long now) {
+    double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
+    // with no route nothing lies far ahead to show, so the view stays close: about 12 s of road, 120 to 300 m
+    double rng = s.route.length == 0 ? Math.max(120, Math.min(300, spd * 12)) : Math.max(200, Math.min(600, spd * 20));
+    if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
+    return rng;
   }
 
   // ---- scene: the route and the roads near it, rebuilt off the UI thread when the car moves on or data arrives
@@ -446,7 +568,58 @@ final class MapView extends View {
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
     if (r != null) s.junctions = junctions(s.route, s.stubs);
+    s.routeChunks = chunks(s.route, null);
+    s.stubsChunks = chunks(s.stubs, s.stubsCls);
+    s.roadsChunks = chunks(s.roads, s.roadsCls);
     return s;
+  }
+
+  // Cuts each run into pieces of at most CHUNK_M m, a long segment into equal parts first; see Chunks. The pieces
+  // overlap only in the shared point, and the round caps there join them as the round join did.
+  private static Chunks chunks(float[][] runs, int[] cls) {
+    List<float[]> pts = new ArrayList<float[]>();
+    List<Integer> pcls = new ArrayList<Integer>();
+    Run run = new Run();
+    for (int r = 0; r < runs.length; r++) {
+      float[] p = runs[r];
+      if (p.length < 4) continue;
+      run.add(p[0], p[1]);
+      double len = 0;
+      for (int i = 2; i + 1 < p.length; i += 2) {
+        double pe = p[i - 2], pn = p[i - 1], de = p[i] - pe, dn = p[i + 1] - pn, d = Math.hypot(de, dn);
+        int parts = Math.max(1, (int) Math.ceil(d / CHUNK_M));
+        for (int j = 1; j <= parts; j++) {
+          if (len > 0 && len + d / parts > CHUNK_M) {
+            float[] c = run.take();
+            pts.add(c);
+            pcls.add(cls == null ? 0 : cls[r]);
+            run.add(c[c.length - 2], c[c.length - 1]);
+            len = 0;
+          }
+          if (j == parts) run.add(p[i], p[i + 1]);
+          else run.add(pe + de * j / parts, pn + dn * j / parts);
+          len += d / parts;
+        }
+      }
+      if (run.size >= 4) {
+        pts.add(run.take());
+        pcls.add(cls == null ? 0 : cls[r]);
+      }
+      run.size = 0;
+    }
+    Chunks out = new Chunks();
+    out.pts = pts.toArray(new float[0][]);
+    out.box = boxes(out.pts);
+    out.cls = ints(pcls);
+    out.path = new Path[out.pts.length];
+    for (int c = 0; c < out.pts.length; c++) {
+      float[] q = out.pts[c];
+      Path path = new Path();
+      path.moveTo(q[0], q[1]);
+      for (int i = 2; i + 1 < q.length; i += 2) path.lineTo(q[i], q[i + 1]);
+      out.path[c] = path;
+    }
+    return out;
   }
 
   // Where a side road crosses the route or ends on it (a T), merged within JUNCTION_MERGE m. A road running
@@ -812,35 +985,16 @@ final class MapView extends View {
     if (!live || s == null) return;
     long now = SystemClock.uptimeMillis();
     canvas.drawColor(0xff050505);
+    drawnStamp = stamp(now);  // before anything is read, so a change during the frame still asks for the next one
 
-    // where the car is now: the last fix carried forward at its speed, at most half a second
-    double h = Math.toRadians(Feed.hdg), spd = Math.max(0, Feed.spd);
-    double ahead = Math.min(0.5, Math.max(0, (now - Feed.poseAt) / 1000.0)) * spd;
-    double[] w = Feed.world(Feed.lat, Feed.lon);
-    if (spd >= HOLD_SPEED) {
-      heldH = h;
-      heldW = null;
-    } else {
-      if (heldW == null || Math.hypot(w[0] - heldW[0], w[1] - heldW[1]) * s.mpt > HOLD_DRIFT) heldW = w;
-      w = heldW;
-      if (Double.isNaN(heldH)) heldH = h;  // parked since the map came up: the first heading, held
-      h = heldH;
-    }
-    float ce = (float) ((w[0] - s.ax) * s.mpt + Math.sin(h) * ahead);
-    float cn = (float) (-(w[1] - s.ay) * s.mpt + Math.cos(h) * ahead);
-    if (spd < HOLD_SPEED) {
-      double r = routeHeading(s.route, ce, cn);
-      if (!Double.isNaN(r)) h = r;
-    }
+    double spd = Math.max(0, Feed.spd);
+    double h = pose(s, now, spd, true, drawEN);
+    float ce = drawEN[0], cn = drawEN[1];
     float ch = (float) Math.cos(h), sh = (float) Math.sin(h);
     long t0 = SystemClock.uptimeMillis();
 
-    // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
-    // view closes in on the turn as the car reaches it and pulls back out once the next maneuver is far
-    double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
-    // with no route nothing lies far ahead to show, so the view stays close: about 12 s of road, 120 to 300 m
-    double rng = s.route.length == 0 ? Math.max(120, Math.min(300, spd * 12)) : Math.max(200, Math.min(600, spd * 20));
-    if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
+    double rng = zoomTarget(s, spd, now);
+    drawnBase = rng;
     if (Feed.poseAt != spdAt) {
       double gap = (Feed.poseAt - spdAt) / 1000.0;
       if (lastSpd >= 0 && gap > 0 && gap < 1) decel += ((lastSpd - spd) / gap - decel) * Math.min(1, gap / 0.5);
@@ -858,16 +1012,37 @@ final class MapView extends View {
     lastFrame = now;
     k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
     float ik = (float) (1 / k), reach = (float) (BOX_R * k);
+    zoomSettled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS;
+    drawnScene = s;
+    drawnAt = now;
+    drawnE = ce;
+    drawnN = cn;
+    drawnH = h;
+    drawnK = k;
+    drawnMoving = spd >= HOLD_SPEED;
 
+    // world metres (e, n) to the car's frame: x = ((e - ce) ch - (n - cn) sh) / k, z = ((e - ce) sh + (n - cn) ch) / k
+    worldV[0] = ch * ik;
+    worldV[1] = -sh * ik;
+    worldV[2] = (-ce * ch + cn * sh) * ik;
+    worldV[3] = sh * ik;
+    worldV[4] = ch * ik;
+    worldV[5] = (-ce * sh - cn * ch) * ik;
+    worldV[6] = 0;
+    worldV[7] = 0;
+    worldV[8] = 1;
+    world.setValues(worldV);
     routePath.rewind();
+    routeWorld.rewind();
     carpetPath.rewind();
     for (Path p : stubPaths) p.rewind();
+    for (Path p : stubWorld) p.rewind();
     gridPath.rewind();
     gridLines(s, ce, cn, ch, sh, ik);
-    paths(s.route, s.routeBox, routePath, ce, cn, ch, sh, ik, reach);
-    if (s.route.length > 0) paths(s.stubs, s.stubsCls, s.stubsBox, ce, cn, ch, sh, ik, reach);
+    pieces(s.routeChunks, routeWorlds, routeFrames, ce, cn, ch, sh, ik);
+    if (s.route.length > 0) pieces(s.stubsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
     if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
-    else paths(s.roads, s.roadsCls, s.roadsBox, ce, cn, ch, sh, ik, reach);
+    else pieces(s.roadsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
 
     // with no route there is no turn text, so the map takes the whole meter: the car at its centre
     boolean free = s.route.length == 0;
@@ -883,20 +1058,12 @@ final class MapView extends View {
     canvas.drawPath(gridPath, grid);
     // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
     float floor = dm(MIN_ROAD_PX);
-    kerb.setStrokeWidth(Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
-    road.setStrokeWidth(Math.max(floor, ROUTE_M * ik));
     // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
-    for (int c : DRAW_ORDER) {
-      sideKerb.setStrokeWidth(Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
-      canvas.drawPath(stubPaths[c], sideKerb);
-    }
-    if (s.route.length > 0) canvas.drawPath(routePath, kerb);
-    for (int c : DRAW_ORDER) {
-      side.setStrokeWidth(Math.max(floor, ROAD_M[c] * ik));
-      canvas.drawPath(stubPaths[c], side);
-    }
+    for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+    if (s.route.length > 0) stroke(canvas, routeWorld, routePath, kerb, Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
+    for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
     if (s.route.length > 0) {
-      canvas.drawPath(routePath, road);
+      stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
       carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
       carpet.setColor(modeColor(Feed.mode));
       carpet.setAlpha(242);
@@ -928,11 +1095,54 @@ final class MapView extends View {
     pathSum += t1 - t0;
     strokeSum += t2 - t1;
     cardSum += ms - (t2 - now);
-    if (++drawCount % 900 == 150) XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
-        + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
-        + cardSum / drawCount + " cards)"
-        + (drawCount == 150 ? ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
-           + (isHardwareAccelerated() ? "GPU" : "software") : ""));
+    drawCount++;
+    // every 900 ticks, with how many of them found nothing new to draw
+    if (logDue) {
+      logDue = false;
+      XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
+          + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
+          + cardSum / drawCount + " cards), " + (checks > 0 ? 100L * skipped / checks : 0) + "% frames skipped"
+          + (loggedCanvas ? "" : ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
+             + (isHardwareAccelerated() ? "GPU" : "software")));
+      loggedCanvas = true;
+    }
+  }
+
+  // One road layer: this frame's kept pieces through the world matrix, where widths are k times larger since the
+  // matrix divides by k, then the near pieces built in the car's frame at the display width.
+  private void stroke(Canvas canvas, Path kept, Path near, Paint p, float width) {
+    if (!kept.isEmpty()) {
+      canvas.save();
+      canvas.concat(world);
+      p.setStrokeWidth((float) (width * k));
+      canvas.drawPath(kept, p);
+      canvas.restore();
+    }
+    if (!near.isEmpty()) {
+      p.setStrokeWidth(width);
+      canvas.drawPath(near, p);
+    }
+  }
+
+  // The kept pieces in view this frame into kept[class], the ones reaching too near the camera turned and clipped
+  // into near[class]. A piece is placed by the corners of its box in the car's frame.
+  private void pieces(Chunks pc, Path[] kept, Path[] near, float ce, float cn, float ch, float sh, float ik) {
+    for (int i = 0; i < pc.path.length; i++) {
+      float[] b = pc.box[i];
+      float x0 = Float.MAX_VALUE, x1 = -Float.MAX_VALUE, z0 = Float.MAX_VALUE, z1 = -Float.MAX_VALUE;
+      for (int c = 0; c < 4; c++) {
+        float de = b[c == 0 || c == 3 ? 0 : 2] - ce, dn = b[c < 2 ? 1 : 3] - cn;
+        float x = (de * ch - dn * sh) * ik, z = (de * sh + dn * ch) * ik;
+        x0 = Math.min(x0, x);
+        x1 = Math.max(x1, x);
+        z0 = Math.min(z0, z);
+        z1 = Math.max(z1, z);
+      }
+      if (x1 < BOX_X0 || x0 > BOX_X1 || z1 < BOX_Z0 || z0 > BOX_Z1) continue;
+      int c = pc.cls[i];
+      if (z0 >= NEAR_Z) kept[c].addPath(pc.path[i]);
+      else line(pc.pts[i], 0, near[c], ce, cn, ch, sh, ik, Float.NaN, 0);
+    }
   }
 
   private static int modeColor(String mode) {
@@ -955,23 +1165,6 @@ final class MapView extends View {
         segment(gridPath, (e0 * ch - n0 * sh) * ik, (e0 * sh + n0 * ch) * ik,
                 (e1 * ch - n1 * sh) * ik, (e1 * sh + n1 * ch) * ik, false);
       }
-    }
-  }
-
-  private void paths(float[][] runs, float[][] boxes, Path path, float ce, float cn, float ch, float sh, float ik, float reach) {
-    for (int r = 0; r < runs.length; r++) {
-      float[] b = boxes[r];
-      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
-      line(runs[r], 0, path, ce, cn, ch, sh, ik, Float.NaN, 0);
-    }
-  }
-
-  // tile roads into one path per class, each drawn at its own width
-  private void paths(float[][] runs, int[] cls, float[][] boxes, float ce, float cn, float ch, float sh, float ik, float reach) {
-    for (int r = 0; r < runs.length; r++) {
-      float[] b = boxes[r];
-      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
-      line(runs[r], 0, stubPaths[cls[r]], ce, cn, ch, sh, ik, Float.NaN, 0);
     }
   }
 
@@ -1223,6 +1416,7 @@ final class MapView extends View {
 
     String status = Feed.mediaStatus, title = Feed.mediaTitle;
     if (status != null && !TextUtils.isEmpty(title)) song(canvas, status, title);
+    else titleRoll.over = artistRoll.over = 0;
   }
 
   private void song(Canvas canvas, String status, String title) {
@@ -1263,6 +1457,7 @@ final class MapView extends View {
     titleRoll.draw(canvas, title, songTitle, SONG_X, SONG_T + 30, w);
     String artist = Feed.mediaArtist;
     if (!TextUtils.isEmpty(artist)) artistRoll.draw(canvas, artist.toUpperCase(Locale.US), songArtist, SONG_X, SONG_T + 44, w);
+    else artistRoll.over = 0;
 
     // pause bars while it plays, a play triangle while paused
     float cy = (SONG_T + SONG_B) / 2;
@@ -1349,18 +1544,28 @@ final class MapView extends View {
     private static final float PX_PER_S = 25;
     private String text;
     private long since;
+    float over;  // px the line is longer than its room as last drawn; 0 when it fits or is not shown
 
     void draw(Canvas canvas, String s, TextPaint p, float x, float y, float w) {
       long now = SystemClock.uptimeMillis();
       if (!s.equals(text)) { text = s; since = now; }
-      float over = p.measureText(s) - w;
+      over = p.measureText(s) - w;
       if (over <= 0) { canvas.drawText(s, x, y, p); return; }
-      long slide = (long) (over / PX_PER_S * 1000), t = (now - since) % (2 * HOLD_MS + slide);
-      float dx = t < HOLD_MS ? 0 : Math.min(over, (t - HOLD_MS) * PX_PER_S / 1000);
+      float dx = dx(now);
       canvas.save();
       canvas.clipRect(x, SONG_T, x + w, SONG_B);  // sideways only: capital accents reach up past the line
       canvas.drawText(s, x - dx, y, p);
       canvas.restore();
+    }
+
+    private float dx(long now) {
+      long slide = (long) (over / PX_PER_S * 1000), t = (now - since) % (2 * HOLD_MS + slide);
+      return t < HOLD_MS ? 0 : Math.min(over, (t - HOLD_MS) * PX_PER_S / 1000);
+    }
+
+    // how far the line is scrolled at `now`, in whole px, so the tick asks for a frame while it slides
+    int shift(long now) {
+      return over > 0 ? (int) dx(now) : 0;
     }
   }
 
