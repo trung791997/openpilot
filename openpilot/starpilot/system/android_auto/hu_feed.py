@@ -35,6 +35,7 @@ import socket
 import struct
 import threading
 import time
+import unicodedata
 import urllib.request
 import zlib
 from collections.abc import Callable
@@ -179,7 +180,9 @@ def media_of(song: dict | None) -> dict | None:
   if not isinstance(song, dict) or song.get('status') not in ('playing', 'paused') or not song.get('title'):
     return None
   url = song.get('artwork') or ''
-  return {'status': song['status'], 'title': str(song['title']), 'artist': str(song.get('artist') or ''),
+  # precomposed letters: a base letter plus loose accent marks (as some Vietnamese tags come) stacks badly on the
+  # head unit's old text renderer, while every precomposed Vietnamese letter is in the card's font
+  return {'status': song['status'], 'title': nfc(song['title']), 'artist': nfc(song.get('artist') or ''),
           'source': str(song.get('source') or ''), 'art': cover_id(url) if isinstance(url, str) else 0,
           'dur': song['durationMs'] if isinstance(song.get('durationMs'), int) and song['durationMs'] > 0 else 0}
 
@@ -194,6 +197,10 @@ def elapsed_of(song: dict | None, now_ms: float) -> int | None:
   except (KeyError, TypeError):
     return None
   return int(max(0, min(dur, value) if isinstance(dur, int) and dur > 0 else value))
+
+
+def nfc(text) -> str:
+  return unicodedata.normalize('NFC', str(text))
 
 
 def cover_id(url: str) -> int:

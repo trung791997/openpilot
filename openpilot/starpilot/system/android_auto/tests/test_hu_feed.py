@@ -235,6 +235,8 @@ def test_no_song_no_card():
   assert next(message for message, _ in sock.sent if message['t'] == 's')['media'] is None
   assert hf.media_of({**SONG, 'status': 'stopped'}) is None and hf.media_of({**SONG, 'title': ''}) is None
   assert hf.media_of({**SONG, 'artwork': ''})['art'] == 0
+  decomposed = 'Tha\u0301c Ni\u0303ng'  # a + combining acute, i + combining tilde
+  assert hf.media_of({**SONG, 'title': decomposed})['title'] == 'Th\u00e1c N\u0129ng'
 
 
 def test_the_song_moving_on_does_not_resend_the_state():
