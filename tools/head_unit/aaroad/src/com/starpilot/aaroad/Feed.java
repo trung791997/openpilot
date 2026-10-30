@@ -1,5 +1,7 @@
 package com.starpilot.aaroad;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.SystemClock;
@@ -26,7 +28,7 @@ import org.json.JSONObject;
 // The comma's cluster map feed (openpilot/starpilot/system/android_auto/hu_feed.py): it beacons once a second
 // on the phone hotspot; while the meter's nav page is up this answers with a hello naming the road tiles it
 // holds, and the comma sends openpilot's mode, the route, the car's position at 20 Hz and the missing tiles
-// to the hello's address. No hellos, no feed: the comma reads nothing and sends nothing when not navigating.
+// to the hello's address, and the song playing with its cover for the music card. No hellos, no feed: the comma reads nothing and sends nothing when not navigating.
 //
 // Runs in the process that draws the meter. If that process may not open network sockets, the datagrams go
 // through Relay in Honda Hack's process instead, over a local socket.
@@ -69,10 +71,18 @@ final class Feed {
   static volatile Route route;
   static final Map<String, Tile> tiles = new ConcurrentHashMap<String, Tile>();
   static volatile int tilesVersion;
+  // the song for the music card; mediaStatus null when nothing plays. mediaArt is the id of its cover (0: none),
+  // which matches coverId once the comma's 'a' datagrams have all come in.
+  static volatile String mediaStatus, mediaTitle, mediaArtist, mediaSource;
+  static volatile long mediaArt;
+  static volatile Bitmap cover;
+  static volatile long coverId;
 
   private static boolean started;
   private static final Map<String, String[]> tileParts = new HashMap<String, String[]>();
   private static final Map<Long, JSONArray[]> routeParts = new HashMap<Long, JSONArray[]>();
+  private static long coverPartsId;
+  private static String[] coverParts;
   private static volatile InetAddress comma;
   private static volatile long commaAt;
   private static boolean noNetworkLogged;
@@ -239,10 +249,18 @@ final class Feed {
       remainingSec = nav != null ? nav.optDouble("duration", -1) : -1;
       remainingMeters = nav != null ? nav.optDouble("remaining", -1) : -1;
       if (nav == null) route = null;
+      JSONObject media = m.optJSONObject("media");
+      mediaTitle = media != null ? media.optString("title") : null;
+      mediaArtist = media != null ? media.optString("artist") : null;
+      mediaSource = media != null ? media.optString("source") : null;
+      mediaArt = media != null ? media.optLong("art") : 0;
+      mediaStatus = media != null ? media.optString("status", "playing") : null;
     } else if (t.equals("r")) {
       onRoute(m);
     } else if (t.equals("m")) {
       onTile(m);
+    } else if (t.equals("a")) {
+      onCover(m);
     }
   }
 
@@ -298,6 +316,29 @@ final class Feed {
     tiles.put(key, tile);
     evict(tile);
     tilesVersion++;
+  }
+
+  // The album cover, a small JPEG in a few datagrams; only the latest one is kept.
+  private static void onCover(JSONObject m) throws Exception {
+    long id = m.getLong("id");
+    int i = m.getInt("i"), n = m.getInt("n");
+    if (n <= 0 || n > 64 || i < 0 || i >= n || (id == coverId && cover != null)) return;  // repeats every 30 s
+    if (coverParts == null || coverPartsId != id || coverParts.length != n) {
+      coverParts = new String[n];
+      coverPartsId = id;
+    }
+    coverParts[i] = m.getString("b");
+    ByteArrayOutputStream raw = new ByteArrayOutputStream();
+    for (String p : coverParts) {
+      if (p == null) return;
+      raw.write(Base64.decode(p, Base64.DEFAULT));
+    }
+    coverParts = null;
+    byte[] b = raw.toByteArray();
+    Bitmap bmp = BitmapFactory.decodeByteArray(b, 0, b.length);
+    if (bmp == null) return;
+    cover = bmp;
+    coverId = id;
   }
 
   // Keep the tiles nearest the car; the comma sends the 3 x 3 around it.

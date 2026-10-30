@@ -97,9 +97,11 @@ final class MapView extends View {
   private final TextPaint big = text(36, true, Color.WHITE), unit = text(18, false, 0xffc8d0dc), street = text(18, true, Color.WHITE),
       cardDim = text(15, false, 0xffaab4c8), cardRoad = text(20, true, Color.WHITE), trip = text(20, true, Color.WHITE),
       tripClock = text(17, false, 0xffd8dee8),
+      songFrom = text(11, false, 0xffaab4c8), songTitle = text(16, true, Color.WHITE), songArtist = text(13, false, 0xffaab4c8),
       sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
-  private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path();
+  private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path(), coverClip = new Path();
+  private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
@@ -798,6 +800,11 @@ final class MapView extends View {
   private static final float CARD_L = 36, CARD_R = 270, TURN_T = 12, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
   private static final float STRIP_W = 10, TEXT_X = 116;
   private static final int ACCENT = 0xff1a73ff, ACCENT_DIM = 0xff1a2e55;
+  // the music card under the trip card, with or without a route: the cover, where the sound comes from, the song,
+  // and whether it plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
+  private static final float SONG_T = 160, SONG_B = 208, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
+  private static final float GLYPH_X = 240, GLYPH_R = 14;
+  private static final int SPOTIFY = 0xff1ed760;
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -886,6 +893,59 @@ final class MapView extends View {
       fill.setColor(0x40ffffff);
       canvas.drawRect(div, TRIP_T + 10, div + 1, TRIP_B - 10, fill);
       canvas.drawText(at, (div + TRIP_R) / 2 - tripClock.measureText(at) / 2, mid + 6, tripClock);
+    }
+
+    String status = Feed.mediaStatus, title = Feed.mediaTitle;
+    if (status != null && !TextUtils.isEmpty(title)) song(canvas, status, title);
+  }
+
+  private void song(Canvas canvas, String status, String title) {
+    RectF card = new RectF(CARD_L, SONG_T, CARD_R, SONG_B);
+    canvas.drawRoundRect(card, 10, 10, panel);
+    canvas.drawRoundRect(card, 10, 10, edge);
+
+    RectF art = new RectF(COVER_L, COVER_T, COVER_L + COVER_PX, COVER_T + COVER_PX);
+    Bitmap cover = Feed.cover;
+    if (cover != null && Feed.mediaArt != 0 && Feed.coverId == Feed.mediaArt) {
+      coverClip.rewind();
+      coverClip.addRoundRect(art, 4, 4, Path.Direction.CW);
+      canvas.save();
+      canvas.clipPath(coverClip);
+      canvas.drawBitmap(cover, null, art, smooth);
+      canvas.restore();
+    } else {
+      fill.setColor(0xff2a2a2a);  // no cover (phone audio) or not here yet
+      canvas.drawRoundRect(art, 4, 4, fill);
+    }
+
+    float w = GLYPH_X - GLYPH_R - 6 - SONG_X;
+    String source = Feed.mediaSource, from = "spotify".equals(source) ? "Spotify" : "phone".equals(source) ? "Phone" : "";
+    float x = SONG_X;
+    if ("spotify".equals(source)) {
+      fill.setColor(SPOTIFY);
+      canvas.drawCircle(x + 3.5f, SONG_T + 10, 3.5f, fill);
+      x += 11;
+    }
+    if (!from.isEmpty()) canvas.drawText(fit(from, songFrom, w - (x - SONG_X)), x, SONG_T + 14, songFrom);
+    canvas.drawText(fit(title, songTitle, w), SONG_X, SONG_T + 30, songTitle);
+    String artist = Feed.mediaArtist;
+    if (!TextUtils.isEmpty(artist)) canvas.drawText(fit(artist.toUpperCase(Locale.US), songArtist, w), SONG_X, SONG_T + 44, songArtist);
+
+    // pause bars while it plays, a play triangle while paused
+    float cy = (SONG_T + SONG_B) / 2;
+    fill.setColor(0xff2e2e2e);
+    canvas.drawCircle(GLYPH_X, cy, GLYPH_R, fill);
+    fill.setColor(Color.WHITE);
+    if ("playing".equals(status)) {
+      canvas.drawRect(GLYPH_X - 5, cy - 6, GLYPH_X - 2, cy + 6, fill);
+      canvas.drawRect(GLYPH_X + 2, cy - 6, GLYPH_X + 5, cy + 6, fill);
+    } else {
+      Path play = new Path();
+      play.moveTo(GLYPH_X - 4, cy - 7);
+      play.lineTo(GLYPH_X + 7, cy);
+      play.lineTo(GLYPH_X - 4, cy + 7);
+      play.close();
+      canvas.drawPath(play, fill);
     }
   }
 

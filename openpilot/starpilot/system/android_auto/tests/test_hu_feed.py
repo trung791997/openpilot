@@ -31,13 +31,14 @@ def snapshot(**changes):
   return value
 
 
-def make(value=None, tiles=None):
+def make(value=None, tiles=None, cover=None):
   sock, now, reads = Sock(), [100.], []
   def read():
     reads.append(1)
     return value if value is not None else snapshot()
   feed = hf.HeadUnitFeed(read=read, sock=sock, broadcasts=lambda: ['10.122.0.255'], tiles=tiles or (lambda key: None),
-                         around=lambda lat, lon: ['1/1', '1/2'], clock=lambda: now[0], clock_ns=lambda: FIX[0] + 100_000_000)
+                         around=lambda lat, lon: ['1/1', '1/2'], clock=lambda: now[0], clock_ns=lambda: FIX[0] + 100_000_000,
+                         cover=cover or (lambda url: None))
   return feed, sock, now, reads
 
 
@@ -200,3 +201,130 @@ def test_sign_shows_the_accepted_limit_then_the_one_seen_and_nothing_unknown():
   assert hf.posted_limit(N(hasAccepted=True, acceptedSpeedLimit=13.4112, observationKind='unknown', speedLimit=0)) == 13.41
   assert hf.posted_limit(N(hasAccepted=False, acceptedSpeedLimit=0, observationKind='valid', speedLimit=15.6464)) == 15.65
   assert hf.posted_limit(N(hasAccepted=False, acceptedSpeedLimit=0, observationKind='unknown', speedLimit=15.6)) is None
+
+
+ART = 'https://i.scdn.co/image/ab67616d0000b273abc'
+SONG = {'source': 'spotify', 'status': 'playing', 'title': 'Another Life', 'artist': 'RÜFÜS DU SOL', 'album': 'Surrender',
+        'durationMs': 200000, 'position': {'ms': 1000, 'at': 1, 'speed': 1.0}, 'artwork': ART}
+
+
+def tick_and_wait(feed):
+  feed.tick()
+  if feed._cover_thread is not None:
+    feed._cover_thread.join(2)
+
+
+def test_the_song_rides_in_the_state_without_its_position():
+  feed, sock, now, _ = make(snapshot(media=dict(SONG)))
+  sock.hello()
+  feed.tick()
+  state = next(message for message, _ in sock.sent if message['t'] == 's')
+  assert state['media'] == {'status': 'playing', 'title': 'Another Life', 'artist': 'RÜFÜS DU SOL', 'source': 'spotify',
+                            'art': hf.cover_id(ART)}
+  assert hf.cover_id(ART) != 0 and hf.cover_id('') == 0
+
+
+def test_no_song_no_card():
+  feed, sock, now, _ = make()
+  sock.hello()
+  feed.tick()
+  assert next(message for message, _ in sock.sent if message['t'] == 's')['media'] is None
+  assert hf.media_of({**SONG, 'status': 'stopped'}) is None and hf.media_of({**SONG, 'title': ''}) is None
+  assert hf.media_of({**SONG, 'artwork': ''})['art'] == 0
+
+
+def test_the_song_moving_on_does_not_resend_the_state():
+  value = snapshot(media=dict(SONG))
+  feed, sock, now, _ = make(value)
+  sock.hello()
+  feed.tick()
+  sock.sent.clear()
+  value['media'] = {**SONG, 'position': {'ms': 5000, 'at': 2, 'speed': 1.0}}
+  now[0] += 0.05
+  feed.tick()
+  assert 's' not in sock.kinds()
+  value['media'] = {**SONG, 'status': 'paused'}
+  now[0] += 0.05
+  feed.tick()
+  assert 's' in sock.kinds()
+
+
+def test_cover_is_fetched_once_then_sent_in_chunks_and_repeated():
+  raw, fetched = bytes(range(256)) * 9, []   # 2304 bytes: three datagrams
+  def cover(url):
+    fetched.append(url)
+    return raw
+  feed, sock, now, _ = make(snapshot(media=dict(SONG)), cover=cover)
+  sock.hello()
+  tick_and_wait(feed)
+  now[0] += 0.05
+  feed.tick()
+  parts = [message for message, _ in sock.sent if message['t'] == 'a']
+  assert [p['i'] for p in parts] == [0, 1, 2] and {p['n'] for p in parts} == {3} and {p['id'] for p in parts} == {hf.cover_id(ART)}
+  assert b''.join(base64.b64decode(p['b']) for p in parts) == raw
+  assert max(len(json.dumps(message, separators=(',', ':'))) for message, _ in sock.sent) < 1472
+  sock.sent.clear()
+  now[0] += 1
+  sock.hello()
+  feed.tick()
+  assert 'a' not in sock.kinds()            # not again straight away
+  now[0] += hf.COVER_EVERY
+  sock.hello()
+  feed.tick()
+  assert sock.kinds().count('a') == 3       # every COVER_EVERY s while the song is on
+  assert fetched == [ART]                   # downloaded once
+  sock.sent.clear()
+  sock.hello(address=('10.122.0.21', 40000))
+  now[0] += 1
+  feed.tick()
+  assert sock.kinds(('10.122.0.21', 40000)).count('a') == 3   # a new head unit gets it at once
+
+
+def test_no_cover_sent_without_a_song_or_when_the_download_fails():
+  value = snapshot(media={**SONG, 'artwork': ''})
+  fetched = []
+  feed, sock, now, _ = make(value, cover=lambda url: fetched.append(url))
+  sock.hello()
+  tick_and_wait(feed)
+  assert not fetched and 'a' not in sock.kinds()
+  value['media'] = dict(SONG)
+  now[0] += 0.05
+  tick_and_wait(feed)
+  now[0] += 0.05
+  feed.tick()
+  assert fetched == [ART] and 'a' not in sock.kinds()   # the download came back empty
+
+
+def test_a_new_song_drops_the_old_cover():
+  value = snapshot(media=dict(SONG))
+  feed, sock, now, _ = make(value, cover=lambda url: url.encode())
+  sock.hello()
+  tick_and_wait(feed)
+  other = ART + 'def'
+  value['media'] = {**SONG, 'title': 'Innerbloom', 'artwork': other}
+  sock.sent.clear()
+  now[0] += 0.05
+  tick_and_wait(feed)
+  now[0] += 0.05
+  feed.tick()
+  parts = [message for message, _ in sock.sent if message['t'] == 'a']
+  assert {p['id'] for p in parts} == {hf.cover_id(other)} and base64.b64decode(parts[0]['b']) == other.encode()
+
+
+def test_fetch_cover_shrinks_to_a_small_jpeg(monkeypatch):
+  import io
+  from PIL import Image
+  big = io.BytesIO()
+  Image.new('RGB', (640, 640), (200, 80, 40)).save(big, 'JPEG')
+  class Response(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
+  monkeypatch.setattr(hf.urllib.request, 'urlopen', lambda url, timeout: Response(big.getvalue()))
+  out = hf.fetch_cover(ART)
+  assert out[:2] == b'\xff\xd8' and Image.open(io.BytesIO(out)).size == (hf.COVER_PX, hf.COVER_PX) and len(out) < 4000
+  monkeypatch.setattr(hf.urllib.request, 'urlopen', lambda url, timeout: Response(bytes(hf.COVER_MAX_BYTES + 1)))
+  assert hf.fetch_cover(ART) is None
+  def down(url, timeout):
+    raise OSError('no network')
+  monkeypatch.setattr(hf.urllib.request, 'urlopen', down)
+  assert hf.fetch_cover(ART) is None

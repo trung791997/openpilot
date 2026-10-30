@@ -14,11 +14,15 @@ unit asking, nothing about the drive leaves the comma and the sensors are never 
 Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
   b  beacon, broadcast, 1 Hz: {"port"}
   h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...]} road tiles it holds; no "have", no tiles
-  s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit"}; nav is null unless a route is guiding; limit (m/s)
-     is the speed limit openpilot goes by, or null
+  s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media"}; nav is null unless a route is guiding;
+     limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
+     {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art"}, art the id of its cover
+     (crc32 of the cover URL) or 0 without one. No position, so the state does not change every second.
   r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
   p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py)
+  a  album cover, once it is downloaded and every COVER_EVERY s while a song is on: {"id", "i", "n", "b": base64};
+     a COVER_PX square JPEG, id as media's art
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ import socket
 import struct
 import threading
 import time
+import urllib.request
 import zlib
 from collections.abc import Callable
 
@@ -51,6 +56,11 @@ NAV_HOLD_NS = 10_000_000_000
 MAX_CARRY = 1.             # s: past this a fix is too old to carry forward
 METERS_PER_DEG = 111_320.
 MODES = ('exp', 'chill', 'aol', 'off')
+MEDIA_EVERY = 1.           # s between reads of the song (a small file the soloist supervisor rewrites)
+COVER_EVERY = 30.          # s between repeats of the cover, so a head unit that missed a datagram gets it whole
+COVER_PX = 56              # the card draws it about 40 px square
+COVER_MAX_BYTES = 2 * 1024 * 1024
+COVER_TIMEOUT = 5.
 
 _IFF_UP, _IFF_BROADCAST = 0x1, 0x2
 _SIOCGIFFLAGS, _SIOCGIFADDR, _SIOCGIFBRDADDR = 0x8913, 0x8915, 0x8919
@@ -163,6 +173,36 @@ def tiles_around(lat: float, lon: float) -> list[str]:
   return [f'{cx + dx}/{cy + dy}' for dx, dy in ring]
 
 
+def media_of(song: dict | None) -> dict | None:
+  """The song as the cluster's music card shows it: what is playing, from where, and which cover goes with it."""
+  if not isinstance(song, dict) or song.get('status') not in ('playing', 'paused') or not song.get('title'):
+    return None
+  url = song.get('artwork') or ''
+  return {'status': song['status'], 'title': str(song['title']), 'artist': str(song.get('artist') or ''),
+          'source': str(song.get('source') or ''), 'art': cover_id(url) if isinstance(url, str) else 0}
+
+
+def cover_id(url: str) -> int:
+  return zlib.crc32(url.encode()) & 0xffffffff if url else 0
+
+
+def fetch_cover(url: str) -> bytes | None:
+  """The cover at url (now_playing has already held it to Spotify's image hosts), as a small JPEG; None if it fails."""
+  import io
+  from PIL import Image
+  try:
+    with urllib.request.urlopen(url, timeout=COVER_TIMEOUT) as response:
+      raw = response.read(COVER_MAX_BYTES + 1)
+    if len(raw) > COVER_MAX_BYTES:
+      return None
+    image = Image.open(io.BytesIO(raw)).convert('RGB').resize((COVER_PX, COVER_PX), Image.LANCZOS)
+    out = io.BytesIO()
+    image.save(out, 'JPEG', quality=80)
+    return out.getvalue()
+  except Exception:
+    return None
+
+
 class CerealReader:
   """Everything the feed sends, from cereal; opened on the first hello so an idle feed costs no sockets."""
   SERVICES = ('selfdriveState', 'carControl', 'carState', 'aolAxisState', 'deviceMotion', 'starpilotNavigation',
@@ -174,12 +214,29 @@ class CerealReader:
     self.sm = messaging.SubMaster(list(self.SERVICES))
     self.params = Params()
     self._metric = (-math.inf, False)
+    self._media = (-math.inf, None)
+    self._layout = None
     self._heading = HeadingFilter()
 
   def metric(self, now: float) -> bool:
     if now - self._metric[0] >= 5.:
       self._metric = (now, self.params.get_bool('IsMetric'))
     return self._metric[1]
+
+  def media(self, now: float) -> dict | None:
+    """The soloist's now-playing snapshot, read once every MEDIA_EVERY s; None without a song or on any error."""
+    if now - self._media[0] >= MEDIA_EVERY:
+      song = None
+      try:
+        from openpilot.starpilot.soloist import now_playing
+        if self._layout is None:
+          from openpilot.starpilot.soloist.paths import Layout
+          self._layout = Layout.default()
+        song = now_playing.read(self._layout.status)
+      except Exception:
+        song = None  # no music card rather than no map
+      self._media = (now, song)
+    return self._media[1]
 
   def __call__(self) -> dict:
     from openpilot.starpilot.aol.runtime import current_axis
@@ -194,7 +251,8 @@ class CerealReader:
                    bool(sm.seen['carControl'] and control.latActive),
                    bool(axis.nativeAcknowledged and axis.desiredLongitudinal) if axis is not None else None)
     value = {'mode': mode, 'metric': self.metric(time.monotonic()), 'nav': None, 'route': None, 'fix': None,
-             'speed': float(sm['carState'].vEgo) if sm.seen['carState'] else 0., 'yaw_rate': 0.}
+             'speed': float(sm['carState'].vEgo) if sm.seen['carState'] else 0., 'yaw_rate': 0.,
+             'media': self.media(time.monotonic())}
     motion = sm['deviceMotion'].angularVelocityDevice
     if sm.seen['deviceMotion'] and motion.valid and abs(motion.z) < 1.:
       value['yaw_rate'] = math.degrees(motion.z)  # device z points down: + is a right turn, as compass heading runs
@@ -239,8 +297,10 @@ class HeadUnitFeed:
   def __init__(self, read: Callable[[], dict] | None = None, sock: socket.socket | None = None,
                broadcasts: Callable[[], list[str]] = broadcast_addresses, tiles: Callable[[str], bytes | None] | None = None,
                around: Callable[[float, float], list[str]] = tiles_around, clock: Callable[[], float] = time.monotonic,
-               clock_ns: Callable[[], int] = time.monotonic_ns, log: Callable[..., None] = lambda *_, **__: None):
+               clock_ns: Callable[[], int] = time.monotonic_ns, log: Callable[..., None] = lambda *_, **__: None,
+               cover: Callable[[str], bytes | None] | None = None):
     self._read, self.broadcasts, self._tiles, self.around = read, broadcasts, tiles, around
+    self._cover = cover or fetch_cover
     self.clock, self.clock_ns, self.log = clock, clock_ns, log
     if sock is None:
       sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -258,6 +318,11 @@ class HeadUnitFeed:
     self.sending: list[bytes] = []  # datagrams of the tile on its way
     self.tile_sent: dict[str, float] = {}
     self.last_tile_scan = -math.inf
+    self.cover_url = ''                          # the cover asked for last
+    self.cover: tuple[int, bytes] | None = None  # (art id, JPEG), set by the download thread
+    self.sent_cover: int | None = None
+    self.last_cover = -math.inf
+    self._cover_thread: threading.Thread | None = None
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
 
@@ -306,6 +371,7 @@ class HeadUnitFeed:
         self.log('hu_feed_peer', port=address[1])
         self.peer, self.sent_state, self.sent_route, self.last_route = address, None, None, -math.inf
         self.sending, self.tile_sent = [], {}
+        self.sent_cover, self.last_cover = None, -math.inf
       self.peer_seen = now
       have = message.get('have')
       self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
@@ -326,10 +392,15 @@ class HeadUnitFeed:
     if self._read is None:
       self._read = CerealReader()
     value = self._read()
-    state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav'], 'limit': value.get('limit')}
+    song = value.get('media')
+    media = media_of(song)
+    state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav'], 'limit': value.get('limit'),
+             'media': media}
     if state != self.sent_state or now - self.last_state >= STATE_EVERY:
       self._send('s', state)
       self.sent_state, self.last_state = state, now
+    if media is not None and media['art']:
+      self.send_cover(song['artwork'], media['art'], now)
     route = value.get('route')
     if route is None:
       self.sent_route = None  # the head unit drops the route with the nav, so it goes again the moment nav is back
@@ -369,3 +440,28 @@ class HeadUnitFeed:
       except OSError:
         pass
     del self.sending[:TILE_CHUNKS_PER_TICK]
+
+  def send_cover(self, url: str, art: int, now: float) -> None:
+    """Downloads the cover once per URL, off this thread (up to COVER_TIMEOUT s), then sends it when it is ready
+    and again every COVER_EVERY s."""
+    if url != self.cover_url:
+      self.cover_url = url
+      self._cover_thread = threading.Thread(target=self._fetch_cover, args=(url, art), name='aa-hu-cover', daemon=True)
+      self._cover_thread.start()
+    cover = self.cover
+    if cover is None or cover[0] != art or (cover[0] == self.sent_cover and now - self.last_cover < COVER_EVERY):
+      return
+    raw = cover[1]
+    parts = [base64.b64encode(raw[i:i + TILE_CHUNK]).decode() for i in range(0, len(raw), TILE_CHUNK)]
+    for i, part in enumerate(parts):
+      self._send('a', {'id': art, 'i': i, 'n': len(parts), 'b': part})
+    self.sent_cover, self.last_cover = art, now
+
+  def _fetch_cover(self, url: str, art: int) -> None:
+    try:
+      raw = self._cover(url)
+    except Exception as error:
+      self.log('hu_feed_cover_error', error=f'{type(error).__name__}: {error}')
+      return
+    if raw and url == self.cover_url:  # still the song on
+      self.cover = (art, raw)
