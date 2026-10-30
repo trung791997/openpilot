@@ -240,7 +240,7 @@ final class GlProbe {
         + (dpy == null ? ", centre px " + (px.get((H / 2 * W + W / 2) * 4) & 0xff) : "") + ", glError " + err;
   }
 
-  private static String processName() {
+  static String processName() {
     try {
       java.io.FileInputStream in = new java.io.FileInputStream("/proc/self/cmdline");
       byte[] b = new byte[256];
@@ -258,7 +258,7 @@ final class GlProbe {
     return String.valueOf(Math.round(ns / 1e5) / 10.0);
   }
 
-  private static int program(String vs, String fs) {
+  static int program(String vs, String fs) {
     int v = shader(GLES20.GL_VERTEX_SHADER, vs), f = shader(GLES20.GL_FRAGMENT_SHADER, fs);
     if (v == 0 || f == 0) return 0;
     int p = GLES20.glCreateProgram();
