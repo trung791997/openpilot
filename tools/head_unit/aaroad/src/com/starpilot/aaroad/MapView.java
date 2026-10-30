@@ -1154,6 +1154,10 @@ final class MapView extends View {
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     View icon = find("turn_icon");
+    // the next turn's street, Android Auto's next_road. It read the street tag's name (the road the car is on) from
+    // bdc227553 on, so the card named the current road instead of the turn (Peter's photo 2026-10-30)
+    TextView next = (TextView) find("next_road");
+    CharSequence turnRoad = next != null && next.getVisibility() == VISIBLE ? next.getText() : null;
     if (!free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()))) {
       canvas.drawPath(turnCard, panel);
       double ft = TextUtils.isEmpty(d) ? -1 : Meter.feet(d);
@@ -1197,7 +1201,7 @@ final class MapView extends View {
         canvas.drawText(num, TEXT_X, 62, big);
         canvas.drawText(u, TEXT_X + big.measureText(num) + 5, 62, unit);
       }
-      if (!TextUtils.isEmpty(name)) canvas.drawText(fit(name.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 68 : 86, cardRoad);
+      if (!TextUtils.isEmpty(turnRoad)) canvas.drawText(fit(turnRoad.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 68 : 86, cardRoad);
     }
 
     // the trip card: time and distance left, a divider, the arrival time
