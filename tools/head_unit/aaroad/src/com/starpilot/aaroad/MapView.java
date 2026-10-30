@@ -99,7 +99,7 @@ final class MapView extends View {
   private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
-      rim = new Paint(), ring = new Paint(), blueGlow = new Paint(), greenGlow = new Paint();
+      rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint();
   // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
   private final TextPaint big = text(36, inter(true), Color.WHITE), unit = text(17, inter(false), 0xffc8d0dc),
       street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
@@ -177,7 +177,7 @@ final class MapView extends View {
     // gradients, not blur: BlurMaskFilter and shadow layers are too slow for the Tegra's software canvas. Opaque,
     // blended into the black card by hand: inside the card's clip the car drew see-through ends solid (2026-10-30)
     float w = CARD_R - CARD_L;
-    blueGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0xff0a2e66, 0xff000000},
+    turnGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0xff2a2a2a, 0xff000000},
                                           new float[] {0, 1}, Shader.TileMode.CLAMP));
     greenGlow.setShader(new LinearGradient(SONG_R, 0, SONG_R - 0.35f * (SONG_R - CARD_L), 0, new int[] {0xff0a4820, 0xff000000}, new float[] {0, 1}, Shader.TileMode.CLAMP));
     street.setTextAlign(Paint.Align.CENTER);
@@ -827,7 +827,7 @@ final class MapView extends View {
   private static final float STRIP_W = 10, TEXT_X = 116;
   // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
   private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
-  private static final int ACCENT = 0xff1a73ff, ACCENT_DIM = 0xff1a2e55;
+  private static final int ACCENT = 0xfff2f2f2, ACCENT_DIM = 0xff3a3a3a;
   // the music card under the trip card, with or without a route: the cover, where the sound comes from, the song,
   // and whether it plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
   // as narrow as the trip card: at 270 it touched the car without a route (Peter 2026-10-30)
@@ -919,7 +919,7 @@ final class MapView extends View {
       float lit = ft < 0 || ft > 500 ? TURN_B : TURN_B - (float) (ft / 500) * (TURN_B - TURN_T);
       canvas.save();
       canvas.clipPath(turnCard);
-      canvas.drawRect(CARD_L, TURN_T, CARD_L + 0.4f * (CARD_R - CARD_L), TURN_B, blueGlow);  // a soft blue from the left
+      canvas.drawRect(CARD_L, TURN_T, CARD_L + 0.4f * (CARD_R - CARD_L), TURN_B, turnGlow);  // a soft light from the left
       fill.setColor(ACCENT_DIM);
       canvas.drawRect(CARD_L, TURN_T, CARD_L + STRIP_W, lit, fill);
       fill.setColor(ACCENT);
@@ -936,12 +936,12 @@ final class MapView extends View {
       // a brighter rim on the strip's curve, lit as far as the strip is
       canvas.save();
       canvas.clipPath(rect(CARD_L - 2, TURN_T - 2, CARD_L + RADIUS + 2, lit));
-      rim.setColor(0xff2c4f8f);
+      rim.setColor(0xff4a4a4a);
       canvas.drawPath(turnRim, rim);
       canvas.restore();
       canvas.save();
       canvas.clipPath(rect(CARD_L - 2, lit, CARD_L + RADIUS + 2, TURN_B + 2));
-      rim.setColor(0xff5c9dff);
+      rim.setColor(0xffffffff);
       canvas.drawPath(turnRim, rim);
       canvas.restore();
 
