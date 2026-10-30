@@ -65,7 +65,7 @@ final class Feed {
   static volatile long stateAt;    // when turnMeters was current
   static volatile String mode = "off";
   static volatile boolean metric;
-  static volatile double turnMeters = -1, limitMs = -1, remainingSec = -1;
+  static volatile double turnMeters = -1, limitMs = -1, remainingSec = -1, remainingMeters = -1;
   static volatile Route route;
   static final Map<String, Tile> tiles = new ConcurrentHashMap<String, Tile>();
   static volatile int tilesVersion;
@@ -237,6 +237,7 @@ final class Feed {
       turnMeters = nav != null ? nav.optDouble("distance", -1) : -1;
       limitMs = nav != null && !nav.isNull("limit") ? nav.optDouble("limit", -1) : m.isNull("limit") ? -1 : m.optDouble("limit", -1);
       remainingSec = nav != null ? nav.optDouble("duration", -1) : -1;
+      remainingMeters = nav != null ? nav.optDouble("remaining", -1) : -1;
       if (nav == null) route = null;
     } else if (t.equals("r")) {
       onRoute(m);

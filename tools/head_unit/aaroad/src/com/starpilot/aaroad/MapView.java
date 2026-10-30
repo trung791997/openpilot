@@ -81,7 +81,7 @@ final class MapView extends View {
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout"};
   // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place)
-  private static final int ICON = 60, ICON_PAD = 4, ICON_LEFT = 60, ICON_TOP = 11;
+  private static final int ICON = 60, ICON_PAD = 4, ICON_LEFT = 48, ICON_TOP = 24;
 
   static volatile String modulePath;
   private static Bitmap car;
@@ -93,9 +93,11 @@ final class MapView extends View {
   private final Matrix camera = new Matrix();
   private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
-      fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint();
-  private final TextPaint big = text(36, true, Color.WHITE), unit = text(16, false, 0xffcccccc), street = text(24, true, Color.WHITE),
-      eta = text(25, true, Color.WHITE), etaDim = text(17, false, 0xffb0b0b0), etaClock = text(23, true, 0xffe6e6e6), sign = text(8.5f, true, 0xff111111),
+      fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint();
+  private final TextPaint big = text(36, true, Color.WHITE), unit = text(18, false, 0xffc8d0dc), street = text(18, true, Color.WHITE),
+      cardDim = text(15, false, 0xffaab4c8), cardRoad = text(20, true, Color.WHITE), trip = text(20, true, Color.WHITE),
+      tripClock = text(17, false, 0xffd8dee8),
+      sign = text(8.5f, true, 0xff111111),
       signBig = text(23, true, 0xff111111);
   private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path();
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
@@ -145,8 +147,11 @@ final class MapView extends View {
     fog.setShader(new LinearGradient(0, 0, 0, 78, new int[] {0xff050505, 0xe6050505, 0x00050505},
                                      new float[] {0, 0.6f, 1}, Shader.TileMode.CLAMP));
     panel.setAntiAlias(true);
-    panel.setColor(0xff15171c);
-    big.setTextAlign(Paint.Align.RIGHT);
+    panel.setColor(0xff000000);  // black as the rest of the dash (Peter 2026-10-30)
+    edge.setAntiAlias(true);
+    edge.setStyle(Paint.Style.STROKE);
+    edge.setStrokeWidth(1);
+    edge.setColor(0x38ffffff);
     street.setTextAlign(Paint.Align.CENTER);
     sign.setTextAlign(Paint.Align.CENTER);
     signBig.setTextAlign(Paint.Align.CENTER);
@@ -784,15 +789,15 @@ final class MapView extends View {
     return true;
   }
 
-  // ---- Layout B text: street on top, speed limit; in the left column, stacked, the distance and bar over the time
-  // left over the arrival time
+  // ---- Peter's mockup (2026-10-30, second version): a turn card and a trip card down the left, the next street as
+  // a tag over the map, the speed limit at the right, all on the dash's black. No close button: nothing on the
+  // cluster takes a touch.
 
-  private static final float COL = 150, COL_X = 76;  // left column width, and the centre line its text stacks on
-  // the turn card: the bar 6 px in from its left (left of x 36 the tach needle rests on it at idle), the arrow
-  // (ICON_LEFT) after it, the distance centred in what is left; it reaches past the column over the map's fog
-  private static final float CARD_L = 36, CARD_T = 8, CARD_R = 244, CARD_B = 74, CARD_TEXT = 122;
-  private static final float BAR_X = 42, BAR_W = 14, MIN_Y = 160, CLOCK_Y = 207;
-  // the bar starts 40 px in: left of that the tach needle rests on it at idle (Peter's photo 2026-10-29)
+  private static final float COL = 150;  // the dark band behind the cards
+  // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
+  private static final float CARD_L = 36, CARD_R = 270, TURN_T = 12, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
+  private static final float STRIP_W = 10, TEXT_X = 116;
+  private static final int ACCENT = 0xff1a73ff, ACCENT_DIM = 0xff1a2e55;
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -804,13 +809,24 @@ final class MapView extends View {
     TextView road = (TextView) find("next_road");
     CharSequence name = road != null && road.getVisibility() == VISIBLE ? road.getText() : null;
     if (!TextUtils.isEmpty(name)) {
-      // centred over the map, between the column and the sign
+      // a tag centred over the map between the cards and the sign, pointing down at the road
       float left = free ? 0 : CARD_R, right = hasSign ? 466 : 584;
-      float maxw = Math.min(right - left - 16, free && hasSign ? 356 : 400), size = 24;
+      float maxw = Math.min(right - left - 40, 300), size = 18;
       float cx = free && hasSign ? 292 : (left + right) / 2;
       street.setTextSize(size);
-      while (street.measureText(name.toString()) > maxw && size > 17) street.setTextSize(--size);
-      canvas.drawText(TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString(), cx, streetY, street);
+      while (street.measureText(name.toString()) > maxw && size > 14) street.setTextSize(--size);
+      String n = TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString();
+      float w = street.measureText(n) + 24, t = streetY - 19, b = streetY + 7;
+      RectF r = new RectF(cx - w / 2, t, cx + w / 2, b);
+      Path tip = new Path();
+      tip.moveTo(cx - 7, b - 1);
+      tip.lineTo(cx, b + 7);
+      tip.lineTo(cx + 7, b - 1);
+      canvas.drawRoundRect(r, 7, 7, panel);
+      canvas.drawRoundRect(r, 7, 7, edge);
+      canvas.drawPath(tip, panel);  // over the edge where the pointer leaves the tag
+      canvas.drawPath(tip, edge);
+      canvas.drawText(n, cx, streetY, street);
     }
 
     if (hasSign) {
@@ -818,54 +834,80 @@ final class MapView extends View {
       speedSign(canvas, String.valueOf(Math.round(v)), 474, 30, 40, 52);
     }
 
-    // the turn card across the top left, one wide box: the distance bar at its left edge, the stock arrow, then
-    // the distance (Peter 2026-10-29: the arrow floating over the map looked out of place, and a box stacked in
-    // the column looked heavy); under it the time left, and the arrival time on the map's bottom edge, level
-    // with the stock row's text beside it
+    // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did,
+    // the stock arrow (ICON_LEFT/TOP put it here), the distance, and the road
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     View icon = find("turn_icon");
     if (!free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()))) {
-      canvas.drawRoundRect(new RectF(CARD_L, CARD_T, CARD_R, CARD_B), 10, 10, panel);
-    }
-    if (!TextUtils.isEmpty(d)) {
-      String t = d.toString().trim();
-      int sp = t.lastIndexOf(' ');
-      String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
-      double ft = Meter.feet(d);
-      if (ft >= 0 && ft <= 500) bar(canvas, (int) Math.round(ft / 50), BAR_X, CARD_T + 4, BAR_W, CARD_B - CARD_T - 8);
-      float size = 36;  // a long distance shrinks to fit
-      big.setTextSize(size);
-      while (big.measureText(num) + 4 + unit.measureText(u) > CARD_R - CARD_TEXT - 8 && size > 24) big.setTextSize(--size);
-      float nw = big.measureText(num), x = (CARD_TEXT + CARD_R - nw - 4 - unit.measureText(u)) / 2 + nw;
-      float base = (CARD_T + CARD_B) / 2 + 13;
-      canvas.drawText(num, x, base, big);
-      canvas.drawText(u, x + 4, base, unit);
+      RectF card = new RectF(CARD_L, TURN_T, CARD_R, TURN_B);
+      canvas.drawRoundRect(card, 10, 10, panel);
+      double ft = TextUtils.isEmpty(d) ? -1 : Meter.feet(d);
+      float lit = ft < 0 || ft > 500 ? TURN_B : TURN_B - (float) (ft / 500) * (TURN_B - TURN_T);
+      canvas.save();
+      canvas.clipPath(rect(CARD_L, TURN_T, CARD_L + STRIP_W, lit));
+      fill.setColor(ACCENT_DIM);
+      canvas.drawRoundRect(card, 10, 10, fill);
+      canvas.restore();
+      canvas.save();
+      canvas.clipPath(rect(CARD_L, lit, CARD_L + STRIP_W, TURN_B));
+      fill.setColor(ACCENT);
+      canvas.drawRoundRect(card, 10, 10, fill);
+      canvas.restore();
+      canvas.drawRoundRect(card, 10, 10, edge);
+
+      float textW = CARD_R - TEXT_X - 10;
+      if (!TextUtils.isEmpty(d)) {
+        String t = d.toString().trim();
+        int sp = t.lastIndexOf(' ');
+        String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
+        float size = 36;  // a long distance shrinks to fit
+        big.setTextSize(size);
+        while (big.measureText(num) + 5 + unit.measureText(u) > textW && size > 24) big.setTextSize(--size);
+        canvas.drawText(num, TEXT_X, 50, big);
+        canvas.drawText(u, TEXT_X + big.measureText(num) + 5, 50, unit);
+      }
+      if (!TextUtils.isEmpty(name)) canvas.drawText(fit(name.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 61 : 82, cardRoad);
     }
 
-    if (Feed.remainingSec >= 0) {
+    // the trip card: time and distance left, a divider, the arrival time
+    if (!free && Feed.remainingSec >= 0) {
+      RectF card = new RectF(CARD_L, TRIP_T, TRIP_R, TRIP_B);
+      canvas.drawRoundRect(card, 10, 10, panel);
+      canvas.drawRoundRect(card, 10, 10, edge);
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
       long min = Math.round(left / 60);
-      String n = min >= 60 ? (min / 60) + " h " + (min % 60) : String.valueOf(min);
+      String n = min >= 60 ? (min / 60) + " h " + (min % 60) + " min" : min + " min";
       String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
-      canvas.drawText(at, COL_X - etaClock.measureText(at) / 2, CLOCK_Y, etaClock);
-      float x = COL_X - (eta.measureText(n) + etaDim.measureText(" min")) / 2;
-      canvas.drawText(n, x, MIN_Y, eta);
-      canvas.drawText(" min", x + eta.measureText(n), MIN_Y, etaDim);
+      float div = CARD_L + 112, mid = (TRIP_T + TRIP_B) / 2;
+      boolean far = Feed.remainingMeters >= 0;
+      canvas.drawText(fit(n, trip, div - CARD_L - 22), CARD_L + 14, far ? TRIP_T + 22 : mid + 7, trip);
+      if (far) canvas.drawText(away(Feed.remainingMeters, Feed.metric), CARD_L + 14, TRIP_T + 41, cardDim);
+      fill.setColor(0x40ffffff);
+      canvas.drawRect(div, TRIP_T + 10, div + 1, TRIP_B - 10, fill);
+      canvas.drawText(at, (div + TRIP_R) / 2 - tripClock.measureText(at) / 2, mid + 6, tripClock);
     }
   }
 
-  // Stock look: white end caps, ten stacked segments lit white from the bottom, one per 50 ft left.
-  private void bar(Canvas canvas, int lit, float x, float y, float w, float h) {
-    fill.setColor(Color.WHITE);
-    canvas.drawRect(x, y, x + w, y + 3, fill);
-    canvas.drawRect(x, y + h - 3, x + w, y + h, fill);
-    float seg = (h - 6 - 22) / 10f;
-    for (int i = 0; i < 10; i++) {
-      float b = y + h - 5 - i * (seg + 2);
-      fill.setColor(i < lit ? Color.WHITE : 0xff5a5a5a);
-      canvas.drawRect(x + 2, b - seg, x + w - 2, b, fill);
-    }
+  private static Path rect(float l, float t, float r, float b) {
+    Path p = new Path();
+    p.moveTo(l, t);
+    p.lineTo(r, t);
+    p.lineTo(r, b);
+    p.lineTo(l, b);
+    p.close();
+    return p;
+  }
+
+  private static String fit(String s, TextPaint p, float w) {
+    return TextUtils.ellipsize(s, p, w, TextUtils.TruncateAt.END).toString();
+  }
+
+  // Distance left to the destination, as the phone shows it.
+  static String away(double m, boolean metric) {
+    if (metric) return m < 1000 ? Math.round(m / 10) * 10 + " m" : String.format(Locale.US, "%.1f km", m / 1000);
+    double mi = m / 1609.344;
+    return mi < 0.1 ? Math.round(m * 3.28084 / 50) * 50 + " ft" : String.format(Locale.US, "%.1f mi", mi);
   }
 
   // US speed limit sign: white plate, black inset border, the number large enough to read at a glance.
