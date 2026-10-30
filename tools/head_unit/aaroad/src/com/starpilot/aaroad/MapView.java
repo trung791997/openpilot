@@ -10,15 +10,17 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.os.SystemClock;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.RelativeLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 import de.robv.android.xposed.XposedBridge;
 import java.io.InputStream;
@@ -80,9 +82,11 @@ final class MapView extends View {
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
-                                        "limited_speed", "limited_speed_text", "traffic_layout"};
-  // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place)
-  private static final int ICON = 60, ICON_PAD = 4, ICON_LEFT = 48, ICON_TOP = 24;
+                                        "limited_speed", "limited_speed_text", "traffic_layout", "turn_icon"};
+  // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
+  // Drawn here from the stock view's picture: moving the view itself put it 70 px right of this, over the road
+  // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show
+  private static final int ICON = 52, ICON_LEFT = 52, ICON_TOP = 28;
 
   static volatile String modulePath;
   private static Bitmap car;
@@ -124,8 +128,6 @@ final class MapView extends View {
   private int drawCount;
   private boolean live;
   private double k = 600 / R0;
-  private ViewGroup.LayoutParams iconSaved, iconOurs;
-  private int[] iconPad;
   private float t0, t1;  // clip parameters of the segment being clipped
 
   // Positions are metres east (e) and north (n) of the anchor, in runs of e, n pairs.
@@ -155,7 +157,7 @@ final class MapView extends View {
     grid.setStrokeWidth(0);  // hairline in screen pixels
     fill.setAntiAlias(true);
     mask.setShader(new LinearGradient(0, 0, COL, 0, new int[] {0xff050505, 0xff050505, 0x00050505},
-                                      new float[] {0, 0.87f, 1}, Shader.TileMode.CLAMP));
+                                      new float[] {0, (CARD_R + 4) / COL, 1}, Shader.TileMode.CLAMP));
     fog.setShader(new LinearGradient(0, 0, 0, 78, new int[] {0xff050505, 0xe6050505, 0x00050505},
                                      new float[] {0, 0.6f, 1}, Shader.TileMode.CLAMP));
     panel.setAntiAlias(true);
@@ -172,12 +174,12 @@ final class MapView extends View {
     ring.setStyle(Paint.Style.STROKE);
     ring.setStrokeWidth(2.5f);
     ring.setStrokeCap(Paint.Cap.ROUND);
-    // gradients, not blur: BlurMaskFilter and shadow layers are too slow for the Tegra's software canvas
+    // gradients, not blur: BlurMaskFilter and shadow layers are too slow for the Tegra's software canvas. Opaque,
+    // blended into the black card by hand: inside the card's clip the car drew see-through ends solid (2026-10-30)
     float w = CARD_R - CARD_L;
-    blueGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0x661a73ff, 0x001a73ff},
+    blueGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0xff0a2e66, 0xff000000},
                                           new float[] {0, 1}, Shader.TileMode.CLAMP));
-    greenGlow.setShader(new LinearGradient(SONG_R, 0, SONG_R - 0.35f * (SONG_R - CARD_L), 0, new int[] {0x55000000 | (SPOTIFY & 0xffffff),
-                                           SPOTIFY & 0xffffff}, new float[] {0, 1}, Shader.TileMode.CLAMP));
+    greenGlow.setShader(new LinearGradient(SONG_R, 0, SONG_R - 0.35f * (SONG_R - CARD_L), 0, new int[] {0xff0a4820, 0xff000000}, new float[] {0, 1}, Shader.TileMode.CLAMP));
     street.setTextAlign(Paint.Align.CENTER);
     sign.setTextAlign(Paint.Align.CENTER);
     signBig.setTextAlign(Paint.Align.CENTER);
@@ -295,10 +297,8 @@ final class MapView extends View {
 
   // Layout B over Honda Hack's page while the map shows; its own page back as it was when not.
   private void setLive(boolean on) {
-    View icon = find("turn_icon");
     if (on == live) {
       if (!on) return;
-      if (icon != null && icon.getLayoutParams() != iconOurs) moveIcon(icon);  // Honda Hack laid it out again
       for (String n : HIDE) {
         View v = find(n);
         if (v != null && v.getAlpha() != 0f) v.setAlpha(0f);
@@ -312,28 +312,7 @@ final class MapView extends View {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
     }
-    if (icon == null) return;
-    if (on) {
-      moveIcon(icon);
-    } else if (iconSaved != null) {
-      icon.setLayoutParams(iconSaved);
-      icon.setPadding(iconPad[0], iconPad[1], iconPad[2], iconPad[3]);
-      iconSaved = iconOurs = null;
-    }
     XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden"));
-  }
-
-  private void moveIcon(View icon) {
-    iconSaved = icon.getLayoutParams();
-    iconPad = new int[] {icon.getPaddingLeft(), icon.getPaddingTop(), icon.getPaddingRight(), icon.getPaddingBottom()};
-    RelativeLayout.LayoutParams p = new RelativeLayout.LayoutParams(ICON, ICON);
-    p.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-    p.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-    p.leftMargin = ICON_LEFT;
-    p.topMargin = ICON_TOP;
-    iconOurs = p;
-    icon.setPadding(ICON_PAD, ICON_PAD, ICON_PAD, ICON_PAD);
-    icon.setLayoutParams(p);
   }
 
   // ---- scene: the route and the roads near it, rebuilt off the UI thread when the car moves on or data arrives
@@ -841,7 +820,7 @@ final class MapView extends View {
   // a tag over the map, the speed limit at the right, all on the dash's black. No close button: nothing on the
   // cluster takes a touch.
 
-  private static final float COL = 150;  // the dark band behind the cards
+  private static final float COL = 300;  // the dark band behind the cards, solid as far as they reach: roads showed between them
   // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
   private static final float CARD_L = 36, CARD_R = 270, TURN_T = 12, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
   private static final float STRIP_W = 10, TEXT_X = 116;
@@ -929,7 +908,7 @@ final class MapView extends View {
     }
 
     // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did,
-    // the stock arrow (ICON_LEFT/TOP put it here), the distance, and the road
+    // the stock arrow, the distance, and the road
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     View icon = find("turn_icon");
@@ -946,6 +925,13 @@ final class MapView extends View {
       canvas.drawRect(CARD_L, lit, CARD_L + STRIP_W, TURN_B, fill);
       canvas.restore();
       canvas.drawPath(turnCard, edge);
+      Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
+      if (arrow != null) {
+        Rect was = arrow.copyBounds();
+        arrow.setBounds(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON);
+        arrow.draw(canvas);
+        arrow.setBounds(was);  // the stock view draws it again when the map goes
+      }
       // a brighter rim on the strip's curve, lit as far as the strip is
       canvas.save();
       canvas.clipPath(rect(CARD_L - 2, TURN_T - 2, CARD_L + RADIUS + 2, lit));
