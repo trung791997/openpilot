@@ -62,10 +62,24 @@ final class Feed {
     }
   }
 
+  static final class Pose {
+    final double lat, lon, hdg, spd;
+    final long at;
+
+    Pose(double lat, double lon, double hdg, double spd, long at) {
+      this.lat = lat;
+      this.lon = lon;
+      this.hdg = hdg;
+      this.spd = spd;
+      this.at = at;
+    }
+  }
+
   // Everything MapView reads; written only by the feed thread.
   static volatile boolean wanted;  // the nav page is showing
   static volatile double lat, lon, hdg, spd;
   static volatile long poseAt;     // SystemClock.uptimeMillis() of the fix the pose stands for
+  static volatile Pose pose;       // the same fix as one piece, so a reader on another thread never mixes two
   static volatile long stateAt;    // when turnMeters was current
   static volatile String mode = "off";
   static volatile boolean metric;
@@ -245,6 +259,7 @@ final class Feed {
       hdg = m.getDouble("hdg");
       spd = m.optDouble("spd", 0);
       poseAt = now - (long) (m.optDouble("age", 0) * 1000);
+      pose = new Pose(lat, lon, hdg, spd, poseAt);
     } else if (t.equals("s")) {
       stateAt = now;
       mode = m.optString("mode", "off");

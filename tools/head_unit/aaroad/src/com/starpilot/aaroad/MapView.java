@@ -146,7 +146,7 @@ final class MapView extends View {
   private final Path routeWorld = new Path();
   private final Path[] routeWorlds = {routeWorld}, routeFrames = {routePath};
   private final Matrix world = new Matrix();  // world metres to the car's frame, this frame
-  private final float[] worldV = new float[9], drawEN = new float[2], tickEN = new float[2];
+  private final float[] worldV = new float[9], tickEN = new float[2];
   // What the last frame showed, so the tick only asks for a frame when something on screen would change (Peter
   // 2026-10-30): the car moved a pixel or turned, the zoom is still easing, or anything else drawn changed (stamp()).
   private Scene drawnScene;
@@ -417,14 +417,15 @@ final class MapView extends View {
     Scene s = scene;
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
-    double spd = Math.max(0, Feed.spd);
+    Feed.Pose p = pose();
+    double spd = Math.max(0, p.spd);
     boolean moving = spd >= HOLD_SPEED;
     if (moving != drawnMoving || Math.abs(zoomTarget(s, spd, now) / drawnBase - 1) > ZOOM_EPS) return true;
     if (!moving) {
-      double[] held = heldW, w = Feed.world(Feed.lat, Feed.lon);
+      double[] held = heldW, w = Feed.world(p.lat, p.lon);
       return held == null || Math.hypot(w[0] - held[0], w[1] - held[1]) * s.mpt > HOLD_DRIFT;
     }
-    double h = pose(s, now, spd, false, tickEN);
+    double h = pose(s, p, now, false, tickEN);
     double px = Math.hypot(tickEN[0] - drawnE, tickEN[1] - drawnN) * PX_DM / drawnK;
     return px > MOVE_PX || Math.abs(Math.IEEEremainder(h - drawnH, 2 * Math.PI)) > Math.toRadians(TURN_DEG);
   }
@@ -463,13 +464,19 @@ final class MapView extends View {
     return h;
   }
 
-  // Where the car is now: the last fix carried forward at speed spd, at most half a second; e, n into en, and the
+  // The last fix as one piece; from the separate fields when none has come as one (the harness sets only those).
+  private static Feed.Pose pose() {
+    Feed.Pose p = Feed.pose;
+    return p != null ? p : new Feed.Pose(Feed.lat, Feed.lon, Feed.hdg, Feed.spd, Feed.poseAt);
+  }
+
+  // Where the car is now: fix p carried forward at its speed, at most half a second; e, n into en, and the
   // heading returned. hold (onDraw only): at a standstill the car keeps the heading it last moved with, stays put
   // while the fix wanders within HOLD_DRIFT, and near the route points along it. The tick passes false: no change.
-  private double pose(Scene s, long now, double spd, boolean hold, float[] en) {
-    double h = Math.toRadians(Feed.hdg);
-    double ahead = Math.min(0.5, Math.max(0, (now - Feed.poseAt) / 1000.0)) * spd;
-    double[] w = Feed.world(Feed.lat, Feed.lon);
+  private double pose(Scene s, Feed.Pose p, long now, boolean hold, float[] en) {
+    double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg);
+    double ahead = Math.min(0.5, Math.max(0, (now - p.at) / 1000.0)) * spd;
+    double[] w = Feed.world(p.lat, p.lon);
     if (hold && spd >= HOLD_SPEED) {
       heldH = h;
       heldW = null;
@@ -496,6 +503,90 @@ final class MapView extends View {
     double rng = s.route.length == 0 ? Math.max(120, Math.min(300, spd * 12)) : Math.max(200, Math.min(600, spd * 20));
     if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
     return rng;
+  }
+
+  // One frame's camera: where the car is drawn, which way it points, the zoom and where the carpet starts. The view's
+  // onDraw and the GPU layer's own clock both take it from here, so the two agree; synchronized, as both may ask
+  // while the GPU layer warms up.
+  static final class Frame {
+    float ce, cn, ch, sh, ik, reach, cutE, cutN, cut = Float.NaN;
+    double h, k, base;
+    int cRun = -1, cSeg, color;
+    boolean free, moving, settled;
+  }
+
+  synchronized Frame frame(Scene s, long now) {
+    Frame f = new Frame();
+    Feed.Pose p = pose();
+    double spd = Math.max(0, p.spd);
+    f.moving = spd >= HOLD_SPEED;
+    double h = smooth(s, p, now, f.moving, frameEN, pose(s, p, now, true, frameEN));
+    float ce = frameEN[0], cn = frameEN[1], ch = (float) Math.cos(h), sh = (float) Math.sin(h);
+
+    double rng = zoomTarget(s, spd, now);
+    f.base = rng;
+    if (p.at != spdAt) {
+      double gap = (p.at - spdAt) / 1000.0;
+      if (lastSpd >= 0 && gap > 0 && gap < 1) decel += ((lastSpd - spd) / gap - decel) * Math.min(1, gap / 0.5);
+      else decel = 0;
+      lastSpd = spd;
+      spdAt = p.at;
+    }
+    double jn = s.route.length > 0 ? junctionAhead(s, ce, cn, ch, sh) : -1;
+    if (jn >= 0) {
+      double stopAt = decel > STOP_DECEL ? spd * spd / (2 * decel) : -1;
+      boolean stopping = (stopAt >= 0 && Math.abs(stopAt - jn) < Math.max(25, 0.4 * jn)) || (spd < CRAWL && jn < STOP_NEAR);
+      if (stopping && jn + TURN_LEN < rng) rng = Math.max(jn + TURN_LEN, CLOSE);
+    }
+    double dt = lastFrame == 0 ? 10 : (now - lastFrame) / 1000.0;
+    lastFrame = now;
+    k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
+    f.k = k;
+    f.settled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS;
+    f.ce = ce;
+    f.cn = cn;
+    f.h = h;
+    f.ch = ch;
+    f.sh = sh;
+    f.ik = (float) (1 / k);
+    f.reach = (float) (BOX_R * k);
+    // with no route there is no turn text, so the map takes the whole meter: the car at its centre
+    f.free = s.route.length == 0;
+    f.color = modeColor(Feed.mode);
+    if (!f.free) carpetStart(s, f);
+    return f;
+  }
+
+  // At 30 frames a second the 20 Hz fixes would show as small steps wherever the last fix carried forward disagrees
+  // with the next. On a new fix the step is kept as an offset and faded out over SMOOTH_TAU, so the car glides onto
+  // it; a step over SNAP_M or SNAP_DEG (a GPS jump) or after a gap is taken at once, and at a standstill the holds in
+  // pose() rule.
+  private static final double SMOOTH_TAU = 0.06, SNAP_M = 15, SNAP_DEG = 20;
+  private static final long SMOOTH_GAP_MS = 500;  // after a longer gap in the fixes the last one says nothing about now
+  private final float[] frameEN = new float[2], smEN = new float[2];
+  private Feed.Pose smPose;
+  private long smAt;
+  private double offE, offN, offH;
+
+  private double smooth(Scene s, Feed.Pose p, long now, boolean moving, float[] en, double h) {
+    double fade = Math.exp(-(smAt == 0 ? 1 : Math.max(0, now - smAt) / 1000.0) / SMOOTH_TAU);
+    smAt = now;
+    offE *= fade;
+    offN *= fade;
+    offH *= fade;
+    if (p != smPose) {
+      if (moving && smPose != null && p.at - smPose.at < SMOOTH_GAP_MS) {
+        double was = pose(s, smPose, now, false, smEN);  // where the last fix put the car now
+        offE += smEN[0] - en[0];
+        offN += smEN[1] - en[1];
+        offH = Math.IEEEremainder(offH + was - h, 2 * Math.PI);
+      }
+      smPose = p;
+    }
+    if (!moving || Math.hypot(offE, offN) > SNAP_M || Math.abs(offH) > Math.toRadians(SNAP_DEG)) offE = offN = offH = 0;
+    en[0] += (float) offE;
+    en[1] += (float) offN;
+    return h + offH;
   }
 
   // ---- scene: the route and the roads near it, rebuilt off the UI thread when the car moves on or data arrives
@@ -1037,39 +1128,19 @@ final class MapView extends View {
     if (!onGpu) canvas.drawColor(0xff050505);
     drawnStamp = stamp(now);  // before anything is read, so a change during the frame still asks for the next one
 
-    double spd = Math.max(0, Feed.spd);
-    double h = pose(s, now, spd, true, drawEN);
-    float ce = drawEN[0], cn = drawEN[1];
-    float ch = (float) Math.cos(h), sh = (float) Math.sin(h);
+    Frame f = frame(s, now);
+    float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik, reach = f.reach;
+    double h = f.h;
     long t0 = SystemClock.uptimeMillis();
-
-    double rng = zoomTarget(s, spd, now);
-    drawnBase = rng;
-    if (Feed.poseAt != spdAt) {
-      double gap = (Feed.poseAt - spdAt) / 1000.0;
-      if (lastSpd >= 0 && gap > 0 && gap < 1) decel += ((lastSpd - spd) / gap - decel) * Math.min(1, gap / 0.5);
-      else decel = 0;
-      lastSpd = spd;
-      spdAt = Feed.poseAt;
-    }
-    double jn = s.route.length > 0 ? junctionAhead(s, ce, cn, ch, sh) : -1;
-    if (jn >= 0) {
-      double stopAt = decel > STOP_DECEL ? spd * spd / (2 * decel) : -1;
-      boolean stopping = (stopAt >= 0 && Math.abs(stopAt - jn) < Math.max(25, 0.4 * jn)) || (spd < CRAWL && jn < STOP_NEAR);
-      if (stopping && jn + TURN_LEN < rng) rng = Math.max(jn + TURN_LEN, CLOSE);
-    }
-    double dt = lastFrame == 0 ? 10 : (now - lastFrame) / 1000.0;
-    lastFrame = now;
-    k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
-    float ik = (float) (1 / k), reach = (float) (BOX_R * k);
-    zoomSettled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS;
+    drawnBase = f.base;
+    zoomSettled = f.settled;
     drawnScene = s;
     drawnAt = now;
     drawnE = ce;
     drawnN = cn;
     drawnH = h;
-    drawnK = k;
-    drawnMoving = spd >= HOLD_SPEED;
+    drawnK = f.k;
+    drawnMoving = f.moving;
 
     // world metres (e, n) to the car's frame: x = ((e - ce) ch - (n - cn) sh) / k, z = ((e - ce) sh + (n - cn) ch) / k
     worldV[0] = ch * ik;
@@ -1082,17 +1153,9 @@ final class MapView extends View {
     worldV[7] = 0;
     worldV[8] = 1;
     world.setValues(worldV);
-    // with no route there is no turn text, so the map takes the whole meter: the car at its centre
-    boolean free = s.route.length == 0;
+    boolean free = f.free;
     // the GPU layer is handed every frame, even while the view still draws the roads, so it is warm when it takes over
-    if (gpu != null) {
-      float cut = Float.NaN;
-      if (!free && carpetStart(s, ce, cn, reach)) {
-        float[] p = s.route[cRun];
-        cut = s.routeAlong[cRun][cSeg] + (float) Math.hypot(cE - p[2 * cSeg], cN - p[2 * cSeg + 1]);
-      }
-      gpu.frame(s, ce, cn, ch, sh, ik, free, modeColor(Feed.mode), cut, cE, cN);
-    }
+    if (gpu != null) gpu.frame(s, ce, cn, ch, sh, ik, free, f.color, f.cut, f.cutE, f.cutN);
     if (!onGpu) {
       routePath.rewind();
       routeWorld.rewind();
@@ -1103,7 +1166,7 @@ final class MapView extends View {
       gridLines(s, ce, cn, ch, sh, ik);
       pieces(s.routeChunks, routeWorlds, routeFrames, ce, cn, ch, sh, ik);
       if (s.route.length > 0) pieces(s.stubsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
-      if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
+      if (s.route.length > 0) carpet(s, f, ce, cn, ch, sh, ik, reach);
       else pieces(s.roadsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
     }
 
@@ -1247,21 +1310,20 @@ final class MapView extends View {
   }
 
   // The carpet: the route from the car's place on it to the end of the scene, so the driven part is bare road.
-  private void carpet(Scene s, float ce, float cn, float ch, float sh, float ik, float reach) {
-    if (!carpetStart(s, ce, cn, reach)) return;
-    line(s.route[cRun], cSeg, carpetPath, ce, cn, ch, sh, ik, cE, cN);
-    for (int r = cRun + 1; r < s.route.length; r++) {
+  private void carpet(Scene s, Frame f, float ce, float cn, float ch, float sh, float ik, float reach) {
+    if (f.cRun < 0) return;
+    line(s.route[f.cRun], f.cSeg, carpetPath, ce, cn, ch, sh, ik, f.cutE, f.cutN);
+    for (int r = f.cRun + 1; r < s.route.length; r++) {
       float[] b = s.routeBox[r];
       if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
       line(s.route[r], 0, carpetPath, ce, cn, ch, sh, ik, Float.NaN, 0);
     }
   }
 
-  // Where the carpet starts: the nearest point of the route to the car, as run cRun, segment cSeg, point (cE, cN).
-  private int cRun, cSeg;
-  private float cE, cN;
-
-  private boolean carpetStart(Scene s, float ce, float cn, float reach) {
+  // Where the carpet starts: the nearest point of the route to the car, as run cRun, segment cSeg, point (cutE, cutN)
+  // of f, and how far along the route that is.
+  private static void carpetStart(Scene s, Frame f) {
+    float ce = f.ce, cn = f.cn, reach = f.reach;
     int bestRun = -1, bestSeg = 0;
     float bestD = Float.MAX_VALUE, be = 0, bn = 0;
     for (int r = 0; r < s.route.length; r++) {
@@ -1281,11 +1343,14 @@ final class MapView extends View {
         }
       }
     }
-    cRun = bestRun;
-    cSeg = bestSeg;
-    cE = be;
-    cN = bn;
-    return bestRun >= 0;
+    f.cRun = bestRun;
+    f.cSeg = bestSeg;
+    f.cutE = be;
+    f.cutN = bn;
+    if (bestRun >= 0) {
+      float[] p = s.route[bestRun];
+      f.cut = s.routeAlong[bestRun][bestSeg] + (float) Math.hypot(be - p[2 * bestSeg], bn - p[2 * bestSeg + 1]);
+    }
   }
 
   // Liang-Barsky: adds the part of (x0, z0)-(x1, z1) inside the box; returns whether the path ends at (x1, z1).
