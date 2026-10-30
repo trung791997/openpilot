@@ -1418,6 +1418,59 @@ final class MapView extends View {
       speedSign(canvas, String.valueOf(Math.round(v)), 474, 30, 40, 52);
     }
 
+    // The cards are drawn into a bitmap and only redrawn when something on them changes: drawing them every frame was
+    // most of a frame on the Tegra (30-48 ms of 45-59 ms with a route, Peter 2026-10-30), though the map moved and they
+    // did not. Their panels are opaque, so the bitmap over the map looks as drawing them straight on did.
+    String key = cardKey(now, free);
+    if (cardBmp == null) {
+      cardBmp = Bitmap.createBitmap(CARDS_W, 215, Bitmap.Config.ARGB_8888);
+      cardCanvas = new Canvas(cardBmp);
+    }
+    if (!key.equals(cardsKey)) {
+      cardBmp.eraseColor(Color.TRANSPARENT);
+      cards(cardCanvas, now, free);
+      cardsKey = key;
+    }
+    canvas.drawBitmap(cardBmp, 0, 0, null);
+  }
+
+  private static final int CARDS_W = 272;  // clear of the turn card's right end (CARD_R)
+  private Bitmap cardBmp;
+  private Canvas cardCanvas;
+  private String cardsKey;
+
+  // Everything the cards show, as they would draw it now.
+  private String cardKey(long now, boolean free) {
+    StringBuilder k = new StringBuilder(160).append(free);
+    TextView dist = (TextView) find("seg_dist");
+    k.append('|').append(dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null);
+    TextView next = (TextView) find("next_road");
+    k.append('|').append(next != null && next.getVisibility() == VISIBLE ? next.getText() : null);
+    View icon = find("turn_icon");
+    Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
+    k.append('|').append(icon != null && icon.isShown());
+    if (arrow != null) k.append('|').append(System.identityHashCode(arrow)).append('/').append(arrow.getLevel());
+    if (Feed.remainingSec >= 0) {
+      double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
+      k.append('|').append(Math.round(left / 60)).append('|').append(clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000))));
+      if (Feed.remainingMeters >= 0) k.append('|').append(away(Feed.remainingMeters, Feed.metric));
+    }
+    String status = Feed.mediaStatus, title = Feed.mediaTitle;
+    if (status != null && !TextUtils.isEmpty(title)) {
+      k.append('|').append(status).append('|').append(title).append('|').append(Feed.mediaArtist).append('|').append(Feed.mediaSource);
+      Bitmap cover = Feed.cover;
+      k.append('|').append(cover != null && Feed.mediaArt != 0 && Feed.coverId == Feed.mediaArt ? System.identityHashCode(cover) : 0);
+      long dur = Feed.mediaDur, pos = Feed.mediaPos;
+      if (dur > 0 && pos >= 0) {
+        if ("playing".equals(status)) pos += SystemClock.uptimeMillis() - Feed.mediaAt;
+        k.append('|').append(Math.round(360 * Math.min(1f, pos / (float) dur)));  // the ring, to the degree
+      }
+      k.append('|').append(titleRoll.shift(now)).append('|').append(artistRoll.shift(now));
+    }
+    return k.toString();
+  }
+
+  private void cards(Canvas canvas, long now, boolean free) {
     // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did,
     // the stock arrow, the distance, and the road
     TextView dist = (TextView) find("seg_dist");
