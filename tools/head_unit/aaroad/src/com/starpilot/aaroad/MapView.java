@@ -87,6 +87,9 @@ final class MapView extends View {
   private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
+  // once showing, the map rides out a position gap this long with the car held where it was (Peter 2026-10-30
+  // photo: mid-route the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused)
+  private static final long GAP_HOLD_MS = 10000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout", "turn_icon"};
   // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
@@ -164,6 +167,7 @@ final class MapView extends View {
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
   private boolean live;
+  private String hideWhy = "";
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
@@ -344,7 +348,10 @@ final class MapView extends View {
         boolean shown = navi.isShown();
         Feed.wanted = shown;
         long now = SystemClock.uptimeMillis();
-        setLive(shown && Feed.poseAt > 0 && now - Feed.poseAt < STALE_MS);
+        long age = Feed.poseAt > 0 ? now - Feed.poseAt : Long.MAX_VALUE;
+        hideWhy = !shown ? "page not shown" : age == Long.MAX_VALUE ? "no position yet"
+            : "no position for " + age / 1000 + " s";
+        setLive(shown && age < (live ? GAP_HOLD_MS : STALE_MS));
         if (live) {
           rebuildIfNeeded(now);
           if (changed(now)) invalidate();
@@ -400,7 +407,7 @@ final class MapView extends View {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
     }
-    XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden"));
+    XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden: " + hideWhy));
   }
 
   // Whether a frame now would look different from the last one drawn (Peter 2026-10-30: most frames at a light or on
