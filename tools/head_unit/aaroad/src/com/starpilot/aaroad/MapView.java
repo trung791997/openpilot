@@ -121,7 +121,7 @@ final class MapView extends View {
 
   private volatile Scene scene;
   private volatile boolean building;
-  private long builtAt, lastFrame, drawMs, drawSum, spdAt;
+  private long builtAt, lastFrame, drawMs, drawSum, spdAt, setupSum, pathSum, strokeSum, cardSum;
   private double heldH = Double.NaN;  // radians, the GPS heading while last moving
   private double[] heldW;              // world position held at a standstill
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
@@ -622,6 +622,7 @@ final class MapView extends View {
       if (!Double.isNaN(r)) h = r;
     }
     float ch = (float) Math.cos(h), sh = (float) Math.sin(h);
+    long t0 = SystemClock.uptimeMillis();
 
     // zoom: about 20 s of road ahead, 200 to 600 m; once the turn is in range it is held near the top, so the
     // view closes in on the turn as the car reaches it and pulls back out once the next maneuver is far
@@ -659,6 +660,7 @@ final class MapView extends View {
 
     // with no route there is no turn text, so the map takes the whole meter: the car at its centre
     boolean free = s.route.length == 0;
+    long t1 = SystemClock.uptimeMillis();
     canvas.save();
     if (free) canvas.translate(FREE_X - CAR_X, 0f);
     canvas.save();
@@ -700,12 +702,20 @@ final class MapView extends View {
       canvas.drawPath(p, fill);
     }
     canvas.restore();
+    long t2 = SystemClock.uptimeMillis();
     overlay(canvas, now, free);
 
     long ms = SystemClock.uptimeMillis() - now;
     drawMs = (drawMs * 7 + ms) / 8;
     drawSum += ms;
-    if (++drawCount % 900 == 150) XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames"
+    // where a frame's time goes: the camera and zoom, building the road shapes, stroking them, the cards
+    setupSum += t0 - now;
+    pathSum += t1 - t0;
+    strokeSum += t2 - t1;
+    cardSum += ms - (t2 - now);
+    if (++drawCount % 900 == 150) XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
+        + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
+        + cardSum / drawCount + " cards)"
         + (drawCount == 150 ? ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
            + (isHardwareAccelerated() ? "GPU" : "software") : ""));
   }
