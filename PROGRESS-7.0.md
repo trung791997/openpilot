@@ -187,6 +187,10 @@ A new track takes its weight at once. Otherwise the weight rises over 0.25 s and
   - Job's script showed a weight with neither tell on r1e T333.89 and r31 T326.38. The weight there is the camera-passed tell 2.7-3.5 s after the brake; the script read the tells only in T-2..T+1. It is not a bound bug.
   - Not yet run: the route sweep (frames per engaged hour with a weight, per tell). Closed loop is not possible on 7.0 rlogs (no starpilotPlan / liveParameters).
 - On `night-star7-longradar` and `night-star7-vasm-jetson` (2026-10-28), default ON, no toggle: 90826c671, one commit on the synced head 0f9ad353f. The 7.0 sync took StarPilotCarState @38 (toyotaCruise), so the STATUS carrier is @39/@40 there. Judge it on Peter's next drives: far taps behind a lead that holds its speed, and any real far slowdown that brakes late.
+- **Addendum 2026-10-30** (Job, open loop, 0f9ad353f vs 90826c671, found by the CSB census bisect). The fix also removes brakes before or beside the windows checked above:
+  - ev19 E02 (2ed T335): the "onset 2.8 s later" is a −0.54 precursor dip at T335.3 that the contradicted tell (8.3 m/s, weight 0.77) now holds at −0.48. The real brake still starts at T338.08 in both. Stills show open road with a far car until T339, so the dip was not a real slowdown. The entry 9 claim holds for the real brake, but it never covered precursor dips.
+  - 313 T336.2 (census pd276): −1.05 → −0.2. A status-9 return at 50 m with both tells plausible; the lead is gone from T335.4. Stills at night show a cluster of brake lights far ahead, roughly in lane, and the car slowed to −0.64 at T337. Label: a real, mild, distant slowdown, about 1 s late with the fix. A mild regression in the dangerous direction (a removed brake), not a hard one. Status fidelity 95 %.
+  - route 34 T479 (census pc102): the intended tap removal, −1.82 → −0.19.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
 
