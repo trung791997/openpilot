@@ -1028,9 +1028,9 @@ final class MapView extends View {
       x += 2 * LOGO_R + 4;
     }
     if (!from.isEmpty()) canvas.drawText(fit(from, songFrom, w - (x - SONG_X)), x, SONG_T + 14, songFrom);
-    canvas.drawText(fit(title, songTitle, w), SONG_X, SONG_T + 30, songTitle);
+    titleRoll.draw(canvas, title, songTitle, SONG_X, SONG_T + 30, w);
     String artist = Feed.mediaArtist;
-    if (!TextUtils.isEmpty(artist)) canvas.drawText(fit(artist.toUpperCase(Locale.US), songArtist, w), SONG_X, SONG_T + 44, songArtist);
+    if (!TextUtils.isEmpty(artist)) artistRoll.draw(canvas, artist.toUpperCase(Locale.US), songArtist, SONG_X, SONG_T + 44, w);
 
     // pause bars while it plays, a play triangle while paused
     float cy = (SONG_T + SONG_B) / 2;
@@ -1108,6 +1108,31 @@ final class MapView extends View {
     p.close();
     return p;
   }
+
+  // A song line too long for the card scrolls (Peter 2026-10-30): it holds at the start, slides left slowly until
+  // its end shows, holds there, then jumps back and starts over. Lines that fit stay still. Each line keeps its
+  // own clock and restarts when its text changes.
+  private static final class Roll {
+    private static final long HOLD_MS = 2000;
+    private static final float PX_PER_S = 25;
+    private String text;
+    private long since;
+
+    void draw(Canvas canvas, String s, TextPaint p, float x, float y, float w) {
+      long now = SystemClock.uptimeMillis();
+      if (!s.equals(text)) { text = s; since = now; }
+      float over = p.measureText(s) - w;
+      if (over <= 0) { canvas.drawText(s, x, y, p); return; }
+      long slide = (long) (over / PX_PER_S * 1000), t = (now - since) % (2 * HOLD_MS + slide);
+      float dx = t < HOLD_MS ? 0 : Math.min(over, (t - HOLD_MS) * PX_PER_S / 1000);
+      canvas.save();
+      canvas.clipRect(x, SONG_T, x + w, SONG_B);  // sideways only: capital accents reach up past the line
+      canvas.drawText(s, x - dx, y, p);
+      canvas.restore();
+    }
+  }
+
+  private final Roll titleRoll = new Roll(), artistRoll = new Roll();
 
   private static String fit(String s, TextPaint p, float w) {
     return TextUtils.ellipsize(s, p, w, TextUtils.TruncateAt.END).toString();
