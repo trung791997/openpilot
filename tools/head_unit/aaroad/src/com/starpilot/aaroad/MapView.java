@@ -87,6 +87,21 @@ final class MapView extends View {
   // Drawn here from the stock view's picture: moving the view itself put it 70 px right of this, over the road
   // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show
   private static final int ICON = 52, ICON_LEFT = 52, ICON_TOP = 36;
+  // Street names from the road tiles (Peter 2026-10-30: the street the car is on even with no route, and the names of
+  // the streets around it). The car is on the nearest named road within ON_ROAD m that runs within ON_ROAD_DEG of its
+  // heading, so a cross street at a junction does not take over. Looked up every ROAD_EVERY_MS, not per frame.
+  // A different road has to be ROAD_CLEARLY m closer for ROAD_SWITCH_MS before it replaces the shown name, so a
+  // parallel frontage road or a GPS wobble does not flicker the tag; a road that stops qualifying (the car turned off
+  // it) gives way at once. With no road in reach the name stays ROAD_LOST_MS, then goes.
+  private static final double ON_ROAD = 25, ON_ROAD_DEG = 35, ROAD_CLEARLY = 4;
+  private static final long ROAD_EVERY_MS = 300, ROAD_SWITCH_MS = 1500, ROAD_LOST_MS = 4000;
+  // At most LABELS other streets labelled. Where they go is chosen every LABEL_EVERY_MS from samples along the named
+  // roads, nearest the car first, each kept clear of the cards, the car, the speed sign, the street tag and the
+  // others. Between choices only the LABELS anchors are moved with the map (a few multiplies each), and one that
+  // has slid onto something is skipped for that frame: the per-frame cost is two drawText calls per label.
+  private static final int LABELS = 4;
+  private static final long LABEL_EVERY_MS = 500;
+  private static final float LABEL_STEP = 30, LABEL_MAX_W = 130, LABEL_GAP = 6, LABEL_TOP = 64, MINOR_COST = 150;
 
   static volatile String modulePath;
   private static Bitmap car;
@@ -129,6 +144,16 @@ final class MapView extends View {
   private boolean live;
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
+  private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
+  private String onRoad, switchTo;  // street shown as the one the car is on (null: none); the one waiting to replace it
+  private long roadAt, switchSince, lostSince, labelAt;
+  private int labelCount;
+  private final String[] labelText = new String[LABELS];
+  private final float[] labelE = new float[LABELS], labelN = new float[LABELS], labelW = new float[LABELS],
+      labelX = new float[LABELS], labelY = new float[LABELS];
+  private final boolean[] labelOn = new boolean[LABELS];
+  private final float[] tagBox = new float[4];  // the street tag as last drawn, with its pointer; zero size when none
+  private final TextPaint label = text(11.5f, inter(false), 0xffc8ccd2), halo = text(11.5f, inter(false), 0xff050505);
 
   // Positions are metres east (e) and north (n) of the anchor, in runs of e, n pairs.
   private static final class Scene {
@@ -137,6 +162,7 @@ final class MapView extends View {
     int tilesVersion;
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
     int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run
+    String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
   }
@@ -152,6 +178,12 @@ final class MapView extends View {
     float[] v = new float[9];
     for (int i = 0; i < 9; i++) v[i] = (float) (h[i] / c0);
     camera.setValues(v);
+    System.arraycopy(v, 0, cam, 0, 9);
+    label.setTextAlign(Paint.Align.CENTER);
+    halo.setTextAlign(Paint.Align.CENTER);
+    halo.setStyle(Paint.Style.STROKE);  // a dark outline under each label, so it reads over a road
+    halo.setStrokeWidth(3);
+    halo.setStrokeJoin(Paint.Join.ROUND);
     grid.setColor(0xff2a2a2a);
     grid.setStyle(Paint.Style.STROKE);
     grid.setStrokeWidth(0);  // hairline in screen pixels
@@ -358,6 +390,7 @@ final class MapView extends View {
     s.tilesVersion = version;
     List<float[]> route = new ArrayList<float[]>(), stubs = new ArrayList<float[]>(), roads = new ArrayList<float[]>();
     List<Integer> stubsCls = new ArrayList<Integer>(), roadsCls = new ArrayList<Integer>();
+    List<String> stubsName = new ArrayList<String>(), roadsName = new ArrayList<String>();
     HashSet<Long> cells = new HashSet<Long>();
     if (r != null) {
       s.routeId = r.id;
@@ -390,13 +423,15 @@ final class MapView extends View {
       for (int c = 0; c < 5; c++) {  // motorway, major, street, link, minor
         float[] pts = tile.pts[c];
         int[] starts = tile.starts[c];
+        String[] names = tile.names[c];
         if (pts == null || starts == null) continue;
         for (int l = 0; l + 1 < starts.length; l++) {
           // with a route, every road around the car shows as in free drive, and farther out the roads along the route
           if (r == null) around(s, tile, pts, starts[l], starts[l + 1], roads);
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
-          while (roadsCls.size() < roads.size()) roadsCls.add(c);
-          while (stubsCls.size() < stubs.size()) stubsCls.add(c);
+          String name = names != null && l < names.length ? names[l] : null;
+          while (roadsCls.size() < roads.size()) { roadsCls.add(c); roadsName.add(name); }
+          while (stubsCls.size() < stubs.size()) { stubsCls.add(c); stubsName.add(name); }
         }
       }
     }
@@ -405,6 +440,8 @@ final class MapView extends View {
     s.roads = roads.toArray(new float[0][]);
     s.stubsCls = ints(stubsCls);
     s.roadsCls = ints(roadsCls);
+    s.stubsName = stubsName.toArray(new String[0]);
+    s.roadsName = roadsName.toArray(new String[0]);
     s.routeBox = boxes(s.route);
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
@@ -593,6 +630,180 @@ final class MapView extends View {
     }
   }
 
+  // ---- street names
+
+  // The street the car is on, from the named tile roads near it; see ON_ROAD for the rules.
+  private void currentRoad(Scene s, float ce, float cn, double h, long now) {
+    if (now - roadAt < ROAD_EVERY_MS) return;
+    roadAt = now;
+    boolean free = s.route.length == 0;
+    float[][] runs = free ? s.roads : s.stubs, boxes = free ? s.roadsBox : s.stubsBox;
+    String[] names = free ? s.roadsName : s.stubsName;
+    double hx = Math.sin(h), hy = Math.cos(h), aligned = Math.cos(Math.toRadians(ON_ROAD_DEG));
+    String best = null;
+    double bestD = ON_ROAD, curD = Double.MAX_VALUE;
+    for (int r = 0; r < runs.length; r++) {
+      String name = names[r];
+      float[] b = boxes[r];
+      if (name == null || b[2] < ce - ON_ROAD || b[0] > ce + ON_ROAD || b[3] < cn - ON_ROAD || b[1] > cn + ON_ROAD) continue;
+      float[] p = runs[r];
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        double dx = p[i + 2] - p[i], dy = p[i + 3] - p[i + 1], l2 = dx * dx + dy * dy;
+        if (l2 < 1 || Math.abs(dx * hx + dy * hy) < aligned * Math.sqrt(l2)) continue;  // either direction of travel
+        double t = Math.max(0, Math.min(1, ((ce - p[i]) * dx + (cn - p[i + 1]) * dy) / l2));
+        double d = Math.hypot(p[i] + t * dx - ce, p[i + 1] + t * dy - cn);
+        if (d >= ON_ROAD) continue;
+        if (d < bestD) {
+          bestD = d;
+          best = name;
+        }
+        if (name.equals(onRoad)) curD = Math.min(curD, d);
+      }
+    }
+    if (best == null) {
+      switchTo = null;
+      if (onRoad != null && lostSince == 0) lostSince = now;
+      if (onRoad != null && now - lostSince > ROAD_LOST_MS) onRoad = null;
+      return;
+    }
+    lostSince = 0;
+    if (onRoad == null || curD == Double.MAX_VALUE) {
+      onRoad = best;  // nothing shown yet, or the car has left the shown road
+      switchTo = null;
+    } else if (best.equals(onRoad) || bestD + ROAD_CLEARLY >= curD) {
+      switchTo = null;
+    } else if (!best.equals(switchTo)) {
+      switchTo = best;
+      switchSince = now;
+    } else if (now - switchSince >= ROAD_SWITCH_MS) {
+      onRoad = best;
+      switchTo = null;
+    }
+  }
+
+  // Screen position of the car-frame point (x, z) through the camera, or null when it is off the drawn box.
+  private boolean project(float x, float z, float off, float[] out) {
+    if (x < BOX_X0 || x > BOX_X1 || z < BOX_Z0 || z > BOX_Z1) return false;
+    float w = cam[6] * x + cam[7] * z + cam[8];
+    if (w <= 0.01f) return false;
+    out[0] = (cam[0] * x + cam[1] * z + cam[2]) / w + off;
+    out[1] = (cam[3] * x + cam[4] * z + cam[5]) / w;
+    return true;
+  }
+
+  // Whether a label box centred on (x, y) would cover a card, the car, the speed sign, the street tag or the edges.
+  // Off the map: left of the cards (or of the tach needle without a route), and the fog at the top.
+  private boolean blocked(float x, float y, float w, boolean free) {
+    float l = x - w / 2 - 3, r = x + w / 2 + 3, t = y - 9, b = y + 7;
+    if (l < (free ? CARD_L + 6 : CARD_R + 10) || r > 578 || t < LABEL_TOP || b > 212) return true;
+    float carX = free ? FREE_X : CAR_X;
+    if (hits(l, t, r, b, carX - 30, CAR_Y - 32, carX + 30, 215)) return true;
+    if (Feed.limitMs > 0 && hits(l, t, r, b, 466, 24, 522, 90)) return true;
+    if (tagBox[2] > tagBox[0] && hits(l, t, r, b, tagBox[0] - 6, tagBox[1] - 6, tagBox[2] + 6, tagBox[3] + 6)) return true;
+    return free && Feed.mediaStatus != null && !TextUtils.isEmpty(Feed.mediaTitle)
+        && hits(l, t, r, b, CARD_L - 6, SONG_T - 6, SONG_R + SLANT + 6, 215);
+  }
+
+  private static boolean hits(float l, float t, float r, float b, float l2, float t2, float r2, float b2) {
+    return l < r2 && l2 < r && t < b2 && t2 < b;
+  }
+
+  // Picks up to LABELS other named streets and where to write them, every LABEL_EVERY_MS. Samples every LABEL_STEP
+  // display metres along each named road in view, nearest the car first (service roads last), and takes the first
+  // clear spot for each name.
+  private void placeLabels(Scene s, float ce, float cn, float ch, float sh, float ik, float reach, boolean free,
+                           String current, long now) {
+    if (now - labelAt < LABEL_EVERY_MS) return;
+    labelAt = now;
+    float[][] runs = free ? s.roads : s.stubs, boxes = free ? s.roadsBox : s.stubsBox;
+    String[] names = free ? s.roadsName : s.stubsName;
+    int[] cls = free ? s.roadsCls : s.stubsCls;
+    float off = free ? FREE_X - CAR_X : 0, step = LABEL_STEP / ik;
+    float[] q = new float[2];
+    List<float[]> found = new ArrayList<float[]>();  // cost, run, e, n, x, y
+    for (int r = 0; r < runs.length; r++) {
+      String name = names[r];
+      float[] b = boxes[r];
+      if (name == null || name.equals(current)) continue;
+      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
+      float[] p = runs[r];
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        float dx = p[i + 2] - p[i], dy = p[i + 3] - p[i + 1];
+        int pieces = Math.max(1, (int) Math.ceil(Math.hypot(dx, dy) / step));
+        for (int j = 0; j < pieces; j++) {
+          float f = (j + 0.5f) / pieces, e = p[i] + f * dx, n = p[i + 1] + f * dy, de = e - ce, dn = n - cn;
+          if (!project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q)) continue;
+          if (q[1] < LABEL_TOP + 9 || q[1] > 205) continue;
+          float cost = (float) Math.hypot(de, dn) + (cls[r] == 4 ? MINOR_COST : 0);
+          found.add(new float[] {cost, r, e, n, q[0], q[1]});
+        }
+      }
+    }
+    java.util.Collections.sort(found, new java.util.Comparator<float[]>() {
+      @Override
+      public int compare(float[] a, float[] b) {
+        return Float.compare(a[0], b[0]);
+      }
+    });
+    int count = 0;
+    HashSet<String> done = new HashSet<String>();
+    for (float[] c : found) {
+      if (count == LABELS) break;
+      String name = names[(int) c[1]];
+      if (done.contains(name)) continue;
+      String text = TextUtils.ellipsize(name, label, LABEL_MAX_W, TextUtils.TruncateAt.END).toString();
+      float w = label.measureText(text);
+      if (blocked(c[4], c[5], w, free)) continue;
+      boolean clear = true;
+      for (int i = 0; i < count && clear; i++) {
+        clear = !hits(c[4] - w / 2 - LABEL_GAP, c[5] - 9 - LABEL_GAP, c[4] + w / 2 + LABEL_GAP, c[5] + 7 + LABEL_GAP,
+                      labelX[i] - labelW[i] / 2, labelY[i] - 9, labelX[i] + labelW[i] / 2, labelY[i] + 7);
+      }
+      if (!clear || crossed(runs, boxes, (int) c[1], c[2], c[3], c[4], w, ce, cn, ch, sh, ik, off, q)) continue;
+      done.add(name);
+      labelText[count] = text;
+      labelE[count] = c[2];
+      labelN[count] = c[3];
+      labelW[count] = w;
+      labelX[count] = c[4];
+      labelY[count] = c[5];
+      count++;
+    }
+    labelCount = count;
+  }
+
+  // Whether another road runs under a label written at (e, n) on run r: a name centred on a junction could be read
+  // as either street. The label's half width is turned into display metres with the screen scale at that point.
+  private boolean crossed(float[][] runs, float[][] boxes, int r, float e, float n, float x, float w, float ce,
+                          float cn, float ch, float sh, float ik, float off, float[] q) {
+    float de = e - ce, dn = n - cn;
+    if (!project((de * ch - dn * sh) * ik + 5, (de * sh + dn * ch) * ik, off, q)) return true;
+    float px = Math.abs(q[0] - x);  // screen px across 5 camera units beside the label
+    double clear = (w / 2 + 4) / Math.max(px, 0.5f) * 5 / ik;
+    for (int o = 0; o < runs.length; o++) {
+      float[] b = boxes[o], t = runs[o];
+      if (o == r || b[2] < e - clear || b[0] > e + clear || b[3] < n - clear || b[1] > n + clear) continue;
+      for (int j = 0; j + 3 < t.length; j += 2) {
+        double sx = t[j + 2] - t[j], sy = t[j + 3] - t[j + 1], l2 = sx * sx + sy * sy;
+        double u = l2 < 1e-6 ? 0 : Math.max(0, Math.min(1, ((e - t[j]) * sx + (n - t[j + 1]) * sy) / l2));
+        if (Math.hypot(t[j] + u * sx - e, t[j + 1] + u * sy - n) < clear) return true;
+      }
+    }
+    return false;
+  }
+
+  // The chosen labels follow the map between choices; one that has moved onto something is left out this frame.
+  private void moveLabels(float ce, float cn, float ch, float sh, float ik, boolean free) {
+    float off = free ? FREE_X - CAR_X : 0;
+    float[] q = new float[2];
+    for (int i = 0; i < labelCount; i++) {
+      float de = labelE[i] - ce, dn = labelN[i] - cn;
+      labelOn[i] = project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q) && !blocked(q[0], q[1], labelW[i], free);
+      labelX[i] = q[0];
+      labelY[i] = q[1];
+    }
+  }
+
   // ---- drawing
 
   @Override
@@ -660,6 +871,10 @@ final class MapView extends View {
 
     // with no route there is no turn text, so the map takes the whole meter: the car at its centre
     boolean free = s.route.length == 0;
+    currentRoad(s, ce, cn, h, now);
+    String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+    placeLabels(s, ce, cn, ch, sh, ik, reach, free, shown, now);
+    moveLabels(ce, cn, ch, sh, ik, free);
     long t1 = SystemClock.uptimeMillis();
     canvas.save();
     if (free) canvas.translate(FREE_X - CAR_X, 0f);
@@ -889,13 +1104,21 @@ final class MapView extends View {
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
     canvas.drawRect(0, 0, 584, 78, fog);
+    for (int i = 0; i < labelCount; i++) {
+      if (!labelOn[i]) continue;
+      canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, halo);
+      canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, label);
+    }
 
     View lanes = find("drive_way_layout");
     float streetY = lanes != null && lanes.isShown() ? navi.getTop() + lanes.getBottom() + 22 : 48;
     boolean hasSign = Feed.limitMs > 0;
     // the road the car is on, from the comma's route. Android Auto's next_road is the next turn's street, already on the
     // turn card; over the map it read as the current road (Peter's photo 2026-10-30, East Bethany Drive was the next turn)
-    CharSequence name = Feed.road;
+    // With no route, or a route step without a road name, the street found under the car in the road tiles
+    // (Peter 2026-10-30).
+    CharSequence name = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+    tagBox[2] = tagBox[0];
     if (!TextUtils.isEmpty(name)) {
       // a tag centred over the map between the cards and the sign, pointing down at the road
       float left = free ? 0 : CARD_R, right = hasSign ? 466 : 584;
@@ -906,6 +1129,10 @@ final class MapView extends View {
       String n = TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString();
       float w = street.measureText(n) + 24, t = streetY - 19, b = streetY + 7;
       RectF r = new RectF(cx - w / 2, t, cx + w / 2, b);
+      tagBox[0] = cx - w / 2;
+      tagBox[1] = t;
+      tagBox[2] = cx + w / 2;
+      tagBox[3] = b + 7;
       Path tip = new Path();
       tip.moveTo(cx - 7, b - 1);
       tip.lineTo(cx, b + 7);

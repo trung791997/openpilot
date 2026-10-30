@@ -42,6 +42,8 @@ final class Feed {
     final int x, y;
     final float[][] pts = new float[5][];  // per road class: x, y pairs in tile units (0..4096 over the tile)
     final int[][] starts = new int[5][];   // per road class: index of each line's first point, then the end
+    // per road class: each line's street name, null when it has none (or the comma sent a format 1 tile).
+    final String[][] names = new String[5][];
 
     Tile(int x, int y) {
       this.x = x;
@@ -227,7 +229,8 @@ final class Feed {
       if (have.length() >= HAVE_MAX) break;
       have.put(k);
     }
-    return new JSONObject().put("v", 1).put("t", "h").put("have", have).toString().getBytes("UTF-8");
+    // rt 2: this app reads road tiles with street names (Peter, 2026-10-30); without it the comma sends format 1
+    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", 2).toString().getBytes("UTF-8");
   }
 
   private static void handle(JSONObject m) throws Exception {
@@ -368,12 +371,15 @@ final class Feed {
     }
   }
 
-  // road_tiles.py encode_road_tile: "SPRT", version 1, class count, then zlib of per class
+  // road_tiles.py encode_road_tile: "SPRT", version, class count, then zlib of per class
   // <BII (class, lines, points), the line lengths as <u2, and the points as <i4 x, y deltas.
+  // Version 2 puts the tile's street names first (<H count, then <B length + UTF-8 each) and an <u2 name
+  // index per line (0 = none) after the line lengths.
   static Tile decode(int x, int y, byte[] raw) throws Exception {
-    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] != 1) {
+    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] < 1 || raw[4] > 2) {
       throw new IllegalArgumentException("not a road tile");
     }
+    int version = raw[4];
     int classes = raw[5] & 0xff;
     Inflater inflater = new Inflater();
     ByteArrayOutputStream body = new ByteArrayOutputStream(raw.length * 4);
@@ -391,14 +397,32 @@ final class Feed {
     }
     ByteBuffer b = ByteBuffer.wrap(body.toByteArray()).order(ByteOrder.LITTLE_ENDIAN);
     Tile tile = new Tile(x, y);
+    String[] table = new String[0];
+    if (version >= 2) {
+      table = new String[b.getShort() & 0xffff];
+      for (int i = 0; i < table.length; i++) {
+        int len = b.get() & 0xff;
+        table[i] = new String(b.array(), b.position(), len, "UTF-8");
+        b.position(b.position() + len);
+      }
+    }
     for (int c = 0; c < classes; c++) {
       int cls = b.get() & 0xff, lines = b.getInt(), total = b.getInt();
-      if (cls >= 5 || lines < 0 || total < 0 || (long) lines * 2 + (long) total * 8 > b.remaining()) {
+      if (cls >= 5 || lines < 0 || total < 0 || (long) lines * (version >= 2 ? 4 : 2) + (long) total * 8 > b.remaining()) {
         throw new IllegalArgumentException("bad road tile class");
       }
       int[] starts = new int[lines + 1];
       for (int l = 0; l < lines; l++) starts[l + 1] = starts[l] + (b.getShort() & 0xffff);
       if (starts[lines] != total) throw new IllegalArgumentException("bad road tile lengths");
+      if (version >= 2) {
+        String[] names = new String[lines];
+        for (int l = 0; l < lines; l++) {
+          int k = b.getShort() & 0xffff;
+          if (k > table.length) throw new IllegalArgumentException("bad road tile name");
+          names[l] = k == 0 ? null : table[k - 1];
+        }
+        tile.names[cls] = names;
+      }
       float[] pts = new float[total * 2];
       int ax = 0, ay = 0;
       for (int p = 0; p < total; p++) {

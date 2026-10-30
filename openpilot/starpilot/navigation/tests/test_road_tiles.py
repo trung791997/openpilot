@@ -1,12 +1,14 @@
 import gzip
 import math
+import zlib
 
 import numpy as np
 import pytest
 
 from openpilot.starpilot.navigation.road_tiles import (
-  DATA_ZOOM, EXTENT, LINK, MAJOR, MINOR, MOTORWAY, STREET, TileFormatError, TileKey, corridor_tiles, decode_mvt_roads,
-  decode_road_tile, encode_road_tile, lat_lon, meters_per_tile, tiles_in_radius, world_xy,
+  DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, STREET, TileFormatError, TileKey, corridor_tiles,
+  decode_mvt_named_roads, decode_mvt_roads, decode_road_tile, downgrade_road_tile, encode_road_tile, lat_lon,
+  meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
 )
 
 
@@ -45,15 +47,29 @@ def _geometry(lines):
 
 
 def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
-  """features: (class, kind, lines)."""
-  classes = sorted({feature[0] for feature in features})
+  """features: (class, kind, lines) or (class, kind, lines, {other tag: string value})."""
+  keys, values = ["class"], []
+  for feature in features:
+    for key in (feature[3] if len(feature) > 3 else {}):
+      if key not in keys:
+        keys.append(key)
+
+  def value_index(value):
+    if value not in values:
+      values.append(value)
+    return values.index(value)
+
   body = _field(15, 0, 2) + _field(1, 2, layer.encode())
-  for cls, kind, lines in features:
-    feature = _field(2, 2, _varint(0) + _varint(classes.index(cls))) + _field(3, 0, kind) + _field(4, 2, _geometry(lines))
+  for feature_tags in features:
+    cls, kind, lines = feature_tags[:3]
+    tags = {"class": cls, **(feature_tags[3] if len(feature_tags) > 3 else {})}
+    packed = b"".join(_varint(keys.index(key)) + _varint(value_index(value)) for key, value in tags.items())
+    feature = _field(2, 2, packed) + _field(3, 0, kind) + _field(4, 2, _geometry(lines))
     body += _field(2, 2, feature)
-  body += _field(3, 2, b"class")
-  for cls in classes:
-    body += _field(4, 2, _field(1, 2, cls.encode()))
+  for key in keys:
+    body += _field(3, 2, key.encode())
+  for value in values:
+    body += _field(4, 2, _field(1, 2, value.encode()))
   body += _field(5, 0, extent)
   tile = b""
   if extra_layer:
@@ -111,6 +127,56 @@ def test_empty_tile_and_corruption():
   for bad in (b"", b"XXXX" + raw[4:], raw[:-3], raw + b"\0"):
     with pytest.raises(TileFormatError):
       decode_road_tile(key, bad)
+
+
+def test_decoder_reads_street_names_with_ref_as_fallback():
+  data = mvt([("primary", 2, [[(0, 0), (10, 0)], [(10, 0), (20, 0)]], {"name": "Main Street"}),
+              ("motorway", 2, [[(0, 5), (50, 5)]], {"ref": "I 5"}),
+              ("motorway", 2, [[(0, 9), (50, 9)]], {"name": "Golden State Freeway", "ref": "I 5"}),
+              ("street", 2, [[(1, 1), (2, 2)]])])
+  roads, names = decode_mvt_named_roads(data)
+  assert names[MAJOR] == ["Main Street", "Main Street"], "one name per line, even when a feature has several"
+  assert names[MOTORWAY] == ["I 5", "Golden State Freeway"]
+  assert names[STREET] == [""]
+  assert all(len(names[cls]) == len(roads[cls]) for cls in roads)
+  assert decode_mvt_roads(data).keys() == roads.keys()
+
+
+def test_names_are_stored_once_per_tile_and_survive_the_round_trip():
+  line = np.array([[0, 0], [100, 0]])
+  roads = {MAJOR: [line, line + 1, line + 2], STREET: [line + 3, line + 4]}
+  names = {MAJOR: ["Main Street", "Main Street", ""], STREET: ["Main Street", "Ünïcode Ave"]}
+  raw = encode_road_tile(roads, names)
+  assert road_tile_version(raw) == 2
+  tile = decode_road_tile(TileKey(14, 0, 0), raw)
+  assert tile.names == ("Main Street", "Ünïcode Ave"), "a street split into many lines is stored once"
+  assert [tile.name_of(MAJOR, i) for i in range(3)] == ["Main Street", "Main Street", ""]
+  assert [tile.name_of(STREET, i) for i in range(2)] == ["Main Street", "Ünïcode Ave"]
+  assert tile.name_of(MINOR, 0) == ""
+  # the names table costs little next to the same tile without names
+  assert len(raw) - len(encode_road_tile(roads)) < 40
+  # an over-long name is cut at a character boundary, never mid-character
+  long = encode_road_tile({MAJOR: [line]}, {MAJOR: ["é" * 100]})
+  assert decode_road_tile(TileKey(14, 0, 0), long).names == ("é" * (MAX_NAME_BYTES // 2),)
+
+
+def test_version_1_tiles_still_decode_and_new_ones_downgrade_for_old_head_units():
+  line = np.array([[0, 0], [100, 50], [90, 70]])
+  roads, names = {MOTORWAY: [line], STREET: [line + 5]}, {MOTORWAY: ["I 5"], STREET: ["Elm"]}
+  old = encode_road_tile(roads, version=1)
+  assert road_tile_version(old) == 1 and old[4] == 1
+  tile = decode_road_tile(TileKey(14, 0, 0), old)
+  assert tile.version == 1 and tile.names == () and tile.name_of(MOTORWAY, 0) == ""
+  new = encode_road_tile(roads, names)
+  down = downgrade_road_tile(new)
+  assert down == old, "the head unit before 2026-10-30 gets exactly the old format"
+  assert downgrade_road_tile(old) == old and downgrade_road_tile(b"fake") == b"fake"
+  # an index past the names table is corrupt, not a crash later in the renderer
+  bad = bytearray(new)
+  body = bytearray(zlib.decompress(bytes(bad[6:])))
+  body[2 + 1 + 3 + 1 + 3 + 9 + 2] = 9  # first motorway line's name index
+  with pytest.raises(TileFormatError):
+    decode_road_tile(TileKey(14, 0, 0), bytes(bad[:6]) + zlib.compress(bytes(body)))
 
 
 def test_mercator_round_trip_and_scale():

@@ -148,6 +148,30 @@ def test_road_tiles_go_only_to_head_units_that_take_them_and_lack_them():
   assert 'm' not in sock.kinds()
 
 
+def test_named_tiles_go_as_is_to_new_head_units_and_without_names_to_old_ones():
+  import numpy as np
+  from openpilot.starpilot.navigation.road_tiles import MAJOR, decode_road_tile, encode_road_tile, TileKey
+  roads, names = {MAJOR: [np.array([[0, 0], [400, 0]])]}, {MAJOR: ['Bolsa Ave']}
+  raw = encode_road_tile(roads, names)
+
+  def received(sock):
+    return b''.join(base64.b64decode(m['b']) for m, _ in sock.sent if m['t'] == 'm')
+
+  feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
+  sock.hello(have=['1/1'])                 # an app from before street names: no "rt"
+  feed.tick()
+  old = received(sock)
+  assert old[4] == 1 and old == encode_road_tile(roads, version=1), "an old app would drop format 2 and get it resent forever"
+  feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
+  sock.hello(have=['1/1'], rt=2)
+  feed.tick()
+  assert received(sock) == raw and decode_road_tile(TileKey(14, 1, 2), received(sock)).name_of(MAJOR, 0) == 'Bolsa Ave'
+  feed, sock, now, _ = make(tiles=lambda key: b'SPRT\x02\x01broken' if key == '1/2' else None)
+  sock.hello(have=['1/1'])
+  feed.tick()
+  assert 'm' not in sock.kinds()           # a broken file is skipped, not sent to be dropped
+
+
 def test_datagrams_fit_one_frame():
   feed, sock, now, _ = make(snapshot(route=('s:1', [(-33.123456, -117.123456)] * 300)),
                             tiles=lambda key: bytes(5000))

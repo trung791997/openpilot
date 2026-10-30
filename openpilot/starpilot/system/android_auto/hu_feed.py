@@ -13,7 +13,10 @@ unit asking, nothing about the drive leaves the comma and the sensors are never 
 
 Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
   b  beacon, broadcast, 1 Hz: {"port"}
-  h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...]} road tiles it holds; no "have", no tiles
+  h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...], "rt"} road tiles it holds; no "have", no tiles.
+     rt is the newest road tile format it reads (2: street names per line); without rt it reads only format 1,
+     and gets its tiles turned back into format 1 (an older app drops anything else, and the comma would resend
+     it every TILE_RETRY s)
   s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
      limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
      {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its
@@ -21,7 +24,8 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      is (ms) when sent, or null; it is left out of the change check, so a playing song does not resend every tick.
   r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
   p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
-  m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py)
+  m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
+     in the hello's rt format or older
   a  album cover, once it is downloaded and every COVER_EVERY s while a song is on: {"id", "i", "n", "b": base64};
      a COVER_PX square JPEG, id as media's art
 """
@@ -163,6 +167,15 @@ def tile_reader() -> Callable[[str], bytes | None]:
     x, y = (int(part) for part in name.split('/'))
     return store.read(TileKey(DATA_ZOOM, x, y))
   return read
+
+
+def tile_for(raw: bytes, version: int) -> bytes:
+  """A stored tile in a format the head unit reads: head unit apps from before 2026-10-30 take only format 1."""
+  from openpilot.starpilot.navigation.road_tiles import downgrade_road_tile, road_tile_version
+  have = road_tile_version(raw)
+  if have is None or have <= version:
+    return raw
+  return downgrade_road_tile(raw, version)
 
 
 def tiles_around(lat: float, lon: float) -> list[str]:
@@ -333,6 +346,7 @@ class HeadUnitFeed:
     self.peer: tuple[str, int] | None = None
     self.peer_seen = -math.inf
     self.have: set[str] | None = None  # None: this head unit takes no road tiles
+    self.tile_version = 1  # newest road tile format the head unit reads
     self.last_beacon = self.last_state = self.last_route = -math.inf
     self.sent_state: dict | None = None
     self.sent_route: str | None = None
@@ -396,6 +410,8 @@ class HeadUnitFeed:
       self.peer_seen = now
       have = message.get('have')
       self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
+      rt = message.get('rt')
+      self.tile_version = rt if isinstance(rt, int) and not isinstance(rt, bool) and rt >= 1 else 1
 
   def tick(self) -> bool:
     """One pass; True when there is no head unit to feed."""
@@ -451,6 +467,11 @@ class HeadUnitFeed:
           continue
         raw = self._tiles(key)
         if raw:
+          try:
+            raw = tile_for(raw, self.tile_version)
+          except ValueError:
+            self.tile_sent[key] = now  # a broken file: try again after TILE_RETRY, maybe re-downloaded by then
+            continue
           parts = [base64.b64encode(raw[i:i + TILE_CHUNK]).decode() for i in range(0, len(raw), TILE_CHUNK)]
           self.sending = [json.dumps({'v': VERSION, 't': 'm', 'k': key, 'i': i, 'n': len(parts), 'b': part},
                                      separators=(',', ':')).encode() for i, part in enumerate(parts)]

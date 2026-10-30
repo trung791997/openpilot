@@ -106,6 +106,26 @@ def test_near_car_tiles_are_saved_as_you_drive(tmp_path):
   assert any(d.store.has("cache", key) for key in ahead_tiles(36.30, -115.1728, 0.0))
 
 
+def test_near_tiles_saved_without_street_names_are_fetched_again_once(tmp_path):
+  import numpy as np
+  from openpilot.starpilot.navigation.road_tiles import MAJOR, encode_road_tile
+  named = mvt([("primary", 2, [[(0, 0), (4096, 4096)]], {"name": "Las Vegas Blvd"})])
+  d = daemon(tmp_path, Session(body=named))
+  keys = ahead_tiles(36.1147, -115.1728, 0.0)
+  old = encode_road_tile({MAJOR: [np.array([[0, 0], [9, 9]])]}, version=1)
+  d.store.write("saved", keys[0], old)
+  env = Environment(token="pk.test", network="cellular", onroad=True, map_enabled=True,
+                    position=(36.1147, -115.1728), bearing=0.0)
+  run(d, env)
+  tile = decode_road_tile(keys[0], d.store.read(keys[0]))
+  assert tile.version == 2 and tile.names == ("Las Vegas Blvd",)
+  assert d.store.has("saved", keys[0]), "it stays in the saved area it came from"
+  fetched = len(d.fetcher.session.urls)
+  d.near_key = None
+  run(d, env)
+  assert len(d.fetcher.session.urls) == fetched, "named tiles are not fetched again"
+
+
 def test_map_off_or_offroad_fetches_nothing_near_the_car(tmp_path):
   d = daemon(tmp_path)
   for env in (Environment(token="pk.test", network="wifi", onroad=True, map_enabled=False, position=(36.1, -115.1)),

@@ -29,11 +29,12 @@ from openpilot.starpilot.navigation.offline_roads import (
   AREA_REFRESH_SECONDS, CACHE_MAX_BYTES, DRIVEN_MAX_BYTES, SAVED_MAX_BYTES, OfflineState, TileStore, Usage, area_tiles,
 )
 from openpilot.starpilot.navigation.road_tiles import (
-  DATA_ZOOM, MAX_DOWNLOAD_BYTES, MVT_URL, TileFormatError, TileKey, corridor_tiles, decode_mvt_roads, encode_road_tile,
-  meters_per_tile, tiles_in_radius, world_xy,
+  DATA_ZOOM, MAX_DOWNLOAD_BYTES, MVT_URL, TileFormatError, TileKey, corridor_tiles, decode_mvt_named_roads,
+  encode_road_tile, meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
 )
 
 NEAR_RADIUS_M = 2500.0
+VERSION_WITH_NAMES = 2
 AHEAD_M = 6000.0
 REQUEST_TIMEOUT = (4.0, 10.0)
 NETWORK_BACKOFF_S, SERVER_BACKOFF_S, KEY_BACKOFF_S = 15.0, 30.0, 300.0
@@ -143,11 +144,11 @@ class Fetcher:
     elif status != 200:
       return None
     try:
-      roads = decode_mvt_roads(data) if data else {}
+      roads, names = decode_mvt_named_roads(data) if data else ({}, {})
     except (TileFormatError, OSError, EOFError, ValueError):
       return None
     self.failure = None
-    return encode_road_tile(roads)
+    return encode_road_tile(roads, names)
 
 
 class AreaProgress:
@@ -209,6 +210,10 @@ class TileDaemon:
     self.clock, self.wall = clock, wall
     self.urgent: deque[TileKey] = deque()
     self.urgent_kind = "cache"
+    # Near-car tiles saved before street names were stored (format 1), each fetched again once so the
+    # dash map can name the street the car is on (Peter, 2026-10-30). key -> directory it lives in.
+    self.upgrades: dict[TileKey, str] = {}
+    self.upgraded: set[TileKey] = set()
     self.route_plan: list[TileKey] = []
     self.route_index = 0
     self.route_key: tuple | None = None
@@ -289,10 +294,26 @@ class TileDaemon:
       self.sizes[name] = max(0, self.sizes[name] + self._tile_size(name, key) - sizes[name])
     return promoted
 
+  @staticmethod
+  def _unnamed(path) -> bool:
+    try:
+      with open(path, "rb") as handle:
+        version = road_tile_version(handle.read(8))
+    except OSError:
+      return False
+    return version is not None and version < VERSION_WITH_NAMES
+
   def _urgent_job(self) -> TileKey | None:
     while self.urgent:
       key = self.urgent.popleft()
-      if self.store.find(key) is None:
+      found = self.store.find(key)
+      if found is None:
+        return key
+      if key not in self.upgraded and self._unnamed(found):
+        if len(self.upgraded) > 20000:
+          self.upgraded.clear()
+        self.upgraded.add(key)
+        self.upgrades[key] = found.relative_to(self.store.root).parts[0]
         return key
       if self.urgent_kind == "driven":
         self._promote("driven", key)
@@ -320,8 +341,9 @@ class TileDaemon:
     key = self._urgent_job()
     if key is not None:
       data = self.fetcher.fetch(key, env.token)
+      kind = self.upgrades.pop(key, self.urgent_kind)
       if data is not None:
-        if not self._store(self.urgent_kind, key, data):
+        if not self._store(kind, key, data):
           self.urgent.appendleft(key)
       elif self.fetcher.blocked:
         self.urgent.appendleft(key)
