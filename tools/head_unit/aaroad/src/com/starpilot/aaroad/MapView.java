@@ -109,8 +109,9 @@ final class MapView extends View {
   // the cards' shapes and rims never move, so they are built once
   private final Path turnCard = card(CARD_L, TURN_T, CARD_R, TURN_B), tripCard = card(CARD_L, TRIP_T, TRIP_R, TRIP_B),
       songCard = card(CARD_L, SONG_T, SONG_R, SONG_B), turnRim = leftEnd(CARD_L, TURN_T, TURN_B),
-      songRim = rightEnd(SONG_R, SONG_T, SONG_B);
+      songRim = rightEnd(SONG_R, SONG_T, SONG_B), logoWaves = spotifyWaves(SONG_X + LOGO_R, SONG_T + 10, LOGO_R);
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
+  private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
@@ -166,6 +167,7 @@ final class MapView extends View {
     rim.setAntiAlias(true);
     rim.setStyle(Paint.Style.STROKE);
     rim.setStrokeWidth(2);
+    waves.setColor(0xff000000);
     ring.setAntiAlias(true);
     ring.setStyle(Paint.Style.STROKE);
     ring.setStrokeWidth(2.5f);
@@ -852,6 +854,27 @@ final class MapView extends View {
   private static final float SONG_T = 160, SONG_B = 208, SONG_R = 250, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
   private static final float GLYPH_X = 218, GLYPH_R = 14;
   private static final int SPOTIFY = 0xff1ed760;
+  private static final float LOGO_R = 6;
+
+  // Spotify's three sound waves across its green disc, widest on top, each tilted down to the right; the stroke
+  // is filled into a shape once so the frame only draws a path
+  private static Path spotifyWaves(float cx, float cy, float r) {
+    Path out = new Path();
+    float[][] w = {{-0.62f, -0.22f, -0.50f, 0.64f, 0.02f, 0.20f}, {-0.50f, 0.10f, -0.16f, 0.52f, 0.30f, 0.16f},
+                   {-0.40f, 0.40f, 0.16f, 0.42f, 0.56f, 0.13f}};  // x0, y0, control y, x1, y1, width (in r)
+    Paint stroke = new Paint();
+    stroke.setStyle(Paint.Style.STROKE);
+    stroke.setStrokeCap(Paint.Cap.ROUND);
+    for (float[] a : w) {
+      Path arc = new Path(), shape = new Path();
+      arc.moveTo(cx + a[0] * r, cy + a[1] * r);
+      arc.quadTo(cx, cy + a[2] * r, cx + a[3] * r, cy + a[4] * r);
+      stroke.setStrokeWidth(a[5] * r);
+      stroke.getFillPath(arc, shape);
+      out.addPath(shape);
+    }
+    return out;
+  }
 
   private void overlay(Canvas canvas, long now, boolean free) {
     if (!free) canvas.drawRect(0, 0, COL, 215, mask);
@@ -987,8 +1010,9 @@ final class MapView extends View {
     float x = SONG_X;
     if (spotify) {
       fill.setColor(SPOTIFY);
-      canvas.drawCircle(x + 3.5f, SONG_T + 10, 3.5f, fill);
-      x += 11;
+      canvas.drawCircle(x + LOGO_R, SONG_T + 10, LOGO_R, fill);
+      canvas.drawPath(logoWaves, waves);
+      x += 2 * LOGO_R + 4;
     }
     if (!from.isEmpty()) canvas.drawText(fit(from, songFrom, w - (x - SONG_X)), x, SONG_T + 14, songFrom);
     canvas.drawText(fit(title, songTitle, w), SONG_X, SONG_T + 30, songTitle);
