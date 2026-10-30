@@ -43,8 +43,12 @@ final class GlProbe {
           // marker goes in the first of these this process can write, and the probe stays off if none
           Application app = AndroidAppHelper.currentApplication();
           Context own = app != null ? app : ctx;
-          File[] dirs = {own.getCacheDir(), own.getFilesDir(), new File("/data/data/" + own.getPackageName()),
-                         ctx.getCacheDir(), new File("/data/local/tmp")};
+          // the process is Mitsubishi's external-display app (uid 10056, 2026-10-30) with no Application to ask, so
+          // its own folder comes from the process name
+          String proc = processName();
+          File[] dirs = {proc != null ? new File("/data/data/" + proc + "/cache") : null,
+                         proc != null ? new File("/data/data/" + proc) : null,
+                         own.getCacheDir(), own.getFilesDir(), ctx.getCacheDir(), new File("/data/local/tmp")};
           String tried = "uid " + android.os.Process.myUid() + " app " + (app != null ? app.getPackageName() : "none");
           File marker = null;
           for (File d : dirs) {
@@ -162,6 +166,20 @@ final class GlProbe {
     GLES20.glDeleteProgram(prog);
     return idx.length / 3 + " triangles, draw " + ms(drawSum / FRAMES) + " ms avg " + ms(drawMax) + " max, read-back "
         + ms(readSum / FRAMES) + " ms, centre px " + (px.get((H / 2 * W + W / 2) * 4) & 0xff) + ", glError " + err;
+  }
+
+  private static String processName() {
+    try {
+      java.io.FileInputStream in = new java.io.FileInputStream("/proc/self/cmdline");
+      byte[] b = new byte[256];
+      int n = in.read(b);
+      in.close();
+      int end = 0;
+      while (end < n && b[end] != 0) end++;
+      return end > 0 ? new String(b, 0, end, "UTF-8") : null;
+    } catch (java.io.IOException e) {
+      return null;
+    }
   }
 
   private static String ms(long ns) {
