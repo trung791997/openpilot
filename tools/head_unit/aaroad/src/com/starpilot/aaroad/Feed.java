@@ -75,6 +75,8 @@ final class Feed {
   // which matches coverId once the comma's 'a' datagrams have all come in.
   static volatile String mediaStatus, mediaTitle, mediaArtist, mediaSource;
   static volatile long mediaArt;
+  // song progress for the ring round the play button: mediaPos ms in at mediaAt (uptime), mediaDur ms; 0: unknown
+  static volatile long mediaPos, mediaAt, mediaDur;
   static volatile Bitmap cover;
   static volatile long coverId;
 
@@ -254,6 +256,9 @@ final class Feed {
       mediaArtist = media != null ? media.optString("artist") : null;
       mediaSource = media != null ? media.optString("source") : null;
       mediaArt = media != null ? media.optLong("art") : 0;
+      mediaDur = media != null ? media.optLong("dur") : 0;
+      mediaPos = m.isNull("pos") ? -1 : m.optLong("pos");
+      mediaAt = SystemClock.uptimeMillis();
       mediaStatus = media != null ? media.optString("status", "playing") : null;
     } else if (t.equals("r")) {
       onRoute(m);

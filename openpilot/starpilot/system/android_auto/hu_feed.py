@@ -14,10 +14,11 @@ unit asking, nothing about the drive leaves the comma and the sensors are never 
 Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
   b  beacon, broadcast, 1 Hz: {"port"}
   h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...]} road tiles it holds; no "have", no tiles
-  s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media"}; nav is null unless a route is guiding;
+  s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
      limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
-     {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art"}, art the id of its cover
-     (crc32 of the cover URL) or 0 without one. No position, so the state does not change every second.
+     {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its
+     cover (crc32 of the cover URL) or 0 without one, dur the song length in ms or 0. pos is how far into the song it
+     is (ms) when sent, or null; it is left out of the change check, so a playing song does not resend every tick.
   r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
   p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py)
@@ -179,7 +180,20 @@ def media_of(song: dict | None) -> dict | None:
     return None
   url = song.get('artwork') or ''
   return {'status': song['status'], 'title': str(song['title']), 'artist': str(song.get('artist') or ''),
-          'source': str(song.get('source') or ''), 'art': cover_id(url) if isinstance(url, str) else 0}
+          'source': str(song.get('source') or ''), 'art': cover_id(url) if isinstance(url, str) else 0,
+          'dur': song['durationMs'] if isinstance(song.get('durationMs'), int) and song['durationMs'] > 0 else 0}
+
+
+def elapsed_of(song: dict | None, now_ms: float) -> int | None:
+  """How far into the song it is, in ms, for the ring round the play button; None when the player gives no position."""
+  if not isinstance(song, dict) or not isinstance(song.get('position'), dict):
+    return None
+  p, dur = song['position'], song.get('durationMs')
+  try:
+    value = p['ms'] + max(0.0, now_ms - p['at']) * p.get('speed', 1.0) if song.get('status') == 'playing' else p['ms']
+  except (KeyError, TypeError):
+    return None
+  return int(max(0, min(dur, value) if isinstance(dur, int) and dur > 0 else value))
 
 
 def cover_id(url: str) -> int:
@@ -396,8 +410,9 @@ class HeadUnitFeed:
     media = media_of(song)
     state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav'], 'limit': value.get('limit'),
              'media': media}
+    # pos moves every tick, so it rides along with the state but does not count as a change
     if state != self.sent_state or now - self.last_state >= STATE_EVERY:
-      self._send('s', state)
+      self._send('s', {**state, 'pos': elapsed_of(song, time.time() * 1000) if media is not None else None})  # noqa: TID251 epoch-ms anchors
       self.sent_state, self.last_state = state, now
     if media is not None and media['art']:
       self.send_cover(song['artwork'], media['art'], now)

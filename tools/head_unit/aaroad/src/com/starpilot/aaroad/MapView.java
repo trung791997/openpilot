@@ -95,7 +95,7 @@ final class MapView extends View {
   private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
-      rim = new Paint(), blueGlow = new Paint(), greenGlow = new Paint();
+      rim = new Paint(), ring = new Paint(), blueGlow = new Paint(), greenGlow = new Paint();
   // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
   private final TextPaint big = text(36, inter(true), Color.WHITE), unit = text(17, inter(false), 0xffc8d0dc),
       street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
@@ -166,6 +166,10 @@ final class MapView extends View {
     rim.setAntiAlias(true);
     rim.setStyle(Paint.Style.STROKE);
     rim.setStrokeWidth(2);
+    ring.setAntiAlias(true);
+    ring.setStyle(Paint.Style.STROKE);
+    ring.setStrokeWidth(2.5f);
+    ring.setStrokeCap(Paint.Cap.ROUND);
     // gradients, not blur: BlurMaskFilter and shadow layers are too slow for the Tegra's software canvas
     float w = CARD_R - CARD_L;
     blueGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0x661a73ff, 0x001a73ff},
@@ -995,6 +999,17 @@ final class MapView extends View {
     float cy = (SONG_T + SONG_B) / 2;
     fill.setColor(0xff2e2e2e);
     canvas.drawCircle(GLYPH_X, cy, GLYPH_R, fill);
+    // a green ring round the button fills clockwise from the top as the song plays (Peter 2026-10-30)
+    long dur = Feed.mediaDur, pos = Feed.mediaPos;
+    if (dur > 0 && pos >= 0) {
+      if ("playing".equals(status)) pos += SystemClock.uptimeMillis() - Feed.mediaAt;
+      float done = Math.min(1f, pos / (float) dur);
+      RectF ringBox = new RectF(GLYPH_X - GLYPH_R, cy - GLYPH_R, GLYPH_X + GLYPH_R, cy + GLYPH_R);
+      ring.setColor(0x33ffffff);
+      canvas.drawArc(ringBox, 0, 360, false, ring);
+      ring.setColor(SPOTIFY);
+      canvas.drawArc(ringBox, -90, 360 * done, false, ring);
+    }
     fill.setColor(Color.WHITE);
     if ("playing".equals(status)) {
       canvas.drawRect(GLYPH_X - 5, cy - 6, GLYPH_X - 2, cy + 6, fill);

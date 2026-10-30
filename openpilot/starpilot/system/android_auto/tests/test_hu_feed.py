@@ -220,7 +220,11 @@ def test_the_song_rides_in_the_state_without_its_position():
   feed.tick()
   state = next(message for message, _ in sock.sent if message['t'] == 's')
   assert state['media'] == {'status': 'playing', 'title': 'Another Life', 'artist': 'RÜFÜS DU SOL', 'source': 'spotify',
-                            'art': hf.cover_id(ART)}
+                            'art': hf.cover_id(ART), 'dur': 200000}
+  assert state['pos'] == 200000  # anchored long ago: held at the end
+  assert hf.elapsed_of({**SONG, 'position': {'ms': 1000, 'at': 0, 'speed': 1.0}}, 30000) == 31000
+  assert hf.elapsed_of({**SONG, 'status': 'paused'}, 30000) == 1000
+  assert hf.elapsed_of({**SONG, 'position': None}, 30000) is None
   assert hf.cover_id(ART) != 0 and hf.cover_id('') == 0
 
 
