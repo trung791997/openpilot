@@ -86,7 +86,7 @@ final class MapView extends View {
   // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
   // Drawn here from the stock view's picture: moving the view itself put it 70 px right of this, over the road
   // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show
-  private static final int ICON = 52, ICON_LEFT = 52, ICON_TOP = 28;
+  private static final int ICON = 52, ICON_LEFT = 52, ICON_TOP = 31;
 
   static volatile String modulePath;
   private static Bitmap car;
@@ -822,7 +822,8 @@ final class MapView extends View {
 
   private static final float COL = 300;  // the dark band behind the cards, solid as far as they reach: roads showed between them
   // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
-  private static final float CARD_L = 36, CARD_R = 270, TURN_T = 12, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
+  // the turn card starts 18 down: at 12 its top left corner almost met the tach ring (photo 2026-10-30)
+  private static final float CARD_L = 36, CARD_R = 270, TURN_T = 18, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
   private static final float STRIP_W = 10, TEXT_X = 116;
   // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
   private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
@@ -952,10 +953,10 @@ final class MapView extends View {
         float size = 36;  // a long distance shrinks to fit
         big.setTextSize(size);
         while (big.measureText(num) + 5 + unit.measureText(u) > textW && size > 24) big.setTextSize(--size);
-        canvas.drawText(num, TEXT_X, 50, big);
-        canvas.drawText(u, TEXT_X + big.measureText(num) + 5, 50, unit);
+        canvas.drawText(num, TEXT_X, 54, big);
+        canvas.drawText(u, TEXT_X + big.measureText(num) + 5, 54, unit);
       }
-      if (!TextUtils.isEmpty(name)) canvas.drawText(fit(name.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 61 : 82, cardRoad);
+      if (!TextUtils.isEmpty(name)) canvas.drawText(fit(name.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 64 : 84, cardRoad);
     }
 
     // the trip card: time and distance left, a divider, the arrival time
