@@ -21,7 +21,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Brake-onset relief + stop-and-go fix follow the Bosch-A harness (Civic + CR-V 5G), not Civic only | 44d05a2db | f361d7d4e | static (CR-V); Civic unchanged |
 | Curve brake fix: a radar lead whose accel flips from + to - within 1.5 s gets less braking authority (entry 7) | 8a36e513e | 30e08d987 | replay (route 30) + static tests |
 | Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
-| Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower (entry 10) | see entry 10 | see entry 10 | replay (6 of Peter's hard brakes + 8:57 phantom) + static tests; new-brake cost not yet measured |
+| Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower; camera and radar range must agree within max(8 m, 10 %) (entries 10, 12) | see entry 12 | see entry 12 | replay (6 of Peter's hard brakes + 8:57 phantom, 19 real brakes, 747-brake census with stills) + static tests |
 | Stop-and-go: stay stopped behind a stopped car; no gas while crawling inside the 6 m stop gap (entry 11) | see entry 11 | see entry 11 | log check (route 46 segs 14-16, open loop) + static tests |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
@@ -43,6 +43,19 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 12 — 2026-10-30 — Early gentle brake: the camera's lead must sit closer to the radar's lead, so a farther car slowing no longer brakes us hard; on longradar and V-ASM, default ON
+
+**Problem.** Job's census of the early gentle brake (entry 10; 747 brakes, open loop, sw9 = CAM_SLOW_W_MAX 0 vs sw8) moved 16 brakes by more than 0.1. On stills, two were false triggers and one leaned false, all with the leads 80-95 m out: 30a T424 (-2.16 -> -2.75; the camera's lead was another car 10.4 m past the radar's, slowing at a light queue while an SUV sat in the next lane), 237 T1186 (cones, -1.39 -> -1.71) and 311 T2873 (2.3 s early, nothing close in lane). Eight were real slowdowns, three ambiguous. On the 19 real brakes CSB moved only f10, 0.13 deeper in the middle of a real slowdown the radar lagged. 2f8 T537 (8:57 phantom): unchanged, -0.24.
+
+**Change.** `CAM_SLOW_RANGE_M` 10 -> 8 and `CAM_SLOW_RANGE_FRAC` 0.2 -> 0.1: the camera lead counts as the radar lead only within max(8 m, 10 %). Peter approved it 2026-10-30.
+
+**Replay** (Job, open loop, the 16 movers re-run with the gate):
+- Back to the radar-only brake: 30a T424, 311 T2873, and two real ones, 09 T355 (cut-in, -2.73 -> -2.50) and 31 T317 (-1.86 -> -1.63). Where the gate drops CSB the car brakes as it did before entry 10, never less.
+- Kept: 2f8 T1365 (radar 79.8 / camera 80.7 m; onset 1365.2, min -2.73) and the other 11, including 237 T1186 (cones, 9.5 m apart at 95.5 m).
+- Rejected alternative: CSB off past 60 m lost T1365 and kept 30a T424.
+
+**Not verified.** No road evidence. One census set; fidelity is status-only (can_vs_logged is 0 on these routes, a known 0.086 m logging offset, not re-scored). Static: 16 tests pass, two new (30a T424 shape no longer matched; T1365 shape still bounds), ruff clean.
 
 ### 11 — 2026-10-29 — Stop-and-go: stay stopped behind a stopped car, and no gas while crawling inside the stop gap; on longradar and V-ASM, default ON
 

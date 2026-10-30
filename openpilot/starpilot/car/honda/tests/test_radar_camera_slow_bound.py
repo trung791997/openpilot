@@ -145,3 +145,19 @@ def test_one_frame_dip_does_not_restart_hold():
   for i in range(frames(3.0)):
     step(cb, radar_lead(), vision(v=16.0 if i % 6 == 5 else 11.9))
   assert cb.weights[0] > 0.0
+
+
+def test_camera_lead_past_the_radar_lead_is_another_car():
+  # 30a T424 (census pd216): radar 68.4 m, camera lead 78.8 m slowing hard; the old max(10 m, 20 %) matched them
+  cb = CameraSlowBound()
+  for _ in range(frames(4.0)):
+    out = step(cb, radar_lead(d=68.4, v=18.4), vision(d=78.8, v=13.8))
+  assert out['vLead'] == pytest.approx(18.4)
+
+
+def test_route_2f8_t1365_range_match_still_bounds():
+  # 2f8 T1365 at its CSB peak: radar 79.8 m, camera 80.7 m
+  cb = CameraSlowBound()
+  for _ in range(frames(4.0)):
+    out = step(cb, radar_lead(d=79.8, v=17.2), vision(d=80.7, v=11.9))
+  assert out['vLead'] == pytest.approx(17.2 - CAM_SLOW_DV_MAX)

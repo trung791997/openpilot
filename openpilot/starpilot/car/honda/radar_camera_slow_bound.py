@@ -28,8 +28,12 @@ from openpilot.common.realtime import DT_MDL
 
 RADAR_TO_CAMERA = 1.52
 CAM_SLOW_PROB = 0.9          # filtered model lead prob (D-105 CamABound uses the same confidence)
-CAM_SLOW_RANGE_FRAC = 0.2    # same object: |dRel - camera range| <= max(CAM_SLOW_RANGE_M, frac * dRel) (D-105)
-CAM_SLOW_RANGE_M = 10.0
+CAM_SLOW_RANGE_FRAC = 0.1    # same object: |dRel - camera range| <= max(CAM_SLOW_RANGE_M, frac * dRel) (D-105)
+CAM_SLOW_RANGE_M = 8.0       # was max(10 m, 20 %). Census 2026-10-30 (Job, open loop, 16 CSB movers): 2f8 T1365 matched
+                             # within 0.9 m and is kept; 30a T424 (-2.16 -> -2.75, the camera lead a different car
+                             # 10.4 m past the radar's) and 311 T2873 (2.3 s early, nothing close in lane) are dropped.
+                             # Also dropped: two real ones (09 T355 cut-in, 31 T317), which go back to the radar-only
+                             # brake. Kept: 237 T1186 (cones, 9.5 m apart at 95 m).
 CAM_SLOW_DV = 2.0            # camera speed at least this far below radar vLead (m/s)
 CAM_SLOW_HOLD_S = 0.5        # for this long before w starts to rise
 CAM_SLOW_W_MAX = 0.8         # never all the way to the camera speed (0.5 gave 2f8 T1365.04 min -2.86, 0.8 -2.73, replay)
