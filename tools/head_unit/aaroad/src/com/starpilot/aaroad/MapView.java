@@ -1,6 +1,7 @@
 package com.starpilot.aaroad;
 
 import android.content.Context;
+import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -93,14 +94,22 @@ final class MapView extends View {
   private final Matrix camera = new Matrix();
   private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
-      fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint();
-  private final TextPaint big = text(36, true, Color.WHITE), unit = text(18, false, 0xffc8d0dc), street = text(18, true, Color.WHITE),
-      cardDim = text(15, false, 0xffaab4c8), cardRoad = text(20, true, Color.WHITE), trip = text(20, true, Color.WHITE),
-      tripClock = text(17, false, 0xffd8dee8),
-      songFrom = text(11, false, 0xffaab4c8), songTitle = text(16, true, Color.WHITE), songArtist = text(13, false, 0xffaab4c8),
-      sign = text(8.5f, true, 0xff111111),
-      signBig = text(23, true, 0xff111111);
+      fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
+      rim = new Paint(), blueGlow = new Paint(), greenGlow = new Paint();
+  // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
+  private final TextPaint big = text(36, inter(true), Color.WHITE), unit = text(17, inter(false), 0xffc8d0dc),
+      street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
+      cardRoad = text(19, inter(true), Color.WHITE), trip = text(18, inter(true), Color.WHITE),
+      tripClock = text(15, inter(false), 0xffd8dee8),
+      songFrom = text(11, inter(false), 0xffaab4c8), songTitle = text(15, inter(true), Color.WHITE),
+      songArtist = text(12, inter(false), 0xffaab4c8),
+      sign = text(8.5f, Typeface.DEFAULT_BOLD, 0xff111111),
+      signBig = text(23, Typeface.DEFAULT_BOLD, 0xff111111);
   private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path(), coverClip = new Path();
+  // the cards' shapes and rims never move, so they are built once
+  private final Path turnCard = card(CARD_L, TURN_T, CARD_R, TURN_B), tripCard = card(CARD_L, TRIP_T, TRIP_R, TRIP_B),
+      songCard = card(CARD_L, SONG_T, SONG_R, SONG_B), turnRim = leftEnd(CARD_L, TURN_T, TURN_B),
+      songRim = rightEnd(SONG_R, SONG_T, SONG_B);
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
@@ -154,6 +163,15 @@ final class MapView extends View {
     edge.setStyle(Paint.Style.STROKE);
     edge.setStrokeWidth(1);
     edge.setColor(0x38ffffff);
+    rim.setAntiAlias(true);
+    rim.setStyle(Paint.Style.STROKE);
+    rim.setStrokeWidth(2);
+    // gradients, not blur: BlurMaskFilter and shadow layers are too slow for the Tegra's software canvas
+    float w = CARD_R - CARD_L;
+    blueGlow.setShader(new LinearGradient(CARD_L, 0, CARD_L + 0.4f * w, 0, new int[] {0x661a73ff, 0x001a73ff},
+                                          new float[] {0, 1}, Shader.TileMode.CLAMP));
+    greenGlow.setShader(new LinearGradient(SONG_R, 0, SONG_R - 0.35f * (SONG_R - CARD_L), 0, new int[] {0x55000000 | (SPOTIFY & 0xffffff),
+                                           SPOTIFY & 0xffffff}, new float[] {0, 1}, Shader.TileMode.CLAMP));
     street.setTextAlign(Paint.Align.CENTER);
     sign.setTextAlign(Paint.Align.CENTER);
     signBig.setTextAlign(Paint.Align.CENTER);
@@ -174,12 +192,34 @@ final class MapView extends View {
     return p;
   }
 
-  private static TextPaint text(float size, boolean bold, int color) {
+  private static TextPaint text(float size, Typeface face, int color) {
     TextPaint p = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     p.setTextSize(size);
     p.setColor(color);
-    p.setTypeface(bold ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+    p.setTypeface(face);
     return p;
+  }
+
+  // Inter (SIL OFL, assets/fonts) read from the module apk on first use: Display SemiBold for the bold text, Medium
+  // for the rest. The system faces if it will not load. The AssetManager stays referenced with the faces.
+  private static Typeface semiBold, medium;
+  private static AssetManager fontAssets;
+
+  private static synchronized Typeface inter(boolean bold) {
+    if (medium == null) {
+      try {
+        AssetManager am = AssetManager.class.newInstance();
+        AssetManager.class.getMethod("addAssetPath", String.class).invoke(am, modulePath);  // hidden on 4.2
+        semiBold = Typeface.createFromAsset(am, "fonts/InterDisplay-SemiBold.ttf");
+        medium = Typeface.createFromAsset(am, "fonts/Inter-Medium.ttf");
+        fontAssets = am;
+      } catch (Throwable t) {
+        XposedBridge.log("aaroad: Inter not loaded, system font instead: " + t);
+        semiBold = Typeface.DEFAULT_BOLD;
+        medium = Typeface.DEFAULT;
+      }
+    }
+    return bold ? semiBold : medium;
   }
 
   // The Civic (Crystal Black Sport), rendered from Peter's reference photos; a white chevron if it will not load.
@@ -799,11 +839,14 @@ final class MapView extends View {
   // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
   private static final float CARD_L = 36, CARD_R = 270, TURN_T = 12, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
   private static final float STRIP_W = 10, TEXT_X = 116;
+  // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
+  private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
   private static final int ACCENT = 0xff1a73ff, ACCENT_DIM = 0xff1a2e55;
   // the music card under the trip card, with or without a route: the cover, where the sound comes from, the song,
   // and whether it plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
-  private static final float SONG_T = 160, SONG_B = 208, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
-  private static final float GLYPH_X = 240, GLYPH_R = 14;
+  // as narrow as the trip card: at 270 it touched the car without a route (Peter 2026-10-30)
+  private static final float SONG_T = 160, SONG_B = 208, SONG_R = 250, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
+  private static final float GLYPH_X = 218, GLYPH_R = 14;
   private static final int SPOTIFY = 0xff1ed760;
 
   private void overlay(Canvas canvas, long now, boolean free) {
@@ -847,23 +890,31 @@ final class MapView extends View {
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     View icon = find("turn_icon");
     if (!free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()))) {
-      RectF card = new RectF(CARD_L, TURN_T, CARD_R, TURN_B);
-      canvas.drawRoundRect(card, 10, 10, panel);
+      canvas.drawPath(turnCard, panel);
       double ft = TextUtils.isEmpty(d) ? -1 : Meter.feet(d);
       float lit = ft < 0 || ft > 500 ? TURN_B : TURN_B - (float) (ft / 500) * (TURN_B - TURN_T);
       canvas.save();
-      canvas.clipPath(rect(CARD_L, TURN_T, CARD_L + STRIP_W, lit));
+      canvas.clipPath(turnCard);
+      canvas.drawRect(CARD_L, TURN_T, CARD_L + 0.4f * (CARD_R - CARD_L), TURN_B, blueGlow);  // a soft blue from the left
       fill.setColor(ACCENT_DIM);
-      canvas.drawRoundRect(card, 10, 10, fill);
+      canvas.drawRect(CARD_L, TURN_T, CARD_L + STRIP_W, lit, fill);
+      fill.setColor(ACCENT);
+      canvas.drawRect(CARD_L, lit, CARD_L + STRIP_W, TURN_B, fill);
+      canvas.restore();
+      canvas.drawPath(turnCard, edge);
+      // a brighter rim on the strip's curve, lit as far as the strip is
+      canvas.save();
+      canvas.clipPath(rect(CARD_L - 2, TURN_T - 2, CARD_L + RADIUS + 2, lit));
+      rim.setColor(0xff2c4f8f);
+      canvas.drawPath(turnRim, rim);
       canvas.restore();
       canvas.save();
-      canvas.clipPath(rect(CARD_L, lit, CARD_L + STRIP_W, TURN_B));
-      fill.setColor(ACCENT);
-      canvas.drawRoundRect(card, 10, 10, fill);
+      canvas.clipPath(rect(CARD_L - 2, lit, CARD_L + RADIUS + 2, TURN_B + 2));
+      rim.setColor(0xff5c9dff);
+      canvas.drawPath(turnRim, rim);
       canvas.restore();
-      canvas.drawRoundRect(card, 10, 10, edge);
 
-      float textW = CARD_R - TEXT_X - 10;
+      float textW = CARD_R - SLANT - TEXT_X - 6;  // clear of the lean at the road name's baseline
       if (!TextUtils.isEmpty(d)) {
         String t = d.toString().trim();
         int sp = t.lastIndexOf(' ');
@@ -879,9 +930,8 @@ final class MapView extends View {
 
     // the trip card: time and distance left, a divider, the arrival time
     if (!free && Feed.remainingSec >= 0) {
-      RectF card = new RectF(CARD_L, TRIP_T, TRIP_R, TRIP_B);
-      canvas.drawRoundRect(card, 10, 10, panel);
-      canvas.drawRoundRect(card, 10, 10, edge);
+      canvas.drawPath(tripCard, panel);
+      canvas.drawPath(tripCard, edge);
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
       long min = Math.round(left / 60);
       String n = min >= 60 ? (min / 60) + " h " + (min % 60) + " min" : min + " min";
@@ -892,7 +942,7 @@ final class MapView extends View {
       if (far) canvas.drawText(away(Feed.remainingMeters, Feed.metric), CARD_L + 14, TRIP_T + 41, cardDim);
       fill.setColor(0x40ffffff);
       canvas.drawRect(div, TRIP_T + 10, div + 1, TRIP_B - 10, fill);
-      canvas.drawText(at, (div + TRIP_R) / 2 - tripClock.measureText(at) / 2, mid + 6, tripClock);
+      canvas.drawText(at, (div + TRIP_R - SLANT / 2) / 2 - tripClock.measureText(at) / 2, mid + 6, tripClock);  // centred at mid height
     }
 
     String status = Feed.mediaStatus, title = Feed.mediaTitle;
@@ -900,9 +950,19 @@ final class MapView extends View {
   }
 
   private void song(Canvas canvas, String status, String title) {
-    RectF card = new RectF(CARD_L, SONG_T, CARD_R, SONG_B);
-    canvas.drawRoundRect(card, 10, 10, panel);
-    canvas.drawRoundRect(card, 10, 10, edge);
+    boolean spotify = "spotify".equals(Feed.mediaSource);
+    canvas.drawPath(songCard, panel);
+    if (spotify) {  // Spotify's green comes in from the lean
+      canvas.save();
+      canvas.clipPath(songCard);
+      canvas.drawRect(SONG_R - 0.35f * (SONG_R - CARD_L), SONG_T, SONG_R, SONG_B, greenGlow);
+      canvas.restore();
+    }
+    canvas.drawPath(songCard, edge);
+    if (spotify) {
+      rim.setColor(SPOTIFY);
+      canvas.drawPath(songRim, rim);
+    }
 
     RectF art = new RectF(COVER_L, COVER_T, COVER_L + COVER_PX, COVER_T + COVER_PX);
     Bitmap cover = Feed.cover;
@@ -921,7 +981,7 @@ final class MapView extends View {
     float w = GLYPH_X - GLYPH_R - 6 - SONG_X;
     String source = Feed.mediaSource, from = "spotify".equals(source) ? "Spotify" : "phone".equals(source) ? "Phone" : "";
     float x = SONG_X;
-    if ("spotify".equals(source)) {
+    if (spotify) {
       fill.setColor(SPOTIFY);
       canvas.drawCircle(x + 3.5f, SONG_T + 10, 3.5f, fill);
       x += 11;
@@ -947,6 +1007,44 @@ final class MapView extends View {
       play.close();
       canvas.drawPath(play, fill);
     }
+  }
+
+  // a card: the left end rounded, the right end leaning in SLANT from top to bottom with small rounded corners
+  private static Path card(float l, float t, float r, float b) {
+    float dx = SLANT / (b - t) * CORNER;  // how far the lean moves in over a corner
+    Path p = new Path();
+    p.moveTo(l + RADIUS, t);
+    p.lineTo(r - CORNER, t);
+    p.quadTo(r, t, r - dx, t + CORNER);
+    p.lineTo(r - SLANT + dx, b - CORNER);
+    p.quadTo(r - SLANT, b, r - SLANT - CORNER, b);
+    p.lineTo(l + RADIUS, b);
+    p.quadTo(l, b, l, b - RADIUS);
+    p.lineTo(l, t + RADIUS);
+    p.quadTo(l, t, l + RADIUS, t);
+    p.close();
+    return p;
+  }
+
+  // the rounded left end of a card, for its rim
+  private static Path leftEnd(float l, float t, float b) {
+    Path p = new Path();
+    p.moveTo(l + RADIUS, t);
+    p.quadTo(l, t, l, t + RADIUS);
+    p.lineTo(l, b - RADIUS);
+    p.quadTo(l, b, l + RADIUS, b);
+    return p;
+  }
+
+  // the leaning right end of a card, for its rim
+  private static Path rightEnd(float r, float t, float b) {
+    float dx = SLANT / (b - t) * CORNER;
+    Path p = new Path();
+    p.moveTo(r - CORNER, t);
+    p.quadTo(r, t, r - dx, t + CORNER);
+    p.lineTo(r - SLANT + dx, b - CORNER);
+    p.quadTo(r - SLANT, b, r - SLANT - CORNER, b);
+    return p;
   }
 
   private static Path rect(float l, float t, float r, float b) {
