@@ -49,8 +49,8 @@ import java.util.zip.ZipFile;
 final class MapView extends View {
   private static final double CAM_H = 150, CAM_ZC = -50, PITCH = Math.toRadians(55), FOCAL = 260, CX = 369, CY = 102.663;
   private static final double R0 = 70.03;          // display metres from the car to the range's far edge (y 86)
-  private static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
-  private static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
+  static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
+  static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
   private static final float BOX_R = 430;          // display metres: covers the box from the car
   // Road shapes are kept between frames (Peter 2026-10-30: building them was 46 of 158 ms a frame on the Tegra): each
   // run is cut into pieces of at most CHUNK_M m, each a Path in world metres built with the scene, and a frame only
@@ -58,19 +58,19 @@ final class MapView extends View {
   // still turned and clipped point by point: the camera's horizon line behind the car is at z -264, and anything past
   // it would come out on the wrong side of the screen.
   private static final float CHUNK_M = 150, NEAR_Z = -200;
-  private static final float FREE_X = 292;  // the meter's centre
-  private static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
-  private static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
+  static final float FREE_X = 292;  // the meter's centre
+  static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
+  static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
   // Every road at its real width, so an intersection looks like the one out of the windscreen (Peter 2026-10-29:
   // the route drawn wider than the roads around it looked wrong; the orange line alone marks the route). Metres
   // kerb to kerb, both directions, by tile class: motorway, major, street, link; the route itself as a street
   // under its own road, where the tile has it. The orange line is about two lanes wide, between LINE_MIN_PX and
   // LINE_MAX_PX on screen. All of them are drawn ROAD_SCALE times as wide, the same for every road so they keep
   // their real proportions: at real width a street is a hairline beside the car icon.
-  private static final float[] ROAD_M = {28 * 2, 18 * 2, 10 * 2, 6 * 2, 5 * 2};  // x ROAD_SCALE 2
+  static final float[] ROAD_M = {28 * 2, 18 * 2, 10 * 2, 6 * 2, 5 * 2};  // x ROAD_SCALE 2
   // minor (service roads, parking-lot aisles, Peter 2026-10-29: the phone map shows them) under the rest
-  private static final int[] DRAW_ORDER = {4, 0, 1, 2, 3};
-  private static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
+  static final int[] DRAW_ORDER = {4, 0, 1, 2, 3};
+  static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
   private static final double TURN_LEN = 40;   // m of road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
   private static final double TAU_IN = 0.8, TAU_OUT = 2.0;   // s, zoom smoothing: in briskly, back out gently
@@ -178,7 +178,7 @@ final class MapView extends View {
   private final TextPaint label = text(11.5f, inter(false), 0xffc8ccd2), halo = text(11.5f, inter(false), 0xff050505);
 
   // Positions are metres east (e) and north (n) of the anchor, in runs of e, n pairs.
-  private static final class Scene {
+  static final class Scene {
     double ax, ay, mpt;  // anchor in zoom-14 tile units; metres per tile unit there
     long routeId = -1;
     int tilesVersion;
@@ -187,16 +187,31 @@ final class MapView extends View {
     String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
+    float[][] routeAlong = new float[0][];  // metres along the route at each point of each run, runs end to end
     Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
   }
 
   // The runs cut into pieces of at most CHUNK_M m (neighbours share their end point), each kept as a Path in world
   // metres (x east, y north), with its points, its box (min e, min n, max e, max n) and its class.
-  private static final class Chunks {
+  static final class Chunks {
     Path[] path = new Path[0];
     float[][] pts = new float[0][], box = new float[0][];
     int[] cls = new int[0];
+    float[] at = new float[0];  // metres along the runs, end to end, at each piece's first point
   }
+
+  // The roads, the route, the grid and the carpet drawn on the GPU under this view (GlRoads, Peter 2026-10-30:
+  // stroking them in software was most of a frame on the Tegra). Meter adds it when GPU is set; the desktop harness
+  // has no GL and leaves it off. Until it has drawn a frame, and for good if it fails, the view draws them itself.
+  interface Roads {
+    boolean ready();
+    void frame(Scene s, float ce, float cn, float ch, float sh, float ik, boolean free, int color, float cut, float cutE, float cutN);
+    long takeMs();  // average ms per GL frame since the last call, -1 with none
+    void setShown(boolean on);
+  }
+
+  static boolean GPU = true;
+  Roads gpu;
 
   MapView(Context context, ViewGroup navi, String pkg) {
     super(context);
@@ -204,10 +219,7 @@ final class MapView extends View {
     this.pkg = pkg;
     setLayerType(LAYER_TYPE_SOFTWARE, null);  // perspective paths and clipPath: software Skia only on 4.2
     setVisibility(INVISIBLE);
-    double cp = Math.cos(PITCH), sp = Math.sin(PITCH), c0 = CAM_H * sp - CAM_ZC * cp;
-    double[] h = {FOCAL, CX * cp, CX * c0, 0, CY * cp - FOCAL * sp, CY * c0 + FOCAL * (CAM_H * cp + CAM_ZC * sp), 0, cp, c0};
-    float[] v = new float[9];
-    for (int i = 0; i < 9; i++) v[i] = (float) (h[i] / c0);
+    float[] v = cameraValues();
     camera.setValues(v);
     System.arraycopy(v, 0, cam, 0, 9);
     label.setTextAlign(Paint.Align.CENTER);
@@ -249,7 +261,16 @@ final class MapView extends View {
     loadCar();
   }
 
-  private static float dm(float px) {
+  // The camera as a 3x3 from the car's frame (x, z, 1) to the screen, row-major as Matrix.setValues takes it.
+  static float[] cameraValues() {
+    double cp = Math.cos(PITCH), sp = Math.sin(PITCH), c0 = CAM_H * sp - CAM_ZC * cp;
+    double[] h = {FOCAL, CX * cp, CX * c0, 0, CY * cp - FOCAL * sp, CY * c0 + FOCAL * (CAM_H * cp + CAM_ZC * sp), 0, cp, c0};
+    float[] v = new float[9];
+    for (int i = 0; i < 9; i++) v[i] = (float) (h[i] / c0);
+    return v;
+  }
+
+  static float dm(float px) {
     return px / PX_DM;
   }
 
@@ -374,6 +395,7 @@ final class MapView extends View {
     lastFrame = 0;
     drawnAt = 0;
     setVisibility(on ? VISIBLE : INVISIBLE);
+    if (gpu != null) gpu.setShown(on);
     for (String n : HIDE) {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
@@ -568,6 +590,16 @@ final class MapView extends View {
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
     if (r != null) s.junctions = junctions(s.route, s.stubs);
+    s.routeAlong = new float[s.route.length][];
+    double along = 0;
+    for (int i = 0; i < s.route.length; i++) {
+      float[] p = s.route[i], al = new float[p.length / 2];
+      for (int j = 0; j < al.length; j++) {
+        if (j > 0) along += Math.hypot(p[2 * j] - p[2 * j - 2], p[2 * j + 1] - p[2 * j - 1]);
+        al[j] = (float) along;
+      }
+      s.routeAlong[i] = al;
+    }
     s.routeChunks = chunks(s.route, null);
     s.stubsChunks = chunks(s.stubs, s.stubsCls);
     s.roadsChunks = chunks(s.roads, s.roadsCls);
@@ -579,11 +611,14 @@ final class MapView extends View {
   private static Chunks chunks(float[][] runs, int[] cls) {
     List<float[]> pts = new ArrayList<float[]>();
     List<Integer> pcls = new ArrayList<Integer>();
+    List<Float> pat = new ArrayList<Float>();
     Run run = new Run();
+    double along = 0, start;
     for (int r = 0; r < runs.length; r++) {
       float[] p = runs[r];
       if (p.length < 4) continue;
       run.add(p[0], p[1]);
+      start = along;
       double len = 0;
       for (int i = 2; i + 1 < p.length; i += 2) {
         double pe = p[i - 2], pn = p[i - 1], de = p[i] - pe, dn = p[i + 1] - pn, d = Math.hypot(de, dn);
@@ -593,17 +628,21 @@ final class MapView extends View {
             float[] c = run.take();
             pts.add(c);
             pcls.add(cls == null ? 0 : cls[r]);
+            pat.add((float) start);
+            start = along;
             run.add(c[c.length - 2], c[c.length - 1]);
             len = 0;
           }
           if (j == parts) run.add(p[i], p[i + 1]);
           else run.add(pe + de * j / parts, pn + dn * j / parts);
           len += d / parts;
+          along += d / parts;
         }
       }
       if (run.size >= 4) {
         pts.add(run.take());
         pcls.add(cls == null ? 0 : cls[r]);
+        pat.add((float) start);
       }
       run.size = 0;
     }
@@ -611,6 +650,8 @@ final class MapView extends View {
     out.pts = pts.toArray(new float[0][]);
     out.box = boxes(out.pts);
     out.cls = ints(pcls);
+    out.at = new float[pat.size()];
+    for (int i = 0; i < out.at.length; i++) out.at[i] = pat.get(i);
     out.path = new Path[out.pts.length];
     for (int c = 0; c < out.pts.length; c++) {
       float[] q = out.pts[c];
@@ -984,7 +1025,9 @@ final class MapView extends View {
     Scene s = scene;
     if (!live || s == null) return;
     long now = SystemClock.uptimeMillis();
-    canvas.drawColor(0xff050505);
+    // with the GPU layer drawing, the road area is left clear so it shows through from under the window
+    boolean onGpu = gpu != null && gpu.ready();
+    if (!onGpu) canvas.drawColor(0xff050505);
     drawnStamp = stamp(now);  // before anything is read, so a change during the frame still asks for the next one
 
     double spd = Math.max(0, Feed.spd);
@@ -1032,20 +1075,31 @@ final class MapView extends View {
     worldV[7] = 0;
     worldV[8] = 1;
     world.setValues(worldV);
-    routePath.rewind();
-    routeWorld.rewind();
-    carpetPath.rewind();
-    for (Path p : stubPaths) p.rewind();
-    for (Path p : stubWorld) p.rewind();
-    gridPath.rewind();
-    gridLines(s, ce, cn, ch, sh, ik);
-    pieces(s.routeChunks, routeWorlds, routeFrames, ce, cn, ch, sh, ik);
-    if (s.route.length > 0) pieces(s.stubsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
-    if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
-    else pieces(s.roadsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
-
     // with no route there is no turn text, so the map takes the whole meter: the car at its centre
     boolean free = s.route.length == 0;
+    // the GPU layer is handed every frame, even while the view still draws the roads, so it is warm when it takes over
+    if (gpu != null) {
+      float cut = Float.NaN;
+      if (!free && carpetStart(s, ce, cn, reach)) {
+        float[] p = s.route[cRun];
+        cut = s.routeAlong[cRun][cSeg] + (float) Math.hypot(cE - p[2 * cSeg], cN - p[2 * cSeg + 1]);
+      }
+      gpu.frame(s, ce, cn, ch, sh, ik, free, modeColor(Feed.mode), cut, cE, cN);
+    }
+    if (!onGpu) {
+      routePath.rewind();
+      routeWorld.rewind();
+      carpetPath.rewind();
+      for (Path p : stubPaths) p.rewind();
+      for (Path p : stubWorld) p.rewind();
+      gridPath.rewind();
+      gridLines(s, ce, cn, ch, sh, ik);
+      pieces(s.routeChunks, routeWorlds, routeFrames, ce, cn, ch, sh, ik);
+      if (s.route.length > 0) pieces(s.stubsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
+      if (s.route.length > 0) carpet(s, ce, cn, ch, sh, ik, reach);
+      else pieces(s.roadsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
+    }
+
     currentRoad(s, ce, cn, h, now);
     String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     placeLabels(s, ce, cn, ch, sh, ik, reach, free, shown, now);
@@ -1053,23 +1107,25 @@ final class MapView extends View {
     long t1 = SystemClock.uptimeMillis();
     canvas.save();
     if (free) canvas.translate(FREE_X - CAR_X, 0f);
-    canvas.save();
-    canvas.concat(camera);
-    canvas.drawPath(gridPath, grid);
-    // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
-    float floor = dm(MIN_ROAD_PX);
-    // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
-    for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
-    if (s.route.length > 0) stroke(canvas, routeWorld, routePath, kerb, Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
-    for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
-    if (s.route.length > 0) {
-      stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
-      carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
-      carpet.setColor(modeColor(Feed.mode));
-      carpet.setAlpha(242);
-      canvas.drawPath(carpetPath, carpet);
+    if (!onGpu) {
+      canvas.save();
+      canvas.concat(camera);
+      canvas.drawPath(gridPath, grid);
+      // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
+      float floor = dm(MIN_ROAD_PX);
+      // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
+      for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      if (s.route.length > 0) stroke(canvas, routeWorld, routePath, kerb, Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
+      for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
+      if (s.route.length > 0) {
+        stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
+        carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
+        carpet.setColor(modeColor(Feed.mode));
+        carpet.setAlpha(242);
+        canvas.drawPath(carpetPath, carpet);
+      }
+      canvas.restore();
     }
-    canvas.restore();
 
     if (car != null) {
       canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, null);
@@ -1102,6 +1158,7 @@ final class MapView extends View {
       XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
           + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
           + cardSum / drawCount + " cards), " + (checks > 0 ? 100L * skipped / checks : 0) + "% frames skipped"
+          + (gpu != null ? ", gl " + gpu.takeMs() + " ms" : "")
           + (loggedCanvas ? "" : ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
              + (isHardwareAccelerated() ? "GPU" : "software")));
       loggedCanvas = true;
@@ -1184,6 +1241,20 @@ final class MapView extends View {
 
   // The carpet: the route from the car's place on it to the end of the scene, so the driven part is bare road.
   private void carpet(Scene s, float ce, float cn, float ch, float sh, float ik, float reach) {
+    if (!carpetStart(s, ce, cn, reach)) return;
+    line(s.route[cRun], cSeg, carpetPath, ce, cn, ch, sh, ik, cE, cN);
+    for (int r = cRun + 1; r < s.route.length; r++) {
+      float[] b = s.routeBox[r];
+      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
+      line(s.route[r], 0, carpetPath, ce, cn, ch, sh, ik, Float.NaN, 0);
+    }
+  }
+
+  // Where the carpet starts: the nearest point of the route to the car, as run cRun, segment cSeg, point (cE, cN).
+  private int cRun, cSeg;
+  private float cE, cN;
+
+  private boolean carpetStart(Scene s, float ce, float cn, float reach) {
     int bestRun = -1, bestSeg = 0;
     float bestD = Float.MAX_VALUE, be = 0, bn = 0;
     for (int r = 0; r < s.route.length; r++) {
@@ -1203,13 +1274,11 @@ final class MapView extends View {
         }
       }
     }
-    if (bestRun < 0) return;
-    line(s.route[bestRun], bestSeg, carpetPath, ce, cn, ch, sh, ik, be, bn);
-    for (int r = bestRun + 1; r < s.route.length; r++) {
-      float[] b = s.routeBox[r];
-      if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
-      line(s.route[r], 0, carpetPath, ce, cn, ch, sh, ik, Float.NaN, 0);
-    }
+    cRun = bestRun;
+    cSeg = bestSeg;
+    cE = be;
+    cN = bn;
+    return bestRun >= 0;
   }
 
   // Liang-Barsky: adds the part of (x0, z0)-(x1, z1) inside the box; returns whether the path ends at (x1, z1).

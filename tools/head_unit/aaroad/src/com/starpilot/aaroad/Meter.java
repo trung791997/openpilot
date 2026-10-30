@@ -44,8 +44,21 @@ final class Meter {
           if (!(navi.getParent() instanceof ViewGroup)) return;
           ViewGroup root = (ViewGroup) navi.getParent();
           String pkg = v.getResources().getResourcePackageName(v.getId());
-          root.addView(new MapView(root.getContext(), navi, pkg), 0,
+          MapView map = new MapView(root.getContext(), navi, pkg);
+          root.addView(map, 0,
               new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+          // The roads on the GPU, under the map (Peter 2026-10-30); without it the map draws them itself as before.
+          if (MapView.GPU) {
+            try {
+              GlRoads gl = new GlRoads(root.getContext(), map);
+              root.addView(gl, 0,
+                  new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              map.gpu = gl;
+              gl.setShown(map.getVisibility() == View.VISIBLE);  // the map may have gone live already
+            } catch (Throwable t) {
+              XposedBridge.log("aaroad: gpu roads off: " + t);
+            }
+          }
           Feed.start();
           XposedBridge.log("aaroad: meter map added");
         } catch (Throwable t) {
