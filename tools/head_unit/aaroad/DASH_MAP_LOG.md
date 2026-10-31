@@ -55,10 +55,14 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 5. **Traffic colours** (2026-10-31): static only, not installed. Check on a drive that refreshes stay quiet in the log and the colours change. In `exp` mode the carpet is orange, so moderate amber is hard to tell apart; Peter may want a different colour there.
 6. **Brake lights on the car icon** (2026-10-31): static only, not installed. Check on a drive that the lights come on with the pedal and with openpilot's firm braking (accel below -0.5), and go off cleanly. On the GPU layer the glow can start up to 100 ms after the pose (the slow tick); Peter may want the -0.5 threshold or the glow size changed.
 7. **Turn card from the comma** (2026-10-31): static only, not installed. Check on a drive that the dash and the car screen show the same arrow, text and distance, that the distance counts down smoothly between the comma's once-a-second updates, and that the card goes within ~3 s when guidance stops. The Honda Hack panel (`Panel.java`, its own page) still uses Android Auto's next-turn data.
+8. **Highway colour** (2026-10-31): static only (software path rendered; the GPU path uses the same constants but cannot run on the desktop). Peter to judge the gold at night on the dash.
 
 ## Log
 
 ### 2026-10-31
+- **Highways in their own colour** (Open 8). *static*.
+  - Motorways and trunks (tile class 0) have a muted gold surface `#7a6420` with a darker gold kerb `#54451a`; ramps (class 3) a dimmer gold `#5a4b1e` / `#433816`. Other roads stay grey. Constants `MapView.KERBS/ROADS`, used by both `GlRoads.drawFrame` and the software path, so they cannot drift. Same number of GL draws per frame.
+  - The route's own grey road is now drawn under the tile roads' surfaces, so on a highway the gold shows round the route line; the orange/traffic line stays on top. Without highways the renders are pixel-identical to the last commit (only the ETA minute differs).
 - **The dash turn card matches StarPilot Auto** (Open 7). *static*.
   - Problem: the card read Honda Hack's `turn_icon`/`seg_dist`/`next_road` widgets, fed by Android Auto's throttled next-turn path, so it lagged or froze behind the car screen.
   - Now it draws from `Feed.nav`, the comma's own step (`nav` in the `s` datagram, which the car screen also draws). `Turn.java` ports `icon_name`, `distance_text` and the text clean-up; the arrows are the car screen's 88 PNGs, copied into the APK's `assets/nav/` by `build.sh` from `navigation-assets.json` (+~130 KB). The instruction text wraps to two lines like the car screen. Between datagrams the distance counts down at the car's speed. The card blanks when nav is over 3 s old.

@@ -75,6 +75,13 @@ final class MapView extends View {
   static final float[] ROAD_M = {28 * 2, 18 * 2, 10 * 2, 6 * 2, 5 * 2};  // x ROAD_SCALE 2
   // minor (service roads, parking-lot aisles, Peter 2026-10-29: the phone map shows them) under the rest
   static final int[] DRAW_ORDER = {4, 0, 1, 2, 3};
+  // Road colours by tile class, kerb and surface, the same on the GPU layer: grey, but motorways and trunks in a muted
+  // gold and their ramps a dimmer gold, so a highway reads as one at a glance (Peter 2026-10-31). The gold is dark
+  // enough to keep the orange route line and the amber traffic colour (#ffb300) the brightest things on the map.
+  // The route's own road is grey (KERB_C/ROAD_C), drawn under the tile roads' surfaces, so on a highway it is the gold.
+  static final int KERB_C = 0xff6a6a6a, ROAD_C = 0xff383838;
+  static final int[] KERBS = {0xff54451a, KERB_C, KERB_C, 0xff433816, KERB_C};
+  static final int[] ROADS = {0xff7a6420, ROAD_C, ROAD_C, 0xff5a4b1e, ROAD_C};
   static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
   private static final double TURN_LEN = 40;   // m of road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
@@ -131,8 +138,8 @@ final class MapView extends View {
   private final String pkg;
   private final Map<String, View> views = new HashMap<String, View>();
   private final Matrix camera = new Matrix();
-  private final Paint grid = new Paint(), kerb = stroke(0xff6a6a6a, 0), road = stroke(0xff383838, 0),
-      carpet = stroke(Color.WHITE, 0), sideKerb = stroke(0xff6a6a6a, 0), side = stroke(0xff383838, 0),
+  private final Paint grid = new Paint(), kerb = stroke(KERB_C, 0), road = stroke(ROAD_C, 0),
+      carpet = stroke(Color.WHITE, 0), sideKerb = stroke(KERB_C, 0), side = stroke(ROAD_C, 0),
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
       rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint();
   // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
@@ -1362,11 +1369,17 @@ final class MapView extends View {
       // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
       float floor = dm(MIN_ROAD_PX);
       // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
-      for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      for (int c : DRAW_ORDER) {
+        sideKerb.setColor(KERBS[c]);
+        stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      }
       if (s.route.length > 0) stroke(canvas, routeWorld, routePath, kerb, Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
-      for (int c : DRAW_ORDER) stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
+      if (s.route.length > 0) stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
+      for (int c : DRAW_ORDER) {
+        side.setColor(ROADS[c]);
+        stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
+      }
       if (s.route.length > 0) {
-        stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
         carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
         for (int l = 0; l < carpetPaths.length; l++) {
           if (carpetPaths[l].isEmpty()) continue;

@@ -52,7 +52,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final int STRIDE = GlCull.STRIDE;  // per corner: a.e, a.n, b.e, b.n, across, end, along at a
   private static final int SLICE = 256 * 1024;  // bytes of a new scene sent a frame, while the last one draws
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
-  private static final int BG = 0xff050505, KERB = 0xff6a6a6a, ROAD = 0xff383838, GRID = 0xff2a2a2a;
+  private static final int BG = 0xff050505, KERB = MapView.KERB_C, ROAD = MapView.ROAD_C, GRID = 0xff2a2a2a;
   // groups 0-4 the road classes, 5-8 the route by traffic: unknown or low, moderate, heavy, severe
   private static final int ROUTE = 5, LEVELS = 4;
   private static final long FRAME_MS = 33, IDLE_MS = 500;
@@ -721,10 +721,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glEnableVertexAttribArray(lC);
     float floor = MapView.dm(MapView.MIN_ROAD_PX), kerb = MapView.dm(2 * MapView.KERB_PX);
     float route = Math.max(floor, MapView.ROUTE_M * ik);
-    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, KERB, 1);
+    // by class colour (MapView.KERBS/ROADS); the route's own grey road under the tile roads' surfaces
+    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
-    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), ROAD, 1);
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
+    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
     part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
