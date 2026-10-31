@@ -46,6 +46,9 @@ final class Feed {
     final String[][] names = new String[5][];
     // per road class: whether each line is a bridge (road_tiles.BRIDGE), null when the tile is older than format 3
     final boolean[][] bridge = new boolean[5][];
+    // traffic signal / stop points: x, y in tile units and kind (road_tiles.SIGNAL 1, STOP 2) in threes;
+    // empty when the tile is older than format 4
+    float[] signals = new float[0];
 
     Tile(int x, int y) {
       this.x = x;
@@ -283,9 +286,9 @@ final class Feed {
       if (have.length() >= HAVE_MAX) break;
       have.put(k);
     }
-    // rt: the newest road tile format this app reads, 3 with bridges (2026-10-31); the comma sends an older app's
-    // tiles as format 2 (names, 2026-10-30) or 1 (no "rt")
-    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", 3).toString().getBytes("UTF-8");
+    // rt: the newest road tile format this app reads, 4 with traffic signals (2026-10-31); the comma sends an older
+    // app's tiles as format 3 (bridges), 2 (names, 2026-10-30) or 1 (no "rt")
+    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", 4).toString().getBytes("UTF-8");
   }
 
   private static void handle(JSONObject m) throws Exception {
@@ -441,8 +444,9 @@ final class Feed {
   // <BII (class, lines, points), the line lengths as <u2, and the points as <i4 x, y deltas.
   // Version 2 puts the tile's street names first (<H count, then <B length + UTF-8 each) and an <u2 name
   // index per line (0 = none) after the line lengths. Version 3 adds a flags byte per line after that, bit 0 a bridge.
+  // Version 4 ends with the tile's signal points: <H count, then per point <h x, <h y, <B kind.
   static Tile decode(int x, int y, byte[] raw) throws Exception {
-    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] < 1 || raw[4] > 3) {
+    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] < 1 || raw[4] > 4) {
       throw new IllegalArgumentException("not a road tile");
     }
     int version = raw[4];
@@ -504,6 +508,17 @@ final class Feed {
       }
       tile.pts[cls] = pts;
       tile.starts[cls] = starts;
+    }
+    if (version >= 4) {
+      int n = b.getShort() & 0xffff;
+      if ((long) n * 5 > b.remaining()) throw new IllegalArgumentException("bad road tile points");
+      float[] sig = new float[n * 3];
+      for (int i = 0; i < n; i++) {
+        sig[3 * i] = b.getShort();
+        sig[3 * i + 1] = b.getShort();
+        sig[3 * i + 2] = b.get() & 0xff;
+      }
+      tile.signals = sig;
     }
     return tile;
   }

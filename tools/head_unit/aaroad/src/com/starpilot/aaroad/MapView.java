@@ -294,6 +294,7 @@ final class MapView extends View {
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
     byte[][] routeLevel = new byte[0][];  // traffic per segment of each route run, 0 unknown to 4 severe (Feed.Route.lvl)
     float[][] routeAlong = new float[0][];  // metres along the route at each point of each run, runs end to end
+    float[] signals = new float[0];  // the traffic signal and stop icons, Signals.cluster: e, n, kind, along in fours
     Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
     // with no route: the rectangle of roads kept, in the frame of heading bh (FreeView.area), and whether service
     // roads are in it; area null with a route
@@ -939,6 +940,19 @@ final class MapView extends View {
       }
       s.routeAlong[i] = al;
     }
+    int sigCount = 0;
+    for (Feed.Tile tile : Feed.tiles.values()) sigCount += tile.signals.length / 3;
+    double[] sig = new double[sigCount * 3];
+    int k = 0;
+    for (Feed.Tile tile : Feed.tiles.values()) {
+      float[] t = tile.signals;
+      for (int i = 0; i + 2 < t.length && k < sig.length; i += 3, k += 3) {
+        sig[k] = tile.x + t[i] / Feed.EXTENT;
+        sig[k + 1] = tile.y + t[i + 1] / Feed.EXTENT;
+        sig[k + 2] = t[i + 2];
+      }
+    }
+    s.signals = Signals.cluster(sig, k / 3, s.ax, s.ay, s.mpt, s.route, s.routeAlong);
     s.routeChunks = chunks(s.route, null, s.routeLevel);
     s.stubsChunks = chunks(s.stubs, s.stubsCls, null);
     s.roadsChunks = chunks(s.roads, s.roadsCls, null);
@@ -1374,6 +1388,37 @@ final class MapView extends View {
     return false;
   }
 
+  // The traffic signal and stop icons this frame (Signals.choose), each where the map puts its intersection and left
+  // out while it would cover a card, the car, the sign, the tag or an edge, as a label is: into xy (x, y pairs, whole
+  // pixels, the icon's centre) and sprite (SignalIcon.sprite), farthest first. Returns how many. The view and the GPU
+  // layer both place them with this, each with its own c, q (scratch), xy and sprite.
+  int placeSignals(Scene s, float ce, float cn, float ch, float sh, float ik, boolean free, float[] tag,
+                   Signals.Choice c, float[] q, float[] xy, int[] sprite) {
+    Signals.choose(s.signals, ce, cn, ch, sh, c);
+    float off = free ? FREE_X - CAR_X : 0;
+    int n = 0;
+    for (int i = 0; i < c.count; i++) {
+      int g = 4 * c.idx[i];
+      float de = s.signals[g] - ce, dn = s.signals[g + 1] - cn;
+      if (!project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q)) continue;
+      // the icon's box as a label's, a little taller: blocked() takes a label's centre, 1 px above its box's middle
+      if (blocked(q[0], q[1] + 1, 12, free, tag)) continue;
+      xy[2 * n] = Math.round(q[0]);
+      xy[2 * n + 1] = Math.round(q[1]);
+      sprite[n] = SignalIcon.sprite((int) s.signals[g + 2], c.idx[i] == c.next);
+      n++;
+    }
+    return n;
+  }
+  private final float[] sigQ = new float[2];
+  private final Signals.Choice sigChoice = new Signals.Choice();
+  private final float[] sigXY = new float[2 * Signals.MAX];
+  private final int[] sigSprite = new int[Signals.MAX];
+  private int sigCount;
+  private final Paint sigPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Path sigPath = new Path();
+  private final RectF sigRect = new RectF(0, 0, 0, 0);
+
   // The chosen labels follow the map between choices; one that has moved onto something is left out this frame.
   private void moveLabels(float ce, float cn, float ch, float sh, float ik, boolean free) {
     float off = free ? FREE_X - CAR_X : 0;
@@ -1460,6 +1505,7 @@ final class MapView extends View {
       gpu.poke();
     }
     if (!onGpu) moveLabels(ce, cn, ch, sh, ik, free);  // else the GPU layer moves and draws them
+    sigCount = onGpu ? 0 : placeSignals(s, ce, cn, ch, sh, ik, free, tagBox, sigChoice, sigQ, sigXY, sigSprite);  // likewise
     long t1 = SystemClock.uptimeMillis();
     canvas.save();
     if (free) canvas.translate(FREE_X - CAR_X, 0f);
@@ -1833,6 +1879,8 @@ final class MapView extends View {
       if (!free) canvas.drawRect(0, 0, COL, 215, mask);
       canvas.drawRect(0, 0, 584, 78, fog);
     }
+    // the signals under the names, as Google Maps has them
+    for (int i = 0; i < sigCount && !onGpu; i++) SignalIcon.draw(canvas, sigSprite[i], sigXY[2 * i], sigXY[2 * i + 1], sigPaint, sigPath, sigRect);
     for (int i = 0; i < labelCount && !onGpu; i++) {
       if (!labelOn[i]) continue;
       if (labelRef[i]) {

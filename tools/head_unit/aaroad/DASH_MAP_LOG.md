@@ -64,6 +64,20 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 ## Log
 
 ### 2026-10-31
+- **Traffic lights on the dash map, like Google Maps.** *static*.
+  - Problem: Peter asked for the small traffic-light icon Google Maps puts at an intersection with a light or a stop sign.
+  - `Feed.java` reads tile format 4 and asks `rt` 4.
+  - `Signals.java` (desktop test `test/SignalsTest.java`):
+    - OSM's signals within 30 m of each other are merged into one icon, since a divided road has one at each corner.
+    - It keeps those within 300 m and not more than 15 m behind, at most the 6 nearest, drawn farthest first.
+    - With a route, the next one on it ahead is drawn 1.25x.
+  - `SignalIcon.java`: the icon is upright, centred on the intersection, and drawn under the street names.
+    - A light is a dark pill, 7 x 15 px, with a light rim and red, yellow and green dots.
+    - A stop sign is a red octagon, about 15 px with its white rim. None arrive yet, because the data has no stop signs.
+  - Both paths draw the icons the same way:
+    - Both place them with `MapView.placeSignals`, which hides them where a label would be hidden.
+    - The view draws them with `SignalIcon.draw`. The GPU layer draws the same routine once into a 96 x 24 sprite texture and lays the sprites at the same whole pixels; the harness compares them and no pixels differ.
+  - Harness renders are in `/tmp/hu/signals/`. The software path costs +0.2 to 0.4 ms a frame on the desktop JVM.
 - **Road tiles carry traffic signals (format 4), comma side.** *static*.
   - Problem: Peter asked for Google's small traffic-light icon at signalised intersections. The road tiles held only lines, so the head unit had no signal positions.
   - `road_tiles.py`: format 4 ends with a points table (`<H` count, then `<h x, <h y, <B kind` per point; kind 1 a signal, 2 a stop, reserved). The points are Mapbox Streets' `traffic_signals` points in the z14 `road` layer, which come from OSM `highway=traffic_signals`. Mapbox has no stop or give-way points, and mapd has no node tags, so no stop signs reach the map.

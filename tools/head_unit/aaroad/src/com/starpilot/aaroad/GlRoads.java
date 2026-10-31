@@ -204,6 +204,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private TextPaint[] paints;
   private final String[] atlasText = new String[ATLAS_H / ROW];
   private final float[] lq = new float[2];
+  // the traffic signal and stop icons: their sprites' texture, and this frame's choice and places (MapView.placeSignals)
+  private int sigTex;
+  private final Signals.Choice sigChoice = new Signals.Choice();
+  private final float[] sigQ = new float[2], sigXY = new float[2 * Signals.MAX];
+  private final int[] sigSprite = new int[Signals.MAX];
   private MapView.Scene glScene;  // the scene vbo holds, and the one drawn
   private GlCull cur;              // its pieces and their cull
   private GlCull pend;             // packed, being sent into back from byte pendOff
@@ -510,6 +515,17 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    // the signal icons' sprites, drawn once by the view's own routine (SignalIcon.draw) and laid one texel to a pixel
+    GLES20.glGenTextures(1, t, 0);
+    sigTex = t[0];
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sigTex);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    Bitmap sprites = signalSprites();
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, sprites, 0);
+    sprites.recycle();
     int[] b = new int[5];
     GLES20.glGenBuffers(5, b, 0);
     ibo = b[0];
@@ -754,6 +770,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     fade(0, 0, 584, 78, 1, 1, 0xe6 / 255f, 0, 0.6f);
     GLES20.glDisableVertexAttribArray(fP);
     part(P_FADE);
+    signals(f, w, h);  // under the names, as the view draws them
     labels(f, w, h);
     part(P_LABELS);
 
@@ -834,6 +851,45 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       float x0 = Math.round(lq[0] - set.w[i] / 2) - PAD, y0 = Math.round(lq[1] + 4) - BASE;
       GLES20.glUniform4f(tRect, x0, y0, x0 + ATLAS_W, y0 + ROW);
       GLES20.glUniform4f(tUV, 0, i * ROW / (float) ATLAS_H, 1, (i + 1) * ROW / (float) ATLAS_H);
+      GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    }
+    GLES20.glDisableVertexAttribArray(tP);
+    GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
+  }
+
+  // The four sprites side by side, each centred in its CELL square as the view draws an icon at its whole pixel.
+  static Bitmap signalSprites() {
+    int c = SignalIcon.CELL;
+    Bitmap b = Bitmap.createBitmap(c * SignalIcon.SPRITES, c, Bitmap.Config.ARGB_8888);
+    b.eraseColor(0);
+    Canvas k = new Canvas(b);
+    android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+    android.graphics.Path path = new android.graphics.Path();
+    android.graphics.RectF r = new android.graphics.RectF(0, 0, 0, 0);
+    for (int i = 0; i < SignalIcon.SPRITES; i++) SignalIcon.draw(k, i, i * c + c / 2, c / 2, p, path, r);
+    return b;
+  }
+
+  // The signal icons the view would draw this frame, placed as it places them (MapView.placeSignals), as quads of
+  // their sprites with the labels' program and premultiplied blend.
+  private void signals(MapView.Frame f, int w, int h) {
+    MapView.Scene s = f.s;
+    if (s == null || s.signals.length == 0) return;
+    int n = map.placeSignals(s, f.ce, f.cn, f.ch, f.sh, f.ik, f.free, map.tagShown, sigChoice, sigQ, sigXY, sigSprite);
+    if (n == 0) return;
+    int c = SignalIcon.CELL;
+    GLES20.glUseProgram(text);
+    GLES20.glUniform2f(tSize, w, h);
+    GLES20.glUniform1i(tTex, 0);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sigTex);
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, unit);
+    GLES20.glEnableVertexAttribArray(tP);
+    GLES20.glVertexAttribPointer(tP, 2, GLES20.GL_FLOAT, false, 8, 0);
+    GLES20.glBlendFuncSeparate(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
+    for (int i = 0; i < n; i++) {
+      float x0 = sigXY[2 * i] - c / 2, y0 = sigXY[2 * i + 1] - c / 2;
+      GLES20.glUniform4f(tRect, x0, y0, x0 + c, y0 + c);
+      GLES20.glUniform4f(tUV, sigSprite[i] / (float) SignalIcon.SPRITES, 0, (sigSprite[i] + 1) / (float) SignalIcon.SPRITES, 1);
       GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
     }
     GLES20.glDisableVertexAttribArray(tP);
