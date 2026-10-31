@@ -208,6 +208,19 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private boolean checkNext;
   private final float[] proj = new float[16];
 
+  // Where a moving frame's time goes (Peter 2026-10-31: 32-43 ms a frame and 233-378 ms worst while driving, 10-12 ms
+  // standing), logged every PARTS_MS. GL calls only queue work, so the GPU's own time shows up where the driver
+  // blocks: mostly the swap. Each part() closes the stage since the last mark; primitives only, nothing allocated.
+  private static final int P_LOCK = 0, P_CAMERA = 1, P_UPLOAD = 2, P_CLEAR = 3, P_GRID = 4, P_CULL = 5, P_ROADS = 6,
+      P_CARPET = 7, P_FADE = 8, P_LABELS = 9, P_ATLAS = 10, P_SWAP = 11, P_SLEEP = 12, PARTS = 13;
+  private static final String[] PART_NAMES = {"lock", "camera", "upload", "clear", "grid", "cull", "roads", "carpet",
+                                              "fade", "labels", "atlas", "swap", "sleep"};
+  private static final long PARTS_MS = 10000, SLOW_NS = 100000000L;
+  private final long[] partNow = new long[PARTS], partSum = new long[PARTS], partMax = new long[PARTS];
+  private final int[] slowTop = new int[PARTS];
+  private long partMark, partsFrom;
+  private int partFrames, slowFrames, atlasUploads, sceneUploads;
+
   GlRoads(Context context, MapView map) {
     super(context);
     this.map = map;
@@ -308,7 +321,10 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       boolean idle = false;
       while (!failed) {
         SurfaceHolder h;
+        java.util.Arrays.fill(partNow, 0);
+        partMark = System.nanoTime();
         synchronized (lock) {
+          part(P_LOCK);  // takeStats and surfaceDestroyed hold it on the UI thread
           // until the next frame is due, the surface changes, or, while idle, a poke
           while (holder == glHolder) {
             if (glHolder == null) {
@@ -322,6 +338,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           h = holder;
           poked = false;
         }
+        part(P_SLEEP);
         if (h != glHolder) {
           why = setSurface(h);
           if (why != null) {
@@ -339,25 +356,37 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           next = start + IDLE_MS;
           continue;
         }
-        MapView.Frame f = map.frame(s, start);
+        MapView.Frame f;
+        part(P_CAMERA);
+        // frame() is synchronized on the view, which onDraw also calls; taken here first so the wait is seen apart
+        synchronized (map) {
+          part(P_LOCK);
+          f = map.frame(s, start);
+        }
+        part(P_CAMERA);
         why = drawFrame(s, f);
         if (why != null) {
           fail(why);
           return;
         }
-        if (last > 0 && !idle) {
+        boolean counted = last > 0 && !idle;  // the frames the gaps count: after a frame's sleep, not an idle one
+        if (counted) {
           long gap = start - last;
           synchronized (lock) {
+            part(P_LOCK);
             gaps[(int) Math.min(gap, gaps.length - 1)]++;
             gapSum += gap;
             gapCount++;
             gapMax = Math.max(gapMax, gap);
           }
         }
+        part(P_LOCK);
+        if (counted) addParts();
         last = start;
         // a frame that ran late is followed at once, not skipped
         idle = !f.moving && f.settled;
         next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
+        logParts(start);  // after next is set, so its own time comes out of the coming sleep
       }
     } catch (Throwable t) {
       fail(String.valueOf(t));
@@ -597,6 +626,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     if (s != glScene) {
       String why = upload(s);
       if (why != null) return why;
+      sceneUploads++;
+      part(P_UPLOAD);
     }
     int[] q = new int[2];
     EGL14.eglQuerySurface(dpy, surf, EGL14.EGL_WIDTH, q, 0);
@@ -611,6 +642,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
     projection(w, h, free ? MapView.FREE_X - MapView.CAR_X : 0);
     float qa = 1 / (v[4] - v[5] * v[7]);
+    part(P_CLEAR);
 
     // the grid, every GRID_DM display metres, fixed to the ground
     double k = 1.0 / ik, step = MapView.GRID_DM * k;
@@ -628,9 +660,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glVertexAttribPointer(gA, 2, GLES20.GL_FLOAT, false, 8, 0);
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
     GLES20.glDisableVertexAttribArray(gA);
+    part(P_GRID);
 
     // the roads: every kerb, then every surface, then the carpet, as the view strokes them
     cull(ce, cn, ch, sh, ik);
+    part(P_CULL);
     GLES20.glUseProgram(line);
     GLES20.glUniformMatrix4fv(lP, 1, false, proj, 0);
     GLES20.glUniform4f(lW, ch * ik, sh * ik, (-ce * ch + cn * sh) * ik, (-ce * sh - cn * ch) * ik);
@@ -649,6 +683,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     lines(ROUTE, route + kerb, KERB, 1);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), ROAD, 1);
     lines(ROUTE, route, ROAD, 1);
+    part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
       float wide = Math.max(MapView.dm(MapView.LINE_MIN_PX), Math.min(MapView.dm(MapView.LINE_MAX_PX), MapView.LINE_M * ik));
@@ -656,6 +691,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
     GLES20.glDisableVertexAttribArray(lSeg);
     GLES20.glDisableVertexAttribArray(lC);
+    part(P_CARPET);
 
     // the fades over the roads, as the view's mask and fog: the band behind the cards with a route, the fog at the top
     GLES20.glUseProgram(fade);
@@ -667,7 +703,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     if (!free) fade(0, 0, MapView.COL, 215, 0, 1, 1, 0, (MapView.CARD_R + 4) / MapView.COL);
     fade(0, 0, 584, 78, 1, 1, 0xe6 / 255f, 0, 0.6f);
     GLES20.glDisableVertexAttribArray(fP);
+    part(P_FADE);
     labels(f, w, h);
+    part(P_LABELS);
 
     if (checkNext) {
       // the first frame on a surface or with a scene is checked; later ones are trusted
@@ -682,7 +720,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       return "swap failed, egl error 0x" + Integer.toHexString(err);
     }
     long ns = System.nanoTime() - t0;
+    part(P_SWAP);
     synchronized (lock) {
+      part(P_LOCK);
       glSum += ns;
       glCount++;
     }
@@ -710,6 +750,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     for (int i = 0; i < atlasText.length && same; i++) same = i < n ? set.text[i].equals(atlasText[i]) : atlasText[i] == null;
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
     if (!same) {
+      part(P_LABELS);
       if (atlas == null) {
         atlas = Bitmap.createBitmap(ATLAS_W, ATLAS_H, Bitmap.Config.ARGB_8888);
         atlasCanvas = new Canvas(atlas);
@@ -723,6 +764,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       }
       for (int i = n; i < atlasText.length; i++) atlasText[i] = null;
       GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, atlas, 0);
+      atlasUploads++;
+      part(P_ATLAS);  // the names drawn into the bitmap and the bitmap sent to GL
     }
     float off = f.free ? MapView.FREE_X - MapView.CAR_X : 0;
     float[] tag = map.tagShown;
@@ -745,6 +788,61 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
     GLES20.glDisableVertexAttribArray(tP);
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
+  }
+
+  // The time since the last mark goes to stage i.
+  private void part(int i) {
+    long t = System.nanoTime();
+    partNow[i] += t - partMark;
+    partMark = t;
+  }
+
+  // One counted frame into the sums; one over SLOW_NS, sleep included as the gaps include it, notes its largest stage.
+  private void addParts() {
+    long total = 0;
+    int top = 0;
+    for (int i = 0; i < PARTS; i++) {
+      long t = partNow[i];
+      partSum[i] += t;
+      if (t > partMax[i]) partMax[i] = t;
+      if (t > partNow[top]) top = i;
+      total += t;
+    }
+    partFrames++;
+    if (total > SLOW_NS) {
+      slowFrames++;
+      slowTop[top]++;
+    }
+  }
+
+  // Every PARTS_MS, one line if any moving frames were counted; the window starts over either way.
+  private void logParts(long now) {
+    if (partsFrom == 0) partsFrom = now;
+    if (now - partsFrom < PARTS_MS) return;
+    if (partFrames > 0) {
+      StringBuilder b = new StringBuilder("aaroad: gl parts avg/max ms: ");
+      for (int i = 0; i < PARTS; i++) {
+        if (i > 0) b.append(", ");
+        b.append(PART_NAMES[i]).append(' ').append(ms(partSum[i] / partFrames)).append('/').append(ms(partMax[i]));
+      }
+      b.append("; ").append(partFrames).append(" frames; label uploads ").append(atlasUploads)
+          .append("; scene uploads ").append(sceneUploads).append("; slow frames ").append(slowFrames);
+      if (slowFrames > 0) {
+        b.append(" (top stage");
+        for (int i = 0; i < PARTS; i++) if (slowTop[i] > 0) b.append(' ').append(PART_NAMES[i]).append(' ').append(slowTop[i]);
+        b.append(')');
+      }
+      XposedBridge.log(b.toString());
+    }
+    java.util.Arrays.fill(partSum, 0);
+    java.util.Arrays.fill(partMax, 0);
+    java.util.Arrays.fill(slowTop, 0);
+    partFrames = slowFrames = atlasUploads = sceneUploads = 0;
+    partsFrom = now;
+  }
+
+  private static String ms(long ns) {
+    return String.valueOf(Math.round(ns / 1e5) / 10.0);
   }
 
   private void fade(float x0, float y0, float x1, float y1, int axis, float a0, float a1, float a2, float stop) {
