@@ -95,10 +95,11 @@ final class MapView extends View {
   private static final long GAP_HOLD_MS = 10000;
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout", "turn_icon"};
-  // arrow 52 px in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
+  // arrow in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
   // Drawn here from the stock view's picture: moving the view itself put it 70 px right of this, over the road
-  // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show
-  private static final int ICON = 52, ICON_LEFT = 52, ICON_TOP = 36;
+  // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show.
+  // 34 px beside the distance, down from 52, so the card fits the narrow column (Peter 2026-10-31)
+  private static final int ICON = 34, ICON_LEFT = 52, ICON_TOP = 35;
   // Street names from the road tiles (Peter 2026-10-30: the street the car is on even with no route, and the names of
   // the streets around it). The car is on the nearest named road within ON_ROAD m that runs within ON_ROAD_DEG of its
   // heading, so a cross street at a junction does not take over. Looked up every ROAD_EVERY_MS, not per frame.
@@ -128,19 +129,18 @@ final class MapView extends View {
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
       rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint();
   // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
-  private final TextPaint big = text(36, inter(true), Color.WHITE), unit = text(17, inter(false), 0xffc8d0dc),
+  private final TextPaint big = text(30, inter(true), Color.WHITE), unit = text(15, inter(false), 0xffc8d0dc),
       street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
-      cardRoad = text(19, inter(true), Color.WHITE), trip = text(18, inter(true), Color.WHITE),
-      tripClock = text(15, inter(false), 0xffd8dee8),
+      cardRoad = text(18, inter(true), Color.WHITE),
       songFrom = text(11, inter(false), 0xffaab4c8), songTitle = text(15, inter(true), Color.WHITE),
       songArtist = text(12, inter(false), 0xffaab4c8),
       sign = text(8.5f, Typeface.DEFAULT_BOLD, 0xff111111),
       signBig = text(23, Typeface.DEFAULT_BOLD, 0xff111111);
   private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path(), coverClip = new Path();
-  // the cards' shapes and rims never move, so they are built once
-  private final Path turnCard = card(CARD_L, TURN_T, CARD_R, TURN_B), tripCard = card(CARD_L, TRIP_T, TRIP_R, TRIP_B),
-      songCard = card(CARD_L, SONG_T, SONG_R, SONG_B), turnRim = leftEnd(CARD_L, TURN_T, TURN_B),
-      logoWaves = spotifyWaves(SONG_X + LOGO_R, SONG_T + 10, LOGO_R);
+  // the music card's shape and logo, built again only when the card moves (songAt, its top); the turn card's
+  // shape follows its rows
+  private Path songCard, logoWaves;
+  private float songAt = -1;
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
@@ -1493,24 +1493,28 @@ final class MapView extends View {
     return true;
   }
 
-  // ---- Peter's mockup (2026-10-30, second version): a turn card and a trip card down the left, the next street as
-  // a tag over the map, the speed limit at the right, all on the dash's black. No close button: nothing on the
-  // cluster takes a touch.
+  // ---- Peter's mockup (2026-10-30, second version): a turn card down the left, the next street as a tag over the
+  // map, the speed limit at the right, all on the dash's black. No close button: nothing on the cluster takes a touch.
+  // The trip card is folded into the turn card as its last line and the column is 210 wide, not 270: the cards took
+  // about half the meter (Peter 2026-10-31).
 
-  static final float COL = 300;  // the dark band behind the cards, solid as far as they reach: roads showed between them
+  static final float COL = 236;  // the dark band behind the cards, solid as far as they reach: roads showed between them
   // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
   // the turn card starts 28 down: at 12 its top left corner almost met the tach ring, and at 18 it still looked
   // cut off by it (Peter's photos 2026-10-30)
-  static final float CARD_L = 36, CARD_R = 270, TURN_T = 28, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
-  private static final float STRIP_W = 10, TEXT_X = 116;
+  static final float CARD_L = 36, CARD_R = 210, TURN_T = 28;
+  // the turn card's rows, each there only when it has something: the arrow and the distance, the road across the
+  // card, then time left, distance left and arrival. Its height follows them.
+  private static final float STRIP_W = 10, ROW_X = 50, TEXT_X = 92, TOP_H = 42, ROAD_H = 24, ETA_H = 20, PAD = 6;
   // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
   private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
   private static final int ACCENT = 0xfff2f2f2, ACCENT_DIM = 0xff3a3a3a;
-  // the music card under the trip card, with or without a route: the cover, where the sound comes from, the song,
-  // and whether it plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
-  // as narrow as the trip card: at 270 it touched the car without a route (Peter 2026-10-30)
-  private static final float SONG_T = 160, SONG_B = 208, SONG_R = 250, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
-  private static final float GLYPH_X = 218, GLYPH_R = 14;
+  // the music card, with or without a route: the cover, where the sound comes from, the song, and whether it
+  // plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
+  // at 270 wide it touched the car without a route (Peter 2026-10-30); now as wide as the turn card, and while
+  // routing drawn SONG_GAP under it rather than here at the bottom (Peter 2026-10-31)
+  private static final float SONG_T = 160, SONG_B = 208, SONG_R = CARD_R, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
+  private static final float GLYPH_X = SONG_R - 32, GLYPH_R = 14, SONG_GAP = 8;
   private static final int SPOTIFY = 0xff1ed760;
   private static final float LOGO_R = 7;
 
@@ -1618,7 +1622,7 @@ final class MapView extends View {
     canvas.drawBitmap(cardBmp, 0, 0, null);
   }
 
-  private static final int CARDS_W = 272;  // clear of the turn card's right end (CARD_R)
+  private static final int CARDS_W = (int) CARD_R + 2;  // clear of the cards' right ends
   private Bitmap cardBmp;
   private Canvas cardCanvas;
   private String cardsKey;
@@ -1656,7 +1660,7 @@ final class MapView extends View {
 
   private void cards(Canvas canvas, long now, boolean free) {
     // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did,
-    // the stock arrow, the distance, and the road
+    // the stock arrow and the distance, the road, and the trip
     TextView dist = (TextView) find("seg_dist");
     CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
     View icon = find("turn_icon");
@@ -1664,86 +1668,116 @@ final class MapView extends View {
     // bdc227553 on, so the card named the current road instead of the turn (Peter's photo 2026-10-30)
     TextView next = (TextView) find("next_road");
     CharSequence turnRoad = next != null && next.getVisibility() == VISIBLE ? next.getText() : null;
-    if (!free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()))) {
+    Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
+    boolean turn = !free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()));
+    boolean top = turn && (!TextUtils.isEmpty(d) || arrow != null), road = turn && !TextUtils.isEmpty(turnRoad);
+    boolean trip = !free && Feed.remainingSec >= 0;  // a card for the trip alone when there is no turn
+    float b = -1;
+    if (top || road || trip) {
+      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + (road ? ROAD_H : 0) + (trip ? ETA_H : 0) + PAD;
+      Path turnCard = card(CARD_L, TURN_T, CARD_R, b);
       canvas.drawPath(turnCard, panel);
       double ft = TextUtils.isEmpty(d) ? -1 : Meter.feet(d);
-      float lit = ft < 0 || ft > 500 ? TURN_B : TURN_B - (float) (ft / 500) * (TURN_B - TURN_T);
+      float lit = ft < 0 || ft > 500 ? b : b - (float) (ft / 500) * (b - TURN_T);
       canvas.save();
       canvas.clipPath(turnCard);
-      canvas.drawRect(CARD_L, TURN_T, CARD_L + 0.4f * (CARD_R - CARD_L), TURN_B, turnGlow);  // a soft light from the left
+      canvas.drawRect(CARD_L, TURN_T, CARD_L + 0.4f * (CARD_R - CARD_L), b, turnGlow);  // a soft light from the left
       fill.setColor(ACCENT_DIM);
       canvas.drawRect(CARD_L, TURN_T, CARD_L + STRIP_W, lit, fill);
       fill.setColor(ACCENT);
-      canvas.drawRect(CARD_L, lit, CARD_L + STRIP_W, TURN_B, fill);
+      canvas.drawRect(CARD_L, lit, CARD_L + STRIP_W, b, fill);
       canvas.restore();
       canvas.drawPath(turnCard, edge);
-      Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
-      if (arrow != null) {
-        Rect was = arrow.copyBounds();
-        arrow.setBounds(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON);
-        arrow.draw(canvas);
-        arrow.setBounds(was);  // the stock view draws it again when the map goes
-      }
       // a brighter rim on the strip's curve, lit as far as the strip is
+      Path turnRim = leftEnd(CARD_L, TURN_T, b);
       canvas.save();
       canvas.clipPath(rect(CARD_L - 2, TURN_T - 2, CARD_L + RADIUS + 2, lit));
       rim.setColor(0xff4a4a4a);
       canvas.drawPath(turnRim, rim);
       canvas.restore();
       canvas.save();
-      canvas.clipPath(rect(CARD_L - 2, lit, CARD_L + RADIUS + 2, TURN_B + 2));
+      canvas.clipPath(rect(CARD_L - 2, lit, CARD_L + RADIUS + 2, b + 2));
       rim.setColor(0xffffffff);
       canvas.drawPath(turnRim, rim);
       canvas.restore();
 
-      float textW = CARD_R - SLANT - TEXT_X - 6;  // clear of the lean at the road name's baseline
-      if (!TextUtils.isEmpty(d)) {
-        String t = d.toString().trim();
-        int sp = t.lastIndexOf(' ');
-        String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
-        float size = 36;  // a long distance shrinks to fit
-        big.setTextSize(size);
-        while (big.measureText(num) + 5 + unit.measureText(u) > textW && size > 24) big.setTextSize(--size);
-        canvas.drawText(num, TEXT_X, 62, big);
-        canvas.drawText(u, TEXT_X + big.measureText(num) + 5, 62, unit);
+      float y = TURN_T + (top ? 0 : PAD);  // the top of the next row
+      if (top) {
+        if (arrow != null) {
+          Rect was = arrow.copyBounds();
+          arrow.setBounds(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON);
+          arrow.draw(canvas);
+          arrow.setBounds(was);  // the stock view draws it again when the map goes
+        }
+        if (!TextUtils.isEmpty(d)) {
+          String t = d.toString().trim();
+          int sp = t.lastIndexOf(' ');
+          String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
+          float x = arrow != null ? TEXT_X : ROW_X, textW = right(y + 34, b) - x;
+          float size = 30;  // a long distance shrinks to fit
+          big.setTextSize(size);
+          while (big.measureText(num) + 5 + unit.measureText(u) > textW && size > 22) big.setTextSize(--size);
+          canvas.drawText(num, x, y + 34, big);
+          canvas.drawText(u, x + big.measureText(num) + 5, y + 34, unit);
+        }
+        y += TOP_H;
       }
-      if (!TextUtils.isEmpty(turnRoad)) canvas.drawText(fit(turnRoad.toString(), cardRoad, textW), TEXT_X, TextUtils.isEmpty(d) ? 68 : 86, cardRoad);
-    }
-
-    // the trip card: time and distance left, a divider, the arrival time
-    if (!free && Feed.remainingSec >= 0) {
-      canvas.drawPath(tripCard, panel);
-      canvas.drawPath(tripCard, edge);
-      double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
-      long min = Math.round(left / 60);
-      String n = min >= 60 ? (min / 60) + " h " + (min % 60) + " min" : min + " min";
-      String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
-      float div = CARD_L + 112, mid = (TRIP_T + TRIP_B) / 2;
-      boolean far = Feed.remainingMeters >= 0;
-      canvas.drawText(fit(n, trip, div - CARD_L - 22), CARD_L + 14, far ? TRIP_T + 22 : mid + 7, trip);
-      if (far) canvas.drawText(away(Feed.remainingMeters, Feed.metric), CARD_L + 14, TRIP_T + 41, cardDim);
-      fill.setColor(0x40ffffff);
-      canvas.drawRect(div, TRIP_T + 10, div + 1, TRIP_B - 10, fill);
-      canvas.drawText(at, (div + TRIP_R - SLANT / 2) / 2 - tripClock.measureText(at) / 2, mid + 6, tripClock);  // centred at mid height
+      if (road) {  // across the whole card, under the arrow: beside it only ~100 px were left
+        float textW = right(y + 18, b) - ROW_X, size = 18;
+        String n = turnRoad.toString();
+        cardRoad.setTextSize(size);
+        while (cardRoad.measureText(n) > textW && size > 15) cardRoad.setTextSize(--size);
+        canvas.drawText(fit(n, cardRoad, textW), ROW_X, y + 18, cardRoad);
+        y += ROAD_H;
+      }
+      if (trip) canvas.drawText(eta(now, right(y + 14, b) - ROW_X), ROW_X, y + 14, cardDim);
     }
 
     String status = Feed.mediaStatus, title = Feed.mediaTitle;
-    if (status != null && !TextUtils.isEmpty(title)) song(canvas, status, title);
+    if (status != null && !TextUtils.isEmpty(title)) song(canvas, status, title, b > 0 ? b + SONG_GAP : SONG_T);  // up under the turn card
     else titleRoll.over = artistRoll.over = 0;
   }
 
-  private void song(Canvas canvas, String status, String title) {
+  // Where text on a row with its baseline at y has to end, clear of the turn card's lean (bottom at b).
+  private static float right(float y, float b) {
+    return CARD_R - SLANT * (y - TURN_T) / (b - TURN_T) - 6;
+  }
+
+  // The trip as one line: "11 min · 5.2 mi · 2:10 AM", the values the trip card showed (Peter 2026-10-31). A piece
+  // that is missing is left out; the distance goes first if the line is too long for w.
+  private String eta(long now, float w) {
+    double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
+    long min = Math.round(left / 60);
+    String n = min >= 60 ? (min / 60) + " h " + (min % 60) + " min" : min + " min";
+    String at = clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000)));
+    String dot = "\u2009\u00b7\u2009";  // thin spaces: with full ones "11 min · 5.2 mi · 2:10 AM" ran into the lean
+    String line = n + dot + at;
+    if (Feed.remainingMeters >= 0) {
+      String all = n + dot + away(Feed.remainingMeters, Feed.metric) + dot + at;
+      if (cardDim.measureText(all) <= w) line = all;
+    }
+    return fit(line, cardDim, w);
+  }
+
+  // the music card with its top at t: SONG_T, or under the turn card while routing
+  private void song(Canvas canvas, String status, String title, float t) {
+    float o = t - SONG_T, b = SONG_B + o;
+    if (t != songAt) {
+      songCard = card(CARD_L, t, SONG_R, b);
+      logoWaves = spotifyWaves(SONG_X + LOGO_R, t + 10, LOGO_R);
+      songAt = t;
+    }
     boolean spotify = "spotify".equals(Feed.mediaSource);
     canvas.drawPath(songCard, panel);
     if (spotify) {  // Spotify's green comes in from the lean
       canvas.save();
       canvas.clipPath(songCard);
-      canvas.drawRect(SONG_R - 0.35f * (SONG_R - CARD_L), SONG_T, SONG_R, SONG_B, greenGlow);
+      canvas.drawRect(SONG_R - 0.35f * (SONG_R - CARD_L), t, SONG_R, b, greenGlow);
       canvas.restore();
     }
     canvas.drawPath(songCard, edge);
 
-    RectF art = new RectF(COVER_L, COVER_T, COVER_L + COVER_PX, COVER_T + COVER_PX);
+    RectF art = new RectF(COVER_L, COVER_T + o, COVER_L + COVER_PX, COVER_T + o + COVER_PX);
     Bitmap cover = Feed.cover;
     if (cover != null && Feed.mediaArt != 0 && Feed.coverId == Feed.mediaArt) {
       coverClip.rewind();
@@ -1762,18 +1796,18 @@ final class MapView extends View {
     float x = SONG_X;
     if (spotify) {
       fill.setColor(SPOTIFY);
-      canvas.drawCircle(x + LOGO_R, SONG_T + 10, LOGO_R, fill);
+      canvas.drawCircle(x + LOGO_R, t + 10, LOGO_R, fill);
       canvas.drawPath(logoWaves, waves);
       x += 2 * LOGO_R + 4;
     }
-    if (!from.isEmpty()) canvas.drawText(fit(from, songFrom, w - (x - SONG_X)), x, SONG_T + 14, songFrom);
-    titleRoll.draw(canvas, title, songTitle, SONG_X, SONG_T + 30, w);
+    if (!from.isEmpty()) canvas.drawText(fit(from, songFrom, w - (x - SONG_X)), x, t + 14, songFrom);
+    titleRoll.draw(canvas, title, songTitle, SONG_X, t + 30, w, t, b);
     String artist = Feed.mediaArtist;
-    if (!TextUtils.isEmpty(artist)) artistRoll.draw(canvas, artist.toUpperCase(Locale.US), songArtist, SONG_X, SONG_T + 44, w);
+    if (!TextUtils.isEmpty(artist)) artistRoll.draw(canvas, artist.toUpperCase(Locale.US), songArtist, SONG_X, t + 44, w, t, b);
     else artistRoll.over = 0;
 
     // pause bars while it plays, a play triangle while paused
-    float cy = (SONG_T + SONG_B) / 2;
+    float cy = (t + b) / 2;
     fill.setColor(0xff2e2e2e);
     canvas.drawCircle(GLYPH_X, cy, GLYPH_R, fill);
     // a green ring round the button fills clockwise from the top as the song plays (Peter 2026-10-30)
@@ -1859,14 +1893,14 @@ final class MapView extends View {
     private long since;
     float over;  // px the line is longer than its room as last drawn; 0 when it fits or is not shown
 
-    void draw(Canvas canvas, String s, TextPaint p, float x, float y, float w) {
+    void draw(Canvas canvas, String s, TextPaint p, float x, float y, float w, float top, float bottom) {
       long now = SystemClock.uptimeMillis();
       if (!s.equals(text)) { text = s; since = now; }
       over = p.measureText(s) - w;
       if (over <= 0) { canvas.drawText(s, x, y, p); return; }
       float dx = dx(now);
       canvas.save();
-      canvas.clipRect(x, SONG_T, x + w, SONG_B);  // sideways only: capital accents reach up past the line
+      canvas.clipRect(x, top, x + w, bottom);  // sideways only: capital accents reach up past the line
       canvas.drawText(s, x - dx, y, p);
       canvas.restore();
     }
