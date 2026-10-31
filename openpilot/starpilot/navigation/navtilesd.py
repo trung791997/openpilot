@@ -29,12 +29,15 @@ from openpilot.starpilot.navigation.offline_roads import (
   AREA_REFRESH_SECONDS, CACHE_MAX_BYTES, DRIVEN_MAX_BYTES, SAVED_MAX_BYTES, OfflineState, TileStore, Usage, area_tiles,
 )
 from openpilot.starpilot.navigation.road_tiles import (
-  DATA_ZOOM, MAX_DOWNLOAD_BYTES, MVT_URL, TileFormatError, TileKey, corridor_tiles, decode_mvt_named_roads,
-  encode_road_tile, meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
+  DATA_ZOOM, MAX_DOWNLOAD_BYTES, MVT_URL, TileFormatError, TileKey, corridor_tiles,
+  decode_mvt_road_layer, encode_road_tile, meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
 )
 
 NEAR_RADIUS_M = 2500.0
-VERSION_WITH_NAMES = 2
+# A saved tile near the car in an older format than this is fetched again, once per tile: version 2 added
+# street names, version 3 (2026-10-31) the bridge flags. Tiles nowhere near the car keep their old format,
+# and draw without names or bridges, until a drive comes near them or their area refreshes.
+CURRENT_FORMAT = 3
 AHEAD_M = 6000.0
 REQUEST_TIMEOUT = (4.0, 10.0)
 NETWORK_BACKOFF_S, SERVER_BACKOFF_S, KEY_BACKOFF_S = 15.0, 30.0, 300.0
@@ -144,11 +147,11 @@ class Fetcher:
     elif status != 200:
       return None
     try:
-      roads, names = decode_mvt_named_roads(data) if data else ({}, {})
+      roads, names, flags = decode_mvt_road_layer(data) if data else ({}, {}, {})
     except (TileFormatError, OSError, EOFError, ValueError):
       return None
     self.failure = None
-    return encode_road_tile(roads, names)
+    return encode_road_tile(roads, names, flags=flags)
 
 
 class AreaProgress:
@@ -295,13 +298,13 @@ class TileDaemon:
     return promoted
 
   @staticmethod
-  def _unnamed(path) -> bool:
+  def _outdated(path) -> bool:
     try:
       with open(path, "rb") as handle:
         version = road_tile_version(handle.read(8))
     except OSError:
       return False
-    return version is not None and version < VERSION_WITH_NAMES
+    return version is not None and version < CURRENT_FORMAT
 
   def _urgent_job(self) -> TileKey | None:
     while self.urgent:
@@ -309,7 +312,7 @@ class TileDaemon:
       found = self.store.find(key)
       if found is None:
         return key
-      if key not in self.upgraded and self._unnamed(found):
+      if key not in self.upgraded and self._outdated(found):
         if len(self.upgraded) > 20000:
           self.upgraded.clear()
         self.upgraded.add(key)

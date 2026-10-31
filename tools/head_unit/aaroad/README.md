@@ -105,7 +105,7 @@ One JSON object per datagram, `{"v": 1, "t": kind, ...}`, each under 1472 bytes:
 | kind | way, rate | body |
 |---|---|---|
 | `b` beacon | comma broadcast, 1 Hz, every up interface but `lo` and `aa*` | `port` only, no drive data |
-| `h` hello | head unit to comma, about 1 Hz | `have`: road tiles held, `["x/y", ...]`; leave it out to get no tiles |
+| `h` hello | head unit to comma, about 1 Hz | `have`: road tiles held, `["x/y", ...]`; leave it out to get no tiles. `rt`: newest tile format the app reads (3 since 2026-10-31: bridges); older tiles go as format 2 or 1 |
 | `s` state | 1 Hz and on change | `mode` (`exp` `chill` `aol` `off`), `metric`, `nav` (null unless a route is guiding) |
 | `r` route | on change and every 5 s | `id`, `i`, `n`, `pts` `[[lat, lon], ...]`, 50 per datagram, about 512 in all; `c` (optional) a traffic level per point of `pts`, 0 unknown, 1 low, 2 moderate, 3 heavy, 4 severe |
 | `p` pose | 20 Hz | `lat`, `lon`, `hdg` (deg, compass), `spd` (m/s), `age` (s): the last GPS fix carried forward, at most 1 s; `b`: 1 while braking (pedal, or openpilot asking below -0.5 m/s²), left out otherwise |

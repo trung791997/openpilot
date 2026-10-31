@@ -53,8 +53,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final int SLICE = 256 * 1024;  // bytes of a new scene sent a frame, while the last one draws
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = MapView.KERB_C, ROAD = MapView.ROAD_C, GRID = 0xff2a2a2a;
-  // groups 0-4 the road classes, 5-8 the route by traffic: unknown or low, moderate, heavy, severe
-  private static final int ROUTE = 5, LEVELS = 4;
+  // groups 0-4 the road classes, 5-9 their bridges (MapView.BRIDGE), 10-13 the route by traffic: unknown or low,
+  // moderate, heavy, severe. A group with nothing in view costs no draw call.
+  private static final int ROUTE = 2 * MapView.BRIDGE, LEVELS = 4;
   private static final long FRAME_MS = 33, IDLE_MS = 500;
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
@@ -726,6 +727,12 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
+    // the bridges over all of that, as the view: casing, kerb, surface
+    float casing = MapView.dm(2 * MapView.KERB_PX + 2 * MapView.CASING_PX);
+    int b = MapView.BRIDGE;
+    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, 1);
+    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
+    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
     part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);

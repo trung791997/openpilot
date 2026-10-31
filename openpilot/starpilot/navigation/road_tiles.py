@@ -42,8 +42,13 @@ MAGIC = b"SPRT"
 # Version 2 (2026-10-30) adds a street name per line, for Peter's ask to see the street the car is on
 # without a route and the names of nearby streets. Version 1 files (no names) still decode, and
 # downgrade_road_tile() turns a version 2 file back into version 1 for head units that only read 1.
-VERSION = 2
+# Version 3 (2026-10-31) adds a flags byte per line, BRIDGE or TUNNEL from the vector tile's ``structure``,
+# so the dash map can draw an overpass over the road under it (Peter). Older versions still decode (no
+# flags), and downgrade_road_tile() makes a version 2 (names, no flags) or 1 copy for older head units.
+VERSION = 3
 OLDEST_VERSION = 1
+BRIDGE, TUNNEL = 1, 2  # line flags
+_STRUCTURE_FLAG = {"bridge": BRIDGE, "tunnel": TUNNEL}
 MAX_NAME_BYTES = 64
 _HEADER = struct.Struct("<4sBB")
 _CLASS_HEADER = struct.Struct("<BII")
@@ -219,6 +224,16 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
 
   The name is the ``name`` tag, else ``ref`` (a route number such as "I 5"), so a numbered highway
   still gets a label."""
+  roads, names, _ = decode_mvt_road_layer(data)
+  return roads, names
+
+
+def decode_mvt_road_layer(data: bytes) -> tuple[dict[int, list[np.ndarray]], dict[int, list[str]], dict[int, list[int]]]:
+  """Road lines, names and flags by class, the three lists parallel.
+
+  The flags are BRIDGE or TUNNEL from the ``structure`` tag (Mapbox Streets v8: none, bridge, tunnel
+  or ford), 0 otherwise. The numeric ``layer`` tag is not read: bridge over everything else is what the
+  dash map draws, and a bridge over a bridge is rare enough to leave in tile order."""
   if data[:2] == b"\x1f\x8b":
     inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
@@ -229,6 +244,7 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
       raise TileFormatError("vector tile too large")
   roads: dict[int, list[np.ndarray]] = {}
   names: dict[int, list[str]] = {}
+  flags: dict[int, list[int]] = {}
   for field, wire, layer in _fields(data):
     if field != 3 or wire != 2:
       continue
@@ -257,6 +273,7 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
     class_key = keys.index("class") if "class" in keys else -1
     name_key = keys.index("name") if "name" in keys else -1
     ref_key = keys.index("ref") if "ref" in keys else -1
+    structure_key = keys.index("structure") if "structure" in keys else -1
     for feature in features:
       tags, kind, geometry = [], 0, []
       for ff, fw, value in _fields(bytes(feature)):
@@ -268,7 +285,7 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
           geometry = _packed(value)
       if kind != 2 or class_key < 0:
         continue
-      road_class, road_name, road_ref = None, "", ""
+      road_class, road_name, road_ref, road_flags = None, "", "", 0
       for k in range(0, len(tags) - 1, 2):
         if tags[k + 1] >= len(values):
           continue
@@ -278,6 +295,8 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
           road_name = (values[tags[k + 1]] or "").strip()
         elif tags[k] == ref_key:
           road_ref = (values[tags[k + 1]] or "").strip()
+        elif tags[k] == structure_key:
+          road_flags = _STRUCTURE_FLAG.get(values[tags[k + 1]] or "", 0)
       if road_class is None:
         continue
       for line in _lines(geometry):
@@ -286,7 +305,8 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
           points *= scale
         roads.setdefault(road_class, []).append(points)
         names.setdefault(road_class, []).append(road_name or road_ref)
-  return roads, names
+        flags.setdefault(road_class, []).append(road_flags)
+  return roads, names, flags
 
 
 # ---------------------------------------------------------------- compact storage
@@ -297,25 +317,28 @@ def _clip_name(name: str) -> bytes:
 
 
 def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[int, Sequence[str]] | None = None,
-                     version: int = VERSION) -> bytes:
+                     version: int = VERSION, flags: Mapping[int, Sequence[int]] | None = None) -> bytes:
   """Delta-coded int16 polylines per class, zlib-compressed.
 
   Version 2 starts the body with the tile's distinct street names (each stored once, up to
   MAX_NAME_BYTES) and gives every line a 2-byte index into them (0 = unnamed), so a street cut into
-  many lines costs its name once. ``names[class]`` runs parallel to ``roads[class]``."""
-  if version not in (OLDEST_VERSION, VERSION):
+  many lines costs its name once. Version 3 adds a byte per line after the name index, the line's
+  flags (BRIDGE, TUNNEL). ``names[class]`` and ``flags[class]`` run parallel to ``roads[class]``."""
+  if not OLDEST_VERSION <= version <= VERSION:
     raise ValueError(f"unknown road tile version {version}")
   table: dict[bytes, int] = {}
   sections = bytearray()
   classes = 0
   for road_class in sorted(roads):
     class_names = list((names or {}).get(road_class, ()))
+    class_flags = list((flags or {}).get(road_class, ()))
     pairs = [(np.clip(np.rint(line), -_COORD_LIMIT, _COORD_LIMIT).astype(np.int32),
-              class_names[i] if i < len(class_names) else "") for i, line in enumerate(roads[road_class])]
-    pairs = [(line, name) for line, name in pairs if len(line) >= 2]
+              class_names[i] if i < len(class_names) else "",
+              int(class_flags[i]) & 0xFF if i < len(class_flags) else 0) for i, line in enumerate(roads[road_class])]
+    pairs = [pair for pair in pairs if len(pair[0]) >= 2]
     if not pairs:
       continue
-    lines = [line for line, _ in pairs]
+    lines = [pair[0] for pair in pairs]
     lengths = np.array([min(len(line), 65535) for line in lines], dtype=np.uint16)
     coords = np.concatenate([line[:65535] for line in lines])
     deltas = coords.copy()
@@ -324,11 +347,13 @@ def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[i
     sections += lengths.tobytes()
     if version >= 2:
       index = np.zeros(len(lines), dtype="<u2")
-      for i, (_, name) in enumerate(pairs):
+      for i, (_, name, _) in enumerate(pairs):
         key = _clip_name(name or "")
         if key and (key in table or len(table) < 65535):
           index[i] = table.setdefault(key, len(table) + 1)
       sections += index.tobytes()
+    if version >= 3:
+      sections += np.array([pair[2] for pair in pairs], dtype=np.uint8).tobytes()
     sections += np.clip(deltas, -65535, 65535).astype(np.int32).astype("<i4").tobytes()
     classes += 1
   body = bytearray()
@@ -350,12 +375,18 @@ class RoadTile:
   names: tuple[str, ...] = ()
   line_names: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
   version: int = VERSION
+  # per class a flags byte per line (BRIDGE, TUNNEL); empty for version 1 and 2 tiles
+  line_flags: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
 
   def name_of(self, road_class: int, line: int) -> str:
     index = self.line_names.get(road_class)
     if index is None or line >= len(index) or not index[line]:
       return ""
     return self.names[int(index[line]) - 1]
+
+  def flags_of(self, road_class: int, line: int) -> int:
+    flags = self.line_flags.get(road_class)
+    return 0 if flags is None or line >= len(flags) else int(flags[line])
 
   @property
   def empty(self) -> bool:
@@ -375,7 +406,7 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
     raise TileFormatError("corrupt road tile") from error
   if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
     raise TileFormatError("truncated, oversized or padded road tile")
-  pos, lines, names, line_names = 0, {}, [], {}
+  pos, lines, names, line_names, line_flags = 0, {}, [], {}, {}
   if version >= 2:
     if pos + 2 > len(body):
       raise TileFormatError("truncated road tile names")
@@ -391,7 +422,7 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
       raise TileFormatError("truncated road tile")
     road_class, count, total = _CLASS_HEADER.unpack_from(body, pos)
     pos += _CLASS_HEADER.size
-    need = count * (4 if version >= 2 else 2) + total * 8
+    need = count * (5 if version >= 3 else 4 if version >= 2 else 2) + total * 8
     if road_class >= len(CLASS_NAMES) or road_class in lines or pos + need > len(body):
       raise TileFormatError("bad road tile class")
     lengths = np.frombuffer(body, dtype="<u2", count=count, offset=pos).astype(np.int32)
@@ -402,6 +433,9 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
       if count and int(index.max()) > len(names):
         raise TileFormatError("bad road tile name index")
       line_names[road_class] = index
+    if version >= 3:
+      line_flags[road_class] = np.frombuffer(body, dtype=np.uint8, count=count, offset=pos).copy()
+      pos += count
     deltas = np.frombuffer(body, dtype="<i4", count=total * 2, offset=pos).reshape(total, 2)
     pos += total * 8
     if int(lengths.sum()) != total or (count and int(lengths.min()) < 2):
@@ -411,7 +445,7 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
     lines[road_class] = (np.cumsum(deltas, axis=0).astype(np.float32), offsets)
   if pos != len(body):
     raise TileFormatError("trailing road tile data")
-  return RoadTile(key, lines, tuple(names), line_names, version)
+  return RoadTile(key, lines, tuple(names), line_names, version, line_flags)
 
 
 def road_tile_version(raw: bytes) -> int | None:
@@ -424,10 +458,13 @@ def road_tile_version(raw: bytes) -> int | None:
 def downgrade_road_tile(raw: bytes, version: int = OLDEST_VERSION) -> bytes:
   """The same tile in an older format, for a head unit that rejects newer ones.
 
-  The head unit app before 2026-10-30 refuses any version but 1; sending it a version 2 tile would
-  make it drop the tile and the comma resend it every few seconds forever."""
-  if road_tile_version(raw) in (None, version):
+  The head unit app before 2026-10-30 refuses any version but 1, and the one before 2026-10-31 any
+  but 1 and 2; sending a newer tile would make it drop the tile and the comma resend it every few
+  seconds forever. Going to 2 keeps the street names; only the flags are lost."""
+  have = road_tile_version(raw)
+  if have is None or have <= version:
     return raw
   tile = decode_road_tile(TileKey(DATA_ZOOM, 0, 0), raw)
   roads = {c: [points[offsets[i]:offsets[i + 1]] for i in range(len(offsets) - 1)] for c, (points, offsets) in tile.lines.items()}
-  return encode_road_tile(roads, version=version)
+  names = {c: [tile.name_of(c, i) for i in range(len(offsets) - 1)] for c, (_, offsets) in tile.lines.items()}
+  return encode_road_tile(roads, names if version >= 2 else None, version=version)

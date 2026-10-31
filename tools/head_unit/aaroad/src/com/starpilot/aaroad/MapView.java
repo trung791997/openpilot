@@ -82,6 +82,11 @@ final class MapView extends View {
   static final int KERB_C = 0xff6a6a6a, ROAD_C = 0xff383838;
   static final int[] KERBS = {0xff54451a, KERB_C, KERB_C, 0xff433816, KERB_C};
   static final int[] ROADS = {0xff7a6420, ROAD_C, ROAD_C, 0xff5a4b1e, ROAD_C};
+  // Bridges (format 3 tiles, road_tiles.BRIDGE) go over the roads under them, Peter 2026-10-31: after every other
+  // road's kerb and surface, in their own colours, with a dark casing CASING_PX wide each side so the road below
+  // reads as passing under. A bridge's class in the scene is its tile class + BRIDGE; the carpet stays on top.
+  static final int BRIDGE = 5, CASING_C = 0xff101010;
+  static final float CASING_PX = 2;
   static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
   private static final double TURN_LEN = 40;   // m of road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
@@ -157,9 +162,9 @@ final class MapView extends View {
   private float songAt = -1;
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
-  private final Path[] stubPaths = {new Path(), new Path(), new Path(), new Path(), new Path()};
+  private final Path[] stubPaths = paths(2 * BRIDGE);  // by scene class: the tile classes, then their bridges
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
-  private final Path[] stubWorld = {new Path(), new Path(), new Path(), new Path(), new Path()};
+  private final Path[] stubWorld = paths(2 * BRIDGE);
   private final Path routeWorld = new Path();
   // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe
   private final Path[] carpetPaths = {new Path(), new Path(), new Path(), new Path()};
@@ -239,7 +244,7 @@ final class MapView extends View {
     long routeId = -1;
     int tilesVersion;
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
-    int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run
+    int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run, + BRIDGE on a bridge
     String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
@@ -829,14 +834,16 @@ final class MapView extends View {
         float[] pts = tile.pts[c];
         int[] starts = tile.starts[c];
         String[] names = tile.names[c];
+        boolean[] bridge = tile.bridge[c];
         if (pts == null || starts == null) continue;
         for (int l = 0; l + 1 < starts.length; l++) {
           // with a route, every road around the car shows as in free drive, and farther out the roads along the route
           if (r == null) around(s, tile, pts, starts[l], starts[l + 1], roads);
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
           String name = names != null && l < names.length ? names[l] : null;
-          while (roadsCls.size() < roads.size()) { roadsCls.add(c); roadsName.add(name); }
-          while (stubsCls.size() < stubs.size()) { stubsCls.add(c); stubsName.add(name); }
+          int sc = bridge != null && l < bridge.length && bridge[l] ? c + BRIDGE : c;
+          while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsName.add(name); }
+          while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsName.add(name); }
         }
       }
     }
@@ -932,6 +939,12 @@ final class MapView extends View {
 
   // Where a side road crosses the route or ends on it (a T), merged within JUNCTION_MERGE m. A road running
   // along the route (its own road in the tiles) is skipped by the angle test.
+  private static Path[] paths(int n) {
+    Path[] p = new Path[n];
+    for (int i = 0; i < n; i++) p[i] = new Path();
+    return p;
+  }
+
   private static int[] ints(List<Integer> l) {
     int[] a = new int[l.size()];
     for (int i = 0; i < a.length; i++) a[i] = l.get(i);
@@ -1215,7 +1228,7 @@ final class MapView extends View {
           float f = (j + 0.5f) / pieces, e = p[i] + f * dx, n = p[i + 1] + f * dy, de = e - ce, dn = n - cn;
           if (!project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q)) continue;
           if (q[1] < LABEL_TOP + 9 || q[1] > 205) continue;
-          float cost = (float) Math.hypot(de, dn) + (cls[r] == 4 ? MINOR_COST : 0);
+          float cost = (float) Math.hypot(de, dn) + (cls[r] % BRIDGE == 4 ? MINOR_COST : 0);
           found.add(new float[] {cost, r, e, n, q[0], q[1]});
         }
       }
@@ -1378,6 +1391,19 @@ final class MapView extends View {
       for (int c : DRAW_ORDER) {
         side.setColor(ROADS[c]);
         stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
+      }
+      // the bridges over all of that: casing, kerb, surface
+      sideKerb.setColor(CASING_C);
+      for (int c : DRAW_ORDER) {
+        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+      }
+      for (int c : DRAW_ORDER) {
+        sideKerb.setColor(KERBS[c]);
+        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      }
+      for (int c : DRAW_ORDER) {
+        side.setColor(ROADS[c]);
+        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], side, Math.max(floor, ROAD_M[c] * ik));
       }
       if (s.route.length > 0) {
         carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));

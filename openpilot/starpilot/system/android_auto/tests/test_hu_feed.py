@@ -178,7 +178,7 @@ def test_road_tiles_go_only_to_head_units_that_take_them_and_lack_them():
   assert 'm' not in sock.kinds()
 
 
-def test_named_tiles_go_as_is_to_new_head_units_and_without_names_to_old_ones():
+def test_tiles_go_as_is_to_new_head_units_and_in_the_format_each_older_app_reads():
   import numpy as np
   from openpilot.starpilot.navigation.road_tiles import MAJOR, decode_road_tile, encode_road_tile, TileKey
   roads, names = {MAJOR: [np.array([[0, 0], [400, 0]])]}, {MAJOR: ['Bolsa Ave']}
@@ -193,9 +193,14 @@ def test_named_tiles_go_as_is_to_new_head_units_and_without_names_to_old_ones():
   old = received(sock)
   assert old[4] == 1 and old == encode_road_tile(roads, version=1), "an old app would drop format 2 and get it resent forever"
   feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
-  sock.hello(have=['1/1'], rt=2)
+  sock.hello(have=['1/1'], rt=2)          # the app of 2026-10-30: names, no bridge flags
   feed.tick()
-  assert received(sock) == raw and decode_road_tile(TileKey(14, 1, 2), received(sock)).name_of(MAJOR, 0) == 'Bolsa Ave'
+  assert received(sock) == encode_road_tile(roads, names, version=2)
+  assert decode_road_tile(TileKey(14, 1, 2), received(sock)).name_of(MAJOR, 0) == 'Bolsa Ave'
+  feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
+  sock.hello(have=['1/1'], rt=3)
+  feed.tick()
+  assert received(sock) == raw and decode_road_tile(TileKey(14, 1, 2), received(sock)).version == 3
   feed, sock, now, _ = make(tiles=lambda key: b'SPRT\x02\x01broken' if key == '1/2' else None)
   sock.hello(have=['1/1'])
   feed.tick()
