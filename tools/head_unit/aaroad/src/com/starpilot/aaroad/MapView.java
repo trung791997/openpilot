@@ -86,6 +86,9 @@ final class MapView extends View {
   private static final double HOLD_DRIFT = 10;
   private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
+  // SLOW_MS: with the GPU layer drawing the map, this view only holds the car, tag, sign and cards, so the tick looks
+  // for a change in them ten times a second
+  private static final long SLOW_MS = 100;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   // once showing, the map rides out a position gap this long with the car held where it was (Peter 2026-10-30
   // photo: mid-route the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused)
@@ -154,7 +157,10 @@ final class MapView extends View {
   private double drawnH, drawnK, drawnBase;
   private boolean drawnMoving, zoomSettled, logDue, loggedCanvas;
   private long drawnAt, drawnStamp;
-  private int checks, skipped;
+  private int checks, skipped, drawsAtLog;
+  private long logFrom;
+  private String drawnRoad;
+  private volatile Frame latest;  // the last frame asked for, by either thread
   private static final double MOVE_PX = 1, TURN_DEG = 0.4, ZOOM_EPS = 0.01;
   private static final long REDRAW_MS = 1000;  // the clock, the trip countdown and the song ring tick on their own
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
@@ -237,7 +243,7 @@ final class MapView extends View {
   interface Roads {
     boolean ready();
     void poke();  // something changed while the car stands: draw now rather than at the idle rate
-    long takeMs();  // average ms per GL frame since the last call, -1 with none
+    String takeStats();  // GL ms a frame and the frame rate since the last call, for the log
     void setShown(boolean on);
   }
 
@@ -381,7 +387,9 @@ final class MapView extends View {
         setLive(shown && age < (live ? GAP_HOLD_MS : STALE_MS));
         if (live) {
           rebuildIfNeeded(now);
-          if (changed(now)) {
+          if (gpu != null && gpu.ready()) {
+            slowTick(now);
+          } else if (changed(now)) {
             invalidate();
             if (gpu != null) gpu.poke();
           } else {
@@ -393,9 +401,37 @@ final class MapView extends View {
         XposedBridge.log("aaroad: map tick failed: " + t);
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
-      postDelayed(this, live ? Math.max(FRAME_MS, 2 * drawMs) : IDLE_MS);
+      postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? SLOW_MS : Math.max(FRAME_MS, 2 * drawMs));
     }
   };
+
+  // With the GPU layer drawing everything that moves at 30 a second (Peter 2026-10-30), this view is the slow layer:
+  // the street under the car and the labels are chosen here from the GPU layer's last frame, and the view redraws
+  // only when the car, tag, sign or cards would look different, about once a second (the clock and countdown are in
+  // the cards' key). The GPU layer is poked when the feed's state changes, so a new mode colour shows while it idles.
+  private void slowTick(long now) {
+    Scene s = scene;
+    if (s == null) return;
+    Frame f = latest;
+    if (f != null) {
+      currentRoad(s, f.ce, f.cn, f.h, now);
+      String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+      placeLabels(s, f.ce, f.cn, f.ch, f.sh, f.ik, f.reach, f.free, shown, now);
+      if (labelAt == now) {
+        labels = new Labels(labelText, labelE, labelN, labelW, labelCount);
+        gpu.poke();
+      }
+    }
+    long st = stamp(now);
+    String road = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+    if (st != drawnStamp) gpu.poke();
+    if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
+        || !cardKey(now, s.route.length == 0).equals(cardsKey)) {
+      invalidate();
+    } else {
+      skipped++;
+    }
+  }
 
   @Override
   protected void onAttachedToWindow() {
@@ -589,6 +625,7 @@ final class MapView extends View {
     f.free = s.route.length == 0;
     f.color = modeColor(Feed.mode);
     if (!f.free) carpetStart(s, f);
+    latest = f;
     return f;
   }
 
@@ -1164,6 +1201,20 @@ final class MapView extends View {
     boolean onGpu = gpu != null && gpu.ready();
     if (!onGpu) canvas.drawColor(0xff050505);
     drawnStamp = stamp(now);  // before anything is read, so a change during the frame still asks for the next one
+    if (onGpu) {
+      // the slow layer: the car, tag, sign and cards over the GPU layer's map (slowTick)
+      boolean free = s.route.length == 0;
+      drawnScene = s;
+      drawnAt = now;
+      drawnRoad = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+      canvas.save();
+      if (free) canvas.translate(FREE_X - CAR_X, 0f);
+      drawCar(canvas);
+      canvas.restore();
+      overlay(canvas, now, free, true);
+      drawn(canvas, now, now, now, now);
+      return;
+    }
 
     Frame f = frame(s, now);
     float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik, reach = f.reach;
@@ -1236,6 +1287,14 @@ final class MapView extends View {
       canvas.restore();
     }
 
+    drawCar(canvas);
+    canvas.restore();
+    long t2 = SystemClock.uptimeMillis();
+    overlay(canvas, now, free, onGpu);
+    drawn(canvas, now, t0, t1, t2);
+  }
+
+  private void drawCar(Canvas canvas) {
     if (car != null) {
       canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, null);
     } else {
@@ -1248,10 +1307,10 @@ final class MapView extends View {
       p.close();
       canvas.drawPath(p, fill);
     }
-    canvas.restore();
-    long t2 = SystemClock.uptimeMillis();
-    overlay(canvas, now, free, onGpu);
+  }
 
+  // A frame's timing into the log's sums, and every 900 ticks the log line.
+  private void drawn(Canvas canvas, long now, long t0, long t1, long t2) {
     long ms = SystemClock.uptimeMillis() - now;
     drawMs = (drawMs * 7 + ms) / 8;
     drawSum += ms;
@@ -1264,10 +1323,14 @@ final class MapView extends View {
     // every 900 ticks, with how many of them found nothing new to draw
     if (logDue) {
       logDue = false;
+      String redraws = logFrom > 0 && now > logFrom
+          ? String.format(Locale.US, ", view %.1f redraws/s", (drawCount - drawsAtLog) * 1000.0 / (now - logFrom)) : "";
+      drawsAtLog = drawCount;
+      logFrom = now;
       XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
           + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
           + cardSum / drawCount + " cards), " + (checks > 0 ? 100L * skipped / checks : 0) + "% frames skipped"
-          + (gpu != null ? ", gl " + gpu.takeMs() + " ms" : "")
+          + redraws + (gpu != null ? ", " + gpu.takeStats() : "")
           + (loggedCanvas ? "" : ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
              + (isHardwareAccelerated() ? "GPU" : "software")));
       loggedCanvas = true;

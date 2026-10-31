@@ -178,6 +178,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private SurfaceHolder holder, glHolder;
   private boolean poked, threadStarted;
   private long glSum, glCount;
+  // the time from one moving frame to the next, for the log: 1 ms buckets, the last one everything longer
+  private final int[] gaps = new int[200];
+  private long gapSum, gapCount, gapMax;
 
   private volatile boolean ready, failed;
 
@@ -228,13 +231,26 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
   }
 
+  // GL ms a frame, and while moving the frame rate, the longest gap between frames and the 95th percentile one.
   @Override
-  public long takeMs() {
+  public String takeStats() {
     synchronized (lock) {
-      long ms = glCount > 0 ? Math.round(glSum / 1e6 / glCount) : -1;
+      String out = "gl " + (glCount > 0 ? Math.round(glSum / 1e6 / glCount) : -1) + " ms";
+      if (gapCount > 0) {
+        long p95 = 0;
+        for (long n = 0; p95 < gaps.length - 1 && (n += gaps[(int) p95]) < 0.95 * gapCount; ) p95++;
+        out += String.format(java.util.Locale.US, ", %.1f fps, worst %d ms, p95 %d ms", 1000.0 * gapCount / gapSum,
+            gapMax, p95);
+      } else {
+        out += ", no moving frames";
+      }
       glSum = 0;
       glCount = 0;
-      return ms;
+      java.util.Arrays.fill(gaps, 0);
+      gapSum = 0;
+      gapCount = 0;
+      gapMax = 0;
+      return out;
     }
   }
 
@@ -288,7 +304,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         fail(why);
         return;
       }
-      long next = 0;
+      long next = 0, last = 0;
       boolean idle = false;
       while (!failed) {
         SurfaceHolder h;
@@ -313,6 +329,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
             return;
           }
           next = 0;
+          last = 0;
           continue;
         }
         long start = SystemClock.uptimeMillis();
@@ -328,6 +345,16 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           fail(why);
           return;
         }
+        if (last > 0 && !idle) {
+          long gap = start - last;
+          synchronized (lock) {
+            gaps[(int) Math.min(gap, gaps.length - 1)]++;
+            gapSum += gap;
+            gapCount++;
+            gapMax = Math.max(gapMax, gap);
+          }
+        }
+        last = start;
         // a frame that ran late is followed at once, not skipped
         idle = !f.moving && f.settled;
         next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
