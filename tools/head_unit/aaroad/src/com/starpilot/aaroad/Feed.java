@@ -123,6 +123,9 @@ final class Feed {
   static volatile Route route;
   static volatile Nav nav;           // null while the comma is not guiding
   static volatile String road = "";  // the road the car is on, from the comma's route step; "" = not known
+  // its route number(s) as Mapbox gives them ("US 75", "US 75; TX 289"), for the street tag's badge; "" = none, or a
+  // comma from before 2026-10-31 that does not send it
+  static volatile String roadRef = "";
   static final Map<String, Tile> tiles = new ConcurrentHashMap<String, Tile>();
   static volatile int tilesVersion;
   // the song for the music card; mediaStatus null when nothing plays. mediaArt is the id of its cover (0: none),
@@ -309,6 +312,7 @@ final class Feed {
       remainingSec = nav != null ? nav.optDouble("duration", -1) : -1;
       remainingMeters = nav != null ? nav.optDouble("remaining", -1) : -1;
       road = nav != null ? nav.optString("road", "") : "";
+      roadRef = nav != null ? nav.optString("ref", "") : "";
       Feed.nav = Nav.of(nav, now);
       if (nav == null) route = null;
       JSONObject media = m.optJSONObject("media");

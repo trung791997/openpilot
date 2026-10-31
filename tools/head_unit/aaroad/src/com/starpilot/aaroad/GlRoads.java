@@ -808,8 +808,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       }
       atlas.eraseColor(0);
       for (int i = 0; i < n; i++) {
-        atlasCanvas.drawText(set.text[i], PAD, i * ROW + BASE, paints[0]);
-        atlasCanvas.drawText(set.text[i], PAD, i * ROW + BASE, paints[1]);
+        // a route number ("US 75") as the overlay draws it, a white badge (MapView.drawLabel)
+        MapView.drawLabel(atlasCanvas, set.text[i], Shield.ref(set.text[i]) != null, PAD, i * ROW + BASE, paints);
         atlasText[i] = set.text[i];
       }
       for (int i = n; i < atlasText.length; i++) atlasText[i] = null;

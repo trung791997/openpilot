@@ -146,11 +146,12 @@ final class MapView extends View {
   private final Paint grid = new Paint(), kerb = stroke(KERB_C, 0), road = stroke(ROAD_C, 0),
       carpet = stroke(Color.WHITE, 0), sideKerb = stroke(KERB_C, 0), side = stroke(ROAD_C, 0),
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
-      rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint();
+      rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint(),
+      badgeBox = new Paint(Paint.ANTI_ALIAS_FLAG);
   // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
   private final TextPaint big = text(30, inter(true), Color.WHITE), unit = text(15, inter(false), 0xffc8d0dc),
       street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
-      cardRoad = text(18, inter(true), Color.WHITE),
+      cardRoad = text(18, inter(true), Color.WHITE), badgeInk = text(15, inter(true), BADGE_INK),
       songFrom = text(11, inter(false), 0xffaab4c8), songTitle = text(15, inter(true), Color.WHITE),
       songArtist = text(12, inter(false), 0xffaab4c8),
       sign = text(8.5f, Typeface.DEFAULT_BOLD, 0xff111111),
@@ -204,6 +205,7 @@ final class MapView extends View {
   private long roadAt, switchSince, lostSince, labelAt;
   private int labelCount;
   private final String[] labelText = new String[LABELS];
+  private final boolean[] labelRef = new boolean[LABELS];  // the label is a route number, drawn as a badge
   private final float[] labelE = new float[LABELS], labelN = new float[LABELS], labelW = new float[LABELS],
       labelX = new float[LABELS], labelY = new float[LABELS];
   private final boolean[] labelOn = new boolean[LABELS];
@@ -228,13 +230,54 @@ final class MapView extends View {
     }
   }
 
-  // The labels' halo and text paints, fresh for the GPU layer's own thread, left aligned.
+  // The labels' halo and text paints, fresh for the GPU layer's own thread, left aligned; then a route number's
+  // badge text, box and dark rim (drawLabel).
   static TextPaint[] labelPaints() {
     TextPaint halo = text(11.5f, inter(false), 0xff050505), fill = text(11.5f, inter(false), 0xffc8ccd2);
     halo.setStyle(Paint.Style.STROKE);
     halo.setStrokeWidth(3);
     halo.setStrokeJoin(Paint.Join.ROUND);
-    return new TextPaint[] {halo, fill};
+    TextPaint box = text(1, null, Color.WHITE), rim = text(1, null, 0xff050505);
+    return new TextPaint[] {halo, fill, text(LABEL_BADGE, inter(true), BADGE_INK), box, rim};
+  }
+  private final TextPaint[] labelBadge = labelPaints();  // the overlay's route-number labels, drawn as the GPU's are
+
+  // A street label at left, base (the halo then the text), or a route number ("US 75", "I-635") as a white badge
+  // with a dark rim, the way Google Maps writes them over the map (Peter 2026-10-31). p is labelPaints(). The GPU
+  // layer draws its atlas with this too, so the two paths match; a badge is placeLabels' labelW wide, no wider.
+  static void drawLabel(Canvas c, String t, boolean ref, float left, float base, TextPaint[] p) {
+    if (!ref) {
+      c.drawText(t, left, base, p[0]);
+      c.drawText(t, left, base, p[1]);
+      return;
+    }
+    // centred in the box blocked() keeps for a label (y - 9 to y + 7, y = base - 4), rim included
+    badge(c, Shield.REF, t, left + 1, base - 5, LABEL_BADGE, p[2], p[3], p[4]);
+  }
+
+  // Badges: an exit number in Google's green with white text, a route number in white with black text. bs is the
+  // badge's text size; the box is centred on mid, rounded, and 0.76 bs wider than its text.
+  static final int EXIT_GREEN = 0xff1e7d32, BADGE_INK = 0xff111111;
+  static final float LABEL_BADGE = 10.5f;  // a map label's badge text: its box with the rim is 16 px, the label's
+
+  static String badgeText(Shield.Piece p) {
+    return p.kind == Shield.EXIT ? "Exit " + p.text : p.text;
+  }
+
+  static float badgeW(String t, float bs, TextPaint ink) {
+    ink.setTextSize(bs);
+    return ink.measureText(t) + 0.76f * bs;
+  }
+
+  // Draws the badge with its left at x and returns its width; rim, when given, is a 1 px dark edge round it.
+  static float badge(Canvas c, int kind, String t, float x, float mid, float bs, TextPaint ink, Paint box, Paint rim) {
+    float w = badgeW(t, bs, ink), h = 0.66f * bs, r = 0.25f * bs;
+    if (rim != null) c.drawRoundRect(new RectF(x - 1, mid - h - 1, x + w + 1, mid + h + 1), r + 1, r + 1, rim);
+    box.setColor(kind == Shield.EXIT ? EXIT_GREEN : Color.WHITE);
+    c.drawRoundRect(new RectF(x, mid - h, x + w, mid + h), r, r, box);
+    ink.setColor(kind == Shield.EXIT ? Color.WHITE : BADGE_INK);
+    c.drawText(t, x + 0.38f * bs, mid + 0.3635f * bs, ink);  // Inter's caps are 0.727 em: centred on mid
+    return w;
   }
   private final TextPaint label = text(11.5f, inter(false), 0xffc8ccd2), halo = text(11.5f, inter(false), 0xff050505);
 
@@ -548,6 +591,7 @@ final class MapView extends View {
     h = h * 31 + Double.doubleToLongBits(Feed.limitMs);
     h = h * 31 + hash(Feed.mode);
     h = h * 31 + hash(Feed.road);
+    h = h * 31 + hash(Feed.roadRef);
     h = h * 31 + hash(Feed.mediaStatus);
     h = h * 31 + hash(Feed.mediaTitle);
     h = h * 31 + Feed.coverId;
@@ -1245,8 +1289,9 @@ final class MapView extends View {
       if (count == LABELS) break;
       String name = names[(int) c[1]];
       if (done.contains(name)) continue;
-      String text = TextUtils.ellipsize(name, label, LABEL_MAX_W, TextUtils.TruncateAt.END).toString();
-      float w = label.measureText(text);
+      String ref = Shield.ref(name);  // "I 635" from the tiles is written "I-635" in a white badge
+      String text = ref != null ? ref : TextUtils.ellipsize(name, label, LABEL_MAX_W, TextUtils.TruncateAt.END).toString();
+      float w = ref != null ? badgeW(ref, LABEL_BADGE, labelBadge[2]) + 2 : label.measureText(text);
       if (blocked(c[4], c[5], w, free, tagBox)) continue;
       boolean clear = true;
       for (int i = 0; i < count && clear; i++) {
@@ -1256,6 +1301,7 @@ final class MapView extends View {
       if (!clear || crossed(runs, boxes, (int) c[1], c[2], c[3], c[4], w, ce, cn, ch, sh, ik, off, q)) continue;
       done.add(name);
       labelText[count] = text;
+      labelRef[count] = ref != null;
       labelE[count] = c[2];
       labelN[count] = c[3];
       labelW[count] = w;
@@ -1747,6 +1793,10 @@ final class MapView extends View {
     }
     for (int i = 0; i < labelCount && !onGpu; i++) {
       if (!labelOn[i]) continue;
+      if (labelRef[i]) {
+        drawLabel(canvas, labelText[i], true, labelX[i] - labelW[i] / 2, labelY[i] + 4, labelBadge);
+        continue;
+      }
       canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, halo);
       canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, label);
     }
@@ -1765,10 +1815,22 @@ final class MapView extends View {
       float left = free ? 0 : CARD_R, right = hasSign ? 466 : 584;
       float maxw = Math.min(right - left - 40, 300), size = 18;
       float cx = free && hasSign ? 292 : (left + right) / 2;
+      // A route number in it, or the comma's ref for the road ("US 75" for North Central Expressway), is a white
+      // badge before the name, as Google Maps writes the road (Peter 2026-10-31); the badge alone if the name will
+      // not fit beside it even at 14 px.
+      List<Shield.Piece> pieces = tagPieces(name.toString());
+      boolean badges = pieces.size() > 1 || pieces.get(0).kind != Shield.TEXT;
       street.setTextSize(size);
-      while (street.measureText(name.toString()) > maxw && size > 14) street.setTextSize(--size);
-      String n = TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString();
-      float w = street.measureText(n) + 24, t = streetY - 19, b = streetY + 7;
+      while ((badges ? piecesW(pieces, street, TAG_BADGE * size) : street.measureText(name.toString())) > maxw && size > 14)
+        street.setTextSize(--size);
+      if (badges && piecesW(pieces, street, TAG_BADGE * size) > maxw) {
+        List<Shield.Piece> only = new ArrayList<Shield.Piece>();
+        for (Shield.Piece p : pieces) if (p.kind != Shield.TEXT) only.add(p);
+        pieces = only;
+      }
+      String n = badges ? null : TextUtils.ellipsize(name, street, maxw, TextUtils.TruncateAt.END).toString();
+      float w = (badges ? Math.min(piecesW(pieces, street, TAG_BADGE * size), maxw) : street.measureText(n)) + 24;
+      float t = streetY - 19, b = streetY + 7;
       RectF r = new RectF(cx - w / 2, t, cx + w / 2, b);
       tagBox[0] = cx - w / 2;
       tagBox[1] = t;
@@ -1782,7 +1844,12 @@ final class MapView extends View {
       canvas.drawRoundRect(r, 7, 7, edge);
       canvas.drawPath(tip, panel);  // over the edge where the pointer leaves the tag
       canvas.drawPath(tip, edge);
-      canvas.drawText(n, cx, streetY, street);
+      if (n != null) canvas.drawText(n, cx, streetY, street);
+      else {
+        street.setTextAlign(Paint.Align.LEFT);
+        drawPieces(canvas, pieces, cx - w / 2 + 12, cx + w / 2 - 12, streetY, street, size, TAG_BADGE);
+        street.setTextAlign(Paint.Align.CENTER);
+      }
     }
     if (!java.util.Arrays.equals(tagBox, tagShown)) tagShown = tagBox.clone();
 
@@ -1851,12 +1918,12 @@ final class MapView extends View {
     double meters = nav != null ? turnLeft(nav, now) : -1;
     String d = meters >= 0 ? Turn.distance(meters, Feed.metric) : null;
     Bitmap arrow = nav != null ? NavArrow.get(nav.type, nav.modifier) : null;
-    String[] lines = nav != null ? turnLines(Turn.text(nav.text)) : NO_LINES;
-    boolean top = nav != null && (d != null || arrow != null), road = lines.length > 0;
+    List<List<Shield.Piece>> lines = nav != null ? turnLines(Turn.text(nav.text)) : NO_LINES;
+    boolean top = nav != null && (d != null || arrow != null), road = !lines.isEmpty();
     boolean trip = !free && Feed.remainingSec >= 0;  // a card for the trip alone when there is no turn
     float b = -1;
     if (top || road || trip) {
-      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + lines.length * ROAD_H + (trip ? ETA_H : 0) + PAD;
+      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + lines.size() * ROAD_H + (trip ? ETA_H : 0) + PAD;
       Path turnCard = card(CARD_L, TURN_T, CARD_R, b);
       canvas.drawPath(turnCard, panel);
       double ft = meters < 0 ? -1 : meters * 3.28084;
@@ -1900,8 +1967,8 @@ final class MapView extends View {
         y += TOP_H;
       }
       // across the whole card, under the arrow: beside it only ~100 px were left. turnLines set the size.
-      for (String line : lines) {
-        canvas.drawText(fit(line, cardRoad, right(y + 18, b) - ROW_X), ROW_X, y + 18, cardRoad);
+      for (List<Shield.Piece> line : lines) {
+        drawPieces(canvas, line, ROW_X, right(y + 18, b), y + 18, cardRoad, cardSize, CARD_BADGE);
         y += ROAD_H;
       }
       if (trip) canvas.drawText(eta(now, right(y + 14, b) - ROW_X), ROW_X, y + 14, cardDim);
@@ -1931,27 +1998,101 @@ final class MapView extends View {
     return Math.max(0, n.distance - Math.max(0, Feed.spd) * Math.max(0, now - n.at) / 1000.0);
   }
 
-  private static final String[] NO_LINES = new String[0];
+  private static final List<List<Shield.Piece>> NO_LINES = new ArrayList<List<Shield.Piece>>();
   private static final float LINE_W = CARD_R - 6 - 0.6f * SLANT - ROW_X;  // about where the lean cuts a text row
+  // a badge's text against the line's: the card's 18-15 px text gets 15-13 px badges (a 20-17 px box in the 24 px
+  // row); the tag's 18-14 px a little smaller, to stay inside its 26 px
+  private static final float CARD_BADGE = 0.85f, TAG_BADGE = 0.8f;
+  private float cardSize = 18;  // cardRoad's size as turnLines left it
 
   // The text in one line at 18 px, shrunk to 15 px if that fits; else two lines at 16 px broken between words, the
   // second ending in an ellipsis if it is still too long, as the car screen does with its two lines. Sets cardRoad's
-  // size.
-  private String[] turnLines(String t) {
+  // size. An exit number ("Exit 34") and route numbers ("US 75") are badges (Shield) that a line never breaks inside;
+  // with none the lines are the plain text as before.
+  private List<List<Shield.Piece>> turnLines(String t) {
     if (t.isEmpty()) return NO_LINES;
+    List<Shield.Piece> all = Shield.split(t);
     for (int size = 18; size >= 15; size--) {
-      cardRoad.setTextSize(size);
-      if (cardRoad.measureText(t) <= LINE_W) return new String[] {t};
+      cardRoad.setTextSize(cardSize = size);
+      if (piecesW(all, cardRoad, CARD_BADGE * size) <= LINE_W) return lines(all);
     }
-    cardRoad.setTextSize(16);
-    String[] words = t.split(" ");
-    String first = words[0];
+    cardRoad.setTextSize(cardSize = 16);
+    List<Shield.Piece> atoms = new ArrayList<Shield.Piece>();  // words and badges
+    for (Shield.Piece p : all) {
+      if (p.kind != Shield.TEXT) atoms.add(p);
+      else for (String w : p.text.split(" ")) atoms.add(new Shield.Piece(Shield.TEXT, w));
+    }
     int i = 1;
-    for (; i < words.length && cardRoad.measureText(first + " " + words[i]) <= LINE_W; i++) first += " " + words[i];
-    if (i >= words.length) return new String[] {first};  // one word too long for a line: fit() cuts it
-    StringBuilder rest = new StringBuilder(words[i]);
-    for (i++; i < words.length; i++) rest.append(' ').append(words[i]);
-    return new String[] {first, rest.toString()};
+    while (i < atoms.size() && piecesW(join(atoms.subList(0, i + 1)), cardRoad, CARD_BADGE * 16) <= LINE_W) i++;
+    List<Shield.Piece> first = join(atoms.subList(0, i));
+    if (i >= atoms.size()) return lines(first);  // one word too long for a line: drawPieces cuts it
+    return lines(first, join(atoms.subList(i, atoms.size())));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<List<Shield.Piece>> lines(List<Shield.Piece>... l) {
+    return java.util.Arrays.asList(l);
+  }
+
+  // words run together into one piece of text between badges, so plain text measures and draws as one string
+  private static List<Shield.Piece> join(List<Shield.Piece> atoms) {
+    List<Shield.Piece> out = new ArrayList<Shield.Piece>();
+    StringBuilder words = new StringBuilder();
+    for (Shield.Piece p : atoms) {
+      if (p.kind == Shield.TEXT) {
+        if (words.length() > 0) words.append(' ');
+        words.append(p.text);
+        continue;
+      }
+      if (words.length() > 0) out.add(new Shield.Piece(Shield.TEXT, words.toString()));
+      words.setLength(0);
+      out.add(p);
+    }
+    if (words.length() > 0) out.add(new Shield.Piece(Shield.TEXT, words.toString()));
+    return out;
+  }
+
+  // The width of pieces in a row: text in p, badges with bs px text, a space between pieces.
+  private float piecesW(List<Shield.Piece> pieces, TextPaint p, float bs) {
+    float w = 0, gap = p.measureText(" ");
+    for (int i = 0; i < pieces.size(); i++) {
+      Shield.Piece q = pieces.get(i);
+      w += (i > 0 ? gap : 0)
+          + (q.kind == Shield.TEXT ? p.measureText(q.text) : badgeW(badgeText(q), bs, badgeInk));
+    }
+    return w;
+  }
+
+  // Draws pieces from x on the baseline base, the text in p (left aligned: it is size px), the badges centred on the
+  // text's caps. Text that runs past end ends in an ellipsis; a badge that does not fit is left off, with what
+  // follows it.
+  private void drawPieces(Canvas c, List<Shield.Piece> pieces, float x, float end, float base, TextPaint p, float size,
+                          float scale) {
+    float gap = p.measureText(" "), mid = base - 0.3635f * size;
+    for (int i = 0; i < pieces.size() && x < end; i++) {
+      Shield.Piece q = pieces.get(i);
+      if (q.kind == Shield.TEXT) {
+        String t = fit(q.text, p, end - x);
+        c.drawText(t, x, base, p);
+        x += p.measureText(t) + gap;
+        if (!t.equals(q.text)) break;
+        continue;
+      }
+      String t = badgeText(q);
+      if (x + badgeW(t, scale * size, badgeInk) > end + 0.5f) break;
+      x += badge(c, q.kind, t, x, mid, scale * size, badgeInk, badgeBox, null) + gap;
+    }
+  }
+
+  // The street tag's pieces: the name with any route number in it as a badge, else the comma's ref for the road
+  // ("US 75") as a badge before the name.
+  private static List<Shield.Piece> tagPieces(String name) {
+    List<Shield.Piece> pieces = Shield.split(name);
+    if (pieces.isEmpty()) pieces.add(new Shield.Piece(Shield.TEXT, name));
+    for (Shield.Piece p : pieces) if (p.kind == Shield.REF) return pieces;
+    String ref = name.equals(Feed.road) ? Shield.firstRef(Feed.roadRef) : null;
+    if (ref != null) pieces.add(0, new Shield.Piece(Shield.REF, ref));
+    return pieces;
   }
 
   // The trip as one line: "11 min · 5.2 mi · 2:10 AM", the values the trip card showed (Peter 2026-10-31). A piece

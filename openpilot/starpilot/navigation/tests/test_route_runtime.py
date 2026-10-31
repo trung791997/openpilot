@@ -94,6 +94,34 @@ def test_roundabout_exit_angle_and_number_reach_the_instruction():
   assert (instruction['exitDegrees'], instruction['exitNumber']) == (0, 0)
 
 
+def test_road_name_and_route_number_reach_the_instruction():
+  # the head unit's street tag shows the ref as a badge beside the name ("US 75" North Central Expressway)
+  steps = [{'distance': 1112., 'duration': 100., 'name': 'North Central Expressway', 'ref': 'US 75; TX 289',
+            'maneuver': {'type': 'depart'}},
+           {'distance': 0., 'duration': 0., 'maneuver': {'type': 'arrive'}}]
+  data = {'distance': 1112., 'duration': 100., 'geometry': {'coordinates': [[0., 0.], [.01, 0.]]}, 'legs': [{'steps': steps}]}
+  instruction = NavigationRoute(data).progress((.005, 0.), 5., 90.).instruction
+  assert (instruction['roadName'], instruction['roadRef']) == ('North Central Expressway', 'US 75; TX 289')
+  del steps[0]['name']
+  instruction = NavigationRoute(data).progress((.005, 0.), 5., 90.).instruction
+  assert (instruction['roadName'], instruction['roadRef']) == ('US 75; TX 289', 'US 75; TX 289')
+  del steps[0]['ref']
+  instruction = NavigationRoute(data).progress((.005, 0.), 5., 90.).instruction
+  assert (instruction['roadName'], instruction['roadRef']) == ('', '')
+
+
+def test_the_instruction_fits_the_navigation_message():
+  from openpilot.cereal import messaging
+  from openpilot.starpilot.navigation.wire import navigation_envelope
+  steps = [{'distance': 1112., 'duration': 100., 'name': 'North Central Expressway', 'ref': 'US 75',
+            'maneuver': {'type': 'depart'}}, {'distance': 0., 'duration': 0., 'maneuver': {'type': 'arrive'}}]
+  instruction = NavigationRoute({'distance': 1112., 'duration': 100., 'geometry': {'coordinates': [[0., 0.], [.01, 0.]]},
+                                 'legs': [{'steps': steps}]}).progress((.005, 0.), 5., 90.).instruction
+  message = messaging.new_message('starpilotNavigation', valid=True)
+  message.starpilotNavigation = navigation_envelope({'instruction': instruction})
+  assert message.starpilotNavigation.navigation.instruction.roadRef == 'US 75'
+
+
 def test_route_interpolation_preserves_distance_and_advice(route):
   progress = route.progress((.005, 0.), 5., 90.)
   assert abs(progress.instruction['distanceMeters'] - 556.) < .01

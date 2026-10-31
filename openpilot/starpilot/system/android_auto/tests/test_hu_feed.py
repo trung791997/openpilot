@@ -427,3 +427,12 @@ def test_route_without_matching_traffic_sends_no_c_and_keeps_its_old_id():
   feed.tick()
   part = next(message for message, _ in sock.sent if message['t'] == 'r')
   assert 'c' not in part and part['id'] == hf.zlib.crc32(b's:1')
+
+
+def test_instruction_sends_the_road_and_its_route_number():
+  from types import SimpleNamespace
+  step = SimpleNamespace(maneuverType='turn', maneuverModifier='slight left', distanceMeters=1609.3, exitNumber=0,
+                         exitDegrees=0, drivingLeft=False, text='Keep left onto US 75 South',
+                         roadName='North Central Expressway', roadRef='US 75')
+  sent = hf.instruction(step)
+  assert (sent['road'], sent['ref'], sent['text']) == ('North Central Expressway', 'US 75', 'Keep left onto US 75 South')

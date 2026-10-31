@@ -57,10 +57,18 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 7. **Turn card from the comma** (2026-10-31): static only, not installed. Check on a drive that the dash and the car screen show the same arrow, text and distance, that the distance counts down smoothly between the comma's once-a-second updates, and that the card goes within ~3 s when guidance stops. The Honda Hack panel (`Panel.java`, its own page) still uses Android Auto's next-turn data.
 8. **Highway colour** (2026-10-31): static only (software path rendered; the GPU path uses the same constants but cannot run on the desktop). Peter to judge the gold at night on the dash.
 9. **Overpasses** (2026-10-31): static only, not installed. Needs the new APK *and* the comma updated (`navtilesd`, `hu_feed`). Check on a drive under a highway that the bridge is drawn over the road below with a dark edge, and that the route line stays on top. Each bridge end shows a thin dark arc across the road (the round line caps); Peter may want it gone. Saved tiles away from the car stay without bridges until a drive comes near them.
+10. **Exit and highway badges** (2026-10-31): static only, not installed. The turn card and map labels need only the APK (`aaroad-badges.apk`). The street tag's badge for a named highway ("US 75" before "North Central Expressway") also needs the comma updated (`route_engine`, `hu_feed`, `custom.capnp` `roadRef`); an old comma just sends no ref. Road tiles carry `name or ref`, so a map label is a badge only on a road with no name. Peter to judge the badge sizes, and whether he wants "Exit 34" or just "34" in the green box.
 
 ## Log
 
 ### 2026-10-31
+- **Exit numbers in a green box, highway numbers in a white box** (Open 10). *static*.
+  - Problem: the turn card read "Exit 34 McDermott Drive" and "Keep left onto US 75 South" as plain text, where Google Maps marks the exit and the route number.
+  - `Shield.java` (desktop test `test/ShieldTest.java`) finds a leading exit number and route numbers (I-635, US 75, SH/SR, state codes, Loop, Spur, FM/RM, CR, Beltway) and writes them one way ("I 635" -> "I-635"). Tollway names and words without a number stay text.
+  - Turn card: the exit is a green badge, route numbers white badges with black text; lines break between words and badges, never inside a badge, and a badge that does not fit is left off rather than cut.
+  - Street tag: a route number in the name, or the comma's new `ref` for the road, is a white badge before the name; when both do not fit at 14 px the badge shows alone.
+  - Map labels: a label that is a route number draws as a white badge with a dark rim. The GPU atlas draws through the same `MapView.drawLabel`, so both paths match; its width is the one `placeLabels` reserves.
+  - Comma: `route_engine` keeps Mapbox's step `ref` as `roadRef` (new `custom.capnp` field @10), and `hu_feed` sends it as `ref` in the nav message. Old head units ignore the key.
 - **Installed** (parked, Peter's OK): comma updated to `bb4a12ca5` and rebooted (aa0 and the hotspot came up this time); `aaroad-turn-hwy.apk` on the head unit, rebooted, ignition cycled. Head-unit log: meter map showing, GPU on, parked frame parts cull 1.2 ms avg (was ~48 ms driving before `c48ffae76`), swap 18.5 ms avg. Not driven yet.
 - **Bridges drawn over the roads under them** (Open 9). *static*.
   - Problem: a highway overpass and the street under it were drawn as one flat crossing, so the dash showed a junction that is not there.

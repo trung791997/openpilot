@@ -109,6 +109,7 @@ class Step:
   exit_number: int = 0
   driving_left: bool = False
   road: str = ''  # the road this step drives along (Mapbox step name, else its ref); '' = not given
+  ref: str = ''  # that road's route number(s), the Mapbox step ref ("US 75; TX 289"); '' = none
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,7 @@ class NavigationRoute:
                                str(primary.get('type') or maneuver['type'])[:40],
                                modifier(primary.get('modifier') or maneuver.get('modifier', 'none'))[:40],
                                *roundabout(primary, maneuver, upcoming),
-                               str(step.get('name') or step.get('ref') or '')[:80]))
+                               str(step.get('name') or step.get('ref') or '')[:80], str(step.get('ref') or '')[:80]))
         offset = end
       self.total_distance = number(data['distance'])
       self.total_duration = number(data['duration'])
@@ -197,7 +198,8 @@ class NavigationRoute:
     instruction = {'text': step.text, 'maneuverType': step.maneuver_type, 'maneuverModifier': step.modifier,
                        'distanceMeters': remaining, 'remainingDistanceMeters': max(0., self.steps[-1].end - along),
                        'remainingDurationSeconds': duration, 'exitDegrees': step.exit_degrees,
-                       'exitNumber': step.exit_number, 'drivingLeft': step.driving_left, 'roadName': step.road}
+                       'exitNumber': step.exit_number, 'drivingLeft': step.driving_left, 'roadName': step.road,
+                       'roadRef': step.ref}
     upcoming = self.steps[min(index + 1, len(self.steps) - 1)]
     next_maneuver = {'maneuverType': upcoming.maneuver_type, 'maneuverModifier': upcoming.modifier,
                          'distanceMeters': max(0., upcoming.end - along)}
