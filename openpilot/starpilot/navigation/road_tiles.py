@@ -45,9 +45,16 @@ MAGIC = b"SPRT"
 # Version 3 (2026-10-31) adds a flags byte per line, BRIDGE or TUNNEL from the vector tile's ``structure``,
 # so the dash map can draw an overpass over the road under it (Peter). Older versions still decode (no
 # flags), and downgrade_road_tile() makes a version 2 (names, no flags) or 1 copy for older head units.
-VERSION = 3
+# Version 4 (2026-10-31) adds the tile's traffic signal points after the classes, so the dash map can draw
+# a small traffic-light icon at a signalised intersection like Google Maps (Peter). Mapbox Streets has no
+# stop or give-way points; STOP is reserved for a future source. Older versions still decode (no points),
+# and downgrade_road_tile() makes a version 3 (flags, no points) or older copy for older head units.
+VERSION = 4
 OLDEST_VERSION = 1
 BRIDGE, TUNNEL = 1, 2  # line flags
+SIGNAL, STOP = 1, 2  # point kinds
+_POINT_KIND = {"traffic_signals": SIGNAL}
+MAX_POINTS = 4096
 _STRUCTURE_FLAG = {"bridge": BRIDGE, "tunnel": TUNNEL}
 MAX_NAME_BYTES = 64
 _HEADER = struct.Struct("<4sBB")
@@ -214,6 +221,24 @@ def _lines(geometry: list[int]) -> list[list[tuple[int, int]]]:
   return lines
 
 
+def _points(geometry: list[int]) -> list[tuple[int, int]]:
+  """Points from MVT point geometry (MoveTo commands only, zigzag deltas)."""
+  points: list[tuple[int, int]] = []
+  x = y = i = 0
+  while i < len(geometry):
+    command, count = geometry[i] & 7, geometry[i] >> 3
+    i += 1
+    if command != 1 or i + 2 * count > len(geometry):
+      raise TileFormatError("bad point geometry")
+    for _ in range(count):
+      dx, dy = geometry[i], geometry[i + 1]
+      i += 2
+      x += (dx >> 1) ^ -(dx & 1)
+      y += (dy >> 1) ^ -(dy & 1)
+      points.append((x, y))
+  return points
+
+
 def decode_mvt_roads(data: bytes) -> dict[int, list[np.ndarray]]:
   """Road lines by class from a Mapbox Streets vector tile, in 0..EXTENT tile units."""
   return decode_mvt_named_roads(data)[0]
@@ -229,7 +254,18 @@ def decode_mvt_named_roads(data: bytes) -> tuple[dict[int, list[np.ndarray]], di
 
 
 def decode_mvt_road_layer(data: bytes) -> tuple[dict[int, list[np.ndarray]], dict[int, list[str]], dict[int, list[int]]]:
-  """Road lines, names and flags by class, the three lists parallel.
+  """Road lines, names and flags by class, the three lists parallel (see decode_mvt_road_tile)."""
+  roads, names, flags, _ = decode_mvt_road_tile(data)
+  return roads, names, flags
+
+
+def decode_mvt_road_tile(data: bytes) -> tuple[dict[int, list[np.ndarray]], dict[int, list[str]], dict[int, list[int]],
+                                               list[tuple[float, float, int]]]:
+  """Road lines, names and flags by class, the three lists parallel, and the tile's signal points.
+
+  The points are (x, y, kind) in 0..EXTENT tile units, from the road layer's point features of class
+  ``traffic_signals`` (OSM highway=traffic_signals nodes). Points in the tile's buffer, outside
+  0..EXTENT, are left to the neighbouring tile so a signal near an edge is not stored twice.
 
   The flags are BRIDGE or TUNNEL from the ``structure`` tag (Mapbox Streets v8: none, bridge, tunnel
   or ford), 0 otherwise. The numeric ``layer`` tag is not read: bridge over everything else is what the
@@ -245,6 +281,7 @@ def decode_mvt_road_layer(data: bytes) -> tuple[dict[int, list[np.ndarray]], dic
   roads: dict[int, list[np.ndarray]] = {}
   names: dict[int, list[str]] = {}
   flags: dict[int, list[int]] = {}
+  signals: list[tuple[float, float, int]] = []
   for field, wire, layer in _fields(data):
     if field != 3 or wire != 2:
       continue
@@ -283,6 +320,17 @@ def decode_mvt_road_layer(data: bytes) -> tuple[dict[int, list[np.ndarray]], dic
           kind = value
         elif ff == 4 and fw == 2:
           geometry = _packed(value)
+      if kind == 1 and class_key >= 0:
+        point_kind = 0
+        for k in range(0, len(tags) - 1, 2):
+          if tags[k] == class_key and tags[k + 1] < len(values):
+            point_kind = _POINT_KIND.get(values[tags[k + 1]] or "", 0)
+        if point_kind:
+          for px, py in _points(geometry):
+            px, py = px * scale, py * scale
+            if 0 <= px < EXTENT and 0 <= py < EXTENT and len(signals) < MAX_POINTS:
+              signals.append((px, py, point_kind))
+        continue
       if kind != 2 or class_key < 0:
         continue
       road_class, road_name, road_ref, road_flags = None, "", "", 0
@@ -306,7 +354,7 @@ def decode_mvt_road_layer(data: bytes) -> tuple[dict[int, list[np.ndarray]], dic
         roads.setdefault(road_class, []).append(points)
         names.setdefault(road_class, []).append(road_name or road_ref)
         flags.setdefault(road_class, []).append(road_flags)
-  return roads, names, flags
+  return roads, names, flags, signals
 
 
 # ---------------------------------------------------------------- compact storage
@@ -317,13 +365,16 @@ def _clip_name(name: str) -> bytes:
 
 
 def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[int, Sequence[str]] | None = None,
-                     version: int = VERSION, flags: Mapping[int, Sequence[int]] | None = None) -> bytes:
+                     version: int = VERSION, flags: Mapping[int, Sequence[int]] | None = None,
+                     points: Sequence[tuple[float, float, int]] = ()) -> bytes:
   """Delta-coded int16 polylines per class, zlib-compressed.
 
   Version 2 starts the body with the tile's distinct street names (each stored once, up to
   MAX_NAME_BYTES) and gives every line a 2-byte index into them (0 = unnamed), so a street cut into
   many lines costs its name once. Version 3 adds a byte per line after the name index, the line's
-  flags (BRIDGE, TUNNEL). ``names[class]`` and ``flags[class]`` run parallel to ``roads[class]``."""
+  flags (BRIDGE, TUNNEL). ``names[class]`` and ``flags[class]`` run parallel to ``roads[class]``.
+  Version 4 ends the body with the tile's points: a 2-byte count, then per point int16 x, int16 y
+  (tile units) and a kind byte (SIGNAL, STOP)."""
   if not OLDEST_VERSION <= version <= VERSION:
     raise ValueError(f"unknown road tile version {version}")
   table: dict[bytes, int] = {}
@@ -362,6 +413,12 @@ def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[i
     for key in table:
       body += struct.pack("<B", len(key)) + key
   body += sections
+  if version >= 4:
+    kept = [(x, y, int(k)) for x, y, k in points if 0 < int(k) < 256][:MAX_POINTS]
+    body += struct.pack("<H", len(kept))
+    for x, y, k in kept:
+      body += struct.pack("<hhB", int(np.clip(round(x), -_COORD_LIMIT, _COORD_LIMIT)),
+                          int(np.clip(round(y), -_COORD_LIMIT, _COORD_LIMIT)), k)
   return _HEADER.pack(MAGIC, version, classes) + zlib.compress(bytes(body), 6)
 
 
@@ -377,6 +434,8 @@ class RoadTile:
   version: int = VERSION
   # per class a flags byte per line (BRIDGE, TUNNEL); empty for version 1 and 2 tiles
   line_flags: dict[int, np.ndarray] = dataclasses.field(default_factory=dict)
+  # (x, y, kind) points in tile units (SIGNAL, STOP); empty before version 4
+  points: tuple[tuple[int, int, int], ...] = ()
 
   def name_of(self, road_class: int, line: int) -> str:
     index = self.line_names.get(road_class)
@@ -443,9 +502,19 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
     offsets = np.zeros(count + 1, dtype=np.int32)
     np.cumsum(lengths, out=offsets[1:])
     lines[road_class] = (np.cumsum(deltas, axis=0).astype(np.float32), offsets)
+  points = []
+  if version >= 4:
+    if pos + 2 > len(body):
+      raise TileFormatError("truncated road tile points")
+    (count,), pos = struct.unpack_from("<H", body, pos), pos + 2
+    if count > MAX_POINTS or pos + count * 5 > len(body):
+      raise TileFormatError("bad road tile points")
+    for _ in range(count):
+      points.append(struct.unpack_from("<hhB", body, pos))
+      pos += 5
   if pos != len(body):
     raise TileFormatError("trailing road tile data")
-  return RoadTile(key, lines, tuple(names), line_names, version, line_flags)
+  return RoadTile(key, lines, tuple(names), line_names, version, line_flags, tuple(points))
 
 
 def road_tile_version(raw: bytes) -> int | None:
@@ -460,11 +529,14 @@ def downgrade_road_tile(raw: bytes, version: int = OLDEST_VERSION) -> bytes:
 
   The head unit app before 2026-10-30 refuses any version but 1, and the one before 2026-10-31 any
   but 1 and 2; sending a newer tile would make it drop the tile and the comma resend it every few
-  seconds forever. Going to 2 keeps the street names; only the flags are lost."""
+  seconds forever. Going to 2 keeps the street names; only the flags are lost. Going to 3 keeps the
+  flags; only the signal points are lost."""
   have = road_tile_version(raw)
   if have is None or have <= version:
     return raw
   tile = decode_road_tile(TileKey(DATA_ZOOM, 0, 0), raw)
   roads = {c: [points[offsets[i]:offsets[i + 1]] for i in range(len(offsets) - 1)] for c, (points, offsets) in tile.lines.items()}
   names = {c: [tile.name_of(c, i) for i in range(len(offsets) - 1)] for c, (_, offsets) in tile.lines.items()}
-  return encode_road_tile(roads, names if version >= 2 else None, version=version)
+  flags = {c: [tile.flags_of(c, i) for i in range(len(offsets) - 1)] for c, (_, offsets) in tile.lines.items()}
+  return encode_road_tile(roads, names if version >= 2 else None, version=version,
+                          flags=flags if version >= 3 else None, points=tile.points)

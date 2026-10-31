@@ -14,9 +14,9 @@ unit asking, nothing about the drive leaves the comma and the sensors are never 
 Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
   b  beacon, broadcast, 1 Hz: {"port"}
   h  hello, head unit -> comma, about 1 Hz: {"have": ["x/y", ...], "rt"} road tiles it holds; no "have", no tiles.
-     rt is the newest road tile format it reads (2: street names per line, 3: bridge flags too); a newer tile,
-     or any but format 1 without rt, is turned back into the format it reads (an older app drops anything else,
-     and the comma would resend it every TILE_RETRY s)
+     rt is the newest road tile format it reads (2: street names per line, 3: bridge flags too, 4: traffic signal
+     points too); a newer tile, or any but format 1 without rt, is turned back into the format it reads (an older
+     app drops anything else, and the comma would resend it every TILE_RETRY s)
   s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
      limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
      {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its

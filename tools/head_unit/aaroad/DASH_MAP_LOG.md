@@ -64,6 +64,12 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 ## Log
 
 ### 2026-10-31
+- **Road tiles carry traffic signals (format 4), comma side.** *static*.
+  - Problem: Peter asked for Google's small traffic-light icon at signalised intersections. The road tiles held only lines, so the head unit had no signal positions.
+  - `road_tiles.py`: format 4 ends with a points table (`<H` count, then `<h x, <h y, <B kind` per point; kind 1 a signal, 2 a stop, reserved). The points are Mapbox Streets' `traffic_signals` points in the z14 `road` layer, which come from OSM `highway=traffic_signals`. Mapbox has no stop or give-way points, and mapd has no node tags, so no stop signs reach the map.
+  - `navtilesd.py`: format 4 is current. A tile near the car saved without the points is fetched again once. `hu_feed` sends a head unit that asks `rt` 3 or older its format with the points dropped.
+  - Tests: `test_road_tiles.py`, `test_navtilesd.py`, `test_hu_feed.py`.
+  - Not checked: how many US signals the z14 tiles actually carry (no token on this VM).
 - **The map ahead loads in free drive** (Open 11). *static*.
   - Problem: with no route, at highway speed the top of the dash map was often bare and filled in only as the car got close. The comma had the tiles; the head unit kept only the roads within 700 m of the last rebuild and rebuilt every 600 m, while the view at 70 mph reaches about 790 m ahead and 1200 m to the side. In the harness the road ahead fell to about 100 m before each rebuild. The cull box also stopped at x 240, which left the top right of the free-drive view bare.
   - `FreeView.java`: with no route the scene keeps a rectangle turned to the car's heading. It covers the view at that speed (turned up to 30 degrees either way), 250 m around that, and 30 s of road ahead. The scene is rebuilt as soon as the view now, 5 s on, or turned 30 degrees would leave it. Service roads go above 264 m of range (StarPilot Auto's 2.2 m/px, about 49 mph). Road points within 1 m of a straight line are dropped. The box's right edge is now 290.

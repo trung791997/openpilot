@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 from openpilot.starpilot.navigation.road_tiles import (
-  BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, STREET, TUNNEL, VERSION, TileFormatError,
-  TileKey, corridor_tiles, decode_mvt_named_roads, decode_mvt_road_layer, decode_mvt_roads, decode_road_tile, downgrade_road_tile, encode_road_tile, lat_lon,
+  BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, SIGNAL, STOP, STREET, TUNNEL, VERSION, TileFormatError,
+  TileKey, corridor_tiles, decode_mvt_named_roads, decode_mvt_road_layer, decode_mvt_road_tile, decode_mvt_roads, decode_road_tile,
+  downgrade_road_tile, encode_road_tile, lat_lon,
   meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
 )
 
@@ -46,8 +47,20 @@ def _geometry(lines):
   return b"".join(_varint(value) for value in commands)
 
 
+def _point_geometry(groups):
+  """One MoveTo per group of points (a multipoint feature when a group has more than one)."""
+  commands, x, y = [], 0, 0
+  for group in groups:
+    commands.append(1 | len(group) << 3)
+    for px, py in group:
+      commands += [_zigzag(px - x), _zigzag(py - y)]
+      x, y = px, py
+  return b"".join(_varint(value) for value in commands)
+
+
 def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
-  """features: (class, kind, lines) or (class, kind, lines, {other tag: string value})."""
+  """features: (class, kind, lines) or (class, kind, lines, {other tag: string value}); kind 1 (point) takes
+  groups of points instead of lines."""
   keys, values = ["class"], []
   for feature in features:
     for key in (feature[3] if len(feature) > 3 else {}):
@@ -64,7 +77,8 @@ def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
     cls, kind, lines = feature_tags[:3]
     tags = {"class": cls, **(feature_tags[3] if len(feature_tags) > 3 else {})}
     packed = b"".join(_varint(keys.index(key)) + _varint(value_index(value)) for key, value in tags.items())
-    feature = _field(2, 2, packed) + _field(3, 0, kind) + _field(4, 2, _geometry(lines))
+    geometry = _point_geometry(lines) if kind == 1 else _geometry(lines)
+    feature = _field(2, 2, packed) + _field(3, 0, kind) + _field(4, 2, geometry)
     body += _field(2, 2, feature)
   for key in keys:
     body += _field(3, 2, key.encode())
@@ -147,7 +161,7 @@ def test_names_are_stored_once_per_tile_and_survive_the_round_trip():
   roads = {MAJOR: [line, line + 1, line + 2], STREET: [line + 3, line + 4]}
   names = {MAJOR: ["Main Street", "Main Street", ""], STREET: ["Main Street", "Ünïcode Ave"]}
   raw = encode_road_tile(roads, names)
-  assert road_tile_version(raw) == VERSION == 3
+  assert road_tile_version(raw) == VERSION == 4
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
   assert tile.names == ("Main Street", "Ünïcode Ave"), "a street split into many lines is stored once"
   assert [tile.name_of(MAJOR, i) for i in range(3)] == ["Main Street", "Main Street", ""]
@@ -218,12 +232,12 @@ def test_bridge_flags_survive_the_round_trip_and_older_versions_drop_only_what_t
   flags = {MOTORWAY: [0, BRIDGE], STREET: [TUNNEL], LINK: [BRIDGE]}
   raw = encode_road_tile(roads, names, flags=flags)
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
-  assert tile.version == 3
+  assert tile.version == VERSION
   assert [tile.flags_of(MOTORWAY, i) for i in range(2)] == [0, BRIDGE]
   assert tile.flags_of(STREET, 0) == TUNNEL and tile.flags_of(LINK, 0) == BRIDGE and tile.flags_of(MINOR, 0) == 0
   assert tile.name_of(STREET, 0) == "Elm"
   # a byte a line, and the flags compress to almost nothing next to the same tile without them
-  assert len(raw) - len(encode_road_tile(roads, names)) < 8
+  assert len(raw) - len(encode_road_tile(roads, names, version=3)) < 8
   assert len(raw) - len(encode_road_tile(roads, names, version=2)) < 16
   # the head unit app of 2026-10-30 reads names but not flags: it gets exactly the version 2 tile
   v2 = downgrade_road_tile(raw, 2)
@@ -231,7 +245,8 @@ def test_bridge_flags_survive_the_round_trip_and_older_versions_drop_only_what_t
   old = decode_road_tile(TileKey(14, 0, 0), v2)
   assert old.version == 2 and old.line_flags == {} and old.flags_of(MOTORWAY, 1) == 0 and old.name_of(STREET, 0) == "Elm"
   assert downgrade_road_tile(raw, 1) == encode_road_tile(roads, version=1)
-  assert downgrade_road_tile(raw, 3) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
+  assert downgrade_road_tile(raw, 3) == encode_road_tile(roads, names, version=3, flags=flags), "the flags survive"
+  assert downgrade_road_tile(raw, 4) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
   # the same lines in every version
   for version in (1, 2, 3):
     decoded = decode_road_tile(TileKey(14, 0, 0), downgrade_road_tile(raw, version))
@@ -247,4 +262,53 @@ def test_a_cut_flags_array_is_corrupt_not_misread():
     with pytest.raises(TileFormatError):
       decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(body[:-cut]))
   with pytest.raises(TileFormatError):
-    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x04\x01" + zlib.compress(body))
+    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x05\x01" + zlib.compress(body))
+
+
+def test_decoder_keeps_traffic_signal_points_inside_the_tile_only():
+  data = mvt([("primary", 2, [[(0, 0), (4096, 4096)]], {"name": "Main St"}),
+              ("traffic_signals", 1, [[(100, 200)], [(4000, 50), (4010, 60)]]),
+              ("traffic_signals", 1, [[(-20, 300)]]),       # in the buffer: the neighbouring tile has it
+              ("traffic_signals", 1, [[(4096, 300)]]),
+              ("turning_circle", 1, [[(500, 500)]]),
+              ("junction", 1, [[(600, 600)]])])
+  roads, names, flags, points = decode_mvt_road_tile(data)
+  assert points == [(100, 200, SIGNAL), (4000, 50, SIGNAL), (4010, 60, SIGNAL)]
+  assert names[MAJOR] == ["Main St"] and flags[MAJOR] == [0] and len(roads[MAJOR]) == 1
+  assert decode_mvt_road_layer(data)[0].keys() == roads.keys(), "the three-list reader is unchanged"
+  half = decode_mvt_road_tile(mvt([("traffic_signals", 1, [[(256, 100)]])], extent=2048))[3]
+  assert half == [(512, 200, SIGNAL)], "other extents scale like the lines"
+
+
+def test_signal_points_round_trip_and_older_versions_drop_only_the_points():
+  line = np.array([[0, 0], [100, 50]])
+  roads, names, flags = {MAJOR: [line]}, {MAJOR: ["Main"]}, {MAJOR: [BRIDGE]}
+  points = [(100.4, 200.6, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP), (1, 1, 0)]
+  raw = encode_road_tile(roads, names, flags=flags, points=points)
+  tile = decode_road_tile(TileKey(14, 0, 0), raw)
+  assert tile.version == 4 == VERSION
+  assert tile.points == ((100, 201, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP)), "rounded; kind 0 is not a point"
+  assert tile.flags_of(MAJOR, 0) == BRIDGE and tile.name_of(MAJOR, 0) == "Main"
+  # five bytes a point, and nothing when there are none
+  assert len(zlib.decompress(raw[6:])) - len(zlib.decompress(encode_road_tile(roads, names, flags=flags)[6:])) == 15
+  assert decode_road_tile(TileKey(14, 0, 0), encode_road_tile(roads, names, flags=flags)).points == ()
+  # the head unit app before signals reads version 3: it gets exactly the version 3 tile, flags kept
+  v3 = downgrade_road_tile(raw, 3)
+  assert v3 == encode_road_tile(roads, names, version=3, flags=flags)
+  old = decode_road_tile(TileKey(14, 0, 0), v3)
+  assert old.version == 3 and old.points == () and old.flags_of(MAJOR, 0) == BRIDGE
+  assert downgrade_road_tile(raw, 2) == encode_road_tile(roads, names, version=2)
+  assert downgrade_road_tile(raw, 1) == encode_road_tile(roads, version=1)
+  for version in (1, 2, 3):
+    assert decode_road_tile(TileKey(14, 0, 0), downgrade_road_tile(raw, version)).points == ()
+
+
+def test_a_cut_or_padded_points_table_is_corrupt_not_misread():
+  raw = encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, points=[(5, 5, SIGNAL), (9, 9, SIGNAL)])
+  body = zlib.decompress(raw[6:])
+  for bad in (body[:-1], body[:-5], body[:-11], body + b"\0"):
+    with pytest.raises(TileFormatError):
+      decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(bad))
+  # a version 3 tile carries no points table, so the same bytes read as version 3 are trailing data
+  with pytest.raises(TileFormatError):
+    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x03" + raw[5:6] + zlib.compress(body))
