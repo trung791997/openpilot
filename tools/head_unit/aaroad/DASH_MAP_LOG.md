@@ -22,8 +22,8 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad-slim-timing.apk` | slim cards + frame-part timing (`ace790491`), installed 2026-10-31 evening |
-| Previous | `aaroad-gl30.apk` | GPU map at 30 fps, glitchy while driving |
+| Installed now | `aaroad-turn-hwy.apk` | cheap culling, route traffic, brake lights, turn card from the comma, gold highways, bridges on top (`887675898`); installed 2026-10-31 night, comma on `bb4a12ca5` |
+| Previous | `aaroad-slim-timing.apk` | slim cards + frame-part timing (`ace790491`) |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
 
 The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the commit with `build.sh` in a scratch copy (it runs `rm -rf out`).
@@ -61,6 +61,7 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 ## Log
 
 ### 2026-10-31
+- **Installed** (parked, Peter's OK): comma updated to `bb4a12ca5` and rebooted (aa0 and the hotspot came up this time); `aaroad-turn-hwy.apk` on the head unit, rebooted, ignition cycled. Head-unit log: meter map showing, GPU on, parked frame parts cull 1.2 ms avg (was ~48 ms driving before `c48ffae76`), swap 18.5 ms avg. Not driven yet.
 - **Bridges drawn over the roads under them** (Open 9). *static*.
   - Problem: a highway overpass and the street under it were drawn as one flat crossing, so the dash showed a junction that is not there.
   - Tiles: `road_tiles.py` format 3 keeps the vector tile's `structure` tag as a flags byte per line (`BRIDGE` 1, `TUNNEL` 2; `layer` is not kept). It adds about one byte a line before compression.
