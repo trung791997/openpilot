@@ -10,18 +10,14 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.os.SystemClock;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
-import android.widget.TextView;
 import de.robv.android.xposed.XposedBridge;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
@@ -98,6 +94,8 @@ final class MapView extends View {
   // SLOW_MS: with the GPU layer drawing the map, this view only holds the car, tag, sign and cards, so the tick looks
   // for a change in them ten times a second
   private static final long SLOW_MS = 100;
+  // the turn card goes once the comma's nav state is this old (it sends it once a second)
+  private static final long NAV_STALE_MS = 3000;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
   // once showing, the map rides out a position gap this long with the car held where it was (Peter 2026-10-30
   // photo: mid-route the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused)
@@ -542,17 +540,18 @@ final class MapView extends View {
     h = h * 31 + hash(Feed.mediaTitle);
     h = h * 31 + Feed.coverId;
     h = h * 31 + hash(onRoad);
-    View v = find("seg_dist");
-    if (v instanceof TextView) h = h * 31 + (v.getVisibility() == VISIBLE ? hash(((TextView) v).getText()) : 1);
-    v = find("next_road");
-    if (v instanceof TextView) h = h * 31 + (v.getVisibility() == VISIBLE ? hash(((TextView) v).getText()) : 1);
-    v = find("turn_icon");
-    if (v != null) {
-      Drawable d = v.isShown() && v instanceof ImageView ? ((ImageView) v).getDrawable() : null;
-      h = h * 31 + (v.isShown() ? 1 : 2);
-      if (d != null) h = (h * 31 + System.identityHashCode(d)) * 31 + d.getLevel();
+    Feed.Nav nav = turnNav(now);  // the turn card: its maneuver, text and the distance as shown, and gone when stale
+    if (nav != null) {
+      h = h * 31 + hash(nav.type);
+      h = h * 31 + hash(nav.modifier);
+      h = h * 31 + hash(nav.text);
+      h = h * 31 + hash(nav.road);
+      double m = turnLeft(nav, now);
+      h = h * 31 + (m >= 0 ? hash(Turn.distance(m, Feed.metric)) : 1);
+    } else {
+      h = h * 31 + 2;
     }
-    v = find("drive_way_layout");
+    View v = find("drive_way_layout");
     if (v != null) h = h * 31 + (v.isShown() ? 1 : 2);
     return (h * 31 + titleRoll.shift(now)) * 31 + artistRoll.shift(now);
   }
@@ -1777,14 +1776,12 @@ final class MapView extends View {
   // Everything the cards show, as they would draw it now.
   private String cardKey(long now, boolean free) {
     StringBuilder k = new StringBuilder(160).append(free);
-    TextView dist = (TextView) find("seg_dist");
-    k.append('|').append(dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null);
-    TextView next = (TextView) find("next_road");
-    k.append('|').append(next != null && next.getVisibility() == VISIBLE ? next.getText() : null);
-    View icon = find("turn_icon");
-    Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
-    k.append('|').append(icon != null && icon.isShown());
-    if (arrow != null) k.append('|').append(System.identityHashCode(arrow)).append('/').append(arrow.getLevel());
+    Feed.Nav nav = free ? null : turnNav(now);
+    if (nav != null) {
+      double m = turnLeft(nav, now);
+      k.append('|').append(nav.type).append('|').append(nav.modifier).append('|').append(Turn.text(nav.text));
+      k.append('|').append(m >= 0 ? Turn.distance(m, Feed.metric) : null);
+    }
     if (Feed.remainingSec >= 0) {
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
       k.append('|').append(Math.round(left / 60)).append('|').append(clock.format(new Date(System.currentTimeMillis() + (long) (left * 1000))));
@@ -1806,25 +1803,24 @@ final class MapView extends View {
   }
 
   private void cards(Canvas canvas, long now, boolean free) {
-    // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did,
-    // the stock arrow and the distance, the road, and the trip
-    TextView dist = (TextView) find("seg_dist");
-    CharSequence d = dist != null && dist.getVisibility() == VISIBLE ? dist.getText() : null;
-    View icon = find("turn_icon");
-    // the next turn's street, Android Auto's next_road. It read the street tag's name (the road the car is on) from
-    // bdc227553 on, so the card named the current road instead of the turn (Peter's photo 2026-10-30)
-    TextView next = (TextView) find("next_road");
-    CharSequence turnRoad = next != null && next.getVisibility() == VISIBLE ? next.getText() : null;
-    Drawable arrow = icon instanceof ImageView && icon.isShown() ? ((ImageView) icon).getDrawable() : null;
-    boolean turn = !free && (!TextUtils.isEmpty(d) || (icon != null && icon.isShown()));
-    boolean top = turn && (!TextUtils.isEmpty(d) || arrow != null), road = turn && !TextUtils.isEmpty(turnRoad);
+    // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did, the
+    // arrow and the distance, the maneuver's text, and the trip. The turn is the comma's own (Feed.nav, the step the
+    // StarPilot Auto car screen draws), not Honda Hack's panel: that came through Android Auto's throttled next-turn
+    // path and lagged or froze (Peter 2026-10-31: the dash said "0.2 mi US 75 South" while the car screen said
+    // "Exit 6 Walnut Hill Lane 1.9 mi"). Gone when the comma has not said for NAV_STALE_MS.
+    Feed.Nav nav = free ? null : turnNav(now);
+    double meters = nav != null ? turnLeft(nav, now) : -1;
+    String d = meters >= 0 ? Turn.distance(meters, Feed.metric) : null;
+    Bitmap arrow = nav != null ? NavArrow.get(nav.type, nav.modifier) : null;
+    String[] lines = nav != null ? turnLines(Turn.text(nav.text)) : NO_LINES;
+    boolean top = nav != null && (d != null || arrow != null), road = lines.length > 0;
     boolean trip = !free && Feed.remainingSec >= 0;  // a card for the trip alone when there is no turn
     float b = -1;
     if (top || road || trip) {
-      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + (road ? ROAD_H : 0) + (trip ? ETA_H : 0) + PAD;
+      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + lines.length * ROAD_H + (trip ? ETA_H : 0) + PAD;
       Path turnCard = card(CARD_L, TURN_T, CARD_R, b);
       canvas.drawPath(turnCard, panel);
-      double ft = TextUtils.isEmpty(d) ? -1 : Meter.feet(d);
+      double ft = meters < 0 ? -1 : meters * 3.28084;
       float lit = ft < 0 || ft > 500 ? b : b - (float) (ft / 500) * (b - TURN_T);
       canvas.save();
       canvas.clipPath(turnCard);
@@ -1850,12 +1846,7 @@ final class MapView extends View {
 
       float y = TURN_T + (top ? 0 : PAD);  // the top of the next row
       if (top) {
-        if (arrow != null) {
-          Rect was = arrow.copyBounds();
-          arrow.setBounds(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON);
-          arrow.draw(canvas);
-          arrow.setBounds(was);  // the stock view draws it again when the map goes
-        }
+        if (arrow != null) canvas.drawBitmap(arrow, null, new RectF(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON), smooth);
         if (!TextUtils.isEmpty(d)) {
           String t = d.toString().trim();
           int sp = t.lastIndexOf(' ');
@@ -1869,12 +1860,9 @@ final class MapView extends View {
         }
         y += TOP_H;
       }
-      if (road) {  // across the whole card, under the arrow: beside it only ~100 px were left
-        float textW = right(y + 18, b) - ROW_X, size = 18;
-        String n = turnRoad.toString();
-        cardRoad.setTextSize(size);
-        while (cardRoad.measureText(n) > textW && size > 15) cardRoad.setTextSize(--size);
-        canvas.drawText(fit(n, cardRoad, textW), ROW_X, y + 18, cardRoad);
+      // across the whole card, under the arrow: beside it only ~100 px were left. turnLines set the size.
+      for (String line : lines) {
+        canvas.drawText(fit(line, cardRoad, right(y + 18, b) - ROW_X), ROW_X, y + 18, cardRoad);
         y += ROAD_H;
       }
       if (trip) canvas.drawText(eta(now, right(y + 14, b) - ROW_X), ROW_X, y + 14, cardDim);
@@ -1888,6 +1876,43 @@ final class MapView extends View {
   // Where text on a row with its baseline at y has to end, clear of the turn card's lean (bottom at b).
   private static float right(float y, float b) {
     return CARD_R - SLANT * (y - TURN_T) / (b - TURN_T) - 6;
+  }
+
+  // The next maneuver, or null when the comma's last word on it is over NAV_STALE_MS old: a card that froze on an
+  // old turn was the fault this replaced.
+  private static Feed.Nav turnNav(long now) {
+    Feed.Nav n = Feed.nav;
+    return n != null && now - n.at <= NAV_STALE_MS ? n : null;
+  }
+
+  // Metres to the maneuver now: the comma's distance less what the car has driven since, at its speed; -1 if unknown.
+  // The comma says once a second, so this keeps the number moving between its datagrams.
+  static double turnLeft(Feed.Nav n, long now) {
+    if (n.distance < 0) return -1;
+    return Math.max(0, n.distance - Math.max(0, Feed.spd) * Math.max(0, now - n.at) / 1000.0);
+  }
+
+  private static final String[] NO_LINES = new String[0];
+  private static final float LINE_W = CARD_R - 6 - 0.6f * SLANT - ROW_X;  // about where the lean cuts a text row
+
+  // The text in one line at 18 px, shrunk to 15 px if that fits; else two lines at 16 px broken between words, the
+  // second ending in an ellipsis if it is still too long, as the car screen does with its two lines. Sets cardRoad's
+  // size.
+  private String[] turnLines(String t) {
+    if (t.isEmpty()) return NO_LINES;
+    for (int size = 18; size >= 15; size--) {
+      cardRoad.setTextSize(size);
+      if (cardRoad.measureText(t) <= LINE_W) return new String[] {t};
+    }
+    cardRoad.setTextSize(16);
+    String[] words = t.split(" ");
+    String first = words[0];
+    int i = 1;
+    for (; i < words.length && cardRoad.measureText(first + " " + words[i]) <= LINE_W; i++) first += " " + words[i];
+    if (i >= words.length) return new String[] {first};  // one word too long for a line: fit() cuts it
+    StringBuilder rest = new StringBuilder(words[i]);
+    for (i++; i < words.length; i++) rest.append(' ').append(words[i]);
+    return new String[] {first, rest.toString()};
   }
 
   // The trip as one line: "11 min · 5.2 mi · 2:10 AM", the values the trip card showed (Peter 2026-10-31). A piece

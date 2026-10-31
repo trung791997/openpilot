@@ -153,6 +153,8 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     } else {
       boolean instruction = false;
       for (String p : INSTRUCTION) instruction |= lower.startsWith(p);
+      // "Exit 19A Walnut Hill Lane" is the sign, not an instruction ("Exit right", "Exit the roundabout"): it was nulled
+      if (lower.length() > 5 && lower.startsWith("exit ") && Character.isDigit(lower.charAt(5))) instruction = false;
       if (instruction) {
         i = lower.indexOf(" on ");
         if (i < 0 || lower.contains("destination")) return null;

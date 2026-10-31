@@ -78,6 +78,36 @@ final class Feed {
     }
   }
 
+  // The next maneuver as the comma's 's' datagram had it (hu_feed.instruction: starpilotNavigation.instruction, the
+  // same step the StarPilot Auto car screen draws). One piece, so the turn card never mixes two datagrams.
+  // at: uptime of the datagram; distance (m) is the distance to the maneuver then.
+  static final class Nav {
+    final String type, modifier, text, road;
+    final int exit, degrees;
+    final boolean left;
+    final double distance;
+    final long at;
+
+    Nav(String type, String modifier, String text, String road, int exit, int degrees, boolean left, double distance, long at) {
+      this.type = type;
+      this.modifier = modifier;
+      this.text = text;
+      this.road = road;
+      this.exit = exit;
+      this.degrees = degrees;
+      this.left = left;
+      this.distance = distance;
+      this.at = at;
+    }
+
+    static Nav of(JSONObject nav, long at) {
+      if (nav == null) return null;
+      return new Nav(nav.optString("type", ""), nav.optString("modifier", ""), nav.optString("text", ""),
+                     nav.optString("road", ""), nav.optInt("exit", 0), nav.optInt("degrees", 0), nav.optBoolean("left"),
+                     nav.optDouble("distance", -1), at);
+    }
+  }
+
   // Everything MapView reads; written only by the feed thread.
   static volatile boolean wanted;  // the nav page is showing
   static volatile double lat, lon, hdg, spd;
@@ -89,6 +119,7 @@ final class Feed {
   static volatile boolean metric;
   static volatile double turnMeters = -1, limitMs = -1, remainingSec = -1, remainingMeters = -1;
   static volatile Route route;
+  static volatile Nav nav;           // null while the comma is not guiding
   static volatile String road = "";  // the road the car is on, from the comma's route step; "" = not known
   static final Map<String, Tile> tiles = new ConcurrentHashMap<String, Tile>();
   static volatile int tilesVersion;
@@ -275,6 +306,7 @@ final class Feed {
       remainingSec = nav != null ? nav.optDouble("duration", -1) : -1;
       remainingMeters = nav != null ? nav.optDouble("remaining", -1) : -1;
       road = nav != null ? nav.optString("road", "") : "";
+      Feed.nav = Nav.of(nav, now);
       if (nav == null) route = null;
       JSONObject media = m.optJSONObject("media");
       mediaTitle = media != null ? media.optString("title") : null;
