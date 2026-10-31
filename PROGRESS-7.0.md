@@ -44,6 +44,12 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 13 — 2026-10-31 — Dash map work is tracked in its own log and worked in a worktree (Peter approved the exception)
+
+**Decision.** The Civic cluster map (`tools/head_unit/`) is worked in the git worktree `/tmp/hu_feed` on `night-star7-vasm-jetson`, not in `~/openpilot`. Switching the shared main checkout would change files under other agents. This is an exception to AGENTS.md §7, approved by Peter 2026-10-31. It covers only this worktree and this work.
+
+**Tracking.** The state, open items, installed APK and resume steps live in `tools/head_unit/aaroad/DASH_MAP_LOG.md`. Update it with every dash-map commit, so the work can be paused and picked up again.
+
 ### 12 — 2026-10-30 — Early gentle brake: the camera's lead must sit closer to the radar's lead, so a farther car slowing no longer brakes us hard; on longradar and V-ASM, default ON
 
 **Problem.** Job's census of the early gentle brake (entry 10; 747 brakes, open loop, sw9 = CAM_SLOW_W_MAX 0 vs sw8) moved 16 brakes by more than 0.1. On stills, two were false triggers and one leaned false, all with the leads 80-95 m out: 30a T424 (-2.16 -> -2.75; the camera's lead was another car 10.4 m past the radar's, slowing at a light queue while an SUV sat in the next lane), 237 T1186 (cones, -1.39 -> -1.71) and 311 T2873 (2.3 s early, nothing close in lane). Eight were real slowdowns, three ambiguous. On the 19 real brakes CSB moved only f10, 0.13 deeper in the middle of a real slowdown the radar lagged. 2f8 T537 (8:57 phantom): unchanged, -0.24.
