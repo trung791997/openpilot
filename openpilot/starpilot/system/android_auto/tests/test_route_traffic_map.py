@@ -13,12 +13,13 @@ import pytest
 from openpilot.starpilot.navigation.road_tiles import lat_lon, world_xy
 from openpilot.starpilot.ui import onroad_map
 from openpilot.starpilot.ui.onroad_map import (
-  CONGESTION_CORE, ROUTE_CORE, ROUTE_GLOW, ZOOM_SLOW_M_PER_PX, CanvasRequest, MapOverlay, core_colors, premultiplied,
+  CONGESTION_CORE, CONGESTION_GLOW, ROUTE_CORE, ROUTE_GLOW, ZOOM_SLOW_M_PER_PX, CanvasRequest, MapOverlay, core_colors, premultiplied,
   route_ahead, route_guidance, segment_levels, split_route,
 )
 
 CENTER = (36.1147, -115.1728)
 AMBER, ORANGE, RED = (CONGESTION_CORE[level] for level in (2, 3, 4))
+GLOW_AMBER, GLOW_ORANGE, GLOW_RED = (CONGESTION_GLOW[level] for level in (2, 3, 4))
 
 
 def colour(rgba):
@@ -73,9 +74,12 @@ def test_congested_route_is_one_strip_per_colour():
   for start in range(0, len(levels), 20):
     levels[start + 4:start + 8], levels[start + 9:start + 12], levels[start + 14:start + 16] = 2, 3, 4
   layers = route_guidance(world, request, CENTER[0], levels)
-  assert layer_colours(layers) == [colour(ROUTE_GLOW), colour(ROUTE_CORE), colour(AMBER), colour(ORANGE), colour(RED)]
-  # One glow under the whole line, the same as the plain route's.
-  np.testing.assert_array_equal(layers[0][1], route_guidance(world, request, CENTER[0])[0][1])
+  # Every glow first, then every core: a slow stretch's glow takes its colour, and no glow covers a core.
+  assert layer_colours(layers) == [colour(c) for c in (ROUTE_GLOW, GLOW_AMBER, GLOW_ORANGE, GLOW_RED,
+                                                       ROUTE_CORE, AMBER, ORANGE, RED)]
+  # Each glow runs under the same stretches as its core.
+  for glow, core in zip(layers[:4], layers[4:], strict=True):
+    assert len(glow[1]) == len(core[1])
 
 
 def test_each_colour_covers_its_own_stretch():
@@ -141,8 +145,8 @@ def test_overlay_colours_the_route_ahead_and_rebuilds_only_on_new_traffic(tmp_pa
     overlay._route(route, congestion)
     overlay._compose_layer(400, 300, True)
     assert len(builds) == 1
-    assert layer_colours(overlay._route_layers) == [colour(ROUTE_GLOW), colour(ROUTE_CORE), colour(ORANGE)]
-    assert len(draws) == 3, "one draw per colour per frame, not one per segment"
+    assert layer_colours(overlay._route_layers) == [colour(c) for c in (ROUTE_GLOW, GLOW_ORANGE, ROUTE_CORE, ORANGE)]
+    assert len(draws) == 4, "one glow and one core draw per colour per frame, not one per segment"
     overlay._route(route, tuple(congestion))                       # the same levels in a new message
     overlay._compose_layer(400, 300, True)
     assert len(builds) == 1, "unchanged traffic reuses the strips"

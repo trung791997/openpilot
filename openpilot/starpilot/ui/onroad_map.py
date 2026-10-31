@@ -73,10 +73,13 @@ ROUTE_GLOW = (150, 110, 255, 90)
 ROUTE_CORE = (178, 150, 255, 255)
 ROUTE_DONE = (118, 104, 150, 200)
 # Traffic on the route line (Navigation.routeCongestion: 0 unknown, 1 low, 2 moderate, 3 heavy, 4 severe), the
-# head unit's dash-map colours. Unknown and low keep ROUTE_CORE; the glow under the line stays route purple.
+# head unit's dash-map colours. Unknown and low keep ROUTE_CORE and ROUTE_GLOW; a slow stretch's glow takes its colour
+# at the glow's alpha, so the whole width of the line shows the traffic (Peter 2026-10-31).
 # Severe is #e53935, one shade brighter than the head unit's #c62828: on this dark map #c62828 is only ~2.5:1 against
 # the road background and reads as a dark gap in the line; #e53935 is ~3.3:1 and still distinct from heavy orange.
 CONGESTION_CORE = {2: (255, 179, 0, 255), 3: (255, 87, 34, 255), 4: (229, 57, 53, 255)}   # #ffb300 #ff5722 #e53935
+CONGESTION_GLOW = {level: (*color[:3], ROUTE_GLOW[3]) for level, color in CONGESTION_CORE.items()}
+GLOW_OF = {CONGESTION_CORE[level]: CONGESTION_GLOW[level] for level in CONGESTION_CORE}
 GLASS = (8, 12, 20, 132)
 SOURCE_LABELS = {"comma": "Comma GPS", "car": "Car GPS", "phone": "Phone GPS"}
 REFERENCE_M_PER_PX = 1.4
@@ -220,8 +223,9 @@ def build_canvas(request: CanvasRequest, tiles: dict[TileKey, RoadTile], latitud
 def route_guidance(route, request: CanvasRequest, latitude: float, levels: np.ndarray | None = None):
   """Build only the remaining route; the road canvas never bakes in a driven tail.
 
-  ``levels`` is the traffic on each of the route's segments (len(route) - 1), or None for a plain route: the glow
-  is one strip under the whole line, and the core one strip per traffic colour (runs of the same colour batched).
+  ``levels`` is the traffic on each of the route's segments (len(route) - 1), or None for a plain route. Glow and core
+  are each one strip per traffic colour (runs of the same colour batched); every glow is drawn before any core, so a
+  neighbour's glow never covers a core.
   """
   if route is None or len(route) < 2:
     return []
@@ -233,13 +237,13 @@ def route_guidance(route, request: CanvasRequest, latitude: float, levels: np.nd
   reach = 8.0 + 17.0 * width_scale / 2
   keep = visible_segments(points, (-reach, -reach, request.side + reach, request.side + reach))
   layers = []
-  strip = line_strip(*segment_runs(points, keep), 17.0 * width_scale / 2, bounds)
-  if len(strip):
-    layers.append((premultiplied(ROUTE_GLOW), strip))
-  for color, mask in core_colors(keep, levels):
-    strip = line_strip(*segment_runs(points, mask), 7.0 * width_scale / 2, bounds)
-    if len(strip):
-      layers.append((premultiplied(color), strip))
+  colors = core_colors(keep, levels)
+  glow = {color: GLOW_OF.get(color, ROUTE_GLOW) for color, _ in colors}
+  for width, pick in ((17.0, glow.__getitem__), (7.0, lambda color: color)):
+    for color, mask in colors:
+      strip = line_strip(*segment_runs(points, mask), width * width_scale / 2, bounds)
+      if len(strip):
+        layers.append((premultiplied(pick(color)), strip))
   return layers
 
 
