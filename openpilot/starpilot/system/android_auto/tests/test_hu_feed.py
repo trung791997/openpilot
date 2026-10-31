@@ -207,6 +207,58 @@ def test_tiles_go_as_is_to_new_head_units_and_in_the_format_each_older_app_reads
   assert 'm' not in sock.kinds()           # a broken file is skipped, not sent to be dropped
 
 
+def test_free_drive_at_70_mph_has_the_tiles_ahead_long_before_the_car_gets_there():
+  # Peter 2026-10-31: off navigation the dash map sometimes did not load ahead until the car got close. The comma side
+  # is not why: with no route it sends the 3x3 tiles around the car (each about 2 km across), so a tile reaches the head
+  # unit about a tile's drive before the car does. The head unit dropped them (MapView kept 700 m; FreeView now).
+  from openpilot.starpilot.navigation.road_tiles import world_xy
+  mph70, lead = 70 * 0.44704, 30.
+  for bearing in (90., 45., 0., 200.):   # east along a row of tiles, across corners, north, and back south-west
+    lat, lon = 33.0, -117.0
+    value = snapshot(speed=mph70)
+    clock = [100.]
+    sock = Sock()
+    feed = hf.HeadUnitFeed(read=lambda value=value: value, sock=sock, broadcasts=list,
+                           tiles=lambda key: bytes(30_000), clock=lambda clock=clock: clock[0],
+                           clock_ns=lambda clock=clock: int(clock[0] * 1e9), cover=lambda url: None)
+    have: list[str] = []      # what the head unit holds, newest last (Feed.MAX_TILES 25)
+    parts: dict[str, set] = {}
+    arrived: dict[str, float] = {}
+    entered: dict[str, float] = {}
+    c, s = math.cos(math.radians(bearing)), math.sin(math.radians(bearing))
+    for tick in range(int(600 / 0.05)):  # 10 minutes at the comma's 20 Hz
+      t = clock[0] = 100. + tick * 0.05
+      lat += mph70 * 0.05 * c / hf.METERS_PER_DEG
+      lon += mph70 * 0.05 * s / (hf.METERS_PER_DEG * math.cos(math.radians(lat)))
+      value['fix'] = (int(t * 1e9), lat, lon, bearing)
+      if tick % 20 == 0:
+        sock.hello(have=have[-64:], rt=3)
+      sock.sent.clear()
+      feed.tick()
+      for message, _ in sock.sent:
+        if message['t'] == 'm':
+          got = parts.setdefault(message['k'], set())
+          got.add(message['i'])
+          if len(got) == message['n']:
+            got.clear()
+            have = [key for key in have if key != message['k']][-24:] + [message['k']]
+            arrived.setdefault(message['k'], t)
+      x, y = world_xy(lat, lon)
+      entered.setdefault(f'{int(x)}/{int(y)}', t)
+      if t < 112.:   # the first nine go one a second (TILE_SCAN_EVERY)
+        continue
+      # the free-drive view at 70 mph reaches about 800 m ahead and 1250 m to each side at its far edge: all held
+      for ahead, side in ((800, 0), (800, -1250), (800, 1250), (0, 0)):
+        north, east = ahead * c - side * s, ahead * s + side * c
+        vx, vy = world_xy(lat + north / hf.METERS_PER_DEG, lon + east / (hf.METERS_PER_DEG * math.cos(math.radians(lat))))
+        assert f'{int(vx)}/{int(vy)}' in have, f'bearing {bearing}: a tile in view missing at {t - 100:.1f} s'
+    # the tiles sent as the car moves, not the nine around where it started
+    later = {key: when for key, when in entered.items() if when > 112. and arrived.get(key, 1e9) > 112.}
+    assert len(later) >= 4, f'bearing {bearing}: the drive should cross several tiles'
+    for key, when in later.items():
+      assert arrived[key] <= when - lead, f'bearing {bearing}: tile {key} came {when - arrived[key]:.0f} s ahead, want {lead:.0f}'
+
+
 def test_datagrams_fit_one_frame():
   feed, sock, now, _ = make(snapshot(route=('s:1', [(-33.123456, -117.123456)] * 300)),
                             tiles=lambda key: bytes(5000))

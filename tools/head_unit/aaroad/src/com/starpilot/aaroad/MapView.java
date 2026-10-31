@@ -46,7 +46,8 @@ final class MapView extends View {
   private static final double CAM_H = 150, CAM_ZC = -50, PITCH = Math.toRadians(55), FOCAL = 260, CX = 369, CY = 102.663;
   private static final double R0 = 70.03;          // display metres from the car to the range's far edge (y 86)
   static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
-  static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // a little past the screen
+  // a little past the screen; see FreeView (2026-10-31: the right edge 240 left the free-drive map's top right bare)
+  static final float BOX_X0 = FreeView.X0, BOX_X1 = FreeView.X1, BOX_Z0 = FreeView.Z0, BOX_Z1 = FreeView.Z1;
   private static final float BOX_R = 430;          // display metres: covers the box from the car
   // Road shapes are kept between frames (Peter 2026-10-30: building them was 46 of 158 ms a frame on the Tegra): each
   // run is cut into pieces of at most CHUNK_M m, each a Path in world metres built with the scene, and a frame only
@@ -294,6 +295,11 @@ final class MapView extends View {
     byte[][] routeLevel = new byte[0][];  // traffic per segment of each route run, 0 unknown to 4 severe (Feed.Route.lvl)
     float[][] routeAlong = new float[0][];  // metres along the route at each point of each run, runs end to end
     Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
+    // with no route: the rectangle of roads kept, in the frame of heading bh (FreeView.area), and whether service
+    // roads are in it; area null with a route
+    float[] area;
+    double bh;
+    boolean minor = true;
   }
 
   // The runs cut into pieces of at most CHUNK_M m (neighbours share their end point), each kept as a Path in world
@@ -658,7 +664,7 @@ final class MapView extends View {
   private static double zoomTarget(Scene s, double spd, long now) {
     double turn = Feed.turnMeters >= 0 ? Math.max(0, Feed.turnMeters - spd * (now - Feed.stateAt) / 1000.0) : -1;
     // with no route nothing lies far ahead to show, so the view stays close: about 12 s of road, 120 to 300 m
-    double rng = s.route.length == 0 ? Math.max(120, Math.min(300, spd * 12)) : Math.max(200, Math.min(600, spd * 20));
+    double rng = s.route.length == 0 ? FreeView.range(spd) : Math.max(200, Math.min(600, spd * 20));
     if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
     return rng;
   }
@@ -800,20 +806,30 @@ final class MapView extends View {
     final double lat = Feed.lat, lon = Feed.lon;
     boolean need = s == null || (r == null ? -1 : r.id) != s.routeId
         || (Feed.tilesVersion != s.tilesVersion && now - builtAt > TILE_REBUILD_MS);
+    Feed.Pose p = pose();
+    final double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg), kView = Math.max(k, FreeView.range(spd) / R0);
     if (!need) {
       double[] w = Feed.world(lat, lon, tickW);
-      need = Math.hypot(w[0] - s.ax, w[1] - s.ay) * s.mpt > MOVE_R;
+      double e = (w[0] - s.ax) * s.mpt, n = -(w[1] - s.ay) * s.mpt;
+      need = Math.hypot(e, n) > MOVE_R;
+      // with no route, moving: once the view now or LEAD_S s on leaves the roads kept, or service roads should come
+      // or go; stopped, the heading is noise and the old 600 m rule holds (FreeView)
+      if (!need && s.area != null && spd >= HOLD_SPEED && now - builtAt > TILE_REBUILD_MS) {
+        need = !FreeView.covered(s.area, s.bh, e, n, h, spd, kView)
+            || FreeView.minor(FreeView.range(spd), s.minor) != s.minor;
+      }
     }
     if (!need) return;
     building = true;
     builtAt = now;
     final Feed.Route route = r;
     final int version = Feed.tilesVersion;
+    final boolean minor = s == null || s.minor;
     Thread t = new Thread(new Runnable() {
       @Override
       public void run() {
         try {
-          scene = build(lat, lon, route, version);
+          scene = build(lat, lon, route, version, h, spd, kView, minor);
           Roads g = gpu;
           if (g != null) g.poke();
         } catch (Throwable e) {
@@ -827,13 +843,21 @@ final class MapView extends View {
     t.start();
   }
 
-  private static Scene build(double lat, double lon, Feed.Route r, int version) {
+  // h, spd: the car's heading (radians) and speed; kView the zoom the view has or is heading to; minor whether the
+  // last scene had service roads (all for FreeView, with no route)
+  private static Scene build(double lat, double lon, Feed.Route r, int version, double h, double spd, double kView,
+                             boolean minor) {
     Scene s = new Scene();
     double[] a = Feed.world(lat, lon);
     s.ax = a[0];
     s.ay = a[1];
     s.mpt = Feed.metersPerTile(lat);
     s.tilesVersion = version;
+    if (r == null) {
+      s.area = FreeView.area(spd, kView);
+      s.bh = h;
+      s.minor = FreeView.minor(FreeView.range(spd), minor);
+    }
     List<byte[]> levels = new ArrayList<byte[]>();
     List<float[]> route = new ArrayList<float[]>(), stubs = new ArrayList<float[]>(), roads = new ArrayList<float[]>();
     List<Integer> stubsCls = new ArrayList<Integer>(), roadsCls = new ArrayList<Integer>();
@@ -882,7 +906,9 @@ final class MapView extends View {
         if (pts == null || starts == null) continue;
         for (int l = 0; l + 1 < starts.length; l++) {
           // with a route, every road around the car shows as in free drive, and farther out the roads along the route
-          if (r == null) around(s, tile, pts, starts[l], starts[l + 1], roads);
+          if (r == null) {
+            if (c != 4 || s.minor) free(s, tile, pts, starts[l], starts[l + 1], roads);
+          }
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
           String name = names != null && l < names.length ? names[l] : null;
           int sc = bridge != null && l < bridge.length && bridge[l] ? c + BRIDGE : c;
@@ -1129,6 +1155,22 @@ final class MapView extends View {
     if (b[2] < -ROADS_R || b[0] > ROADS_R || b[3] < -ROADS_R || b[1] > ROADS_R) return false;
     out.add(run.take());
     return true;
+  }
+
+  // A road for the free-drive scene: kept when it reaches into the rectangle ahead (FreeView) or within ROADS_R of
+  // the anchor, its points thinned to FreeView.SIMPLIFY m
+  private static void free(Scene s, Feed.Tile tile, float[] pts, int from, int to, List<float[]> out) {
+    Run run = new Run();
+    for (int i = from; i < to; i++) {
+      double e = ((tile.x + pts[2 * i] / Feed.EXTENT) - s.ax) * s.mpt;
+      double n = -((tile.y + pts[2 * i + 1] / Feed.EXTENT) - s.ay) * s.mpt;
+      run.add(e, n);
+    }
+    if (run.size < 4) return;
+    float[] b = boxes(new float[][] {run.peek()})[0];
+    boolean near = !(b[2] < -ROADS_R || b[0] > ROADS_R || b[3] < -ROADS_R || b[1] > ROADS_R);
+    if (!near && !FreeView.touches(b, s.area, Math.cos(s.bh), Math.sin(s.bh))) return;
+    out.add(FreeView.simplify(run.p, run.size / 2, FreeView.SIMPLIFY));
   }
 
   private static float[][] boxes(float[][] runs) {
