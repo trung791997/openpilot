@@ -204,12 +204,13 @@ final class MapView extends View {
     float[] at = new float[0];  // metres along the runs, end to end, at each piece's first point
   }
 
-  // The roads, the route, the grid and the carpet drawn on the GPU under this view (GlRoads, Peter 2026-10-30:
-  // stroking them in software was most of a frame on the Tegra). Meter adds it when GPU is set; the desktop harness
-  // has no GL and leaves it off. Until it has drawn a frame, and for good if it fails, the view draws them itself.
+  // The roads, the route, the grid, the carpet and the fades over them drawn on the GPU under this view (GlRoads,
+  // Peter 2026-10-30: stroking them in software was most of a frame on the Tegra). It runs its own clock, taking each
+  // frame's camera from frame(). Meter adds it when GPU is set; the desktop harness has no GL and leaves it off. Until
+  // it has drawn a frame, and for good if it fails, the view draws them itself.
   interface Roads {
     boolean ready();
-    void frame(Scene s, float ce, float cn, float ch, float sh, float ik, boolean free, int color, float cut, float cutE, float cutN);
+    void poke();  // something changed while the car stands: draw now rather than at the idle rate
     long takeMs();  // average ms per GL frame since the last call, -1 with none
     void setShown(boolean on);
   }
@@ -354,8 +355,12 @@ final class MapView extends View {
         setLive(shown && age < (live ? GAP_HOLD_MS : STALE_MS));
         if (live) {
           rebuildIfNeeded(now);
-          if (changed(now)) invalidate();
-          else skipped++;
+          if (changed(now)) {
+            invalidate();
+            if (gpu != null) gpu.poke();
+          } else {
+            skipped++;
+          }
           if (++checks % 900 == 150) logDue = true;  // with the next frame's timing
         }
       } catch (Throwable t) {
@@ -471,7 +476,7 @@ final class MapView extends View {
   }
 
   // Where the car is now: fix p carried forward at its speed, at most half a second; e, n into en, and the
-  // heading returned. hold (onDraw only): at a standstill the car keeps the heading it last moved with, stays put
+  // heading returned. hold (frame() only): at a standstill the car keeps the heading it last moved with, stays put
   // while the fix wanders within HOLD_DRIFT, and near the route points along it. The tick passes false: no change.
   private double pose(Scene s, Feed.Pose p, long now, boolean hold, float[] en) {
     double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg);
@@ -515,6 +520,10 @@ final class MapView extends View {
     boolean free, moving, settled;
   }
 
+  Scene scene() {
+    return scene;
+  }
+
   synchronized Frame frame(Scene s, long now) {
     Frame f = new Frame();
     Feed.Pose p = pose();
@@ -538,7 +547,7 @@ final class MapView extends View {
       boolean stopping = (stopAt >= 0 && Math.abs(stopAt - jn) < Math.max(25, 0.4 * jn)) || (spd < CRAWL && jn < STOP_NEAR);
       if (stopping && jn + TURN_LEN < rng) rng = Math.max(jn + TURN_LEN, CLOSE);
     }
-    double dt = lastFrame == 0 ? 10 : (now - lastFrame) / 1000.0;
+    double dt = lastFrame == 0 ? 10 : Math.max(0, now - lastFrame) / 1000.0;  // two threads ask: now may run back
     lastFrame = now;
     k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
     f.k = k;
@@ -612,6 +621,8 @@ final class MapView extends View {
       public void run() {
         try {
           scene = build(lat, lon, route, version);
+          Roads g = gpu;
+          if (g != null) g.poke();
         } catch (Throwable e) {
           XposedBridge.log("aaroad: map scene failed: " + e);
         } finally {
@@ -1154,8 +1165,6 @@ final class MapView extends View {
     worldV[8] = 1;
     world.setValues(worldV);
     boolean free = f.free;
-    // the GPU layer is handed every frame, even while the view still draws the roads, so it is warm when it takes over
-    if (gpu != null) gpu.frame(s, ce, cn, ch, sh, ik, free, f.color, f.cut, f.cutE, f.cutN);
     if (!onGpu) {
       routePath.rewind();
       routeWorld.rewind();
@@ -1211,7 +1220,7 @@ final class MapView extends View {
     }
     canvas.restore();
     long t2 = SystemClock.uptimeMillis();
-    overlay(canvas, now, free);
+    overlay(canvas, now, free, onGpu);
 
     long ms = SystemClock.uptimeMillis() - now;
     drawMs = (drawMs * 7 + ms) / 8;
@@ -1381,11 +1390,11 @@ final class MapView extends View {
   // a tag over the map, the speed limit at the right, all on the dash's black. No close button: nothing on the
   // cluster takes a touch.
 
-  private static final float COL = 300;  // the dark band behind the cards, solid as far as they reach: roads showed between them
+  static final float COL = 300;  // the dark band behind the cards, solid as far as they reach: roads showed between them
   // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
   // the turn card starts 28 down: at 12 its top left corner almost met the tach ring, and at 18 it still looked
   // cut off by it (Peter's photos 2026-10-30)
-  private static final float CARD_L = 36, CARD_R = 270, TURN_T = 28, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
+  static final float CARD_L = 36, CARD_R = 270, TURN_T = 28, TURN_B = 96, TRIP_R = 250, TRIP_T = 104, TRIP_B = 152;
   private static final float STRIP_W = 10, TEXT_X = 116;
   // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
   private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
@@ -1435,9 +1444,11 @@ final class MapView extends View {
     return out;
   }
 
-  private void overlay(Canvas canvas, long now, boolean free) {
-    if (!free) canvas.drawRect(0, 0, COL, 215, mask);
-    canvas.drawRect(0, 0, 584, 78, fog);
+  private void overlay(Canvas canvas, long now, boolean free, boolean onGpu) {
+    if (!onGpu) {  // else the GPU layer fades the roads itself
+      if (!free) canvas.drawRect(0, 0, COL, 215, mask);
+      canvas.drawRect(0, 0, 584, 78, fog);
+    }
     for (int i = 0; i < labelCount; i++) {
       if (!labelOn[i]) continue;
       canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, halo);

@@ -17,8 +17,12 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
 // The map's grid, roads, route and carpet drawn with GLES2 (Peter 2026-10-30: the software canvas spent most of a
-// frame stroking them on the Tegra). MapView keeps the cards, labels, car, tag and sign, and leaves the road area
-// clear when this layer has drawn.
+// frame stroking them on the Tegra), and the fades over them: the dark band behind the cards and the fog at the top.
+// MapView keeps the cards, labels, car, tag and sign, and leaves the road area clear when this layer has drawn.
+//
+// When it draws: on its own clock, every FRAME_MS (30 a second, Peter 2026-10-30; the view drew at most 15), taking
+// the camera from MapView.frame() each time, so the map moves without the view redrawing. With the car standing and
+// the zoom settled it draws every IDLE_MS, or at once when MapView pokes it (a new scene, anything else redrawn).
 //
 // Where it goes: a plain SurfaceView, under MapView in the meter's root and the same size. Its surface sits behind the
 // cluster window; the view punches a clear hole in the window for it, so the map's masks and fog still blend over the
@@ -40,6 +44,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = 0xff6a6a6a, ROAD = 0xff383838, GRID = 0xff2a2a2a;
   private static final int ROUTE = 5, GROUPS = 6;  // groups 0-4 the road classes, 5 the route
+  private static final long FRAME_MS = 33, IDLE_MS = 500;
   private static boolean loggedOn;
 
   private static final String LINE_VS =
@@ -118,17 +123,34 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       + "  gl_FragColor = uColor;\n"
       + "}\n";
 
+  // a fade in screen pixels: the rectangle uRect, its alpha from uA.x to uA.y at uA.w and on to uA.z, across (uAxis 0)
+  // or down (1), as the view's LinearGradient with three stops; the colour the same at all three
+  private static final String FADE_VS =
+      "uniform vec4 uRect; uniform vec2 uSize; uniform float uAxis;\n"
+      + "attribute vec2 aP;\n"
+      + "varying float vT;\n"
+      + "void main() {\n"
+      + "  vec2 p = mix(uRect.xy, uRect.zw, aP);\n"
+      + "  vT = uAxis < 0.5 ? aP.x : aP.y;\n"
+      + "  gl_Position = vec4(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0, 0.0, 1.0);\n"
+      + "}\n";
+
+  private static final String FADE_FS =
+      "precision mediump float;\n"
+      + "uniform vec4 uA; uniform vec3 uRgb;\n"
+      + "varying float vT;\n"
+      + "void main() {\n"
+      + "  float a = vT < uA.w ? mix(uA.x, uA.y, vT / uA.w) : mix(uA.y, uA.z, (vT - uA.w) / (1.0 - uA.w));\n"
+      + "  gl_FragColor = vec4(uRgb, a);\n"
+      + "}\n";
+
   private final MapView map;
   private final float[] v = MapView.cameraValues();
   private final Object lock = new Object();
 
-  // handed over under lock: the surface from the UI thread, the frame from MapView.onDraw
+  // handed over under lock: the surface and pokes from the UI thread
   private SurfaceHolder holder, glHolder;
-  private boolean pending, threadStarted;
-  private MapView.Scene fScene;
-  private float fCe, fCn, fCh, fSh, fIk, fCut, fCutE, fCutN;
-  private boolean fFree;
-  private int fColor;
+  private boolean poked, threadStarted;
   private long glSum, glCount;
 
   private volatile boolean ready, failed;
@@ -138,9 +160,10 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private EGLConfig cfg;
   private EGLContext ctx = EGL14.EGL_NO_CONTEXT;
   private EGLSurface surf = EGL14.EGL_NO_SURFACE;
-  private int line, grid, vbo, ibo, quad;
+  private int line, grid, fade, vbo, ibo, quad, unit;
   private int lP, lW, lV, lCam, lR, lCut, lColor, lCarpet, lSeg, lC;
   private int gP, gV, gRot, gCam, gColor, gStep, gA;
+  private int fRect, fSize, fAxis, fA, fRgb, fP;
   private MapView.Scene glScene;
   private float[][] cBox = new float[0][];
   private int[] cStart = new int[0], cCount = new int[0], gFrom = new int[GROUPS + 1];
@@ -166,22 +189,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   }
 
   @Override
-  public void frame(MapView.Scene s, float ce, float cn, float ch, float sh, float ik, boolean free, int color,
-                    float cut, float cutE, float cutN) {
-    if (failed) return;
+  public void poke() {
     synchronized (lock) {
-      fScene = s;
-      fCe = ce;
-      fCn = cn;
-      fCh = ch;
-      fSh = sh;
-      fIk = ik;
-      fFree = free;
-      fColor = color;
-      fCut = cut;
-      fCutE = cutE;
-      fCutN = cutN;
-      pending = true;
+      poked = true;
       lock.notifyAll();
     }
   }
@@ -215,12 +225,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       }
       lock.notifyAll();
     }
-    map.invalidate();  // a frame for the new surface
   }
 
   @Override
   public void surfaceChanged(SurfaceHolder h, int format, int w, int hgt) {
-    map.invalidate();
+    poke();
   }
 
   // The surface may not outlive this call: wait for the GL thread to let go of it, a second at most.
@@ -247,29 +256,23 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         fail(why);
         return;
       }
+      long next = 0;
+      boolean idle = false;
       while (!failed) {
         SurfaceHolder h;
-        boolean draw;
-        MapView.Scene s;
-        float ce, cn, ch, sh, ik, cut, cutE, cutN;
-        boolean free;
-        int color;
         synchronized (lock) {
-          while (holder == glHolder && !(pending && holder != null)) lock.wait();
+          // until the next frame is due, the surface changes, or, while idle, a poke
+          while (holder == glHolder) {
+            if (glHolder == null) {
+              lock.wait();
+              continue;
+            }
+            long left = next - SystemClock.uptimeMillis();
+            if (left <= 0 || (idle && poked)) break;
+            lock.wait(left);
+          }
           h = holder;
-          draw = pending && h != null && h == glHolder;
-          if (draw) pending = false;
-          s = fScene;
-          ce = fCe;
-          cn = fCn;
-          ch = fCh;
-          sh = fSh;
-          ik = fIk;
-          free = fFree;
-          color = fColor;
-          cut = fCut;
-          cutE = fCutE;
-          cutN = fCutN;
+          poked = false;
         }
         if (h != glHolder) {
           why = setSurface(h);
@@ -277,15 +280,25 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
             fail(why);
             return;
           }
+          next = 0;
           continue;
         }
-        if (draw && s != null) {
-          why = drawFrame(s, ce, cn, ch, sh, ik, free, color, cut, cutE, cutN);
-          if (why != null) {
-            fail(why);
-            return;
-          }
+        long start = SystemClock.uptimeMillis();
+        MapView.Scene s = map.scene();
+        if (s == null) {
+          idle = true;
+          next = start + IDLE_MS;
+          continue;
         }
+        MapView.Frame f = map.frame(s, start);
+        why = drawFrame(s, f);
+        if (why != null) {
+          fail(why);
+          return;
+        }
+        // a frame that ran late is followed at once, not skipped
+        idle = !f.moving && f.settled;
+        next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
       }
     } catch (Throwable t) {
       fail(String.valueOf(t));
@@ -342,7 +355,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private String setupGl() {
     line = GlProbe.program(LINE_VS, LINE_FS);
     grid = GlProbe.program(GRID_VS, GRID_FS);
-    if (line == 0 || grid == 0) return "shader compile failed";
+    fade = GlProbe.program(FADE_VS, FADE_FS);
+    if (line == 0 || grid == 0 || fade == 0) return "shader compile failed";
     lP = GLES20.glGetUniformLocation(line, "uP");
     lW = GLES20.glGetUniformLocation(line, "uW");
     lV = GLES20.glGetUniformLocation(line, "uV");
@@ -360,12 +374,19 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     gColor = GLES20.glGetUniformLocation(grid, "uColor");
     gStep = GLES20.glGetUniformLocation(grid, "uStep");
     gA = GLES20.glGetAttribLocation(grid, "aP");
-    if (lSeg < 0 || lC < 0 || gA < 0) return "shader attributes missing";
-    int[] b = new int[3];
-    GLES20.glGenBuffers(3, b, 0);
+    fRect = GLES20.glGetUniformLocation(fade, "uRect");
+    fSize = GLES20.glGetUniformLocation(fade, "uSize");
+    fAxis = GLES20.glGetUniformLocation(fade, "uAxis");
+    fA = GLES20.glGetUniformLocation(fade, "uA");
+    fRgb = GLES20.glGetUniformLocation(fade, "uRgb");
+    fP = GLES20.glGetAttribLocation(fade, "aP");
+    if (lSeg < 0 || lC < 0 || gA < 0 || fP < 0) return "shader attributes missing";
+    int[] b = new int[4];
+    GLES20.glGenBuffers(4, b, 0);
     ibo = b[0];
     quad = b[1];
     vbo = b[2];
+    unit = b[3];
     // every quad's two triangles, the same for all: corners 0 1 2 and 2 1 3
     ByteBuffer ib = ByteBuffer.allocateDirect(MAX_QUADS * 12).order(ByteOrder.nativeOrder());
     for (int q = 0; q < MAX_QUADS; q++) {
@@ -383,6 +404,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     fb.put(box).position(0);
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quad);
     GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, box.length * 4, fb, GLES20.GL_STATIC_DRAW);
+    // the fades' quad: the unit square, stretched over each rectangle
+    fb = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer();
+    fb.put(new float[] {0, 0, 1, 0, 0, 1, 1, 1}).position(0);
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, unit);
+    GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 32, fb, GLES20.GL_STATIC_DRAW);
     int err = GLES20.glGetError();
     return err == GLES20.GL_NO_ERROR ? null : "gl error 0x" + Integer.toHexString(err) + " in setup";
   }
@@ -489,9 +515,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
   }
 
-  private String drawFrame(MapView.Scene s, float ce, float cn, float ch, float sh, float ik, boolean free, int color,
-                           float cut, float cutE, float cutN) {
+  private String drawFrame(MapView.Scene s, MapView.Frame f) {
     long t0 = System.nanoTime();
+    float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik, cut = f.cut, cutE = f.cutE, cutN = f.cutN;
+    boolean free = f.free;
+    int color = f.color;
     if (s != glScene) {
       String why = upload(s);
       if (why != null) return why;
@@ -555,6 +583,17 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glDisableVertexAttribArray(lSeg);
     GLES20.glDisableVertexAttribArray(lC);
 
+    // the fades over the roads, as the view's mask and fog: the band behind the cards with a route, the fog at the top
+    GLES20.glUseProgram(fade);
+    GLES20.glUniform2f(fSize, w, h);
+    GLES20.glUniform3f(fRgb, (BG >> 16 & 0xff) / 255f, (BG >> 8 & 0xff) / 255f, (BG & 0xff) / 255f);
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, unit);
+    GLES20.glEnableVertexAttribArray(fP);
+    GLES20.glVertexAttribPointer(fP, 2, GLES20.GL_FLOAT, false, 8, 0);
+    if (!free) fade(0, 0, MapView.COL, 215, 0, 1, 1, 0, (MapView.CARD_R + 4) / MapView.COL);
+    fade(0, 0, 584, 78, 1, 1, 0xe6 / 255f, 0, 0.6f);
+    GLES20.glDisableVertexAttribArray(fP);
+
     if (checkNext) {
       // the first frame on a surface or with a scene is checked; later ones are trusted
       int err = GLES20.glGetError();
@@ -583,6 +622,13 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       invalidateMap();  // the view stops drawing the roads from its next frame
     }
     return null;
+  }
+
+  private void fade(float x0, float y0, float x1, float y1, int axis, float a0, float a1, float a2, float stop) {
+    GLES20.glUniform4f(fRect, x0, y0, x1, y1);
+    GLES20.glUniform1f(fAxis, axis);
+    GLES20.glUniform4f(fA, a0, a1, a2, stop);
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
   }
 
   // MapView's camera as a projection: car frame (x, z, 0, 1) to clip space for a w x h surface, the screen shifted
