@@ -45,7 +45,11 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
    - **Next:** (installed) drive about 10 min, and read the `aaroad: gl parts avg/max ms:` lines to see which stage is slow.
    - **Suspects:** card redraws, `new int[2]` per frame in `GlRoads.drawFrame`, and `new Frame()` per frame in `MapView.frame()`, which could cause GC pauses.
 2. **Slim cards** (`a9da6e81b`): static only, so Peter has to see them on the dash. Song names cut off sooner now, so maybe scroll them or widen that card a little.
-3. **Double X on the StarPilot Auto car screen** (`2299affae`): fixed, but the comma has not been updated yet. Update it when parked (standing rule).
+3. **Double X on the StarPilot Auto car screen** (`2299affae`): on the comma since `ec0b1f6ce` (2026-10-31); Peter has not seen it yet.
+4. **No map after the comma reboot (2026-10-31 evening).** The head unit gets no poses because the comma is off the hotspot.
+   - At the cold boot, the Android Auto daemon made its second radio `aa0` (10:05:11), gave up 2 s later (`car_interface.py` `READY_TIMEOUT_S = 5.0`, `DedicatedUnavailable`), and fell back to the old lease on `wlan0` (`starpilot-android-auto`). `network.py` notes aa0 once took 16 s on a cold start.
+   - An ignition cycle did not bring aa0 back; the daemon stays in fallback until it restarts.
+   - **Fix options:** restart the Android Auto service while warm (quick), or raise the aa0 wait for cold boots (code; check with the StarPilot Auto owner first).
 
 ## Log
 
