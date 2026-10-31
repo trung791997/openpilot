@@ -36,9 +36,11 @@ import java.nio.FloatBuffer;
 // roads. The meter window is drawn in software and has no TextureView; the only placement seen working on this unit
 // so far is a SurfaceView over the window (GlProbe), and that would cover the cards.
 //
-// How it draws: every piece of every road is uploaded once per scene, on this layer's own thread, as one quad per
-// segment carrying both end points. The vertex shader turns them with the car's pose and the zoom and widens the quad
-// by the half width; the fragment shader keeps what lies within the half width of the segment, so joins and caps come
+// How it draws: every piece of every road is uploaded once per scene as one quad per segment carrying both end
+// points. The quads are packed off the GL thread (aaroad-pack) and sent a slice a frame into a second buffer while the
+// last scene goes on drawing; the new scene is drawn from the frame after its last slice (Peter's drive 2026-10-31:
+// the upload in one frame stalled it 330-360 ms). The vertex shader turns them with the car's pose and the zoom and
+// widens the quad by the half width; the fragment shader keeps what lies within the half width of the segment, so joins and caps come
 // out round as Skia strokes them, smoothed over one screen pixel. A frame changes only a few uniforms: the camera is
 // MapView's, as a projection whose near plane drops what lies behind the horizon. The carpet is the route's own
 // quads, with each point's distance along the route: what lies before the car's place on it is dropped, with a round
@@ -47,7 +49,8 @@ import java.nio.FloatBuffer;
 // If EGL or GL fails anywhere, the layer logs why, hides, and the view draws everything itself as before.
 final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapView.Roads, Runnable {
   private static final int MAX_QUADS = 16384;  // 4 corners each, under the 65536 a short index reaches
-  private static final int FLOATS = 7, STRIDE = FLOATS * 4;  // per corner: a.e, a.n, b.e, b.n, across, end, along at a
+  private static final int STRIDE = GlCull.STRIDE;  // per corner: a.e, a.n, b.e, b.n, across, end, along at a
+  private static final int SLICE = 256 * 1024;  // bytes of a new scene sent a frame, while the last one draws
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = 0xff6a6a6a, ROAD = 0xff383838, GRID = 0xff2a2a2a;
   private static final int ROUTE = 5, GROUPS = 6;  // groups 0-4 the road classes, 5 the route
@@ -199,11 +202,19 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private TextPaint[] paints;
   private final String[] atlasText = new String[ATLAS_H / ROW];
   private final float[] lq = new float[2];
-  private MapView.Scene glScene;
-  private float[][] cBox = new float[0][];
-  private int[] cStart = new int[0], cCount = new int[0], gFrom = new int[GROUPS + 1];
-  private int[] rStart = new int[0], rLen = new int[0];
-  private final int[] rFrom = new int[GROUPS + 1];
+  private MapView.Scene glScene;  // the scene vbo holds, and the one drawn
+  private GlCull cur;              // its pieces and their cull
+  private GlCull pend;             // packed, being sent into back from byte pendOff
+  private int back, pendOff;
+  private MapView.Scene asked;     // the last scene the packer was asked for
+  private final MapView.Frame glFrame = new MapView.Frame();
+  private final int[] surfSize = new int[2];
+  // handed between the GL thread and the packer under packLock: the scene to pack, the result, and bytes, which is
+  // the packer's from an ask until the GL thread has sent the last slice
+  private final Object packLock = new Object();
+  private MapView.Scene packAsk;
+  private GlCull packDone;
+  private boolean packBusy, packStarted;
   private ByteBuffer bytes;
   private boolean checkNext;
   private final float[] proj = new float[16];
@@ -350,18 +361,31 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           continue;
         }
         long start = SystemClock.uptimeMillis();
-        MapView.Scene s = map.scene();
-        if (s == null) {
+        MapView.Scene newest = map.scene();
+        if (newest == null) {
           idle = true;
           next = start + IDLE_MS;
           continue;
         }
-        MapView.Frame f;
         part(P_CAMERA);
+        why = stepUpload(newest);
+        if (why != null) {
+          fail(why);
+          return;
+        }
+        part(P_UPLOAD);
+        MapView.Scene s = glScene;  // the scene on the GPU, until the newest is all there
+        if (s == null) {
+          // packing the first scene: the view draws the roads meanwhile; the packer pokes when done
+          idle = true;
+          next = start + IDLE_MS;
+          continue;
+        }
+        MapView.Frame f = glFrame;
         // frame() is synchronized on the view, which onDraw also calls; taken here first so the wait is seen apart
         synchronized (map) {
           part(P_LOCK);
-          f = map.frame(s, start);
+          map.frame(s, start, f);
         }
         part(P_CAMERA);
         why = drawFrame(s, f);
@@ -384,7 +408,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         if (counted) addParts();
         last = start;
         // a frame that ran late is followed at once, not skipped
-        idle = !f.moving && f.settled;
+        idle = !f.moving && f.settled && pend == null;
         next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
         logParts(start);  // after next is set, so its own time comes out of the coming sleep
       }
@@ -484,12 +508,13 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-    int[] b = new int[4];
-    GLES20.glGenBuffers(4, b, 0);
+    int[] b = new int[5];
+    GLES20.glGenBuffers(5, b, 0);
     ibo = b[0];
     quad = b[1];
     vbo = b[2];
     unit = b[3];
+    back = b[4];
     // every quad's two triangles, the same for all: corners 0 1 2 and 2 1 3
     ByteBuffer ib = ByteBuffer.allocateDirect(MAX_QUADS * 12).order(ByteOrder.nativeOrder());
     for (int q = 0; q < MAX_QUADS; q++) {
@@ -516,93 +541,113 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     return err == GLES20.GL_NO_ERROR ? null : "gl error 0x" + Integer.toHexString(err) + " in setup";
   }
 
-  // The scene's pieces into one buffer, grouped by class and then the route, in the order the view draws them. With
-  // a route the view draws the roads along it (stubs), without one the roads around the car.
-  private String upload(MapView.Scene s) {
-    MapView.Chunks roads = s.route.length > 0 ? s.stubsChunks : s.roadsChunks;
-    int n = roads.pts.length + s.routeChunks.pts.length;
-    cBox = new float[n][];
-    cStart = new int[n];
-    cCount = new int[n];
-    int k = 0, segs = 0;
-    for (int g = 0; g < GROUPS; g++) {
-      gFrom[g] = k;
-      MapView.Chunks src = g == ROUTE ? s.routeChunks : roads;
-      for (int i = 0; i < src.pts.length; i++) {
-        if (g != ROUTE && src.cls[i] != g) continue;
-        cBox[k] = src.box[i];
-        cStart[k] = segs;
-        cCount[k] = src.pts[i].length / 2 - 1;
-        segs += cCount[k++];
-      }
-    }
-    gFrom[GROUPS] = k;
-    rStart = new int[k];
-    rLen = new int[k];
-    int size = segs * 4 * STRIDE;
-    if (bytes == null || bytes.capacity() < size) bytes = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
-    FloatBuffer fb = bytes.asFloatBuffer();
-    float[] tmp = new float[4 * FLOATS];
-    for (int g = 0; g < GROUPS; g++) {
-      MapView.Chunks src = g == ROUTE ? s.routeChunks : roads;
-      for (int i = 0; i < src.pts.length; i++) {
-        if (g != ROUTE && src.cls[i] != g) continue;
-        float[] q = src.pts[i];
-        double along = src.at[i];
-        for (int j = 0; j + 3 < q.length; j += 2) {
-          for (int c = 0; c < 4; c++) {
-            int o = c * FLOATS;
-            tmp[o] = q[j];
-            tmp[o + 1] = q[j + 1];
-            tmp[o + 2] = q[j + 2];
-            tmp[o + 3] = q[j + 3];
-            tmp[o + 4] = (c & 1) == 0 ? -1 : 1;
-            tmp[o + 5] = c >> 1;
-            tmp[o + 6] = (float) along;
+  // A new scene's quads: asks the packer for them, then sends them into back a slice a frame (all at once while there
+  // is nothing on screen to keep moving), then draws from back. The scene drawn until then stays glScene, so the frame
+  // is made for it. s is the view's newest scene.
+  private String stepUpload(MapView.Scene s) {
+    if (pend == null) {
+      synchronized (packLock) {
+        if (packDone != null) {
+          pend = packDone;
+          packDone = null;
+          pendOff = 0;
+        } else if (s != null && s != glScene && s != asked && !packBusy) {
+          asked = s;
+          packAsk = s;
+          packBusy = true;
+          if (!packStarted) {
+            packStarted = true;
+            Thread t = new Thread(new Runnable() {
+              @Override
+              public void run() {
+                packLoop();
+              }
+            }, "aaroad-pack");
+            t.setDaemon(true);
+            t.start();
           }
-          fb.put(tmp);
-          along += Math.hypot(q[j + 2] - q[j], q[j + 3] - q[j + 1]);
+          packLock.notifyAll();
         }
       }
+      if (pend == null) return null;
+      GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
+      GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, Math.max(pend.bytes(), 4), null, GLES20.GL_STATIC_DRAW);
     }
+    int size = pend.bytes();
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
+    do {
+      int n = Math.min(SLICE, size - pendOff);
+      if (n > 0) {
+        bytes.position(pendOff);
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, pendOff, n, bytes);
+      }
+      pendOff += n;
+    } while (pendOff < size && cur == null);
+    if (pendOff < size) return null;
     bytes.position(0);
-    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
-    GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, Math.max(size, 4), bytes, GLES20.GL_STATIC_DRAW);
     int err = GLES20.glGetError();
-    if (err != GLES20.GL_NO_ERROR) return "gl error 0x" + Integer.toHexString(err) + " uploading " + segs + " segments";
-    glScene = s;
+    if (err != GLES20.GL_NO_ERROR) return "gl error 0x" + Integer.toHexString(err) + " uploading " + pend.segs + " segments";
+    int was = vbo;
+    vbo = back;
+    back = was;
+    // the old scene's storage let go now, not at the next upload; the driver keeps it while a frame still reads it
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
+    GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 4, null, GLES20.GL_STATIC_DRAW);
+    cur = pend;
+    glScene = (MapView.Scene) pend.scene;
+    pend = null;
+    synchronized (packLock) {
+      packBusy = false;  // bytes is the packer's again
+    }
+    sceneUploads++;
+    checkNext = true;
     return null;
   }
 
-  // The pieces in view, as runs of neighbouring pieces in the buffer: the view's own test on each piece's box.
-  private void cull(float ce, float cn, float ch, float sh, float ik) {
-    int r = 0;
-    for (int g = 0; g < GROUPS; g++) {
-      rFrom[g] = r;
-      for (int i = gFrom[g]; i < gFrom[g + 1]; i++) {
-        float[] b = cBox[i];
-        float x0 = Float.MAX_VALUE, x1 = -Float.MAX_VALUE, z0 = Float.MAX_VALUE, z1 = -Float.MAX_VALUE;
-        for (int c = 0; c < 4; c++) {
-          float de = b[c == 0 || c == 3 ? 0 : 2] - ce, dn = b[c < 2 ? 1 : 3] - cn;
-          float x = (de * ch - dn * sh) * ik, z = (de * sh + dn * ch) * ik;
-          x0 = Math.min(x0, x);
-          x1 = Math.max(x1, x);
-          z0 = Math.min(z0, z);
-          z1 = Math.max(z1, z);
+  // The packer: each asked scene's pieces, in the order the view draws them, into bytes. With a route the view draws
+  // the roads along it (stubs), without one the roads around the car.
+  private void packLoop() {
+    float[] tmp = new float[4096 / (4 * GlCull.FLOATS) * 4 * GlCull.FLOATS];
+    while (!failed) {
+      MapView.Scene s;
+      ByteBuffer b;
+      synchronized (packLock) {
+        while (packAsk == null) {
+          try {
+            packLock.wait();
+          } catch (InterruptedException e) {
+            return;
+          }
         }
-        if (x1 < MapView.BOX_X0 || x0 > MapView.BOX_X1 || z1 < MapView.BOX_Z0 || z0 > MapView.BOX_Z1) continue;
-        if (r > rFrom[g] && rStart[r - 1] + rLen[r - 1] == cStart[i]) {
-          rLen[r - 1] += cCount[i];
-        } else {
-          rStart[r] = cStart[i];
-          rLen[r++] = cCount[i];
-        }
+        s = packAsk;
+        packAsk = null;
+        b = bytes;
       }
+      GlCull g = null;
+      try {
+        MapView.Chunks roads = s.route.length > 0 ? s.stubsChunks : s.roadsChunks;
+        MapView.Chunks route = s.routeChunks;
+        g = new GlCull(s, GROUPS, roads.pts, roads.box, roads.cls, roads.at, route.pts, route.box, route.at);
+        int size = g.bytes();
+        if (b == null || b.capacity() < size) b = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
+        b.position(0);
+        g.pack(b, tmp);
+        b.position(0);
+      } catch (Throwable t) {
+        XposedBridge.log("aaroad: scene pack failed: " + t);
+        g = null;
+      }
+      synchronized (packLock) {
+        bytes = b;
+        if (g != null) packDone = g;
+        else packBusy = false;  // the GL thread asks again only for a newer scene
+      }
+      if (g != null) poke();
     }
-    rFrom[GROUPS] = r;
   }
 
   private void lines(int g, float width, int color, float alpha) {
+    int[] rFrom = cur.rFrom, rStart = cur.rStart, rLen = cur.rLen;
     if (rFrom[g] == rFrom[g + 1]) return;
     GLES20.glUniform1f(lR, width / 2);
     GLES20.glUniform4f(lColor, (color >> 16 & 0xff) / 255f, (color >> 8 & 0xff) / 255f, (color & 0xff) / 255f, alpha);
@@ -623,13 +668,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik, cut = f.cut, cutE = f.cutE, cutN = f.cutN;
     boolean free = f.free;
     int color = f.color;
-    if (s != glScene) {
-      String why = upload(s);
-      if (why != null) return why;
-      sceneUploads++;
-      part(P_UPLOAD);
-    }
-    int[] q = new int[2];
+    int[] q = surfSize;
     EGL14.eglQuerySurface(dpy, surf, EGL14.EGL_WIDTH, q, 0);
     EGL14.eglQuerySurface(dpy, surf, EGL14.EGL_HEIGHT, q, 1);
     int w = q[0], h = q[1];
@@ -663,7 +702,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     part(P_GRID);
 
     // the roads: every kerb, then every surface, then the carpet, as the view strokes them
-    cull(ce, cn, ch, sh, ik);
+    cur.cull(ce, cn, ch, sh, ik, MapView.BOX_X0, MapView.BOX_X1, MapView.BOX_Z0, MapView.BOX_Z1);
     part(P_CULL);
     GLES20.glUseProgram(line);
     GLES20.glUniformMatrix4fv(lP, 1, false, proj, 0);

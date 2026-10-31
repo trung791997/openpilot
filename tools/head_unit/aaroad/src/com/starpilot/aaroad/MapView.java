@@ -160,7 +160,6 @@ final class MapView extends View {
   private int checks, skipped, drawsAtLog;
   private long logFrom;
   private String drawnRoad;
-  private volatile Frame latest;  // the last frame asked for, by either thread
   private Feed.Pose pokedPose;
   private static final double MOVE_PX = 1, TURN_DEG = 0.4, ZOOM_EPS = 0.01;
   private static final long REDRAW_MS = 1000;  // the clock, the trip countdown and the song ring tick on their own
@@ -174,7 +173,8 @@ final class MapView extends View {
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
   private boolean live;
-  private String hideWhy = "";
+  private boolean hideShown;           // why the map hides, kept as values and put in words only when logged
+  private long hideAge;
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
@@ -385,8 +385,8 @@ final class MapView extends View {
         Feed.wanted = shown;
         long now = SystemClock.uptimeMillis();
         long age = Feed.poseAt > 0 ? now - Feed.poseAt : Long.MAX_VALUE;
-        hideWhy = !shown ? "page not shown" : age == Long.MAX_VALUE ? "no position yet"
-            : "no position for " + age / 1000 + " s";
+        hideShown = shown;
+        hideAge = age;
         setLive(shown && age < (live ? GAP_HOLD_MS : STALE_MS));
         if (live) {
           rebuildIfNeeded(now);
@@ -415,7 +415,13 @@ final class MapView extends View {
   private void slowTick(long now) {
     Scene s = scene;
     if (s == null) return;
-    Frame f = latest;
+    Frame f = null;
+    synchronized (this) {
+      if (latest.s != null) {
+        latest.copyTo(tickFrame);
+        f = tickFrame;
+      }
+    }
     if (f != null && f.s == s) {  // not one from before a rebuild, placed from the old anchor
       currentRoad(s, f.ce, f.cn, f.h, now);
       String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
@@ -429,7 +435,7 @@ final class MapView extends View {
     Feed.Pose p = pose();
     if (p != pokedPose) {
       pokedPose = p;
-      double[] held = heldW, w = Feed.world(p.lat, p.lon);
+      double[] held = heldW, w = Feed.world(p.lat, p.lon, tickW);
       if (p.spd >= HOLD_SPEED || held == null || Math.hypot(w[0] - held[0], w[1] - held[1]) * s.mpt > HOLD_DRIFT) {
         gpu.poke();
       }
@@ -486,7 +492,8 @@ final class MapView extends View {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
     }
-    XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden: " + hideWhy));
+    XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden: " + (!hideShown ? "page not shown"
+        : hideAge == Long.MAX_VALUE ? "no position yet" : "no position for " + hideAge / 1000 + " s")));
   }
 
   // Whether a frame now would look different from the last one drawn (Peter 2026-10-30: most frames at a light or on
@@ -501,10 +508,10 @@ final class MapView extends View {
     boolean moving = spd >= HOLD_SPEED;
     if (moving != drawnMoving || Math.abs(zoomTarget(s, spd, now) / drawnBase - 1) > ZOOM_EPS) return true;
     if (!moving) {
-      double[] held = heldW, w = Feed.world(p.lat, p.lon);
+      double[] held = heldW, w = Feed.world(p.lat, p.lon, tickW);
       return held == null || Math.hypot(w[0] - held[0], w[1] - held[1]) * s.mpt > HOLD_DRIFT;
     }
-    double h = pose(s, p, now, false, tickEN);
+    double h = pose(s, p, now, false, tickEN, tickW);
     double px = Math.hypot(tickEN[0] - drawnE, tickEN[1] - drawnN) * PX_DM / drawnK;
     return px > MOVE_PX || Math.abs(Math.IEEEremainder(h - drawnH, 2 * Math.PI)) > Math.toRadians(TURN_DEG);
   }
@@ -552,15 +559,17 @@ final class MapView extends View {
   // Where the car is now: fix p carried forward at its speed, at most half a second; e, n into en, and the
   // heading returned. hold (frame() only): at a standstill the car keeps the heading it last moved with, stays put
   // while the fix wanders within HOLD_DRIFT, and near the route points along it. The tick passes false: no change.
-  private double pose(Scene s, Feed.Pose p, long now, boolean hold, float[] en) {
+  // w: the caller's own scratch for the world position, so a frame allocates nothing (see Frame).
+  private double pose(Scene s, Feed.Pose p, long now, boolean hold, float[] en, double[] w) {
     double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg);
     double ahead = Math.min(0.5, Math.max(0, (now - p.at) / 1000.0)) * spd;
-    double[] w = Feed.world(p.lat, p.lon);
+    Feed.world(p.lat, p.lon, w);
     if (hold && spd >= HOLD_SPEED) {
       heldH = h;
       heldW = null;
     } else if (hold) {
-      if (heldW == null || Math.hypot(w[0] - heldW[0], w[1] - heldW[1]) * s.mpt > HOLD_DRIFT) heldW = w;
+      // a new array when the hold moves, rarely; w is scratch, and the UI thread reads heldW without the lock
+      if (heldW == null || Math.hypot(w[0] - heldW[0], w[1] - heldW[1]) * s.mpt > HOLD_DRIFT) heldW = new double[] {w[0], w[1]};
       w = heldW;
       if (Double.isNaN(heldH)) heldH = h;  // parked since the map came up: the first heading, held
       h = heldH;
@@ -587,25 +596,62 @@ final class MapView extends View {
   // One frame's camera: where the car is drawn, which way it points, the zoom and where the carpet starts. The view's
   // onDraw and the GPU layer's own clock both take it from here, so the two agree; synchronized, as both may ask
   // while the GPU layer warms up.
+  //
+  // Each caller owns its Frame and frame() fills every field, so the 30 frames a second allocate nothing (Peter's drive
+  // 2026-10-31: camera 160-225 ms in some frames; on Dalvik a thread that allocates while a collection runs waits for
+  // it). latest is the view's own copy of the last one, made under the lock and copied out under it.
   static final class Frame {
     Scene s;  // the scene the frame was made for: ce, cn are metres from its anchor
     float ce, cn, ch, sh, ik, reach, cutE, cutN, cut = Float.NaN;
     double h, k, base;
     int cRun = -1, cSeg, color;
     boolean free, moving, settled;
+
+    void copyTo(Frame o) {
+      o.s = s;
+      o.ce = ce;
+      o.cn = cn;
+      o.ch = ch;
+      o.sh = sh;
+      o.ik = ik;
+      o.reach = reach;
+      o.cutE = cutE;
+      o.cutN = cutN;
+      o.cut = cut;
+      o.h = h;
+      o.k = k;
+      o.base = base;
+      o.cRun = cRun;
+      o.cSeg = cSeg;
+      o.color = color;
+      o.free = free;
+      o.moving = moving;
+      o.settled = settled;
+    }
   }
+
+  private final Frame latest = new Frame(), tickFrame = new Frame(), drawFrame = new Frame();
+  private final double[] frameW = new double[2], smW = new double[2], tickW = new double[2];
 
   Scene scene() {
     return scene;
   }
 
-  synchronized Frame frame(Scene s, long now) {
-    Frame f = new Frame();
+  // onDraw's frame, on the UI thread
+  Frame frame(Scene s, long now) {
+    return frame(s, now, drawFrame);
+  }
+
+  synchronized Frame frame(Scene s, long now, Frame f) {
     f.s = s;
+    f.cRun = -1;
+    f.cSeg = 0;
+    f.cut = Float.NaN;
+    f.cutE = f.cutN = 0;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     f.moving = spd >= HOLD_SPEED;
-    double h = smooth(s, p, now, f.moving, frameEN, pose(s, p, now, true, frameEN));
+    double h = smooth(s, p, now, f.moving, frameEN, pose(s, p, now, true, frameEN, frameW));
     float ce = frameEN[0], cn = frameEN[1], ch = (float) Math.cos(h), sh = (float) Math.sin(h);
 
     double rng = zoomTarget(s, spd, now);
@@ -639,7 +685,7 @@ final class MapView extends View {
     f.free = s.route.length == 0;
     f.color = modeColor(Feed.mode);
     if (!f.free) carpetStart(s, f);
-    latest = f;
+    f.copyTo(latest);
     return f;
   }
 
@@ -662,7 +708,7 @@ final class MapView extends View {
     offH *= fade;
     if (p != smPose) {
       if (moving && smPose != null && p.at - smPose.at < SMOOTH_GAP_MS) {
-        double was = pose(s, smPose, now, false, smEN);  // where the last fix put the car now
+        double was = pose(s, smPose, now, false, smEN, smW);  // where the last fix put the car now
         offE += smEN[0] - en[0];
         offN += smEN[1] - en[1];
         offH = Math.IEEEremainder(offH + was - h, 2 * Math.PI);
@@ -685,7 +731,7 @@ final class MapView extends View {
     boolean need = s == null || (r == null ? -1 : r.id) != s.routeId
         || (Feed.tilesVersion != s.tilesVersion && now - builtAt > TILE_REBUILD_MS);
     if (!need) {
-      double[] w = Feed.world(lat, lon);
+      double[] w = Feed.world(lat, lon, tickW);
       need = Math.hypot(w[0] - s.ax, w[1] - s.ay) * s.mpt > MOVE_R;
     }
     if (!need) return;
@@ -1448,7 +1494,9 @@ final class MapView extends View {
       float[] p = s.route[r];
       for (int i = 0; i + 3 < p.length; i += 2) {
         float ex = p[i + 2] - p[i], ny = p[i + 3] - p[i + 1], len2 = ex * ex + ny * ny;
-        float t = len2 > 0 ? Math.max(0, Math.min(1, ((ce - p[i]) * ex + (cn - p[i + 1]) * ny) / len2)) : 0;
+        // clamped to 0..1 by hand: Math.min and max are calls on Dalvik, and this runs for every route segment a frame
+        float t = len2 > 0 ? ((ce - p[i]) * ex + (cn - p[i + 1]) * ny) / len2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
         float qe = p[i] + t * ex, qn = p[i + 1] + t * ny, d = (qe - ce) * (qe - ce) + (qn - cn) * (qn - cn);
         if (d < bestD) {
           bestD = d;

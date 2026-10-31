@@ -42,8 +42,9 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 ## Open
 
 1. **Map glitch while driving.** The head-unit log shows GL frames of 32–43 ms (20–24 fps), with worst frames of 0.23–0.38 s that match the freeze in Peter's video. It is the map's own frames, not GPS. Card redraws take 35–55 ms each, 2–6 times a second, and compete for the CPU.
-   - **Next:** (installed) drive about 10 min, and read the `aaroad: gl parts avg/max ms:` lines to see which stage is slow.
-   - **Suspects:** card redraws, `new int[2]` per frame in `GlRoads.drawFrame`, and `new Frame()` per frame in `MapView.frame()`, which could cause GC pauses.
+   - **Drive 2026-10-31 (gl parts log):** 9–10 fps. Per frame avg/max ms: cull 46–49/146, swap ~30/60–80, camera 8–24/160–225, upload 0–4/330–360 (one frame per scene), roads 8–9/30–44.
+   - **Fixed, static only (2026-10-31, "Map frames: cull, upload, camera"):** cheap cull, scene packed off the GL thread and sent in 256 KB slices, no per-frame allocations in `frame()`/`drawFrame`. Not installed yet.
+   - **Next:** install `aaroad-fast-traffic.apk`, drive 10 min, and read the `gl parts` lines again. Swap (~30 ms) is likely GPU fill and is untouched; card redraws, Feed JSON parsing and the scene's `Path` objects still make garbage.
 2. **Slim cards** (`a9da6e81b`): static only, so Peter has to see them on the dash. Song names cut off sooner now, so maybe scroll them or widen that card a little.
 3. **Double X on the StarPilot Auto car screen** (`2299affae`): on the comma since `ec0b1f6ce` (2026-10-31); Peter has not seen it yet.
 4. **No map after the comma reboot (2026-10-31 evening).** The head unit gets no poses because the comma is off the hotspot.
@@ -54,6 +55,11 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 ## Log
 
 ### 2026-10-31
+- **Map frames: cull, upload, camera** (Open 1). *static*
+  - Cull: new `GlCull` keeps a candidate list from a circle round the view, tests each candidate's centre, and runs the old corner test (without `Math.min/max`) only on the rest. `test/GlCullTest.java`, synthetic 14.5k-piece scene: identical runs in all 7,499 frames, identical packed bytes. Interpreted JVM (`-Xint`, closest to Dalvik): 18.3 → 1.7 ms a frame while driving; JIT: 0.25 → 0.08 ms.
+  - Upload: a packer thread (`aaroad-pack`) builds the quads. The GL thread sends 256 KB a frame into a second VBO while the old scene keeps drawing, then swaps. Packing alone took 178 → 36 ms interpreted.
+  - Camera: `frame()` fills a Frame the caller owns. `Feed.world` writes into a caller array, `drawFrame`'s `int[2]` is a field, the tick's hide reason is built only when logged, and `carpetStart` clamps without calls.
+  - Harness renders are byte-identical to the old ones (13/13).
 - `a9da6e81b` **Slimmer left column.**
   - The trip card is folded into the turn card as a third line: "11 min · 5.2 mi · 2:15 AM".
   - The column right edge moves 270 → 210 px and the dark band 300 → 236, so the map gets about 60 px.

@@ -454,10 +454,17 @@ final class Feed {
 
   // Web Mercator position in zoom-14 tile units, as road_tiles.world_xy.
   static double[] world(double latitude, double longitude) {
+    return world(latitude, longitude, new double[2]);
+  }
+
+  // The same into out, for the map's frames, which allocate nothing.
+  static double[] world(double latitude, double longitude, double[] out) {
     double n = 1 << (int) TILE_ZOOM;
     latitude = Math.max(-85.05112878, Math.min(85.05112878, latitude));
     double s = Math.sin(Math.toRadians(latitude));
-    return new double[] {(longitude + 180) / 360 * n, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n};
+    out[0] = (longitude + 180) / 360 * n;
+    out[1] = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+    return out;
   }
 
   static double metersPerTile(double latitude) {
