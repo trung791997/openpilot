@@ -179,6 +179,32 @@ final class MapView extends View {
       labelX = new float[LABELS], labelY = new float[LABELS];
   private final boolean[] labelOn = new boolean[LABELS];
   private final float[] tagBox = new float[4];  // the street tag as last drawn, with its pointer; zero size when none
+  volatile float[] tagShown = new float[4];     // the same, handed to the GPU layer whenever it changes
+  volatile Labels labels;                       // the chosen labels, handed to the GPU layer at each choice
+
+  // The labels as chosen, for the GPU layer: it moves them with the map on its own clock (Peter 2026-10-30).
+  static final class Labels {
+    final String[] text;
+    final float[] e, n, w;
+    final int count;
+
+    Labels(String[] text, float[] e, float[] n, float[] w, int count) {
+      this.text = text.clone();
+      this.e = e.clone();
+      this.n = n.clone();
+      this.w = w.clone();
+      this.count = count;
+    }
+  }
+
+  // The labels' halo and text paints, fresh for the GPU layer's own thread, left aligned.
+  static TextPaint[] labelPaints() {
+    TextPaint halo = text(11.5f, inter(false), 0xff050505), fill = text(11.5f, inter(false), 0xffc8ccd2);
+    halo.setStyle(Paint.Style.STROKE);
+    halo.setStrokeWidth(3);
+    halo.setStrokeJoin(Paint.Join.ROUND);
+    return new TextPaint[] {halo, fill};
+  }
   private final TextPaint label = text(11.5f, inter(false), 0xffc8ccd2), halo = text(11.5f, inter(false), 0xff050505);
 
   // Positions are metres east (e) and north (n) of the anchor, in runs of e, n pairs.
@@ -1005,7 +1031,7 @@ final class MapView extends View {
   }
 
   // Screen position of the car-frame point (x, z) through the camera, or null when it is off the drawn box.
-  private boolean project(float x, float z, float off, float[] out) {
+  boolean project(float x, float z, float off, float[] out) {
     if (x < BOX_X0 || x > BOX_X1 || z < BOX_Z0 || z > BOX_Z1) return false;
     float w = cam[6] * x + cam[7] * z + cam[8];
     if (w <= 0.01f) return false;
@@ -1016,7 +1042,7 @@ final class MapView extends View {
 
   // Whether a label box centred on (x, y) would cover a card, the car, the speed sign, the street tag or the edges.
   // Off the map: left of the cards (or of the tach needle without a route), and the fog at the top.
-  private boolean blocked(float x, float y, float w, boolean free) {
+  boolean blocked(float x, float y, float w, boolean free, float[] tagBox) {
     float l = x - w / 2 - 3, r = x + w / 2 + 3, t = y - 9, b = y + 7;
     if (l < (free ? CARD_L + 6 : CARD_R + 10) || r > 578 || t < LABEL_TOP || b > 212) return true;
     float carX = free ? FREE_X : CAR_X;
@@ -1076,7 +1102,7 @@ final class MapView extends View {
       if (done.contains(name)) continue;
       String text = TextUtils.ellipsize(name, label, LABEL_MAX_W, TextUtils.TruncateAt.END).toString();
       float w = label.measureText(text);
-      if (blocked(c[4], c[5], w, free)) continue;
+      if (blocked(c[4], c[5], w, free, tagBox)) continue;
       boolean clear = true;
       for (int i = 0; i < count && clear; i++) {
         clear = !hits(c[4] - w / 2 - LABEL_GAP, c[5] - 9 - LABEL_GAP, c[4] + w / 2 + LABEL_GAP, c[5] + 7 + LABEL_GAP,
@@ -1121,7 +1147,7 @@ final class MapView extends View {
     float[] q = new float[2];
     for (int i = 0; i < labelCount; i++) {
       float de = labelE[i] - ce, dn = labelN[i] - cn;
-      labelOn[i] = project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q) && !blocked(q[0], q[1], labelW[i], free);
+      labelOn[i] = project((de * ch - dn * sh) * ik, (de * sh + dn * ch) * ik, off, q) && !blocked(q[0], q[1], labelW[i], free, tagBox);
       labelX[i] = q[0];
       labelY[i] = q[1];
     }
@@ -1182,7 +1208,11 @@ final class MapView extends View {
     currentRoad(s, ce, cn, h, now);
     String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     placeLabels(s, ce, cn, ch, sh, ik, reach, free, shown, now);
-    moveLabels(ce, cn, ch, sh, ik, free);
+    if (labelAt == now && gpu != null) {
+      labels = new Labels(labelText, labelE, labelN, labelW, labelCount);
+      gpu.poke();
+    }
+    if (!onGpu) moveLabels(ce, cn, ch, sh, ik, free);  // else the GPU layer moves and draws them
     long t1 = SystemClock.uptimeMillis();
     canvas.save();
     if (free) canvas.translate(FREE_X - CAR_X, 0f);
@@ -1449,7 +1479,7 @@ final class MapView extends View {
       if (!free) canvas.drawRect(0, 0, COL, 215, mask);
       canvas.drawRect(0, 0, 584, 78, fog);
     }
-    for (int i = 0; i < labelCount; i++) {
+    for (int i = 0; i < labelCount && !onGpu; i++) {
       if (!labelOn[i]) continue;
       canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, halo);
       canvas.drawText(labelText[i], labelX[i], labelY[i] + 4, label);
@@ -1488,6 +1518,7 @@ final class MapView extends View {
       canvas.drawPath(tip, edge);
       canvas.drawText(n, cx, streetY, street);
     }
+    if (!java.util.Arrays.equals(tagBox, tagShown)) tagShown = tagBox.clone();
 
     if (hasSign) {
       double v = Feed.limitMs * (Feed.metric ? 3.6 : 2.23694);

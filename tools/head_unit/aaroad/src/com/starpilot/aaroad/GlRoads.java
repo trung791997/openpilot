@@ -1,6 +1,8 @@
 package com.starpilot.aaroad;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.PixelFormat;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
@@ -8,7 +10,9 @@ import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
 import android.opengl.GLES20;
+import android.opengl.GLUtils;
 import android.os.SystemClock;
+import android.text.TextPaint;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import de.robv.android.xposed.XposedBridge;
@@ -18,7 +22,10 @@ import java.nio.FloatBuffer;
 
 // The map's grid, roads, route and carpet drawn with GLES2 (Peter 2026-10-30: the software canvas spent most of a
 // frame stroking them on the Tegra), and the fades over them: the dark band behind the cards and the fog at the top.
-// MapView keeps the cards, labels, car, tag and sign, and leaves the road area clear when this layer has drawn.
+// and the street labels over those. MapView keeps the cards, car, tag and sign, and leaves the road area clear when
+// this layer has drawn. The view still chooses the labels; each name is written once, by the same text code and font
+// as the view's, into a row of a texture, and every frame the row is laid on the map at whole pixels, so it reads as
+// sharp as before.
 //
 // When it draws: on its own clock, every FRAME_MS (30 a second, Peter 2026-10-30; the view drew at most 15), taking
 // the camera from MapView.frame() each time, so the map moves without the view redrawing. With the car standing and
@@ -45,6 +52,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final int BG = 0xff050505, KERB = 0xff6a6a6a, ROAD = 0xff383838, GRID = 0xff2a2a2a;
   private static final int ROUTE = 5, GROUPS = 6;  // groups 0-4 the road classes, 5 the route
   private static final long FRAME_MS = 33, IDLE_MS = 500;
+  private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
 
   private static final String LINE_VS =
@@ -144,6 +152,24 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       + "  gl_FragColor = vec4(uRgb, a);\n"
       + "}\n";
 
+  private static final String TEXT_VS =
+      "uniform vec4 uRect; uniform vec2 uSize; uniform vec4 uUV;\n"
+      + "attribute vec2 aP;\n"
+      + "varying vec2 vUV;\n"
+      + "void main() {\n"
+      + "  vec2 p = mix(uRect.xy, uRect.zw, aP);\n"
+      + "  vUV = mix(uUV.xy, uUV.zw, aP);\n"
+      + "  gl_Position = vec4(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0, 0.0, 1.0);\n"
+      + "}\n";
+
+  private static final String TEXT_FS =
+      "precision mediump float;\n"
+      + "uniform sampler2D uTex;\n"
+      + "varying vec2 vUV;\n"
+      + "void main() {\n"
+      + "  gl_FragColor = texture2D(uTex, vUV);\n"
+      + "}\n";
+
   private final MapView map;
   private final float[] v = MapView.cameraValues();
   private final Object lock = new Object();
@@ -160,10 +186,16 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private EGLConfig cfg;
   private EGLContext ctx = EGL14.EGL_NO_CONTEXT;
   private EGLSurface surf = EGL14.EGL_NO_SURFACE;
-  private int line, grid, fade, vbo, ibo, quad, unit;
+  private int line, grid, fade, text, vbo, ibo, quad, unit, tex;
   private int lP, lW, lV, lCam, lR, lCut, lColor, lCarpet, lSeg, lC;
   private int gP, gV, gRot, gCam, gColor, gStep, gA;
   private int fRect, fSize, fAxis, fA, fRgb, fP;
+  private int tRect, tSize, tUV, tTex, tP;
+  private Bitmap atlas;
+  private Canvas atlasCanvas;
+  private TextPaint[] paints;
+  private final String[] atlasText = new String[ATLAS_H / ROW];
+  private final float[] lq = new float[2];
   private MapView.Scene glScene;
   private float[][] cBox = new float[0][];
   private int[] cStart = new int[0], cCount = new int[0], gFrom = new int[GROUPS + 1];
@@ -356,7 +388,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     line = GlProbe.program(LINE_VS, LINE_FS);
     grid = GlProbe.program(GRID_VS, GRID_FS);
     fade = GlProbe.program(FADE_VS, FADE_FS);
-    if (line == 0 || grid == 0 || fade == 0) return "shader compile failed";
+    text = GlProbe.program(TEXT_VS, TEXT_FS);
+    if (line == 0 || grid == 0 || fade == 0 || text == 0) return "shader compile failed";
     lP = GLES20.glGetUniformLocation(line, "uP");
     lW = GLES20.glGetUniformLocation(line, "uW");
     lV = GLES20.glGetUniformLocation(line, "uV");
@@ -380,7 +413,21 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     fA = GLES20.glGetUniformLocation(fade, "uA");
     fRgb = GLES20.glGetUniformLocation(fade, "uRgb");
     fP = GLES20.glGetAttribLocation(fade, "aP");
-    if (lSeg < 0 || lC < 0 || gA < 0 || fP < 0) return "shader attributes missing";
+    tRect = GLES20.glGetUniformLocation(text, "uRect");
+    tSize = GLES20.glGetUniformLocation(text, "uSize");
+    tUV = GLES20.glGetUniformLocation(text, "uUV");
+    tTex = GLES20.glGetUniformLocation(text, "uTex");
+    tP = GLES20.glGetAttribLocation(text, "aP");
+    if (lSeg < 0 || lC < 0 || gA < 0 || fP < 0 || tP < 0) return "shader attributes missing";
+    // the labels' texture: texels laid one to one on screen pixels, so nearest
+    int[] t = new int[1];
+    GLES20.glGenTextures(1, t, 0);
+    tex = t[0];
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
     int[] b = new int[4];
     GLES20.glGenBuffers(4, b, 0);
     ibo = b[0];
@@ -593,6 +640,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     if (!free) fade(0, 0, MapView.COL, 215, 0, 1, 1, 0, (MapView.CARD_R + 4) / MapView.COL);
     fade(0, 0, 584, 78, 1, 1, 0xe6 / 255f, 0, 0.6f);
     GLES20.glDisableVertexAttribArray(fP);
+    labels(f, w, h);
 
     if (checkNext) {
       // the first frame on a surface or with a scene is checked; later ones are trusted
@@ -622,6 +670,52 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       invalidateMap();  // the view stops drawing the roads from its next frame
     }
     return null;
+  }
+
+  // The view's chosen labels where this frame puts them: each left out while it would cover a card, the car, the sign,
+  // the tag or an edge, as the view decides. The texture holds premultiplied colour, blended as such.
+  private void labels(MapView.Frame f, int w, int h) {
+    MapView.Labels set = map.labels;
+    int n = set == null ? 0 : Math.min(set.count, atlasText.length);
+    if (n == 0) return;
+    boolean same = true;
+    for (int i = 0; i < n && same; i++) same = set.text[i].equals(atlasText[i]);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+    if (!same) {
+      if (atlas == null) {
+        atlas = Bitmap.createBitmap(ATLAS_W, ATLAS_H, Bitmap.Config.ARGB_8888);
+        atlasCanvas = new Canvas(atlas);
+        paints = MapView.labelPaints();
+      }
+      atlas.eraseColor(0);
+      for (int i = 0; i < n; i++) {
+        atlasCanvas.drawText(set.text[i], PAD, i * ROW + BASE, paints[0]);
+        atlasCanvas.drawText(set.text[i], PAD, i * ROW + BASE, paints[1]);
+        atlasText[i] = set.text[i];
+      }
+      GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, atlas, 0);
+    }
+    float off = f.free ? MapView.FREE_X - MapView.CAR_X : 0;
+    float[] tag = map.tagShown;
+    GLES20.glUseProgram(text);
+    GLES20.glUniform2f(tSize, w, h);
+    GLES20.glUniform1i(tTex, 0);
+    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, unit);
+    GLES20.glEnableVertexAttribArray(tP);
+    GLES20.glVertexAttribPointer(tP, 2, GLES20.GL_FLOAT, false, 8, 0);
+    GLES20.glBlendFuncSeparate(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
+    for (int i = 0; i < n; i++) {
+      float de = set.e[i] - f.ce, dn = set.n[i] - f.cn;
+      float x = (de * f.ch - dn * f.sh) * f.ik, z = (de * f.sh + dn * f.ch) * f.ik;
+      if (!map.project(x, z, off, lq) || map.blocked(lq[0], lq[1], set.w[i], f.free, tag)) continue;
+      // where the view's centred text would start and sit, at whole pixels
+      float x0 = Math.round(lq[0] - set.w[i] / 2) - PAD, y0 = Math.round(lq[1] + 4) - BASE;
+      GLES20.glUniform4f(tRect, x0, y0, x0 + ATLAS_W, y0 + ROW);
+      GLES20.glUniform4f(tUV, 0, i * ROW / (float) ATLAS_H, 1, (i + 1) * ROW / (float) ATLAS_H);
+      GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    }
+    GLES20.glDisableVertexAttribArray(tP);
+    GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
   }
 
   private void fade(float x0, float y0, float x1, float y1, int axis, float a0, float a1, float a2, float stop) {
