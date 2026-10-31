@@ -48,8 +48,10 @@ def test_destination_label_names_home_and_work(favorites):
   assert destination_label({**document, 'destination': other}) == 'Costco'
 
 
-def state(*, ordered=False):
+def state(*, ordered=False, card=True):
   layout = default_layout_for_viewport(VIEWPORT)
+  # Without the turn card there is no X under it, so the active Home/Work button ends the route.
+  layout['widgets']['nav_card']['enabled'] = card
   for key in FAVORITE_WIDGETS:
     layout['widgets'][key]['enabled'] = True
   if ordered:
@@ -141,7 +143,7 @@ def test_map_above_home_blocks_touch(favorites):
 @pytest.mark.parametrize('ordered', [True, False])
 @pytest.mark.parametrize('display', ['words', 'icons'])
 def test_home_work_start_hide_other_and_end_navigation(favorites, ordered, display):
-  view = state(ordered=ordered)
+  view = state(ordered=ordered, card=False)
   for key in FAVORITE_WIDGETS:
     view.customization['layouts']['large'][key]['display'] = display
   tap(favorites, view, 'nav_home')
@@ -188,7 +190,7 @@ def test_changed_or_cancelled_press_does_not_navigate(favorites, change):
 
 
 def test_unconfigured_and_disabled_navigation_do_not_write(favorites):
-  view = state()
+  view = state(card=False)
   for doc in [dict(favorites.document, enabled=False), dict(favorites.document, token=''), dict(favorites.document, favorites=[])]:
     favorites.owner.path.write_text(json.dumps(doc))
     tap(favorites, view, 'nav_home')
@@ -202,7 +204,7 @@ def test_unconfigured_and_disabled_navigation_do_not_write(favorites):
 
 
 def test_overlap_uses_saved_order_and_removed_widget_cannot_intercept(favorites):
-  view = state(ordered=True)
+  view = state(ordered=True, card=False)
   placements = view.customization['layouts']['large']
   placements['nav_work'].update(x=placements['nav_home']['x'], y=placements['nav_home']['y'])
   tap(favorites, view, 'nav_home')
@@ -281,6 +283,29 @@ def test_cancel_x_shows_only_while_navigating_and_beside_the_card(favorites):
   assert favorites.cancel_bounds(view) is None
   hidden, _ = guiding(favorites, card=False)
   assert favorites.cancel_bounds(hidden) is None, 'a hidden turn card hides the X'
+
+
+@pytest.mark.parametrize('display', ['words', 'icons'])
+def test_one_x_ends_a_home_route(favorites, display):
+  view, _ = guiding(favorites)
+  view.customization['layouts']['large']['nav_home']['display'] = display
+  tap(favorites, view, 'nav_home')
+  assert favorites.owner.read()['destination']['name'] == 'My home'
+  assert favorites.cancel_bounds(view) is not None
+  assert favorites.covered('nav_home', view) and favorites.bounds('nav_home', view) is None, 'the X under the card is the only X'
+  tap(favorites, view, 'nav_home')
+  assert favorites.owner.read()['destination']['name'] == 'My home', 'the hidden Home button cannot end the route'
+  tap_cancel(favorites, view)
+  assert favorites.owner.read()['destination'] is None
+  assert not favorites.covered('nav_home', view) and favorites.bounds('nav_home', view) is not None
+  tap(favorites, view, 'nav_home')
+  view.alert.size = 'full'
+  assert favorites.cancel_bounds(view) is None and not favorites.covered('nav_home', view)
+  view.alert.size = 'none'
+  hidden, _ = guiding(favorites, card=False)
+  hidden.navigation = None
+  hidden.customization['layouts']['large']['nav_card']['enabled'] = False
+  assert favorites.cancel_bounds(hidden) is None and favorites.bounds('nav_home', hidden) is not None, 'no card X: Home keeps its own'
 
 
 def test_cancel_x_moves_above_a_low_card(favorites):

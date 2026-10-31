@@ -12,13 +12,15 @@ class NavigationFavorites:
     self.fonts = fonts
     self.document: dict | None = None
     self.error = ''
+    # The AA renderer hides the active favorite while its own X under the turn card ends the route.
+    self.covered = lambda key, state: False
 
   def render(self, key, state):
     placed = state.customization['layouts']['large'].get(key)
     if placed is None or not placed['enabled'] or state.alert.size != 'none':
       return
     bookmark = key == 'bookmark'
-    if not bookmark and not favorite_visible(key, self.document, state.customization['layouts']['large']):
+    if not bookmark and (not favorite_visible(key, self.document, state.customization['layouts']['large']) or self.covered(key, state)):
       return
     label = key.removeprefix('nav_').title()
     doc = self.document

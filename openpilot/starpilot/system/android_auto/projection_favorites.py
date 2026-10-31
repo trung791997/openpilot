@@ -4,7 +4,7 @@ import time
 from openpilot.starpilot.navigation.owner import NavigationOwner
 from openpilot.starpilot.system.android_auto.projection_layout import BOOKMARK_WIDGET, DISPLAY_WIDGETS, FAVORITE_WIDGETS, FAVORITE_SIZE, FAVORITE_ICON_SIZE
 from openpilot.starpilot.ui.onroad_customization import widget_order
-from openpilot.starpilot.ui.navigation_favorites_state import favorite_visible
+from openpilot.starpilot.ui.navigation_favorites_state import active_favorite, favorite_visible
 
 # The round X that ends the route sits under the turn card, the size of a Home/Work icon.
 CANCEL_ROUTE = 'nav_cancel'
@@ -87,13 +87,17 @@ class ProjectionFavorites:
       return right - size, bottom + CANCEL_ROUTE_GAP, size
     return right - size, top - CANCEL_ROUTE_GAP - size, size
 
+  def covered(self, key, state):
+    """True for the active Home/Work button while the X under the card already ends its route."""
+    return key == active_favorite(self.document, state.customization['layouts']['large']) and self.cancel_bounds(state) is not None
+
   def bounds(self, key, state):
     if key == CANCEL_ROUTE:
       return self.cancel_bounds(state)
     if state.alert.size != 'none':
       return None
     placements = state.customization['layouts']['large']
-    if key != BOOKMARK_WIDGET and not favorite_visible(key, self.document, placements):
+    if key != BOOKMARK_WIDGET and (not favorite_visible(key, self.document, placements) or self.covered(key, state)):
       return None
     placed = placements.get(key)
     return placed if placed is not None and placed['enabled'] else None

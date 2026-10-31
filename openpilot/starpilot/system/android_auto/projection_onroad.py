@@ -259,6 +259,8 @@ class ProjectionOnroad:
         self.favorites = native.favorites(lambda: native.ui_state.started)
         self.favorites.bookmark = lambda: self.bookmark()
         self.favorites.card_bounds = getattr(getattr(self.onroad, 'navigation', None), 'bounds', None)
+        if (drawn := getattr(self.onroad, 'navigation_favorites', None)) is not None:
+          drawn.covered = self.favorites.covered
         self._resources.callback(self.favorites.close)
     except BaseException:
       self._resources.close()
