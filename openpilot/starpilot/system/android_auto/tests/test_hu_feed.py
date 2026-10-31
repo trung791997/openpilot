@@ -358,3 +358,37 @@ def test_fetch_cover_shrinks_to_a_small_jpeg(monkeypatch):
     raise OSError('no network')
   monkeypatch.setattr(hf.urllib.request, 'urlopen', down)
   assert hf.fetch_cover(ART) is None
+
+
+def test_route_traffic_rides_in_each_chunk_and_a_traffic_change_resends_it():
+  points = [(33.0 + i * 1e-4, -117.0) for i in range(130)]
+  levels = [i % 5 for i in range(130)]
+  value = snapshot(nav={'road': 'Bolsa Ave'}, route=hf.route_of('s:1', points, levels))
+  feed, sock, now, _ = make(value)
+  sock.hello()
+  feed.tick()
+  parts = [message for message, _ in sock.sent if message['t'] == 'r']
+  assert [len(p['c']) for p in parts] == [len(p['pts']) for p in parts] == [50, 50, 30]
+  assert sum((p['c'] for p in parts), []) == levels
+  first = parts[0]['id']
+  sock.sent.clear()
+  now[0] += 0.05
+  feed.tick()
+  assert 'r' not in sock.kinds()  # same traffic: not before ROUTE_EVERY
+  value['route'] = hf.route_of('s:1', points, [3] * 130)
+  now[0] += 0.05
+  feed.tick()
+  parts = [message for message, _ in sock.sent if message['t'] == 'r']
+  assert len(parts) == 3 and parts[0]['id'] != first and parts[0]['c'] == [3] * 50
+
+
+def test_route_without_matching_traffic_sends_no_c_and_keeps_its_old_id():
+  points = [(33.0, -117.0), (33.1, -117.0)]
+  assert hf.route_of('s:1', points, []) == ('s:1', points, None)
+  assert hf.route_of('s:1', points, [1]) == ('s:1', points, None)  # one short
+  assert hf.route_of('s:1', points, [9, 2])[2] == [0, 2]  # unknown levels read as unknown
+  feed, sock, _, _ = make(snapshot(route=hf.route_of('s:1', points, [])))
+  sock.hello()
+  feed.tick()
+  part = next(message for message, _ in sock.sent if message['t'] == 'r')
+  assert 'c' not in part and part['id'] == hf.zlib.crc32(b's:1')

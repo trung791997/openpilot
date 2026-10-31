@@ -10,6 +10,9 @@ EARTH_RADIUS = 6371007.2
 MAX_POINTS = 20000
 SPEED_UNITS = {'km/h': 1 / 3.6, 'mph': 0.44704}
 MAX_SPEED_LIMIT_MPS = 160 / 3.6
+# Mapbox congestion per geometry segment -> the level published in Navigation.routeCongestion
+CONGESTION = {'unknown': 0, 'low': 1, 'moderate': 2, 'heavy': 3, 'severe': 4}
+REFRESH_URL = 'https://api.mapbox.com/directions-refresh/v1/mapbox/driving-traffic/'
 
 
 def point(value) -> tuple[float, float]:
@@ -68,6 +71,24 @@ def max_speeds(data: dict, segments: int) -> list[float | None]:
   return limits
 
 
+def congestion_rows(rows, segments: int) -> list[int] | None:
+  """Levels from a Mapbox congestion list of `segments` entries; None when it is missing, short or not a list."""
+  if not isinstance(rows, list) or len(rows) != segments:
+    return None
+  return [CONGESTION.get(row, 0) if isinstance(row, str) else 0 for row in rows]
+
+
+def congestion_levels(data: dict, segments: int) -> list[int]:
+  """Traffic per route segment from Mapbox's congestion annotation: 0 unknown, 1 low, 2 moderate, 3 heavy,
+  4 severe. A missing or mismatched annotation leaves every segment unknown."""
+  try:
+    rows = data['legs'][0]['annotation']['congestion']
+  except (KeyError, TypeError, IndexError):
+    return [0] * segments
+  levels = congestion_rows(rows, segments)
+  return levels if levels is not None else [0] * segments
+
+
 def roundabout(primary: dict, maneuver: dict, step: dict) -> tuple[int, int, bool]:
   """(exit angle, exit number, drives on the left) for a roundabout maneuver; zeros when Mapbox gives none."""
   degrees, exit_number = primary.get('degrees'), maneuver.get('exit')
@@ -97,6 +118,7 @@ class Progress:
   off_route: bool
   arrived: bool
   speed_limit_mps: float | None = None  # Mapbox posted limit on the matched segment
+  segment: int = 0  # the matched geometry segment
 
 
 class NavigationRoute:
@@ -133,15 +155,29 @@ class NavigationRoute:
         raise ValidationError('The route is empty')
       self.starts = [step.start for step in self.steps]
       self.speed_limits = max_speeds(data, len(self.points) - 1)
+      # replaced whole (never edited in place) by MapboxRouteEngine.refresh on the route thread
+      self.congestion = congestion_levels(data, len(self.points) - 1)
+      self.uuid = None      # the Directions response's uuid, for refreshes; None without enable_refresh
+      self.route_index = 0  # this route's place in that response
     except (KeyError, TypeError, IndexError, AttributeError):
       raise ValidationError('The map service returned an incomplete route') from None
 
-  def preview(self) -> list[dict]:
+  def preview_indices(self) -> list[int]:
     stride = max(1, math.ceil((len(self.points) - 1) / 511))
-    points = self.points[::stride]
-    if points[-1] != self.points[-1]:
-      points.append(self.points[-1])
-    return [{'longitude': x, 'latitude': y} for x, y in points]
+    indices = list(range(0, len(self.points), stride))
+    if indices[-1] != len(self.points) - 1:
+      indices.append(len(self.points) - 1)
+    return indices
+
+  def preview(self) -> list[dict]:
+    return [{'longitude': self.points[i][0], 'latitude': self.points[i][1]} for i in self.preview_indices()]
+
+  def preview_congestion(self) -> list[int]:
+    """One level per preview() point: the worst on the segments from that point to the next (the last point
+    repeats the one before it)."""
+    levels, indices = self.congestion, self.preview_indices()
+    result = [max(levels[a:b], default=0) for a, b in zip(indices, indices[1:], strict=False)]
+    return result + result[-1:] if result else [0] * len(indices)
 
   def progress(self, position, speed: float | None, bearing: float | None = None) -> Progress:
     best = (float('inf'), 0., 0)
@@ -181,7 +217,7 @@ class NavigationRoute:
     arrived = known_speed and speed < 2 and distance(position, self.points[-1]) < 40 and instruction['remainingDistanceMeters'] < 40
     off_route = separation > threshold or misaligned
     return Progress(instruction, next_maneuver, off_route, arrived,
-                    None if off_route else self.speed_limits[segment])
+                    None if off_route else self.speed_limits[segment], segment)
 
 
 class MapboxRouteEngine:
@@ -196,7 +232,7 @@ class MapboxRouteEngine:
     url = ('https://api.mapbox.com/directions/v5/mapbox/driving-traffic/' +
            f'{position[0]},{position[1]};{destination["longitude"]},{destination["latitude"]}')
     params = {'access_token': token, 'geometries': 'geojson', 'steps': 'true', 'overview': 'full', 'banner_instructions': 'true', 'alternatives': 'true',
-              'annotations': 'maxspeed'}
+              'annotations': 'maxspeed,congestion', 'enable_refresh': 'true'}
     if exclusions:
       params['exclude'] = ','.join(exclusions)
     if bearing is not None:
@@ -205,5 +241,38 @@ class MapboxRouteEngine:
     if data.get('code') != 'Ok' or not data.get('routes'):
       raise ValidationError('No driving route was found')
     routes = [NavigationRoute(row) for row in data['routes'][:3]]
+    response_uuid = data.get('uuid')
+    # it goes into the refresh URL's path
+    usable = isinstance(response_uuid, str) and 0 < len(response_uuid) <= 128 and response_uuid.isascii() and \
+      all(c.isalnum() or c in '-_' for c in response_uuid)
+    for index, route in enumerate(routes):
+      route.uuid, route.route_index = (response_uuid if usable else None), index
     routes[0].alternatives = routes
     return routes[0]
+
+  def refresh(self, token: str, route: NavigationRoute, geometry_index: int) -> bool:
+    """Fresh traffic for the rest of the route from Directions Refresh. Only route.congestion changes; on any
+    error it keeps the old levels and returns False. Geometry, steps and guidance are never touched."""
+    segments = len(route.points) - 1
+    if route.uuid is None or not 0 <= geometry_index < segments:
+      return False
+    if self.budget is not None:
+      self.budget.spend(enforce=False)  # counted with directions, never refused
+    url = f'{REFRESH_URL}{route.uuid}/{route.route_index}/0'
+    try:
+      data = response_json(self.session, url, {'access_token': token, 'current_route_geometry_index': geometry_index})
+      if data.get('code') != 'Ok':
+        return False
+      rows = data['route']['legs'][0]['annotation']['congestion']
+    except (ValidationError, KeyError, TypeError, IndexError, AttributeError):
+      return False
+    # The refreshed annotation starts at geometry_index; a full-length one is taken whole.
+    tail = congestion_rows(rows, segments - geometry_index)
+    if tail is not None:
+      route.congestion = route.congestion[:geometry_index] + tail
+      return True
+    full = congestion_rows(rows, segments)
+    if full is not None:
+      route.congestion = full
+      return True
+    return False

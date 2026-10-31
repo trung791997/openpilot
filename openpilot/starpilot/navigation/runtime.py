@@ -15,6 +15,7 @@ from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS, GPS_SERVICES, bearing
 
 ARRIVED_NS = 5_000_000_000      # stopped at the destination this long shows "You have arrived"
 END_ROUTE_NS = 15_000_000_000   # ...and this long ends navigation, like tapping End navigation
+REFRESH_NS = 300_000_000_000    # traffic on the guided route is refreshed this often (Directions Refresh)
 
 
 def location(sm, now_ns: int, phone_fix=None, head_unit_fix=None):
@@ -49,6 +50,9 @@ class RouteRuntime:
     self.off_route_since = 0
     self.arrived_since = 0
     self.ended_revision = None
+    self.refresh_route = None  # the route the refresh clock runs for
+    self.refresh_after = 0
+    self.refresh_future = None
     self.session = uuid.uuid4().hex
 
   def update(self, now_ns: int, position, drive_id: int) -> dict:
@@ -79,7 +83,7 @@ class RouteRuntime:
     result = {'sessionId': self.session, 'frameMonoTime': now_ns, 'startedMonoTime': drive_id,
                   'revision': settings['revision'], 'enabled': settings['enabled'], 'status': base_status,
                   'destinationName': (settings['destination'] or {}).get('name', ''), 'instruction': {}, 'nextManeuver': {},
-                  'route': [], 'locationMonoTime': 0, 'controlValid': False, 'speedLimit': 0.}
+                  'route': [], 'routeCongestion': [], 'locationMonoTime': 0, 'controlValid': False, 'speedLimit': 0.}
     if self.future is not None and self.future.done():
       try:
         route = self.future.result()
@@ -108,6 +112,7 @@ class RouteRuntime:
     if position is None:
       if self.route is not None:
         result['route'] = self.route.preview()
+        result['routeCongestion'] = self.route.preview_congestion()
       else:
         saved = self.owner.position_store.read()
         if saved is not None:
@@ -138,11 +143,26 @@ class RouteRuntime:
     arrived = self.arrived_since and now_ns - self.arrived_since >= ARRIVED_NS
     if self.arrived_since and now_ns - self.arrived_since >= END_ROUTE_NS:
       self._end_route(settings['revision'])
+    if not arrived:
+      self._refresh_traffic(now_ns, settings['token'], progress.segment)
     result.update(status='arrived' if arrived else 'guiding', instruction=progress.instruction,
                   nextManeuver=progress.next_maneuver, route=self.route.preview(),
+                  routeCongestion=self.route.preview_congestion(),
                   controlValid=bool(speed is not None and fresh and drive_id > 0 and not progress.off_route and not progress.arrived and stamp >= drive_id),
                   speedLimit=progress.speed_limit_mps or 0.)
     return result
+
+  def _refresh_traffic(self, now_ns: int, token: str, segment: int) -> None:
+    """Every REFRESH_NS while guiding, new traffic colours for the rest of the route, on the route thread. Only
+    the route's congestion changes, and a failed refresh keeps the old one."""
+    refresh = getattr(self.engine, 'refresh', None)
+    if refresh is None or getattr(self.route, 'uuid', None) is None:
+      return
+    if self.route is not self.refresh_route:
+      self.refresh_route, self.refresh_after = self.route, now_ns + REFRESH_NS
+    elif now_ns >= self.refresh_after and (self.refresh_future is None or self.refresh_future.done()):
+      self.refresh_after = now_ns + REFRESH_NS
+      self.refresh_future = self.executor.submit(_quiet_refresh, refresh, token, self.route, segment)
 
   def _end_route(self, revision: str) -> None:
     # Once per destination; a concurrent change (new destination, Galaxy edit) wins over arrival.
@@ -156,6 +176,13 @@ class RouteRuntime:
       return
     else:
       self.ended_revision = revision
+
+
+def _quiet_refresh(refresh, token: str, route, segment: int) -> bool:
+  try:
+    return bool(refresh(token, route, segment))
+  except Exception:
+    return False  # the old colours stay
 
 
 def gps_dict(fix) -> dict | None:

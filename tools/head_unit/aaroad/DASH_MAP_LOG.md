@@ -52,9 +52,17 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
    - An ignition cycle did not bring aa0 back; the daemon stays in fallback until it restarts.
    - **Fix options:** restart the Android Auto service while warm (quick), or raise the aa0 wait for cold boots (code; check with the StarPilot Auto owner first).
 
+5. **Traffic colours** (2026-10-31): static only, not installed. Check on a drive that refreshes stay quiet in the log and the colours change. In `exp` mode the carpet is orange, so moderate amber is hard to tell apart; Peter may want a different colour there.
+
 ## Log
 
 ### 2026-10-31
+- **Traffic colours on the route line** (Open 5). *static*, plus one live Mapbox check.
+  - Comma: Directions asks for `congestion` and `enable_refresh`. Every 5 min while guiding, `directions-refresh` fetches fresh traffic from the car's place on. It runs on the nav executor and counts on the `directions` budget without blocking. On any error the old colours stay. Geometry, steps and guidance are never touched.
+  - `navigation.routeCongestion` (custom.capnp @14) has one level per preview point, the worst within each stride. `hu_feed` sends it as `c` in the `r` datagrams, aligned with `pts`. A traffic change resends the route under a new id.
+  - Head unit: the carpet is drawn per level. Unknown and low keep the mode colour; moderate is amber `#ffb300`, heavy orange `#ff5722`, severe red `#c62828`. Done on the GPU layer (route groups 5–8 in `GlCull`) and in the software fallback.
+  - Static: python 322 passed (308 before). GlCullTest PASS (runs and bytes identical). Without traffic, harness renders are identical to the last commit (13/13). With traffic, the carpet changes colour at the right points.
+  - Live (from the comma, token kept on the device): Directions `Ok` with a uuid, 571 congestion entries for 572 points. Refresh at index 285 returned `Ok` with 286 entries, the tail from that index, which is how `refresh()` merges it.
 - **Map frames: cull, upload, camera** (Open 1). *static*
   - Cull: new `GlCull` keeps a candidate list from a circle round the view, tests each candidate's centre, and runs the old corner test (without `Math.min/max`) only on the rest. `test/GlCullTest.java`, synthetic 14.5k-piece scene: identical runs in all 7,499 frames, identical packed bytes. Interpreted JVM (`-Xint`, closest to Dalvik): 18.3 → 1.7 ms a frame while driving; JIT: 0.25 → 0.08 ms.
   - Upload: a packer thread (`aaroad-pack`) builds the quads. The GL thread sends 256 KB a frame into a second VBO while the old scene keeps drawing, then swaps. Packing alone took 178 → 36 ms interpreted.

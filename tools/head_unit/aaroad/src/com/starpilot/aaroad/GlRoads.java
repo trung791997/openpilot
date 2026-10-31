@@ -53,7 +53,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final int SLICE = 256 * 1024;  // bytes of a new scene sent a frame, while the last one draws
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = 0xff6a6a6a, ROAD = 0xff383838, GRID = 0xff2a2a2a;
-  private static final int ROUTE = 5, GROUPS = 6;  // groups 0-4 the road classes, 5 the route
+  // groups 0-4 the road classes, 5-8 the route by traffic: unknown or low, moderate, heavy, severe
+  private static final int ROUTE = 5, LEVELS = 4;
   private static final long FRAME_MS = 33, IDLE_MS = 500;
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
@@ -627,7 +628,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       try {
         MapView.Chunks roads = s.route.length > 0 ? s.stubsChunks : s.roadsChunks;
         MapView.Chunks route = s.routeChunks;
-        g = new GlCull(s, GROUPS, roads.pts, roads.box, roads.cls, roads.at, route.pts, route.box, route.at);
+        int[] level = new int[route.cls.length];  // a route piece's cls is its traffic, 0 to 4 (MapView.chunks)
+        for (int i = 0; i < level.length; i++) level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
+        g = new GlCull(s, ROUTE, LEVELS, roads.pts, roads.box, roads.cls, roads.at, route.pts, route.box, level, route.at);
         int size = g.bytes();
         if (b == null || b.capacity() < size) b = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
         b.position(0);
@@ -719,14 +722,14 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     float floor = MapView.dm(MapView.MIN_ROAD_PX), kerb = MapView.dm(2 * MapView.KERB_PX);
     float route = Math.max(floor, MapView.ROUTE_M * ik);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, KERB, 1);
-    lines(ROUTE, route + kerb, KERB, 1);
+    for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), ROAD, 1);
-    lines(ROUTE, route, ROAD, 1);
+    for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
     part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
       float wide = Math.max(MapView.dm(MapView.LINE_MIN_PX), Math.min(MapView.dm(MapView.LINE_MAX_PX), MapView.LINE_M * ik));
-      lines(ROUTE, wide, color, 242 / 255f);
+      for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, wide, l == 0 ? color : MapView.TRAFFIC[l - 1], 242 / 255f);
     }
     GLES20.glDisableVertexAttribArray(lSeg);
     GLES20.glDisableVertexAttribArray(lC);

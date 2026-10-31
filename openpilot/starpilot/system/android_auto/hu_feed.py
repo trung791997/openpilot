@@ -22,7 +22,10 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its
      cover (crc32 of the cover URL) or 0 without one, dur the song length in ms or 0. pos is how far into the song it
      is (ms) when sent, or null; it is left out of the change check, so a playing song does not resend every tick.
-  r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...]}, n datagrams
+  r  route, on change and every ROUTE_EVERY s: {"id", "i", "n", "pts": [[lat, lon], ...], "c": [level, ...]}, n datagrams;
+     c is the traffic on each point's stretch to the next, one per pts entry (0 unknown, 1 low, 2 moderate, 3 heavy,
+     4 severe), left out when navigationd gives none. id is the crc32 of a key that includes c's hash, so new traffic
+     makes a new id (the head unit ignores a repeated one); an older app ignores c
   p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
@@ -307,8 +310,17 @@ class CerealReader:
                       'limit': round(float(state.speedLimit), 2) if state.speedLimit > 0 else None}
       points = [(round(point.latitude, 6), round(point.longitude, 6)) for point in state.route]
       if points:
-        value['route'] = (f'{state.sessionId}:{state.revision}', points)
+        value['route'] = route_of(f'{state.sessionId}:{state.revision}', points, list(state.routeCongestion))
     return value
+
+
+def route_of(key: str, points: list, congestion: list[int] | None) -> tuple[str, list, list[int] | None]:
+  """(key, points, congestion) for the 'r' datagrams. Congestion that does not match the points is dropped; when
+  there is some, its hash goes in the key, so a change in traffic alone sends the route again under a new id."""
+  if not congestion or len(congestion) != len(points):
+    return key, points, None
+  congestion = [level if 0 <= level <= 4 else 0 for level in congestion]
+  return f'{key}:{zlib.crc32(bytes(congestion)) & 0xffffffff:08x}', points, congestion
 
 
 def posted_limit(slc) -> float | None:
@@ -443,11 +455,15 @@ class HeadUnitFeed:
     if route is None:
       self.sent_route = None  # the head unit drops the route with the nav, so it goes again the moment nav is back
     elif (route[0] != self.sent_route or now - self.last_route >= ROUTE_EVERY):
-      key, points = route
+      key, points = route[:2]
+      congestion = route[2] if len(route) > 2 else None
       route_id = zlib.crc32(key.encode()) & 0xffffffff
-      chunks = [points[i:i + ROUTE_CHUNK] for i in range(0, len(points), ROUTE_CHUNK)]
-      for i, chunk in enumerate(chunks):
-        self._send('r', {'id': route_id, 'i': i, 'n': len(chunks), 'pts': chunk})
+      starts = range(0, len(points), ROUTE_CHUNK)
+      for i, start in enumerate(starts):
+        body = {'id': route_id, 'i': i, 'n': len(starts), 'pts': points[start:start + ROUTE_CHUNK]}
+        if congestion is not None:
+          body['c'] = congestion[start:start + ROUTE_CHUNK]
+        self._send('r', body)
       self.sent_route, self.last_route = key, now
     pose = carry(value['fix'], value['speed'], value['yaw_rate'], self.clock_ns()) if value['fix'] else None
     if pose is not None:

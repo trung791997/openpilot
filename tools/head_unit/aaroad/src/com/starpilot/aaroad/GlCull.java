@@ -37,12 +37,13 @@ final class GlCull {
   private boolean candOk;
   private float candE, candN, candR;
 
-  // Pieces in the order drawn: groups 0 to groups - 2 the roads of that class, the last group the route.
-  GlCull(Object scene, int groups, float[][] roadPts, float[][] roadBox, int[] roadCls, float[] roadAt,
-         float[][] routePts, float[][] routeBox, float[] routeAt) {
+  // Pieces in the order drawn: groups 0 to roadGroups - 1 the roads of that class, then routeGroups of the route,
+  // route piece i in group roadGroups + routeGroup[i] (all in the first if routeGroup is null).
+  GlCull(Object scene, int roadGroups, int routeGroups, float[][] roadPts, float[][] roadBox, int[] roadCls,
+         float[] roadAt, float[][] routePts, float[][] routeBox, int[] routeGroup, float[] routeAt) {
     this.scene = scene;
-    this.groups = groups;
-    int route = groups - 1;
+    this.groups = roadGroups + routeGroups;
+    int route = roadGroups;
     int n = 0;
     for (int i = 0; i < roadPts.length; i++) if (roadCls[i] >= 0 && roadCls[i] < route) n++;
     n += routePts.length;
@@ -62,11 +63,12 @@ final class GlCull {
     int k = 0, sg = 0;
     for (int g = 0; g < groups; g++) {
       gFrom[g] = k;
-      boolean isRoute = g == route;
+      boolean isRoute = g >= route;
       float[][] p = isRoute ? routePts : roadPts, b = isRoute ? routeBox : roadBox;
       float[] a = isRoute ? routeAt : roadAt;
       for (int i = 0; i < p.length; i++) {
         if (!isRoute && roadCls[i] != g) continue;
+        if (isRoute && (routeGroup == null ? 0 : routeGroup[i]) != g - route) continue;
         float[] bb = b[i];
         bx0[k] = bb[0];
         by0[k] = bb[1];

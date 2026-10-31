@@ -54,11 +54,14 @@ final class Feed {
   static final class Route {
     final long id;
     final double[] lat, lon;
+    // traffic on the segment from point i to i + 1: 0 unknown, 1 low, 2 moderate, 3 heavy, 4 severe
+    final byte[] lvl;
 
-    Route(long id, double[] lat, double[] lon) {
+    Route(long id, double[] lat, double[] lon, byte[] lvl) {
       this.id = id;
       this.lat = lat;
       this.lon = lon;
+      this.lvl = lvl;
     }
   }
 
@@ -99,7 +102,7 @@ final class Feed {
 
   private static boolean started;
   private static final Map<String, String[]> tileParts = new HashMap<String, String[]>();
-  private static final Map<Long, JSONArray[]> routeParts = new HashMap<Long, JSONArray[]>();
+  private static final Map<Long, JSONObject[]> routeParts = new HashMap<Long, JSONObject[]>();
   private static long coverPartsId;
   private static String[] coverParts;
   private static volatile InetAddress comma;
@@ -295,28 +298,35 @@ final class Feed {
     if (n <= 0 || n > 400 || i < 0 || i >= n) return;
     Route current = route;
     if (current != null && current.id == id) return;  // the comma repeats the route every 5 s
-    JSONArray[] parts = routeParts.get(id);
+    JSONObject[] parts = routeParts.get(id);
     if (parts == null || parts.length != n) {
       routeParts.clear();
-      parts = new JSONArray[n];
+      parts = new JSONObject[n];
       routeParts.put(id, parts);
     }
-    parts[i] = m.getJSONArray("pts");
+    parts[i] = m;
     int count = 0;
-    for (JSONArray p : parts) {
+    for (JSONObject p : parts) {
       if (p == null) return;
-      count += p.length();
+      count += p.getJSONArray("pts").length();
     }
     double[] la = new double[count], lo = new double[count];
+    byte[] lv = new byte[count];
     int j = 0;
-    for (JSONArray p : parts) {
+    for (JSONObject part : parts) {
+      JSONArray p = part.getJSONArray("pts");
+      // "c", a traffic level per point, is left out by a comma without traffic; one of the wrong length is not used
+      JSONArray c = part.optJSONArray("c");
+      if (c != null && c.length() != p.length()) c = null;
       for (int k = 0; k < p.length(); k++, j++) {
         la[j] = p.getJSONArray(k).getDouble(0);
         lo[j] = p.getJSONArray(k).getDouble(1);
+        int v = c == null ? 0 : c.optInt(k, 0);
+        lv[j] = (byte) (v < 0 || v > 4 ? 0 : v);
       }
     }
     routeParts.remove(id);
-    route = new Route(id, la, lo);
+    route = new Route(id, la, lo, lv);
   }
 
   private static void onTile(JSONObject m) throws Exception {

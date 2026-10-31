@@ -58,7 +58,7 @@ public class GlCullTest {
     float[][] rb = boxes(rp), ub = boxes(up);
 
     Old old = new Old(rp, rb, rc, rat, up, ub, uat);
-    GlCull neu = new GlCull(null, GROUPS, rp, rb, rc, rat, up, ub, uat);
+    GlCull neu = new GlCull(null, ROUTE, 1, rp, rb, rc, rat, up, ub, null, uat);
     System.out.println("pieces " + neu.count + ", segments " + neu.segs + ", " + neu.bytes() / 1024 + " KB");
     int bad = 0;
 

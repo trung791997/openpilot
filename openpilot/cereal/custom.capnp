@@ -94,6 +94,9 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
     }
     version @12 :UInt16;
     speedLimit @13 :Float32;  # m/s, Mapbox posted limit on the matched route segment; 0 = unknown
+    # traffic per route point, from point i to i + 1 (the worst Mapbox level on those segments; the last repeats the one
+    # before): 0 unknown, 1 low, 2 moderate, 3 heavy, 4 severe. Empty without a route or from an older navigationd.
+    routeCongestion @14 :List(UInt8);
   }
 
   phoneGps @3 :StarPilotCarState.Gps;  # sourceMonoTime is comma receive time minus the phone's fix age

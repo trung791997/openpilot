@@ -136,7 +136,7 @@ final class MapView extends View {
       songArtist = text(12, inter(false), 0xffaab4c8),
       sign = text(8.5f, Typeface.DEFAULT_BOLD, 0xff111111),
       signBig = text(23, Typeface.DEFAULT_BOLD, 0xff111111);
-  private final Path routePath = new Path(), carpetPath = new Path(), gridPath = new Path(), coverClip = new Path();
+  private final Path routePath = new Path(), gridPath = new Path(), coverClip = new Path();
   // the music card's shape and logo, built again only when the card moves (songAt, its top); the turn card's
   // shape follows its rows
   private Path songCard, logoWaves;
@@ -147,6 +147,9 @@ final class MapView extends View {
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
   private final Path[] stubWorld = {new Path(), new Path(), new Path(), new Path(), new Path()};
   private final Path routeWorld = new Path();
+  // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe
+  private final Path[] carpetPaths = {new Path(), new Path(), new Path(), new Path()};
+  static final int[] TRAFFIC = {0xffffb300, 0xffff5722, 0xffc62828};  // moderate, heavy, severe; GlRoads draws the same
   private final Path[] routeWorlds = {routeWorld}, routeFrames = {routePath};
   private final Matrix world = new Matrix();  // world metres to the car's frame, this frame
   private final float[] worldV = new float[9], tickEN = new float[2];
@@ -226,6 +229,7 @@ final class MapView extends View {
     String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
+    byte[][] routeLevel = new byte[0][];  // traffic per segment of each route run, 0 unknown to 4 severe (Feed.Route.lvl)
     float[][] routeAlong = new float[0][];  // metres along the route at each point of each run, runs end to end
     Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
   }
@@ -764,6 +768,7 @@ final class MapView extends View {
     s.ay = a[1];
     s.mpt = Feed.metersPerTile(lat);
     s.tilesVersion = version;
+    List<byte[]> levels = new ArrayList<byte[]>();
     List<float[]> route = new ArrayList<float[]>(), stubs = new ArrayList<float[]>(), roads = new ArrayList<float[]>();
     List<Integer> stubsCls = new ArrayList<Integer>(), roadsCls = new ArrayList<Integer>();
     List<String> stubsName = new ArrayList<String>(), roadsName = new ArrayList<String>();
@@ -771,6 +776,7 @@ final class MapView extends View {
     if (r != null) {
       s.routeId = r.id;
       Run run = new Run();
+      java.io.ByteArrayOutputStream lv = new java.io.ByteArrayOutputStream();  // the run's traffic, per segment
       double pe = 0, pn = 0;
       boolean pin = false;
       for (int i = 0; i < r.lat.length; i++) {
@@ -780,6 +786,7 @@ final class MapView extends View {
         if (i > 0 && (in || pin)) {
           if (run.size == 0) run.add(pe, pn);
           run.add(e, n);
+          lv.write(r.lvl != null && i - 1 < r.lvl.length ? r.lvl[i - 1] : 0);
           // the route's samples every DENSE m mark the cells whose roads may show as stubs
           int steps = (int) Math.ceil(Math.hypot(e - pe, n - pn) / DENSE);
           for (int j = 0; j <= steps; j++) {
@@ -788,12 +795,17 @@ final class MapView extends View {
           }
         } else if (run.size > 0) {
           route.add(run.take());
+          levels.add(lv.toByteArray());
+          lv.reset();
         }
         pe = e;
         pn = n;
         pin = in;
       }
-      if (run.size > 0) route.add(run.take());
+      if (run.size > 0) {
+        route.add(run.take());
+        levels.add(lv.toByteArray());
+      }
     }
     for (Feed.Tile tile : Feed.tiles.values()) {
       for (int c = 0; c < 5; c++) {  // motorway, major, street, link, minor
@@ -812,6 +824,7 @@ final class MapView extends View {
       }
     }
     s.route = route.toArray(new float[0][]);
+    s.routeLevel = levels.toArray(new byte[0][]);
     s.stubs = stubs.toArray(new float[0][]);
     s.roads = roads.toArray(new float[0][]);
     s.stubsCls = ints(stubsCls);
@@ -832,15 +845,16 @@ final class MapView extends View {
       }
       s.routeAlong[i] = al;
     }
-    s.routeChunks = chunks(s.route, null);
-    s.stubsChunks = chunks(s.stubs, s.stubsCls);
-    s.roadsChunks = chunks(s.roads, s.roadsCls);
+    s.routeChunks = chunks(s.route, null, s.routeLevel);
+    s.stubsChunks = chunks(s.stubs, s.stubsCls, null);
+    s.roadsChunks = chunks(s.roads, s.roadsCls, null);
     return s;
   }
 
   // Cuts each run into pieces of at most CHUNK_M m, a long segment into equal parts first; see Chunks. The pieces
-  // overlap only in the shared point, and the round caps there join them as the round join did.
-  private static Chunks chunks(float[][] runs, int[] cls) {
+  // overlap only in the shared point, and the round caps there join them as the round join did. With lv, the
+  // route's traffic per segment of each run, a piece also ends where the traffic changes and its cls is the level.
+  private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv) {
     List<float[]> pts = new ArrayList<float[]>();
     List<Integer> pcls = new ArrayList<Integer>();
     List<Float> pat = new ArrayList<Float>();
@@ -852,14 +866,17 @@ final class MapView extends View {
       run.add(p[0], p[1]);
       start = along;
       double len = 0;
+      byte[] rl = lv != null && r < lv.length ? lv[r] : null;
+      int cur = 0;  // the level of the piece being built
       for (int i = 2; i + 1 < p.length; i += 2) {
         double pe = p[i - 2], pn = p[i - 1], de = p[i] - pe, dn = p[i + 1] - pn, d = Math.hypot(de, dn);
         int parts = Math.max(1, (int) Math.ceil(d / CHUNK_M));
+        int level = rl != null && i / 2 - 1 < rl.length ? rl[i / 2 - 1] : 0;
         for (int j = 1; j <= parts; j++) {
-          if (len > 0 && len + d / parts > CHUNK_M) {
+          if (len > 0 && (len + d / parts > CHUNK_M || level != cur)) {
             float[] c = run.take();
             pts.add(c);
-            pcls.add(cls == null ? 0 : cls[r]);
+            pcls.add(cls == null ? cur : cls[r]);
             pat.add((float) start);
             start = along;
             run.add(c[c.length - 2], c[c.length - 1]);
@@ -867,13 +884,14 @@ final class MapView extends View {
           }
           if (j == parts) run.add(p[i], p[i + 1]);
           else run.add(pe + de * j / parts, pn + dn * j / parts);
+          cur = level;
           len += d / parts;
           along += d / parts;
         }
       }
       if (run.size >= 4) {
         pts.add(run.take());
-        pcls.add(cls == null ? 0 : cls[r]);
+        pcls.add(cls == null ? cur : cls[r]);
         pat.add((float) start);
       }
       run.size = 0;
@@ -1305,7 +1323,7 @@ final class MapView extends View {
     if (!onGpu) {
       routePath.rewind();
       routeWorld.rewind();
-      carpetPath.rewind();
+      for (Path p : carpetPaths) p.rewind();
       for (Path p : stubPaths) p.rewind();
       for (Path p : stubWorld) p.rewind();
       gridPath.rewind();
@@ -1340,9 +1358,12 @@ final class MapView extends View {
       if (s.route.length > 0) {
         stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
         carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
-        carpet.setColor(modeColor(Feed.mode));
-        carpet.setAlpha(242);
-        canvas.drawPath(carpetPath, carpet);
+        for (int l = 0; l < carpetPaths.length; l++) {
+          if (carpetPaths[l].isEmpty()) continue;
+          carpet.setColor(l == 0 ? modeColor(Feed.mode) : TRAFFIC[l - 1]);
+          carpet.setAlpha(242);
+          canvas.drawPath(carpetPaths[l], carpet);
+        }
       }
       canvas.restore();
     }
@@ -1428,7 +1449,7 @@ final class MapView extends View {
         z1 = Math.max(z1, z);
       }
       if (x1 < BOX_X0 || x0 > BOX_X1 || z1 < BOX_Z0 || z0 > BOX_Z1) continue;
-      int c = pc.cls[i];
+      int c = kept.length == 1 ? 0 : pc.cls[i];  // the route's surface is one path whatever the traffic
       if (z0 >= NEAR_Z) kept[c].addPath(pc.path[i]);
       else line(pc.pts[i], 0, near[c], ce, cn, ch, sh, ik, Float.NaN, 0);
     }
@@ -1471,14 +1492,34 @@ final class MapView extends View {
     }
   }
 
+  // line() into carpetPaths, each segment into the path for its traffic level (lv per segment, may be short).
+  private void carpetLine(float[] p, byte[] lv, int from, float ce, float cn, float ch, float sh, float ik, float fe, float fn) {
+    boolean pen = false;
+    int last = -1;
+    float px = 0, pz = 0;
+    for (int i = 2 * from; i + 1 < p.length; i += 2) {
+      float de = (i == 2 * from && !Float.isNaN(fe) ? fe : p[i]) - ce;
+      float dn = (i == 2 * from && !Float.isNaN(fe) ? fn : p[i + 1]) - cn;
+      float x = (de * ch - dn * sh) * ik, z = (de * sh + dn * ch) * ik;
+      if (i > 2 * from) {
+        int seg = i / 2 - 1, l = lv != null && seg < lv.length ? lv[seg] : 0, k = l < 2 ? 0 : l - 1;
+        if (k != last) pen = false;  // a new path starts its own stroke
+        last = k;
+        pen = segment(carpetPaths[k], px, pz, x, z, pen);
+      }
+      px = x;
+      pz = z;
+    }
+  }
+
   // The carpet: the route from the car's place on it to the end of the scene, so the driven part is bare road.
   private void carpet(Scene s, Frame f, float ce, float cn, float ch, float sh, float ik, float reach) {
     if (f.cRun < 0) return;
-    line(s.route[f.cRun], f.cSeg, carpetPath, ce, cn, ch, sh, ik, f.cutE, f.cutN);
+    carpetLine(s.route[f.cRun], s.routeLevel[f.cRun], f.cSeg, ce, cn, ch, sh, ik, f.cutE, f.cutN);
     for (int r = f.cRun + 1; r < s.route.length; r++) {
       float[] b = s.routeBox[r];
       if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
-      line(s.route[r], 0, carpetPath, ce, cn, ch, sh, ik, Float.NaN, 0);
+      carpetLine(s.route[r], s.routeLevel[r], 0, ce, cn, ch, sh, ik, Float.NaN, 0);
     }
   }
 
