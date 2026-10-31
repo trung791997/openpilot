@@ -703,10 +703,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   // the tag or an edge, as the view decides. The texture holds premultiplied colour, blended as such.
   private void labels(MapView.Frame f, int w, int h) {
     MapView.Labels set = map.labels;
-    int n = set == null ? 0 : Math.min(set.count, atlasText.length);
+    int n = set == null || set.s != f.s ? 0 : Math.min(set.count, atlasText.length);  // none placed from an old anchor
     if (n == 0) return;
+    // every row, so a name left in a row the last redraw erased is not taken as still there
     boolean same = true;
-    for (int i = 0; i < n && same; i++) same = set.text[i].equals(atlasText[i]);
+    for (int i = 0; i < atlasText.length && same; i++) same = i < n ? set.text[i].equals(atlasText[i]) : atlasText[i] == null;
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
     if (!same) {
       if (atlas == null) {
@@ -720,6 +721,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         atlasCanvas.drawText(set.text[i], PAD, i * ROW + BASE, paints[1]);
         atlasText[i] = set.text[i];
       }
+      for (int i = n; i < atlasText.length; i++) atlasText[i] = null;
       GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, atlas, 0);
     }
     float off = f.free ? MapView.FREE_X - MapView.CAR_X : 0;

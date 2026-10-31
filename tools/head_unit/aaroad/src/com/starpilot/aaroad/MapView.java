@@ -161,6 +161,7 @@ final class MapView extends View {
   private long logFrom;
   private String drawnRoad;
   private volatile Frame latest;  // the last frame asked for, by either thread
+  private Feed.Pose pokedPose;
   private static final double MOVE_PX = 1, TURN_DEG = 0.4, ZOOM_EPS = 0.01;
   private static final long REDRAW_MS = 1000;  // the clock, the trip countdown and the song ring tick on their own
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
@@ -190,11 +191,13 @@ final class MapView extends View {
 
   // The labels as chosen, for the GPU layer: it moves them with the map on its own clock (Peter 2026-10-30).
   static final class Labels {
+    final Scene s;  // whose anchor e, n are from: a rebuild moves it
     final String[] text;
     final float[] e, n, w;
     final int count;
 
-    Labels(String[] text, float[] e, float[] n, float[] w, int count) {
+    Labels(Scene s, String[] text, float[] e, float[] n, float[] w, int count) {
+      this.s = s;
       this.text = text.clone();
       this.e = e.clone();
       this.n = n.clone();
@@ -413,12 +416,21 @@ final class MapView extends View {
     Scene s = scene;
     if (s == null) return;
     Frame f = latest;
-    if (f != null) {
+    if (f != null && f.s == s) {  // not one from before a rebuild, placed from the old anchor
       currentRoad(s, f.ce, f.cn, f.h, now);
       String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
       placeLabels(s, f.ce, f.cn, f.ch, f.sh, f.ik, f.reach, f.free, shown, now);
       if (labelAt == now) {
-        labels = new Labels(labelText, labelE, labelN, labelW, labelCount);
+        labels = new Labels(s, labelText, labelE, labelN, labelW, labelCount);
+        gpu.poke();
+      }
+    }
+    // the GPU layer idles at a standstill; a fix that would move the car on screen wakes it at once
+    Feed.Pose p = pose();
+    if (p != pokedPose) {
+      pokedPose = p;
+      double[] held = heldW, w = Feed.world(p.lat, p.lon);
+      if (p.spd >= HOLD_SPEED || held == null || Math.hypot(w[0] - held[0], w[1] - held[1]) * s.mpt > HOLD_DRIFT) {
         gpu.poke();
       }
     }
@@ -576,6 +588,7 @@ final class MapView extends View {
   // onDraw and the GPU layer's own clock both take it from here, so the two agree; synchronized, as both may ask
   // while the GPU layer warms up.
   static final class Frame {
+    Scene s;  // the scene the frame was made for: ce, cn are metres from its anchor
     float ce, cn, ch, sh, ik, reach, cutE, cutN, cut = Float.NaN;
     double h, k, base;
     int cRun = -1, cSeg, color;
@@ -588,6 +601,7 @@ final class MapView extends View {
 
   synchronized Frame frame(Scene s, long now) {
     Frame f = new Frame();
+    f.s = s;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     f.moving = spd >= HOLD_SPEED;
@@ -1260,7 +1274,7 @@ final class MapView extends View {
     String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     placeLabels(s, ce, cn, ch, sh, ik, reach, free, shown, now);
     if (labelAt == now && gpu != null) {
-      labels = new Labels(labelText, labelE, labelN, labelW, labelCount);
+      labels = new Labels(s, labelText, labelE, labelN, labelW, labelCount);
       gpu.poke();
     }
     if (!onGpu) moveLabels(ce, cn, ch, sh, ik, free);  // else the GPU layer moves and draws them
