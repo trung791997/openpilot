@@ -22,8 +22,8 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad-turn-hwy.apk` | cheap culling, route traffic, brake lights, turn card from the comma, gold highways, bridges on top (`887675898`); installed 2026-10-31 night, comma on `bb4a12ca5` |
-| Previous | `aaroad-slim-timing.apk` | slim cards + frame-part timing (`ace790491`) |
+| Installed now | `aaroad-signals.apk` | exit/highway badges (`f091686b2`), free-drive roads ahead (`4856311cb`), traffic-light icons (`1d2a7a2f9`); installed 2026-10-31 night, comma on `1d2a7a2f9` |
+| Previous | `aaroad-turn-hwy.apk` | cheap culling, route traffic, brake lights, turn card from the comma, gold highways, bridges on top (`887675898`) |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
 
 The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the commit with `build.sh` in a scratch copy (it runs `rm -rf out`).
@@ -62,6 +62,8 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 11. **Free-drive map loads ahead** (2026-10-31): static only, not installed. APK only; the comma already sends the tiles ahead. Check on a 70 mph drive with no route that roads reach the top of the screen the whole way, and that the corners and ramps do not leave a bare edge. The scene now holds more roads at highway speed (harness: 1932 lines, 5572 pieces, against 206 and 440), so read the `gl parts` cull and upload lines to see what that costs on the Tegra.
 
 ## Log
+
+- **Installed** 2026-10-31 night (parked, Peter's OK): comma fast-forwarded to `1d2a7a2f9` and rebooted (came back, nav/feed processes up); `aaroad-signals.apk` installed on the head unit (`install -r` Success), `hu-reboot` sent in Park, adb key removed. Waiting on the ignition cycle. Not driven yet. Check on the next drive: Open 10 (badges), 11 (free-drive roads ahead, `gl parts` cull/upload cost), and traffic-light coverage in the z14 tiles. Rollback: `aaroad-turn-hwy.apk`.
 
 ### 2026-10-31
 - **Traffic lights on the dash map, like Google Maps.** *static*.
