@@ -60,6 +60,15 @@ final class MapView extends View {
   private static final float CHUNK_M = 150, NEAR_Z = -200;
   static final float FREE_X = 292;  // the meter's centre
   static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
+  // Brake lights (Peter 2026-10-31): the sprite's tail lights, the C shapes at rows 30 to 38, glow red while the pose
+  // says the car is braking, fading in and out over GLOW_MS. The view redraws only while the glow changes; the tick
+  // runs every GLOW_TICK_MS during a fade on the GPU path, so the fade shows as a few steps rather than one.
+  static final float LIGHT_DX = 16, LIGHT_DY = 8;  // each light's centre from the car point
+  private static final long GLOW_MS = 150, GLOW_TICK_MS = 33;
+  private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private boolean glowOn;
+  private float glowFrom, drawnGlow;
+  private long glowAt;
   static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
   // Every road at its real width, so an intersection looks like the one out of the windscreen (Peter 2026-10-29:
   // the route drawn wider than the roads around it looked wrong; the orange line alone marks the route). Metres
@@ -408,7 +417,8 @@ final class MapView extends View {
         XposedBridge.log("aaroad: map tick failed: " + t);
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
-      postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? SLOW_MS : Math.max(FRAME_MS, 2 * drawMs));
+      long slow = glowing(SystemClock.uptimeMillis()) ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
+      postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs));
     }
   };
 
@@ -448,7 +458,7 @@ final class MapView extends View {
     String road = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     if (st != drawnStamp) gpu.poke();
     if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
-        || !cardKey(now, s.route.length == 0).equals(cardsKey)) {
+        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow) {
       invalidate();
     } else {
       skipped++;
@@ -507,6 +517,7 @@ final class MapView extends View {
     Scene s = scene;
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
+    if (glow(now) != drawnGlow) return true;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     boolean moving = spd >= HOLD_SPEED;
@@ -1376,8 +1387,12 @@ final class MapView extends View {
   }
 
   private void drawCar(Canvas canvas) {
+    float g = glow(SystemClock.uptimeMillis());
+    drawnGlow = g;
+    if (g > 0) lights(canvas, g, true);
     if (car != null) {
       canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, null);
+      if (g > 0) lights(canvas, g, false);
     } else {
       fill.setColor(Color.WHITE);
       Path p = new Path();
@@ -1387,6 +1402,49 @@ final class MapView extends View {
       p.lineTo(CAR_X - 10, CAR_Y + 10);
       p.close();
       canvas.drawPath(p, fill);
+    }
+  }
+
+  // The brake glow, 0 to 1: it notices Feed.brake changing and moves from where it was toward the new end at 1/GLOW_MS
+  // a millisecond, so a tap shorter than the fade turns back from part way. Off while the pose is stale.
+  private float glow(long now) {
+    boolean on = Feed.brake && now - Feed.poseAt < STALE_MS;
+    if (on != glowOn) {
+      glowFrom = glowLevel(now);
+      glowOn = on;
+      glowAt = now;
+    }
+    return glowLevel(now);
+  }
+
+  private float glowLevel(long now) {
+    float d = (now - glowAt) / (float) GLOW_MS;
+    return glowOn ? Math.min(1f, glowFrom + d) : Math.max(0f, glowFrom - d);
+  }
+
+  private boolean glowing(long now) {
+    float g = glow(now);
+    return g != (glowOn ? 1f : 0f) || g != drawnGlow;
+  }
+
+  // Under the sprite, a wide red halo that shows past the body's sides; over it, a bright core on each lamp.
+  private void lights(Canvas canvas, float g, boolean under) {
+    for (int side = -1; side <= 1; side += 2) {
+      float x = CAR_X + side * LIGHT_DX, y = CAR_Y + LIGHT_DY;
+      if (under) {
+        glowPaint.setColor(0xffff1a1a);
+        glowPaint.setAlpha(Math.round(60 * g));
+        canvas.drawCircle(x, y, 13, glowPaint);
+        glowPaint.setAlpha(Math.round(90 * g));
+        canvas.drawCircle(x, y, 9, glowPaint);
+      } else {
+        glowPaint.setColor(0xffff2a20);
+        glowPaint.setAlpha(Math.round(150 * g));
+        canvas.drawCircle(x, y, 6, glowPaint);
+        glowPaint.setColor(0xffff9a80);
+        glowPaint.setAlpha(Math.round(200 * g));
+        canvas.drawCircle(x, y, 2.5f, glowPaint);
+      }
     }
   }
 

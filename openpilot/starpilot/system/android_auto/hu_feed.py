@@ -26,7 +26,8 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      c is the traffic on each point's stretch to the next, one per pts entry (0 unknown, 1 low, 2 moderate, 3 heavy,
      4 severe), left out when navigationd gives none. id is the crc32 of a key that includes c's hash, so new traffic
      makes a new id (the head unit ignores a repeated one); an older app ignores c
-  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age"}, the last GPS fix carried forward to now
+  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b"}, the last GPS fix carried forward to now; "b": 1 while the
+     car is braking (brake_of), left out otherwise, so an older app ignores it
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
   a  album cover, once it is downloaded and every COVER_EVERY s while a song is on: {"id", "i", "n", "b": base64};
@@ -112,6 +113,21 @@ class HeadingFilter:
       self.heading = (predicted + BEARING_GAIN * ((bearing - predicted + 180) % 360 - 180)) % 360
     self.stamp = now_ns
     return self.heading
+
+
+BRAKE_ACCEL = -0.5  # m/s^2: openpilot's own long command firmer than this lights the cluster car's brake lights
+
+
+def brake_of(car_state, car_control) -> bool:
+  """Whether the car is braking, for the cluster car's brake lights: the driver on the pedal, or openpilot's long
+  control asking for more than BRAKE_ACCEL. carState.brakeLights is deprecated and the Honda carstate does not fill
+  a brake-light field, so the lights follow these two. Either message may be None (not seen yet)."""
+  if car_state is not None and car_state.brakePressed:
+    return True
+  if car_control is None or not car_control.longActive:
+    return False
+  accel = float(car_control.actuators.accel)
+  return math.isfinite(accel) and accel < BRAKE_ACCEL
 
 
 def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
@@ -289,7 +305,9 @@ class CerealReader:
                    bool(axis.nativeAcknowledged and axis.desiredLongitudinal) if axis is not None else None)
     value = {'mode': mode, 'metric': self.metric(time.monotonic()), 'nav': None, 'route': None, 'fix': None,
              'speed': float(sm['carState'].vEgo) if sm.seen['carState'] else 0., 'yaw_rate': 0.,
-             'media': self.media(time.monotonic())}
+             'media': self.media(time.monotonic()),
+             'brake': brake_of(sm['carState'] if sm.seen['carState'] else None,
+                               control if sm.seen['carControl'] else None)}
     motion = sm['deviceMotion'].angularVelocityDevice
     if sm.seen['deviceMotion'] and motion.valid and abs(motion.z) < 1.:
       value['yaw_rate'] = math.degrees(motion.z)  # device z points down: + is a right turn, as compass heading runs
@@ -467,6 +485,8 @@ class HeadUnitFeed:
       self.sent_route, self.last_route = key, now
     pose = carry(value['fix'], value['speed'], value['yaw_rate'], self.clock_ns()) if value['fix'] else None
     if pose is not None:
+      if value.get('brake'):
+        pose['b'] = 1
       self._send('p', pose)
       if self.have is not None:
         self.send_tiles(pose['lat'], pose['lon'], now)

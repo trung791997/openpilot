@@ -53,10 +53,15 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
    - **Fix options:** restart the Android Auto service while warm (quick), or raise the aa0 wait for cold boots (code; check with the StarPilot Auto owner first).
 
 5. **Traffic colours** (2026-10-31): static only, not installed. Check on a drive that refreshes stay quiet in the log and the colours change. In `exp` mode the carpet is orange, so moderate amber is hard to tell apart; Peter may want a different colour there.
+6. **Brake lights on the car icon** (2026-10-31): static only, not installed. Check on a drive that the lights come on with the pedal and with openpilot's firm braking (accel below -0.5), and go off cleanly. On the GPU layer the glow can start up to 100 ms after the pose (the slow tick); Peter may want the -0.5 threshold or the glow size changed.
 
 ## Log
 
 ### 2026-10-31
+- **Brake lights on our car icon** (Open 6). *static*.
+  - Comma: `hu_feed.brake_of` is true when the driver presses the brake (`carState.brakePressed`) or openpilot long is active and asks for less than -0.5 m/s² (`carControl.actuators.accel`). `carState.brakeLights` is deprecated and the Honda carstate fills no brake-light field, so it is not used. The pose `p` carries `"b": 1` only while braking; older apps ignore it.
+  - Head unit: `Feed.brake` from the pose. The two tail lights glow red (a halo under the sprite, a bright core over each lamp) and fade in or out over 150 ms; off if the pose is stale. Drawn in `drawCar`, which both the GPU and software paths call. The view redraws only while the glow changes, and the GPU-path tick drops from 100 ms to 33 ms during a fade.
+  - Static: python 324 passed (322 before). GlCullTest PASS. Harness without braking is identical to the last commit (13/13, with and without traffic). Brake renders at 75 ms (half) and 200 ms (full) look right. APK 492,278 bytes.
 - **Traffic colours on the route line** (Open 5). *static*, plus one live Mapbox check.
   - Comma: Directions asks for `congestion` and `enable_refresh`. Every 5 min while guiding, `directions-refresh` fetches fresh traffic from the car's place on. It runs on the nav executor and counts on the `directions` budget without blocking. On any error the old colours stay. Geometry, steps and guidance are never touched.
   - `navigation.routeCongestion` (custom.capnp @14) has one level per preview point, the worst within each stride. `hu_feed` sends it as `c` in the `r` datagrams, aligned with `pts`. A traffic change resends the route under a new id.

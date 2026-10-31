@@ -120,6 +120,36 @@ def test_pose_carries_the_fix_forward_at_speed():
   assert hf.carry(FIX, 20., 0., FIX[0] + int((hf.MAX_CARRY + 0.1) * 1e9)) is None
 
 
+def test_brake_lights_follow_the_pedal_or_openpilots_firm_braking():
+  from types import SimpleNamespace as NS
+  def cs(pressed): return NS(brakePressed=pressed)
+  def cc(active, accel): return NS(longActive=active, actuators=NS(accel=accel))
+  assert hf.brake_of(cs(True), None)
+  assert hf.brake_of(cs(True), cc(True, 1.0))
+  assert not hf.brake_of(cs(False), None) and not hf.brake_of(None, None)
+  assert hf.brake_of(cs(False), cc(True, -0.6))
+  assert not hf.brake_of(cs(False), cc(True, -0.5))       # gentle slowing is not a brake light
+  assert not hf.brake_of(cs(False), cc(False, -2.0))      # stock ACC's command is not ours to read
+  assert not hf.brake_of(None, cc(True, float('nan')))
+
+
+def test_pose_carries_a_brake_flag_only_while_braking():
+  feed, sock, now, _ = make(snapshot(brake=True))
+  sock.hello()
+  feed.tick()
+  poses = [m for m, a in sock.sent if m['t'] == 'p']
+  assert poses and poses[-1]['b'] == 1
+  feed, sock, now, _ = make(snapshot(brake=False))
+  sock.hello()
+  feed.tick()
+  poses = [m for m, a in sock.sent if m['t'] == 'p']
+  assert poses and 'b' not in poses[-1]                    # the old pose body, byte for byte
+  feed, sock, now, _ = make(snapshot())                     # a reader without the key
+  sock.hello()
+  feed.tick()
+  assert 'b' not in [m for m, a in sock.sent if m['t'] == 'p'][-1]
+
+
 def test_road_tiles_go_only_to_head_units_that_take_them_and_lack_them():
   raw = bytes(range(256)) * 9   # 2304 bytes: three datagrams
   feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
