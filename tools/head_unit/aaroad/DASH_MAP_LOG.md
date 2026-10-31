@@ -22,8 +22,8 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad-gl30.apk` | GPU map at 30 fps, glitchy while driving |
-| Ready to install | `aaroad-slim-timing.apk` | slim cards + frame-part timing (`ace790491`) |
+| Installed now | `aaroad-slim-timing.apk` | slim cards + frame-part timing (`ace790491`), installed 2026-10-31 evening |
+| Previous | `aaroad-gl30.apk` | GPU map at 30 fps, glitchy while driving |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
 
 The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the commit with `build.sh` in a scratch copy (it runs `rm -rf out`).
@@ -37,11 +37,12 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
   3. Filter on the comma, because the head unit has no grep.
   4. Delete the key on the comma afterwards.
 - Never print the head unit's IP.
+- **Network (2026-10-31):** the head unit is on Peter's phone hotspot. The comma's Wi-Fi keeps switching back to `starpilot-android-auto` (the AAWireless network), which leaves it no path to the head unit. Run `nmcli con up` on the hotspot connection and do the adb work in the same command, right away. Peter OK'd switching it. The hotspot can hand out new addresses, so if `/tmp/hu/ip` stops answering, scan the subnet for port 5555.
 
 ## Open
 
 1. **Map glitch while driving.** The head-unit log shows GL frames of 32–43 ms (20–24 fps), with worst frames of 0.23–0.38 s that match the freeze in Peter's video. It is the map's own frames, not GPS. Card redraws take 35–55 ms each, 2–6 times a second, and compete for the CPU.
-   - **Next:** install `aaroad-slim-timing.apk`, drive about 10 min, and read the `aaroad: gl parts avg/max ms:` lines to see which stage is slow.
+   - **Next:** (installed) drive about 10 min, and read the `aaroad: gl parts avg/max ms:` lines to see which stage is slow.
    - **Suspects:** card redraws, `new int[2]` per frame in `GlRoads.drawFrame`, and `new Frame()` per frame in `MapView.frame()`, which could cause GC pauses.
 2. **Slim cards** (`a9da6e81b`): static only, so Peter has to see them on the dash. Song names cut off sooner now, so maybe scroll them or widen that card a little.
 3. **Double X on the StarPilot Auto car screen** (`2299affae`): fixed, but the comma has not been updated yet. Update it when parked (standing rule).
