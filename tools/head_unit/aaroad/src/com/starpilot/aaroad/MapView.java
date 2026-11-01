@@ -19,6 +19,7 @@ import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
 import de.robv.android.xposed.XposedBridge;
+import java.io.File;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -110,9 +111,8 @@ final class MapView extends View {
   // the turn card goes once the comma's nav state is this old (it sends it once a second)
   private static final long NAV_STALE_MS = 3000;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
-  // once showing, the map rides out a position gap this long with the car held where it was (Peter 2026-10-30
-  // photo: mid-route the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused)
-  private static final long GAP_HOLD_MS = 10000;
+  // once showing, the map rides out a position gap with the car held where it was (Peter 2026-10-30 photo: mid-route
+  // the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused); see Liveness
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout", "turn_icon"};
   // arrow in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
@@ -197,8 +197,10 @@ final class MapView extends View {
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
   private boolean live;
-  private boolean hideShown;           // why the map hides, kept as values and put in words only when logged
-  private long hideAge;
+  private String hideWhy = "not started";  // why the map is hidden, for the log
+  private boolean holding;                // up only because the comma's feed still talks through a GPS gap
+  private long poseGapFrom;               // uptime the position went stale while up (0: it is fresh)
+  private boolean whereLogged;
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
@@ -330,6 +332,10 @@ final class MapView extends View {
     super(context);
     this.navi = navi;
     this.pkg = pkg;
+    try {  // the SD card first; the meter process's own files dir when it may not write there
+      Events.dirs = new File[] {new File("/sdcard/aaroad"), new File(context.getFilesDir(), "aaroad")};
+    } catch (Throwable ignored) {
+    }
     setLayerType(LAYER_TYPE_SOFTWARE, null);  // perspective paths and clipPath: software Skia only on 4.2
     setVisibility(INVISIBLE);
     float[] v = cameraValues();
@@ -458,9 +464,16 @@ final class MapView extends View {
         Feed.wanted = shown;
         long now = SystemClock.uptimeMillis();
         long age = Feed.poseAt > 0 ? now - Feed.poseAt : Long.MAX_VALUE;
-        hideShown = shown;
-        hideAge = age;
-        setLive(shown && age < (live ? GAP_HOLD_MS : STALE_MS));
+        long feedAge = Feed.stateAt > 0 ? now - Feed.stateAt : Long.MAX_VALUE;
+        String why = Liveness.hideReason(shown, live, age, feedAge);
+        if (why != null && !shown) why += pageHidden();
+        hideWhy = why;
+        noteGap(now, age, feedAge);
+        setLive(why == null);
+        if (!whereLogged && Events.where() != null) {
+          whereLogged = true;
+          XposedBridge.log("aaroad: map events go to " + Events.where());
+        }
         if (live) {
           rebuildIfNeeded(now);
           if (gpu != null && gpu.ready()) {
@@ -474,7 +487,7 @@ final class MapView extends View {
           if (++checks % 900 == 150) logDue = true;  // with the next frame's timing
         }
       } catch (Throwable t) {
-        XposedBridge.log("aaroad: map tick failed: " + t);
+        say("aaroad: map tick failed: " + t);
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
       long slow = glowing(SystemClock.uptimeMillis()) ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
@@ -528,6 +541,7 @@ final class MapView extends View {
   @Override
   protected void onAttachedToWindow() {
     super.onAttachedToWindow();
+    say("aaroad: map view attached " + id());
     removeCallbacks(tick);
     post(tick);
   }
@@ -536,7 +550,56 @@ final class MapView extends View {
   protected void onDetachedFromWindow() {
     removeCallbacks(tick);
     Feed.wanted = false;
+    // Honda Hack re-creating its meter page takes this view with it; a new one comes with the new page (Meter)
+    say("aaroad: " + (live ? "hidden" : "still hidden") + " reason=view detached " + id());
+    live = false;
     super.onDetachedFromWindow();
+  }
+
+  // One line to logcat and to the rolling file (Events).
+  static void say(String line) {
+    XposedBridge.log(line);
+    Events.record(line);
+  }
+
+  private String id() {
+    return "map@" + Integer.toHexString(System.identityHashCode(this));
+  }
+
+  // Which of Honda Hack's views is keeping its nav page off screen, so a page switch can be told from the window
+  // or the whole display going.
+  private String pageHidden() {
+    if (navi.getWindowToken() == null) return " (nav page detached)";
+    if (navi.getWindowVisibility() != VISIBLE) return " (meter window " + vis(navi.getWindowVisibility()) + ")";
+    for (View v = navi; v != null; v = v.getParent() instanceof View ? (View) v.getParent() : null) {
+      if (v.getVisibility() != VISIBLE) {
+        String n = null;
+        try {
+          if (v.getId() != NO_ID) n = v.getResources().getResourceEntryName(v.getId());
+        } catch (Throwable ignored) {
+        }
+        return " (" + (n != null ? n : v.getClass().getSimpleName()) + " " + vis(v.getVisibility()) + ")";
+      }
+    }
+    return "";
+  }
+
+  private static String vis(int v) {
+    return v == GONE ? "gone" : v == INVISIBLE ? "invisible" : String.valueOf(v);
+  }
+
+  // The GPS gaps the map rides out, one line when it starts holding past the old limit and one when the position
+  // comes back, so the events file shows each gap and how long it was.
+  private void noteGap(long now, long age, long feedAge) {
+    boolean stale = live && age != Long.MAX_VALUE && age >= STALE_MS;
+    if (stale && poseGapFrom == 0) poseGapFrom = now - age;
+    boolean h = Liveness.holding(live, age, feedAge);
+    if (h && !holding) say("aaroad: map held reason=no position for " + age / 1000 + " s, comma feed alive");
+    holding = h;
+    if (!stale && poseGapFrom != 0) {
+      if (live) say(String.format(Locale.US, "aaroad: position back after %.1f s", (now - poseGapFrom) / 1000.0));
+      poseGapFrom = 0;
+    }
   }
 
   private View find(String name) {
@@ -566,8 +629,11 @@ final class MapView extends View {
       View v = find(n);
       if (v != null) v.setAlpha(on ? 0f : 1f);
     }
-    XposedBridge.log("aaroad: meter map " + (on ? "showing" : "hidden: " + (!hideShown ? "page not shown"
-        : hideAge == Long.MAX_VALUE ? "no position yet" : "no position for " + hideAge / 1000 + " s")));
+    if (!on) {
+      holding = false;
+      poseGapFrom = 0;
+    }
+    say("aaroad: " + (on ? "shown" : "hidden") + " reason=" + (on ? "page shown, position fresh" : hideWhy));
   }
 
   // Whether a frame now would look different from the last one drawn (Peter 2026-10-30: most frames at a light or on
@@ -1638,7 +1704,7 @@ final class MapView extends View {
           ? String.format(Locale.US, ", view %.1f redraws/s", (drawCount - drawsAtLog) * 1000.0 / (now - logFrom)) : "";
       drawsAtLog = drawCount;
       logFrom = now;
-      XposedBridge.log("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
+      say("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
           + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
           + cardSum / drawCount + " cards), " + (checks > 0 ? 100L * skipped / checks : 0) + "% frames skipped"
           + redraws + (gpu != null ? ", " + gpu.takeStats() : "")

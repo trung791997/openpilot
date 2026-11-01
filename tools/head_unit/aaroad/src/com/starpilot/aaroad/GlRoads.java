@@ -798,7 +798,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       ready = true;
       if (!loggedOn) {
         loggedOn = true;
-        XposedBridge.log("aaroad: gpu roads on, " + GLES20.glGetString(GLES20.GL_RENDERER) + ", " + w + "x" + h
+        MapView.say("aaroad: gpu roads on, " + GLES20.glGetString(GLES20.GL_RENDERER) + ", " + w + "x" + h
             + ", first frame " + Math.round(ns / 1e5) / 10.0 + " ms");
       }
       invalidateMap();  // the view stops drawing the roads from its next frame
@@ -938,7 +938,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         for (int i = 0; i < PARTS; i++) if (slowTop[i] > 0) b.append(' ').append(PART_NAMES[i]).append(' ').append(slowTop[i]);
         b.append(')');
       }
-      XposedBridge.log(b.toString());
+      MapView.say(b.toString());
     }
     java.util.Arrays.fill(partSum, 0);
     java.util.Arrays.fill(partMax, 0);
@@ -981,7 +981,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     if (failed) return;
     failed = true;
     ready = false;
-    XposedBridge.log("aaroad: gpu roads off: " + why);
+    MapView.say("aaroad: gpu roads off: " + why);
     try {
       if (dpy != EGL14.EGL_NO_DISPLAY) {
         EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);

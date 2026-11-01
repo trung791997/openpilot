@@ -56,13 +56,13 @@ final class Meter {
               map.gpu = gl;
               gl.setShown(map.getVisibility() == View.VISIBLE);  // the map may have gone live already
             } catch (Throwable t) {
-              XposedBridge.log("aaroad: gpu roads off: " + t);
+              MapView.say("aaroad: gpu roads off: " + t);
             }
           }
           Feed.start();
-          XposedBridge.log("aaroad: meter map added");
+          MapView.say("aaroad: meter map added");
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: meter map failed: " + t);
+          MapView.say("aaroad: meter map failed: " + t);
         }
       }
     });

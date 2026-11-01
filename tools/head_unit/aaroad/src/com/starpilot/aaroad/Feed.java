@@ -247,9 +247,13 @@ final class Feed {
     Thread hello = new Thread(new Runnable() {
       @Override
       public void run() {
+        boolean heard = true;
         while (!dead[0]) {
           try {
-            if (wanted && SystemClock.uptimeMillis() - commaAt < 5000) link.send(hello());
+            boolean h = SystemClock.uptimeMillis() - commaAt < 5000;
+            if (h != heard && wanted) MapView.say("aaroad: comma feed " + (h ? "back" : "lost: nothing from the comma for 5 s"));
+            heard = h;
+            if (wanted && h) link.send(hello());
           } catch (Throwable ignored) {
             // the receive side sees a broken link and starts over
           }
@@ -295,8 +299,12 @@ final class Feed {
     if (m.optInt("v") != 1) return;
     String t = m.optString("t");
     long now = SystemClock.uptimeMillis();
+    // Any datagram says the comma is there, not only its beacon: the beacon is a broadcast, and a head unit's Wi-Fi
+    // drops broadcasts first, so a few lost beacons used to pause the hellos and with them the comma's whole feed
+    // (hu_feed.py drops a peer after 5 s without hellos), taking the map down though poses still came (2026-11-01).
+    commaAt = now;
     if (t.equals("b")) {
-      commaAt = now;
+      // the comma's beacon; nothing more in it
     } else if (t.equals("p")) {
       lat = m.getDouble("lat");
       lon = m.getDouble("lon");
