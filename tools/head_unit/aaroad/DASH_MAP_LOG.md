@@ -73,6 +73,28 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 - **Installed** 2026-10-31 night (parked, Peter's OK): comma fast-forwarded to `1d2a7a2f9` and rebooted (came back, nav/feed processes up); `aaroad-signals.apk` installed on the head unit (`install -r` Success), `hu-reboot` sent in Park, adb key removed. Waiting on the ignition cycle. Not driven yet. Check on the next drive: Open 10 (badges), 11 (free-drive roads ahead, `gl parts` cull/upload cost), and traffic-light coverage in the z14 tiles. Rollback: `aaroad-turn-hwy.apk`.
 
 ### 2026-11-01
+- **Zoomed in, the dash map's camera tilts further toward the horizon for a more 3D look, and eases back to today's tilt as the view zooms out. Cruise is unchanged.** *static*: desktop renders and tests only, not driven, GPU path not run.
+  - Problem: Peter's immersive-nav request asked for a steeper camera tilt in the close-up, like Google Maps' immersive view. The camera always looked down at 55 degrees.
+  - What it does: the camera looks down 48 degrees (`CloseUp.CLOSE_PITCH`) at a displayed range of 180 m or less (`TILT_SHOW`), and 55 degrees from 260 m (`TILT_HIDE`, the close-up look's `ROAD_HIDE`), with a smooth curve between. The tilt follows the displayed range, so it glides with the zoom's own easing (`TAU_IN` 0.8 s, `TAU_OUT` 2 s) and never jumps: in tests it moves at most 0.13 degrees per metre of range.
+  - The camera stays in the same place, so the raised decks (`CloseUp.lift`) are still drawn correctly. The focal length and centre row change with the tilt so that the car stays at (369, 180) and the road is as wide at the car. Only the road ahead looks more laid back: the top edge now sees about 191 m ahead instead of 177.
+  - The lane row's lift and zoom (option B, `Lanes.AT_CAR`) is untouched: it is a screen shift and a range change on top of this.
+  - Code: `CloseUp.pitch(range)` and `CloseUp.camera(pitch, out)` are the one camera; `MapView.cameraValues()` is now `camera(PITCH)`. Each `Frame` carries its tilt and camera values, set in `frame()` only when the tilt changes, so no allocation per frame.
+    - The GPU layer copies the frame's values into its uniforms each frame and places its labels with them.
+    - The UI thread (the software map, label choice, the car's outline under a deck) switches to a frame's camera with `useCamera`.
+  - Static:
+    - `test/TiltTest.java` is new, with 17 checks, all ok. At 55 degrees the camera is bit for bit the old one. Ranges from 260 m up give today's tilt and 180 m or less gives the close-up tilt. The tilt only moves one way, with no jump, and is half way at 220 m. The car stays at (369, 180) with the same width per metre at every tilt. The top edge sees about 191 m. A lifted deck point lies on the camera's ray at the new tilt.
+    - The other tests are ok and `build.sh` builds.
+    - Renders in `/tmp/hu/under/r2_before` and `r2_after`:
+      - The 300 m and 500 m frames are byte-identical to before, apart from the arrival clock text, which also differs between runs of the old code.
+      - The close-up frames and the 192 m frame (part way) are tilted.
+      - Path and op counts are the same in every frame, and draw time is within noise.
+    - Side-by-side in `/tmp/hu/under/compare.png`.
+  - Not checked:
+    - The GL map on the head unit.
+    - The car and its outline in the slow layer (drawn with the GL layer's frame) may sit a frame off the tilted GL map while the tilt eases.
+    - In free drive at 48 degrees, the top corners of the view reach past the drawn box above row 21. They are bare there, under the fog, which is about 95% dark at that height.
+
+### 2026-11-01
 - **The dash map shows railroad crossings as a yellow round "RR" sign, like the traffic lights, and draws the tracks under the roads when zoomed in.** *static*: desktop renders and tests only, not driven, GPU path not run, no real Mapbox crossing seen.
   - Problem: Peter wants a railroad crossing sign on the dash map, and the rail lines if the tiles have them.
   - Head unit: `Feed` reads tile format 6 (the rail table; `VERSION` = 6, so the comma sends format 6 to this app). `Signals` takes point kind 3 as a crossing; crossings cluster only with crossings (a double track is one sign), and the next crossing ahead is drawn big, like the next light. The cap of 6 signs is shared with the lights. `SignalIcon` adds sprites 4 and 5: a yellow disc with a black X and "R R" (the US advance warning sign, W10-1).

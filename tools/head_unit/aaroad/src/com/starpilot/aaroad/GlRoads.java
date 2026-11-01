@@ -176,7 +176,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       + "}\n";
 
   private final MapView map;
-  private final float[] v = MapView.cameraValues();
+  private final float[] v = MapView.cameraValues();  // the frame's camera (MapView.Frame.cam), GL thread
   private final Object lock = new Object();
 
   // handed over under lock: the surface and pokes from the UI thread
@@ -708,6 +708,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glEnable(GLES20.GL_BLEND);
     // the colours blend, the alpha stays 1: the window composites the masks over an opaque layer
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
+    System.arraycopy(f.cam, 0, v, 0, 9);  // tilted with the zoom (CloseUp.pitch)
     projection(w, h, free ? MapView.FREE_X - MapView.CAR_X : 0, f.lift);
     float qa = 1 / (v[4] - v[5] * v[7]);
     part(P_CLEAR);
@@ -875,7 +876,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     for (int i = 0; i < n; i++) {
       float de = set.e[i] - f.ce, dn = set.n[i] - f.cn;
       float x = (de * f.ch - dn * f.sh) * f.ik, z = (de * f.sh + dn * f.ch) * f.ik;
-      if (!map.project(x, z, off, lq) || map.blocked(lq[0], lq[1], set.w[i], f.free, tag)) continue;
+      if (!map.project(f.cam, x, z, off, lq) || map.blocked(lq[0], lq[1], set.w[i], f.free, tag)) continue;
       // where the view's centred text would start and sit, at whole pixels
       float x0 = Math.round(lq[0] - set.w[i] / 2) - PAD, y0 = Math.round(lq[1] + 4) - BASE;
       GLES20.glUniform4f(tRect, x0, y0, x0 + ATLAS_W, y0 + ROW);

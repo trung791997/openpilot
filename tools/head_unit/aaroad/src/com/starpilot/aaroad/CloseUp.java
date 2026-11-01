@@ -110,6 +110,36 @@ final class CloseUp {
     return t * t * (3 - 2 * t);
   }
 
+  // The camera's tilt (Peter's immersive-nav request): it looks down PITCH below the horizon cruising, and CLOSE_PITCH,
+  // further toward the horizon, zoomed in. The tilt follows the displayed range, so it glides with the zoom's own
+  // easing (MapView.frame): today's tilt from TILT_HIDE m out (the close-up look's ROAD_HIDE), all of it by TILT_SHOW.
+  // The camera stays where it is (CAM_H, CAM_ZC, so lift() holds), and the focal length and centre row move with the
+  // tilt to keep the car at CAR_Y and its px per metre across: only the road ahead looks more laid back. At 48 degrees
+  // the top corners of the free-drive view show past FreeView's box above row 21, under the fog's 95% dark.
+  static final double PITCH = Math.toRadians(55), CLOSE_PITCH = Math.toRadians(48);
+  static final float TILT_SHOW = 180, TILT_HIDE = ROAD_HIDE;
+  // MapView's lens at PITCH: focal length and the centre's column and row, px
+  static final double FOCAL = 260, CX = 369, CY = 102.663;
+
+  // the tilt at a displayed range of rng m
+  static double pitch(double rng) {
+    float g = gate(rng, TILT_SHOW, TILT_HIDE);
+    return g <= 0 ? PITCH : PITCH + (CLOSE_PITCH - PITCH) * g;
+  }
+
+  // The camera at a tilt as a 3x3 from the car's frame (x, z, 1) to the screen, row-major as Matrix.setValues takes it,
+  // into out. At PITCH exactly the values it always had.
+  static float[] camera(double pitch, float[] out) {
+    double c0p = CAM_H * Math.sin(PITCH) - CAM_ZC * Math.cos(PITCH);
+    double cp = Math.cos(pitch), sp = Math.sin(pitch), c0 = CAM_H * sp - CAM_ZC * cp;
+    double f = FOCAL * (c0 / c0p);  // the same px per metre across at the car
+    double cy = CY + (FOCAL * (CAM_H * Math.cos(PITCH) + CAM_ZC * Math.sin(PITCH)) / c0p
+                      - f * (CAM_H * cp + CAM_ZC * sp) / c0);  // the car on the same row
+    double[] h = {f, CX * cp, CX * c0, 0, cy * cp - f * sp, cy * c0 + f * (CAM_H * cp + CAM_ZC * sp), 0, cp, c0};
+    for (int i = 0; i < 9; i++) out[i] = (float) (h[i] / c0);
+    return out;
+  }
+
   // The ground point a point hd display metres up is drawn at: its car-frame (x, z) scaled about the camera's foot.
   // Also the factor widths scale by there.
   static float lift(float hd) {

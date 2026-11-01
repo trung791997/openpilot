@@ -45,7 +45,8 @@ import java.util.zip.ZipFile;
 // each frame (x right, z ahead), divided by the zoom k so that roads keep their on-screen width at every zoom.
 // The camera is the mockup's (k = 1): 150 m up, 50 m behind, 55 deg down, focal 260 px, the car at (369, 180).
 final class MapView extends View {
-  private static final double CAM_H = 150, CAM_ZC = -50, PITCH = Math.toRadians(55), FOCAL = 260, CX = 369, CY = 102.663;
+  // the camera's place, tilt and lens: CloseUp's, which tilts it further toward the horizon zoomed in (CloseUp.pitch)
+  private static final double CAM_H = CloseUp.CAM_H, CAM_ZC = CloseUp.CAM_ZC, PITCH = CloseUp.PITCH;
   static final double R0 = 70.03;          // display metres from the car to the range's far edge (y 86)
   static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
   // a little past the screen; see FreeView (2026-10-31: the right edge 240 left the free-drive map's top right bare)
@@ -223,6 +224,7 @@ final class MapView extends View {
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
+  private double camPitch = CloseUp.PITCH;  // the tilt cam and camera are at (useCamera), UI thread
   private String onRoad, switchTo;  // street shown as the one the car is on (null: none); the one waiting to replace it
   private long roadAt, switchSince, lostSince, labelAt;
   private int labelCount;
@@ -401,12 +403,17 @@ final class MapView extends View {
   }
 
   // The camera as a 3x3 from the car's frame (x, z, 1) to the screen, row-major as Matrix.setValues takes it.
+  // At today's (cruising) tilt; a frame's own is Frame.cam.
   static float[] cameraValues() {
-    double cp = Math.cos(PITCH), sp = Math.sin(PITCH), c0 = CAM_H * sp - CAM_ZC * cp;
-    double[] h = {FOCAL, CX * cp, CX * c0, 0, CY * cp - FOCAL * sp, CY * c0 + FOCAL * (CAM_H * cp + CAM_ZC * sp), 0, cp, c0};
-    float[] v = new float[9];
-    for (int i = 0; i < 9; i++) v[i] = (float) (h[i] / c0);
-    return v;
+    return CloseUp.camera(PITCH, new float[9]);
+  }
+
+  // The UI thread's camera (labels, the car's outline under a deck, the software map) to f's tilt.
+  private void useCamera(Frame f) {
+    if (f.pitch == camPitch) return;
+    System.arraycopy(f.cam, 0, cam, 0, 9);
+    camera.setValues(cam);
+    camPitch = f.pitch;
   }
 
   static float dm(float px) {
@@ -558,6 +565,7 @@ final class MapView extends View {
     if (f != null && f.s == s) {  // not one from before a rebuild, placed from the old anchor
       currentRoad(s, f.ce, f.cn, f.h, now);
       String shown = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
+      useCamera(f);
       placeLabels(s, f.ce, f.cn, f.ch, f.sh, f.ik, f.reach, f.free, shown, now);
       if (labelAt == now) {
         labels = new Labels(s, labelText, labelE, labelN, labelW, labelCount);
@@ -817,6 +825,8 @@ final class MapView extends View {
     int cRun = -1, cSeg, color;
     boolean free, moving, settled;
     float lift;  // px the map and car are drawn higher, for the lane row under the car (Lanes.AT_CAR)
+    double pitch = Double.NaN;  // the camera's tilt (CloseUp.pitch) and its values at it
+    final float[] cam = new float[9];
 
     void copyTo(Frame o) {
       o.s = s;
@@ -839,6 +849,8 @@ final class MapView extends View {
       o.moving = moving;
       o.settled = settled;
       o.lift = lift;
+      if (o.pitch != pitch) System.arraycopy(cam, 0, o.cam, 0, 9);
+      o.pitch = pitch;
     }
   }
 
@@ -885,6 +897,9 @@ final class MapView extends View {
     lastFrame = now;
     k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
     f.k = k;
+    double pitch = CloseUp.pitch(k * R0);  // the tilt glides with the zoom
+    if (pitch != f.pitch) CloseUp.camera(pitch, f.cam);
+    f.pitch = pitch;
     // the lane row under the car: the map and car glide up LIFT px to make room while it shows, and back down after
     float want = Lanes.at == Lanes.AT_CAR && s.route.length > 0 && lanesShown(now) ? LIFT : 0;
     float l = lift + (want - lift) * (float) (1 - Math.exp(-dt / LIFT_TAU));
@@ -1418,6 +1433,12 @@ final class MapView extends View {
 
   // Screen position of the car-frame point (x, z) through the camera, or null when it is off the drawn box.
   boolean project(float x, float z, float off, float[] out) {
+    return project(cam, x, z, off, out);
+  }
+
+  // the same through camera values c (the GPU layer's frame's, Frame.cam)
+  boolean project(float[] c, float x, float z, float off, float[] out) {
+    float[] cam = c;
     if (x < BOX_X0 || x > BOX_X1 || z < BOX_Z0 || z > BOX_Z1) return false;
     float w = cam[6] * x + cam[7] * z + cam[8];
     if (w <= 0.01f) return false;
@@ -1610,6 +1631,7 @@ final class MapView extends View {
     }
 
     Frame f = frame(s, now);
+    useCamera(f);
     float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik, reach = f.reach;
     double h = f.h;
     long t0 = SystemClock.uptimeMillis();
@@ -1717,6 +1739,7 @@ final class MapView extends View {
   }
 
   private void drawCar(Canvas canvas, Frame f) {
+    if (f != null) useCamera(f);
     long now = SystemClock.uptimeMillis();
     float g = glow(now);
     drawnGlow = g;
