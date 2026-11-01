@@ -231,7 +231,8 @@ def init_overlay() -> None:
 
   git_diff = run(["git", "diff"], OVERLAY_MERGED)
   params.put("GitDiff", git_diff, block=True)
-  cloudlog.info(f"git diff output:\n{git_diff}")
+  # a build on the device dirties tracked generated sources; the full diff stays in the param
+  cloudlog.info(f"git diff output:\n{git_diff[:16384]}")
 
 
 def finalize_update() -> None:

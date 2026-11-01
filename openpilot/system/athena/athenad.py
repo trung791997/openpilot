@@ -1044,8 +1044,24 @@ def ws_manage(ws: WebSocket, end_event: threading.Event) -> None:
       break
 
 
-def backoff(retries: int) -> int:
-  return random.randrange(0, min(128, int(2 ** retries)))
+def backoff(retries: int, cap: int = 128) -> int:
+  return random.randrange(0, min(cap, int(2 ** retries)))
+
+
+def get_backoff_cap() -> int:
+  # A Wi-Fi stall of a few seconds should not leave athena waiting up to 2 minutes to reconnect
+  try:
+    if HARDWARE.get_network_type() == NetworkType.wifi:
+      return 30
+  except Exception:
+    cloudlog.exception("athenad.get_backoff_cap.exception")
+  return 128
+
+
+def clear_ping_time_after_retry(params: Params, retries: int) -> None:
+  # Keep the last ping through one failed connection, so a brief drop does not flip the sidebar to offline
+  if retries > 1:
+    params.remove("LastAthenaPingTime")
 
 
 def main(exit_event: threading.Event | None = None):
@@ -1087,14 +1103,14 @@ def main(exit_event: threading.Event | None = None):
       break
     except (ConnectionError, TimeoutError, WebSocketException):
       conn_retries += 1
-      params.remove("LastAthenaPingTime")
+      clear_ping_time_after_retry(params, conn_retries)
     except Exception:
       cloudlog.exception("athenad.main.exception")
 
       conn_retries += 1
-      params.remove("LastAthenaPingTime")
+      clear_ping_time_after_retry(params, conn_retries)
 
-    time.sleep(backoff(conn_retries))
+    time.sleep(backoff(conn_retries, get_backoff_cap()))
 
 
 if __name__ == "__main__":
