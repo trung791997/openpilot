@@ -40,8 +40,9 @@ class SentryRuntime:
   def __init__(self, params: Params, messages: Any, *, mono_clock: Callable[[], int] = time.monotonic_ns,
                boot_clock: Callable[[], int] = boot_time_ns,
                record: Callable[[str, int, Callable[[], bool]], Any] | None = None, status: RuntimeStatus | None = None,
-               start: Callable[[Callable[[], None]], Any] = start_thread):
+               start: Callable[[Callable[[], None]], Any] = start_thread, shake_log: Any = None):
     self.params, self.messages = params, messages
+    self.shake_log = shake_log  # Observation only; see shake_log.py.
     self.start = start
     self.authorized: tuple[bytes, int] | None = None  # (saved preferences, MONO ns) of the last permitted tick
     self.lock = threading.Lock()
@@ -204,14 +205,25 @@ class SentryRuntime:
                  self.policy.arm_started is not None and self.policy.last_sample_time is not None and
                  0 <= now_ns - self.last_sample_ns <= SAMPLE_TTL_NS)
     self.authorized = (expected_raw, now_ns) if permitted else None
-    if decision.event is not None and self.record is not None and permitted:
+    queued = decision.event is not None and self.record is not None and permitted
+    if queued:
       self._queue(decision.event, now_ns, expected_raw)
+    if self.shake_log is not None:
+      try:
+        self.shake_log.observe(now_ns, sample, decision, self.policy, queued)
+      except Exception:
+        pass  # ShakeLog.observe already swallows and rate-limits its own errors.
     if self.status is not None:
       self.status.publish(decision, saved.raw, self.recording_state)
     return decision
 
   def close(self) -> None:
     self.authorized = None  # A running capture stops at its next permission check.
+    if self.shake_log is not None:
+      try:
+        self.shake_log.close()
+      except Exception:
+        pass
     join = getattr(self.worker, "join", None)
     if join is not None:
       join(timeout=5)
@@ -260,7 +272,8 @@ def main() -> None:
   camera, clip = CameraSnapshot(), CameraClip()
   def record(kind, stamp, permitted):
     return record_event(store, params, camera, clip, kind, stamp, permitted)
-  runtime = SentryRuntime(params, messages, record=record, status=RuntimeStatus())
+  from openpilot.starpilot.sentry_mode.shake_log import ShakeLog
+  runtime = SentryRuntime(params, messages, record=record, status=RuntimeStatus(), shake_log=ShakeLog())
   try:
     while not stop.is_set():
       started = time.monotonic()

@@ -43,6 +43,23 @@ There are no image paths, location data or network requests. Authority and saved
 settings are checked again immediately before publication. A publication whose
 directory sync fails reports uncertain durability and is never blindly retried.
 
+A shake log (`shake_log.py`) helps choose sensitivity and warning time from data,
+for example to tell passing-car rumble from a door or a get-in. It is observation
+only: it reads the sample and decision the motion loop already has and never
+changes detection, arming, alarms, notifications, clips or timing; its errors are
+swallowed and its file writes run on their own thread every 10 s without fsync.
+For each 1 s window whose largest |magnitude delta| is above 0.02 (parked noise
+is below that) it writes one JSON line: max, sum, the count above each of 0.02,
+0.03, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20 and 0.30, the signed deltas, whether
+the policy was armed, its trigger count and any event (whose `monoNs` matches the
+stored event's `monoTimeNs`). A heartbeat line every 10 minutes shows Sentry was
+running. Files are one per UTC day in `sentry/shake/` beside `sentry/events/`,
+private like events, 20 MB in total with the oldest day deleted first. It is on
+whenever Sentry runs; there is no separate setting.
+`tools/sentry_shake_report.py` summarizes the log per hour and per labeled episode
+(a `start,end,label` CSV) and replays candidate sensitivity/warning-time pairs
+through `SentryPolicy` itself.
+
 Tests cover continuous arming and thresholds, corrupt preferences, serialized
 message timing, resume and power/ignition revocation, process selection, bounded
 storage and interrupted writes. They do not establish physical motion sensitivity,
