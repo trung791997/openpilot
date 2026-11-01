@@ -29,6 +29,9 @@ FADE_LAT_ACC_BP = [0.6, 1.0]  # lateral accel of the sharpest bend ahead over wh
 LIFT_FALL = 2.4  # m/s^3. Fast, so the assist never holds off the model's braking.
 LANE_CHANGE_OFF = 'off'  # log.LaneChangeState.off
 CLEAR_S = 2.  # s with no lead before the assist builds again
+# m/s^2 of lift per m/s below set speed. The stock planner's a_cruise is only jerk-limited down, so lifting the model to
+# it carried o313d through a 38.0 m/s set speed to 39.0 (Job, replay 2026-11-01); this tapers the lift to 0 at set speed.
+SET_SPEED_TAPER = 1.
 
 
 def reader(msg):
@@ -47,8 +50,9 @@ class SetSpeedAssist:
     self.lift = 0.
     self.clear_t = 0.
 
-  def update(self, sm, a_model: float, a_floor: float, reset_state: bool) -> float:
-    """Return the model's accel plus the assist. a_floor is the lower of the lead and cruise accels."""
+  def update(self, sm, a_model: float, a_floor: float, reset_state: bool, v_cruise: float | None = None) -> float:
+    """Return the model's accel plus the assist. a_floor is the lower of the lead and cruise accels; v_cruise is the
+    planner's set speed in m/s (the lift tapers to 0 there)."""
     self.active = False
     self.gain = self.fade = 0.
     if reset_state or not self.enabled:
@@ -85,6 +89,9 @@ class SetSpeedAssist:
     self.active = str(md.meta.laneChangeState) == LANE_CHANGE_OFF and self.clear_t >= CLEAR_S
 
     target = self.gain * self.fade * max(0., a_floor - a_model) if self.active else 0.
+    if v_cruise is not None:
+      v_cruise = float(v_cruise)
+      target = min(target, max(0., v_cruise - v_ego) * SET_SPEED_TAPER) if math.isfinite(v_cruise) else 0.
     rise = float(np.interp(v_ego, self.rise_bp, self.rise_vals))
     self.lift = min(max(target, self.lift - LIFT_FALL * self.dt), self.lift + rise * self.dt)
     if not math.isfinite(self.lift):
