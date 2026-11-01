@@ -14,9 +14,10 @@ final class Lanes {
   static final double SHOW_M = 1000;  // the row shows from 1 km before the maneuver, as Google Maps does
 
   // Where the row goes, Peter's two choices (2026-11-01): under the turn card, or under the car with the map lifted
-  // and zoomed in a little to make room. AT is the one that ships; not final so the render harness can draw both.
+  // and zoomed in a little to make room. Peter picked under the car (2026-11-01). `at` is the one that ships; not
+  // final so the render harness can draw both.
   static final int AT_CARD = 0, AT_CAR = 1;
-  static int at = AT_CARD;
+  static int at = AT_CAR;
 
   private Lanes() {
   }

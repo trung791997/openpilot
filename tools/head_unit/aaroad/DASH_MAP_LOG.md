@@ -69,6 +69,7 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 ## Log
 
+- `Lanes.at = AT_CAR`: Peter picked the lane row under the car (option B: map lifts 38 px and zooms in 15% while lanes show; song card stays). Comma updated to `1c15daba8` and rebooted while parked (Peter's OK for the comma). Ready to install: `/tmp/hu/aaroad-lanes-car.apk` = GPS-gap hold + map-drop log (`f045536c1`), close-up 3D (`e177a7065`), lanes (`1c15daba8`), this switch; same signing key as the installed app. Not installed, not driven. Rollback: `aaroad-signals.apk`.
 - **Installed** 2026-10-31 night (parked, Peter's OK): comma fast-forwarded to `1d2a7a2f9` and rebooted (came back, nav/feed processes up); `aaroad-signals.apk` installed on the head unit (`install -r` Success), `hu-reboot` sent in Park, adb key removed. Waiting on the ignition cycle. Not driven yet. Check on the next drive: Open 10 (badges), 11 (free-drive roads ahead, `gl parts` cull/upload cost), and traffic-light coverage in the z14 tiles. Rollback: `aaroad-turn-hwy.apk`.
 
 ### 2026-11-01
