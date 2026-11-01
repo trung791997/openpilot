@@ -46,7 +46,8 @@ final class Feed {
     final String[][] names = new String[5][];
     // per road class: whether each line is a bridge (road_tiles.BRIDGE), null when the tile is older than format 3
     final boolean[][] bridge = new boolean[5][];
-    // traffic signal / stop points: x, y in tile units and kind (road_tiles.SIGNAL 1, STOP 2) in threes;
+    // traffic signal / stop / level crossing points: x, y in tile units and kind (road_tiles.SIGNAL 1, STOP 2,
+    // LEVEL_CROSSING 3 from format 6) in threes;
     // empty when the tile is older than format 4
     float[] signals = new float[0];
     // per road class: each line's stacking layer (Mapbox ``layer``, bridges above 0), its lane count (0 unknown;
@@ -59,6 +60,11 @@ final class Feed {
     float[] walkPts = new float[0];
     int[] walkStarts = {0};
     byte[] walkKind = new byte[0];
+    // rail lines (format 6) in the same layout, kind RAIL_MAJOR..RAIL_SERVICE, | RAIL_BRIDGE on a bridge; empty
+    // before format 6. Level crossings are signals points of kind 3 (Signals.CROSSING).
+    float[] railPts = new float[0];
+    int[] railStarts = {0};
+    byte[] railKind = new byte[0];
 
     Tile(int x, int y) {
       this.x = x;
@@ -67,7 +73,8 @@ final class Feed {
   }
 
   static final int WALK_SIDEWALK = 1, WALK_CROSSING = 2, WALK_FOOTWAY = 3, WALK_PEDESTRIAN = 4;
-  static final int VERSION = 5;
+  static final int RAIL_MAJOR = 1, RAIL_MINOR = 2, RAIL_SERVICE = 3, RAIL_BRIDGE = 0x80;
+  static final int VERSION = 6;
 
   static final class Route {
     final long id;
@@ -331,8 +338,9 @@ final class Feed {
       if (have.length() >= HAVE_MAX) break;
       have.put(k);
     }
-    // rt: the newest road tile format this app reads, 5 with layers, lanes and sidewalks (2026-11-01); the comma
-    // sends an older app's tiles as format 4 (signals), 3 (bridges), 2 (names, 2026-10-30) or 1 (no "rt")
+    // rt: the newest road tile format this app reads, 6 with railroad crossings and rail lines (2026-11-01); the
+    // comma sends an older app's tiles as format 5 (layers, lanes, sidewalks), 4 (signals), 3 (bridges), 2 (names,
+    // 2026-10-30) or 1 (no "rt")
     return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", VERSION).toString().getBytes("UTF-8");
   }
 
@@ -585,26 +593,48 @@ final class Feed {
       tile.signals = sig;
     }
     if (version >= 5) {
-      int n = b.getInt(), total = b.getInt();
-      if (n < 0 || total < 0 || (long) n * 3 + (long) total * 8 > b.remaining()) throw new IllegalArgumentException("bad road tile walks");
-      int[] starts = new int[n + 1];
-      for (int l = 0; l < n; l++) starts[l + 1] = starts[l] + (b.getShort() & 0xffff);
-      if (starts[n] != total) throw new IllegalArgumentException("bad road tile walk lengths");
-      byte[] kind = new byte[n];
-      b.get(kind);
-      float[] pts = new float[total * 2];
-      int ax = 0, ay = 0;
-      for (int p = 0; p < total; p++) {
-        ax += b.getInt();
-        ay += b.getInt();
-        pts[2 * p] = ax;
-        pts[2 * p + 1] = ay;
-      }
-      tile.walkPts = pts;
-      tile.walkStarts = starts;
-      tile.walkKind = kind;
+      KindLines w = kindLines(b, "walk");
+      tile.walkPts = w.pts;
+      tile.walkStarts = w.starts;
+      tile.walkKind = w.kind;
+    }
+    if (version >= 6) {
+      KindLines r = kindLines(b, "rail");
+      tile.railPts = r.pts;
+      tile.railStarts = r.starts;
+      tile.railKind = r.kind;
     }
     return tile;
+  }
+
+  private static final class KindLines {
+    float[] pts;
+    int[] starts;
+    byte[] kind;
+  }
+
+  // A table of lines with a kind byte each (the walks, and from format 6 the rails), as road_tiles._kind_lines.
+  private static KindLines kindLines(ByteBuffer b, String what) {
+    int n = b.getInt(), total = b.getInt();
+    if (n < 0 || total < 0 || (long) n * 3 + (long) total * 8 > b.remaining()) throw new IllegalArgumentException("bad road tile " + what + "s");
+    KindLines out = new KindLines();
+    int[] starts = new int[n + 1];
+    for (int l = 0; l < n; l++) starts[l + 1] = starts[l] + (b.getShort() & 0xffff);
+    if (starts[n] != total) throw new IllegalArgumentException("bad road tile " + what + " lengths");
+    byte[] kind = new byte[n];
+    b.get(kind);
+    float[] pts = new float[total * 2];
+    int ax = 0, ay = 0;
+    for (int p = 0; p < total; p++) {
+      ax += b.getInt();
+      ay += b.getInt();
+      pts[2 * p] = ax;
+      pts[2 * p + 1] = ay;
+    }
+    out.pts = pts;
+    out.starts = starts;
+    out.kind = kind;
+    return out;
   }
 
   // Web Mercator position in zoom-14 tile units, as road_tiles.world_xy.

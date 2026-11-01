@@ -729,6 +729,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
     GLES20.glDisableVertexAttribArray(gA);
     part(P_GRID);
+    // zoomed in: the rail lines, under the roads (CloseView.rails)
+    if (close != null) {
+      GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, ibo);
+      close.rails(s, f, proj, v[0], v[1], v[2], v[7], qa, CloseUp.gate(MapView.R0 / ik, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE));
+    }
 
     // the roads: every kerb, then every surface, then the carpet, as the view strokes them
     cur.cull(ce, cn, ch, sh, ik, MapView.BOX_X0, MapView.BOX_X1, MapView.BOX_Z0, MapView.BOX_Z1);

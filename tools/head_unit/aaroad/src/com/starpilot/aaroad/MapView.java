@@ -1548,7 +1548,7 @@ final class MapView extends View {
       if (blocked(q[0], q[1] + 1, 12, free, tag)) continue;
       xy[2 * n] = Math.round(q[0]);
       xy[2 * n + 1] = Math.round(q[1]);
-      sprite[n] = SignalIcon.sprite((int) s.signals[g + 2], c.idx[i] == c.next);
+      sprite[n] = SignalIcon.sprite((int) s.signals[g + 2], c.big(c.idx[i]));
       n++;
     }
     return n;
@@ -1666,6 +1666,8 @@ final class MapView extends View {
       canvas.save();
       canvas.concat(camera);
       canvas.drawPath(gridPath, grid);
+      // zoomed in: the rail lines, under the roads (CloseView.rails)
+      closeView.rails(canvas, s.close, ce, cn, ch, sh, ik, CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE));
       // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
       float floor = dm(MIN_ROAD_PX);
       // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb

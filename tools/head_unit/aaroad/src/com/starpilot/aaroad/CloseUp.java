@@ -7,15 +7,16 @@ import java.util.List;
 
 // The zoomed-in look (Peter 2026-11-01, after Google Maps' immersive close-up, not extruded buildings): bridges raised
 // over the roads they cross, with ramps at their ends, a dark side wall and a soft shadow on the ground; lane lines on
-// motorways; thin sidewalks and dashed crosswalks. All of it fades in only while the map is zoomed in (gate below):
-// cruising, the map draws exactly what it drew before, so its frame rate is untouched.
+// motorways; thin sidewalks and dashed crosswalks; rail lines with cross ties (drawn under the roads, CloseView.rails).
+// All of it fades in only while the map is zoomed in (gate below): cruising, the map draws exactly what it drew
+// before, so its frame rate is untouched.
 //
 // This file is plain Java (no Android, no GL) so test/CloseUpTest.java can check it on the desktop. It turns a scene's
 // lines (metres east, north of the scene's anchor) into segments in draw ranges. CloseView draws them in software,
 // GlClose on the GPU, both the same way: a point h world metres up is drawn where the camera's ray through it meets
 // the ground, so every shader and stroke stays a ground-plane one (lift()).
 //
-// Data: road_tiles format 5 (Feed.Tile layer, lanes, oneway, walk*). Mapbox has lane counts only in Japan, so in the
+// Data: road_tiles format 5 (Feed.Tile layer, lanes, oneway, walk*), format 6 rails (Feed.Tile rail*). Mapbox has lane counts only in Japan, so in the
 // US a motorway gets LANES_ONEWAY or LANES_TWOWAY.
 final class CloseUp {
   // the camera, as MapView's CAM_H and CAM_ZC: height above the ground and the foot's z, in display metres
@@ -37,8 +38,12 @@ final class CloseUp {
   static final float DASH_ON_M = 6, DASH_PERIOD_M = 18, CROSS_ON_M = 1.5f, CROSS_PERIOD_M = 3.5f;
   // what is kept: lines with a point this near the anchor (the scene is rebuilt every MapView.MOVE_R 600 m, and the
   // close-up view reaches about 700 m ahead), and at most this many segments, the nearest first
-  static final float ROAD_R = 1400, WALK_R = 1000;
-  static final int ROAD_SEGS = 6144, WALK_SEGS = 4096;
+  static final float ROAD_R = 1400, WALK_R = 1000, RAIL_R = 1000;
+  static final int ROAD_SEGS = 6144, WALK_SEGS = 4096, RAIL_SEGS = 3072;
+  // a rail line's cross ties: one every TIE_M along it, TIE_HALF_M each side of it (a real tie is about 2.6 m long,
+  // drawn twice that as the roads are, MapView.ROAD_SCALE; every 8 m is about one in thirteen, so they read as ties
+  // at the close-up zoom instead of a solid band)
+  static final float TIE_M = 8, TIE_HALF_M = 2.6f, RAIL_PIECE_M = 100;
   // the gate: shown fully at a displayed range up to SHOW m, gone from HIDE m, faded between (no flicker as the zoom
   // eases). Free drive's range is 12 s of road: roads and bridges show under about 40 mph, walks under about 24 mph;
   // with a route they show while the view closes in on a turn, an exit or a stop.
@@ -48,9 +53,10 @@ final class CloseUp {
   static final int SEG = 7;
   static final int CORNER = 9;  // floats per corner of a segment's quad on the GPU (corners)
   // draw ranges: the walks, the crossings, then per layer group 0 (ground) to 3, the decks of each road class, and the
-  // lane lines: dashed, solid white, solid yellow (a two-way road's centre, a one-way's left edge)
+  // lane lines: dashed, solid white, solid yellow (a two-way road's centre, a one-way's left edge); last the rail
+  // lines and their ties (after the rest so the ranges before them keep their numbers)
   static final int WALK = 0, CROSS = 1, LAYERS = 4, CLASSES = 5, DASH = CLASSES, EDGE = CLASSES + 1, YELLOW = CLASSES + 2;
-  static final int PER_LAYER = CLASSES + 3, RANGES = 2 + LAYERS * PER_LAYER;
+  static final int PER_LAYER = CLASSES + 3, RAIL = 2 + LAYERS * PER_LAYER, TIE = RAIL + 1, RANGES = TIE + 1;
 
   static int range(int layer, int kind) {
     return 2 + layer * PER_LAYER + kind;
@@ -59,7 +65,7 @@ final class CloseUp {
   static final class Detail {
     float[] seg = new float[0];
     final int[] from = new int[RANGES + 1];  // range r is segments from[r] to from[r + 1]
-    int roadSegs, walkSegs, roadDropped, walkDropped, bridges, ramps;
+    int roadSegs, walkSegs, railSegs, roadDropped, walkDropped, railDropped, bridges, ramps;
     float maxH;  // the highest point, world metres
 
     int count() {
@@ -77,6 +83,7 @@ final class CloseUp {
     final List<int[]> attr = new ArrayList<int[]>();  // cls, bridge 0/1, layer, lanes, oneway 0/1
     final List<float[]> walks = new ArrayList<float[]>();
     final List<Integer> walkKind = new ArrayList<Integer>();
+    final List<float[]> rails = new ArrayList<float[]>();
 
     void road(float[] p, int cls, boolean bridge, int layer, int lanes, boolean oneway) {
       if (p.length < 4) return;
@@ -88,6 +95,10 @@ final class CloseUp {
       if (p.length < 4) return;
       walks.add(p);
       walkKind.add(kind);
+    }
+
+    void rail(float[] p) {
+      if (p.length >= 4) rails.add(p);
     }
   }
 
@@ -219,18 +230,46 @@ final class CloseUp {
         at += (float) Math.hypot(p[j + 2] - p[j], p[j + 3] - p[j + 1]);
       }
     }
+    // the rail lines on the ground, every one (a rail bridge too: drawn under the roads, a road under it shows over
+    // it), in pieces at most RAIL_PIECE_M long (a main line's points can be kilometres apart, so its ends say nothing
+    // of how near it passes), the pieces within RAIL_R, and a tie across each every TIE_M
+    List<Seg> rails = new ArrayList<Seg>();
+    for (float[] p : in.rails) {
+      float at = 0, next = TIE_M / 2;
+      for (int j = 0; j + 3 < p.length; j += 2) {
+        float dx = p[j + 2] - p[j], dy = p[j + 3] - p[j + 1], len = (float) Math.hypot(dx, dy);
+        int pieces = Math.max(1, (int) Math.ceil(len / RAIL_PIECE_M));
+        for (int k = 0; k < pieces; k++) {
+          float u0 = (float) k / pieces, u1 = (float) (k + 1) / pieces;
+          float ae = p[j] + dx * u0, an = p[j + 1] + dy * u0, be = p[j] + dx * u1, bn = p[j + 1] + dy * u1;
+          if (Math.hypot((ae + be) / 2, (an + bn) / 2) > RAIL_R) continue;
+          rails.add(new Seg(ae, an, be, bn, 0, 0, at + len * u0, RAIL));
+        }
+        if (len > 1e-3f) {
+          float nx = -dy / len * TIE_HALF_M, ny = dx / len * TIE_HALF_M;
+          for (; next <= at + len; next += TIE_M) {
+            float u = (next - at) / len, te = p[j] + dx * u, tn = p[j + 1] + dy * u;
+            if (te * te + tn * tn <= RAIL_R * RAIL_R) rails.add(new Seg(te - nx, tn - ny, te + nx, tn + ny, 0, 0, 0, TIE));
+          }
+        }
+        at += len;
+      }
+    }
     out.roadDropped = cap(roads, ROAD_SEGS);
     out.walkDropped = cap(walks, WALK_SEGS);
+    out.railDropped = cap(rails, RAIL_SEGS);
     out.roadSegs = roads.size();
     out.walkSegs = walks.size();
+    out.railSegs = rails.size();
     // into ranges, in order
     int[] count = new int[RANGES];
     for (Seg s : roads) count[s.range]++;
     for (Seg s : walks) count[s.range]++;
+    for (Seg s : rails) count[s.range]++;
     for (int r = 0; r < RANGES; r++) out.from[r + 1] = out.from[r] + count[r];
     int[] at = Arrays.copyOf(out.from, RANGES);
     out.seg = new float[out.count() * SEG];
-    for (List<Seg> l : Arrays.asList(roads, walks)) {
+    for (List<Seg> l : Arrays.asList(roads, walks, rails)) {
       for (Seg s : l) System.arraycopy(s.v, 0, out.seg, SEG * at[s.range]++, SEG);
     }
     return out;
@@ -377,10 +416,12 @@ final class CloseUp {
     for (int i = 0; i < d.length; i++) d[i] = l.get(i).d;
     Arrays.sort(d);
     float cut = d[max - 1];
-    int kept = 0, dropped = 0;
+    int below = 0;
+    while (d[below] < cut) below++;
+    int kept = 0, dropped = 0, ties = max - below;  // all nearer than cut, and as many at cut as fit
     for (int i = 0; i < l.size(); i++) {
       Seg s = l.get(i);
-      if (s.d < cut || (s.d == cut && kept < max)) {
+      if (s.d < cut || (s.d == cut && ties-- > 0)) {
         l.set(kept++, s);
       } else {
         dropped++;

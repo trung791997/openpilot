@@ -13,8 +13,13 @@ package com.starpilot.aaroad;
 // MAX nearest within AHEAD_M are drawn, none more than BEHIND_M behind the car, farthest first so a near one is on top.
 // With a route, the nearest one on it ahead (within ROUTE_M of the line, more than NEXT_MIN_M ahead) is drawn larger:
 // the next light the car will stop at.
+//
+// Railroad crossings (Peter 2026-11-01) come the same way from format 6 (Mapbox Streets' level_crossing points, OSM
+// railway=level_crossing: a road crossing a railway on the same level). They follow the same rules, but merge only
+// with other crossings (a double track is two points a few metres apart; a crossing next to a light stays its own
+// icon), and the next crossing on the route is drawn larger on its own, as well as the next light.
 final class Signals {
-  static final int SIGNAL = 1, STOP = 2;  // road_tiles.SIGNAL, STOP
+  static final int SIGNAL = 1, STOP = 2, CROSSING = 3;  // road_tiles.SIGNAL, STOP, LEVEL_CROSSING
   static final float CLUSTER_M = 30, AHEAD_M = 300, BEHIND_M = 15, ROUTE_M = 25, NEXT_MIN_M = 5;
   static final int MAX = 6;
   // signals farther from the scene's anchor are left out: the scene is rebuilt every 600 m, so this is 300 m ahead of
@@ -24,7 +29,8 @@ final class Signals {
   // The scene's icons from the tiles' points: pts is x, y, kind in threes, x and y in zoom-14 tile units (Feed.world),
   // ax, ay the scene's anchor and mpt its metres per tile unit. route and along are the scene's route runs (e, n
   // pairs) and the metres along it at each point, both empty with no route. Returns e, n, kind, along in fours: e, n
-  // in metres east and north of the anchor, kind SIGNAL when any merged point is one, along the metres along the
+  // in metres east and north of the anchor, kind SIGNAL when any merged point is one (CROSSING when the group is
+  // crossings, which merge only with each other), along the metres along the
   // route at the point of it nearest the icon, or NaN when the icon is not within ROUTE_M of the route.
   static float[] cluster(double[] pts, int count, double ax, double ay, double mpt, float[][] route, float[][] along) {
     float[] e = new float[count], n = new float[count];
@@ -34,10 +40,11 @@ final class Signals {
       double pe = (pts[3 * i] - ax) * mpt, pn = -(pts[3 * i + 1] - ay) * mpt;
       if (Math.abs(pe) > KEEP_M || Math.abs(pn) > KEEP_M) continue;
       int k = (int) pts[3 * i + 2];
-      if (k != SIGNAL && k != STOP) continue;
+      if (k != SIGNAL && k != STOP && k != CROSSING) continue;
       int best = -1;
       double bestD = CLUSTER_M;
       for (int g = 0; g < groups; g++) {
+        if ((kind[g] == CROSSING) != (k == CROSSING)) continue;
         double d = Math.hypot(e[g] - pe, n[g] - pn);
         if (d <= bestD) {
           bestD = d;
@@ -87,11 +94,17 @@ final class Signals {
     return at;
   }
 
-  // One frame's choice: idx the chosen icons (indices into the fours) farthest first, next the one drawn larger or -1.
+  // One frame's choice: idx the chosen icons (indices into the fours) farthest first, next the light (or stop) drawn
+  // larger or -1, nextCrossing the railroad crossing drawn larger or -1.
   static final class Choice {
     final int[] idx = new int[MAX];
     final float[] dist = new float[MAX];
-    int count, next = -1;
+    int count, next = -1, nextCrossing = -1;
+
+    // whether icon g (an index into the fours) is drawn larger
+    boolean big(int g) {
+      return g >= 0 && (g == next || g == nextCrossing);
+    }
   }
 
   // The icons to draw with the car at (ce, cn) heading ch = cos h, sh = sin h (h clockwise from north), into c.
@@ -99,7 +112,8 @@ final class Signals {
   static void choose(float[] sig, float ce, float cn, float ch, float sh, Choice c) {
     c.count = 0;
     c.next = -1;
-    float nextAt = Float.MAX_VALUE;
+    c.nextCrossing = -1;
+    float nextAt = Float.MAX_VALUE, crossingAt = Float.MAX_VALUE;
     for (int g = 0; g + 3 < sig.length; g += 4) {
       float de = sig[g] - ce, dn = sig[g + 1] - cn;
       float fwd = de * sh + dn * ch;
@@ -128,7 +142,13 @@ final class Signals {
       float along = sig[g + 3];
       if (Float.isNaN(along)) continue;
       float fwd = (sig[g] - ce) * sh + (sig[g + 1] - cn) * ch;
-      if (fwd > NEXT_MIN_M && along < nextAt) {
+      if (fwd <= NEXT_MIN_M) continue;
+      if (sig[g + 2] == CROSSING) {
+        if (along < crossingAt) {
+          crossingAt = along;
+          c.nextCrossing = c.idx[i];
+        }
+      } else if (along < nextAt) {
         nextAt = along;
         c.next = c.idx[i];
       }

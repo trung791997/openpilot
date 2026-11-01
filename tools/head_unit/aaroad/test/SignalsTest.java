@@ -7,7 +7,8 @@ package com.starpilot.aaroad;
 // centre, two intersections a block apart stay two, a stop and a signal together are a signal, points far from the
 // anchor and unknown kinds are left out; only icons within AHEAD_M and not more than BEHIND_M behind are chosen, at
 // most MAX of them, the nearest, farthest first; and the next one on the route ahead is the larger one, with none
-// off the route or behind the car.
+// off the route or behind the car. Railroad crossings merge only with crossings (a double track is one icon, a
+// crossing beside a light is its own), and the next crossing on the route is larger on its own, beside the next light.
 public class SignalsTest {
   static int fails = 0;
   static final double MPT = 2445.98 / 4096 * 4096;  // metres per zoom-14 tile unit at the equator, near enough
@@ -119,6 +120,28 @@ public class SignalsTest {
     for (int i = 0; i < c.count; i++) check(c.idx[i] < Signals.MAX, "the nearest kept, got " + c.idx[i]);
     check(c.count > 0 && c.idx[c.count - 1] == 0, "the nearest last, drawn on top");
     check(c.next == -1, "no route, no next");
+
+    // railroad crossings: a double track (two points 6 m apart) is one icon; a crossing 15 m from a light is its own
+    int X = Signals.CROSSING;
+    g = cluster(none, 0, 0, X, 0, 6, X, 15, 0, S, 18, 3, T);
+    check(g.length == 8, "a double track is one crossing and the light its own, got " + g.length / 4);
+    check(g.length == 8 && g[2] == X && Math.abs(g[1] - 3) < 0.5, "the crossing at the middle of its tracks");
+    check(g.length == 8 && g[6] == S, "the light and stop beside it merge as before");
+
+    // the next light and the next crossing on the route are both larger
+    float[] mixed = {
+        0, 150, S, 250,          // 0: the next light
+        0, 80, X, 180,           // 1: the next crossing, before the light
+        0, 200, X, 300,          // 2: a later crossing
+        30, 60, X, Float.NaN,    // 3: a crossing off the route
+    };
+    Signals.choose(mixed, 0, 0, 1, 0, c);
+    check(c.count == 4, "all four chosen, got " + c.count);
+    check(c.next == 0, "a crossing is not the next light, got " + c.next);
+    check(c.nextCrossing == 1, "the first crossing on the route ahead, got " + c.nextCrossing);
+    check(c.big(0) && c.big(1) && !c.big(2) && !c.big(3) && !c.big(-1), "only the next light and next crossing are big");
+    Signals.choose(sig, 0, 0, 1, 0, c);
+    check(c.nextCrossing == -1, "no crossings, no next crossing");
 
     if (fails > 0) {
       System.out.println(fails + " failed");

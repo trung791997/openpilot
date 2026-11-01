@@ -16,6 +16,10 @@ final class CloseView {
   // the deck's side wall: the deck drawn dark at these fractions of its height under it (a quarter apart, so a thin
   // link ramp two layers up still shows one wall, not stripes)
   static final float[] WALL_AT = {0, 0.25f, 0.5f, 0.75f};
+  // a rail line: a thin dark grey line with thin cross ties (CloseUp.TIE_M), as a printed map draws one, darker than
+  // any road so it reads as under them
+  static final int RAIL_C = 0xff707479, TIE_C = 0xff5c6065;
+  static final float RAIL_PX = 1.3f, TIE_PX = 1.1f;
 
   // One pass: range r of the detail at hs of its height, dashed (on, period world m) or solid (period 0).
   interface Pass {
@@ -59,6 +63,14 @@ final class CloseView {
     }
   }
 
+  // The rail lines, under the roads (MapView and GlRoads draw this before the roads), with the roads' gate gr: the
+  // ties, then the line over them.
+  static void rails(CloseUp.Detail d, float gr, Pass p) {
+    if (gr <= 0) return;
+    p.lines(CloseUp.TIE, 0, MapView.dm(TIE_PX), TIE_C, gr, 0, 0);
+    p.lines(CloseUp.RAIL, 0, MapView.dm(RAIL_PX), RAIL_C, gr, 0, 0);
+  }
+
   private static void lanes(int g, float hs, float lane, float gr, Pass p) {
     p.lines(CloseUp.range(g, CloseUp.DASH), hs, lane, LANE_C, LANE_A * gr, CloseUp.DASH_ON_M, CloseUp.DASH_PERIOD_M);
     p.lines(CloseUp.range(g, CloseUp.EDGE), hs, lane, LANE_C, LANE_A * gr, 0, 0);
@@ -92,6 +104,8 @@ final class CloseView {
       for (int l = 0; l + 1 < ws.length; l++) {
         in.walk(metres(tile, tile.walkPts, ws[l], ws[l + 1], ax, ay, mpt), l < tile.walkKind.length ? tile.walkKind[l] : 0);
       }
+      int[] rs = tile.railStarts;
+      for (int l = 0; l + 1 < rs.length; l++) in.rail(metres(tile, tile.railPts, rs[l], rs[l + 1], ax, ay, mpt));
     }
     return CloseUp.build(in);
   }
@@ -123,7 +137,18 @@ final class CloseView {
             final float ik, float gr, float gw) {
     segsDrawn = 0;
     if (d == null || d.count() == 0 || (gr <= 0 && gw <= 0)) return;
-    passes(d, ik, gr, gw, new Pass() {
+    passes(d, ik, gr, gw, pass(canvas, d, ce, cn, ch, sh, ik));
+  }
+
+  // The rail lines (rails()), before the roads.
+  void rails(Canvas canvas, CloseUp.Detail d, float ce, float cn, float ch, float sh, float ik, float gr) {
+    if (d == null || d.count() == 0 || gr <= 0) return;
+    rails(d, gr, pass(canvas, d, ce, cn, ch, sh, ik));
+  }
+
+  private Pass pass(final Canvas canvas, final CloseUp.Detail d, final float ce, final float cn, final float ch,
+                    final float sh, final float ik) {
+    return new Pass() {
       @Override
       public void lines(int r, float hs, float width, int color, float alpha, float on, float period) {
         if (d.empty(r) || alpha <= 0) return;
@@ -134,7 +159,7 @@ final class CloseView {
         paint.setStrokeWidth(width * s);
         canvas.drawPath(path, paint);
       }
-    });
+    };
   }
 
   // Range r into path, each point lifted by hs of its height; returns the width factor at the highest point.

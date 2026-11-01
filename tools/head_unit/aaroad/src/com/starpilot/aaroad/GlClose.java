@@ -153,6 +153,21 @@ final class GlClose implements CloseView.Pass {
             float gw) {
     CloseUp.Detail d = shown;
     if (d == null || (gr <= 0 && gw <= 0)) return;
+    begin(s, f, proj, v0, v1, v2, v7, qa);
+    CloseView.passes(d, ik, gr, gw, this);
+    end();
+  }
+
+  // The rail lines (CloseView.rails), as draw, before the roads.
+  void rails(MapView.Scene s, MapView.Frame f, float[] proj, float v0, float v1, float v2, float v7, float qa, float gr) {
+    CloseUp.Detail d = shown;
+    if (d == null || gr <= 0 || d.empty(CloseUp.RAIL)) return;
+    begin(s, f, proj, v0, v1, v2, v7, qa);
+    CloseView.rails(d, gr, this);
+    end();
+  }
+
+  private void begin(MapView.Scene s, MapView.Frame f, float[] proj, float v0, float v1, float v2, float v7, float qa) {
     float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh;
     MapView.Scene u = shownScene;
     if (u != s) {  // the detail on the GPU is the last scene's while the new one is sent: its anchor
@@ -170,7 +185,9 @@ final class GlClose implements CloseView.Pass {
     GLES20.glEnableVertexAttribArray(aSeg);
     GLES20.glEnableVertexAttribArray(aC);
     GLES20.glEnableVertexAttribArray(aH);
-    CloseView.passes(d, ik, gr, gw, this);
+  }
+
+  private void end() {
     GLES20.glDisableVertexAttribArray(aSeg);
     GLES20.glDisableVertexAttribArray(aC);
     GLES20.glDisableVertexAttribArray(aH);

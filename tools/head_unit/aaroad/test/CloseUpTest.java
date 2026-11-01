@@ -187,11 +187,40 @@ public class CloseUpTest {
     in.road(line(5000, 0, 5200, 0), 0, false, 0, 0, true);
     check(CloseUp.build(in).count() == 0, "roads past ROAD_R left out");
 
+    // rails: a straight main line 50 m north whose two points are 3 km apart is kept (in pieces), the pieces past
+    // RAIL_R left out; a tie across it every TIE_M, TIE_HALF_M each side; the road ranges keep their numbers
+    in = new CloseUp.Lines();
+    in.rail(line(-3000, 50, 3000, 50));
+    in.rail(line(5000, 0, 5200, 0));
+    d = CloseUp.build(in);
+    List<float[]> rail = segs(d, CloseUp.RAIL), ties = segs(d, CloseUp.TIE);
+    float railFar = 0, railLen = 0;
+    for (float[] s : rail) {
+      railFar = Math.max(railFar, Math.min(Math.abs(s[0]), Math.abs(s[2])));
+      railLen += (float) Math.hypot(s[2] - s[0], s[3] - s[1]);
+      check(Math.hypot(s[2] - s[0], s[3] - s[1]) <= CloseUp.RAIL_PIECE_M + 1e-3, "rail piece at most RAIL_PIECE_M");
+    }
+    check(!rail.isEmpty() && railFar < CloseUp.RAIL_R && railLen > 1800 && railLen < 2 * CloseUp.RAIL_R + 2 * CloseUp.RAIL_PIECE_M,
+          "a long rail is kept near the anchor: " + rail.size() + " pieces, " + railLen + " m");
+    boolean across = !ties.isEmpty();
+    for (float[] s : ties) {
+      across &= near(s[0], s[2], 1e-3) && near(Math.abs(s[3] - s[1]), 2 * CloseUp.TIE_HALF_M, 1e-3) && near((s[1] + s[3]) / 2, 50, 1e-3);
+    }
+    check(across, "ties across the line, " + ties.size() + " of them");
+    check(near(ties.size(), 2 * CloseUp.RAIL_R / CloseUp.TIE_M, 3), "a tie every TIE_M: " + ties.size());
+    check(d.railSegs == rail.size() + ties.size() && d.empty(CloseUp.WALK) && d.empty(CloseUp.range(0, 0)), "rails only in their ranges");
+    check(CloseUp.RAIL == 2 + CloseUp.LAYERS * CloseUp.PER_LAYER && CloseUp.range(1, 0) == 2 + CloseUp.PER_LAYER, "rail ranges after the road ranges");
+    in = new CloseUp.Lines();
+    for (int i = 0; i < 40; i++) in.rail(line(-900, i * 20 - 400, 900, i * 20 - 400));
+    d = CloseUp.build(in);
+    check(d.railSegs == CloseUp.RAIL_SEGS && d.railDropped > 0, "rail cap " + d.railSegs + " kept, " + d.railDropped + " dropped");
+
     // ranges are in order and cover the segments
     in = new CloseUp.Lines();
     in.road(line(0, 0, 150, 0, 300, 0), 0, true, 1, 0, true);
     in.road(line(-300, 0, 0, 0), 0, false, 0, 0, true);
     in.walk(line(0, 10, 50, 10), 1);
+    in.rail(line(-200, -30, 200, -30));
     d = CloseUp.build(in);
     boolean order = d.from[0] == 0 && d.seg.length == d.count() * CloseUp.SEG;
     for (int r = 0; r < CloseUp.RANGES; r++) order &= d.from[r] <= d.from[r + 1];
