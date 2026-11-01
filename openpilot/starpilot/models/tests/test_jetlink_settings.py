@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 import tempfile
 from pathlib import Path
+from typing import Any
 import unittest
 
 from jetlink.openpilot import Status
@@ -11,7 +12,7 @@ from openpilot.starpilot.models.manager import ModelManager, preferences
 
 class MemoryParams:
   def __init__(self):
-    self.values = {"JetlinkMode": 0, "JetlinkChargePhone": False}
+    self.values: dict[str, Any] = {"JetlinkMode": 0, "JetlinkChargePhone": False}
 
   def get(self, key):
     return self.values.get(key)

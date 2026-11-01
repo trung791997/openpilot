@@ -68,7 +68,6 @@ def with_default_bundle(catalog):
 def _adapter_class():
   from jetlink.openpilot.interface import Keys
   from jetlink.openpilot.stock import Stock
-  from jetlink.registry.catalog import REQUIRED_SELECTOR_VERSION
 
   class StarPilotAdapter(Stock):
     # The big-model slot and catalog are StarPilot's own JSON params (params_keys.h): the slot is the owner's pick,
@@ -76,8 +75,10 @@ def _adapter_class():
     KEYS = Keys(link="JetlinkMode", offroad="IsOffroad", progress="JetlinkProgress", spec="JetlinkSpec",
                 pointers="JetlinkPointers", big_model=BIG_MODEL_KEY, catalog=CATALOG_KEY,
                 charge_phone="JetlinkChargePhone")
-    # Models.catalog() keeps only bundles at this selector version; merge_catalogs() retypes newer ones to it
-    CATALOG_SELECTOR = REQUIRED_SELECTOR_VERSION
+    # Models.catalog() keeps only bundles at this selector version; merge_catalogs() retypes newer ones to it.
+    # jetlink.registry.catalog.REQUIRED_SELECTOR_VERSION, written out: owner_config() builds this class and must not
+    # import jetlink.registry (jetlink.openpilot.testing.check_adapter); test_selector_is_jetlinks pins the two equal
+    CATALOG_SELECTOR = 19
     IN_CONTROL_SERVICES = ("carControl", "selfdriveState")
     _aol = None
     _aol_since = 0.
