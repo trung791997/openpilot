@@ -20,9 +20,10 @@ import java.util.List;
 final class CloseUp {
   // the camera, as MapView's CAM_H and CAM_ZC: height above the ground and the foot's z, in display metres
   static final float CAM_H = 150, CAM_ZC = -50;
-  // world metres up per Mapbox layer: about 6 m a deck, times MapView.ROAD_SCALE as the widths are, so a bridge stands
-  // as high against its own width as a real one
-  static final float LAYER_M = 6 * 2;
+  // world metres up per Mapbox layer: about 6 m a deck, times 4: twice for MapView.ROAD_SCALE, as the widths are, and
+  // twice more because the camera sits about 90 m up at the closest zoom, where at 12 m a deck moved 5-7 px and did not
+  // read as raised in the harness renders (2026-11-01); at 24 m it moves 12-15 px
+  static final float LAYER_M = 6 * 4;
   // a bridge reaches its height this far from an end: along the road it meets there, or inside itself (at most a
   // third of it) when nothing meets it
   static final float RAMP_M = 60;
@@ -45,6 +46,7 @@ final class CloseUp {
 
   // per segment: a.e, a.n, b.e, b.n, height at a, at b (world m, before the gate), metres along its line at a
   static final int SEG = 7;
+  static final int CORNER = 9;  // floats per corner of a segment's quad on the GPU (corners)
   // draw ranges: the walks, the crossings, then per layer group 0 (ground) to 3, the decks of each road class, and the
   // lane lines: dashed, solid white, solid yellow (a two-way road's centre, a one-way's left edge)
   static final int WALK = 0, CROSS = 1, LAYERS = 4, CLASSES = 5, DASH = CLASSES, EDGE = CLASSES + 1, YELLOW = CLASSES + 2;
@@ -386,6 +388,31 @@ final class CloseUp {
     }
     while (l.size() > kept) l.remove(l.size() - 1);
     return dropped;
+  }
+
+  // For GlClose: segments from..from+n of d as quads of 4 corners into out, CORNER floats each: a.e, a.n, b.e, b.n,
+  // across (-1, 1), end (0, 1), metres along at a, the heights at a and b. Along is kept mod a multiple of both dash
+  // periods so a float holds it to a millimetre however far the line runs.
+  static void corners(Detail d, int from, int n, float[] out) {
+    float[] v = d.seg;
+    float period = 126;  // 7 x 18 m and 36 x 3.5 m: a multiple of both dash periods
+    int o = 0;
+    for (int i = from; i < from + n; i++) {
+      int s = i * SEG;
+      float at = v[s + 6] % period;
+      for (int c = 0; c < 4; c++) {
+        out[o] = v[s];
+        out[o + 1] = v[s + 1];
+        out[o + 2] = v[s + 2];
+        out[o + 3] = v[s + 3];
+        out[o + 4] = (c & 1) == 0 ? -1 : 1;
+        out[o + 5] = c >> 1;
+        out[o + 6] = at;
+        out[o + 7] = v[s + 4];
+        out[o + 8] = v[s + 5];
+        o += CORNER;
+      }
+    }
   }
 
   static float length(float[] p) {

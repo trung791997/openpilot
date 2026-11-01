@@ -8,6 +8,7 @@ import java.util.List;
 //   java -cp /tmp/closeup com.starpilot.aaroad.CloseUpTest
 // Exits 1 on a failure.
 public class CloseUpTest {
+  static final float L = CloseUp.LAYER_M;  // one deck's height
   static int bad;
 
   static void check(boolean ok, String what) {
@@ -78,13 +79,13 @@ public class CloseUpTest {
     in.road(line(200, 0, 500, 0), 2, false, 0, 0, false);
     CloseUp.Detail d = CloseUp.build(in);
     int deck1 = CloseUp.range(1, 2);
-    check(near(heightAt(d, deck1, 100, 0), 12, 1e-3), "bridge middle at layer x 12 m");
-    check(near(heightAt(d, deck1, 0, 0), 12, 1e-3) && near(heightAt(d, deck1, 200, 0), 12, 1e-3),
+    check(near(heightAt(d, deck1, 100, 0), L, 1e-3), "bridge middle at one deck's height");
+    check(near(heightAt(d, deck1, 0, 0), L, 1e-3) && near(heightAt(d, deck1, 200, 0), L, 1e-3),
           "bridge ends stay up where a road meets them");
     check(near(heightAt(d, deck1, -60, 0), 0, 1e-3) && near(heightAt(d, deck1, 260, 0), 0, 1e-3),
           "the meeting roads ramp down to the ground 60 m out (a point is cut in there)");
     float mid = heightAt(d, deck1, 230, 0);
-    check(Float.isNaN(mid) || (mid > 0 && mid < 12), "ramp in between");
+    check(Float.isNaN(mid) || (mid > 0 && mid < L), "ramp in between");
     check(Float.isNaN(heightAt(d, deck1, 500, 0)) && Float.isNaN(heightAt(d, deck1, -300, 0)),
           "the ground beyond the ramps is not drawn again");
     check(d.bridges == 1 && d.ramps == 2, "one bridge, two ramps: " + d.bridges + ", " + d.ramps);
@@ -96,12 +97,12 @@ public class CloseUpTest {
     d = CloseUp.build(in);
     int deck = CloseUp.range(1, 1);
     check(near(heightAt(d, deck, 0, 0), 0, 1e-3) && near(heightAt(d, deck, 300, 0), 0, 1e-3), "lone bridge ends on the ground");
-    check(near(heightAt(d, deck, 60, 0), 12, 1e-3) && near(heightAt(d, deck, 240, 0), 12, 1e-3) && near(heightAt(d, deck, 150, 0), 12, 1e-3),
+    check(near(heightAt(d, deck, 60, 0), L, 1e-3) && near(heightAt(d, deck, 240, 0), L, 1e-3) && near(heightAt(d, deck, 150, 0), L, 1e-3),
           "lone bridge up from 60 m in");
     in = new CloseUp.Lines();
     in.road(line(0, 0, 90, 0), 1, true, 1, 0, false);
     d = CloseUp.build(in);
-    check(near(heightAt(d, CloseUp.range(1, 1), 30, 0), 12, 1e-3), "a short bridge ramps over a third of itself");
+    check(near(heightAt(d, CloseUp.range(1, 1), 30, 0), L, 1e-3), "a short bridge ramps over a third of itself");
 
     // a bridge cut at a tile edge, its halves' ends 1.5 m apart: no ramp at the cut
     in = new CloseUp.Lines();
@@ -109,19 +110,19 @@ public class CloseUpTest {
     in.road(line(101.5f, 0, 300, 0), 0, true, 1, 0, true);
     d = CloseUp.build(in);
     deck = CloseUp.range(1, 0);
-    check(near(heightAt(d, deck, 100, 0), 12, 1e-3) && near(heightAt(d, deck, 101.5f, 0), 12, 1e-3), "no ramp at a tile-edge cut");
+    check(near(heightAt(d, deck, 100, 0), L, 1e-3) && near(heightAt(d, deck, 101.5f, 0), L, 1e-3), "no ramp at a tile-edge cut");
     check(near(heightAt(d, deck, 0, 0), 0, 1e-3) && near(heightAt(d, deck, 300, 0), 0, 1e-3), "ramps at the true ends");
 
-    // layers: 2 stands at 24 m in group 2; 5 is grouped with 3 but stands at 60 m; layer 0 bridges count as 1
+    // layers: 2 stands at 2 L in group 2; 5 is grouped with 3 but stands at 5 L; layer 0 bridges count as 1
     in = new CloseUp.Lines();
     in.road(line(0, 0, 100, 0, 200, 0), 2, true, 2, 0, false);
     in.road(line(0, 500, 100, 500, 200, 500), 2, true, 5, 0, false);
     in.road(line(0, 900, 100, 900, 200, 900), 2, true, 0, 0, false);
     d = CloseUp.build(in);
-    check(near(heightAt(d, CloseUp.range(2, 2), 100, 0), 24, 1e-3), "layer 2 at 24 m");
-    check(near(heightAt(d, CloseUp.range(3, 2), 100, 500), 60, 1e-3), "layer 5 at 60 m, drawn with group 3");
-    check(near(heightAt(d, CloseUp.range(1, 2), 100, 900), 12, 1e-3), "a bridge without a layer counts as layer 1");
-    check(near(d.maxH, 60, 1e-3), "max height");
+    check(near(heightAt(d, CloseUp.range(2, 2), 100, 0), 2 * L, 1e-3), "layer 2 at two decks");
+    check(near(heightAt(d, CloseUp.range(3, 2), 100, 500), 5 * L, 1e-3), "layer 5 at five decks, drawn with group 3");
+    check(near(heightAt(d, CloseUp.range(1, 2), 100, 900), L, 1e-3), "a bridge without a layer counts as layer 1");
+    check(near(d.maxH, 5 * L, 1e-3), "max height");
 
     // lane lines on a one-way motorway east, no lane count (the US): 3 lanes, 2 dashed separators, a white right
     // edge, a yellow left edge, all inside the drawn width
@@ -217,6 +218,24 @@ public class CloseUpTest {
           + d.walkSegs + " walk segments (" + d.roadDropped + ", " + d.walkDropped + " dropped), " + d.count() * 4 * 36 / 1024
           + " KB on the GPU, built in " + (t1 - t0) / 1000000 + " ms here");
 
+    // the GPU corners (GlClose): four per segment, across and end from the corner, along kept short, heights carried
+    int at = d.count() - 3;
+    float[] gq = new float[3 * 4 * CloseUp.CORNER];
+    CloseUp.corners(d, at, 3, gq);
+    boolean same = true;
+    for (int i = 0; i < 3; i++) {
+      int s = (at + i) * CloseUp.SEG;
+      for (int c = 0; c < 4; c++) {
+        int o = (i * 4 + c) * CloseUp.CORNER;
+        for (int j = 0; j < 4; j++) same &= gq[o + j] == d.seg[s + j];
+        same &= gq[o + 4] == ((c & 1) == 0 ? -1 : 1) && gq[o + 5] == (c >> 1) && gq[o + 7] == d.seg[s + 4]
+                && gq[o + 8] == d.seg[s + 5];
+        same &= gq[o + 6] >= 0 && gq[o + 6] < 126 && near(Math.IEEEremainder(d.seg[s + 6] - gq[o + 6], 18), 0, 1e-3)
+                && near(Math.IEEEremainder(d.seg[s + 6] - gq[o + 6], 3.5), 0, 1e-3);
+      }
+    }
+    check(same, "GPU corners carry the ends, heights, corner and along (mod both dash periods)");
+    check(CloseUp.CORNER * 4 == 36, "36 bytes a corner");
     System.out.println(bad == 0 ? "all ok" : bad + " failed");
     System.exit(bad == 0 ? 0 : 1);
   }

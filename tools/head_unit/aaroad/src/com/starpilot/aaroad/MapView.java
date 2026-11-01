@@ -45,7 +45,7 @@ import java.util.zip.ZipFile;
 // The camera is the mockup's (k = 1): 150 m up, 50 m behind, 55 deg down, focal 260 px, the car at (369, 180).
 final class MapView extends View {
   private static final double CAM_H = 150, CAM_ZC = -50, PITCH = Math.toRadians(55), FOCAL = 260, CX = 369, CY = 102.663;
-  private static final double R0 = 70.03;          // display metres from the car to the range's far edge (y 86)
+  static final double R0 = 70.03;          // display metres from the car to the range's far edge (y 86)
   static final float PX_DM = 1.7156f;      // px per display metre across the road at the car
   // a little past the screen; see FreeView (2026-10-31: the right edge 240 left the free-drive map's top right bare)
   static final float BOX_X0 = FreeView.X0, BOX_X1 = FreeView.X1, BOX_Z0 = FreeView.Z0, BOX_Z1 = FreeView.Z1;
@@ -165,6 +165,7 @@ final class MapView extends View {
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   private final Path[] stubPaths = paths(2 * BRIDGE);  // by scene class: the tile classes, then their bridges
+  private final CloseView closeView = new CloseView();
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
   private final Path[] stubWorld = paths(2 * BRIDGE);
   private final Path routeWorld = new Path();
@@ -303,6 +304,7 @@ final class MapView extends View {
     float[] area;
     double bh;
     boolean minor = true;
+    CloseUp.Detail close;  // the close-up view's raised bridges, lane lines and sidewalks (CloseView)
   }
 
   // The runs cut into pieces of at most CHUNK_M m (neighbours share their end point), each kept as a Path in world
@@ -1022,6 +1024,7 @@ final class MapView extends View {
     s.routeChunks = chunks(s.route, null, s.routeLevel);
     s.stubsChunks = chunks(s.stubs, s.stubsCls, null);
     s.roadsChunks = chunks(s.roads, s.roadsCls, null);
+    s.close = CloseView.detail(Feed.tiles.values(), s.ax, s.ay, s.mpt);
     return s;
   }
 
@@ -1605,6 +1608,9 @@ final class MapView extends View {
         side.setColor(ROADS[c]);
         stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], side, Math.max(floor, ROAD_M[c] * ik));
       }
+      // zoomed in: the raised bridges, lane lines and sidewalks (CloseView), under the carpet
+      closeView.draw(canvas, s.close, ce, cn, ch, sh, ik, CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE),
+                     CloseUp.gate(f.k * R0, CloseUp.WALK_SHOW, CloseUp.WALK_HIDE));
       if (s.route.length > 0) {
         carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
         for (int l = 0; l < carpetPaths.length; l++) {

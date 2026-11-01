@@ -95,6 +95,14 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
   - `Feed.java` decodes format 5 (layer, lane count, one-way per line; the walk table) and asks the comma for it.
   - New `CloseUp.java` (pure Java) turns the scene's lines into segments by range: bridge decks per layer and class, with a ramp where a bridge meets a ground road (or inside a lone bridge), lane lines for motorways (lane count, else 3 one-way / 4 two-way), and sidewalks and dashed crosswalks. Height 12 m a layer. Capped at 6144 road and 4096 walk segments, nearest first, within 1400 / 1000 m.
   - Static: `test/CloseUpTest.java` all ok. A busy synthetic scene is 403 road + 1209 walk segments, 226 KB on the GPU, built in 2 ms (desktop JIT).
+- **Zoomed in, the dash map draws raised overpasses, motorway lane lines, sidewalks and crosswalks.** *static*: desktop renders and a GL compile check only, not run on the head unit's GPU, not driven.
+  - Only when the view is zoomed in: roads under a 220 m range (fully off by 260 m), walks under 130 m (off by 160 m). Free drive that is under about 18 m/s for roads and 11 m/s for walks; with a route, when the view closes in on a turn. Cruising is unchanged: the free-far and nav-cruise renders are byte-identical before and after.
+  - New `CloseView.java`: the draw passes and the software (Canvas) draw. Per deck layer 1-3: a soft shadow on the ground, a dark side wall (4 samples between the ground and the deck), then casing, kerb, surface and the lane lines (dashed between lanes, solid edges, yellow centre). Ground lane lines first, sidewalks and dashed crosswalks under everything.
+  - New `GlClose.java`: the same passes on the GPU layer (`GlRoads`), with its own program (the road shader plus a lift, a width scale and dashes) and two buffers. A new scene is sent 1024 segments a frame while the old one draws. If the program does not build, the map draws without the close-up look instead of failing.
+  - Height 24 m a layer (was 12): at 12 m a deck moved only 5-7 px in the renders and did not read as raised. It is exaggerated on purpose.
+  - Cost: at most 10240 segments, 1.47 MB on the GPU; the busy test scene is 226 KB. Software draw on the desktop (50 reps): close frames 10-12 ms, was 5-8 ms; cruise 17 ms, about as before. The close frames stay under the cruise cost. GPU timing on the Tegra 3 is not measured.
+  - Not done: the carpet and the car stay at ground level on a deck; lane counts are US defaults (Mapbox has them only in Japan); walk layers are ignored; ramps come only from line ends, not mid-line junctions.
+  - Static: `test/CloseUpTest.java` all ok (it also checks the GPU corner packing). Renders: `/tmp/hu/walk3d/compare.png`. APK: `/tmp/hu/aaroad-walk3d.apk`.
 
 ### 2026-10-31
 - **Traffic lights on the dash map, like Google Maps.** *static*.

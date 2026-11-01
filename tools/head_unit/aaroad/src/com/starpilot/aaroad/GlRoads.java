@@ -209,6 +209,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private final Signals.Choice sigChoice = new Signals.Choice();
   private final float[] sigQ = new float[2], sigXY = new float[2 * Signals.MAX];
   private final int[] sigSprite = new int[Signals.MAX];
+  private GlClose close;  // null when its program did not build
   private MapView.Scene glScene;  // the scene vbo holds, and the one drawn
   private GlCull cur;              // its pieces and their cull
   private GlCull pend;             // packed, being sent into back from byte pendOff
@@ -556,7 +557,15 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, unit);
     GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 32, fb, GLES20.GL_STATIC_DRAW);
     int err = GLES20.glGetError();
-    return err == GLES20.GL_NO_ERROR ? null : "gl error 0x" + Integer.toHexString(err) + " in setup";
+    if (err != GLES20.GL_NO_ERROR) return "gl error 0x" + Integer.toHexString(err) + " in setup";
+    // the close-up look (GlClose): if its program does not build, the map draws without it rather than failing
+    close = new GlClose();
+    if (!close.setup()) {
+      XposedBridge.log("aaroad: close-up program failed; drawing without it");
+      close = null;
+    }
+    GLES20.glGetError();
+    return null;
   }
 
   // A new scene's quads: asks the packer for them, then sends them into back a slice a frame (all at once while there
@@ -749,6 +758,21 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, 1);
     for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
     for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
+    // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over
+    if (close != null) {
+      double rng = MapView.R0 / ik;
+      float gr = CloseUp.gate(rng, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE), gw = CloseUp.gate(rng, CloseUp.WALK_SHOW, CloseUp.WALK_HIDE);
+      close.step(s);
+      if (gr > 0 || gw > 0) {
+        GLES20.glDisableVertexAttribArray(lSeg);
+        GLES20.glDisableVertexAttribArray(lC);
+        close.draw(s, f, proj, v[0], v[1], v[2], v[7], qa, gr, gw);
+        GLES20.glUseProgram(line);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
+        GLES20.glEnableVertexAttribArray(lSeg);
+        GLES20.glEnableVertexAttribArray(lC);
+      }
+    }
     part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
