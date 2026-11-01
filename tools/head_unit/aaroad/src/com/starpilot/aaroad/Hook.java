@@ -3,7 +3,6 @@ package com.starpilot.aaroad;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.IXposedHookZygoteInit;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
@@ -35,23 +34,23 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     try {
       Relay.install(lpparam.packageName, lpparam.processName);
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: map relay failed: " + t);
+      Xlog.log("aaroad: map relay failed: " + t);
     }
     try {
       Cast.install(lpparam.packageName);
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: cast hook failed: " + t);
+      Xlog.log("aaroad: cast hook failed: " + t);
     }
     try {
       Meter.install(lpparam.processName);
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: meter hook failed: " + t);
+      Xlog.log("aaroad: meter hook failed: " + t);
     }
     if (NavFake.PKG.equals(lpparam.packageName)) {
       try {
         NavFake.install(lpparam.classLoader);
       } catch (Throwable t) {
-        XposedBridge.log("aaroad: guidance device hook failed: " + t);
+        Xlog.log("aaroad: guidance device hook failed: " + t);
       }
       return;
     }
@@ -65,7 +64,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
           String road = road(param.thisObject);
           if (road != null) param.setResult(encode(road, charset(param.thisObject)));
         } catch (Throwable t) {
-          XposedBridge.log(t);
+          Xlog.log(t);
         }
       }
     });
@@ -83,7 +82,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
           XposedHelpers.callMethod(guide, "setGuidanceRoadNameCode", code);
           XposedHelpers.callMethod(guide, "setGuidanceRoadNameNum", fit(road, cs).length());
         } catch (Throwable t) {
-          XposedBridge.log(t);
+          Xlog.log(t);
         }
       }
     });
@@ -96,7 +95,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
           XposedHelpers.setObjectField(param.thisObject, "mRoad", road(param.thisObject));
           param.setObjectExtra("swapped", Boolean.TRUE);
         } catch (Throwable t) {
-          XposedBridge.log(t);
+          Xlog.log(t);
         }
       }
 
@@ -106,7 +105,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
           XposedHelpers.setObjectField(param.thisObject, "mRoad", param.getObjectExtra("raw"));
         } catch (Throwable t) {
-          XposedBridge.log(t);
+          Xlog.log(t);
         }
       }
     };
@@ -120,16 +119,16 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
       @Override
       protected void beforeHookedMethod(MethodHookParam param) {
         // the raw text too: a turn with no street (2026-10-30, parking lot) left no way to tell what the phone sent
-        XposedBridge.log("aaroad: street \"" + street((String) param.args[0]) + "\" from \"" + param.args[0] + "\"");
+        Xlog.log("aaroad: street \"" + street((String) param.args[0]) + "\" from \"" + param.args[0] + "\"");
       }
     });
 
     try {
       Panel.install(nfm);
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: panel hook failed: " + t);
+      Xlog.log("aaroad: panel hook failed: " + t);
     }
-    XposedBridge.log("aaroad: hooked " + NFM);
+    Xlog.log("aaroad: hooked " + NFM);
   }
 
   private static final String[] INSTRUCTION = {

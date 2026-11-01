@@ -4,7 +4,6 @@ import android.app.AndroidAppHelper;
 import android.content.Context;
 import android.content.Intent;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 // Honda Hack's custom Civic meter (C0268ua, meter_civic.xml) already draws on the cluster and has
@@ -41,9 +40,9 @@ final class Panel {
           icon = i;
           street = s;
           keepContext(o);
-          if (send() && fresh) XposedBridge.log("aaroad: panel turn " + i + " \"" + s + "\" sent");
+          if (send() && fresh) Xlog.log("aaroad: panel turn " + i + " \"" + s + "\" sent");
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: panel turn failed: " + t);
+          Xlog.log("aaroad: panel turn failed: " + t);
         }
       }
     });
@@ -56,7 +55,7 @@ final class Panel {
           keepContext(param.thisObject);
           if (icon != null) send();
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: panel distance failed: " + t);
+          Xlog.log("aaroad: panel distance failed: " + t);
         }
       }
     });
@@ -73,10 +72,10 @@ final class Panel {
             meters = -1;
           }
           boolean sent = broadcast(new Intent(HH + (now ? "START_NAVI" : "STOP_NAVI")));
-          XposedBridge.log("aaroad: panel " + (now ? "start" : "stop") + (sent ? "" : " not sent")
+          Xlog.log("aaroad: panel " + (now ? "start" : "stop") + (sent ? "" : " not sent")
                            + " (pid " + android.os.Process.myPid() + ")");
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: panel status failed: " + t);
+          Xlog.log("aaroad: panel status failed: " + t);
         }
       }
     });
@@ -108,7 +107,7 @@ final class Panel {
     Context c = AndroidAppHelper.currentApplication();
     if (c == null) c = context;
     if (c == null) {
-      if (!noContextLogged) XposedBridge.log("aaroad: panel has no context to send from");
+      if (!noContextLogged) Xlog.log("aaroad: panel has no context to send from");
       noContextLogged = true;
       return false;
     }

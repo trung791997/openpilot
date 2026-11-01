@@ -5,7 +5,6 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.widget.TextView;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import java.util.WeakHashMap;
 import java.util.regex.Matcher;

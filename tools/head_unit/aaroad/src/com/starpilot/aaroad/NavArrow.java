@@ -2,7 +2,6 @@ package com.starpilot.aaroad;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import de.robv.android.xposed.XposedBridge;
 import java.io.InputStream;
 import java.util.Enumeration;
 import java.util.HashSet;
@@ -37,7 +36,7 @@ final class NavArrow {
           String entry = e.nextElement().getName();
           if (entry.startsWith(DIR) && entry.toLowerCase(Locale.US).endsWith(".png")) have.add(entry.substring(DIR.length()));
         }
-        if (have.isEmpty()) XposedBridge.log("aaroad: no turn arrows in the module apk");
+        if (have.isEmpty()) Xlog.log("aaroad: no turn arrows in the module apk");
       }
       if (have.isEmpty()) return null;
       n = Turn.icon(type, modifier, have);
@@ -50,7 +49,7 @@ final class NavArrow {
       shown = b;
       return b;
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: turn arrow not loaded: " + t);  // once: the failed name is kept as shown, with no picture
+      Xlog.log("aaroad: turn arrow not loaded: " + t);  // once: the failed name is kept as shown, with no picture
       if (have == null) have = new HashSet<String>();
       shownName = n;
       shown = null;

@@ -9,7 +9,6 @@ import android.graphics.RectF;
 import android.view.View;
 import android.widget.ImageView;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import java.io.BufferedReader;
 import java.io.File;
@@ -56,10 +55,10 @@ final class Cast {
           param.args[0] = crop(frame, view);
           if (!logged) {
             logged = true;
-            XposedBridge.log("aaroad: cluster cast cropped to " + describe() + " in " + pkg);
+            Xlog.log("aaroad: cluster cast cropped to " + describe() + " in " + pkg);
           }
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: cast crop failed: " + t);
+          Xlog.log("aaroad: cast crop failed: " + t);
         }
       }
     });
@@ -122,7 +121,7 @@ final class Cast {
     List<int[]> next = parse(text);
     if (next.isEmpty()) next = parse("card");
     regions = next;
-    XposedBridge.log("aaroad: cast regions " + describe());
+    Xlog.log("aaroad: cast regions " + describe());
   }
 
   static List<int[]> parse(String text) {

@@ -2,7 +2,6 @@ package com.starpilot.aaroad;
 
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
-import de.robv.android.xposed.XposedBridge;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.DatagramPacket;
@@ -30,14 +29,14 @@ final class Relay {
         try {
           server = new LocalServerSocket(NAME);
         } catch (Throwable e) {
-          XposedBridge.log("aaroad: map relay could not listen: " + e);
+          Xlog.log("aaroad: map relay could not listen: " + e);
           return;
         }
         while (true) {
           try {
             serve(server.accept());
           } catch (Throwable e) {
-            XposedBridge.log("aaroad: map relay dropped the meter: " + e);
+            Xlog.log("aaroad: map relay dropped the meter: " + e);
           }
         }
       }
@@ -54,7 +53,7 @@ final class Relay {
       udp.setBroadcast(true);
       udp.bind(new InetSocketAddress(Feed.PORT));
       final DataOutputStream out = new DataOutputStream(client.getOutputStream());
-      XposedBridge.log("aaroad: map relay carrying the feed for the meter");
+      Xlog.log("aaroad: map relay carrying the feed for the meter");
       Thread down = new Thread(new Runnable() {
         @Override
         public void run() {

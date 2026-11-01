@@ -15,7 +15,6 @@ import android.os.SystemClock;
 import android.text.TextPaint;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import de.robv.android.xposed.XposedBridge;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -561,7 +560,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     // the close-up look (GlClose): if its program does not build, the map draws without it rather than failing
     close = new GlClose();
     if (!close.setup()) {
-      XposedBridge.log("aaroad: close-up program failed; drawing without it");
+      Xlog.log("aaroad: close-up program failed; drawing without it");
       close = null;
     }
     GLES20.glGetError();
@@ -663,7 +662,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         g.pack(b, tmp);
         b.position(0);
       } catch (Throwable t) {
-        XposedBridge.log("aaroad: scene pack failed: " + t);
+        Xlog.log("aaroad: scene pack failed: " + t);
         g = null;
       }
       synchronized (packLock) {

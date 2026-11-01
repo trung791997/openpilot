@@ -20,7 +20,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
-import de.robv.android.xposed.XposedBridge;
 
 // One-time check whether the head unit can draw the 3D close-up (Peter 2026-10-29: 3D for the zoomed-in view
 // near a turn only, 2D while cruising). Off screen, on its own thread, nothing shown: a GLES2 context on a
@@ -70,13 +69,13 @@ final class GlProbe {
             tried += ", " + d;
           }
           if (dir == null) {
-            XposedBridge.log("aaroad: gl probe skipped, nowhere to keep its marker (" + tried + ")");
+            Xlog.log("aaroad: gl probe skipped, nowhere to keep its marker (" + tried + ")");
             return;
           }
-          if (mark(dir, MARKER)) XposedBridge.log("aaroad: gl probe " + probe(null));
+          if (mark(dir, MARKER)) Xlog.log("aaroad: gl probe " + probe(null));
           if (root != null && mark(dir, SCREEN_MARKER)) onScreen(root);
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: gl probe failed: " + t);
+          Xlog.log("aaroad: gl probe failed: " + t);
         }
       }
     }, "aaroad-glprobe");
@@ -115,7 +114,7 @@ final class GlProbe {
                 } catch (Throwable t) {
                   r = "failed: " + t;
                 }
-                XposedBridge.log("aaroad: gl screen " + r);
+                Xlog.log("aaroad: gl screen " + r);
                 root.post(new Runnable() {
                   @Override
                   public void run() {
@@ -131,7 +130,7 @@ final class GlProbe {
           public void surfaceDestroyed(SurfaceHolder holder) {}
         });
         root.addView(sv, new ViewGroup.LayoutParams(W, H));
-        XposedBridge.log("aaroad: gl screen view added");
+        Xlog.log("aaroad: gl screen view added");
       }
     });
   }

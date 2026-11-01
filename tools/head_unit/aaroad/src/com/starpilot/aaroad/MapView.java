@@ -19,7 +19,6 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
-import de.robv.android.xposed.XposedBridge;
 import java.io.File;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
@@ -220,7 +219,7 @@ final class MapView extends View {
   private String hideWhy = "not started";  // why the map is hidden, for the log
   private boolean holding;                // up only because the comma's feed still talks through a GPS gap
   private long poseGapFrom;               // uptime the position went stale while up (0: it is fresh)
-  private boolean whereLogged;
+  private static String whereLogged;  // Events.status() as last logged
   private double k = 600 / R0;
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
@@ -354,10 +353,14 @@ final class MapView extends View {
     super(context);
     this.navi = navi;
     this.pkg = pkg;
-    try {  // the SD card first; the meter process's own files dir when it may not write there
-      Events.dirs = new File[] {new File("/sdcard/aaroad"), new File(context.getFilesDir(), "aaroad")};
+    // the SD card first; the meter process's own files dir when it may not write there, then its cache dir. Each
+    // asked on its own: one that throws (or gives null) must not take the others with it
+    Context app = null;
+    try {
+      app = context.getApplicationContext();
     } catch (Throwable ignored) {
     }
+    Events.use(filesDir(app), filesDir(context), cacheDir(app), cacheDir(context));
     setLayerType(LAYER_TYPE_SOFTWARE, null);  // perspective paths and clipPath: software Skia only on 4.2
     setVisibility(INVISIBLE);
     float[] v = cameraValues();
@@ -452,7 +455,7 @@ final class MapView extends View {
         medium = Typeface.createFromAsset(am, "fonts/Inter-Medium.ttf");
         fontAssets = am;
       } catch (Throwable t) {
-        XposedBridge.log("aaroad: Inter not loaded, system font instead: " + t);
+        Xlog.log("aaroad: Inter not loaded, system font instead: " + t);
         semiBold = Typeface.DEFAULT_BOLD;
         medium = Typeface.DEFAULT;
       }
@@ -473,7 +476,7 @@ final class MapView extends View {
       in.close();
       if (car != null) outline = outlineOf(car);
     } catch (Throwable t) {
-      XposedBridge.log("aaroad: map car icon not loaded: " + t);
+      Xlog.log("aaroad: map car icon not loaded: " + t);
     } finally {
       try {
         if (zip != null) zip.close();
@@ -520,9 +523,10 @@ final class MapView extends View {
         hideWhy = why;
         noteGap(now, age, feedAge);
         setLive(why == null);
-        if (!whereLogged && Events.where() != null) {
-          whereLogged = true;
-          XposedBridge.log("aaroad: map events go to " + Events.where());
+        String where = Events.status();
+        if (where != null && !where.equals(whereLogged)) {  // once, and again only if it changes
+          whereLogged = where;
+          Xlog.log(where);
         }
         if (live) {
           rebuildIfNeeded(now);
@@ -611,9 +615,25 @@ final class MapView extends View {
     super.onDetachedFromWindow();
   }
 
+  private static File filesDir(Context c) {
+    try {
+      return c == null ? null : c.getFilesDir();
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private static File cacheDir(Context c) {
+    try {
+      return c == null ? null : c.getCacheDir();
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
   // One line to logcat and to the rolling file (Events).
   static void say(String line) {
-    XposedBridge.log(line);
+    Xlog.log(line);
     Events.record(line);
   }
 
@@ -989,7 +1009,7 @@ final class MapView extends View {
           Roads g = gpu;
           if (g != null) g.poke();
         } catch (Throwable e) {
-          XposedBridge.log("aaroad: map scene failed: " + e);
+          Xlog.log("aaroad: map scene failed: " + e);
         } finally {
           building = false;
         }

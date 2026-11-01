@@ -291,7 +291,76 @@ def test_a_stop_keeps_the_heading_it_arrived_with():
   assert heading(None, 0.0, 0., 2 * second) == 92.0     # stopped: GPS has no bearing
   assert heading(120.0, 0.0, 0., 3 * second) == 92.0    # nor a real one when it reports one
   assert hf.HeadingFilter()(None, 0.0, 0., second) is None
-  assert heading(None, 5.0, 0., 4 * second) is None     # moving without a bearing: the old one is stale
+  assert heading(None, 5.0, 0., 4 * second) == 92.0     # rolling off before the GPS has a bearing: the gyro carries it
+  for t in range(5, 14):
+    assert heading(None, 5.0, 0., t * second) == 92.0
+  assert heading(None, 5.0, 0., 14 * second) is None    # moving MAX_BEARING_GAP without a bearing: the old one is stale
+
+
+def test_creeping_to_a_stop_without_a_bearing_keeps_the_heading():
+  # Route 00000079--c1010e535e at 13:19:39: the head unit's GPS has no bearing under 1.2 m/s, vEgo touched exactly
+  # STOPPED_SPEED (not "stopped") on a fix without one, the heading went to None and no pose went out while parked.
+  heading, tenth = hf.HeadingFilter(), 100_000_000
+  assert heading(180.0, 3.0, 0., tenth) == 180.0
+  assert heading(None, hf.STOPPED_SPEED, 2.0, 2 * tenth) == 180.2   # the gyro still turns it
+  for t in range(3, 1000):
+    assert heading(None, 0.0, 0., t * tenth) == 180.2              # and the stop holds it for as long as it lasts
+  assert heading(None, 2.0, 0., 1000 * tenth) == 180.2              # driving off before a bearing comes back
+
+
+def test_a_bearing_gap_is_carried_by_the_gyro():
+  heading, tenth = hf.HeadingFilter(), 100_000_000
+  heading(90.0, 10.0, 0., tenth)
+  assert math.isclose(heading(None, 10.0, 10.0, 6 * tenth), 95.0)   # 0.5 s at 10 deg/s
+  assert math.isclose(heading(None, 10.0, 0., 16 * tenth), 95.0)
+  assert heading(None, 10.0, 0., 28 * tenth) is None                 # a gap over MAX_GYRO_GAP: nothing to carry
+
+
+def test_a_standstill_holds_the_last_pose_when_the_fix_goes():
+  hold, tenth = hf.StopHold(), 100_000_000
+  pose = {'lat': 33.0, 'lon': -117.0, 'hdg': 90.0, 'spd': 0.4, 'age': 0.3}
+  assert hold(pose, 0.4, tenth) is pose
+  held = hold(None, 0.0, 2 * tenth)
+  assert held == {**pose, 'spd': 0., 'age': 0., 'held': 1}
+  for t in range(3, 6000):                                     # ten minutes parked
+    assert hold(None, 0.0, t * tenth) == held
+  assert hold(None, None, 6000 * tenth) is None                # carState went stale: nothing says the car stands
+  assert hold(None, 0.0, 6001 * tenth) is None                 # and it does not come back without a real pose
+
+
+def test_a_moving_car_never_gets_a_held_pose():
+  pose, tenth = {'lat': 33.0, 'lon': -117.0, 'hdg': 90.0, 'spd': 5.0, 'age': 0.}, 100_000_000
+  hold = hf.StopHold()
+  hold(pose, 5.0, tenth)
+  assert hold(None, hf.STOPPED_SPEED, 2 * tenth) is None       # moving: carry()'s MAX_CARRY is the only limit
+  hold = hf.StopHold()
+  hold(pose, 0.9, tenth)
+  for t in range(2, 57):                                       # creeping at 0.9 m/s rolls 5 m in about 5.6 s
+    assert hold(None, 0.9, t * tenth) is not None
+  assert hold(None, 0.9, 57 * tenth) is None
+  hold = hf.StopHold()
+  hold(pose, 0.0, tenth)
+  assert hold(None, 0.0, 30 * tenth) is None                   # ticks too far apart to know the car stayed put
+
+
+def test_a_parked_car_keeps_sending_its_pose_with_no_fix():
+  value = snapshot(speed=0., still_speed=0.)
+  feed, sock, now, _ = make(value)
+  sock.hello()
+  feed.tick()
+  first = [m for m, a in sock.sent if m['t'] == 'p'][-1]
+  assert 'held' not in first
+  value['fix'] = None
+  now[0] += 0.05
+  feed.tick()
+  held = [m for m, a in sock.sent if m['t'] == 'p'][-1]
+  assert held['held'] == 1 and held['age'] == 0. and held['spd'] == 0.
+  assert (held['lat'], held['lon'], held['hdg']) == (first['lat'], first['lon'], first['hdg'])
+  value['still_speed'] = None                                  # an older reader, or no carState: no hold
+  count = sock.kinds().count('p')
+  now[0] += 0.05
+  feed.tick()
+  assert sock.kinds().count('p') == count
 
 
 def test_heading_noise_is_damped_and_the_gyro_carries_turns():

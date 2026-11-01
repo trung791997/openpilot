@@ -33,8 +33,9 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      c is the traffic on each point's stretch to the next, one per pts entry (0 unknown, 1 low, 2 moderate, 3 heavy,
      4 severe), left out when navigationd gives none. id is the crc32 of a key that includes c's hash, so new traffic
      makes a new id (the head unit ignores a repeated one); an older app ignores c
-  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b"}, the last GPS fix carried forward to now; "b": 1 while the
-     car is braking (brake_of), left out otherwise, so an older app ignores it
+  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b", "held"}, the last GPS fix carried forward to now; "b": 1 while
+     the car is braking (brake_of), left out otherwise, so an older app ignores it; at a standstill with no fresh fix
+     the last pose goes on with age 0, spd 0 and "held": 1 (StopHold), left out otherwise
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
   a  album cover, once it is downloaded and every COVER_EVERY s while a song is on: {"id", "i", "n", "b": base64};
@@ -97,29 +98,76 @@ def mode_of(enabled: bool, experimental: bool, lat_active: bool, desired_long: b
 # a few degrees frame to frame at 48 mph). Below walking speed GPS has no real heading (the comma's still read about
 # 40 deg accuracy and wandered 5 deg at a stop) and the car cannot turn, so a stop keeps the heading it arrived with.
 # Moving, the gyro carries the heading between fixes and each GPS bearing pulls it only part of the way.
+# The head unit's GPS (the only fix on route 00000079--c1010e535e, 2026-11-01, the comma's own never fixed) gives no
+# bearing below about 1.2 m/s, so creeping to a stop at about 1 m/s the old filter dropped the heading, could not get
+# one back at a standstill, and sent no pose until the car drove off: the dash map hid at 13:20 while parked. A fix
+# with no bearing now keeps the heading the gyro carries, for up to MAX_BEARING_GAP s of moving without one.
 STOPPED_SPEED = 1.0
 BEARING_GAIN = 0.3
 MAX_GYRO_GAP = 1.  # s: past this the held heading is too old to carry
+MAX_BEARING_GAP = 10.  # s moving with no GPS bearing before the gyro-carried heading counts as stale
 
 
 class HeadingFilter:
   def __init__(self):
     self.heading: float | None = None
     self.stamp = 0
+    self.bearing_stamp = 0  # last time a bearing came in, or the car stood (it cannot turn then)
 
   def __call__(self, bearing: float | None, speed: float, yaw_rate: float, now_ns: int) -> float | None:
     """Heading (deg) to send with the fix, None when there is none. yaw_rate in deg/s, + right."""
     if self.heading is not None and speed < STOPPED_SPEED:
-      self.stamp = now_ns
+      self.stamp = self.bearing_stamp = now_ns
       return self.heading
     dt = (now_ns - self.stamp) * 1e-9
-    if bearing is None or self.heading is None or not 0 <= dt <= MAX_GYRO_GAP:
+    if self.heading is None or not 0 <= dt <= MAX_GYRO_GAP:
       self.heading = bearing  # nothing to carry: start again from the GPS, or have no heading
+      self.bearing_stamp = now_ns
     else:
       predicted = self.heading + yaw_rate * dt
-      self.heading = (predicted + BEARING_GAIN * ((bearing - predicted + 180) % 360 - 180)) % 360
+      if bearing is not None:
+        self.heading = (predicted + BEARING_GAIN * ((bearing - predicted + 180) % 360 - 180)) % 360
+        self.bearing_stamp = now_ns
+      elif 0 <= (now_ns - self.bearing_stamp) * 1e-9 <= MAX_BEARING_GAP:
+        self.heading = predicted % 360  # a slow fix with no bearing: the gyro carries the turn
+      else:
+        self.heading = None  # moving too long without a bearing: the old one is stale
     self.stamp = now_ns
     return self.heading
+
+
+# A stop also keeps the car where it is when the fix itself goes (no source, or one older than MAX_CARRY): the wheels
+# say the car has not moved, so the last pose is still right. Without this a GPS that drops out at a standstill hides
+# the dash map after its 60 s hold. It is sent as fresh (age 0, speed 0, "held": 1) for as long as carState stays
+# fresh, the car stays under STOPPED_SPEED and the wheels have rolled under STOP_HOLD_DISTANCE since; any of those
+# failing drops it, so a moving car never gets a held pose beyond MAX_CARRY.
+STOP_HOLD_DISTANCE = 5.  # m the wheels may roll from the last real pose before it no longer stands for the car
+STOP_HOLD_GAP = 1.       # s between ticks past which the hold lost track of the wheels
+CAR_STATE_FRESH_NS = 500_000_000  # carState comes at 100 Hz
+
+
+class StopHold:
+  def __init__(self):
+    self.pose: dict | None = None
+    self.stamp = 0
+    self.rolled = 0.
+
+  def __call__(self, pose: dict | None, speed: float | None, now_ns: int) -> dict | None:
+    """The pose to send: pose itself when there is one, else the last one while the car stands. speed: vEgo from a
+    fresh carState, None when there is none."""
+    dt = (now_ns - self.stamp) * 1e-9
+    self.stamp = now_ns
+    if pose is not None:
+      self.pose, self.rolled = pose, 0.
+      return pose
+    if self.pose is None or speed is None or not math.isfinite(speed) or not 0 <= dt <= STOP_HOLD_GAP:
+      self.pose = None
+      return None
+    self.rolled += max(speed, 0.) * dt
+    if speed >= STOPPED_SPEED or self.rolled > STOP_HOLD_DISTANCE:
+      self.pose = None
+      return None
+    return {**self.pose, 'spd': 0., 'age': 0., 'held': 1}
 
 
 BRAKE_ACCEL = -0.5  # m/s^2: openpilot's own long command firmer than this lights the cluster car's brake lights
@@ -313,8 +361,10 @@ class CerealReader:
     mode = mode_of(bool(sm.seen['selfdriveState'] and selfdrive.enabled), bool(selfdrive.experimentalMode),
                    bool(sm.seen['carControl'] and control.latActive),
                    bool(axis.nativeAcknowledged and axis.desiredLongitudinal) if axis is not None else None)
+    fresh = sm.seen['carState'] and 0 <= now_ns - sm.logMonoTime['carState'] <= CAR_STATE_FRESH_NS
     value = {'mode': mode, 'metric': self.metric(time.monotonic()), 'nav': None, 'route': None, 'fix': None,
              'speed': float(sm['carState'].vEgo) if sm.seen['carState'] else 0., 'yaw_rate': 0.,
+             'still_speed': float(sm['carState'].vEgo) if fresh else None,
              'media': self.media(time.monotonic()),
              'brake': brake_of(sm['carState'] if sm.seen['carState'] else None,
                                control if sm.seen['carControl'] else None)}
@@ -417,6 +467,7 @@ class HeadUnitFeed:
     self.sent_cover: int | None = None
     self.last_cover = -math.inf
     self._cover_thread: threading.Thread | None = None
+    self._stop_hold = StopHold()
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
 
@@ -512,7 +563,9 @@ class HeadUnitFeed:
           body['c'] = congestion[start:start + ROUTE_CHUNK]
         self._send('r', body)
       self.sent_route, self.last_route = key, now
-    pose = carry(value['fix'], value['speed'], value['yaw_rate'], self.clock_ns()) if value['fix'] else None
+    now_ns = self.clock_ns()
+    pose = carry(value['fix'], value['speed'], value['yaw_rate'], now_ns) if value['fix'] else None
+    pose = self._stop_hold(pose, value.get('still_speed'), now_ns)
     if pose is not None:
       if value.get('brake'):
         pose['b'] = 1

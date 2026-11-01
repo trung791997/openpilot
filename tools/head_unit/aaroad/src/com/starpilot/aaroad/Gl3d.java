@@ -19,7 +19,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
-import de.robv.android.xposed.XposedBridge;
 
 // A visible test of the 3D turn close-up (Peter 2026-10-30: "Yeah let's try that"). The GPU test drew to the dash
 // through its own layer in about 22 ms a frame, but drew nothing visible, so it did not show the layer actually
@@ -45,7 +44,7 @@ final class Gl3d {
           long until = SystemClock.uptimeMillis() + WAIT_MS;
           while (Feed.spd >= 0.3) {
             if (SystemClock.uptimeMillis() > until) {
-              XposedBridge.log("aaroad: gl 3d test skipped, the car kept moving");
+              Xlog.log("aaroad: gl 3d test skipped, the car kept moving");
               return;
             }
             Thread.sleep(1000);
@@ -54,7 +53,7 @@ final class Gl3d {
           if (!marker.createNewFile()) return;
           show(root);
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: gl 3d test failed: " + t);
+          Xlog.log("aaroad: gl 3d test failed: " + t);
         }
       }
     }, "aaroad-gl3d").start();
@@ -83,7 +82,7 @@ final class Gl3d {
                 } catch (Throwable t) {
                   r = "failed: " + t;
                 }
-                XposedBridge.log("aaroad: gl 3d test " + r);
+                Xlog.log("aaroad: gl 3d test " + r);
                 root.post(new Runnable() {
                   @Override
                   public void run() {
@@ -102,7 +101,7 @@ final class Gl3d {
         lp.leftMargin = X;
         box.addView(sv, lp);
         root.addView(box, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        XposedBridge.log("aaroad: gl 3d test showing");
+        Xlog.log("aaroad: gl 3d test showing");
       }
     });
   }

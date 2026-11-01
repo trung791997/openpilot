@@ -6,7 +6,6 @@ import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.SystemClock;
 import android.util.Base64;
-import de.robv.android.xposed.XposedBridge;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -213,11 +212,11 @@ final class Feed {
           try {
             Link link = direct();
             if (link == null) link = relay();
-            XposedBridge.log("aaroad: map feed listening" + (link instanceof Relayed ? " through Honda Hack" : ""));
+            Xlog.log("aaroad: map feed listening" + (link instanceof Relayed ? " through Honda Hack" : ""));
             logged = false;
             pump(link);
           } catch (Throwable e) {
-            if (!logged) XposedBridge.log("aaroad: map feed down, retrying: " + e);
+            if (!logged) Xlog.log("aaroad: map feed down, retrying: " + e);
             logged = true;
           }
           SystemClock.sleep(2000);
@@ -237,7 +236,7 @@ final class Feed {
       sock.bind(new InetSocketAddress(PORT));
       sock.setSoTimeout(250);
     } catch (Exception e) {
-      if (!noNetworkLogged) XposedBridge.log("aaroad: map feed has no network here (" + e.getMessage() + "), asking Honda Hack");
+      if (!noNetworkLogged) Xlog.log("aaroad: map feed has no network here (" + e.getMessage() + "), asking Honda Hack");
       noNetworkLogged = true;
       return null;
     }
@@ -319,7 +318,7 @@ final class Feed {
         try {
           handle(new JSONObject(new String(buf, 0, n, "UTF-8")));
         } catch (Throwable e) {
-          XposedBridge.log("aaroad: map feed dropped a datagram: " + e);
+          Xlog.log("aaroad: map feed dropped a datagram: " + e);
         }
       }
     } finally {

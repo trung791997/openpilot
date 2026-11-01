@@ -9,7 +9,8 @@ import java.io.FileReader;
 //   java -cp /tmp/events com.starpilot.aaroad.EventsTest
 // Fails (exit 1) unless: lines append in order; at MAX_BYTES the file moves to events.log.1 and a new one starts,
 // one older copy only, so the two never pass about 2 x MAX_BYTES; record() writes timestamped lines on its own
-// thread; and an unwritable first directory falls back to the next.
+// thread; an unwritable first directory falls back to the next, down to the cache dir; status() names the file in
+// use, or every directory's reason when none takes a line; and use() keeps the order, leaving out nulls and repeats.
 public class EventsTest {
   static int fails = 0;
 
@@ -59,6 +60,34 @@ public class EventsTest {
     String l = g.exists() ? last(g) : "";
     check(l.matches("\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3} aaroad: hidden reason=page not shown"),
         "timestamped line: " + l);
+
+    check(("aaroad: map events go to " + g).equals(Events.status()), "status names the file: " + Events.status());
+    check(Events.stamp("x").matches("\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3} x"), "stamp: " + Events.stamp("x"));
+
+    // the file in use goes away (its dir replaced by a file): the next line finds the cache dir past two bad ones
+    check(g.delete() && good.delete() && good.createNewFile(), "break the dir in use");
+    File parent = new File(dir, "nothere");
+    check(parent.createNewFile(), "a file where a parent should be");
+    File gone = new File(parent, "deeper");
+    File cache = new File(dir, "cache");
+    Events.dirs = new File[] {blocker, gone, cache};
+    Events.write(Events.stamp("aaroad: shown"));
+    File c = new File(cache, Events.NAME);
+    check(c.equals(Events.where()) && c.exists() && last(c).endsWith(" aaroad: shown"), "falls back to the cache dir");
+    check(("aaroad: map events go to " + c).equals(Events.status()), "status follows it: " + Events.status());
+
+    // nowhere to write: no file, and the status says why for each directory
+    check(c.delete() && cache.delete() && cache.createNewFile(), "break the cache dir");
+    Events.write("aaroad: lost");
+    String s = Events.status();
+    check(Events.where() == null, "no file in use");
+    check(s != null && s.startsWith("aaroad: events.log not written: ") && s.contains(blocker + ": not a directory")
+        && s.contains(gone + ": mkdirs failed") && s.contains(cache + ": not a directory"), "reasons: " + s);
+
+    Events.use(new File("/data/x/files"), null, new File("/data/x/cache"), new File("/data/x/files"));
+    check(Events.dirs.length == 3 && Events.dirs[0].getPath().equals("/sdcard/aaroad")
+        && Events.dirs[1].getPath().equals("/data/x/files/aaroad")
+        && Events.dirs[2].getPath().equals("/data/x/cache/aaroad"), "use(): " + java.util.Arrays.toString(Events.dirs));
 
     if (fails > 0) {
       System.out.println(fails + " failed");

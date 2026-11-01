@@ -1,7 +1,6 @@
 package com.starpilot.aaroad;
 
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import java.io.BufferedReader;
 import java.io.File;
@@ -44,13 +43,13 @@ final class NavFake {
           byte[] data = (byte[]) XposedHelpers.callMethod(param.args[0], "getBcanData");
           if (data == null || Arrays.equals(data, lastReply)) return;
           lastReply = data.clone();
-          XposedBridge.log("aaroad: cluster guide reply " + hex(data) + (builtin ? " (sent as built-in)" : " (sent as phone)"));
+          Xlog.log("aaroad: cluster guide reply " + hex(data) + (builtin ? " (sent as built-in)" : " (sent as phone)"));
         } catch (Throwable t) {
-          XposedBridge.log("aaroad: reply log failed: " + t);
+          Xlog.log("aaroad: reply log failed: " + t);
         }
       }
     });
-    XposedBridge.log("aaroad: guidance device hook in " + PKG);
+    Xlog.log("aaroad: guidance device hook in " + PKG);
   }
 
   private static void reload() {
@@ -75,7 +74,7 @@ final class NavFake {
       }
     }
     builtin = !text.equals("phone");
-    XposedBridge.log("aaroad: guidance sent as " + (builtin ? "built-in" : "phone"));
+    Xlog.log("aaroad: guidance sent as " + (builtin ? "built-in" : "phone"));
   }
 
   private static String hex(byte[] data) {
