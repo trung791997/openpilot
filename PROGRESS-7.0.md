@@ -23,6 +23,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
 | Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower; camera and radar range must agree within max(8 m, 10 %) (entries 10, 12) | see entry 12 | see entry 12 | replay (6 of Peter's hard brakes + 8:57 phantom, 19 real brakes, 747-brake census with stills) + static tests |
 | Stop-and-go: stay stopped behind a stopped car; no gas while crawling inside the 6 m stop gap (entry 11) | see entry 11 | see entry 11 | log check (route 46 segs 14-16, open loop) + static tests |
+| Set Speed Assist: Experimental Mode catches up to the set speed on an open road (entry 14) | see entry 14 | see entry 14 | replay + static tests |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
@@ -43,6 +44,41 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 - **D-097 is not on this branch** (the gentle gas ramp after a coast, 6d9579ce5). `CivicBrakeEdge` covers the release-surge part on the Civic.
 
 ## Log
+
+### 14 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
+
+**Problem.** In Experimental Mode with no car ahead, the model often holds 2–4 m/s under the set speed for a minute or more (route 313 at 80–85 mph, route 311). The owner had to press the gas to get there.
+
+**Fix.** `openpilot/starpilot/longitudinal/set_speed_assist.py`, a port of sunnypilot #2083. It is hooked after Accel Boost in both planners (`longitudinal_planner.py` and `upstream/planner.py`), Experimental Mode only, radar cars only. It lifts the model's accel toward min(lead MPC, cruise) at the cruise jerk. It stays off when:
+- radarState has any lead, or has had one in the last 2 s (the lift drops at 2.4 m/s³);
+- the model itself is braking (raw `desiredAcceleration` below −0.1);
+- a lane change is in progress, or the road bends.
+
+The lift tapers to 0 at the set speed (1 m/s² per m/s below it). Without the taper, the stock planner's lagging cruise accel carried the car 1 m/s past an 85 mph set speed.
+
+**Evidence (replay, closed loop, limited road evidence; compare ON vs OFF only; sim-vs-log aEgo corr is low, −0.14 to 0.56, because these stretches are flat).** Job, OFF b7582d110 vs ON c5de40a6f, both planners. Time to within 2 mph of set speed, sustained:
+
+| Stretch | OFF | ON | Logged car |
+|---|---|---|---|
+| o313a | 69.7 s | 47.0 s | 80.4 s |
+| o313c | never | 12.7 s | never |
+| o313d | never | 13.6 s | never |
+| o313e | never | 15.8 s | 39.7 s |
+| o311a | never | 12.5 s | never |
+
+- Mean deficit to set speed: 2–4 m/s → 0.5–1.3 m/s.
+- Peak plant accel 1.1–1.3 m/s².
+- Never over set speed by more than 0.14 m/s once the taper is in.
+- The firmer brakes in ON are all explained:
+  - o313d: the owner lowered the set speed 38.0 → 35.56 with the car already at 38 (−1.83 stock, −1.43 StarPilot).
+  - o313c and route 309: the sim runs 100+ m past the logged lead, so the replay brakes on a lead that is effectively on top of it. This is a harness artifact; lift 0 and clear_t 0 on every lead frame.
+  - o313d braking lead at 110 m: ON closes 2.3 m/s faster and keeps 3.0 s / 99.5 m (OFF 3.5 s / 110 m), with a −1.05 peak vs −0.35.
+- The 7-route scan found no other usable open-road stretch.
+
+**Not verified.** No road evidence. Watch the next Experimental Mode drive with no car ahead:
+- it should reach the set speed in about 15 s, without passing it;
+- a car appearing ahead should stop the extra speed at once;
+- a car cutting in shortly after a catch-up should not get a firmer brake.
 
 ### 13 — 2026-11-01 — Coast first: for a distant car tapping its brakes, lift off before braking; on longradar and V-ASM, default ON
 
