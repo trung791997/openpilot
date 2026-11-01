@@ -91,6 +91,10 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
   - `road_tiles.py` reads Mapbox's `layer`, `lane_count` (Mapbox has it only in Japan) and `oneway`, plus class `path` (sidewalk, crossing, footway) and `pedestrian` lines as walks. Cycleways, steps and trails are dropped.
   - `navtilesd` stores format 5 and fetches near tiles in format 4 or older again, once each. `hu_feed` sends a head unit that asks for 4 or less the old format, unchanged.
   - Size, from a synthetic tile (none are cached here): a jittered 22 x 22 downtown grid with 3312 walk lines goes from 7.4 to 27.5 KB, about 6 B per walk line. Roads alone cost 2 B a line more.
+- **Head unit reads format 5 and builds the close-up detail.** *static*; nothing is drawn by this commit.
+  - `Feed.java` decodes format 5 (layer, lane count, one-way per line; the walk table) and asks the comma for it.
+  - New `CloseUp.java` (pure Java) turns the scene's lines into segments by range: bridge decks per layer and class, with a ramp where a bridge meets a ground road (or inside a lone bridge), lane lines for motorways (lane count, else 3 one-way / 4 two-way), and sidewalks and dashed crosswalks. Height 12 m a layer. Capped at 6144 road and 4096 walk segments, nearest first, within 1400 / 1000 m.
+  - Static: `test/CloseUpTest.java` all ok. A busy synthetic scene is 403 road + 1209 walk segments, 226 KB on the GPU, built in 2 ms (desktop JIT).
 
 ### 2026-10-31
 - **Traffic lights on the dash map, like Google Maps.** *static*.

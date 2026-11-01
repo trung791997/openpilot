@@ -49,12 +49,25 @@ final class Feed {
     // traffic signal / stop points: x, y in tile units and kind (road_tiles.SIGNAL 1, STOP 2) in threes;
     // empty when the tile is older than format 4
     float[] signals = new float[0];
+    // per road class: each line's stacking layer (Mapbox ``layer``, bridges above 0), its lane count (0 unknown;
+    // Mapbox has it only in Japan) and whether it is one-way; null when the tile is older than format 5
+    final byte[][] layer = new byte[5][];
+    final byte[][] lanes = new byte[5][];
+    final boolean[][] oneway = new boolean[5][];
+    // sidewalks, crossings, footways and pedestrian streets (format 5): x, y pairs in tile units, each line's
+    // first point then the end, and each line's kind (WALK_SIDEWALK..WALK_PEDESTRIAN); empty before format 5
+    float[] walkPts = new float[0];
+    int[] walkStarts = {0};
+    byte[] walkKind = new byte[0];
 
     Tile(int x, int y) {
       this.x = x;
       this.y = y;
     }
   }
+
+  static final int WALK_SIDEWALK = 1, WALK_CROSSING = 2, WALK_FOOTWAY = 3, WALK_PEDESTRIAN = 4;
+  static final int VERSION = 5;
 
   static final class Route {
     final long id;
@@ -290,9 +303,9 @@ final class Feed {
       if (have.length() >= HAVE_MAX) break;
       have.put(k);
     }
-    // rt: the newest road tile format this app reads, 4 with traffic signals (2026-10-31); the comma sends an older
-    // app's tiles as format 3 (bridges), 2 (names, 2026-10-30) or 1 (no "rt")
-    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", 4).toString().getBytes("UTF-8");
+    // rt: the newest road tile format this app reads, 5 with layers, lanes and sidewalks (2026-11-01); the comma
+    // sends an older app's tiles as format 4 (signals), 3 (bridges), 2 (names, 2026-10-30) or 1 (no "rt")
+    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", VERSION).toString().getBytes("UTF-8");
   }
 
   private static void handle(JSONObject m) throws Exception {
@@ -453,8 +466,10 @@ final class Feed {
   // Version 2 puts the tile's street names first (<H count, then <B length + UTF-8 each) and an <u2 name
   // index per line (0 = none) after the line lengths. Version 3 adds a flags byte per line after that, bit 0 a bridge.
   // Version 4 ends with the tile's signal points: <H count, then per point <h x, <h y, <B kind.
+  // Version 5 adds per line after the flags an <b layer and a <B lane count (flags bit 2 one-way), and ends
+  // with the walk lines: <I count, <I points, the <u2 lengths, a <B kind each, and the <i4 x, y deltas.
   static Tile decode(int x, int y, byte[] raw) throws Exception {
-    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] < 1 || raw[4] > 4) {
+    if (raw.length < 6 || raw[0] != 'S' || raw[1] != 'P' || raw[2] != 'R' || raw[3] != 'T' || raw[4] < 1 || raw[4] > VERSION) {
       throw new IllegalArgumentException("not a road tile");
     }
     int version = raw[4];
@@ -486,7 +501,7 @@ final class Feed {
     }
     for (int c = 0; c < classes; c++) {
       int cls = b.get() & 0xff, lines = b.getInt(), total = b.getInt();
-      if (cls >= 5 || lines < 0 || total < 0 || (long) lines * (version >= 3 ? 5 : version >= 2 ? 4 : 2) + (long) total * 8 > b.remaining()) {
+      if (cls >= 5 || lines < 0 || total < 0 || (long) lines * (version >= 5 ? 7 : version >= 3 ? 5 : version >= 2 ? 4 : 2) + (long) total * 8 > b.remaining()) {
         throw new IllegalArgumentException("bad road tile class");
       }
       int[] starts = new int[lines + 1];
@@ -503,8 +518,21 @@ final class Feed {
       }
       if (version >= 3) {
         boolean[] bridge = new boolean[lines];
-        for (int l = 0; l < lines; l++) bridge[l] = (b.get() & 1) != 0;
+        boolean[] oneway = new boolean[lines];
+        for (int l = 0; l < lines; l++) {
+          int f = b.get() & 0xff;
+          bridge[l] = (f & 1) != 0;
+          oneway[l] = (f & 4) != 0;
+        }
         tile.bridge[cls] = bridge;
+        if (version >= 5) {
+          byte[] layer = new byte[lines], lanes = new byte[lines];
+          b.get(layer);
+          b.get(lanes);
+          tile.layer[cls] = layer;
+          tile.lanes[cls] = lanes;
+          tile.oneway[cls] = oneway;
+        }
       }
       float[] pts = new float[total * 2];
       int ax = 0, ay = 0;
@@ -527,6 +555,26 @@ final class Feed {
         sig[3 * i + 2] = b.get() & 0xff;
       }
       tile.signals = sig;
+    }
+    if (version >= 5) {
+      int n = b.getInt(), total = b.getInt();
+      if (n < 0 || total < 0 || (long) n * 3 + (long) total * 8 > b.remaining()) throw new IllegalArgumentException("bad road tile walks");
+      int[] starts = new int[n + 1];
+      for (int l = 0; l < n; l++) starts[l + 1] = starts[l] + (b.getShort() & 0xffff);
+      if (starts[n] != total) throw new IllegalArgumentException("bad road tile walk lengths");
+      byte[] kind = new byte[n];
+      b.get(kind);
+      float[] pts = new float[total * 2];
+      int ax = 0, ay = 0;
+      for (int p = 0; p < total; p++) {
+        ax += b.getInt();
+        ay += b.getInt();
+        pts[2 * p] = ax;
+        pts[2 * p + 1] = ay;
+      }
+      tile.walkPts = pts;
+      tile.walkStarts = starts;
+      tile.walkKind = kind;
     }
     return tile;
   }
