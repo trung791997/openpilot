@@ -387,8 +387,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"JetlinkCatalog", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkSpec", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkPointers", {PERSISTENT | DONT_LOG, JSON}},
-    {"JetlinkBigModel", {PERSISTENT, JSON}},  // owner-picked Jetson big model; unset = jetlink default
-    {"JetlinkCatalog", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkProgress", {CLEAR_ON_MANAGER_START | DONT_LOG, JSON}},
     {"Version", {PERSISTENT, STRING}},
 
