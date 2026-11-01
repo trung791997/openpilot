@@ -24,7 +24,7 @@ import java.util.zip.Inflater;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-// The comma's cluster map feed (openpilot/starpilot/system/android_auto/hu_feed.py): it beacons once a second
+// The comma's cluster map feed (openpilot/starpilot/system/starport/hu_feed.py): it beacons once a second
 // on the phone hotspot; while the meter's nav page is up this answers with a hello naming the road tiles it
 // holds, and the comma sends openpilot's mode, the route, the car's position at 20 Hz and the missing tiles
 // to the hello's address, and the song playing with its cover for the music card. No hellos, no feed: the comma reads nothing and sends nothing when not navigating.

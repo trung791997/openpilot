@@ -9,7 +9,7 @@ import math
 import threading
 import time
 
-from openpilot.starpilot.system.android_auto.wire import one, signed
+from openpilot.starpilot.system.starport.wire import one, signed
 
 # The Android Auto LocationData accuracy field is optional. A built-in car receiver is good to a few metres in the
 # open; without a figure, claim one just inside the 25 m usable limit so any real figure above it is still refused.

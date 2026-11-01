@@ -217,9 +217,9 @@ class _Canvas:
       if viewport is None:
         self.view = OnroadView(self.fonts, ASSET_DIRECTORY, background_layer=layers['background_layer'])
       else:
-        from openpilot.starpilot.system.android_auto.projection_onroad import ProjectionOnroad
+        from openpilot.starpilot.system.starport.projection_onroad import ProjectionOnroad
         self.view = ProjectionOnroad.create_view(OnroadView, self.fonts, viewport=viewport, **layers)
-        from openpilot.starpilot.system.android_auto.projection_exit import ProjectionExit
+        from openpilot.starpilot.system.starport.projection_exit import ProjectionExit
         self.view.projection_exit_layer = ProjectionExit(rl).render
         ProjectionOnroad.apply_theme(self.view, self.fonts, self._render_theme_overlay)
         self.view.now_playing.track = {'source': 'spotify', 'status': 'playing', 'title': 'Midnight City', 'artist': 'M83', 'album': '',
@@ -245,14 +245,14 @@ class _Canvas:
     if self.viewport is None:
       render_sample_road(rect, state, self.profile)
     else:
-      from openpilot.starpilot.system.android_auto.projection_theme import road_style
+      from openpilot.starpilot.system.starport.projection_theme import road_style
       render_sample_road(rect, state, self.profile, road_style(state.customization["roadColors"]["large"]))
     if not state.customization.get("widgetOrder", {}).get(str(self.profile)) and self.viewport is None:
       self._render_side_cameras(state)
 
   def _render_theme_overlay(self, content: rl.Rectangle, state: OnroadState) -> None:
-    from openpilot.starpilot.system.android_auto import projection_theme
-    from openpilot.starpilot.system.android_auto.projection_onroad import driving_mode_label
+    from openpilot.starpilot.system.starport import projection_theme
+    from openpilot.starpilot.system.starport.projection_onroad import driving_mode_label
     projection_theme.overlay(self.fonts, content, state, driving_mode_label(state), lead_present=True)
 
   @staticmethod
@@ -358,7 +358,7 @@ class _Canvas:
       widget_state = sample_state(sample, state.customization) if sample is not None else state
       if self.viewport is not None and key == 'cruise_limits':
         # The car screen's own card, sized as drawn: its button row comes and goes with the sample.
-        from openpilot.starpilot.system.android_auto import projection_theme
+        from openpilot.starpilot.system.starport import projection_theme
         logical_width, logical_height = projection_theme.CARD_WIDTH, projection_theme.card_height(widget_state) or 1
       position = positions[key]
       widget = PROFILES[str(self.profile)]['widgets'][key]
@@ -478,7 +478,7 @@ class LayoutPreviewRenderer:
       raise ValueError("Invalid widget art request")
     viewport = None
     if payload['profile'] == 'projection':
-      from openpilot.starpilot.system.android_auto.projection_layout import projection_customization
+      from openpilot.starpilot.system.starport.projection_layout import projection_customization
       layout = payload['document']['layout']
       viewport = (layout['canvas']['width'], layout['canvas']['height'])
       document = projection_customization(layout, validate_document(payload['document']['base']))

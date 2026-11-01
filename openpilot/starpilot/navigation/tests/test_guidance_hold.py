@@ -4,7 +4,7 @@ import collections
 from types import SimpleNamespace
 
 from openpilot.starpilot.navigation.guidance_hold import HOLD_NS, GuidanceHold
-from openpilot.starpilot.system.android_auto import hu_feed as hf
+from openpilot.starpilot.system.starport import hu_feed as hf
 
 S = 1_000_000_000
 KEY = ('session', 'rev-1')
@@ -173,7 +173,7 @@ def test_dash_clears_at_once_on_end_navigation_and_after_the_hold(monkeypatch):
 
 def test_drive_75_gap_keeps_the_cluster_turn_and_end_navigation_still_clears_it(monkeypatch):
   from openpilot.common import params
-  from openpilot.starpilot.system.android_auto import nav_status as ns
+  from openpilot.starpilot.system.starport import nav_status as ns
   monkeypatch.setattr(params, 'Params', lambda: SimpleNamespace(get_bool=lambda name: False))
   clock, sub = [0], Sub(26 / 2.237)
   sub.valid = collections.defaultdict(lambda: True)

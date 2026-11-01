@@ -1,7 +1,7 @@
 import json
 
 from openpilot.starpilot.soloist import now_playing
-from openpilot.starpilot.system.android_auto.projection_now_playing import ProjectionNowPlayingFeed
+from openpilot.starpilot.system.starport.projection_now_playing import ProjectionNowPlayingFeed
 
 PLAYER = {'loggedIn': True, 'active': True, 'status': 'playing',
           'track': {'title': 'Midnight City', 'artists': 'M83', 'album': 'Hurry Up', 'durationMs': 243000},
@@ -122,7 +122,7 @@ def test_spotify_cover_is_kept_only_on_spotify_image_hosts():
 
 
 def test_feed_downloads_each_cover_once_and_drops_failures():
-  from openpilot.starpilot.system.android_auto import projection_now_playing
+  from openpilot.starpilot.system.starport import projection_now_playing
   value = {'title': 'x', 'artwork': 'https://i.scdn.co/image/a'}
   fetched = []
   def fetch(url):
@@ -148,7 +148,7 @@ def test_feed_downloads_each_cover_once_and_drops_failures():
 
 
 def test_jpeg_covers_reach_the_card_as_png():
-  from openpilot.starpilot.system.android_auto import projection_now_playing
+  from openpilot.starpilot.system.starport import projection_now_playing
   # The comma's raylib cannot decode JPEG, and every Spotify cover is JPEG.
   import io
   from PIL import Image

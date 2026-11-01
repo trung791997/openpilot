@@ -7,7 +7,7 @@ import java.util.Set;
 // What the turn card says, worked out exactly as the StarPilot Auto car screen works it out, so the dash and the car
 // screen agree: the arrow's file (navigation_icons.icon_name), the distance (navigation_state.distance_text) and the
 // instruction's text (navigation_state). Plain Java, no Android, so the Python tests can run it against the Python
-// (openpilot/starpilot/system/android_auto/tests/test_dash_turn_card.py).
+// (openpilot/starpilot/system/starport/tests/test_dash_turn_card.py).
 final class Turn {
   static final String FALLBACK = "direction_turn_straight.png";
 

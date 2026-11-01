@@ -50,6 +50,7 @@ class FeaturePage(StrEnum):
   LANE = "lane"
   LANE_CHANGE = "lane_change"
   PROFILES = "profiles"
+  PERSONALITIES = "personalities"
   AGGRESSIVE = "aggressive"
   STANDARD = "standard"
   RELAXED = "relaxed"
@@ -98,6 +99,8 @@ class FeatureRow:
   actions: tuple[tuple[str, bool], ...] = ()
   presets: tuple[tuple[str, str], ...] = ()
   default_reset_available: bool = False
+  # A page row that runs a command, not a sub-menu, names its verb here instead of "Open >".
+  action_label: str = ""
 
 
 @dataclass(frozen=True)

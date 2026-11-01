@@ -208,7 +208,8 @@ class FeatureSettingsView:
               else:
                 self._center(self._elide(text, FontRole.MEDIUM, DETAIL_SIZE, button.width - 24), DETAIL_SIZE, button, color)
           elif row.page and value is None:
-            self._center("Open >", DETAIL_SIZE, action, TEXT_PRIMARY if row.available or row.choices == ("Off", "On") else TEXT_MUTED)
+            self._center(row.action_label or "Open >", DETAIL_SIZE, action,
+                         TEXT_PRIMARY if row.available or row.choices == ("Off", "On") else TEXT_MUTED)
           elif _confirmation(row):
             if row.key in ("torque_adopt", "slc_adopt"):
               action = "Adopt…"

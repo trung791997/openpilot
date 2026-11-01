@@ -5,7 +5,9 @@ on:
     branches:
       - master
       - Domathon
-      - SecretGoodStarPilot
+      # Honda-PTM branches and the night-star7(-clean) mirrors only change by a pull request that already ran this
+      # workflow, so a push run there tests the same tree twice. Only the personal branch takes direct pushes.
+      - night-star7-vfn-personal-DONOTFLASH
   pull_request:
   workflow_call:
     inputs:

@@ -8,8 +8,8 @@ import pyray as rl
 
 from openpilot.starpilot.ui import clip
 from openpilot.starpilot.soloist.now_playing import ELSEWHERE, elapsed_ms
-from openpilot.starpilot.system.android_auto.projection_now_playing import image_type
-from openpilot.starpilot.system.android_auto.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
+from openpilot.starpilot.system.starport.projection_now_playing import image_type
+from openpilot.starpilot.system.starport.projection_layout import NOW_PLAYING_SIZE, NOW_PLAYING_WIDGET
 from openpilot.starpilot.ui.presentation import FontRole, TextSize
 
 ACCENT = rl.Color(199, 174, 247, 255)  # without cover art; with it the card takes its color from the art

@@ -95,7 +95,7 @@ ran (seg_dist and next_road sit in a LinearLayout) and is gone. Log: `aaroad: me
 
 The cluster map (heading-up route, 3D close-up near the turn, carpet in openpilot's mode colour) needs
 more than Android Auto's nav channel carries: openpilot's mode, the whole route and the car's position.
-The comma sends them from `openpilot/starpilot/system/android_auto/hu_feed.py`, started by the Android
+The comma sends them from `openpilot/starpilot/system/starport/hu_feed.py`, started by the Android
 Auto daemon. The comma's `aa0` reaches the head unit only through the AAWireless dongle's USB side, so
 there is no IP route to the head unit there; the feed uses the phone hotspot both are on, UDP port
 47312. It does nothing when the head unit is on another network.

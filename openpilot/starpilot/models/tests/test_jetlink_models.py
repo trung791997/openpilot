@@ -55,7 +55,8 @@ def jetlink_op(store):
     value = store.get(key)
     return adapter.with_default_bundle(value) if key == adapter.CATALOG_KEY else value
 
-  return SimpleNamespace(keys=cls.KEYS, catalog_selector=cls.CATALOG_SELECTOR, get=get,
+  # params_dir() names a missing directory: the store is in memory, so the pick has no file time.
+  return SimpleNamespace(keys=cls.KEYS, catalog_selector=cls.CATALOG_SELECTOR, get=get, params_dir=lambda: "/nonexistent-params",
                          log=logging.getLogger("jetlink-test"), put=store.put)
 
 
@@ -115,12 +116,14 @@ def test_jetlink_models_read_through_the_adapter():
   # an empty catalog: jetlink's default, not None (Models.default_model waits for a catalog otherwise)
   models = Models(jetlink_op(Store()))
   assert models.catalog() == [{"name": DEFAULT_BIG_MODEL_NAME, "ref": DEFAULT_BIG_MODEL_REF}]
-  assert models.default_model()["ref"] == DEFAULT_BIG_MODEL_REF
+  default = models.default_model()
+  assert default is not None and default["ref"] == DEFAULT_BIG_MODEL_REF
   # a selector-20 bundle is not one jetlink runs
   store = Store(JetlinkCatalog={"bundles": [bundle(OLD, 1), bundle(NEXT, 5, selector=20)]})
   models = Models(jetlink_op(store))
   assert models.catalog() == [{"name": "model 1", "ref": OLD}]
-  assert models.default_model()["ref"] == OLD
+  default = models.default_model()
+  assert default is not None and default["ref"] == OLD
   # the picker and jetlink agree on the rows
   assert [r["ref"] for r in adapter.models(store, Link())] == [m["ref"] for m in models.catalog()]
 
@@ -129,7 +132,8 @@ def test_select_model():
   store = Store(JetlinkCatalog={"bundles": [bundle(OLD, 1), bundle(NEXT, 5, selector=20)]})
   assert adapter.select_model(OLD, store, Link()) is True
   assert store.values[adapter.BIG_MODEL_KEY] == {"ref": OLD, "displayName": "model 1"}
-  assert Models(jetlink_op(store)).selected_model()["ref"] == OLD
+  selected = Models(jetlink_op(store)).selected_model()
+  assert selected is not None and selected["ref"] == OLD
   for ref in (NEW, NEXT, "not-a-ref"):
     assert adapter.select_model(ref, store, Link()) is False
   assert store.values[adapter.BIG_MODEL_KEY]["ref"] == OLD

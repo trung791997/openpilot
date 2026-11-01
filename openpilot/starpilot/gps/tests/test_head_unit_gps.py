@@ -10,7 +10,7 @@ from openpilot.starpilot.gps.tests.test_phone_gps import FIX as PHONE_FIX, Bus, 
 from openpilot.starpilot.gps.phone import PhoneGpsPublisher, read_phone_gps
 from openpilot.starpilot.navigation.runtime import publish_status
 from openpilot.starpilot.navigation.status import NavigationStatusSource
-from openpilot.starpilot.system.android_auto.wire import field, parse_fields
+from openpilot.starpilot.system.starport.wire import field, parse_fields
 
 NOW = 101_000_000_000
 

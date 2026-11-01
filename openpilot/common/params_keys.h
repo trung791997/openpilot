@@ -113,7 +113,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneCenterOffset", {PERSISTENT, FLOAT, "0.0"}},
     {"LaneCenteringE2EAuthority", {PERSISTENT, FLOAT, "1.0"}},
     {"LaneCenteringStrength", {PERSISTENT, FLOAT, "1.5"}},
-    {"AndroidAutoEnabled", {PERSISTENT | DONT_LOG, BOOL, "0"}},
+    {"StarPortEnabled", {PERSISTENT | DONT_LOG, BOOL, "0"}},
     {"AdvancedLateralTune", {PERSISTENT, BOOL}},
     {"LateralControllerSelection", {PERSISTENT | DONT_LOG, JSON}},
     {"SteeringLearningPreferences", {PERSISTENT, BYTES}},
@@ -214,6 +214,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriverLockoutCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, INT, "0"}},
     {"AlphaLongitudinalEnabled", {PERSISTENT, BOOL}},
     {"ExperimentalMode", {PERSISTENT, BOOL}},
+    {"ExperimentalSpeedNudge", {PERSISTENT, BOOL, "1"}},
     {"FirmwareQueryDone", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ForcePowerDown", {PERSISTENT, BOOL}},
     {"GitBranch", {PERSISTENT, STRING}},
@@ -382,6 +383,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ReprojectSessionActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION | DONT_LOG, BOOL}},
     {"JetlinkMode", {PERSISTENT, INT, "0"}},
     {"JetlinkChargePhone", {PERSISTENT, BOOL, "0"}},
+    {"JetlinkBigModel", {PERSISTENT, JSON}},  // owner-picked Jetson big model; unset = jetlink default
+    {"JetlinkCatalog", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkSpec", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkPointers", {PERSISTENT | DONT_LOG, JSON}},
     {"JetlinkBigModel", {PERSISTENT, JSON}},  // owner-picked Jetson big model; unset = jetlink default
