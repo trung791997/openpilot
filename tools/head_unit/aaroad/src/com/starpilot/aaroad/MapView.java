@@ -492,7 +492,8 @@ final class MapView extends View {
         say("aaroad: map tick failed: " + t);
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
-      long slow = glowing(SystemClock.uptimeMillis()) ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
+      // and while the car glides up or down for the lane row (lift), so it keeps with the map under it
+      long slow = glowing(SystemClock.uptimeMillis()) || lift != drawnLift ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
       postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs));
     }
   };
@@ -533,7 +534,7 @@ final class MapView extends View {
     String road = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     if (st != drawnStamp) gpu.poke();
     if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
-        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow) {
+        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || Math.abs(lift - drawnLift) > 0.5f) {
       invalidate();
     } else {
       skipped++;
@@ -679,6 +680,10 @@ final class MapView extends View {
       h = h * 31 + hash(nav.road);
       double m = turnLeft(nav, now);
       h = h * 31 + (m >= 0 ? hash(Turn.distance(m, Feed.metric)) : 1);
+      h = h * 31 + java.util.Arrays.hashCode(nav.lanes);  // the lane row, and whether it shows yet
+      h = h * 31 + java.util.Arrays.hashCode(nav.take);
+      h = h * 31 + hash(nav.toward);
+      h = h * 31 + (Lanes.shown(nav.lanes, m) ? 1 : 2);
     } else {
       h = h * 31 + 2;
     }
@@ -735,8 +740,24 @@ final class MapView extends View {
     // with no route nothing lies far ahead to show, so the view stays close: about 12 s of road, 120 to 300 m
     double rng = s.route.length == 0 ? FreeView.range(spd) : Math.max(200, Math.min(600, spd * 20));
     if (turn >= 0 && turn + TURN_LEN < rng) rng = Math.max(turn + TURN_LEN, CLOSE);
+    // the lane row under the car takes the bottom of the map: a little closer in, so the turn still fits above it
+    if (Lanes.at == Lanes.AT_CAR && s.route.length > 0 && lanesShown(now)) rng *= LANE_ZOOM;
     return rng;
   }
+
+  // Whether the lane row shows now: the comma sent lanes for the next maneuver, and it is within Lanes.SHOW_M.
+  private static boolean lanesShown(long now) {
+    Feed.Nav nav = turnNav(now);
+    return nav != null && Lanes.shown(nav.lanes, turnLeft(nav, now));
+  }
+
+  // The lane row under the car (Lanes.AT_CAR, Peter 2026-11-01): the map and car drawn LIFT px higher while it
+  // shows, easing over LIFT_TAU (frame()), and the zoom LANE_ZOOM closer. lift is the last frame's, for the slow
+  // layer and project(); drawnLift what the slow layer last drew the car with.
+  static final float LIFT = 38;
+  private static final double LIFT_TAU = 0.35, LANE_ZOOM = 0.85;
+  private volatile float lift;
+  private float drawnLift;
 
   // One frame's camera: where the car is drawn, which way it points, the zoom and where the carpet starts. The view's
   // onDraw and the GPU layer's own clock both take it from here, so the two agree; synchronized, as both may ask
@@ -751,6 +772,7 @@ final class MapView extends View {
     double h, k, base;
     int cRun = -1, cSeg, color;
     boolean free, moving, settled;
+    float lift;  // px the map and car are drawn higher, for the lane row under the car (Lanes.AT_CAR)
 
     void copyTo(Frame o) {
       o.s = s;
@@ -772,6 +794,7 @@ final class MapView extends View {
       o.free = free;
       o.moving = moving;
       o.settled = settled;
+      o.lift = lift;
     }
   }
 
@@ -818,7 +841,12 @@ final class MapView extends View {
     lastFrame = now;
     k += (rng / R0 - k) * (1 - Math.exp(-dt / (rng / R0 < k ? TAU_IN : TAU_OUT)));
     f.k = k;
-    f.settled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS;
+    // the lane row under the car: the map and car glide up LIFT px to make room while it shows, and back down after
+    float want = Lanes.at == Lanes.AT_CAR && s.route.length > 0 && lanesShown(now) ? LIFT : 0;
+    float l = lift + (want - lift) * (float) (1 - Math.exp(-dt / LIFT_TAU));
+    if (Math.abs(want - l) < 0.3f) l = want;
+    lift = f.lift = l;
+    f.settled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS && l == want;
     f.ce = ce;
     f.cn = cn;
     f.h = h;
@@ -1350,7 +1378,7 @@ final class MapView extends View {
     float w = cam[6] * x + cam[7] * z + cam[8];
     if (w <= 0.01f) return false;
     out[0] = (cam[0] * x + cam[1] * z + cam[2]) / w + off;
-    out[1] = (cam[3] * x + cam[4] * z + cam[5]) / w;
+    out[1] = (cam[3] * x + cam[4] * z + cam[5]) / w - lift;
     return true;
   }
 
@@ -1360,7 +1388,9 @@ final class MapView extends View {
     float l = x - w / 2 - 3, r = x + w / 2 + 3, t = y - 9, b = y + 7;
     if (l < (free ? CARD_L + 6 : CARD_R + 10) || r > 578 || t < LABEL_TOP || b > 212) return true;
     float carX = free ? FREE_X : CAR_X;
-    if (hits(l, t, r, b, carX - 30, CAR_Y - 32, carX + 30, 215)) return true;
+    float up = lift;
+    if (hits(l, t, r, b, carX - 30, CAR_Y - 32 - up, carX + 30, 215 - up)) return true;
+    if (up > 1 && hits(l, t, r, b, CAR_X - LANE_HALF - 6, LANE_CAR_T - 6, CAR_X + LANE_HALF + 6, 215)) return true;  // the lane row
     if (Feed.limitMs > 0 && hits(l, t, r, b, 466, 24, 522, 90)) return true;
     if (tagBox[2] > tagBox[0] && hits(l, t, r, b, tagBox[0] - 6, tagBox[1] - 6, tagBox[2] + 6, tagBox[3] + 6)) return true;
     return free && Feed.mediaStatus != null && !TextUtils.isEmpty(Feed.mediaTitle)
@@ -1518,7 +1548,9 @@ final class MapView extends View {
       drawnAt = now;
       drawnRoad = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
       canvas.save();
-      if (free) canvas.translate(FREE_X - CAR_X, 0f);
+      float up = lift;
+      drawnLift = up;
+      canvas.translate(free ? FREE_X - CAR_X : 0f, -up);
       drawCar(canvas);
       canvas.restore();
       overlay(canvas, now, free, true);
@@ -1577,7 +1609,8 @@ final class MapView extends View {
     sigCount = onGpu ? 0 : placeSignals(s, ce, cn, ch, sh, ik, free, tagBox, sigChoice, sigQ, sigXY, sigSprite);  // likewise
     long t1 = SystemClock.uptimeMillis();
     canvas.save();
-    if (free) canvas.translate(FREE_X - CAR_X, 0f);
+    drawnLift = f.lift;
+    canvas.translate(free ? FREE_X - CAR_X : 0f, -f.lift);
     if (!onGpu) {
       canvas.save();
       canvas.concat(camera);
@@ -2034,6 +2067,17 @@ final class MapView extends View {
       cardsKey = key;
     }
     canvas.drawBitmap(cardBmp, 0, 0, null);
+
+    // the lane row under the car (Lanes.AT_CAR), in the room the lifted map leaves; drawn once the lift is most of
+    // the way, so it never sits over the car
+    Feed.Nav nav = free ? null : turnNav(now);
+    if (nav != null && Lanes.at == Lanes.AT_CAR && lift > LIFT - 4 && Lanes.shown(nav.lanes, turnLeft(nav, now))) {
+      float half = Math.min(LANE_HALF, nav.lanes.length * LANE_CELL / 2f + 8);
+      RectF box = new RectF(CAR_X - half, LANE_CAR_T, CAR_X + half, LANE_CAR_T + LANE_H - 2);
+      canvas.drawRoundRect(box, 8, 8, panel);
+      canvas.drawRoundRect(box, 8, 8, edge);
+      laneRow(canvas, nav, box.left + 6, box.top, box.right - 6, box.bottom);
+    }
   }
 
   private static final int CARDS_W = (int) CARD_R + 2;  // clear of the cards' right ends
@@ -2048,7 +2092,10 @@ final class MapView extends View {
     if (nav != null) {
       double m = turnLeft(nav, now);
       k.append('|').append(nav.type).append('|').append(nav.modifier).append('|').append(Turn.text(nav.text));
-      k.append('|').append(m >= 0 ? Turn.distance(m, Feed.metric) : null);
+      k.append('|').append(m >= 0 ? Turn.distance(m, Feed.metric) : null).append('|').append(nav.toward);
+      if (Lanes.shown(nav.lanes, m)) {
+        k.append('|').append(Lanes.at).append(java.util.Arrays.toString(nav.lanes)).append(java.util.Arrays.toString(nav.take));
+      }
     }
     if (Feed.remainingSec >= 0) {
       double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
@@ -2083,9 +2130,12 @@ final class MapView extends View {
     List<List<Shield.Piece>> lines = nav != null ? turnLines(Turn.text(nav.text)) : NO_LINES;
     boolean top = nav != null && (d != null || arrow != null), road = !lines.isEmpty();
     boolean trip = !free && Feed.remainingSec >= 0;  // a card for the trip alone when there is no turn
+    // where the maneuver leads, under its text as Google Maps writes it: "toward Garland"
+    String toward = nav != null && road && !TextUtils.isEmpty(nav.toward) ? "toward " + nav.toward : null;
     float b = -1;
     if (top || road || trip) {
-      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + lines.size() * ROAD_H + (trip ? ETA_H : 0) + PAD;
+      b = TURN_T + (top ? 0 : PAD) + (top ? TOP_H : 0) + lines.size() * ROAD_H + (toward != null ? TOWARD_H : 0)
+          + (trip ? ETA_H : 0) + PAD;
       Path turnCard = card(CARD_L, TURN_T, CARD_R, b);
       canvas.drawPath(turnCard, panel);
       double ft = meters < 0 ? -1 : meters * 3.28084;
@@ -2133,12 +2183,78 @@ final class MapView extends View {
         drawPieces(canvas, line, ROW_X, right(y + 18, b), y + 18, cardRoad, cardSize, CARD_BADGE);
         y += ROAD_H;
       }
+      if (toward != null) {
+        canvas.drawText(TextUtils.ellipsize(toward, cardDim, right(y + 14, b) - ROW_X, TextUtils.TruncateAt.END).toString(),
+                        ROW_X, y + 14, cardDim);
+        y += TOWARD_H;
+      }
       if (trip) canvas.drawText(eta(now, right(y + 14, b) - ROW_X), ROW_X, y + 14, cardDim);
+    }
+    // the lane row under the turn card (Lanes.AT_CARD), a card of its own; the song goes under it, or waits for
+    // the maneuver when it would run off the bottom
+    float under = b;
+    if (b > 0 && nav != null && Lanes.at == Lanes.AT_CARD && Lanes.shown(nav.lanes, meters)) {
+      float t = b + LANE_GAP;
+      Path laneCard = card(CARD_L, t, CARD_R, t + LANE_H);
+      canvas.drawPath(laneCard, panel);
+      canvas.drawPath(laneCard, edge);
+      laneRow(canvas, nav, CARD_L + 8, t, CARD_R - SLANT - 4, t + LANE_H);
+      under = t + LANE_H;
     }
 
     String status = Feed.mediaStatus, title = Feed.mediaTitle;
-    if (status != null && !TextUtils.isEmpty(title)) song(canvas, status, title, b > 0 ? b + SONG_GAP : SONG_T);  // up under the turn card
+    float songT = under > 0 ? under + SONG_GAP : SONG_T;  // up under the turn card
+    if (status != null && !TextUtils.isEmpty(title) && songT + SONG_B - SONG_T <= SONG_LAST) song(canvas, status, title, songT);
     else titleRoll.over = artistRoll.over = 0;
+  }
+
+  // The lane row (Lanes, Peter 2026-11-01, after Google Maps): each lane's arrows in a cell of its own, left to right,
+  // the one to take in white over the rest in grey, thin lines between the lanes. Under the turn card or under the
+  // car (Lanes.at).
+  static final float LANE_H = 34, LANE_GAP = 4, LANE_CELL = 34, LANE_PX = 26, TOWARD_H = 20, SONG_LAST = 213;
+  // under the car: centred on it, its half width at most clear of the cards, LANE_CAR_T down to 211
+  static final float LANE_CAR_T = 179, LANE_HALF = CAR_X - CARD_R - 12;
+  private static final int LANE_ON = 0xffffffff, LANE_OFF = 0xff5a5a5a, LANE_SEP = 0x30ffffff;
+  private final Paint laneLine = new Paint(Paint.ANTI_ALIAS_FLAG), laneTip = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Path lanePath = new Path();
+  private final float[] lanePts = new float[2 * Lanes.POINTS], laneHead = new float[6];
+  private final int[] laneOrder = new int[10];
+
+  private void laneRow(Canvas canvas, Feed.Nav nav, float l, float t, float r, float b) {
+    int n = nav.lanes.length;
+    float cw = Lanes.cell(n, r - l, LANE_CELL), x0 = (l + r - n * cw) / 2, cy = (t + b) / 2;
+    float s = Math.min(cw * 0.9f, Math.min(b - t - 8, LANE_PX));
+    laneLine.setStyle(Paint.Style.STROKE);
+    laneLine.setStrokeCap(Paint.Cap.ROUND);
+    laneLine.setStrokeJoin(Paint.Join.ROUND);
+    laneLine.setStrokeWidth(Math.max(2, 0.13f * s));
+    laneTip.setStyle(Paint.Style.FILL);
+    for (int i = 0; i < n; i++) {
+      float cx = x0 + (i + 0.5f) * cw;
+      if (i > 0) {
+        laneLine.setColor(LANE_SEP);
+        laneLine.setStrokeWidth(1);
+        canvas.drawLine(x0 + i * cw, t + 7, x0 + i * cw, b - 7, laneLine);
+        laneLine.setStrokeWidth(Math.max(2, 0.13f * s));
+      }
+      int m = Lanes.order(nav.lanes[i], nav.take[i], laneOrder);
+      for (int j = 0; j < m; j++) {
+        int bit = laneOrder[j], c = bit == nav.take[i] ? LANE_ON : LANE_OFF;
+        int pts = Lanes.arrow(bit, nav.left, cx, cy, s, lanePts, laneHead);
+        lanePath.rewind();
+        lanePath.moveTo(lanePts[0], lanePts[1]);
+        for (int q = 1; q < pts; q++) lanePath.lineTo(lanePts[2 * q], lanePts[2 * q + 1]);
+        laneLine.setColor(c);
+        canvas.drawPath(lanePath, laneLine);
+        lanePath.rewind();
+        lanePath.moveTo(laneHead[0], laneHead[1]);
+        lanePath.lineTo(laneHead[2], laneHead[3]);
+        lanePath.lineTo(laneHead[4], laneHead[5]);
+        lanePath.close();
+        laneTip.setColor(c);
+        canvas.drawPath(lanePath, laneTip);
+      }
+    }
   }
 
   // Where text on a row with its baseline at y has to end, clear of the turn card's lean (bottom at b).

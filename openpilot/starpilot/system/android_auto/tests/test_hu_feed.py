@@ -497,3 +497,17 @@ def test_instruction_sends_the_road_and_its_route_number():
                          roadName='North Central Expressway', roadRef='US 75')
   sent = hf.instruction(step)
   assert (sent['road'], sent['ref'], sent['text']) == ('North Central Expressway', 'US 75', 'Keep left onto US 75 South')
+
+
+def test_instruction_sends_the_lanes_and_toward_only_when_given():
+  from types import SimpleNamespace
+  lane = SimpleNamespace
+  step = SimpleNamespace(maneuverType='off ramp', maneuverModifier='slightRight', distanceMeters=800., exitNumber=0,
+                         exitDegrees=0, drivingLeft=False, text='Exit 34 I 635 East', roadName='US 75', roadRef='US 75',
+                         lanes=[lane(directions=1, active=False, activeDirection=0),
+                                lane(directions=3, active=True, activeDirection=2)], toward='Garland')
+  sent = hf.instruction(step)
+  assert (sent['lanes'], sent['toward']) == ([[1, 0, 0], [3, 1, 2]], 'Garland')
+  assert len(json.dumps(sent, separators=(',', ':'))) < 400
+  step.lanes, step.toward = [], ''
+  assert 'lanes' not in hf.instruction(step) and 'toward' not in hf.instruction(step)

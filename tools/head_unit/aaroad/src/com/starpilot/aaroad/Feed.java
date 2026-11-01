@@ -100,13 +100,23 @@ final class Feed {
   // same step the StarPilot Auto car screen draws). One piece, so the turn card never mixes two datagrams.
   // at: uptime of the datagram; distance (m) is the distance to the maneuver then.
   static final class Nav {
+    static final int[] NO_LANES = new int[0];
     final String type, modifier, text, road;
     final int exit, degrees;
     final boolean left;
     final double distance;
     final long at;
+    // the lanes before the maneuver, left to right (Lanes): the arrows each carries, and the one to take in it
+    // (0 = not a lane to take); empty when the comma sends none. toward: where the maneuver leads ("Garland"), or "".
+    final int[] lanes, take;
+    final String toward;
 
     Nav(String type, String modifier, String text, String road, int exit, int degrees, boolean left, double distance, long at) {
+      this(type, modifier, text, road, exit, degrees, left, distance, at, NO_LANES, NO_LANES, "");
+    }
+
+    Nav(String type, String modifier, String text, String road, int exit, int degrees, boolean left, double distance, long at,
+        int[] lanes, int[] take, String toward) {
       this.type = type;
       this.modifier = modifier;
       this.text = text;
@@ -116,13 +126,31 @@ final class Feed {
       this.left = left;
       this.distance = distance;
       this.at = at;
+      this.lanes = lanes;
+      this.take = take;
+      this.toward = toward;
     }
 
     static Nav of(JSONObject nav, long at) {
       if (nav == null) return null;
-      return new Nav(nav.optString("type", ""), nav.optString("modifier", ""), nav.optString("text", ""),
+      String modifier = nav.optString("modifier", "");
+      // "lanes": [[arrows, take 0/1, arrow to take], ...]; a malformed list drops them all, as the comma does
+      JSONArray rows = nav.optJSONArray("lanes");
+      int n = rows == null || rows.length() > Lanes.MAX ? 0 : rows.length();
+      int[] lanes = n == 0 ? NO_LANES : new int[n], take = n == 0 ? NO_LANES : new int[n];
+      for (int i = 0; i < n; i++) {
+        JSONArray row = rows.optJSONArray(i);
+        int arrows = row == null ? 0 : row.optInt(0, 0) & Lanes.ALL;
+        if (arrows == 0) {
+          lanes = take = NO_LANES;
+          break;
+        }
+        lanes[i] = arrows;
+        take[i] = Lanes.lit(arrows, row.optInt(1, 0) != 0, row.optInt(2, 0), modifier);
+      }
+      return new Nav(nav.optString("type", ""), modifier, nav.optString("text", ""),
                      nav.optString("road", ""), nav.optInt("exit", 0), nav.optInt("degrees", 0), nav.optBoolean("left"),
-                     nav.optDouble("distance", -1), at);
+                     nav.optDouble("distance", -1), at, lanes, take, nav.optString("toward", ""));
     }
   }
 

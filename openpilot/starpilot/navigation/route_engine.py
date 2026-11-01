@@ -97,6 +97,72 @@ def roundabout(primary: dict, maneuver: dict, step: dict) -> tuple[int, int, boo
   return degrees, exit_number, step.get('driving_side') == 'left'
 
 
+# Lane guidance for the head unit's dash map (display only: nothing here reaches steering, braking or speed).
+# One bit per arrow a lane carries; Instruction.Lane.directions is the OR of them, activeDirection one of them.
+LANE_BITS = {'straight': 1, 'slight right': 2, 'right': 4, 'sharp right': 8, 'uturn': 16, 'sharp left': 32,
+             'left': 64, 'slight left': 128}
+LANE_NONE = 'none'  # a lane with no painted arrow; drawn as straight
+LANE_MERGE_LEFT, LANE_MERGE_RIGHT = 256, 512  # set on the lanes to use when the maneuver is a merge
+MAX_LANES = 12
+
+
+def lane_bits(indications) -> int:
+  if not isinstance(indications, list):
+    return 0
+  bits = 0
+  for name in indications[:9]:
+    bits |= LANE_BITS.get('straight' if name == LANE_NONE else str(name).replace('_', ' '), 0)
+  return bits
+
+
+def lanes(banners: list, upcoming: dict, maneuver_type: str, maneuver_modifier: str) -> tuple:
+  """The lanes before the maneuver at the end of this step, left to right: ((directions, use, arrow to use), ...).
+
+  From the last banner that has lane components ({directions, active, active_direction}), else from the maneuver's
+  intersection lanes ({indications, valid, active, valid_indication}). Empty when Mapbox gives none or a lane is
+  malformed. On a merge the lanes to use get the merge arrow toward the merge side."""
+  rows = []
+  for banner in reversed(banners if isinstance(banners, list) else []):
+    components = ((banner.get('sub') or {}).get('components') or []) if isinstance(banner, dict) else []
+    found = [c for c in components if isinstance(c, dict) and c.get('type') == 'lane']
+    if found:
+      rows = [(c.get('directions'), c.get('active'), c.get('active_direction')) for c in found]
+      break
+  if not rows:
+    intersections = upcoming.get('intersections') or [None]
+    found = (intersections[0].get('lanes') or []) if isinstance(intersections[0], dict) else []
+    rows = [(c.get('indications'), c.get('active', c.get('valid')), c.get('valid_indication'))
+            for c in found if isinstance(c, dict)]
+  if not 0 < len(rows) <= MAX_LANES:
+    return ()
+  result = []
+  merge = LANE_MERGE_LEFT if 'left' in maneuver_modifier.lower() else LANE_MERGE_RIGHT
+  for indications, active, direction in rows:
+    bits = lane_bits(indications)
+    if not bits:
+      return ()
+    use = active is True
+    arrow = lane_bits([direction]) if use else 0
+    if use and not arrow & bits:  # no arrow given, or one the lane does not carry: the lane's first arrow
+      arrow = bits & -bits
+    if use and maneuver_type == 'merge':
+      bits, arrow = bits | merge, merge
+    result.append((bits, use, arrow))
+  return tuple(result)
+
+
+def toward(banners: list, upcoming: dict, text: str) -> str:
+  """Where the maneuver leads ("Garland"): the banner's secondary line, else the next road's destinations after
+  the colon ("I 635 East: Garland" -> "Garland"). '' when not given or the instruction already says it."""
+  banner = banners[0] if isinstance(banners, list) and banners and isinstance(banners[0], dict) else {}
+  value = str((banner.get('secondary') or {}).get('text') or '')
+  if not value:
+    value = str(upcoming.get('destinations') or '')
+    value = value.split(':', 1)[1] if ':' in value else value
+  value = ' '.join(value.split())
+  return '' if not value or 'toward' in text.lower() or value.lower() in text.lower() else value[:80]
+
+
 @dataclass(frozen=True)
 class Step:
   start: float
@@ -110,6 +176,8 @@ class Step:
   driving_left: bool = False
   road: str = ''  # the road this step drives along (Mapbox step name, else its ref); '' = not given
   ref: str = ''  # that road's route number(s), the Mapbox step ref ("US 75; TX 289"); '' = none
+  lanes: tuple = ()  # the lanes before this step's maneuver, see lanes(); () = not given
+  toward: str = ''  # where the maneuver leads ("Garland"); '' = not given
 
 
 @dataclass(frozen=True)
@@ -144,11 +212,14 @@ class NavigationRoute:
         banners = step.get('bannerInstructions', [])
         primary = banners[0].get('primary', {}) if banners else {}
         text = str(primary.get('text') or maneuver.get('instruction', ''))[:256]
-        self.steps.append(Step(offset, end, number(step['duration']), text,
-                               str(primary.get('type') or maneuver['type'])[:40],
-                               modifier(primary.get('modifier') or maneuver.get('modifier', 'none'))[:40],
+        maneuver_type = str(primary.get('type') or maneuver['type'])[:40]
+        maneuver_modifier = modifier(primary.get('modifier') or maneuver.get('modifier', 'none'))[:40]
+        last = index == len(steps) - 1  # the arrive step: no maneuver ahead, so no lanes or destination
+        self.steps.append(Step(offset, end, number(step['duration']), text, maneuver_type, maneuver_modifier,
                                *roundabout(primary, maneuver, upcoming),
-                               str(step.get('name') or step.get('ref') or '')[:80], str(step.get('ref') or '')[:80]))
+                               str(step.get('name') or step.get('ref') or '')[:80], str(step.get('ref') or '')[:80],
+                               () if last else lanes(banners, upcoming, maneuver_type, maneuver_modifier),
+                               '' if last else toward(banners, upcoming, text)))
         offset = end
       self.total_distance = number(data['distance'])
       self.total_duration = number(data['duration'])
@@ -199,7 +270,9 @@ class NavigationRoute:
                        'distanceMeters': remaining, 'remainingDistanceMeters': max(0., self.steps[-1].end - along),
                        'remainingDurationSeconds': duration, 'exitDegrees': step.exit_degrees,
                        'exitNumber': step.exit_number, 'drivingLeft': step.driving_left, 'roadName': step.road,
-                       'roadRef': step.ref}
+                       'roadRef': step.ref,
+                       'lanes': [{'directions': bits, 'active': use, 'activeDirection': arrow} for bits, use, arrow in step.lanes],
+                       'toward': step.toward}
     upcoming = self.steps[min(index + 1, len(self.steps) - 1)]
     next_maneuver = {'maneuverType': upcoming.maneuver_type, 'maneuverModifier': upcoming.modifier,
                          'distanceMeters': max(0., upcoming.end - along)}

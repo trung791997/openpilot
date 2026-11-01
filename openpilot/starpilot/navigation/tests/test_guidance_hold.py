@@ -42,6 +42,15 @@ def test_a_gap_keeps_the_step_and_counts_it_down_at_the_cars_speed():
   assert hold('guiding', KEY, step(150.), 15 * S, 10.) == (step(150.), False)
 
 
+def test_a_gap_keeps_the_lanes_and_toward_line():
+  hold = GuidanceHold()
+  lanes = [[1, 0, 0], [1, 0, 0], [3, 1, 2], [2, 1, 2]]
+  hold('guiding', KEY, {**step(900.), 'lanes': lanes, 'toward': 'Garland'}, 0, 30.)
+  for second in range(1, 6):
+    shown, held = hold('waitingForLocation', KEY, None, second * S, 30.)
+  assert held and shown['lanes'] == lanes and shown['toward'] == 'Garland' and shown['distance'] == 750.
+
+
 def test_a_long_pause_between_reads_adds_no_distance():
   hold = GuidanceHold()
   hold('guiding', KEY, step(400.), 0, 10.)

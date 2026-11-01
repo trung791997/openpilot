@@ -92,6 +92,16 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
       drivingLeft @8 :Bool;    # left-hand traffic (roundabouts run clockwise)
       roadName @9 :Text;       # the road this step drives along, the one the car is on; "" = not given
       roadRef @10 :Text;       # that road's route number(s) as Mapbox gives them ("US 75", "US 75; TX 289"); "" = none
+      lanes @11 :List(Lane);   # the lanes before this maneuver, left to right; empty = not given (display only)
+      toward @12 :Text;        # where the maneuver leads, the banner's secondary line ("Garland"); "" = not given
+
+      struct Lane {
+        directions @0 :UInt16;       # OR of the arrows painted on the lane: straight 1, slight right 2, right 4,
+                                     # sharp right 8, uturn 16, sharp left 32, left 64, slight left 128,
+                                     # merge left 256, merge right 512
+        active @1 :Bool;             # a lane to use for this maneuver
+        activeDirection @2 :UInt16;  # the one arrow to use in it (a bit of directions); 0 = not a lane to use
+      }
     }
     version @12 :UInt16;
     speedLimit @13 :Float32;  # m/s, Mapbox posted limit on the matched route segment; 0 = unknown

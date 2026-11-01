@@ -708,7 +708,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glEnable(GLES20.GL_BLEND);
     // the colours blend, the alpha stays 1: the window composites the masks over an opaque layer
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
-    projection(w, h, free ? MapView.FREE_X - MapView.CAR_X : 0);
+    projection(w, h, free ? MapView.FREE_X - MapView.CAR_X : 0, f.lift);
     float qa = 1 / (v[4] - v[5] * v[7]);
     part(P_CLEAR);
 
@@ -983,8 +983,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   }
 
   // MapView's camera as a projection: car frame (x, z, 0, 1) to clip space for a w x h surface, the screen shifted
-  // right by tx. Clip w is the camera's w, and clip z is w - 2 NEAR_W, so the near plane drops w < NEAR_W.
-  private void projection(int w, int h, float tx) {
+  // right by tx and up by lift (the lane row under the car, MapView.LIFT). Clip w is the camera's w, and clip z is
+  // w - 2 NEAR_W, so the near plane drops w < NEAR_W.
+  private void projection(int w, int h, float tx, float lift) {
     java.util.Arrays.fill(proj, 0);
     proj[0] = 2 * v[0] / w;
     proj[4] = 2 * v[1] / w + 2 * tx * v[7] / w - v[7];
@@ -993,6 +994,9 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     proj[7] = v[7];
     proj[12] = 2 * v[2] / w + 2 * tx / w - 1;
     proj[13] = 1 - 2 * v[5] / h;
+    // up by lift px: clip y gains 2 lift / h times clip w (v[7] z + 1)
+    proj[5] += 2 * lift * v[7] / h;
+    proj[13] += 2 * lift / h;
     proj[14] = 1 - 2 * NEAR_W;
     proj[15] = 1;
   }

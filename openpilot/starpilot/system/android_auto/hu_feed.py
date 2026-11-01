@@ -18,6 +18,10 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      points too); a newer tile, or any but format 1 without rt, is turned back into the format it reads (an older
      app drops anything else, and the comma would resend it every TILE_RETRY s)
   s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
+     nav may carry "lanes": [[directions, use, arrow], ...] left to right (directions the OR of the lane's arrows:
+     straight 1, slight right 2, right 4, sharp right 8, uturn 16, sharp left 32, left 64, slight left 128, merge left
+     256, merge right 512; use 1 for a lane to take; arrow the one to take) and "toward" ("Garland"), each left out
+     when not given (older apps ignore both);
      through a GPS gap of up to 20 s it stays the last step, counted down at the car's speed, with "held": 1 (older
      apps ignore it); arrival, End navigation, a new destination or a reroute still null it at once (guidance_hold);
      limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
@@ -369,9 +373,16 @@ def posted_limit(slc) -> float | None:
 
 
 def instruction(step) -> dict:
-  return {'type': step.maneuverType, 'modifier': step.maneuverModifier, 'distance': round(float(step.distanceMeters), 1),
-          'exit': int(step.exitNumber), 'degrees': int(step.exitDegrees), 'left': bool(step.drivingLeft),
-          'text': step.text, 'road': step.roadName, 'ref': step.roadRef}
+  value = {'type': step.maneuverType, 'modifier': step.maneuverModifier, 'distance': round(float(step.distanceMeters), 1),
+           'exit': int(step.exitNumber), 'degrees': int(step.exitDegrees), 'left': bool(step.drivingLeft),
+           'text': step.text, 'road': step.roadName, 'ref': step.roadRef}
+  # lane guidance, display only; left out when navigationd gives none (or is older), so the datagram stays as it was
+  lanes = [[int(lane.directions), int(bool(lane.active)), int(lane.activeDirection)] for lane in getattr(step, 'lanes', ())]
+  if lanes:
+    value['lanes'] = lanes
+  if getattr(step, 'toward', ''):
+    value['toward'] = step.toward
+  return value
 
 
 class HeadUnitFeed:
