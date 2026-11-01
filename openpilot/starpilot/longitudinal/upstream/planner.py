@@ -86,6 +86,8 @@ class LongitudinalPlanner:
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
     self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
+    from openpilot.starpilot.longitudinal.set_speed_assist import SetSpeedAssist
+    self.set_speed_assist = SetSpeedAssist(CP, A_CRUISE_MAX_BP, J_CRUISE_VALS, dt)  # same as the StarPilot planner
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
@@ -178,6 +180,9 @@ class LongitudinalPlanner:
     # Accel Boost: in Experimental Mode, a gas press while the model is the slowest source adds up to +0.2 m/s^2
     # to the e2e target for the rest of the engagement (scaled off below 10 mph).
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    if sm['selfdriveState'].experimentalMode:
+      output_a_target_e2e = self.set_speed_assist.update(sm, output_a_target_e2e, min(output_a_target_mpc, self.a_cruise),
+                                                         bool(reset_state or self.fcw))
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
