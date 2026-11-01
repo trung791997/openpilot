@@ -9,7 +9,12 @@ change. It builds at the cruise jerk and drops at 2.4 m/s^3, so it never holds o
 lowers the candidate and never lifts above the lead/cruise candidates.
 
 Differences from the PR: no Params toggle (owner 2026-11-01 "let's try it"; on for radar cars), and vision-only cars are
-left alone (owner 2026-10-19: vision-only + Experimental should track the model's own accel). Replay evidence pending.
+left alone (owner 2026-10-19: vision-only + Experimental should track the model's own accel).
+
+Open road only (owner 2026-11-01). The first build lifted behind leads too: in closed-loop replay of route 71 (rt 118-300)
+it added up to +0.98 as a lead 75 m ahead dropped from 25 to 16.6 m/s, so we arrived 0.7 m/s faster, braked -2.25 instead
+of -1.38 and closed to 6.9 m instead of 10.4 m; it also followed tighter than the 1.25 s personality (p10 1.00 s). Now
+any lead in radarState (radar or camera) drops the lift at LIFT_FALL, and it only builds again after CLEAR_S with none.
 """
 import math
 
@@ -22,7 +27,8 @@ FULL_SPEED = 8.  # m/s. Full assist from this speed up.
 GAIN_BP = [-0.3, -0.1]  # model accel over which the assist fades out as the model slows down
 FADE_LAT_ACC_BP = [0.6, 1.0]  # lateral accel of the sharpest bend ahead over which the assist fades out
 LIFT_FALL = 2.4  # m/s^3. Fast, so the assist never holds off the model's braking.
-LANE_CHANGE_OFF = 0  # log.LaneChangeState.off
+LANE_CHANGE_OFF = 'off'  # log.LaneChangeState.off
+CLEAR_S = 2.  # s with no lead before the assist builds again
 
 
 class SetSpeedAssist:
@@ -34,6 +40,7 @@ class SetSpeedAssist:
     self.gain = 0.
     self.fade = 0.
     self.lift = 0.
+    self.clear_t = 0.
 
   def update(self, sm, a_model: float, a_floor: float, reset_state: bool) -> float:
     """Return the model's accel plus the assist. a_floor is the lower of the lead and cruise accels."""
@@ -41,7 +48,12 @@ class SetSpeedAssist:
     self.gain = self.fade = 0.
     if reset_state or not self.enabled:
       self.lift = 0.
+      self.clear_t = 0.
       return a_model
+
+    rs = sm['radarState']
+    lead_seen = bool(rs.leadOne.present) or bool(rs.leadTwo.present)
+    self.clear_t = 0. if lead_seen else self.clear_t + self.dt
 
     md = sm['modelV2']
     v_ego = float(sm['carState'].vEgo)
@@ -61,7 +73,8 @@ class SetSpeedAssist:
 
     self.gain = float(np.interp(a_model, GAIN_BP, [0., 1.]) * throttle_prob * np.interp(v_ego, [MIN_SPEED, FULL_SPEED], [0., 1.]))
     self.fade = float(np.interp(lat_acc, FADE_LAT_ACC_BP, [1., 0.]))
-    self.active = int(md.meta.laneChangeState) == LANE_CHANGE_OFF
+    # str(): pycapnp enums compare as their names; int() raises on some pycapnp builds
+    self.active = str(md.meta.laneChangeState) == LANE_CHANGE_OFF and self.clear_t >= CLEAR_S
 
     target = self.gain * self.fade * max(0., a_floor - a_model) if self.active else 0.
     rise = float(np.interp(v_ego, self.rise_bp, self.rise_vals))
