@@ -7,6 +7,7 @@ import pytest
 
 from openpilot.starpilot.navigation.road_tiles import (
   CROSSING, FOOTWAY, ONEWAY, PEDESTRIAN, SIDEWALK, decode_mvt_road_detail,
+  LEVEL_CROSSING, MAJOR_RAIL, MAX_RAIL_LINES, MINOR_RAIL, RAIL_BRIDGE, SERVICE_RAIL,
   BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, SIGNAL, STOP, STREET, TUNNEL, VERSION, TileFormatError,
   TileKey, corridor_tiles, decode_mvt_named_roads, decode_mvt_road_layer, decode_mvt_road_tile, decode_mvt_roads, decode_road_tile,
   downgrade_road_tile, encode_road_tile, lat_lon,
@@ -168,7 +169,7 @@ def test_names_are_stored_once_per_tile_and_survive_the_round_trip():
   roads = {MAJOR: [line, line + 1, line + 2], STREET: [line + 3, line + 4]}
   names = {MAJOR: ["Main Street", "Main Street", ""], STREET: ["Main Street", "Ünïcode Ave"]}
   raw = encode_road_tile(roads, names)
-  assert road_tile_version(raw) == VERSION == 5
+  assert road_tile_version(raw) == VERSION == 6
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
   assert tile.names == ("Main Street", "Ünïcode Ave"), "a street split into many lines is stored once"
   assert [tile.name_of(MAJOR, i) for i in range(3)] == ["Main Street", "Main Street", ""]
@@ -253,7 +254,7 @@ def test_bridge_flags_survive_the_round_trip_and_older_versions_drop_only_what_t
   assert old.version == 2 and old.line_flags == {} and old.flags_of(MOTORWAY, 1) == 0 and old.name_of(STREET, 0) == "Elm"
   assert downgrade_road_tile(raw, 1) == encode_road_tile(roads, version=1)
   assert downgrade_road_tile(raw, 3) == encode_road_tile(roads, names, version=3, flags=flags), "the flags survive"
-  assert downgrade_road_tile(raw, 5) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
+  assert downgrade_road_tile(raw, 6) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
   # the same lines in every version
   for version in (1, 2, 3):
     decoded = decode_road_tile(TileKey(14, 0, 0), downgrade_road_tile(raw, version))
@@ -269,7 +270,7 @@ def test_a_cut_flags_array_is_corrupt_not_misread():
     with pytest.raises(TileFormatError):
       decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(body[:-cut]))
   with pytest.raises(TileFormatError):
-    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x06\x01" + zlib.compress(body))
+    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x07\x01" + zlib.compress(body))
 
 
 def test_decoder_keeps_traffic_signal_points_inside_the_tile_only():
@@ -293,7 +294,7 @@ def test_signal_points_round_trip_and_older_versions_drop_only_the_points():
   points = [(100.4, 200.6, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP), (1, 1, 0)]
   raw = encode_road_tile(roads, names, flags=flags, points=points)
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
-  assert tile.version == 5 == VERSION
+  assert tile.version == 6 == VERSION
   assert tile.points == ((100, 201, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP)), "rounded; kind 0 is not a point"
   assert tile.flags_of(MAJOR, 0) == BRIDGE and tile.name_of(MAJOR, 0) == "Main"
   # five bytes a point, and nothing when there are none
@@ -340,7 +341,7 @@ def test_decoder_reads_layer_lanes_oneway_and_keeps_sidewalks_crossings_and_foot
   roads, names, flags, points = decode_mvt_road_tile(data)
   assert roads.keys() == detail.roads.keys() and flags == detail.flags, "the version 4 reader is the same content"
   tile = decode_road_tile(TileKey(14, 0, 0), detail.encode())
-  assert tile.version == 5 and tile.flags_of(MOTORWAY, 0) == BRIDGE | ONEWAY
+  assert tile.version == VERSION and tile.flags_of(MOTORWAY, 0) == BRIDGE | ONEWAY
   assert tile.layer_of(MOTORWAY, 0) == 2 and tile.lanes_of(MOTORWAY, 0) == 4 and tile.layer_of(LINK, 0) == -1
   assert [(w.tolist(), k) for w, k in tile.walk_lines()] == [(w.tolist(), k) for w, k in zip(detail.walks, detail.walk_kinds, strict=True)]
 
@@ -362,11 +363,11 @@ def test_version_5_downgrades_to_exactly_the_version_4_tile_and_old_tiles_have_n
   assert [tile.layer_of(MOTORWAY, i) for i in range(2)] == [1, 0] and tile.lanes_of(MOTORWAY, 0) == 5
   assert [k for _, k in tile.walk_lines()] == [SIDEWALK, CROSSING]
   assert tile.walk_lines()[0][0].tolist() == [[0, 10], [40, 10], [40, 30]]
-  assert downgrade_road_tile(raw, 5) == raw
-  # no walks: 8 bytes of table header; two bytes a line for layer and lanes
+  assert downgrade_road_tile(raw, 6) == raw
+  # no walks or rails: 8 bytes of table header each; two bytes a line for layer and lanes
   bare = encode_road_tile(roads, names, flags=flags, points=points)
   v4_bare = encode_road_tile(roads, names, version=4, flags=flags, points=points)
-  assert len(zlib.decompress(bare[6:])) - len(zlib.decompress(v4_bare[6:])) == 8 + 2 * 2
+  assert len(zlib.decompress(bare[6:])) - len(zlib.decompress(v4_bare[6:])) == 8 + 8 + 2 * 2
 
 
 def test_a_cut_or_padded_walk_table_is_corrupt_not_misread():
@@ -378,3 +379,51 @@ def test_a_cut_or_padded_walk_table_is_corrupt_not_misread():
   short = encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, walks=[(np.array([[0, 0]]), SIDEWALK),
                                                                            (np.array([[0, 0], [5, 5]]), 0)])
   assert decode_road_tile(TileKey(14, 0, 0), short).walk_lines() == [], "a one-point or kind-0 walk is not stored"
+
+
+def test_decoder_keeps_level_crossings_and_rails_but_not_rail_tunnels():
+  data = mvt([("primary", 2, [[(0, 2000), (4096, 2000)]]),
+              ("level_crossing", 1, [[(1000, 2000)]]),
+              ("traffic_signals", 1, [[(3000, 2000)]]),
+              ("major_rail", 2, [[(1000, 0), (1000, 4096)]]),
+              ("minor_rail", 2, [[(2000, 0), (2100, 4096)]], {"structure": "bridge"}),
+              ("service_rail", 2, [[(500, 500), (600, 600), (700, 600)]], {"type": "siding"}),
+              ("major_rail", 2, [[(3000, 0), (3000, 4096)]], {"structure": "tunnel"}),
+              ("level_crossing", 1, [[(-5, 100)]])])
+  detail = decode_mvt_road_detail(data)
+  assert detail.points == [(1000, 2000, LEVEL_CROSSING), (3000, 2000, SIGNAL)], "the buffer crossing is the neighbour's"
+  assert detail.rail_kinds == [MAJOR_RAIL, MINOR_RAIL | RAIL_BRIDGE, SERVICE_RAIL], "a subway in a tunnel is not drawn"
+  assert list(detail.roads) == [MAJOR], "rails are not roads"
+  tile = decode_road_tile(TileKey(14, 0, 0), detail.encode())
+  assert tile.version == VERSION == 6
+  assert tile.points == ((1000, 2000, LEVEL_CROSSING), (3000, 2000, SIGNAL))
+  assert [(r.tolist(), k) for r, k in tile.rail_lines()] == [(r.tolist(), k) for r, k in zip(detail.rails, detail.rail_kinds, strict=True)]
+  assert tile.walk_lines() == []
+
+
+def test_version_6_downgrades_to_exactly_the_version_5_tile_without_rails_or_crossings():
+  roads, names = {MAJOR: [np.array([[0, 0], [100, 50]])]}, {MAJOR: ["Bolsa Ave"]}
+  points = [(5, 5, SIGNAL), (50, 25, LEVEL_CROSSING), (9, 9, STOP)]
+  walks = [(np.array([[0, 10], [40, 10]]), SIDEWALK)]
+  rails = [(np.array([[50, 0], [50, 100]]), MAJOR_RAIL), (np.array([[0, 0], [5, 5]]), SERVICE_RAIL | RAIL_BRIDGE)]
+  raw = encode_road_tile(roads, names, points=points, walks=walks, rails=rails)
+  v5 = downgrade_road_tile(raw, 5)
+  assert v5 == encode_road_tile(roads, names, version=5, points=[(5, 5, SIGNAL), (9, 9, STOP)], walks=walks)
+  old = decode_road_tile(TileKey(14, 0, 0), v5)
+  assert old.rail_lines() == [] and old.rails is None and [k for *_, k in old.points] == [SIGNAL, STOP]
+  assert [k for *_, k in decode_road_tile(TileKey(14, 0, 0), downgrade_road_tile(raw, 4)).points] == [SIGNAL, STOP]
+  tile = decode_road_tile(TileKey(14, 0, 0), raw)
+  assert [k for _, k in tile.rail_lines()] == [MAJOR_RAIL, SERVICE_RAIL | RAIL_BRIDGE]
+  assert tile.rail_lines()[0][0].tolist() == [[50, 0], [50, 100]]
+  assert [k for *_, k in tile.points] == [SIGNAL, LEVEL_CROSSING, STOP]
+
+
+def test_a_cut_or_padded_rail_table_is_corrupt_not_misread_and_the_rails_are_capped():
+  raw = encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, rails=[(np.array([[0, 0], [9, 9]]), MAJOR_RAIL)])
+  body = zlib.decompress(raw[6:])
+  for bad in (body[:-1], body[:-8], body + b"\0"):
+    with pytest.raises(TileFormatError):
+      decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(bad))
+  many = [(np.array([[i, 0], [i, 9]]), MINOR_RAIL) for i in range(MAX_RAIL_LINES + 10)]
+  tile = decode_road_tile(TileKey(14, 0, 0), encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, rails=many))
+  assert len(tile.rail_lines()) == MAX_RAIL_LINES

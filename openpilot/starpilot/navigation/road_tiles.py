@@ -55,7 +55,12 @@ MAGIC = b"SPRT"
 # and after the points a table of walk lines: sidewalks, crossings and footways (class ``path``) and
 # pedestrian streets (class ``pedestrian``), each with a kind byte. Older versions still decode (no layers,
 # lanes or walks) and downgrade_road_tile() makes a version 4 or older copy for older head units.
-VERSION = 5
+# Version 6 (2026-11-01) adds, for Peter's railroad crossings, the point kind LEVEL_CROSSING (road layer point
+# class ``level_crossing``: a road crossing a railway on the same level) and after the walks a table of rail
+# lines in the walk table's layout, with a kind byte per line (MAJOR_RAIL, MINOR_RAIL, SERVICE_RAIL, plus
+# RAIL_BRIDGE when the rail is on a bridge; rails in a tunnel are not kept). downgrade_road_tile() makes a
+# version 5 or older copy without the rails and without the crossing points.
+VERSION = 6
 OLDEST_VERSION = 1
 BRIDGE, TUNNEL, ONEWAY = 1, 2, 4  # line flags; ONEWAY from version 5
 SIDEWALK, CROSSING, FOOTWAY, PEDESTRIAN = 1, 2, 3, 4  # walk kinds
@@ -63,8 +68,13 @@ SIDEWALK, CROSSING, FOOTWAY, PEDESTRIAN = 1, 2, 3, 4  # walk kinds
 _WALK_TYPE = {"sidewalk": SIDEWALK, "crossing": CROSSING, "footway": FOOTWAY, "path": FOOTWAY}
 MAX_WALK_LINES = 16384
 MAX_WALK_POINTS = 65535
-SIGNAL, STOP = 1, 2  # point kinds
-_POINT_KIND = {"traffic_signals": SIGNAL}
+SIGNAL, STOP, LEVEL_CROSSING = 1, 2, 3  # point kinds; LEVEL_CROSSING from version 6
+_POINT_KIND = {"traffic_signals": SIGNAL, "level_crossing": LEVEL_CROSSING}
+MAJOR_RAIL, MINOR_RAIL, SERVICE_RAIL = 1, 2, 3  # rail kinds (version 6): mainline, light rail/tram, yards/sidings
+RAIL_BRIDGE = 0x80  # rail kind bit: the rail is on a bridge
+_RAIL_KIND = {"major_rail": MAJOR_RAIL, "minor_rail": MINOR_RAIL, "service_rail": SERVICE_RAIL}
+MAX_RAIL_LINES = 4096
+MAX_RAIL_POINTS = 32767
 MAX_POINTS = 4096
 _STRUCTURE_FLAG = {"bridge": BRIDGE, "tunnel": TUNNEL}
 _LAYER_LIMIT, _LANES_LIMIT = 15, 15  # Mapbox: 99.9999% of layers within -5..5
@@ -292,10 +302,13 @@ class MvtRoads:
   points: list[tuple[float, float, int]]
   walks: list[np.ndarray]
   walk_kinds: list[int]
+  rails: list[np.ndarray] = dataclasses.field(default_factory=list)
+  rail_kinds: list[int] = dataclasses.field(default_factory=list)
 
   def encode(self, version: int = VERSION) -> bytes:
     return encode_road_tile(self.roads, self.names, version=version, flags=self.flags, points=self.points,
-                            layers=self.layers, lanes=self.lanes, walks=list(zip(self.walks, self.walk_kinds, strict=True)))
+                            layers=self.layers, lanes=self.lanes, walks=list(zip(self.walks, self.walk_kinds, strict=True)),
+                            rails=list(zip(self.rails, self.rail_kinds, strict=True)))
 
 
 def decode_mvt_road_detail(data: bytes) -> MvtRoads:
@@ -310,7 +323,9 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
   to +-15) and ``lane_count`` (0..15, 0 unknown) are kept per line too, for the close-up's raised overpasses
   and lane lines. Class ``path`` lines of type sidewalk, crossing, footway or path and class ``pedestrian``
   lines become walk lines (SIDEWALK, CROSSING, FOOTWAY, PEDESTRIAN), at most MAX_WALK_LINES and
-  MAX_WALK_POINTS points a tile."""
+  MAX_WALK_POINTS points a tile. Class ``major_rail``, ``minor_rail`` and ``service_rail`` lines become rail
+  lines (RAIL_BRIDGE added on a bridge; rails in a tunnel, such as subways, are dropped), at most
+  MAX_RAIL_LINES and MAX_RAIL_POINTS points, and ``level_crossing`` points become LEVEL_CROSSING points."""
   if data[:2] == b"\x1f\x8b":
     inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
@@ -328,6 +343,9 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
   walks: list[np.ndarray] = []
   walk_kinds: list[int] = []
   walk_points = 0
+  rails: list[np.ndarray] = []
+  rail_kinds: list[int] = []
+  rail_points = 0
   for field, wire, layer in _fields(data):
     if field != 3 or wire != 2:
       continue
@@ -426,6 +444,22 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
           walk_kinds.append(walk)
           walk_points += len(line)
         continue
+      rail = _RAIL_KIND.get(class_name, 0)
+      if rail:
+        if road_flags == TUNNEL:
+          continue
+        if road_flags == BRIDGE:
+          rail |= RAIL_BRIDGE
+        for line in _lines(geometry):
+          if len(rails) >= MAX_RAIL_LINES or rail_points + len(line) > MAX_RAIL_POINTS:
+            break
+          points = np.asarray(line, dtype=np.float64)
+          if scale != 1.0:
+            points *= scale
+          rails.append(points)
+          rail_kinds.append(rail)
+          rail_points += len(line)
+        continue
       if road_class is None:
         continue
       if oneway:
@@ -439,7 +473,7 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
         flags.setdefault(road_class, []).append(road_flags)
         layers.setdefault(road_class, []).append(road_layer)
         lanes.setdefault(road_class, []).append(road_lanes)
-  return MvtRoads(roads, names, flags, layers, lanes, signals, walks, walk_kinds)
+  return MvtRoads(roads, names, flags, layers, lanes, signals, walks, walk_kinds, rails, rail_kinds)
 
 
 def _small_int(value, low: int, high: int) -> int:
@@ -464,7 +498,7 @@ def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[i
                      version: int = VERSION, flags: Mapping[int, Sequence[int]] | None = None,
                      points: Sequence[tuple[float, float, int]] = (), layers: Mapping[int, Sequence[int]] | None = None,
                      lanes: Mapping[int, Sequence[int]] | None = None,
-                     walks: Iterable[tuple[np.ndarray, int]] = ()) -> bytes:
+                     walks: Iterable[tuple[np.ndarray, int]] = (), rails: Iterable[tuple[np.ndarray, int]] = ()) -> bytes:
   """Delta-coded int16 polylines per class, zlib-compressed.
 
   Version 2 starts the body with the tile's distinct street names (each stored once, up to
@@ -476,7 +510,9 @@ def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[i
   ``layers[class]`` stacking order (int8) and ``lanes[class]`` lane count (uint8, 0 unknown), keeps the
   ONEWAY flag bit (older versions mask flags to BRIDGE | TUNNEL), and ends the body with the walk lines:
   int32 line count and point count, the uint16 lengths, a kind byte per line (SIDEWALK, CROSSING,
-  FOOTWAY, PEDESTRIAN), then the int32 x, y deltas, from ``walks`` as (points, kind) pairs."""
+  FOOTWAY, PEDESTRIAN), then the int32 x, y deltas, from ``walks`` as (points, kind) pairs. Version 6 ends
+  the body with the rail lines from ``rails`` in the same layout (kind MAJOR_RAIL, MINOR_RAIL or SERVICE_RAIL,
+  maybe with RAIL_BRIDGE), and keeps LEVEL_CROSSING points (older versions keep only SIGNAL and STOP)."""
   if not OLDEST_VERSION <= version <= VERSION:
     raise ValueError(f"unknown road tile version {version}")
   table: dict[bytes, int] = {}
@@ -525,30 +561,60 @@ def encode_road_tile(roads: Mapping[int, Iterable[np.ndarray]], names: Mapping[i
       body += struct.pack("<B", len(key)) + key
   body += sections
   if version >= 4:
-    kept = [(x, y, int(k)) for x, y, k in points if 0 < int(k) < 256][:MAX_POINTS]
+    kept = [(x, y, int(k)) for x, y, k in points if 0 < int(k) < 256 and (version >= 6 or int(k) in (SIGNAL, STOP))][:MAX_POINTS]
     body += struct.pack("<H", len(kept))
     for x, y, k in kept:
       body += struct.pack("<hhB", int(np.clip(round(x), -_COORD_LIMIT, _COORD_LIMIT)),
                           int(np.clip(round(y), -_COORD_LIMIT, _COORD_LIMIT)), k)
   if version >= 5:
-    kept_walks, total = [], 0
-    for line, kind in walks:
-      line = np.clip(np.rint(np.asarray(line, dtype=np.float64)), -_COORD_LIMIT, _COORD_LIMIT).astype(np.int32)[:65535]
-      if len(line) < 2 or not 0 < int(kind) < 256:
-        continue
-      if len(kept_walks) >= MAX_WALK_LINES or total + len(line) > MAX_WALK_POINTS:
-        break
-      kept_walks.append((line, int(kind)))
-      total += len(line)
-    body += _WALK_HEADER.pack(len(kept_walks), total)
-    if kept_walks:
-      coords = np.concatenate([line for line, _ in kept_walks])
-      deltas = coords.copy()
-      deltas[1:] -= coords[:-1]
-      body += np.array([len(line) for line, _ in kept_walks], dtype="<u2").tobytes()
-      body += np.array([kind for _, kind in kept_walks], dtype=np.uint8).tobytes()
-      body += np.clip(deltas, -65535, 65535).astype("<i4").tobytes()
+    body += _kind_lines(walks, MAX_WALK_LINES, MAX_WALK_POINTS)
+  if version >= 6:
+    body += _kind_lines(rails, MAX_RAIL_LINES, MAX_RAIL_POINTS)
   return _HEADER.pack(MAGIC, version, classes) + zlib.compress(bytes(body), 6)
+
+
+def _kind_lines(lines: Iterable[tuple[np.ndarray, int]], max_lines: int, max_points: int) -> bytes:
+  """A table of lines with a kind byte each (the walks and the rails): int32 line count and point count,
+  the uint16 lengths, the kind bytes, then the int32 x, y deltas."""
+  kept, total = [], 0
+  for line, kind in lines:
+    line = np.clip(np.rint(np.asarray(line, dtype=np.float64)), -_COORD_LIMIT, _COORD_LIMIT).astype(np.int32)[:65535]
+    if len(line) < 2 or not 0 < int(kind) < 256:
+      continue
+    if len(kept) >= max_lines or total + len(line) > max_points:
+      break
+    kept.append((line, int(kind)))
+    total += len(line)
+  out = bytearray(_WALK_HEADER.pack(len(kept), total))
+  if kept:
+    coords = np.concatenate([line for line, _ in kept])
+    deltas = coords.copy()
+    deltas[1:] -= coords[:-1]
+    out += np.array([len(line) for line, _ in kept], dtype="<u2").tobytes()
+    out += np.array([kind for _, kind in kept], dtype=np.uint8).tobytes()
+    out += np.clip(deltas, -65535, 65535).astype("<i4").tobytes()
+  return bytes(out)
+
+
+def _decode_kind_lines(body: bytes, pos: int, max_lines: int, max_points: int,
+                       what: str) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray, int]:
+  """The table _kind_lines writes, at ``pos``: ((points, offsets), kinds, new pos)."""
+  if pos + _WALK_HEADER.size > len(body):
+    raise TileFormatError(f"truncated road tile {what}")
+  count, total = _WALK_HEADER.unpack_from(body, pos)
+  pos += _WALK_HEADER.size
+  if count > max_lines or total > max_points or pos + count * 3 + total * 8 > len(body):
+    raise TileFormatError(f"bad road tile {what}")
+  lengths = np.frombuffer(body, dtype="<u2", count=count, offset=pos).astype(np.int32)
+  kinds = np.frombuffer(body, dtype=np.uint8, count=count, offset=pos + count * 2).copy()
+  pos += count * 3
+  deltas = np.frombuffer(body, dtype="<i4", count=total * 2, offset=pos).reshape(total, 2)
+  pos += total * 8
+  if int(lengths.sum()) != total or (count and int(lengths.min()) < 2):
+    raise TileFormatError(f"bad road tile {what} lengths")
+  offsets = np.zeros(count + 1, dtype=np.int32)
+  np.cumsum(lengths, out=offsets[1:])
+  return (np.cumsum(deltas, axis=0).astype(np.float32), offsets), kinds, pos
 
 
 @dataclass(frozen=True)
@@ -571,6 +637,9 @@ class RoadTile:
   # walk lines (points float32 (N, 2), start offsets (W + 1,)) and a kind per line; None before version 5
   walks: tuple[np.ndarray, np.ndarray] | None = None
   walk_kinds: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(0, dtype=np.uint8))
+  # rail lines in the walks' layout and a kind per line (MAJOR_RAIL.., maybe | RAIL_BRIDGE); None before version 6
+  rails: tuple[np.ndarray, np.ndarray] | None = None
+  rail_kinds: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(0, dtype=np.uint8))
 
   def name_of(self, road_class: int, line: int) -> str:
     index = self.line_names.get(road_class)
@@ -595,6 +664,12 @@ class RoadTile:
       return []
     points, offsets = self.walks
     return [(points[offsets[i]:offsets[i + 1]], int(self.walk_kinds[i])) for i in range(len(offsets) - 1)]
+
+  def rail_lines(self) -> list[tuple[np.ndarray, int]]:
+    if self.rails is None:
+      return []
+    points, offsets = self.rails
+    return [(points[offsets[i]:offsets[i + 1]], int(self.rail_kinds[i])) for i in range(len(offsets) - 1)]
 
   @property
   def empty(self) -> bool:
@@ -667,26 +742,14 @@ def decode_road_tile(key: TileKey, raw: bytes) -> RoadTile:
       pos += 5
   walks, walk_kinds = None, np.zeros(0, dtype=np.uint8)
   if version >= 5:
-    if pos + _WALK_HEADER.size > len(body):
-      raise TileFormatError("truncated road tile walks")
-    count, total = _WALK_HEADER.unpack_from(body, pos)
-    pos += _WALK_HEADER.size
-    if count > MAX_WALK_LINES or total > MAX_WALK_POINTS or pos + count * 3 + total * 8 > len(body):
-      raise TileFormatError("bad road tile walks")
-    lengths = np.frombuffer(body, dtype="<u2", count=count, offset=pos).astype(np.int32)
-    walk_kinds = np.frombuffer(body, dtype=np.uint8, count=count, offset=pos + count * 2).copy()
-    pos += count * 3
-    deltas = np.frombuffer(body, dtype="<i4", count=total * 2, offset=pos).reshape(total, 2)
-    pos += total * 8
-    if int(lengths.sum()) != total or (count and int(lengths.min()) < 2):
-      raise TileFormatError("bad road tile walk lengths")
-    offsets = np.zeros(count + 1, dtype=np.int32)
-    np.cumsum(lengths, out=offsets[1:])
-    walks = (np.cumsum(deltas, axis=0).astype(np.float32), offsets)
+    walks, walk_kinds, pos = _decode_kind_lines(body, pos, MAX_WALK_LINES, MAX_WALK_POINTS, "walk")
+  rails, rail_kinds = None, np.zeros(0, dtype=np.uint8)
+  if version >= 6:
+    rails, rail_kinds, pos = _decode_kind_lines(body, pos, MAX_RAIL_LINES, MAX_RAIL_POINTS, "rail")
   if pos != len(body):
     raise TileFormatError("trailing road tile data")
   return RoadTile(key, lines, tuple(names), line_names, version, line_flags, tuple(points),
-                  line_layers, line_lanes, walks, walk_kinds)
+                  line_layers, line_lanes, walks, walk_kinds, rails, rail_kinds)
 
 
 def road_tile_version(raw: bytes) -> int | None:
@@ -702,7 +765,8 @@ def downgrade_road_tile(raw: bytes, version: int = OLDEST_VERSION) -> bytes:
   The head unit app before 2026-10-30 refuses any version but 1, and the one before 2026-10-31 any
   but 1 and 2; sending a newer tile would make it drop the tile and the comma resend it every few
   seconds forever. Going to 2 keeps the street names; only the flags are lost. Going to 3 keeps the
-  flags; only the signal points are lost. Going to 4 loses the layers, lane counts, ONEWAY bit and walks."""
+  flags; only the signal points are lost. Going to 4 loses the layers, lane counts, ONEWAY bit and walks.
+  Going to 5 loses the rails and the level crossing points."""
   have = road_tile_version(raw)
   if have is None or have <= version:
     return raw
@@ -714,4 +778,4 @@ def downgrade_road_tile(raw: bytes, version: int = OLDEST_VERSION) -> bytes:
   lanes = {c: [tile.lanes_of(c, i) for i in range(len(offsets) - 1)] for c, (_, offsets) in tile.lines.items()}
   return encode_road_tile(roads, names if version >= 2 else None, version=version,
                           flags=flags if version >= 3 else None, points=tile.points,
-                          layers=layers, lanes=lanes, walks=tile.walk_lines())
+                          layers=layers, lanes=lanes, walks=tile.walk_lines(), rails=tile.rail_lines())

@@ -36,10 +36,11 @@ from openpilot.starpilot.navigation.road_tiles import (
 NEAR_RADIUS_M = 2500.0
 # A saved tile near the car in an older format than this is fetched again, once per tile: version 2 added
 # street names, version 3 (2026-10-31) the bridge flags, version 4 (2026-10-31) the traffic signal points,
-# version 5 (2026-11-01) bridge layers, lane counts, one-way and the sidewalks and crossings.
+# version 5 (2026-11-01) bridge layers, lane counts, one-way and the sidewalks and crossings, version 6
+# (2026-11-01) the railroad crossings and rail lines.
 # Tiles nowhere near the car keep their old format, and draw without names, bridges or signals, until a
 # drive comes near them or their area refreshes.
-CURRENT_FORMAT = 5
+CURRENT_FORMAT = 6
 AHEAD_M = 6000.0
 REQUEST_TIMEOUT = (4.0, 10.0)
 NETWORK_BACKOFF_S, SERVER_BACKOFF_S, KEY_BACKOFF_S = 15.0, 30.0, 300.0
