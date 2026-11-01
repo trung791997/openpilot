@@ -493,3 +493,81 @@ def test_cover_falls_back_to_the_album_when_the_song_has_none():
   assert client.track(bare)['artwork'] == 'https://i.scdn.co/image/album'
   assert client.track({**ENTITY, 'decorations': {**ENTITY['decorations'], 'parent': {'entity': album}}})['artwork'] == 'https://i.scdn.co/image/x'
   assert client.track({**bare, 'decorations': {**bare['decorations'], 'parent': {'entity': 'junk'}}})['artwork'] == ''
+
+
+STUCK = '2026-11-01 13:17:45.099: playing spotify:track:abc "Song" by "Band" [0:00 / 3:24]'
+
+
+def test_player_health_reads_the_soloist_hangs():
+  health = supervisor.PlayerHealth()
+  health.line(STUCK, 0.0)
+  assert health.trouble(0.0) is None
+  health.line(STUCK, 10.0)
+  assert health.trouble(10.0) == 'track stuck at 0:00'
+  health.line(STUCK.replace('[0:00', '[0:01'), 11.0)  # it got going
+  assert health.trouble(11.0) is None
+  health.line(STUCK.replace('track:abc', 'track:def'), 20.0)
+  health.line(STUCK, 25.0)  # a different track at 0:00 starts the clock over
+  assert health.trouble(25.0) is None
+  health.line('2026-11-01 13:18:00.000: stopped', 26.0)
+  health.line(STUCK, 30.0)
+  assert health.trouble(30.0) is None
+
+  health = supervisor.PlayerHealth()
+  health.line('2026-11-01 13:18:00.000: login failed: make sure --api-key is valid', 0.0)
+  assert health.trouble(0.0) == 'login failed'
+  health.line('2026-11-01 13:18:05.000: logged in as someone', 5.0)
+  assert health.trouble(5.0) is None
+
+  health.line('2026-11-01 13:18:10.000: logged out', 10.0)
+  assert health.trouble(10.0 + supervisor.LOGOUT_SECONDS - 1) is None  # give it a chance to sign back in
+  assert health.trouble(10.0 + supervisor.LOGOUT_SECONDS) == 'logged out'
+  # Music from the cache still advancing: a coverage gap, not a hang.
+  health.line(STUCK.replace('[0:00', '[1:00'), 31.0)
+  health.line(STUCK.replace('[0:00', '[1:10'), 41.0)
+  assert health.trouble(45.0) is None
+  assert health.trouble(41.0 + supervisor.PROGRESS_SECONDS) == 'logged out'
+
+
+def test_supervisor_restarts_a_hung_player_with_backoff(layout, monkeypatch):
+  ready_layout(layout, monkeypatch)
+  monkeypatch.setattr(supervisor, '_kill_group', lambda _p: None)
+  spawned = []
+  sup, now = make_supervisor(layout, spawned)
+  sup.tick()
+  assert len(spawned) == 2
+  for attempt, expected in enumerate((5, 15, 60, 60), start=1):
+    sup.health.line(STUCK, now[0])
+    sup.health.line(STUCK, now[0] + 10)
+    now[0] += 10
+    sup.tick()
+    assert sup.status()['state'] == 'retrying' and sup.player is None
+    assert any(f'recovery attempt {attempt} (track stuck at 0:00)' in line for line in sup.log)
+    now[0] += expected - 1
+    sup.tick()
+    assert sup.player is None  # still backing off
+    now[0] += 1
+    sup.tick()
+    assert sup.player is not None and len(spawned) == 2 + 2 * attempt
+  assert all('sk_live' not in line for line in sup.log)
+  # Healthy for long enough: the next hang starts the backoff over.
+  now[0] += supervisor.RECOVERY_RESET_SECONDS
+  sup.tick()
+  assert sup.recoveries == 0
+  sup.health.line('2026-11-01 13:18:00.000: login failed: make sure --api-key is valid', now[0])
+  sup.tick()
+  assert any('recovery attempt 1 (login failed); restarting Spotify in 5s' in line for line in sup.log)
+
+
+def test_supervisor_does_not_restart_a_hung_player_without_network(layout, monkeypatch):
+  ready_layout(layout, monkeypatch)
+  monkeypatch.setattr(supervisor, '_kill_group', lambda _p: None)
+  spawned = []
+  sup, now = make_supervisor(layout, spawned)
+  sup.tick()
+  sup.network = lambda: False
+  sup.health.line(STUCK, now[0])
+  sup.health.line(STUCK, now[0] + 10)
+  now[0] += 10
+  sup.tick()
+  assert sup.player is not None and sup.recoveries == 0

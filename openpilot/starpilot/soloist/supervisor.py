@@ -35,6 +35,20 @@ MAX_FAST_FAILURES = 5
 UNRESPONSIVE_SECONDS = 120.0
 PLAYING_GRACE_SECONDS = 600.0
 LOG_LINES = 200
+# The Soloist sometimes hangs without exiting: "playing ... [0:00 / 3:24]" for minutes with no sound, or
+# "logged out" / "login failed" and never signing back in (2026-11-01: stuck from 13:17:45, the 120 s
+# watchdog only recovered it at 13:23:08). Its status lines come about every 10 s; two of them at 0:00 for
+# the same track is a stall.
+STALL_SECONDS = 9.0
+LOGOUT_SECONDS = 20.0            # a logout the player has not undone by itself in this long
+PROGRESS_SECONDS = 30.0          # music still advancing this recently is cached playback; leave it alone
+RECOVERY_BACKOFF = (5.0, 15.0, 60.0)
+RECOVERY_RESET_SECONDS = 300.0   # this long without trouble starts the backoff over
+STATUS_LINE = re.compile(r'\bplaying (\S+) .*\[(\d+):(\d\d) / ')
+LOGGED_IN = re.compile(r'\blogged in\b')
+LOGGED_OUT = re.compile(r'\blogged out\b')
+LOGIN_FAILED = re.compile(r'\blogin failed\b')
+NOT_PLAYING = re.compile(r':\s*(stopped|paused)\b')
 
 
 def network_ready() -> bool:
@@ -59,6 +73,51 @@ def network_ready() -> bool:
 
 
 EXPIRES_IN = re.compile(r'client expires in (\d+) days?')
+
+
+class PlayerHealth:
+  """What one Soloist run's own output says about hangs it does not leave by itself."""
+
+  def __init__(self):
+    self.stall_uri: str | None = None
+    self.stall_since: float | None = None
+    self.stalled = False
+    self.position: tuple[str, int] | None = None
+    self.progress_at: float | None = None
+    self.login_failed = False
+    self.logged_out_at: float | None = None
+
+  def line(self, text: str, now: float) -> None:
+    if LOGIN_FAILED.search(text):
+      self.login_failed = True
+    elif LOGGED_IN.search(text):
+      self.login_failed, self.logged_out_at = False, None
+    elif LOGGED_OUT.search(text):
+      if self.logged_out_at is None:
+        self.logged_out_at = now
+    elif (match := STATUS_LINE.search(text)) is not None:
+      uri, seconds = match.group(1), int(match.group(2)) * 60 + int(match.group(3))
+      if seconds:
+        if self.position is not None and self.position != (uri, seconds):
+          self.progress_at = now
+        self.position = (uri, seconds)
+        self.stall_uri, self.stall_since, self.stalled = None, None, False
+      elif uri != self.stall_uri or self.stall_since is None:
+        self.stall_uri, self.stall_since, self.stalled = uri, now, False
+      elif now - self.stall_since >= STALL_SECONDS:
+        self.stalled = True
+    elif NOT_PLAYING.search(text):
+      self.stall_uri, self.stall_since, self.stalled = None, None, False
+
+  def trouble(self, now: float) -> str | None:
+    if self.login_failed:
+      return 'login failed'
+    if self.stalled:
+      return 'track stuck at 0:00'
+    if self.logged_out_at is not None and now - self.logged_out_at >= LOGOUT_SECONDS:
+      if self.progress_at is None or now - self.progress_at >= PROGRESS_SECONDS:
+        return 'logged out'
+    return None
 
 
 def _kill_group(process: subprocess.Popen | None) -> None:
@@ -169,6 +228,8 @@ class Supervisor:
     self.authenticated_once = False
     self.answered = False
     self.last_playing = False
+    self.health = PlayerHealth()
+    self.recoveries, self.recovered_at = 0, 0.0
 
   # ---- status ---------------------------------------------------------------------------------------
   def _set(self, state: str, message: str = '') -> None:
@@ -199,7 +260,7 @@ class Supervisor:
       pass
 
   # ---- children -------------------------------------------------------------------------------------
-  def _record(self, stream, label: str) -> None:
+  def _record(self, stream, label: str, health: PlayerHealth | None = None) -> None:
     for raw in iter(stream.readline, b''):
       line = raw.decode('utf-8', 'replace').rstrip()
       line = re.sub(r'\x1b\[[0-9;]*m', '', line)
@@ -207,6 +268,8 @@ class Supervisor:
         line = line.replace(self.secret, '[api key]')
       with self.log_lock:
         self.log.append(f'{label}: {line[:300]}')
+        if health is not None:
+          health.line(line, self.clock())
       match = EXPIRES_IN.search(line)
       if match:
         self.days_left = int(match.group(1))
@@ -214,7 +277,12 @@ class Supervisor:
   def _start(self, launch: backend.Launch, label: str) -> subprocess.Popen:
     process = self.spawn(launch.argv, env=launch.env, cwd=str(self.layout.runtime), stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    threading.Thread(target=self._record, args=(process.stdout, label), name=f'spotify_{label}_log', daemon=True).start()
+    health = None
+    if label == 'soloist':
+      # Fresh per run: lines still draining from a killed player must not count against the new one.
+      health = self.health = PlayerHealth()
+    threading.Thread(target=self._record, args=(process.stdout, label, health), name=f'spotify_{label}_log',
+                     daemon=True).start()
     return process
 
   def stop_children(self, *, release_phone: bool = True) -> None:
@@ -433,6 +501,13 @@ class Supervisor:
     code = self.player.poll() if self.player is not None else None
     server_dead = self.server is not None and self.server.poll() is not None
     if code is None and not server_dead:
+      with self.log_lock:
+        trouble = self.health.trouble(now)
+      if trouble is not None and self.network():
+        self._recover(now, trouble)
+        return
+      if trouble is None and self.recoveries and now - self.recovered_at >= RECOVERY_RESET_SECONDS:
+        self.recoveries = 0
       snapshot = self.client.snapshot() if self.client is not None else {}
       connected = bool(snapshot.get('connected'))
       self.answered = self.answered or connected
@@ -465,6 +540,19 @@ class Supervisor:
       return
     detail = 'audio output closed' if server_dead and code is None else f'player exited ({code})'
     self._fail(now, f'Spotify stopped: {detail}. Retrying…')
+
+  def _recover(self, now: float, reason: str) -> None:
+    """Restart a player that is hung but still running; 5 s, then 15 s, then every 60 s."""
+    delay = RECOVERY_BACKOFF[min(self.recoveries, len(RECOVERY_BACKOFF) - 1)]
+    self.recoveries += 1
+    self.recovered_at = now
+    line = f'supervisor: recovery attempt {self.recoveries} ({reason}); restarting Spotify in {delay:.0f}s'
+    with self.log_lock:
+      self.log.append(line)
+    print(line, file=sys.stderr, flush=True)
+    self.stop_children()
+    self.retry_at = now + delay
+    self._set('retrying', 'Spotify got stuck; signing in again…')
 
   def _fail(self, now: float, message: str) -> None:
     self.fast_failures += 1
