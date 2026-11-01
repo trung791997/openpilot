@@ -11,6 +11,7 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.Region;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -67,6 +68,23 @@ final class MapView extends View {
   private boolean glowOn;
   private float glowFrom, drawnGlow;
   private long glowAt;
+  // Under an overpass (Under, Peter 2026-11-01): where a raised deck is drawn over the car, the car is cut away so the
+  // deck shows, and a light outline of it (OUTLINE_C, a faint OUTLINE_FILL inside) shows through, easing over
+  // Under.FADE_MS. The sprite's body is its alpha over OUTLINE_ALPHA (under it is the soft shadow). cover holds the
+  // decks over the car, kept from the last frame that had one while the outline fades out; deckClip their outline on
+  // screen. The tick runs every GLOW_TICK_MS while under a deck on the GPU path, as the deck slides by the car.
+  private static final int OUTLINE_C = 0xfff4f4f4, OUTLINE_FILL = 0x30ffffff, OUTLINE_ALPHA = 170;
+  private static Bitmap outline;
+  private final Under.Fade under = new Under.Fade();
+  private final int[] cover = new int[48], tickCover = new int[1];
+  private int coverN;
+  private CloseUp.Detail coverOf;
+  private final float[] coverQ = new float[4];
+  private final Path deckClip = new Path();
+  private final Paint carPaint = new Paint(Paint.FILTER_BITMAP_FLAG), outlinePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+  private final Frame slowFrame = new Frame();
+  private float drawnUnder;
+  private float drawnUE = Float.NaN, drawnUN, drawnUH;
   static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
   // Every road at its real width, so an intersection looks like the one out of the windscreen (Peter 2026-10-29:
   // the route drawn wider than the roads around it looked wrong; the orange line alone marks the route). Metres
@@ -446,6 +464,7 @@ final class MapView extends View {
       InputStream in = zip.getInputStream(e);
       car = BitmapFactory.decodeStream(in);
       in.close();
+      if (car != null) outline = outlineOf(car);
     } catch (Throwable t) {
       XposedBridge.log("aaroad: map car icon not loaded: " + t);
     } finally {
@@ -454,6 +473,28 @@ final class MapView extends View {
       } catch (Throwable ignored) {
       }
     }
+  }
+
+  // The car's outline for under a deck: a 2 px line on the edge of the sprite's body (one pixel each side of it), a
+  // faint fill inside. Made once, with the sprite.
+  static Bitmap outlineOf(Bitmap src) {
+    int w = src.getWidth(), h = src.getHeight();
+    int[] px = new int[w * h], out = new int[w * h];
+    src.getPixels(px, 0, w, 0, 0, w, h);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        boolean in = body(px, w, h, x, y), edge = false;
+        for (int dy = -1; dy <= 1 && !edge; dy++) {
+          for (int dx = -1; dx <= 1 && !edge; dx++) edge = body(px, w, h, x + dx, y + dy) != in;
+        }
+        out[y * w + x] = edge ? OUTLINE_C : in ? OUTLINE_FILL : 0;
+      }
+    }
+    return Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888);
+  }
+
+  private static boolean body(int[] px, int w, int h, int x, int y) {
+    return x >= 0 && y >= 0 && x < w && y < h && px[y * w + x] >>> 24 >= OUTLINE_ALPHA;
   }
 
   // ---- liveness: the nav page is showing and the comma's position is fresh
@@ -493,7 +534,9 @@ final class MapView extends View {
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
       // and while the car glides up or down for the lane row (lift), so it keeps with the map under it
-      long slow = glowing(SystemClock.uptimeMillis()) || lift != drawnLift ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
+      long t = SystemClock.uptimeMillis();
+      long slow = glowing(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
+          ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
       postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs));
     }
   };
@@ -534,7 +577,8 @@ final class MapView extends View {
     String road = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     if (st != drawnStamp) gpu.poke();
     if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
-        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || Math.abs(lift - drawnLift) > 0.5f) {
+        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || Math.abs(lift - drawnLift) > 0.5f
+        || (f != null && f.s == s && underWanted(f) != under.on()) || underMoving(now)) {
       invalidate();
     } else {
       skipped++;
@@ -646,7 +690,7 @@ final class MapView extends View {
     Scene s = scene;
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
-    if (glow(now) != drawnGlow) return true;
+    if (glow(now) != drawnGlow || under.moving(now)) return true;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     boolean moving = spd >= HOLD_SPEED;
@@ -1551,7 +1595,14 @@ final class MapView extends View {
       float up = lift;
       drawnLift = up;
       canvas.translate(free ? FREE_X - CAR_X : 0f, -up);
-      drawCar(canvas);
+      Frame uf = null;
+      synchronized (this) {
+        if (latest.s == s) {
+          latest.copyTo(slowFrame);
+          uf = slowFrame;
+        }
+      }
+      drawCar(canvas, uf);
       canvas.restore();
       overlay(canvas, now, free, true);
       drawn(canvas, now, now, now, now);
@@ -1656,30 +1707,173 @@ final class MapView extends View {
       canvas.restore();
     }
 
-    drawCar(canvas);
+    drawCar(canvas, f);
     canvas.restore();
     long t2 = SystemClock.uptimeMillis();
     overlay(canvas, now, free, onGpu);
     drawn(canvas, now, t0, t1, t2);
   }
 
-  private void drawCar(Canvas canvas) {
-    float g = glow(SystemClock.uptimeMillis());
+  private void drawCar(Canvas canvas, Frame f) {
+    long now = SystemClock.uptimeMillis();
+    float g = glow(now);
     drawnGlow = g;
+    float u = underDeck(f, now);
+    if (u <= 0) {
+      body(canvas, g, 255);
+      return;
+    }
+    // under a deck: the car outside the deck as ever; under it, the car fades out and its outline in
+    canvas.save();
+    canvas.clipPath(deckClip, Region.Op.DIFFERENCE);
+    body(canvas, g, 255);
+    canvas.restore();
+    canvas.save();
+    canvas.clipPath(deckClip);
+    int a = Math.round(255 * (1 - u));
+    if (a > 0) body(canvas, g * (1 - u), a);
+    if (outline != null) {
+      outlinePaint.setAlpha(Math.round(255 * u));
+      canvas.drawBitmap(outline, CAR_X - CAR_PX, CAR_Y - CAR_PX, outlinePaint);
+    } else {
+      fill.setColor(OUTLINE_C);
+      fill.setAlpha(Math.round(255 * u));
+      fill.setStyle(Paint.Style.STROKE);
+      fill.setStrokeWidth(2);
+      canvas.drawPath(arrow(), fill);
+      fill.setStyle(Paint.Style.FILL);
+    }
+    canvas.restore();
+  }
+
+  // The car at alpha a (0 to 255) with its brake glow g.
+  private void body(Canvas canvas, float g, int a) {
     if (g > 0) lights(canvas, g, true);
     if (car != null) {
-      canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, null);
+      carPaint.setAlpha(a);
+      canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, a == 255 ? null : carPaint);
       if (g > 0) lights(canvas, g, false);
     } else {
       fill.setColor(Color.WHITE);
-      Path p = new Path();
-      p.moveTo(CAR_X, CAR_Y - 14);
-      p.lineTo(CAR_X + 10, CAR_Y + 10);
-      p.lineTo(CAR_X, CAR_Y + 5);
-      p.lineTo(CAR_X - 10, CAR_Y + 10);
-      p.close();
-      canvas.drawPath(p, fill);
+      fill.setAlpha(a);
+      canvas.drawPath(arrow(), fill);
     }
+  }
+
+  private static Path arrow() {
+    Path p = new Path();
+    p.moveTo(CAR_X, CAR_Y - 14);
+    p.lineTo(CAR_X + 10, CAR_Y + 10);
+    p.lineTo(CAR_X, CAR_Y + 5);
+    p.lineTo(CAR_X - 10, CAR_Y + 10);
+    p.close();
+    return p;
+  }
+
+  // How much the car shows as an outline under a deck this frame, 0 to 1 (the ease times the close-up's gate), with
+  // deckClip the decks over it on screen. 0 with no frame, no deck over the car, or cruising (no close-up).
+  private float underDeck(Frame f, long now) {
+    CloseUp.Detail d = f == null || f.s == null ? null : f.s.close;
+    float gr = f == null ? 0 : CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
+    if (d != coverOf) {
+      coverOf = d;
+      coverN = 0;
+    }
+    int n = gr <= 0 ? 0 : Under.covering(d, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
+                                           dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), cover);
+    under.set(n > 0, now);
+    if (n > 0) coverN = n;  // else the last ones, while the outline fades out
+    float u = under.level(now) * gr;
+    drawnUnder = u;
+    if (f != null) {
+      drawnUE = f.ce;
+      drawnUN = f.cn;
+      drawnUH = (float) f.h;
+    }
+    if (u <= 0 || coverN == 0) return 0;
+    deckShape(d, f, gr);
+    return deckClip.isEmpty() ? 0 : u;
+  }
+
+  // The decks over the car into deckClip, on screen: each one's part within Under.NEAR_DM of the car, as wide as its
+  // casing, lifted as drawn, with a round-ish end so pieces meet without a notch. Each piece is wound the same way, so
+  // where two overlap the clip holds both.
+  private void deckShape(CloseUp.Detail d, Frame f, float gr) {
+    deckClip.rewind();
+    float[] v = d.seg;
+    float casing = dm(2 * KERB_PX + 2 * CASING_PX), floor = dm(MIN_ROAD_PX);
+    for (int k = 0; k < coverN; k++) {
+      int i = cover[k], o = i * CloseUp.SEG;
+      int c = (closeRange(d, i) - 2) % CloseUp.PER_LAYER;
+      float half = (Math.max(floor, ROAD_M[c] * f.ik) + casing) / 2;
+      float[] q = Under.lifted(v, o, f.ce, f.cn, f.ch, f.sh, f.ik, gr, coverQ);
+      float dx = q[2] - q[0], dz = q[3] - q[1], len = (float) Math.hypot(dx, dz);
+      if (len <= 0) continue;
+      float t = Math.max(0, Math.min(1, -(q[0] * dx + q[1] * dz) / (len * len)));
+      float t0 = Math.max(0, t - Under.NEAR_DM / len), t1 = Math.min(1, t + Under.NEAR_DM / len);
+      float ha = half * CloseUp.lift((v[o + 4] + t0 * (v[o + 5] - v[o + 4])) * gr * f.ik);
+      float hb = half * CloseUp.lift((v[o + 4] + t1 * (v[o + 5] - v[o + 4])) * gr * f.ik);
+      float ax = q[0] + t0 * dx, az = q[1] + t0 * dz, bx = q[0] + t1 * dx, bz = q[1] + t1 * dz;
+      float nx = -dz / len, nz = dx / len;
+      polygon(new float[] {ax + nx * ha, az + nz * ha, bx + nx * hb, bz + nz * hb, bx - nx * hb, bz - nz * hb,
+                           ax - nx * ha, az - nz * ha});
+      if (t0 == 0) polygon(disc(ax, az, ha));
+      if (t1 == 1) polygon(disc(bx, bz, hb));
+    }
+  }
+
+  // which range segment i is in
+  private static int closeRange(CloseUp.Detail d, int i) {
+    int r = 0;
+    while (r + 1 < CloseUp.RANGES && d.from[r + 1] <= i) r++;
+    return r;
+  }
+
+  private static float[] disc(float x, float z, float r) {
+    float[] p = new float[16];
+    for (int j = 0; j < 8; j++) {
+      double a = j * Math.PI / 4;
+      p[2 * j] = x + r * (float) Math.cos(a);
+      p[2 * j + 1] = z + r * (float) Math.sin(a);
+    }
+    return p;
+  }
+
+  // Car-frame points (x, z pairs) to the screen through the camera, into deckClip, wound clockwise on screen.
+  private void polygon(float[] p) {
+    int n = p.length / 2;
+    float area = 0;
+    for (int j = 0; j < n; j++) {
+      float x = p[2 * j], z = p[2 * j + 1], w = cam[6] * x + cam[7] * z + cam[8];
+      if (w <= 0) return;
+      p[2 * j] = (cam[0] * x + cam[1] * z + cam[2]) / w;
+      p[2 * j + 1] = (cam[3] * x + cam[4] * z + cam[5]) / w;
+    }
+    for (int j = 0; j < n; j++) {
+      int k = (j + 1) % n;
+      area += p[2 * j] * p[2 * k + 1] - p[2 * k] * p[2 * j + 1];
+    }
+    for (int j = 0; j < n; j++) {
+      int m = area >= 0 ? j : n - 1 - j;
+      if (j == 0) deckClip.moveTo(p[2 * m], p[2 * m + 1]);
+      else deckClip.lineTo(p[2 * m], p[2 * m + 1]);
+    }
+    deckClip.close();
+  }
+
+  // Whether frame f puts the car under a deck (the slow layer's check between its draws).
+  private boolean underWanted(Frame f) {
+    float gr = CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
+    return gr > 0 && Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
+                                    dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover) > 0;
+  }
+
+  // Under a deck the outline is still moving (easing, or the deck sliding by the car): the slow layer redraws.
+  private boolean underMoving(long now) {
+    if (under.moving(now)) return true;
+    if (drawnUnder <= 0) return false;
+    Frame f = tickFrame;
+    return f.s != null && (f.ce != drawnUE || f.cn != drawnUN || (float) f.h != drawnUH);
   }
 
   // The brake glow, 0 to 1: it notices Feed.brake changing and moves from where it was toward the new end at 1/GLOW_MS
