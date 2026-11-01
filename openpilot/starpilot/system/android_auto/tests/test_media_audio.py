@@ -40,6 +40,13 @@ class Source:
   def close(self): self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def fresh_carry():
+  ma.CARRY.clear()
+  yield
+  ma.CARRY.clear()
+
+
 @pytest.fixture
 def audio():
   session, source, now, paused = Session(), Source(), [100.0], []
@@ -220,3 +227,109 @@ def test_replaced_pipe_reopens_instead_of_reading_previous_source(tmp_path):
     source.close()
     os.close(old)
     os.close(new)
+
+
+def test_refused_focus_right_after_reconnect_retries_instead_of_pausing(audio):
+  # 2026-11-01 session 77: the car answered the first request with a solicited LOSS 2 s before projection
+  # came up; pausing there left Spotify stopped until the driver pressed play.
+  stream, session, source, now, paused = audio
+  ready(stream, session)
+  source.data += TONE
+  stream.service()
+  assert stream.state == 'focus_wait'
+  stream.handle(0, ma.AUDIO_FOCUS_NOTIFICATION, {1: [ma.STATE_LOSS], 2: [0]})
+  assert paused == [] and not stream.car_paused and stream.state == 'ready'
+  source.data += TONE
+  stream.service()
+  assert stream.state == 'ready'  # waits FOCUS_RETRY before asking again
+  now[0] += ma.FOCUS_RETRY
+  play(stream, session, source, now)
+  assert stream.state == 'playing'
+
+
+def test_refused_focus_keeps_being_refused_is_the_drivers_choice(audio):
+  stream, session, source, now, paused = audio
+  ready(stream, session)
+  for _ in range(ma.FOCUS_RETRIES):
+    source.data += TONE
+    stream.service()
+    assert stream.state == 'focus_wait'
+    stream.handle(0, ma.AUDIO_FOCUS_NOTIFICATION, {1: [ma.STATE_LOSS], 2: [0]})
+    assert paused == []
+    now[0] += ma.FOCUS_RETRY
+  source.data += TONE
+  stream.service()
+  stream.handle(0, ma.AUDIO_FOCUS_NOTIFICATION, {1: [ma.STATE_LOSS], 2: [0]})
+  assert paused == [True] and stream.car_paused
+
+
+def test_late_refusal_is_the_drivers_choice(audio):
+  stream, session, source, now, paused = audio
+  ready(stream, session)
+  now[0] += ma.FOCUS_GRACE + 1
+  source.data += TONE
+  stream.service()
+  stream.handle(0, ma.AUDIO_FOCUS_NOTIFICATION, {1: [ma.STATE_LOSS], 2: [0]})
+  assert paused == [True]
+
+
+def make_stream(now, resumed, carry):
+  session, source = Session(), Source()
+  stream = ma.MediaAudio(session, 4, 0, source, lambda *a, **k: None, pause=lambda: None, clock=lambda: now[0],
+                         resume=lambda: resumed.append(True), carry=carry)
+  return stream, session, source
+
+
+def test_music_playing_at_a_drop_resumes_after_the_reconnect():
+  now, resumed, carry = [100.0], [], {}
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  play(stream, session, source, now)
+  stream.close()  # projection dropped mid-song
+  now[0] += 20
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  stream.service()
+  assert resumed == []  # give the player a moment to come back on its own
+  now[0] += ma.RESUME_AFTER
+  stream.service()
+  assert resumed == [True]
+  now[0] += 10
+  stream.service()
+  assert resumed == [True]  # once only
+  play(stream, session, source, now)
+
+
+def test_no_resume_when_music_was_stopped_or_comes_back_by_itself():
+  now, resumed, carry = [100.0], [], {}
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  stream.close()  # nothing was playing
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  now[0] += ma.RESUME_AFTER + 1
+  stream.service()
+  assert resumed == []
+  # playing at the drop, but the sound returns before the resume delay
+  play(stream, session, source, now)
+  stream.close()
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  play(stream, session, source, now)
+  now[0] += ma.RESUME_AFTER + 1
+  stream.service()
+  assert resumed == []
+
+
+def test_old_drop_does_not_resume():
+  now, resumed, carry = [100.0], [], {}
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  play(stream, session, source, now)
+  stream.close()
+  now[0] += ma.RESUME_WINDOW + 1
+  stream, session, source = make_stream(now, resumed, carry)
+  ready(stream, session)
+  now[0] += ma.RESUME_AFTER + 1
+  stream.service()
+  assert resumed == []
