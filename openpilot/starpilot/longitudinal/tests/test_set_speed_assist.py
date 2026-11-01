@@ -5,10 +5,10 @@ from openpilot.starpilot.longitudinal.set_speed_assist import SetSpeedAssist, LI
 BP, VALS = [0., 10., 25., 40.], [1.6, 1.2, 0.8, 0.6]
 
 
-def sm(v_ego=25., gas=0.9, curv=0., yaw=0., lane_change='off', lead=False):
+def sm(v_ego=25., gas=0.9, curv=0., yaw=0., lane_change='off', lead=False, model_a=0.):
   md = NS(velocity=NS(x=[v_ego] * 33), orientationRate=NS(z=[yaw] * 33),
           meta=NS(disengagePredictions=NS(gasPressProbs=[0.9, gas]), laneChangeState=lane_change),
-          action=NS(desiredCurvature=curv))
+          action=NS(desiredCurvature=curv, desiredAcceleration=model_a))
   rs = NS(leadOne=NS(present=lead), leadTwo=NS(present=False))
   return {'modelV2': md, 'carState': NS(vEgo=v_ego), 'controlsState': NS(curvature=curv), 'radarState': rs}
 
@@ -38,13 +38,13 @@ def test_builds_at_cruise_jerk_after_clear_hold():
 
 
 def test_model_slowing_gets_nothing():
-  assert run(assist(), sm(), -0.3, 0.5) == -0.3
+  assert run(assist(), sm(model_a=-0.3), -0.3, 0.5) == -0.3
 
 
 def test_never_below_model_and_drops_fast():
   a = assist()
   run(a, sm(gas=1.0), 0.0, 0.5)
-  out = a.update(sm(gas=1.0), -0.5, 0.5, False)  # model starts braking
+  out = a.update(sm(gas=1.0, model_a=-0.5), -0.5, 0.5, False)  # model starts braking
   assert out >= -0.5 and a.lift <= 0.5 - LIFT_FALL * 0.05 + 1e-9
 
 
@@ -68,3 +68,8 @@ def test_any_lead_drops_lift_and_restarts_hold():
   assert run(a, sm(gas=1.0, lead=True), 0.0, 0.5) == 0.0
   a.update(sm(gas=1.0), 0.0, 0.5, False)  # lead gone: no lift until the hold passes
   assert a.update(sm(gas=1.0), 0.0, 0.5, False) == 0.0
+
+
+def test_braking_model_raised_by_encouragement_gets_nothing():
+  # the candidate is lifted to -0.05 by Encouragement, but the model itself brakes at -2.0
+  assert run(assist(), sm(gas=1.0, model_a=-2.0), -0.05, 0.5) == -0.05
