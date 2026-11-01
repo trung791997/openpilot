@@ -118,7 +118,7 @@ def test_near_tiles_saved_without_street_names_are_fetched_again_once(tmp_path):
                     position=(36.1147, -115.1728), bearing=0.0)
   run(d, env)
   tile = decode_road_tile(keys[0], d.store.read(keys[0]))
-  assert tile.version == 4 and tile.names == ("Las Vegas Blvd",)
+  assert tile.version == 5 and tile.names == ("Las Vegas Blvd",)
   assert d.store.has("saved", keys[0]), "it stays in the saved area it came from"
   fetched = len(d.fetcher.session.urls)
   d.near_key = None
@@ -137,7 +137,7 @@ def test_near_tiles_saved_without_bridges_are_fetched_again_once_and_keep_them(t
                     position=(36.1147, -115.1728), bearing=0.0)
   run(d, env)
   tile = decode_road_tile(keys[0], d.store.read(keys[0]))
-  assert tile.version == 4 and tile.flags_of(MAJOR, 0) == BRIDGE
+  assert tile.version == 5 and tile.flags_of(MAJOR, 0) == BRIDGE
   fetched = len(d.fetcher.session.urls)
   d.near_key = None
   run(d, env)
@@ -157,7 +157,7 @@ def test_near_tiles_saved_without_signals_are_fetched_again_once_and_keep_them(t
                     position=(36.1147, -115.1728), bearing=0.0)
   run(d, env)
   tile = decode_road_tile(keys[0], d.store.read(keys[0]))
-  assert tile.version == 4 and tile.points == ((2048, 2048, SIGNAL),) and tile.flags_of(MAJOR, 0) == BRIDGE
+  assert tile.version == 5 and tile.points == ((2048, 2048, SIGNAL),) and tile.flags_of(MAJOR, 0) == BRIDGE
   fetched = len(d.fetcher.session.urls)
   d.near_key = None
   run(d, env)
@@ -409,3 +409,25 @@ def test_main_subscribes_to_registered_gps_carriers(monkeypatch):
   monkeypatch.setattr(navtilesd.os, "nice", lambda _: None)
   with pytest.raises(SubscriptionsChecked):
     navtilesd.main()
+
+
+def test_near_tiles_saved_before_layers_and_sidewalks_are_fetched_again_once_and_keep_them(tmp_path):
+  import numpy as np
+  from openpilot.starpilot.navigation.road_tiles import BRIDGE, MOTORWAY, ONEWAY, SIDEWALK, SIGNAL, encode_road_tile
+  layered = mvt([("motorway", 2, [[(0, 0), (4096, 4096)]], {"structure": "bridge", "layer": 2, "oneway": "true"}),
+                 ("path", 2, [[(10, 10), (300, 10)]], {"type": "sidewalk"}),
+                 ("traffic_signals", 1, [[(2048, 2048)]])])
+  d = daemon(tmp_path, Session(body=layered))
+  keys = ahead_tiles(36.1147, -115.1728, 0.0)
+  d.store.write("saved", keys[0], encode_road_tile({MOTORWAY: [np.array([[0, 0], [9, 9]])]}, version=4,
+                                                   flags={MOTORWAY: [BRIDGE]}, points=[(1, 1, SIGNAL)]))
+  env = Environment(token="pk.test", network="cellular", onroad=True, map_enabled=True,
+                    position=(36.1147, -115.1728), bearing=0.0)
+  run(d, env)
+  tile = decode_road_tile(keys[0], d.store.read(keys[0]))
+  assert tile.version == 5 and tile.flags_of(MOTORWAY, 0) == BRIDGE | ONEWAY and tile.layer_of(MOTORWAY, 0) == 2
+  assert [k for _, k in tile.walk_lines()] == [SIDEWALK] and tile.points == ((2048, 2048, SIGNAL),)
+  fetched = len(d.fetcher.session.urls)
+  d.near_key = None
+  run(d, env)
+  assert len(d.fetcher.session.urls) == fetched, "current tiles are not fetched again"

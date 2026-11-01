@@ -203,9 +203,13 @@ def test_tiles_go_as_is_to_new_head_units_and_in_the_format_each_older_app_reads
   assert received(sock) == encode_road_tile(roads, names, version=3)
   assert decode_road_tile(TileKey(14, 1, 2), received(sock)).version == 3
   feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
-  sock.hello(have=['1/1'], rt=4)
+  sock.hello(have=['1/1'], rt=4)          # the app of 2026-10-31 with signals: no layers, lanes or sidewalks
   feed.tick()
-  assert received(sock) == raw and decode_road_tile(TileKey(14, 1, 2), received(sock)).version == 4
+  assert received(sock) == encode_road_tile(roads, names, version=4)
+  feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)
+  sock.hello(have=['1/1'], rt=5)
+  feed.tick()
+  assert received(sock) == raw and decode_road_tile(TileKey(14, 1, 2), received(sock)).version == 5
   feed, sock, now, _ = make(tiles=lambda key: b'SPRT\x02\x01broken' if key == '1/2' else None)
   sock.hello(have=['1/1'])
   feed.tick()

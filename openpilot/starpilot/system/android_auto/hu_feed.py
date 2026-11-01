@@ -18,6 +18,8 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      points too); a newer tile, or any but format 1 without rt, is turned back into the format it reads (an older
      app drops anything else, and the comma would resend it every TILE_RETRY s)
   s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
+     through a GPS gap of up to 20 s it stays the last step, counted down at the car's speed, with "held": 1 (older
+     apps ignore it); arrival, End navigation, a new destination or a reroute still null it at once (guidance_hold);
      limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
      {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its
      cover (crc32 of the cover URL) or 0 without one, dur the song length in ms or 0. pos is how far into the song it
@@ -270,6 +272,9 @@ class CerealReader:
     self._media = (-math.inf, None)
     self._layout = None
     self._heading = HeadingFilter()
+    from openpilot.starpilot.navigation.guidance_hold import GuidanceHold
+    self._guidance = GuidanceHold()
+    self._route = None
 
   def metric(self, now: float) -> bool:
     if now - self._metric[0] >= 5.:
@@ -320,15 +325,27 @@ class CerealReader:
     value['limit'] = posted_limit(sm['slcState']) if sm.seen['slcState'] else None
     stamp = sm.logMonoTime['starpilotNavigation']
     state = navigation_state(sm['starpilotNavigation']) if sm.seen['starpilotNavigation'] else None
-    if state is not None and state.status == 'guiding' and 0 < stamp <= now_ns <= stamp + NAV_HOLD_NS:
-      value['nav'] = {**instruction(state.instruction),
-                      'then': instruction(state.nextManeuver) if state.nextManeuver.maneuverType else None,
-                      'remaining': round(float(state.instruction.remainingDistanceMeters)),
-                      'duration': round(float(state.instruction.remainingDurationSeconds)),
-                      'limit': round(float(state.speedLimit), 2) if state.speedLimit > 0 else None}
+    if state is None or not 0 < stamp <= now_ns <= stamp + NAV_HOLD_NS:
+      self._guidance.clear()
+      return value
+    step, route = None, None
+    if state.status == 'guiding':
+      step = {**instruction(state.instruction),
+              'then': instruction(state.nextManeuver) if state.nextManeuver.maneuverType else None,
+              'remaining': round(float(state.instruction.remainingDistanceMeters)),
+              'duration': round(float(state.instruction.remainingDurationSeconds)),
+              'limit': round(float(state.speedLimit), 2) if state.speedLimit > 0 else None}
       points = [(round(point.latitude, 6), round(point.longitude, 6)) for point in state.route]
       if points:
-        value['route'] = route_of(f'{state.sessionId}:{state.revision}', points, list(state.routeCongestion))
+        route = route_of(f'{state.sessionId}:{state.revision}', points, list(state.routeCongestion))
+    # A GPS gap keeps the last step (counted down at the car's speed) and its route; see guidance_hold.
+    value['nav'], held = self._guidance(str(state.status), (state.sessionId, state.revision), step, now_ns,
+                                         value['speed'], stamp)
+    if held:
+      value['nav'] = {**value['nav'], 'held': 1}
+      route = self._route
+    self._route = route if value['nav'] is not None else None
+    value['route'] = self._route
     return value
 
 

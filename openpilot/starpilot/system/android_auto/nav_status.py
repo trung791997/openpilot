@@ -260,23 +260,32 @@ class NavFeed:
     from openpilot.starpilot.navigation.wire import navigation_state
     if self._sm is None:
       from openpilot.cereal import messaging
-      self._sm = messaging.SubMaster(['starpilotNavigation'])
+      from openpilot.starpilot.navigation.guidance_hold import GuidanceHold
+      self._sm = messaging.SubMaster(['starpilotNavigation', 'carState'])
+      self._guidance = GuidanceHold()
     self._sm.update(0)
+    now_ns = time.monotonic_ns()
     stamp = self._sm.logMonoTime['starpilotNavigation']
-    if not self._sm.valid['starpilotNavigation'] or not 0 < stamp <= time.monotonic_ns() <= stamp + int(STALE_AFTER * 1e9):
-      return None
-    state = navigation_state(self._sm['starpilotNavigation'])
-    if state is None or state.status not in ('guiding', 'routing'):
+    state = navigation_state(self._sm['starpilotNavigation']) if self._sm.valid['starpilotNavigation'] else None
+    if state is None or not 0 < stamp <= now_ns <= stamp + int(STALE_AFTER * 1e9):
+      self._guidance.clear()
       return None
     from openpilot.common.params import Params
-    snapshot = {'state': state.status, 'metric': Params().get_bool('IsMetric')}
+    metric = Params().get_bool('IsMetric')
+    step = None
     if state.status == 'guiding':
       instruction = state.instruction
-      snapshot.update(road=instruction.text, type=instruction.maneuverType, modifier=instruction.maneuverModifier,
-                      distance=float(instruction.distanceMeters), remaining=float(instruction.remainingDistanceMeters),
-                      duration=float(instruction.remainingDurationSeconds), degrees=int(instruction.exitDegrees),
-                      exit=int(instruction.exitNumber), driving_left=bool(instruction.drivingLeft))
-    return snapshot
+      step = {'state': 'guiding', 'road': instruction.text, 'type': instruction.maneuverType,
+              'modifier': instruction.maneuverModifier, 'distance': float(instruction.distanceMeters),
+              'remaining': float(instruction.remainingDistanceMeters),
+              'duration': float(instruction.remainingDurationSeconds), 'degrees': int(instruction.exitDegrees),
+              'exit': int(instruction.exitNumber), 'driving_left': bool(instruction.drivingLeft)}
+    # A GPS gap keeps the cluster on the last turn, counted down at the car's speed (guidance_hold).
+    speed = float(self._sm['carState'].vEgo) if self._sm.seen['carState'] else 0.
+    step, _ = self._guidance(str(state.status), (state.sessionId, state.revision), step, now_ns, speed, stamp)
+    if step is not None:
+      return {**step, 'metric': metric}
+    return {'state': 'routing', 'metric': metric} if state.status == 'routing' else None
 
   def _run(self) -> None:
     while not self._stop.is_set():

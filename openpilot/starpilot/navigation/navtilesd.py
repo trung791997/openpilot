@@ -30,15 +30,16 @@ from openpilot.starpilot.navigation.offline_roads import (
 )
 from openpilot.starpilot.navigation.road_tiles import (
   DATA_ZOOM, MAX_DOWNLOAD_BYTES, MVT_URL, TileFormatError, TileKey, corridor_tiles,
-  decode_mvt_road_tile, encode_road_tile, meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
+  decode_mvt_road_detail, encode_road_tile, meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
 )
 
 NEAR_RADIUS_M = 2500.0
 # A saved tile near the car in an older format than this is fetched again, once per tile: version 2 added
-# street names, version 3 (2026-10-31) the bridge flags, version 4 (2026-10-31) the traffic signal points.
+# street names, version 3 (2026-10-31) the bridge flags, version 4 (2026-10-31) the traffic signal points,
+# version 5 (2026-11-01) bridge layers, lane counts, one-way and the sidewalks and crossings.
 # Tiles nowhere near the car keep their old format, and draw without names, bridges or signals, until a
 # drive comes near them or their area refreshes.
-CURRENT_FORMAT = 4
+CURRENT_FORMAT = 5
 AHEAD_M = 6000.0
 REQUEST_TIMEOUT = (4.0, 10.0)
 NETWORK_BACKOFF_S, SERVER_BACKOFF_S, KEY_BACKOFF_S = 15.0, 30.0, 300.0
@@ -148,11 +149,11 @@ class Fetcher:
     elif status != 200:
       return None
     try:
-      roads, names, flags, points = decode_mvt_road_tile(data) if data else ({}, {}, {}, [])
+      detail = decode_mvt_road_detail(data) if data else None
     except (TileFormatError, OSError, EOFError, ValueError):
       return None
     self.failure = None
-    return encode_road_tile(roads, names, flags=flags, points=points)
+    return detail.encode() if detail is not None else encode_road_tile({})
 
 
 class AreaProgress:

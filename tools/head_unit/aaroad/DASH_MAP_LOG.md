@@ -61,9 +61,27 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 11. **Free-drive map loads ahead** (2026-10-31): static only, not installed. APK only; the comma already sends the tiles ahead. Check on a 70 mph drive with no route that roads reach the top of the screen the whole way, and that the corners and ramps do not leave a bare edge. The scene now holds more roads at highway speed (harness: 1932 lines, 5572 pieces, against 206 and 440), so read the `gl parts` cull and upload lines to see what that costs on the Tegra.
 
+12. **Turn card through GPS drops** (2026-11-01): static and replay only. Needs the comma updated (`hu_feed`, `nav_status`); no APK change. Check on a drive that the card and route line no longer blink when the car's GPS drops, and that End navigation still clears them at once.
+
 ## Log
 
 - **Installed** 2026-10-31 night (parked, Peter's OK): comma fast-forwarded to `1d2a7a2f9` and rebooted (came back, nav/feed processes up); `aaroad-signals.apk` installed on the head unit (`install -r` Success), `hu-reboot` sent in Park, adb key removed. Waiting on the ignition cycle. Not driven yet. Check on the next drive: Open 10 (badges), 11 (free-drive roads ahead, `gl parts` cull/upload cost), and traffic-light coverage in the z14 tiles. Rollback: `aaroad-turn-hwy.apk`.
+
+### 2026-11-01
+- **The turn card stays through a short GPS drop.** *static + replay of the logged gap*.
+  - Problem: Peter saw the dash turn card vanish for a moment (only the map and the Spotify card left), then come back.
+  - Drive `00000075--4ad120a8a2` (2026-10-31, comma on `1d2a7a2f9`), parsed on the comma: navigationd went `waitingForLocation` twice while guiding. At 504.2-508.0 s (26 mph) the car's GPS (`headUnitGps`) sent no fix for ~7 s, past the 3 s limit, so there was no location for 3.8 s. At 586.8 s (46 mph) one fix was unusable for 0.2 s. Route 71 had two more 0.2 s drops at ~70 mph; route 72 none.
+  - Cause: with no location, navigationd still has the route but publishes no step, and `hu_feed` sent `nav: null` and dropped the route at once. The car's cluster (`nav_status`) went inactive the same way.
+  - Fix (comma only): new `navigation/guidance_hold.py`. Through `waitingForLocation` on the same route, `hu_feed` and `nav_status` keep the last step for up to 20 s, counted down at the car's speed once a second, and the route stays. The dash step carries `"held": 1` (older apps ignore it). Arrival, End navigation, a reroute or a new destination still clear it at once. navigationd's own message is unchanged, so nothing that steers, brakes or picks a speed limit sees a held step.
+  - Not changed: the comma's own screen (`ui/navigation_state.py`, `ui/onroad_map.py`) still blinks on a GPS drop.
+  - Static: `test_guidance_hold.py` (10 tests, with the drive's message timing replayed through the dash feed and the cluster feed), `test_hu_feed.py` and `test_nav_status.py` pass.
+
+### 2026-11-01
+- **Tile format 5: bridge layers, lane counts, one-way and sidewalks.** *static*; comma side only, no drawing yet.
+  - Problem: Peter wants Google Maps' close-up look (stacked overpasses, lane lines, sidewalks and crosswalks), and the tiles dropped all of it.
+  - `road_tiles.py` reads Mapbox's `layer`, `lane_count` (Mapbox has it only in Japan) and `oneway`, plus class `path` (sidewalk, crossing, footway) and `pedestrian` lines as walks. Cycleways, steps and trails are dropped.
+  - `navtilesd` stores format 5 and fetches near tiles in format 4 or older again, once each. `hu_feed` sends a head unit that asks for 4 or less the old format, unchanged.
+  - Size, from a synthetic tile (none are cached here): a jittered 22 x 22 downtown grid with 3312 walk lines goes from 7.4 to 27.5 KB, about 6 B per walk line. Roads alone cost 2 B a line more.
 
 ### 2026-10-31
 - **Traffic lights on the dash map, like Google Maps.** *static*.

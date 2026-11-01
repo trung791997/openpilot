@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from openpilot.starpilot.navigation.road_tiles import (
+  CROSSING, FOOTWAY, ONEWAY, PEDESTRIAN, SIDEWALK, decode_mvt_road_detail,
   BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, SIGNAL, STOP, STREET, TUNNEL, VERSION, TileFormatError,
   TileKey, corridor_tiles, decode_mvt_named_roads, decode_mvt_road_layer, decode_mvt_road_tile, decode_mvt_roads, decode_road_tile,
   downgrade_road_tile, encode_road_tile, lat_lon,
@@ -59,8 +60,8 @@ def _point_geometry(groups):
 
 
 def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
-  """features: (class, kind, lines) or (class, kind, lines, {other tag: string value}); kind 1 (point) takes
-  groups of points instead of lines."""
+  """features: (class, kind, lines) or (class, kind, lines, {other tag: value}); a value is a string, a bool
+  (written as a bool) or an int (written as a sint); kind 1 (point) takes groups of points instead of lines."""
   keys, values = ["class"], []
   for feature in features:
     for key in (feature[3] if len(feature) > 3 else {}):
@@ -68,9 +69,10 @@ def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
         keys.append(key)
 
   def value_index(value):
-    if value not in values:
-      values.append(value)
-    return values.index(value)
+    typed = (type(value).__name__, value)
+    if typed not in values:
+      values.append(typed)
+    return values.index(typed)
 
   body = _field(15, 0, 2) + _field(1, 2, layer.encode())
   for feature_tags in features:
@@ -82,8 +84,13 @@ def mvt(features, layer="road", extent=EXTENT, extra_layer=True):
     body += _field(2, 2, feature)
   for key in keys:
     body += _field(3, 2, key.encode())
-  for value in values:
-    body += _field(4, 2, _field(1, 2, value.encode()))
+  for kind, value in values:
+    if kind == "bool":
+      body += _field(4, 2, _field(7, 0, int(value)))
+    elif kind == "int":
+      body += _field(4, 2, _field(6, 0, (value << 1) ^ (value >> 63)))
+    else:
+      body += _field(4, 2, _field(1, 2, value.encode()))
   body += _field(5, 0, extent)
   tile = b""
   if extra_layer:
@@ -161,7 +168,7 @@ def test_names_are_stored_once_per_tile_and_survive_the_round_trip():
   roads = {MAJOR: [line, line + 1, line + 2], STREET: [line + 3, line + 4]}
   names = {MAJOR: ["Main Street", "Main Street", ""], STREET: ["Main Street", "Ünïcode Ave"]}
   raw = encode_road_tile(roads, names)
-  assert road_tile_version(raw) == VERSION == 4
+  assert road_tile_version(raw) == VERSION == 5
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
   assert tile.names == ("Main Street", "Ünïcode Ave"), "a street split into many lines is stored once"
   assert [tile.name_of(MAJOR, i) for i in range(3)] == ["Main Street", "Main Street", ""]
@@ -246,7 +253,7 @@ def test_bridge_flags_survive_the_round_trip_and_older_versions_drop_only_what_t
   assert old.version == 2 and old.line_flags == {} and old.flags_of(MOTORWAY, 1) == 0 and old.name_of(STREET, 0) == "Elm"
   assert downgrade_road_tile(raw, 1) == encode_road_tile(roads, version=1)
   assert downgrade_road_tile(raw, 3) == encode_road_tile(roads, names, version=3, flags=flags), "the flags survive"
-  assert downgrade_road_tile(raw, 4) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
+  assert downgrade_road_tile(raw, 5) == raw and downgrade_road_tile(v2, 3) == v2, "never upgraded"
   # the same lines in every version
   for version in (1, 2, 3):
     decoded = decode_road_tile(TileKey(14, 0, 0), downgrade_road_tile(raw, version))
@@ -262,7 +269,7 @@ def test_a_cut_flags_array_is_corrupt_not_misread():
     with pytest.raises(TileFormatError):
       decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(body[:-cut]))
   with pytest.raises(TileFormatError):
-    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x05\x01" + zlib.compress(body))
+    decode_road_tile(TileKey(14, 0, 0), b"SPRT\x06\x01" + zlib.compress(body))
 
 
 def test_decoder_keeps_traffic_signal_points_inside_the_tile_only():
@@ -286,7 +293,7 @@ def test_signal_points_round_trip_and_older_versions_drop_only_the_points():
   points = [(100.4, 200.6, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP), (1, 1, 0)]
   raw = encode_road_tile(roads, names, flags=flags, points=points)
   tile = decode_road_tile(TileKey(14, 0, 0), raw)
-  assert tile.version == 4 == VERSION
+  assert tile.version == 5 == VERSION
   assert tile.points == ((100, 201, SIGNAL), (4095, 0, SIGNAL), (7, 8, STOP)), "rounded; kind 0 is not a point"
   assert tile.flags_of(MAJOR, 0) == BRIDGE and tile.name_of(MAJOR, 0) == "Main"
   # five bytes a point, and nothing when there are none
@@ -312,3 +319,62 @@ def test_a_cut_or_padded_points_table_is_corrupt_not_misread():
   # a version 3 tile carries no points table, so the same bytes read as version 3 are trailing data
   with pytest.raises(TileFormatError):
     decode_road_tile(TileKey(14, 0, 0), b"SPRT\x03" + raw[5:6] + zlib.compress(body))
+
+
+def test_decoder_reads_layer_lanes_oneway_and_keeps_sidewalks_crossings_and_footways_as_walks():
+  data = mvt([("motorway", 2, [[(0, 0), (4000, 0)]], {"structure": "bridge", "layer": 2, "oneway": True, "lane_count": 4}),
+              ("motorway_link", 2, [[(0, 100), (400, 100)]], {"layer": -1, "oneway": "true"}),
+              ("primary", 2, [[(0, 200), (4000, 200)]], {"layer": 99, "oneway": False}),
+              ("path", 2, [[(10, 10), (20, 10)]], {"type": "sidewalk"}),
+              ("path", 2, [[(30, 10), (30, 40)]], {"type": "crossing"}),
+              ("path", 2, [[(50, 10), (60, 10)]], {"type": "footway"}),
+              ("path", 2, [[(70, 10), (80, 10)]], {"type": "cycleway"}),
+              ("path", 2, [[(90, 10), (99, 10)]], {"type": "steps"}),
+              ("pedestrian", 2, [[(100, 10), (200, 10)]])])
+  detail = decode_mvt_road_detail(data)
+  assert detail.flags[MOTORWAY] == [BRIDGE | ONEWAY] and detail.layers[MOTORWAY] == [2] and detail.lanes[MOTORWAY] == [4]
+  assert detail.flags[LINK] == [ONEWAY] and detail.layers[LINK] == [-1] and detail.lanes[LINK] == [0]
+  assert detail.flags[MAJOR] == [0] and detail.layers[MAJOR] == [15], "an absurd layer is clipped"
+  assert detail.walk_kinds == [SIDEWALK, CROSSING, FOOTWAY, PEDESTRIAN], "cycleways and steps are not drawn"
+  assert detail.walks[1].tolist() == [[30, 10], [30, 40]]
+  roads, names, flags, points = decode_mvt_road_tile(data)
+  assert roads.keys() == detail.roads.keys() and flags == detail.flags, "the version 4 reader is the same content"
+  tile = decode_road_tile(TileKey(14, 0, 0), detail.encode())
+  assert tile.version == 5 and tile.flags_of(MOTORWAY, 0) == BRIDGE | ONEWAY
+  assert tile.layer_of(MOTORWAY, 0) == 2 and tile.lanes_of(MOTORWAY, 0) == 4 and tile.layer_of(LINK, 0) == -1
+  assert [(w.tolist(), k) for w, k in tile.walk_lines()] == [(w.tolist(), k) for w, k in zip(detail.walks, detail.walk_kinds, strict=True)]
+
+
+def test_version_5_downgrades_to_exactly_the_version_4_tile_and_old_tiles_have_no_walks():
+  line = np.array([[0, 0], [100, 50]])
+  roads, names, flags = {MOTORWAY: [line, line + 5]}, {MOTORWAY: ["I-405", ""]}, {MOTORWAY: [BRIDGE | ONEWAY, ONEWAY]}
+  points = [(5, 5, SIGNAL)]
+  walks = [(np.array([[0, 10], [40, 10], [40, 30]]), SIDEWALK), (np.array([[1, 1], [1, 9]]), CROSSING)]
+  raw = encode_road_tile(roads, names, flags=flags, points=points, layers={MOTORWAY: [1, 0]}, lanes={MOTORWAY: [5, 0]},
+                         walks=walks)
+  v4 = downgrade_road_tile(raw, 4)
+  assert v4 == encode_road_tile(roads, names, version=4, flags={MOTORWAY: [BRIDGE, 0]}, points=points)
+  old = decode_road_tile(TileKey(14, 0, 0), v4)
+  assert old.flags_of(MOTORWAY, 0) == BRIDGE, "the old app sees no new bit"
+  assert old.walk_lines() == [] and old.layer_of(MOTORWAY, 0) == 0 and old.lanes_of(MOTORWAY, 0) == 0
+  assert downgrade_road_tile(raw, 3) == encode_road_tile(roads, names, version=3, flags={MOTORWAY: [BRIDGE, 0]})
+  tile = decode_road_tile(TileKey(14, 0, 0), raw)
+  assert [tile.layer_of(MOTORWAY, i) for i in range(2)] == [1, 0] and tile.lanes_of(MOTORWAY, 0) == 5
+  assert [k for _, k in tile.walk_lines()] == [SIDEWALK, CROSSING]
+  assert tile.walk_lines()[0][0].tolist() == [[0, 10], [40, 10], [40, 30]]
+  assert downgrade_road_tile(raw, 5) == raw
+  # no walks: 8 bytes of table header; two bytes a line for layer and lanes
+  bare = encode_road_tile(roads, names, flags=flags, points=points)
+  v4_bare = encode_road_tile(roads, names, version=4, flags=flags, points=points)
+  assert len(zlib.decompress(bare[6:])) - len(zlib.decompress(v4_bare[6:])) == 8 + 2 * 2
+
+
+def test_a_cut_or_padded_walk_table_is_corrupt_not_misread():
+  raw = encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, walks=[(np.array([[0, 0], [9, 9]]), SIDEWALK)])
+  body = zlib.decompress(raw[6:])
+  for bad in (body[:-1], body[:-8], body[:-19], body + b"\0"):
+    with pytest.raises(TileFormatError):
+      decode_road_tile(TileKey(14, 0, 0), raw[:6] + zlib.compress(bad))
+  short = encode_road_tile({MAJOR: [np.array([[0, 0], [100, 0]])]}, walks=[(np.array([[0, 0]]), SIDEWALK),
+                                                                           (np.array([[0, 0], [5, 5]]), 0)])
+  assert decode_road_tile(TileKey(14, 0, 0), short).walk_lines() == [], "a one-point or kind-0 walk is not stored"
