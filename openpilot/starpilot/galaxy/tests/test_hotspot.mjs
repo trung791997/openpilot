@@ -4,6 +4,8 @@ import { GalaxyHotspot, validHotspot } from '../web/js/hotspot.js'
 const value = { version: 1, revision: 'a'.repeat(64), editable: true, active: false, state: 'disabled', reason: '',
   url: 'http://172.31.254.1:8082/', config: { enabled: false, ssid: 'TheGalaxy-6b86', password: '' } }
 assert.equal(validHotspot(value), true)
+assert.equal(validHotspot({ ...value, state: 'paused', reason: 'Paused while Android Auto wireless projection is running.' }), true)
+assert.equal(validHotspot({ ...value, state: 'pausing', active: true }), true)
 assert.equal(validHotspot({ ...value, config: { ...value.config, ssid: 'Custom network' } }), false)
 assert.ok(!GalaxyHotspot.template.includes('v-model="draft.ssid"'))
 assert.ok(GalaxyHotspot.template.includes('Broadcast hotspot automatically'))

@@ -8,6 +8,7 @@ import pytest
 
 from openpilot.starpilot.galaxy.hotspot import DEFAULT, HotspotSettings, atomic_json, hotspot_name, validate_config
 from openpilot.starpilot.galaxy.hotspot_netlink import WirelessInterfaces, attribute, attributes
+from openpilot.starpilot.galaxy import hotspot_worker
 from openpilot.starpilot.galaxy.hotspot_worker import (HOLD, STANDALONE_SETTLE_S, HotspotBackend, HotspotController, choose_channel,
                                                        hostapd_config, nm_activating, overlapping_routes, radio_channel)
 
@@ -20,6 +21,7 @@ def backend_mock(ready=True, ap_channel=None):
   backend.alive.return_value = True
   backend.ap_status.return_value = {'ready': ready, 'channel': ap_channel}
   backend.activating.return_value = False
+  backend.projection.return_value = None
   backend.connected = set()
   return backend
 
@@ -352,3 +354,65 @@ def test_netlink_new_interface_payloads():
   wireless.create('aa0', iftype=2)
   station = attribute(1, struct.pack('I', 0)) + attribute(4, b'aa0\0') + attribute(5, struct.pack('I', 2))
   wireless.query.assert_called_with(22, 7, station, ack=True)
+
+
+def test_android_auto_projection_keeps_the_hotspot_off_and_says_why():
+  now = [100.]
+  backend = backend_mock()
+  backend.channel.return_value = ('a', 149)
+  backend.projection.return_value = 'aa0'
+  controller = HotspotController(backend, clock=lambda: now[0])
+  status = controller.tick(CONFIG)
+  assert status['state'] == 'paused' and not status['active'] and 'Android Auto' in status['reason']
+  backend.start.assert_not_called()
+  # Projection ends: the hotspot comes back by itself.
+  backend.projection.return_value = None
+  assert controller.tick(CONFIG)['state'] == 'starting'
+  backend.start.assert_called_once_with(CONFIG, ('a', 149))
+  assert controller.tick(CONFIG)['active']
+
+
+def test_android_auto_projection_stops_a_running_hotspot_but_not_mid_join():
+  now = [100.]
+  backend = backend_mock(ap_channel=149)
+  backend.channel.return_value = ('a', 149)
+  controller = HotspotController(backend, clock=lambda: now[0])
+  controller.tick(CONFIG)
+  assert controller.tick(CONFIG)['active']
+  backend.stop.reset_mock()
+  backend.projection.return_value = 'aa0'
+  backend.channel.return_value = HOLD  # the car link is joining: leave the AP alone until it is done
+  status = controller.tick(CONFIG)
+  assert status['state'] == 'pausing' and status['active']
+  backend.stop.assert_not_called()
+  backend.channel.return_value = ('a', 36)
+  status = controller.tick(CONFIG)
+  assert status['state'] == 'paused' and not status['active']
+  backend.stop.assert_called()
+  assert controller.applied is None
+
+
+def test_backend_finds_projection_on_aa0_or_its_networkmanager_profile(tmp_path, monkeypatch):
+  monkeypatch.setattr(Path, 'exists', lambda self: False)
+  run = Mock(return_value=Mock(returncode=0, stdout='home:wlan0\n'))
+  backend = HotspotBackend(tmp_path, run=run, interfaces=Mock())
+  assert backend.projection() is None
+  run.return_value = Mock(returncode=0, stdout='starpilot-android-auto:wlan0\n')
+  assert backend.projection() == 'wlan0'  # session fell back to wlan0
+  run.return_value = Mock(returncode=10, stdout='')
+  assert backend.projection() is None
+  monkeypatch.setattr(Path, 'exists', lambda self: True)
+  monkeypatch.setattr(hotspot_worker, 'owned', lambda interface, alias: (interface, alias) == ('aa0', 'starpilot-aa-wifi'))
+  assert backend.projection() == 'aa0'
+  monkeypatch.setattr(hotspot_worker, 'owned', lambda interface, alias: False)
+  assert backend.projection() is None  # an aa0 that is not ours
+
+
+def test_daemon_logs_each_state_change_once():
+  from openpilot.starpilot.galaxy.hotspot_daemon import log_transition
+  lines = []
+  warn = lambda *args: lines.append(args)  # noqa: E731
+  state = log_transition(None, {'state': 'active', 'reason': ''}, warn)
+  state = log_transition(state, {'state': 'paused', 'reason': hotspot_worker.PAUSED_FOR_PROJECTION}, warn)
+  state = log_transition(state, {'state': 'paused', 'reason': hotspot_worker.PAUSED_FOR_PROJECTION}, warn)
+  assert state == 'paused' and len(lines) == 2 and lines[1][2] == 'paused'

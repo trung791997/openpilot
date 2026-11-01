@@ -28,6 +28,13 @@ STATIONS = ('wlan0', 'aa0')
 # Android Auto drops and rejoins the car between attempts; stay put through those gaps.
 STANDALONE_SETTLE_S = 30.0
 NEGOTIATING = ('AUTHENTICATING', 'ASSOCIATING', 'ASSOCIATED', '4WAY_HANDSHAKE', 'GROUP_HANDSHAKE')
+# Android Auto wireless: its own station (car_interface.py) and the NetworkManager profile it joins the car with
+# (network.py), which is on wlan0 when a session falls back to it.
+AA_INTERFACE, AA_ALIAS, AA_CONNECTION = 'aa0', 'starpilot-aa-wifi', 'starpilot-android-auto'
+# galaxy0 shares the one Wi-Fi radio with the car link. Up during projection, the radio splits its time between
+# them, which can stall the car's video (2026-11-01, session 77: AP followed wlan0 to channel 149, car link on 36).
+PAUSED_FOR_PROJECTION = ('Paused while Android Auto wireless projection is running: the hotspot shares the Wi-Fi radio ' +
+                         "and would interrupt the car's video. It comes back when projection ends.")
 
 
 def radio_channel(status):
@@ -127,6 +134,18 @@ class HotspotBackend:
         self.connected.add(result[1])
       results.append(result)
     return choose_channel(results)
+
+  def projection(self):
+    """The station carrying an Android Auto wireless session, or None."""
+    if Path(f'/sys/class/net/{AA_INTERFACE}').exists() and owned(AA_INTERFACE, AA_ALIAS):
+      return AA_INTERFACE
+    reply = self.command(['nmcli', '-t', '-f', 'NAME,DEVICE', 'connection', 'show', '--active'], check=False)
+    if reply.returncode == 0:
+      for line in reply.stdout.splitlines():
+        name, _, device = line.rpartition(':')
+        if name == AA_CONNECTION:
+          return device or AA_CONNECTION
+    return None
 
   def activating(self):
     for station in self.idle:
@@ -228,6 +247,13 @@ class HotspotController:
     try:
       channel = self.backend.channel()
       running = self.applied is not None and self.backend.alive()
+      if self.backend.projection():
+        if running and (channel == HOLD or self.backend.activating()):
+          # Stopping the AP in the middle of the car link's join makes that join fail; drop it right after.
+          return {'active': True, 'state': 'pausing', 'reason': PAUSED_FOR_PROJECTION, 'channel': self.applied[1][1]}
+        self.backend.stop()
+        self.applied = None
+        return {'active': False, 'state': 'paused', 'reason': PAUSED_FOR_PROJECTION}
       status = self.backend.ap_status() if running else {'ready': False, 'channel': None}
       if running and isinstance(channel, tuple) and self.applied[0] == config:
         current = status['channel']

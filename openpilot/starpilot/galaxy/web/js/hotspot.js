@@ -9,7 +9,7 @@ const validPassword = password => typeof password === 'string' && (password === 
 export function validHotspot(value) {
   return value?.version === 1 && /^[a-f0-9]{64}$/.test(value.revision) &&
     typeof value.editable === 'boolean' && typeof value.active === 'boolean' &&
-    ['active', 'starting', 'waiting', 'disabled', 'error', 'unavailable'].includes(value.state) &&
+    ['active', 'starting', 'waiting', 'pausing', 'paused', 'disabled', 'error', 'unavailable'].includes(value.state) &&
     typeof value.reason === 'string' && value.reason.length <= 256 &&
     value.url === 'http://172.31.254.1:8082/' && typeof value.config?.enabled === 'boolean' &&
     /^TheGalaxy-[a-f0-9]{4}$/.test(value.config.ssid) &&

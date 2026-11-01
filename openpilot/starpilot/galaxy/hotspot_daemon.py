@@ -11,6 +11,23 @@ from openpilot.starpilot.galaxy.hotspot import HotspotSettings, STATUS_PATH, ato
 from openpilot.starpilot.system.pipe_worker import spawn
 
 
+def cloudlog_warning(*args):
+  from openpilot.common.swaglog import cloudlog
+  cloudlog.warning(*args)
+
+
+def log_transition(previous, runtime, warn=cloudlog_warning):
+  """One log line per state change, with the reason (e.g. paused for Android Auto projection)."""
+  state = runtime.get('state')
+  if state == previous:
+    return previous
+  try:
+    warn('galaxy_hotspot state %s -> %s: %s', previous, state, runtime.get('reason', ''))
+  except Exception:
+    pass
+  return state
+
+
 def main():
   from openpilot.common.hardware import PC
   if PC or os.environ.get('OPENPILOT_PREFIX'):
@@ -21,6 +38,7 @@ def main():
   signal.signal(signal.SIGTERM, lambda *_: stop.set())
   child, revision, buffer, last_reply = None, None, b'', 0.0
   runtime = {'active': False, 'state': 'disabled', 'reason': ''}
+  logged = None
   try:
     while not stop.is_set():
       try:
@@ -60,6 +78,7 @@ def main():
           if time.monotonic() - last_reply > 20:
             raise RuntimeError('Worker unresponsive')
         atomic_json(STATUS_PATH, {**runtime, 'revision': runtime.get('revision', revision), 'updated': time.monotonic()})
+        logged = log_transition(logged, runtime)
       except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         if child is not None:
           if not child.stdin.closed:
