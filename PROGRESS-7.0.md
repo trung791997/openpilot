@@ -232,7 +232,7 @@ A new track takes its weight at once. Otherwise the weight rises over 0.25 s and
   - route 34 T479 (census pc102): the intended tap removal, −1.82 → −0.19.
 - **Correction 2026-11-01** (Job, open loop, wbdrive with the radar filter fed every frame; device planner 9185b2081). Every wbdrive replay before this one froze the Bosch-A filter (radarTracks recv_frame never bumped), so aLeadK stayed 0. With the filter live:
   - The 19 real brakes are unchanged with the fix on (18 identical; r01 +0.011). e02 −2.40 vs −2.37, the same real brake. The conclusion "no real brake later or harder" stands.
-  - The fix trims the taps less than the tables above say: route 34 T479 −1.82 → **−1.23** (not −0.19; its minimum sits at the window edge, so it is approximate), route 37 T903 −1.76 → **−0.87** (not −0.64), 313 T336.2 −1.05 → **−0.42** (not −0.2). Min gap is identical in all three.
+  - The fix trims two of the three taps less than the tables above say: route 34 T479 −1.82 → −0.19 as first tabled (the −1.23 given here on 11-01 was a warm-up transient 8 s before the event window, not the tap; Job, 11-01), route 37 T903 −1.76 → **−0.87** (not −0.64), 313 T336.2 −1.05 → **−0.42** (not −0.2). Min gap is identical in all three.
   - Read the −0.19 / −0.64 / −0.2 figures above as frozen-filter numbers. Radar fidelity (fidscore2, 0.05 m after the per-build offset): routes 34/37 99.9 %, 313 95.2 %, 2ed 90.3 %.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
