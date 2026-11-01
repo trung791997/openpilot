@@ -44,6 +44,41 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 15 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
+
+**Problem.** In Experimental Mode with no car ahead, the model often holds 2–4 m/s under the set speed for a minute or more (route 313 at 80–85 mph, route 311). The owner had to press the gas to get there.
+
+**Fix.** `openpilot/starpilot/longitudinal/set_speed_assist.py`, a port of sunnypilot #2083. It is hooked after Accel Boost in both planners (`longitudinal_planner.py` and `upstream/planner.py`), Experimental Mode only, radar cars only. It lifts the model's accel toward min(lead MPC, cruise) at the cruise jerk. It stays off when:
+- radarState has any lead, or has had one in the last 2 s (the lift drops at 2.4 m/s³);
+- the model itself is braking (raw `desiredAcceleration` below −0.1);
+- a lane change is in progress, or the road bends.
+
+The lift tapers to 0 at the set speed (1 m/s² per m/s below it). Without the taper, the stock planner's lagging cruise accel carried the car 1 m/s past an 85 mph set speed.
+
+**Evidence (replay, closed loop, limited road evidence; compare ON vs OFF only; sim-vs-log aEgo corr is low, −0.14 to 0.56, because these stretches are flat).** Job, OFF b7582d110 vs ON c5de40a6f, both planners. Time to within 2 mph of set speed, sustained:
+
+| Stretch | OFF | ON | Logged car |
+|---|---|---|---|
+| o313a | 69.7 s | 47.0 s | 80.4 s |
+| o313c | never | 12.7 s | never |
+| o313d | never | 13.6 s | never |
+| o313e | never | 15.8 s | 39.7 s |
+| o311a | never | 12.5 s | never |
+
+- Mean deficit to set speed: 2–4 m/s → 0.5–1.3 m/s.
+- Peak plant accel 1.1–1.3 m/s².
+- Never over set speed by more than 0.14 m/s once the taper is in.
+- The firmer brakes in ON are all explained:
+  - o313d: the owner lowered the set speed 38.0 → 35.56 with the car already at 38 (−1.83 stock, −1.43 StarPilot).
+  - o313c and route 309: the sim runs 100+ m past the logged lead, so the replay brakes on a lead that is effectively on top of it. This is a harness artifact; lift 0 and clear_t 0 on every lead frame.
+  - o313d braking lead at 110 m: ON closes 2.3 m/s faster and keeps 3.0 s / 99.5 m (OFF 3.5 s / 110 m), with a −1.05 peak vs −0.35.
+- The 7-route scan found no other usable open-road stretch.
+
+**Not verified.** No road evidence. Watch the next Experimental Mode drive with no car ahead:
+- it should reach the set speed in about 15 s, without passing it;
+- a car appearing ahead should stop the extra speed at once;
+- a car cutting in shortly after a catch-up should not get a firmer brake.
+
 ### 14 — 2026-11-01 — Coast first: for a distant car tapping its brakes, lift off before braking; on longradar and V-ASM, default ON
 
 **Problem.** Route 71 (11c8fa231c0499ed/00000071--37216af48f) 12:03: at 70 mph a pickup 51–66 m ahead (1.6–2.0 s) braked for about 2 s and was back on the gas 1.5 s later. We braked to −2.25 in 0.75 s. The owner: too firm for a car that far away. A −0.5 coast from the same onset gives up about 1.4 m of gap (open-loop kinematics).
