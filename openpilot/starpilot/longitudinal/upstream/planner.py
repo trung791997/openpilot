@@ -182,7 +182,7 @@ class LongitudinalPlanner:
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
     if sm['selfdriveState'].experimentalMode:
       output_a_target_e2e = self.set_speed_assist.update(sm, output_a_target_e2e, min(output_a_target_mpc, self.a_cruise),
-                                                         bool(reset_state or self.fcw))
+                                                         bool(reset_state or self.fcw), v_cruise=v_cruise)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]

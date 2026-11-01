@@ -73,3 +73,14 @@ def test_any_lead_drops_lift_and_restarts_hold():
 def test_braking_model_raised_by_encouragement_gets_nothing():
   # the candidate is lifted to -0.05 by Encouragement, but the model itself brakes at -2.0
   assert run(assist(), sm(gas=1.0, model_a=-2.0), -0.05, 0.5) == -0.05
+
+
+def test_lift_tapers_to_zero_at_set_speed():
+  # o313d on the stock planner: a_cruise still +0.2 at set speed carried the lifted car 1 m/s past it
+  a = assist()
+  far = [a.update(sm(gas=1.0), 0.0, 1.5, False, v_cruise=35.) for _ in range(200)][-1]
+  assert 1.49 < far <= 1.5
+  near = [a.update(sm(gas=1.0), 0.0, 1.5, False, v_cruise=25.3) for _ in range(100)][-1]
+  assert abs(near - 0.3) < 1e-6
+  for v_cruise in (25., 24., float('nan')):
+    assert [a.update(sm(gas=1.0), 0.0, 1.5, False, v_cruise=v_cruise) for _ in range(100)][-1] == 0.0
