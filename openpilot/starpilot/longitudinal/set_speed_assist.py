@@ -31,6 +31,11 @@ LANE_CHANGE_OFF = 'off'  # log.LaneChangeState.off
 CLEAR_S = 2.  # s with no lead before the assist builds again
 
 
+def reader(msg):
+  # reading an unset struct field off a Cap'n Proto builder sets it; never touch a supplied message
+  return msg.as_reader() if hasattr(msg, 'as_reader') else msg
+
+
 class SetSpeedAssist:
   def __init__(self, CP, rise_bp, rise_vals, dt: float = DT_MDL):
     self.enabled = not bool(getattr(CP, 'radarUnavailable', True))
@@ -51,11 +56,11 @@ class SetSpeedAssist:
       self.clear_t = 0.
       return a_model
 
-    rs = sm['radarState']
+    rs = reader(sm['radarState'])
     lead_seen = bool(rs.leadOne.present) or bool(rs.leadTwo.present)
     self.clear_t = 0. if lead_seen else self.clear_t + self.dt
 
-    md = sm['modelV2']
+    md = reader(sm['modelV2'])
     v_ego = float(sm['carState'].vEgo)
     vel = np.asarray(md.velocity.x, dtype=float)
     yaw_rate = np.asarray(md.orientationRate.z, dtype=float)
@@ -71,7 +76,10 @@ class SetSpeedAssist:
     curvature = max(*np.abs(curvatures), float(np.max(np.abs(yaw_rate) / np.maximum(vel, 1.))))
     lat_acc = curvature * v_ego ** 2
 
-    self.gain = float(np.interp(a_model, GAIN_BP, [0., 1.]) * throttle_prob * np.interp(v_ego, [MIN_SPEED, FULL_SPEED], [0., 1.]))
+    # gate on the model's own accel, not the candidate after Encouragement/Accel Boost: a braking model stays unlifted
+    a_raw = float(md.action.desiredAcceleration)
+    a_gate = a_raw if math.isfinite(a_raw) else -1.
+    self.gain = float(np.interp(a_gate, GAIN_BP, [0., 1.]) * throttle_prob * np.interp(v_ego, [MIN_SPEED, FULL_SPEED], [0., 1.]))
     self.fade = float(np.interp(lat_acc, FADE_LAT_ACC_BP, [1., 0.]))
     # str(): pycapnp enums compare as their names; int() raises on some pycapnp builds
     self.active = str(md.meta.laneChangeState) == LANE_CHANGE_OFF and self.clear_t >= CLEAR_S
