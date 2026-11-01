@@ -63,6 +63,12 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Not verified.** No road evidence. One census set; fidelity is status-only (can_vs_logged is 0 on these routes, a known 0.086 m logging offset, not re-scored). Static: 16 tests pass, two new (30a T424 shape no longer matched; T1365 shape still bounds), ruff clean.
 
+- **Correction 2026-11-01** (Job, open loop, logged ego, radar filter fed every frame; earlier wbdrive replays froze it, aLeadK 0). Gate (b) shipped vs CSB off vs gate (a), min planner aT. Onset below −0.5 and min gap are identical across all three on every event, so only depth moves, and never toward later braking.
+  - CSB moves more than "only f10": 12 of the 17 census events brake 0.1–0.5 deeper with gate (b) than with CSB off (largest 237 T1186, the cones still, −1.21 → −1.71). f10 +0.13 reproduces.
+  - 2f8 T1365 is kept by **both** gates (a −2.73, b −2.74, off −3.04 later), so it does not separate them.
+  - Gate (b) fully reverts 31 T317 and mostly 30a T424 (+0.11 vs a +0.60). It does **not** revert 09 T355 (+0.42 like a). 311 T2873 no longer moves in any variant. 2f8 T537 is −0.37 in all three.
+  - Gate (b) stays: it is never later and is shallower than (a) on 30a T424, 31 T317 and census pc027. Per-event real/false labels for the 12 deepened events are pending (Job). Fidelity (fidscore2, 0.05 m after the per-build offset): 92.4–100 % over 15 routes.
+
 ### 11 — 2026-10-29 — Stop-and-go: stay stopped behind a stopped car, and no gas while crawling inside the stop gap; on longradar and V-ASM, default ON
 
 **Problem.** Route 46 (00000046--852fb6caa2, 15:30-15:55), Peter: "comma still got a little too close at times", behind a white Audi braking over and over at walking speed. From the car's log (seg 15 rlog, sendcan ACC_CONTROL):
