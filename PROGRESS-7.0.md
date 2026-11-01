@@ -44,6 +44,20 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 13 — 2026-11-01 — Coast first: for a distant car tapping its brakes, lift off before braking; on longradar and V-ASM, default ON
+
+**Problem.** Route 71 (11c8fa231c0499ed/00000071--37216af48f) 12:03: at 70 mph a pickup 51–66 m ahead (1.6–2.0 s) braked for about 2 s and was back on the gas 1.5 s later. We braked to −2.25 in 0.75 s. The owner: too firm for a car that far away. A −0.5 coast from the same onset gives up about 1.4 m of gap (open-loop kinematics).
+
+**Fix.** `openpilot/starpilot/longitudinal/bosch_a_coast_first.py`, hooked in `longitudinal_planner.py` before `bosch_a_smooth`. At ≥ 15 m/s, a braking target is floored at −0.5 when the brake starts, and the floor descends at 1 m/s³, so the brake is staged, not cut. It bypasses at once, and stays bypassed for the event, when the time gap < follow + 0.35 s, TTC < 5 s, aLeadK < −4, FCW, or a 3 s projection (the lead keeps its decel, we follow the floor) falls under 0.8 s·v + 6 m. It only raises a braking target, and radar points are untouched (D-041/D-042).
+
+**Evidence (replay, closed loop with the new-format shim, limited road evidence; compare ON vs OFF only).** 42 events, a704c81a4 vs 9185b2081:
+- Route 71 12:03: min accel −1.99 → −1.60, below −1 1.40 → 1.10 s, min gap 56.6 m in both (1.85 → 1.84 s). Floor held 1.85 s, never bypassed. aEgo corr 0.92, vEgo RMSE 0.34.
+- None of the other 41 events gets a smaller gap by more than 2 m or a peak firmer by more than 0.1. Closest: ke11 gap −1.9 m, peak −2.14 vs −2.10. 2f5 10:01 is unreliable (sim overran the lead in both runs). 3a3 17:44: identical peak, gap and onset. ke02 softer, −2.24 → −1.85.
+- Engaged in 21/42. Mostly released by v < 15, then TTC < 5 (4 events), gap < follow + 0.35 (4) and other reasons (10; reasons reconstructed, not logged).
+- It never engages on the far-tap taps (route 34 T479, route 37 T903, 313 T336.2): their gap is already under follow + 0.35 s, so far-tap alone handles those.
+
+**Not verified.** No road evidence. The shim approximates the planner inputs, and the bypass reason is not logged. On the next drive, watch distant brake taps at highway speed: a lift-off before the brake, and the brake still arriving if the lead keeps braking.
+
 ### 12 — 2026-10-30 — Early gentle brake: the camera's lead must sit closer to the radar's lead, so a farther car slowing no longer brakes us hard; on longradar and V-ASM, default ON
 
 **Problem.** Job's census of the early gentle brake (entry 10; 747 brakes, open loop, sw9 = CAM_SLOW_W_MAX 0 vs sw8) moved 16 brakes by more than 0.1. On stills, two were false triggers and one leaned false, all with the leads 80-95 m out: 30a T424 (-2.16 -> -2.75; the camera's lead was another car 10.4 m past the radar's, slowing at a light queue while an SUV sat in the next lane), 237 T1186 (cones, -1.39 -> -1.71) and 311 T2873 (2.3 s early, nothing close in lane). Eight were real slowdowns, three ambiguous. On the 19 real brakes CSB moved only f10, 0.13 deeper in the middle of a real slowdown the radar lagged. 2f8 T537 (8:57 phantom): unchanged, -0.24.
