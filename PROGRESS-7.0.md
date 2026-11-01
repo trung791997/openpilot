@@ -210,6 +210,10 @@ A new track takes its weight at once. Otherwise the weight rises over 0.25 s and
   - ev19 E02 (2ed T335): the "onset 2.8 s later" is a −0.54 precursor dip at T335.3 that the contradicted tell (8.3 m/s, weight 0.77) now holds at −0.48. The real brake still starts at T338.08 in both. Stills show open road with a far car until T339, so the dip was not a real slowdown. The entry 9 claim holds for the real brake, but it never covered precursor dips.
   - 313 T336.2 (census pd276): −1.05 → −0.2. A status-9 return at 50 m with both tells plausible; the lead is gone from T335.4. Stills at night show a cluster of brake lights far ahead, roughly in lane, and the car slowed to −0.64 at T337. Label: a real, mild, distant slowdown, about 1 s late with the fix. A mild regression in the dangerous direction (a removed brake), not a hard one. Status fidelity 95 %.
   - route 34 T479 (census pc102): the intended tap removal, −1.82 → −0.19.
+- **Correction 2026-11-01** (Job, open loop, wbdrive with the radar filter fed every frame; device planner 9185b2081). Every wbdrive replay before this one froze the Bosch-A filter (radarTracks recv_frame never bumped), so aLeadK stayed 0. With the filter live:
+  - The 19 real brakes are unchanged with the fix on (18 identical; r01 +0.011). e02 −2.40 vs −2.37, the same real brake. The conclusion "no real brake later or harder" stands.
+  - The fix trims the taps less than the tables above say: route 34 T479 −1.82 → **−1.23** (not −0.19; its minimum sits at the window edge, so it is approximate), route 37 T903 −1.76 → **−0.87** (not −0.64), 313 T336.2 −1.05 → **−0.42** (not −0.2). Min gap is identical in all three.
+  - Read the −0.19 / −0.64 / −0.2 figures above as frozen-filter numbers. Radar fidelity (fidscore2, 0.05 m after the per-build offset): routes 34/37 99.9 %, 313 95.2 %, 2ed 90.3 %.
 
 ### 8 — 2026-10-26 — Brake tap on route 34: a new radar track's range settling read as a braking car; no fix
 
