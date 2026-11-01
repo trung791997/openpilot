@@ -49,7 +49,7 @@ import time
 
 from jetlink import protocol as P
 from jetlink.comma import gadget
-from jetlink.openpilot.model_state import JetlinkModelState
+from jetlink.openpilot.model_state import PROVING_FRAMES, JetlinkModelState
 from jetlink.transport.priority import background_thread
 
 # after a join fails or the large model dies mid-drive. Long enough not to
@@ -89,6 +89,35 @@ DROPS_TO_BLAME_CABLE = 2
 # a second within about 6.5 s is not. modeld forgives the frame of a handover
 # too, so the drops that decided it never reach selfdrived
 DROP_LIMIT = 0.0075
+# ... unless the drops are one short stall of the comma's own, which handing
+# back does not fix: the small model runs on the same starved comma, from a
+# reset history, and the driver gets an alert for it. Logged drives (log-based):
+# 6f at 9:37, one frame of 292 ms, and 75 at 11:09, three of 98, 58 and 134 ms,
+# each the only stall of its stretch, the host answering in 19.6 ms all along;
+# both handed back past DROP_LIMIT. Such a stall is forgiven: the large model
+# keeps driving, and the frame counts as a handover, so modeld resets its
+# filter as it would have for the hand-back and selfdrived sees the same.
+# Nothing stale is published for longer: the stalled frames hold as they do
+# today (model_state.HOLD_FRAME, HOLDS_IN_A_ROW), and the frame after a gap is
+# never published (modeld's vipc_dropped_frames). It hands back as before when
+# - any frame in the last HOST_LOOKBACK said the host was late
+#   (model_state.HOST_LATE_WAIT), which is the host's lag and not the comma's
+# - the burst has lost more than STALL_FORGIVEN of frame time: run() starts
+#   more than STALL_INTERVAL apart, each losing what is past FRAME_DT, merged
+#   into one burst while less than STALL_BURST_GAP apart
+# - another burst tripped DROP_LIMIT in the STALL_REPEAT before this one
+#   started, forgiven or not. 75's bursts that tripped DROP_LIMIT came 22 s and then 57 s apart, the
+#   large model driving in all three; 6f had one in 519 s. A comma stalling
+#   that often hands back, as it did
+# - no run() started late in the last STALL_BURST_GAP: drops not timed here
+# - within the swap's first PROVING_FRAMES, the proof (model_state)
+# A lost link or a host that stops answering raises in the frame, unchanged
+STALL_INTERVAL = 0.075
+FRAME_DT = 0.05
+STALL_BURST_GAP = 0.5
+STALL_FORGIVEN = 0.4
+STALL_REPEAT = 120.0
+HOST_LOOKBACK = 1.0
 # the small model drives the first frames of every modeld start, even with the
 # large model ready: its first run in a process costs ~1.3 s, which the first
 # fallback frame would pay (25 dropped frames, commIssue) if the large model
@@ -184,6 +213,15 @@ class JoiningModelState:
     self._lagging = False
     # modeld's share of dropped camera frames, for the frame about to run
     self._frame_drop_ratio = 0.0
+    # the comma's stalls while the large model drives (STALL_FORGIVEN): when
+    # the last run() started, when the current burst started and last ran
+    # late, the frame time it has lost, and when the last burst that tripped
+    # DROP_LIMIT started, forgiven or not. Across swaps: they are the comma's, not a link's
+    self._run_at = 0.0
+    self._burst_at = 0.0
+    self._late_at = -float('inf')
+    self._burst_lost = 0.0
+    self._tripped_at = -float('inf')
     # set by the large model's first frame: the join thread clears the
     # progress, which is params IO and not the frame thread's
     self._announce = False
@@ -328,20 +366,63 @@ class JoiningModelState:
   def run(self, bufs, transforms, inputs, after_enqueue=None):
     if self._ask_in_control is not None:
       self.in_control = self._ask_in_control()
+    self._note_stall()
     if self._lagging:
       # the last frame was the large model's last, published as it came
       self._lagging = False
       self._demote(BEHIND)
     elif self._active is not self._small and self._frame_drop_ratio > DROP_LIMIT:
-      # modeld is behind the large model; this frame is the small model's
-      self._log.warning("jetlink: modeld dropped %.2f %% of camera frames behind the large model, " +
-                        "the small model drives from this one", self._frame_drop_ratio * 100)
-      self._demote(BEHIND)
+      why = self._unforgiven()
+      self._tripped_at = self._burst_at
+      if why is None:
+        # the comma's own short stall: the large model drives on, and the
+        # handover resets modeld's filter (STALL_FORGIVEN)
+        self._handed_over()
+        self._log.warning("jetlink: modeld dropped %.2f %% of camera frames in a stall of the comma's own "
+                          "(%.0f ms lost), the large model drives on", self._frame_drop_ratio * 100,
+                          self._burst_lost * 1e3)
+      else:
+        # modeld is behind the large model; this frame is the small model's
+        self._log.warning("jetlink: modeld dropped %.2f %% of camera frames behind the large model (%s), "
+                          "the small model drives from this one", self._frame_drop_ratio * 100, why)
+        self._demote(BEHIND)
     self._maybe_swap()
     if self._active is self._small:
       self._small_frames += 1
       return self._small.run(bufs, transforms, inputs, after_enqueue)
     return self._run_big(bufs, transforms, inputs, after_enqueue)
+
+  def _note_stall(self) -> None:
+    """Time this run() against the last one while the large model drives;
+    a late start is a stall of the frame before, the comma's or the host's."""
+    now = time.monotonic()
+    last, self._run_at = self._run_at, now
+    if self._active is self._small or not last:
+      return
+    interval = now - last
+    if interval <= STALL_INTERVAL:
+      return
+    if now - self._late_at >= STALL_BURST_GAP:
+      self._burst_at, self._burst_lost = now, 0.0
+    self._burst_lost += interval - FRAME_DT
+    self._late_at = now
+
+  def _unforgiven(self) -> str | None:
+    """Why the drops past DROP_LIMIT hand back, or None for a short stall of
+    the comma's own (STALL_FORGIVEN)."""
+    now = time.monotonic()
+    big = self._big
+    if getattr(big, 'frame_id', 0) <= PROVING_FRAMES:
+      return 'within its proof'
+    if now - getattr(big, 'host_late_at', now) < HOST_LOOKBACK:
+      return 'the host was late'
+    if now - self._late_at >= STALL_BURST_GAP:
+      return 'no stall of the comma to forgive'
+    if self._burst_lost > STALL_FORGIVEN:
+      return f'a {self._burst_lost * 1e3:.0f} ms stall'
+    if self._tripped_at != self._burst_at and self._burst_at - self._tripped_at < STALL_REPEAT:
+      return f'the comma stalled {self._burst_at - self._tripped_at:.0f} s ago too'
+    return None
 
   def _run_big(self, bufs, transforms, inputs, after_enqueue):
     big = self._big

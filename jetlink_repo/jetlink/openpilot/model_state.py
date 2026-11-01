@@ -66,6 +66,16 @@ PROVING_FRAMES = 20
 # single slow frame later is the comma's own stall, a warp or a send, which
 # handing back would not fix; only held frames say the host is behind
 SETTLING_FRAMES = 3
+# What makes a frame the host's lateness rather than the comma's own stall,
+# for the joining model's stall rule (joining.STALL_FORGIVEN): a held frame
+# that waited this long for its reply, a send this slow, or a server total
+# this long. Logged drives (log-based, 6f and 75): the host's held frames wait
+# 43 ms with the comma's part ~3 ms, the comma's stalls wait 0.1 to 0.3 ms
+# with the hold spent before end(), and the server's total is 19.6 to 19.7 ms
+# in both. A frame not sent because the link was still busy is the host's too
+HOST_LATE_WAIT = 0.025
+HOST_LATE_SEND = 0.025
+HOST_LATE_SERVER = 0.040
 # frames between asks for the server's telemetry, which rides on the response:
 # every second one, as modeld sent a chestnut's state (20 Hz over 10 Hz)
 TELEMETRY_EVERY = 2
@@ -196,6 +206,9 @@ class JetlinkModelState:
     self.behind: str | None = None
     # whether the last frame published the one before it: the runtime record's
     self.held = False
+    # when a frame last said the host was late (HOST_LATE_WAIT), monotonic; the
+    # joining model's stall rule reads it
+    self.host_late_at = 0.0
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     return {k: model_outputs[np.newaxis, v] for k, v in output_slices.items()}
@@ -287,6 +300,9 @@ class JetlinkModelState:
     t4 = time.perf_counter()
     held = self.held = model_output is None
     self.behind = self._note_hold(held)
+    if (frame.seq is None or (held and t4 - waiting_from >= HOST_LATE_WAIT) or
+        frame.sent - frame.t2 >= HOST_LATE_SEND or self.client.last_timings[2] >= HOST_LATE_SERVER * 1e6):
+      self.host_late_at = time.monotonic()
     self.trips.record(t4 - frame.t0, self.client.last_timings[2])
     outputs = self._outputs(self.client.last_output if held else model_output)
     # a frame past the budget is a dropped camera frame; send against reply
@@ -321,6 +337,11 @@ class JetlinkModelState:
     self.prepare(bufs, transforms, inputs)
     self.send(after_enqueue is not None)
     return self.end(after_enqueue)
+
+  @property
+  def frame_id(self) -> int:
+    """Frames sent since the swap; the first PROVING_FRAMES are its proof."""
+    return self._frame_id
 
   @property
   def _can_hold(self) -> bool:
