@@ -181,7 +181,7 @@ def test_actual_scoped_fingerprint_respects_existing_skip_and_cache_flags(skip, 
     ordered = stack.enter_context(mock.patch.object(car_helpers, 'get_fw_versions_ordered', return_value=[]))
     can = stack.enter_context(mock.patch.object(car_helpers, 'can_fingerprint', return_value=(CAR.CHEVROLET_VOLT_ASCM, layout)))
     result = car_helpers.fingerprint(receive, mock.Mock(), callback, cached, known_gm_bus0=True)
-  can.assert_called_once_with(receive)
+  can.assert_called_once_with(receive, vin=vin_module.VIN_UNKNOWN if skip else VIN, camera_cruise_messages=set())
   receive.assert_called_once_with()
   present.assert_not_called()
   ordered.assert_not_called()
