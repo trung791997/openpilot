@@ -18,12 +18,12 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
   - The comma-side feed is `hu_feed.py` (see the README).
 - **Desktop render harness:** `/tmp/hu/jvmtest`, with `render_slim.sh <MapView.java> <classdir> <outdir>`. It is not in the repo, so it is lost with the VM.
 
-## Head unit state (2026-11-01)
+## Head unit state (2026-11-03)
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad-under.apk` | built at `38861a444`: lane arrows under the car, bridges and overpasses raised, railroad crossings, 3D tilt zoomed in, plus everything in `aaroad-signals.apk`; installed 2026-11-01 ~12:00 CST in Park (Peter's OK), comma on `1e6c01651`, `hu-reboot` sent, waiting on the ignition cycle; not driven yet |
-| Previous | `aaroad-signals.apk` | exit/highway badges (`f091686b2`), free-drive roads ahead (`4856311cb`), traffic-light icons (`1d2a7a2f9`) |
+| Installed now | `aaroad-hold.apk` | built at `ba1ecd65f`: everything in `aaroad-under.apk`, plus events.log falls back to the app files/cache dirs and says where it writes or why not, and every aaroad error.log line carries a time stamp; installed 2026-11-03 in Park at 0 m/s (Peter's OK), comma on `7ea46a1dc` (has the stopped-pose hold in hu_feed), `hu-reboot` sent, waiting on the ignition cycle; not driven yet |
+| Previous | `aaroad-under.apk` | built at `38861a444`: lane arrows under the car, bridges and overpasses raised, railroad crossings, 3D tilt zoomed in; drove 2026-11-01 |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
 
 The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the commit with `build.sh` in a scratch copy (it runs `rm -rf out`).
