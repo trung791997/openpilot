@@ -222,6 +222,48 @@ def refresh_expired_lateral_snapshot(sm, *, now_ns: int) -> bool:
   return False
 
 
+COMBINED_REFRESH_MARGIN_NS = 15_000_000
+
+
+def refresh_expiring_combined_snapshot(sm, *, now_ns: int) -> bool:
+  """Receive queued AOL inputs once when a held LAT+LONG proof is about to lapse; it never gains time.
+
+  Route 00000080--bdf63ac92f (2026-11-03, segs 9/19/26): lat and long dropped together for one 10 ms
+  frame every ~2.3 s with every logged axis and native input fresh, valid and allowed. Each mid-brake
+  drop sent an inactive ACC frame and the brake let go for ~1 s (aEgo -1.2 -> -0.2 under a -1.5
+  command). The axis lease is 30 ms, so a cycle holding the previous axis can lapse while a newer one
+  already waits. Only already-queued messages are taken; every normal gate still runs on them.
+  Log evidence only: the live gate is not logged, see axis_drop_reason.
+  """
+  axis = sm['aolAxisState']
+  if (sm.seen['aolAxisState'] and sm.valid['aolAxisState'] and sm.alive['aolAxisState'] and
+      axis.qualified and axis.nativeAcknowledged and axis.sessionId and
+      axis.lateralActive and axis.desiredLateral and axis.longitudinalActive and axis.desiredLongitudinal and
+      0 < int(sm.logMonoTime['aolAxisState']) and 0 < axis.observedMonoTime <= axis.validUntilMonoTime and
+      (int(axis.validUntilMonoTime) - now_ns < COMBINED_REFRESH_MARGIN_NS or
+       now_ns - int(sm.logMonoTime['aolAxisState']) > AXIS_MAX_AGE_NS - COMBINED_REFRESH_MARGIN_NS)):
+    sm.update(0)
+    return True
+  return False
+
+
+def axis_drop_reason(sm, CP, *, now_ns: int) -> str:
+  """Name the first failing AOL admission check (diagnostic only; never gates output)."""
+  if not (sm.valid['aolAxisState'] and sm.alive['aolAxisState'] and sm.seen['aolAxisState']):
+    return 'axis_service'
+  axis = sm['aolAxisState']
+  if current_axis(sm, now_ns=now_ns) is None:
+    expired = now_ns > int(axis.validUntilMonoTime) or now_ns - int(sm.logMonoTime['aolAxisState']) > AXIS_MAX_AGE_NS
+    return 'axis_expired' if expired else 'axis_unqualified'
+  if not (sm.valid[SAFETY_SERVICE] and sm.alive[SAFETY_SERVICE] and sm.seen[SAFETY_SERVICE]):
+    return 'native_service'
+  if current_native(sm, CP, now_ns=now_ns, axis_session_id=str(axis.sessionId)) is None:
+    return 'native_rejected'
+  if not (axis.lateralActive and axis.longitudinalActive):
+    return 'axis_inactive'
+  return 'native_state'
+
+
 def monitoring_lateral_engaged(sm, *, now_ns: int) -> bool:
   axis = current_axis(sm, now_ns=now_ns)
   if axis is None or not axis.lateralActive or not axis.nativeAcknowledged:

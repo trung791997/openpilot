@@ -34,7 +34,8 @@ from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.lateral.pause import LateralPause, read_settings as read_lateral_pause
 from openpilot.starpilot.lateral.model_turn_assist import ModelTurnAssist, update_twitch_guard
 from openpilot.starpilot.aol.runtime import (current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged,
-                                            refresh_expired_lateral_snapshot)
+                                            refresh_expired_lateral_snapshot, refresh_expiring_combined_snapshot,
+                                            axis_drop_reason)
 from openpilot.starpilot.aol.transition_diagnostic import TransitionDiagnostic
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed, allow_lateral_onset
 from openpilot.starpilot.lateral.lane_centering import (
@@ -215,6 +216,9 @@ class Controls:
       late_gm_refresh = self.CP.brand == 'gm'
       if not late_gm_refresh:
         lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=refresh_now_ns)
+        if not lateral_inputs_refreshed:
+          # LAT+LONG: take an already-queued axis before the held one lapses mid-cycle (route 80 brake drops).
+          refresh_expiring_combined_snapshot(self.sm, now_ns=refresh_now_ns)
     CS = self.sm['carState']
     self.flm_native_witness = None
     if self.lateral_gain_owner is not None:
@@ -285,6 +289,16 @@ class Controls:
                            bool(axis.desiredLongitudinal) == bool(native.requestedLongitudinal) and native.longitudinalAllowed and
                            self.CP.openpilotLongitudinalControl and
                            not any(e.overrideLongitudinal for e in self.sm['onroadEvents']))
+      if (CC.enabled and not CC.latActive and not CC.longActive and getattr(self, 'aol_previous_lateral_active', False) and
+          self.sm.frame >= getattr(self, 'aol_axis_drop_log_frame', 0)):
+        # Route 80 lat+long 1-frame drops: name the live gate the log cannot show (diagnostic only, at most 1/s).
+        self.aol_axis_drop_log_frame = self.sm.frame + 100
+        try:
+          cloudlog.event('aol_axis_drop', reason=axis_drop_reason(self.sm, self.CP, now_ns=now_ns),
+                         axis_left_ms=(int(self.sm['aolAxisState'].validUntilMonoTime) - now_ns) / 1e6,
+                         axis_age_ms=(now_ns - int(self.sm.logMonoTime['aolAxisState'])) / 1e6)
+        except Exception:
+          pass
 
       if diagnostic_entry is not None:
         diagnostic_gate = diagnostic_observer.capture(self.sm, now_ns)
