@@ -35,6 +35,13 @@ CRAWL_D_M = 6.0          # long_mpc STOP_DISTANCE: no gas while closing
 CLOSING_DV = 0.2         # m/s slower than us counts as closing (46 15:26.95 cut the gas at 0.03)
 CRAWL_CLOSE_D_M = 4.5    # no gas unless the lead pulls away (46: stopped at 4.17 m was already close for the owner)
 NO_GAS_ACCEL = -0.25     # m/s^2, just under the Bosch gas floor -0.2
+# Earlier release (owner-approved road test 2026-11-03, route 0000007c--0ea998a750 16:59 "didn't want to move"): the gap
+# opening this far past the hold minimum with the lead at least this fast also releases, and counts as pulling away until
+# the gap closes again. Open-loop replay on 7c/72/75/76 + 46 seg 15: release 0/0.25/0.51 s earlier on the 8 launches that
+# hold (median 0.25 s); 10 triggers in 23 standstill episodes, all real pull-aways. The stopped Audi on 46 at 15:37.9
+# (vLead 0.29-0.32) opened 0.06 m. Replay only; nothing here is road-validated.
+RELEASE_GROWTH_M = 0.4
+RELEASE_GROWTH_LEAD_V = 0.3
 
 
 def closest_radar_lead(leads):
@@ -54,9 +61,15 @@ class BoschAStopGap:
     self.enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
     self.dt = dt
     self.hold_d = None  # closest dRel while holding; None while not holding (replay/debug)
+    self.released_d = None  # hold minimum of a gap-growth release, latched while the gap stays open
 
   def reset(self):
     self.hold_d = None
+    self.released_d = None
+
+  def opened(self, lead, base_d) -> bool:
+    return base_d is not None and float(lead.dRel) - base_d >= RELEASE_GROWTH_M and \
+      float(lead.vLead) >= RELEASE_GROWTH_LEAD_V
 
   @property
   def holding(self) -> bool:
@@ -74,18 +87,23 @@ class BoschAStopGap:
       return float(target), bool(should_stop)
     d_rel = float(lead.dRel)
 
+    if not self.opened(lead, self.released_d):
+      self.released_d = None
     if self.holding:
       if pulling_away(lead, v_ego):
         self.reset()
+      elif self.opened(lead, self.hold_d):
+        self.released_d, self.hold_d = self.hold_d, None
       else:
         self.hold_d = min(self.hold_d, d_rel)
     elif (standstill or v_ego < STANDSTILL_V) and d_rel < HOLD_D_M and \
-        float(lead.vLead) < RELEASE_LEAD_V:
+        float(lead.vLead) < RELEASE_LEAD_V and self.released_d is None:
       self.hold_d = d_rel
     if self.holding:
       return float(min(target, NO_GAS_ACCEL)), True
 
-    if v_ego < CRAWL_V_MAX and ((d_rel < CRAWL_CLOSE_D_M and not pulling_away(lead, v_ego)) or
+    if v_ego < CRAWL_V_MAX and ((d_rel < CRAWL_CLOSE_D_M and not pulling_away(lead, v_ego) and
+                                 self.released_d is None) or
                                 (d_rel < CRAWL_D_M and float(lead.vLead) < v_ego - CLOSING_DV)):
       target = min(target, NO_GAS_ACCEL)
     return float(target), bool(should_stop)

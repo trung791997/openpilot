@@ -24,6 +24,11 @@ BOSCH_BRAKE_FORCE_RELEASE = -0.02
 #     escape (about 0.2 per minute, each shortening a hold by 0.04-0.4 s).
 #   BOSCH_A_RELEASE_GAS_START / _RAMP_S: after a release the gas starts at most at 35 and reaches the lookup over 1 s,
 #     instead of the 60 cap. Gas on the release frame 60 -> 35; mean over the first second 121 -> 81.
+#   BOSCH_A_LAUNCH_GAS_RAMP_S: a release straight out of stopping (a launch from a stop, not a stop-and-go brake cycle)
+#     ramps over 0.5 s instead. Route 0000007c--0ea998a750 16:59 (owner bookmark, "didn't want to move, I tapped the
+#     gas"): openpilot released and sent gas 36 -> 232 over 0.8 s with no motion; clean launches on 7c/72/75/76 take
+#     0.9-1.7 s from release to motion. Replay cannot model the car's standstill release, so the gain is unmeasured:
+#     owner-approved road test 2026-11-03. The brake-cycling releases above keep the 1 s ramp.
 # Stopping still forces the request on, and a long-control drop still clears it, exactly as before.
 # Runs on every car with the Bosch-A radar harness (bosch_a_harness), owner 2026-10-24: the CR-V 5G is static only.
 BOSCH_A_BRAKE_FORCE_ON = -0.20
@@ -31,6 +36,7 @@ BOSCH_A_BRAKE_MIN_HOLD_S = 1.5
 BOSCH_A_BRAKE_HOLD_ESCAPE = 0.2
 BOSCH_A_RELEASE_GAS_START = 35.0
 BOSCH_A_RELEASE_GAS_RAMP_S = 1.0
+BOSCH_A_LAUNCH_GAS_RAMP_S = 0.5
 
 CLASSIC_BOSCH_CARS = frozenset((
   CAR.HONDA_NBOX_2G,
@@ -82,12 +88,16 @@ class BoschABrakeEdge:
     self.braking = False
     self.hold_s = 0.0
     self.release_s = math.inf
+    self.stopping = False
+    self.ramp_s = BOSCH_A_RELEASE_GAS_RAMP_S
 
   def update(self, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
     if not long_active:
       self.reset()
       return False
     was_braking = self.braking
+    was_stopping = self.stopping
+    self.stopping = stopping
     if stopping:
       self.braking = True
     elif self.braking:
@@ -99,14 +109,18 @@ class BoschABrakeEdge:
       self.hold_s = self.hold_s + self.dt if was_braking else 0.0
       self.release_s = math.inf
     else:
-      self.release_s = 0.0 if was_braking else self.release_s + self.dt
+      if was_braking:
+        self.release_s = 0.0
+        self.ramp_s = BOSCH_A_LAUNCH_GAS_RAMP_S if was_stopping else BOSCH_A_RELEASE_GAS_RAMP_S
+      else:
+        self.release_s += self.dt
     return self.braking
 
   def limit_gas(self, gas: float) -> float:
-    """Gas after a brake release rises from BOSCH_A_RELEASE_GAS_START to the lookup over BOSCH_A_RELEASE_GAS_RAMP_S."""
-    if self.braking or self.release_s >= BOSCH_A_RELEASE_GAS_RAMP_S or gas <= BOSCH_A_RELEASE_GAS_START:
+    """Gas after a brake release rises from BOSCH_A_RELEASE_GAS_START to the lookup over ramp_s (shorter for a launch)."""
+    if self.braking or self.release_s >= self.ramp_s or gas <= BOSCH_A_RELEASE_GAS_START:
       return gas
-    return BOSCH_A_RELEASE_GAS_START + (gas - BOSCH_A_RELEASE_GAS_START) * self.release_s / BOSCH_A_RELEASE_GAS_RAMP_S
+    return BOSCH_A_RELEASE_GAS_START + (gas - BOSCH_A_RELEASE_GAS_START) * self.release_s / self.ramp_s
 
 
 def get_honda_bosch_wind_brake_mps2(v_ego: float) -> float:
