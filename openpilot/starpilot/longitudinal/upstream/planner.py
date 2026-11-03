@@ -9,7 +9,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.starpilot.longitudinal.upstream.mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.starpilot.longitudinal.upstream.mpc import LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW
 from openpilot.starpilot.longitudinal.upstream.mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -85,6 +85,9 @@ class LongitudinalPlanner:
     # Bosch-A stop hold + no gas inside the stop gap (always on for Bosch-A Hondas with the radar; bosch_a_stop_gap.py).
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
+    # Bosch-A early slowdown for a far car slower than it reads (radar on; bosch_a_far_slow_lead.py).
+    from openpilot.starpilot.longitudinal.bosch_a_far_slow_lead import BoschAFarSlowLead
+    self.bosch_a_far_slow_lead = BoschAFarSlowLead(CP, dt)
     self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
     from openpilot.starpilot.longitudinal.set_speed_assist import SetSpeedAssist
     self.set_speed_assist = SetSpeedAssist(CP, A_CRUISE_MAX_BP, J_CRUISE_VALS, dt)  # same as the StarPilot planner
@@ -209,6 +212,9 @@ class LongitudinalPlanner:
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
         target=float(output_a_target), v_ego=v_ego, stopping=bool(self.output_should_stop),
         standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+    output_a_target = self.bosch_a_far_slow_lead.step(
+      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target),
+      v_ego=v_ego, follow_s=float(get_T_FOLLOW(sm['selfdriveState'].personality)), reset_state=bool(reset_state))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
