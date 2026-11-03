@@ -38,6 +38,7 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
   4. Delete the key on the comma afterwards.
 - Never print the head unit's IP.
 - **Network (2026-10-31):** the head unit is on Peter's phone hotspot. The comma's Wi-Fi keeps switching back to `starpilot-android-auto` (the AAWireless network), which leaves it no path to the head unit. Run `nmcli con up` on the hotspot connection and do the adb work in the same command, right away. Peter OK'd switching it. The hotspot can hand out new addresses, so if `/tmp/hu/ip` stops answering, scan the subnet for port 5555.
+- **Network (2026-11-03):** the head unit's Wi-Fi is 2.4 GHz only. With the phone hotspot on 5 GHz (channel 149) the head unit dropped off it and the dash map got no feed; Peter turned on the hotspot's 2.4 + 5 GHz broadcast and the map came back. The comma's hotspot profile (`iqpilot connection Galaxy S20 FE 5G6CC3`) is pinned to 2.4 GHz (`802-11-wireless.band bg`, set on the device with Peter's OK, persisted in /etc/netplan on /data) so wlan0 stays off the 5 GHz band StarPort's car link (aa0, 5180 MHz) uses; takes effect on the next join. If the map is missing, check the phone still broadcasts 2.4 GHz.
 
 ## Open
 
