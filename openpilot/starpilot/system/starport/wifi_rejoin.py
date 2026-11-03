@@ -6,8 +6,10 @@ blocks the connection for about five minutes and may not rescan. 2026-11-03: wla
 hotspot in range at 100 % signal until a manual rescan, after which it joined within a minute.
 
 Every CHECK_EVERY s, while wlan0 is down and not already connecting: if a saved Wi-Fi network for wlan0 is in the
-last scan, bring it up (at most once per CON_UP_EVERY s); otherwise ask wlan0 for a fresh scan (at most once per
-SCAN_EVERY s), read on the next check. The network is whichever saved, autoconnecting station network for wlan0
+last scan, bring it up (at most once per CON_UP_EVERY s); otherwise ask wlan0 for a fresh scan, read on the next
+check. A scan takes the shared radio off-channel and can stall StarPort's car video on aa0 (video stalls dropped
+projection on 2026-11-01), so scans back off: every SCAN_EVERY s for SCAN_FAST_FOR s after wlan0 drops or the daemon
+starts, then the gap doubles after each scan up to SCAN_MAX s; a new drop starts over. The network is whichever saved, autoconnecting station network for wlan0
 (the phone hotspot, or home Wi-Fi) is in range, most recently used first -- the same choice NetworkManager would make.
 
 It never touches aa0 (StarPort's car link on the same radio), and it does nothing while the car link is joining
@@ -28,7 +30,9 @@ CAR_INTERFACE = "aa0"
 CAR_CONNECTION = "starpilot-starport"
 POLL_EVERY = 2.         # s between sysfs reads of wlan0's link, to log a drop
 CHECK_EVERY = 15.       # s between rejoin checks while wlan0 is down
-SCAN_EVERY = 15.        # s: never ask for a scan more often
+SCAN_EVERY = 15.        # s between scans at first: never more often
+SCAN_FAST_FOR = 120.    # s after wlan0 drops (or the daemon starts) that scans stay SCAN_EVERY apart
+SCAN_MAX = 120.         # s: the longest gap the doubling reaches
 CON_UP_EVERY = 30.      # s: never start a join more often
 SAVED_EVERY = 300.      # s a read of the saved connections is reused
 COMMAND_TIMEOUT = 5.
@@ -88,6 +92,8 @@ class HotspotRejoin:
     self._was_up: bool | None = None
     self._checked_at = -CHECK_EVERY
     self._scanned_at = -SCAN_EVERY
+    self._scan_gap = SCAN_EVERY
+    self._down_since: float | None = None  # when the current outage began (a drop, or the first look at a down wlan0)
     self._con_up_at = -CON_UP_EVERY
     self._saved: list[dict] = []
     self._saved_at = -SAVED_EVERY
@@ -120,6 +126,9 @@ class HotspotRejoin:
         self.log("wlan0_nmcli_failed", error=text)
       return None
 
+  def _restart_scans(self, now: float) -> None:
+    self._down_since, self._scan_gap, self._scanned_at = now, SCAN_EVERY, -SCAN_EVERY
+
   def poll(self, now: float) -> None:
     """Every POLL_EVERY s: note a drop at once, and check for a rejoin every CHECK_EVERY s while down."""
     up = self.link() == "up"
@@ -128,6 +137,7 @@ class HotspotRejoin:
         self.log("wlan0_up", ts=self.wall())
       elif not up and self._was_up:
         self.log("wlan0_dropped", ts=self.wall(), reason=self._reason())
+        self._restart_scans(now)
       self._was_up = up
     if not up and now - self._checked_at >= CHECK_EVERY:
       self._checked_at = now
@@ -217,8 +227,12 @@ class HotspotRejoin:
       self.log("wlan0_rejoin", ts=self.wall(), connection=target["name"], ok=not error, s=round(time.monotonic() - started, 1),
                **({"error": error} if error else {}))
       return "con_up"
-    if now - self._scanned_at < SCAN_EVERY:
+    if self._down_since is None:
+      self._down_since = now
+    if now - self._scanned_at < self._scan_gap:
       return "backoff"
     self._scanned_at = now
+    if now - self._down_since >= SCAN_FAST_FOR:
+      self._scan_gap = min(self._scan_gap * 2, SCAN_MAX)
     self._nmcli(["device", "wifi", "rescan", "ifname", INTERFACE])
     return "scan"

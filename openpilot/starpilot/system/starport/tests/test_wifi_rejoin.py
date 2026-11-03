@@ -147,6 +147,51 @@ def test_backoff_respected():
   assert len(fake.did("rescan")) == 2
 
 
+def scan_times(fake, watch, start, end, step=15.):
+  times, t = [], start
+  while t < end:
+    before = len(fake.did("rescan"))
+    watch.check(t)
+    if len(fake.did("rescan")) > before:
+      times.append(t)
+    t += step
+  return times
+
+
+def test_scans_back_off_after_two_minutes():
+  fake = Nmcli(visible=())
+  watch, _ = make(fake)
+  # 15 s apart for the first 2 minutes, then 30, 60, 120, 120
+  assert scan_times(fake, watch, 0., 600.) == [0., 15., 30., 45., 60., 75., 90., 105., 120., 150., 210., 330., 450., 570.]
+
+
+def test_new_drop_resets_scan_backoff():
+  fake = Nmcli(visible=())
+  state = {"link": "down"}
+  watch, _ = make(fake)
+  watch.link = lambda: state["link"]
+  for t in range(0, 600, 2):
+    watch.poll(float(t))
+  assert watch._scan_gap == wr.SCAN_MAX
+  state["link"] = "up"
+  watch.poll(600.)
+  state["link"] = "down"
+  rescans = len(fake.did("rescan"))
+  for t in range(602, 662, 2):
+    watch.poll(float(t))
+  assert watch._scan_gap == wr.SCAN_EVERY
+  assert len(fake.did("rescan")) - rescans == 4  # 602, 618, 634, 650: back to 15 s
+
+
+def test_visible_network_joins_even_while_scans_are_slow():
+  fake = Nmcli(visible=())
+  watch, _ = make(fake)
+  scan_times(fake, watch, 0., 400.)
+  assert watch._scan_gap == wr.SCAN_MAX
+  fake.visible = ["Galaxy S20 FE 5G6CC3"]
+  assert watch.check(405.) == "con_up"
+
+
 def test_poll_checks_every_15s_while_down():
   fake = Nmcli(visible=())
   watch, _ = make(fake)
