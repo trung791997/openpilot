@@ -202,3 +202,26 @@ def test_crv_brake_edge_holds_the_request_and_ramps_gas_after_release():
     gases.append(gas)
   assert not braking and gases[0] <= BOSCH_A_RELEASE_GAS_START
   assert all(b >= a - 1e-6 for a, b in zip(gases, gases[1:], strict=False))
+
+
+def test_brake_edge_launch_from_stopping_ramps_gas_faster_than_a_brake_cycle_release():
+  from opendbc.car.honda.bosch_longitudinal import (BOSCH_A_LAUNCH_GAS_RAMP_S, BOSCH_A_RELEASE_GAS_RAMP_S,
+                                                    BOSCH_A_RELEASE_GAS_START, BoschABrakeEdge)
+  assert BOSCH_A_LAUNCH_GAS_RAMP_S < BOSCH_A_RELEASE_GAS_RAMP_S
+
+  def gas_after_release(stopping_before):
+    edge = BoschABrakeEdge(0.02)
+    for _ in range(100):  # 2 s of braking: past the minimum hold
+      assert edge.update(-0.5, stopping_before, True)
+    gases = []
+    for _ in range(int(BOSCH_A_RELEASE_GAS_RAMP_S / edge.dt) + 5):
+      assert not edge.update(0.5, False, True)
+      gases.append(edge.limit_gas(500.))
+    return gases
+
+  launch, cycle = gas_after_release(True), gas_after_release(False)
+  assert launch[0] == cycle[0] == BOSCH_A_RELEASE_GAS_START
+  n_launch = int(round(BOSCH_A_LAUNCH_GAS_RAMP_S / 0.02))
+  assert launch[n_launch] == 500. and cycle[n_launch] < 500.
+  assert all(a >= b for a, b in zip(launch, cycle, strict=True))
+  assert cycle[-1] == 500.

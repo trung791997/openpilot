@@ -91,5 +91,37 @@ class TestConstants(unittest.TestCase):
     self.assertEqual(sg.RELEASE_LEAD_V, BREAKAWAY_MIN_LEAD_SPEED)
 
 
+class TestGapGrowthRelease(unittest.TestCase):
+  def test_gap_opening_releases_before_the_lead_reaches_release_speed_and_stays_released(self):
+    gap = sg.BoschAStopGap(BOSCH_A)
+    self.assertEqual(step(gap, lead(4.7, 0.0), 0.5, False, 0.0, standstill=True), (sg.NO_GAS_ACCEL, True))
+    # route 7c 16:58.5: the lead creeps off, still under RELEASE_LEAD_V
+    self.assertEqual(step(gap, lead(4.9, 0.35), 0.5, False, 0.0, standstill=True), (sg.NO_GAS_ACCEL, True))
+    self.assertEqual(step(gap, lead(5.15, 0.45), 0.5, False, 0.0, standstill=True), (0.5, False))
+    self.assertFalse(gap.holding)
+    # still standstill and still under RELEASE_LEAD_V: the latch keeps it from re-holding next tick
+    self.assertEqual(step(gap, lead(5.3, 0.5), 0.5, False, 0.0, standstill=True), (0.5, False))
+    self.assertEqual(step(gap, lead(5.6, 0.7), 0.5, False, 0.1, standstill=False), (0.5, False))
+
+  def test_close_release_is_not_capped_by_the_crawl_gap(self):
+    gap = sg.BoschAStopGap(BOSCH_A)
+    step(gap, lead(2.98, 0.0), 0.5, False, 0.0, standstill=True)  # route 46 15:46.9 launch, hold_d 2.98
+    self.assertEqual(step(gap, lead(3.42, 0.54), 0.5, False, 0.0, standstill=True), (0.5, False))
+
+  def test_route46_stopped_audi_doppler_does_not_release(self):
+    gap = sg.BoschAStopGap(BOSCH_A)
+    for d in (4.10, 4.12, 4.16, 4.14):  # 15:37.9: vLead 0.29-0.32 on a stopped car, gap opens 0.06 m
+      self.assertEqual(step(gap, lead(d, 0.32), 0.5, False, 0.0, standstill=True), (sg.NO_GAS_ACCEL, True))
+
+  def test_gap_growth_with_a_too_slow_lead_or_a_closing_gap_holds_again(self):
+    gap = sg.BoschAStopGap(BOSCH_A)
+    step(gap, lead(4.0, 0.0), 0.5, False, 0.0, standstill=True)
+    self.assertEqual(step(gap, lead(4.5, 0.2), 0.5, False, 0.0, standstill=True), (sg.NO_GAS_ACCEL, True))
+    self.assertEqual(step(gap, lead(4.5, 0.4), 0.5, False, 0.0, standstill=True), (0.5, False))
+    # the lead stops again inside the opened gap: the latch clears and the stop is held
+    self.assertEqual(step(gap, lead(4.3, 0.0), 0.5, False, 0.0, standstill=True), (sg.NO_GAS_ACCEL, True))
+    self.assertTrue(gap.holding)
+
+
 if __name__ == "__main__":
   unittest.main()
