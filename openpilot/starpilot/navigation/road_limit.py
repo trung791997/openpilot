@@ -98,7 +98,11 @@ class RoadLimit:
       except (ValidationError, OSError, ValueError, RuntimeError):  # RuntimeError: BudgetExhausted
         self.next_request = now_ns + RETRY_NS
       else:
-        self.answer = (limit, *self.pending)
+        # reset() can clear self.pending while a lookup is still in flight (e.g. GPS
+        # drops out and position goes None). Discard the stale result instead of
+        # unpacking None, which crash-looped navigationd. (2026-11-04)
+        if self.pending is not None:
+          self.answer = (limit, *self.pending)
       self.future = self.pending = None
     if position is None:
       self.reset()
