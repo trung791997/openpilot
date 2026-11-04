@@ -55,54 +55,6 @@ STOCK_FEEL_EMERGENCY_NEED = 2.0  # m/s^2
 # 17:28.35 aLeadK -2.09 at TTC 21.7 s latched and stayed on through a separate build 15 s later that ran to -3.03.
 STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC = 10.0  # s
 
-# ---- Lead brake anticipation (owner 2026-11-04, Stock Brake Feel only) ----------------------------------------------
-# Route 82 (00000082--c57529600f, rt 359-363): a radar-locked lead at ~48 m braked at about -4 from 19 to 6.5 m/s. The
-# MPC extrapolates a lead's accel as aLeadK * exp(-aLeadTau t^2 / 2), which with the Bosch-A tau floor loses about
-# 2.3 * aLeadK of speed in total, about half of the real slowdown, and the 18 m gap surplus over the ~30 m follow gap let
-# it wait: aTarget reached -1 at 360.0 and -2 only at 361.1, then the car peaked near -3.9. A faster aLeadK changed
-# none of that (Job's replay, reverted d98976aa2). So when a radar lead is clearly braking, this assumes it keeps
-# braking at aLeadK for ANT_T s and floors the target at the constant decel that matches its end speed with
-# ANT_GAP_S * v_end + ANT_GAP_M of gap left: start firmer, earlier, and lower the peak. It only adds braking.
-# Channel (D-048 amendment): reads the published lead's aLeadK (radard KF of vLead = vRel + vEgo), vLead and dRel. A
-#   railed vRel makes vLead follow our own speed, so aLeadK then reads our own accel: the lead must brake at least
-#   ANT_REL_A harder than we do (aEgo), which a railed track never does.
-# Static evidence only; Job replay pending. Stock Brake Feel (BoschAStockBrakeFeel) is off on the car.
-ANT_A_LEAD = -1.5      # m/s^2: the lead's aLeadK must be at least this hard
-ANT_REL_A = 1.0        # m/s^2: and this much harder than our own aEgo (rail guard)
-ANT_T = 2.5            # s the lead is assumed to keep braking
-ANT_GAP_S = 1.45       # s of follow gap kept at the end speed (default personality T_FOLLOW)
-ANT_GAP_M = 4.0        # m
-ANT_MAX = 3.5          # m/s^2: the floor never asks for more than this
-ANT_ONSET_JERK = 2.0   # m/s^3: how fast the floor may deepen the target
-ANT_RELEASE_JERK = 1.0  # m/s^3: how fast the floor lets off once the lead stops braking
-
-
-def lead_brake_anticipation_need(lead, v_ego: float, a_ego: float) -> float:
-  """Constant decel (m/s^2, >= 0) to reach a braking radar lead's end speed with the anticipation gap; 0 when not armed."""
-  if not _present(lead) or not bool(getattr(lead, 'radar', False)):
-    return 0.0
-  a_lead = float(getattr(lead, 'aLeadK', 0.0))
-  if not (a_lead <= ANT_A_LEAD and a_lead <= float(a_ego) - ANT_REL_A):
-    return 0.0
-  v_lead = max(float(lead.vLead), 0.0)
-  v_end = max(v_lead + a_lead * ANT_T, 0.0)
-  if not v_end < v_ego:
-    return 0.0
-  room = float(lead.dRel) + (v_lead - v_end) ** 2 / (2.0 * -a_lead) - (ANT_GAP_S * v_end + ANT_GAP_M)
-  return float(min((v_ego - v_end) ** 2 / (2.0 * max(room, 1.0)), ANT_MAX))
-
-
-def lead_brake_anticipation_target(leads, prev: float, target: float, dt: float, v_ego: float, a_ego: float,
-                                   floor_prev: float) -> tuple[float, float]:
-  """(target, floor): target floored at -need, deepening at most ANT_ONSET_JERK and letting off at ANT_RELEASE_JERK."""
-  need = max(lead_brake_anticipation_need(lead, v_ego, a_ego) for lead in leads)
-  floor = min(-need, floor_prev + ANT_RELEASE_JERK * dt)
-  if floor >= 0.0:
-    return float(target), 0.0
-  floor = max(floor, min(prev, 0.0) - ANT_ONSET_JERK * dt)
-  return float(min(target, floor)), float(floor)
-
-
 # ---- Stop ease (owner 2026-10-07, 2f2: every hard stop reached standstill still braking -1.6..-1.7, the clunk) ------
 STOP_EASE = True
 STOP_EASE_BP = [0.0, 1.0, 3.0]  # m/s
@@ -272,10 +224,9 @@ class HondaBoschALongEnhancement:
   def reset(self):
     self.emergency = False
     self.law_t = 0.0
-    self.anticipation_floor = 0.0  # lead brake anticipation floor (m/s^2, <= 0); 0 when not braking (replay/debug)
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
-           stopping: bool, standstill: bool, reset_state: bool, a_ego: float = 0.0) -> float:
+           stopping: bool, standstill: bool, reset_state: bool) -> float:
     """Shape the final acceleration target. `stopping` covers should-stop, force stop and red-light stops."""
     if not self.enabled or reset_state or standstill:
       self.reset()
@@ -287,8 +238,6 @@ class HondaBoschALongEnhancement:
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
       target = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
       self.law_t = STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
-      target, self.anticipation_floor = lead_brake_anticipation_target(leads, prev, target, self.dt, v_ego, a_ego,
-                                                                       self.anticipation_floor)
     if not self.stop_ease:
       return float(target)
     d_lead = float(lead_one.dRel) if _present(lead_one) else None
