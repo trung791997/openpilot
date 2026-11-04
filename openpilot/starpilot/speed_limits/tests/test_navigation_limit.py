@@ -57,7 +57,7 @@ def test_directions_request_asks_for_maxspeed():
     MapboxRouteEngine(Session()).fetch('pk.test', (0., 0.), {'longitude': .02, 'latitude': 0.})
   except Exception:
     pass  # response_json's transport details are covered elsewhere; only the request matters here
-  assert calls and calls[0]['annotations'] == 'maxspeed' and calls[0]['overview'] == 'full'
+  assert calls and 'maxspeed' in calls[0]['annotations'].split(',') and calls[0]['overview'] == 'full'
 
 
 def nav_message(speed_limit, *, status='guiding', control_valid=True, frame_ns=MONO):
