@@ -509,7 +509,7 @@ class LongitudinalPlanner:
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, prev=float(a_prev),
       target=float(output_a_target), v_ego=v_ego,
       stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
-      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), a_ego=float(sm['carState'].aEgo))
     output_a_target = self.bosch_a_coast_first.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       v_ego=v_ego, follow_s=float(base_follow), fcw=bool(self.fcw), reset_state=bool(reset_state))

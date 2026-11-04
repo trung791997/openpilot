@@ -208,7 +208,7 @@ class LongitudinalPlanner:
       output_a_target = self.bosch_a_long.step(
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
         target=float(output_a_target), v_ego=v_ego, stopping=bool(self.output_should_stop),
-        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), a_ego=float(sm['carState'].aEgo))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
