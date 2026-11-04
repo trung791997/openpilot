@@ -252,6 +252,46 @@ def test_road_limit_is_dropped_after_a_turn_or_far_from_the_match_and_kept_at_a_
   assert not far['controlValid']
 
 
+class HeldExecutor:
+  """Keeps each lookup in flight until the test finishes it."""
+  def __init__(self):
+    self.futures = []
+
+  def submit(self, fn, *args):
+    from concurrent.futures import Future
+    future = Future()
+    self.futures.append((future, fn, args))
+    return future
+
+  def finish(self):
+    for future, fn, args in self.futures:
+      if not future.done():
+        future.set_result(fn(*args))
+
+
+def test_road_limit_drops_a_lookup_that_finishes_after_gps_drops_out_or_the_feature_turns_off():
+  # 2026-11-04 navigationd crash-loop: a lookup in flight when position went None (or the
+  # setting went off) finished after reset() cleared pending, and unpacking None raised.
+  from openpilot.starpilot.navigation.road_limit import RoadLimit
+  off = {'token': 'pk.test', 'roadSpeedLimit': False}
+  for dropout in ('gps', 'setting'):
+    matcher, executor = Matcher(), HeldExecutor()
+    road = RoadLimit(matcher, lambda settings: settings['roadSpeedLimit'], executor)
+    _, x = drive(road, MONO, seconds=5)
+    assert len(executor.futures) == 1 and road.pending is not None
+    now = MONO + 5_000_000_000
+    if dropout == 'gps':
+      assert road.update(now, SETTINGS, None, 1) == {}
+    else:
+      assert road.update(now, off, (now, (x, 0.), 15., 90.), 1) == {}
+    assert road.pending is None and road.future is not None
+    executor.finish()
+    now += 1_000_000_000
+    out = road.update(now, SETTINGS, (now, (x, 0.), 15., 90.), 1)  # raised TypeError before the fix
+    assert out['speedLimit'] == 0. and not out['controlValid']  # the stale answer is not published
+    assert road.future is None and road.answer is None
+
+
 def test_road_limit_unknown_failures_and_previous_drive_publish_no_limit():
   assert not drive(road_limit(Matcher(None)), MONO, seconds=30)[0]['controlValid']
   matcher = Matcher(OSError('offline'))
