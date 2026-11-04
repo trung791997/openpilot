@@ -32,23 +32,6 @@ _LEAD_ACCEL_TAU = 0.6
 #     really brakes harder than -3 m/s^2 is extrapolated at -3; its real slowdown still arrives through vLead/dRel.
 BOSCH_A_LEAD_ACCEL_TAU_MIN = 0.3
 BOSCH_A_LEAD_ACCEL_MIN = -3.0
-# Fast lead braking (2026-11-04). Route 82 (00000082--c57529600f, rt 359-363): a radar-locked lead at ~48 m braked at
-# about -4 from 19 m/s and vLead read it from the first frame, but the KF accel took ~1.3 s to follow (aLeadK -0.43 at
-# 359.44, -1.02 at 359.84, -3 only at 360.54), so the MPC ramped in at ~1 m/s^3 and braked late. Job's replay: coast-first
-# never bound; the lag is this KF. So a least-squares slope of the last FAST_ACCEL_SAMPLES measured vLead values
-# (~0.42 s at the D-046 cadence) is published instead of the KF accel when it is the more negative and the fit is
-# clean. It only ever moves aLeadK toward braking and still ends at the BOSCH_A_LEAD_ACCEL_MIN clamp; the KF state,
-# vLead/vLeadK/dRel and track selection are untouched (D-041/D-042/D-048).
-# Channel (D-048 amendment): reads this track's vLead = vRel (U11 / RangeDerivedVrel) + vEgo, at measurement updates
-# only. A railed or frozen vRel makes vLead follow our own speed, so our own braking would read as lead braking: the
-# vRel slope over the same window must also be falling by FAST_ACCEL_VREL_MAX, and a railed vRel has slope 0 so it
-# never engages. A rail/rejoin step (> FAST_ACCEL_STEP_MAX between measurements) restarts the window.
-# Static evidence only until Job's replay of routes 80-84.
-FAST_ACCEL_SAMPLES = 7         # measured vLead samples in the slope window (6 intervals, ~0.42 s at 14.35 Hz)
-FAST_ACCEL_ON = -2.0           # m/s^2: the window slope must be at least this hard before it is used (taps stay KF)
-FAST_ACCEL_VREL_MAX = -1.0     # m/s^2: vRel itself must be falling this fast too (not our own braking via vEgo)
-FAST_ACCEL_RESID_MAX = 0.35    # m/s RMS residual of the line fit; noisier windows stay KF
-FAST_ACCEL_STEP_MAX = 1.5      # m/s between two measurements (~21 m/s^2): a rail/rejoin step, restart the window
 V_EGO_STATIONARY = 4.0
 RADAR_TO_CAMERA = 1.52
 HONDA_BOSCH_A_LOW_SPEED_MIN_COUNT = 3
@@ -72,9 +55,6 @@ class Track:
     self.K_C = kalman_params.C
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
-    self.meas_dt = float(self.K_A[0][1])  # the KF's measurement cadence (D-046)
-    self.fast_hist: deque[tuple[float, float]] = deque(maxlen=FAST_ACCEL_SAMPLES)  # (vLead, vRel) per measurement
-    self.fast_accel: float | None = None  # window slope while it is the published accel (replay/debug)
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool, measurement_update: bool | None = None):
     self.dRel = d_rel
@@ -90,42 +70,14 @@ class Track:
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
     if measurement_update:
-      self._update_fast_accel(float(v_lead), float(v_rel))
-    if self.fast_accel is not None and self.fast_accel < self.aLeadK:
-      self.aLeadK = self.fast_accel
-    if measurement_update:
       if abs(self.aLeadK) < 0.5:
         self.aLeadTau.x = min(max(self.aLeadTau.x, 0.01) * 1.1, _LEAD_ACCEL_TAU)
       else:
         self.aLeadTau.update(0.0)
       self.aLeadTau.x = max(self.aLeadTau.x, BOSCH_A_LEAD_ACCEL_TAU_MIN)
       self.cnt += 1
-    # Published value only; the KF accel state (and the tau decision above) keep the unclamped estimate (the fast
-    # window slope when it is in use).
+    # Published value only; the KF accel state (and the tau decision above) keep the unclamped estimate.
     self.aLeadK = max(self.aLeadK, BOSCH_A_LEAD_ACCEL_MIN)
-
-  def _update_fast_accel(self, v_lead: float, v_rel: float):
-    if self.fast_hist and abs(v_lead - self.fast_hist[-1][0]) > FAST_ACCEL_STEP_MAX:
-      self.fast_hist.clear()
-    self.fast_hist.append((v_lead, v_rel))
-    self.fast_accel = None
-    if len(self.fast_hist) < FAST_ACCEL_SAMPLES:
-      return
-    n = len(self.fast_hist)
-    ts = [i * self.meas_dt for i in range(n)]
-    t_mean = sum(ts) / n
-    sxx = sum((t - t_mean) ** 2 for t in ts)
-
-    def fit(values):
-      mean = sum(values) / n
-      slope = sum((t - t_mean) * (v - mean) for t, v in zip(ts, values, strict=True)) / sxx
-      resid = math.sqrt(sum((v - mean - slope * (t - t_mean)) ** 2 for t, v in zip(ts, values, strict=True)) / n)
-      return slope, resid
-
-    lead_slope, lead_resid = fit([v for v, _ in self.fast_hist])
-    vrel_slope, _ = fit([r for _, r in self.fast_hist])
-    if lead_slope <= FAST_ACCEL_ON and vrel_slope <= FAST_ACCEL_VREL_MAX and lead_resid <= FAST_ACCEL_RESID_MAX:
-      self.fast_accel = lead_slope
 
   def get_RadarState(self, model_prob: float = 0.0):
     return {
