@@ -2130,8 +2130,11 @@ class SelfdriveD:
                             CS.canValid and not CS.canTimeout)
       driver_override = bool(CS.brakePressed or CS.regenBraking or CS.gasPressed or
                              self.events.contains(ET.USER_DISABLE))
-      lost_companion = bool((previous.lateral_active or previous.longitudinal_active) and
+      # A companion loss held by the stale grace last step still counts until carState is fresh.
+      lost_companion = bool((previous.lateral_active or previous.longitudinal_active or
+                             getattr(self, 'aol_stale_grace_lost_companion', False)) and
                             not source_current and not self.events.contains(ET.USER_DISABLE))
+      self.aol_stale_grace_lost_companion = False
       lost_honda_lateral_grant = self.honda_native_lateral_grant_lost(
         CS, native, previous, requested, source_current=source_current,
         previous_intent=previous_intent, intent=intent, now_ns=now_ns)
@@ -2228,6 +2231,19 @@ class SelfdriveD:
         self.aol_transport_pause.active = pause = False
       if pause:
         lost_companion = False
+      if (lost_companion and stale_grace_hold and intent is None and CS.canValid and not CS.canTimeout and
+          not (upgraded or lost_active_aol or lost_permission or self.aol_selected_pair_future)):
+        # Same AOL_STALE_ALERT_NS grace as _expire_axis_source, for long_only and
+        # combined_unarmed with the gas held: ordinary retention declines under gas
+        # and there is no armed-LAT availability to clear the loss, so one 35-65 ms
+        # late carState raised controlsMismatch/immediateDisable. Only the alert
+        # waits: the expired source grants no output (requested above has no intent)
+        # and the loss is carried to the next step, which recovers on a fresh source
+        # or, once the source is 100 ms old, raises it unchanged.
+        lost_companion = False
+        self.aol_stale_grace_lost_companion = True
+        self.aol_stale_alert_deferred = True
+        self.aol_publication_retained_intent = retained_intent
       if self.initialized and (upgraded or lost_active_aol or lost_companion or lost_permission):
         lost_active_aol = True
         self.aol_authority_lost = True
