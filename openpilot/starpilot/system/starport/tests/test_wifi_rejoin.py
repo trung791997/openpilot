@@ -1,6 +1,9 @@
 """wlan0 rejoins the phone hotspot by itself once it is in range, without hammering nmcli or touching the car link."""
 
-from openpilot.starpilot.system.starport import wifi_rejoin as wr
+import json
+
+from openpilot.starpilot.system.starport import scan_quiet, wifi_rejoin as wr
+from openpilot.starpilot.system.starport.identity import boot_id
 
 SAVED = "".join(line + "\n" for line in ("iqpilot connection Galaxy S20 FE 5G6CC3:8a97:802-11-wireless:yes:1793727569",
                                          "starpilot-starport:aaaa:802-11-wireless:no:1793727579",
@@ -22,6 +25,9 @@ class Nmcli:
     for word in self.fail:
       if word in key:
         raise RuntimeError(f"{word} failed")
+    if args[:3] == ["device", "set", "wlan0"] and args[3] == "autoconnect":
+      self.autoconnect = args[4]
+      return ""
     if args[-1:] == ["device"]:
       return f"wlan0:{self.wlan0}:\naa0:{self.aa0}:starpilot-starport\nlo:connected (externally):lo\n"
     if "GENERAL.AUTOCONNECT" in key:
@@ -270,3 +276,207 @@ def test_watchdog_thread_errors_never_raise(monkeypatch):
   watch.link = boom
   watch._loop()
   assert logs == [("wlan0_rejoin_error", {"error": "boom"})]
+
+
+# ---- streaming: keep wlan0 quiet while Android Auto is on the car screen (2026-11-05 16:02 aa0 drop) ----
+
+
+class Beat:
+  """The supervisor's streaming heartbeat: None when not projecting, else the time of the last stats update."""
+  def __init__(self, at=None):
+    self.at = at
+
+  def __call__(self):
+    return self.at
+
+
+def make_quiet(fake, tmp_path, beat, joining=None, link="down"):
+  logs, state = [], {"link": link, "joining": joining or (lambda: False)}
+  watch = wr.HotspotRejoin(log=lambda event, **f: logs.append((event, f)), car_joining=lambda: state["joining"](), run=fake,
+                           link=lambda: state["link"], wall=lambda: "2026-11-05T16:02:08", streaming_beat=beat,
+                           lease=tmp_path / "lease.json", marker=tmp_path / "paused.json",
+                           session_marker=tmp_path / "session.json")
+  return watch, logs, state
+
+
+def events(logs):
+  return [e for e, _ in logs]
+
+
+def test_streaming_check_neither_scans_nor_joins(tmp_path):
+  fake = Nmcli()  # wlan0 down, hotspot visible: without projection this would join it
+  watch, _, _ = make_quiet(fake, tmp_path, Beat(99.5))
+  assert watch.check(100.) == "streaming"
+  assert not fake.did("rescan") and not fake.did("up") and not fake.did("list")
+
+
+def test_streaming_drop_pauses_autoconnect_and_never_scans(tmp_path):
+  fake = Nmcli(visible=())
+  beat = Beat(0.)
+  watch, logs, state = make_quiet(fake, tmp_path, beat, link="up")
+  watch.poll(0.)
+  assert fake.calls == []  # connected wlan0 while projecting: nothing is run, nothing is disconnected
+  assert scan_quiet.quiet(1., tmp_path / "lease.json")
+  state["link"] = "down"
+  for t in range(2, 300, 2):
+    beat.at = float(t) - 0.5
+    watch.poll(float(t))
+  assert fake.did("device", "set", "wlan0", "autoconnect", "no") == [["device", "set", "wlan0", "autoconnect", "no"]]
+  assert fake.autoconnect == "no"
+  assert not fake.did("rescan") and not fake.did("up") and not fake.did("disconnect")
+  assert json.loads((tmp_path / "paused.json").read_text()) == {"interface": "wlan0", "boot": boot_id()}
+  assert "wlan0_scans_paused" in events(logs) and scan_quiet.quiet(299., tmp_path / "lease.json")
+
+
+def test_projection_end_restores_autoconnect_and_scans(tmp_path):
+  fake = Nmcli(visible=())
+  beat = Beat(0.)
+  watch, logs, _ = make_quiet(fake, tmp_path, beat)
+  watch.poll(0.)
+  assert fake.autoconnect == "no"
+  beat.at = None  # projection stopped
+  watch.poll(2.)
+  assert fake.autoconnect == "yes" and not (tmp_path / "paused.json").exists()
+  assert not (tmp_path / "lease.json").exists() and not scan_quiet.quiet(2., tmp_path / "lease.json")
+  assert "wlan0_scans_resumed" in events(logs)
+  for t in range(4, 40, 2):
+    watch.poll(float(t))
+  assert fake.did("rescan")  # the fast-scan window starts over once projection ends
+
+
+def test_stale_beat_restores_scans(tmp_path):
+  """A hung stream loop or a dead supervisor stops the beat; scans and autoconnect come back on their own."""
+  fake = Nmcli(visible=())
+  watch, _, _ = make_quiet(fake, tmp_path, Beat(0.))
+  watch.poll(1.)
+  assert fake.autoconnect == "no"
+  watch.poll(scan_quiet.STALE_AFTER - 0.1)
+  assert fake.autoconnect == "no"
+  watch.poll(scan_quiet.STALE_AFTER)
+  assert fake.autoconnect == "yes"
+  assert watch.check(100.) != "streaming"
+
+
+def test_lease_expires_without_renewal(tmp_path):
+  lease = tmp_path / "lease.json"
+  assert not scan_quiet.quiet(0., lease)  # no lease
+  assert scan_quiet.hold(10., lease)
+  assert scan_quiet.quiet(9.9, lease) and not scan_quiet.quiet(10., lease)
+  scan_quiet.hold(1000., lease)  # implausibly far ahead (another boot's clock): ignored
+  assert not scan_quiet.quiet(0., lease)
+  lease.write_text("garbage")
+  assert not scan_quiet.quiet(0., lease)
+  scan_quiet.drop(lease)
+  scan_quiet.drop(lease)
+  assert not lease.exists()
+
+
+def test_fresh_beat():
+  assert scan_quiet.fresh(5., 5.) and scan_quiet.fresh(5., 5. + scan_quiet.STALE_AFTER - 0.01)
+  assert not scan_quiet.fresh(None, 5.) and not scan_quiet.fresh(5., 5. + scan_quiet.STALE_AFTER)
+  assert not scan_quiet.fresh(10., 5.)  # a beat from the future is not trusted
+
+
+def test_autoconnect_already_off_is_left_alone(tmp_path):
+  fake = Nmcli(autoconnect="no")  # a session projecting over wlan0 (or the user) turned it off
+  beat = Beat(0.)
+  watch, _, _ = make_quiet(fake, tmp_path, beat)
+  watch.poll(0.)
+  beat.at = None
+  for t in range(2, 60, 2):
+    watch.poll(float(t))
+  assert not fake.did("device", "set") and fake.autoconnect == "no"
+
+
+def test_restart_after_crash_restores_from_marker(tmp_path):
+  (tmp_path / "paused.json").write_text(json.dumps({"interface": "wlan0", "boot": boot_id()}))
+  fake = Nmcli(autoconnect="no", wlan0="connected")
+  watch, logs, _ = make_quiet(fake, tmp_path, Beat(None), link="up")
+  watch.poll(0.)
+  assert fake.autoconnect == "yes" and not (tmp_path / "paused.json").exists()
+  assert "wlan0_scans_resumed" in events(logs)
+
+
+def test_marker_from_an_earlier_boot_is_discarded(tmp_path):
+  (tmp_path / "paused.json").write_text(json.dumps({"interface": "wlan0", "boot": "an-old-boot"}))
+  fake = Nmcli(wlan0="connected")
+  watch, _, _ = make_quiet(fake, tmp_path, Beat(None), link="up")
+  watch.poll(0.)
+  assert not (tmp_path / "paused.json").exists() and fake.calls == []
+
+
+def test_restore_waits_for_the_car_join(tmp_path):
+  fake = Nmcli(visible=())
+  beat, joining = Beat(0.), {"on": False}
+  watch, _, _ = make_quiet(fake, tmp_path, beat, joining=lambda: joining["on"])
+  watch.poll(0.)
+  beat.at, joining["on"] = None, True  # projection dropped and a new car join started at once
+  watch.poll(2.)
+  assert fake.autoconnect == "no"
+  joining["on"] = False
+  watch.poll(4.)
+  assert fake.autoconnect == "yes"
+
+
+def test_session_holding_wlan0_restores_it_itself(tmp_path):
+  fake = Nmcli(visible=())
+  beat = Beat(0.)
+  watch, logs, _ = make_quiet(fake, tmp_path, beat)
+  watch.poll(0.)
+  (tmp_path / "session.json").write_text(json.dumps({"interface": "wlan0", "boot": boot_id()}))
+  beat.at = None
+  watch.poll(2.)
+  assert fake.autoconnect == "no" and not fake.did("autoconnect", "yes")
+  assert not (tmp_path / "paused.json").exists() and ("wlan0_scans_resumed", {"ts": "2026-11-05T16:02:08",
+                                                                              "held_by_session": True}) in logs
+
+
+def test_failed_toggles_retry_slowly(tmp_path):
+  fake = Nmcli(visible=())
+  fake.fail = {"autoconnect no"}
+  beat = Beat(0.)
+  watch, _, _ = make_quiet(fake, tmp_path, beat)
+  for t in range(0, 30, 2):
+    beat.at = float(t)
+    watch.poll(float(t))
+  assert len(fake.did("autoconnect", "no")) == 2  # t=0 and t=16 s
+  assert not (tmp_path / "paused.json").exists()
+  fake.fail = set()
+  beat.at = 32.
+  watch.poll(32.)  # the second failure was at t=16 s
+  assert fake.autoconnect == "no"
+  fake.fail = {"autoconnect yes"}
+  beat.at = None
+  for t in range(34, 48, 2):
+    watch.poll(float(t))
+  assert len(fake.did("autoconnect", "yes")) == 1 and (tmp_path / "paused.json").exists()
+  assert watch.check(100.) == "paused"  # still off: no scan meanwhile
+  fake.fail = set()
+  watch.poll(50.)
+  assert fake.autoconnect == "yes" and not (tmp_path / "paused.json").exists()
+
+
+def test_close_restores_autoconnect_and_drops_the_lease(tmp_path):
+  fake = Nmcli(visible=())
+  watch, _, _ = make_quiet(fake, tmp_path, Beat(0.))
+  watch.poll(0.)
+  assert (tmp_path / "lease.json").exists() and fake.autoconnect == "no"
+  watch.close()
+  assert not (tmp_path / "lease.json").exists() and fake.autoconnect == "yes"
+
+
+def test_supervisor_streaming_beat():
+  import threading
+  import time
+  from openpilot.starpilot.system.starport import supervisor
+  sup = supervisor.Supervisor.__new__(supervisor.Supervisor)
+  sup._lock, sup._status, sup._stats_at = threading.RLock(), {"state": "joining_wifi"}, 0.0
+  sup._set(stats={"fps": 30})
+  assert sup.streaming_beat() is None
+  before = time.monotonic()
+  for state in ("streaming", "suspended"):
+    sup._set(state=state)
+    sup._set(stats={"fps": 30})
+    assert sup.streaming_beat() >= before
+  sup._set(state="idle")
+  assert sup.streaming_beat() is None

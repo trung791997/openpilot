@@ -42,6 +42,7 @@ from openpilot.starpilot.system.starport.bugsink_report import PairingAttempt
 from openpilot.starpilot.system.starport.frame_source import (DEFAULT_PATH as DEFAULT_FRAME_PATH, FLAG_ASYNC_READBACK, FLAG_NV12,
                                                                   FORMAT_NV12, FrameRequest)
 from openpilot.starpilot.system.starport.nav_status import LinkLost
+from openpilot.starpilot.system.starport.scan_quiet import STREAMING_STATES
 from openpilot.starpilot.system.starport.projection_control import DEFAULT_CONTROL_SOCKET, NATIVE_FOCUS
 from openpilot.starpilot.system.starport.touch import DEFAULT_TOUCH_SOCKET
 from openpilot.starpilot.system.starport.view import CAR_FRAME_PATH, ViewSource, renderer_available
@@ -438,12 +439,22 @@ class Supervisor:
     self._status: dict = {"state": "idle", "detail": "", "error": "", "last_stage": "", "attempt": 0,
                           "retry_in": 0.0, "mode": None, "stats": {}, "head_unit": {}, "identity": "", "running": False,
                           "view": "", "encoder": "", "target_fps": 0}
+    self._stats_at = 0.0  # monotonic time of the last stats update; the stream loop sends one each second
 
   # ------------------------------------------------------------------ status
 
   def _set(self, **values) -> None:
     with self._lock:
       self._status.update(values)
+      if "stats" in values:
+        self._stats_at = time.monotonic()
+
+  def streaming_beat(self) -> float | None:
+    """Monotonic time of the stream loop's latest stats update while a projection is on the car, else None.
+
+    wifi_rejoin keeps wlan0 from scanning while this is fresh (scan_quiet); a hung or ended loop stops the beat."""
+    with self._lock:
+      return self._stats_at if self._status["state"] in STREAMING_STATES else None
 
   def _stage(self, state: str, detail: str = "") -> None:
     self._check_cancel()

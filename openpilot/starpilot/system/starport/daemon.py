@@ -265,7 +265,8 @@ def main() -> int:
       try:
         from openpilot.starpilot.system.starport.wifi_rejoin import CAR_JOIN_STATES, HotspotRejoin
         rejoin = HotspotRejoin(log=lambda event, **fields: print(json.dumps({"event": event, **fields}), flush=True),
-                               car_joining=lambda: supervisor.status()["state"] in CAR_JOIN_STATES).start()
+                               car_joining=lambda: supervisor.status()["state"] in CAR_JOIN_STATES,
+                               streaming_beat=supervisor.streaming_beat).start()
         cleanup.callback(rejoin.close)
       except Exception as error:  # rejoining the phone hotspot for the dash map is optional too
         print(json.dumps({"event": "wlan0_rejoin_unavailable", "error": str(error)}), flush=True)

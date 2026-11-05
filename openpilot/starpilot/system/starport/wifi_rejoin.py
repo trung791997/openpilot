@@ -15,15 +15,35 @@ starts, then the gap doubles after each scan up to SCAN_MAX s; a new drop starts
 It never touches aa0 (StarPort's car link on the same radio), and it does nothing while the car link is joining
 (a scan can disturb that join) or while a projection session has paused wlan0's autoconnect to use wlan0 itself.
 While wlan0 is up it reads one sysfs file and runs no command. Every nmcli failure is logged and swallowed.
+
+While Android Auto is on the car screen (the supervisor's stream loop heartbeat, streaming_beat, is under
+scan_quiet.STALE_AFTER s old) wlan0 is kept quiet. 2026-11-05 16:02 CST: wlan0 lost home Wi-Fi (a hidden profile) at
+16:02:08, NetworkManager hit "link timed out" at 16:02:22 and probed for hidden networks, wlan0 joined the 2.4 GHz
+hotspot on another channel at 16:02:34, and at 16:02:38 StarPort's send timed out and aa0 dropped. So while quiet:
+  - no rescan and no join from here (check() returns "streaming");
+  - a scan_quiet lease is held, so the UI's Wi-Fi manager skips its scans too;
+  - if wlan0 is down, its device autoconnect is turned off (`nmcli device set wlan0 autoconnect no`; no saved profile
+    is edited, and a connected wlan0 is never touched), so NetworkManager does not join anything and hop the radio.
+    A marker in DATA_DIR records that we did it.
+When the heartbeat stops (projection ended, loop hung, starportd gone) the lease expires on its own, autoconnect is
+turned back on (on the next poll, after a starportd restart from the marker, or at reboot by NetworkManager itself),
+and the fast-scan window restarts. Not covered: NetworkManager 1.46 still runs its own periodic scans, with hidden
+probes, on a disconnected wlan0 regardless of autoconnect, and wpa_supplicant scans to reconnect after a drop and for
+bgscan while weakly connected. The cost: a hotspot lost mid-projection is rejoined only after projection ends.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
+
+from openpilot.starpilot.system.starport import scan_quiet
+from openpilot.starpilot.system.starport.identity import DATA_DIR, boot_id
 
 INTERFACE = "wlan0"
 CAR_INTERFACE = "aa0"
@@ -40,6 +60,9 @@ CON_UP_WAIT = 25        # s nmcli waits for the join to finish
 # Supervisor stages from the car sending its Wi-Fi details until TCP is up: aa0 is joining the car then.
 CAR_JOIN_STATES = ("wifi_start", "wifi_info", "joining_wifi", "connecting_tcp")
 BUSY = ("connecting", "deactivating")  # nmcli device states of an interface in the middle of a change
+PAUSE_MARKER = DATA_DIR / "wlan0_scan_paused.json"            # we turned wlan0 autoconnect off for a projection
+SESSION_MARKER = DATA_DIR / "wifi_autoconnect_paused.json"    # network.py's: a session paused it to use wlan0 itself
+TOGGLE_RETRY = 15.      # s before a failed autoconnect pause or restore is tried again
 
 Runner = Callable[[list, float], str]
 
@@ -85,9 +108,16 @@ def _now_text() -> str:
 
 class HotspotRejoin:
   def __init__(self, log: Callable[..., None], car_joining: Callable[[], bool] = lambda: False,
-               run: Runner | None = None, link: Callable[[], str] = operstate, wall: Callable[[], str] = _now_text):
+               run: Runner | None = None, link: Callable[[], str] = operstate, wall: Callable[[], str] = _now_text,
+               streaming_beat: Callable[[], float | None] = lambda: None, lease: Path = scan_quiet.LEASE_PATH,
+               marker: Path = PAUSE_MARKER, session_marker: Path = SESSION_MARKER):
     self.log, self.car_joining, self.link, self.wall = log, car_joining, link, wall
+    self.streaming_beat, self.lease, self.marker, self.session_marker = streaming_beat, lease, marker, session_marker
     self.run = run or nmcli
+    self._quiet_on = False
+    self._paused = self._load_marker()  # a starportd that died mid-projection left wlan0 autoconnect off
+    self._toggle_retry_at = -TOGGLE_RETRY
+    self._lock = threading.Lock()
     self._last_error = ""
     self._was_up: bool | None = None
     self._checked_at = -CHECK_EVERY
@@ -106,14 +136,27 @@ class HotspotRejoin:
     return self
 
   def close(self) -> None:
+    """Stop, and give wlan0 its scans and autoconnect back."""
     self._stop.set()
+    if not self._lock.acquire(timeout=COMMAND_TIMEOUT + 1.):
+      return  # the loop is stuck in nmcli; the lease expires by itself and the marker restores autoconnect next start
+    try:
+      scan_quiet.drop(self.lease)
+      if self._paused:
+        self._toggle_retry_at = -TOGGLE_RETRY
+        self._resume(time.monotonic())
+    finally:
+      self._lock.release()
 
   def _loop(self) -> None:
     while not self._stop.wait(POLL_EVERY):
-      try:
-        self.poll(time.monotonic())
-      except Exception as error:  # never let the watchdog take anything else down
-        self.log("wlan0_rejoin_error", error=str(error)[:200] or type(error).__name__)
+      with self._lock:
+        if self._stop.is_set():
+          return
+        try:
+          self.poll(time.monotonic())
+        except Exception as error:  # never let the watchdog take anything else down
+          self.log("wlan0_rejoin_error", error=str(error)[:200] or type(error).__name__)
 
   def _nmcli(self, args: list) -> str | None:
     """stdout, or None after logging the failure (a repeat of the last failure is not logged again)."""
@@ -129,8 +172,13 @@ class HotspotRejoin:
   def _restart_scans(self, now: float) -> None:
     self._down_since, self._scan_gap, self._scanned_at = now, SCAN_EVERY, -SCAN_EVERY
 
+  def _quiet(self, now: float) -> bool:
+    """True while Android Auto is on the car screen: wlan0 must not take the shared radio off aa0's channel."""
+    return scan_quiet.fresh(self.streaming_beat(), now)
+
   def poll(self, now: float) -> None:
-    """Every POLL_EVERY s: note a drop at once, and check for a rejoin every CHECK_EVERY s while down."""
+    """Every POLL_EVERY s: note a drop at once, keep wlan0 quiet while projecting, and check for a rejoin every
+    CHECK_EVERY s while down."""
     up = self.link() == "up"
     if up != self._was_up:
       if up and self._was_up is False:
@@ -139,9 +187,88 @@ class HotspotRejoin:
         self.log("wlan0_dropped", ts=self.wall(), reason=self._reason())
         self._restart_scans(now)
       self._was_up = up
+    beat = self.streaming_beat()
+    if scan_quiet.fresh(beat, now):
+      scan_quiet.hold(beat + scan_quiet.STALE_AFTER, self.lease)  # expires by itself if the beat or this thread stops
+      if not self._quiet_on:
+        self._quiet_on = True
+        self.log("wlan0_scans_quiet", ts=self.wall(), on=True)
+      if not up and not self._paused:
+        self._pause(now)
+    else:
+      if self._quiet_on:
+        self._quiet_on = False
+        scan_quiet.drop(self.lease)
+        self.log("wlan0_scans_quiet", ts=self.wall(), on=False)
+        self._restart_scans(now)  # projection ended: look for the hotspot quickly again
+      if self._paused and not self.car_joining():  # never flip wlan0 in the middle of a car join
+        self._resume(now)
     if not up and now - self._checked_at >= CHECK_EVERY:
       self._checked_at = now
       self.check(now)
+
+  def _load_marker(self) -> bool:
+    try:
+      state = json.loads(self.marker.read_text())
+    except FileNotFoundError:
+      return False
+    except (OSError, ValueError):
+      state = None
+    if isinstance(state, dict) and state.get("interface") == INTERFACE and state.get("boot") == boot_id():
+      return True
+    self._unlink_marker()  # an earlier boot: NetworkManager reset device autoconnect when it restarted
+    return False
+
+  def _unlink_marker(self) -> None:
+    try:
+      self.marker.unlink(missing_ok=True)
+    except OSError:
+      pass
+
+  def _session_holds_wlan0(self) -> bool:
+    """network.py paused wlan0 autoconnect this boot (a projection over wlan0) and restores it itself."""
+    try:
+      state = json.loads(self.session_marker.read_text())
+    except (OSError, ValueError):
+      return False
+    return isinstance(state, dict) and state.get("interface") == INTERFACE and state.get("boot") == boot_id()
+
+  def _pause(self, now: float) -> None:
+    """Turn wlan0 device autoconnect off while it is down and the car is projecting, so NetworkManager joins nothing."""
+    if now < self._toggle_retry_at:
+      return
+    self._toggle_retry_at = now + TOGGLE_RETRY
+    current = self._nmcli(["-t", "-g", "GENERAL.AUTOCONNECT", "device", "show", INTERFACE])
+    if current is None or current.strip() != "yes":
+      return  # already off: a session using wlan0 owns it, and we must not turn it back on later
+    try:
+      self.marker.parent.mkdir(parents=True, exist_ok=True)
+      self.marker.write_text(json.dumps({"interface": INTERFACE, "boot": boot_id()}))
+    except OSError as error:
+      self.log("wlan0_scan_pause_failed", error=str(error)[:200])
+      return
+    if self._nmcli(["device", "set", INTERFACE, "autoconnect", "no"]) is None:
+      self._unlink_marker()
+      return
+    self._paused = True
+    self._toggle_retry_at = -TOGGLE_RETRY
+    self.log("wlan0_scans_paused", ts=self.wall())
+
+  def _resume(self, now: float) -> None:
+    """Turn wlan0 device autoconnect back on after projection; retried every TOGGLE_RETRY s until it works."""
+    if now < self._toggle_retry_at:
+      return
+    self._toggle_retry_at = now + TOGGLE_RETRY
+    if self._session_holds_wlan0():
+      held = True  # a session paused it too and will restore it; turning it on now would let NM pull wlan0 away
+    else:
+      held = False
+      if self._nmcli(["device", "set", INTERFACE, "autoconnect", "yes"]) is None:
+        return
+    self._unlink_marker()
+    self._paused = False
+    self._toggle_retry_at = -TOGGLE_RETRY
+    self.log("wlan0_scans_resumed", ts=self.wall(), **({"held_by_session": True} if held else {}))
 
   def _reason(self) -> str:
     out = self._nmcli(["-t", "-g", "GENERAL.STATE,GENERAL.REASON", "device", "show", INTERFACE])
@@ -190,6 +317,8 @@ class HotspotRejoin:
     """One rejoin decision; returns what it did, for tests and logs."""
     if self.car_joining():
       return "car_joining"
+    if self._quiet(now):
+      return "streaming"  # no scan and no join: either takes the shared radio off aa0's channel
     devices = self._devices()
     if devices is None or INTERFACE not in devices:
       return "no_device"

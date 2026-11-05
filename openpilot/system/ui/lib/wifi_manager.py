@@ -16,6 +16,11 @@ from jeepney.low_level import MessageType
 from jeepney.wrappers import Properties
 
 from openpilot.common.swaglog import cloudlog
+try:
+  from openpilot.starpilot.system.starport.scan_quiet import quiet as _starport_scan_quiet
+except ImportError:  # trees without StarPort
+  def _starport_scan_quiet() -> bool:
+    return False
 from openpilot.system.ui.lib.networkmanager import (NM, NM_WIRELESS_IFACE, NM_802_11_AP_SEC_PAIR_WEP40,
                                                     NM_802_11_AP_SEC_PAIR_WEP104, NM_802_11_AP_SEC_GROUP_WEP40,
                                                     NM_802_11_AP_SEC_GROUP_WEP104, NM_802_11_AP_SEC_KEY_MGMT_PSK,
@@ -846,6 +851,10 @@ class WifiManager:
   def _request_scan(self):
     if self._wifi_device is None:
       cloudlog.warning("No WiFi device found")
+      return
+    if _starport_scan_quiet():
+      # StarPort is projecting Android Auto over aa0, which shares this radio: a scan takes it off the car's
+      # channel and can drop the projection (2026-11-05 16:02). The lease lapses on its own when projection stops.
       return
 
     wifi_addr = DBusAddress(self._wifi_device, bus_name=NM, interface=NM_WIRELESS_IFACE)
