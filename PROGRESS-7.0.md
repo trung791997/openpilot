@@ -44,6 +44,38 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 16 — 2026-11-05 — Brake onset ramp: a brake that starts with every car far away builds in over about half a second instead of one jolt; on longradar and V-ASM, default ON
+
+**Problem.** When a car far ahead slowed, the Civic went from no brake to about -3.5 m/s^2 in one 50 ms frame. Stock ACC on route 299 (STATUS 214) builds the same kind of brake gradually. The owner asked to "mimic stock brake for those situations instead of just slamming the brake".
+
+**Cause.** Nothing limited how fast a brake could deepen at onset. The first step measured -36 to -52 m/s^3 on route 84 E1/E4, e2ae and e2f8. The old D-083 ramp (6f1a05b37) would not have changed these. Its lead-braking and need gates stand it down on every one, because the lead is already braking hard at onset (replay R1/R2: equal to today).
+
+**Change.** `BoschAOnsetRamp` in `starpilot/longitudinal/bosch_a_onset_ramp.py`. It is in both planners after `BoschASmooth`, it applies to Bosch-A Hondas, and it is default ON with no toggle.
+- A brake episode starts when the target drops below -0.3 and ends when it is back at or above -0.1.
+- The episode is exempt for its whole length if any lead is closer than 40 m as it starts.
+- Otherwise the brake may deepen at most 8 m/s^3. The peak is never reduced, and rises pass through.
+- The ramp turns off for the rest of the episode at TTC <= 2.0 s, FCW, or a stop.
+- Channel: radarState leadOne/leadTwo (`present`, `dRel`, `vRel`). The U11 low rail (vRel -12) can only shorten TTC, so it can only turn the ramp off.
+
+**Replay results** (Job's harness, open loop, base dad6bbbb6, arm R4b vs today):
+
+| Event | Onset dRel | First jolt (m/s^3) | Min gap change |
+|---|---|---|---|
+| route 84 far brakes (E1, E4, two other drives) | unverified, ~93 m | 44-52 -> 8 | 0 to -0.9 m |
+| e2ae | 84.6 m | 34 -> 8 | -0.62 m (ends at 4.8 m) |
+| e2f8 | 43.9 m | 43 -> 8 | -0.45 m |
+| 2f5 close stop | 38.1 m | exempt, unchanged | 0 |
+| route 82 | 47.7 m | cap never binds | 0 |
+
+- Peak decel is unchanged. The brake reaches -2 at most 0.15 s later. Min TTC is within 0.08 s.
+- Pooled 0.85 h: the same brake episode counts, and no episode got more than 2 m closer.
+- Ruled out in replay: a 30 m exemption (it capped 2f5, -0.36 m), and an in-brake close-gap stand-down (R5/R5b changed nothing, because the ramp finishes in ~0.4 s).
+- The 40 m line sits between 2f5 (38.1 m) and e2f8 (43.9 m).
+
+**Tests:** static. `test_bosch_a_onset_ramp.py` (10 new) passes, and the longitudinal suites pass (806). The upstream planner's pinned hash in `provenance.json` is updated for the hook.
+
+**Not verified:** not driven. The cost is up to ~0.9 m of min gap on far brakes that turn hard, and a Python port has no parity check against Job's harness yet.
+
 ### 15 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
 
 **Problem.** In Experimental Mode with no car ahead, the model often holds 2–4 m/s under the set speed for a minute or more (route 313 at 80–85 mph, route 311). The owner had to press the gas to get there.
