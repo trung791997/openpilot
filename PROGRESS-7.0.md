@@ -45,6 +45,27 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 16 — 2026-11-05 — Coast first reaches brake taps at 30 mph and stops assuming the car ahead brakes for 3 s; on longradar and V-ASM, default ON
+
+**What you felt:** route 0000008f bookmark 1 (4445.2): a car 37-40 m ahead at 32 mph tapped its brakes for about a
+second and we braked to -1.8 instead of lifting off. Coast first stood down because 32 mph was under its 15 m/s floor
+and because its safety projection assumed the car ahead keeps braking at -3 for the whole 3 s.
+
+**Change** (`starpilot/longitudinal/bosch_a_coast_first.py`): `MIN_V_EGO` 15 -> 13.5 m/s; the projection holds the
+lead's decel for `LEAD_DECEL_HOLD_S` = 1.5 s, then holds its speed. Gap, TTC, lead-decel and FCW checks and the
+per-tick re-check are unchanged, so a lead that keeps braking still gets the full brake.
+
+**Evidence** (Job, replay, open loop on the logged lead, V-ASM 3b3d20056 with Stock Brake Feel and Human Following
+on): bookmark 1 coasts 1.75 s, peak -1.81 -> -1.58, min gap unchanged; bookmark 2 (1.43 s gap) unchanged by design;
+2f5 one frame later with the same min gap/TTC; e2ae, route 84 E1/E4 and route 71 12:03 identical; 2.16 h pooled: 14
+new coasts, none lost, firm-brake counts identical, max target change 0.18 m/s^2, closest new coast 2.29 s / TTC
+9.9 s. Not driven.
+
+**Also found this round (no change):** bookmark 2 was a real brake tap at a 1.43 s gap; bookmark 3's late brake was
+Stock Brake Feel's -0.35 cap at TTC over 25 s; letting that cap follow the model (SF-M) did not lower the -3.5 peak
+and stopped 13-32 m short in replay, so it is shelved. With Stock Brake Feel on, the entry 15 onset ramp never binds
+(bit-identical replay); it stays as a backstop.
+
 ### 15 — 2026-11-05 — Brake onset ramp: a brake that starts with every car far away builds in over about half a second instead of one jolt; on longradar and V-ASM, default ON
 
 **Problem.** When a car far ahead slowed, the Civic went from no brake to about -3.5 m/s^2 in one 50 ms frame. Stock ACC on route 299 (STATUS 214) builds the same kind of brake gradually. The owner asked to "mimic stock brake for those situations instead of just slamming the brake".
