@@ -306,6 +306,72 @@ final class CloseUp {
     return out;
   }
 
+  // ---- which link roads are highway ramps (Peter 2026-11-05, Angel Pkwy: short olive strokes inside grey streets
+  // looked like traffic)
+  //
+  // Tile class 3 (road_tiles._CLASS_OF LINK) is every Mapbox "_link": motorway and trunk ramps, but also the
+  // primary/secondary/tertiary links, the turn and slip lanes at a street corner. The ramp gold (MapView.ROADS[3]) is
+  // meant to say "highway ramp", so a link keeps it only when it touches a motorway or trunk (class 0) or joins one
+  // through other links: an end of one within JOIN_M of the other's line. Every other link is drawn as a street
+  // (STREET, class 2: its grey, width and kerb). Lines are in metres, in one frame for all tiles (tile edges cut
+  // lines; the halves' ends land on each other, so a ramp cut at a tile edge stays one).
+  //
+  // Wrong when: the highway or the rest of the ramp is in a tile not yet loaded - grey until the scene is rebuilt with
+  // it; a street link ending within JOIN_M of a highway it does not join (under a highway bridge) - gold; a slip lane
+  // at an at-grade junction on a trunk road touches the trunk - gold; a U-turn lane under a highway joining two
+  // frontage roads touches no highway - grey.
+  static final int MOTORWAY = 0, STREET = 2, LINK = 3;
+
+  // Per link: true for a highway ramp (keeps the ramp gold).
+  static boolean[] ramps(List<float[]> links, List<float[]> highways) {
+    int n = links.size();
+    boolean[] out = new boolean[n];
+    if (n == 0) return out;
+    float[][] box = new float[n][];
+    for (int i = 0; i < n; i++) box[i] = bounds(links.get(i));
+    boolean[] touch = new boolean[n];
+    for (float[] h : highways) {
+      if (h.length < 2) continue;
+      float[] hb = bounds(h);
+      for (int i = 0; i < n; i++) {
+        if (touch[i] || !overlap(box[i], hb, JOIN_M)) continue;
+        touch[i] = touches(links.get(i), h);
+      }
+    }
+    int[] parent = new int[n];
+    for (int i = 0; i < n; i++) parent[i] = i;
+    for (int a = 0; a < n; a++) {
+      for (int b = a + 1; b < n; b++) {
+        if (!overlap(box[a], box[b], JOIN_M) || find(parent, a) == find(parent, b)) continue;
+        if (touches(links.get(a), links.get(b))) parent[find(parent, a)] = find(parent, b);
+      }
+    }
+    boolean[] group = new boolean[n];
+    for (int i = 0; i < n; i++) if (touch[i]) group[find(parent, i)] = true;
+    for (int i = 0; i < n; i++) out[i] = group[find(parent, i)];
+    return out;
+  }
+
+  // an end of p within JOIN_M of q's line, or an end of q within JOIN_M of p's
+  private static boolean touches(float[] p, float[] q) {
+    if (p.length < 2 || q.length < 2) return false;
+    return within(q, p[0], p[1]) || within(q, p[p.length - 2], p[p.length - 1])
+        || within(p, q[0], q[1]) || within(p, q[q.length - 2], q[q.length - 1]);
+  }
+
+  private static boolean within(float[] p, float e, float n) {
+    float m2 = JOIN_M * JOIN_M;
+    if (p.length < 4) return (p[0] - e) * (p[0] - e) + (p[1] - n) * (p[1] - n) <= m2;
+    for (int j = 0; j + 3 < p.length; j += 2) {
+      float dx = p[j + 2] - p[j], dy = p[j + 3] - p[j + 1], len2 = dx * dx + dy * dy;
+      float t = len2 <= 0 ? 0 : ((e - p[j]) * dx + (n - p[j + 1]) * dy) / len2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      float fe = p[j] + t * dx - e, fn = p[j + 1] + t * dy - n;
+      if (fe * fe + fn * fn <= m2) return true;
+    }
+    return false;
+  }
+
   // The car's road (with no route): the line within FOLLOW_M of the car at (0, 0) running its way (he, hn, a unit
   // vector east, north), and the lines that carry on from each of its ends turning least, up to ROAD_R each way.
   // Null when the car is on no line.

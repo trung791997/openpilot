@@ -1079,10 +1079,13 @@ final class MapView extends View {
       }
     }
     // the close-up detail first: it finds which bridges are overpasses (CloseUp.overpasses), and the rest are drawn
-    // as plain road here too
+    // as plain road here too. One copy of the tile set for both, so they judge the same tiles; and the link roads that
+    // are not highway ramps, drawn as streets in both (CloseView.links, Peter 2026-11-05)
+    List<Feed.Tile> tiles = new ArrayList<Feed.Tile>(Feed.tiles.values());
+    java.util.Map<Feed.Tile, boolean[]> streets = CloseView.links(tiles, s.ax, s.ay, s.mpt);
     java.util.IdentityHashMap<Feed.Tile, byte[][]> raised = new java.util.IdentityHashMap<Feed.Tile, byte[][]>();
-    s.close = CloseView.detail(Feed.tiles.values(), s.ax, s.ay, s.mpt, route.toArray(new float[0][]), h, raised);
-    for (Feed.Tile tile : Feed.tiles.values()) {
+    s.close = CloseView.detail(tiles, s.ax, s.ay, s.mpt, route.toArray(new float[0][]), h, raised, streets);
+    for (Feed.Tile tile : tiles) {
       byte[][] up = raised.get(tile);
       for (int c = 0; c < 5; c++) {  // motorway, major, street, link, minor
         float[] pts = tile.pts[c];
@@ -1098,7 +1101,8 @@ final class MapView extends View {
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
           String name = names != null && l < names.length ? names[l] : null;
           boolean flat = up != null && up[c] != null && l < up[c].length && up[c][l] == 1;  // a bridge not over a road
-          int sc = bridge != null && l < bridge.length && bridge[l] && !flat ? c + BRIDGE : c;
+          int dc = CloseView.drawn(streets, tile, c, l);  // a link that is not a highway ramp: a street
+          int sc = bridge != null && l < bridge.length && bridge[l] && !flat ? dc + BRIDGE : dc;
           while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsName.add(name); }
           while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsName.add(name); }
         }

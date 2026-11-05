@@ -104,9 +104,10 @@ final class CloseView {
   // tile unit), as MapView.free() places them. route: the route's runs in the same metres (empty in free drive, when
   // the car's own road along h, its heading in radians from north, stands in for it; see CloseUp.overpasses). raised,
   // when not null, gets per tile, class and line whether a tile bridge in the detail is drawn raised (2) or flat (1),
-  // for the base layer (MapView.build); 0, a tile bridge out of reach, keeps its old look.
+  // for the base layer (MapView.build); 0, a tile bridge out of reach, keeps its old look. streets: links() of the
+  // same tiles, the link roads drawn as streets.
   static CloseUp.Detail detail(Iterable<Feed.Tile> tiles, double ax, double ay, double mpt, float[][] route, double h,
-                               java.util.Map<Feed.Tile, byte[][]> raised) {
+                               java.util.Map<Feed.Tile, byte[][]> raised, java.util.Map<Feed.Tile, boolean[]> streets) {
     CloseUp.Lines in = new CloseUp.Lines();
     java.util.List<Object[]> from = new java.util.ArrayList<Object[]>();  // per road of in: tile, class, line
     double reach = Math.max(CloseUp.ROAD_R, CloseUp.WALK_R) / mpt;
@@ -123,7 +124,7 @@ final class CloseView {
           boolean br = bridge != null && l < bridge.length && bridge[l];
           // every line: a bridge, a motorway (lanes), what may meet a bridge (its ramps) or pass under it, the car's road
           int before = in.pts.size();
-          in.road(metres(tile, pts, starts[l], starts[l + 1], ax, ay, mpt), c, br,
+          in.road(metres(tile, pts, starts[l], starts[l + 1], ax, ay, mpt), drawn(streets, tile, c, l), br,
                   layer != null && l < layer.length ? layer[l] : 0, lanes != null && l < lanes.length ? lanes[l] & 0xff : 0,
                   oneway != null && l < oneway.length && oneway[l]);
           if (in.pts.size() > before) from.add(new Object[] {tile, c, l});
@@ -154,6 +155,46 @@ final class CloseView {
     // free drive: an overpass held down as the car's road stays down only while the car is on that road
     if ((route == null || route.length == 0) && in.held) d.heldOn = path;
     return d;
+  }
+
+  // The link roads (tile class 3) that are not highway ramps (CloseUp.ramps), per tile: true for a line drawn as a
+  // street. Once per scene (MapView.build), over every tile, so a ramp cut at a tile edge is judged whole; the base
+  // map (MapView.build) and the close-up (detail) both draw a line's class through drawn(), so the GPU and software
+  // paths, zoomed in or not, agree.
+  static java.util.Map<Feed.Tile, boolean[]> links(Iterable<Feed.Tile> tiles, double ax, double ay, double mpt) {
+    java.util.List<float[]> links = new java.util.ArrayList<float[]>(), highways = new java.util.ArrayList<float[]>();
+    java.util.List<Feed.Tile> of = new java.util.ArrayList<Feed.Tile>();
+    for (Feed.Tile tile : tiles) {
+      int[] ls = tile.starts[CloseUp.LINK];
+      if (tile.pts[CloseUp.LINK] == null || ls == null) continue;
+      for (int l = 0; l + 1 < ls.length; l++) {
+        links.add(metres(tile, tile.pts[CloseUp.LINK], ls[l], ls[l + 1], ax, ay, mpt));
+        of.add(tile);
+      }
+    }
+    java.util.IdentityHashMap<Feed.Tile, boolean[]> out = new java.util.IdentityHashMap<Feed.Tile, boolean[]>();
+    if (links.isEmpty()) return out;
+    for (Feed.Tile tile : tiles) {
+      int[] hs = tile.starts[CloseUp.MOTORWAY];
+      if (tile.pts[CloseUp.MOTORWAY] == null || hs == null) continue;
+      for (int l = 0; l + 1 < hs.length; l++) highways.add(metres(tile, tile.pts[CloseUp.MOTORWAY], hs[l], hs[l + 1], ax, ay, mpt));
+    }
+    boolean[] ramp = CloseUp.ramps(links, highways);
+    int i = 0;
+    while (i < of.size()) {
+      Feed.Tile tile = of.get(i);
+      boolean[] street = new boolean[tile.starts[CloseUp.LINK].length - 1];
+      for (int l = 0; l < street.length; l++, i++) street[l] = !ramp[i];
+      out.put(tile, street);
+    }
+    return out;
+  }
+
+  // the class tile line (c, l) is drawn as: a link that is not a highway ramp as a street, else its tile class
+  static int drawn(java.util.Map<Feed.Tile, boolean[]> streets, Feed.Tile tile, int c, int l) {
+    if (c != CloseUp.LINK || streets == null) return c;
+    boolean[] st = streets.get(tile);
+    return st != null && l < st.length && st[l] ? CloseUp.STREET : c;
   }
 
   private static float[] metres(Feed.Tile tile, float[] pts, int from, int to, double ax, double ay, double mpt) {

@@ -70,7 +70,41 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 15. **Map stays up at a stop, events.log, timed error.log lines** (2026-11-01): static and replay only, not installed, not driven. Needs the comma updated (`hu_feed`) for the stop fix and the APK (`aaroad-hold.apk`) for the log fixes; either works without the other. Check on a drive with a long red light that the map stays on the car and no `map held` / `hidden` line comes while stopped. Find `aaroad: map events go to` or `aaroad: events.log not written:` in error.log to learn where the events file went, or why none did. **Peter to decide:** the hold limits (a held stop pose dies after 5 m of wheel roll; a heading with no GPS bearing dies after 10 s of moving), and whether to look at the comma's own GPS (route 79 never had a fix from it).
 
+16. **Turn lanes drawn as streets** (2026-11-05): static only, not installed. APK only: `aaroad-overpass2.apk`. Check on a drive that the Angel Pkwy turn lanes show as grey street, that highway ramps stay gold right up to the highway, and that no ramp turns grey and then gold as tiles load.
+
 ## Log
+
+### 2026-11-05
+- **On the dash map, turn and slip lanes at street corners now look like the street instead of a short olive streak. Only highway ramps keep the ramp gold.** *static*: desktop tests and harness renders only. Not installed on the head unit, not driven, and the GPU path was not run on the Tegra.
+  - Problem: Peter's Angel Pkwy photo (entry below). Tile "link" lines (class 3) are motorway and trunk ramps, but also `primary_link`, `secondary_link` and `tertiary_link` turn lanes. All of them were drawn in the ramp gold, so inside a grey street they showed as olive strokes that looked like traffic.
+  - The rule (`CloseUp.ramps`): a link keeps the gold only if it touches a motorway or trunk line, or joins one through other links.
+    - "Touches" means an end of one line lies within `JOIN_M` (4 m) of the other line. A link that only crosses a highway in plan (going under or over it) does not touch it.
+    - Links that touch each other count as one ramp, so the far piece of a ramp past a tile edge, or a branch off its middle, stays gold too.
+    - Every other link is drawn exactly as a street: street grey, street width, street kerb (class 2).
+  - Where it runs: once per scene build, in the app. `road_tiles.py` and the tiles are unchanged.
+    - `CloseView.links` judges all loaded tiles together in one metre frame, so a ramp cut at a tile edge is judged whole.
+    - `MapView.build` uses the result for the base map, and `CloseView.detail` uses it for the close-up. Both the GPU path (`GlRoads`, `GlClose`) and the software path read what these build, so all four draw the same thing with the same passes in the same order.
+    - Nothing is added per frame. In a busy test (400 links, 200 highway lines) it takes about 7 ms, or 12 ms with the JIT off, once per scene on the build thread.
+  - Static:
+    - `CloseUpTest` 91 ok (was 82). New cases:
+      - a slip lane at a street corner is not a ramp;
+      - an off-ramp leaving the motorway mid-line is a ramp, and so are its far piece past a tile cut and a branch off its middle;
+      - an end 6 m from the motorway does not touch it;
+      - a link crossing the motorway in plan is not a ramp;
+      - a link joined only to a street link is not a ramp;
+      - a motorway ending on a link's middle makes the link a ramp;
+      - the empty and busy cases.
+    - `UnderTest` 21 ok and `TiltTest` 17 ok. The free view, lanes, shield, signals, events, liveness and GL cull tests are ok. `build.sh` builds.
+    - Harness (`-Dscene=links`: a street grid with four slip lanes at Main St / Elm Ave, plus a diamond interchange on US 75). Outputs are in `/tmp/hu/yellow/before_links` and `after_links`, with side-by-side pairs in `/tmp/hu/yellow/pairs`.
+      - Street-grid frames: 763 and 402 gold pixels before, 0 after.
+      - Highway-ramp frames: byte-identical, still gold (424 and 290 pixels).
+    - Bridges and plain scenes (22 frames, `/tmp/hu/yellow/before` and `after`): byte-identical to HEAD. The harness flyover was moved to start on US 75, because a flyover that touches no highway would now turn grey.
+    - APK: `/tmp/hu/aaroad-overpass2.apk`. It holds the overpass redesign plus this change and is signed with the same key.
+  - Known ways the rule goes wrong:
+    - If the highway, or the rest of the ramp, is in a tile that has not loaded yet, the ramp is grey until the next scene build.
+    - A street link that ends within 4 m of a highway it does not join (for example, under a highway bridge) is gold.
+    - A slip lane at an at-grade junction on a trunk road is gold. Trunk counts as highway.
+    - A U-turn lane under a highway that joins the two frontage roads is grey.
 
 ### 2026-11-05
 - **Zoomed in, a bridge on the road you're driving (or over a creek) now looks like the rest of the road instead of a grey slab laid on top. Only real overpasses, the ones a road passes under, stand up, now drawn as 3D decks with side faces, piers and a shadow.** *static*: desktop tests and harness renders only. Not installed on the head unit, not driven, GPU path not run on the Tegra.
@@ -97,7 +131,7 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
     - How they're drawn: in the dim ramp gold (`ROADS[3]` 0xff5a4b1e), 12 m wide, last in `DRAW_ORDER`. Kerbs are drawn first, so inside a grey street they show as a narrow olive stroke with no outline.
     - When they show: whenever the tiles have one, with or without a route, at every zoom.
     - Traffic colours only ever go on the route line, and the close-up yellow line is only drawn on motorways.
-    - Recommendation, not changed here: restyle. The gold was meant to say "highway ramp" (2026-10-31). Draw street-level links as street grey, either in `road_tiles.py` (needs the tiles rebuilt) or in the app (gold only when the link touches a motorway or trunk).
+    - Recommendation (done 2026-11-05, entry above): restyle. The gold was meant to say "highway ramp" (2026-10-31). Draw street-level links as street grey, either in `road_tiles.py` (needs the tiles rebuilt) or in the app (gold only when the link touches a motorway or trunk).
   - Static:
     - `CloseUpTest` 82 ok.
       - New: a creek bridge stays flat; rail or a path under it doesn't raise it; roads meeting its ends don't count; an 11-degree crossing doesn't count; a same-layer crossing doesn't count; over a lower bridge only the flyover rises; a route under it gives a deck, ramps and 8 piers in pairs clear of the roads; a route on it, or the car on it, keeps it flat; `carRoad` follows the straightest join; the car under it keeps it raised; the held flag and `onRoad`.

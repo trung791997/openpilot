@@ -360,6 +360,42 @@ public class CloseUpTest {
     }
     check(same, "GPU corners carry the ends, heights, corner and along (mod both dash periods)");
     check(CloseUp.CORNER * 4 == 36, "36 bytes a corner");
+
+    // link roads (class 3): the ramp gold only for a highway ramp (CloseUp.ramps, Peter 2026-11-05 Angel Pkwy)
+    List<float[]> lk = new ArrayList<float[]>(), hw = new ArrayList<float[]>();
+    hw.add(line(-100, -1500, -100, 1500));                         // a motorway, one straight line
+    lk.add(line(180, 0, 195, 5, 200, 20));                         // 0 primary_link: a slip lane at a street corner
+    lk.add(line(-100, -650, -90, -560, -80, -500));                // 1 an off-ramp leaving the motorway mid-line
+    lk.add(line(-80, -500, -60, -450));                            // 2 its rest, cut at a tile edge (ends meet)
+    lk.add(line(-69.5f, -473.75f, -40, -480));                     // 3 a branch off 2's middle
+    lk.add(line(-94, 300, -60, 360));                              // 4 an end 6 m off the motorway (past JOIN_M)
+    lk.add(line(-200, 600, 0, 620));                               // 5 crosses the motorway in plan, ends far from it
+    lk.add(line(200, 20, 230, 40));                                // 6 joins the street slip lane 0 only
+    lk.add(line(500, -100, 500, 100));                             // 7 a motorway's end lands on its middle
+    hw.add(line(700, 0, 501, 0));
+    boolean[] rp = CloseUp.ramps(lk, hw);
+    check(!rp[0], "link: a primary_link at a street corner is a street");
+    check(rp[1], "link: an off-ramp leaving the motorway mid-line is a ramp");
+    check(rp[2] && rp[3], "link: the ramp's rest past a tile edge and a branch off it are ramp too");
+    check(!rp[4], "link: an end 6 m off the motorway does not touch it");
+    check(!rp[5], "link: crossing the motorway in plan (over or under it) is not joining it");
+    check(!rp[6], "link: joined only to a street link stays a street");
+    check(rp[7], "link: a motorway ending on its middle makes it a ramp");
+    check(CloseUp.ramps(new ArrayList<float[]>(), hw).length == 0, "link: no links, nothing to judge");
+    // a busy area: 400 links (half off a motorway grid) and 200 highway lines, once per scene build
+    lk.clear();
+    hw.clear();
+    for (int i = 0; i < 200; i++) hw.add(line(i * 300, -3000, i * 300, 3000));
+    for (int i = 0; i < 400; i++) {
+      float x = (i / 2) * 300, y = (i % 40) * 150 - 3000;
+      lk.add(i % 2 == 0 ? line(x, y, x + 40, y + 60) : line(x + 100, y, x + 140, y + 60));
+    }
+    t0 = System.nanoTime();
+    rp = CloseUp.ramps(lk, hw);
+    t1 = System.nanoTime();
+    boolean alt = true;
+    for (int i = 0; i < rp.length; i++) alt &= rp[i] == (i % 2 == 0);
+    check(alt, "link: busy area judged right, in " + (t1 - t0) / 1000000 + " ms here");
     System.out.println(bad == 0 ? "all ok" : bad + " failed");
     System.exit(bad == 0 ? 0 : 1);
   }
