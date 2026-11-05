@@ -1,4 +1,9 @@
-"""SET and RES adopt qualified current limits, with normal resume as fallback."""
+"""SET adopts the qualified current limit (limit + offset); RES restores the last set speed.
+
+Car branch (owner decision 2026-11-05): on non-PCM cars RES/+ restores the previous set
+speed even when a limit is in force (cruise.initialize_v_cruise). PCM cars keep Testing's
+RES-adopts-limit path because the car condition only restores when not pcmCruise.
+"""
 from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
@@ -100,7 +105,16 @@ def test_prepared_limit_initializes_set_once_and_adopts_it(metric, limit, offset
   instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = previous
   if resume is None:
     instance.CS_prev.buttonEvents = [car.CarState.ButtonEvent(type='accelCruise', pressed=False)]
+  # SET starts at the posted limit plus the configured offset.
+  units = CV.KPH_TO_MS if metric else CV.MPH_TO_MS
+  assert math.isclose(float(prepared.presentationAdjustedLimit), (limit + offset) * units, abs_tol=1e-3)
   engage(instance)
+  if resume is not False and not pcm:
+    # Car branch: RES on a non-PCM car restores the last set speed and adopts nothing.
+    assert instance.v_cruise_helper.v_cruise_kph == previous
+    assert instance.v_cruise_helper.v_cruise_cluster_kph == previous
+    assert instance.slc_receipts == []
+    return
   expected = cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), metric)
   assert instance.v_cruise_helper.v_cruise_kph == expected
   assert instance.v_cruise_helper.v_cruise_cluster_kph == expected
@@ -238,6 +252,10 @@ def test_reengagement_clears_previous_decline(resume):
   if resume:
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   engage(instance)
+  if resume:
+    # Car branch: RES restores the last set speed and adopts nothing.
+    assert instance.v_cruise_helper.v_cruise_kph == 105. and instance.slc_receipts == []
+    return
   adopted = runtime.step(sm, cp, now_ns=START + 10_000_000, cruise_event=receipt(instance))
   assert adopted.message.slcState.actionStatus == 'adopt' and adopted.message.slcState.hasAccepted
   assert not adopted.message.slcState.hasPending and adopted.command is None
@@ -258,7 +276,12 @@ def test_reengagement_clears_override_even_after_previous_application(resume):
   sm.data['slcState'] = overridden.message.slcState
   instance.CC_prev.enabled = False
   instance.slc_receipts.clear()
+  last_set = instance.v_cruise_helper.v_cruise_kph
   engage(instance, now=START + 30_000_000)
+  if resume:
+    # Car branch: RES restores the helper's last set speed and adopts nothing.
+    assert instance.v_cruise_helper.v_cruise_kph == last_set and instance.slc_receipts == []
+    return
   adopted = runtime.step(sm, cp, now_ns=START + 30_000_000,
     cruise_event=receipt(instance, now=START + 30_000_000, event_id=3))
   assert adopted.message.slcState.actionStatus == 'adopt' and not adopted.message.slcState.driverOverrideActive
@@ -296,6 +319,10 @@ def test_engagement_uses_existing_priority_and_qualified_secondary_source(source
   if resume:
     instance.v_cruise_helper.v_cruise_kph = instance.v_cruise_helper.v_cruise_cluster_kph = 105.
   engage(instance)
+  if resume:
+    # Car branch: RES restores the last set speed and adopts nothing.
+    assert instance.v_cruise_helper.v_cruise_kph == 105. and instance.slc_receipts == []
+    return
   expected = cruise.slc_target_kph(float(prepared.presentationAdjustedLimit), False)
   assert instance.v_cruise_helper.v_cruise_kph == expected
   # ReplaySM.advance uses monotonic stamps for every service; mapd uses boottime.
