@@ -2,6 +2,7 @@ import numpy as np
 
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.accord_mvl_stock import AccordMvlStock, qualified as mvl_stock_qualified
 from opendbc.car.honda.modified_eps import ModifiedEpsSteering, current_settings, get_eps_modified_steering_pressed, modified_eps  # noqa: F401
@@ -135,6 +136,10 @@ class CarController(CarControllerBase):
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
+    if hud_control.speedVisible and not CS.dynamic_v_cruise_units and not CS.is_metric:
+      # Imperial cluster reads whole kph on Honda's 1.6 kph-per-mph grid. Exact 50 mph
+      # (80.47 kph) rounded to 81 and showed 51 (route 0000008f--1effd6e0ad, 2026-11-05).
+      hud_v_cruise = round(hud_control.setSpeed * CV.MS_TO_MPH) * 1.6
     pcm_cancel_cmd = CC.cruiseControl.cancel
     if self.keep_pcm_acc:
       # carstate hides the PCM's ACC from openpilot in this mode, so the cancel on disengage is sent from here
