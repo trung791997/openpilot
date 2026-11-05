@@ -72,7 +72,7 @@ def card_height(state):
 
 
 def card_controls(profile, state):
-  """The speed-limit buttons (Use limit, Accept / Decline) as a row at the bottom of the card, not loose over the
+  """The speed-limit buttons (Accept / Decline) as a row at the bottom of the card, not loose over the
   camera. Same controls and requests as the comma screen; only where they sit changes."""
   controls = slc_controls(profile, state)
   body = _card_body(state)

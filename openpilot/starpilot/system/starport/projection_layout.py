@@ -139,7 +139,7 @@ def layout_metadata_for_viewport(viewport):
   # The car screen draws its own taller card (MAX SET over SLC LIMIT), without the source rows.
   widgets['cruise_limits'].update(width=SPEED_CARD_SIZE[0], height=SPEED_CARD_SIZE[1])
   widgets['cruise_limits'].pop('sourcesExtent', None)
-  widgets['speed_limit_actions']['note'] = ('On the car screen Use limit, Accept and Decline sit in a row at the bottom of the speed card; '
+  widgets['speed_limit_actions']['note'] = ('On the car screen Accept and Decline sit in a row at the bottom of the speed card; '
                                             'this only turns them on or off.')
   widgets['cruise_limits']['default'].update(opacity=100)
   profile["widgetOrder"] = [NAV_MAP, *[key for key in profile["widgetOrder"] if key not in (NAV_MAP, NAV_CARD, STOPPED_TIMER_WIDGET)],

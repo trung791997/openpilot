@@ -185,12 +185,14 @@ def test_projected_taps_tolerate_touchscreen_drift():
   assert len(emitted) == 1
 
 
-def test_use_limit_sits_in_the_speed_card_and_taps_land_there():
+def test_no_use_limit_button_on_the_car_screen():
+  # Follows Testing (2026-11-05 owner decision): the on-screen "Use N" button is gone;
+  # adopting the limit is wheel action 10. An overridden limit with nothing pending shows no buttons.
   from dataclasses import replace
   from openpilot.starpilot.system.starport import projection_theme
   from openpilot.starpilot.system.starport.projection_layout import default_layout_for_viewport, projection_customization
-  from openpilot.starpilot.ui.onroad_customization import default_document, placement
-  from openpilot.starpilot.ui.onroad_state import OnroadInput, slc_controls
+  from openpilot.starpilot.ui.onroad_customization import default_document
+  from openpilot.starpilot.ui.onroad_state import slc_controls
   from openpilot.starpilot.ui.presentation import Profile
   from openpilot.starpilot.ui.tests.test_slc_ui_actions import state
   layout = default_layout_for_viewport((1920, 1080))
@@ -198,16 +200,8 @@ def test_use_limit_sits_in_the_speed_card_and_taps_land_there():
   current = state(pending=False)
   current = replace(current, speed_limit=replace(current.speed_limit, driver_override_active=True, speed_limit_mps=18.0),
                     customization=projection_customization(layout, default_document()))
-  (loose,), (inside,) = slc_controls(Profile.LARGE, current), projection_theme.card_controls(Profile.LARGE, current)
-  assert inside.request == loose.request and inside.label == loose.label
-  card = placement(current.customization, 'large', 'cruise_limits')
-  left, top, right, bottom = inside.bounds
-  assert card['x'] < left < right < card['x'] + projection_theme.CARD_WIDTH and top > card['y']
-  emitted = []
-  touch = OnroadInput(emitted.append, Profile.LARGE, controls=projection_theme.card_controls)
-  touch.press((left + right) / 2, (top + bottom) / 2, current)
-  touch.release((left + right) / 2, (top + bottom) / 2, current)
-  assert emitted == [inside.request]
+  assert slc_controls(Profile.LARGE, current) == ()
+  assert projection_theme.card_controls(Profile.LARGE, current) == ()
 
 
 def test_car_screen_shows_accept_and_decline_without_tapping_the_sign_first():
