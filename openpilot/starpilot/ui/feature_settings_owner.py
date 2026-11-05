@@ -1132,11 +1132,6 @@ class FeatureSettingsOwner:
       confirmation = self._bool_row("SLCConfirmation", "Automatic adoption", allowed,
         reason="On adopts new limits immediately; Off asks for confirmation within 10 seconds")
       rows.append(replace(confirmation, value={"On": "Off", "Off": "On"}.get(confirmation.value, confirmation.value), default_value="On"))
-      if confirmation.value == "Off":  # stored "0" is automatic adoption, where the per-direction prompts apply
-        rows.append(self._bool_row("SLCConfirmationLower", "Confirm lower limits", allowed,
-          reason="On asks before lowering cruise speed, such as for school zones; no answer in 10 seconds keeps the current speed"))
-        rows.append(self._bool_row("SLCConfirmationHigher", "Confirm higher limits", allowed,
-          reason="On asks before raising cruise speed; no answer in 10 seconds keeps the current speed"))
       advance, raw_advance, readable_advance = self._value('SLCAdvanceSeconds')
       valid_advance = readable_advance and advance in tuple(str(seconds) for seconds in range(11))
       rows.append(FeatureRow('SLCAdvanceSeconds', 'Adopt limits early',
@@ -1144,6 +1139,11 @@ class FeatureSettingsOwner:
         SLC_ADVANCE_CHOICES if valid_advance else ('Off',), available=allowed, default_value='Off',
         reason='Offer or adopt mapped limits this many seconds early at the current speed; applies to increases and decreases'
           if valid_advance else 'Invalid saved advance time; restore Off'))
+      if confirmation.value == "Off":  # stored "0" is automatic adoption, where the per-direction prompts apply
+        rows.append(self._bool_row("SLCConfirmationLower", "Confirm lower limits", allowed,
+          reason="On asks before lowering cruise speed, such as for school zones; no answer in 10 seconds keeps the current speed"))
+        rows.append(self._bool_row("SLCConfirmationHigher", "Confirm higher limits", allowed,
+          reason="On asks before raising cruise speed; no answer in 10 seconds keeps the current speed"))
       source_capability = self._source_capability()
       vision_dev, maps_available = source_capability
       source_allowed = configurable and self.authority("preferences")

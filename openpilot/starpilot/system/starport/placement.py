@@ -68,6 +68,9 @@ class RendererPlacement:
   def __init__(self, core: int = RENDER_CORE, report: Callable[[dict[str, Any]], None] | None = None,
                thread_ids: Callable[[], list[int]] = _thread_ids, core_online: Callable[[int], bool] = _core_online,
                idle: bool = True, jetson_drives: Callable[[], bool] = _jetson_drives):
+    # One core only (the 2026-10 core 6/7 placement); a core pool, as Testing's background (0, 1, 2) design used, is rejected.
+    if isinstance(core, bool) or not isinstance(core, int) or core < 0:
+      raise ValueError("Expected one nonnegative CPU index")
     self.home_core = core
     self.core = core
     self.idle = idle
