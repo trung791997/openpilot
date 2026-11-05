@@ -3,10 +3,10 @@ import gc
 import struct
 from types import SimpleNamespace
 
-import pyray
 import pytest
 
 from openpilot.starpilot.system.starport import projection_theme as theme
+from openpilot.starpilot.ui.raylib import rl as shared_rl
 from openpilot.starpilot.system.starport.projection_theme import (BRAKING, PULLING_AWAY, STEADY, LeadTrend,
                                                                        LeadView, gap_bars)
 
@@ -70,16 +70,14 @@ def test_gap_bars_take_the_capnp_enum():
     assert gap_bars(log.LongitudinalPersonality.schema.enumerants[name]) == bars
 
 
-@pytest.mark.parametrize('nargs', [4, 5])
-def test_glow_matches_either_raylib_gradient_signature(monkeypatch, nargs):
-  # The comma's raylib takes (Vector2, radius, inner, outer); passing ints there killed the car view.
+def test_glow_passes_a_vector2_centre(monkeypatch):
+  # raylib_nb takes (Vector2, radius, inner, outer); passing ints there killed the car view.
   calls = []
-  fake = SimpleNamespace(ffi=SimpleNamespace(typeof=lambda fn: SimpleNamespace(args=[0] * nargs)),
-                         rl=SimpleNamespace(DrawCircleGradient=None), Vector2=lambda x, y: ('v', x, y),
-                         draw_circle_gradient=lambda *a: calls.append(a))
+  fake = SimpleNamespace(Vector2=lambda x, y: ('v', x, y), draw_circle_gradient=lambda *a: calls.append(a))
   monkeypatch.setattr(theme, 'rl', fake)
   theme._glow(10.6, 20.2, 5., 'in', 'out')
-  assert calls == [(('v', 10.6, 20.2), 5., 'in', 'out')] if nargs == 4 else [(10, 20, 5., 'in', 'out')]
+  assert calls == [(('v', 10.6, 20.2), 5., 'in', 'out')]
+
 
 
 # Static: the badge mimics the Honda cluster's following-distance display with a render of Peter's Civic.
@@ -96,14 +94,16 @@ class Fonts:
 
 
 class Raylib:
-  """Real pyray types and constants; every draw / load / unload call is recorded instead of touching a GL context."""
+  """Real shared-raylib types and constants; every draw / load / unload call is recorded instead of touching a GL context."""
   def __init__(self):
     self.calls = []
 
   def __getattr__(self, name):
     if name.startswith(('draw_', 'rl_', 'unload_', 'load_', 'image_', 'set_texture')):
       return lambda *a: self.calls.append((name, a))
-    return getattr(pyray, name)
+    if name == 'is_image_valid':
+      return lambda image: getattr(image, 'data', None) is not None
+    return getattr(shared_rl, name)
 
   def named(self, name):
     return [a for n, a in self.calls if n == name]
@@ -292,7 +292,7 @@ def test_load_shrinks_on_the_cpu_and_frees_the_image(rl, monkeypatch):
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda img: SimpleNamespace(id=9), raising=False)
   tex = theme._load_sprite(theme.LEAD_SPRITE_DIR / theme.LEAD_SPRITE, 128)
   assert tex.id == 9 and rl.named('image_resize') == [(image, 128, 124)] and rl.named('unload_image') == [(image,)]
-  assert rl.named('set_texture_filter') == [(tex, pyray.TextureFilter.TEXTURE_FILTER_BILINEAR)]
+  assert rl.named('set_texture_filter') == [(tex, shared_rl.TextureFilter.TEXTURE_FILTER_BILINEAR)]
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda img: SimpleNamespace(id=0), raising=False)
   assert theme._load_sprite(theme.LEAD_SPRITE_DIR / theme.LEAD_SPRITE, 128) is None
   assert theme._load_sprite(theme.LEAD_SPRITE_DIR / 'missing.png', 128) is None and len(calls) == 2

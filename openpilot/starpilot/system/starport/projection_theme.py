@@ -6,7 +6,7 @@ import weakref
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.system.starport.projection_layout import SPEED_CARD_SIZE
 from openpilot.starpilot.ui.onroad_customization import placement, rgba
@@ -355,23 +355,23 @@ def _shade(*stops):
 
 def _fill(points, color_at):
   """Convex polygon (clockwise on screen) as a triangle fan with a per-vertex vertical gradient."""
+  # UNRESOLVED (2026-11-05): per-vertex colour needs rlColor4ub + RL_TRIANGLES, which the shared raylib_nb `rl`
+  # does not expose. This is the last pyray use in the file; pyray is a second, uninitialised raylib, and under
+  # xvfb its draw calls segfault inside a raylib_nb window. Kept as-is until the owner picks a replacement.
+  import pyray
   mx, my = sum(x for x, _ in points) / len(points), sum(y for _, y in points) / len(points)
-  rl.rl_begin(rl.RL_TRIANGLES)
+  pyray.rl_begin(pyray.RL_TRIANGLES)
   for i in range(len(points)):
     for x, y in ((mx, my), points[(i + 1) % len(points)], points[i]):
       c = color_at(y)
-      rl.rl_color4ub(c.r, c.g, c.b, c.a)
-      rl.rl_vertex2f(x, y)
-  rl.rl_end()
+      pyray.rl_color4ub(c.r, c.g, c.b, c.a)
+      pyray.rl_vertex2f(x, y)
+  pyray.rl_end()
 
 
 def _glow(x: float, y: float, radius: float, inner, outer) -> None:
-  # The comma's raylib takes a Vector2 centre, desktop raylib takes ints; the wrong one
-  # raises TypeError and kills the car view, leaving the head unit on the starting frame.
-  if len(rl.ffi.typeof(rl.rl.DrawCircleGradient).args) == 4:
-    rl.draw_circle_gradient(rl.Vector2(x, y), radius, inner, outer)
-  else:
-    rl.draw_circle_gradient(int(x), int(y), radius, inner, outer)
+  # raylib_nb takes a Vector2 centre on every backend (the pyray-era int fallback is gone).
+  rl.draw_circle_gradient(rl.Vector2(x, y), radius, inner, outer)
 
 
 # Rear view of Peter's Crystal Black Civic Sport, rendered from the 3D model in tools/head_unit/civic
@@ -404,13 +404,12 @@ def _load_sprite(path, width):
     return None
   image = rl.load_image(str(path))
   try:
-    if image.data == rl.ffi.NULL or image.width <= 0 or image.height <= 0:
+    if not rl.is_image_valid(image) or image.width <= 0 or image.height <= 0:
       return None
     rl.image_resize(image, width, max(1, round(image.height * width / image.width)))
     texture = rl.load_texture_from_image(image)
   finally:
-    if image.data != rl.ffi.NULL:
-      rl.unload_image(image)
+    rl.unload_image(image)  # raylib frees NULL data as a no-op
   if texture.id == 0:
     return None
   rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
