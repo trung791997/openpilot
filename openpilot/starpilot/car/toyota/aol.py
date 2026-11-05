@@ -1,12 +1,13 @@
 from dataclasses import replace
 
 from opendbc.car import structs
+from opendbc.car.toyota.config_cache import cached_config
 from opendbc.car.toyota.values import CAR, ToyotaFlags, ToyotaSafetyFlags, EPS_SCALE, uses_toyota_auto_hold_aeb
 from openpilot.starpilot.aol.policy import AolVehiclePolicy
 from openpilot.starpilot.aol.intent import AolCardIntent, AOL_TOGGLE
 
 AOL_WORDS = frozenset((
-  0x3049, 0x3249, 0x3449, 0x3649, 0xA042, 0xA049, 0xA242, 0xA249, 0xA449, 0xA649,
+  0xE449, 0xE649, 0x3049, 0x3249, 0x3449, 0x3649, 0xA042, 0xA049, 0xA242, 0xA249, 0xA449, 0xA649,
   0xA849, 0xA949, 0xA958, 0xA964, 0xAA49, 0xAB49, 0xAB58, 0xAB64, 0xB149, 0xB158,
   0xB164, 0xB349, 0xB358, 0xB364, 0xB449, 0xB549, 0xB558, 0xB564, 0xB649, 0xB749,
   0xB758, 0xB764, 0xB842, 0xB849, 0xBA42, 0xBA49, 0xE042, 0xE049, 0xE242, 0xE249,
@@ -78,7 +79,7 @@ def radar_filter_qualified(cp, *, marked_only=False):
   required = ToyotaFlags.NO_DSU | ToyotaFlags.RADAR_CAN_FILTER
   if cp.carFingerprint in (CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_CHR_TSS2):
     required |= ToyotaFlags.TSS2 | ToyotaFlags.RADAR_ACC | ToyotaFlags.RAISED_ACCEL_LIMIT
-  allowed = required | ToyotaFlags.HYBRID | ToyotaFlags.HAS_BSM
+  allowed = required | ToyotaFlags.HYBRID | ToyotaFlags.HAS_BSM | ToyotaFlags.FILTER_BUTTONS
   if cp.carFingerprint == CAR.TOYOTA_RAV4_TSS2_2022:
     allowed |= ToyotaFlags.ARS510_RADAR | ToyotaFlags.ARS510_FUSED
   return bool(cp.flags & required == required and not int(cp.flags) & ~int(allowed) and
@@ -112,6 +113,7 @@ def stock_prius_retrofit_qualified(cp, *, marked_only=False):
   return config.safetyModel == structs.CarParams.SafetyModel.toyota and config.safetyParam == 585
 
 
+@cached_config
 def qualified(cp, *, marked_only=False):
   from opendbc.car.toyota import stock_aol
   if stock_aol.configured(cp):

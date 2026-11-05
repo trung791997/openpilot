@@ -56,10 +56,10 @@ def button_reported(cp, key):
     if key in KEYS[2:5] and bool(cp.flags & ToyotaFlags.RADAR_CAN_FILTER) and camera_2aa_filter.configured(cp):
       return False  # No verified FD_BUTTON receiver is implied by a 2AA discriminator.
     if key == 'LKASButtonControl':
-      return bool(cp.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER) or
+      return bool(cp.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER | ToyotaFlags.FILTER_BUTTONS) or
                   cp.carFingerprint == CAR.TOYOTA_PRIUS_RETROFIT or legacy_advert)
     return bool(cp.flags & ToyotaFlags.TSS2 and not cp.flags & (ToyotaFlags.RADAR_ACC | ToyotaFlags.SECOC) or
-                cp.flags & ToyotaFlags.LONG_FILTER or legacy_advert or cp.carFingerprint in
+                cp.flags & (ToyotaFlags.LONG_FILTER | ToyotaFlags.FILTER_BUTTONS) or legacy_advert or cp.carFingerprint in
                 (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT, CAR.TOYOTA_SIENNA_4TH_GEN))
   if brand == 'tesla':
     from opendbc.car.tesla.values import CAR, TeslaFlags
@@ -68,7 +68,10 @@ def button_reported(cp, key):
                   cp.flags & TeslaFlags.AOL_SCREEN_BUTTON)
     return bool(key in KEYS[5:8] and cp.carFingerprint == CAR.TESLA_MODEL_S_PREAP)
   if key == 'LKASButtonControl':
-    if brand in ('chrysler', 'gm', 'mazda', 'nissan', 'volkswagen', 'volvo'):
+    if brand == 'gm':
+      from opendbc.car.gm.values import is_volt_flashed_profile
+      return is_volt_flashed_profile(cp)
+    if brand in ('chrysler', 'mazda', 'nissan', 'volkswagen', 'volvo'):
       return False
     if brand == 'hyundai':
       from opendbc.car.hyundai.values import CAR, HyundaiFlags, is_blended
@@ -82,7 +85,7 @@ def button_reported(cp, key):
     if brand == 'ford':
       return bool(cp.openpilotLongitudinalControl)
     if brand == 'mazda':
-      from opendbc.car.mazda.aol import qualified
+      from opendbc.car.mazda.stock_aol import qualified
       return qualified(cp, marked_only=True)
   return True
 

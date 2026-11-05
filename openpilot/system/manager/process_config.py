@@ -70,6 +70,14 @@ def reproject(started: bool, params: Params, CP: car.CarParams) -> bool:
   from openpilot.selfdrive.modeld.reproject_config import select_reproject_session
   return select_reproject_session(params)
 
+
+def steering_learning(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if not started:
+    return False
+  from openpilot.starpilot.lateral.learning_preferences import read_preference
+  preference = read_preference(params, CP)
+  return preference.valid and preference.enabled
+
 def vision_slc_development(started: bool, params: Params, CP: car.CarParams) -> bool:
   from openpilot.starpilot.speed_limits.vision.gate import wanted
   return started and wanted(params, CP)
@@ -180,7 +188,7 @@ procs = [
   NativeProcess("_pandad", "openpilot/selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "openpilot.selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "openpilot.selfdrive.locationd.torqued", only_onroad),
-  PythonProcess("steerlearnerd", "openpilot.starpilot.flm.steerlearnerd", only_onroad, restart_on_exit=True),
+  PythonProcess("steerlearnerd", "openpilot.starpilot.flm.steerlearnerd", steering_learning, restart_on_exit=True),
   PythonProcess("controlsd", "openpilot.selfdrive.controls.controlsd", and_(not_joystick, iscar)),
   PythonProcess("joystickd", "openpilot.tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "openpilot.selfdrive.selfdrived.selfdrived", only_onroad),
@@ -205,7 +213,6 @@ procs = [
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),
 
   # debug procs
-  NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", or_(livestream, notcar)),
   PythonProcess("joystick", "openpilot.tools.joystick.joystick_control", and_(joystick, iscar)),
 ]

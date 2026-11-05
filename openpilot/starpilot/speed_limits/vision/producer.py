@@ -9,6 +9,7 @@ import uuid
 
 import numpy as np
 
+from openpilot.common.constants import CV
 from openpilot.starpilot.speed_limits.vision.model import VisionModelCore, cv2
 from openpilot.starpilot.speed_limits.vision.observation import (MODEL_ID, MAX_FRAME_AGE_NS, MAX_RESULT_AGE_NS, MAX_PAIR_SKEW_NS,
                                                                 SIGN_HOLD_NS, clock_pair_ns)
@@ -121,7 +122,7 @@ def _camera_frame(client) -> tuple[np.ndarray, int, int] | None:
 
 def _send(pm, *, session: str, status: str, stream: str, observed_ns: int = 0,
           eof_boot_ns: int = 0, frame_id: int = 0, result: tuple[int, float, int, int] | None = None,
-          valid_until_ns: int | None = None) -> None:
+          valid_until_ns: int | None = None, is_metric: bool = False) -> None:
   from openpilot.cereal import messaging
 
   msg = messaging.new_message('slcVisionObservation', valid=True)
@@ -134,8 +135,8 @@ def _send(pm, *, session: str, status: str, stream: str, observed_ns: int = 0,
   event.cameraFrameEofBootTime = eof_boot_ns
   event.frameId = frame_id
   if result is not None:
-    mph, confidence, support, episode = result
-    event.speedMps = mph * 0.44704
+    speed, confidence, support, episode = result
+    event.speedMps = speed * (CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS)
     event.confidence = confidence
     event.supportCount = support
     event.episode = episode
@@ -185,7 +186,8 @@ def run(stop=None, should_run=None) -> None:
     # the detector and classifier on the Jetson when the gadget has ffs.slv; the CPU nets on any doubt, built
     # only when a pass needs them (jetson_net.JetsonNet) so a comma whose Jetson answers never holds them
     from openpilot.starpilot.speed_limits.vision.jetson_net import attach, present
-    core = VisionModelCore(is_metric=params.get_bool('IsMetric'), load_nets=not present())
+    is_metric = params.get_bool('IsMetric')
+    core = VisionModelCore(is_metric=is_metric, load_nets=not present())
     link = attach(core)
     if link is not None:
       cloudlog.warning('vision SLC: Jetson interface present, CPU nets built on demand')
@@ -244,6 +246,14 @@ def run(stop=None, should_run=None) -> None:
       continue
     try:
       sm.update(0)
+      current_metric = params.get_bool('IsMetric')
+      if current_metric != is_metric:
+        # A retained numeral and its supporting reads belong to the old units.
+        is_metric = core.is_metric = current_metric
+        core.reset()
+        session = uuid.uuid4().hex
+        last_result = None
+        _send(pm, session=session, status='unknown', stream=stream)
       available = VisionIpcClient.available_streams('camerad', block=False)
       wanted = (VisionStreamType.VISION_STREAM_NARROW_ROAD if VisionStreamType.VISION_STREAM_NARROW_ROAD in available else
                 VisionStreamType.VISION_STREAM_WIDE_ROAD if VisionStreamType.VISION_STREAM_WIDE_ROAD in available else None)
@@ -332,9 +342,11 @@ def run(stop=None, should_run=None) -> None:
             last_unavailable = heartbeat_pair[0] / 1e9
             _send(pm, session=session, status='unavailable', stream=stream)
             continue
+          if params.get_bool('IsMetric') != is_metric:
+            continue
           _send(pm, session=session, status='valid', stream=stream,
                 observed_ns=last_result_observed_ns, eof_boot_ns=eof_boot_ns,
-                frame_id=frame_id, result=last_result, valid_until_ns=last_result_valid_until_ns)
+                frame_id=frame_id, result=last_result, valid_until_ns=last_result_valid_until_ns, is_metric=is_metric)
           last_publish_ns = heartbeat_pair[0]
         continue
       try:
@@ -379,6 +391,8 @@ def run(stop=None, should_run=None) -> None:
           # Original Dom processing-cost cooldown: keep slow CPU inference from
           # immediately starting another pass, including after stale rejection.
           processing_interval_ns = min(BUSY_INFERENCE_INTERVAL_NS, processing_ns * 5 // 2)
+      if params.get_bool('IsMetric') != is_metric:
+        continue
       if (observed_pair is None or
           abs((observed_pair[1] - observed_pair[0]) - offset_ns) > MAX_PAIR_SKEW_NS or
           not 0 <= observed_pair[1] - eof_boot_ns <= MAX_RESULT_AGE_NS):
@@ -399,7 +413,7 @@ def run(stop=None, should_run=None) -> None:
       sign_observed_ns = int(core.last_published_support_at * 1e9) if result is not None else source_observed_ns
       _send(pm, session=session, status='valid' if result is not None else 'unknown', stream=stream,
             observed_ns=sign_observed_ns, eof_boot_ns=eof_boot_ns, frame_id=frame_id, result=result,
-            valid_until_ns=source_observed_ns + SIGN_HOLD_NS)
+            valid_until_ns=source_observed_ns + SIGN_HOLD_NS, is_metric=is_metric)
       last_publish_ns = observed_pair[0]
       last_result = result
       last_result_session = session

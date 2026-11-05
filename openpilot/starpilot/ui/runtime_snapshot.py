@@ -22,6 +22,7 @@ from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.manual import TRAFFIC_MODE_ACTION, read_button_map
 from openpilot.starpilot.feature_capabilities import lateral_supported, longitudinal_supported
 from openpilot.starpilot.aol.runtime import current_axis
+from openpilot.starpilot.aol.wire import INTENT_SERVICE, decode_intent
 from openpilot.starpilot.conditional_mode.projection import paired_clocks_ns
 from openpilot.starpilot.conditional_mode.runtime_settings import ConditionalSettingsOwner
 from openpilot.starpilot.conditional_mode.status import settings_fingerprint
@@ -39,7 +40,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.tools.replay.display_clock import BOOT_TIME_SERVICES
 from opendbc.car.structs import car as car_schema
 from openpilot.starpilot.ui.device_state import DeviceRequest, DeviceState
-from openpilot.starpilot.ui.home_state import HomeMode, HomeState
+from openpilot.starpilot.ui.home_state import DriveStatsData, HomeMode, HomeState
 from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed, home_label
 from openpilot.starpilot.ui.onroad_state import conditional_lead_from_message
 from openpilot.starpilot.ui.onroad_state import (AlertSize, BorderSignals, ObservationKind, OnroadAlert,
@@ -128,6 +129,14 @@ def display_message(sm: Any, service: str, now_ns: int, *, after_frame: int = 0)
       # Account for qlog decimation during replay.
       max_age_ns = max(max_age_ns, min(1_000_000_000, int(2e9 * spec.decimation / spec.frequency)))
   return _message_at_age(sm, service, now_ns, after_frame, max_age_ns)
+
+
+def display_aol_latch(sm: Any, now_ns: int, *, after_frame: int) -> bool:
+  raw = display_message(sm, INTENT_SERVICE, now_ns, after_frame=after_frame)
+  intent = decode_intent(raw) if raw is not None else None
+  return bool(intent is not None and intent.settingsQualified and intent.producerSessionId and intent.sequence > 0 and
+              int(sm.logMonoTime[INTENT_SERVICE]) == intent.carStateLogMonoTime == intent.observedMonoTime and
+              0 < intent.observedMonoTime <= now_ns <= intent.validUntilMonoTime and intent.lateralArmed)
 
 
 def current_curve_message(sm: Any, now_ns: int, *, after_frame: int = 0) -> Any | None:
@@ -293,11 +302,13 @@ class RuntimeSnapshotAdapter:
 
   def __init__(self, ui_state: Any, galaxy_access: GalaxyAccessOwner | None = None,
                bluetooth_powered: Callable[[], str | bool] | None = None,
-               *, mono_clock: Callable[[], int] = time.monotonic_ns,
+               *, home_stats: Callable[[bool], DriveStatsData | None] | None = None,
+               mono_clock: Callable[[], int] = time.monotonic_ns,
                boot_clock: Callable[[], int] = _boot_time_ns):
     self.ui_state = ui_state
     self.galaxy_access = galaxy_access
     self.bluetooth_powered = bluetooth_powered
+    self.home_stats = home_stats
     self._customization_value = default_document()
     self._appearance_value = OnroadAppearance()
     self._appearance_read_ns: int | None = None
@@ -388,8 +399,11 @@ class RuntimeSnapshotAdapter:
                       mono_clock=self._mono_clock, boot_clock=self._boot_clock)
         self._replay_epoch = replay.epoch
       now_ns = replay.now_ns if replay is not None and replay.valid else 0
+      traffic_clock = (replay.now_ns, replay.boot_ns) if replay is not None and replay.valid and replay.boot_ns is not None else None
     else:
       now_ns = time.monotonic_ns() if now_ns is None else now_ns
+      # Pair the Traffic clocks before settings reads and snapshot work can delay them.
+      traffic_clock = paired_clocks_ns()
     if mode != ShellMode.ONROAD or self._last_mode != ShellMode.ONROAD:
       self._onroad_ancillary = None
       self._onroad_view_ancillary = None
@@ -401,6 +415,8 @@ class RuntimeSnapshotAdapter:
         now_ns - self._appearance_read_ns >= 1_000_000_000):
       self._customization_value = read_customization(self.ui_state.params)
       self._appearance_value = onroad_appearance(self.ui_state.params)
+      self._navigation_enabled = _flag(self.ui_state.params, "NavigationEnabled")
+      self._show_curve_status = _flag(self.ui_state.params, "ShowCSCStatus")
       if self.appearance_override is not None:
         self._appearance_value = self.appearance_override(self._appearance_value)
       self._appearance_read_ns = now_ns
@@ -434,6 +450,11 @@ class RuntimeSnapshotAdapter:
     display_selfdrive = display_message(sm, "selfdriveState", now_ns, after_frame=after) if started else None
     display_model = display_message(sm, "modelV2", now_ns, after_frame=after) if started else None
     display_radar = display_message(sm, "radarState", now_ns, after_frame=after) if started else None
+    display_plan = display_message(sm, 'longitudinalPlan', now_ns, after_frame=after) if started else None
+    display_events = display_message(sm, 'onroadEvents', now_ns, after_frame=after) if started else None
+    display_monitor = display_message(sm, 'driverMonitoringState', now_ns, after_frame=after) if started else None
+    if display_monitor is not None:
+      self._display_rhd = bool(display_monitor.isRHD)
     native_alert = current_alert(sm, now_ns, after_frame=after) if started else OnroadAlert()
     native_alert = lateral_lane_alert(native_alert, car=display_car, control=display_control,
                                       model=display_model, selfdrive=display_selfdrive)
@@ -448,7 +469,7 @@ class RuntimeSnapshotAdapter:
     from openpilot.starpilot.navigation.wire import navigation_state
     navigation = navigation_state(_message_at_age(sm, "starpilotNavigation", now_ns, after, 3_000_000_000)) if started else None
     displayed_navigation = navigation_display(navigation, now_ns=now_ns, drive_id=drive_id)
-    if displayed_navigation is None and started and _flag(params, "NavigationEnabled"):
+    if displayed_navigation is None and started and self._navigation_enabled:
       displayed_navigation = official_navigation_display(
         _message_at_age(sm, "navInstruction", now_ns, after, 3_000_000_000),
         _message_at_age(sm, "navRoute", now_ns, after, 30_000_000_000),
@@ -528,14 +549,10 @@ class RuntimeSnapshotAdapter:
         except (AttributeError, OSError, TypeError, ValueError):
           self._traffic_profile_valid = False
         self._traffic_context_ns = now_ns
-      if getattr(ui, "replay_clock", None) is not None:
-        pair = (replay.now_ns, replay.boot_ns) if replay is not None and replay.valid and replay.boot_ns is not None else None
-      else:
-        pair = paired_clocks_ns()
-      if pair is not None and abs(pair[0] - now_ns) <= 10_000_000:
+      if traffic_clock is not None and abs(traffic_clock[0] - now_ns) <= 10_000_000:
         fingerprint = settings_fingerprint(self._traffic_settings.refresh(now_ns))
         traffic = self._traffic.project(
-          traffic_envelope, now_mono_ns=now_ns, now_boot_ns=pair[1],
+          traffic_envelope, now_mono_ns=now_ns, now_boot_ns=traffic_clock[1],
           drive_id=drive_id,
           settings_fingerprint=fingerprint, map_fingerprint=self._traffic_map_fingerprint,
           map_assigned=self._traffic_map_assigned,
@@ -671,24 +688,31 @@ class RuntimeSnapshotAdapter:
                          experimental_available=bool(ui.has_longitudinal_control),
                          experimental_enabled=observed_experimental,
                          personality=list(Personality).index(persona),
+                         lead_detected=bool(display_plan is not None and display_plan.hasLead),
+                         gas_pressed_override=bool(display_events is not None and any(
+                           e.name == log.OnroadEvent.EventName.gasPressedOverride for e in display_events)),
+                         right_hand_drive=getattr(self, '_display_rhd', False),
                          switchback_mode=bool(lateral_supported(cp) and display_control is not None and display_control.latActive and
-                           self._switchback.sample(slc, drive_id=drive_id, now_ns=now_ns,
+                           self._switchback.sample_state(slc, drive_id=drive_id, now_ns=now_ns,
                              event_ns=int(sm.logMonoTime['slcState']))),
                          traffic_mode=bool(traffic is not None and traffic.state == 'active'),
+                         traffic_selected=bool(started and self._traffic.drive_id == drive_id and self._traffic.requested),
                          traffic_display=traffic,
                          torque_utilization=torque.utilization if torque.utilization is not None else 0.0,
                          torque_source_available=torque.utilization is not None,
                          torque_drive_frame=after if started else None, drive_frame=after if started else None, observed_ns=now_ns,
                          wheel_acceleration=observe_wheel_acceleration(display_car),
+                         aol_latched=(display_aol_latch(sm, now_ns, after_frame=after)
+                                      if started and getattr(ui, "aol_runtime", False) else None),
                          lateral_active=display_lat_active, longitudinal_active=display_long_active,
                          longitudinal_overridden=longitudinal_overridden,
                          driver_override_active=bool(display_car_valid and (
                            display_lat_active and getattr(display_car, 'steeringPressed', False) or
-                           (display_long_active or longitudinal_overridden) and getattr(display_car, 'gasPressed', False))),
+                           (display_long_active or longitudinal_overridden or stock_cruise) and getattr(display_car, 'gasPressed', False))),
                          stock_cruise_active=stock_cruise,
                          slc_system_long_available=system_long,
                          slc_wheel_confirmation_available=wheel_confirmation,
-                         curve=curve, show_curve_status=_flag(params, "ShowCSCStatus"),
+                         curve=curve, show_curve_status=self._show_curve_status,
                          conditional_configured=self._conditional_choice, conditional_effective=conditional,
                          conditional_perception=perception,
                          conditional_lead=conditional_lead_from_message(display_radar) if display_car_valid else None,
@@ -741,7 +765,8 @@ class RuntimeSnapshotAdapter:
                            HomeMode.CONDITIONAL_CHILL if self._conditional_choice is ModeChoice.CCM else
                            HomeMode.EXPERIMENTAL if experimental else HomeMode.CHILL),
                      experimental_enabled=experimental, experimental_available=bool(ui.has_longitudinal_control),
-                     stats=None, paired=bool(ui.prime_state.is_paired()), network=network, network_strength=strength,
+                     stats=self.home_stats(bool(ui.is_metric)) if mode == ShellMode.HOME and self.home_stats is not None else None,
+                     paired=bool(ui.prime_state.is_paired()), network=network, network_strength=strength,
                      temperature_c=device.maxTempC if device is not None else None, metric=bool(ui.is_metric),
                      temperature_high=device is not None and device.thermalStatus != log.DeviceState.ThermalStatus.ok,
                      vehicle_online=panda_connected, connection=connection,
@@ -791,6 +816,10 @@ class RuntimeSnapshotAdapter:
                                offroad=confirmed_offroad,
                                available_actions=frozenset(device_actions))
     updater_state = _text(params, "UpdaterState")
+    fast = params.get('UpdaterFastState')
+    fast = fast if isinstance(fast, dict) else {}
+    checking_metadata = fast.get('check', {}).get('state') == 'checking'
+    background = fast.get('background') and updater_state in ('downloading...', 'finalizing update...')
     available = _flag(params, "UpdaterFetchAvailable")
     status = "updater status unavailable" if not updater_state else updater_state if updater_state != "idle" else (
       "update available" if available else "up to date, last checked " + ("previously" if _text(params, "LastUpdateTime") else "never"))
@@ -800,6 +829,11 @@ class RuntimeSnapshotAdapter:
       if updater_state == "idle":
         software_actions.update((SoftwareRequest.FAST_UPDATE, SoftwareRequest.ROLLBACK))
         software_actions.add(SoftwareRequest.DOWNLOAD_UPDATE if available else SoftwareRequest.CHECK_FOR_UPDATES)
+      elif background and not checking_metadata:
+        software_actions.add(SoftwareRequest.CHECK_FOR_UPDATES)
+      if checking_metadata:
+        software_actions.discard(SoftwareRequest.CHECK_FOR_UPDATES)
+        software_actions.discard(SoftwareRequest.DOWNLOAD_UPDATE)
       if not _flag(params, "IsTestedBranch") and _text(params, "UpdaterAvailableBranches"):
         software_actions.add(SoftwareRequest.OPEN_BRANCH_CHOOSER)
     software = SoftwareState(current_version=_text(params, "UpdaterCurrentDescription"),
@@ -812,9 +846,13 @@ class RuntimeSnapshotAdapter:
     toggles = TogglesState(enabled=_flag(params, "OpenpilotEnabledToggle"),
                            experimental=experimental, disengage_accelerator=_flag(params, "DisengageOnAccelerator"),
                            lane_departure=_flag(params, "IsLdwEnabled"),
-                           always_on_dm=_flag(params, "AlwaysOnDM"), record_front=_flag(params, "RecordFront"),
+                           always_on_dm=_flag(params, "AlwaysOnDM"), right_hand_driving=_flag(params, "IsRhdDetected"),
+                           record_front=_flag(params, "RecordFront"),
                            record_audio=_flag(params, "RecordAudio"), metric=bool(ui.is_metric), personality=persona,
-                           unavailable=frozenset((ToggleKey.SAFE_MODE, ToggleKey.RIGHT_HAND_DRIVING)))
+                           unavailable=frozenset((ToggleKey.SAFE_MODE,)) | (
+                             frozenset((ToggleKey.ALWAYS_ON_DM,)) if _flag(params, "AlwaysOnDMLock") else frozenset()) | (
+                             frozenset() if confirmed_offroad and not _flag(params, "IsDriverViewEnabled") else
+                             frozenset((ToggleKey.RIGHT_HAND_DRIVING,))))
     snapshot = ShellSnapshot(mode, home, settings, onroad, device_state, software, toggles, selected)
     if mode == ShellMode.ONROAD:
       self._onroad_ancillary = (now_ns, ancillary_key, snapshot)

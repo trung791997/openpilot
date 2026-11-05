@@ -4,8 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.starpilot.speed_limits import acceptance as acc
+from openpilot.starpilot.speed_limits import offset_document as od
 from openpilot.starpilot.speed_limits.runtime_settings import MPH_TO_MPS, parse, read_params
 
 
@@ -53,7 +54,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                                 authority, policy, now_ns=1)
               self.assertEqual(result.state.accepted, accepted)
               self.assertIsNone(result.history_write)
-              self.assertIsNotNone(result.state.pending)
+              self.assertEqual(result.state.pending is not None, authority.can_control)
               self.assertEqual(result.control_target_mps, 20. if accepted is not None and authority.can_control else None)
 
   def test_fresh_vision_display_default_preserves_explicit_saved_choices(self):
@@ -77,8 +78,7 @@ class RuntimeSettingsTests(unittest.TestCase):
       self.assertEqual(Path(params.get_param_path('SLCPriority2')).read_bytes(), b'Map Data')
 
   def test_corrupt_saved_values_disable_control_without_rewriting(self):
-    cases = {'SLCConfirmation': b'invalid', 'SLCFallback': b'broken',
-             'Offset3': b'bad', 'IsMetric': b'2', 'SLCPriority1': b'\xff'}
+    cases = {'SLCConfirmation': b'invalid', 'IsMetric': b'2', 'SLCPriority1': b'\xff'}
     for key, raw in cases.items():
       with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
         params = Params(directory)
@@ -98,8 +98,6 @@ class RuntimeSettingsTests(unittest.TestCase):
       settings = read_params(params)
       self.assertTrue(settings.enabled)
       self.assertFalse(settings.errors)
-      self.assertTrue(settings.acceptance.fallback_previous)
-      self.assertEqual(settings.fallback_choice, 2)
       self.assertTrue(all(band.offset_mps == 0 for band in settings.offsets.bands))
 
   def test_valid_native_values_preserve_explicit_zero_and_units(self):
@@ -109,42 +107,56 @@ class RuntimeSettingsTests(unittest.TestCase):
       params.put_bool('SLCConfirmation', True, block=True)
       params.put_bool('SLCConfirmationLower', True, block=True)
       params.put('SLCFallback', 0, block=True)
-      params.put('Offset3', -5.0, block=True)
+      document = od.OffsetDocument(od.IMPERIAL_BOUNDS, (0, 0, -5 * MPH_TO_MPS, 0, 0, 0, 0))
+      params.put('SLCOffsetSchedule', od.to_value(document), block=True)
       settings = read_params(params)
       self.assertTrue(settings.enabled)
       self.assertFalse(settings.errors)
       self.assertTrue(settings.acceptance.confirm_lower)
-      self.assertFalse(settings.acceptance.fallback_previous)
-      self.assertEqual(settings.fallback_choice, 0)
       self.assertAlmostEqual(settings.offsets.bands[2].offset_mps, -5 * MPH_TO_MPS)
 
-  def test_fallback_choice_is_a_validated_immutable_drive_snapshot(self):
+  def test_retired_fallback_bytes_are_ignored_without_creating_or_rewriting_them(self):
     with tempfile.TemporaryDirectory() as directory:
       params = Params(directory)
       params.put_bool('SpeedLimitController', True, block=True)
-      snapshots = []
-      for choice in (0, 1, 2):
-        params.put('SLCFallback', choice, block=True)
-        snapshot = read_params(params)
-        self.assertFalse(snapshot.errors)
-        self.assertEqual(snapshot.fallback_choice, choice)
-        self.assertEqual(snapshot.acceptance.fallback_previous, choice == 2)
-        snapshots.append(snapshot)
-      self.assertEqual(tuple(snapshot.fallback_choice for snapshot in snapshots), (0, 1, 2))
       path = Path(params.get_param_path('SLCFallback'))
-      path.write_bytes(b'not-an-int')
-      unavailable = read_params(params)
-      self.assertFalse(unavailable.enabled)
-      self.assertTrue(unavailable.errors)
-      self.assertEqual(path.read_bytes(), b'not-an-int')
-      self.assertEqual(tuple(snapshot.fallback_choice for snapshot in snapshots), (0, 1, 2))
+      baseline = read_params(params)
+      self.assertTrue(baseline.enabled)
+      self.assertFalse(path.exists())
+      self.assertIsNone(params.get_default_value('SLCFallback'))
+      for raw in (b'0', b'1', b'2', b'', b'broken', b'999', b'\xff'):
+        with self.subTest(raw=raw):
+          path.write_bytes(raw)
+          self.assertEqual(read_params(params), baseline)
+          self.assertEqual(path.read_bytes(), raw)
+      for old in (0, 1, 2, None, 'broken'):
+        self.assertEqual(parse({'SpeedLimitController': True, 'SLCFallback': old}), baseline)
 
-  def test_nonfinite_or_unrepresentable_offset_disables_control(self):
+  def test_nonfinite_or_unrepresentable_current_offset_disables_control(self):
     for value in (float('nan'), float('inf'), 10 ** 1000):
       with self.subTest(kind=type(value).__name__):
-        settings = parse({'SpeedLimitController': True, 'Offset3': value})
+        document = od.OffsetDocument(od.IMPERIAL_BOUNDS, (0, 0, value, 0, 0, 0, 0))
+        settings = parse({'SpeedLimitController': True, 'SLCOffsetSchedule': document})
         self.assertFalse(settings.enabled)
         self.assertTrue(settings.errors)
+
+  def test_retired_offsets_are_unregistered_and_ignored_with_zero_defaults(self):
+    for metric in (False, True):
+      with self.subTest(metric=metric), tempfile.TemporaryDirectory() as directory:
+        params = Params(directory)
+        params.put_bool('SpeedLimitController', True, block=True)
+        params.put_bool('IsMetric', metric, block=True)
+        for index in range(1, 8):
+          key = f'Offset{index}'
+          with self.assertRaises(UnknownKeyName):
+            params.check_key(key)
+          Path(params.get_param_path(key)).write_bytes(b'3' if index % 2 else b'broken')
+        settings = read_params(params)
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.offsets, od.default_document(metric).schedule())
+        self.assertFalse(Path(params.get_param_path('SLCOffsetSchedule')).exists())
+        for retired in (3, float('nan'), 'broken', 10 ** 1000):
+          self.assertEqual(parse({'SpeedLimitController': True, 'IsMetric': metric, 'Offset1': retired}), settings)
 
 
 if __name__ == '__main__':

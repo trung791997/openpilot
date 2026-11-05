@@ -39,7 +39,7 @@ JETLINK_SIZE = (420, 84)
 SPEED_CARD_SIZE = (346, 460)
 JETLINK_OPACITY = (0, 100, 85)
 CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}
-PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT)
+PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT, 'following_distance')
 
 
 class ProjectionLayoutSource:
@@ -83,6 +83,7 @@ def layout_metadata_for_viewport(viewport):
   widgets[CLOCK_WIDGET]['default']['x'] += (width - 1860) / 2
   widgets['steering_wheel']['default']['x'] += width - 1860
   widgets['driver_monitor']['default']['y'] += height - 1080
+  widgets['following_distance']['default']['y'] += height - 1080
   x, y, w, h = maximum_footprint(30, 30, width - 60, height - 60, width)
   widgets['torque_bar'].update(width=w, height=h)
   widgets['torque_bar'].pop('confirmationObstacle', None)
@@ -146,7 +147,8 @@ def layout_metadata_for_viewport(viewport):
   return profile
 
 
-# Android Auto display switches, independent of the comma screen's preferences.
+# Android Auto display switches. The legacy personality field remains in saved layouts for compatibility;
+# the shared comma preference controls that notice on every screen.
 DISPLAY_DEFAULTS = {'blindSpotBorder': False, 'signalBorder': False, 'blindSpotCamera': False,
                     'hidePersonalityAlerts': False, 'wheelPedalFeedback': False,
                     'leadIndicator': True, 'leadInfo': 'Distance', 'speedSources': False,
@@ -156,7 +158,7 @@ LEAD_INFO_CHOICES = ('Off', 'Distance', 'Speed')
 
 
 def projection_appearance(appearance, document):
-  """The comma's onroad appearance with every car-screen choice taken from the AA layout instead."""
+  """Apply screen-specific choices while retaining the shared personality-alert preference."""
   from dataclasses import replace
   from openpilot.starpilot.ui.appearance_preferences import LeadInfoMode
   lead_indicator = document.get('leadIndicator', True) is True
@@ -168,7 +170,6 @@ def projection_appearance(appearance, document):
                  show_lead_indicator=lead_indicator, lead_info_mode=lead_info_mode,
                  show_blindspot_border=document.get('blindSpotBorder', False) is True,
                  show_signal_border=document.get('signalBorder', False) is True,
-                 hide_personality_alerts=document.get('hidePersonalityAlerts', False) is True,
                  wheel_pedal_feedback=document.get('wheelPedalFeedback', False) is True)
 
 
@@ -289,6 +290,9 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
         if type(placement.get(axis)) in (int, float):
           placement[axis] += 32
       placement['size'] = widget['resizable']['default']
+    if (key == 'driver_monitor' and 'following_distance' not in value['widgets'] and type(placement) is dict and
+        (placement.get('x'), placement.get('y'), placement.get('size')) == (120, 840 + viewport[1] - 1080, 128)):
+      placement['x'] = widget['default']['x']
     fields = ({'x', 'y', 'enabled'} | ({'size'} if widget.get('resizable') else set()) |
               ({'display'} if key in DISPLAY_WIDGETS else set()) |
               ({'opacity', 'background'} if key in ACTION_WIDGETS else set()) |

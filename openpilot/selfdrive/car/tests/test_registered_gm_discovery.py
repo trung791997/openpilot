@@ -28,7 +28,7 @@ def detected(candidate):
                                           CAR.CHEVROLET_VOLT_CAMERA, CAR.CHEVROLET_VOLT_CC, CAR.CHEVROLET_BOLT_EUV,
                                           CAR.CHEVROLET_BOLT_CC_2017, CAR.CHEVROLET_BOLT_CC_2018_2021,
                                           CAR.CHEVROLET_BOLT_CC_2022_2023, CAR.CHEVROLET_BOLT_ACC_2022_2023,
-                                          CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL])
+                                          CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL, CAR.CHEVROLET_TRAX])
 def test_explicit_registered_bus0_gm_keeps_live_vin_fw_can_and_actual_factory(candidate):
   callbacks = []
   queries = []

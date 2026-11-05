@@ -87,7 +87,6 @@ class ConditionalOwnerContext:
   committed_turn_scene: ObservedBool | None = None
   red_light: ObservedBool | None = None
   plan_forcing_stop: ObservedBool | None = None
-  slc_experimental: ObservedBool | None = None
   plan_should_stop: ObservedBool | None = None
   plan_allow_throttle: ObservedBool | None = None
 
@@ -539,7 +538,6 @@ class SceneProjector:
     committed_turn, turn_stamp = owner_bool(context.committed_turn_scene)
     red_light, red_stamp = owner_bool(context.red_light)
     plan_forcing_stop, plan_forcing_stamp = owner_bool(context.plan_forcing_stop)
-    slc_experimental, _ = owner_bool(context.slc_experimental)
     plan_should_stop, plan_should_stop_stamp = owner_bool(context.plan_should_stop)
     plan_allow_throttle, plan_allow_throttle_stamp = owner_bool(context.plan_allow_throttle)
     model_stamp = _source_stamp(sm, 'modelV2') if model_transport_current else None
@@ -632,6 +630,9 @@ class SceneProjector:
       stationary_launch_clear=stationary_launch_clear,
       longitudinal_stop_active=bool(_field(control, 'longActive') is True and _field(selfdrive, 'enabled') is True and
         _field(controls, 'longControlState') == structs.CarControl.Actuators.LongControlState.stopping),
+      longitudinal_launch_active=bool(_field(control, 'enabled') is True and _field(control, 'longActive') is True and
+        _field(selfdrive, 'enabled') is True and _field(controls, 'longControlState') in
+        (structs.CarControl.Actuators.LongControlState.starting, structs.CarControl.Actuators.LongControlState.pid)),
       standstill_path_extent_m=(_standstill_path_extent(model) if model_transport_current and car_valid and
                                 _field(car, 'standstill') is True else None),
     )
@@ -755,7 +756,6 @@ class SceneProjector:
       stop_sign_confirmed=sign,
       committed_stop=self.stop_detector.committed if stop_observation.light_detected is not None else None,
       forcing_stop=forcing,
-      slc_experimental=slc_experimental,
       low_speed_stop_scene=chill_observation.low_speed_stop_scene,
       launch_candidate=chill_observation.launch_candidate,
       launch_forced_exit=True if chill_observation.forced_exit else False if chill_observation.launch_candidate is not None else None,

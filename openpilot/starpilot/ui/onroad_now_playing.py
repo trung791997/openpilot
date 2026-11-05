@@ -4,7 +4,7 @@ import time
 import unicodedata
 from importlib.resources import as_file, files
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui import clip
 from openpilot.starpilot.soloist.now_playing import ELSEWHERE, elapsed_ms

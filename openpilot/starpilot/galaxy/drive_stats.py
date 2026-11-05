@@ -18,6 +18,9 @@ from openpilot.starpilot.galaxy.drive_history import DriveHistory, MAX_ROOT_ENTR
 from openpilot.starpilot.galaxy.drive_analysis import ANALYSIS_VERSION
 from openpilot.starpilot.storage import galaxy_storage_root
 
+SOURCE_LIMITATIONS = frozenset({'Route has no observed duration', 'End of route was not recorded',
+                                'Route has missing segments or logs', 'Route samples are missing or gapped'})
+
 SCHEMA_VERSION = 1
 MAX_CACHED_ROUTES = 2048
 MAX_CACHE_BYTES = 4_000_000
@@ -306,7 +309,7 @@ class DriveStatsOwner:
             continue
           if failed and failed['signature'] == signature and failed.get('analysisVersion', 0) == ANALYSIS_VERSION:
             now = self.clock()
-            if (failed['attempts'] >= MAX_RETRY_ATTEMPTS or now - failed['firstAt'] >= MAX_RETRY_AGE_SECONDS or
+            if (failed['reason'] in SOURCE_LIMITATIONS or failed['attempts'] >= MAX_RETRY_ATTEMPTS or now - failed['firstAt'] >= MAX_RETRY_AGE_SECONDS or
                 failed['firstAt'] <= now < failed['retryAt']):
               continue
           candidates.append((route, route_id, signature, manifest))
@@ -493,6 +496,8 @@ class DriveStatsOwner:
               'aolPercent': round(100 * seconds / duration, 1) if duration else None,
               'aolDurationSeconds': duration, 'aolDrives': len(observed)}
     totals = sums(complete)
+    past_week = sums([r for r in complete if day - timedelta(days=6) <=
+                      datetime.fromtimestamp(r['startTime'], zone).date() <= day])
     totals.update(aol_sums(complete))
     week_totals = sums(week)
     week_result = {'days': [{'date': date, 'distanceMeters': daily[date]} for date in dates],
@@ -514,7 +519,7 @@ class DriveStatsOwner:
     pending = max(self._pending, int(not self._scanned))
     state = ('analyzing' if running else 'waitingParked' if pending and not self._allowed() else
              'queued' if pending else 'retrying' if any(
-               f['attempts'] < MAX_RETRY_ATTEMPTS and self.clock() - f['firstAt'] < MAX_RETRY_AGE_SECONDS
+               f['reason'] not in SOURCE_LIMITATIONS and f['attempts'] < MAX_RETRY_ATTEMPTS and self.clock() - f['firstAt'] < MAX_RETRY_AGE_SECONDS
                for f in self._failures.values()) else 'failed' if self._failures else 'ready')
     def public(record):
       return {key: value for key, value in record.items() if key not in ('sourceSignature', 'sourceManifest')}
@@ -522,14 +527,14 @@ class DriveStatsOwner:
     return {'schemaVersion': SCHEMA_VERSION, 'isMetric': is_metric,
             'analysis': {'running': running, 'pending': pending, 'state': state,
                          'failed': len(self._failures),
-                         'quarantined': sum(f['attempts'] >= MAX_RETRY_ATTEMPTS or
+                         'quarantined': sum(f['reason'] in SOURCE_LIMITATIONS or f['attempts'] >= MAX_RETRY_ATTEMPTS or
                                             self.clock() - f['firstAt'] >= MAX_RETRY_AGE_SECONDS for f in self._failures.values()),
                          'failures': [{'routeId': key, 'reason': f['reason'], 'attempts': f['attempts'],
-                                       'retryStopped': f['attempts'] >= MAX_RETRY_ATTEMPTS or
+                                       'retryStopped': f['reason'] in SOURCE_LIMITATIONS or f['attempts'] >= MAX_RETRY_ATTEMPTS or
                                                        self.clock() - f['firstAt'] >= MAX_RETRY_AGE_SECONDS}
                                       for key, f in self._failures.items()],
                          'scanIncomplete': self._scan_incomplete},
-            'totals': totals, 'week': week_result, 'lastDrive': public(included_recent[0]) if included_recent else None,
+            'totals': totals, 'pastWeek': past_week, 'week': week_result, 'lastDrive': public(included_recent[0]) if included_recent else None,
             'recentDrives': [public(r) for r in recent[:RECENT_LIMIT]], 'records': records, 'models': models,
             'coverage': {'scope': 'analyzedLocalRoutes', 'timezone': timezone, 'partialHistory': True,
                          'scanIncomplete': self._scan_incomplete, 'scanned': self._scanned,

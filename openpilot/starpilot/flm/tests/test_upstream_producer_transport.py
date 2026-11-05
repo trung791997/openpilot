@@ -10,7 +10,8 @@ from openpilot.starpilot.flm import producer_clock_equivalence as clock
 
 APPROVED = {
   # Night Star port: our modeld.py (camera source, Honda EPS delay schedule, lateral source); same frame clock path
-  'selfdrive/modeld/modeld.py': '6e76bdcb8bb1af3bc77fc8f0fb05d321f871491bfcb811689facd1fcf5be75b8',
+  'selfdrive/modeld/modeld.py': '1d984ab106826577ad1f57ff0514cba3627951a5ce2e7269d4a183099c08e1d0',
+  'visionipc/visionipc_py.cc': '6c131c4f5eccb9f822f1aaae63733f26b1427c52340b61c9cdaf6cd4aee2f89d',
   'visionipc/visionipc_server.cc': 'a4325a5171eacb931eb271d06a992d2f27216040df113d92099f62cdfa67d81a',
   'visionipc/visionipc_client.cc': 'd142cd60eedabfc581e9770fcd6f0ca81b762ba9dbc608b54dd20a27a317a52d',
 }

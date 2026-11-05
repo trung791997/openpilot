@@ -12,14 +12,13 @@ from openpilot.common.constants import CV
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper, set_core_affinity
-from openpilot.selfdrive.controls.lib.cycle_timing import ControlCycleTiming
+from openpilot.selfdrive.controls.lib.cycle_timing import ControlCycleTiming, PUBLISH_PHASES
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
-from openpilot.selfdrive.controls.lib.latcontrol_angle import STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.lateral_controller_factory import create_lateral_controller
 from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import LatControlHondaEps, ModelActionRamp, get_rack_map, \
@@ -34,8 +33,7 @@ from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.lateral.pause import LateralPause, read_settings as read_lateral_pause
 from openpilot.starpilot.lateral.model_turn_assist import ModelTurnAssist, update_twitch_guard
 from openpilot.starpilot.aol.runtime import (current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged,
-                                            refresh_expired_lateral_snapshot, refresh_expiring_combined_snapshot,
-                                            axis_drop_reason)
+                                            refresh_expired_lateral_snapshot, COMBINED_REFRESH_MARGIN_NS, axis_drop_reason)
 from openpilot.starpilot.aol.transition_diagnostic import TransitionDiagnostic
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed, allow_lateral_onset
 from openpilot.starpilot.lateral.lane_centering import (
@@ -83,7 +81,7 @@ class Controls:
     self.lateral_controller_selection = read_selection(self.params, self.CP)
     self.vehicle_startup_preferences = VehicleStartupPreferences.read(
       self.params, enabled=self.params.get_bool("OpenpilotEnabledToggle"))
-    self.torque_learning_allowed = learning_allowed(self.params, self.CP, selection=self.lateral_controller_selection)
+    manual_effects, manual_status = self._configure_manual_tune()
     self.aol_replay = feature_enabled(self.params, self.CP, 'aol', os.environ)
     self.aol_transition_diagnostic = TransitionDiagnostic() if self.aol_replay and self.CP.brand == 'gm' else None
     self.ordinary_axis_ack_required = axis_policy_for(self.CP).ordinary_axis_ack_required
@@ -94,7 +92,7 @@ class Controls:
                  'driverMonitoringState', 'onroadEvents', 'driverAssistance'] +
                 (['aolAxisState', 'aolSafetyWire'] if self.aol_replay or self.ordinary_axis_ack_required else []))
     optional = list(dict.fromkeys(
-      self.longitudinal_inputs.optional_services + ['deviceState', 'autoSteeringLearning', 'starpilotSteeringTracking', 'pandaStates']
+      self.longitudinal_inputs.optional_services + ['starpilotCarState', 'deviceState', 'autoSteeringLearning', 'starpilotSteeringTracking', 'pandaStates']
     ))
     if optional:
       ignore = set(optional)
@@ -133,11 +131,16 @@ class Controls:
     self.LaC = create_lateral_controller(self.CP, self.CI, DT_CTRL,
       mode=self.lateral_controller_selection.mode, turn_assist=self.vehicle_startup_preferences.turn_assist)
     if isinstance(self.LaC, LatControlTorque):
+      # Only the actual startup owner reads configuration; replay clones stay pure.
+      if manual_effects is not None and manual_effects.profile.context[1] != str(self.LaC.controller_mode):
+        manual_effects, manual_status = None, 'context_changed'
+      self.LaC.manual_flm_effects, self.LaC.manual_flm_status = manual_effects, manual_status
       self.lateral_gain_owner = create_gain_owner(self.params, self.CP, self.LaC)
       cloudlog.info({"event": "torque controller selected", "controller": self.LaC.controller_mode.value,
                      "source": self.lateral_controller_selection.source,
                      "vehicle": self.CP.carFingerprint, "policy": self.LaC.controller_policy,
                      "automaticLearning": self.torque_learning_allowed, "startupParameterSource": "vehicle",
+                     "manualCoordinateStatus": self.LaC.manual_flm_status,
                      "startupTorque": {"factor": self.LaC.torque_params.latAccelFactor,
                                        "offset": self.LaC.torque_params.latAccelOffset,
                                        "friction": self.LaC.torque_params.friction},
@@ -145,12 +148,15 @@ class Controls:
                      "startupPidLimits": [self.LaC.pid.neg_limit, self.LaC.pid.pos_limit]})
 
     from openpilot.starpilot.flm.live_trial_store import load_confirmed_history
-    self.global_learning = GlobalRuntime(self.CP, self.CI, self.LaC, confirmed_live_history=load_confirmed_history(self.params))
-    # Load optional capture code before publishing the first control command.
+    from openpilot.starpilot.lateral.learning_preferences import read_preference
+    preference = read_preference(self.params, self.CP)
+    self.global_learning = (GlobalRuntime(self.CP, self.CI, self.LaC, confirmed_live_history=load_confirmed_history(self.params))
+                            if preference.valid and preference.enabled else None)
+    # Load optional capture and live-trial code before the first control command.
     # Engagement must not compile/import replay and feedback modules in the loop.
-    if self.global_learning.descriptor is not None:
+    if self.global_learning is not None and self.global_learning.descriptor is not None:
       try:
-        for module in ('controller_replay', 'physical_input_observation', 'feedback_wire'):
+        for module in ('controller_replay', 'physical_input_observation', 'feedback_wire', 'live_trial_wire', 'live_tracking_response'):
           importlib.import_module('openpilot.starpilot.flm.' + module)
       except Exception:
         self._discard_global_learning()
@@ -168,8 +174,17 @@ class Controls:
     assist_enabled = self.vehicle_startup_preferences.turn_assist and model_turn_assist_supported(self.CP)
     self.turn_assist_enabled = lambda: assist_enabled
 
-  def update(self):
-    self.sm.update(15)
+  def _configure_manual_tune(self):
+    manual_effects, manual_status = None, 'not_configured'
+    if self.CP.lateralTuning.which() == 'torque' and str(self.CP.steerControlType) == 'torque':
+      from openpilot.starpilot.flm.manual_coordinates import load as load_manual_coordinates
+      manual_effects, manual_status = load_manual_coordinates(self.CP, self.lateral_controller_selection.mode, self.params)
+    self.torque_learning_allowed = bool(manual_status == 'not_configured' and
+      learning_allowed(self.params, self.CP, selection=self.lateral_controller_selection))
+    return manual_effects, manual_status
+
+  def update(self, timeout: int = 15):
+    self.sm.update(timeout)
     if self.sm.updated["extrinsicsCalibration"]:
       self.pose_calibrator.feed_extrinsics_calibration(self.sm['extrinsicsCalibration'])
     if self.sm.updated["deviceMotion"]:
@@ -208,6 +223,7 @@ class Controls:
     diagnostic_initial_lateral = diagnostic_onset = True
     lateral_inputs_refreshed = False
     late_gm_refresh = False
+    refresh_combined_long = False
     if (self.aol_replay and os.getenv('REPLAY') != '1' and
         getattr(self, 'aol_previous_lateral_active', False)):
       refresh_now_ns = time.monotonic_ns()
@@ -218,7 +234,18 @@ class Controls:
         lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=refresh_now_ns)
         if not lateral_inputs_refreshed:
           # LAT+LONG: take an already-queued axis before the held one lapses mid-cycle (route 80 brake drops).
-          refresh_expiring_combined_snapshot(self.sm, now_ns=refresh_now_ns)
+          # Not a LAT-only refresh, so it does not set lateral_inputs_refreshed (that path would end LONG).
+          # A firing refresh runs sm.update(0), which clears every `updated` flag. Restore this cycle's
+          # flags (OR with the new ones) so later readers, e.g. the Honda model ramp's modelV2 check, still see them.
+          updated_before = dict(self.sm.updated)
+          refresh_expired_lateral_snapshot(self.sm, now_ns=refresh_now_ns, allow_combined=True,
+                                           margin_ns=COMBINED_REFRESH_MARGIN_NS, wait_for_new=False)
+          for service, was_updated in updated_before.items():
+            if was_updated:
+              self.sm.updated[service] = True
+    if (self.lane_centering_host is not None and os.getenv('REPLAY') != '1' and
+        self.lane_centering_host.inputs_need_refresh(self.sm, now_ns=time.monotonic_ns())):
+      self.update(0)
     CS = self.sm['carState']
     self.flm_native_witness = None
     if self.lateral_gain_owner is not None:
@@ -267,7 +294,9 @@ class Controls:
       if late_gm_refresh:
         # Use the authority check's clock sample: a proof can expire after the
         # earlier preparation/qualification work, even when it was fresh on entry.
-        lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=now_ns)
+        previous_axis = self.sm['aolAxisState']
+        refresh_combined_long = bool(CC.longActive and previous_axis.longitudinalActive and previous_axis.desiredLongitudinal)
+        lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=now_ns, allow_combined=True)
         if lateral_inputs_refreshed:
           CS = self.sm['carState']
           CC.enabled = self.sm['selfdriveState'].enabled
@@ -315,10 +344,10 @@ class Controls:
                             on_validated_native=lambda native: setattr(self, 'flm_native_witness', native)))
 
     if lateral_inputs_refreshed:
-      # A newly received physical veto wins over an older admitted axis. This
-      # LAT-only refresh cannot enable ordinary LONG; its next normal cycle owns that transition.
+      # Fresh receipts can continue a requested GM LONG axis. A LAT-only refresh
+      # cannot start LONG, and a newly received physical veto still wins.
       CC.latActive = bool(CC.latActive and CS.canValid and not CS.canTimeout)
-      CC.longActive = False
+      CC.longActive = bool(refresh_combined_long and CC.enabled and CC.longActive and CS.canValid and not CS.canTimeout)
 
     fault_latch = getattr(self, 'hyundai_lateral_fault', None)
     if fault_latch is not None:
@@ -554,6 +583,9 @@ class Controls:
     return CC, lac_log
 
   def publish(self, CC, lac_log):
+    publish_timing = getattr(self, 'publish_cycle_timing', None)
+    if publish_timing is not None:
+      publish_timing.start()
     CS = self.sm['carState']
 
     # Orientation and angle rates can be useful for carcontroller
@@ -589,8 +621,10 @@ class Controls:
     if CC.latActive:
       CO = self.sm['carOutput']
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-        self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
-                                              STEER_ANGLE_SATURATION_THRESHOLD
+        from openpilot.starpilot.car.tesla.coop_saturation import is_angle_steering_limited
+        self.steer_limited_by_safety = is_angle_steering_limited(
+          self.CP, CC.actuators.steeringAngleDeg, CO, self.sm['starpilotCarState'],
+          bool(self.sm.valid['starpilotCarState'] and self.sm.valid['carOutput'] and self.sm.alive['carOutput']), int(self.sm.logMonoTime['carState']))
       else:
         self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
 
@@ -629,13 +663,19 @@ class Controls:
     elif lat_tuning == 'torque':
       cs.lateralControlState.torqueState = lac_log
 
+    if publish_timing is not None:
+      publish_timing.mark()
     self.pm.send('controlsState', dat)
+    if publish_timing is not None:
+      publish_timing.mark()
 
     # carControl
     cc_send = messaging.new_message('carControl')
     cc_send.valid = CS.canValid
     cc_send.carControl = CC
     self.pm.send('carControl', cc_send)
+    if publish_timing is not None:
+      publish_timing.mark()
     feedback = feedback_message(
       self.last_lane_centering_result, self.lane_centering_applied, CC.latActive,
       model_mono_time=self.sm.logMonoTime['modelV2'], car_control_mono_time=cc_send.logMonoTime,
@@ -653,8 +693,9 @@ class Controls:
         feedback = learning_feedback
       except Exception:
         self._discard_global_learning()
-    if isinstance(self.LaC, LatControlHondaEps):
-      write_eps_state(feedback.starpilotLateralState, self.LaC.starpilot_lateral_state)
+    lac = getattr(self, 'LaC', None)  # publish-timing tests run publish() on a Controls stand-in without one
+    if isinstance(lac, LatControlHondaEps):
+      write_eps_state(feedback.starpilotLateralState, lac.starpilot_lateral_state)
     if (automatic is not None and automatic.eligible and automatic.source is not None and
         automatic.source.enabled and not automatic.source.manual and
         self.CP.steerControlType == car.CarParams.SteerControlType.torque):
@@ -670,15 +711,20 @@ class Controls:
         self.learning_feedback_prior_publish_ns = 0
     else:
       self.learning_feedback_prior_publish_ns = 0
+    if publish_timing is not None:
+      publish_timing.mark()
     self.pm.send('starpilotLateralState', feedback)
     diagnostic_observer = getattr(self, 'aol_transition_diagnostic', None)
     if diagnostic_observer is not None:
       diagnostic_observer.emit(cloudlog.event, cc_send)
+    if publish_timing is not None:
+      publish_timing.mark()
 
   def run(self):
     rk = Ratekeeper(100, print_delay_threshold=None)
     next_overrun_log_ns = 0
     self.control_cycle_timing = ControlCycleTiming()
+    self.publish_cycle_timing = ControlCycleTiming(phases=PUBLISH_PHASES)
     while True:
       started, cpu_started = time.monotonic_ns(), time.thread_time_ns()
       self.update()
@@ -694,7 +740,9 @@ class Controls:
                        control_ms=(controlled - updated) / 1e6, publish_ms=(published - controlled) / 1e6,
                        wall_ms=(published - started) / 1e6, cpu_ms=(time.thread_time_ns() - cpu_started) / 1e6,
                        control_phases=self.control_cycle_timing.snapshot(),
-                       control_phases_complete=self.control_cycle_timing.complete, error=True)
+                       control_phases_complete=self.control_cycle_timing.complete,
+                       publish_phases=self.publish_cycle_timing.snapshot(),
+                       publish_phases_complete=self.publish_cycle_timing.complete, error=True)
       rk.monitor_time()
 
 
@@ -704,6 +752,10 @@ def main():
   if HARDWARE.get_device_type() in ("tici", "tizi", "mici"):
     set_core_affinity([6])
     os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+    try:
+      os.setpriority(os.PRIO_PROCESS, 0, -5)
+    except OSError:
+      cloudlog.warning("Controls normal scheduling preference unavailable")
   else:
     set_core_affinity([4, 5])
   controls.run()

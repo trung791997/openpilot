@@ -194,7 +194,7 @@ for (const id of ["wheel", "sounds", "localization"]) {
 }
 
 const deviceData = SETTINGS_SECTIONS.find((item) => item.id === "device")
-assert.deepEqual(deviceData.pages, ["display", "data"])
+assert.deepEqual(deviceData.pages, ["power", "display", "data"])
 assert.equal(SettingsPage.computed.atSectionRoot.call({ activeSection: deviceData,
   state: { data: { page: "hub" } } }), true)
 assert.equal(SettingsPage.computed.atSectionRoot.call({ activeSection: deviceData,
@@ -202,7 +202,7 @@ assert.equal(SettingsPage.computed.atSectionRoot.call({ activeSection: deviceDat
 
 const dataLinks = SettingsPage.computed.visibleRows.call({ initialPage: "hub", activeSection: deviceData,
   state: { query: "", data: { page: "hub", rows: [] } } })
-assert.deepEqual(dataLinks.map(({ row }) => row.page), ["display", "data"])
+assert.deepEqual(dataLinks.map(({ row }) => row.page), ["power", "display", "data"])
 
 assert.equal(SettingsPage.computed.atSectionRoot.call({initialPage:'hub',state:{data:null,parents:[]}}),true,
   'section tabs stay mounted while loading a new section')
@@ -221,3 +221,21 @@ assert.deepEqual(SettingsPage.computed.visibleRows.call({initialPage: "hub", act
   ["aggressive", "standard", "relaxed", "traffic"])
 assert.equal(SettingsPage.computed.activeSection.call({sections: SETTINGS_SECTIONS,
   state: {data: {page: "personalities"}}}).id, "longitudinal")
+
+assert.ok(SETTINGS_SECTIONS.find(section => section.id === "device").pages.includes("power"))
+for (const row of [{ value: "30", minimum: 1, maximum: 30, step: 1, unit: "h" },
+                   { value: "11.8", minimum: 11.8, maximum: 12.5, step: .1, unit: "V" }]) {
+  assert.equal(settingControl(row), "slider")
+}
+
+// A section heading (for example "StarPort" on the Developer page) is a label only: no control, no readout, no default button.
+{
+  const heading = { label: "StarPort", value: "", heading: true, available: false, choices: [], key: "heading:starport" }
+  assert.equal(settingControl(heading), "readout")
+  const template = GalaxySettingRow.template
+  assert.match(template, /'gx-row--heading': row\.heading/)
+  assert.match(template, /v-else-if="!row\.heading" class="gx-row__value gx-row__readout"/)
+  assert.match(template, /showDefault && !row\.heading/)
+  assert.match(template, /presentedRow\.reason && !row\.heading/)
+}
+console.log("Settings controls: section headings render as labels only")

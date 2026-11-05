@@ -78,6 +78,9 @@ def manager_init() -> None:
   if params.get_bool("RecordFrontLock"):
     params.put_bool("RecordFront", True, block=True)
 
+  if params.get_bool("AlwaysOnDMLock"):
+    params.put_bool("AlwaysOnDM", True, block=True)
+
   drive_state = DriveStateOwner(params, starpilot_storage_root() / "drive-state")
   try:
     drive_state.initialize_manager()
@@ -89,7 +92,7 @@ def manager_init() -> None:
   for k in params.all_keys():
     if k == b"LKASButtonControl":
       continue  # Card enrolls the vehicle-specific default after identification.
-    default_value = params.get_default_value(k)
+    default_value = not os.path.lexists(params.get_param_path("Version")) if k == b"LaneCentering" else params.get_default_value(k)
     if default_value is not None and not os.path.lexists(params.get_param_path(k)):
       params.put(k, default_value, block=True)
 

@@ -26,7 +26,7 @@ from jeepney.low_level import MessageType
 from jeepney.wrappers import Properties
 
 from openpilot.starpilot.system.starport.bootstrap import WifiCredentials
-from openpilot.starpilot.system.starport.identity import DATA_DIR
+from openpilot.starpilot.system.starport.identity import DATA_DIR, boot_id as _boot_id
 
 NM = "org.freedesktop.NetworkManager"
 NM_PATH = "/org/freedesktop/NetworkManager"
@@ -43,6 +43,11 @@ DEVICE_STATE_DISCONNECTED = 30
 # wlan0 took 32 s and aa0 16 s from creation to ready. At 5 s every cold start gave up on aa0 and joined the car on
 # wlan0, which leaves the head unit's network and its map feed. Long after boot aa0 is ready in under a second.
 DEVICE_READY_TIMEOUT_S = 40.0
+DEVICE_STATES_NOT_MANAGED = (10, 20)  # NM_DEVICE_STATE_UNMANAGED, NM_DEVICE_STATE_UNAVAILABLE
+# A shared interface can be briefly unmanaged (for example while the Wi-Fi mode is being switched). Bugsink showed 19 joins
+# refused with "device is strictly unmanaged"; waiting a few seconds turns a transient state into a normal join, and a
+# device that stays unmanaged is reported as such instead of as an opaque D-Bus error.
+UNMANAGED_WAIT_S = 8.0
 ACTIVE_STATE_ACTIVATED = 2
 ACTIVE_STATE_DEACTIVATED = 4
 # The car sends its Wi-Fi details ~4 s after ignition, but a Honda's access point took ~55 s from ignition to appear
@@ -66,13 +71,6 @@ class DedicatedUnavailable(NetworkError):
 
 class JoinTimeout(NetworkError):
   """The car's network never came up in time."""
-
-
-def _boot_id() -> str:
-  try:
-    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-  except OSError:
-    return ""
 
 
 def _paused_interface(marker: Path) -> str:
@@ -256,6 +254,7 @@ class NetworkLease:
         self._prepare_device(cancelled)
       else:
         self.device_path = self._wifi_device()
+        self._wait_managed(cancelled)
         self._pause_autoconnect()
       active = self._get(self.device_path, NM_DEVICE_IFACE, "ActiveConnection")
       if active and active != "/" and not self.previous_connection and not self.dedicated:
@@ -318,6 +317,22 @@ class NetworkLease:
     if time.monotonic() >= deadline:
       raise DedicatedUnavailable(failure)
     time.sleep(0.25)
+
+  def _wait_managed(self, cancelled: Callable[[], bool], timeout: float = UNMANAGED_WAIT_S) -> None:
+    """Give NetworkManager a few seconds to manage the shared interface before joining on it."""
+    deadline = time.monotonic() + timeout
+    waited = False
+    while (state := self._get(self.device_path, NM_DEVICE_IFACE, "State")) in DEVICE_STATES_NOT_MANAGED:
+      if cancelled():
+        raise NetworkError("cancelled")
+      if time.monotonic() >= deadline:
+        raise NetworkError(f"{self.interface} is unmanaged by NetworkManager (state {state}) after waiting {timeout:.0f} s")
+      if not waited:
+        waited = True
+        self.log("wifi_waiting_managed", interface=self.interface, state=state)
+      time.sleep(0.25)
+    if waited:
+      self.log("wifi_became_managed", interface=self.interface)
 
   def _prepare_device(self, cancelled: Callable[[], bool]) -> None:
     if self.device_ready:

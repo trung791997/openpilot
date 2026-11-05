@@ -60,7 +60,7 @@ class OverrideTests(unittest.TestCase):
     self.assertTrue(armed.event_receipt.consumed)
     self.decision(3)
     self.assertEqual(self.reduce(3, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.0)
-    self.decision(4, candidate=LOW)
+    self.decision(4, candidate=replace(LOW, source=HIGH.source))
     self.assertIsNone(self.reduce(4, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
     self.decision(5, candidate=LOW)
     self.assertIsNone(self.reduce(5, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
@@ -134,18 +134,15 @@ class OverrideTests(unittest.TestCase):
     self.decision(5, policy=display)
     self.assertIsNone(self.reduce(5, policy=display, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
 
-  def test_source_gaps_preserve_the_manual_choice_independently_of_fallback(self):
+  def test_source_gaps_preserve_the_manual_choice(self):
     for kind in (acc.ObservationKind.ABSENT, acc.ObservationKind.UNKNOWN, acc.ObservationKind.STALE):
       with self.subTest(kind=kind):
         self.setUp()
         self.arm()
-        fallback = acc.Policy(confirm_lower=False, confirm_higher=False, fallback_previous=True)
-        self.decision(3, source=kind, policy=fallback)
-        result = self.reduce(3, policy=fallback, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0))
+        self.decision(3, source=kind)
+        result = self.reduce(3, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0))
         self.assertEqual(result.contribution_mps, 25.0)
         self.assertEqual(result.context, self.first.context)
-        self.decision(4, source=kind)
-        self.assertEqual(self.reduce(4, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.)
 
   def test_delayed_acceptance_consumed_effect_cannot_arm_after_release(self):
     pending_policy = acc.Policy(confirm_lower=True, confirm_higher=True)
@@ -179,7 +176,7 @@ class OverrideTests(unittest.TestCase):
   def test_mismatched_snapshot_and_inactive_origin_fail_closed(self):
     change = self.classified()
     self.decision(2)
-    mismatch = self.reduce(2, policy=replace(POLICY, fallback_previous=True), change=change)
+    mismatch = self.reduce(2, policy=replace(POLICY, confirm_lower=True), change=change)
     self.assertTrue(mismatch.errors)
     self.assertEqual(mismatch.state.last_effect_id, 1)
     self.assertTrue(mismatch.state.reset_required)
@@ -199,14 +196,26 @@ class OverrideTests(unittest.TestCase):
   def test_pending_lower_and_rejection_keep_accepted_target_and_intent(self):
     self.arm()
     confirmation = acc.Policy(confirm_lower=True, confirm_higher=True)
-    pending = self.decision(3, candidate=LOW, policy=confirmation)
+    lower = replace(LOW, source=HIGH.source)
+    pending = self.decision(3, candidate=lower, policy=confirmation)
     self.assertEqual(pending.basis, "pending")
     self.assertEqual(self.reduce(3, policy=confirmation, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.0)
     action = acc.DriverAction(SESSION, 2, pending.state.pending.decision_id, acc.ActionKind.REJECT)
-    rejected = acc.step(pending.state, observation(LOW), ACTIVE, confirmation, now_ns=4, action=action)
+    rejected = acc.step(pending.state, observation(lower), ACTIVE, confirmation, now_ns=4, action=action)
     self.accepted = rejected
     self.assertEqual(self.reduce(4, policy=confirmation, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.0)
-    self.assertIn(LOW, rejected.state.rejected)
+    self.assertIn(lower, rejected.state.rejected)
+
+  def test_provider_flapping_preserves_override_until_the_new_limit_qualifies(self):
+    self.arm()
+    for now, candidate in ((3, LOW), (4, HIGH), (5, LOW)):
+      self.decision(now, candidate=candidate)
+      retained = self.reduce(now, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.))
+      self.assertEqual(retained.contribution_mps, 25.)
+    now = 5 + acc.SOURCE_SWITCH_NS
+    self.decision(now, candidate=LOW)
+    adopted = self.reduce(now, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.))
+    self.assertIsNone(adopted.contribution_mps)
 
   def test_mode_owner_change_suppresses_output_without_forgetting_manual_choice(self):
     self.arm()
@@ -217,14 +226,14 @@ class OverrideTests(unittest.TestCase):
     self.decision(4)
     self.assertEqual(self.reduce(4, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.)
 
-  def test_previous_session_history_can_supply_explicit_absent_fallback(self):
+  def test_previous_session_history_does_not_arm_overrides_without_a_live_limit(self):
     prior = acc.AcceptedLimit(acc.Candidate("map", acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value="road"), 20.0),
                               "prior-drive", 0)
-    fallback = acc.Policy(fallback_previous=True)
-    decision = acc.step(acc.new_session(SESSION, prior), acc.Observation(acc.ObservationKind.ABSENT), ACTIVE, fallback, now_ns=1)
-    result = ov.step(ov.new_session(SESSION), decision, ACTIVE, fallback, self.selected, PEDAL_OFF, now_ns=1)
+    policy = acc.Policy()
+    decision = acc.step(acc.new_session(SESSION, prior), acc.Observation(acc.ObservationKind.ABSENT), ACTIVE, policy, now_ns=1)
+    result = ov.step(ov.new_session(SESSION), decision, ACTIVE, policy, self.selected, PEDAL_OFF, now_ns=1)
     self.assertFalse(result.errors)
-    self.assertIsNotNone(result.context)
+    self.assertIsNone(result.context)
 
   def test_automatic_foreign_and_completed_effects_are_watermarked_without_intent(self):
     self.decision(2)
@@ -312,7 +321,7 @@ class OverrideTests(unittest.TestCase):
   def test_target_change_requires_new_action_from_the_new_eligible_context(self):
     self.arm()
     old_effect = self.classified(effect=2, now=3, chosen=26.0)
-    self.decision(3, candidate=LOW)
+    self.decision(3, candidate=replace(LOW, source=HIGH.source))
     lower = self.reduce(3, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 26.0), change=old_effect)
     self.assertIsNone(lower.contribution_mps)
     self.assertFalse(lower.event_receipt.consumed)

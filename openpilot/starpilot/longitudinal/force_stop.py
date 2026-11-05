@@ -5,8 +5,15 @@ import math
 
 from openpilot.common.realtime import DT_MDL
 
-# The stop profile decelerates at 0.65 m/s^2 to the handoff point.
-APPROACH_DECEL = .65
+STANDSTILL_HOLD_NS = 2_000_000_000
+STANDSTILL_CLEAR_NS = 750_000_000
+SIGN_MAX_SPEED_MPS = 17.88
+SIGN_MODEL_AGREE_M = 50.0
+SIGN_SEED_M = 27.0
+SIGN_APPROACH_DECEL = 1.0
+MODEL_APPROACH_DECEL = .65
+# The stop profile decelerates at MODEL_APPROACH_DECEL (sign stops: SIGN_APPROACH_DECEL) to the handoff point.
+APPROACH_DECEL = MODEL_APPROACH_DECEL
 # A light seen late puts the car above that profile. Stepping the ceiling down
 # by 8 m/s braked -2.2 then eased to -0.3 (dongle 11c8fa231c0499ed 0e t=169,
 # replay, limited road evidence). Above this gap the profile is instead the
@@ -59,6 +66,7 @@ class StopFrame:
   steering_angle_deg: float
   resume_requested: bool = False
   perception_available: bool = True
+  sign: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,7 @@ class StopPlan:
   manual_hold: bool = False
   takeoff_light_observed: bool = False
   takeoff_light: bool = False
+  resume_override: bool = False
 
 
 class ForceStop:
@@ -87,28 +96,34 @@ class ForceStop:
     self.from_light = False
     self.light_clear_ns = 0
     self.override_until_ns = 0
+    self.resume_until_ns = 0
     self.entry_speed = None
     self.activation_gate = False
     self.stop_seen_ns = 0
     self.standstill_since_ns = 0
+    self.standstill_clear_ns = 0
     self.standstill_reason = None
+    self.sign_confirmed = False
     self.previously_enabled = False
     self.distance = 0.0
     self.distance_cap = 0.0
     self.approach_decel = None
 
-  def _ceiling(self, speed: float, room: float) -> float:
+  def _ceiling(self, speed: float, room: float, base_decel: float = APPROACH_DECEL) -> float:
+    # base_decel is the profile for this frame (sign stops brake harder). A late entry latches a
+    # steeper constant decel; the profile never brakes softer than base_decel.
     room = max(0.0, room)
     if self.approach_decel is None:
-      self.approach_decel = APPROACH_DECEL
-      if room > 0 and speed - math.sqrt(2 * APPROACH_DECEL * room) > ENTRY_STEP_MPS:
+      self.approach_decel = base_decel
+      if room > 0 and speed - math.sqrt(2 * base_decel * room) > ENTRY_STEP_MPS:
         decel = (speed - ENTRY_DROP_MPS) ** 2 / (2 * room)
         if decel <= ENTRY_MAX_DECEL:
           self.approach_decel = decel
-    return math.sqrt(2 * self.approach_decel * room)
+    return math.sqrt(2 * max(self.approach_decel, base_decel) * room)
 
   def _clear_standstill(self):
     self.standstill_since_ns = 0
+    self.standstill_clear_ns = 0
     self.standstill_reason = None
 
   def step(self, frame: StopFrame, tune: StopTune, offset_ft: int = 0) -> StopPlan:
@@ -130,7 +145,7 @@ class ForceStop:
       self.reset()
       return StopPlan()
     available = frame.perception_available
-    if available and (frame.light or frame.raw_model_stopped):
+    if available and (frame.light or frame.raw_model_stopped) or frame.sign:
       if not frame.standstill:
         self.stop_seen_ns = now
     if frame.standstill:
@@ -144,7 +159,10 @@ class ForceStop:
     permitted = (available and now >= self.override_until_ns and not frame.driving_in_curve and not turn and
                  not frame.tracking_lead and not lead)
     model_path = frame.light and model_active and permitted and not curved
-    active = model_path
+    sign_path = frame.sign and permitted and speed < SIGN_MAX_SPEED_MPS and horizon < SIGN_MODEL_AGREE_M
+    if sign_path:
+      self.sign_confirmed = True
+    active = model_path or sign_path
     if model_path:
       self.from_light = True
       self.light_clear_ns = 0
@@ -152,34 +170,49 @@ class ForceStop:
       self.from_light = False
       self.light_clear_ns = 0
     stop_scene = available and (active or frame.raw_model_stopped)
-    # Reopened geometry may withdraw a moving approach; it cannot classify
-    # a stationary hold as a green light.
     go_scene = available and horizon >= 50.0 and not frame.raw_model_stopped and not frame.model_should_stop
+    held_before = self.previously_enabled and self.standstill_reason is not None
     engaged_stopped = not self.previously_enabled and frame.standstill
-    if frame.standstill and (self.forcing or engaged_stopped and stop_scene) and self.standstill_reason is None:
+    if frame.standstill and self.sign_confirmed and self.standstill_reason != 'sign':
+      self.standstill_since_ns = now
+      self.standstill_reason = 'sign'
+      self.distance = 0
+    elif frame.standstill and (self.forcing or engaged_stopped and stop_scene) and self.standstill_reason is None:
       self.standstill_since_ns = now
       self.standstill_reason = 'unclassified'
       self.distance = 0
+    if self.standstill_reason is not None:
+      if not available or stop_scene:
+        self.standstill_clear_ns = 0
+      elif not self.standstill_clear_ns:
+        self.standstill_clear_ns = now
+    hold_expired = self.standstill_reason not in (None, 'sign') and (
+      now - self.standstill_since_ns >= STANDSTILL_HOLD_NS or
+      self.standstill_clear_ns > 0 and now - self.standstill_clear_ns >= STANDSTILL_CLEAR_NS)
+    if held_before and frame.standstill and frame.resume_requested:
+      self.resume_until_ns = now + 6_000_000_000
+    if abs(speed) >= 2.0 or frame.lead_present or frame.tracking_lead:
+      self.resume_until_ns = 0
     driver_release = frame.pedal_override or frame.resume_requested
-    if self.standstill_reason is not None and driver_release:
+    if self.standstill_reason is not None and (driver_release or hold_expired):
       self.override_until_ns = now + 10_000_000_000
       self._clear_standstill()
     held = self.standstill_reason is not None
     if not available and not self.forcing:
       self.timer = 0
     elif active and not frame.standstill:
-      self.timer = min(2.0, self.timer + DT_MDL)
+      self.timer = min(2.0, self.timer + DT_MDL * (2 if frame.sign else 1))
     elif turn and not self.forcing and not frame.standstill:
       self.timer = 0
     elif held:
       self.timer = max(self.timer, .5)
-    elif self.forcing and frame.standstill and not frame.light and not frame.raw_model_stopped:
+    elif self.forcing and frame.standstill and not frame.sign and not frame.light and not frame.raw_model_stopped:
       self.timer = 0
     else:
       self.timer = max(0, self.timer - DT_MDL * .25)
     force = self.timer >= .5 or self.forcing and not frame.standstill or held
     light_cleared = (not held and self.forcing and self.from_light and not frame.standstill and
-                     available and not frame.light and go_scene)
+                     available and not frame.light and not frame.sign and go_scene)
     low_speed_hold = (light_cleared and tune.low_speed_hold_mps is not None and self.entry_speed is not None and
                       speed <= tune.low_speed_hold_mps and speed < self.entry_speed - .25)
     if light_cleared and not low_speed_hold:
@@ -208,7 +241,7 @@ class ForceStop:
         ceiling = 0.0
       else:
         self.distance = max(0.0, self.distance - speed * dt)
-        if (available and self.distance > max(tune.handoff_m, 40) and not frame.model_should_stop and
+        if (available and not frame.sign and self.distance > max(tune.handoff_m, 40) and not frame.model_should_stop and
             horizon > self.distance + 3 and (tune.reanchor_speed_tolerance is None or self.entry_speed is None or
                                             speed >= self.entry_speed - tune.reanchor_speed_tolerance)):
           self.distance = horizon
@@ -216,18 +249,25 @@ class ForceStop:
           self.distance = min(self.distance, horizon)
         self.distance_cap = max(0.0, self.distance_cap - speed * dt)
         self.distance = min(self.distance, self.distance_cap + 15 * min(self.distance_cap / 60, 1))
+        if frame.sign and available:
+          if horizon < SIGN_MODEL_AGREE_M:
+            self.distance = min(self.distance, SIGN_SEED_M)
+          if horizon < SIGN_SEED_M:
+            self.distance = horizon
         effective = self.distance + offset + tune.distance_bias_m
-        ceiling = self._ceiling(speed, effective - tune.handoff_m)
+        decel = SIGN_APPROACH_DECEL if frame.sign else MODEL_APPROACH_DECEL
+        ceiling = self._ceiling(speed, effective - tune.handoff_m, decel)
     else:
       self.forcing = False
       self.entry_speed = None
+      self.sign_confirmed = False
       self._clear_standstill()
       self.distance = self.distance_cap = horizon if available else 0.0
       if frame.light and permitted and not curved and not overridden:
         approach = horizon
         effective = approach + offset + tune.distance_bias_m
         if effective > tune.handoff_m:
-          ceiling = self._ceiling(speed, effective - tune.handoff_m)
+          ceiling = self._ceiling(speed, effective - tune.handoff_m, MODEL_APPROACH_DECEL)
       if ceiling is None:
         self.approach_decel = None
     self.previously_enabled = frame.enabled
@@ -237,4 +277,5 @@ class ForceStop:
     obstacle = stop_length * .93 + offset + tune.distance_bias_m if stop_length > tune.handoff_m else None
     return StopPlan(now, ceiling, obstacle, self.forcing, bool(self.forcing and ceiling is not None and ceiling <= .5),
                     self.distance if self.forcing else 0.0, approach,
-                    tune.jerk_scale if self.forcing or approach > 0 else 1.0, bool(held and self.forcing and not overridden))
+                    tune.jerk_scale if self.forcing or approach > 0 else 1.0, bool(held and self.forcing and not overridden),
+                    resume_override=now < self.resume_until_ns)
