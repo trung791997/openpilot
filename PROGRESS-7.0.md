@@ -75,7 +75,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 **Tests:** static. `test_bosch_a_onset_ramp.py` (10 new) passes, and the longitudinal suites pass (806). The upstream planner's pinned hash in `provenance.json` is updated for the hook.
 
-**Not verified:** not driven. The cost is up to ~0.9 m of min gap on far brakes that turn hard, and a Python port has no parity check against Job's harness yet.
+**Not verified:** not driven. The cost is up to ~0.9 m of min gap on far brakes that turn hard,. Parity (replay): the shipped class matches Job's R4b harness exactly (max |ΔaT| 0 on every replayed event, 12 of 13 groups; vn83 had no cache).
 
 ### 14 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
 
