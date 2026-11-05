@@ -85,7 +85,7 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                 lat_action_t)
   else:
     desired_accel = model_output['action'][0,1]
-    desired_curvature = model_output['action'][0,0] / (max(2.5, v_ego))**2
+    desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -601,7 +601,7 @@ def main(demo=False):
       prev_action.desiredCurvature = sm['controlsState'].curvature
 
     if isinstance(model, CatalogModelState) or model is jetlink_model:
-      inputs['prev_action'] = np.array([prev_action.desiredCurvature * max(2.5, v_ego) ** 2,
+      inputs['prev_action'] = np.array([prev_action.desiredCurvature * max(1.0, v_ego) ** 2,
                                         prev_action.desiredAcceleration], dtype=np.float32)
       inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
 
