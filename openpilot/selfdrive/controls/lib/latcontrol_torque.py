@@ -12,6 +12,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 from openpilot.starpilot.lateral.controller_selection import ControllerMode, default_selection, policy_for
+from openpilot.starpilot.lateral.torque_shaping import KP as STARPILOT_KP
 from openpilot.starpilot.lateral.torque_extension import apply_turn_assist, create_extension, create_turn_assist
 from openpilot.starpilot.flm import live as flm
 
@@ -62,8 +63,12 @@ class LatControlTorque(LatControl):
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
     self.turn_assist = create_turn_assist(CP, turn_assist)
     self.starpilot_extension = create_extension(self, CP, self.controller_mode, self.controller_policy, turn_assist=turn_assist)
+    if self.starpilot_extension is not None:
+      self.pid._k_p = [[0.0], [STARPILOT_KP]]
     self.flm_source = flm.GmLiveSource(CP, self.controller_mode)
     self.flm_surface = None
+    self.manual_flm_effects = None
+    self.manual_flm_status = 'not_configured'
     from openpilot.starpilot.flm.runtime_adapter_registry import baseline_values
     self.native_learning_baseline = baseline_values(self)
     self.native_learning_refinement = None
@@ -93,6 +98,8 @@ class LatControlTorque(LatControl):
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     self.flm_surface = self.flm_source.sample(active=active, speed=CS.vEgo)
+    if self.manual_flm_effects is not None:
+      self.manual_flm_effects.begin_frame()
     if self.starpilot_extension is not None:
       result = self.starpilot_extension.update(active, CS, VM, params, steer_limited_by_safety,
                                                 desired_curvature, curvature_limited, lat_delay)

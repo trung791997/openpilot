@@ -13,7 +13,7 @@ import zlib
 import numpy as np
 from dataclasses import replace
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.layout_preview_transport import SCENES, validate_preview_document
 from openpilot.starpilot.ui.developer_preview import OnroadVisualPreview
@@ -96,6 +96,7 @@ def sample_state(scene: str, document: dict) -> OnroadState:
                      metric=False, experimental_available=True,
                      experimental_enabled=scene == "experimental" or scene in CEM_SCENE_REASONS, lateral_active=lateral,
                      longitudinal_active=longitudinal, stock_cruise_active=False,
+                     lead_detected=True, gas_pressed_override=scene == 'slc_pedal',
                      slc_system_long_available=longitudinal, slc_wheel_confirmation_available=longitudinal, torque_utilization=0.78 if lateral else 0.0,
                      customization=document,
                      slc_prompt_open=scene == 'slc_pending',
@@ -327,7 +328,7 @@ class _Canvas:
       if scale < 1.0:
         width, height = round(width * scale), round(height * scale)
         rl.image_resize(image, width, height)
-      return _png_rgba(width, height, bytes(rl.ffi.buffer(image.data, width * height * 4)))
+      return _png_rgba(width, height, bytes(image.data[:width * height * 4]))
     finally:
       rl.unload_image(image)
 
@@ -385,7 +386,7 @@ class _Canvas:
       try:
         rl.clear_background(rl.BLANK)
         # Match the runtime's transparent cache coverage before exporting straight-alpha PNG.
-        rl.rl.rlSetBlendFactorsSeparate(0x0302, 0x0303, 1, 0x0303, 0x8006, 0x8006)
+        rl.rl_set_blend_factors_separate(0x0302, 0x0303, 1, 0x0303, 0x8006, 0x8006)
         rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
         try:
           if general and key == 'driver_monitor':
@@ -402,7 +403,7 @@ class _Canvas:
         rl.image_format(image, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
         rl.image_flip_vertical(image)
         rl.image_crop(image, rl.Rectangle(crop_x, crop_y, width, height))
-        captures.append((key, _straight_rgba(bytes(rl.ffi.buffer(image.data, width * height * 4)))))
+        captures.append((key, _straight_rgba(bytes(image.data[:width * height * 4]))))
       finally:
         rl.unload_image(image)
     sheet_width = max(slot['x'] + slot['width'] for slot in sprites.values())
@@ -421,6 +422,15 @@ class _Canvas:
   def _settle(self, state: OnroadState) -> None:
     if self.view is None:
       return
+    personality = self.view.personality
+    personality._alpha_filter.x = 1.0
+    personality._personality = state.personality
+    personality._personality_changed_time = -2.5
+    active_lead = state.lead_detected and state.cruise_active
+    personality._lead_car_filters[0].x = 0.0 if active_lead else 1.0 if state.lead_detected else .35
+    personality._lead_car_filters[1].x = float(active_lead)
+    for i, (active, green) in enumerate(personality._distance_filters):
+      active.x, green.x = float(i < (1 if state.traffic_mode else state.personality + 1)), 0.0
     if self.profile == Profile.COMPACT:
       hud = self.view.compact_hud
       # Freeze the synthetic sample inside the normal post-change set-speed blink.

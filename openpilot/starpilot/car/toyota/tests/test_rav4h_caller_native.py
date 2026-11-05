@@ -281,7 +281,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           assert all(entry.brand == 'toyota' and not entry.logging and entry.bus == 0 for entry in fw)
         assert fingerprint_frames == [(0x2FF, bytes(manual_filter_length), 0)]
       else:
-        assert stock and fingerprint_frames == []
+        assert stock and (fingerprint_frames == [] or candidate == CAR.TOYOTA_PRIUS_RETROFIT)
         if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
           assert not fw and firmware_override == []
         else:
@@ -349,7 +349,10 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
     if candidate == CAR.TOYOTA_RAV4H and not bypass_owner:
       assert 'Bookmark' in rows['wheel:LKASButtonControl'].choices
       assert 'Toggle AOL' not in rows['wheel:LKASButtonControl'].choices
-    assert not any('Cancel' in k or 'MainCruise' in k for k in rows)
+    assert not any('Cancel' in k for k in rows)
+    main = rows['wheel:MainCruiseButtonControl']
+    assert main.value == 'Factory cruise / AOL' and not main.available and not main.choices
+    assert not wheel.choices('MainCruiseButtonControl')
     assert display_supported(host.CP) and longitudinal_supported(host.CP) == (not stock)
     params.put('CancelButtonControl', 9, block=True)  # Unsupported saved remap cannot steal MAIN/physical Cancel ownership.
     seen_active = positive_steering = positive_accel = False

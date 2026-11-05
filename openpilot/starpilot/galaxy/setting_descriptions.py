@@ -4,11 +4,13 @@ Rows and their availability still come from the canonical feature owners.
 This presentation catalog supplies the purpose before any genuine prerequisite.
 """
 from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HELP
+from openpilot.starpilot.ui.feature_settings_state import SLC_OFFSET_KEYS
 
 DESCRIPTIONS = {
+  'DisengageOnAccelerator': 'When enabled, pressing the accelerator pedal will disengage openpilot.',
+  'ReduceMotion': 'Reduces interface animations for a steadier display.',
   'IsMetric': 'On displays speed and distance in kilometers; Off uses miles. Saved speed-limit offsets keep their physical values.',
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
-  'FordPrefSteerAngleCurvature': 'Uses steering pinion angle instead of yaw rate to estimate Ford steering curvature. Applies at the next vehicle startup.',
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
   'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
                               'Applies after the next startup; exact vehicle takeover checks remain required.'),
@@ -59,6 +61,7 @@ DESCRIPTIONS = {
   'FasterLeadTakeoff': ('Improves launches from a stop and responds sooner when a lead starts moving. ' +
                         'Selected acceleration profiles, stop detection and vehicle limits still apply.'),
   'CustomPersonalities': 'Uses your following-time and jerk settings for the selected driving personality.',
+  'profile:stopped_gap': 'Adds this distance to the following gap behind a stopped lead vehicle.',
   'profile:global_acceleration': 'Chooses the acceleration curve used by personalities set to Selected Profile.',
   'profile:global_braking': 'Chooses the braking response used by personalities set to Selected Profile.',
   'reset_profiles': 'Restores the default acceleration, braking and following curves and presets.',
@@ -71,11 +74,11 @@ DESCRIPTIONS = {
   'SLCConfirmation': 'Auto adopts new limits immediately. Confirm lower or higher limits still asks in that direction. With Automatic adoption off, every new limit asks: + accepts and − declines within 10 seconds, and no answer keeps the current speed.',
   'SLCConfirmationLower': 'With Automatic adoption on, asks before a lower limit such as a school zone lowers cruise speed. No answer in 10 seconds keeps the current speed.',
   'SLCConfirmationHigher': 'With Automatic adoption on, asks before a higher limit raises cruise speed. No answer in 10 seconds keeps the current speed.',
+  'SLCAdvanceSeconds': 'Offers mapped limits early using road distance and current speed. Existing adoption and confirmation settings still apply.',
   'SLCPriority1': 'Chooses the first source checked for a fresh speed limit.',
   'SLCPriority2': 'Chooses the source used when the primary source has no fresh speed limit.',
-  'SLCFallback': 'Keeps the previously accepted speed limit when sources are unavailable, until another limit is accepted.',
-  'slc_adopt': 'Keeps the current speed-limit offset schedule fixed when display units change.',
   'slc_reset': 'Resets saved speed-limit offsets while retaining valid configured speed ranges.',
+  'reset_calibration': 'Clears saved camera and steering calibration. The device recalibrates on the next drive.',
   'reset_driver_monitoring': 'Clear saved wheel-side detection. Automatic detection restarts on the next drive.',
   'AlwaysAllowUploads': 'Allows queued full logs and videos to upload over metered networks. This uses mobile data.',
   'UploadRlogs': ('Uploads the full rlog of every finished segment while driving, on any connection including phone hotspots. ' +
@@ -94,7 +97,6 @@ DESCRIPTIONS = {
   'GMLongitudinalTune': 'Selects the supported vehicle speed-control response tune.',
   'TruckTuning': 'Softens small acceleration requests, reduces grade correction and smooths light braking on supported GM trucks.',
   'EVTuning': 'Selects EV acceleration curves for inherited acceleration presets.',
-  'FordLateralMode': 'Chooses the native Ford steering controller or the supported BluePilot angle controller.',
   'TeslaAOLScreenTap': 'Lets a three-finger tap on a supported Tesla screen toggle Always On Lateral.',
   'TeslaAOLDisengageOnBrake': 'Disarms screen-tap Always On Lateral when you press the brake.',
   'HondaEpsAngleRateLimit': 'Caps how fast the desired steering-wheel angle may move. 0 turns the cap off.',
@@ -106,13 +108,17 @@ DESCRIPTIONS = {
   'RemoteStartBootsComma': 'Wakes comma during GM remote start.',
   'HKGRemoteStartBootsComma': 'Wakes comma during Hyundai, Kia or Genesis remote climate operation.',
   'IgnoreIgnitionLine': 'Uses GM CAN ignition instead of the harness ignition signal.',
+  'heading:starport': 'Settings for connecting Android Auto to the car through StarPort.',
+  'StarPortNewSetup': 'Shows the guided StarPort setup with a live checklist instead of the classic setup screens.',
+  'StarPortAllowHevc': 'Lets a car that offers only H.265 video receive H.265; a car with an H.264 mode keeps H.264.',
+  'StarPortDedicatedWifi': "Joins the car's Wi-Fi on a second interface so the comma stays on its home Wi-Fi or phone hotspot.",
   'TeslaWakeOnCAN': 'Wakes comma when the Tesla wakes up, before you press the brake.',
   'RadarRecoveryAlert': 'Play a chime and show a brief message when a radar fault clears. You must re-engage manually.',
   'CameraView': 'Chooses the camera view shown on the driving screen.',
   'DeveloperSidebar': 'Shows live developer metrics on the right of the Big driving screen. Off gives that space back to the road view.',
   'DriverCamera': 'Shows the driver camera while reversing.',
   'StockConfidenceBallWidget': 'Uses StarPilot driving widgets in place of the stock confidence ball.',
-  'HidePersonalityAlerts': 'Hides the alert shown when the driving personality changes.',
+  'HidePersonalityAlerts': 'Hides the alert shown when the driving personality changes on the comma and Android Auto.',
   'ShowBrakeStatus': 'Colors the steering wheel to show braking and acceleration.',
   'HideLeadMarker': 'Shows the lead-vehicle indicator on the driving screen.',
   'LeadInfo': 'Shows the lead vehicle distance or speed beside its indicator.',
@@ -125,6 +131,9 @@ DESCRIPTIONS = {
   'ScreenTimeoutOnroad': 'Sets the wait after interaction before returning to the driving view or turning off the screen if configured.',
   'KeepScreenOnGpuLoading': 'Keeps the driving screen visible while an eGPU model loads. Manual Screen Off still works.',
   'TurnOffCommaScreen': 'Pauses comma UI rendering to reduce CPU and GPU use. Tap once to wake the screen.',
+  'LoudBlindspotAlert': 'Uses the soft-warning sound when a lane change is blocked by a detected blind-spot vehicle.',
+  'LoudBlindspotAlertWhenDisengaged': ('Warns when signaling toward a detected blind-spot vehicle with steering assistance off or paused. ' +
+                                      'Independent of Loud Blindspot Alert. Hazards do not trigger it.'),
   'SoundPack': 'Chooses the sounds used for driving alerts and chimes.',
   'WarningImmediateVolume': 'Sets the starting volume of immediate warnings. These warnings still ramp to full volume.',
   'WarningSoftVolume': 'Sets the starting volume of soft warnings. Warning volume keeps its required minimum.',
@@ -153,10 +162,28 @@ DESCRIPTIONS = {
   'conditional:mode': 'Chooses Chill, Experimental or automatic switching based on the configured driving conditions.',
   'conditional:reset': 'Restores the default conditional driving-mode settings.',
   'conditional:manual_reset': 'Returns both remembered manual driving-mode choices to Automatic.',
+  'FordPrefLateralControl': ('Chooses BluePilot Curvature, BluePilot Angle or StarPilot Controller. Mach-E and classic Explorer' +
+    ' default to StarPilot; other supported Fords default to BluePilot Curvature. Lane centering and offset use the global' +
+    ' StarPilot settings. Change while parked.'),
+  'FordPrefSteerAngleCurvature': ('Measures curvature from the steering pinion angle instead of the yaw-rate sensor, in control and' +
+    ' Panda safety. For Fords with a faulty yaw sensor.'),
+  'enable_human_turn_detection_curv': 'Eases off steering while you turn the wheel through a turn yourself.',
+  'lane_change_factor_high_curv': 'Scales steering during a lane change. Values under 1.0 soften it.',
+  'custom_profile_curv': 'Uses the two predicted-curvature blend settings below instead of the built-in profile.',
+  'pc_blend_ratio_low_C_UI_curv': 'Mixes predicted curvature into gentle curves: 0 follows the plan, 1 follows the prediction.',
+  'pc_blend_ratio_high_C_UI_curv': 'Mixes predicted curvature into sharp curves: 0 follows the plan, 1 follows the prediction.',
+  'FordLowSpeedFactor_ang': 'Scales the low-speed steering response in angle mode. 1.0 is the default feel.',
+  'FordHighSpeedFactor_ang': 'Scales the high-speed steering response in angle mode. 1.0 is the default feel.',
+  'FordHighSpeedDampening_ang': ('Tunes the straight-road response at highway speed in angle mode: lower it if the car oversteers,' +
+    ' raise it if it understeers.'),
+  'lane_change_factor_high_ang': 'Scales steering during a lane change in angle mode. Values over 1.0 strengthen it.',
 }
 
 # These are initialization explanations, not a second defaults table.
 INITIALIZATION = {
+  'StarPortNewSetup': 'Applies the next time the setup screen opens.',
+  'StarPortAllowHevc': 'Applies from the next StarPort connection.',
+  'StarPortDedicatedWifi': 'Applies from the next StarPort connection.',
   'LateralControllerSelection': ('Applies when driving processes next start: the controller class, vehicle policy and ' +
     'PID/filter state are constructed together.'),
   'UseStarPilotLongitudinalPlanner': 'Applies when the planner next starts: each choice runs a different planner process with its own subscriptions and state.',
@@ -171,13 +198,13 @@ INITIALIZATION = {
   'VoltOnePedalMode': ('First enable requires the next vehicle startup to configure the braking safety ' +
     'permission. An already admitted mode can be disabled live.'),
   'VoltSNG': 'Applies when the vehicle controller next starts: its fresh resume-plan input is created for the selected stop-and-go mode.',
-  'FordLateralMode': 'Requires the next vehicle startup to select the steering controller, admitted CAN mode and Panda safety word.',
   'TeslaAOLScreenTap': 'Requires the next vehicle startup to configure the screen-button CAN source and matching safety permission.',
   'TeslaAOLDisengageOnBrake': 'Requires the next vehicle startup to configure the screen-button brake/disarm safety permission.',
   'RemoteStartBootsComma': 'Requires a device restart to load the matching Panda ignition firmware.',
   'HKGRemoteStartBootsComma': 'Requires a device restart to load the matching Panda ignition firmware.',
   'IgnoreIgnitionLine': 'Requires a device restart to load the matching Panda ignition firmware.',
   'TeslaWakeOnCAN': 'Requires a device restart to load the matching Panda ignition firmware.',
+  'FordPrefSteerAngleCurvature': 'Requires the next vehicle startup to configure the pinion measurement in Panda safety.',
 }
 
 CONDITIONS = {
@@ -232,7 +259,7 @@ def purpose(row):
     suffix = next((name for name in VALUE_HELP if key.endswith(name)), None)
     value = VALUE_HELP.get(suffix)
     return value + ' Blends toward Relaxed as speed rises in Traffic mode.' if value and key.startswith('Traffic') else value
-  if key in tuple('Offset'+str(index) for index in range(1, 8)):
+  if key in SLC_OFFSET_KEYS:
     return 'Adds or subtracts this offset from the accepted speed limit within the displayed speed range.'
   if key.startswith('long_repair:'):
     return 'Restores the default value of this invalid longitudinal setting.'
@@ -246,6 +273,10 @@ def purpose(row):
     return 'Selects camera crop dimensions matching the source camera image.'
   if key.startswith('pip:mask:'):
     return 'Moves the camera-image crop center along the indicated axis.'
+  if key.startswith('torque:surface:'):
+    return ('Removes the thirty manual steering overrides while keeping saved Auto Learn history.'
+            if key == 'torque:surface:reset' else
+            'Adjusts this manual steering correction.')
   if key.startswith('torque:'):
     field = key.split(':')[1]
     return {'factor': 'Sets the lateral-acceleration-to-torque conversion for compatible steering controllers.',
@@ -273,6 +304,8 @@ def description(row):
   suffix = INITIALIZATION.get(row.key, '')
   if row.key.startswith('lane_change:') and row.key not in ('lane_change:close_gap', 'lane_change:close_gap_seconds', 'lane_change:reset'):
     suffix = 'Changes apply when the current signal and maneuver end; turning assistance off cancels it after the preference refresh.'
+  if row.key.startswith('torque:surface:'):
+    suffix = row.reason.strip()
   if row.key.startswith('torque:') and row.key.split(':')[1] in ('factor', 'friction', 'gain'):
     suffix = ('First activation of a manual tuning owner requires a driving-process restart. An ' +
       'already active owner refreshes saved adjustments during the drive.')
@@ -286,7 +319,7 @@ def description(row):
     suffix = ('Axis-pause and AOL assignments require the next vehicle startup to configure the ' +
       'native button permissions. Other actions refresh during the drive.')
   if row.key == 'GMLongitudinalTune':
-    suffix = 'ACC Tune refreshes during the drive. Volt Tune initializes its stop/start response when driving processes start.'
+    suffix = 'ACC Tune refreshes during the drive.'
   warning = row.reason.strip().removeprefix('Saved for this vehicle. ')
   related = any(word in warning.lower() for word in
     ('temporarily ignored', 'temporarily ignores', 'fixed torque conversion', 'inactive while', 'custom display is off',

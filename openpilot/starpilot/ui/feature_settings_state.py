@@ -57,6 +57,8 @@ class FeaturePage(StrEnum):
   TRAFFIC = "traffic"
   CURVE = "curve"
   TORQUE = "torque"
+  TUNING = "tuning"
+  BLUEPILOT = "torque/bluepilot"
   AOL = "aol"
   WHEEL = "wheel"
   CONDITIONAL = "conditional"
@@ -65,13 +67,23 @@ class FeaturePage(StrEnum):
   NIGHT_STAR = "night_star"
 
 
-TORQUE_CONFIRM_ACTIONS = frozenset(("torque_adopt", "torque_reset", "torque_reset_profile", "torque_rebase", "torque_prepare_firestar", "torque_gain_rebase"))
-SLC_CONFIRM_ACTIONS = frozenset(("slc_adopt", "slc_reset"))
+TORQUE_CONFIRM_ACTIONS = frozenset(("torque_adopt", "torque_reset", "torque_reset_profile", "torque_rebase",
+                                  "torque_prepare_firestar", "torque_gain_rebase", "torque:surface:reset"))
+SLC_CONFIRM_ACTIONS = frozenset(("slc_reset",))
+SLC_OFFSET_KEYS = tuple(f"slc:offset:{index}" for index in range(1, 8))
 LANE_CHANGE_CONFIRM_ACTIONS = frozenset(("lane_change:reset",))
 CURVE_CONFIRM_ACTIONS = frozenset(("curve_reset",))
 CONDITIONAL_CONFIRM_ACTIONS = frozenset(("conditional:reset", "conditional:manual_reset"))
 FEATURE_CONFIRM_ACTIONS = (TORQUE_CONFIRM_ACTIONS | SLC_CONFIRM_ACTIONS | LANE_CHANGE_CONFIRM_ACTIONS |
                            CURVE_CONFIRM_ACTIONS | CONDITIONAL_CONFIRM_ACTIONS | {"reset_profiles", "pip:reset", "sentry:reset"})
+
+
+HEADING_PREFIX = "heading:"
+
+
+def is_heading(key: str) -> bool:
+  """A section title inside a page: shown like a row but never a control, and never a change request."""
+  return key.startswith(HEADING_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -279,7 +291,7 @@ def feature_parent_page(page: str) -> str | None:
 def feature_parent_title(page: str) -> str:
   parent = feature_parent_page(page)
   return {None: "StarPilot", FeaturePage.HUB: "Driving Controls", FeaturePage.PROFILES: "Long Planner",
-          FeaturePage.CONDITIONAL: "Conditional Driving Modes"}.get(parent, (parent or "").replace("_", " ").title())
+          FeaturePage.CONDITIONAL: "Conditional Driving Modes", FeaturePage.TORQUE: "Steering and Torque"}.get(parent, (parent or "").replace("_", " ").title())
 
 
 def boolean_value(row: FeatureRow) -> bool | None:
@@ -288,8 +300,6 @@ def boolean_value(row: FeatureRow) -> bool | None:
     return None
   if row.value in ("Off", "On"):
     return row.value == "On"
-  if row.key == "SLCFallback" and row.value == "Off (saved mode 0 or 1)":
-    return False
   return None
 
 
@@ -532,7 +542,7 @@ def row_change(row: FeatureRow, direction: int = 1) -> FeatureSettingsRequest | 
   """Bind a press to the displayed source, never a later refreshed value."""
   if not row.available:
     return None
-  if row.key in ("Offset1", "Offset2", "Offset3", "Offset4", "Offset5", "Offset6", "Offset7"):
+  if row.key in SLC_OFFSET_KEYS:
     if direction not in (-1, 1):
       return None
     return FeatureSettingsRequest(row.key, row.source, "", related_source=row.related_source,
@@ -541,12 +551,9 @@ def row_change(row: FeatureRow, direction: int = 1) -> FeatureSettingsRequest | 
   if row.repair_value:
     value = row.repair_value
   elif row.choices and not (row.choices == ("Auto",) and row.step and row.value != "Auto"):
-    if row.key == "SLCFallback":
-      value = "Off" if row.value == "On" else "On"
-    else:
-      if row.value not in row.choices:
-        return None
-      value = row.choices[(row.choices.index(row.value) + direction) % len(row.choices)]
+    if row.value not in row.choices:
+      return None
+    value = row.choices[(row.choices.index(row.value) + direction) % len(row.choices)]
   elif row.step:
     try:
       current = float(row.value)

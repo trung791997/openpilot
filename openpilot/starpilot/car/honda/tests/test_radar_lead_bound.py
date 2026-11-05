@@ -3,6 +3,7 @@ camera's range contradicting the radar's closing), 2ed T338.6 (a real truck the 
 model lead moved on past the radar lead and calls for no braking)."""
 import math
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -174,7 +175,7 @@ def one_point():
 
 def test_card_sends_the_statuses_after_the_tracks_they_describe():
   car = SimpleNamespace(RI=SimpleNamespace(point_statuses={55: 9}), pm=FakePM())
-  Car.radar_publish(car, one_point())
+  Car.radar_publish(cast(Car, car), one_point())
   (tracks_service, tracks_msg), (status_service, status_msg) = car.pm.sent
   assert (tracks_service, status_service) == ('radarTracks', 'starpilotCarState')
   assert status_msg.starpilotCarState.radarTracksMonoTime == tracks_msg.logMonoTime > 0
@@ -184,7 +185,7 @@ def test_card_sends_the_statuses_after_the_tracks_they_describe():
 
 def test_card_sends_no_carrier_for_other_radars():
   car = SimpleNamespace(RI=SimpleNamespace(), pm=FakePM())
-  Car.radar_publish(car, one_point())
+  Car.radar_publish(cast(Car, car), one_point())
   assert [service for service, _ in car.pm.sent] == ['radarTracks']
 
 

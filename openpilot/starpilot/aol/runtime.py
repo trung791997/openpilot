@@ -184,7 +184,8 @@ def decide_axes(*, standard_lateral: bool, standard_longitudinal: bool, intent,
                   not car_state.steerFaultTemporary and
                   (pause_brake_mps <= 0 or not car_state.brakePressed or car_state.vEgo >= pause_brake_mps or car_state.standstill))
   desired_lateral = bool(lateral_safe and not intent.pauseLateral and (standard_lateral or intent.allowedLatch))
-  desired_longitudinal = bool(driving and standard_longitudinal and not car_state.seatbeltUnlatched and not intent.pauseLongitudinal)
+  desired_longitudinal = bool(driving and standard_longitudinal and not car_state.doorOpen and
+                              not car_state.seatbeltUnlatched and not intent.pauseLongitudinal)
   lateral_ack = native is not None and bool(native.requestedLateral) == desired_lateral
   longitudinal_ack = native is not None and bool(native.requestedLongitudinal) == desired_longitudinal
   return AxisDecision(
@@ -207,42 +208,49 @@ def current_axis(sm, *, now_ns: int):
   return state
 
 
-def refresh_expired_lateral_snapshot(sm, *, now_ns: int) -> bool:
-  """Receive queued AOL inputs once; an expired LAT-only proof never gains time."""
-  axis = sm['aolAxisState']
-  if (sm.seen['aolAxisState'] and sm.valid['aolAxisState'] and sm.alive['aolAxisState'] and
-      axis.qualified and axis.nativeAcknowledged and axis.sessionId and
-      axis.lateralActive and axis.desiredLateral and
-      not axis.longitudinalActive and not axis.desiredLongitudinal and
-      0 < sm.logMonoTime['aolAxisState'] <= axis.observedMonoTime <= axis.validUntilMonoTime < now_ns):
-    # All normal authority, source, physical and native gates run on the newly
-    # received snapshot. An empty receive leaves the expired proof untouched.
-    sm.update(0)
-    return True
-  return False
-
-
+# Route 00000080--bdf63ac92f (2026-11-03): a held LAT+LONG proof can lapse mid-cycle while a newer one
+# already waits; see refresh_expired_lateral_snapshot(margin_ns=...).
 COMBINED_REFRESH_MARGIN_NS = 15_000_000
 
 
-def refresh_expiring_combined_snapshot(sm, *, now_ns: int) -> bool:
-  """Receive queued AOL inputs once when a held LAT+LONG proof is about to lapse; it never gains time.
+def refresh_expired_lateral_snapshot(sm, *, now_ns: int, allow_combined: bool = False, margin_ns: int = 0,
+                                     wait_for_new: bool | None = None) -> bool:
+  """Receive a replacement AOL proof; an expired proof never gains time.
 
-  Route 00000080--bdf63ac92f (2026-11-03, segs 9/19/26): lat and long dropped together for one 10 ms
-  frame every ~2.3 s with every logged axis and native input fresh, valid and allowed. Each mid-brake
-  drop sent an inactive ACC frame and the brake let go for ~1 s (aEgo -1.2 -> -0.2 under a -1.5
-  command). The axis lease is 30 ms, so a cycle holding the previous axis can lapse while a newer one
-  already waits. Only already-queued messages are taken; every normal gate still runs on them.
-  Log evidence only: the live gate is not logged, see axis_drop_reason.
+  With margin_ns > 0, a held LAT+LONG proof (allow_combined) is also refreshed once it is within
+  margin_ns of lapsing, by lease or by publish age. LAT-only proofs keep the expired-only test.
+  Route 00000080--bdf63ac92f (2026-11-03, segs 9/19/26; limited road evidence): lat and long dropped
+  together for one 10 ms frame every ~2.3 s with every logged axis and native input fresh, valid and
+  allowed. Each mid-brake drop sent an inactive ACC frame and the brake let go for ~1 s. The axis
+  lease is 30 ms, so a cycle holding the previous axis can lapse while a newer one already waits.
+
+  Only already-queued messages are taken (sm.update(0)); every normal gate still runs on them, and an
+  empty receive leaves the held proof and its deadline untouched. wait_for_new (default: allow_combined,
+  the GM late refresh) additionally waits at most one control tick for a new proof when none was queued.
   """
   axis = sm['aolAxisState']
   if (sm.seen['aolAxisState'] and sm.valid['aolAxisState'] and sm.alive['aolAxisState'] and
       axis.qualified and axis.nativeAcknowledged and axis.sessionId and
-      axis.lateralActive and axis.desiredLateral and axis.longitudinalActive and axis.desiredLongitudinal and
-      0 < int(sm.logMonoTime['aolAxisState']) and 0 < axis.observedMonoTime <= axis.validUntilMonoTime and
-      (int(axis.validUntilMonoTime) - now_ns < COMBINED_REFRESH_MARGIN_NS or
-       now_ns - int(sm.logMonoTime['aolAxisState']) > AXIS_MAX_AGE_NS - COMBINED_REFRESH_MARGIN_NS)):
+      axis.lateralActive and axis.desiredLateral and
+      ((not axis.longitudinalActive and not axis.desiredLongitudinal) or
+       (allow_combined and axis.longitudinalActive and axis.desiredLongitudinal)) and
+      0 < sm.logMonoTime['aolAxisState'] <= axis.observedMonoTime <= axis.validUntilMonoTime and
+      (axis.validUntilMonoTime < now_ns or
+       (margin_ns > 0 and allow_combined and axis.longitudinalActive and axis.desiredLongitudinal and
+        (axis.validUntilMonoTime < now_ns + margin_ns or
+         now_ns - sm.logMonoTime['aolAxisState'] > AXIS_MAX_AGE_NS - margin_ns)))):
+    # All normal authority, source, physical and native gates run on the newly
+    # received snapshot. An empty receive leaves the held proof untouched.
+    header_ns = sm.logMonoTime['aolAxisState']
     sm.update(0)
+    if (allow_combined if wait_for_new is None else wait_for_new) and sm.logMonoTime['aolAxisState'] == header_ns:
+      from openpilot.cereal import messaging
+      # GM EPS can refuse a one-frame withdrawal. Wait at most one control tick
+      # for a new proof; all permission and physical checks still run afterward.
+      poller = messaging.Poller()
+      poller.registerSocket(sm.sock['aolAxisState'])
+      poller.poll(10)
+      sm.update(0)
     return True
   return False
 

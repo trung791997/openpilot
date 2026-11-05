@@ -1,5 +1,5 @@
 import math
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter

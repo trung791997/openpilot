@@ -552,6 +552,8 @@ class RuntimeReplayTests(unittest.TestCase):
     from openpilot.cereal import messaging
     from openpilot.selfdrive.car import card
     now_ns = time.monotonic_ns()
+    # Advance logical source time explicitly below, independent of host scheduling.
+    self.enterContext(mock.patch.object(card.time, 'monotonic_ns', return_value=now_ns))
     observation = SimpleNamespace(status=Status.VALID, speed_mps=30.0, observed_ns=now_ns - 20_000_000,
                                   valid_until_ns=now_ns + 1_000_000_000, episode=4)
     state = messaging.new_message('slcState')
@@ -622,7 +624,7 @@ class RuntimeReplayTests(unittest.TestCase):
       {'carControl': car.CarControl(enabled=True, longActive=True), 'slcState': state.slcState,
        'deviceState': SimpleNamespace(startedMonoTime=1)}, now_ns - 10_000_000))
     self.enterContext(mock.patch.object(fake, 'CI', SimpleNamespace(
-      CS=SimpleNamespace(dashboard_limit=SimpleNamespace(observation=observation)),
+      CC=None, CS=SimpleNamespace(dashboard_limit=SimpleNamespace(observation=observation)),
       update=lambda packets: car.CarState(canValid=True, cruiseState={'available': True})), create=True))
     self.enterContext(mock.patch.object(fake, 'RI', SimpleNamespace(update=lambda packets: None), create=True))
     with (mock.patch.object(card.messaging, 'drain_sock_raw', return_value=[]),
@@ -810,7 +812,7 @@ class RuntimeReplayTests(unittest.TestCase):
     current_cs = [car.CarState(canValid=True, cruiseState={'available': True},
                                buttonEvents=[car.CarState.ButtonEvent(type='accelCruise', pressed=True)])]
     self.enterContext(mock.patch.object(fake, 'CI', SimpleNamespace(
-      CS=SimpleNamespace(dashboard_limit=SimpleNamespace(observation=observation) if observation is not None else None),
+      CC=None, CS=SimpleNamespace(dashboard_limit=SimpleNamespace(observation=observation) if observation is not None else None),
       update=lambda packets: current_cs[0]), create=True))
     self.enterContext(mock.patch.object(fake, 'RI', SimpleNamespace(update=lambda packets: None), create=True))
     return fake, current_cs
@@ -1116,11 +1118,9 @@ class RuntimeReplayTests(unittest.TestCase):
       params.put('SLCFallback', 2, block=True)
       params.put('SLCPriority1', 'Map Data', block=True)
       params.put('SLCPriority2', 'Dashboard', block=True)
-      params.put('Offset3', 5.0, block=True)
       restored = read_params(params)
       self.assertTrue(restored.enabled)
       self.assertTrue(restored.acceptance.confirm_lower)
-      self.assertTrue(restored.acceptance.fallback_previous)
       self.assertEqual(restored.selection.slots[0], Source.MAP)
       self.assertEqual(restored.selection.slots[1], Source.DASHBOARD)
       self.assertFalse(restored.errors)
@@ -1180,7 +1180,7 @@ class RuntimeReplayTests(unittest.TestCase):
     self.assertEqual(runtime._observations(self.sm, self.cp, 9_100_000_000)[Source.DASHBOARD].kind, ObservationKind.STALE)
     self.assertEqual(stale.message.slcState.observationKind, 'stale')  # both configured slots use the expired dashboard
     self.assertFalse(stale.message.slcState.hasCeiling)
-    self.assertEqual(stale.result.acceptance.basis, 'previous_accepted')
+    self.assertEqual(stale.result.acceptance.basis, 'stale')
     self.assertEqual(stale.result.override.contribution_mps, 105 / 3.6)
     planner.update(self.sm, cruise_ceiling=stale.result.ceiling)
     self.assertEqual(planner.last_cruise_ceiling_status, 'absent')

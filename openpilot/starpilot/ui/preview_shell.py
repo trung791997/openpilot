@@ -11,7 +11,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.device_state import DeviceState
 from openpilot.starpilot.ui.display_preferences import MASTER, SCREEN_OFF, SCREEN_OFF_DESCRIPTION
@@ -115,8 +115,7 @@ def reference_feature_scene(scene: str) -> tuple[Destination, str, FeatureSettin
             FeatureRow("repair", "Repair saved preference", "Invalid saved choice", choices=("Off", "On"),
                        available=True, reason="Choose Off to repair", repair_value="Off"),
             FeatureRow("unreadable", "Saved preference", "Unreadable", reason="Saved source cannot be read"),
-            FeatureRow("SLCFallback", "Previous accepted limit", "Off (saved mode 0 or 1)", b"1",
-                       ("Off", "On"), available=True), FeatureRow("", "Following", ""), number, reset,
+            FeatureRow("", "Following", ""), number, reset,
             FeatureRow("", "Child settings", "Saved settings", page="lane", available=True),
             FeatureRow("stock", "Parked Power", "Stock", choices=("Stock", "On"), available=True),
             boolean("last_off", "Off"), boolean("last_on", "On"))
@@ -223,7 +222,7 @@ def main() -> None:
             path = args.output / f"{scene}.png"
             if not rl.export_image(image, str(path)):
               raise RuntimeError(f"Unable to export {scene}")
-            report["scenes"][scene] = hashlib.sha256(bytes(rl.ffi.buffer(image.data, width * height * 4))).hexdigest()
+            report["scenes"][scene] = hashlib.sha256(bytes(image.data[:width * height * 4])).hexdigest()
           finally:
             rl.unload_image(image)
         (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")

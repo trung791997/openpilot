@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui import onroad
 from openpilot.starpilot.ui.onroad import axis_status_color, clock_text, driving_mode_description
@@ -49,6 +49,61 @@ class TestOnroadAxes(unittest.TestCase):
     control.latActive = lateral
     control.longActive = longitudinal
     return self.adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
+
+  def publish_latch(self, armed=True, **changes):
+    from openpilot.starpilot.aol.wire import IntentState, encode_intent
+    intent = IntentState('card-ui', 1, NOW, NOW, NOW + 200_000_000, False, True, False, True, armed)
+    self.ui.sm.put('aolIntentWire', encode_intent(replace(intent, **changes)))
+
+  def test_latch_keeps_border_blue_through_standstill_min_speed_and_reverse(self):
+    self.ui.aol_runtime = True
+    self.publish_latch()
+    for brand in ('hyundai', 'gm', 'toyota', 'ford', 'honda'):
+      self.ui.CP.brand = brand
+      for speed, gear in ((0, 'drive'), (2, 'drive'), (0, 'reverse')):
+        with self.subTest(brand=brand, speed=speed, gear=gear):
+          self.ui.sm['carState'].vEgo = speed
+          self.ui.sm['carState'].gearShifter = gear
+          paused = self.state(False, False)
+          self.assertTrue(getattr(paused, "aol_latched", False))
+          self.assertFalse(paused.lateral_active or paused.longitudinal_active or paused.engaged)
+          self.assertEqual(rgba(axis_status_color(paused)), (10, 186, 181, 255))
+    self.publish_latch(False)
+    self.assertFalse(self.state(False, False).aol_latched)
+    self.assertEqual(rgba(axis_status_color(self.state(False, False))), (18, 40, 57, 255))
+
+  def test_cleared_latch_does_not_borrow_previous_active_steering_color(self):
+    self.ui.aol_runtime = True
+    self.publish_latch()
+    self.assertEqual(rgba(axis_status_color(self.state(True, False))), (10, 186, 181, 255))
+    self.publish_latch(False)
+    current = self.state(True, False)
+    self.assertFalse(current.aol_latched)
+    self.assertTrue(current.lateral_active)
+    self.assertEqual(rgba(axis_status_color(current)), (18, 40, 57, 255))
+
+  def test_latch_display_requires_fresh_current_drive_valid_qualified_intent(self):
+    self.ui.aol_runtime = True
+    for changes in ({'settingsQualified': False}, {'producerSessionId': ''}, {'sequence': 0},
+                    {'observedMonoTime': NOW + 1}, {'carStateLogMonoTime': NOW - 1},
+                    {'validUntilMonoTime': NOW - 1}, {'lateralArmed': False}):
+      self.publish_latch(**changes)
+      self.assertFalse(self.state(False, False).aol_latched, changes)
+    self.ui.sm.put('aolIntentWire', b'invalid')
+    self.assertFalse(self.state(False, False).aol_latched)
+    self.publish_latch()
+    self.assertTrue(self.state(False, False).aol_latched)
+    for flag in (self.ui.sm.valid, self.ui.sm.alive):
+      flag['aolIntentWire'] = False
+      self.assertFalse(self.state(False, False).aol_latched)
+      flag['aolIntentWire'] = True
+    self.ui.sm.recv_frame['aolIntentWire'] = self.ui.started_frame
+    self.assertFalse(self.state(False, False).aol_latched)
+    self.publish_latch()
+    self.assertTrue(self.adapter.build(ShellMode.ONROAD, now_ns=NOW + 150_000_000).onroad.aol_latched)
+    self.assertFalse(self.adapter.build(ShellMode.ONROAD, now_ns=NOW + 201_000_000).onroad.aol_latched)
+    self.ui.aol_runtime = False
+    self.assertFalse(self.state(False, False).aol_latched)
 
   def test_four_axis_modes_drive_border_max_and_compact_wheel(self):
     colors = {(False, False): (18, 40, 57, 255), (True, False): (10, 186, 181, 255),
@@ -134,6 +189,7 @@ class TestOnroadAxes(unittest.TestCase):
 
   def test_independent_long_request_distinguishes_pause_from_pedal_override(self):
     self.ui.aol_runtime = True
+    self.publish_latch()
     self.ui.sm['selfdriveState'].state = 'overriding'
     axis = NS(qualified=True, sessionId='ui-axis', observedMonoTime=NOW, validUntilMonoTime=NOW + 30_000_000,
               nativeAcknowledged=True, desiredLongitudinal=False)
@@ -219,13 +275,29 @@ class TestOnroadAxes(unittest.TestCase):
     cases += [(True, longitudinal, True, alert, color) for longitudinal in (False, True) for alert, color in (
       (OnroadAlert(), gray), (OnroadAlert(size=AlertSize.SMALL), gray), (OnroadAlert(size=AlertSize.MID), gray),
       (OnroadAlert(size=AlertSize.FULL), blue), (OnroadAlert(size=AlertSize.SMALL, critical=True), blue))]
-    for lateral, longitudinal, override, alert, compact_color in cases:
-      state = replace(self.state(lateral, longitudinal), driver_override_active=override, alert=alert)
+    cases = [(*case, None) for case in cases]
+    cases += [(False, False, False, alert, color, True) for alert, color in (
+      (OnroadAlert(), (10, 186, 181, 255)),
+      (OnroadAlert(size=AlertSize.SMALL, text1='Steering Paused'), (10, 186, 181, 255)),
+      (OnroadAlert(size=AlertSize.MID), (10, 186, 181, 255)),
+      (OnroadAlert(size=AlertSize.FULL), blue), (OnroadAlert(size=AlertSize.SMALL, critical=True), blue))]
+    cases = [(*case, False) for case in cases]
+    cases += [(True, True, override, alert, color, None, True) for override, alert, color in (
+      (False, OnroadAlert(), (201, 34, 49, 255)),
+      (False, OnroadAlert(size=AlertSize.SMALL, critical=True), blue),
+      (False, OnroadAlert(), (201, 34, 49, 255)),
+      (True, OnroadAlert(), gray),
+      (False, OnroadAlert(size=AlertSize.FULL), blue),
+      (False, OnroadAlert(), (201, 34, 49, 255)))]
+    for lateral, longitudinal, override, alert, compact_color, latched, traffic in cases:
+      state = replace(self.state(lateral, longitudinal), driver_override_active=override, alert=alert,
+                      aol_latched=latched, traffic_mode=traffic)
       for layout in state.customization['layouts'].values():
         layout[MODE_WIDGET]['enabled'] = True
       for profile in (Profile.LARGE, Profile.COMPACT):
         with self.subTest(profile=profile, lateral=lateral, longitudinal=longitudinal, override=override, alert=alert):
           view = onroad.OnroadView.__new__(onroad.OnroadView)
+          view.personality = Mock()
           object.__setattr__(view, "fonts", NS(profile=profile, draw=Mock(), measure=Mock(return_value=NS(width=100, height=30)),
                                               vertical_ink=Mock(return_value=(0, 20)), horizontal_ink=Mock(return_value=(0, 100))))
           view.camera_layer = Mock()
@@ -287,6 +359,7 @@ class TestOnroadAxes(unittest.TestCase):
     state = self.state(True, True)
     for profile in (Profile.LARGE, Profile.COMPACT):
       view = onroad.OnroadView.__new__(onroad.OnroadView)
+      view.personality = Mock()
       self.enterContext(patch.object(view, 'fonts', NS(profile=profile, draw=Mock()), create=True))
       view._driving_mode(state)
       view.fonts.draw.assert_not_called()
@@ -393,6 +466,27 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertEqual(clock_text(midnight, use_24_hour=True), "00:00")
 
 
+
+  def test_stock_acc_green_keeps_system_long_inactive_and_aol_cyan(self):
+    from opendbc.car.subaru.interface import CarInterface
+    from opendbc.car.subaru.values import CAR
+
+    self.ui.CP = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    self.ui.sm['carState'].cruiseState.enabled = True
+    state = self.state(True, False)
+    self.assertTrue(state.stock_cruise_active)
+    self.assertFalse(state.longitudinal_active)
+    self.assertEqual(rgba(axis_status_color(state)), (22, 127, 64, 255))
+    self.assertEqual(rgba(axis_status_color(replace(state, experimental_enabled=True))), (22, 127, 64, 255))
+    self.ui.sm['carState'].gasPressed = True
+    self.assertEqual(rgba(axis_status_color(self.state(True, False))), (145, 155, 149, 255))
+    self.ui.sm['carState'].gasPressed = False
+    self.ui.sm['carState'].cruiseState.enabled = False
+    self.assertEqual(rgba(axis_status_color(self.state(True, False))), (10, 186, 181, 255))
+    self.ui.sm['carState'].cruiseState.enabled = True
+    self.ui.sm.logMonoTime['carState'] = NOW - 300_000_000
+    self.assertFalse(self.state(True, False).stock_cruise_active)
+
+
 if __name__ == "__main__":
   unittest.main()
-

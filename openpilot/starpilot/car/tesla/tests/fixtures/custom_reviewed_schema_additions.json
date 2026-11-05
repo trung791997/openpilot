@@ -1,6 +1,6 @@
 {
-  "reviewed_schema_commit": "632fa395624275e900b072309950624d36b0184f",
-  "reviewed_schema_sha256": "ce728d3074ad43da2f8782cedae4665c118412f5758b011350d747ea6fbb93a0",
+  "reviewed_schema_commit": "63beafc6af294d0759b47dc3bc546f24082a2a5d",
+  "reviewed_schema_sha256": "ca01ef4f6d2b15c5fac59ce237ec6e49f1167e2408903c9088ee322ca490de31",
   "incumbent_fixture_sha256": "a36ab54c00b5bbe61d520873d24aadfb8f33babd70c31a07046516d5545838d9",
   "types": {
     "0xf35cc4560bbf6ec2": {
@@ -18,7 +18,7 @@
       },
       "new_storage": {
         "dataWordCount": 4,
-        "pointerCount": 7,
+        "pointerCount": 8,
         "preferredListEncoding": "inlineComposite",
         "isGroup": false,
         "discriminantCount": 0,
@@ -59,7 +59,7 @@
             "hadExplicitDefault": false
           },
           "name": "toyotaCruise",
-          "codeOrder": 38,
+          "codeOrder": 39,
           "discriminantValue": 65535,
           "ordinal": {
             "explicit": 38
@@ -68,6 +68,26 @@
         {
           "slot": {
             "offset": 6,
+            "type": {
+              "struct": {
+                "typeId": 15172299076723568810
+              }
+            },
+            "defaultValue": {
+              "schemaValueHex": "00000000040000000000000002000100100000000000000000000000000000000000000000000000"
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "steeringLimitInfo",
+          "codeOrder": 38,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 39
+          }
+        },
+        {
+          "slot": {
+            "offset": 7,
             "type": {
               "list": {
                 "elementType": {
@@ -83,10 +103,10 @@
             "hadExplicitDefault": false
           },
           "name": "radarPointStatus",
-          "codeOrder": 39,
+          "codeOrder": 40,
           "discriminantValue": 65535,
           "ordinal": {
-            "explicit": 39
+            "explicit": 40
           }
         },
         {
@@ -101,10 +121,10 @@
             "hadExplicitDefault": false
           },
           "name": "radarTracksMonoTime",
-          "codeOrder": 40,
+          "codeOrder": 41,
           "discriminantValue": 65535,
           "ordinal": {
-            "explicit": 40
+            "explicit": 41
           }
         }
       ]
@@ -124,7 +144,7 @@
       },
       "new_storage": {
         "dataWordCount": 18,
-        "pointerCount": 21,
+        "pointerCount": 22,
         "preferredListEncoding": "inlineComposite",
         "isGroup": false,
         "discriminantCount": 0,
@@ -237,6 +257,42 @@
           "discriminantValue": 65535,
           "ordinal": {
             "explicit": 56
+          }
+        },
+        {
+          "slot": {
+            "offset": 33,
+            "type": {
+              "float32": null
+            },
+            "defaultValue": {
+              "float32": 0.0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "upcomingSpeedLimit",
+          "codeOrder": 57,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 57
+          }
+        },
+        {
+          "slot": {
+            "offset": 21,
+            "type": {
+              "text": null
+            },
+            "defaultValue": {
+              "text": ""
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "upcomingBoundaryId",
+          "codeOrder": 58,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 58
           }
         }
       ]
@@ -584,7 +640,7 @@
       },
       "new_storage": {
         "dataWordCount": 10,
-        "pointerCount": 3,
+        "pointerCount": 4,
         "preferredListEncoding": "inlineComposite",
         "isGroup": false,
         "discriminantCount": 0,
@@ -607,6 +663,24 @@
           "discriminantValue": 65535,
           "ordinal": {
             "explicit": 14
+          }
+        },
+        {
+          "slot": {
+            "offset": 3,
+            "type": {
+              "text": null
+            },
+            "defaultValue": {
+              "text": ""
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "upcomingBoundaryId",
+          "codeOrder": 15,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 15
           }
         }
       ]
@@ -690,6 +764,116 @@
           "ordinal": {
             "explicit": 47
           }
+        }
+      ]
+    },
+    "0xa4f1eb3323f5f582": {
+      "kind": "struct",
+      "before_name": "MapdOut",
+      "after_name": "MapdOut",
+      "old_field_count": 34,
+      "old_storage": {
+        "dataWordCount": 14,
+        "pointerCount": 6,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "new_storage": {
+        "dataWordCount": 16,
+        "pointerCount": 7,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "added_fields": [
+        {
+          "slot": {
+            "offset": 19,
+            "type": {
+              "float32": null
+            },
+            "defaultValue": {
+              "float32": 0.0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "previewSpeedLimit",
+          "codeOrder": 34,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 34
+          }
+        },
+        {
+          "slot": {
+            "offset": 28,
+            "type": {
+              "float32": null
+            },
+            "defaultValue": {
+              "float32": 0.0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "previewDistance",
+          "codeOrder": 35,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 35
+          }
+        },
+        {
+          "slot": {
+            "offset": 6,
+            "type": {
+              "text": null
+            },
+            "defaultValue": {
+              "text": ""
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "previewBoundaryId",
+          "codeOrder": 36,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 36
+          }
+        },
+        {
+          "slot": {
+            "offset": 15,
+            "type": {
+              "int64": null
+            },
+            "defaultValue": {
+              "int64": 0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "previewWayId",
+          "codeOrder": 37,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 37
+          }
+        }
+      ]
+    },
+    "0x9099c88083a9a9ff": {
+      "kind": "enum",
+      "before_name": "SlcCruiseEvent.Kind",
+      "after_name": "SlcCruiseEvent.Kind",
+      "old_field_count": 12,
+      "old_storage": {},
+      "new_storage": {},
+      "added_enumerants": [
+        {
+          "name": "engagementAdopt",
+          "codeOrder": 12
         }
       ]
     },
@@ -860,7 +1044,8 @@
   },
   "published_addition_commits": {
     "slc": "ab8368f287b78b42f8590722878c7d5834609e19",
-    "flm": "b151ca11cb4d88f32d7adfdbcff50baf29f4fbbc"
+    "flm": "b151ca11cb4d88f32d7adfdbcff50baf29f4fbbc",
+    "tesla_cooperative_steering": "63beafc6af294d0759b47dc3bc546f24082a2a5d"
   },
-  "review_basis": "Published SLC and FLM append-only changes. Every incumbent compiled field descriptor and enum prefix was independently checked unchanged; only the exact seven typed deltas below are permitted."
+  "review_basis": "Published SLC, FLM, and Tesla cooperative-steering additions. Every incumbent wire field descriptor and enum prefix was independently checked unchanged; only the exact typed deltas listed here are permitted. Tesla adds steeringLimitInfo @39 at pointer slot 6 using the existing SteeringLimitInfo type. ToyotaCruise @38 retains pointer slot 5, type, and default; only its declaration codeOrder changes from 38 to 39."
 }

@@ -8,7 +8,7 @@ from pathlib import Path
 import hashlib
 import json
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.onroad_customization import offset, rgba, widget_size
 from openpilot.starpilot.ui.onroad_state import OnroadState, manual_slc_confirmation, speed_limit_bounds
@@ -16,7 +16,7 @@ from openpilot.starpilot.ui.onroad_widget_style import draw_control_card
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile
 from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
-from openpilot.starpilot.ui.speed_limit_widget import SpeedLimitWidget, draw_caption, draw_ink, draw_text
+from openpilot.starpilot.ui.speed_limit_widget import MUTED, SpeedLimitWidget, draw_caption, draw_ink, draw_line, draw_text
 
 
 ENGAGED = rl.Color(128, 216, 166, 255)
@@ -78,7 +78,11 @@ class UnifiedSpeedWidget:
     border = rl.Color(*rgba(state.customization, 'cardBorder', 'large', 'cruise_limits'))
     text = rl.Color(*rgba(state.customization, 'text', 'large', 'cruise_limits'))
     if shown.mode != 'limit_only':
-      if manual_slc_confirmation(Profile.LARGE, state):
+      if shown.max_text == '–':
+        center = rect.x + 120
+        draw_caption(self.fonts, 'SET', center, rect.y + 15, unit=shown.unit, centered=True)
+        draw_line(Profile.LARGE, rl.Vector2(center - 28, rect.y + 101), rl.Vector2(center + 28, rect.y + 101), 8, MUTED)
+      elif manual_slc_confirmation(Profile.LARGE, state):
         x = rect.x + PADDING
         draw_caption(self.fonts, 'SET', x, rect.y + 19, unit=shown.unit, size=32)
         size = 120
@@ -92,10 +96,8 @@ class UnifiedSpeedWidget:
         size *= min(1, 200 / max(1, self.fonts.measure(shown.max_text, FontRole.SET_SPEED, size).width))
         left, right = self.fonts.horizontal_ink(shown.max_text, FontRole.SET_SPEED, size)
         top, bottom = self.fonts.vertical_ink(shown.max_text, FontRole.SET_SPEED, size)
-        # The pinned DINish dash has 15 inked rows in its 200-pixel atlas cell.
-        number_height = size * self.fonts.profile.font_scale * 15 / 200 if shown.max_text == '–' else bottom - top
         draw_ink(self.fonts, shown.max_text, FontRole.SET_SPEED, size, center - (left + right) / 2,
-                 rect.y + 101 - number_height / 2, text)
+                 rect.y + 101 - (bottom - top) / 2, text)
     self.sign.render(state, defer_confirmation=True)
     if shown.mode == 'limit_only' and (bounds := speed_limit_bounds(Profile.LARGE, state)) is not None:
       draw_ink(self.fonts, shown.unit, FontRole.NORMAL, 24, bounds[2], bounds[3] - 32)
@@ -161,7 +163,7 @@ class SteeringWheelWidget:
       raise ValueError("Unreviewed steering wheel art")
     image = rl.load_image(str(path))
     try:
-      if image.data == rl.ffi.NULL:
+      if image.data is None:
         raise RuntimeError("Unable to load steering wheel art")
       rl.image_resize(image, 144, 144)
       texture = rl.load_texture_from_image(image)
@@ -169,7 +171,7 @@ class SteeringWheelWidget:
         raise RuntimeError("Unable to create steering wheel texture")
       self._texture = texture
     finally:
-      if image.data != rl.ffi.NULL:
+      if image.data is not None:
         rl.unload_image(image)
 
   def render(self, content: rl.Rectangle, state: OnroadState) -> None:
