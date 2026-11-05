@@ -13,16 +13,27 @@ floor for HORIZON_S; if the projected gap ever drops under FLOOR_GAP_S * v + FLO
 follow + GAP_MARGIN_S, or TTC, lead decel or FCW trip, the floor is dropped at once and the planner's target passes
 untouched until it stops braking. It only raises a braking target (never adds gas above COAST_ACCEL, never touches the
 radar points: D-041/D-042). Static and open-loop replay evidence only.
+
+Owner 2026-11-05, route 0000008f bookmark 1 (4445.2): a car 37-40 m ahead (2.7 s, TTC 14.5 s) tapped its brakes at
+about -3 for 1 s at 32 mph and we braked to -1.8. Coast first stood down on speed (14.1 < 15) and on the projection,
+which held the lead's -3 for the full 3 s. "The car was still a distance away". So MIN_V_EGO is 13.5 and the
+projection holds the lead's decel for LEAD_DECEL_HOLD_S, then holds the lead's speed. Replay (Long Sim, V-ASM 3b3d20056
+with Stock Brake Feel and Human Following on, open loop on the logged lead): bookmark 1 coasts 1.75 s, peak -1.81 ->
+-1.58, min gap unchanged (26.9 m); bookmark 2 (1.43 s gap) unchanged; 2f5 one frame later, e2ae and route 84 E1/E4
+identical, 19 route-84 far brakes keep min gap and TTC; route 71 12:03 identical. Pooled 2.16 h: 14 new coasts
+(37.1 -> 43.5/h), none lost, counts below -1 and -2 identical, max target change 0.18 m/s^2, closest new coast 2.29 s
+gap / 9.9 s TTC. Replay only, not driven.
 """
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import closest_radar_lead
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 
-MIN_V_EGO = 15.0       # m/s; distant taps at road speed. The stop gap owns the crawl and the stop.
+MIN_V_EGO = 13.5       # m/s (~30 mph); distant taps at road speed (was 15; 8f B1 at 14.1). The stop gap owns the stop.
 COAST_ACCEL = -0.5     # m/s^2; lift-off plus a little (Civic gas-off at 70 mph ~ -0.4)
 RAMP_JERK = 1.0        # m/s^3; staged floor: -0.5 -> -2.5 in 2 s
 GAP_MARGIN_S = 0.35    # time gap must be at least follow + this (aggressive 1.25 -> 1.6; 71 12:03 bottomed at 1.64)
 HORIZON_S = 3.0
+LEAD_DECEL_HOLD_S = 1.5  # s; the projected lead brakes this long, then holds its speed (was the whole horizon)
 FLOOR_GAP_S = 0.8      # projected gap floor: 0.8 s * v + 6 m (long_mpc STOP_DISTANCE)
 FLOOR_GAP_M = 6.0
 MIN_TTC_S = 5.0        # 71 12:03 at the trough: 51 m / 5.8 m/s = 8.8 s
@@ -35,7 +46,8 @@ def projected_gap_ok(d_rel: float, v_lead: float, a_lead: float, v_ego: float, f
   t = 0.0
   while t < HORIZON_S:
     d += (vl - ve) * DT_MDL
-    vl = max(0.0, vl + a_lead * DT_MDL)
+    if t < LEAD_DECEL_HOLD_S:
+      vl = max(0.0, vl + a_lead * DT_MDL)
     ve = max(0.0, ve + fa * DT_MDL)
     fa -= RAMP_JERK * DT_MDL
     if d < FLOOR_GAP_S * ve + FLOOR_GAP_M:
