@@ -148,3 +148,69 @@ def test_source_alert_due_matches_intent_alert_due():
                 mock.Mock(carStateLogMonoTime=now - age_ns), now))
     assert selfdrived.SelfdriveD.aol_stale_source_alert_due(0, now)
     assert selfdrived.SelfdriveD.aol_stale_source_alert_due(now + 1, now)
+
+
+# long_only and combined_unarmed with the gas held: ordinary retention declines
+# under gas and there is no armed-LAT availability, so the late frame reached
+# step()'s lost_companion -> aol_authority_lost -> controlsMismatch/immediateDisable.
+GAS_LONG_MODES = ['long_only', 'combined_unarmed']
+CONTROLS_MISMATCH = log.OnroadEvent.EventName.controlsMismatch
+
+
+def tick_offset(tick, age_ns):
+  """Offset giving carState age_ns at drive(tick); tick 5 + 5_399_000 is 35 ms, each tick adds 10 ms."""
+  return age_ns - 29_601_000 - (tick - 5) * 10_000_000
+
+
+@pytest.mark.parametrize('offset_ns', [AGE_35_MS, AGE_65_MS], ids=['35ms', '65ms'])
+@pytest.mark.parametrize('mode', GAS_LONG_MODES)
+def test_gas_held_single_late_frame_long_modes_no_controls_mismatch(mode, offset_ns):
+  cleanup, sd, drive, axis, state, command = expire_declined(mode, offset_ns, gas=True, retention=True)
+  with cleanup:
+    assert axis.sourceCarStateMonoTime == 0  # the source really expired
+    assert not axis.lateralActive and not axis.longitudinalActive
+    assert not command.latActive and not command.longActive
+    assert CONTROLS_MISMATCH not in sd.events.names and COMM_ISSUE not in sd.events.names
+    assert not sd.events.contains(selfdrived.ET.SOFT_DISABLE) and not sd.events.contains(selfdrived.ET.IMMEDIATE_DISABLE)
+    assert not sd.aol_authority_lost
+    assert state.enabled and state.state in (STATE.enabled, STATE.overriding)
+    assert 'controlsMismatch' not in state.alertType and 'commIssue' not in state.alertType
+    assert sd.aol_stale_alert_deferred and sd.aol_fault_reason == 'availabilityPause'
+    fresh = BASE + 40_000_000
+    recovered, recovered_state, recovered_command = drive(6, gas=True, state_stamp=fresh, **settings(mode, fresh, 4))
+    assert recovered.longitudinalActive and recovered_command.longActive
+    assert recovered_state.enabled and CONTROLS_MISMATCH not in sd.events.names
+    assert not sd.aol_stale_alert_deferred and sd.aol_fault_reason == 'none'
+    assert not sd.aol_stale_grace_lost_companion
+
+
+@pytest.mark.parametrize('age_ns', [120_000_000, 250_000_000], ids=['120ms', '250ms'])
+@pytest.mark.parametrize('mode', GAS_LONG_MODES)
+def test_gas_held_stall_past_100ms_long_modes_still_controls_mismatch(mode, age_ns):
+  cleanup, sd, _, axis, state, command = expire_declined(mode, tick_offset(5, age_ns), gas=True, retention=True)
+  with cleanup:
+    assert not axis.lateralActive and not axis.longitudinalActive
+    assert not command.latActive and not command.longActive
+    assert CONTROLS_MISMATCH in sd.events.names and sd.aol_authority_lost
+    assert not state.enabled and state.alertType == 'controlsMismatch/immediateDisable'
+    assert sd.aol_fault_reason == 'critical'
+
+
+@pytest.mark.parametrize('age_ns', [120_000_000, 250_000_000], ids=['120ms', '250ms'])
+@pytest.mark.parametrize('mode', GAS_LONG_MODES)
+def test_gas_held_stall_growing_past_100ms_long_modes_alerts_once_due(mode, age_ns):
+  cleanup, sd, drive, _, state, command = expire_declined(mode, AGE_35_MS, gas=True, retention=True)
+  with cleanup:
+    for tick, held_age in ((5, None), (6, 65_000_000), (7, 95_000_000)):
+      if held_age is not None:
+        _, state, command = drive(tick, timeout=True, gas=True, state_stamp=BASE, offset_ns=tick_offset(tick, held_age),
+                                  **settings(mode, BASE, 3))
+      assert CONTROLS_MISMATCH not in sd.events.names and not sd.aol_authority_lost
+      assert state.enabled and 'controlsMismatch' not in state.alertType
+      assert not command.latActive and not command.longActive
+    axis, state, command = drive(8, timeout=True, gas=True, state_stamp=BASE, offset_ns=tick_offset(8, age_ns),
+                                 **settings(mode, BASE, 3))
+    assert not axis.lateralActive and not axis.longitudinalActive
+    assert not command.latActive and not command.longActive
+    assert CONTROLS_MISMATCH in sd.events.names and sd.aol_authority_lost
+    assert not state.enabled and state.alertType == 'controlsMismatch/immediateDisable'
