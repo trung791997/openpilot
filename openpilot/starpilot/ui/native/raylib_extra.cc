@@ -100,6 +100,7 @@ NB_MODULE(_raylib_extra, module) {
     if (!nb::hasattr(target, "rl_begin")) target.def("rl_begin", symbol<decltype(&rlBegin)>("rlBegin"));
     if (!nb::hasattr(target, "rl_tex_coord2f")) target.def("rl_tex_coord2f", symbol<decltype(&rlTexCoord2f)>("rlTexCoord2f"));
     if (!nb::hasattr(target, "rl_vertex2f")) target.def("rl_vertex2f", symbol<decltype(&rlVertex2f)>("rlVertex2f"));
+    if (!nb::hasattr(target, "rl_color4ub")) target.def("rl_color4ub", symbol<decltype(&rlColor4ub)>("rlColor4ub"));
     if (!nb::hasattr(target, "rl_end")) target.def("rl_end", symbol<decltype(&rlEnd)>("rlEnd"));
     if (!nb::hasattr(target, "init_audio_device")) target.def("init_audio_device", []() { symbol<decltype(&InitAudioDevice)>("InitAudioDevice")(); });
     if (!nb::hasattr(target, "close_audio_device")) target.def("close_audio_device", []() { symbol<decltype(&CloseAudioDevice)>("CloseAudioDevice")(); });
@@ -131,6 +132,22 @@ NB_MODULE(_raylib_extra, module) {
       }
       using Bytes = nb::ndarray<nb::memview, uint8_t, nb::ndim<1>, nb::device::cpu>;
       return nb::cast(Bytes(image.data, {static_cast<size_t>(size)}, object));
+    });
+    // Free the CPU copy of each glyph bitmap LoadFont keeps beside the atlas. Glyph metrics, recs and the atlas
+    // texture are untouched, so drawing and measuring keep working; UnloadFont later frees NULL, a no-op.
+    target.def("unload_font_glyph_images", [](nb::handle object) {
+      auto &font = nb::cast<Font &>(object);
+      if (!font.glyphs || font.glyphCount <= 0) return 0;
+      auto unload = symbol<decltype(&UnloadImage)>("UnloadImage");
+      int freed = 0;
+      for (int i = 0; i < font.glyphCount; ++i) {
+        Image &image = font.glyphs[i].image;
+        if (!image.data) continue;
+        unload(image);
+        image.data = nullptr;
+        ++freed;
+      }
+      return freed;
     });
     target.def("_font_glyphs", [](nb::handle font) { return GlyphView{nb::borrow<nb::object>(font), &nb::cast<Font &>(font)}; });
     target.def("_font_recs", [](nb::handle font) { return RectangleView{nb::borrow<nb::object>(font), &nb::cast<Font &>(font)}; });
@@ -171,6 +188,7 @@ NB_MODULE(_raylib_extra, module) {
     modes["BLEND_CUSTOM_SEPARATE"] = static_cast<int>(BLEND_CUSTOM_SEPARATE);
     if (!nb::hasattr(target, "BlendMode")) target.attr("BlendMode") = nb::module_::import_("enum").attr("IntEnum")("BlendMode", modes);
     target.attr("RL_QUADS") = RL_QUADS;
+    target.attr("RL_TRIANGLES") = RL_TRIANGLES;
     target.attr("RL_ONE_MINUS_SRC_ALPHA") = RL_ONE_MINUS_SRC_ALPHA;
     target.attr("RL_FUNC_ADD") = RL_FUNC_ADD;
     target.attr("RL_SRC_ALPHA") = RL_SRC_ALPHA;
