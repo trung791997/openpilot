@@ -185,6 +185,8 @@ class TestCatalogRunner(unittest.TestCase):
     self.assertAlmostEqual(action_from_outputs(outputs, "v14", previous, .2, .2, 20).desiredCurvature, .04)
     for version in ("v15", "v16"):
       self.assertAlmostEqual(action_from_outputs(outputs, version, previous, .2, .2, 20).desiredCurvature, .01)
+      # sunnypilot #2091 / comma: below 2.5 m/s the curvature is divided by 2.5^2, not v^2 (1 m/s gave 4.0 here)
+      self.assertAlmostEqual(action_from_outputs(outputs, version, previous, .2, .2, 1.0).desiredCurvature, .64)
     plan = np.zeros((1, 33, 15))
     plan[0, :, 3] = 20
     outputs = {"plan": plan, "desired_curvature": np.array([[.03]])}
