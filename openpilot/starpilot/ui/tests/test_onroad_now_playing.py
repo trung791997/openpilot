@@ -301,13 +301,13 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
   card, drawn, _ = widget
   loads, unloads, steps = [], [], []
   image = SimpleNamespace(width=300, height=300)
-  monkeypatch.setattr(rl, 'load_image_from_memory', lambda kind, data, size: loads.append(kind) or image)
+  monkeypatch.setattr(onroad_now_playing, 'load_image_from_memory', lambda kind, data, size: loads.append(kind) or image)
   for name in ('image_crop', 'image_resize'):
     monkeypatch.setattr(rl, name, lambda *args, name=name: steps.append(name))
   crops = []
   monkeypatch.setattr(rl, 'image_crop', lambda image, box: steps.append('image_crop') or crops.append(box))
-  monkeypatch.setattr(rl, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
-  monkeypatch.setattr(rl, 'unload_image_colors', lambda colors: steps.append('colors freed'))
+  monkeypatch.setattr(onroad_now_playing, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
+  monkeypatch.setattr(onroad_now_playing, 'unload_image_colors', lambda colors: steps.append('colors freed'))
   monkeypatch.setattr(onroad_now_playing, 'round_corners', lambda *args: steps.append('corners cut'))
   monkeypatch.setattr(rl, 'unload_image', lambda *args: None)
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=640, height=264, id=len(loads)))
@@ -339,7 +339,7 @@ def test_cover_is_loaded_once_per_cover_and_drawn_in_the_card_shape(widget, monk
 def test_bytes_that_are_not_an_image_get_the_plain_card(widget, monkeypatch):
   from openpilot.starpilot.ui import onroad_now_playing
   card, _, _ = widget
-  monkeypatch.setattr(onroad_now_playing.rl, 'load_image_from_memory', lambda *args: pytest.fail('decoded a non-image'))
+  monkeypatch.setattr(onroad_now_playing, 'load_image_from_memory', lambda *args: pytest.fail('decoded a non-image'))
   card.track = TRACK
   card.artwork = ('https://i.scdn.co/image/a', b'<html>')
   card.render(state())
@@ -534,11 +534,12 @@ def test_new_cover_fades_in_over_the_old_one_which_is_then_freed(timed, monkeypa
   card, drawn, _, clock = timed
   unloads = []
   textures = iter(range(1, 10))
-  monkeypatch.setattr(rl, 'load_image_from_memory', lambda *args: SimpleNamespace(width=300, height=300))
-  for name in ('image_crop', 'image_resize', 'unload_image', 'unload_image_colors', 'set_texture_filter'):
+  monkeypatch.setattr(onroad_now_playing, 'load_image_from_memory', lambda *args: SimpleNamespace(width=300, height=300))
+  for name in ('image_crop', 'image_resize', 'unload_image', 'set_texture_filter'):
     monkeypatch.setattr(rl, name, lambda *args: None)
+  monkeypatch.setattr(onroad_now_playing, 'unload_image_colors', lambda *args: None)
   monkeypatch.setattr(onroad_now_playing, 'round_corners', lambda *args: None)
-  monkeypatch.setattr(rl, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
+  monkeypatch.setattr(onroad_now_playing, 'load_image_colors', lambda image: [SimpleNamespace(r=200, g=40, b=60)] * (640 * 264))
   monkeypatch.setattr(rl, 'load_texture_from_image', lambda image: SimpleNamespace(width=640, height=264, id=next(textures)))
   monkeypatch.setattr(rl, 'is_window_ready', lambda: True)
   monkeypatch.setattr(rl, 'unload_texture', lambda texture: unloads.append(texture.id))

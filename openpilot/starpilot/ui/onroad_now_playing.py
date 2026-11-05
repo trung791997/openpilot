@@ -1,8 +1,12 @@
 """The Android Auto now-playing card; both live rendering and previews use this drawing."""
 import math
+import tempfile
 import time
 import unicodedata
+from collections import namedtuple
 from importlib.resources import as_file, files
+
+import numpy as np
 
 from openpilot.starpilot.ui.raylib import rl
 
@@ -239,13 +243,41 @@ def scroll_offset(text_width, width, seconds):
   return min(travel, max(0.0, seconds % (SCROLL_PAUSE + travel / SCROLL_SPEED) - SCROLL_PAUSE) * SCROLL_SPEED)
 
 
+Pixel = namedtuple('Pixel', 'r g b a')
+
+
+def load_image_from_memory(kind, data, size):
+  """raylib_nb has no LoadImageFromMemory, so the bytes go through a temporary ``kind`` file and load_image."""
+  with tempfile.NamedTemporaryFile(suffix=kind) as file:
+    file.write(data[:size])
+    file.flush()
+    return rl.load_image(file.name)
+
+
+def load_image_colors(image):
+  """The image's pixels as (r, g, b, a), read from its RGBA8 bytes (raylib_nb has no LoadImageColors)."""
+  rl.image_format(image, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
+  rgba = bytes(image.data[:image.width * image.height * 4])
+  return [Pixel(*rgba[index:index + 4]) for index in range(0, len(rgba), 4)]
+
+
+def unload_image_colors(colors):
+  """The pixels are a Python copy; nothing native to free."""
+
+
 def round_corners(image, width, height):
-  """Cut the card's rounded corners into the cover's alpha once, so each frame draws it in one call."""
-  mask = rl.gen_image_color(width, height, rl.BLANK)
+  """Cut the card's rounded corners into the cover's alpha once, so each frame draws it in one call. The alpha is
+  written straight into the RGBA8 bytes, as raylib's ImageAlphaMask did from a mask of white ImageDrawRectangleRec
+  strips over BLANK: 255 inside a strip, 0 outside (raylib_nb exposes neither call)."""
+  rl.image_format(image, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
+  alpha = np.zeros((height, width), dtype=np.uint8)
   for y, h, inset in pill_rows(height, CORNER):
-    rl.image_draw_rectangle_rec(mask, rl.Rectangle(round(inset), y, width - 2 * round(inset), h), rl.WHITE)
-  rl.image_alpha_mask(image, mask)
-  rl.unload_image(mask)
+    left, top = round(inset), int(y)  # ImageDrawRectangleRec truncates the strip's float rect to whole pixels
+    alpha[top:top + int(h), left:left + width - 2 * left] = 255
+  size = width * height * 4
+  pixels = np.frombuffer(bytes(image.data[:size]), dtype=np.uint8).reshape(height, width, 4).copy()
+  pixels[:, :, 3] = alpha
+  image.data[:size][:] = pixels.tobytes()
 
 
 def pill_rows(height, r, step=1):
@@ -286,9 +318,8 @@ class TrackText:
   @staticmethod
   def _load(text, role):
     codepoints = sorted({*ASCII, *map(ord, text)})
-    buffer = rl.ffi.new("int[]", codepoints)
     with as_file(files("openpilot.selfdrive").joinpath("assets/fonts", TRACK_FONTS[role])) as path:
-      font = rl.load_font_ex(str(path), TRACK_FONT_PX, rl.ffi.cast("int *", buffer), len(codepoints))
+      font = rl.load_font_ex(str(path), TRACK_FONT_PX, np.array(codepoints, dtype=np.int32), len(codepoints))
     # A missing file gives back raylib's shared default font; never own or draw with it.
     if font.texture.id in (0, rl.get_font_default().texture.id) or font.glyphCount == 0:
       return None
@@ -391,16 +422,16 @@ class NowPlayingWidget:
     self._drop_cover()
     texture = accent = None
     if url and data and (kind := image_type(data)):
-      image = rl.load_image_from_memory(kind, data, len(data))
+      image = load_image_from_memory(kind, data, len(data))
       if image.width > 0 and image.height > 0:
         # The middle band of the square cover, at the card's shape, so the picture is not squashed.
         # Whole pixels only: raylib 5.5 corrupted the heap cropping 680x580 to a band starting at y 149.75 (dev VM).
         band = min(image.height, round(image.width * NOW_PLAYING_SIZE[1] / NOW_PLAYING_SIZE[0]))
         rl.image_crop(image, rl.Rectangle(0, (image.height - band) // 2, image.width, band))
         rl.image_resize(image, *NOW_PLAYING_SIZE)  # 660 KB of texture, freed with the song
-        colors = rl.load_image_colors(image)
+        colors = load_image_colors(image)
         accent = accent_from(colors, NOW_PLAYING_SIZE[0] * NOW_PLAYING_SIZE[1])
-        rl.unload_image_colors(colors)
+        unload_image_colors(colors)
         round_corners(image, *NOW_PLAYING_SIZE)
         texture = rl.load_texture_from_image(image)
         rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
@@ -432,7 +463,7 @@ class NowPlayingWidget:
     try:
       # Cleared to the text color, and coverage accumulated as alpha, so the edges are not darkened or thinned.
       rl.clear_background(rl.Color(TEXT.r, TEXT.g, TEXT.b, 0))
-      rl.rl.rlSetBlendFactorsSeparate(0x0302, 0x0303, 1, 0x0303, 0x8006, 0x8006)
+      rl.rl_set_blend_factors_separate(0x0302, 0x0303, 1, 0x0303, 0x8006, 0x8006)
       rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
       try:
         self._draw_line(title, artist, title_width, dot, 0, LINE_BOX[0], TEXT)
