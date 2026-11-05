@@ -19,7 +19,7 @@ PRODUCER_SOURCE_HASHES = (
   ('openpilot', 'system/camerad/cameras/camera_qcom2.cc', 'b34c24c9984a0ac086f7b961cb7ff09d0501231da50aaad0e676bb3dc3f2edd9'),
   ('openpilot', 'system/camerad/cameras/camera_common.cc', 'bd9a416a6ee21047b4deec6df04276d8717cd92fe14de43f3e9daff86b62bb8f'),
   # Night Star port: our modeld.py (camera source, Honda EPS delay schedule, lateral source); same frame clock path
-  ('openpilot', 'selfdrive/modeld/modeld.py', '1d984ab106826577ad1f57ff0514cba3627951a5ce2e7269d4a183099c08e1d0'),
+  ('openpilot', 'selfdrive/modeld/modeld.py', '233bb144abdea81bbe2b09a6edd92860192109ea39fde184a81027e8526e5aec'),
   ('openpilot', 'selfdrive/modeld/fill_model_msg.py', 'b3916c34d1073d0c26a7a8adc51e7b148f63a1ac68b388226170fd0f8b8b56b4'),
   ('openpilot', 'system/sensord/sensord.py', '7c79ab07d775622a43001e5a9b9ccc9a7bafb065940185849b33eefc2fd26420'),
   ('openpilot', 'system/sensord/sensors/lsm6ds3_gyro.py', '3e561f3d8572e1477c9b4b810c7570837d51e81c5672fe21ec67a68cae00dd92'),

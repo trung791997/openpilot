@@ -14,7 +14,7 @@ def test_only_stock_planner_experimental_gets_66_mph():
 
 
 def _engage(v_ego_mph, initial_speed, keep_speed=False):
-  helper = VCruiseHelper(car.CarParams(pcmCruise=False))
+  helper = VCruiseHelper(car.CarParams(pcmCruise=False, openpilotLongitudinalControl=True))
   cs = SimpleNamespace(vEgo=v_ego_mph * CV.MPH_TO_MS, buttonEvents=[])
   helper.initialize_v_cruise(cs, True, resume=False, initial_speed=initial_speed, keep_speed=keep_speed)
   return helper.v_cruise_kph * CV.KPH_TO_MPH
@@ -40,7 +40,7 @@ def test_chill_engage_below_25_mph_keeps_current_speed():
 
 
 def _engage_at_limit(v_ego_mph, target_mph, resume=False, keep_speed=False, metric=False):
-  helper = VCruiseHelper(car.CarParams(pcmCruise=False))
+  helper = VCruiseHelper(car.CarParams(pcmCruise=False, openpilotLongitudinalControl=True))
   helper.v_cruise_kph = helper.v_cruise_kph_last = 50 * CV.MPH_TO_KPH  # a set speed from an earlier engagement
   cs = SimpleNamespace(vEgo=v_ego_mph * CV.MPH_TO_MS, buttonEvents=[])
   helper.initialize_v_cruise(cs, False, resume=resume, initial_speed=40, keep_speed=keep_speed,
@@ -60,7 +60,7 @@ def test_resume_and_missing_limit_keep_existing_engage_speed():
   assert round(_engage_at_limit(30, 45, resume=True)[0]) == 50  # RES restores the last set speed
   assert round(_engage_at_limit(30, None)[0]) == 30
   for bad in (float('nan'), float('inf'), 0., -5.):
-    helper = VCruiseHelper(car.CarParams(pcmCruise=False))
+    helper = VCruiseHelper(car.CarParams(pcmCruise=False, openpilotLongitudinalControl=True))
     cs = SimpleNamespace(vEgo=30 * CV.MPH_TO_MS, buttonEvents=[])
     helper.initialize_v_cruise(cs, False, resume=False, initial_speed=40, slc_target_mps=bad)
     assert round(helper.v_cruise_kph * CV.KPH_TO_MPH) == 30
