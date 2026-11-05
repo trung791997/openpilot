@@ -96,18 +96,16 @@ def validate_bitmap_font(path: Path) -> None:
     raise ValueError(f"Invalid bitmap font {path.name}: {error}") from error
 
 
-def free_glyph_images(font: rl.Font) -> None:
+def free_glyph_images(font: rl.Font) -> int:
   """Free the CPU copy of every glyph bitmap that raylib's LoadBMFont keeps beside the atlas.
 
   Drawing and measuring use only the atlas texture, its rectangles and the glyph metrics;
   nothing here renders text on the CPU (ImageText). UnloadFont frees each glyph image
-  again, which is then free(NULL), a no-op.
+  again, which is then free(NULL), a no-op. raylib_nb hands glyphs back as copies, so the
+  native _raylib_extra helper frees them in raylib's own glyph array and nulls each pointer.
+  Returns how many images were freed (0 on a second call).
   """
-  for index in range(font.glyphCount):
-    image = font.glyphs[index].image  # a view into raylib's own glyph array
-    if image.data != rl.ffi.NULL:
-      rl.unload_image(image)
-      image.data = rl.ffi.NULL
+  return rl.unload_font_glyph_images(font)
 
 
 def return_freed_heap() -> None:

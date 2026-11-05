@@ -1,7 +1,6 @@
 """Static: the LEAD badge's braking / pulling-away state, held so a noisy radar acceleration does not flicker it."""
 import gc
 import struct
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -103,8 +102,6 @@ class Raylib:
       return lambda *a: self.calls.append((name, a))
     if name == 'is_image_valid':
       return lambda image: getattr(image, 'data', None) is not None
-    if name == 'RL_TRIANGLES':
-      return 4  # _fill still imports pyray for this; the shared rl does not expose it
     return getattr(shared_rl, name)
 
   def named(self, name):
@@ -115,8 +112,6 @@ class Raylib:
 def rl(monkeypatch):
   fake = Raylib()
   monkeypatch.setattr(theme, 'rl', fake)
-  # _fill imports pyray locally (UNRESOLVED port); real pyray has no GL context here and segfaults.
-  monkeypatch.setitem(sys.modules, 'pyray', fake)
   return fake
 
 

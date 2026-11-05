@@ -2,14 +2,36 @@ import unittest
 import tempfile
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui.presentation import (BitmapFonts, FontRole, Profile, default_font_directory, font_filename, font_path,
                                                  free_glyph_images, validate_bitmap_font)
+
+
+@contextmanager
+def graphics_context(test):
+  owns_context = not rl.is_window_ready()
+  if owns_context:
+    rl.init_window(64, 64, "Glyph release fixture")
+  if not rl.is_window_ready():
+    test.skipTest("no graphics context on this host")
+  try:
+    yield
+  finally:
+    if owns_context:
+      rl.close_window()
+
+
+def has_cpu_copy(image) -> bool:
+  try:
+    return image.data is not None
+  except ValueError:  # a zero-width glyph (space) still owns an allocation; raylib_nb refuses a 0-byte view of it
+    return True
 
 
 class TestBitmapFonts(unittest.TestCase):
@@ -87,16 +109,21 @@ class TestBitmapFonts(unittest.TestCase):
       self.assertAlmostEqual(raw_draw.call_args.args[3], 36 * 1.16)
 
   def test_freeing_glyph_images_frees_each_cpu_bitmap_once(self):
-    glyphs = rl.ffi.new("GlyphInfo[3]")
-    pixels = [rl.ffi.new("unsigned char[4]"), rl.ffi.new("unsigned char[4]")]
-    glyphs[0].image.data, glyphs[2].image.data = pixels
-    font = SimpleNamespace(glyphCount=3, glyphs=glyphs)
-    freed = []
-    with patch("openpilot.starpilot.ui.presentation.rl.unload_image", side_effect=lambda image: freed.append(image.data)):
-      free_glyph_images(font)
-      free_glyph_images(font)
-    self.assertEqual(freed, [rl.ffi.cast("void *", pixel) for pixel in pixels])
-    self.assertTrue(all(glyphs[index].image.data == rl.ffi.NULL for index in range(3)))
+    with graphics_context(self):
+      font = rl.load_font(str(default_font_directory() / "Inter-Regular.fnt"))
+      try:
+        self.assertNotEqual(font.texture.id, 0)
+        held = [has_cpu_copy(font.glyphs[index].image) for index in range(font.glyphCount)]
+        metrics = [(g.value, g.offsetX, g.offsetY, g.advanceX) for g in font.glyphs]
+        recs = [(r.x, r.y, r.width, r.height) for r in font.recs]
+        self.assertTrue(any(held))
+        self.assertEqual(free_glyph_images(font), sum(held))  # every CPU bitmap freed in raylib's own glyph array
+        self.assertEqual(free_glyph_images(font), 0)  # and only once: the second pass finds nothing left
+        self.assertTrue(all(font.glyphs[index].image.data is None for index in range(font.glyphCount)))
+        self.assertEqual([(g.value, g.offsetX, g.offsetY, g.advanceX) for g in font.glyphs], metrics)
+        self.assertEqual([(r.x, r.y, r.width, r.height) for r in font.recs], recs)
+      finally:
+        rl.unload_font(font)  # frees each now-NULL glyph image again: free(NULL), no double free
 
   def test_glyph_release_is_opt_in_and_trims_the_heap_once(self):
     for release in (False, True):
@@ -120,11 +147,10 @@ class TestBitmapFonts(unittest.TestCase):
       self.assertEqual(trim.call_count, int(release))
 
   def test_fonts_without_cpu_glyph_copies_draw_and_measure_the_same(self):
-    owns_context = not rl.is_window_ready()
-    if owns_context:
-      rl.init_window(64, 64, "Glyph release fixture")
-    if not rl.is_window_ready():
-      self.skipTest("no graphics context on this host")
+    with graphics_context(self):
+      self._draw_and_measure_the_same()
+
+  def _draw_and_measure_the_same(self):
     width, height = 900, 160
     target = rl.load_render_texture(width, height)
     try:
@@ -139,7 +165,9 @@ class TestBitmapFonts(unittest.TestCase):
           fonts.draw("Starting navigation 0.3 mi 123", role, 48, 10, 40)
           rl.end_texture_mode()
           image = rl.load_image_from_texture(target.texture)
-          pixels.append(bytes(rl.ffi.buffer(image.data, width * height * 4)))
+          data = bytes(image.data)
+          self.assertEqual(len(data), width * height * 4)
+          pixels.append(data)
           rl.unload_image(image)
         return measured, pixels
 
@@ -147,13 +175,11 @@ class TestBitmapFonts(unittest.TestCase):
         expected = snapshot(kept)
       self.assertTrue(all(any(pixels) for pixels in expected[1]), 'the fixture must draw visible text')
       with BitmapFonts(Profile.LARGE, default_font_directory(), release_glyph_images=True) as released:
-        self.assertTrue(all(font.glyphs[index].image.data == rl.ffi.NULL
+        self.assertTrue(all(font.glyphs[index].image.data is None
                             for font in released._fonts.values() for index in range(font.glyphCount)))
         self.assertEqual(snapshot(released), expected)
     finally:
       rl.unload_render_texture(target)
-      if owns_context:
-        rl.close_window()
 
 
 if __name__ == "__main__":
