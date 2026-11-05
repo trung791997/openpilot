@@ -4,7 +4,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 
-import pyray as rl
+from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.system.starport.projection_layout import SPEED_CARD_SIZE
 from openpilot.starpilot.ui.onroad_customization import placement, rgba
@@ -350,14 +350,18 @@ def _shade(*stops):
 
 def _fill(points, color_at):
   """Convex polygon (clockwise on screen) as a triangle fan with a per-vertex vertical gradient."""
+  # UNRESOLVED (2026-11-05): per-vertex colour needs rlColor4ub + RL_TRIANGLES, which the shared raylib_nb `rl`
+  # does not expose. This is the last pyray use in the file; pyray is a second, uninitialised raylib, and under
+  # xvfb its draw calls segfault inside a raylib_nb window. Kept as-is until the owner picks a replacement.
+  import pyray
   mx, my = sum(x for x, _ in points) / len(points), sum(y for _, y in points) / len(points)
-  rl.rl_begin(rl.RL_TRIANGLES)
+  pyray.rl_begin(pyray.RL_TRIANGLES)
   for i in range(len(points)):
     for x, y in ((mx, my), points[(i + 1) % len(points)], points[i]):
       c = color_at(y)
-      rl.rl_color4ub(c.r, c.g, c.b, c.a)
-      rl.rl_vertex2f(x, y)
-  rl.rl_end()
+      pyray.rl_color4ub(c.r, c.g, c.b, c.a)
+      pyray.rl_vertex2f(x, y)
+  pyray.rl_end()
 
 
 def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
@@ -378,7 +382,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
   stroke = max(2., unit * .05)
 
   # soft halo in the state color so the change reads at a glance
-  rl.draw_circle_gradient(int(cx), int(top + h * .55), w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
+  rl.draw_circle_gradient(rl.Vector2(int(cx), int(top + h * .55)), w * .95, _fade(accent, 70 * pulse), _fade(accent, 0))
 
   # lane lines fanning out from beside the car, and the gap bars on the road behind it
   road_top, road_bottom = top + h * .62, top + h * 1.85
@@ -433,7 +437,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None):
     lamp = [at(side * .17, .56), at(side * .495, .55), at(side * .48, .655), at(side * .21, .64)][::side]
     if state == BRAKING:
       lx, ly = at(side * .33, .60)
-      rl.draw_circle_gradient(int(lx), int(ly), w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
+      rl.draw_circle_gradient(rl.Vector2(int(lx), int(ly)), w * .26, _fade(LEAD_RED, 170 * pulse), _fade(LEAD_RED, 0))
     _fill(_rounded(lamp, w * .025), _shade((top + h * .55, _mix(tail, CAR_LIGHT, .25)), (top + h * .65, _mix(tail, TIRE, .25))))
     if state == BRAKING:
       _fill(_rounded([at(side * .25, .58), at(side * .44, .575), at(side * .43, .615), at(side * .27, .61)][::side], w * .015),
