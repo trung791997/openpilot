@@ -74,6 +74,8 @@ def test_launch_commands_isolate_the_server_and_player(layout):
   assert player.argv[player.argv.index('--cache-size') + 1] == '256'
   assert player.argv[player.argv.index('--initial-volume') + 1] == '60'
   assert player.env['PULSE_SERVER'] == f'unix:{layout.runtime}/pulse/native'
+  # AGNOS 20.2.1 has no libpulse.so.0; Soloist loads it at run time from the vendored bundle.
+  assert player.env['LD_LIBRARY_PATH'] == str(backend.SERVER_ROOT / 'lib')
 
 
 def test_vendored_server_matches_its_checksums():
@@ -84,8 +86,46 @@ def test_vendored_server_matches_its_checksums():
   assert {name for _, name in sums} >= {'bin/pulseaudio', 'lib/libpulsecore-16.1.so', 'modules/module-pipe-sink.so'}
   for digest, name in sums:
     assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest, name
-  for name in ('pulseaudio', 'libltdl7', 'liborc-0.4-0t64', 'libsoxr0', 'libspeexdsp1', 'libtdb1'):
+  for name in ('pulseaudio', 'libltdl7', 'liborc-0.4-0t64', 'libsoxr0', 'libspeexdsp1', 'libtdb1', 'libpulse0', 'libsndfile1',
+               'libasyncns0', 'libflac12t64', 'libvorbis0a', 'libvorbisenc2', 'libogg0', 'libmpg123-0t64', 'libmp3lame0'):
     assert (root / 'licenses' / f'{name}.copyright').is_file()
+
+
+# Shared libraries the vendored PulseAudio files need that AGNOS 20.2.1 does provide (checked on the comma, 2026-11-05).
+AGNOS_PROVIDES = {'ld-linux-aarch64.so.1', 'libc.so.6', 'libm.so.6', 'libX11-xcb.so.1', 'libX11.so.6', 'libxcb.so.1',
+                  'libapparmor.so.1', 'libasound.so.2', 'libcap.so.2', 'libdbus-1.so.3', 'libgomp.so.1', 'libopus.so.0',
+                  'libsystemd.so.0', 'libudev.so.1', 'libwrap.so.0'}
+
+
+def _needed(path):
+  """DT_NEEDED names of an ELF64 little-endian file, without readelf."""
+  import struct
+  data = path.read_bytes()
+  shoff, = struct.unpack_from('<Q', data, 0x28)
+  shentsize, shnum = struct.unpack_from('<HH', data, 0x3a)
+  sections = [struct.unpack_from('<IIQQQQIIQQ', data, shoff + i * shentsize) for i in range(shnum)]
+  dynamic = next(s for s in sections if s[1] == 6)  # SHT_DYNAMIC
+  strtab = sections[dynamic[6]]
+  names = []
+  for offset in range(dynamic[4], dynamic[4] + dynamic[5], 16):
+    tag, value = struct.unpack_from('<qQ', data, offset)
+    if tag == 0:
+      break
+    if tag == 1:  # DT_NEEDED
+      start = strtab[4] + value
+      names.append(data[start:data.index(b'\0', start)].decode())
+  return names
+
+
+def test_vendored_pulseaudio_needs_nothing_agnos_20_lacks():
+  """AGNOS 20.2.1 dropped libpulse0 and libsndfile1; Spotify then failed with 'audio output could not open' and the
+  car screen lost its now-playing card. Every library the bundle links must be in lib/ or on AGNOS."""
+  root = backend.SERVER_ROOT
+  bundled = {path.name for path in (root / 'lib').iterdir()}
+  assert {'libpulse.so.0', 'libpulse-simple.so.0', 'libpulsecommon-16.1.so', 'libsndfile.so.1'} <= bundled
+  missing = {(path.name, name) for path in [*(root / 'bin').iterdir(), *(root / 'lib').iterdir(), *(root / 'modules').iterdir()]
+             for name in _needed(path) if name not in bundled and name not in AGNOS_PROVIDES}
+  assert not missing
 
 
 def test_starport_output_is_a_real_time_pipe(layout):

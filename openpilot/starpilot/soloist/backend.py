@@ -1,8 +1,10 @@
 """A private PulseAudio server that carries Soloist's audio to one selected output.
 
-AGNOS ships PulseAudio's client library but no server, and Soloist only plays through PulseAudio or
-PipeWire. The matching Ubuntu 24.04 server (the same 16.1+dfsg1-2ubuntu10.1 build as the comma's own
-libpulsecommon) is vendored in ./pulseaudio; see its README for provenance and licenses.
+Soloist only plays through PulseAudio or PipeWire. AGNOS up to 19.8.1 shipped PulseAudio's client library
+but no server; AGNOS 20.2.1 ships neither. The Ubuntu 24.04 16.1+dfsg1-2ubuntu10.1 server and its client
+libraries (libpulse, libpulse-simple, libpulsecommon, libsndfile and its codecs) are vendored in ./pulseaudio;
+see its README for provenance and licenses. Every process that talks PulseAudio (server, pactl, Soloist,
+the phone-audio worker) gets ./pulseaudio/lib on LD_LIBRARY_PATH.
 
 The server never becomes the system's audio: it runs with no default script, owns one sink, and is
 reachable only through a socket in this feature's private run directory. The global ALSA default,
@@ -93,7 +95,7 @@ def server_launch(layout: Layout, prefs: Preferences, *, silent: bool = False, a
   env = {
     'HOME': str(paths['home']), 'XDG_RUNTIME_DIR': str(paths['run']), 'XDG_CONFIG_HOME': str(paths['home']),
     'PULSE_RUNTIME_PATH': str(paths['pulse']), 'PULSE_STATE_PATH': str(paths['pulse']),
-    'LD_LIBRARY_PATH': str(root / 'lib'), 'PATH': '/usr/bin:/bin',
+    'LD_LIBRARY_PATH': library_path(root), 'PATH': '/usr/bin:/bin',
   }
   if prefs.output == 'bluetooth':
     # Written even when starting silent, so the speaker can be added to the running server later.
@@ -110,7 +112,13 @@ def server_launch(layout: Layout, prefs: Preferences, *, silent: bool = False, a
   return Launch(argv, env)
 
 
-def player_launch(layout: Layout, prefs: Preferences, api_key: str) -> Launch:
+def library_path(root: Path = SERVER_ROOT, inherited: str = '') -> str:
+  """LD_LIBRARY_PATH with the vendored PulseAudio libraries first. AGNOS 20.2.1 has no libpulse.so.0, which
+  Soloist loads at run time, so without this Spotify failed with "audio output could not open"."""
+  return ':'.join(part for part in (str(root / 'lib'), inherited) if part)
+
+
+def player_launch(layout: Layout, prefs: Preferences, api_key: str, root: Path = SERVER_ROOT) -> Launch:
   paths = runtime_paths(layout)
   private_dir(layout.state)
   private_dir(layout.cache)
@@ -119,14 +127,14 @@ def player_launch(layout: Layout, prefs: Preferences, api_key: str) -> Launch:
           '--data-dir', str(layout.state), '--cache-dir', str(layout.cache), '--cache-size', str(prefs.cache_mb),
           '--initial-volume', str(prefs.initial_volume), '--ws', '127.0.0.1:0']
   env = {'HOME': str(paths['home']), 'XDG_RUNTIME_DIR': str(paths['run']), 'PATH': '/usr/bin:/bin',
-         'PULSE_SERVER': f'unix:{paths["socket"]}'}
+         'PULSE_SERVER': f'unix:{paths["socket"]}', 'LD_LIBRARY_PATH': library_path(root)}
   return Launch(argv, env)
 
 
 def _pactl(layout: Layout, root: Path, run: Callable[..., subprocess.CompletedProcess], *args: str) -> str:
   paths = runtime_paths(layout)
   env = {'HOME': str(paths['home']), 'XDG_RUNTIME_DIR': str(paths['run']), 'PATH': '/usr/bin:/bin',
-         'PULSE_SERVER': f'unix:{paths["socket"]}'}
+         'PULSE_SERVER': f'unix:{paths["socket"]}', 'LD_LIBRARY_PATH': library_path(root)}
   return run([str(root / 'bin' / 'pactl'), *args], env=env, capture_output=True, text=True, timeout=5, check=True).stdout
 
 
