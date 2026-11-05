@@ -20,6 +20,12 @@ final class CloseView {
   // any road so it reads as under them
   static final int RAIL_C = 0xff707479, TIE_C = 0xff5c6065;
   static final float RAIL_PX = 1.3f, TIE_PX = 1.1f;
+  // an overpass (CloseUp.overpasses) as a structure: its deck's fascia, a concrete band under the parapet drawn at
+  // these fractions of its height (the lowest the dark soffit), a light parapet for the casing, and concrete piers
+  // PIER_PX wide down to its shadow
+  static final float[] FASCIA_AT = {0.8f, 0.87f, 0.94f};
+  static final int UNDER_C = 0xff2b2a27, FASCIA_C = 0xff6e6b64, PARAPET_C = 0xff8c8981, PIER_C = 0xff5f5c56;
+  static final float PIER_PX = 3;
 
   // One pass: range r of the detail at hs of its height, dashed (on, period world m) or solid (period 0).
   interface Pass {
@@ -27,7 +33,8 @@ final class CloseView {
   }
 
   // The passes, in order, for a frame with gate gr (roads, bridges, lanes) and gw (walks): the walks, the ground's
-  // lane lines, the decks' shadows, then each layer group from the lowest: its walls, casing, kerb, surface and lanes.
+  // lane lines, the shadows of every raised road, the overpasses' piers, then each layer group from the lowest: its
+  // ramps' walls, its overpass decks' fascia, then casing (parapet on a deck), kerb, surface and lanes of both.
   static void passes(CloseUp.Detail d, float ik, float gr, float gw, Pass p) {
     float lane = MapView.dm(LANE_PX), floor = MapView.dm(MapView.MIN_ROAD_PX), kerb = MapView.dm(2 * MapView.KERB_PX);
     float casing = MapView.dm(2 * MapView.KERB_PX + 2 * MapView.CASING_PX);
@@ -40,24 +47,40 @@ final class CloseView {
     for (int g = 1; g < CloseUp.LAYERS; g++) {
       for (int c : MapView.DRAW_ORDER) {
         float w = Math.max(floor, MapView.ROAD_M[c] * ik) + casing;
-        p.lines(CloseUp.range(g, c), 0, w + 2 * MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
-        p.lines(CloseUp.range(g, c), 0, w + MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
+        for (int r : new int[] {CloseUp.range(g, c), CloseUp.deck(g, c)}) {
+          p.lines(r, 0, w + 2 * MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
+          p.lines(r, 0, w + MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
+        }
       }
     }
+    // piers stand on the ground, so under every deck: each a column from 0 to the deck (zero plan length)
+    for (int g = 1; g < CloseUp.LAYERS; g++) p.lines(CloseUp.pier(g), gr, MapView.dm(PIER_PX), PIER_C, gr, 0, 0);
     for (int g = 1; g < CloseUp.LAYERS; g++) {
       for (float at : WALL_AT) {
         for (int c : MapView.DRAW_ORDER) {
           p.lines(CloseUp.range(g, c), at * gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, WALL_C, gr, 0, 0);
         }
       }
-      for (int c : MapView.DRAW_ORDER) {
-        p.lines(CloseUp.range(g, c), gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, gr, 0, 0);
+      for (int f = 0; f < FASCIA_AT.length; f++) {
+        for (int c : MapView.DRAW_ORDER) {
+          p.lines(CloseUp.deck(g, c), FASCIA_AT[f] * gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing,
+                  f == 0 ? UNDER_C : FASCIA_C, gr, 0, 0);
+        }
       }
       for (int c : MapView.DRAW_ORDER) {
-        p.lines(CloseUp.range(g, c), gr, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1, 0, 0);
+        float w = Math.max(floor, MapView.ROAD_M[c] * ik) + casing;
+        p.lines(CloseUp.range(g, c), gr, w, MapView.CASING_C, gr, 0, 0);
+        p.lines(CloseUp.deck(g, c), gr, w, PARAPET_C, gr, 0, 0);
       }
       for (int c : MapView.DRAW_ORDER) {
-        p.lines(CloseUp.range(g, c), gr, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1, 0, 0);
+        float w = Math.max(floor, MapView.ROAD_M[c] * ik) + kerb;
+        p.lines(CloseUp.range(g, c), gr, w, MapView.KERBS[c], 1, 0, 0);
+        p.lines(CloseUp.deck(g, c), gr, w, MapView.KERBS[c], 1, 0, 0);
+      }
+      for (int c : MapView.DRAW_ORDER) {
+        float w = Math.max(floor, MapView.ROAD_M[c] * ik);
+        p.lines(CloseUp.range(g, c), gr, w, MapView.ROADS[c], 1, 0, 0);
+        p.lines(CloseUp.deck(g, c), gr, w, MapView.ROADS[c], 1, 0, 0);
       }
       lanes(g, gr, lane, gr, p);
     }
@@ -78,9 +101,14 @@ final class CloseView {
   }
 
   // The scene's detail: the roads and walks of the tiles in metres from the anchor (ax, ay tile units, mpt metres per
-  // tile unit), as MapView.free() places them.
-  static CloseUp.Detail detail(Iterable<Feed.Tile> tiles, double ax, double ay, double mpt) {
+  // tile unit), as MapView.free() places them. route: the route's runs in the same metres (empty in free drive, when
+  // the car's own road along h, its heading in radians from north, stands in for it; see CloseUp.overpasses). raised,
+  // when not null, gets per tile, class and line whether a tile bridge in the detail is drawn raised (2) or flat (1),
+  // for the base layer (MapView.build); 0, a tile bridge out of reach, keeps its old look.
+  static CloseUp.Detail detail(Iterable<Feed.Tile> tiles, double ax, double ay, double mpt, float[][] route, double h,
+                               java.util.Map<Feed.Tile, byte[][]> raised) {
     CloseUp.Lines in = new CloseUp.Lines();
+    java.util.List<Object[]> from = new java.util.ArrayList<Object[]>();  // per road of in: tile, class, line
     double reach = Math.max(CloseUp.ROAD_R, CloseUp.WALK_R) / mpt;
     for (Feed.Tile tile : tiles) {
       double dx = Math.max(0, Math.max(tile.x - ax, ax - (tile.x + 1))), dy = Math.max(0, Math.max(tile.y - ay, ay - (tile.y + 1)));
@@ -93,11 +121,12 @@ final class CloseView {
         byte[] layer = tile.layer[c], lanes = tile.lanes[c];
         for (int l = 0; l + 1 < starts.length; l++) {
           boolean br = bridge != null && l < bridge.length && bridge[l];
-          // lines that can show: bridges, motorways (lanes) and what may meet a bridge (only ends are looked at, but
-          // a ramp needs the line)
+          // every line: a bridge, a motorway (lanes), what may meet a bridge (its ramps) or pass under it, the car's road
+          int before = in.pts.size();
           in.road(metres(tile, pts, starts[l], starts[l + 1], ax, ay, mpt), c, br,
                   layer != null && l < layer.length ? layer[l] : 0, lanes != null && l < lanes.length ? lanes[l] & 0xff : 0,
                   oneway != null && l < oneway.length && oneway[l]);
+          if (in.pts.size() > before) from.add(new Object[] {tile, c, l});
         }
       }
       int[] ws = tile.walkStarts;
@@ -107,7 +136,24 @@ final class CloseView {
       int[] rs = tile.railStarts;
       for (int l = 0; l + 1 < rs.length; l++) in.rail(metres(tile, tile.railPts, rs[l], rs[l + 1], ax, ay, mpt));
     }
-    return CloseUp.build(in);
+    float[][] path = route != null && route.length > 0 ? route : CloseUp.carRoad(in, (float) Math.sin(h), (float) Math.cos(h));
+    in.over = CloseUp.overpasses(in, path);
+    if (raised != null) {
+      for (int i = 0; i < from.size(); i++) {
+        if (in.attr.get(i)[1] == 0) continue;
+        Object[] t = from.get(i);
+        Feed.Tile tile = (Feed.Tile) t[0];
+        int c = (Integer) t[1], l = (Integer) t[2];
+        byte[][] r = raised.get(tile);
+        if (r == null) raised.put(tile, r = new byte[5][]);
+        if (r[c] == null) r[c] = new byte[tile.starts[c].length];
+        r[c][l] = (byte) (in.over[i] ? 2 : 1);
+      }
+    }
+    CloseUp.Detail d = CloseUp.build(in);
+    // free drive: an overpass held down as the car's road stays down only while the car is on that road
+    if ((route == null || route.length == 0) && in.held) d.heldOn = path;
+    return d;
   }
 
   private static float[] metres(Feed.Tile tile, float[] pts, int from, int to, double ax, double ay, double mpt) {

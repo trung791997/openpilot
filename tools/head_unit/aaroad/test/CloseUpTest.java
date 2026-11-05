@@ -31,8 +31,16 @@ public class CloseUpTest {
     return out;
   }
 
-  // height at the point (e, n) among the segments of range r, NaN if none ends there
+  // height at the point (e, n) among the segments of range r, NaN if none ends there; for a layer group's road range
+  // also among its overpass deck range (CloseUp.deck), where the full-height stretch goes
   static float heightAt(CloseUp.Detail d, int r, float e, float n) {
+    float h = at(d, r, e, n);
+    int g = (r - 2) / CloseUp.PER_LAYER, c = (r - 2) % CloseUp.PER_LAYER;
+    if (Float.isNaN(h) && r >= 2 && r < CloseUp.RAIL && g >= 1 && c < CloseUp.CLASSES) h = at(d, CloseUp.deck(g, c), e, n);
+    return h;
+  }
+
+  static float at(CloseUp.Detail d, int r, float e, float n) {
     for (float[] s : segs(d, r)) {
       if (near(s[0], e, 0.05) && near(s[1], n, 0.05)) return s[4];
       if (near(s[2], e, 0.05) && near(s[3], n, 0.05)) return s[5];
@@ -77,6 +85,7 @@ public class CloseUpTest {
     in.road(line(-300, 0, -100, 0, 0, 0), 2, false, 0, 0, false);
     in.road(line(0, 0, 100, 0, 200, 0), 2, true, 1, 0, false);
     in.road(line(200, 0, 500, 0), 2, false, 0, 0, false);
+    in.road(line(130, -200, 130, 200), 2, false, 0, 0, false);  // the street under it, so it is an overpass
     CloseUp.Detail d = CloseUp.build(in);
     int deck1 = CloseUp.range(1, 2);
     check(near(heightAt(d, deck1, 100, 0), L, 1e-3), "bridge middle at one deck's height");
@@ -94,6 +103,7 @@ public class CloseUpTest {
     // a lone bridge ramps inside itself over min(60 m, a third)
     in = new CloseUp.Lines();
     in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(130, -200, 130, 200), 2, false, 0, 0, false);
     d = CloseUp.build(in);
     int deck = CloseUp.range(1, 1);
     check(near(heightAt(d, deck, 0, 0), 0, 1e-3) && near(heightAt(d, deck, 300, 0), 0, 1e-3), "lone bridge ends on the ground");
@@ -101,6 +111,7 @@ public class CloseUpTest {
           "lone bridge up from 60 m in");
     in = new CloseUp.Lines();
     in.road(line(0, 0, 90, 0), 1, true, 1, 0, false);
+    in.road(line(45, -200, 45, 200), 2, false, 0, 0, false);
     d = CloseUp.build(in);
     check(near(heightAt(d, CloseUp.range(1, 1), 30, 0), L, 1e-3), "a short bridge ramps over a third of itself");
 
@@ -108,6 +119,7 @@ public class CloseUpTest {
     in = new CloseUp.Lines();
     in.road(line(0, 0, 100, 0), 0, true, 1, 0, true);
     in.road(line(101.5f, 0, 300, 0), 0, true, 1, 0, true);
+    in.road(line(200, -200, 200, 200), 2, false, 0, 0, false);  // under the second half only: both are raised
     d = CloseUp.build(in);
     deck = CloseUp.range(1, 0);
     check(near(heightAt(d, deck, 100, 0), L, 1e-3) && near(heightAt(d, deck, 101.5f, 0), L, 1e-3), "no ramp at a tile-edge cut");
@@ -118,6 +130,7 @@ public class CloseUpTest {
     in.road(line(0, 0, 100, 0, 200, 0), 2, true, 2, 0, false);
     in.road(line(0, 500, 100, 500, 200, 500), 2, true, 5, 0, false);
     in.road(line(0, 900, 100, 900, 200, 900), 2, true, 0, 0, false);
+    in.road(line(130, -200, 130, 1100), 2, false, 0, 0, false);
     d = CloseUp.build(in);
     check(near(heightAt(d, CloseUp.range(2, 2), 100, 0), 2 * L, 1e-3), "layer 2 at two decks");
     check(near(heightAt(d, CloseUp.range(3, 2), 100, 500), 5 * L, 1e-3), "layer 5 at five decks, drawn with group 3");
@@ -155,6 +168,7 @@ public class CloseUpTest {
     // a motorway bridge's lanes are raised with it
     in = new CloseUp.Lines();
     in.road(line(0, 0, 150, 0, 300, 0), 0, true, 1, 0, true);
+    in.road(line(130, -200, 130, 200), 2, false, 0, 0, false);
     d = CloseUp.build(in);
     boolean up = true;
     for (float[] s : segs(d, CloseUp.range(1, CloseUp.DASH))) up &= s[4] > 0 || s[5] > 0;
@@ -225,6 +239,87 @@ public class CloseUpTest {
     boolean order = d.from[0] == 0 && d.seg.length == d.count() * CloseUp.SEG;
     for (int r = 0; r < CloseUp.RANGES; r++) order &= d.from[r] <= d.from[r + 1];
     check(order, "ranges ordered, " + d.count() + " segments");
+
+    // which bridges are raised (CloseUp.overpasses, Peter 2026-11-05 FM 544): only one the car could drive under
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);  // a creek bridge: nothing under it
+    d = CloseUp.build(in);
+    check(d.maxH == 0 && d.bridges == 0, "a bridge with no road under it is drawn as plain road: maxH " + d.maxH);
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.rail(line(150, -200, 150, 200));
+    in.walk(line(100, -200, 100, 200), 0);
+    d = CloseUp.build(in);
+    check(d.maxH == 0, "a rail line or a path under it does not raise it");
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(300, 0, 300, 200), 2, false, 0, 0, false);  // meets its end: its approach
+    in.road(line(-150, -200, 0, 0), 2, false, 0, 0, false);
+    d = CloseUp.build(in);
+    check(d.maxH == 0, "roads meeting its ends are not under it");
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(0, -20, 300, 40), 2, false, 0, 0, false);  // 11 degrees across
+    d = CloseUp.build(in);
+    check(d.maxH == 0, "a road crossing at a slant under " + CloseUp.CROSS_MIN_DEG + " degrees does not raise it");
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(150, -200, 150, 200), 2, true, 1, 0, false);  // another bridge on the same layer crossing it
+    d = CloseUp.build(in);
+    check(d.maxH == 0, "a bridge on the same layer crossing it is not under it");
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(150, -200, 150, 0, 150, 200), 0, true, 2, 0, false);  // a layer-2 flyover over it
+    d = CloseUp.build(in);
+    check(near(heightAt(d, CloseUp.range(2, 0), 150, 0), 2 * L, 1e-3) && Float.isNaN(heightAt(d, CloseUp.range(1, 1), 150, 0)),
+          "a flyover over a lower bridge raises the flyover only");
+    // the overpass the car drives under is raised, its deck in the deck range, piers clear of the road under it
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);
+    in.road(line(150, -400, 150, 400), 0, false, 0, 0, true);
+    in.path = new float[][] {line(150, -400, 150, 400)};
+    d = CloseUp.build(in);
+    check(near(at(d, CloseUp.deck(1, 1), 150, 0), L, 1e-3) && near(at(d, CloseUp.range(1, 1), 0, 0), 0, 1e-3),
+          "a route under it keeps it raised: the full-height stretch a deck, the ends ramps");
+    List<float[]> piers = segs(d, CloseUp.pier(1));
+    boolean columns = !piers.isEmpty(), clear = true;
+    for (float[] p : piers) {
+      columns &= p[0] == p[2] && p[1] == p[3] && p[4] == 0 && near(p[5], L, 1e-3);
+      clear &= Math.abs(p[0] - 150) >= CloseUp.ROAD_W[0] / 2 + CloseUp.PIER_CLEAR_M;
+      clear &= p[0] >= 60 - 1e-3 && p[0] <= 240 + 1e-3;
+    }
+    check(columns && piers.size() % 2 == 0, piers.size() + " piers, columns from the ground to the deck, in pairs");
+    check(clear, "no pier on the motorway under it or on the ramps");
+    // the road being driven stays down: the route along the bridge, or with no route the car's own road
+    in.path = new float[][] {line(-100, 0, 400, 0)};
+    d = CloseUp.build(in);
+    check(d.maxH == 0, "a route on the bridge: drawn as the road it is part of");
+    in.path = null;
+    in.over = null;
+    float[][] own = CloseUp.carRoad(in, 1, 0);
+    check(own != null && own.length == 1 && own[0][4] == 300, "the car on the bridge heading east: its road is the bridge");
+    in.path = own;
+    check(CloseUp.build(in).maxH == 0, "so the bridge the car is on is not raised");
+    in.held = false;
+    CloseUp.overpasses(in, own);
+    check(in.held, "an overpass held down as the car's road is flagged (free drive rebuilds once the car leaves it)");
+    check(CloseUp.onRoad(own, 100, 3, 1, 0) && CloseUp.onRoad(own, 100, 3, -1, 0), "on the bridge either way: still on its road");
+    check(!CloseUp.onRoad(own, 150, -60, 0, 1) && !CloseUp.onRoad(own, 150, 0, 0, 1),
+          "on the motorway under it heading north: off it, at the crossing too");
+    in.road(line(-200, 0, 0, 0), 1, false, 0, 0, false);
+    in.road(line(300, 0, 500, 30), 1, false, 0, 0, false);
+    in.road(line(300, 0, 300, 300), 2, false, 0, 0, false);
+    own = CloseUp.carRoad(in, 1, 0);
+    check(own != null && own.length == 3, "carRoad follows the straightest join each way: " + (own == null ? 0 : own.length));
+    in = new CloseUp.Lines();
+    in.road(line(-150, 0, 0, 0, 150, 0), 1, true, 1, 0, false);
+    in.road(line(0, -400, 0, 400), 0, false, 0, 0, true);
+    in.path = CloseUp.carRoad(in, 0, 1);
+    check(in.path != null && in.path[0][0] == 0 && in.path[0][1] == -400 && near(CloseUp.build(in).maxH, L, 1e-3),
+          "the car on the motorway under it heading north: the bridge stays raised");
+    in.held = false;
+    CloseUp.overpasses(in, in.path);
+    check(!in.held, "and nothing is held down, so no rebuild is asked for");
 
     // the size of a busy close-up: a 1.4 km motorway interchange grid and a street grid with sidewalks
     in = new CloseUp.Lines();

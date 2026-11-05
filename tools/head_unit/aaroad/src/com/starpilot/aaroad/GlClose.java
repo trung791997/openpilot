@@ -104,6 +104,11 @@ final class GlClose implements CloseView.Pass {
     return GLES20.glGetError() == GLES20.GL_NO_ERROR;
   }
 
+  // Whether s's own detail is up (GlRoads fades the flat overpasses only then, so one is always drawn).
+  boolean shows(MapView.Scene s) {
+    return s != null && s == shownScene;
+  }
+
   // Once a frame, before draw: sends the next slice of s's detail if it is not up yet.
   void step(MapView.Scene s) {
     if (s == null || s == shownScene) {

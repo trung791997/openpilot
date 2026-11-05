@@ -72,6 +72,53 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 ## Log
 
+### 2026-11-05
+- **Zoomed in, a bridge on the road you're driving (or over a creek) now looks like the rest of the road instead of a grey slab laid on top. Only real overpasses, the ones a road passes under, stand up, now drawn as 3D decks with side faces, piers and a shadow.** *static*: desktop tests and harness renders only. Not installed on the head unit, not driven, GPU path not run on the Tegra.
+  - Problem: Peter on FM 544 at 12 mph, close-up. A creek bridge on his own road was drawn as a raised slab with casing and ramps, so it looked like patched work or another route drawn on top. Every tile bridge was drawn raised, whatever was under it.
+  - The rule (`CloseUp.overpasses`): a bridge is raised only if the car could drive under it.
+    - Something must cross under it in plan: a ground road or a lower-layer bridge. Rail lines and paths don't count.
+    - The crossing must be at least `CROSS_MIN_DEG` (20 degrees) and away from both lines' ends (`JOIN_M`), so a road meeting the bridge end on is its approach, not under it.
+    - Bridges joined end to end on one layer count as one.
+    - The road being driven is never raised. That means a bridge with half its length (`ON_PATH_SHARE`) within 12 m and 30 degrees of the route; with no route, of the car's own road ahead and behind (`carRoad`: the line within 20 m running within 35 degrees of the heading, plus the straightest joins out to `ROAD_R`).
+    - Every other bridge is drawn as the plain road it is part of, in the base map too (`MapView.build` gets the flat/raised result per tile line), at every zoom.
+  - The overpass model (`CloseUp.build`, `CloseView.passes`):
+    - The full-height stretch of the deck goes in its own ranges (`deck(g, c)`).
+    - Fascia: three slices down the side face, the lowest in underside colour.
+    - Parapet: in place of the casing.
+    - Piers: pairs of 3 px columns about every `PIER_M` (30 m), kept `PIER_CLEAR_M` (6 m) clear of any road under it; a span shorter than 30 m rests on its ends.
+    - Shadow: the existing shadow pass.
+    - Pass order: walks, ground lanes, all shadows, all piers, then per layer group its walls, fascia, casing/parapet, kerb, surface, lanes.
+    - The GPU (`GlClose`) and software paths both run `CloseView.passes`, so they draw the same passes in the same order.
+    - The base map's bridge copy fades out as the close-up fades in (software alpha; `GlRoads` waits until `GlClose` shows the scene's own detail, so one copy is always drawn).
+    - `Under` (the car's outline under a deck) looks at the deck ranges too.
+  - Free drive: if a scene held an overpass flat because the car was on it, the scene is rebuilt as soon as the car leaves that road (`Detail.heldOn`, `CloseUp.onRoad`). Without this, a harness drive west over I-635 and then north under it on US 75 drew I-635 flat over the car for the next 600 m. In a scene where nothing was held down, this check does nothing.
+  - Peter's second photo (Angel Pkwy, free drive, 18 mph): the short dull olive strokes along road centres are not traffic, lane paint or turn hints.
+    - What they are: tile "link" lines, class 3 (`road_tiles.py` `_CLASS_OF`). These are Mapbox `primary_link`, `secondary_link` and `tertiary_link` (turn and slip lanes at intersections) as well as motorway and trunk ramps.
+    - How they're drawn: in the dim ramp gold (`ROADS[3]` 0xff5a4b1e), 12 m wide, last in `DRAW_ORDER`. Kerbs are drawn first, so inside a grey street they show as a narrow olive stroke with no outline.
+    - When they show: whenever the tiles have one, with or without a route, at every zoom.
+    - Traffic colours only ever go on the route line, and the close-up yellow line is only drawn on motorways.
+    - Recommendation, not changed here: restyle. The gold was meant to say "highway ramp" (2026-10-31). Draw street-level links as street grey, either in `road_tiles.py` (needs the tiles rebuilt) or in the app (gold only when the link touches a motorway or trunk).
+  - Static:
+    - `CloseUpTest` 82 ok.
+      - New: a creek bridge stays flat; rail or a path under it doesn't raise it; roads meeting its ends don't count; an 11-degree crossing doesn't count; a same-layer crossing doesn't count; over a lower bridge only the flyover rises; a route under it gives a deck, ramps and 8 piers in pairs clear of the roads; a route on it, or the car on it, keeps it flat; `carRoad` follows the straightest join; the car under it keeps it raised; the held flag and `onRoad`.
+      - The busy-scene build is still about 2 ms.
+    - `UnderTest` 21 ok. Free view, lanes, tilt, shield, signals, events, liveness and GL cull tests ok. `build.sh` builds.
+    - Harness renders, `/tmp/hu/overpass/before` and `after` (side by side in `/tmp/hu/overpass/pairs`):
+      - The scene with no bridges (`plain_*`, 4 frames) is byte-identical to HEAD when rendered in the same minute; otherwise only the arrival clock differs. `free_far_25ms` is identical too.
+      - Route under I-635: deck, fascia, piers, shadow.
+      - Route on I-635 and the 60 m creek bridge, route or free drive: drawn flat.
+  - Not checked:
+    - Not on the head unit, so the GPU draw cost on the Tegra 3 is unknown. The added work is about 5 deck ranges and 3 pier ranges, of a few segments each, and only where an overpass is in reach.
+    - Known ways the rule goes wrong:
+      - the road under it is missing from the tiles: drawn flat;
+      - a long water bridge with a shore road under one end: all of it raised;
+      - a frontage road crossing under 20 degrees: flat;
+      - lines dropped by the build cap or beyond `ROAD_R`: the deck is lost while the base copy fades;
+      - a pier can stand through a lower deck;
+      - the other-direction twin of the bridge being driven, within 12 m and 30 degrees, is also drawn flat;
+      - on the GPU, the base copy switches back briefly while a new scene's detail uploads.
+    - Pre-existing and not changed: in a free-drive scene anchored at the I-635 overpass, the lane lines on US 75 past the deck are missing; HEAD does the same (`/tmp/hu/overpass/fresh_before`).
+
 - `Lanes.at = AT_CAR`: Peter picked the lane row under the car (option B: map lifts 38 px and zooms in 15% while lanes show; song card stays). Comma updated to `1c15daba8` and rebooted while parked (Peter's OK for the comma). Ready to install: `/tmp/hu/aaroad-lanes-car.apk` = GPS-gap hold + map-drop log (`f045536c1`), close-up 3D (`e177a7065`), lanes (`1c15daba8`), this switch; same signing key as the installed app. Not installed, not driven. Rollback: `aaroad-signals.apk`.
 - **Installed** 2026-10-31 night (parked, Peter's OK): comma fast-forwarded to `1d2a7a2f9` and rebooted (came back, nav/feed processes up); `aaroad-signals.apk` installed on the head unit (`install -r` Success), `hu-reboot` sent in Park, adb key removed. Waiting on the ignition cycle. Not driven yet. Check on the next drive: Open 10 (badges), 11 (free-drive roads ahead, `gl parts` cull/upload cost), and traffic-light coverage in the z14 tiles. Rollback: `aaroad-turn-hwy.apk`.
 

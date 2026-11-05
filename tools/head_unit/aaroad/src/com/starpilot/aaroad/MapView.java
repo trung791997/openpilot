@@ -994,6 +994,11 @@ final class MapView extends View {
         need = !FreeView.covered(s.area, s.bh, e, n, h, spd, kView)
             || FreeView.minor(FreeView.range(spd), s.minor) != s.minor;
       }
+      // an overpass drawn flat as the car's road: rebuilt once the car is off that road (CloseUp.overpasses)
+      if (!need && r == null && s.close != null && s.close.heldOn != null && spd >= HOLD_SPEED
+          && now - builtAt > TILE_REBUILD_MS) {
+        need = !CloseUp.onRoad(s.close.heldOn, (float) e, (float) n, (float) Math.sin(h), (float) Math.cos(h));
+      }
     }
     if (!need) return;
     building = true;
@@ -1073,7 +1078,12 @@ final class MapView extends View {
         levels.add(lv.toByteArray());
       }
     }
+    // the close-up detail first: it finds which bridges are overpasses (CloseUp.overpasses), and the rest are drawn
+    // as plain road here too
+    java.util.IdentityHashMap<Feed.Tile, byte[][]> raised = new java.util.IdentityHashMap<Feed.Tile, byte[][]>();
+    s.close = CloseView.detail(Feed.tiles.values(), s.ax, s.ay, s.mpt, route.toArray(new float[0][]), h, raised);
     for (Feed.Tile tile : Feed.tiles.values()) {
+      byte[][] up = raised.get(tile);
       for (int c = 0; c < 5; c++) {  // motorway, major, street, link, minor
         float[] pts = tile.pts[c];
         int[] starts = tile.starts[c];
@@ -1087,7 +1097,8 @@ final class MapView extends View {
           }
           else if (!around(s, tile, pts, starts[l], starts[l + 1], stubs)) near(s, tile, pts, starts[l], starts[l + 1], cells, stubs);
           String name = names != null && l < names.length ? names[l] : null;
-          int sc = bridge != null && l < bridge.length && bridge[l] ? c + BRIDGE : c;
+          boolean flat = up != null && up[c] != null && l < up[c].length && up[c][l] == 1;  // a bridge not over a road
+          int sc = bridge != null && l < bridge.length && bridge[l] && !flat ? c + BRIDGE : c;
           while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsName.add(name); }
           while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsName.add(name); }
         }
@@ -1131,7 +1142,6 @@ final class MapView extends View {
     s.routeChunks = chunks(s.route, null, s.routeLevel);
     s.stubsChunks = chunks(s.stubs, s.stubsCls, null);
     s.roadsChunks = chunks(s.roads, s.roadsCls, null);
-    s.close = CloseView.detail(Feed.tiles.values(), s.ax, s.ay, s.mpt);
     return s;
   }
 
@@ -1723,18 +1733,29 @@ final class MapView extends View {
         side.setColor(ROADS[c]);
         stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
       }
-      // the bridges over all of that: casing, kerb, surface
-      sideKerb.setColor(CASING_C);
-      for (int c : DRAW_ORDER) {
-        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
-      }
-      for (int c : DRAW_ORDER) {
-        sideKerb.setColor(KERBS[c]);
-        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
-      }
-      for (int c : DRAW_ORDER) {
-        side.setColor(ROADS[c]);
-        stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], side, Math.max(floor, ROAD_M[c] * ik));
+      // the bridges over all of that: casing, kerb, surface. Only overpasses are here (CloseUp.overpasses); zoomed in
+      // they fade out as CloseView draws them raised, with deck, piers and shadow, so the flat copy doesn't show
+      // under the deck as a second road
+      float flatA = s.close != null ? 1 - CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE) : 1;
+      if (flatA > 0) {
+        int alpha = Math.round(255 * flatA);
+        sideKerb.setColor(CASING_C);
+        sideKerb.setAlpha(alpha);
+        for (int c : DRAW_ORDER) {
+          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+        }
+        for (int c : DRAW_ORDER) {
+          sideKerb.setColor(KERBS[c]);
+          sideKerb.setAlpha(alpha);
+          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+        }
+        for (int c : DRAW_ORDER) {
+          side.setColor(ROADS[c]);
+          side.setAlpha(alpha);
+          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], side, Math.max(floor, ROAD_M[c] * ik));
+        }
+        sideKerb.setAlpha(255);
+        side.setAlpha(255);
       }
       // zoomed in: the raised bridges, lane lines and sidewalks (CloseView), under the carpet
       closeView.draw(canvas, s.close, ce, cn, ch, sh, ik, CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE),
@@ -1849,7 +1870,7 @@ final class MapView extends View {
     float casing = dm(2 * KERB_PX + 2 * CASING_PX), floor = dm(MIN_ROAD_PX);
     for (int k = 0; k < coverN; k++) {
       int i = cover[k], o = i * CloseUp.SEG;
-      int c = (closeRange(d, i) - 2) % CloseUp.PER_LAYER;
+      int c = CloseUp.cls(closeRange(d, i));
       float half = (Math.max(floor, ROAD_M[c] * f.ik) + casing) / 2;
       float[] q = Under.lifted(v, o, f.ce, f.cn, f.ch, f.sh, f.ik, gr, coverQ);
       float dx = q[2] - q[0], dz = q[3] - q[1], len = (float) Math.hypot(dx, dz);

@@ -757,12 +757,16 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
     for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
-    // the bridges over all of that, as the view: casing, kerb, surface
+    // the bridges (overpasses only) over all of that, as the view: casing, kerb, surface, fading out zoomed in as
+    // the close-up draws them raised
     float casing = MapView.dm(2 * MapView.KERB_PX + 2 * MapView.CASING_PX);
     int b = MapView.BRIDGE;
-    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, 1);
-    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
-    for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
+    float flatA = close != null && close.shows(s) && s.close != null ? 1 - CloseUp.gate(MapView.R0 / ik, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE) : 1;
+    if (flatA > 0) {
+      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
+      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], flatA);
+      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], flatA);
+    }
     // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over
     if (close != null) {
       double rng = MapView.R0 / ik;

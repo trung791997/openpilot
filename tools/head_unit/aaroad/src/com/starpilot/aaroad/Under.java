@@ -32,8 +32,8 @@ final class Under {
     if (d == null) return 0;
     float[] v = d.seg;
     for (int g = 1; g < CloseUp.LAYERS; g++) {
-      for (int c = 0; c < CloseUp.CLASSES; c++) {
-        int r = CloseUp.range(g, c);
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {  // ramps and decks of each class
+        int c = k % CloseUp.CLASSES, r = k < CloseUp.CLASSES ? CloseUp.range(g, c) : CloseUp.deck(g, c);
         float reach = roadM[c] / 2 + ON_DECK_M;
         for (int i = d.from[r]; i < d.from[r + 1]; i++) {
           int o = i * CloseUp.SEG;
@@ -62,8 +62,8 @@ final class Under {
     float[] v = d.seg;
     int n = 0;
     for (int g = 1; g < CloseUp.LAYERS; g++) {
-      for (int c = 0; c < CloseUp.CLASSES; c++) {
-        int r = CloseUp.range(g, c);
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {  // ramps and decks of each class
+        int c = k % CloseUp.CLASSES, r = k < CloseUp.CLASSES ? CloseUp.range(g, c) : CloseUp.deck(g, c);
         float half = (Math.max(floor, roadM[c] * ik) + casing) / 2;
         for (int i = d.from[r]; i < d.from[r + 1] && n < out.length; i++) {
           int o = i * CloseUp.SEG;
