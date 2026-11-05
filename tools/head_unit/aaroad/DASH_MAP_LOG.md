@@ -22,8 +22,8 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad-hold.apk` | built at `ba1ecd65f`: everything in `aaroad-under.apk`, plus events.log falls back to the app files/cache dirs and says where it writes or why not, and every aaroad error.log line carries a time stamp; installed 2026-11-03 in Park at 0 m/s (Peter's OK), comma on `7ea46a1dc` (has the stopped-pose hold in hu_feed), `hu-reboot` sent, waiting on the ignition cycle; not driven yet |
-| Previous | `aaroad-under.apk` | built at `38861a444`: lane arrows under the car, bridges and overpasses raised, railroad crossings, 3D tilt zoomed in; drove 2026-11-01 |
+| Installed now | `aaroad-overpass2.apk` | everything in `aaroad-hold.apk`, plus turn and slip lanes drawn as streets (Open 16) and real overpasses as 3D decks; installed 2026-11-05 in Park (Peter's OK), `install -r` Success, comma on `2336dc471`, `hu-reboot` sent, adb key removed, waiting on the ignition cycle; not driven yet |
+| Previous | `aaroad-hold.apk` | built at `ba1ecd65f`: events.log fallback dirs, time-stamped error.log lines; installed 2026-11-03 |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
 
 The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the commit with `build.sh` in a scratch copy (it runs `rm -rf out`).
