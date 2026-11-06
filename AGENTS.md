@@ -10,6 +10,9 @@ This branch started its own docs on 2026-11-06. They are not copied from any oth
 1. `STATUS.md`: what is true on this branch now, and what is not verified.
 2. `DECISIONS.md`: settled decisions for this branch. Do not reverse one without new evidence.
 3. `CLAUDE.md`: the short, priority-ordered version.
+4. `STATUS-archive.md` and `DECISIONS-archive.md`: frozen copies from `ns-bosch-radar-testing`
+   @ 84af40f039. Look there when Peter refers to a past fix or a D-number. They describe that branch, not
+   this one; never edit them, and record anything new in the live files.
 
 ## 3. Safety rules
 - Never call a change safe or working without saying *static*, *replay* or *limited road evidence*.
