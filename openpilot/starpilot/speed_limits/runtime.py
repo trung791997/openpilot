@@ -15,7 +15,8 @@ from openpilot.starpilot.speed_limits import composition as comp
 from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
-from openpilot.starpilot.speed_limits.map_observation import TURN_MIN_SPEED, MapSource, SignFirst, TurnOverride, copy_frame
+from openpilot.starpilot.speed_limits.map_observation import (TURN_MIN_SPEED, MapboxCeiling, MapSource, SignFirst, TurnOverride,
+                                                             copy_frame)
 from openpilot.starpilot.speed_limits.navigation_observation import navigation_observation
 from openpilot.starpilot.speed_limits.advance import Advance
 from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, clock_pair_ns, vision_observation
@@ -145,7 +146,8 @@ class Runtime:
     self.sign_first = SignFirst()
     self.sign_first_online = SignFirst()
     self.turn_override = TurnOverride()
-    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)  # Vision as read, while turn_override hides it
+    self.mapbox_ceiling = MapboxCeiling()
+    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)  # Vision as read, while hidden from selection
     self.advance = Advance()
     self.vision_enabled = vision_enabled
     # Exact saved Vision opt-in may grant control; source identity and current
@@ -186,6 +188,7 @@ class Runtime:
     self.sign_first.reset()
     self.sign_first_online.reset()
     self.turn_override.reset()
+    self.mapbox_ceiling.reset()
     self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
     self.advance = Advance()
     self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
@@ -391,6 +394,16 @@ class Runtime:
       self.vision_diagnostic = acc.Observation(acc.ObservationKind.STALE)
     else:
       self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
+    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
+    online = None
+    if self.settings.selection.online_fallback:
+      online = navigation_observation(sm, now_ns=now_ns, drive_session=self.session_id,
+                                      car_fingerprint=str(CP.carFingerprint))
+      # A reading far above Mapbox is a misread (a route shield), not a sign: drop it
+      # before any sign-hold logic counts it as seen.
+      if self.mapbox_ceiling.step(values[sel.Source.VISION], online, now_ns):
+        self.vision_held = values[sel.Source.VISION]
+        values[sel.Source.VISION] = acc.Observation(acc.ObservationKind.UNKNOWN)
     if (sel.Source.MAP in self.settings.selection.slots or
         self.settings.selection.mode is not sel.SelectionMode.ORDERED):
       pair = clock_pair_ns() if now_boot_ns is None else (now_ns, now_boot_ns)
@@ -409,10 +422,7 @@ class Runtime:
         values[sel.Source.MAP] = acc.Observation(acc.ObservationKind.STALE)
       if self.settings.selection.mode is sel.SelectionMode.ORDERED and self.settings.selection.slots == (sel.Source.VISION, sel.Source.MAP):
         values[sel.Source.MAP] = self.sign_first.step(values[sel.Source.VISION], values[sel.Source.MAP])
-    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
-    if self.settings.selection.online_fallback:
-      online = navigation_observation(sm, now_ns=now_ns, drive_session=self.session_id,
-                                      car_fingerprint=str(CP.carFingerprint))
+    if online is not None:
       values[sel.Source.ONLINE] = online
       if sel.Source.VISION in self.settings.selection.slots:
         # Same rule as Maps: a sign seen this drive holds until the route's limit changes.
@@ -656,7 +666,7 @@ class Runtime:
     for row, source in zip(rows, sel.Source, strict=True):
       observation = frame.observations.get(source)
       if source is sel.Source.VISION and self.vision_held.kind is acc.ObservationKind.VALID:
-        observation = self.vision_held  # the drawer still shows the sign the turn override set aside
+        observation = self.vision_held  # the drawer still shows what the camera read, though selection set it aside
       row.source = source.value
       row.enabled = bool(self.settings.display and source in enabled_sources)
       row.observationKind = observation.kind.value if observation is not None else 'unknown'

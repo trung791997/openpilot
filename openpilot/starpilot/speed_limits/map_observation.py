@@ -164,3 +164,51 @@ class TurnOverride:
       # Re-arming takes another turn from here and a Mapbox value seen after it.
       self.active, self.turned, self.online_after_turn, self.reference_deg = True, False, False, heading_deg
     return self.active and vision_valid
+
+
+ABOVE_MAPBOX_MPS = 15 * 0.44704 + SAME_LIMIT_MPS  # 15 mph; Mapbox vs signs on the same road differed by 5 mph at most
+MAPBOX_RECENT_NS = 30 * 1_000_000_000  # Mapbox drops out for seconds between Map Matching answers
+
+
+class MapboxCeiling:
+  """A Vision limit far above Mapbox is something else read as a sign.
+
+  Route 0000009b--2188fdfd3f (Wylie, TX): with Mapbox at 55 the camera read 80
+  (a highway 78 route shield; the classifier has no 78 class), the 80 was taken as
+  a raise without confirmation and held for six minutes, because the correct 55 read
+  after it was a lower limit waiting on confirmation. Later, at 19 mph with Mapbox
+  at 50 a few seconds earlier and 30 just after, it read 70 and that was accepted.
+  Real signs on the same drives sat within 5 mph of Mapbox.
+
+  Judged when a reading first appears (a new vision identity): more than
+  ABOVE_MAPBOX_MPS over the current Mapbox value, or the last one within
+  MAPBOX_RECENT_NS, marks it a misread. A marked reading is cleared for good once
+  Mapbox comes within range (a real raise Mapbox was behind on). A reading that
+  passed is never re-judged, so a sign held after a turn onto a slower road is the
+  turn override's business, not this one's. Without any recent Mapbox value Vision
+  passes unchecked.
+  """
+
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.mapbox_mps: float | None = None
+    self.mapbox_ns = 0
+    self.reading = None   # identity of the current vision reading
+    self.misread = False
+
+  def step(self, vision: acc.Observation, online: acc.Observation, now_ns: int) -> bool:
+    """True while the current Vision reading should be hidden from selection."""
+    if online.kind is acc.ObservationKind.VALID:
+      self.mapbox_mps, self.mapbox_ns = online.candidate.speed_mps, now_ns
+    elif self.mapbox_mps is not None and now_ns - self.mapbox_ns > MAPBOX_RECENT_NS:
+      self.mapbox_mps = None
+    if vision.kind is not acc.ObservationKind.VALID:
+      return False
+    above = self.mapbox_mps is not None and vision.candidate.speed_mps > self.mapbox_mps + ABOVE_MAPBOX_MPS
+    if vision.candidate.observation_identity != self.reading:
+      self.reading, self.misread = vision.candidate.observation_identity, above
+    elif self.misread and self.mapbox_mps is not None:  # only Mapbox agreeing clears it, not Mapbox going quiet
+      self.misread = above
+    return self.misread
