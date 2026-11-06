@@ -252,7 +252,7 @@ class TestConditionalRuntimeLoop(unittest.TestCase):
         with self.assertRaises(EndLoop):
           plannerd.starpilot_main()
       self.assertIn('slcCruiseCommand', publisher.call_args.args[0])
-      for service in ('slcDashboardObservation', 'slcVisionObservation'):
+      for service in ('slcDashboardObservation', 'slcVisionObservation', 'gpsLocationExternal', 'gpsLocation'):
         self.assertIn(service, subscriber.call_args.args[0])
         for check in ('ignore_alive', 'ignore_valid', 'ignore_avg_freq'):
           self.assertIn(service, subscriber.call_args.kwargs[check])

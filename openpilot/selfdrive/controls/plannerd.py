@@ -441,7 +441,9 @@ def starpilot_main():
   subscribed_services.append('deviceState')
   if conditional_host is not None:
     subscribed_services.append('starpilotRadarState')
-  optional_slc = ['slcDashboardObservation', 'slcVisionObservation', 'mapdOut', 'starpilotCarState'] if slc_available else []
+  # gpsLocation*: the comma GPS navigation also reads, for SLC's turn heading (map_observation.TurnOverride).
+  optional_slc = (['slcDashboardObservation', 'slcVisionObservation', 'mapdOut', 'starpilotCarState',
+                   'gpsLocationExternal', 'gpsLocation'] if slc_available else [])
   if slc_available and feature_enabled(params, CP, 'aol', os.environ):
     optional_slc.append('aolAxisState')
   if force_stop_owner is not None and 'starpilotCarState' not in optional_slc:

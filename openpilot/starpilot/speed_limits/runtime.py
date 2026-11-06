@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
+from openpilot.starpilot.gps.source import bearing, select_location
 from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX
 from openpilot.starpilot.aol.runtime import current_axis
 from openpilot.starpilot.speed_limits import acceptance as acc
@@ -14,7 +15,7 @@ from openpilot.starpilot.speed_limits import composition as comp
 from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
-from openpilot.starpilot.speed_limits.map_observation import MapSource, SignFirst, copy_frame
+from openpilot.starpilot.speed_limits.map_observation import TURN_MIN_SPEED, MapSource, SignFirst, TurnOverride, copy_frame
 from openpilot.starpilot.speed_limits.navigation_observation import navigation_observation
 from openpilot.starpilot.speed_limits.advance import Advance
 from openpilot.starpilot.speed_limits.vision.observation import SIGN_HOLD_NS, clock_pair_ns, vision_observation
@@ -41,6 +42,16 @@ def _vision_fresh(sm, now_ns: int) -> bool:
   timestamp = sm.logMonoTime.get('slcVisionObservation', 0)
   return (bool(sm.valid.get('slcVisionObservation', False)) and
           0 < timestamp <= now_ns and now_ns - timestamp <= SIGN_HOLD_NS)
+
+
+def _heading(sm, now_ns: int) -> float | None:
+  """GPS bearing from the fix navigation uses (gps/source.py), only while moving."""
+  try:
+    fix = select_location(sm, now_ns)
+    speed = float(fix[1].speed) if fix is not None else math.nan
+    return bearing(fix[1]) if math.isfinite(speed) and speed >= TURN_MIN_SPEED else None
+  except (AttributeError, KeyError, TypeError, ValueError):
+    return None
 
 
 def _paired_card_frame(sm, source_log_ns: int, now_ns: int, *, max_skew_service: str) -> bool:
@@ -133,6 +144,8 @@ class Runtime:
     self.map_source = MapSource()
     self.sign_first = SignFirst()
     self.sign_first_online = SignFirst()
+    self.turn_override = TurnOverride()
+    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)  # Vision as read, while turn_override hides it
     self.advance = Advance()
     self.vision_enabled = vision_enabled
     # Exact saved Vision opt-in may grant control; source identity and current
@@ -172,6 +185,8 @@ class Runtime:
     self.map_source.reset()
     self.sign_first.reset()
     self.sign_first_online.reset()
+    self.turn_override.reset()
+    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
     self.advance = Advance()
     self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
     self._last_vision_producer = ''
@@ -394,12 +409,24 @@ class Runtime:
         values[sel.Source.MAP] = acc.Observation(acc.ObservationKind.STALE)
       if self.settings.selection.mode is sel.SelectionMode.ORDERED and self.settings.selection.slots == (sel.Source.VISION, sel.Source.MAP):
         values[sel.Source.MAP] = self.sign_first.step(values[sel.Source.VISION], values[sel.Source.MAP])
+    self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
     if self.settings.selection.online_fallback:
-      values[sel.Source.ONLINE] = navigation_observation(sm, now_ns=now_ns, drive_session=self.session_id,
-                                                         car_fingerprint=str(CP.carFingerprint))
+      online = navigation_observation(sm, now_ns=now_ns, drive_session=self.session_id,
+                                      car_fingerprint=str(CP.carFingerprint))
+      values[sel.Source.ONLINE] = online
       if sel.Source.VISION in self.settings.selection.slots:
         # Same rule as Maps: a sign seen this drive holds until the route's limit changes.
-        values[sel.Source.ONLINE] = self.sign_first_online.step(values[sel.Source.VISION], values[sel.Source.ONLINE])
+        values[sel.Source.ONLINE] = self.sign_first_online.step(values[sel.Source.VISION], online)
+        # ...unless the car turned onto a road Mapbox says is slower. Only when no other
+        # primary slot has a limit, so hiding Vision always hands selection to ONLINE.
+        others = (self.settings.selection.slots if self.settings.selection.mode is sel.SelectionMode.ORDERED
+                  else sel.PRIMARY_ORDER)
+        if (self.turn_override.step(values[sel.Source.VISION], online, _heading(sm, now_ns)) and
+            all(values.get(s, online).kind is not acc.ObservationKind.VALID
+                for s in others if s not in (None, sel.Source.VISION))):
+          self.vision_held = values[sel.Source.VISION]
+          values[sel.Source.VISION] = acc.Observation(acc.ObservationKind.UNKNOWN)
+          values[sel.Source.ONLINE] = online  # SignFirst would hold it as the sign's road
     # Vision still requires its independent source-specific qualification.
     return values
 
@@ -628,6 +655,8 @@ class Runtime:
     rows = state.init('sourceReadings', len(sel.Source))
     for row, source in zip(rows, sel.Source, strict=True):
       observation = frame.observations.get(source)
+      if source is sel.Source.VISION and self.vision_held.kind is acc.ObservationKind.VALID:
+        observation = self.vision_held  # the drawer still shows the sign the turn override set aside
       row.source = source.value
       row.enabled = bool(self.settings.display and source in enabled_sources)
       row.observationKind = observation.kind.value if observation is not None else 'unknown'
