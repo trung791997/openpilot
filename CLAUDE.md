@@ -121,3 +121,13 @@ hard 180k):
 If you are a subagent and see `status="critical"`, do NOT compact (your context
 is ephemeral). Stop and return a `<handoff>` with: done, remaining, findings,
 next-step (exact file/function/command), files-touched.
+
+# Opus-orchestrator workflow (when the session model is Opus)
+
+If your session runs on Opus, Opus plans, splits the work and verifies it; the agents in
+`.claude/agents/` do the implementation: `implementer` (Sonnet, bounded code and scripts),
+`runner` (Haiku, commands, tests, inventories), `verifier` (Sonnet, read-only re-checks of a
+worker's claims). One bounded question per brief; never accept a report without checking it.
+Opus keeps architecture, safety judgment, final review, git, pushes, GitHub posts and any device
+action. Do tiny tasks directly (each worker costs ~90k tokens of start-up context). Do not start
+Opus or Fable workers unless a Sonnet worker has already failed. Other models: ignore this section.
