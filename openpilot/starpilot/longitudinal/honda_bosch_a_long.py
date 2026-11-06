@@ -25,12 +25,18 @@ import numpy as np
 # While a lead closes faster than STOCK_FEEL_MIN_CLOSING and the worst TTC is over STOCK_FEEL_TTC_FLOOR_S, the target may
 # go no deeper than the depth table and may deepen no faster than the jerk table (fitted to stock ACC_CONTROL).
 STOCK_FEEL_DEPTH_BP = [2.0, 2.25, 2.75, 3.5, 4.5, 5.5, 6.5, 7.5, 9.0, 11.0, 13.5, 17.5, 25.0]  # s
-STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.6]  # m/s^2
-# Far entry (TTC >= 25 s) -0.35 -> -0.6, owner 2026-11-06. Route 96 32:17 (49 mph, lead braking -3): the -0.35 cap held a
-# plateau for ~6 s while the gap closed and the driver took over; 8f B3 slowed too late on the same plateau. Replay
-# (Job, open loop, car toggles on; limited road evidence): 96 32:17 min gap 8.1 -> 13.5 m, 8f B3 6.2 -> 12.6 m; the
-# brake reaches -1.5 at the same moment. Cost over 3.48 h pooled: 5 new brakes (-1.0..-1.6) on a far lead at gap 7+ s,
-# all under coast-first's 13.5 m/s floor. -0.74 at 17.5 s (D2 -0.9) added nothing; faster jerk table (J1) never bound.
+STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.35]  # m/s^2
+# Far entry (TTC >= 25 s): -0.6 instead of -0.35 while the nearest lead is within STOCK_FEEL_FAR_GAP_S of time gap
+# (owner 2026-11-06). Route 96 32:17 (49 mph, lead then braking -3): the -0.35 cap held a plateau for ~6 s and the
+# driver took over; 8f B3 slowed too late on the same plateau. An ungated -0.6 (c59ee88e4, driven on route 99) added
+# far-lead brakes: vn80 -1.58 at gap 8.2 s, p78 -1.04 at gap 92 s. Only the time gap separates them: the plateau
+# frames sit at 1.2-2.0 s (T4) and 3.3-3.6 s (B3), the far brakes at 9-10 s and 100+ s; lead decel, closing speed
+# and a closing/distance need all overlapped (aLeadK reads -0.8..-1.2 on the far brakes). Replay (Job, open loop,
+# Stock Brake Feel + Human Following + Approaching lead buffer on; limited road evidence): T4 min gap 0.54 -> 0.91 s,
+# B3 2.26 -> 2.71 s, both equal to the ungated -0.6; 2.46 h pooled vs ungated: both far brakes gone, 3 marginal new
+# <-1 episodes (two 1-frame -1.01/-1.03, one -1.18 at 7.8 s), all traced to closed-loop divergence.
+STOCK_FEEL_FAR_DEPTH = -0.6  # m/s^2
+STOCK_FEEL_FAR_GAP_S = 5.0   # s
 STOCK_FEEL_JERK_BP = [2.0, 2.5, 6.0, 10.0]  # s
 STOCK_FEEL_JERK_V = [3.0, 2.0, 1.0, 0.6]  # m/s^3
 STOCK_FEEL_TTC_FLOOR_S = 2.0
@@ -146,7 +152,7 @@ def stock_feel_emergency(leads, v_ego: float, active: bool) -> bool:
        ttc <= STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC:
       return True
   need = lead_stop_need(leads, v_ego)
-  depth = float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, STOCK_FEEL_DEPTH_V))
+  depth = stock_feel_depth(leads, ttc, v_ego)
   return need >= STOCK_FEEL_EMERGENCY_NEED and need > -depth
 
 
@@ -163,6 +169,16 @@ def stock_feel_law_active(leads, emergency: bool) -> bool:
   return not emergency and ttc > STOCK_FEEL_TTC_FLOOR_S and ttc != float('inf')
 
 
+def stock_feel_depth(leads, ttc: float, v_ego: float) -> float:
+  """Depth table at this TTC; the far entry is STOCK_FEEL_FAR_DEPTH while the nearest lead is within
+  STOCK_FEEL_FAR_GAP_S of time gap."""
+  depth_v = STOCK_FEEL_DEPTH_V
+  d_near = min((float(lead.dRel) for lead in leads if _present(lead)), default=float('inf'))
+  if d_near <= STOCK_FEEL_FAR_GAP_S * max(float(v_ego), 0.0):
+    depth_v = STOCK_FEEL_DEPTH_V[:-1] + [STOCK_FEEL_FAR_DEPTH]
+  return float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, depth_v))
+
+
 def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float = 0.0,
                       emergency: bool = False, law_recent: bool = False) -> float:
   """D-086 stock Honda ACC brake law (see the constants above)."""
@@ -174,7 +190,7 @@ def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float
     return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_EXIT_JERK)
   if not ttc > STOCK_FEEL_TTC_FLOOR_S or ttc == float('inf'):
     return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_JERK_OUTSIDE)
-  depth = float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, STOCK_FEEL_DEPTH_V))
+  depth = stock_feel_depth(leads, ttc, v_ego)
   if STOCK_FEEL_LEAD_STOP:
     need = lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T)
     if need > -depth:
