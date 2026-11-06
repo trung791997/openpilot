@@ -132,6 +132,11 @@ and stopped 13-32 m short in replay, so it is shelved. With Stock Brake Feel on,
 
 ### 15 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
 
+**REMOVED 2026-11-06 (owner: "let's remove it from our forks").** Cruising got jerky. In replay (16 units / 2.93 h, Job), cruise jerk RMS was 0.208 off vs 0.476 on. The car's own logs on 14 SSA-on units read 0.466, so this is on the road too (limited road evidence).
+- Three smoothing rounds followed. The best, R4, combined a rise cap 0.3 m/s³, low-pass on gain/fade/target, a 15 s post-lead hold and no rise while slowing. It reached 0.235 but kept only 71 % of the gain.
+- R4 still braked deeper on slow traffic after open road (p78 c78_4: −3.09 vs −2.33 off), because the car arrived 0.8 m/s faster.
+- The module, its tests and both planner hooks are deleted. Upstream: sunnypilot #2083 is still open, not merged. Detail: Job's ~/longsim_frames/ssa/REPORT_R4.md.
+
 **Problem.** In Experimental Mode with no car ahead, the model often holds 2–4 m/s under the set speed for a minute or more (route 313 at 80–85 mph, route 311). The owner had to press the gas to get there.
 
 **Fix.** `openpilot/starpilot/longitudinal/set_speed_assist.py`, a port of sunnypilot #2083. It is hooked after Accel Boost in both planners (`longitudinal_planner.py` and `upstream/planner.py`), Experimental Mode only, radar cars only. It lifts the model's accel toward min(lead MPC, cruise) at the cruise jerk. It stays off when:
