@@ -14,7 +14,13 @@ def sm(v_ego=25., gas=0.9, curv=0., yaw=0., lane_change='off', lead=False, model
 
 
 def assist(radar=True):
-  return SetSpeedAssist(NS(radarUnavailable=not radar), BP, VALS)
+  return SetSpeedAssist(NS(radarUnavailable=not radar), BP, VALS, enabled=True)
+
+
+def test_off_by_default():
+  a = SetSpeedAssist(NS(radarUnavailable=False), BP, VALS)
+  assert run(a, sm(), -0.05, 1.0) == -0.05
+  assert a.lift == 0. and not a.active
 
 
 def run(a, s, a_model, a_floor, n=100):
