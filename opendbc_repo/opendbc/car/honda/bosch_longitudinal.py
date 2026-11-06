@@ -5,6 +5,7 @@ import numpy as np
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, structs
 from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
 from opendbc.car.honda.brake_onset import BrakeOnsetCompensation
+from opendbc.car.honda.bosch_low_speed_brake import LowSpeedBrakeAssist
 from opendbc.car.honda.bosch_gas_learner import CivicGasLearner, LEARN_VERSION, gas_lookup_accel
 from opendbc.car.honda.values import CAR, HondaFlags
 
@@ -157,6 +158,7 @@ class BoschLongitudinal:
     bosch_a = bosch_a_harness(cp)
     self.brake_onset = BrakeOnsetCompensation(2 * DT_CTRL) if bosch_a else None
     self.brake_edge = BoschABrakeEdge(2 * DT_CTRL) if bosch_a else None
+    self.low_speed_brake = LowSpeedBrakeAssist(2 * DT_CTRL) if bosch_a else None
     self.set_factors(1.0, 1.0)
 
   def set_factors(self, gas, wind):
@@ -181,10 +183,18 @@ class BoschLongitudinal:
     wind_brake_mps2 = get_honda_bosch_wind_brake_mps2(CS.out.vEgo)
     min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
     self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+    target = self.accel
     if self.brake_onset is not None:
       self.accel = self.brake_onset.update(self.accel, active=bool(
         CC.longActive and actuators.longControlState == LongCtrlState.pid and
         not CS.out.gasPressed and not CS.out.brakePressed))
+    if self.low_speed_brake is not None:
+      lcs = actuators.longControlState
+      self.accel = self.low_speed_brake.update(target, self.accel, CS.out.aEgo, CS.out.vEgo,
+        active=bool(CC.longActive and lcs in (LongCtrlState.pid, LongCtrlState.stopping) and
+                    not CS.out.gasPressed and not CS.out.brakePressed),
+        stopping=lcs == LongCtrlState.stopping)
+      self.accel = float(np.clip(self.accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
     if self.civic_learner is not None:
       return self._update_civic(CC, CS, hill_brake, wind_brake_mps2, min_gas)
     gas_pedal_force = self.accel + hill_brake
