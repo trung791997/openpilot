@@ -45,6 +45,22 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 18 — 2026-11-06 — The -0.6 far cap from 17 only applies within a 5 s gap, so it stops braking for far cars; on longradar and V-ASM, default ON
+
+**Why:** the ungated -0.6 (entry 17) added far-lead brakes in replay: -1.58 for a car 8 s ahead (vn80) and -1.04 at
+about 4 mph with the car far ahead (p78). The owner drove it on route 99 and found it fine, and asked for the version
+without those.
+
+**Change** (`starpilot/longitudinal/honda_bosch_a_long.py`, `stock_feel_depth`): the far entry (TTC >= 25 s) is
+-0.6 only while the nearest lead is within `STOCK_FEEL_FAR_GAP_S` = 5 s of time gap, otherwise -0.35 as before 17.
+The emergency latch reads the same depth.
+
+**Evidence** (Job, replay, open loop, Stock Brake Feel + Human Following + Approaching lead buffer on): 96 32:17 min
+gap 0.54 -> 0.91 s and 8f B3 2.26 -> 2.71 s, same as 17; 2.46 h pooled vs 17: both far brakes gone, 3 marginal new
+<-1 episodes (two single frames, one -1.18 at a 7.8 s gap), all traced to closed-loop divergence; fidelity unchanged
+(aEgo corr 0.848). Lead decel, closing-speed and closing/distance gates were tried and failed (aLeadK on the far
+brakes reads as strong as on B3). Not driven.
+
 ### 17 — 2026-11-06 — Stock Brake Feel's far cap -0.35 -> -0.6, so a fast approach on a far car slows sooner; on longradar and V-ASM, default ON
 
 **What you felt:** route 00000096 32:17: at 49 mph, closing on a car that then braked hard, the brake sat at a light
