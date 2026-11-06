@@ -45,7 +45,6 @@ from openpilot.starpilot.longitudinal.bosch_a_onset_ramp import BoschAOnsetRamp
 from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
 from openpilot.starpilot.longitudinal.bosch_a_coast_first import BoschACoastFirst
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
-from openpilot.starpilot.longitudinal.set_speed_assist import SetSpeedAssist
 from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
@@ -128,7 +127,6 @@ class LongitudinalPlanner:
     self.allow_throttle = True
     self.accel_boost = AccelBoost()
     self.encouragement = Encouragement()
-    self.set_speed_assist = SetSpeedAssist(CP, A_CRUISE_MAX_BP, J_CRUISE_VALS, dt)  # sunnypilot #2083 port; set_speed_assist.py
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()
     self.ioniq6_throttle_gate_enabled = ioniq6_long_eligible(CP)
@@ -437,9 +435,6 @@ class LongitudinalPlanner:
                    curve.effective_mps is not None or traffic_mode is not False))
     manual_model = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
     output_a_target_e2e = max(manual_model, encouraged_model)
-    if sm['selfdriveState'].experimentalMode:
-      output_a_target_e2e = self.set_speed_assist.update(sm, output_a_target_e2e, min(output_a_target_mpc, self.a_cruise),
-                                                         bool(reset_state or self.fcw), v_cruise=v_cruise)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]

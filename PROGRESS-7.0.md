@@ -23,7 +23,7 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 | Far brake taps: a radar lead the camera contradicts (unconfirmed and closing too fast, or the camera lead already past it) follows the camera's lead (entry 9) | 90826c671 | 90826c671 (synced) | replay (routes 34/37, 19 real brakes, 747 brakes) + static tests |
 | Early gentle brake: a confident camera that sees the radar lead slower moves the lead's speed up to 80 % toward it, max 4 m/s, only slower; camera and radar range must agree within max(8 m, 10 %) (entries 10, 12) | see entry 12 | see entry 12 | replay (6 of Peter's hard brakes + 8:57 phantom, 19 real brakes, 747-brake census with stills) + static tests |
 | Stop-and-go: stay stopped behind a stopped car; no gas while crawling inside the 6 m stop gap (entry 11) | see entry 11 | see entry 11 | log check (route 46 segs 14-16, open loop) + static tests |
-| Set Speed Assist: Experimental Mode catches up to the set speed on an open road (entry 14) | see entry 14 | see entry 14 | replay + static tests |
+| ~~Set Speed Assist~~ REMOVED 2026-11-06: doubled open-road cruise jerk (entry 14) | see entry 14 | see entry 14 | replay + car logs |
 
 **The comma** runs V-ASM 30e08d98 (2026-10-26; has the Bosch-A harness brake fixes and the curve brake fix). `BoschAStockBrakeFeel` is 0 on it.
 
@@ -132,6 +132,11 @@ and stopped 13-32 m short in replay, so it is shelved. With Stock Brake Feel on,
 **Not verified:** not driven. The cost is up to ~0.9 m of min gap on far brakes that turn hard,. Parity (replay): the shipped class matches Job's R4b harness exactly (max |ΔaT| 0 on every replayed event, 12 of 13 groups; vn83 had no cache).
 
 ### 14 — 2026-11-01 — Set Speed Assist: in Experimental Mode on an open road, catch up to the set speed instead of sitting below it; on longradar and V-ASM, default ON
+
+**REMOVED 2026-11-06 (owner: "let's remove it from our forks").** Cruising got jerky. In replay (16 units / 2.93 h, Job), cruise jerk RMS was 0.208 off vs 0.476 on. The car's own logs on 14 SSA-on units read 0.466, so this is on the road too (limited road evidence).
+- Three smoothing rounds followed. The best, R4, combined a rise cap 0.3 m/s³, low-pass on gain/fade/target, a 15 s post-lead hold and no rise while slowing. It reached 0.235 but kept only 71 % of the gain.
+- R4 still braked deeper on slow traffic after open road (p78 c78_4: −3.09 vs −2.33 off), because the car arrived 0.8 m/s faster.
+- The module, its tests and both planner hooks are deleted. Upstream: sunnypilot #2083 is still open, not merged. Detail: Job's ~/longsim_frames/ssa/REPORT_R4.md.
 
 **Problem.** In Experimental Mode with no car ahead, the model often holds 2–4 m/s under the set speed for a minute or more (route 313 at 80–85 mph, route 311). The owner had to press the gas to get there.
 
