@@ -3,6 +3,8 @@
 This is a **car branch**: `night-star7-longradar` and `night-star7-vasm-jetson` are what Peter's
 car runs. Its working contract is in this branch: `AGENTS.md`, `STATUS.md` and `DECISIONS.md`,
 started fresh on 2026-11-06. Read them before editing control code here.
+For past fixes and D-numbers Peter mentions, see `STATUS-archive.md` and `DECISIONS-archive.md`
+(frozen copies from `ns-bosch-radar-testing` @ 84af40f039; read-only history, not this branch's status).
 
 Short version, in priority order:
 
