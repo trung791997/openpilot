@@ -15,6 +15,11 @@ Open road only (owner 2026-11-01). The first build lifted behind leads too: in c
 it added up to +0.98 as a lead 75 m ahead dropped from 25 to 16.6 m/s, so we arrived 0.7 m/s faster, braked -2.25 instead
 of -1.38 and closed to 6.9 m instead of 10.4 m; it also followed tighter than the 1.25 s personality (p10 1.00 s). Now
 any lead in radarState (radar or camera) drops the lift at LIFT_FALL, and it only builds again after CLEAR_S with none.
+
+OFF since 2026-11-06 (owner: "let's take the assist off"). Replay, 16 units / 2.93 h (Job): cruise jerk RMS 0.208 off vs
+0.476 on, and the car's own logs on 14 SSA-on units agree (0.466), so the steps are on the road too (limited road
+evidence). Smoothed variants (rise cap, low-pass, longer clear hold, a 15 s post-lead hold) reached 0.235 only by keeping
+71% of the gain, and still braked deeper at p78 c78_4 (-3.09 vs -2.33 off) from arriving 0.8 m/s faster.
 """
 import math
 
@@ -32,6 +37,7 @@ CLEAR_S = 2.  # s with no lead before the assist builds again
 # m/s^2 of lift per m/s below set speed. The stock planner's a_cruise is only jerk-limited down, so lifting the model to
 # it carried o313d through a 38.0 m/s set speed to 39.0 (Job, replay 2026-11-01); this tapers the lift to 0 at set speed.
 SET_SPEED_TAPER = 1.
+ENABLED = False  # owner 2026-11-06; see the docstring. The code stays so a later design can be replayed against it.
 
 
 def reader(msg):
@@ -40,8 +46,8 @@ def reader(msg):
 
 
 class SetSpeedAssist:
-  def __init__(self, CP, rise_bp, rise_vals, dt: float = DT_MDL):
-    self.enabled = not bool(getattr(CP, 'radarUnavailable', True))
+  def __init__(self, CP, rise_bp, rise_vals, dt: float = DT_MDL, enabled: bool = ENABLED):
+    self.enabled = enabled and not bool(getattr(CP, 'radarUnavailable', True))
     self.rise_bp, self.rise_vals = rise_bp, rise_vals
     self.dt = dt
     self.active = False
