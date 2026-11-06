@@ -25,7 +25,12 @@ import numpy as np
 # While a lead closes faster than STOCK_FEEL_MIN_CLOSING and the worst TTC is over STOCK_FEEL_TTC_FLOOR_S, the target may
 # go no deeper than the depth table and may deepen no faster than the jerk table (fitted to stock ACC_CONTROL).
 STOCK_FEEL_DEPTH_BP = [2.0, 2.25, 2.75, 3.5, 4.5, 5.5, 6.5, 7.5, 9.0, 11.0, 13.5, 17.5, 25.0]  # s
-STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.35]  # m/s^2
+STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.6]  # m/s^2
+# Far entry (TTC >= 25 s) -0.35 -> -0.6, owner 2026-11-06. Route 96 32:17 (49 mph, lead braking -3): the -0.35 cap held a
+# plateau for ~6 s while the gap closed and the driver took over; 8f B3 slowed too late on the same plateau. Replay
+# (Job, open loop, car toggles on; limited road evidence): 96 32:17 min gap 8.1 -> 13.5 m, 8f B3 6.2 -> 12.6 m; the
+# brake reaches -1.5 at the same moment. Cost over 3.48 h pooled: 5 new brakes (-1.0..-1.6) on a far lead at gap 7+ s,
+# all under coast-first's 13.5 m/s floor. -0.74 at 17.5 s (D2 -0.9) added nothing; faster jerk table (J1) never bound.
 STOCK_FEEL_JERK_BP = [2.0, 2.5, 6.0, 10.0]  # s
 STOCK_FEEL_JERK_V = [3.0, 2.0, 1.0, 0.6]  # m/s^3
 STOCK_FEEL_TTC_FLOOR_S = 2.0

@@ -44,6 +44,23 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 18 — 2026-11-06 — Stock Brake Feel's far cap -0.35 -> -0.6, so a fast approach on a far car slows sooner; on longradar and V-ASM, default ON
+
+**What you felt:** route 00000096 32:17: at 49 mph, closing on a car that then braked hard, the brake sat at a light
+plateau for about 6 s and the driver had to take over. Route 0000008f bookmark 3 slowed too late the same way. With
+Stock Brake Feel on, any lead closing with TTC of 25 s or more held the brake to -0.35.
+
+**Change** (`starpilot/longitudinal/honda_bosch_a_long.py`): the last `STOCK_FEEL_DEPTH_V` entry -0.35 -> -0.6. The
+rest of the depth table, the jerk table, the lead-stop law and the emergency latch are unchanged. Only applies with
+the Stock Brake Feel toggle on.
+
+**Evidence** (Job, replay, open loop, override removed, V-ASM 2336dc471 with Stock Brake Feel and Human Following on;
+route 96 fidelity aEgo corr 0.85, vEgo RMSE 1.34): 96 32:17 min gap 8.1 -> 13.5 m (0.52 -> 0.86 s); 8f B3 6.2 ->
+12.6 m; the brake reaches -1.5 at the same moment, so this adds gap, not an earlier firm brake. 3.48 h pooled: 5 new
+brakes (-1.0..-1.6) on a far lead at gap 7+ s (vn80 23512/23524/23570 at ~28 mph, p78 3901/3927 at ~4 mph), none
+eligible for coast first. Deepening the 17.5 s entry too (D2) changed nothing; a faster jerk table (J1) and an earlier
+lead-stop trigger (L1) did nothing useful: the jerk table never bound in route 96. Not driven.
+
 ### 17 — 2026-11-05 — Coast first reaches brake taps at 30 mph and stops assuming the car ahead brakes for 3 s; on longradar and V-ASM, default ON
 
 **What you felt:** route 0000008f bookmark 1 (4445.2): a car 37-40 m ahead at 32 mph tapped its brakes for about a
