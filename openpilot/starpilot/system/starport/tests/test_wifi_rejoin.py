@@ -10,12 +10,16 @@ SAVED = "".join(line + "\n" for line in ("iqpilot connection Galaxy S20 FE 5G6CC
                                          "Hotspot:hhhh:802-11-wireless:no:0",
                                          "lte:llll:gsm:yes:0",
                                          "openpilot connection LHE Casa:cccc:802-11-wireless:yes:0"))
-DETAIL = {"8a97": "Galaxy S20 FE 5G6CC3\ninfrastructure\n\n", "cccc": "LHE Casa\ninfrastructure\nwlan0\n"}
+# fourth line of each detail is 802-11-wireless.band: "" (unset) for both saved profiles below
+DETAIL = {"8a97": "Galaxy S20 FE 5G6CC3\ninfrastructure\n\n\n", "cccc": "LHE Casa\ninfrastructure\nwlan0\n\n"}
 
 
 class Nmcli:
-  def __init__(self, wlan0="disconnected", aa0="connected", visible=("Galaxy S20 FE 5G6CC3",), autoconnect="yes"):
-    self.wlan0, self.aa0, self.visible, self.autoconnect = wlan0, aa0, list(visible), autoconnect
+  def __init__(self, wlan0="disconnected", aa0="connected", visible=("Galaxy S20 FE 5G6CC3",), autoconnect="yes",
+               saved=SAVED, detail=None):
+    self.wlan0, self.aa0, self.autoconnect = wlan0, aa0, autoconnect
+    self.visible = list(visible)  # each entry an SSID (defaults to 2412 MHz) or an (SSID, freq_mhz) tuple
+    self.saved, self.detail = saved, DETAIL if detail is None else detail
     self.calls: list[list] = []
     self.fail: set[str] = set()
 
@@ -35,11 +39,15 @@ class Nmcli:
     if "GENERAL.STATE,GENERAL.REASON" in key:
       return "30 (disconnected)\n8 (The supplicant is now unavailable)\n"
     if args[-2:] == ["connection", "show"]:
-      return SAVED
+      return self.saved
     if args[:2] == ["-t", "-g"] and "uuid" in args:
-      return DETAIL[args[-1]]
+      return self.detail[args[-1]]
     if "list" in args:
-      return "".join(ssid.replace(":", "\\:") + "\n" for ssid in self.visible)
+      out = []
+      for entry in self.visible:
+        ssid, freq = entry if isinstance(entry, tuple) else (entry, 2412)
+        out.append(ssid.replace(":", "\\:") + f":{freq} MHz\n")
+      return "".join(out)
     return ""
 
   def did(self, *words):
@@ -463,6 +471,98 @@ def test_close_restores_autoconnect_and_drops_the_lease(tmp_path):
   assert (tmp_path / "lease.json").exists() and fake.autoconnect == "no"
   watch.close()
   assert not (tmp_path / "lease.json").exists() and fake.autoconnect == "yes"
+
+
+# ---- band: a saved profile pinned to "bg" or "a" must not be joined off a frequency it disallows (2026-11-06) ----
+
+SAVED_BG = "iqpilot connection Galaxy S20 FE 5G6CC3:8a97:802-11-wireless:yes:1793727569\n"
+DETAIL_BG = {"8a97": "Galaxy S20 FE 5G6CC3\ninfrastructure\n\nbg\n"}  # band pinned to 2.4 GHz
+SAVED_OPEN = "openpilot connection LHE Casa:cccc:802-11-wireless:yes:0\n"
+DETAIL_OPEN = {"cccc": "LHE Casa\ninfrastructure\nwlan0\n\n"}  # band unset: either is fine
+
+
+def test_band_bg_visible_only_on_5ghz_is_wrong_band_logged_once(tmp_path):
+  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 5745)], saved=SAVED_BG, detail=DETAIL_BG)
+  watch, logs = make(fake)
+  assert watch.check(100.) == "scan"  # wrong band: no join, keep scanning in case the phone switches bands
+  assert watch.check(115.) == "scan"
+  assert not fake.did("up")
+  wrong = [f for e, f in logs if e == "wlan0_hotspot_wrong_band"]
+  assert len(wrong) == 1
+  assert wrong[0]["band"] == "bg" and wrong[0]["freqs"] == [5745] and wrong[0]["connection"] == "iqpilot connection Galaxy S20 FE 5G6CC3"
+  # back on 2.4 GHz: joins
+  fake.visible = [("Galaxy S20 FE 5G6CC3", 2412)]
+  assert watch.check(130.) == "con_up"
+  assert fake.did("up")
+
+
+def test_band_unset_profile_joins_on_5ghz():
+  fake = Nmcli(visible=[("LHE Casa", 5745)], saved=SAVED_OPEN, detail=DETAIL_OPEN)
+  watch, _ = make(fake)
+  assert watch.check(100.) == "con_up"
+  assert fake.did("up")[0][5] == "cccc"
+
+
+def test_nothing_visible_at_all_still_falls_back_to_scan():
+  fake = Nmcli(visible=[], saved=SAVED_BG, detail=DETAIL_BG)
+  watch, _ = make(fake)
+  assert watch.check(100.) == "scan"
+
+
+# ---- quiet join: one join per QUIET_JOIN_EVERY s while Android Auto streams (2026-11-06 band fix + this) ----
+
+
+def test_quiet_join_once_per_window_then_rechecks(tmp_path):
+  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
+  beat = Beat(-0.5)
+  watch, logs, _ = make_quiet(fake, tmp_path, beat)
+  # down + quiet: poll() pauses wlan0 autoconnect, and its own check() (CHECK_EVERY is due at t=0) does the first join
+  watch.poll(0.)
+  assert fake.autoconnect == "no"
+  assert fake.did("up") == [["-w", str(wr.CON_UP_WAIT), "connection", "up", "uuid", "8a97", "ifname", "wlan0"]]
+  assert [f for e, f in logs if e == "wlan0_rejoin"][-1]["quiet"] is True
+  beat.at = 0.5
+  assert watch.check(1.) == "streaming"  # within the window: no second join
+  assert len(fake.did("up")) == 1
+  beat.at = wr.QUIET_JOIN_EVERY - 0.5
+  assert watch.check(wr.QUIET_JOIN_EVERY) == "quiet_join"  # window elapsed: joins again
+  assert len(fake.did("up")) == 2
+  assert not fake.did("rescan")
+
+
+def test_quiet_session_marker_blocks_the_join(tmp_path):
+  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
+  beat = Beat(-0.5)
+  watch, _, _ = make_quiet(fake, tmp_path, beat)
+  watch.poll(0.)  # pauses, and its own check() does the first quiet join
+  ups = len(fake.did("up"))
+  (tmp_path / "session.json").write_text(json.dumps({"interface": "wlan0", "boot": boot_id()}))
+  beat.at = 1.5
+  assert watch.check(2.) == "paused"
+  assert len(fake.did("up")) == ups  # no further join once a session holds wlan0
+
+
+def test_quiet_without_our_pause_does_not_join(tmp_path):
+  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
+  watch, _, _ = make_quiet(fake, tmp_path, Beat(99.5))  # check() called directly: poll() never paused it
+  assert watch.check(100.) == "streaming"
+  assert not fake.did("up") and not fake.did("list") and not fake.did("rescan")
+
+
+def test_projection_end_rearms_the_quiet_join(tmp_path):
+  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
+  beat = Beat(-0.5)
+  watch, _, _ = make_quiet(fake, tmp_path, beat)
+  watch.poll(0.)  # pauses, and its own check() does the first quiet join
+  assert len(fake.did("up")) == 1
+  beat.at = None  # projection ends
+  watch.poll(2.)
+  assert watch._quiet_join_at == -wr.QUIET_JOIN_EVERY
+  beat.at = 2.5  # projecting again almost at once
+  watch.poll(3.)  # re-pauses; CHECK_EVERY isn't due yet, so no check() inside this poll
+  beat.at = 3.5
+  assert watch.check(4.) == "quiet_join"  # re-armed: does not wait out the old window
+  assert len(fake.did("up")) == 2
 
 
 def test_supervisor_streaming_beat():
