@@ -1,12 +1,47 @@
 # STATUS.md (night-star7-longradar)
 
-Started fresh on 2026-11-06 at `29bc468a23`. Nothing on this branch has been recorded as verified yet.
+Started fresh on 2026-11-06 at `29bc468a23`.
 
 ## Verified
-_None recorded yet._
+- 2026-10-24: Civic brake-onset relief is back in (smaller gaps accepted for smoother brakes). Evidence: commit 093fd404d. Level: replay.
+- 2026-10-24: Civic stop-and-go brake cycling is fixed — the brake no longer rapidly switches on and off, and the gas no longer surges right after the brake releases (`CivicBrakeEdge`). Evidence: route 1f replay; commits 7c8e5eee1, 71f3cc035. Level: replay.
+- 2026-10-24: Force Stop — a red light seen late now brakes steadily instead of jolting. Evidence: commit 7f9bdb4e7. Level: replay.
+- 2026-10-24: Force Stop — a gas tap now keeps Force Stop suppressed for its full 10 s instead of re-engaging early. Evidence: commit 2e869b83d. Level: static.
+- 2026-10-24: The brake-onset relief and the stop-and-go fix (`BoschABrakeEdge`) now apply to every verified Bosch-A Honda (Civic, CR-V 5G), not the Civic only. Evidence: commit 44d05a2db; PROGRESS entry 2; CR-V has not been replayed or driven. Level: static.
+- 2026-10-26: Curve brake fix — a radar lead that reports speeding up then braking hard within 1.5 s (as in an S-curve) gets its braking authority bounded toward the camera's lead instead of slamming the brakes (`ReversalBound`). Evidence: route 30 replay; commit 8a36e513e; PROGRESS entry 7; 11 new tests. Level: replay.
+- 2026-10-27, corrected 2026-11-01: Far brake taps on routes 34 and 37 — a radar lead the camera contradicts (an unconfirmed track closing faster than the camera sees, or a camera lead that has already passed it) is bounded toward the camera's slower read, so the car no longer brakes for a car that isn't really slowing (`WeakLeadBound`). Evidence: commit 90826c671; PROGRESS entry 9; replay on routes 34/37, the 19 real brakes, and a 747-brake census. Level: replay.
+- 2026-10-29/30: Early gentle brake — when a confident camera sees the radar lead's car slowing first, the published lead speed is nudged toward the camera's reading so the brake starts sooner and softer (`CameraSlowBound`), with the camera-match window later tightened to max(8 m, 10 %) after census found false triggers at 80-95 m. Evidence: PROGRESS entries 10, 12; replay/census with stills. Level: replay.
+- 2026-10-29: Stop-and-go — the car now holds the brake behind a stopped lead instead of rolling off, and the gas is capped while crawling inside the 6 m stop gap (`BoschAStopGap`). Evidence: route 46 segs 14-16 log check; PROGRESS entry 11; 12 static tests. Level: replay.
+- 2026-11-01: Coast first — a distant car tapping its brakes now gets a lift-off first instead of an immediate hard brake (`bosch_a_coast_first.py`). Evidence: PROGRESS entry 13; 42-event closed-loop replay with a shim. Level: replay.
+- 2026-11-05: Coast first now also covers 30 mph+ taps, and assumes the lead keeps braking for only 1.5 s before holding its speed (`MIN_V_EGO` lowered to 13.5 m/s). Evidence: commit 31624744f; PROGRESS entry 16; replay, 2.16 h pooled. Level: replay.
+- 2026-11-05: Brake onset ramp — a brake that starts with every car far away now builds in over about half a second instead of jumping straight to its peak (`BoschAOnsetRamp`). Evidence: commits 785341704, ae04319e6; PROGRESS entry 15; 10 new static tests plus Job's open-loop replay parity check. Level: replay.
+- 2026-11-05: The dash set speed display no longer reads 1 mph high on an imperial Honda cluster (50 mph showed 51); the car's actual held speed is unchanged. Evidence: commit e136e5c8e. Level: static.
+- 2026-11-05: A single late CAN message with the gas pressed no longer drops openpilot with a red Communication Issue warning in long-only or unarmed-combined mode. Evidence: commits 322f92f68, 50977cd86; test_stale_alert_debounce.py (38 pass). Level: static.
+- 2026-11-06: Stock Brake Feel's far-lead brake cap is raised from -0.35 to -0.6, gated so the deeper cap only applies while the nearest lead is within a 5 s time gap (so it no longer brakes for a car far ahead holding its speed). Evidence: commits c59ee88e4, 53829a46c; PROGRESS entries 17-18; owner drove the ungated -0.6 on route 99, then asked for the 5 s gate after replay; replay, 2.46 h pooled. Level: replay.
+- 2026-11-06: Below about 7 mph behind a stopping car, a small extra brake (`bosch_low_speed_brake.py`, arm K05N05R1) closes the last few metres of gap instead of crawling. Evidence: commit 70fde2fcf; replay only; the on-road gain is unmeasured. Level: replay.
 
 ## Not verified
+- Entry 7: curve brake fix — watch the next drives for curve brakes, and for a real brake that comes out weaker than it should.
+- Entry 9: far brake taps (`WeakLeadBound`) — replay only, no road evidence yet; judge on Peter's next drives behind a lead that holds its speed.
+- Entries 10, 12: early gentle brake — Job's new-brake sweep (stills, false-trigger rate on steady following) is still running.
+- Entry 11: stop-and-go hold and crawl cap — watch the next stop-and-go drive for no roll-off while stopped, no creeping under about 4 m, and takeoffs that are not later.
+- Entries 1, 2: stop-and-go brake-cycling fix (`BoschABrakeEdge`) — not driven; judge on Peter's next stop-and-go drive (brake toggles per minute, short holds, gas surge after release).
+- Entry 2: the brake-onset relief and stop-and-go fix on the CR-V 5G have not been replayed or driven; the fits are from the Civic.
+- Entry 13: coast first — no road evidence; watch distant highway brake taps for a lift-off before the brake, with the brake still arriving if the lead keeps braking.
+- Entry 15: brake onset ramp — not driven; costs up to about 0.9 m of min gap on far brakes that turn hard.
+- Entry 16: coast first's lowered `MIN_V_EGO` and 1.5 s decel-hold — not driven.
+- Entries 17, 18: Stock Brake Feel's far cap (-0.6, gated to 5 s) — not driven.
+- Commit 70fde2fcf (K05N05R1 low-speed brake assist): the replay plant does not reproduce the final crawl, so the on-road gain is unmeasured.
+- Route 20 T285-287: the hard highway slowdown looks like the radar locked onto the wrong object (STATUS 263); still ambiguous on the stills.
 - Everything on this branch until an entry above says otherwise.
+
+## Removed / shelved
+- Set Speed Assist removed 2026-11-06 at `adab19699`. Reason: doubled cruise jerk in replay (RMS 0.208 off vs 0.476 on) and on the road (14 SSA-on units read 0.466, limited road evidence); the best smoothing attempt (R4) kept only 71 % of the catch-up gain and still braked deeper on slow traffic after open road. PROGRESS entry 14. Upstream sunnypilot #2083 is still open.
+- D-048 radar-lead corroboration: shelved, not shipped. Evidence: unshipped code on branch `d048-corroboration` at a0d0bf865; reason in the D-048 addendum and STATUS 264 on `iq-nav-on-pr10` (5ae8485d3) — it would also soften real early brakes.
+- 2026-10-24: Weak-Lead Cap Ease (6.7.9 port) not ported into 7.0. Reason: 7.0 has no weak-lead cap for it to attach to, and a 72-launch scan found none of the held-low-then-jump shape it was built to fix. PROGRESS entry 3.
+- 2026-10-25: Radar lead-acceleration smoothing (variants V1, V2, V2b, V2c, HO) not shipped. Reason: at 58-90 % replay fidelity, every variant was a near no-op against baseline. PROGRESS entry 4.
+- 2026-10-26/27: Route 34/37 brake-tap radar-only rules (new-track mismatch flag, cut-out flag, combined rule, far-lead onset-ramp variants) not built. Reason: each also softened real slowdowns; replaced by the camera-corroborated `WeakLeadBound`. PROGRESS entries 6, 8.
+- 2026-11-05: Crawl-speed steering change (sunnypilot #2091 port, commit fe3d68521) shipped then reverted the same day (commit 0050269af). Reason: made slow turns weaker without fixing the wobble; the logged wheel wobble barely tracked the old setting (corr 0.07).
 
 ## Entry format
 `YYYY-MM-DD: <claim>. Evidence: <route ID / commit / command>. Level: static | replay | limited road evidence.`
