@@ -1,9 +1,11 @@
 # CLAUDE.md (car branch)
 
 This is a **car branch**: `night-star7-longradar` and `night-star7-vasm-jetson` are what Peter's
-car runs. The full working contract (`AGENTS.md`, `STATUS.md`, `DECISIONS.md`) lives on
-`ns-bosch-radar-testing`; read it with `git show origin/ns-bosch-radar-testing:AGENTS.md` (same for
-`STATUS.md` and `DECISIONS.md`) before editing control code here.
+car runs. `STATUS.md` and `DECISIONS.md` here are copies from `ns-bosch-radar-testing` @ 84af40f039
+(2026-11-06): `STATUS.md` describes that branch, not this one, and neither copy is kept in sync.
+The live contract is on `ns-bosch-radar-testing`; read it with
+`git show origin/ns-bosch-radar-testing:AGENTS.md` (same for `STATUS.md` and `DECISIONS.md`)
+before editing control code here.
 
 Short version, in priority order:
 
