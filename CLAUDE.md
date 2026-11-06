@@ -1,18 +1,15 @@
 # CLAUDE.md (car branch)
 
 This is a **car branch**: `night-star7-longradar` and `night-star7-vasm-jetson` are what Peter's
-car runs. `STATUS.md` and `DECISIONS.md` here are copies from `ns-bosch-radar-testing` @ 84af40f039
-(2026-11-06): `STATUS.md` describes that branch, not this one, and neither copy is kept in sync.
-The live contract is on `ns-bosch-radar-testing`; read it with
-`git show origin/ns-bosch-radar-testing:AGENTS.md` (same for `STATUS.md` and `DECISIONS.md`)
-before editing control code here.
+car runs. Its working contract is in this branch: `AGENTS.md`, `STATUS.md` and `DECISIONS.md`,
+started fresh on 2026-11-06. Read them before editing control code here.
 
 Short version, in priority order:
 
 1. This is **longitudinal and lateral control on a car that gets driven.** Never call a change
    safe or working without the word *static*, *replay*, or *limited road evidence*.
 2. **Deleting a radar point is more dangerous than publishing a degraded one.** When a gate is
-   uncertain, publish a bound and coast nothing (D-041, D-042).
+   uncertain, publish a bound and coast nothing.
 3. The constants in `opendbc_repo/opendbc/car/honda/radar_interface.py` each carry the evidence
    that set them. **Read the comment block before changing a number.**
 4. **Nothing goes to the car without Peter.** Do not push to this branch unless Peter asked for it.
