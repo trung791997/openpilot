@@ -93,7 +93,19 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
   axis = sm.messages['aolAxisState'].as_builder()
   pandas = sm.messages['pandaStates'].as_builder()
   if mutation == 'no_brake':
+    # Neither a brake press nor a CANCEL: Card must give no source even when the parser's brake bit is fresh,
+    # so transport_pause has nothing to latch on.
     cs.brakePressed = False
+    assert not any(e.type == structs.CarState.ButtonEvent.Type.cancel for e in cs.buttonEvents)
+    card: Any = Car.__new__(Car)
+    card.CP = cp
+    message = 'BRAKE_MODULE' if cp.flags & HondaFlags.BOSCH_ALT_BRAKE else 'POWERTRAIN_DATA'
+    parser = SimpleNamespace(vl={message: {'BRAKE_PRESSED': 1}},
+                             ts_nanos={message: {'BRAKE_PRESSED': NOW + 9_000_000_000}})
+    card.CI = SimpleNamespace(can_parsers={Bus.pt: parser}, CS=SimpleNamespace(brake_switch_active=False))
+    card._aol_can_observation = (cs, NOW - 1000, NOW + 9_000_000_000, NOW + 9_000_001_000)
+    source = card.aol_honda_brake_source(cs, NOW)
+    assert source == 0
   if mutation == 'no_source':
     source = 0
   if mutation == 'stale_source':

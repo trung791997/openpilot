@@ -168,10 +168,13 @@ static void honda_rx_hook(const CANPacket_t *msg) {
       controls_allowed = true;
     }
 
-    // exit controls once main or cancel are pressed
+    // exit controls once main or cancel are pressed. With stock AOL, CANCEL ends only longitudinal, like the brake:
+    // the host's lateral request stands and the AOL token keeps lateral permission. MAIN still withdraws both.
     if ((button == HONDA_BTN_MAIN) || (button == HONDA_BTN_CANCEL)) {
       controls_allowed = false;
-      aol_set_host_request(0U);
+      if ((button == HONDA_BTN_MAIN) || !honda_stock_aol_flag(HONDA_STOCK_ENABLED)) {
+        aol_set_host_request(0U);
+      }
     }
     cruise_button_prev = button;
   }

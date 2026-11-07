@@ -909,22 +909,32 @@ class Car:
     return received_ns
 
   def aol_honda_brake_source(self, CS, now_ns: int) -> int:
+    """A driver's longitudinal withdrawal on a stock-AOL Honda: the brake, or a CANCEL press.
+
+    Both end only longitudinal; the AOL latch keeps lateral (the panda keeps the host's lateral request on CANCEL).
+    """
     observation = getattr(self, '_aol_can_observation', None)
-    if (not CS.brakePressed or not qualified_honda_stock_aol(self.CP, marked_only=True) or
+    cancel = any(e.type == structs.CarState.ButtonEvent.Type.cancel and e.pressed for e in CS.buttonEvents)
+    if (not (CS.brakePressed or cancel) or not qualified_honda_stock_aol(self.CP, marked_only=True) or
         observation is None or observation[0] is not CS):
       return 0
     from opendbc.car import Bus
-    from opendbc.car.honda.values import HondaFlags
+    from opendbc.car.honda.values import CruiseButtons, HondaFlags
     parser = self.CI.can_parsers[Bus.pt]
-    message = 'BRAKE_MODULE' if self.CP.flags & HondaFlags.BOSCH_ALT_BRAKE else 'POWERTRAIN_DATA'
-    signals = parser.vl.get(message, {})
-    # Match the real parser's applied-brake or two-sample switch decision.
-    brake = bool(signals.get('BRAKE_PRESSED', 0) or message == 'POWERTRAIN_DATA' and
-                 signals.get('BRAKE_SWITCH', 0) and self.CI.CS.brake_switch_active)
-    stamp = int(parser.ts_nanos.get(message, {}).get('BRAKE_PRESSED', 0))
+    if CS.brakePressed:
+      message = 'BRAKE_MODULE' if self.CP.flags & HondaFlags.BOSCH_ALT_BRAKE else 'POWERTRAIN_DATA'
+      signals = parser.vl.get(message, {})
+      # Match the real parser's applied-brake or two-sample switch decision.
+      withdrawn = bool(signals.get('BRAKE_PRESSED', 0) or message == 'POWERTRAIN_DATA' and
+                       signals.get('BRAKE_SWITCH', 0) and self.CI.CS.brake_switch_active)
+      stamp = int(parser.ts_nanos.get(message, {}).get('BRAKE_PRESSED', 0))
+    else:
+      message = 'SCM_BUTTONS'
+      withdrawn = int(parser.vl.get(message, {}).get('CRUISE_BUTTONS', 0)) == CruiseButtons.CANCEL
+      stamp = int(parser.ts_nanos.get(message, {}).get('CRUISE_BUTTONS', 0))
     _, received_ns, can_source_ns, boot_ns = observation
     # CANParser/CAN batch use BOOTTIME; retain the original MONOTONIC receipt.
-    if (not brake or not 0 < received_ns <= now_ns or now_ns - received_ns > 30_000_000 or
+    if (not withdrawn or not 0 < received_ns <= now_ns or now_ns - received_ns > 30_000_000 or
         not 0 < stamp <= can_source_ns <= boot_ns or boot_ns - stamp > 30_000_000 or
         can_source_ns - stamp > 30_000_000):
       return 0
