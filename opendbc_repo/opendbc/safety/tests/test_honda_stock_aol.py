@@ -131,6 +131,30 @@ class TestHondaStockAol(unittest.TestCase):
             self.stream(main=False)
             self.assertEqual(self.safety.aol_get_permission_mask(), 0)
 
+  def press_button(self, button):
+    for value in (button, 0):
+      scm = {"CRUISE_BUTTONS": value, "CRUISE_SETTING": 0}
+      if self.alt:
+        scm["MAIN_ON"] = 1
+      self.assertTrue(self.safety.safety_rx_hook(self.packet("SCM_BUTTONS", scm)))
+
+  def test_normal_engagement_then_cancel_keeps_lateral_and_main_withdraws_both(self):
+    # CANCEL ends only longitudinal, like the brake: the host's lateral request stands without a re-request.
+    for case in CASES:
+      with self.subTest(case=case[0]):
+        self.configure(case)
+        self.stream()
+        self.normal_engage()
+        self.safety.aol_set_host_request(3)
+        self.assertEqual(self.safety.aol_get_permission_mask(), 3 if self.scoped else 0)
+        self.press_button(2)
+        self.assertFalse(self.safety.get_controls_allowed())
+        self.assertEqual(self.safety.aol_get_request_mask(), 3 if self.scoped else 0)
+        self.assertEqual(self.safety.aol_get_permission_mask(), 1 if self.scoped else 0)
+        self.press_button(1)
+        self.assertEqual(self.safety.aol_get_request_mask(), 0)
+        self.assertEqual(self.safety.aol_get_permission_mask(), 0)
+
   def test_blocked_normal_edge_is_not_replayed_after_sources_recover(self):
     for case in CASES:
       for blocked in ("eps", "reverse", "brake", "missing", "expired", "request_expired"):

@@ -74,11 +74,10 @@ class TestHondaNidecInterceptorAol(TestHondaInterceptor):
     self.safety.aol_set_host_request(1)
     self.assertEqual(self.safety.aol_get_permission_mask(), 1)
 
-    self.step(button=2)  # cancel
-    self.assertEqual(self.safety.aol_get_permission_mask(), 0)
-    self.gesture()  # SGSP: a cancel ends the session; lateral returns only with a new physical gesture
-    self.safety.aol_set_host_request(1)
+    self.step(button=2)  # cancel ends only longitudinal; the host's lateral request and permission stand
+    self.assertFalse(self.safety.get_controls_allowed())
     self.assertEqual(self.safety.aol_get_permission_mask(), 1)
+    self.assertTrue(self.steer())
 
     self.assertTrue(self.rx("SCM_FEEDBACK", 0, {"MAIN_ON": 0}))
     self.assertEqual(self.safety.aol_get_permission_mask(), 0)
