@@ -343,7 +343,7 @@ class CerealReader:
         if self._layout is None:
           from openpilot.starpilot.soloist.paths import Layout
           self._layout = Layout.default()
-        song = now_playing.read(self._layout.status)
+        song = now_playing.read_any_device(self._layout.status)  # Spotify on the phone shows too
       except Exception:
         song = None  # no music card rather than no map
       self._media = (now, song)

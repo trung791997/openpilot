@@ -47,15 +47,27 @@ def snapshot(source: str, status: str, title: str, artist: str, album: str, dura
 
 
 def from_spotify(player: dict | None) -> dict | None:
-  if not isinstance(player, dict) or not player.get('loggedIn'):
+  if not isinstance(player, dict) or not player.get('active'):
     return None
+  return _spotify_song(player, player.get('deviceName'))
+
+
+def from_other_device(player: dict | None) -> dict | None:
+  """The song this Spotify account plays on another device (usually the phone), as the comma's Spotify Connect device
+  sees it while it is not the one playing. device is '': deviceName is the comma's own Connect name."""
+  if not isinstance(player, dict) or not player.get('connected') or player.get('active'):
+    return None
+  return _spotify_song(player, '')
+
+
+def _spotify_song(player: dict, device: Any) -> dict | None:
   track = player.get('track')
-  if not isinstance(track, dict) or player.get('status') not in ('playing', 'paused') or not player.get('active'):
+  if not player.get('loggedIn') or not isinstance(track, dict) or player.get('status') not in ('playing', 'paused'):
     return None
   return snapshot('spotify', player['status'], track.get('title'), track.get('artists'), track.get('album'),
                   _whole(track.get('durationMs')), player.get('position'), player.get('shuffle') is True,
                   track.get('artwork'), player.get('repeat') if player.get('repeat') in REPEATS else 'off',
-                  player.get('deviceName'), player.get('smartShuffle') is True)
+                  device, player.get('smartShuffle') is True)
 
 
 def from_phone(props: dict | None, now_ms: int | None = None) -> dict | None:
@@ -122,3 +134,9 @@ def read_card(path: Path, now: float | None = None) -> dict | None:
   """For the car screen: the song, or the 'elsewhere' offer when Spotify plays on another device."""
   status = _published(path, now)
   return _song(status) or (elsewhere(status.get('player')) if status is not None else None)
+
+
+def read_any_device(path: Path, now: float | None = None) -> dict | None:
+  """For the dash: the song playing here, else the one this Spotify account plays on another device."""
+  status = _published(path, now)
+  return _song(status) or (from_other_device(status.get('player')) if status is not None else None)

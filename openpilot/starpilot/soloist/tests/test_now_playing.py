@@ -82,6 +82,23 @@ def test_published_snapshot_is_ignored_when_stale_or_broken(tmp_path):
 
 
 
+def test_dash_shows_the_song_spotify_plays_on_another_device(tmp_path):
+  path = tmp_path / 'status.json'
+  inactive = {**PLAYER, 'active': False, 'connected': True, 'deviceName': 'Starpilot Auto'}
+  path.write_text(json.dumps({'nowPlaying': None, 'player': inactive}))
+  mtime = path.stat().st_mtime
+  found = present(now_playing.read_any_device(path, now=mtime + 1))
+  assert found['title'] == 'Midnight City' and found['source'] == 'spotify' and found['device'] == ''
+  assert now_playing.read(path, now=mtime + 1) is None  # the comma's own screens are unchanged
+  assert now_playing.read_any_device(path, now=mtime + 60) is None
+  for change in ({'loggedIn': False}, {'connected': False}, {'status': 'idle'}, {'track': None}):
+    path.write_text(json.dumps({'nowPlaying': None, 'player': {**inactive, **change}}))
+    assert now_playing.read_any_device(path, now=mtime + 1) is None
+  path.write_text(json.dumps({'nowPlaying': now_playing.from_spotify(PLAYER), 'player': PLAYER}))
+  assert now_playing.read_any_device(path, now=mtime + 1)['title'] == 'Midnight City'  # playing here: its own snapshot
+  assert now_playing.from_other_device(PLAYER) is None
+
+
 def test_car_screen_offers_play_on_car_only_while_spotify_plays_on_another_device(tmp_path):
   path = tmp_path / 'status.json'
   inactive = {**PLAYER, 'active': False, 'connected': True, 'deviceName': 'Starpilot Auto'}
