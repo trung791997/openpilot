@@ -48,6 +48,11 @@ Decision: mvl-boston's Bosch low-speed brake integrator is added for Bosch-A har
 Evidence: commit 9e3c9eaaa; replay only (arm K05N05R1): 9b_S0 crawl at 0.5-2 m/s, 12.7 -> 7.2 s; the replay plant does not reproduce the final crawl, so the on-road gain is unmeasured.
 Revisit if: a road drive shows no improvement in the final-crawl stop, or shows the extra brake arriving too abruptly.
 
+## C-010: Keep an in-path closing radar lead when the camera's lead jumps away (2026-11-07)
+Decision: When both the strict and relaxed camera matches fail, the previous radar lead is kept, not swapped for the camera-only lead, while it has |yRel| < 1.2 m, is closer than the camera's lead, is closing (vRel < 0), and has vLead > -1 m/s. While it is kept, the gross-distance and challenger staleness checks do not retire it. Default ON. The first draft used 1.5 m and had no speed floor. Camera stills showed two next-lane false keeps at |y| 1.44-1.48 and two cross-traffic false keeps while stopped (vLead -6.6 and -9.0). The 1.2 m bound also drops four real leads back to the old behaviour.
+Evidence: route 9e seg 24 bookmark (owner drive, build fd3b0ec99d); Job's radard replay; a 46-event census (32 survive) with stills; closed loop on 8 events, where real leads in 82, 84 and 9b are braked for 0.5-1.5 s longer. Replay only.
+Revisit if: a road drive shows a brake for a car already out of our lane, at an intersection, or from a glitched radar speed on a kept track.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)
