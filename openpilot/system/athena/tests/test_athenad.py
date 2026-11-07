@@ -1,8 +1,10 @@
 from functools import wraps
+from io import BytesIO
 import json
 import multiprocessing
 import os
 import requests
+import zstandard as zstd
 import shutil
 import time
 import threading
@@ -289,7 +291,22 @@ class TestAthenadMethods(OpenpilotTestCase):
     resp = dispatcher["uploadFilesToUrls"](files_data)
     assert resp['enqueued'] == 1
     assert resp['failed'] == ["2026-10-04--00-00-00--0/rlog.bz2"]
-    assert {"path": fn, "url": f"{host}/rlog.zst", "headers": {}}.items() <= resp['items'][0].items()
+    queued = athenad.upload_queue.get_nowait()
+    assert (queued.path, queued.url, queued.headers, queued.allow_cellular, queued.priority) == (fn, f"{host}/rlog.zst", {}, False, 1)
+
+  def test_upload_files_to_urls_bad_url_does_not_stop_batch(self, host):
+    fn = self._create_file('rlog.zst')
+    bad_fn = "2026-10-04--00-00-00--0/rlog.bz2"
+    resp = dispatcher["uploadFilesToUrls"]([
+      {"fn": bad_fn, "url": "https://[invalid/0/rlog.bz2"},
+      {"fn": "2026-10-04--00-00-00--0/rlog.zst", "url": f"{host}/rlog.zst"},
+    ])
+
+    assert resp['enqueued'] == 1
+    assert resp['failed'] == [bad_fn]
+    queued = athenad.upload_queue.get_nowait()
+    assert queued.path == fn
+    assert self.params.get("AthenadUploadQueue") == [asdict(queued)]
 
   def test_upload_file_to_url_bare_name(self, host):
     # Konik asks for "<segment>/rlog" with an upload URL ending in rlog.zst; only rlog.zst is on disk
@@ -298,12 +315,54 @@ class TestAthenadMethods(OpenpilotTestCase):
     resp = dispatcher["uploadFilesToUrls"]([{"fn": "2026-10-04--00-00-00--0/rlog", "url": f"{host}/seg/0/rlog.zst?sig=x", "headers": {}}])
     assert resp['enqueued'] == 1
     assert 'failed' not in resp
-    assert resp['items'][0]['path'] == fn
+    assert athenad.upload_queue.get_nowait().path == fn
 
     # the bare name is not mapped when the URL does not ask for the .zst file
     resp = dispatcher["uploadFilesToUrls"]([{"fn": "2026-10-04--00-00-00--0/rlog", "url": f"{host}/seg/0/rlog", "headers": {}}])
     assert resp['enqueued'] == 0
     assert resp['failed'] == ["2026-10-04--00-00-00--0/rlog"]
+    assert athenad.upload_queue.empty()
+
+  @parameterized.expand([(False,), (True,)], names=("compressed_copy",))
+  def test_upload_legacy_rlog_to_zst_url(self, host, mocker, compressed_copy):
+    payload = b'legacy log'
+    fn = self._create_file('rlog', data=payload)
+    if compressed_copy:
+      payload = b'prefer the existing compressed log'
+      self._create_file('rlog.zst', data=zstd.ZstdCompressor().compress(payload))
+
+    url = f"{host}/seg/0/rlog.zst?sig=x"
+    resp = dispatcher["uploadFileToUrl"]("2026-10-04--00-00-00--0/rlog", url, {})
+    assert resp['enqueued'] == 1
+    queued = athenad.upload_queue.get_nowait()
+    assert queued.path == fn + '.zst'
+
+    def receive_body(url, *, data, headers, timeout):
+      body = data.read()
+      assert int(headers['Content-Length']) == len(body)
+      with zstd.ZstdDecompressor().stream_reader(BytesIO(body)) as stream:
+        assert stream.read() == payload
+      return requests.Response()
+
+    put = mocker.patch.object(athenad.UPLOAD_SESS, 'put', side_effect=receive_body)
+    athenad._do_upload(queued)
+    assert put.call_count == 1
+
+  def test_upload_zst_fallback_checks_source_ownership(self, host, mocker):
+    fn = self._create_file('rlog', data=b'another provider owns this file')
+    self._create_file('.cloud-rlog', data=b'konik')
+    url = f"{host}/seg/0/rlog.zst"
+    relative = "2026-10-04--00-00-00--0/rlog.zst"
+    resp = dispatcher["uploadFileToUrl"](relative, url, {})
+    assert resp == {'enqueued': 0, 'items': [], 'failed': [relative]}
+    assert athenad.upload_queue.empty()
+
+    # A cached upload must also recheck the ownership of the actual file it opens.
+    item = athenad.UploadItem(path=fn + '.zst', url=url, headers={}, created_at=0, id=None)
+    put = mocker.patch.object(athenad.UPLOAD_SESS, 'put')
+    with self.assertRaises(ValueError):
+      athenad._do_upload(item)
+    put.assert_not_called()
 
   def test_upload_file_to_url_duplicate(self, host):
     self._create_file('qlog.zst')
