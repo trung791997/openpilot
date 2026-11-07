@@ -44,6 +44,7 @@ from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongE
 from openpilot.starpilot.longitudinal.bosch_a_onset_ramp import BoschAOnsetRamp
 from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
 from openpilot.starpilot.longitudinal.bosch_a_coast_first import BoschACoastFirst
+from openpilot.starpilot.longitudinal.bosch_a_release_coast import BoschAReleaseCoast
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
 from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
@@ -118,6 +119,7 @@ class LongitudinalPlanner:
     self.bosch_a_long = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=bosch_a.stock_brake_feel)
     self.bosch_a_smooth = BoschASmooth(CP, dt)  # always on for Bosch-A Hondas; bosch_a_smooth.py
     self.bosch_a_coast_first = BoschACoastFirst(CP, dt)  # lift off before braking for a distant tap; bosch_a_coast_first.py
+    self.bosch_a_release_coast = BoschAReleaseCoast(CP, dt)  # lift off gas when a close radar lead's track releases; bosch_a_release_coast.py
     self.bosch_a_onset_ramp = BoschAOnsetRamp(CP, dt)  # far-lead brake builds at 8 m/s^3; bosch_a_onset_ramp.py
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
@@ -517,6 +519,11 @@ class LongitudinalPlanner:
     output_a_target = self.bosch_a_coast_first.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       v_ego=v_ego, follow_s=float(base_follow), fcw=bool(self.fcw), reset_state=bool(reset_state))
+    output_a_target = self.bosch_a_release_coast.update(
+      lead_one=planner_radar_state.leadOne, target=float(output_a_target),
+      lane_change_state=sm['modelV2'].meta.laneChangeState, left_blinker=bool(sm['carState'].leftBlinker),
+      right_blinker=bool(sm['carState'].rightBlinker), gas_pressed=bool(sm['carState'].gasPressed),
+      reset_state=bool(reset_state))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
     output_a_target = self.bosch_a_onset_ramp.step(
