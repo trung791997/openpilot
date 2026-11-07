@@ -565,7 +565,10 @@ final class MapView extends View {
   // Peter's drive 2026-11-06: from about 21:00 this tick stopped running while the GPU layer went on at 30 a second,
   // so the scene was never rebuilt and the map drove off its roads into a blank page for over an hour (no error in
   // the log). The GPU thread calls this each frame; a tick quiet for TICK_LOST_MS is posted again, and said once.
-  private static final Handler MAIN = new Handler(Looper.getMainLooper());
+  // Not static: Hook.initZygote loads this class in the zygote, which has no main looper yet. A static Handler threw
+  // there at every head unit boot after the 11-06 install, and a class whose static init fails cannot be used again
+  // until the next boot, so the map never appeared (Peter 2026-11-07).
+  private final Handler main = new Handler(Looper.getMainLooper());
   private volatile long tickAt;
   private long kickedAt;
   static final long TICK_LOST_MS = 2000;
@@ -582,8 +585,8 @@ final class MapView extends View {
     kickedAt = now;
     say("aaroad: map tick quiet for " + (now - at) + " ms, posted again");
     removeCallbacks(tick);
-    MAIN.removeCallbacks(tick);
-    MAIN.post(tick);
+    main.removeCallbacks(tick);
+    main.post(tick);
   }
 
   // With the GPU layer drawing everything that moves at 30 a second (Peter 2026-10-30), this view is the slow layer:
@@ -642,7 +645,7 @@ final class MapView extends View {
   @Override
   protected void onDetachedFromWindow() {
     removeCallbacks(tick);
-    MAIN.removeCallbacks(tick);
+    main.removeCallbacks(tick);
     Feed.wanted = false;
     // Honda Hack re-creating its meter page takes this view with it; a new one comes with the new page (Meter)
     say("aaroad: " + (live ? "hidden" : "still hidden") + " reason=view detached " + id());
