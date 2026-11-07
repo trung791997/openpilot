@@ -19,6 +19,7 @@ Started fresh on 2026-11-06 at `29bc468a23`.
 - 2026-11-05: A single late CAN message with the gas pressed no longer drops openpilot with a red Communication Issue warning in long-only or unarmed-combined mode. Evidence: commits 322f92f68, 50977cd86; test_stale_alert_debounce.py (38 pass). Level: static.
 - 2026-11-06: Stock Brake Feel's far-lead brake cap is raised from -0.35 to -0.6, gated so the deeper cap only applies while the nearest lead is within a 5 s time gap (so it no longer brakes for a car far ahead holding its speed). Evidence: commits c59ee88e4, 53829a46c; PROGRESS entries 17-18; owner drove the ungated -0.6 on route 99, then asked for the 5 s gate after replay; replay, 2.46 h pooled. Level: replay.
 - 2026-11-06: Below about 7 mph behind a stopping car, a small extra brake (`bosch_low_speed_brake.py`, arm K05N05R1) closes the last few metres of gap instead of crawling. Evidence: commit 70fde2fcf; replay only; the on-road gain is unmeasured. Level: replay.
+- 2026-11-07: A real radar car in our lane is no longer dropped when the camera's lead distance suddenly jumps farther (route 9e bookmark: the lead jumped 28 m -> 51 m and the brake let go). The previous radar lead is kept while it stays within 1.2 m of centre, closer than the camera's lead, closing, and not itself moving toward us (`in_path_radar_keep` in `starpilot/car/honda/radar.py`). Evidence: Job's replay of route 9e segs 23-24 (holds track 39 about 1 s longer); census over pool14 + r99 + r9b with camera stills and closed-loop runs on the largest events; 9 static tests. Level: replay.
 
 ## Not verified
 - Entry 7: curve brake fix — watch the next drives for curve brakes, and for a real brake that comes out weaker than it should.
@@ -34,6 +35,7 @@ Started fresh on 2026-11-06 at `29bc468a23`.
 - Commit 70fde2fcf (K05N05R1 low-speed brake assist): the replay plant does not reproduce the final crawl, so the on-road gain is unmeasured.
 - Route 20 T285-287: the hard highway slowdown looks like the radar locked onto the wrong object (STATUS 263); still ambiguous on the stills.
 - Everything on this branch until an entry above says otherwise.
+- In-path radar keep — no road evidence. Watch for a phantom brake right after a car leaves our lane or at intersections (cross traffic and next-lane cars were the false keeps in the census), and note that one census event published a glitched radar speed for 2 frames through the keep (84 i3716).
 
 ## Removed / shelved
 - Set Speed Assist removed 2026-11-06 at `adab19699`. Reason: doubled cruise jerk in replay (RMS 0.208 off vs 0.476 on) and on the road (14 SSA-on units read 0.466, limited road evidence); the best smoothing attempt (R4) kept only 71 % of the catch-up gain and still braked deeper on slow traffic after open road. PROGRESS entry 14. Upstream sunnypilot #2083 is still open.
