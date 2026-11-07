@@ -295,8 +295,9 @@ class LongitudinalPlanner:
       ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego))
     if self.human_driving:
       acceleration_cap = human_acceleration.cap(human_accel_base, v_cruise, v_ego)
-    # D-080: the MPC and the enhancement's stock-feel law read the same bounded leads, as in openpilot-radar.
-    planner_radar_state = self.bosch_a_long.planner_radar_state(sm['radarState'], float(sm['carState'].aEgo))
+    # D-080/implausible-drop (a2 seg 50): the MPC and the enhancement's stock-feel law read the same bounded leads.
+    planner_radar_state = self.bosch_a_long.planner_radar_state(sm['radarState'], float(sm['carState'].aEgo),
+                                                                 model_v2=sm['modelV2'])
     self.mpc.update(planner_radar_state, personality=sm['selfdriveState'].personality,
                     follow_seconds=follow if follow is not None else
                     (self.last_profile.follow_seconds if self.last_profile is not None else None),
