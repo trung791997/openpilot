@@ -1840,20 +1840,23 @@ final class MapView extends View {
     return p;
   }
 
-  // How much the car shows as an outline under a deck this frame, 0 to 1 (the ease times the close-up's gate), with
-  // deckClip the decks over it on screen. 0 with no frame, no deck over the car, or cruising (no close-up).
+  // How much the car shows as an outline under a deck this frame, 0 to 1 (just the ease now; every zoom finds a
+  // deck over the car, not only the close-up), with deckClip the decks over it on screen. 0 with no frame or no
+  // deck over the car.
   private float underDeck(Frame f, long now) {
     CloseUp.Detail d = f == null || f.s == null ? null : f.s.close;
+    // the close-up gate, passed to Under.covering as hs: in the close-up the clip follows the lifted decks as drawn
+    // there; at 0 (cruising) it follows the flat decks cruising draws instead (Under.covering handles hs 0).
     float gr = f == null ? 0 : CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
     if (d != coverOf) {
       coverOf = d;
       coverN = 0;
     }
-    int n = gr <= 0 ? 0 : Under.covering(d, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
+    int n = f == null ? 0 : Under.covering(d, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
                                            dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), cover);
-    under.set(n > 0, now);
+    under.set(n > 0, now, Under.fadeMs(Math.max(0, Feed.spd)));
     if (n > 0) coverN = n;  // else the last ones, while the outline fades out
-    float u = under.level(now) * gr;
+    float u = under.level(now);
     drawnUnder = u;
     if (f != null) {
       drawnUE = f.ce;
@@ -1931,11 +1934,11 @@ final class MapView extends View {
     deckClip.close();
   }
 
-  // Whether frame f puts the car under a deck (the slow layer's check between its draws).
+  // Whether frame f puts the car under a deck (the slow layer's check between its draws), at every zoom.
   private boolean underWanted(Frame f) {
     float gr = CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
-    return gr > 0 && Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
-                                    dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover) > 0;
+    return Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
+                          dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover) > 0;
   }
 
   // Under a deck the outline is still moving (easing, or the deck sliding by the car): the slow layer redraws.

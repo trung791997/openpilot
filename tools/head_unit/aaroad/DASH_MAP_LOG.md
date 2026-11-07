@@ -74,6 +74,15 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 ## Log
 
+### 2026-11-07
+- **The car's outline under a bridge or overpass now shows at every zoom, not only in the close-up, and on a frontage road under a viaduct too.** *static*: desktop tests and harness renders on real Dallas tiles
+  - Problem: Peter, "the outline to indicate when I drive beneath a bridge or an overpass is inconsistent". It was drawn only in the close-up (gate `ROAD_SHOW`/`ROAD_HIDE`), and a car on a ground road beside a viaduct counted as on the viaduct.
+  - Every zoom: `Under.covering` runs at hs 0 too (the flat footprint cruising draws); `MapView.underDeck`/`underWanted` no longer gate on the close-up.
+  - The car's road: `CloseUp.Detail.ground` (new, never drawn) holds plain ground roads' centrelines. `Under.carHeight` takes the nearest road running the car's way (ground or raised); a tie keeps the higher one. Bbox prefilter: ~29 us a call on the desktop at the segment caps.
+  - Fade: `Under.fadeMs`, 150 ms at or under 15 m/s, down to 80 ms by about 28 m/s. Ramps already counted once at least `OVER_M` above the car (unchanged).
+  - Static: all 10 tests in `test/` ok (UnderTest 29), `build.sh` ok. Close-up renders of 18 real overpasses byte-identical to before; zoomed out, 2 of 5 real cases now show the outline (the other 3 have no deck over the car at that point, same before and after). Renders in `/tmp/hu/outline5/`.
+  - Not checked: the frontage-road case on real tiles (unit test only); the GPU path on the head unit; time on the Tegra 3. In cruise, a raised non-bridge ramp over the car can cut the car where the flat map draws no deck.
+
 ### 2026-11-05
 - **On the dash map, turn and slip lanes at street corners now look like the street instead of a short olive streak. Only highway ramps keep the ramp gold.** *static*: desktop tests and harness renders only. Not installed on the head unit, not driven, and the GPU path was not run on the Tegra.
   - Problem: Peter's Angel Pkwy photo (entry below). Tile "link" lines (class 3) are motorway and trunk ramps, but also `primary_link`, `secondary_link` and `tertiary_link` turn lanes. All of them were drawn in the ramp gold, so inside a grey street they showed as olive strokes that looked like traffic.

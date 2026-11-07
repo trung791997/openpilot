@@ -40,6 +40,10 @@ final class CloseUp {
   // close-up view reaches about 700 m ahead), and at most this many segments, the nearest first
   static final float ROAD_R = 1400, WALK_R = 1000, RAIL_R = 1000;
   static final int ROAD_SEGS = 6144, WALK_SEGS = 4096, RAIL_SEGS = 3072;
+  // Detail.ground's budget (2026-11-07): the same as ROAD_SEGS, since it is filled from the same ROAD_R-near lines
+  // and never drawn, so there is no reason for it to run any larger. *static*: a cap by analogy, not measured.
+  static final int GROUND_SEGS = ROAD_SEGS;
+  static final int GROUND_SEG = 5;  // per ground segment: a.e, a.n, b.e, b.n, its road class (as a float)
   // a rail line's cross ties: one every TIE_M along it, TIE_HALF_M each side of it (a real tie is about 2.6 m long,
   // drawn twice that as the roads are, MapView.ROAD_SCALE; every 8 m is about one in thirteen, so they read as ties
   // at the close-up zoom instead of a solid band)
@@ -86,6 +90,13 @@ final class CloseUp {
     final int[] from = new int[RANGES + 1];  // range r is segments from[r] to from[r + 1]
     int roadSegs, walkSegs, railSegs, roadDropped, walkDropped, railDropped, bridges, ramps;
     float maxH;  // the highest point, world metres
+    // Under.carHeight's ground candidates only (2026-11-07): every non-raised stretch of a non-bridge road,
+    // any class, centreline a.e, a.n, b.e, b.n, its class (GROUND_SEG floats each; count groundSegs). Never
+    // drawn: no draw range, so CloseView/GlClose and `seg`/`from` above are unchanged by this. Added because the
+    // car's own road was otherwise not in Detail at all (DASH_MAP_LOG.md 2026-11-01), so a frontage road beside
+    // a viaduct read as on the viaduct.
+    float[] ground = new float[0];
+    int groundSegs, groundDropped;
     // free drive, when an overpass was drawn flat as the car's road (overpasses()): that road (carRoad()), so
     // MapView rebuilds once the car leaves it (onRoad) and the overpass it then drives under is raised again
     float[][] heldOn;
@@ -569,11 +580,16 @@ final class CloseUp {
         self[i][e] = !cont && !met;
       }
     }
-    List<Seg> roads = new ArrayList<Seg>();
+    List<Seg> roads = new ArrayList<Seg>(), ground = new ArrayList<Seg>();
     for (int i = 0; i < n; i++) {
       int[] a = attr.get(i);
       boolean bridge = a[1] != 0, ramp = !bridge && (endH[i][0] > 0 || endH[i][1] > 0);
-      if (!bridge && !ramp && a[0] != 0) continue;  // only motorways get lane lines on the ground
+      if (!bridge && !ramp && a[0] != 0) {
+        // not drawn here (only motorways get lane lines on the ground), but still a ground road a car can be on
+        // (Under.carHeight): keep its whole centreline in `ground`, never in a draw range
+        addGround(pts.get(i), a[0], ground);
+        continue;
+      }
       if (ramp) out.ramps++;
       float[] p = pts.get(i);
       float[] h;
@@ -595,6 +611,8 @@ final class CloseUp {
         float[] rp = Arrays.copyOfRange(p, 2 * run[0], 2 * run[1] + 2);
         float[] rh = Arrays.copyOfRange(h, run[0], run[1] + 1);
         for (float v : rh) out.maxH = Math.max(out.maxH, v);
+        // a ramp's own ground tail (not bridge, not up): also a ground candidate for Under.carHeight
+        if (!bridge && !up) addGround(rp, a[0], ground);
         // an overpass's full-height stretch is its deck (drawn open under it), the ramped rest a fill to the ground
         float full = Math.max(1, a[2]) * LAYER_M - 1e-3f;
         if (up) for (int j = 0; j + 1 < rh.length; j++) {
@@ -644,9 +662,21 @@ final class CloseUp {
     out.roadDropped = cap(roads, ROAD_SEGS);
     out.walkDropped = cap(walks, WALK_SEGS);
     out.railDropped = cap(rails, RAIL_SEGS);
+    out.groundDropped = cap(ground, GROUND_SEGS);
     out.roadSegs = roads.size();
     out.walkSegs = walks.size();
     out.railSegs = rails.size();
+    out.groundSegs = ground.size();
+    out.ground = new float[ground.size() * GROUND_SEG];
+    for (int i = 0; i < ground.size(); i++) {
+      Seg s = ground.get(i);
+      int o = i * GROUND_SEG;
+      out.ground[o] = s.v[0];
+      out.ground[o + 1] = s.v[1];
+      out.ground[o + 2] = s.v[2];
+      out.ground[o + 3] = s.v[3];
+      out.ground[o + 4] = s.range;  // the road class, not a draw range: never used as one
+    }
     // into ranges, in order
     int[] count = new int[RANGES];
     for (Seg s : roads) count[s.range]++;
@@ -857,6 +887,12 @@ final class CloseUp {
       i = j;
     }
     return out;
+  }
+
+  // p's own points as ground segments of class cls, into out (Detail.ground only; a Seg's range field holds the
+  // class here, not a draw range, and its height/at fields are unused and left 0).
+  private static void addGround(float[] p, int cls, List<Seg> out) {
+    for (int j = 0; j + 3 < p.length; j += 2) out.add(new Seg(p[j], p[j + 1], p[j + 2], p[j + 3], 0, 0, 0, cls));
   }
 
   // Drops the farthest segments past max; returns how many went.

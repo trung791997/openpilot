@@ -18,33 +18,78 @@ final class Under {
   static final float ON_DECK_DEG = 30;  // as MapView's ON_ROAD_DEG
   static final float OVER_M = CloseUp.LAYER_M / 2;  // half a deck: a ramp's low end beside the car is not over it
   static final float CAR_PX = 11;  // the car's body on screen, px from its point: a deck reaching this far covers it
-  static final long FADE_MS = 150;  // the outline eases in and out over this, so a deck's edge does not flicker
+  static final long FADE_MS = 150;  // the outline eases over this at or under FADE_REF_SPD, so a deck's edge does
+  // not flicker
+  // Fade scales down with speed (2026-11-07, Peter: a pass under an overpass at highway speed is itself under a
+  // second, so a flat 150 ms ease either side ate most of it): FADE_MS still applies at and under FADE_REF_SPD,
+  // falling straight to FADE_MIN_MS by about 28 m/s (100 km/h) and staying there above it. *static*: Peter's ask
+  // (the two endpoints are his numbers), not measured against a real pass under a deck.
+  static final long FADE_MIN_MS = 80;
+  static final double FADE_REF_SPD = 15;  // m/s (54 km/h)
   // a covering segment is cut to this many display metres each side of the car before it is drawn as a clip (the
   // rest is off the car, and a long segment's far end may sit behind the camera)
   static final float NEAR_DM = 40;
 
+  // The outline's ease time at speed spdMps (m/s, caller already clamps it to 0 or more):
+  // clamp(FADE_MS * FADE_REF_SPD / spdMps, FADE_MIN_MS, FADE_MS).
+  static long fadeMs(double spdMps) {
+    if (spdMps <= FADE_REF_SPD) return FADE_MS;
+    return Math.round(Math.max(FADE_MIN_MS, FADE_MS * FADE_REF_SPD / spdMps));
+  }
+
   private static final float COS_ON = (float) Math.cos(Math.toRadians(ON_DECK_DEG));
 
-  // The car's height, world m: the highest raised segment running its way that holds it, 0 on the ground. (ce, cn)
-  // the car in metres from the anchor, (sh, ch) the way it points (east, north), roadM each class's width in world m.
+  // The car's height, world m: among the roads running its way (within ON_DECK_DEG) that hold it (half the road's
+  // width plus ON_DECK_M), the one whose centreline is nearest the car wins, ground (Detail.ground: plain roads and
+  // a ramp's own ground tail, height 0) or raised (a deck's own range) alike; a tie keeps the higher one (the old
+  // rule, when only raised candidates competed). No candidate at all is the ground, height 0. (ce, cn) the car in
+  // metres from the anchor, (sh, ch) the way it points (east, north), roadM each class's width in world m.
   static float carHeight(CloseUp.Detail d, float ce, float cn, float ch, float sh, float[] roadM) {
-    float hc = 0;
     if (d == null) return 0;
+    float hc = 0, bestD2 = Float.POSITIVE_INFINITY;
+    float[] g = d.ground;
+    for (int i = 0; i < d.groundSegs; i++) {
+      int o = i * CloseUp.GROUND_SEG;
+      int c = (int) g[o + 4];
+      float reach = roadM[c] / 2 + ON_DECK_M;
+      // cheap bbox reject before the dot products (2026-11-07, measured on a large synthetic scene: see UnderTest)
+      if (ce < Math.min(g[o], g[o + 2]) - reach || ce > Math.max(g[o], g[o + 2]) + reach) continue;
+      if (cn < Math.min(g[o + 1], g[o + 3]) - reach || cn > Math.max(g[o + 1], g[o + 3]) + reach) continue;
+      float dx = g[o + 2] - g[o], dy = g[o + 3] - g[o + 1];
+      float len = (float) Math.hypot(dx, dy);
+      if (len <= 0) continue;
+      if (Math.abs((dx * sh + dy * ch) / len) < COS_ON) continue;  // across the car's way: a deck over it
+      float t = Math.max(0, Math.min(1, ((ce - g[o]) * dx + (cn - g[o + 1]) * dy) / (len * len)));
+      float ex = g[o] + t * dx - ce, ey = g[o + 1] + t * dy - cn;
+      float d2 = ex * ex + ey * ey;
+      if (d2 > reach * reach) continue;
+      if (d2 < bestD2) bestD2 = d2;  // ground is always height 0; hc stays unless a nearer raised candidate wins
+    }
     float[] v = d.seg;
-    for (int g = 1; g < CloseUp.LAYERS; g++) {
-      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {  // ramps and decks of each class
-        int c = k % CloseUp.CLASSES, r = k < CloseUp.CLASSES ? CloseUp.range(g, c) : CloseUp.deck(g, c);
+    for (int layer = 1; layer < CloseUp.LAYERS; layer++) {
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {
+        int c = k % CloseUp.CLASSES;
+        int r = k < CloseUp.CLASSES ? CloseUp.range(layer, c) : CloseUp.deck(layer, c);
         float reach = roadM[c] / 2 + ON_DECK_M;
         for (int i = d.from[r]; i < d.from[r + 1]; i++) {
           int o = i * CloseUp.SEG;
+          if (ce < Math.min(v[o], v[o + 2]) - reach || ce > Math.max(v[o], v[o + 2]) + reach) continue;
+          if (cn < Math.min(v[o + 1], v[o + 3]) - reach || cn > Math.max(v[o + 1], v[o + 3]) + reach) continue;
           float dx = v[o + 2] - v[o], dy = v[o + 3] - v[o + 1];
           float len = (float) Math.hypot(dx, dy);
           if (len <= 0) continue;
           if (Math.abs((dx * sh + dy * ch) / len) < COS_ON) continue;  // across the car's way: a deck over it
           float t = Math.max(0, Math.min(1, ((ce - v[o]) * dx + (cn - v[o + 1]) * dy) / (len * len)));
           float ex = v[o] + t * dx - ce, ey = v[o + 1] + t * dy - cn;
-          if (ex * ex + ey * ey > reach * reach) continue;
-          hc = Math.max(hc, v[o + 4] + t * (v[o + 5] - v[o + 4]));
+          float d2 = ex * ex + ey * ey;
+          if (d2 > reach * reach) continue;
+          float h = v[o + 4] + t * (v[o + 5] - v[o + 4]);
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            hc = h;
+          } else if (d2 == bestD2) {
+            hc = Math.max(hc, h);
+          }
         }
       }
     }
@@ -52,11 +97,14 @@ final class Under {
   }
 
   // The raised segments drawn over the car's body this frame, into out (segment indices; at most out.length) and
-  // their count. The detail is drawn with heights at hs (the close-up gate) and widths w(c) = max(floor, roadM[c] ik)
-  // + casing display metres, lifted as CloseView does; carDm is the body's reach in display metres. None at hs 0.
+  // their count, at every zoom (2026-11-07: this used to run only in the close-up; now it also finds the flat decks
+  // cruising draws). The detail is drawn with heights at hs (the close-up gate, 0 cruising) and widths w(c) =
+  // max(floor, roadM[c] ik) + casing display metres, lifted as CloseView does; at hs 0, lifted() scales by 1 (flat),
+  // matching the flat footprint cruising draws. The height test against the car (hc + OVER_M) is against the data
+  // heights, not hs, so it does not depend on the gate either. carDm is the body's reach in display metres.
   static int covering(CloseUp.Detail d, float ce, float cn, float ch, float sh, float ik, float hs, float[] roadM,
                       float floor, float casing, float carDm, int[] out) {
-    if (d == null || hs <= 0 || d.maxH <= 0) return 0;
+    if (d == null || d.maxH <= 0) return 0;
     float hc = carHeight(d, ce, cn, ch, sh, roadM);
     if (d.maxH < hc + OVER_M) return 0;
     float[] v = d.seg;
@@ -96,22 +144,31 @@ final class Under {
     return q;
   }
 
-  // The 0 to 1 ease of the outline: set() notes the wanted end, level() moves toward it at 1 / FADE_MS a millisecond
-  // from where it was, so a deck edge crossed back part way turns back part way (as the brake glow).
+  // The 0 to 1 ease of the outline: set() notes the wanted end, level() moves toward it at 1 / ms a millisecond from
+  // where it was, so a deck edge crossed back part way turns back part way (as the brake glow). ms is the pace of
+  // the ease in flight: set(want, now) keeps whatever pace was last given (FADE_MS until told otherwise);
+  // set(want, now, fadeMs) is for the speed-scaled pace (fadeMs(), Peter 2026-11-07) and only takes hold on a new
+  // transition, not mid-ease, so an ease already running does not jump.
   static final class Fade {
     private boolean on;
     private float from;
     private long at;
+    private long ms = FADE_MS;
 
     void set(boolean want, long now) {
+      set(want, now, ms);
+    }
+
+    void set(boolean want, long now, long fadeMs) {
       if (want == on) return;
       from = level(now);
       on = want;
       at = now;
+      ms = fadeMs;
     }
 
     float level(long now) {
-      float d = Math.max(0, now - at) / (float) FADE_MS;
+      float d = Math.max(0, now - at) / (float) ms;
       return on ? Math.min(1f, from + d) : Math.max(0f, from - d);
     }
 

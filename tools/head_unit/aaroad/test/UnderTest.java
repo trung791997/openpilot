@@ -42,7 +42,10 @@ public class UnderTest {
     check(over(d, 0, 0, 90, 1) == 0, "on the bridge itself heading east: nothing over the car");
     check(over(d, 0, 0, 270, 1) == 0, "on the bridge heading west: nothing over the car");
     check(over(d, 0, 4, 85, 1) == 0, "on the bridge a little off its line and its way: still on it");
-    check(over(d, 0, 0, 0, 0) == 0, "cruising (close-up shut): no outline");
+    // 2026-11-07: the outline now works at every zoom, not only the close-up (hs 1 to 0); zoomed out (hs 0) the
+    // bridge is drawn flat, and the car's flat clip still covers it, so the outline still shows.
+    check(over(d, 0, 0, 0, 0) > 0, "zoomed out (hs 0): the flat deck still shows the outline");
+    check(over(d, 0, 0, 90, 0) == 0, "zoomed out, on the bridge itself: still nothing over the car");
     check(over(d, 0, -300, 0, 1) == 0 && over(d, 0, 300, 0, 1) == 0, "well before and after the bridge: nothing over");
     check(over(d, 150, 0, 90, 1) > 0, "on the bridge under the flyover: the flyover is over the car");
     check(over(d, 150, 0, 0, 1) == 0, "on the flyover heading north: nothing over the car");
@@ -72,6 +75,24 @@ public class UnderTest {
     check(over(CloseUp.build(in), 0, 0, 0, 1) == 0, "no bridges: nothing over");
     check(Under.covering(null, 0, 0, 1, 0, IK, 1, ROAD_M, FLOOR, CASING, CAR, new int[4]) == 0, "no detail: nothing");
 
+    // a ground frontage road north-south at e = 20 (20 m from the viaduct's centreline, inside its reach), beside a
+    // layer-1 viaduct north-south at e = 0: a car on the frontage road is nearer the ground road than the viaduct,
+    // so it reads as on the ground and the viaduct over it shows an outline; a car on the viaduct itself reads as
+    // on the viaduct and shows none.
+    in = new CloseUp.Lines();
+    in.road(line(0, -800, 0, 800), 1, true, 1, 0, false);  // the viaduct, layer 1, north-south
+    in.road(line(20, -800, 20, 800), 0, false, 0, 0, false);  // the frontage road, ground, 20 m off its centre
+    // a ground cross-street well up the road, away from both test points below, so overpasses() marks the viaduct
+    // raised (a bridge needs some lower or ground line actually crossing it; a same-or-higher bridge does not count)
+    in.road(line(-50, 600, 50, 600), 0, false, 0, 0, false);
+    CloseUp.Detail dv = CloseUp.build(in);
+    check(over(dv, 20, 0, 0, 1) > 0, "frontage road 20 m off a viaduct's centre: on the ground, the viaduct shows");
+    check(over(dv, 0, 0, 0, 1) == 0, "on the viaduct itself: nothing over (it is the car's own road)");
+    // the viaduct's own reach (half width + ON_DECK_M) extends well past the frontage road's position; it is the
+    // nearer-candidate rule (Under.carHeight), not any gap between the two reaches, that gives the ground the win
+    float viaductHalf = ROAD_M[1] / 2 + Under.ON_DECK_M;
+    check(viaductHalf > 20, "the viaduct's own reach already covers the frontage road's position: " + viaductHalf);
+
     // the ease: 150 ms each way, turning back from part way
     Under.Fade f = new Under.Fade();
     check(f.level(0) == 0 && !f.moving(0), "starts off");
@@ -86,6 +107,17 @@ public class UnderTest {
     f.set(false, 2060);  // a deck edge crossed back after 60 ms
     check(Math.abs(f.level(2060) - 0.4f) < 1e-3, "turned back at 0.4");
     check(Math.abs(f.level(2090) - 0.2f) < 1e-3 && f.level(2120) == 0, "and out from there, not from 1");
+
+    // the ease scales down with speed: 150 ms at or under 15 m/s, 80 ms by about 28 m/s and above
+    check(Under.fadeMs(5) == 150, "5 m/s: still the full 150 ms");
+    check(Under.fadeMs(15) == 150, "15 m/s: still the full 150 ms (the reference speed)");
+    check(Under.fadeMs(20) == 112 || Under.fadeMs(20) == 113, "20 m/s: part way down, " + Under.fadeMs(20) + " ms");
+    check(Under.fadeMs(28) == 80, "28 m/s: at the floor, " + Under.fadeMs(28) + " ms");
+    check(Under.fadeMs(35) == 80, "35 m/s: still at the 80 ms floor");
+    Under.Fade fs = new Under.Fade();
+    fs.set(true, 3000, Under.fadeMs(35));  // a new transition at 35 m/s: the 80 ms pace takes hold
+    check(fs.level(3040) == 0.5f, "half in after 40 ms at the 80 ms pace: " + fs.level(3040));
+    check(fs.level(3080) == 1, "fully in at 80 ms at that pace");
 
     System.out.println(bad == 0 ? "all ok" : bad + " failed");
     System.exit(bad == 0 ? 0 : 1);
