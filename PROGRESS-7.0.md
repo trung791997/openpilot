@@ -44,6 +44,22 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 20 — 2026-11-07 — No hard brake when the radar suddenly reports the car ahead slowing impossibly fast while the camera sees it holding speed; on longradar and V-ASM, default ON
+
+**Problem.** On the a2 seg 50 bookmark, right after a lane change, the radar's speed for the car 18 m ahead fell from
+12.5 to 2.9 m/s in 0.7 s (about -13 m/s^2) while the camera saw it holding 10.5-11.9 m/s at a steady 19-20 m. The
+planner braked at -3.5 and the car slowed from 10.3 to 4.2 m/s. Raw CAN shows the radar itself sent those values.
+
+**Change** (`ImplausibleDropBound` in `starpilot/longitudinal/honda_bosch_a_long.py`, applied in `planner_radar_state`):
+when the same radar lead's speed drops more than 5 m/s in 0.5 s, a confident camera lead at the same range drops less
+than 1.5 m/s, and the camera lead's range did not shrink more than 0.3 m, the lead speed the planner sees is held no
+lower than the camera's speed minus 1 m/s, for at most 1 s. The radar point and its range are untouched.
+
+**Evidence.** Replay only. a2: fires for 2.0 s. The range rule was added after Job's stills showed the first version
+also fired on real red-light slowdowns (7b s27, 99 s1); with it, those and five other real slowdowns plus a next-lane
+truck no longer fire. Still fires on one 0.4 s highway radar-noise blip (84 s15, speed flat) and one 0.1 s disengaged
+blip (8a s11). Fidelity 0.963-0.996. Margin around 0.3 m is about 1 m each side on 12 cases; not road-tested.
+
 ### 19 — 2026-11-07 — No gas surge for 1 s when the radar suddenly loses a close car we were closing on; on longradar and V-ASM, default ON
 
 **Problem.** On the 9e bookmark the radar dropped a car 21 m ahead that we were closing on at 6.9 m/s. The lead
