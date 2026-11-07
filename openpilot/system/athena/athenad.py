@@ -172,15 +172,30 @@ def strip_zst_extension(fn: str) -> str:
   return fn
 
 
-def resolve_upload_path(path: str, url: str) -> str:
-  """Konik asks for a log by its bare name ("<segment>/rlog") with an upload URL ending in "rlog.zst".
+def resolve_upload_path(path: str, url: str) -> str | None:
+  try:
+    destination = urlparse(url).path
+  except ValueError:
+    return None
 
-  Logs are only written compressed, so the bare name never exists. When the URL names the .zst file and that file is
-  on disk, upload it as is.
-  """
-  if os.path.exists(path) or not urlparse(url).path.endswith('/' + os.path.basename(path) + '.zst'):
-    return path
-  return path + '.zst' if os.path.exists(path + '.zst') else path
+  # Konik can request a bare log name with a .zst destination. Keep the canonical
+  # .zst path so the worker prefers the compressed file or compresses the raw log.
+  if not path.endswith('.zst') and destination.endswith('/' + os.path.basename(path) + '.zst'):
+    return path + '.zst'
+  return path
+
+
+def get_upload_source(path: str, log_root: str) -> str | None:
+  source = path
+  if not os.path.exists(source):
+    source = strip_zst_extension(path)
+    if source == path or not os.path.exists(source):
+      return None
+
+  # A per-file provider marker on the raw fallback can differ from the .zst path.
+  if not owns_recording(path, log_root) or (source != path and not owns_recording(source, log_root)):
+    return None
+  return source
 
 
 class AbortTransferException(Exception):
@@ -357,19 +372,13 @@ def upload_handler(end_event: threading.Event) -> None:
 
 
 def _do_upload(upload_item: UploadItem, callback: Callable | None = None) -> requests.Response:
-  path = upload_item.path
-  if not owns_recording(path, Paths.log_root()):
-    raise ValueError('Recording belongs to another cloud provider')
-  compress = False
-
-  # If file does not exist, but does exist without the .zst extension we will compress on the fly
-  if not os.path.exists(path) and os.path.exists(strip_zst_extension(path)):
-    path = strip_zst_extension(path)
-    compress = True
+  path = get_upload_source(upload_item.path, Paths.log_root())
+  if path is None:
+    raise ValueError('Recording belongs to another cloud provider or is unavailable')
 
   stream = None
   try:
-    stream, content_length = get_upload_stream(path, compress)
+    stream, content_length = get_upload_stream(path, path != upload_item.path)
     response = UPLOAD_SESS.put(upload_item.url,
                                data=CallbackReader(stream, callback, content_length) if callback else stream,
                                headers={**upload_item.headers, 'Content-Length': str(content_length)},
@@ -684,8 +693,9 @@ def uploadFilesToUrls(files_data: list[UploadFileDict]) -> UploadFilesToUrlRespo
       failed.append(file.fn)
       continue
 
-    path = resolve_upload_path(os.path.join(Paths.log_root(), file.fn), file.url)
-    if not owns_recording(path, Paths.log_root()) or (not os.path.exists(path) and not os.path.exists(strip_zst_extension(path))):
+    log_root = Paths.log_root()
+    path = resolve_upload_path(os.path.join(log_root, file.fn), file.url)
+    if path is None or get_upload_source(path, log_root) is None:
       failed.append(file.fn)
       continue
 
