@@ -186,7 +186,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private final int[] gaps = new int[200];
   private long gapSum, gapCount, gapMax;
 
-  private volatile boolean ready, failed;
+  private volatile boolean ready, failed, quit;
 
   // GL thread only
   private EGLDisplay dpy = EGL14.EGL_NO_DISPLAY;
@@ -290,6 +290,30 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     setVisibility(on && !failed ? VISIBLE : INVISIBLE);
   }
 
+  // The meter page is re-created several times a day (Peter's drive 2026-11-06: 6 old aaroad-gl/aaroad-pack pairs
+  // found still alive in the meter process); without this the old threads sit in their wait loops forever and keep
+  // their EGL context alive.
+  @Override
+  protected void onDetachedFromWindow() {
+    synchronized (lock) {
+      quit = true;
+      lock.notifyAll();
+    }
+    synchronized (packLock) {
+      packLock.notifyAll();
+    }
+    super.onDetachedFromWindow();
+  }
+
+  // The same view can be attached again later. Lets the GL thread start fresh on the next surfaceCreated.
+  @Override
+  protected void onAttachedToWindow() {
+    super.onAttachedToWindow();
+    synchronized (lock) {
+      quit = false;
+    }
+  }
+
   // ---- the surface, on the UI thread
 
   @Override
@@ -337,14 +361,14 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       }
       long next = 0, last = 0;
       boolean idle = false;
-      while (!failed) {
+      while (!failed && !quit) {
         SurfaceHolder h;
         java.util.Arrays.fill(partNow, 0);
         partMark = System.nanoTime();
         synchronized (lock) {
           part(P_LOCK);  // takeStats and surfaceDestroyed hold it on the UI thread
           // until the next frame is due, the surface changes, or, while idle, a poke
-          while (holder == glHolder) {
+          while (holder == glHolder && !quit) {
             if (glHolder == null) {
               lock.wait();
               continue;
@@ -356,6 +380,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           h = holder;
           poked = false;
         }
+        if (quit) break;
         part(P_SLEEP);
         if (h != glHolder) {
           why = setSurface(h);
@@ -420,8 +445,58 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
         logParts(start);  // after next is set, so its own time comes out of the coming sleep
       }
+      if (!failed) quitExit();  // every fail() path returns, so only quit gets here; quit may already be cleared again
     } catch (Throwable t) {
       fail(String.valueOf(t));
+    }
+  }
+
+  // Lets go of this context the same way fail() does, but without eglTerminate, failed, or map.gpu = null: the
+  // view may be attached again and start a fresh GL thread. Everything the dead context built (programs, buffers,
+  // textures, the cached scene) is cleared so a later run() rebuilds it rather than reusing stale ids.
+  private void quitExit() {
+    try {
+      if (dpy != EGL14.EGL_NO_DISPLAY) {
+        EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+        if (surf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, surf);
+        if (ctx != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, ctx);
+        surf = EGL14.EGL_NO_SURFACE;
+        ctx = EGL14.EGL_NO_CONTEXT;
+      }
+      line = grid = fade = text = vbo = ibo = quad = unit = tex = sigTex = back = 0;
+      close = null;
+      cur = null;
+      pend = null;
+      pendOff = 0;
+      glScene = null;
+      asked = null;
+      checkNext = false;
+      if (atlas != null) {
+        atlas.recycle();
+        atlas = null;
+      }
+      atlasCanvas = null;
+      paints = null;
+      java.util.Arrays.fill(atlasText, null);
+      synchronized (packLock) {
+        packAsk = null;
+        packDone = null;
+      }
+      MapView.say("aaroad: gpu roads stopped: view detached");
+    } finally {
+      synchronized (lock) {
+        glHolder = null;
+        threadStarted = false;
+        ready = false;
+        // attached again and given a surface while this thread was on its way out: start the next one now
+        if (!quit && holder != null && !failed) {
+          threadStarted = true;
+          Thread t = new Thread(this, "aaroad-gl");
+          t.setDaemon(true);
+          t.start();
+        }
+        lock.notifyAll();
+      }
     }
   }
 
@@ -639,12 +714,17 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       MapView.Scene s;
       ByteBuffer b;
       synchronized (packLock) {
-        while (packAsk == null) {
+        while (packAsk == null && !quit) {
           try {
             packLock.wait();
           } catch (InterruptedException e) {
             return;
           }
+        }
+        if (quit) {
+          packStarted = false;
+          packBusy = false;
+          return;
         }
         s = packAsk;
         packAsk = null;
