@@ -45,6 +45,27 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 19 — 2026-11-07 — No gas surge for 1 s when the radar suddenly loses a close car we were closing on; on longradar and V-ASM, default ON
+
+**Problem.** On the 9e bookmark the radar dropped a car 21 m ahead that we were closing on at 6.9 m/s. The lead
+went to a camera lead 81 m away, and the planner gave gas for about 1 s toward a car that was still there.
+
+**Change** (`starpilot/longitudinal/bosch_a_release_coast.py`, called in `longitudinal_planner.py` after coast
+first): when the previous lead was a radar track within 40 m closing faster than 2 m/s, and the lead is now gone or
+a different track more than 20 m farther, the target is capped at 0 for 1 s. Brakes are untouched. A lane change,
+blinker or gas press cancels it; a close closing lead ends it early.
+
+**Evidence.** Replay: on 9e it fires at the release and removes up to 0.59 m/s^2 of gas (fidelity 0.985). In the
+16-drive census (routes 71-9b, fidelity 0.986-0.996) it triggered 8 times and cut gas on 2 (route 84 seg 7 and
+seg 19, 1.1 s total). Job's aligned stills: 84 s7, the pickup turned off (coast harmless); 84 s19, unclear.
+Static: 13 unit tests. Not driven.
+
+**Not shipped: the implausible-drop bound** for the a2 seg 50 phantom brake (radar track 24 read -6.8 m/s closing
+while the camera saw a steady car). A raw CAN replay shows the radar itself sent those values (the parser decoded
+them unchanged), so no parser fix. The bound fired 11 times in the census, and the stills show real slowdowns
+at red lights in several (7b s27, 99 s1), where the camera model lags. Being reworked to also require the radar
+and camera ranges to split apart.
+
 ### 18 — 2026-11-06 — The -0.6 far cap from 17 only applies within a 5 s gap, so it stops braking for far cars; on longradar and V-ASM, default ON
 
 **Why:** the ungated -0.6 (entry 17) added far-lead brakes in replay: -1.58 for a car 8 s ahead (vn80) and -1.04 at
