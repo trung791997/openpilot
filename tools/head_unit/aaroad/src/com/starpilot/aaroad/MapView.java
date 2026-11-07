@@ -14,6 +14,8 @@ import android.graphics.RectF;
 import android.graphics.Region;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextPaint;
 import android.text.TextUtils;
@@ -545,12 +547,44 @@ final class MapView extends View {
       }
       // software drawing on the Tegra: if a frame costs more than half the frame time, draw less often
       // and while the car glides up or down for the lane row (lift), so it keeps with the map under it
-      long t = SystemClock.uptimeMillis();
-      long slow = glowing(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
-          ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
-      postDelayed(this, !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs));
+      long delay = SLOW_MS;
+      try {
+        long t = SystemClock.uptimeMillis();
+        long slow = glowing(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
+            ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
+        delay = !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs);
+      } catch (Throwable t) {
+        say("aaroad: map tick delay failed: " + t);
+      } finally {
+        tickAt = SystemClock.uptimeMillis();
+        postDelayed(this, Math.min(delay, IDLE_MS));
+      }
     }
   };
+
+  // Peter's drive 2026-11-06: from about 21:00 this tick stopped running while the GPU layer went on at 30 a second,
+  // so the scene was never rebuilt and the map drove off its roads into a blank page for over an hour (no error in
+  // the log). The GPU thread calls this each frame; a tick quiet for TICK_LOST_MS is posted again, and said once.
+  private static final Handler MAIN = new Handler(Looper.getMainLooper());
+  private volatile long tickAt;
+  private long kickedAt;
+  static final long TICK_LOST_MS = 2000;
+
+  long tickAge(long now) {
+    long at = tickAt;
+    return at == 0 ? -1 : now - at;
+  }
+
+  void kickTick(long now) {
+    long at = tickAt;
+    // a detached view's tick is stopped on purpose (onDetachedFromWindow)
+    if (at == 0 || now - at < TICK_LOST_MS || now - kickedAt < TICK_LOST_MS || getWindowToken() == null) return;
+    kickedAt = now;
+    say("aaroad: map tick quiet for " + (now - at) + " ms, posted again");
+    removeCallbacks(tick);
+    MAIN.removeCallbacks(tick);
+    MAIN.post(tick);
+  }
 
   // With the GPU layer drawing everything that moves at 30 a second (Peter 2026-10-30), this view is the slow layer:
   // the street under the car and the labels are chosen here from the GPU layer's last frame, and the view redraws
@@ -608,6 +642,7 @@ final class MapView extends View {
   @Override
   protected void onDetachedFromWindow() {
     removeCallbacks(tick);
+    MAIN.removeCallbacks(tick);
     Feed.wanted = false;
     // Honda Hack re-creating its meter page takes this view with it; a new one comes with the new page (Meter)
     say("aaroad: " + (live ? "hidden" : "still hidden") + " reason=view detached " + id());

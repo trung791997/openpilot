@@ -368,6 +368,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           continue;
         }
         long start = SystemClock.uptimeMillis();
+        map.kickTick(start);
         MapView.Scene newest = map.scene();
         if (newest == null) {
           idle = true;
@@ -965,7 +966,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         b.append(PART_NAMES[i]).append(' ').append(ms(partSum[i] / partFrames)).append('/').append(ms(partMax[i]));
       }
       b.append("; ").append(partFrames).append(" frames; label uploads ").append(atlasUploads)
-          .append("; scene uploads ").append(sceneUploads).append("; slow frames ").append(slowFrames);
+          .append("; scene uploads ").append(sceneUploads).append("; slow frames ").append(slowFrames)
+          .append("; tick age ").append(map.tickAge(now));
       if (slowFrames > 0) {
         b.append(" (top stage");
         for (int i = 0; i < PARTS; i++) if (slowTop[i] > 0) b.append(' ').append(PART_NAMES[i]).append(' ').append(slowTop[i]);
