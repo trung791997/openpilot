@@ -25,7 +25,10 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      when not given (older apps ignore both);
      through a GPS gap of up to 20 s it stays the last step, counted down at the car's speed, with "held": 1 (older
      apps ignore it); arrival, End navigation, a new destination or a reroute still null it at once (guidance_hold);
-     limit (m/s) is the speed limit openpilot goes by, or null; media is the song playing or paused, else null:
+     limit (m/s) is the speed limit openpilot goes by, or null; "sl" (left out without one; older apps ignore it) says
+     more about it: {"src": where limit came from ("vision", "map", "dashboard", "online", or ""), "pend": a new limit
+     (m/s) waiting for the driver's Accept/Decline on the cruise buttons or about to be adopted, else null, "psrc": the
+     pend's source, "auto": 1 when pend adopts by itself}; media is the song playing or paused, else null:
      {"status": "playing"|"paused", "title", "artist", "source": "spotify"|"phone", "art", "dur"}, art the id of its
      cover (crc32 of the cover URL) or 0 without one, dur the song length in ms or 0. pos is how far into the song it
      is (ms) when sent, or null; it is left out of the change check, so a playing song does not resend every tick.
@@ -378,6 +381,7 @@ class CerealReader:
       if heading is not None:
         value['fix'] = (stamp, float(gps.latitude), float(gps.longitude), heading)
     value['limit'] = posted_limit(sm['slcState']) if sm.seen['slcState'] else None
+    value['sl'] = limit_detail(sm['slcState']) if sm.seen['slcState'] else None
     stamp = sm.logMonoTime['starpilotNavigation']
     state = navigation_state(sm['starpilotNavigation']) if sm.seen['starpilotNavigation'] else None
     if state is None or not 0 < stamp <= now_ns <= stamp + NAV_HOLD_NS:
@@ -421,6 +425,25 @@ def posted_limit(slc) -> float | None:
   if slc.observationKind == 'valid' and slc.speedLimit > 0:
     return round(float(slc.speedLimit), 2)
   return None
+
+
+def limit_detail(slc) -> dict | None:
+  """Where the sign's limit came from and the new one waiting for the driver, as the comma's own screen shows them
+  (unified_speed_presentation): a pending limit with no presentation yet cannot be accepted, so it is not shown."""
+  if slc.hasAccepted and slc.acceptedSpeedLimit > 0:
+    src = slc.acceptedSource
+  elif slc.observationKind == 'valid' and slc.speedLimit > 0:
+    src = slc.source
+  else:
+    src = ''
+  pend = None
+  if slc.hasPending and slc.pendingSpeedLimit > 0 and slc.presentationId != 0:
+    pend = round(float(slc.pendingSpeedLimit), 2)
+  if not src and pend is None:
+    return None
+  psrc = slc.pendingSource if pend is not None and slc.pendingSource not in ('', 'none') else ''
+  return {'src': src if src != 'none' else '', 'pend': pend, 'psrc': psrc,
+          'auto': int(pend is not None and bool(slc.automaticAdoptionPending))}
 
 
 def instruction(step) -> dict:
@@ -543,6 +566,8 @@ class HeadUnitFeed:
     media = media_of(song)
     state = {'mode': value['mode'], 'metric': value['metric'], 'nav': value['nav'], 'limit': value.get('limit'),
              'media': media}
+    if value.get('sl') is not None:
+      state['sl'] = value['sl']
     # pos moves every tick, so it rides along with the state but does not count as a change
     if state != self.sent_state or now - self.last_state >= STATE_EVERY:
       self._send('s', {**state, 'pos': elapsed_of(song, time.time() * 1000) if media is not None else None})  # noqa: TID251 epoch-ms anchors

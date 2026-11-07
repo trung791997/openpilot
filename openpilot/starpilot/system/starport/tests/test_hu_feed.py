@@ -396,6 +396,35 @@ def test_sign_shows_the_accepted_limit_then_the_one_seen_and_nothing_unknown():
   assert hf.posted_limit(N(hasAccepted=False, acceptedSpeedLimit=0, observationKind='unknown', speedLimit=15.6)) is None
 
 
+def test_limit_detail_names_the_source_and_the_new_limit_waiting_for_the_driver():
+  from types import SimpleNamespace as N
+  base = {'hasAccepted': True, 'acceptedSpeedLimit': 13.4112, 'acceptedSource': 'map', 'observationKind': 'valid',
+          'speedLimit': 15.6464, 'source': 'vision', 'hasPending': False, 'pendingSpeedLimit': 0., 'presentationId': 0,
+          'pendingSource': '', 'automaticAdoptionPending': False}
+  assert hf.limit_detail(N(**base)) == {'src': 'map', 'pend': None, 'psrc': '', 'auto': 0}
+  waiting = {**base, 'hasPending': True, 'pendingSpeedLimit': 15.6464, 'presentationId': 7, 'pendingSource': 'vision'}
+  assert hf.limit_detail(N(**waiting)) == {'src': 'map', 'pend': 15.65, 'psrc': 'vision', 'auto': 0}
+  assert hf.limit_detail(N(**{**waiting, 'automaticAdoptionPending': True}))['auto'] == 1
+  assert hf.limit_detail(N(**{**waiting, 'presentationId': 0}))['pend'] is None  # the comma shows it as unavailable
+  seen = {**base, 'hasAccepted': False, 'acceptedSpeedLimit': 0.}
+  assert hf.limit_detail(N(**seen))['src'] == 'vision'
+  assert hf.limit_detail(N(**{**seen, 'observationKind': 'unknown'})) is None
+  assert hf.limit_detail(N(**{**seen, 'observationKind': 'unknown', **{k: waiting[k] for k in (
+    'hasPending', 'pendingSpeedLimit', 'presentationId', 'pendingSource')}})) == {
+    'src': '', 'pend': 15.65, 'psrc': 'vision', 'auto': 0}
+
+
+def test_state_carries_limit_detail_only_when_there_is_one():
+  feed, sock, now, value = make(snapshot(sl={'src': 'vision', 'pend': None, 'psrc': '', 'auto': 0}))
+  sock.hello()
+  feed.tick()
+  assert next(message for message, _ in sock.sent if message['t'] == 's')['sl']['src'] == 'vision'
+  feed, sock, now, value = make(snapshot())
+  sock.hello()
+  feed.tick()
+  assert 'sl' not in next(message for message, _ in sock.sent if message['t'] == 's')
+
+
 ART = 'https://i.scdn.co/image/ab67616d0000b273abc'
 SONG = {'source': 'spotify', 'status': 'playing', 'title': 'Another Life', 'artist': 'RÜFÜS DU SOL', 'album': 'Surrender',
         'durationMs': 200000, 'position': {'ms': 1000, 'at': 1, 'speed': 1.0}, 'artwork': ART}
