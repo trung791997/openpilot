@@ -280,6 +280,31 @@ class TestAthenadMethods(OpenpilotTestCase):
     assert resp['items'][0].get('id') is not None
     assert athenad.upload_queue.qsize() == 1
 
+  def test_upload_files_to_urls_without_headers(self, host):
+    # Konik's "upload all" batch sends allow_cellular and priority but no headers
+    fn = self._create_file('rlog.zst')
+    files_data = [{"fn": "2026-10-04--00-00-00--0/rlog.zst", "url": f"{host}/rlog.zst", "allow_cellular": False, "priority": 1},
+                  {"fn": "2026-10-04--00-00-00--0/rlog.bz2", "url": f"{host}/rlog.bz2", "allow_cellular": False, "priority": 1}]
+
+    resp = dispatcher["uploadFilesToUrls"](files_data)
+    assert resp['enqueued'] == 1
+    assert resp['failed'] == ["2026-10-04--00-00-00--0/rlog.bz2"]
+    assert {"path": fn, "url": f"{host}/rlog.zst", "headers": {}}.items() <= resp['items'][0].items()
+
+  def test_upload_file_to_url_bare_name(self, host):
+    # Konik asks for "<segment>/rlog" with an upload URL ending in rlog.zst; only rlog.zst is on disk
+    fn = self._create_file('rlog.zst')
+
+    resp = dispatcher["uploadFilesToUrls"]([{"fn": "2026-10-04--00-00-00--0/rlog", "url": f"{host}/seg/0/rlog.zst?sig=x", "headers": {}}])
+    assert resp['enqueued'] == 1
+    assert 'failed' not in resp
+    assert resp['items'][0]['path'] == fn
+
+    # the bare name is not mapped when the URL does not ask for the .zst file
+    resp = dispatcher["uploadFilesToUrls"]([{"fn": "2026-10-04--00-00-00--0/rlog", "url": f"{host}/seg/0/rlog", "headers": {}}])
+    assert resp['enqueued'] == 0
+    assert resp['failed'] == ["2026-10-04--00-00-00--0/rlog"]
+
   def test_upload_file_to_url_duplicate(self, host):
     self._create_file('qlog.zst')
 
