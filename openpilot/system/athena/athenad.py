@@ -25,6 +25,7 @@ from functools import partial, total_ordering
 from queue import Queue
 from typing import cast
 from collections.abc import Callable, Iterable
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter, DEFAULT_POOLBLOCK
@@ -92,8 +93,9 @@ UPLOAD_URL = regex(r'https?://[\x21-\x7e]+')
 UPLOAD_HEADERS = dict_of(regex(r'[\w\-]+'), regex(r'[\x20-\x7e]*'))
 UPLOAD_ID = regex(r'[0-9a-f]{40}')
 CLIP_FILENAME = regex(r'[\w\-][\w\-.]*')
-UPLOAD_FILE = struct({"fn": regex(DATA_PATH), "url": UPLOAD_URL, "headers": UPLOAD_HEADERS},
-                     {"allow_cellular": boolean, "priority": integer(0, DEFAULT_UPLOAD_PRIORITY)})
+# headers is optional: Konik's "upload all" batch leaves it out, and UploadFile.from_dict already defaults it to {}
+UPLOAD_FILE = struct({"fn": regex(DATA_PATH), "url": UPLOAD_URL},
+                     {"headers": UPLOAD_HEADERS, "allow_cellular": boolean, "priority": integer(0, DEFAULT_UPLOAD_PRIORITY)})
 
 
 class UploadTOSAdapter(HTTPAdapter):
@@ -168,6 +170,17 @@ def strip_zst_extension(fn: str) -> str:
   if fn.endswith('.zst'):
     return fn[:-4]
   return fn
+
+
+def resolve_upload_path(path: str, url: str) -> str:
+  """Konik asks for a log by its bare name ("<segment>/rlog") with an upload URL ending in "rlog.zst".
+
+  Logs are only written compressed, so the bare name never exists. When the URL names the .zst file and that file is
+  on disk, upload it as is.
+  """
+  if os.path.exists(path) or not urlparse(url).path.endswith('/' + os.path.basename(path) + '.zst'):
+    return path
+  return path + '.zst' if os.path.exists(path + '.zst') else path
 
 
 class AbortTransferException(Exception):
@@ -671,7 +684,7 @@ def uploadFilesToUrls(files_data: list[UploadFileDict]) -> UploadFilesToUrlRespo
       failed.append(file.fn)
       continue
 
-    path = os.path.join(Paths.log_root(), file.fn)
+    path = resolve_upload_path(os.path.join(Paths.log_root(), file.fn), file.url)
     if not owns_recording(path, Paths.log_root()) or (not os.path.exists(path) and not os.path.exists(strip_zst_extension(path))):
       failed.append(file.fn)
       continue
