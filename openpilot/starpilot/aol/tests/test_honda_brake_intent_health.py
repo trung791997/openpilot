@@ -11,7 +11,7 @@ from opendbc.car.honda.values import CAR, HondaFlags
 from openpilot.cereal import log, messaging
 from openpilot.selfdrive.car.card import Car
 from openpilot.starpilot.aol.runtime import decide_axes
-from openpilot.starpilot.aol.transport_pause import TransportPauseFeedback, independent_lateral_health, _healthy_transport_native
+from openpilot.starpilot.aol.transport_pause import HONDA_BRAKE_PENDING_NS, TransportPauseFeedback, independent_lateral_health, _healthy_transport_native
 from openpilot.starpilot.aol.wire import PandaSlot, SafetyState, encode_safety
 
 NOW = 10_000_000_000
@@ -108,6 +108,10 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
     assert source == 0
   if mutation == 'no_source':
     source = 0
+  if mutation in ('no_brake', 'no_source'):
+    # The panda-vs-parser hold (test_honda_brake_pending.py) gives one withdrawal 30ms in total;
+    # with that window already spent, a missing source must still fault immediately.
+    feedback.honda_brake_pending_ns = NOW - HONDA_BRAKE_PENDING_NS - 1
   if mutation == 'stale_source':
     source = NOW - 30_000_001
   if mutation == 'future_source':

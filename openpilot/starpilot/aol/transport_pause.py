@@ -266,6 +266,15 @@ class TransportPause:
     return False, False
 
 
+# Route 000000ac--138f4b8bb4 seg 14 (replay): panda sees BRAKE_SWITCH's rising edge on CAN
+# and clears controls_allowed one ~100Hz card cycle before card.py's own BRAKE_SWITCH
+# two-sample debounce (aol_honda_brake_source) can report the withdrawal, so
+# brake_source_ns is still 0 the cycle the native already shows requestedLongitudinal
+# and not longitudinalAllowed. 30ms matches the 30ms parser bound aol_honda_brake_source
+# itself applies (card.py:~935-937), so a genuine unrelated fault still resets on schedule.
+HONDA_BRAKE_PENDING_NS = 30_000_000
+
+
 class TransportPauseFeedback:
   """Card accepts pause provenance only after a healthy same-session baseline."""
   def __init__(self, cp):
@@ -293,6 +302,7 @@ class TransportPauseFeedback:
     self.longitudinal_cancel_ns = 0
     self.last_cancel_source_ns = 0
     self.honda_brake_ns = 0
+    self.honda_brake_pending_ns = 0
     self.gm_withdrawal_ns = 0
     self.retention_qualified = False
     self.retention_pending = False
@@ -804,6 +814,48 @@ class TransportPauseFeedback:
       return None
     self.honda_brake_ns = source_ns
     return native
+
+  def _honda_brake_pending(self, sm, cp, cs, axis, now_ns, *, latched, brake_source_ns):
+    """Hold, don't reset, while a Honda panda brake withdrawal outruns card's own parser.
+
+    See the HONDA_BRAKE_PENDING_NS comment above the class for the route/debounce evidence.
+    Every guard below is the freshness subset _honda_brake_lateral_current already applies
+    to axis/session/healthy_feedback_ns/gear/seatbelt/accFaulted/onroadEvents; any failure
+    here, including a transport-native rejection (lateralAllowed, inventory, rx-invalid,
+    panda fault, CAN invalid -- all screened by independent_lateral_health), ends the hold
+    immediately and falls through to today's reset, same as if this method did not exist.
+    The stamp clears only when native shows the withdrawal ended, never on a failure.
+    """
+    from opendbc.car.honda.stock_aol import qualified
+    from opendbc.car.structs import car
+
+    if (brake_source_ns or not qualified(cp, marked_only=True) or not latched or
+        self.failed or self.paused or self.pending_event or
+        not self.session or str(axis.sessionId) != self.session or
+        not self.healthy_feedback_ns or not 0 <= now_ns - self.healthy_feedback_ns <= AXIS_MAX_AGE_NS or
+        cs.accFaulted or cs.seatbeltUnlatched or
+        cs.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
+                              car.CarState.GearShifter.low, car.CarState.GearShifter.brake) or
+        str(axis.faultReason) != 'none' or not axis.lateralActive):
+      return False
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
+        any(e.immediateDisable or e.softDisable for e in sm['onroadEvents'])):
+      return False
+    native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
+    if native is not None and (native.longitudinalAllowed or not native.requestedLongitudinal):
+      # The withdrawal is over; only now may a later withdrawal open a new hold.
+      self.honda_brake_pending_ns = 0
+    if (native is None or not native.requestedLateral or not native.lateralAllowed or
+        not native.requestedLongitudinal or native.longitudinalAllowed or
+        (native.pandaSerial, tuple(p.hardwareSerial for p in native.pandaInventory)) != self.healthy_inventory):
+      return False
+    # The stamp is sticky: a failed guard or an expired hold keeps it, so one withdrawal
+    # gets at most HONDA_BRAKE_PENDING_NS in total and can never chain fresh windows.
+    pending_ns = self.honda_brake_pending_ns or now_ns
+    self.honda_brake_pending_ns = pending_ns
+    return 0 <= now_ns - pending_ns <= HONDA_BRAKE_PENDING_NS
 
   def _longitudinal_cancel_current(self, sm, cp, cs, axis, now_ns, *, latched, cancel_source_ns, withdrawal_required=True) -> SafetyState | None:
     from opendbc.car.hyundai.canfd_stock_aol import qualified_long as qualified
@@ -1525,6 +1577,12 @@ class TransportPauseFeedback:
       if brake_native is not None:
         self.healthy_feedback_ns = stamp
         self.healthy_native_ns = int(brake_native.observedMonoTime)
+        self.honda_brake_pending_ns = 0
+        self.sequence, self.signature = int(axis.sequence), signature
+        return False
+      if current and continuity and self._honda_brake_pending(sm, cp, cs, axis, now_ns,
+          latched=latched, brake_source_ns=brake_source_ns):
+        # Hold only: do not refresh healthy_feedback_ns -- this is not a renewal.
         self.sequence, self.signature = int(axis.sequence), signature
         return False
       if current and continuity and (gm_withdrawal_source_ns or self.gm_withdrawal_ns):
@@ -1663,6 +1721,7 @@ class TransportPauseFeedback:
           self.gm_withdrawal_ns = 0
         if native is not None and not native.requestedLongitudinal:
           self.honda_brake_ns = 0
+          self.honda_brake_pending_ns = 0
         if (not latched or native is not None and not native.requestedLongitudinal or
             self.longitudinal_cancel_ns and now_ns - self.longitudinal_cancel_ns > SAFETY_MAX_AGE_NS):
           self.longitudinal_cancel_ns = 0
