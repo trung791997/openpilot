@@ -76,9 +76,9 @@ final class MapView extends View {
   // decks over the car, kept from the last frame that had one while the outline fades out; deckClip their outline on
   // screen. The tick runs every GLOW_TICK_MS while under a deck on the GPU path, as the deck slides by the car.
   private static final int OUTLINE_C = 0xfff4f4f4, OUTLINE_FILL = 0x30ffffff, OUTLINE_ALPHA = 170;
-  // Off (Peter 2026-11-08): the under-deck check was hit or miss, at times outlining the car while it drove on the
-  // bridge itself. The car now always draws whole, on top of any deck.
-  private static final boolean UNDER_OUTLINE = false;
+  // Back on (Peter 2026-11-08, after turning it off the same day): he wants the outline under overpasses. The
+  // under-deck check could outline the car while it drove on the bridge itself; that is part of the deck audit.
+  private static final boolean UNDER_OUTLINE = true;
   private static Bitmap outline;
   private final Under.Fade under = new Under.Fade();
   private final int[] cover = new int[48], tickCover = new int[1];
