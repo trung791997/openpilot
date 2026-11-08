@@ -359,3 +359,9 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 - Built the cluster map: the turn/trip/music cards in the style of Peter's mockup, the Spotify card with progress and scrolling names, and street labels without a route.
 - Roads moved to the GPU (`283bb4e47`), with one camera shared by both drawing paths and a car that glides between GPS fixes (`3bc4f6ce7`).
 - The full list is in `git log -- tools/head_unit`.
+
+## Car outline under overpasses removed (Peter 2026-11-08)
+Peter: the outline of the car under a highway was hit or miss, and sometimes showed while he drove on the bridge
+itself; he is fine with it gone. `MapView.UNDER_OUTLINE = false`: `underDeck` returns 0 and `underWanted` false, so
+the car always draws whole on top of any deck and the slow layer no longer redraws for it. Raised decks themselves are
+unchanged. Built as /tmp/hu/aaroad-nooutline.apk (static only: build passes; not yet installed).

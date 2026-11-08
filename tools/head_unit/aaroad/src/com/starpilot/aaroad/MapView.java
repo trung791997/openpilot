@@ -76,6 +76,9 @@ final class MapView extends View {
   // decks over the car, kept from the last frame that had one while the outline fades out; deckClip their outline on
   // screen. The tick runs every GLOW_TICK_MS while under a deck on the GPU path, as the deck slides by the car.
   private static final int OUTLINE_C = 0xfff4f4f4, OUTLINE_FILL = 0x30ffffff, OUTLINE_ALPHA = 170;
+  // Off (Peter 2026-11-08): the under-deck check was hit or miss, at times outlining the car while it drove on the
+  // bridge itself. The car now always draws whole, on top of any deck.
+  private static final boolean UNDER_OUTLINE = false;
   private static Bitmap outline;
   private final Under.Fade under = new Under.Fade();
   private final int[] cover = new int[48], tickCover = new int[1];
@@ -1882,6 +1885,10 @@ final class MapView extends View {
   // deck over the car, not only the close-up), with deckClip the decks over it on screen. 0 with no frame or no
   // deck over the car.
   private float underDeck(Frame f, long now) {
+    if (!UNDER_OUTLINE) {
+      drawnUnder = 0;
+      return 0;
+    }
     CloseUp.Detail d = f == null || f.s == null ? null : f.s.close;
     // the close-up gate, passed to Under.covering as hs: in the close-up the clip follows the lifted decks as drawn
     // there; at 0 (cruising) it follows the flat decks cruising draws instead (Under.covering handles hs 0).
@@ -1974,6 +1981,7 @@ final class MapView extends View {
 
   // Whether frame f puts the car under a deck (the slow layer's check between its draws), at every zoom.
   private boolean underWanted(Frame f) {
+    if (!UNDER_OUTLINE) return false;
     float gr = CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
     return Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
                           dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover) > 0;
