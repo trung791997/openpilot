@@ -45,6 +45,24 @@ Do not add 7.0 work to them. Add new entries here, at the top of **Log**, newest
 
 ## Log
 
+### 21 — 2026-11-08 — Two log tools: raw-CAN trace of the radar parser, and an AEB/FCW scan
+
+Tools only; no car code changed.
+
+`openpilot/tools/replay/bosch_a_can_trace.py` feeds a route's logged CAN through this tree's Bosch-A parser and writes
+one JSON line per sweep: what the radar sent for each track, what the parser published, and the track's hold state.
+Each track is labelled RADAR_SENT, DROPPED (sent but not published), PARSER_MADE (published from a coast or hold) or
+NO_CAN. A slot counts only when all its frames arrived that sweep. Evidence word: replay of the parser on logged CAN.
+
+`openpilot/tools/replay/aeb_scan.py` scans the rlogs for the events aeb, stockAeb, fcw and stockFcw, for
+longitudinalPlan.fcw and modelV2 hardBrakePredicted, and for hard decelerations, each labelled PEDAL, COMMANDED or
+UNCOMMANDED. On this car (Bosch with openpilot longitudinal), carState.stockAeb is forced False and stockFcw is never
+decoded. A stock AEB brake can only show up as an UNCOMMANDED decel.
+
+Drive ac, segments 0-37 (logged): no AEB or FCW from any source, and no decel at -3.0 m/s^2 or harder. At -2.0 for
+0.2 s or longer there are 5 decels: 4 PEDAL and 1 COMMANDED (seg 23, a_min -2.56 against a commanded -2.2), none
+UNCOMMANDED.
+
 ### 20 — 2026-11-07 — No hard brake when the radar suddenly reports the car ahead slowing impossibly fast while the camera sees it holding speed; on longradar and V-ASM, default ON
 
 **Problem.** On the a2 seg 50 bookmark, right after a lane change, the radar's speed for the car 18 m ahead fell from
