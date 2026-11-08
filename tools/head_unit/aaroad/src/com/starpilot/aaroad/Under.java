@@ -96,9 +96,20 @@ final class Under {
     return hc;
   }
 
+  // a raised segment running within this of the route's way is never a deck "over" the route: it is the route's own
+  // deck (or one alongside it), not one it passes beneath
+  static final float ALONG_DEG = 45;
+  private static final float COS_ALONG = (float) Math.cos(Math.toRadians(ALONG_DEG));
+
   // One point (pe, pn), heading (ch, sh) along a route segment: true if it sits under a deck higher than the
   // road it is itself on by more than OVER_M (own height rh from carHeight, which already keeps only the segment's
   // own way). Split out of underCuts below so a long route edge can be sampled at more than its one midpoint.
+  //
+  // A raised segment running along the route (within ALONG_DEG) is never over it (Peter 2026-11-08, split
+  // harness: on the I-10/I-35 and McDermott connectors the route's own curving deck missed carHeight's ON_DECK_DEG
+  // match, its height fell back to the ground, and the deck it rides then hid it). A hidden route line is worse
+  // than one drawn over a parallel viaduct. No road found at all still reads as the ground: a minor street the
+  // close-up detail leaves out must still go under the highway crossing it.
   private static boolean underPoint(CloseUp.Detail d, float pe, float pn, float ch, float sh) {
     float rh = carHeight(d, pe, pn, ch, sh, CloseUp.ROAD_W);
     float[] v = d.seg;
@@ -114,6 +125,7 @@ final class Under {
           if (pn < Math.min(v[o + 1], v[o + 3]) - reach || pn > Math.max(v[o + 1], v[o + 3]) + reach) continue;
           float sx = v[o + 2] - v[o], sy = v[o + 3] - v[o + 1], len2 = sx * sx + sy * sy;
           if (len2 <= 0) continue;
+          if (Math.abs(sx * sh + sy * ch) >= COS_ALONG * (float) Math.sqrt(len2)) continue;  // along the route
           float t = Math.max(0, Math.min(1, ((pe - v[o]) * sx + (pn - v[o + 1]) * sy) / len2));
           float ex = v[o] + t * sx - pe, ey = v[o + 1] + t * sy - pn;
           if (ex * ex + ey * ey <= reach * reach) return true;

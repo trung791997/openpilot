@@ -109,6 +109,24 @@ public class UnderTest {
       check(out > 105 && out < 145, "and just after it: n " + out);
     }
 
+    // Split-harness fix (2026-11-08): a route edge drawn as a straight chord across its own curving connector deck
+    // (the deck's segments 35-60 deg off the chord, past carHeight's ON_DECK_DEG) used to fall back to ground height,
+    // so the deck it rides read as a higher deck over it and hid the route. A raised segment along the route
+    // (within ALONG_DEG) never covers it.
+    in = new CloseUp.Lines();
+    in.road(line(0, 0, 60, 40, 140, 60), 3, true, 2, 0, false);  // the connector deck, layer 2, curving
+    in.road(line(-50, 20, 200, 20), 0, false, 0, 0, false);              // ground road under it: makes it raised
+    CloseUp.Detail dc = CloseUp.build(in);
+    Under.Cuts own = Under.underCuts(dc, 0, 0, 140, 60);
+    check(!own.first && own.at.length == 0, "a chord across its own curving deck is never under it, cuts " + own.at.length);
+    // and a real flyover still hides a ground route crossing beneath it
+    in = new CloseUp.Lines();
+    in.road(line(-50, 0, 50, 0), 0, true, 1, 0, false);   // the flyover, east-west
+    in.road(line(0, -300, 0, 300), 0, false, 0, 0, false);  // the route's ground road, north-south
+    CloseUp.Detail df = CloseUp.build(in);
+    Under.Cuts gr = Under.underCuts(df, 0, -200, 0, 200);
+    check(!gr.first && gr.at.length == 2, "a ground route still goes under a crossing flyover, cuts " + gr.at.length);
+
     // the ease: 150 ms each way, turning back from part way
     Under.Fade f = new Under.Fade();
     check(f.level(0) == 0 && !f.moving(0), "starts off");
