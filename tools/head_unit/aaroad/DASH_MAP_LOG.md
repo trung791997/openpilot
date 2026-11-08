@@ -365,3 +365,15 @@ Peter: the outline of the car under a highway was hit or miss, and sometimes sho
 itself; he is fine with it gone. `MapView.UNDER_OUTLINE = false`: `underDeck` returns 0 and `underWanted` false, so
 the car always draws whole on top of any deck and the slow layer no longer redraws for it. Raised decks themselves are
 unchanged. Built as /tmp/hu/aaroad-nooutline.apk (static only: build passes; not yet installed).
+
+## Bridge seams at ramp/flyover joints (Peter 2026-11-08)
+
+Reproduced offline on Peter's drives a6, a9 and aa (San Antonio interchanges, Konik GPS + real Mapbox tiles,
+harness /tmp/hu/jvmtest/hbridgeR). Two causes, both where bridge ways with different OSM `layer` tags meet end to end:
+- Cruising view: CloseUp.overpasses joined bridges into one raised-or-flat group only on the same layer, so one piece
+  of a deck could be drawn raised (cased) and the next flat. Now a chain joined at any layer is raised as a whole;
+  the road being driven still stays down per same-layer group. Renders: the motorway deck at aa_06 / under_aa_02 reads
+  as one piece instead of capsules with rounded ends.
+- Close-up: a bridge end meeting a bridge at another layer counted as a free end, so both decks ramped toward the
+  ground at the joint. Now the lower deck rises to the higher one there and draws in its group.
+Static evidence only (desktop renders); not yet seen on the car.

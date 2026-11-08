@@ -244,14 +244,17 @@ final class CloseUp {
     if (nb == 0) return out;
     float[][] box = new float[n][];
     for (int i = 0; i < n; i++) box[i] = bounds(in.pts.get(i));
-    // bridges joined end to end on one layer: one group
-    int[] parent = new int[nb];
-    for (int k = 0; k < nb; k++) parent[k] = k;
+    // bridges joined end to end on one layer: one group; at any layer: one chain, raised or flat as a whole (Peter
+    // 2026-11-08: a ramp deck at one layer joining a flyover at another was raised while the flyover was drawn flat,
+    // so the bridge read as pieces laid on top of each other). Only the road being driven, a group, stays down.
+    int[] parent = new int[nb], chain = new int[nb];
+    for (int k = 0; k < nb; k++) parent[k] = chain[k] = k;
     for (int a = 0; a < nb; a++) {
       for (int b = a + 1; b < nb; b++) {
         int ia = br.get(a), ib = br.get(b);
-        if (deckLayer(in.attr.get(ia)) != deckLayer(in.attr.get(ib)) || !overlap(box[ia], box[ib], JOIN_M)) continue;
-        if (endsMeet(in.pts.get(ia), in.pts.get(ib))) parent[find(parent, a)] = find(parent, b);
+        if (!overlap(box[ia], box[ib], JOIN_M) || !endsMeet(in.pts.get(ia), in.pts.get(ib))) continue;
+        chain[find(chain, a)] = find(chain, b);
+        if (deckLayer(in.attr.get(ia)) == deckLayer(in.attr.get(ib))) parent[find(parent, a)] = find(parent, b);
       }
     }
     boolean[] crossed = new boolean[nb];
@@ -283,7 +286,9 @@ final class CloseUp {
       }
     }
     boolean[] group = new boolean[nb];
-    for (int k = 0; k < nb; k++) if (crossed[k]) group[find(parent, k)] = true;
+    boolean[] raised = new boolean[nb];
+    for (int k = 0; k < nb; k++) if (crossed[k]) raised[find(chain, k)] = true;
+    for (int k = 0; k < nb; k++) if (raised[find(chain, k)]) group[find(parent, k)] = true;
     // the road being driven: a group mostly along the path stays down
     if (path != null && path.length > 0) {
       float[] len = new float[nb], on = new float[nb];
@@ -555,6 +560,10 @@ final class CloseUp {
     float[][] endH = new float[n][2];
     boolean[][] self = new boolean[n][2];
     int[] group = new int[n];
+    // a bridge end meeting a higher bridge's end (a ramp deck joining a flyover at another layer): the height it
+    // rises to there (0: none), and that layer's group, which its stretch above its own layer draws in
+    float[][] upH = new float[n][2];
+    int[] upG = new int[n];
     for (int i = 0; i < n; i++) {
       int[] a = attr.get(i);
       if (a[1] == 0) continue;
@@ -569,7 +578,14 @@ final class CloseUp {
         for (int[] o : meeting(ends, p[j], p[j + 1], pts, i)) {
           int[] oa = attr.get(o[0]);
           if (oa[1] != 0) {
-            if (Math.max(1, oa[2]) == layer) cont = true;
+            // another deck carries on from here, at any layer: not an end that ramps to the ground (Peter 2026-11-08:
+            // two decks at different layers each dived to the ground at their joint, one drawn on top of the other)
+            cont = true;
+            int ol = Math.max(1, oa[2]);
+            if (ol > layer && ol * LAYER_M > upH[i][e]) {
+              upH[i][e] = ol * LAYER_M;
+              upG[i] = Math.max(upG[i], Math.min(LAYERS - 1, ol));
+            }
             continue;
           }
           met = true;
@@ -595,8 +611,8 @@ final class CloseUp {
       float[] h;
       if (bridge) {
         float len = length(p), rl = Math.min(RAMP_M, len / 3);
-        p = cut(p, self[i][0] ? rl : -1, self[i][1] ? len - rl : -1);
-        h = bridgeHeights(p, endH[i][0], self[i][0], rl, self[i][1]);
+        p = cut(p, self[i][0] || upH[i][0] > 0 ? rl : -1, self[i][1] || upH[i][1] > 0 ? len - rl : -1);
+        h = bridgeHeights(p, endH[i][0], self[i][0], rl, self[i][1], upH[i][0], upH[i][1]);
       } else if (ramp) {
         float len = length(p);
         p = cut(p, endH[i][0] > 0 ? Math.min(RAMP_M, len) : -1, endH[i][1] > 0 ? Math.max(0, len - RAMP_M) : -1);
@@ -616,7 +632,9 @@ final class CloseUp {
         // an overpass's full-height stretch is its deck (drawn open under it), the ramped rest a fill to the ground
         float full = Math.max(1, a[2]) * LAYER_M - 1e-3f;
         if (up) for (int j = 0; j + 1 < rh.length; j++) {
-          int r = bridge && rh[j] >= full && rh[j + 1] >= full ? deck(g, a[0]) : range(g, a[0]);
+          // its rise to a higher deck draws in that deck's group, so the joint is cased and surfaced as one road
+          int gj = bridge && upG[i] > g && Math.max(rh[j], rh[j + 1]) > full + 1e-2f ? upG[i] : g;
+          int r = bridge && rh[j] >= full && rh[j + 1] >= full ? deck(gj, a[0]) : range(gj, a[0]);
           roads.add(new Seg(rp[2 * j], rp[2 * j + 1], rp[2 * j + 2], rp[2 * j + 3], rh[j], rh[j + 1], 0, r));
         }
         if (up && bridge) piers(rp, rh, full, a[0], g, unders.get(i), roads);
@@ -816,8 +834,9 @@ final class CloseUp {
     return q;
   }
 
-  // Heights of a bridge's points: h, falling to 0 over rl at an end that ramps inside it (self).
-  static float[] bridgeHeights(float[] p, float h, boolean self0, float rl, boolean self1) {
+  // Heights of a bridge's points: h, falling to 0 over rl at an end that ramps inside it (self), or rising over rl to
+  // up0 (up1) at an end that meets a higher deck (0: none).
+  static float[] bridgeHeights(float[] p, float h, boolean self0, float rl, boolean self1, float up0, float up1) {
     float len = length(p);
     float[] out = new float[p.length / 2];
     float s = 0;
@@ -826,7 +845,10 @@ final class CloseUp {
       float f = 1;
       if (self0) f = Math.min(f, ease(s / rl));
       if (self1) f = Math.min(f, ease((len - s) / rl));
-      out[i] = h * f;
+      float v = h * f;
+      if (up0 > h) v = Math.max(v, h + (up0 - h) * ease(1 - s / rl));
+      if (up1 > h) v = Math.max(v, h + (up1 - h) * ease(1 - (len - s) / rl));
+      out[i] = v;
     }
     return out;
   }
