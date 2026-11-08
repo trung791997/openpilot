@@ -68,12 +68,40 @@ class ManagerProcess(ABC):
   name = ""
   shutting_down = False
   stop_requested_at: float | None = None
+  restart_on_exit = False
+  restart_failures = 0
+  restart_at = 0.0
+  started_at = 0.0
+  # Names of processes this one must not start alongside while they are still shutting down. A new encoderd
+  # opening the video encoder while another closes can find it in SYS_ERROR and abort (2026-11-07 drive start).
+  wait_for: tuple[str, ...] = ()
+
+  def recover(self) -> bool:
+    if not self.restart_on_exit or self.proc is None or self.shutting_down:
+      return True
+    now = time.monotonic()
+    if self.proc.exitcode is None:
+      if now - self.started_at >= 60.0:
+        self.restart_failures = 0
+      return True
+    if self.restart_at == 0.0:
+      self.restart_failures = min(self.restart_failures + 1, 6)
+      self.restart_at = now + min(2 ** (self.restart_failures - 1), 30)
+      cloudlog.warning(f"{self.name} exited with {self.proc.exitcode}; restarting in {self.restart_at - now:.0f}s")
+    if now < self.restart_at:
+      return False
+    self.proc.join()
+    self.proc = None
+    self.restart_at = 0.0
+    return True
 
   @abstractmethod
   def start(self) -> None:
     pass
 
   def stop(self, retry: bool = True, block: bool = True, sig: signal.Signals | None = None) -> int | None:
+    self.restart_failures = 0
+    self.restart_at = 0.0
     if self.proc is None:
       return None
 
@@ -136,7 +164,9 @@ class ManagerProcess(ABC):
 
 
 class NativeProcess(ManagerProcess):
-  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False):
+  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False, restart_on_exit=False, wait_for=()):
+    self.restart_on_exit = restart_on_exit
+    self.wait_for = tuple(wait_for)
     self.name = name
     self.cwd = cwd
     self.cmdline = cmdline
@@ -157,6 +187,7 @@ class NativeProcess(ManagerProcess):
     cloudlog.info(f"starting process {self.name}")
     self.proc = Process(name=self.name, target=self.launcher, args=(self.cmdline, cwd, self.name))
     self.proc.start()
+    self.started_at = time.monotonic()
     self.shutting_down = False
 
 
@@ -172,30 +203,6 @@ class PythonProcess(ManagerProcess):
     self.restart_failures = 0
     self.restart_at = 0.0
     self.started_at = 0.0
-
-  def recover(self) -> bool:
-    if not self.restart_on_exit or self.proc is None or self.shutting_down:
-      return True
-    now = time.monotonic()
-    if self.proc.exitcode is None:
-      if now - self.started_at >= 60.0:
-        self.restart_failures = 0
-      return True
-    if self.restart_at == 0.0:
-      self.restart_failures = min(self.restart_failures + 1, 6)
-      self.restart_at = now + min(2 ** (self.restart_failures - 1), 30)
-      cloudlog.warning(f"{self.name} exited with {self.proc.exitcode}; restarting in {self.restart_at - now:.0f}s")
-    if now < self.restart_at:
-      return False
-    self.proc.join()
-    self.proc = None
-    self.restart_at = 0.0
-    return True
-
-  def stop(self, retry=True, block=True, sig=None):
-    self.restart_failures = 0
-    self.restart_at = 0.0
-    return super().stop(retry=retry, block=block, sig=sig)
 
   def start(self) -> None:
     # In case we only tried a non blocking stop we need to stop it before restarting
@@ -267,8 +274,14 @@ def ensure_running(procs: ValuesView[ManagerProcess], started: bool, params: Par
     else:
       p.stop(block=False)
 
+  by_name = {p.name: p for p in procs}
   for p in running:
-    if isinstance(p, PythonProcess) and not p.recover():
+    if not p.recover():
+      continue
+    busy = [n for n in p.wait_for if n in by_name and by_name[n].shutting_down and
+            by_name[n].proc is not None and by_name[n].proc.exitcode is None]
+    if busy and p.proc is None:
+      cloudlog.info(f"{p.name} waits for {', '.join(busy)} to exit")
       continue
     p.start()
 

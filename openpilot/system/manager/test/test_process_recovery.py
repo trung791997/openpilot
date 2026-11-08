@@ -192,3 +192,61 @@ class TestProcessRecovery(unittest.TestCase):
       p.enabled = False
       self.step(p, started=True)
       self.assertIsNone(p.proc)
+
+
+class TestEncoderHandoff(unittest.TestCase):
+  """2026-11-07: stream_encoderd was still closing when encoderd started at ignition; encoderd aborted for the drive."""
+  setUp = TestProcessRecovery.setUp
+  step = TestProcessRecovery.step
+
+  def make_pair(self):
+    enc = process.NativeProcess("encoderd", ".", ["unused"], lambda started, params, cp: started,
+                                restart_on_exit=True, wait_for=("stream_encoderd",))
+    self.clip = True
+    stream = process.NativeProcess("stream_encoderd", ".", ["unused"], lambda started, params, cp: self.clip and not started,
+                                   wait_for=("encoderd",))
+    return enc, stream
+
+  def step_all(self, ps, started):
+    process.ensure_running({p.name: p for p in ps}.values(), started, self.params, self.cp)
+
+  def test_encoderd_waits_for_closing_stream_encoder(self):
+    enc, stream = self.make_pair()
+    self.enterContext(patch.object(process, "join_process", lambda p, timeout: None))
+    self.step_all([enc, stream], False)
+    self.assertIsNotNone(stream.proc)
+    self.step_all([enc, stream], True)
+    self.assertTrue(stream.shutting_down)
+    self.assertIsNone(enc.proc)
+    stream.proc.exitcode = -2
+    self.step_all([enc, stream], True)
+    self.assertIsNone(stream.proc)
+    self.assertIsNotNone(enc.proc)
+
+  def test_live_stream_encoder_does_not_block(self):
+    enc, stream = self.make_pair()
+    stream.should_run = lambda *_: True
+    self.step_all([enc, stream], True)
+    self.assertIsNotNone(enc.proc)
+    self.assertIsNotNone(stream.proc)
+
+  def test_native_encoderd_restarts_after_crash(self):
+    enc, _ = self.make_pair()
+    self.step(enc)
+    old = enc.proc
+    old.exitcode = -6
+    self.step(enc)
+    self.assertIs(enc.proc, old)
+    self.now += 1.01
+    self.step(enc)
+    self.assertIsNot(enc.proc, old)
+    self.assertTrue(old.joined)
+
+  def test_native_without_restart_stays_down(self):
+    _, stream = self.make_pair()
+    self.step(stream, started=False)
+    old = stream.proc
+    old.exitcode = -6
+    self.now += 60
+    self.step(stream, started=False)
+    self.assertIs(stream.proc, old)
