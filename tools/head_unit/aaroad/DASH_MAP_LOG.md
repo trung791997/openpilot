@@ -377,3 +377,19 @@ harness /tmp/hu/jvmtest/hbridgeR). Two causes, both where bridge ways with diffe
 - Close-up: a bridge end meeting a bridge at another layer counted as a free end, so both decks ramped toward the
   ground at the joint. Now the lower deck rises to the higher one there and draws in its group.
 Static evidence only (desktop renders); not yet seen on the car.
+
+## Dash map lag: needless redraws (Peter 2026-11-08)
+Peter: the dash map felt laggy. Drive 01:43-02:08: the GPU map ran 14-18 fps (21-29 the night before), its pure-math
+camera step stalled 300-860 ms in every 10 s window, and the map tick went quiet for up to 142 s. A stack dump showed
+no deadlock: the map process's main thread was busy drawing the window in software and the GPU thread waited for CPU
+longer than it ran. Parked with the car on, the main thread still used ~28% of a core: the slow layer redrew the whole
+view 4-6 times a second at 31-37 ms each with nothing moving. Two causes in the code:
+- A long song title scrolls at 25 px/s, and each scroll step re-rendered the cards' bitmap and the whole view, up to
+  10 times a second. Now the scrolling lines are drawn live over the cached cards, and a scroll step redraws only
+  their strip (`invalidate(rollBox)`). The progress ring re-keys the cards every 3 degrees instead of every degree.
+- The comma's state message (1 a second) forced a redraw by its arrival time even when nothing in it changed. `stamp()`
+  now hashes only what is drawn (metric added, since the sign uses it).
+Also the "cluster guide reply" log line (14,637 in one drive, the reply flips between a few values about 4 a second)
+is now written once per distinct reply. The map draw log line adds "N song strips".
+Static only: build passes, harness renders identical to before except the ETA wall-clock minute, also with a long
+scrolling title. Next drive: check "view N redraws/s" (expect ~1 or less without a scrolling title), fps and tick age.

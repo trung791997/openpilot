@@ -10,6 +10,7 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Region;
 import android.graphics.Shader;
@@ -236,7 +237,10 @@ final class MapView extends View {
   private double drawnH, drawnK, drawnBase;
   private boolean drawnMoving, zoomSettled, logDue, loggedCanvas;
   private long drawnAt, drawnStamp;
+  private int drawnRoll;
+  private final Rect rollBox = new Rect();
   private int checks, skipped, drawsAtLog;
+  private long rollsAtLog;
   private long logFrom;
   private String drawnRoad;
   private Feed.Pose pokedPose;
@@ -679,10 +683,19 @@ final class MapView extends View {
         || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || Math.abs(lift - drawnLift) > 0.5f
         || (f != null && f.s == s && underWanted(f) != under.on()) || underMoving(now)) {
       invalidate();
+    } else if (rolled(now) != drawnRoll) {
+      titleRoll.box(rollBox);
+      artistRoll.box(rollBox);
+      if (rollBox.isEmpty()) invalidate();
+      else invalidate(rollBox);
+      rollBox.setEmpty();
+      rollDraws++;
     } else {
       skipped++;
     }
   }
+
+  private long rollDraws;
 
   @Override
   protected void onAttachedToWindow() {
@@ -806,6 +819,7 @@ final class MapView extends View {
     Scene s = scene;
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
+    if (rolled(now) != drawnRoll) return true;
     if (glow(now) != drawnGlow || under.moving(now)) return true;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
@@ -822,8 +836,11 @@ final class MapView extends View {
 
   // Everything drawn besides the car's place and the zoom, folded into one number: the feed's state (mode, limit,
   // trip, street, song), the cover, Honda Hack's distance, next street and arrow, the lane bar, a song line's scroll.
+  // Not the state's arrival time: the comma sends it once a second even when nothing in it changed, and each one
+  // redrew the whole view for nothing (Peter 2026-11-08, parked: 4-6 redraws a second at 31-37 ms each). Not the
+  // song lines' scroll either: that is rolled(), redrawn on its own small strip.
   private long stamp(long now) {
-    long h = Feed.stateAt;
+    long h = Feed.metric ? 1 : 2;
     h = h * 31 + Double.doubleToLongBits(Feed.limitMs);
     h = h * 31 + hash(Feed.mode);
     h = h * 31 + hash(Feed.road);
@@ -849,7 +866,14 @@ final class MapView extends View {
     }
     View v = find("drive_way_layout");
     if (v != null) h = h * 31 + (v.isShown() ? 1 : 2);
-    return (h * 31 + titleRoll.shift(now)) * 31 + artistRoll.shift(now);
+    return h;
+  }
+
+  // How far the song lines are scrolled. A change redraws only their strip (rollBox): the lines are drawn live over
+  // the cards' bitmap, not into it, so a scroll step no longer redraws the cards and the whole view (Peter 2026-11-08:
+  // a long title sliding at 25 px a second redrew everything up to 10 times a second, ~35 ms each on the Tegra).
+  private int rolled(long now) {
+    return titleRoll.shift(now) * 31 + artistRoll.shift(now);
   }
 
   private static int hash(CharSequence c) {
@@ -2312,11 +2336,12 @@ final class MapView extends View {
       String redraws = logFrom > 0 && now > logFrom
           ? String.format(Locale.US, ", view %.1f redraws/s", (drawCount - drawsAtLog) * 1000.0 / (now - logFrom)) : "";
       drawsAtLog = drawCount;
+      rollsAtLog = rollDraws;
       logFrom = now;
       say("aaroad: map draw " + drawSum / drawCount + " ms average over " + drawCount + " frames ("
           + setupSum / drawCount + " setup, " + pathSum / drawCount + " shapes, " + strokeSum / drawCount + " roads, "
           + cardSum / drawCount + " cards), " + (checks > 0 ? 100L * skipped / checks : 0) + "% frames skipped"
-          + redraws + (gpu != null ? ", " + gpu.takeStats() : "")
+          + redraws + String.format(Locale.US, ", %d song strips", rollDraws - rollsAtLog) + (gpu != null ? ", " + gpu.takeStats() : "")
           + (loggedCanvas ? "" : ", canvas " + (canvas.isHardwareAccelerated() ? "GPU" : "software") + ", view "
              + (isHardwareAccelerated() ? "GPU" : "software")));
       loggedCanvas = true;
@@ -2653,6 +2678,9 @@ final class MapView extends View {
       cardsKey = key;
     }
     canvas.drawBitmap(cardBmp, 0, 0, null);
+    titleRoll.live(canvas, now);
+    artistRoll.live(canvas, now);
+    drawnRoll = rolled(now);
 
     // the lane row under the car (Lanes.AT_CAR), in the room the lifted map leaves; drawn once the lift is most of
     // the way, so it never sits over the car
@@ -2696,9 +2724,8 @@ final class MapView extends View {
       long dur = Feed.mediaDur, pos = Feed.mediaPos;
       if (dur > 0 && pos >= 0) {
         if ("playing".equals(status)) pos += SystemClock.uptimeMillis() - Feed.mediaAt;
-        k.append('|').append(Math.round(360 * Math.min(1f, pos / (float) dur)));  // the ring, to the degree
+        k.append('|').append(Math.round(120 * Math.min(1f, pos / (float) dur)));  // the ring, to 3 degrees
       }
-      k.append('|').append(titleRoll.shift(now)).append('|').append(artistRoll.shift(now));
     }
     return k.toString();
   }
@@ -3109,16 +3136,31 @@ final class MapView extends View {
     private long since;
     float over;  // px the line is longer than its room as last drawn; 0 when it fits or is not shown
 
+    private TextPaint paint;
+    private float x, y, w, top, bottom;
+
+    // Into the cards' bitmap: a line that fits is drawn there; one that scrolls is only measured and placed, and
+    // live() draws it over the bitmap each frame.
     void draw(Canvas canvas, String s, TextPaint p, float x, float y, float w, float top, float bottom) {
       long now = SystemClock.uptimeMillis();
       if (!s.equals(text)) { text = s; since = now; }
       over = p.measureText(s) - w;
-      if (over <= 0) { canvas.drawText(s, x, y, p); return; }
-      float dx = dx(now);
+      paint = p;
+      this.x = x; this.y = y; this.w = w; this.top = top; this.bottom = bottom;
+      if (over <= 0) canvas.drawText(s, x, y, p);
+    }
+
+    void live(Canvas canvas, long now) {
+      if (over <= 0 || text == null || paint == null) return;
       canvas.save();
       canvas.clipRect(x, top, x + w, bottom);  // sideways only: capital accents reach up past the line
-      canvas.drawText(s, x - dx, y, p);
+      canvas.drawText(text, x - dx(now), y, paint);
       canvas.restore();
+    }
+
+    // the strip a scroll step redraws, added to r
+    void box(Rect r) {
+      if (over > 0) r.union((int) Math.floor(x) - 1, (int) Math.floor(top), (int) Math.ceil(x + w) + 1, (int) Math.ceil(bottom));
     }
 
     private float dx(long now) {

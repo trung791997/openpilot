@@ -24,7 +24,17 @@ final class NavFake {
 
   private static boolean builtin = true;
   private static long checkedAt, configTime = -1;
-  private static byte[] lastReply;
+  // The replies seen, so each is logged once: the cluster answers about 4 a second, flipping between a few values,
+  // and logging every flip wrote ~14,600 lines in one drive (Peter 2026-11-08). Forgotten after REPLY_KEEP of them.
+  private static final java.util.ArrayList<byte[]> replies = new java.util.ArrayList<>();
+  private static final int REPLY_KEEP = 16;
+
+  private static synchronized boolean seen(byte[] data) {
+    for (byte[] r : replies) if (Arrays.equals(r, data)) return true;
+    if (replies.size() >= REPLY_KEEP) replies.remove(0);
+    replies.add(data.clone());
+    return false;
+  }
 
   static void install(ClassLoader loader) {
     Class<?> tbt = XposedHelpers.findClass(TBT, loader);
@@ -41,8 +51,7 @@ final class NavFake {
       protected void beforeHookedMethod(MethodHookParam param) {
         try {
           byte[] data = (byte[]) XposedHelpers.callMethod(param.args[0], "getBcanData");
-          if (data == null || Arrays.equals(data, lastReply)) return;
-          lastReply = data.clone();
+          if (data == null || seen(data)) return;
           Xlog.log("aaroad: cluster guide reply " + hex(data) + (builtin ? " (sent as built-in)" : " (sent as phone)"));
         } catch (Throwable t) {
           Xlog.log("aaroad: reply log failed: " + t);
