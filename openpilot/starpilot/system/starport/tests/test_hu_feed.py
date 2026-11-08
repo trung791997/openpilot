@@ -150,6 +150,49 @@ def test_pose_carries_a_brake_flag_only_while_braking():
   assert 'b' not in [m for m, a in sock.sent if m['t'] == 'p'][-1]
 
 
+def test_blind_of_is_car_or_vasm_per_side():
+  from types import SimpleNamespace as NS
+  def cs(l, r): return NS(leftBlindspot=l, rightBlindspot=r)
+  for car_l in (False, True):
+    for car_r in (False, True):
+      for vl in (False, True):
+        for vr in (False, True):
+          assert hf.blind_of(cs(car_l, car_r), (vl, vr)) == (car_l or vl, car_r or vr)
+  assert hf.blind_of(None, (True, False)) == (True, False)       # no carState yet: V-ASM alone
+  assert hf.blind_of(cs(False, True), None) == (False, True)     # no V-ASM: the car alone
+  assert hf.blind_of(None, None) == (False, False)
+
+
+def test_pose_carries_blind_flags_only_for_the_warning_side():
+  def pose(**kw):
+    feed, sock, now, _ = make(snapshot(**kw))
+    sock.hello()
+    feed.tick()
+    return [m for m, a in sock.sent if m['t'] == 'p'][-1]
+  both = pose(blind=(True, True))
+  assert both['bl'] == 1 and both['br'] == 1
+  left = pose(blind=(True, False))
+  assert left['bl'] == 1 and 'br' not in left
+  right = pose(blind=(False, True))
+  assert right['br'] == 1 and 'bl' not in right
+  quiet = pose(blind=(False, False))
+  assert 'bl' not in quiet and 'br' not in quiet
+  assert 'bl' not in pose() and 'br' not in pose()               # a reader without the key
+
+
+def test_vasm_failure_is_quiet_not_fatal():
+  from types import SimpleNamespace as NS
+  reader = object.__new__(hf.CerealReader)
+  reader._vasm_source, reader._vasm_saved, reader._vasm_read, reader.params = None, None, -math.inf, None
+  class Broken:
+    @property
+    def canValid(self): raise RuntimeError('boom')
+  assert reader.vasm(True, Broken(), 100.) == (False, False)      # exception path
+  assert reader.vasm(False, NS(canValid=True), 100.) == (False, False)   # stale carState
+  assert reader.vasm(True, NS(canValid=False), 100.) == (False, False)   # CAN not valid
+  reader.close()
+
+
 def test_road_tiles_go_only_to_head_units_that_take_them_and_lack_them():
   raw = bytes(range(256)) * 9   # 2304 bytes: three datagrams
   feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/2' else None)

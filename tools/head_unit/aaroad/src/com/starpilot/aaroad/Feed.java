@@ -166,6 +166,7 @@ final class Feed {
   static volatile long poseAt;     // SystemClock.uptimeMillis() of the fix the pose stands for
   static volatile Pose pose;       // the same fix as one piece, so a reader on another thread never mixes two
   static volatile boolean brake;   // the pose's "b": the driver on the pedal or openpilot braking firmly; the rear lights
+  static volatile boolean blindLeft, blindRight;  // the pose's "bl"/"br": that side's blind spot warns (car or V-ASM); the side glows
   static volatile long stateAt;    // when turnMeters was current
   static volatile String mode = "off";
   static volatile boolean metric;
@@ -361,6 +362,8 @@ final class Feed {
       poseAt = now - (long) (m.optDouble("age", 0) * 1000);
       pose = new Pose(lat, lon, hdg, spd, poseAt);
       brake = m.optInt("b", 0) == 1;  // left out unless braking, and by a comma from before 2026-10-31
+      blindLeft = m.optInt("bl", 0) == 1;   // left out unless that side warns, and by a comma from before 2026-11-08
+      blindRight = m.optInt("br", 0) == 1;
     } else if (t.equals("s")) {
       stateAt = now;
       mode = m.optString("mode", "off");

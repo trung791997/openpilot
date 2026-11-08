@@ -699,6 +699,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
     GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 4, null, GLES20.GL_STATIC_DRAW);
     cur = pend;
+    tickLog = 0;  // the new scene's cull counts start from zero
+    forcedLog = framesLog = rebuildLog = 0;
     glScene = (MapView.Scene) pend.scene;
     pend = null;
     synchronized (packLock) {
@@ -773,19 +775,48 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private void lines(int g, float width, int color, float alpha) {
     int[] rFrom = cur.rFrom, rStart = cur.rStart, rLen = cur.rLen;
     if (rFrom[g] == rFrom[g + 1]) return;
+    if (minorA < 1 && g < ROUTE && (g % MapView.DIM_OFF) % MapView.BRIDGE == 4) {
+      if (minorA <= 0) return;
+      alpha *= minorA;
+    }
     GLES20.glUniform1f(lR, width / 2);
     GLES20.glUniform4f(lColor, (color >> 16 & 0xff) / 255f, (color >> 8 & 0xff) / 255f, (color & 0xff) / 255f, alpha);
     for (int r = rFrom[g]; r < rFrom[g + 1]; r++) {
       for (int st = rStart[r], left = rLen[r]; left > 0; ) {
-        int q = Math.min(left, MAX_QUADS);
-        GLES20.glVertexAttribPointer(lSeg, 4, GLES20.GL_FLOAT, false, STRIDE, st * 4 * STRIDE);
-        GLES20.glVertexAttribPointer(lC, 3, GLES20.GL_FLOAT, false, STRIDE, st * 4 * STRIDE + 16);
-        GLES20.glDrawElements(GLES20.GL_TRIANGLES, q * 6, GLES20.GL_UNSIGNED_SHORT, 0);
+        // the index buffer holds the quad pattern for one page of MAX_QUADS, so a run inside a page is drawn from an
+        // offset into it and the attribute pointers, set once for the page, serve every run on it (the I-35 drive:
+        // three GL calls a run, 300 to 500 runs a frame; now one call a run)
+        int page = st / MAX_QUADS * MAX_QUADS;
+        if (page != ptrPage) {
+          GLES20.glVertexAttribPointer(lSeg, 4, GLES20.GL_FLOAT, false, STRIDE, page * 4 * STRIDE);
+          GLES20.glVertexAttribPointer(lC, 3, GLES20.GL_FLOAT, false, STRIDE, page * 4 * STRIDE + 16);
+          ptrPage = page;
+          statPtr++;
+        }
+        int q = Math.min(left, page + MAX_QUADS - st);
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, q * 6, GLES20.GL_UNSIGNED_SHORT, (st - page) * 12);
+        statDraws++;
+        statQuads += q;
         st += q;
         left -= q;
       }
     }
   }
+
+  // The page of the scene buffer the line program's attribute pointers are on (-1: none), and the frame's counts.
+  // LOD: zoomed out past LOD_IK the minor streets (class 4, the narrowest) are not drawn; they fade out between
+  // LOD_FADE_IK and LOD_IK so the speed-driven zoom does not pop them. On the I-35 replay they are 63% of the quads
+  // in the dense minutes (ik < 0.15). Peter 2026-11-08: hide them. The route is its own group and always draws.
+  static final boolean LOD_MINOR = true;
+  static final float LOD_IK = 0.15f, LOD_FADE_IK = 0.18f;
+  private float minorA = 1;
+  private int ptrPage = -1;
+  private int statDraws, statPtr, statQuads;
+  private long sumDraws, sumPtr, sumQuads, sumCand, sumRuns, sumTicks;
+  private int statRebuildsNow, statFramesNow, statForced;
+  private float statIk;
+  private long tickLog;
+  private int forcedLog, framesLog, rebuildLog;
 
   private String drawFrame(MapView.Scene s, MapView.Frame f) {
     long t0 = System.nanoTime();
@@ -832,8 +863,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
 
     // the roads: every kerb, then every surface, then the carpet, as the view strokes them
-    cur.cull(ce, cn, ch, sh, ik, MapView.BOX_X0, MapView.BOX_X1, MapView.BOX_Z0, MapView.BOX_Z1);
+    cur.update(SystemClock.uptimeMillis(), ce, cn, ch, sh, ik, MapView.BOX_X0, MapView.BOX_X1, MapView.BOX_Z0, MapView.BOX_Z1);
     part(P_CULL);
+    ptrPage = -1;
+    minorA = LOD_MINOR ? Math.max(0, Math.min(1, (ik - LOD_IK) / (LOD_FADE_IK - LOD_IK))) : 1;
+    statDraws = statPtr = statQuads = 0;
     GLES20.glUseProgram(line);
     GLES20.glUniformMatrix4fv(lP, 1, false, proj, 0);
     GLES20.glUniform4f(lW, ch * ik, sh * ik, (-ce * ch + cn * sh) * ik, (-ce * sh - cn * ch) * ik);
@@ -900,6 +934,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
         GLES20.glEnableVertexAttribArray(lSeg);
         GLES20.glEnableVertexAttribArray(lC);
+        ptrPage = -1;  // the close-up set pointers of its own
       }
     }
     part(P_ROADS);
@@ -911,6 +946,16 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glDisableVertexAttribArray(lSeg);
     GLES20.glDisableVertexAttribArray(lC);
     part(P_CARPET);
+    sumDraws += statDraws;
+    sumPtr += statPtr;
+    sumQuads += statQuads;
+    sumCand += cur.candidateCount();
+    sumRuns += cur.rFrom[cur.groups];
+    sumTicks = cur.ticks;
+    statRebuildsNow = cur.rebuilds;
+    statFramesNow = cur.frames;
+    statForced = cur.forced;
+    statIk = ik;
 
     // the fades over the roads, as the view's mask and fog: the band behind the cards with a route, the fog at the top
     GLES20.glUseProgram(fade);
@@ -1087,6 +1132,18 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       b.append("; ").append(partFrames).append(" frames; label uploads ").append(atlasUploads)
           .append("; scene uploads ").append(sceneUploads).append("; slow frames ").append(slowFrames)
           .append("; tick age ").append(map.tickAge(now));
+      // the roads' cost this window: per frame, the candidates the cull tests, runs it kept, draw calls (one a run
+      // plus one per 16384-quad page crossed), quads drawn; and the culls made (the cull runs on a tick, early when
+      // the camera leaves its margin), candidate lists rebuilt, and the zoom
+      b.append("; roads cand ").append(sumCand / partFrames).append(" runs ").append(sumRuns / partFrames)
+          .append(" draws ").append(sumDraws / partFrames).append(" ptr ").append(sumPtr / partFrames)
+          .append(" quads ").append(sumQuads / partFrames).append("; culls ").append(sumTicks - tickLog)
+          .append(" (early ").append(statForced - forcedLog).append(") of ").append(statFramesNow - framesLog)
+          .append(" frames; rebuilds ").append(statRebuildsNow - rebuildLog).append("; ik ").append(statIk);
+      tickLog = sumTicks;
+      forcedLog = statForced;
+      framesLog = statFramesNow;
+      rebuildLog = statRebuildsNow;
       if (slowFrames > 0) {
         b.append(" (top stage");
         for (int i = 0; i < PARTS; i++) if (slowTop[i] > 0) b.append(' ').append(PART_NAMES[i]).append(' ').append(slowTop[i]);
@@ -1098,6 +1155,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     java.util.Arrays.fill(partMax, 0);
     java.util.Arrays.fill(slowTop, 0);
     partFrames = slowFrames = atlasUploads = sceneUploads = 0;
+    sumDraws = sumPtr = sumQuads = sumCand = sumRuns = 0;
     partsFrom = now;
   }
 

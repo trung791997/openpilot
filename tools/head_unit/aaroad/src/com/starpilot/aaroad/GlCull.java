@@ -21,6 +21,20 @@ final class GlCull {
   static final float PAD = 1;  // display metres on the centre test, for its float error against the corner test
   private static final float ROOT2 = (float) Math.sqrt(2);
 
+  // Pieces of a group are laid out in the buffer in Morton (Z-curve) order of their centres, so the pieces in view,
+  // a patch of ground, fall into few runs of neighbours (2026-11-08, the I-35 drive: 300 to 500 draw calls a frame
+  // in the dense stretches when the roads were laid out run by run). Off: the order the scene had them.
+  static boolean MORTON = true;
+  static final float MORTON_CELL = 64;  // metres per step of the Z-curve's grid
+  // Runs of one group closer than this many quads are drawn as one, the quads between them included: a draw call
+  // costs the Tegra more than a few hundred quads the GPU clips (0: off). The quads between lie outside the view
+  // box (the cull rejected them), so they draw nothing that was not already off the screen.
+  static int GAP = 0;
+  // The cull runs at most every TICK_MS (update()), on the view box widened by how far the camera can move in that
+  // time; update() runs it sooner if the camera has left that margin.
+  static final long TICK_MS = 100;
+  static final float MARGIN_MIN = 3, MARGIN_MAX = 90;  // display metres
+
   final Object scene;  // the MapView.Scene this was made from
   final int groups, count, segs;
   final int[] gFrom;   // pieces of group g: gFrom[g] to gFrom[g + 1]
@@ -31,7 +45,9 @@ final class GlCull {
 
   // the cull's result: runs of neighbouring pieces, group g's from rFrom[g] to rFrom[g + 1]
   final int[] rStart, rLen, rFrom;
-  int rebuilds;  // candidate lists made, for the test
+  int rebuilds;  // candidate lists made, for the test and the log
+  int ticks, forced, frames;  // update(): culls made, of them early because the camera left the margin, calls
+  final float maxDiag;  // the longest diagonal of a piece's box, metres
 
   private final int[] cand, candFrom;
   private boolean candOk;
@@ -61,14 +77,22 @@ final class GlCull {
     pts = new float[n][];
     at = new float[n];
     int k = 0, sg = 0;
+    int[] ids = new int[Math.max(roadPts.length, routePts.length)];
+    float diag = 0;
     for (int g = 0; g < groups; g++) {
       gFrom[g] = k;
       boolean isRoute = g >= route;
       float[][] p = isRoute ? routePts : roadPts, b = isRoute ? routeBox : roadBox;
       float[] a = isRoute ? routeAt : roadAt;
+      int m = 0;
       for (int i = 0; i < p.length; i++) {
         if (!isRoute && roadCls[i] != g) continue;
         if (isRoute && (routeGroup == null ? 0 : routeGroup[i]) != g - route) continue;
+        ids[m++] = i;
+      }
+      if (MORTON && m > 1) morton(ids, m, b);
+      for (int j = 0; j < m; j++) {
+        int i = ids[j];
         float[] bb = b[i];
         bx0[k] = bb[0];
         by0[k] = bb[1];
@@ -78,7 +102,9 @@ final class GlCull {
         cy[k] = (bb[1] + bb[3]) / 2;
         // the box's corners lie within half its diagonal of the centre; the old test takes the square round those
         // corners in the car's frame, which lies within that times root 2
-        cr[k] = (float) Math.hypot(bb[2] - bb[0], bb[3] - bb[1]) / 2 * ROOT2;
+        float d = (float) Math.hypot(bb[2] - bb[0], bb[3] - bb[1]);
+        if (d > diag) diag = d;
+        cr[k] = d / 2 * ROOT2;
         pts[k] = p[i];
         at[k] = a[i];
         cStart[k] = sg;
@@ -86,6 +112,7 @@ final class GlCull {
         sg += cCount[k++];
       }
     }
+    maxDiag = diag;
     gFrom[groups] = k;
     segs = sg;
     rStart = new int[n];
@@ -93,6 +120,36 @@ final class GlCull {
     rFrom = new int[groups + 1];
     cand = new int[n];
     candFrom = new int[groups + 1];
+  }
+
+  // ids[0..m) sorted by the Z-curve key of their boxes' centres (ties in their given order).
+  private static void morton(int[] ids, int m, float[][] box) {
+    float minE = Float.MAX_VALUE, minN = Float.MAX_VALUE;
+    for (int j = 0; j < m; j++) {
+      float[] bb = box[ids[j]];
+      minE = Math.min(minE, (bb[0] + bb[2]) / 2);
+      minN = Math.min(minN, (bb[1] + bb[3]) / 2);
+    }
+    long[] key = new long[m];
+    for (int j = 0; j < m; j++) {
+      float[] bb = box[ids[j]];
+      int qe = Math.min(65535, (int) (((bb[0] + bb[2]) / 2 - minE) / MORTON_CELL));
+      int qn = Math.min(65535, (int) (((bb[1] + bb[3]) / 2 - minN) / MORTON_CELL));
+      key[j] = ((long) (spread(qe) | spread(qn) << 1) << 32) | j;
+    }
+    java.util.Arrays.sort(key);
+    int[] old = new int[m];
+    System.arraycopy(ids, 0, old, 0, m);
+    for (int j = 0; j < m; j++) ids[j] = old[(int) key[j]];
+  }
+
+  // The 16 bits of v with a zero between each.
+  private static int spread(int v) {
+    v = (v | v << 8) & 0x00ff00ff;
+    v = (v | v << 4) & 0x0f0f0f0f;
+    v = (v | v << 2) & 0x33333333;
+    v = (v | v << 1) & 0x55555555;
+    return v;
   }
 
   int bytes() {
@@ -170,9 +227,69 @@ final class GlCull {
           rLen[r++] = cCount[i];
         }
       }
+      if (GAP > 0) {  // runs a few quads apart become one
+        int w = rFrom[g];
+        for (int q = rFrom[g]; q < r; q++) {
+          if (w > rFrom[g] && rStart[q] - (rStart[w - 1] + rLen[w - 1]) <= GAP) {
+            rLen[w - 1] = rStart[q] + rLen[q] - rStart[w - 1];
+          } else {
+            rStart[w] = rStart[q];
+            rLen[w++] = rLen[q];
+          }
+        }
+        r = w;
+      }
     }
     rFrom[groups] = r;
   }
+
+  // The cull for this frame's camera, at most every TICK_MS (Peter's drive 2026-11-08: 15 to 21 ms a frame of it
+  // on I-35 North). The result stays valid for the frames in between because the cull is made on the view box
+  // widened by the margin the camera can move in a tick -- the speed and turn and zoom rates since the last cull --
+  // and a frame whose camera is already outside that margin culls at once. The margin is exact, not a guess:
+  // a point q in the car's frame now is at q0 in the frame at the last cull, |q0 - q| <= ik0 |dpos| +
+  // |q| (|ik0 / ik - 1| + chord of the turn), and every corner that decides a piece lies within rho of the car (the
+  // box's far corner plus a piece's own size). So whatever the cull for this camera would keep, the stale one
+  // kept. Returns whether it culled.
+  boolean update(long now, float ce, float cn, float ch, float sh, float ik, float x0, float x1, float z0, float z1) {
+    frames++;
+    float rho = (float) Math.hypot(Math.max(Math.abs(x0), Math.abs(x1)), Math.max(Math.abs(z0), Math.abs(z1)))
+        + 1.5f * maxDiag * Math.max(ik, tIk);
+    float de = 0, dn = 0, chord = 0;
+    if (tOk) {
+      de = ce - tE;
+      dn = cn - tN;
+      chord = (float) Math.sqrt(Math.max(0, 2 - 2 * (ch * tCh + sh * tSh)));
+      if (now - tAt < TICK_MS) {
+        float d = tIk * (float) Math.sqrt(de * de + dn * dn) + rho * (Math.abs(tIk / ik - 1) + chord);
+        if (d <= tM) return false;
+        forced++;
+      }
+    }
+    float m = MARGIN_MIN;
+    if (tOk && now > tAt) {
+      // the rates over the time since the last cull, for the tick and a frame or two of lateness
+      float dt = (now - tAt) / 1000f, t = (TICK_MS + 80) / 1000f;
+      float v = (float) Math.sqrt(de * de + dn * dn) / dt, w = chord / dt, z = Math.abs(tIk / ik - 1) / dt;
+      m += 1.5f * t * (ik * v + rho * (w + z));
+      if (m > MARGIN_MAX) m = MARGIN_MAX;
+    }
+    cull(ce, cn, ch, sh, ik, x0 - m, x1 + m, z0 - m, z1 + m);
+    tOk = true;
+    tAt = now;
+    tE = ce;
+    tN = cn;
+    tCh = ch;
+    tSh = sh;
+    tIk = ik;
+    tM = m;
+    ticks++;
+    return true;
+  }
+
+  private boolean tOk;
+  private long tAt;
+  private float tE, tN, tCh, tSh, tIk, tM;
 
   // Every piece whose circle comes within R of (e, n), in buffer order.
   private void candidates(float e, float n, float rad) {

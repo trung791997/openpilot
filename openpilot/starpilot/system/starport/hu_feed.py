@@ -36,8 +36,9 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      c is the traffic on each point's stretch to the next, one per pts entry (0 unknown, 1 low, 2 moderate, 3 heavy,
      4 severe), left out when navigationd gives none. id is the crc32 of a key that includes c's hash, so new traffic
      makes a new id (the head unit ignores a repeated one); an older app ignores c
-  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b", "held"}, the last GPS fix carried forward to now; "b": 1 while
-     the car is braking (brake_of), left out otherwise, so an older app ignores it; at a standstill with no fresh fix
+  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b", "bl", "br", "held"}, the last GPS fix carried forward to now; "b": 1 while
+     the car is braking (brake_of), left out otherwise, so an older app ignores it; "bl"/"br": 1 while that side's blind
+     spot warns (car or V-ASM, blind_of), likewise left out otherwise; at a standstill with no fresh fix
      the last pose goes on with age 0, spd 0 and "held": 1 (StopHold), left out otherwise
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
@@ -188,6 +189,15 @@ def brake_of(car_state, car_control) -> bool:
   return math.isfinite(accel) and accel < BRAKE_ACCEL
 
 
+def blind_of(car_state, vasm) -> tuple[bool, bool]:
+  """(left, right) blind-spot warning for the cluster car's side glow: the car's own blind-spot monitor OR the V-ASM
+  warning, as projection_theme.side_colors does. car_state None (not seen yet) adds nothing; vasm None is (False, False)."""
+  left = bool(car_state.leftBlindspot) if car_state is not None else False
+  right = bool(car_state.rightBlindspot) if car_state is not None else False
+  vasm_left, vasm_right = (bool(vasm[0]), bool(vasm[1])) if vasm is not None else (False, False)
+  return left or vasm_left, right or vasm_right
+
+
 def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
   """The fix (stamp_ns, lat, lon, bearing_deg) moved on to now at speed (m/s) and yaw_rate (deg/s, + right)."""
   stamp, lat, lon, bearing = fix
@@ -331,6 +341,45 @@ class CerealReader:
     from openpilot.starpilot.navigation.guidance_hold import GuidanceHold
     self._guidance = GuidanceHold()
     self._route = None
+    self._vasm_source = None
+    self._vasm_saved = None
+    self._vasm_read = -math.inf
+
+  def close(self) -> None:
+    source, self._vasm_source = self._vasm_source, None
+    if source is not None:
+      try:
+        source.close()
+      except Exception:
+        pass
+
+  def vasm(self, fresh: bool, car_state, now: float) -> tuple[bool, bool]:
+    """V-ASM side warnings, gated as projection_onroad._vasm_warning is (fresh drive-gear carState with canValid, saved
+    preferences readable/valid/enabled, a clock pair). Anything wrong, or any exception: (False, False)."""
+    try:
+      if not fresh or not car_state.canValid:
+        return False, False
+      from openpilot.cereal import car
+      if car_state.gearShifter != car.CarState.GearShifter.drive:
+        return False, False
+      if self._vasm_source is None:
+        from openpilot.starpilot.ui.pip_warning import PiPWarningSource
+        self._vasm_source = PiPWarningSource()
+      if now - self._vasm_read >= 1.:  # re-read the saved preferences at most once a second
+        from openpilot.starpilot.spot_monitor.preferences import read_preferences
+        self._vasm_saved = read_preferences(self.params)
+        self._vasm_read = now
+      saved = self._vasm_saved
+      if saved is None or not (saved.readable and saved.valid and saved.preferences.enabled):
+        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0)
+      from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
+      pair = clock_pair_ns()
+      if pair is None:
+        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0)
+      return self._vasm_source.sample(enabled=True, settings_fingerprint=saved.fingerprint,
+                                      now_mono_ns=pair[0], now_boot_ns=pair[1])
+    except Exception:
+      return False, False  # an optional glow must never break the feed
 
   def metric(self, now: float) -> bool:
     if now - self._metric[0] >= 5.:
@@ -371,6 +420,8 @@ class CerealReader:
              'media': self.media(time.monotonic()),
              'brake': brake_of(sm['carState'] if sm.seen['carState'] else None,
                                control if sm.seen['carControl'] else None)}
+    car_seen = sm['carState'] if sm.seen['carState'] else None
+    value['blind'] = blind_of(car_seen, self.vasm(bool(fresh), car_seen, time.monotonic()))
     motion = sm['deviceMotion'].angularVelocityDevice
     if sm.seen['deviceMotion'] and motion.valid and abs(motion.z) < 1.:
       value['yaw_rate'] = math.degrees(motion.z)  # device z points down: + is a right turn, as compass heading runs
@@ -504,6 +555,12 @@ class HeadUnitFeed:
     if self._thread is not None:
       self._thread.join(timeout=2)
     self.sock.close()
+    closer = getattr(self._read, 'close', None)
+    if callable(closer):
+      try:
+        closer()
+      except Exception:
+        pass
 
   def _run(self) -> None:
     while not self._stop.is_set():
@@ -594,6 +651,11 @@ class HeadUnitFeed:
     if pose is not None:
       if value.get('brake'):
         pose['b'] = 1
+      blind = value.get('blind') or (False, False)
+      if blind[0]:
+        pose['bl'] = 1
+      if blind[1]:
+        pose['br'] = 1
       self._send('p', pose)
       if self.have is not None:
         self.send_tiles(pose['lat'], pose['lon'], now)

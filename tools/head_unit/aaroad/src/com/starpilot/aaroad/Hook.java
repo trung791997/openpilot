@@ -19,6 +19,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 // replayed every second; each replay carries no distance, so the stock distance bar flickered
 // to 0 (Peter, 2026-10-29). Removed.
 public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
+
+  private static volatile String lastStreetLine;  // the last "street from" line logged
+
   private static final String PKG = "com.mitsubishielectric.ada.app.androidauto";
   private static final String NFM = PKG + ".navigation.NavigationFocusManager";
   private static final int MAX_CHARS = 31;  // 5-bit length field, same cap as present location
@@ -119,7 +122,11 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
       @Override
       protected void beforeHookedMethod(MethodHookParam param) {
         // the raw text too: a turn with no street (2026-10-30, parking lot) left no way to tell what the phone sent
-        Xlog.log("aaroad: street \"" + street((String) param.args[0]) + "\" from \"" + param.args[0] + "\"");
+        // once a change: the phone repeats the same turn text every second or so (the I-35 drive logged 5,677 of them)
+        String raw = (String) param.args[0], line = street(raw) + "\u0000" + raw;
+        if (line.equals(lastStreetLine)) return;
+        lastStreetLine = line;
+        Xlog.log("aaroad: street \"" + street(raw) + "\" from \"" + raw + "\"");
       }
     });
 

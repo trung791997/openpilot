@@ -137,3 +137,4 @@ Head unit side (`Feed.java`, `Relay.java`, `MapView.java`, 2026-10-29):
   grid. Not yet run on the head unit.
 Module log: `/data/data/cn.autohack.hondahack/log/error.log` (su).
 Comma side: static tests only (`tests/test_hu_feed.py`).
+Blind-spot glow (2026-11-08, static): pose keys `bl`/`br` (car blind-spot monitor or V-ASM) light a red halo on that side of the car; not yet seen on the head unit.

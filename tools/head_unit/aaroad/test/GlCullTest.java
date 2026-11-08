@@ -12,6 +12,10 @@ import java.util.Random;
 //   javac -d /tmp/glcull src/com/starpilot/aaroad/GlCull.java test/GlCullTest.java
 //   java -cp /tmp/glcull com.starpilot.aaroad.GlCullTest
 // It fails (exit 1) if any frame's runs or any packed byte differ. Times are this machine's, not the Tegra's.
+// 2026-11-08: that equivalence holds with GlCull.MORTON off (the buffer in the order the scene had it). With it on
+// (the app's setting) the pieces of a group are laid out along a Z-curve, so the run numbers differ by design; there
+// the test checks the same quads are drawn each frame (the packed records of the runs, as multisets, per group)
+// and that update(), the 10 Hz cull, always covers what a cull of that frame's camera would.
 public class GlCullTest {
   static final int GROUPS = 6, ROUTE = 5;
   static final float BOX_X0 = -380, BOX_X1 = 240, BOX_Z0 = -45, BOX_Z1 = 185;  // MapView's
@@ -57,6 +61,8 @@ public class GlCullTest {
     for (int i = 0; i < uat.length; i++) uat[i] = i * 150;
     float[][] rb = boxes(rp), ub = boxes(up);
 
+    GlCull.MORTON = false;
+    GlCull.GAP = 0;
     Old old = new Old(rp, rb, rc, rat, up, ub, uat);
     GlCull neu = new GlCull(null, ROUTE, 1, rp, rb, rc, rat, up, ub, null, uat);
     System.out.println("pieces " + neu.count + ", segments " + neu.segs + ", " + neu.bytes() / 1024 + " KB");
@@ -74,6 +80,17 @@ public class GlCullTest {
     for (int i = 0; i < neu.bytes(); i++) if (ob.get(i) != nb.get(i)) byteDiff++;
     System.out.println("pack old " + ms(t1 - t0) + " ms, new " + ms(t2 - t1) + " ms, bytes differing " + byteDiff);
     if (byteDiff != 0) bad++;
+
+    // the Z-curve layout, a second copy to cull on the 10 Hz tick and a third to cull every frame
+    GlCull.MORTON = true;
+    GlCull mor = new GlCull(null, ROUTE, 1, rp, rb, rc, rat, up, ub, null, uat);
+    GlCull tk = new GlCull(null, ROUTE, 1, rp, rb, rc, rat, up, ub, null, uat);
+    GlCull rf = new GlCull(null, ROUTE, 1, rp, rb, rc, rat, up, ub, null, uat);
+    GlCull.MORTON = false;
+    ByteBuffer mb = ByteBuffer.allocateDirect(mor.bytes()).order(ByteOrder.nativeOrder());
+    mor.pack(mb, new float[4088]);
+    int quadBytes = 4 * GlCull.STRIDE, setDiff = 0, setChecked = 0, supDiff = 0, supChecked = 0, early = 0;
+    int morRuns = 0, oldRuns = 0;
 
     // driving: a car along the route at 10 to 35 m/s for 120 s at 30 frames a second, the zoom moving with speed,
     // then random places, headings and zooms
@@ -104,6 +121,23 @@ public class GlCullTest {
       long a1 = System.nanoTime();
       neu.cull(ce, cn, ch, sh, ik, BOX_X0, BOX_X1, BOX_Z0, BOX_Z1);
       long a2 = System.nanoTime();
+      mor.cull(ce, cn, ch, sh, ik, BOX_X0, BOX_X1, BOX_Z0, BOX_Z1);
+      morRuns += mor.rFrom[GROUPS];
+      oldRuns += old.rFrom[GROUPS];
+      if (f % 25 == 0) {
+        setChecked++;
+        for (int g = 0; g < GROUPS; g++) {
+          if (!sameQuads(ob, old.rStart, old.rLen, old.rFrom[g], old.rFrom[g + 1], mb, mor.rStart, mor.rLen, mor.rFrom[g],
+              mor.rFrom[g + 1], quadBytes)) {
+            setDiff++;
+            break;
+          }
+        }
+      }
+      tk.update((long) f * 33, ce, cn, ch, sh, ik, BOX_X0, BOX_X1, BOX_Z0, BOX_Z1);
+      rf.cull(ce, cn, ch, sh, ik, BOX_X0, BOX_X1, BOX_Z0, BOX_Z1);
+      supChecked++;
+      if (!superset(tk, rf)) supDiff++;
       if (f == 3600) {
         System.out.println("driving " + (frames) + " frames: old avg " + us(oldNs / frames) + " us max " + us(oldMax)
             + ", new avg " + us(newNs / frames) + " us max " + us(newMax) + "; candidate lists " + neu.rebuilds
@@ -125,8 +159,47 @@ public class GlCullTest {
         + ", new avg " + us(newNs / frames) + " us max " + us(newMax) + "; candidate lists " + neu.rebuilds
         + "; frames whose runs differ " + frameDiff);
     if (frameDiff != 0) bad++;
+    System.out.println("Z-curve layout: runs per frame " + morRuns / (3600 + 4000) + " (was " + oldRuns / (3600 + 4000)
+        + "); frames whose drawn quads differ from the old layout's " + setDiff + " of " + setChecked
+        + "; 10 Hz cull: " + tk.ticks + " culls in " + tk.frames + " frames (" + tk.forced + " early), frames not covering a"
+        + " per-frame cull " + supDiff + " of " + supChecked);
+    if (setDiff != 0 || supDiff != 0 || tk.ticks >= tk.frames) bad++;
     System.out.println(bad == 0 ? "PASS" : "FAIL");
     if (bad != 0) System.exit(1);
+  }
+
+  // every run of the fresh cull lies inside one run of the stale one, group by group
+  static boolean superset(GlCull stale, GlCull fresh) {
+    for (int g = 0; g < fresh.groups; g++) {
+      int j = stale.rFrom[g], je = stale.rFrom[g + 1];
+      for (int i = fresh.rFrom[g]; i < fresh.rFrom[g + 1]; i++) {
+        int s = fresh.rStart[i], e = s + fresh.rLen[i];
+        while (j < je && stale.rStart[j] + stale.rLen[j] <= s) j++;
+        if (j == je || stale.rStart[j] > s || stale.rStart[j] + stale.rLen[j] < e) return false;
+      }
+    }
+    return true;
+  }
+
+  // the quads two layouts draw for one group, as sorted lists of their packed bytes
+  static boolean sameQuads(ByteBuffer a, int[] aStart, int[] aLen, int a0, int a1, ByteBuffer b, int[] bStart, int[] bLen,
+      int b0, int b1, int qb) {
+    List<String> x = records(a, aStart, aLen, a0, a1, qb), y = records(b, bStart, bLen, b0, b1, qb);
+    java.util.Collections.sort(x);
+    java.util.Collections.sort(y);
+    return x.equals(y);
+  }
+
+  static List<String> records(ByteBuffer b, int[] start, int[] len, int r0, int r1, int qb) {
+    List<String> out = new ArrayList<String>();
+    byte[] rec = new byte[qb];
+    for (int r = r0; r < r1; r++) {
+      for (int q = start[r]; q < start[r] + len[r]; q++) {
+        for (int i = 0; i < qb; i++) rec[i] = b.get(q * qb + i);
+        out.add(new String(rec, java.nio.charset.StandardCharsets.ISO_8859_1));
+      }
+    }
+    return out;
   }
 
   static String ms(long ns) {

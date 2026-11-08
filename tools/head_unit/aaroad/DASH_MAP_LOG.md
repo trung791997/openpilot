@@ -74,6 +74,12 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
 
 ## Log
 
+### 2026-11-08
+- **Blind-spot side glow on the dash map car.** *static*: Python tests, APK build and existing desktop tests only; not installed, not road-tested
+  - Comma (`hu_feed.py`): pose `p` gains optional `"bl"`/`"br"`: 1 while that side warns (`blind_of`: the car's blind-spot monitor OR the V-ASM warning, as `projection_theme.side_colors`), left out otherwise. V-ASM is sampled with the gates of `projection_onroad._vasm_warning` (fresh drive-gear carState with canValid, saved preferences enabled, a clock pair, `PiPWarningSource`); any failure is (False, False).
+  - Head unit: `Feed.blindLeft`/`blindRight`; `MapView.drawCar` draws a steady red halo along that side of the sprite (rotates with the car), faded over `GLOW_MS` with the brake glow's stale rule. Brake glow untouched.
+  - Not checked: how the halo looks on the head unit (`BLIND_*` set from a desktop mock render over the 52 px sprite, not the head unit), real V-ASM warnings, GPU-path fps.
+
 ### 2026-11-07
 - **The car's outline under a bridge or overpass now shows at every zoom, not only in the close-up, and on a frontage road under a viaduct too.** *static*: desktop tests and harness renders on real Dallas tiles
   - Problem: Peter, "the outline to indicate when I drive beneath a bridge or an overpass is inconsistent". It was drawn only in the close-up (gate `ROAD_SHOW`/`ROAD_HIDE`), and a car on a ground road beside a viaduct counted as on the viaduct.
@@ -393,3 +399,21 @@ Also the "cluster guide reply" log line (14,637 in one drive, the reply flips be
 is now written once per distinct reply. The map draw log line adds "N song strips".
 Static only: build passes, harness renders identical to before except the ETA wall-clock minute, also with a long
 scrolling title. Next drive: check "view N redraws/s" (expect ~1 or less without a scrolling title), fps and tick age.
+
+## Dash map lag with navigation on: GPU culling and draw batching (Peter 2026-11-08)
+Peter: the map still lagged drawing with navigation on. Head-unit log, 13:29 drive (*limited road evidence*): lag began
+when navigation started (13:29:18, qlog); cull went from 1-8 to 15-21 ms a frame, sleep fell to ~0, fps 28 -> 19. The
+route adds many scattered pieces, so the per-frame cull and the number of small draw calls both grew.
+- `GlCull.update()` culls 10 times a second over a widened margin box (3-90 display m), re-culling early only when the
+  view leaves it; pieces are ordered along a Z curve (64 m cells, `MORTON`) so neighbours draw as one run.
+- `GlRoads.lines()` draws each run with one `glDrawElements` from a page offset; attribute pointers are set once per
+  16384-quad page instead of per run.
+- Minor streets (class 4) fade out when zoomed out (`LOD_MINOR`, ik 0.18 -> 0.15) and their labels hide with them
+  (Peter: "hide side streets if needed").
+- Hook logs the `street` line only when the street changes. "gl parts" adds roads cand/runs/draws/ptr/quads, culls
+  (early), rebuilds and ik.
+Replay (`test/MapReplayBench.java` over the real drive, desktop): draws/frame 280 -> 109, GL calls 840 -> 111, runs
+138 -> 53, cull time about halved; superset check 0 misses in 53,978 frames (negative control 13,303). Tests and build
+pass. Installed 15:15; first head-unit reading 15:28, parked, no route: cull 0.4 ms, 18-19 draws, ~29 fps. Next nav
+drive: compare "gl parts" fps, draws and cull with the 13:29 numbers. After a comma reboot the map took ~7 min to show
+(first fresh position; cause not proven).

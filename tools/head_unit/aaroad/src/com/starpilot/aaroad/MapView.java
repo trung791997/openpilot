@@ -65,12 +65,19 @@ final class MapView extends View {
   // Brake lights (Peter 2026-10-31): the sprite's tail lights, the C shapes at rows 30 to 38, glow red while the pose
   // says the car is braking, fading in and out over GLOW_MS. The view redraws only while the glow changes; the tick
   // runs every GLOW_TICK_MS during a fade on the GPU path, so the fade shows as a few steps rather than one.
+  static final float BLIND_EDGE_DX = 22, BLIND_UP = 20, BLIND_DOWN = 26;  // the blind-spot halo: inner edge and extent from the car point (sprite body spans x -24..24, y -23..31; 2026-11-08 mock render)
   static final float LIGHT_DX = 16, LIGHT_DY = 8;  // each light's centre from the car point
   private static final long GLOW_MS = 150, GLOW_TICK_MS = 33;
   private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private boolean glowOn;
   private float glowFrom, drawnGlow;
   private long glowAt;
+  // Blind-spot side glow (2026-11-08): a steady red halo along the car's left or right side while the pose says that side
+  // warns (the car's monitor or V-ASM), faded over GLOW_MS like the brake glow and off while the pose is stale. [0] left, [1] right.
+  private final boolean[] blindOn = new boolean[2];
+  private final float[] blindFrom = new float[2], blindDrawn = new float[2];
+  private final long[] blindAt = new long[2];
+  private final RectF blindRect = new RectF();
   // Under an overpass (Under, Peter 2026-11-01): where a raised deck is drawn over the car, the car is cut away so the
   // deck shows, and a light outline of it (OUTLINE_C, a faint OUTLINE_FILL inside) shows through, easing over
   // Under.FADE_MS. The sprite's body is its alpha over OUTLINE_ALPHA (under it is the soft shadow). cover holds the
@@ -604,7 +611,7 @@ final class MapView extends View {
       long delay = SLOW_MS;
       try {
         long t = SystemClock.uptimeMillis();
-        long slow = glowing(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
+        long slow = glowing(t) || blinding(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
             ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
         delay = !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs);
       } catch (Throwable t) {
@@ -680,7 +687,8 @@ final class MapView extends View {
     String road = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     if (st != drawnStamp) gpu.poke();
     if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
-        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || Math.abs(lift - drawnLift) > 0.5f
+        || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || blind(0, now) != blindDrawn[0] || blind(1, now) != blindDrawn[1]
+        || Math.abs(lift - drawnLift) > 0.5f
         || (f != null && f.s == s && underWanted(f) != under.on()) || underMoving(now)) {
       invalidate();
     } else if (rolled(now) != drawnRoll) {
@@ -820,7 +828,7 @@ final class MapView extends View {
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
     if (rolled(now) != drawnRoll) return true;
-    if (glow(now) != drawnGlow || under.moving(now)) return true;
+    if (glow(now) != drawnGlow || blind(0, now) != blindDrawn[0] || blind(1, now) != blindDrawn[1] || under.moving(now)) return true;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     boolean moving = spd >= HOLD_SPEED;
@@ -1759,12 +1767,15 @@ final class MapView extends View {
     String[] names = free ? s.roadsName : s.stubsName;
     int[] cls = free ? s.roadsCls : s.stubsCls;
     float off = free ? FREE_X - CAR_X : 0, step = LABEL_STEP / ik;
+    boolean minorHidden = GPU && GlRoads.LOD_MINOR && ik < GlRoads.LOD_FADE_IK;
     float[] q = new float[2];
     List<float[]> found = new ArrayList<float[]>();  // cost, run, e, n, x, y
     for (int r = 0; r < runs.length; r++) {
       String name = names[r];
       float[] b = boxes[r];
       if (name == null || name.equals(current)) continue;
+      // the GPU map fades the minor streets out when zoomed out (GlRoads.LOD_MINOR), so their names go with them
+      if (minorHidden && cls[r] % BRIDGE == 4) continue;
       if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
       float[] p = runs[r];
       for (int i = 0; i + 3 < p.length; i += 2) {
@@ -2091,20 +2102,23 @@ final class MapView extends View {
     long now = SystemClock.uptimeMillis();
     float g = glow(now);
     drawnGlow = g;
+    float bl = blind(0, now), br = blind(1, now);
+    blindDrawn[0] = bl;
+    blindDrawn[1] = br;
     float u = underDeck(f, now);
     if (u <= 0) {
-      body(canvas, g, 255);
+      body(canvas, g, 255, bl, br);
       return;
     }
     // under a deck: the car outside the deck as ever; under it, the car fades out and its outline in
     canvas.save();
     canvas.clipPath(deckClip, Region.Op.DIFFERENCE);
-    body(canvas, g, 255);
+    body(canvas, g, 255, bl, br);
     canvas.restore();
     canvas.save();
     canvas.clipPath(deckClip);
     int a = Math.round(255 * (1 - u));
-    if (a > 0) body(canvas, g * (1 - u), a);
+    if (a > 0) body(canvas, g * (1 - u), a, bl * (1 - u), br * (1 - u));
     if (outline != null) {
       outlinePaint.setAlpha(Math.round(255 * u));
       canvas.drawBitmap(outline, CAR_X - CAR_PX, CAR_Y - CAR_PX, outlinePaint);
@@ -2119,8 +2133,10 @@ final class MapView extends View {
     canvas.restore();
   }
 
-  // The car at alpha a (0 to 255) with its brake glow g.
-  private void body(Canvas canvas, float g, int a) {
+  // The car at alpha a (0 to 255) with its brake glow g and its left and right blind-spot glows bl and br.
+  private void body(Canvas canvas, float g, int a, float bl, float br) {
+    if (bl > 0) sideGlow(canvas, -1, bl, a);
+    if (br > 0) sideGlow(canvas, 1, br, a);
     if (g > 0) lights(canvas, g, true);
     if (car != null) {
       carPaint.setAlpha(a);
@@ -2296,6 +2312,44 @@ final class MapView extends View {
   private boolean glowing(long now) {
     float g = glow(now);
     return g != (glowOn ? 1f : 0f) || g != drawnGlow;
+  }
+
+  // The blind-spot glow of one side (0 left, 1 right), 0 to 1: the same fade and stale rule as the brake glow.
+  private float blind(int side, long now) {
+    boolean on = (side == 0 ? Feed.blindLeft : Feed.blindRight) && now - Feed.poseAt < STALE_MS;
+    if (on != blindOn[side]) {
+      blindFrom[side] = blindLevel(side, now);
+      blindOn[side] = on;
+      blindAt[side] = now;
+    }
+    return blindLevel(side, now);
+  }
+
+  private float blindLevel(int side, long now) {
+    float d = (now - blindAt[side]) / (float) GLOW_MS;
+    return blindOn[side] ? Math.min(1f, blindFrom[side] + d) : Math.max(0f, blindFrom[side] - d);
+  }
+
+  private boolean blinding(long now) {
+    for (int side = 0; side < 2; side++) {
+      float g = blind(side, now);
+      if (g != (blindOn[side] ? 1f : 0f) || g != blindDrawn[side]) return true;
+    }
+    return false;
+  }
+
+  // A soft red halo hugging one side of the sprite (side -1 left, 1 right), three widening rounded bars of falling
+  // opacity, under the body so it shows past the car's edge; steady, no pulse. Alpha follows the fade g and the car's alpha a.
+  private void sideGlow(Canvas canvas, int side, float g, int a) {
+    float edge = CAR_X + side * BLIND_EDGE_DX, k = g * a / 255f;
+    glowPaint.setColor(0xffeb2832);  // projection_theme.py RED (235, 40, 50)
+    for (int i = 0; i < 3; i++) {
+      float out = 4 + 5 * i;  // how far the bar reaches past the body edge
+      float x0 = side < 0 ? edge - out : edge - 4, x1 = side < 0 ? edge + 4 : edge + out;
+      glowPaint.setAlpha(Math.round((150 - 45 * i) * k));
+      blindRect.set(x0, CAR_Y - BLIND_UP - i * 2, x1, CAR_Y + BLIND_DOWN + i * 2);
+      canvas.drawRoundRect(blindRect, 6, 6, glowPaint);
+    }
   }
 
   // Under the sprite, a wide red halo that shows past the body's sides; over it, a bright core on each lamp.
