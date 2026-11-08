@@ -13,9 +13,19 @@ final class CloseView {
   // SHADOW_PX past a deck's casing, in two steps
   static final float WALK_PX = 1.2f, CROSS_PX = 3, LANE_PX = 1.2f, SHADOW_PX = 5;
   static final float WALK_A = 0.55f, CROSS_A = 0.7f, LANE_A = 0.8f, SHADOW_A = 0.22f;
+  // Peter 2026-11-08, Apple-style 3D: a third, wider and fainter shadow stroke so the two hard-edged steps above
+  // read as a soft falloff instead of a double outline. Drawn widest/faintest first, same as the two steps already
+  // there. *static*: picked by eye in the desktop harness, not measured on the head unit.
+  static final float SHADOW_PX3 = 9, SHADOW_A3 = 0.10f;
   // the deck's side wall: the deck drawn dark at these fractions of its height under it (a quarter apart, so a thin
   // link ramp two layers up still shows one wall, not stripes)
   static final float[] WALL_AT = {0, 0.25f, 0.5f, 0.75f};
+  // Peter 2026-11-08, Apple-style 3D: baked directional shading, one fixed light implied from above/the deck top -
+  // WALL_AT is ordered bottom (0, nearest the ground, darkest) to top (0.75, nearest the deck, lightest), so a
+  // per-band brightness scalar here reads as a lit gradient down the wall at zero extra fragment cost (same strokes,
+  // same draw calls, just a baked uColor.rgb multiplier instead of per-pixel lighting). *static*: a visual choice,
+  // not measured.
+  static final float[] WALL_SHADE = {0.65f, 0.78f, 0.9f, 1.0f};
   // a rail line: a thin dark grey line with thin cross ties (CloseUp.TIE_M), as a printed map draws one, darker than
   // any road so it reads as under them
   static final int RAIL_C = 0xff707479, TIE_C = 0xff5c6065;
@@ -26,6 +36,39 @@ final class CloseView {
   static final float[] FASCIA_AT = {0.8f, 0.87f, 0.94f};
   static final int UNDER_C = 0xff2b2a27, FASCIA_C = 0xff6e6b64, PARAPET_C = 0xff8c8981, PIER_C = 0xff5f5c56;
   static final float PIER_PX = 3;
+  // Peter 2026-11-08, Apple-style 3D: FASCIA_AT is ordered soffit (darkest, unlit) to top band (lightest, nearest
+  // the lit deck top); PIER_SHADE darkens the piers below even the darkest wall band, so the stack reads
+  // top-lightest to pier-darkest. *static*: a visual choice, not measured.
+  static final float[] FASCIA_SHADE = {0.85f, 0.92f, 1.05f};
+  static final float PIER_SHADE = 0.55f;
+  // Peter 2026-11-08, Apple-style 3D: the deck's own top surface (the road colour drawn on the lifted deck range)
+  // lightened a little versus the same class's ground-level colour, so the deck top reads as the lit face next to
+  // the darker wall/fascia bands below it. *static*: a visual choice, not measured.
+  static final float DECK_TOP_SHADE = 1.12f;
+
+  // Peter 2026-11-08, Apple-style 3D: scales color's rgb by f (clamping each channel to 255), alpha unchanged.
+  // Called only while building the shaded colour tables below (class init, not per frame or per segment).
+  private static int shade(int color, float f) {
+    int r = Math.min(255, Math.round(((color >> 16) & 0xff) * f));
+    int g = Math.min(255, Math.round(((color >> 8) & 0xff) * f));
+    int b = Math.min(255, Math.round((color & 0xff) * f));
+    return (color & 0xff000000) | (r << 16) | (g << 8) | b;
+  }
+
+  // Peter 2026-11-08, Apple-style 3D: baked once, not per frame - WALL_C/FASCIA_C/UNDER_C shaded per band above,
+  // and the deck-top (lightened) road/kerb colours by class, so passes() below just looks the right one up.
+  private static final int[] WALL_SHADED = new int[WALL_AT.length];
+  private static final int[] FASCIA_SHADED = new int[FASCIA_AT.length];
+  private static final int UNDER_SHADED = shade(UNDER_C, FASCIA_SHADE[0]);
+  private static final int PIER_SHADED = shade(PIER_C, PIER_SHADE);
+  private static final int[] DECK_ROADS = new int[MapView.ROADS.length];
+  private static final int[] DECK_KERBS = new int[MapView.KERBS.length];
+  static {
+    for (int i = 0; i < WALL_AT.length; i++) WALL_SHADED[i] = shade(WALL_C, WALL_SHADE[i]);
+    for (int i = 0; i < FASCIA_AT.length; i++) FASCIA_SHADED[i] = shade(FASCIA_C, FASCIA_SHADE[i]);
+    for (int i = 0; i < MapView.ROADS.length; i++) DECK_ROADS[i] = shade(MapView.ROADS[i], DECK_TOP_SHADE);
+    for (int i = 0; i < MapView.KERBS.length; i++) DECK_KERBS[i] = shade(MapView.KERBS[i], DECK_TOP_SHADE);
+  }
 
   // One pass: range r of the detail at hs of its height, dashed (on, period world m) or solid (period 0).
   interface Pass {
@@ -48,23 +91,26 @@ final class CloseView {
       for (int c : MapView.DRAW_ORDER) {
         float w = Math.max(floor, MapView.ROAD_M[c] * ik) + casing;
         for (int r : new int[] {CloseUp.range(g, c), CloseUp.deck(g, c)}) {
+          // widest/faintest first (phase 2's soft-falloff step), then the two existing hard-edged steps
+          p.lines(r, 0, w + MapView.dm(SHADOW_PX3), SHADOW_C, SHADOW_A3 * gr, 0, 0);
           p.lines(r, 0, w + 2 * MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
           p.lines(r, 0, w + MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);
         }
       }
     }
     // piers stand on the ground, so under every deck: each a column from 0 to the deck (zero plan length)
-    for (int g = 1; g < CloseUp.LAYERS; g++) p.lines(CloseUp.pier(g), gr, MapView.dm(PIER_PX), PIER_C, gr, 0, 0);
+    for (int g = 1; g < CloseUp.LAYERS; g++) p.lines(CloseUp.pier(g), gr, MapView.dm(PIER_PX), PIER_SHADED, gr, 0, 0);
     for (int g = 1; g < CloseUp.LAYERS; g++) {
-      for (float at : WALL_AT) {
+      for (int a = 0; a < WALL_AT.length; a++) {
         for (int c : MapView.DRAW_ORDER) {
-          p.lines(CloseUp.range(g, c), at * gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, WALL_C, gr, 0, 0);
+          p.lines(CloseUp.range(g, c), WALL_AT[a] * gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing,
+                  WALL_SHADED[a], gr, 0, 0);
         }
       }
       for (int f = 0; f < FASCIA_AT.length; f++) {
         for (int c : MapView.DRAW_ORDER) {
           p.lines(CloseUp.deck(g, c), FASCIA_AT[f] * gr, Math.max(floor, MapView.ROAD_M[c] * ik) + casing,
-                  f == 0 ? UNDER_C : FASCIA_C, gr, 0, 0);
+                  f == 0 ? UNDER_SHADED : FASCIA_SHADED[f], gr, 0, 0);
         }
       }
       for (int c : MapView.DRAW_ORDER) {
@@ -75,12 +121,12 @@ final class CloseView {
       for (int c : MapView.DRAW_ORDER) {
         float w = Math.max(floor, MapView.ROAD_M[c] * ik) + kerb;
         p.lines(CloseUp.range(g, c), gr, w, MapView.KERBS[c], 1, 0, 0);
-        p.lines(CloseUp.deck(g, c), gr, w, MapView.KERBS[c], 1, 0, 0);
+        p.lines(CloseUp.deck(g, c), gr, w, DECK_KERBS[c], 1, 0, 0);
       }
       for (int c : MapView.DRAW_ORDER) {
         float w = Math.max(floor, MapView.ROAD_M[c] * ik);
         p.lines(CloseUp.range(g, c), gr, w, MapView.ROADS[c], 1, 0, 0);
-        p.lines(CloseUp.deck(g, c), gr, w, MapView.ROADS[c], 1, 0, 0);
+        p.lines(CloseUp.deck(g, c), gr, w, DECK_ROADS[c], 1, 0, 0);
       }
       lanes(g, gr, lane, gr, p);
     }
