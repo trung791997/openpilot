@@ -52,9 +52,10 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final int SLICE = 256 * 1024;  // bytes of a new scene sent a frame, while the last one draws
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = MapView.KERB_C, ROAD = MapView.ROAD_C, GRID = 0xff2a2a2a;
-  // groups 0-4 the road classes, 5-9 their bridges (MapView.BRIDGE), 10-13 the route by traffic: unknown or low,
-  // moderate, heavy, severe. A group with nothing in view costs no draw call.
-  private static final int ROUTE = 2 * MapView.BRIDGE, LEVELS = 4;
+  // groups 0-4 the road classes, then their bridges by deck layer (class + MapView.BRIDGE * layer, layers 1 to
+  // CloseUp.LAYERS - 1), then the route by traffic: unknown or low, moderate, heavy, severe. A group with nothing in
+  // view costs no draw call.
+  private static final int ROUTE = MapView.BRIDGE * CloseUp.LAYERS, LEVELS = 4;
   private static final long FRAME_MS = 33, IDLE_MS = 500;
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
@@ -844,9 +845,13 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     int b = MapView.BRIDGE;
     float flatA = close != null && close.shows(s) && s.close != null ? 1 - CloseUp.gate(MapView.R0 / ik, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE) : 1;
     if (flatA > 0) {
-      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
-      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], flatA);
-      for (int c : MapView.DRAW_ORDER) lines(b + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], flatA);
+      // a layer's casing, kerb and surface all before the next layer up, as the view draws them
+      for (int ly = 1; ly < CloseUp.LAYERS; ly++) {
+        int g = b * ly;
+        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
+        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], flatA);
+        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], flatA);
+      }
     }
     // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over
     if (close != null) {

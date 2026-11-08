@@ -85,6 +85,16 @@ final class CloseUp {
     return r >= DECK0 && r < PIER0 ? (r - DECK0) % CLASSES : (r - 2) % PER_LAYER;
   }
 
+  // The deck layer group a raised range or a deck range belongs to (1 to LAYERS - 1; 0 for everything else, which
+  // Under.covering never asks about since it only ever looks up range(g, c)/deck(g, c) ranges with g >= 1). Added
+  // for MapView's under-outline gate (Peter 2026-11-08): the car's own bridge must not count as covering it, which
+  // a height margin alone can miss right at a layer boundary.
+  static int layerOf(int r) {
+    if (r >= DECK0 && r < PIER0) return (r - DECK0) / CLASSES + 1;
+    if (r >= 2 && r < RAIL) return (r - 2) / PER_LAYER;
+    return 0;
+  }
+
   static final class Detail {
     float[] seg = new float[0];
     final int[] from = new int[RANGES + 1];  // range r is segments from[r] to from[r + 1]

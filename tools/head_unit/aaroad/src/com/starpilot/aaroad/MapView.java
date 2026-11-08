@@ -187,10 +187,13 @@ final class MapView extends View {
   private float songAt = -1;
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
-  private final Path[] stubPaths = paths(2 * BRIDGE);  // by scene class: the tile classes, then their bridges
+  // by scene class: the tile classes, then their bridges, one bucket of BRIDGE classes per deck layer (1 to
+  // CloseUp.LAYERS - 1) so draw() can paint a higher layer's casing and fill over a lower one's (Peter 2026-11-08,
+  // "the highway lines simply overlay the street below, with no joint seams")
+  private final Path[] stubPaths = paths(BRIDGE * CloseUp.LAYERS);
   private final CloseView closeView = new CloseView();
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
-  private final Path[] stubWorld = paths(2 * BRIDGE);
+  private final Path[] stubWorld = paths(BRIDGE * CloseUp.LAYERS);
   private final Path routeWorld = new Path();
   // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe
   private final Path[] carpetPaths = {new Path(), new Path(), new Path(), new Path()};
@@ -1133,6 +1136,7 @@ final class MapView extends View {
         int[] starts = tile.starts[c];
         String[] names = tile.names[c];
         boolean[] bridge = tile.bridge[c];
+        byte[] layer = tile.layer[c];
         if (pts == null || starts == null) continue;
         for (int l = 0; l + 1 < starts.length; l++) {
           // with a route, every road around the car shows as in free drive, and farther out the roads along the route
@@ -1143,7 +1147,13 @@ final class MapView extends View {
           String name = names != null && l < names.length ? names[l] : null;
           boolean flat = up != null && up[c] != null && l < up[c].length && up[c][l] == 1;  // a bridge not over a road
           int dc = CloseView.drawn(streets, tile, c, l);  // a link that is not a highway ramp: a street
-          int sc = bridge != null && l < bridge.length && bridge[l] && !flat ? dc + BRIDGE : dc;
+          boolean isBridge = bridge != null && l < bridge.length && bridge[l] && !flat;
+          // the OSM layer (CloseUp.LAYER_M stacking order), kept instead of thrown away so a flyover's deck draws
+          // over a ramp's below it the same way CloseUp already lifts it: no layer tag (0) is a bridge with nothing
+          // under it, CloseUp.layerOf's convention (Math.max(1, ...)); clipped to CloseUp.LAYERS - 1 the same way.
+          int rawLayer = layer != null && l < layer.length ? layer[l] : 0;
+          int ly = isBridge ? Math.max(1, Math.min(CloseUp.LAYERS - 1, rawLayer)) : 0;
+          int sc = isBridge ? dc + BRIDGE * ly : dc;
           while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsName.add(name); }
           while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsName.add(name); }
         }
@@ -1778,26 +1788,38 @@ final class MapView extends View {
         side.setColor(ROADS[c]);
         stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
       }
-      // the bridges over all of that: casing, kerb, surface. Only overpasses are here (CloseUp.overpasses); zoomed in
-      // they fade out as CloseView draws them raised, with deck, piers and shadow, so the flat copy doesn't show
-      // under the deck as a second road
+      // the bridges over all of that: casing, kerb, surface, lowest layer first. Only overpasses are here
+      // (CloseUp.overpasses); zoomed in they fade out as CloseView draws them raised, with deck, piers and shadow,
+      // so the flat copy doesn't show under the deck as a second road.
+      //
+      // Peter 2026-11-08 ("the highway lines simply overlay the street below, with no joint seams"): each layer's
+      // casing, then kerb, then fill are drawn fully before the next layer up starts, so a layer-2 flyover's fill
+      // always paints over a layer-1 ramp's deck where they cross, and a ramp joining the mainline at the same
+      // layer has its casing hidden by whichever piece's fill is drawn last there -- no round-cap seam crossing the
+      // joint, as Google draws it. Tried first: only merging touching pieces of the same class (same width), which
+      // had no visible effect since the seam is between classes (motorway vs motorway_link), not within one; see
+      // /tmp/hu/audit/merge-same-class.patch.
       float flatA = s.close != null ? 1 - CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE) : 1;
       if (flatA > 0) {
         int alpha = Math.round(255 * flatA);
-        sideKerb.setColor(CASING_C);
-        sideKerb.setAlpha(alpha);
-        for (int c : DRAW_ORDER) {
-          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
-        }
-        for (int c : DRAW_ORDER) {
-          sideKerb.setColor(KERBS[c]);
+        for (int ly = 1; ly < CloseUp.LAYERS; ly++) {
+          sideKerb.setColor(CASING_C);
           sideKerb.setAlpha(alpha);
-          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
-        }
-        for (int c : DRAW_ORDER) {
-          side.setColor(ROADS[c]);
-          side.setAlpha(alpha);
-          stroke(canvas, stubWorld[c + BRIDGE], stubPaths[c + BRIDGE], side, Math.max(floor, ROAD_M[c] * ik));
+          for (int c : DRAW_ORDER) {
+            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], sideKerb,
+                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+          }
+          for (int c : DRAW_ORDER) {
+            sideKerb.setColor(KERBS[c]);
+            sideKerb.setAlpha(alpha);
+            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], sideKerb,
+                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+          }
+          for (int c : DRAW_ORDER) {
+            side.setColor(ROADS[c]);
+            side.setAlpha(alpha);
+            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], side, Math.max(floor, ROAD_M[c] * ik));
+          }
         }
         sideKerb.setAlpha(255);
         side.setAlpha(255);
@@ -1899,6 +1921,7 @@ final class MapView extends View {
     }
     int n = f == null ? 0 : Under.covering(d, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
                                            dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), cover);
+    if (n > 0) n = aboveCarLayer(d, f, cover, n);
     under.set(n > 0, now, Under.fadeMs(Math.max(0, Feed.spd)));
     if (n > 0) coverN = n;  // else the last ones, while the outline fades out
     float u = under.level(now);
@@ -1947,6 +1970,21 @@ final class MapView extends View {
     return r;
   }
 
+  // Keeps only out[0..n) whose own deck layer is strictly above the layer of the road the car is on (Peter
+  // 2026-11-08: Under.covering's height margin (OVER_M) alone can still call the car's own bridge "covering" it
+  // right at a layer boundary -- this is why UNDER_OUTLINE was once turned off, d852f9f41). Under.carHeight and
+  // CloseUp.layerOf are both package-visible helpers already used elsewhere; nothing here is per-frame allocation,
+  // just a compaction of the existing out array. Returns the new count.
+  private static int aboveCarLayer(CloseUp.Detail d, Frame f, int[] out, int n) {
+    float hc = Under.carHeight(d, f.ce, f.cn, f.ch, f.sh, ROAD_M);
+    int carLayer = Math.max(0, Math.min(CloseUp.LAYERS - 1, Math.round(hc / CloseUp.LAYER_M)));
+    int kept = 0;
+    for (int k = 0; k < n; k++) {
+      if (CloseUp.layerOf(closeRange(d, out[k])) > carLayer) out[kept++] = out[k];
+    }
+    return kept;
+  }
+
   private static float[] disc(float x, float z, float r) {
     float[] p = new float[16];
     for (int j = 0; j < 8; j++) {
@@ -1979,12 +2017,15 @@ final class MapView extends View {
     deckClip.close();
   }
 
-  // Whether frame f puts the car under a deck (the slow layer's check between its draws), at every zoom.
+  // Whether frame f puts the car under a deck (the slow layer's check between its draws), at every zoom. Filtered
+  // by layer the same way underDeck is, so this does not ask for a redraw over a case underDeck would then decide
+  // is really the car's own bridge.
   private boolean underWanted(Frame f) {
     if (!UNDER_OUTLINE) return false;
     float gr = CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
-    return Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
-                          dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover) > 0;
+    int n = Under.covering(f.s.close, f.ce, f.cn, f.ch, f.sh, f.ik, gr, ROAD_M, dm(MIN_ROAD_PX),
+                           dm(2 * KERB_PX + 2 * CASING_PX), dm(Under.CAR_PX), tickCover);
+    return n > 0 && aboveCarLayer(f.s.close, f, tickCover, n) > 0;
   }
 
   // Under a deck the outline is still moving (easing, or the deck sliding by the car): the slow layer redraws.
