@@ -53,9 +53,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = MapView.KERB_C, ROAD = MapView.ROAD_C, GRID = 0xff2a2a2a;
   // groups 0-4 the road classes, then their bridges by deck layer (class + MapView.BRIDGE * layer, layers 1 to
-  // CloseUp.LAYERS - 1), then the route by traffic: unknown or low, moderate, heavy, severe. A group with nothing in
-  // view costs no draw call.
-  private static final int ROUTE = MapView.BRIDGE * CloseUp.LAYERS, LEVELS = 4;
+  // CloseUp.LAYERS - 1), then the same again past MapView.DIM_OFF for the dimmed half (Part B, Peter 2026-11-08,
+  // MapView.Scene.stubsDim) -- a stub/road group with nothing in view costs no draw call, same as any other --
+  // then the route by traffic: unknown or low, moderate, heavy, severe. ROUTE mirrors MapView's own doubled
+  // stubWorld/stubPaths size (2 * MapView.DIM_OFF), so group indices line up the same way on both paths.
+  private static final int ROUTE = 2 * MapView.DIM_OFF, LEVELS = 4;
   private static final long FRAME_MS = 33, IDLE_MS = 500;
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
@@ -735,9 +737,21 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       try {
         MapView.Chunks roads = s.route.length > 0 ? s.stubsChunks : s.roadsChunks;
         MapView.Chunks route = s.routeChunks;
+        // a stub/road piece's own class, offset into the dimmed half (Part B, Peter 2026-11-08, MapView.Chunks.dim)
+        // when it is the untaken branch of a split -- same offset trick as level below, mirroring pieces() on the
+        // software path.
+        int[] rcls = new int[roads.cls.length];
+        for (int i = 0; i < rcls.length; i++) {
+          rcls[i] = roads.cls[i] + (i < roads.dim.length && roads.dim[i] != 0 ? MapView.DIM_OFF : 0);
+        }
         int[] level = new int[route.cls.length];  // a route piece's cls is its traffic, 0 to 4 (MapView.chunks)
-        for (int i = 0; i < level.length; i++) level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
-        g = new GlCull(s, ROUTE, LEVELS, roads.pts, roads.box, roads.cls, roads.at, route.pts, route.box, level, route.at);
+        // group LEVELS..2*LEVELS-1 (Peter 2026-11-08) is the same traffic colour but under a higher deck
+        // (MapView.Chunks.under); drawFrame draws that half before the bridges instead of after, Apple Maps style.
+        for (int i = 0; i < level.length; i++) {
+          level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
+          if (route.under[i] != 0) level[i] += LEVELS;
+        }
+        g = new GlCull(s, ROUTE, 2 * LEVELS, roads.pts, roads.box, rcls, roads.at, route.pts, route.box, level, route.at);
         int size = g.bytes();
         if (b == null || b.capacity() < size) b = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
         b.position(0);
@@ -836,9 +850,23 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     float route = Math.max(floor, MapView.ROUTE_M * ik);
     // by class colour (MapView.KERBS/ROADS); the route's own grey road under the tile roads' surfaces
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
-    for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
-    for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
+    // route groups LEVELS..2*LEVELS-1 are the under-a-higher-deck half (Peter 2026-11-08, packLoop); the grey
+    // backdrop draws before bridges either way, so both halves go here together same as the over half did.
+    for (int l = 0; l < 2 * LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
+    for (int l = 0; l < 2 * LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
     for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
+    // Part B (Peter 2026-11-08): the untaken branch of a split, ground level, dimmed over the plain ground pass
+    // above -- group c + MapView.DIM_OFF, MapView.dim()'s colours, same kerb-then-surface order and widths.
+    for (int c : MapView.DRAW_ORDER) lines(c + MapView.DIM_OFF, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.dim(MapView.KERBS[c]), 1);
+    for (int c : MapView.DRAW_ORDER) lines(c + MapView.DIM_OFF, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.dim(MapView.ROADS[c]), 1);
+    // the carpet under a higher deck (Peter 2026-11-08, Apple Maps style): drawn before the bridges below so their
+    // casing/kerb/surface paint over it; the rest of the carpet (ROUTE + 0..LEVELS-1) still draws last, over them.
+    if (!Float.isNaN(cut)) {
+      GLES20.glUniform1f(lCarpet, 1);
+      float wide = Math.max(MapView.dm(MapView.LINE_MIN_PX), Math.min(MapView.dm(MapView.LINE_MAX_PX), MapView.LINE_M * ik));
+      for (int l = 0; l < LEVELS; l++) lines(ROUTE + LEVELS + l, wide, l == 0 ? color : MapView.TRAFFIC[l - 1], 242 / 255f);
+      GLES20.glUniform1f(lCarpet, 0);
+    }
     // the bridges (overpasses only) over all of that, as the view: casing, kerb, surface, fading out zoomed in as
     // the close-up draws them raised
     float casing = MapView.dm(2 * MapView.KERB_PX + 2 * MapView.CASING_PX);
@@ -851,6 +879,12 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
         for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], flatA);
         for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], flatA);
+        // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
+        // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
+        int gd = g + MapView.DIM_OFF;
+        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
+        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.dim(MapView.KERBS[c]), flatA);
+        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.dim(MapView.ROADS[c]), flatA);
       }
     }
     // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over

@@ -96,6 +96,79 @@ final class Under {
     return hc;
   }
 
+  // One point (pe, pn), heading (ch, sh) along a route segment: true if it sits under a deck higher than the
+  // road it is itself on by more than OVER_M (own height rh from carHeight, which already keeps only the segment's
+  // own way). Split out of underCuts below so a long route edge can be sampled at more than its one midpoint.
+  private static boolean underPoint(CloseUp.Detail d, float pe, float pn, float ch, float sh) {
+    float rh = carHeight(d, pe, pn, ch, sh, CloseUp.ROAD_W);
+    float[] v = d.seg;
+    for (int layer = 1; layer < CloseUp.LAYERS; layer++) {
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {
+        int c = k % CloseUp.CLASSES;
+        int r = k < CloseUp.CLASSES ? CloseUp.range(layer, c) : CloseUp.deck(layer, c);
+        float reach = CloseUp.ROAD_W[c] / 2;
+        for (int i = d.from[r]; i < d.from[r + 1]; i++) {
+          int o = i * CloseUp.SEG;
+          if (Math.max(v[o + 4], v[o + 5]) <= rh + OVER_M) continue;
+          if (pe < Math.min(v[o], v[o + 2]) - reach || pe > Math.max(v[o], v[o + 2]) + reach) continue;
+          if (pn < Math.min(v[o + 1], v[o + 3]) - reach || pn > Math.max(v[o + 1], v[o + 3]) + reach) continue;
+          float sx = v[o + 2] - v[o], sy = v[o + 3] - v[o + 1], len2 = sx * sx + sy * sy;
+          if (len2 <= 0) continue;
+          float t = Math.max(0, Math.min(1, ((pe - v[o]) * sx + (pn - v[o + 1]) * sy) / len2));
+          float ex = v[o] + t * sx - pe, ey = v[o + 1] + t * sy - pn;
+          if (ex * ex + ey * ey <= reach * reach) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // A route edge's own shape points can be far apart (a straight highway stretch may carry only its two ends), so
+  // testing only the edge's midpoint can step clean over a deck that crosses a short way into it (Peter 2026-11-08,
+  // found on the walk3d close-up harness, where a 1450 m synthetic edge's midpoint missed a crossing 475 m off it).
+  // UNDER_STEP_M, a deck's narrowest expected width (two lanes plus shoulders) so no crossing is thin enough to
+  // fall between samples: static choice, not road-measured. Capped at UNDER_SAMPLES so one long highway edge can't
+  // make the once-per-build classification loop unbounded.
+  private static final float UNDER_STEP_M = 8;
+  private static final int UNDER_SAMPLES = 256;
+
+  // Whether a route edge passes under a deck higher than the road it is itself on, and where that state changes
+  // along it: first is the state at (ae, an); at holds, in ascending metres from (ae, an), each point where it
+  // flips, as the midpoint between the last sample of one state and the first of the next -- collinear with the
+  // edge, so a caller that splits the edge there doesn't bend the line or move its length.
+  static final class Cuts {
+    final boolean first;
+    final float[] at;
+    Cuts(boolean first, float[] at) { this.first = first; this.at = at; }
+  }
+
+  // A route edge's own shape points can be far apart (a straight highway stretch may carry only its two ends), so
+  // testing only the edge's midpoint can step clean over a deck that crosses a short way into it, or -- the Part A
+  // bug (Peter 2026-11-08) -- miss that the edge is only PARTLY under a higher deck: a long straight edge can ride
+  // its own overpass through part of its length (not under anything higher than itself there) and duck under a
+  // different, higher flyover through another part. underHigherDeck used to collapse that to one flag for the
+  // whole edge, so the edge's own deck then painted over the route on the bridge the car is actually driving on.
+  // Sampled every UNDER_STEP_M along the edge (its direction is one heading throughout, so carHeight's own-way
+  // filter still applies at each sample) instead of once at the midpoint. Called once per route edge at scene
+  // build time (MapView.build), not per frame.
+  static Cuts underCuts(CloseUp.Detail d, float ae, float an, float be, float bn) {
+    float dx = be - ae, dy = bn - an, len = (float) Math.hypot(dx, dy);
+    if (d == null || len <= 0) return new Cuts(false, new float[0]);
+    float sh = dx / len, ch = dy / len;
+    int n = Math.min(UNDER_SAMPLES, Math.max(1, (int) Math.ceil(len / UNDER_STEP_M)));
+    boolean first = underPoint(d, ae, an, ch, sh), prev = first;
+    java.util.List<Float> cuts = new java.util.ArrayList<Float>();
+    for (int i = 1; i <= n; i++) {
+      float t = (float) i / n;
+      boolean cur = underPoint(d, ae + dx * t, an + dy * t, ch, sh);
+      if (cur != prev) cuts.add(((i - 0.5f) / n) * len);
+      prev = cur;
+    }
+    float[] at = new float[cuts.size()];
+    for (int i = 0; i < at.length; i++) at[i] = cuts.get(i);
+    return new Cuts(first, at);
+  }
+
   // The raised segments drawn over the car's body this frame, into out (segment indices; at most out.length) and
   // their count, at every zoom (2026-11-07: this used to run only in the close-up; now it also finds the flat decks
   // cruising draws). The detail is drawn with heights at hs (the close-up gate, 0 cruising) and widths w(c) =

@@ -109,9 +109,22 @@ final class MapView extends View {
   static final int[] ROADS = {0xff7a6420, ROAD_C, ROAD_C, 0xff5a4b1e, ROAD_C};
   // Bridges (format 3 tiles, road_tiles.BRIDGE) go over the roads under them, Peter 2026-10-31: after every other
   // road's kerb and surface, in their own colours, with a dark casing CASING_PX wide each side so the road below
-  // reads as passing under. A bridge's class in the scene is its tile class + BRIDGE; the carpet stays on top.
+  // reads as passing under. A bridge's class in the scene is its tile class + BRIDGE; the carpet stays on top of
+  // the deck it rides on, but not of a higher deck it passes under (Peter 2026-11-08, overriding the above: Apple
+  // Maps shows the route diving under a bridge it doesn't use). The under-a-higher-deck piece of carpet is drawn
+  // here, before the bridges, so the bridge draws over it -- see Scene.routeUnder, Under.underCuts, and the
+  // carpetUnderPaths split of carpet()/carpetLine().
   static final int BRIDGE = 5, CASING_C = 0xff101010;
   static final float CASING_PX = 2;
+  // Part B (Peter 2026-11-08 approved): the branch not taken at a split ahead -- the other ramp, or the mainline
+  // continuing ahead when the route exits -- draws dimmed, the way Apple Maps does it. The dimmed half of a stub
+  // road's class space, same doubling trick as the route's under-a-deck half above (GlRoads.LEVELS): a dimmed
+  // piece's class is its plain class (+ BRIDGE * layer if it's on a deck) plus DIM_OFF, so it shares every other
+  // class's drawing code and only needs its own kerb/surface colour pass. See stubsDim() and Scene.stubsDim.
+  static final int DIM_OFF = BRIDGE * CloseUp.LAYERS;
+  // the night canvas clears to this (see the drawColor call below); blended 50% with a road's own colour for the
+  // untaken branch, as the background it's meant to recede toward
+  private static final int BG = 0xff050505;
   static final float ROUTE_M = 10 * 2, LINE_M = 6 * 2, LINE_MIN_PX = 4, LINE_MAX_PX = 14;
   private static final double TURN_LEN = 40;   // m of road shown past the turn
   private static final double CLOSE = 60;                    // m ahead at the turn itself: the closest zoom
@@ -127,6 +140,16 @@ final class MapView extends View {
   // stays put while the fix wanders within HOLD_DRIFT m.
   private static final double HOLD_DRIFT = 10;
   private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
+  // Part B (Peter 2026-11-08 approved, "grey out the ramp not taken"): a stub run whose end lands within
+  // FORK_MERGE_M of the route (loose, OSM nodes rarely coincide exactly, unlike the junction dots above which only
+  // need to find a crossing) and which leaves there at between FORK_MIN_DEG and FORK_MAX_DEG off the route's own
+  // heading is the other branch of a split -- too small an angle and it is the route's own road re-matched (or a
+  // frontage road running alongside, Under's ON_DECK-style near-parallel case); too large and it is a road merely
+  // crossing the route, which stubsDim() must leave alone. Design values, not yet checked against a real fork's
+  // OSM geometry (no close-up fork case in the harnesses at the time this was written) -- revisit against a real
+  // ramp if the dimming is ever seen in the wrong place, or missing, on road. DIM_M is the spec's own number
+  // (first ~150-200 m of the untaken branch), not measured either.
+  private static final float FORK_MERGE_M = 15, FORK_MIN_DEG = 5, FORK_MAX_DEG = 70, DIM_M = 180;
   private static final double SCENE_R = 4000, MOVE_R = 600, ROADS_R = 700, CELL = 500, DENSE = 100;
   // SLOW_MS: with the GPU layer drawing the map, this view only holds the car, tag, sign and cards, so the tick looks
   // for a change in them ten times a second
@@ -189,14 +212,19 @@ final class MapView extends View {
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   // by scene class: the tile classes, then their bridges, one bucket of BRIDGE classes per deck layer (1 to
   // CloseUp.LAYERS - 1) so draw() can paint a higher layer's casing and fill over a lower one's (Peter 2026-11-08,
-  // "the highway lines simply overlay the street below, with no joint seams")
-  private final Path[] stubPaths = paths(BRIDGE * CloseUp.LAYERS);
+  // "the highway lines simply overlay the street below, with no joint seams"). Doubled past DIM_OFF (Part B,
+  // 2026-11-08) for the same classes dimmed, the untaken branch of a split (Scene.stubsDim) -- the free-drive
+  // roadsChunks path through pieces() never sets a dim flag, so that half of these arrays stays empty there.
+  private final Path[] stubPaths = paths(2 * BRIDGE * CloseUp.LAYERS);
   private final CloseView closeView = new CloseView();
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
-  private final Path[] stubWorld = paths(BRIDGE * CloseUp.LAYERS);
+  private final Path[] stubWorld = paths(2 * BRIDGE * CloseUp.LAYERS);
   private final Path routeWorld = new Path();
-  // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe
+  // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe.
+  // carpetUnderPaths (Peter 2026-11-08) holds the same four, split off where Scene.routeUnder says the route runs
+  // under a higher deck -- drawn before the bridges/decks instead of after, so it goes under them (Apple Maps style).
   private final Path[] carpetPaths = {new Path(), new Path(), new Path(), new Path()};
+  private final Path[] carpetUnderPaths = {new Path(), new Path(), new Path(), new Path()};
   static final int[] TRAFFIC = {0xffffb300, 0xffff5722, 0xffc62828};  // moderate, heavy, severe; GlRoads draws the same
   private final Path[] routeWorlds = {routeWorld}, routeFrames = {routePath};
   private final Matrix world = new Matrix();  // world metres to the car's frame, this frame
@@ -323,6 +351,14 @@ final class MapView extends View {
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
     byte[][] routeLevel = new byte[0][];  // traffic per segment of each route run, 0 unknown to 4 severe (Feed.Route.lvl)
+    // whether each segment of each route run passes under a deck higher than the road it is on (Peter 2026-11-08,
+    // Under.underCuts against s.close), found once here at build; carpet()/carpetLine() read it, no new work
+    // per frame. Same run/segment shape as routeLevel, built right after s.close so the heights it reads are ready.
+    byte[][] routeUnder = new byte[0][];
+    // Part B (Peter 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch not taken at a split,
+    // found once here at build by stubsDim() against the finished route and stubs; same run/segment shape as
+    // stubsCls. draw() reads it through stubsChunks' dim field below, no work per frame.
+    byte[][] stubsDim = new byte[0][];
     float[][] routeAlong = new float[0][];  // metres along the route at each point of each run, runs end to end
     float[] signals = new float[0];  // the traffic signal and stop icons, Signals.cluster: e, n, kind, along in fours
     Chunks routeChunks = new Chunks(), stubsChunks = new Chunks(), roadsChunks = new Chunks();
@@ -341,6 +377,14 @@ final class MapView extends View {
     float[][] pts = new float[0][], box = new float[0][];
     int[] cls = new int[0];
     float[] at = new float[0];  // metres along the runs, end to end, at each piece's first point
+    // route chunks only (Peter 2026-11-08): 1 where the whole piece passes under a higher deck (Scene.routeUnder),
+    // 0 otherwise; a piece is cut at a change the same way a traffic-level change cuts one (chunks()'s un param),
+    // so GlRoads' route groups can split on it without a piece straddling both.
+    int[] under = new int[0];
+    // stubs chunks only (Peter 2026-11-08, Part B): 1 where the whole piece is the dimmed, untaken branch of a
+    // split (Scene.stubsDim); cuts a piece the same way under does, so the dimmed and plain halves of a stub
+    // never share one piece.
+    int[] dim = new int[0];
   }
 
   // The roads, the route, the grid, the carpet and the fades over them drawn on the GPU under this view (GlRoads,
@@ -1129,6 +1173,45 @@ final class MapView extends View {
     java.util.Map<Feed.Tile, boolean[]> streets = CloseView.links(tiles, s.ax, s.ay, s.mpt);
     java.util.IdentityHashMap<Feed.Tile, byte[][]> raised = new java.util.IdentityHashMap<Feed.Tile, byte[][]>();
     s.close = CloseView.detail(tiles, s.ax, s.ay, s.mpt, route.toArray(new float[0][]), h, raised, streets);
+    // the route under a higher deck (Peter 2026-11-08, Part A fix): classified per *sample* along an edge, not
+    // once for the whole edge between two route vertices -- a long, straight highway edge can ride its own deck
+    // through part of its length and duck under a different, higher one through another part (its own bridge
+    // deck would then paint over the route on the bridge it is actually driving on, Under.underCuts' comment).
+    // Where Under.underCuts finds a transition, the edge is split there: one extra, collinear point, so the
+    // route's shape and routeAlong's distance don't move; the traffic level (levels/routeLevel) is copied onto
+    // both halves of the split. route, levels and the new under flags are kept the same length throughout, so
+    // s.route / s.routeLevel / s.routeUnder stay one byte or point per segment in step for every later use
+    // (chunks, carpet/carpetLine, routeAlong, junctions, Signals.cluster). Read once here against the heights
+    // s.close just found, not per frame.
+    List<byte[]> unders = new ArrayList<byte[]>();
+    for (int ri = 0; ri < route.size(); ri++) {
+      float[] p = route.get(ri);
+      byte[] lv = levels.get(ri);
+      Run split = new Run();
+      java.io.ByteArrayOutputStream rlv = new java.io.ByteArrayOutputStream(), ru = new java.io.ByteArrayOutputStream();
+      split.add(p[0], p[1]);
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        float ae = p[i], an = p[i + 1], be = p[i + 2], bn = p[i + 3];
+        int level = i / 2 < lv.length ? lv[i / 2] : 0;
+        Under.Cuts c = Under.underCuts(s.close, ae, an, be, bn);
+        boolean state = c.first;
+        float dx = be - ae, dy = bn - an, len = (float) Math.hypot(dx, dy);
+        for (float at : c.at) {
+          float t = len <= 0 ? 0 : at / len;
+          split.add(ae + dx * t, an + dy * t);
+          rlv.write(level);
+          ru.write(state ? 1 : 0);
+          state = !state;
+        }
+        split.add(be, bn);
+        rlv.write(level);
+        ru.write(state ? 1 : 0);
+      }
+      route.set(ri, split.take());
+      levels.set(ri, rlv.toByteArray());
+      unders.add(ru.toByteArray());
+    }
+    s.routeUnder = unders.toArray(new byte[0][]);
     for (Feed.Tile tile : tiles) {
       byte[][] up = raised.get(tile);
       for (int c = 0; c < 5; c++) {  // motorway, major, street, link, minor
@@ -1163,7 +1246,10 @@ final class MapView extends View {
     s.routeLevel = levels.toArray(new byte[0][]);
     s.stubs = stubs.toArray(new float[0][]);
     s.roads = roads.toArray(new float[0][]);
+    // Part B (Peter 2026-11-08): against the finished route and stubs, so stubsDim() matches real route-to-road
+    // geometry (Under.carHeight's own ON_DECK-style matching, not a guess); found once here, not per frame.
     s.stubsCls = ints(stubsCls);
+    if (r != null) s.stubsDim = stubsDim(s.route, s.routeUnder, s.stubs, s.stubsCls);
     s.roadsCls = ints(roadsCls);
     s.stubsName = stubsName.toArray(new String[0]);
     s.roadsName = roadsName.toArray(new String[0]);
@@ -1194,8 +1280,8 @@ final class MapView extends View {
       }
     }
     s.signals = Signals.cluster(sig, k / 3, s.ax, s.ay, s.mpt, s.route, s.routeAlong);
-    s.routeChunks = chunks(s.route, null, s.routeLevel);
-    s.stubsChunks = chunks(s.stubs, s.stubsCls, null);
+    s.routeChunks = chunks(s.route, null, s.routeLevel, s.routeUnder);
+    s.stubsChunks = chunks(s.stubs, s.stubsCls, null, null, s.stubsDim);
     s.roadsChunks = chunks(s.roads, s.roadsCls, null);
     return s;
   }
@@ -1204,8 +1290,20 @@ final class MapView extends View {
   // overlap only in the shared point, and the round caps there join them as the round join did. With lv, the
   // route's traffic per segment of each run, a piece also ends where the traffic changes and its cls is the level.
   private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv) {
+    return chunks(runs, cls, lv, null, null);
+  }
+
+  // un (route only, Peter 2026-11-08): per segment, 1 where it passes under a higher deck; a change in it cuts a
+  // piece the same way a change in lv (traffic level) does, so GlRoads can group route pieces by it too.
+  private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un) {
+    return chunks(runs, cls, lv, un, null);
+  }
+
+  // dim (stubs only, Peter 2026-11-08, Part B): per segment, 1 where it is the dimmed, untaken branch of a split;
+  // cuts a piece the same way un does, so the dimmed and plain halves of a stub are never drawn as one piece.
+  private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un, byte[][] dim) {
     List<float[]> pts = new ArrayList<float[]>();
-    List<Integer> pcls = new ArrayList<Integer>();
+    List<Integer> pcls = new ArrayList<Integer>(), punder = new ArrayList<Integer>(), pdim = new ArrayList<Integer>();
     List<Float> pat = new ArrayList<Float>();
     Run run = new Run();
     double along = 0, start;
@@ -1216,16 +1314,22 @@ final class MapView extends View {
       start = along;
       double len = 0;
       byte[] rl = lv != null && r < lv.length ? lv[r] : null;
-      int cur = 0;  // the level of the piece being built
+      byte[] ru = un != null && r < un.length ? un[r] : null;
+      byte[] rd = dim != null && r < dim.length ? dim[r] : null;
+      int cur = 0, curU = 0, curD = 0;  // the level, under-deck flag and dim flag of the piece being built
       for (int i = 2; i + 1 < p.length; i += 2) {
         double pe = p[i - 2], pn = p[i - 1], de = p[i] - pe, dn = p[i + 1] - pn, d = Math.hypot(de, dn);
         int parts = Math.max(1, (int) Math.ceil(d / CHUNK_M));
         int level = rl != null && i / 2 - 1 < rl.length ? rl[i / 2 - 1] : 0;
+        int u = ru != null && i / 2 - 1 < ru.length ? ru[i / 2 - 1] : 0;
+        int dm = rd != null && i / 2 - 1 < rd.length ? rd[i / 2 - 1] : 0;
         for (int j = 1; j <= parts; j++) {
-          if (len > 0 && (len + d / parts > CHUNK_M || level != cur)) {
+          if (len > 0 && (len + d / parts > CHUNK_M || level != cur || u != curU || dm != curD)) {
             float[] c = run.take();
             pts.add(c);
             pcls.add(cls == null ? cur : cls[r]);
+            punder.add(curU);
+            pdim.add(curD);
             pat.add((float) start);
             start = along;
             run.add(c[c.length - 2], c[c.length - 1]);
@@ -1234,6 +1338,8 @@ final class MapView extends View {
           if (j == parts) run.add(p[i], p[i + 1]);
           else run.add(pe + de * j / parts, pn + dn * j / parts);
           cur = level;
+          curU = u;
+          curD = dm;
           len += d / parts;
           along += d / parts;
         }
@@ -1241,6 +1347,8 @@ final class MapView extends View {
       if (run.size >= 4) {
         pts.add(run.take());
         pcls.add(cls == null ? cur : cls[r]);
+        punder.add(curU);
+        pdim.add(curD);
         pat.add((float) start);
       }
       run.size = 0;
@@ -1249,6 +1357,8 @@ final class MapView extends View {
     out.pts = pts.toArray(new float[0][]);
     out.box = boxes(out.pts);
     out.cls = ints(pcls);
+    out.under = ints(punder);
+    out.dim = ints(pdim);
     out.at = new float[pat.size()];
     for (int i = 0; i < out.at.length; i++) out.at[i] = pat.get(i);
     out.path = new Path[out.pts.length];
@@ -1326,6 +1436,69 @@ final class MapView extends View {
     for (int i = 0; i < found.size(); i++) {
       out[2 * i] = found.get(i)[0];
       out[2 * i + 1] = found.get(i)[1];
+    }
+    return out;
+  }
+
+  // Part B (Peter 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch leaving the route at a
+  // split not taken (FORK_MERGE_M, FORK_MIN_DEG..FORK_MAX_DEG above); 0 elsewhere. Checked at both ends of each
+  // run, since either end may be the one that meets the route (near() and around() keep a stub's points in the
+  // tile's own direction, not the route's direction of travel).
+  // Only motorway (0) and link (3) runs, the ramp and mainline a split is made of: a street meeting the route at
+  // an angle in that window is a junction, not a split, and stays at full colour. A bridge run ending near the
+  // route where the route runs under a deck (under, Scene.routeUnder) is the overpass crossing above it, not a
+  // fork, and is skipped too (seen on the St Mary's crossing harness case, 2026-11-08).
+  private static byte[][] stubsDim(float[][] route, byte[][] under, float[][] stubs, int[] cls) {
+    byte[][] out = new byte[stubs.length][];
+    for (int si = 0; si < stubs.length; si++) {
+      float[] p = stubs[si];
+      out[si] = new byte[Math.max(0, p.length / 2 - 1)];
+      int tc = si < cls.length ? cls[si] % BRIDGE : -1;
+      if (p.length < 4 || (tc != 0 && tc != 3)) continue;
+      for (int end = 0; end < 2; end++) {
+        int ei = end == 0 ? 0 : p.length - 2, di = end == 0 ? 2 : p.length - 4;
+        double[] m = nearestOnRoute(route, p[ei], p[ei + 1]);
+        if (m == null) continue;
+        int mr = (int) m[3], ms = (int) m[4];
+        if (cls[si] >= BRIDGE && mr < under.length && ms < under[mr].length && under[mr][ms] != 0) continue;
+        float ox = p[di] - p[ei], on = p[di + 1] - p[ei + 1];  // the branch's own heading, away from the match
+        double rl = Math.hypot(m[1], m[2]), ol = Math.hypot(ox, on);
+        if (rl < 1e-3 || ol < 1e-3) continue;
+        double deg = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, (m[1] * ox + m[2] * on) / (rl * ol)))));
+        deg = Math.min(deg, 180 - deg);  // the route's own direction here is arbitrary (forward or back): the acute angle either way
+        if (deg < FORK_MIN_DEG || deg > FORK_MAX_DEG) continue;  // too parallel: its own road; too square: a crossing road, leave it
+        double along = 0;
+        if (end == 0) {
+          for (int i = 0; i + 3 < p.length && along < DIM_M; i += 2) {
+            out[si][i / 2] = 1;
+            along += Math.hypot(p[i + 2] - p[i], p[i + 3] - p[i + 1]);
+          }
+        } else {
+          for (int i = p.length - 2; i - 1 >= 2 && along < DIM_M; i -= 2) {
+            out[si][i / 2 - 1] = 1;
+            along += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  // The closest point on any route run to (e, n), as its distance, the (unnormalised) direction of the route
+  // segment it falls on, and that segment's run and index, or null when none is within FORK_MERGE_M. Same projection as routeHeading, kept separate
+  // since that one answers a different question (the car's own heading) at a different, tighter range (ON_ROUTE).
+  private static double[] nearestOnRoute(float[][] route, float e, float n) {
+    double best = FORK_MERGE_M * FORK_MERGE_M;
+    double[] out = null;
+    for (int r = 0; r < route.length; r++) {
+      float[] p = route[r];
+      for (int i = 0; i + 3 < p.length; i += 2) {
+        double dx = p[i + 2] - p[i], dy = p[i + 3] - p[i + 1], l2 = dx * dx + dy * dy;
+        if (l2 < 1) continue;
+        double t = Math.max(0, Math.min(1, ((e - p[i]) * dx + (n - p[i + 1]) * dy) / l2));
+        double px = p[i] + t * dx - e, py = p[i + 1] + t * dy - n, d2 = px * px + py * py;
+        if (d2 < best) { best = d2; out = new double[] {Math.sqrt(d2), dx, dy, r, i / 2}; }
+      }
     }
     return out;
   }
@@ -1746,6 +1919,7 @@ final class MapView extends View {
       routePath.rewind();
       routeWorld.rewind();
       for (Path p : carpetPaths) p.rewind();
+      for (Path p : carpetUnderPaths) p.rewind();
       for (Path p : stubPaths) p.rewind();
       for (Path p : stubWorld) p.rewind();
       gridPath.rewind();
@@ -1788,6 +1962,29 @@ final class MapView extends View {
         side.setColor(ROADS[c]);
         stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
       }
+      // Part B (Peter 2026-11-08): the untaken branch of a split, at ground level, drawn dimmed over the plain
+      // ground pass above -- same kerb-then-surface order, same widths, just the DIM_OFF half of the classes and
+      // dim()'s colours instead of KERBS/ROADS.
+      for (int c : DRAW_ORDER) {
+        sideKerb.setColor(dim(KERBS[c]));
+        stroke(canvas, stubWorld[c + DIM_OFF], stubPaths[c + DIM_OFF], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+      }
+      for (int c : DRAW_ORDER) {
+        side.setColor(dim(ROADS[c]));
+        stroke(canvas, stubWorld[c + DIM_OFF], stubPaths[c + DIM_OFF], side, Math.max(floor, ROAD_M[c] * ik));
+      }
+      // the carpet where the route passes under a higher deck (Scene.routeUnder, Peter 2026-11-08): drawn here,
+      // before the bridges below, so their casing/kerb/surface paint over it and the line reads as diving under
+      // the deck it doesn't use -- the rest of the carpet (carpetPaths) still draws last, on top, below.
+      if (s.route.length > 0) {
+        carpet.setStrokeWidth(Math.max(dm(LINE_MIN_PX), Math.min(dm(LINE_MAX_PX), LINE_M * ik)));
+        for (int l = 0; l < carpetUnderPaths.length; l++) {
+          if (carpetUnderPaths[l].isEmpty()) continue;
+          carpet.setColor(l == 0 ? modeColor(Feed.mode) : TRAFFIC[l - 1]);
+          carpet.setAlpha(242);
+          canvas.drawPath(carpetUnderPaths[l], carpet);
+        }
+      }
       // the bridges over all of that: casing, kerb, surface, lowest layer first. Only overpasses are here
       // (CloseUp.overpasses); zoomed in they fade out as CloseView draws them raised, with deck, piers and shadow,
       // so the flat copy doesn't show under the deck as a second road.
@@ -1819,6 +2016,25 @@ final class MapView extends View {
             side.setColor(ROADS[c]);
             side.setAlpha(alpha);
             stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], side, Math.max(floor, ROAD_M[c] * ik));
+          }
+          // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
+          // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
+          for (int c : DRAW_ORDER) {
+            sideKerb.setColor(CASING_C);
+            sideKerb.setAlpha(alpha);
+            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], sideKerb,
+                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+          }
+          for (int c : DRAW_ORDER) {
+            sideKerb.setColor(dim(KERBS[c]));
+            sideKerb.setAlpha(alpha);
+            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], sideKerb,
+                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+          }
+          for (int c : DRAW_ORDER) {
+            side.setColor(dim(ROADS[c]));
+            side.setAlpha(alpha);
+            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], side, Math.max(floor, ROAD_M[c] * ik));
           }
         }
         sideKerb.setAlpha(255);
@@ -2138,10 +2354,22 @@ final class MapView extends View {
         z1 = Math.max(z1, z);
       }
       if (x1 < BOX_X0 || x0 > BOX_X1 || z1 < BOX_Z0 || z0 > BOX_Z1) continue;
-      int c = kept.length == 1 ? 0 : pc.cls[i];  // the route's surface is one path whatever the traffic
+      // the route's surface is one path whatever the traffic; a stub piece goes to its own dimmed half (Part B,
+      // Scene.stubsDim through Chunks.dim) when it is the untaken branch of a split, same offset GlRoads' route
+      // groups use for the under-a-deck half (DIM_OFF mirrors that doubling, just on the stub/road class space)
+      int c = kept.length == 1 ? 0 : pc.cls[i] + (i < pc.dim.length && pc.dim[i] != 0 ? DIM_OFF : 0);
       if (z0 >= NEAR_Z) kept[c].addPath(pc.path[i]);
       else line(pc.pts[i], 0, near[c], ce, cn, ch, sh, ik, Float.NaN, 0);
     }
+  }
+
+  // Part B (Peter 2026-11-08): a road colour blended halfway to the background (BG), for the untaken branch of a
+  // split -- Apple Maps' own look for it. Alpha untouched: the blend already reads as dimmed against BG, and the
+  // roads it is mixed with are opaque already (KERBS/ROADS have none).
+  static int dim(int color) {
+    int br = (BG >> 16) & 0xff, bg = (BG >> 8) & 0xff, bb = BG & 0xff;
+    int r = (((color >> 16) & 0xff) + br) / 2, g = (((color >> 8) & 0xff) + bg) / 2, b = ((color & 0xff) + bb) / 2;
+    return 0xff000000 | (r << 16) | (g << 8) | b;
   }
 
   private static int modeColor(String mode) {
@@ -2181,8 +2409,10 @@ final class MapView extends View {
     }
   }
 
-  // line() into carpetPaths, each segment into the path for its traffic level (lv per segment, may be short).
-  private void carpetLine(float[] p, byte[] lv, int from, float ce, float cn, float ch, float sh, float ik, float fe, float fn) {
+  // line() into carpetPaths (or carpetUnderPaths, Scene.routeUnder, Peter 2026-11-08), each segment into the path
+  // for its traffic level (lv per segment, may be short) and under/over group.
+  private void carpetLine(float[] p, byte[] lv, byte[] un, int from, float ce, float cn, float ch, float sh, float ik,
+                          float fe, float fn) {
     boolean pen = false;
     int last = -1;
     float px = 0, pz = 0;
@@ -2192,9 +2422,11 @@ final class MapView extends View {
       float x = (de * ch - dn * sh) * ik, z = (de * sh + dn * ch) * ik;
       if (i > 2 * from) {
         int seg = i / 2 - 1, l = lv != null && seg < lv.length ? lv[seg] : 0, k = l < 2 ? 0 : l - 1;
-        if (k != last) pen = false;  // a new path starts its own stroke
-        last = k;
-        pen = segment(carpetPaths[k], px, pz, x, z, pen);
+        boolean u = un != null && seg < un.length && un[seg] != 0;
+        int key = u ? k + carpetPaths.length : k;  // either changing starts a new stroke, as a level change did
+        if (key != last) pen = false;  // a new path starts its own stroke
+        last = key;
+        pen = segment(u ? carpetUnderPaths[k] : carpetPaths[k], px, pz, x, z, pen);
       }
       px = x;
       pz = z;
@@ -2204,11 +2436,11 @@ final class MapView extends View {
   // The carpet: the route from the car's place on it to the end of the scene, so the driven part is bare road.
   private void carpet(Scene s, Frame f, float ce, float cn, float ch, float sh, float ik, float reach) {
     if (f.cRun < 0) return;
-    carpetLine(s.route[f.cRun], s.routeLevel[f.cRun], f.cSeg, ce, cn, ch, sh, ik, f.cutE, f.cutN);
+    carpetLine(s.route[f.cRun], s.routeLevel[f.cRun], s.routeUnder[f.cRun], f.cSeg, ce, cn, ch, sh, ik, f.cutE, f.cutN);
     for (int r = f.cRun + 1; r < s.route.length; r++) {
       float[] b = s.routeBox[r];
       if (b[2] < ce - reach || b[0] > ce + reach || b[3] < cn - reach || b[1] > cn + reach) continue;
-      carpetLine(s.route[r], s.routeLevel[r], 0, ce, cn, ch, sh, ik, Float.NaN, 0);
+      carpetLine(s.route[r], s.routeLevel[r], s.routeUnder[r], 0, ce, cn, ch, sh, ik, Float.NaN, 0);
     }
   }
 

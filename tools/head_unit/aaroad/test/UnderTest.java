@@ -93,6 +93,22 @@ public class UnderTest {
     float viaductHalf = ROAD_M[1] / 2 + Under.ON_DECK_M;
     check(viaductHalf > 20, "the viaduct's own reach already covers the frontage road's position: " + viaductHalf);
 
+    // Part A fix (2026-11-08): a route edge that rides its own layer-1 deck for most of its length but passes
+    // under a layer-2 deck partway along it must split there, not read as under (or not) for its whole length.
+    in = new CloseUp.Lines();
+    in.road(line(0, -500, 0, 500), 0, true, 1, 0, false);       // the route's own deck, layer 1, north-south at e = 0
+    in.road(line(-50, -480, 50, -480), 0, false, 0, 0, false);  // a ground cross street, away from the test: makes it an overpass
+    in.road(line(-50, 100, 50, 100), 0, true, 2, 0, false);     // a layer-2 flyover crossing it at n = 100
+    CloseUp.Detail dp = CloseUp.build(in);
+    Under.Cuts cuts = Under.underCuts(dp, 0, -400, 0, 400);
+    check(!cuts.first, "the own-deck part of the edge, away from the flyover, is not under anything higher");
+    check(cuts.at.length == 2, "two transitions: into the flyover's crossing and back out of it, found " + cuts.at.length);
+    if (cuts.at.length == 2) {
+      float into = -400 + cuts.at[0], out = -400 + cuts.at[1];
+      check(into > 55 && into < 95, "splits just before the flyover's reach: n " + into);
+      check(out > 105 && out < 145, "and just after it: n " + out);
+    }
+
     // the ease: 150 ms each way, turning back from part way
     Under.Fade f = new Under.Fade();
     check(f.level(0) == 0 && !f.moving(0), "starts off");
