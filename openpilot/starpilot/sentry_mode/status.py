@@ -9,6 +9,7 @@ import uuid
 
 from openpilot.common.hardware.hw import Paths
 from openpilot.starpilot.parked_evidence import RESUME_SKEW_NS
+from openpilot.starpilot.sentry_mode import pause
 from openpilot.starpilot.sentry_mode.preferences import SavedPreferences
 from openpilot.starpilot.sentry_mode.storage import EventStore, FILE_FLAGS, StorageUnavailable, _private
 from openpilot.starpilot.storage import starpilot_storage_root
@@ -16,6 +17,12 @@ from openpilot.starpilot.storage import starpilot_storage_root
 
 def boot_clock():
   return time.clock_gettime_ns(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC))
+
+
+def pause_snapshot(params, now: float | None = None) -> int | None:
+  """The saved pause-until epoch while it is still in effect, for Galaxy's "Paused until" display."""
+  moment = now if now is not None else time.time()
+  return pause.read_pause(params) if pause.is_paused(params, moment) else None
 
 
 TTL_NS = 1_500_000_000

@@ -140,6 +140,19 @@ class TestRuntime(unittest.TestCase):
     self.assertNotEqual(self.runtime.tick().state, "armed")
     self.assertEqual(self.events, [])
 
+  def test_pause_disarms_like_disabled_and_resumes_after_expiry(self):
+    from openpilot.starpilot.sentry_mode.pause import MIN_VALID_NOW, set_pause_until
+    wall = [MIN_VALID_NOW + 1_000_000]
+    self.runtime.wall_clock = lambda: wall[0]
+    self.assertEqual(self.tick().state, "arming")
+    set_pause_until(self.params, wall[0] + 60, now=wall[0])
+    self.assertEqual(self.tick().state, "disabled")
+    self.assertIsNone(self.runtime.policy.arm_started)
+    self.assertEqual(self.events, [])
+    # Expiry resumes on its own and the saved `enabled` preference (never touched by pausing) still applies.
+    wall[0] += 61
+    self.assertEqual(self.tick().state, "arming")
+
   def test_resume_barrier_rejects_queued_pre_resume_sensor(self):
     self.tick()
     old_stamp = self.messages.messages["accelerometer"].timestamp

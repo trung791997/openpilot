@@ -3,6 +3,7 @@ import { SettingsPage } from "./settings.js"
 import { GxNotice } from "./notice.js"
 import { BluetoothNotice, bluetoothConnection } from "./bluetooth-notice.js"
 import { SentryNotifications } from "./sentry-notifications.js"
+import { SentryPause } from "./sentry-pause.js"
 import { SnapshotFeed } from "./snapshot-feed.js"
 import { deleteRecords, storedSize } from "./record-deletion.js"
 
@@ -50,7 +51,7 @@ export class SentryEventsFeed extends SnapshotFeed {
 
 export const SentryEventsPage = {
   name: "SentryEventsPage",
-  components: { GxState, GxNotice, BluetoothNotice, SentryNotifications, SettingsPage },
+  components: { GxState, GxNotice, BluetoothNotice, SentryNotifications, SentryPause, SettingsPage },
   props: { mode: { type: String, required: true }, unauthorized: { type: Function, required: true },
     go: { type: Function, required: true } },
   data: () => ({ bluetooth: bluetoothConnection(), status: "idle", data: null, error: "", deleting: false }),
@@ -68,6 +69,7 @@ export const SentryEventsPage = {
         <p>Review motion events, configure motion monitoring, and manage notifications. Timestamps use the device clock and may be inaccurate.</p></div></header>
 
       <SettingsPage :mode="mode" :unauthorized="unauthorized" initial-page="sentry" title="" />
+      <SentryPause :mode="mode" :unauthorized="unauthorized" />
       <SentryNotifications :mode="mode" :unauthorized="unauthorized" />
       <GxState v-if="mode !== 'local'">Local motion records are unavailable in preview.</GxState>
       <template v-else>

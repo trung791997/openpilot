@@ -1386,6 +1386,12 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         else:
           if self.require_session():
             self.json(200, result)
+      elif path == '/api/sentry/pause':
+        if not self.require_session():
+          return
+        from openpilot.common.params import Params
+        from openpilot.starpilot.sentry_mode.status import pause_snapshot
+        self.json(200, {'pausedUntil': pause_snapshot(Params())})
       elif path in ('/api/maps/status', '/api/maps/catalog', '/api/maps/operation', '/api/maps/setup'):
         if not self.require_session():
           return
@@ -1681,7 +1687,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                       '/api/models/cancel', '/api/models/delete', '/api/models/refresh_manifest', '/api/models/jetlink',
                       '/api/models/laboratory', '/api/models/laboratory/download', '/api/models/laboratory/delete',
                       '/api/sounds/download', '/api/sounds/cancel', '/api/software/action', '/api/drives/ignore',
-                      '/api/recordings/delete-videos', '/api/sentry/notifications', '/api/sentry/events/delete', '/api/crash-reports/delete',
+                      '/api/recordings/delete-videos', '/api/sentry/notifications', '/api/sentry/events/delete', '/api/sentry/pause', '/api/crash-reports/delete',
                       '/api/navigation/search', '/api/navigation/action', '/api/navigation/offline', '/api/drive-state/action',
                       '/api/toyota-tools/action', '/api/vehicle-selection/preview', '/api/vehicle-selection/confirm'):
         self.json(405, {'error': 'Method unavailable'})
@@ -1824,6 +1830,33 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         else:
           if self.settings_session() == identity:
             self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+        return
+      if path == '/api/sentry/pause':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        from openpilot.common.params import Params
+        from openpilot.starpilot.sentry_mode import pause
+        from openpilot.starpilot.sentry_mode.status import pause_snapshot
+        params = Params()
+        try:
+          if payload.get('action') == 'clear':
+            if set(payload) != {'action'}:
+              raise ValueError('Invalid pause request')
+            pause.clear_pause(params)
+          else:
+            if set(payload) != {'until'} or type(payload.get('until')) is not int:
+              raise ValueError('Invalid pause request')
+            # The browser computes "until" from its own local time zone for both presets and the picker.
+            pause.set_pause_until(params, payload['until'])
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, {'pausedUntil': pause_snapshot(params)})
           else:
             self.json(401, {'error': 'Sign in to Galaxy'})
         return

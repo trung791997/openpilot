@@ -361,6 +361,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapdShadowEnabled", {PERSISTENT | DONT_LOG, BOOL, "0"}},
     {"OffroadPowerPreferences", {PERSISTENT | DONT_LOG, JSON}},
     {"SentryMotionPreferences", {PERSISTENT | DONT_LOG, JSON}},
+    {"SentryPausedUntil", {PERSISTENT | DONT_LOG, STRING}},
     {"VASMPreferences", {PERSISTENT | DONT_LOG, JSON}},
     {"VASMRadarAssist", {PERSISTENT, BOOL, "1"}},
     {"LaneChangePreferences", {PERSISTENT | DONT_LOG, JSON}},

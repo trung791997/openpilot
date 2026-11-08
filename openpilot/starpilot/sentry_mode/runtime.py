@@ -12,6 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.parked_evidence import ParkedEvidence, RESUME_SKEW_NS, fresh_parked
 from openpilot.starpilot.power.offroad_preferences import read_saved as read_power, effective as effective_power
 from openpilot.starpilot.saved_source import read_saved
+from openpilot.starpilot.sentry_mode.pause import is_paused
 from openpilot.starpilot.sentry_mode.policy import Inputs, MotionSample, SentryPolicy
 from openpilot.starpilot.sentry_mode.preferences import read_preferences
 from openpilot.starpilot.sentry_mode.status import RuntimeStatus
@@ -38,10 +39,11 @@ def boot_time_ns() -> int:
 
 class SentryRuntime:
   def __init__(self, params: Params, messages: Any, *, mono_clock: Callable[[], int] = time.monotonic_ns,
-               boot_clock: Callable[[], int] = boot_time_ns,
+               boot_clock: Callable[[], int] = boot_time_ns, wall_clock: Callable[[], float] = time.time,
                record: Callable[[str, int, Callable[[], bool]], Any] | None = None, status: RuntimeStatus | None = None,
                start: Callable[[Callable[[], None]], Any] = start_thread, shake_log: Any = None):
     self.params, self.messages = params, messages
+    self.wall_clock = wall_clock  # Pause is a saved wall-clock epoch; everything else here runs off mono/boot.
     self.shake_log = shake_log  # Observation only; see shake_log.py.
     self.start = start
     self.authorized: tuple[bytes, int] | None = None  # (saved preferences, MONO ns) of the last permitted tick
@@ -192,8 +194,10 @@ class SentryRuntime:
   def tick(self) -> Any:
     self.messages.update(0)
     saved = read_preferences(self.params)
+    # A pause never changes the saved enabled bit; it only gates `active` the same way enabled=False would,
+    # so resuming (by expiry or "Resume now") returns to exactly the prior setting.
     active = (saved.readable and saved.valid and
-              saved.preferences.enabled)
+              saved.preferences.enabled and not is_paused(self.params, self.wall_clock()))
     if saved.raw != self.saved_raw:
       self.policy = SentryPolicy(saved.preferences.settings)
       self.saved_raw = saved.raw
