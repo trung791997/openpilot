@@ -14,6 +14,8 @@ import de.robv.android.xposed.XposedHelpers;
 // UPDATE_NAVI_WAZE is dropped while Honda Hack's "enable_screen_cast" is on (C0268ua.z), so the
 // panel only shows with screen cast off.
 final class Panel {
+  // off: see Hook (a turn broadcast hung the cluster's main thread, 2026-11-07)
+  static final boolean ENABLED = false;
   private static final String HH = "cn.autohack.hondahack.";
   private static final double FEET_PER_METER = 3.28084, METERS_PER_MILE = 1609.344;
 

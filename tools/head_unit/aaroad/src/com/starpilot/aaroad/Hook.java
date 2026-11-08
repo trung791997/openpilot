@@ -123,10 +123,16 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
       }
     });
 
-    try {
-      Panel.install(nfm);
-    } catch (Throwable t) {
-      Xlog.log("aaroad: panel hook failed: " + t);
+    // Panel off (Peter 2026-11-07 drive): each turn it sends makes Honda Hack's receiver in the cluster process
+    // re-read its settings three times on the cluster's main thread, each read starting a thread. At 17:54 one of
+    // those thread starts hung that main thread for good: the map froze, and Android Auto's own turn arrow (its route,
+    // not the comma's) sat over it. The dash turn card comes from the comma, so nothing is lost while the map shows.
+    if (Panel.ENABLED) {
+      try {
+        Panel.install(nfm);
+      } catch (Throwable t) {
+        Xlog.log("aaroad: panel hook failed: " + t);
+      }
     }
     Xlog.log("aaroad: hooked " + NFM);
   }
