@@ -13,6 +13,7 @@ from openpilot.common.simple_kalman import KF1D
 from openpilot.starpilot.car.honda import radar_point_status
 from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_PROB_MIN, TREND_SAMPLES, WeakLeadBound,
                                                            camera_contradiction, camera_passed_ratio, range_slope)
+from openpilot.starpilot.car.honda.radar_camera_cap import CameraCap
 from openpilot.starpilot.car.honda.radar_camera_slow_bound import CameraSlowBound
 from openpilot.starpilot.car.honda.radar_reversal_bound import ReversalBound
 
@@ -408,6 +409,7 @@ class BoschALeadPolicy:
     self._last_tracks_frame = -1
     self.reversal_bound = ReversalBound()
     self.camera_slow_bound = CameraSlowBound()
+    self.camera_cap = CameraCap()
     self.weak_lead_bound = WeakLeadBound()
     self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
 
@@ -478,6 +480,7 @@ class BoschALeadPolicy:
     output = self.reversal_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs, self.tracks, floor_weights=weak_weights,
                                        urgent_v_rels=urgent_v_rels)
     output = self.camera_slow_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs)
+    output = self.camera_cap.apply(output, leads, model_v_ego, lead_probs, self.tracks, self.camera_ranges)
     for index, lead in enumerate(output):
       if lead.get('present', False) and lead.get('radar', False):
         identifier = int(lead.get('radarTrackId', -1))
