@@ -13,8 +13,10 @@ So while a radar lead is at least CAP_MIN_D away, a camera lead with filtered pr
 CAP_RANGE_FRAC of its range, its range slope matches its own closing speed within CAMERA_SELF_TOL, it slows no harder
 than CAMERA_DECEL_MIN, and it closes more than CAP_GAP_MIN slower than the radar's vRel, the published vLead/vLeadK/vRel
 are raised to the camera's closing speed. Only ever less braking, toward a camera that calls for none; never past the
-camera. dRel, aLeadK and the point are untouched (D-041/D-042). The added dv slews at CAP_DV_RATE in and out (no
-step) and restarts at 0 on a new track. Runs after CameraSlowBound, which only ever makes a lead slower.
+camera. While the cap is active, aLeadK is also lifted toward the camera lead's a (floored at CAMERA_DECEL_MIN), never
+lowered. dRel and the point are untouched (D-041/D-042). The added dv slews at CAP_DV_RATE and the aLeadK lift at
+CAP_DA_RATE, in and out (no step); both restart at 0 on a new track. Runs after CameraSlowBound, which only ever makes
+a lead slower.
 
 Replay (open loop, logged radarTracks through radard and the planner, 3b3d + StockBrakeFeel + HumanFollowing, plan
 min accel, before -> after): b0 17:13 -1.38 -> -0.59, 8a seg2 -1.81 -> -0.82, 71 seg12 -1.74 -> -1.35; 84 seg7 t0
@@ -24,6 +26,9 @@ replay fidelity moved by at most 0.004 in correlation. Route a2 (60 segs): seg22
 seg43 -0.59 -> -0.39, seg45 -0.85 -> -0.64, seg50 -0.69 -> -0.74; a3 unchanged.
 The cost case is 80 seg19: track 25 is a real slowdown the camera read late (vRel -8 against a camera calling for
 much less), so the cap softened the first pulse (-1.70 -> -1.22, logged -1.80) and the second came 0.12 harder.
+aLeadK lift (variant A, same replay, cap alone -> cap + lift): 71 seg12 -1.35 -> -0.93, 8a seg2 -0.82 -> -0.72,
+b0 17:05 -0.59 -> -0.11; b0 t51.6 stays -3.40 (track 53's range-fit vRel, not the camera's case). No row anywhere
+braked harder than the cap alone except 80 seg19's second pulse (+0.20); full-route fidelity moved <= 0.006.
 Replay evidence only; no road evidence yet.
 """
 from __future__ import annotations
@@ -40,6 +45,7 @@ CAP_PROB = 0.9         # filtered model lead prob (CameraSlowBound's witness lev
 CAP_RANGE_FRAC = 0.3   # camera range within this fraction of dRel (b0 17:05: 70 vs 79 m)
 CAP_GAP_MIN = 3.0      # m/s; the camera must close this much slower than the radar's vRel
 CAP_DV_RATE = 8.0      # m/s per second, in and out (the replay above ran at 8)
+CAP_DA_RATE = 10.0     # m/s^2 per second for the aLeadK lift, in and out (variant A replay ran at 10)
 
 
 class CameraCap:
@@ -47,6 +53,7 @@ class CameraCap:
   def __init__(self, dt: float = DT_MDL):
     self.dt = dt
     self.dv = [0.0, 0.0]
+    self.da = [0.0, 0.0]
     self.track_ids = [-1, -1]
 
   @staticmethod
@@ -66,6 +73,7 @@ class CameraCap:
   def apply(self, output: list[dict[str, Any]], model_leads, model_v_ego: float, lead_probs, tracks,
             camera_ranges) -> list[dict[str, Any]]:
     step = CAP_DV_RATE * self.dt
+    step_a = CAP_DA_RATE * self.dt
     capped = []
     for index, lead in enumerate(output):
       radar_lead = lead.get('present', False) and lead.get('radar', False)
@@ -73,13 +81,19 @@ class CameraCap:
       if track_id != self.track_ids[index]:
         self.track_ids[index] = track_id
         self.dv[index] = 0.0
+        self.da[index] = 0.0
       target = 0.0
       if radar_lead and track_id in tracks:
         target = self._target(lead, model_leads[index], camera_ranges[index], model_v_ego, float(lead_probs[index]))
       self.dv[index] = min(max(target, self.dv[index] - step), self.dv[index] + step)
-      if radar_lead and self.dv[index] > 0.0:
+      a_target = 0.0
+      if target > 0.0:
+        a_target = max(0.0, max(float(model_leads[index].a[0]), CAMERA_DECEL_MIN) - float(lead['aLeadK']))
+      self.da[index] = min(max(a_target, self.da[index] - step_a), self.da[index] + step_a)
+      if radar_lead and (self.dv[index] > 0.0 or self.da[index] > 0.0):
         lead = dict(lead)
         for key in ('vLead', 'vLeadK', 'vRel'):
           lead[key] = float(lead[key]) + self.dv[index]
+        lead['aLeadK'] = float(lead['aLeadK']) + self.da[index]
       capped.append(lead)
     return capped
