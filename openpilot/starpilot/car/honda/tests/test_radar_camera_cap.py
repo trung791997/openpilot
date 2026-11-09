@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.common.realtime import DT_MDL
-from openpilot.starpilot.car.honda.radar_camera_cap import (CAP_DV_RATE, CAP_GAP_MIN, CAP_MIN_D, CAP_PROB,
+from openpilot.starpilot.car.honda.radar_camera_cap import (CAP_DA_RATE, CAP_DV_RATE, CAP_GAP_MIN, CAP_MIN_D, CAP_PROB,
                                                             RADAR_TO_CAMERA, CameraCap)
 from openpilot.starpilot.car.honda.radar_lead_bound import TREND_SAMPLES
 
@@ -53,7 +53,17 @@ def test_raises_to_camera_closing_speed_slewed():
   assert out['vRel'] == pytest.approx(-0.5)
   assert out['vLead'] == pytest.approx(V_EGO - 0.5)
   assert out['vLeadK'] == pytest.approx(V_EGO - 0.5)
-  assert out['dRel'] == 70.0 and out['aLeadK'] == -0.4
+  assert out['dRel'] == 70.0 and out['aLeadK'] == pytest.approx(0.0)
+
+
+def test_lifts_aleadk_slewed_never_lowers():
+  cap = CameraCap()
+  out = step(cap, lead=radar_lead(a=-2.0))
+  assert out['aLeadK'] == pytest.approx(-2.0 + CAP_DA_RATE * DT_MDL)
+  out = run(CameraCap(), 20, model=vision(a=-0.3))
+  assert out['aLeadK'] == pytest.approx(-0.3)
+  out = run(CameraCap(), 20, lead=radar_lead(a=0.5))   # radar lead already accelerating harder: untouched
+  assert out['aLeadK'] == 0.5
 
 
 def test_releases_slewed_when_camera_drops():

@@ -53,6 +53,11 @@ Decision: Branch `bob-camera-cap` (not on the car branch yet) adds `CameraCap` a
 Evidence: commit f8b9f99509; replay on the 93b pool, probes 71/8a/b0 and routes a2/a3 (numbers in STATUS and the module docstring); Peter's stills for b0/8a/71; branch code reproduces the prototype exactly (max |X-C| = 0.0000 on 23 groups). Replay only. Cost accepted: 80 seg19 second pulse 0.12 harder.
 Revisit if: a road drive shows a real far slowdown braked late because the camera read it slow, or variants A/B/C (aLeadK lift, gap hold < 1, 40 m/s^2 slew-in; branch `bob-camera-cap-variants`) change the residuals on 71, 8a and b0 without new harder brakes.
 
+## C-011: Camera cap also lifts aLeadK toward the camera lead (2026-11-08)
+Decision: While the C-010 cap is active, `CameraCap` also raises aLeadK toward the camera lead's a (floored at CAMERA_DECEL_MIN -0.5), never lowering it, slewed at CAP_DA_RATE 10 m/s^2 per second in and out and restarted at 0 on a new track (D-042: no step). dRel and the point stay untouched (D-041). Variants B (hold until gap < 1) and C (40 m/s^2 slew-in) were not taken: they soften four further events (9b seg10, 99 seg15, 84 seg8, a2 seg10) that are not yet judged on stills, and slow the onset of 84 seg4, a real hard stop.
+Evidence: replay by Job, 93b pool plus routes a2/a3, default config: 71 seg12 -1.35 -> -0.93, 8a seg2 -0.82 -> -0.72, b0 seg17 t5.7 -0.59 -> -0.11; b0 t51.6 unchanged at -3.40. Nothing brakes harder than the cap alone except 80 seg19's second pulse (+0.20). Full-route fidelity moved <= 0.006 in correlation. Static tests 13/13. Replay only.
+Revisit if: a road drive shows a real far slowdown braked late while the camera lead read a > -0.5, or the 80 seg19 second-pulse cost shows up on the road.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)
