@@ -1587,3 +1587,15 @@ struct LiveTrackingResponseWitness @0xdaa1a9f0d8968e31 {
  windowStartMonoTime @4 :UInt64; independentPoses @5 :UInt16;
  residualRmse @6 :Float64; validUntilMonoTime @7 :UInt64;
 }
+struct StarPilotBlendfulState @0xf7b1a9d3e5c2f486 {
+ version @0 :UInt16;
+ curvature @1 :Float32;
+ trust @2 :Float32;
+ modelCurvature @3 :Float32;
+ goingAround @4 :Bool;
+ leftProb @5 :Float32;
+ rightProb @6 :Float32;
+ laneWidth @7 :Float32;
+ modelMonoTime @8 :UInt64;
+}
+

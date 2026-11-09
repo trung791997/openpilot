@@ -123,6 +123,7 @@ class UIState:
         "selfdriveState",
         "starpilotSelfdriveState",
         "starpilotLateralState",
+        "starpilotBlendfulState",
         "starpilotNavigation",
         "longitudinalPlan",
         "gpsLocationExternal",
@@ -140,9 +141,9 @@ class UIState:
         *(["customReserved6", "cabinCameraState", "narrowRoadEncodeIdx", "wideRoadEncodeIdx", "cabinEncodeIdx"]
           if self.replay_clock is not None else []),
       ],
-      ignore_alive=["starpilotSelfdriveState", "starpilotLateralState", "aolAxisState", "starpilotCarState"],
-      ignore_valid=["starpilotSelfdriveState", "starpilotLateralState", "aolAxisState", "starpilotCarState"],
-      ignore_avg_freq=["starpilotSelfdriveState", "starpilotLateralState", "aolAxisState", "starpilotCarState"],
+      ignore_alive=["starpilotSelfdriveState", "starpilotLateralState", "starpilotBlendfulState", "aolAxisState", "starpilotCarState"],
+      ignore_valid=["starpilotSelfdriveState", "starpilotLateralState", "starpilotBlendfulState", "aolAxisState", "starpilotCarState"],
+      ignore_avg_freq=["starpilotSelfdriveState", "starpilotLateralState", "starpilotBlendfulState", "aolAxisState", "starpilotCarState"],
     )
 
     self.prime_state = ProjectionPrimeState(self.params) if self.replay_clock is not None or isinstance(self.params, ProjectionParams) else PrimeState()

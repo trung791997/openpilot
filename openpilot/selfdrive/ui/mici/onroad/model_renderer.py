@@ -10,6 +10,7 @@ from openpilot.starpilot.ui.rainbow_path import RainbowPath
 from openpilot.starpilot.ui.road_colors import lane_color, path_mode, solid_gradient
 from openpilot.starpilot.ui.onroad_customization import ROAD_COLORS
 from openpilot.starpilot.lateral.lane_feedback import BLUE, direction as lane_centering_direction
+from openpilot.starpilot.ui.blendful_renderer import BlendfulRenderer
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
@@ -105,6 +106,7 @@ class ModelRenderer(ModelGeometry, Widget):
       stops=[],
     )
     self._rainbow_path = RainbowPath()
+    self.blendful = BlendfulRenderer(rect_relative=True)
     self.road_style = {}
 
     # Get longitudinal control setting from car parameters
@@ -192,6 +194,7 @@ class ModelRenderer(ModelGeometry, Widget):
     if self._visual_status() != UIStatus.DISENGAGED:
       self._draw_lane_lines()
       self._draw_path(sm)
+      self.blendful.draw(self._rect)
 
     if lead_ready and getattr(self, '_paint', True):
       self._draw_lead_indicator()
@@ -323,6 +326,7 @@ class ModelRenderer(ModelGeometry, Widget):
     )
 
     self._update_experimental_gradient()
+    self.blendful.update(self, max_idx)
 
   def _update_experimental_gradient(self):
     """Pre-calculate experimental mode gradient colors"""
