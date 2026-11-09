@@ -105,3 +105,115 @@ def test_never_more_braking_and_vision_leads_untouched():
   assert out['vRel'] == -5.0
   vision_lead = dict(radar_lead(), radar=False)
   assert run(CameraCap(), 10, lead=vision_lead) == vision_lead
+
+
+# ---- D+E mode (C-012): limited tapered hold; VA above is unchanged ----
+from openpilot.starpilot.car.honda.radar_camera_cap import CAP_GAP_HOLD, CAP_HOLD_T  # noqa: E402
+
+
+def gap_model(gap):
+  """Camera lead whose closing speed is `gap` m/s slower than the radar's -5.0 (radar v_rel = -5.0)."""
+  return vision(v_rel=-5.0 + gap)
+
+
+def gap_cam(gap):
+  return ranges(slope=-5.0 + gap)
+
+
+def hstep(cap, gap, lead=None):
+  return step(cap, lead=lead, model=gap_model(gap), camera=gap_cam(gap))
+
+
+def hrun(cap, gap, frames):
+  out = None
+  for _ in range(frames):
+    out = hstep(cap, gap)
+  return out
+
+
+def test_default_is_va_and_hold_off():
+  assert CameraCap().hold is False and CameraCap().hold_t == [0.0, 0.0]
+  cap = CameraCap()
+  hrun(cap, 5.0, 20)
+  out = hrun(cap, 2.0, 20)   # VA: gap <= CAP_GAP_MIN releases
+  assert out['vRel'] == pytest.approx(-5.0)
+  assert cap.hold_t == [0.0, 0.0]
+
+
+def test_hold_tapers_target_when_gap_drops_5_to_2():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  assert cap.dv[0] == pytest.approx(5.0)
+  hrun(cap, 2.0, 20)   # target = 2 * (2 - 1) / (3 - 1) = 1.0
+  assert cap.dv[0] == pytest.approx(2.0 * (2.0 - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD))
+  assert cap.dv[0] == pytest.approx(1.0)
+  assert cap.hold_t[0] == pytest.approx(20 * DT_MDL)
+
+
+def test_hold_ends_after_hold_t():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  frames = int(round(CAP_HOLD_T / DT_MDL))
+  hrun(cap, 2.0, frames)
+  assert cap.dv[0] == pytest.approx(1.0)
+  hrun(cap, 2.0, 40)   # hold exhausted: target 0, slews down
+  assert cap.dv[0] == pytest.approx(0.0)
+  assert cap.hold_t[0] == 0.0   # reset once dv <= 0
+
+
+def test_no_hold_at_or_below_gap_hold():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  hrun(cap, CAP_GAP_HOLD - 0.1, 40)
+  assert cap.dv[0] == pytest.approx(0.0)
+  assert cap.hold_t[0] == 0.0
+
+
+def test_hold_t_not_reset_across_recrossing_of_gap_min():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  hrun(cap, 2.0, 10)
+  held = cap.hold_t[0]
+  assert held == pytest.approx(10 * DT_MDL)
+  hrun(cap, 5.0, 3)    # re-crossing 3 with dv > 0
+  assert cap.hold_t[0] == pytest.approx(held)
+  hrun(cap, 2.0, 5)
+  assert cap.hold_t[0] == pytest.approx(held + 5 * DT_MDL)
+
+
+def test_new_track_resets_hold_t():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  hrun(cap, 2.0, 10)
+  assert cap.hold_t[0] > 0.0
+  hstep(cap, 5.0, lead=radar_lead(tid=54))
+  assert cap.hold_t[0] == 0.0 and cap.dv[0] == pytest.approx(CAP_DV_RATE * DT_MDL)
+
+
+def test_hold_mode_matches_va_while_gap_above_gap_min():
+  va, de = CameraCap(), CameraCap(hold=True)
+  for _ in range(30):
+    assert hstep(va, 5.0) == hstep(de, 5.0)
+
+
+def test_hold_mode_still_lifts_aleadk_while_holding():
+  cap = CameraCap(hold=True)
+  hrun(cap, 5.0, 20)
+  out = hrun(cap, 2.0, 5)
+  assert out['aLeadK'] >= -0.4
+
+
+def test_toggle_parsing_defaults_to_va(tmp_path):
+  from openpilot.starpilot.longitudinal.bosch_a_toggles import CAMERA_CAP_HOLD_KEY, read_camera_cap_hold
+
+  class P:
+    def get_param_path(self, key):
+      return str(tmp_path / key)
+
+  assert read_camera_cap_hold(P()) is False             # missing
+  for raw, expected in ((b'1', True), (b'0', False), (b'', False), (b'true', False), (b'1\n', False), (b'\xff', False),
+                        (b'1' * 9, False)):
+    (tmp_path / CAMERA_CAP_HOLD_KEY).write_bytes(raw)
+    assert read_camera_cap_hold(P()) is expected, raw
+  assert read_camera_cap_hold(None) is False
+  assert read_camera_cap_hold(object()) is False

@@ -64,6 +64,11 @@ Safer B variants were also tried and not taken (Peter, 2026-11-08): D (hold limi
 Evidence: replay by Job, 93b pool plus routes a2/a3, default config: 71 seg12 -1.35 -> -0.93, 8a seg2 -0.82 -> -0.72, b0 seg17 t5.7 -0.59 -> -0.11; b0 t51.6 unchanged at -3.40. Nothing brakes harder than the cap alone except 80 seg19's second pulse (+0.20). Full-route fidelity moved <= 0.006 in correlation. Static tests 13/13. Replay only.
 Revisit if: a road drive shows a real far slowdown braked late while the camera lead read a > -0.5, or the 80 seg19 second-pulse cost shows up on the road.
 
+## C-012: Camera cap mode setting, VA (default) or D+E (2026-11-09)
+Decision: New boolean param `BoschACameraCapHold` (default "0"), a row beside the other Bosch-A toggles on the Long Planner page. Off is VA (C-010 + C-011, unchanged and byte-identical). On is D+E: the VA cap plus a limited tapered hold. With the gap floor dropped, a gap above CAP_GAP_MIN (3 m/s) targets the gap as before; while dv > 0, the gap is above CAP_GAP_HOLD (1 m/s) and at most CAP_HOLD_T (1.0 s) of hold has been used, the target is gap * (gap - 1) / (3 - 1); otherwise 0. hold_t resets on a new track and whenever dv <= 0, and deliberately not when the gap re-crosses 3 while dv > 0. The dv/da slews and the aLeadK lift are unchanged. radard reads the param once at construction (only an exact saved "1" is on; missing or malformed is VA), so a change applies on the next drive.
+Evidence: replay by Job (variants D+E, see C-011): never brakes harder than VA; softens real far slowdowns by up to about 0.4 m/s^2 for up to about 2 s (99 s15 -0.60 -> -0.24 over 1.95 s, a2 s11 -0.62 -> -0.26, 84 s4 -2.79 -> -2.63); cuts more residual phantoms (8a s2 -0.72 -> -0.58). Static tests only for the setting; not road-validated.
+Revisit if: a road drive with D+E on shows a real far slowdown braked late, or D+E removes no phantom that VA leaves on the road.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)

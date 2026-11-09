@@ -30,6 +30,11 @@ aLeadK lift (variant A, same replay, cap alone -> cap + lift): 71 seg12 -1.35 ->
 b0 17:05 -0.59 -> -0.11; b0 t51.6 stays -3.40 (track 53's range-fit vRel, not the camera's case). No row anywhere
 braked harder than the cap alone except 80 seg19's second pulse (+0.20); full-route fidelity moved <= 0.006.
 Replay evidence only; no road evidence yet.
+
+Mode (C-012): VA (above, default) or D+E (`hold=True`, the BoschACameraCapHold toggle, latched at construction). D+E adds a
+limited, tapered hold: the gap floor is dropped, and while the gap is at or below CAP_GAP_MIN but above CAP_GAP_HOLD with
+dv > 0, a target of gap * (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD) holds for at most CAP_HOLD_T seconds in total
+per engagement (hold_t is reset on a new track and whenever dv <= 0, deliberately not when the gap re-crosses CAP_GAP_MIN).
 """
 from __future__ import annotations
 
@@ -45,19 +50,24 @@ CAP_PROB = 0.9         # filtered model lead prob (CameraSlowBound's witness lev
 CAP_RANGE_FRAC = 0.3   # camera range within this fraction of dRel (b0 17:05: 70 vs 79 m)
 CAP_GAP_MIN = 3.0      # m/s; the camera must close this much slower than the radar's vRel
 CAP_DV_RATE = 8.0      # m/s per second, in and out (the replay above ran at 8)
+CAP_GAP_HOLD = 1.0     # m/s; D+E: no hold at or below this gap, and the taper reaches 0 here
+CAP_HOLD_T = 1.0       # s; D+E: total hold time per engagement
 CAP_DA_RATE = 10.0     # m/s^2 per second for the aLeadK lift, in and out (variant A replay ran at 10)
 
 
 class CameraCap:
   """Per lead index camera cap over the published Bosch-A leads. Call `apply` once per radard cycle."""
-  def __init__(self, dt: float = DT_MDL):
+  def __init__(self, dt: float = DT_MDL, hold: bool = False):
     self.dt = dt
+    self.hold = bool(hold)
+    self.hold_t = [0.0, 0.0]
     self.dv = [0.0, 0.0]
     self.da = [0.0, 0.0]
     self.track_ids = [-1, -1]
 
   @staticmethod
-  def _target(lead: dict[str, Any], model_lead, camera_ranges, model_v_ego: float, lead_prob: float) -> float:
+  def _target(lead: dict[str, Any], model_lead, camera_ranges, model_v_ego: float, lead_prob: float,
+              gap_min: float = CAP_GAP_MIN) -> float:
     d_rel = float(lead['dRel'])
     if lead_prob < CAP_PROB or d_rel < CAP_MIN_D:
       return 0.0
@@ -68,7 +78,7 @@ class CameraCap:
     if math.isnan(camera_slope) or abs(camera_slope - camera_v_rel) > CAMERA_SELF_TOL or float(model_lead.a[0]) < CAMERA_DECEL_MIN:
       return 0.0
     gap = camera_v_rel - float(lead['vRel'])
-    return gap if gap > CAP_GAP_MIN else 0.0
+    return gap if gap > gap_min else 0.0
 
   def apply(self, output: list[dict[str, Any]], model_leads, model_v_ego: float, lead_probs, tracks,
             camera_ranges) -> list[dict[str, Any]]:
@@ -82,10 +92,22 @@ class CameraCap:
         self.track_ids[index] = track_id
         self.dv[index] = 0.0
         self.da[index] = 0.0
+        self.hold_t[index] = 0.0
       target = 0.0
       if radar_lead and track_id in tracks:
-        target = self._target(lead, model_leads[index], camera_ranges[index], model_v_ego, float(lead_probs[index]))
+        if not self.hold:
+          target = self._target(lead, model_leads[index], camera_ranges[index], model_v_ego, float(lead_probs[index]))
+        else:
+          gap = self._target(lead, model_leads[index], camera_ranges[index], model_v_ego, float(lead_probs[index]),
+                             gap_min=-math.inf)
+          if gap > CAP_GAP_MIN:
+            target = gap
+          elif self.dv[index] > 0.0 and gap > CAP_GAP_HOLD and self.hold_t[index] < CAP_HOLD_T:
+            self.hold_t[index] += self.dt
+            target = gap * (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD)
       self.dv[index] = min(max(target, self.dv[index] - step), self.dv[index] + step)
+      if self.dv[index] <= 0.0:
+        self.hold_t[index] = 0.0
       a_target = 0.0
       if target > 0.0:
         a_target = max(0.0, max(float(model_leads[index].a[0]), CAMERA_DECEL_MIN) - float(lead['aLeadK']))

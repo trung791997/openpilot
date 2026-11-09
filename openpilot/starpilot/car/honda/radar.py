@@ -394,7 +394,7 @@ class BoschALeadPolicy:
       self._was_standstill = False
       self._standstill_had_lead = False
 
-  def __init__(self):
+  def __init__(self, camera_cap_hold: bool = False):
     self.starpilot_toggles = SimpleNamespace(lead_detection_probability=0.35)
     self.vision_state = SimpleNamespace(prev_aLeadK=0.0)
     self.prev_lead_track_ids = [-1, -1]
@@ -409,7 +409,7 @@ class BoschALeadPolicy:
     self._last_tracks_frame = -1
     self.reversal_bound = ReversalBound()
     self.camera_slow_bound = CameraSlowBound()
-    self.camera_cap = CameraCap()
+    self.camera_cap = CameraCap(hold=camera_cap_hold)  # C-012: D+E mode, latched here
     self.weak_lead_bound = WeakLeadBound()
     self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
 

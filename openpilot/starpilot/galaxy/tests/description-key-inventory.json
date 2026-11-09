@@ -11,6 +11,7 @@
   "AlwaysOnLateral",
   "AolBrakePauseSpeedMps",
   "BlindSpotMetrics",
+  "BoschACameraCapHold",
   "BoschAHumanFollowing",
   "BoschAStockBrakeFeel",
   "CameraView",
