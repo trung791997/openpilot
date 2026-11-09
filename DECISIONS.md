@@ -48,6 +48,11 @@ Decision: When both the strict and relaxed camera matches fail, the previous rad
 Evidence: route 9e seg 24 bookmark (owner drive, build fd3b0ec99d); Job's radard replay; a 46-event census (32 survive) with stills; closed loop on 8 events, where real leads in 82, 84 and 9b are braked for 0.5-1.5 s longer. Replay only.
 Revisit if: a road drive shows a brake for a car already out of our lane, at an intersection, or from a glitched radar speed on a kept track.
 
+## C-010: Camera cap for far radar leads the camera contradicts, no position gate (2026-11-08)
+Decision: Branch `bob-camera-cap` (not on the car branch yet) adds `CameraCap` after `CameraSlowBound`: a far (>= 50 m) radar lead's vLead/vLeadK/vRel may be raised, never lowered, toward a confident, self-consistent camera lead at the same range (within 30 %) when the camera closes more than 3 m/s slower. It only removes braking, never past the camera's read; dRel, aLeadK and the point are untouched (D-041: publish a bound, never delete; D-042: the 8 m/s^2 slew in and out, no step). A gate on where the camera lead sits against the radar's (at/past it, or <= 5 m past) was tried and dropped: 71 (gap/dRel 0.15-0.32) and b0 17:13 (up to 0.17) overlap, and either gate lost one of them. No radar-only tell separates b0 17:13 (its range slope matched its doppler), which is why the camera is the witness.
+Evidence: commit f8b9f99509; replay on the 93b pool, probes 71/8a/b0 and routes a2/a3 (numbers in STATUS and the module docstring); Peter's stills for b0/8a/71; branch code reproduces the prototype exactly (max |X-C| = 0.0000 on 23 groups). Replay only. Cost accepted: 80 seg19 second pulse 0.12 harder.
+Revisit if: a road drive shows a real far slowdown braked late because the camera read it slow, or variants A/B/C (aLeadK lift, gap hold < 1, 40 m/s^2 slew-in; branch `bob-camera-cap-variants`) change the residuals on 71, 8a and b0 without new harder brakes.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)
