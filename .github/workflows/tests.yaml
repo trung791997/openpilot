@@ -45,6 +45,16 @@ jobs:
     - name: Validate published device build receipt
       if: github.event_name == 'push' && github.ref == 'refs/heads/Dom'
       run: python3 tools/ci/check_prebuilt_receipt.py --revision HEAD
+    # Feature pull requests into Testing do not refresh prebuilt.json: it hashes the whole tree, so every merge
+    # would put each open pull request in conflict on it. It is refreshed on Testing once, right before a
+    # promotion, and checked here on the promotion's own commit (docs/BRANCH_WORKFLOW.md, Device build receipt).
+    - name: Validate promoted device build receipt
+      if: github.event_name == 'pull_request' && (github.base_ref == 'Honda-PTM-Stage' || github.base_ref == 'Honda-PTM-Stable')
+      env:
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+        python3 tools/ci/check_prebuilt_receipt.py --revision "$HEAD_SHA"
     - name: Check shipped device runtime dependencies
       run: |
         python3 -m unittest tools.laptop_device_build.tests.test_runtime_dependencies -v

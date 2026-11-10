@@ -9,6 +9,8 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
+from openpilot.starpilot import local_timezone
+
 from openpilot.starpilot.galaxy.access import GalaxyAccessOwner
 from openpilot.starpilot.galaxy.remote import RemotePairing
 from openpilot.starpilot.galaxy.server import make_remote_server, make_server
@@ -20,6 +22,14 @@ PLACE = {'name': 'Library', 'latitude': 41.1, 'longitude': -88.2}
 
 class NavigationHttpTest(unittest.TestCase):
   def setUp(self):
+    # Navigation requests may carry X-Galaxy-Timezone, which saves a zone; keep every test's save out of the real storage root.
+    zone_dir = tempfile.TemporaryDirectory()
+    self.addCleanup(zone_dir.cleanup)
+    for name, value in (('_root', lambda: Path(zone_dir.name)), ('_cache', None)):
+      patcher = patch.object(local_timezone, name, value)
+      patcher.start()
+      self.addCleanup(patcher.stop)
+    self.zone_file = Path(zone_dir.name) / local_timezone.FILE
     temporary = tempfile.TemporaryDirectory()
     self.addCleanup(temporary.cleanup)
     root = Path(temporary.name)
@@ -49,10 +59,10 @@ class NavigationHttpTest(unittest.TestCase):
       thread.join(timeout=2)
       server.server_close()
 
-  def request(self, path='/api/auth/session', *, payload=None, remote=False, cookie=None, origin=None):
+  def request(self, path='/api/auth/session', *, payload=None, remote=False, cookie=None, origin=None, headers=None):
     server = self.remote if remote else self.local
     host = f'{self.slug}.devices.local' if remote else f'127.0.0.1:{server.server_port}'
-    headers = {'Host': host}
+    headers = {'Host': host, **(headers or {})}
     if cookie is not None:
       headers['Cookie'] = cookie
     if payload is not None:
@@ -65,6 +75,51 @@ class NavigationHttpTest(unittest.TestCase):
       return response.status, json.loads(response.read()), dict(response.getheaders())
     finally:
       connection.close()
+
+  def test_client_timezone_header_is_saved_only_for_authorized_requests(self):
+    zone = {'X-Galaxy-Timezone': 'America/Chicago'}
+    self.assertFalse(self.zone_file.exists())
+    status, body, _ = self.request('/api/navigation/status', cookie='', headers=zone)
+    self.assertEqual(status, 401)
+    status, _, _ = self.request('/api/navigation/action', payload={'action': 'clear', 'revision': 'x'}, cookie='', headers=zone)
+    self.assertEqual(status, 401)
+    status, _, _ = self.request('/api/navigation/search', payload={'query': 'x'}, cookie='', headers=zone)
+    self.assertEqual(status, 401)
+    self.assertFalse(self.zone_file.exists())
+    self.assertEqual(self.request('/api/navigation/status', cookie=self.local_cookie)[0], 200)
+    self.assertFalse(self.zone_file.exists())
+    status, body, _ = self.request('/api/navigation/status', cookie=self.local_cookie, headers=zone)
+    self.assertEqual(status, 200)
+    self.assertEqual(self.zone_file.read_text(), 'America/Chicago')
+    self.assertEqual(body, self.request('/api/navigation/status', cookie=self.local_cookie)[1])
+
+  def test_client_timezone_header_is_saved_by_action_and_search_and_remote(self):
+    with patch.object(self.navigation, 'search', return_value=[]):
+      status, _, _ = self.request('/api/navigation/search', payload={'query': 'cof'}, cookie=self.local_cookie,
+                                  headers={'X-Galaxy-Timezone': 'Asia/Tokyo'})
+    self.assertEqual(status, 200)
+    self.assertEqual(self.zone_file.read_text(), 'Asia/Tokyo')
+    status, _, _ = self.request('/api/navigation/action', payload={'action': 'clear', 'revision': self.navigation.snapshot()['revision']},
+                                cookie=self.local_cookie, headers={'X-Galaxy-Timezone': 'Europe/Paris'})
+    self.assertEqual(status, 200)
+    self.assertEqual(self.zone_file.read_text(), 'Europe/Paris')
+    status, _, _ = self.request('/api/navigation/status', remote=True, cookie=self.remote_cookie,
+                                headers={'X-Galaxy-Timezone': 'America/Denver'})
+    self.assertEqual(status, 200)
+    self.assertEqual(self.zone_file.read_text(), 'America/Denver')
+
+  def test_invalid_client_timezone_header_changes_nothing(self):
+    self.assertEqual(self.request('/api/navigation/status', cookie=self.local_cookie, headers={'X-Galaxy-Timezone': 'America/Chicago'})[0], 200)
+    expected = self.request('/api/navigation/status', cookie=self.local_cookie)[1]
+    for bad in ('Not/AZone', '../../etc/passwd', 'x' * 300):
+      with self.subTest(bad=bad):
+        status, body, _ = self.request('/api/navigation/status', cookie=self.local_cookie, headers={'X-Galaxy-Timezone': bad})
+        self.assertEqual((status, body), (200, expected))
+        self.assertEqual(self.zone_file.read_text(), 'America/Chicago')
+    status, _, _ = self.request('/api/navigation/action', payload={'action': 'clear', 'revision': self.navigation.snapshot()['revision']},
+                                cookie=self.local_cookie, headers={'X-Galaxy-Timezone': 'Not/AZone'})
+    self.assertEqual(status, 200)
+    self.assertEqual(self.zone_file.read_text(), 'America/Chicago')
 
   def test_map_tiles_recheck_authentication_after_provider(self):
     def tile(*args):

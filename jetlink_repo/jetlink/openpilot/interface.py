@@ -61,8 +61,10 @@ class Keys:
   # the server is written there, so the comma's own list shows it; without
   # the key it drives all the same
   select: str | None = None
-  # API 3's kept pointers, unread since the model index: until the next minor release
+  # API 3's cached pointers, used when the model index lacks the selected model.
   pointers: str | None = None
+  # A picker can clear the slot to defer to the host instead of choosing Default.
+  empty_slot_chooses_default: bool = True
 
 
 @dataclass(frozen=True)

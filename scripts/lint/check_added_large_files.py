@@ -27,6 +27,7 @@ LARGE_TEXT_FILES = frozenset((
   'openpilot/cereal/gen/cpp/log.capnp.c++',
   'openpilot/cereal/gen/cpp/log.capnp.h',
   'openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.c',
+  'openpilot/selfdrive/test/process_replay/refs/starpilot/manifest.json',
   'openpilot/starpilot/lateral/tests/fixtures/corolla_tss2_ba901b5f.json',
   'openpilot/starpilot/lateral/tests/fixtures/genesis_g70_ba901b5f.json',
   'openpilot/starpilot/lateral/tests/fixtures/oct2_turns.json',

@@ -10,9 +10,9 @@ from opendbc.car.honda.steer_ratio import (
 from openpilot.selfdrive.controls.lib.honda_eps_firmware_ff import CLARITY_TRW_A020_LAT_DELAY_SCHEDULE, ColumnLoadModel, \
   EpsFirmwareCalibration, R6_GAIN_BP, computed_r6
 from openpilot.selfdrive.controls.lib.honda_eps_rack_map import CIVIC_TBA_C020_RACK, CIVIC_TEG_A010_RACK, CIVIC_TGG_A120_RACK, \
-  CLARITY_TRW_A020_RACK, INSIGHT_TXM_A040_RACK, RDX_TJB_A220_RACK
-from openpilot.selfdrive.controls.lib.honda_eps_spec_plant import CIVIC_2019_SEDAN_SPEC, CRV_2017_SPEC, \
-  CRV_2020_SPEC, spec_rack_table
+  CLARITY_TRW_A020_RACK, CRV_TLA_A040_RACK, INSIGHT_TXM_A040_RACK, RDX_TJB_A220_RACK, RIDGELINE_T6Z_A110_RACK
+from openpilot.selfdrive.controls.lib.honda_eps_spec_plant import CIVIC_2019_SEDAN_SPEC, \
+  spec_rack_table
 
 # --- the images ------------------------------------------------------------------------------------------------
 # Every table below was read from the image the car's owners actually run (the latest builds on the dev machine;
@@ -288,8 +288,7 @@ INSIGHT_TXM_A040 = EpsFirmwareCalibration(
 # feedback_R6 on steeringRateDeg, hands off, route 82bb (-121.6 at a 15 ms lag on the t9-67523237 build, norm 1450;
 # x 1650/1450 = -138.4) is an angle average against the B-table rate, not the centre value.
 # Column load measured on the same drive (CRV_TLA_A040_LOAD). P/I trims: the owner's (CRV_TLA_A040_P_SCALE /
-# CRV_TLA_A040_I_SCALE, untrimmed). Rack map predicted from the 2017-19 CR-V's specs through its A table (no yaw fit).
-CRV_TLA_A040_SPEC_RACK = spec_rack_table(CRV_2017_SPEC, HONDA_VGR_INVERSE_BY_PROFILE[HONDA_VGR_CRV_TLA_A040])
+# CRV_TLA_A040_I_SCALE, untrimmed). Rack map measured against its VSA yaw on rev b (honda_eps_rack_map.CRV_TLA_A040_RACK).
 CRV_TLA_A040 = EpsFirmwareCalibration(
   name="crv_tla_a040", e4_per_output=4096.0,
   r5_key_bp=(0, 219, 443, 662, 887, 1108, 1330, 1552, 1663), r5_v=(0, 3699, 7497, 11200, 15001, 18747, 22502, 26252, 28127),
@@ -297,7 +296,7 @@ CRV_TLA_A040 = EpsFirmwareCalibration(
   kp_key_bp=tuple(round(k * 4096 / 3840) for k in CLARITY_TRW_A020_P_KEYS), kp_v=P_ROW_PMINUS5,
   r6_per_deg_s=CRV_TLA_A040_R6_CENTRE, r6_angle_bp=R6_GAIN_BP, r6_angle_gain=CRV_TLA_A040_R6_GAIN,
   load=CRV_TLA_A040_LOAD, p_scale=CRV_TLA_A040_P_SCALE, i_scale=CRV_TLA_A040_I_SCALE,
-  rack=CRV_TLA_A040_SPEC_RACK,
+  rack=CRV_TLA_A040_RACK,
 )
 # CR-V 5G 39990-TLA-A220 (2020+), the CORRECTED PTM build of 2026-10-16, revision b (payload sha256 a62337a9, RWD 2c992997;
 # KB PTM_FIX_FAMILY_20261016/out/A220, proof/) on stock df85f988: command map and P table Clarity-equivalent, D737, KFF45, Norm1650, Trk3200,
@@ -327,8 +326,13 @@ CRV_TLA_A040 = EpsFirmwareCalibration(
 # Carried over, NOT read from this image: load = CRV_TLA_A040_LOAD and the P/I trims (the CR-V's, see CRV_TLA_A040). R6 is computed
 # from its A table: the motor-to-angle constant (3121, 0x19C00), the A table (16783 at centre, 0x11338, byte-identical to
 # the A040's) and NORM (1650, PTM halfword 0x42558) all equal the A040's, so it has the A040's R6.
-# Rack map predicted from the 2020+ CR-V's specs through the same A table (no yaw fit).
-CRV_TLA_A220_SPEC_RACK = spec_rack_table(CRV_2020_SPEC, HONDA_VGR_INVERSE_BY_PROFILE[HONDA_VGR_CRV_TLA_A040])
+# Rack map: the A040's, measured against its VSA yaw. Same steering (lock 2.30 turns at 12.3, ~3% heavier) and the same
+# A table. Scored on this car's own VSA yaw (0x94 bus 1, 0.2467 deg/s per count + 0.135 clockwise from 334k GPS pairs) over
+# routes 0000030a, 0000030d, 00000039 and 0000003d (740 s moving at >= 3 deg): left / right measured / predicted
+# curvature 0.95 / 0.99 at 25-40 m/s and 0.97 / 1.01 at 15-25 m/s, against 0.79 / 0.90 and 0.86 / 0.95 on its spec map
+# (slip factor -0.000534), and 1.00 past 90 deg at crawl against 1.02-1.035. Ahead of the spec map on either half of
+# those routes held out. Its own fit is not usable yet: the slip factor comes out -0.00112 or -0.00041 depending on
+# which half it is fitted on.
 CRV_TLA_A220 = EpsFirmwareCalibration(
   name="crv_tla_a220", e4_per_output=4096.0,
   r5_key_bp=(0, 161, 222, 322, 409, 534, 696, 998, 1663), r5_v=(0, 2720, 3750, 5439, 6917, 9038, 11775, 16880, 28127), key_clamp=1774,
@@ -336,7 +340,7 @@ CRV_TLA_A220 = EpsFirmwareCalibration(
   kp_key_bp=tuple(round(k * 4096 / 3840) for k in CLARITY_TRW_A020_P_KEYS), kp_v=P_ROW_PMINUS5,
   r6_per_deg_s=CRV_TLA_A040.r6_per_deg_s, r6_angle_bp=CRV_TLA_A040.r6_angle_bp, r6_angle_gain=CRV_TLA_A040.r6_angle_gain,
   load=CRV_TLA_A040_LOAD, p_scale=CRV_TLA_A040_P_SCALE, i_scale=CRV_TLA_A040_I_SCALE,
-  rack=CRV_TLA_A220_SPEC_RACK,
+  rack=CRV_TLA_A040_RACK,
 )
 
 # Acura RDX 3G 39990-TJB-A220, the Route-A PTM, Trk1641 build with the runtime ROM CRC fix (RDX-PTM-101526-RomCRC.rwd,
@@ -386,6 +390,10 @@ RDX_TJB_A220_LOAD = ColumnLoadModel(k0=-11.19, k1=-0.1363, c=-2.479, friction=-2
 # windows at 0.002-0.006), and P alone (x0.6: 1.10, but tracking 0.40 deg).
 RDX_TJB_A220_P_SCALE = (1.0, 1.0, 0.7)
 RDX_TJB_A220_FRICTION_WIDTH_V = (20.0, 15.0)
+# Measured on 412ed2539bfc2c42/00000035--c07fa20f79 (night-star7): plan_timing all turns 5-12 m/s +0.40 s late vs the
+# plan; eps_report action on-time 0.22 s at 15-25 m/s (542 ms late at 9-15 m/s on sparse data, same band as plan_timing).
+# Closed-loop replay on this route: rdx_tjb_a220 trims 1-2 Hz 0.96 vs measured 0.97 at 9-20 m/s — no trim change.
+RDX_TJB_A220_LAT_DELAY_SCHEDULE = ((3.5, 7.0, 12.0, 20.0, 30.0), (0.15, 0.40, 0.40, 0.22, 0.30))
 ACURA_RDX_TJB_A220 = EpsFirmwareCalibration(
   name="rdx_tjb_a220", e4_per_output=4096.0,
   r5_key_bp=tuple(round(a * _RDX_A) for a in (0, 128, 256, 384, 512, 640, 768, 896, 1024)),
@@ -396,6 +404,53 @@ ACURA_RDX_TJB_A220 = EpsFirmwareCalibration(
   r6_per_deg_s=RDX_TJB_A220_R6_CENTRE, r6_angle_bp=R6_GAIN_BP, r6_angle_gain=RDX_TJB_A220_R6_GAIN,
   load=RDX_TJB_A220_LOAD, p_scale=RDX_TJB_A220_P_SCALE, i_scale=CRV_TLA_A040_I_SCALE,
   rack=RDX_TJB_A220_RACK, friction_width_v=RDX_TJB_A220_FRICTION_WIDTH_V,
+  lat_delay_schedule=RDX_TJB_A220_LAT_DELAY_SCHEDULE,
+)
+
+# Honda Ridgeline 39990-T6Z-A110, PTM rev b5 (39990-T6Z,A110-REVB5.rwd, RWD sha256 e7e2d909, decoded image sha256
+# 5c578995; static, built on the stock image, block sums 0). Not the Clarity's controller family: a V850 image of the
+# Pilot codebase. Every value below was read from the rwd decoded (all five calsets 0x1E5D2..0x21FDA identical) and run
+# through the bit-exact model of its 1 kHz LKAS task (validated against the real code in Ghidra's p-code emulator).
+# In the Clarity's units the law is the one honda_eps_firmware_ff inverts:
+# - index j = 254/256 x (|E4| x 100/256) x 41/256 (C7E 100, C80 0, flat speed ceiling C84 256; the 254/256 is the
+#   hands-off product of the two target-stage driver-torque fades), so E4 4096 -> j 254. The key axis below is the
+#   Clarity key at the smallest E4 that reaches each j, so command_key() reads it unchanged: within one table step
+#   (rms 75, max 254 counts) at every E4.
+# - target map +0x426 (s16[256]): the Clarity's R5 at the same output (E4 / 4096 here, E4 / 3840 there) with its KFF45
+#   folded in (x (1 + 45 / Kp), since Kp*(R5-R6) + 45*R5 = Kp*((1 + 45/Kp)*R5 - R6)) and rescaled to this image's
+#   feedback (x 128 / 122), saturating at 32767 from j 232 (E4 3732); the knots are every 16th entry.
+# - Kp +0xA26 (u8[256], 12..28, P = Kp * e / 1024): the Clarity's P at the same output, x 122/128 x 2457/8868 / 2.539, so
+#   the same percent of full scale per deg/s; here at each plateau's centre, within half a count. D (Kd 77, clamp 192)
+#   is left out, as everywhere. P is clamped at 942 (the patched movea at 0x364E0/EC/F6), which binds inside its
+#   range: 942 x 2.539 = 2391 of the 2410 cap (C7A).
+# - output: (P + D) x (fade D x fade C = 255 x 255) / 65536, x 655 / 256 (0x28F, FUN_000365a2), so scale_q8 = 649.9
+#   hands off, in its own LKAS counts (full motor command +-2457); no fe280 limiter (bypassed), no C79 clamp (NOP).
+# - R6: fe232 = IIR (c6 18, c8 220, unity gain) of the resolver motor speed x 42 (x84 stock, halved at 0x2E314) x the
+#   motor sign (-1); the 0x18F rate word is fe232 / 32 (FUN_00036d12). On the owner's routes 0000023d / 0000023e the
+#   word reads -3.97 to -4.05 per published deg in every band from centre to lock (steer_ratio RIDGELINE_T6Z_A110_VGR_*),
+#   so R6 = -128 per deg/s, flat (no angle table, a constant-ratio rack). It rails at 256 deg/s.
+# - E4 4096 per unit (opendbc's Ridgeline map); the target is flat from E4 3732, so the integrator clamp
+#   (output_ceiling) stops at 0.91.
+# The driver-torque fades are the Clarity's (fade A on the target, its helper A on the output) and stay out of the law
+# hands off, as everywhere. Every earlier T6Z build (rev b1-b4, the PTM2045) reports 39990,T6Z,A110 and is not this law.
+RIDGELINE_T6Z_A110_P_KEYS = (0, 62, 139, 211, 276, 342, 408, 474, 540, 606, 671, 744, 830, 924, 1066, 1388, 1616)
+RIDGELINE_T6Z_A110_P = (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28)
+# Load: the standard recipe (fit_column_load.py --source e4: the law above rebuilt from the sent 0xE4, |steeringTorque| <
+# 300) on the owner's routes 9b9a340b3a3dd778/0000023d and 0000023e (nrdr-clean's LatControlPID on rev b5), 83 min of
+# frames, mostly highway (1.7 engaged min past 45 deg); R^2 0.561, held out by quarter of the drive 0.60 / 0.45 / 0.60 /
+# 0.66 (the Clarity's column at 2457/8868 of its counts: 0.50 / 0.29 / 0.07 / -0.03). It beats that in every regime;
+# it under-asks highway turn-ins (actual 1.45x the fit at 15+ m/s, as the Clarity's does) and over-asks highway holds
+# (0.83x). In percent of full scale its stiffness is near the Clarity's in town (k0 -2.79 vs -1.94) and half at 25 m/s.
+RIDGELINE_T6Z_A110_LOAD = ColumnLoadModel(k0=-2.791, k1=-0.03092, c=-2.007, friction=-51.44, bias=6.89, kroll=-0.6671)
+RIDGELINE_T6Z_A110 = EpsFirmwareCalibration(
+  name="ridgeline_t6z_a110", e4_per_output=4096.0,
+  r5_key_bp=(0, 107, 218, 329, 439, 557, 668, 778, 889, 1000, 1111, 1222, 1339, 1450, 1560, 1616),
+  r5_v=(0, 2598, 5065, 7418, 9706, 11927, 14098, 16264, 18434, 20612, 22832, 25045, 27274, 29498, 31747, 32767),
+  key_clamp=1773, envelope_bp=FLAT_ENVELOPE[0], envelope_v=FLAT_ENVELOPE[1],
+  kp_key_bp=RIDGELINE_T6Z_A110_P_KEYS, kp_v=RIDGELINE_T6Z_A110_P,
+  r6_per_deg_s=-128.0, kff=0.0, scale_q8=655.0 * 255 * 255 / 65536, p_clamp=942.0,
+  load=RIDGELINE_T6Z_A110_LOAD, p_scale=CRV_TLA_A040_P_SCALE, i_scale=CRV_TLA_A040_I_SCALE,
+  rack=RIDGELINE_T6Z_A110_RACK,
 )
 
 # normalize_honda_eps_fw(EPS fwVersion) -> (fingerprint, profile). TGG-A020 is a separate application from the A120 (its RWD updates only A010/A020)
@@ -413,6 +468,7 @@ EPS_FIRMWARE_CALIBRATIONS = {
   # Stock A220 accepts every RDX 3G image as a source, so the 2019-21 and 2022+ (MMR) cars run the same PTM image on
   # the same rack; the vehicle side was measured on a 2019.
   "39990-TJB-A220": (("ACURA_RDX_3G", "ACURA_RDX_3G_MMR"), ACURA_RDX_TJB_A220),
+  "39990-T6Z-A110": ("HONDA_RIDGELINE", RIDGELINE_T6Z_A110),
 }
 
 
@@ -506,7 +562,7 @@ CALIBRATION_PROVENANCE = {
     "trims": "measured: the owner drives it untrimmed",
     "cmd_delay": "default (the owner's LatControlPID drive ran 0.08 s late: re-check on this controller)",
     "model_delay": "default: the Clarity's schedule",
-    "rack": "spec: Honda lock turns and lock ratio through its A table, R0 +-2.5%",
+    "rack": "measured: VSA yaw (GPS-checked scale), routes 00000003 / 04 / 05 on rev b; spec shape past 173 deg",
   },
   "rdx_tjb_a220": {
     "row": "firmware: rows 0-3 carry the same Route-A target, P and D (0x57BAE + 0x300*row), so the variant row does not matter",
@@ -514,9 +570,18 @@ CALIBRATION_PROVENANCE = {
     "r6": "firmware: ref = 32 x its 0x18F rate word (0x1C668 / 0x1D300) x 0.4812 (the build); the word measured at 7.8 per deg/s on routes b8/c7/cc/d2",
     "load": "measured: the owner's routes 000000c6 / c7 / cc / d2 (a 2019), rebuilt through the law from the sent 0xE4; the MMR takes it",
     "trims": "measured: closed-loop replay of routes cc / d2 (P x0.7 above 50 mph, a 15 deg/s friction knee at speed)",
-    "cmd_delay": "measured: plan_timing on this controller, routes cc / d2: on time at 5-12 m/s (+0.04 / +0.03 s), so the default stands",
-    "model_delay": "default: the Clarity's schedule",
+    "cmd_delay": "measured: plan_timing, cc/d2 on time 5-12 m/s (+0.04/+0.03 s); r35 +0.40 s late 5-12 m/s (re-check on model change)",
+    "model_delay": "measured: route 00000035 (plan_timing 5-12 m/s +0.40 s; action on-time 0.22 s at 15-25 m/s)",
     "rack": "measured: VSA yaw (GPS-checked scale), routes 000000b8 / c6 / c7 / cc / d2 (a 2019; the MMR takes it), through its road-measured linear map",
+  },
+  "ridgeline_t6z_a110": {
+    "row": "firmware: one target / P row, all five calsets of rev b5 identical (no variant rows)",
+    "kp_axis": "firmware", "key_clamp": "firmware", "envelope": "firmware: the speed ceiling C84 is flat 256",
+    "r6": "firmware: fe232 = 32 x the 0x18F rate word, x42 in rev b5; the word measured at -4.00 per deg/s on routes 23d/23e",
+    "load": "measured: the owner's routes 0000023d / 0000023e (rev b5), rebuilt through the law from the sent 0xE4",
+    "trims": "inferred: the CR-V owner's (untrimmed)",
+    "cmd_delay": "default", "model_delay": "default: the Clarity's schedule",
+    "rack": "measured: wheel-speed yaw (GPS-checked) below 9 m/s, livePose (GPS-scaled) above, routes 0000023d / 0000023e",
   },
   "crv_tla_a220": {
     "row": "firmware: rows 0-5 all Clarity-equivalent in the corrected build, so the untraced variant row does not matter",
@@ -525,7 +590,7 @@ CALIBRATION_PROVENANCE = {
     "load": "inferred: the A040 owner's (the A220 drives 0x30A-0x30D ran the 10-06 build: refit after the reflash)",
     "trims": "inferred: the A040 owner's",
     "cmd_delay": "default", "model_delay": "default: the Clarity's schedule",
-    "rack": "spec: Honda lock turns and lock ratio through its A table, R0 +-2.5%",
+    "rack": "inferred: the A040's VSA-yaw map (same steering and A table), checked on its own VSA yaw, routes 030a / 030d / 39 / 3d",
   },
 }
 
@@ -543,6 +608,7 @@ REQUIRED_PTM_RWD = {
   "crv_tla_a040": "2e6a8802",
   "crv_tla_a220": "2c992997",
   "rdx_tjb_a220": "3dd8b91b",
+  "ridgeline_t6z_a110": "e7e2d909",
 }
 
 

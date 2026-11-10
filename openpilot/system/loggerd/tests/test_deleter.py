@@ -4,6 +4,7 @@ from pathlib import Path
 from collections.abc import Sequence
 
 import openpilot.system.loggerd.deleter as deleter
+from openpilot.common.params import Params
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
 
 Stats = namedtuple("Stats", ['f_bavail', 'f_blocks', 'f_frsize'])
@@ -66,13 +67,15 @@ class TestDeleter(UploaderTestCase):
     ])
 
   def test_delete_order_after_route_count_reset(self):
+    Params().put("RouteCount", 8)
     old = [self.make_file_with_data(f"000000e8--dcc621904d--{i}", "qlog.zst") for i in range(2)]
     new = [self.make_file_with_data(f"00000007--29d39f1644--{i}", "qlog.zst") for i in range(2)]
-    for n, f in enumerate(old + new):
-      os.utime(f, (1_700_000_000 + n, 1_700_000_000 + n))
+    for f in old + new:
+      os.utime(f, (1_700_000_000, 1_700_000_000))
     self.assertDeleteOrder(old + new)
 
   def test_delete_order_ignores_video_deletion_and_unsynced_clock(self):
+    Params().put("RouteCount", 8)
     old = self.make_file_with_data("000000e8--dcc621904d--0", "qlog.zst")
     unsynced = self.make_file_with_data("00000007--29d39f1644--0", "qlog.zst")
     synced = self.make_file_with_data("00000007--29d39f1644--1", "qlog.zst")
@@ -80,6 +83,16 @@ class TestDeleter(UploaderTestCase):
       os.utime(f, (t, t))
     os.utime(old.parent, (1_900_000_000, 1_900_000_000))
     self.assertDeleteOrder([old, unsynced, synced])
+
+  def test_new_route_written_before_the_clock_is_set_is_not_deleted_first(self):
+    # Cold boot: the new route's first segments carry the stale boot clock (Oct 12), older than every earlier route.
+    Params().put("RouteCount", 0x9a)
+    older = self.make_file_with_data("00000098--b5d2943e2e--0", "qlog.zst")
+    newest = [self.make_file_with_data(f"00000099--a68b84f4c7--{i}", "qlog.zst") for i in range(2)]
+    os.utime(older, (1_793_900_000, 1_793_900_000))
+    for f in newest:
+      os.utime(f, (1_791_790_576, 1_791_790_576))
+    self.assertDeleteOrder([older] + newest)
 
   def test_no_delete_when_available_space(self):
     f_path = self.make_file_with_data(self.seg_dir, self.f_type)

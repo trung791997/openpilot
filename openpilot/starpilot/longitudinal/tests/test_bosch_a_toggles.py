@@ -25,7 +25,7 @@ def car(fingerprint='HONDA_CIVIC_BOSCH', brand='honda', long=True, radar_unavail
 
 
 BOSCH_A = car()
-NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_ACCORD'), car(long=False))
+NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_CIVIC'), car('HONDA_ACCORD_11G'), car(long=False))
 
 
 class FileParams:
@@ -176,6 +176,11 @@ class TestCarGates(unittest.TestCase):
 
   def test_settings_row_gate(self):
     self.assertTrue(bosch_a_toggles.vehicle_supported(BOSCH_A))
+    self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G')))
+    self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G_MMR')))
+    rdx_pcm = car('ACURA_RDX_3G', long=False)
+    rdx_pcm.alphaLongitudinalAvailable = True
+    self.assertTrue(bosch_a_toggles.vehicle_supported(rdx_pcm))
     self.assertFalse(bosch_a_toggles.vehicle_supported(None))
     for cp in NOT_BOSCH_A:
       self.assertFalse(bosch_a_toggles.vehicle_supported(cp), cp)
@@ -303,6 +308,34 @@ class TestStarPilotPlanner(unittest.TestCase):
   def test_plannerd_passes_toggles(self):
     from openpilot.selfdrive.controls import plannerd as starpilot_plannerd
     self.assertIs(starpilot_plannerd.read_bosch_a_toggles, read_toggles)
+
+
+class TestSettingsRows(unittest.TestCase):
+  def rows(self, cp, saved="0", can_edit=True):
+    from openpilot.starpilot.longitudinal.bosch_a_toggles import ROWS, settings_rows
+    out = settings_rows(cp, lambda key: (saved, None, None), can_edit)
+    self.assertEqual([r[0] for r in out], [r[0] for r in ROWS])
+    return out
+
+  def test_supported_car_is_editable_with_plain_reason(self):
+    from openpilot.starpilot.longitudinal.bosch_a_toggles import ROWS
+    for (_, _, editable, reason), (_, _, plain) in zip(self.rows(BOSCH_A), ROWS, strict=True):
+      self.assertTrue(editable)
+      self.assertEqual(reason, plain)
+
+  def test_unsupported_car_is_locked_and_says_why(self):
+    for (_, _, editable, reason) in self.rows(car('HONDA_CIVIC')):
+      self.assertFalse(editable)
+      self.assertIn("not a Bosch-A Honda", reason)
+    for (_, _, editable, reason) in self.rows(car(long=False)):
+      self.assertFalse(editable)
+      self.assertIn("Alpha Longitudinal", reason)
+
+  def test_saved_on_stays_editable_so_it_can_be_turned_off(self):
+    self.assertTrue(all(r[2] for r in self.rows(car('HONDA_CIVIC'), saved="1")))
+
+  def test_no_preferences_authority_locks_rows(self):
+    self.assertFalse(any(r[2] for r in self.rows(BOSCH_A, can_edit=False)))
 
 
 if __name__ == '__main__':

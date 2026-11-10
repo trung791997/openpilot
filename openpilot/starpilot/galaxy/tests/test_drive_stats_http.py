@@ -4,12 +4,23 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
+from openpilot.starpilot import local_timezone
 from openpilot.starpilot.galaxy.access import GalaxyAccessOwner
 from openpilot.starpilot.galaxy.server import make_server
 
 
 class DriveStatsHTTPTest(unittest.TestCase):
+  def setUp(self):
+    # A stats request with ?timezone= saves the zone; keep every test's save out of the real storage root.
+    zone_dir = tempfile.TemporaryDirectory()
+    self.addCleanup(zone_dir.cleanup)
+    for name, value in (('_root', lambda: Path(zone_dir.name)), ('_cache', None)):
+      patcher = mock.patch.object(local_timezone, name, value)
+      patcher.start()
+      self.addCleanup(patcher.stop)
+
   def test_local_access_exclusions_and_remote_auth(self):
     with tempfile.TemporaryDirectory() as tmp:
       calls = []
@@ -71,6 +82,46 @@ class DriveStatsHTTPTest(unittest.TestCase):
         thread.join(2)
         server.server_close()
       self.assertEqual(closed, [True])
+
+  def test_stats_request_saves_the_phone_timezone_and_bad_zones_keep_old_behavior(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      class Statistics:
+        def snapshot(self, timezone='UTC'):
+          if timezone == 'Not/AZone':
+            raise ValueError('Invalid timezone')  # what the real owner raises
+          return {'schemaVersion': 1}
+
+        def close(self):
+          pass
+
+      saved = Path(tmp) / 'state' / local_timezone.FILE
+      server = make_server(port=0, owner=GalaxyAccessOwner(Path(tmp)), drive_stats=Statistics())
+      thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
+      thread.start()
+      cookie = ['']
+      def get(path):
+        conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+        try:
+          conn.request('GET', path, None, {'Origin': f'http://127.0.0.1:{server.server_port}', 'Cookie': cookie[0]})
+          response = conn.getresponse()
+          if response.getheader('Set-Cookie'):
+            cookie[0] = response.getheader('Set-Cookie').split(';', 1)[0]
+          return response.status
+        finally:
+          conn.close()
+      try:
+        with mock.patch.object(local_timezone, '_root', lambda: saved.parent):
+          self.assertEqual(get('/api/auth/session'), 200)
+          self.assertEqual(get('/api/drives/stats'), 200)
+          self.assertFalse(saved.exists())
+          self.assertEqual(get('/api/drives/stats?timezone=America%2FLos_Angeles'), 200)
+          self.assertEqual(saved.read_text(), 'America/Los_Angeles')
+          self.assertEqual(get('/api/drives/stats?timezone=Not%2FAZone'), 400)
+          self.assertEqual(saved.read_text(), 'America/Los_Angeles')
+      finally:
+        server.shutdown()
+        thread.join(2)
+        server.server_close()
 
   def test_logout_during_snapshot_discards_private_result(self):
     with tempfile.TemporaryDirectory() as tmp:

@@ -68,6 +68,8 @@ def read_route(pattern, source, cal):
                 st['y'], st['fresh'] = s16(tel[0x6A0], 2) + cal.kff * r5 / 1024.0, 1.0
         elif w == 'vehicleParameters':
           st['off'], st['roll'] = e.vehicleParameters.angleOffsetDeg, e.vehicleParameters.roll
+        elif w == 'liveParameters':  # logs from forks without vehicleParameters (the Ridgeline's, on nrdr)
+          st['off'], st['roll'] = e.liveParameters.angleOffsetDeg, e.liveParameters.roll
         elif w == 'carControl':
           st['lat'] = float(e.carControl.latActive)
         elif w == 'carState':

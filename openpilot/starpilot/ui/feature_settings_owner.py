@@ -24,7 +24,7 @@ from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_A
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
 from openpilot.starpilot.longitudinal.encouragement import KEY as NUDGE_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
-from openpilot.starpilot.longitudinal.bosch_a_toggles import (KEYS as BOSCH_A_KEYS, ROWS as BOSCH_A_ROWS,
+from openpilot.starpilot.longitudinal.bosch_a_toggles import (KEYS as BOSCH_A_KEYS, settings_rows as bosch_a_settings_rows,
                                                                vehicle_supported as bosch_a_vehicle_supported)
 
 from openpilot.starpilot.longitudinal.profile_document import (
@@ -1193,11 +1193,8 @@ class FeatureSettingsOwner:
       title = "Long Planner"
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
-      bosch_a_supported = bosch_a_vehicle_supported(self.vehicle_params())
-      for ba_key, ba_label, ba_reason in BOSCH_A_ROWS:
-        ba_on, _, _ = self._value(ba_key)
-        rows.append(self._bool_row(ba_key, ba_label, self.authority("preferences") and
-                                   (bosch_a_supported or ba_on == "1"), reason=ba_reason))
+      for ba_key, ba_label, ba_editable, ba_reason in bosch_a_settings_rows(self.vehicle_params(), self._value, self.authority("preferences")):
+        rows.append(self._bool_row(ba_key, ba_label, ba_editable, reason=ba_reason))
       allowed = configurable and system_long
       force_enabled, _, _ = self._value("ForceStops")
       rows.append(self._bool_row("ForceStops", "Force Stop", allowed or

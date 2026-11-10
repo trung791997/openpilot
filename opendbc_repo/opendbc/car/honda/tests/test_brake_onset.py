@@ -108,9 +108,18 @@ def test_civic_bosch_command_is_compensated_only_in_pid():
     assert other.update(cc, cs, -1.5)[0] == -1.5
 
 
-def test_other_bosch_cars_are_unchanged():
+def test_accord_bosch_a_harness_command_is_compensated():
   accord = bosch(CAR.HONDA_ACCORD)
-  assert accord.brake_onset is None
+  assert accord.brake_onset is not None
   cc, cs = frame()
   accord.update(cc, cs, 0.0)
-  assert accord.update(cc, cs, -1.5)[0] == -1.5
+  assert accord.update(cc, cs, -1.5)[0] > -1.5
+
+
+def test_other_bosch_cars_are_unchanged():
+  # Civic 2022 is not a Bosch-A harness car.
+  other = bosch(CAR.HONDA_CIVIC_2022)
+  assert other.brake_onset is None
+  cc, cs = frame()
+  other.update(cc, cs, 0.0)
+  assert other.update(cc, cs, -1.5)[0] == -1.5

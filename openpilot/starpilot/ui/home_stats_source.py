@@ -14,9 +14,13 @@ from openpilot.starpilot.ui.home_state import DailyDistance, DriveStatsData, Dri
 
 
 def read_home_stats(metric: bool, *, store: Path | None = None, clock: Callable[[], float] = lambda: datetime.now(UTC).timestamp(),
-                    timezone: str = 'UTC') -> DriveStatsData | None:
+                    timezone: str | None = None) -> DriveStatsData | None:
   from openpilot.starpilot.galaxy.drive_stats import DriveStatsOwner
+  from openpilot.starpilot.local_timezone import local_zone
   from openpilot.starpilot.storage import starpilot_storage_root
+
+  # Days, today and the week are local dates: a drive after 7 PM Eastern is not tomorrow's.
+  timezone = timezone or getattr(local_zone(), 'key', 'UTC')
 
   path = store if store is not None else starpilot_storage_root() / 'galaxy/drive-stats.json'
   if not path.is_file():

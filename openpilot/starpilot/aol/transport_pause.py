@@ -1497,6 +1497,15 @@ class TransportPauseFeedback:
         if retain_eps_recovery(self, sm, cp, cs, axis, now_ns, latched=latched, producer=intent_producer_session):
           self.sequence, self.signature = int(axis.sequence), signature
           return False
+      # Night Star: ahead of the generic host paths, so a held Honda brake keeps its own baseline fresh
+      brake_native = (self._honda_brake_lateral_current(sm, cp, cs, axis, now_ns,
+        latched=latched, brake_source_ns=brake_source_ns) if current and continuity else None)
+      if brake_native is not None:
+        self.healthy_feedback_ns = stamp
+        self.healthy_native_ns = int(brake_native.observedMonoTime)
+        self.honda_brake_pending_ns = 0
+        self.sequence, self.signature = int(axis.sequence), signature
+        return False
       if current and continuity and self._ordinary_warning_intent_current(sm, cp, cs, axis, stamp, now_ns,
           latched=latched, producer=intent_producer_session):
         self.ordinary_warning_qualified = any(event.softDisable for event in sm['onroadEvents'])
@@ -1572,14 +1581,6 @@ class TransportPauseFeedback:
           self.lateral_native_ns = int(gas_native.observedMonoTime)
           self.sequence, self.signature = int(axis.sequence), signature
           return False
-      brake_native = (self._honda_brake_lateral_current(sm, cp, cs, axis, now_ns,
-        latched=latched, brake_source_ns=brake_source_ns) if current and continuity else None)
-      if brake_native is not None:
-        self.healthy_feedback_ns = stamp
-        self.healthy_native_ns = int(brake_native.observedMonoTime)
-        self.honda_brake_pending_ns = 0
-        self.sequence, self.signature = int(axis.sequence), signature
-        return False
       if current and continuity and self._honda_brake_pending(sm, cp, cs, axis, now_ns,
           latched=latched, brake_source_ns=brake_source_ns):
         # Hold only: do not refresh healthy_feedback_ns -- this is not a renewal.

@@ -69,6 +69,11 @@ Decision: New boolean param `BoschACameraCapHold` (default "0"), a row beside th
 Evidence: replay by Job (variants D+E, see C-011): never brakes harder than VA; softens real far slowdowns by up to about 0.4 m/s^2 for up to about 2 s (99 s15 -0.60 -> -0.24 over 1.95 s, a2 s11 -0.62 -> -0.26, 84 s4 -2.79 -> -2.63); cuts more residual phantoms (8a s2 -0.72 -> -0.58). Static tests only for the setting; not road-validated.
 Revisit if: a road drive with D+E on shows a real far slowdown braked late, or D+E removes no phantom that VA leaves on the road.
 
+## C-013: Keep the bounded Honda brake-pending bridge in the PTM sync (2026-11-10)
+Decision: Retain this branch's nonrenewable 30 ms panda-before-Card pending bridge, which does not renew the healthy baseline, while adopting Testing's earlier handling for a parser-proven Honda brake. Do not treat an unproven native-first withdrawal as a brake source. This keeps the route-ac guard's fault and deadline behavior when integrating upstream's overlapping change.
+Evidence: Honda pending, brake-intent and radar-lead tests: 71 passed in a Linux ARM64 container against committed device artifacts; upstream 9486199bc6. Level: static. No road validation of the integration.
+Revisit if: replay or road evidence shows the bounded bridge fails to cover a real parser delay, or a failure path does not reset as intended.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)

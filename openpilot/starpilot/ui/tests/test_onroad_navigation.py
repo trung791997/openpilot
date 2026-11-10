@@ -57,12 +57,18 @@ def test_actual_instruction_does_not_require_control_authority():
 
 @pytest.mark.parametrize('field,value', [('enabled', False), ('status', 'routing'), ('startedMonoTime', 2),
                                         ('frameMonoTime', NOW + 1), ('frameMonoTime', NOW - 3_000_000_001),
-                                        ('locationMonoTime', NOW - 3_000_000_001), ('sessionId', '')])
+                                        ('locationMonoTime', 0), ('locationMonoTime', NOW + 1), ('sessionId', '')])
 def test_invalid_or_stale_navigation_does_not_render(field, value):
   nav = message()
   setattr(nav, field, value)
   assert navigation_display(nav, now_ns=NOW, drive_id=DRIVE) is None
 
+
+def test_sparse_phone_fix_keeps_card_while_producer_is_guiding():
+  # Galaxy phones send fixes every few seconds; the producer holds one for 10 s and keeps publishing 'guiding'.
+  nav = message()
+  nav.locationMonoTime = NOW - 9_000_000_000
+  assert navigation_display(nav, now_ns=NOW, drive_id=DRIVE) is not None
 
 def test_bad_distance_and_empty_instruction_do_not_render():
   nav = message()
@@ -83,6 +89,22 @@ def test_distance_units(meters, metric, expected):
 
 def test_arrival_time_uses_remaining_route_duration():
   assert arrival_time(18 * 60, datetime(2026, 10, 7, 15, 42)) == '4:00 PM'
+
+
+def test_arrival_time_and_clock_use_the_saved_phone_timezone(monkeypatch, tmp_path):
+  from datetime import UTC
+  from openpilot.starpilot import local_timezone
+  from openpilot.starpilot.ui.onroad import clock_text
+  monkeypatch.setattr(local_timezone, '_root', lambda: tmp_path)
+  monkeypatch.setattr(local_timezone, '_cache', None)
+  assert local_timezone.store_timezone('America/Los_Angeles')
+  # Issue 53: the device clock is UTC 03:05 while the phone says 7:05 PM Pacific the day before.
+  device = datetime(2026, 11, 6, 3, 5, tzinfo=UTC)
+  assert arrival_time(0, device) == '3:05 AM'
+  phone = device.astimezone(local_timezone.local_zone())
+  assert arrival_time(0, phone) == '7:05 PM'
+  assert clock_text(phone) == '7:05 PM'
+  assert clock_text(phone, use_24_hour=True) == '19:05'
 
 
 @pytest.mark.parametrize('profile', [Profile.COMPACT, Profile.LARGE])

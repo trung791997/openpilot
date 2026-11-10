@@ -36,7 +36,7 @@ HORIZON_S = 3.0
 LEAD_DECEL_HOLD_S = 1.5  # s; the projected lead brakes this long, then holds its speed (was the whole horizon)
 FLOOR_GAP_S = 0.8      # projected gap floor: 0.8 s * v + 6 m (long_mpc STOP_DISTANCE)
 FLOOR_GAP_M = 6.0
-MIN_TTC_S = 5.0        # 71 12:03 at the trough: 51 m / 5.8 m/s = 8.8 s
+MIN_TTC_S = 5.0        # 71 12:03 at the speed low point: 51 m / 5.8 m/s = 8.8 s
 MAX_LEAD_DECEL = -4.0  # m/s^2; harder than this is not a tap
 
 

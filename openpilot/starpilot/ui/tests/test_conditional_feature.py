@@ -558,6 +558,27 @@ class ConditionalFeatureTests(unittest.TestCase):
       child.communicate(input="x", timeout=5)
     self.assertTrue(self.owner.apply(request))
 
+  def test_render_during_a_save_keeps_the_last_rows_instead_of_flashing_unavailable(self):
+    from openpilot.starpilot.ui import conditional_feature
+    settled = self.rows()
+    mode = next(row for row in settled if row.key == "conditional:mode")
+    self.assertNotEqual(mode.value, "Unavailable")
+    root = Path(self.params.get_param_path("ConditionalModeConfig")).parent.parent
+    script = "import fcntl,sys; f=open(sys.argv[1],'a'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read(1)"
+    child = subprocess.Popen([sys.executable, "-c", script, str(root / ".lock")],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+      self.assertEqual(child.stdout.readline().strip(), "ready")
+      self.assertEqual(self.rows(), settled)
+      self.assertFalse(self.owner.apply(required_change(mode)))
+      with patch.object(conditional_feature.time, "monotonic", return_value=conditional_feature.time.monotonic() + 1.0):
+        held = next(row for row in self.rows() if row.key == "conditional:mode")
+      self.assertEqual((held.value, held.available), ("Unavailable", False))
+    finally:
+      child.communicate(input="x", timeout=5)
+    self.assertEqual(self.rows(), settled)
+    self.assertTrue(self.owner.apply(required_change(mode)))
+
   def test_oversized_document_never_repaired_by_render(self):
     path = Path(self.params.get_param_path("ConditionalModeConfig"))
     path.write_bytes(b'x' * 4097)

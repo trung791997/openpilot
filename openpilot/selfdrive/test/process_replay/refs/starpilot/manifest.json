@@ -1457,6 +1457,53 @@
 "segment": "regenB328FF8BA0A|2025-04-08--22-57-45--0",
 "process": "card",
 "file": "regenB328FF8BA0A_2025-04-08--22-57-45--0_card.zst",
+"bytes": 305623,
+"sha256": "48796df44121919cb8ca25a2523ecf599349116a5dbca370c85c80adf8081da8",
+"input_sha256": "8ea4ab5412a99bfc65fbe95cd169a54edb6bcb68f6fa20c97f2bc58ed4bba538",
+"input_bytes": 10090147,
+"official_baseline_commit": "ec95db3f1fa19f76940497fedfdb62e09ea19912",
+"official_artifact_commit": "9ae451c262c7402c9623f3baa1580c6242d6777b",
+"official_baseline_url": "https://raw.githubusercontent.com/commaai/ci-artifacts/9ae451c262c7402c9623f3baa1580c6242d6777b/regenB328FF8BA0A_2025-04-08--22-57-45--0_card_ec95db3f1fa19f76940497fedfdb62e09ea19912.zst",
+"official_baseline_bytes": 305603,
+"official_baseline_sha256": "9f6932a3371a59a890ee0a5a94a0a6ef1970021559ef8d83c85545f69ef365de",
+"config_sha256": "560c1060f4d2e43810e7bbd55d5f361a828bdb027d60f308b2e1d614222a2078",
+"car_fingerprint": "HONDA_CIVIC",
+"contract": "Honda imperial-cluster dash set speed sends whole mph on Honda's 1.6 kph-per-mph grid (commit 9ea82068c6): the HUD set speed 58 mph now rounds 58*1.6=92.8 to 93 instead of 94. Exactly two sendcan messages change (0x30C/780 bus0 length8 byte3, 94 to 93, and its checksum nibble); all other compared fields and messages are retained. Display only: the cruise set speed the car holds is not changed. Replay evidence only; not road validated.",
+"producing_source_snapshot": "honda-ptm-89363c45-ci",
+"intentional_change_commit": "9ea82068c694ed2c1cf995e6b840ead8be957d66",
+"hosted_evidence_run": 42400463788,
+"review_evidence": {
+"ci_run": 42400463788,
+"ci_job": 128486893065,
+"head": "78a5804f680eee71883b776e13fab2d0aa97fae5",
+"comparison_reference_sha256": "59bd2dee5ed50efca833797b6c68eedbad700f85706c561156de22bad03e79a7",
+"actual_CI_sha256": "48796df44121919cb8ca25a2523ecf599349116a5dbca370c85c80adf8081da8",
+"difference_count": 2,
+"difference_fields": {
+"sendcan.2.dat": 2
+},
+"behavior_proof": {
+"changed_messages": "sendcan messages 18212 and 18244, element 2, address 780 (0x30C) bus 0",
+"differences": [
+{
+"old": "2602005e0190d122",
+"new": "2602005d0190d123"
+},
+{
+"old": "2613005e0190d13f",
+"new": "2613005d0190d130"
+}
+],
+"byte3": "0x5e to 0x5d (94 to 93 kph) plus checksum nibble",
+"set_speed_mph": 58
+},
+"decoded_comparison": "Both logs decoded with LogReader (19099 messages each, identical message order, logMonoTime and valid); compare_logs with the card ignore list (logMonoTime, carState.cumLagMs) returns exactly these 2 sendcan.2.dat changes; no other process differs (1 changed, 65 passed, 0 errors).",
+"no_new_ignores_or_tolerances": true
+},
+"previous_reviewed_expectation": {
+"segment": "regenB328FF8BA0A|2025-04-08--22-57-45--0",
+"process": "card",
+"file": "regenB328FF8BA0A_2025-04-08--22-57-45--0_card.zst",
 "bytes": 305631,
 "sha256": "59bd2dee5ed50efca833797b6c68eedbad700f85706c561156de22bad03e79a7",
 "input_sha256": "8ea4ab5412a99bfc65fbe95cd169a54edb6bcb68f6fa20c97f2bc58ed4bba538",
@@ -1470,6 +1517,7 @@
 "car_fingerprint": "HONDA_CIVIC",
 "contract": "CarParams.flags gains VGR_CIVIC_TBA_C120 from EPS firmware 39990-TBA-C120: it names the steering-ratio table, is read only by the modified-EPS controllers, and is never safety; controlsd output for this stock Civic is unchanged.",
 "producing_source_snapshot": "honda-ptm-89363c45-ci"
+}
 },
 {
 "segment": "aebd8f1d4ea16066|000002d8--5850d3ea5c--2",
@@ -1488,6 +1536,24 @@
 "car_fingerprint": "TESLA_MODEL_Y",
 "contract": "Stopped-model guard: lateral is inactive while modelV2 is not alive (no message within 0.5 s), so latActive and the angle target stay off for 3 frames where the recording has a model gap. Fail-closed by design.",
 "producing_source_snapshot": "honda-ptm-89363c45-ci"
+},
+{
+"segment": "regen6170C8C9A35|2025-04-08--22-57-46--0",
+"process": "card",
+"file": "regen6170C8C9A35_2025-04-08--22-57-46--0_card.zst",
+"bytes": 319136,
+"sha256": "e83f98ca931d996f5e7b35c7bdcaaad0baead3c894d426357c08b5793aa481ec",
+"input_sha256": "fc9ab2b4fd9702ceb8e3342186076dc6a85dbd6a3bd859ac6b965234bcc65c69",
+"input_bytes": 10419375,
+"official_baseline_commit": "ec95db3f1fa19f76940497fedfdb62e09ea19912",
+"official_artifact_commit": "9ae451c262c7402c9623f3baa1580c6242d6777b",
+"official_baseline_url": "https://raw.githubusercontent.com/commaai/ci-artifacts/9ae451c262c7402c9623f3baa1580c6242d6777b/regen6170C8C9A35_2025-04-08--22-57-46--0_card_ec95db3f1fa19f76940497fedfdb62e09ea19912.zst",
+"official_baseline_bytes": 269746,
+"official_baseline_sha256": "5c4b0d7f7679666a15ce14956a6952fba116873994aadcb3264be15b221c2b38",
+"config_sha256": "560c1060f4d2e43810e7bbd55d5f361a828bdb027d60f308b2e1d614222a2078",
+"car_fingerprint": "HONDA_ACCORD",
+"contract": "Bosch-A radar for the 10th-gen Accord (PR #45): CarParams.radarUnavailable changes from True (official baseline) to False, so card publishes radarTracks from the Bosch-A parser. On this recording radarTracks drops from 1200 to 894 messages; carState (6000), carOutput (6000), sendcan (5897) and carParams (2) counts are unchanged. Replay evidence only; not road validated.",
+"hosted_evidence_run": 42165925975
 }
 ],
 "source_snapshots": {

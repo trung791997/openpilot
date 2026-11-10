@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12.3, <3.13"
 
 [manifest]
@@ -648,8 +648,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/36/c1/6fd56f7a02a478d54a1a3e6000eccd34b446b1c45cbf0d002fe5d2937126/nanobind-3.1.0-py3-none-any.whl", hash = "sha256:96984dbe8154ffb86e653b1b60aaeed6985c710c5e75ad0279eb87943c66292d", size = 316917, upload-time = "2026-09-18T15:59:37.796Z" },
 ]
 
-
-
 [[package]]
 name = "numpy"
 version = "2.5.3"
@@ -711,6 +709,7 @@ testing = [
 name = "openpilot"
 version = "0.1.0"
 source = { editable = "." }
+default-groups = ["standalone"]
 dependencies = [
     { name = "comma-deps-acados" },
     { name = "comma-deps-capnproto" },
@@ -763,9 +762,9 @@ tools = [
     { name = "matplotlib" },
 ]
 vendored = [
-    { name = "nanobind" },
     { name = "jetlink" },
     { name = "msgq-ipc", extra = ["build"] },
+    { name = "nanobind" },
     { name = "opendbc" },
     { name = "pandacan" },
     { name = "rednose" },
@@ -780,7 +779,6 @@ standalone = [
 
 [package.metadata]
 requires-dist = [
-    { name = "nanobind", marker = "extra == 'vendored'", specifier = "==3.1.0" },
     { name = "cffi", marker = "extra == 'safety'" },
     { name = "codespell", marker = "extra == 'testing'" },
     { name = "comma-deps-acados" },
@@ -802,6 +800,7 @@ requires-dist = [
     { name = "jetlink", marker = "extra == 'vendored'", editable = "jetlink_repo" },
     { name = "matplotlib", marker = "extra == 'tools'" },
     { name = "msgq-ipc", extras = ["build"], marker = "extra == 'vendored'", virtual = "msgq_repo" },
+    { name = "nanobind", marker = "extra == 'vendored'", specifier = "==3.1.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "opendbc", marker = "extra == 'vendored'", editable = "opendbc_repo" },
     { name = "pandacan", marker = "extra == 'vendored'", editable = "panda" },
@@ -1242,7 +1241,7 @@ requires-dist = [
     { name = "mkdocs", marker = "extra == 'docs'" },
     { name = "mkdocs-material", marker = "extra == 'docs'" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'" },
-    { name = "mypy", marker = "extra == 'linting'", specifier = "==1.19.1" },
+    { name = "mypy", marker = "extra == 'linting'", specifier = "==2.3.1" },
     { name = "networkx", marker = "extra == 'testing'" },
     { name = "nibabel", marker = "extra == 'testing'" },
     { name = "numba", marker = "extra == 'testing'", specifier = ">=0.55" },
@@ -1263,7 +1262,7 @@ requires-dist = [
     { name = "pytest-split", marker = "extra == 'testing-minimal'" },
     { name = "pytest-xdist", marker = "extra == 'testing-minimal'" },
     { name = "pyyaml", marker = "extra == 'autogen'" },
-    { name = "ruff", marker = "extra == 'linting'", specifier = "==0.14.10" },
+    { name = "ruff", marker = "extra == 'linting'", specifier = "==0.16.4" },
     { name = "safetensors", marker = "extra == 'testing-unit'" },
     { name = "sentencepiece", marker = "extra == 'testing'" },
     { name = "tabulate", marker = "extra == 'testing-unit'" },
@@ -1276,7 +1275,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'testing'" },
     { name = "typeguard", marker = "extra == 'linting'" },
     { name = "typing-extensions", marker = "extra == 'linting'" },
-    { name = "z3-solver", marker = "extra == 'testing-minimal'", specifier = "<4.15.4" },
+    { name = "z3-solver", marker = "extra == 'testing-minimal'", specifier = "==5.1.0.0" },
 ]
 provides-extras = ["linting", "testing-minimal", "testing-unit", "testing", "docs", "mesa", "autogen"]
 

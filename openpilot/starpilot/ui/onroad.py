@@ -13,6 +13,7 @@ from typing import Protocol
 import hashlib
 import json
 
+from openpilot.starpilot.local_timezone import local_now
 from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.starpilot.ui import clip
@@ -79,7 +80,7 @@ def driving_mode_description(state: OnroadState) -> str:
 
 
 def clock_text(now: datetime | None = None, use_24_hour: bool = False) -> str:
-  value = now or datetime.now().astimezone()
+  value = now or local_now()
   return value.strftime('%H:%M') if use_24_hour else value.strftime('%I:%M %p').lstrip('0')
 
 
@@ -123,7 +124,7 @@ class OnroadView:
                background_layer: OverlayLayer | None = None, projection_viewport: tuple[float, float] | None = None,
                wall_clock: Callable[[], datetime | None] | None = None):
     self.projection_viewport = projection_viewport
-    self.wall_clock = wall_clock or (lambda: datetime.now().astimezone())
+    self.wall_clock = wall_clock or local_now
     self._corner_cache = CornerHintCache()
     self.quick_select_layer = None
     gui_app.add_render_prepare(self._corner_cache.prepare, self._corner_cache.close)

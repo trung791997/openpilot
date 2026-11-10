@@ -159,6 +159,16 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
   assert feedback.honda_brake_ns == 0
 
 
+def test_native_first_never_becomes_a_proven_brake_source():
+  """An early panda withdrawal may bridge pending, but cannot renew proven brake authority."""
+  cp, cs, sm, native, feedback = fixture(coherent=True, long_allowed=False, brake=False)
+  now = native.observedMonoTime + 20_000_000
+  assert feedback._honda_brake_lateral_current(sm, cp, cs, sm['aolAxisState'], now,
+                                               latched=True, brake_source_ns=0) is None
+  assert feedback.honda_brake_ns == 0
+  # The 30 ms nonrenewable bridge and parser handoff are exercised in test_honda_brake_pending.py.
+
+
 def test_release_and_held_brake_cannot_extend_original_deadline():
   cp, cs, sm, native, feedback = fixture(long_allowed=False)
   source = NOW - 1000
