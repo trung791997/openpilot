@@ -11,3 +11,19 @@ class TestHondaCancel(CurrentCaller):
   # The Clarity can't run here (its cruiseState.enabled stays False); the Civic pedal shares word 544.
   def test_pedal_cancel(self):
     self.run_current_caller(candidate=CAR.HONDA_CIVIC, word=544, pedal=True, cancel=True)
+
+  def test_civic_bosch_stock_acc_cancel(self):
+    self.run_current_caller(candidate=CAR.HONDA_CIVIC_BOSCH, word=0, cancel=True)
+
+  # The CR-V and RDX are alt-brake Bosch (BRAKE_MODULE), so their words carry the ALT_BRAKE bit; RDX alpha adds RDX_HIGH_GAS (2211).
+  def test_crv_stock_acc_cancel(self):
+    self.run_current_caller(candidate=CAR.HONDA_CRV_5G, word=1, cancel=True)
+
+  def test_crv_alpha_cancel(self):
+    self.run_current_caller(candidate=CAR.HONDA_CRV_5G, word=2083, alpha=True, cancel=True)
+
+  def test_rdx_stock_acc_cancel(self):
+    self.run_current_caller(candidate=CAR.ACURA_RDX_3G, word=1, cancel=True)
+
+  def test_rdx_alpha_cancel(self):
+    self.run_current_caller(candidate=CAR.ACURA_RDX_3G, word=2211, alpha=True, cancel=True)

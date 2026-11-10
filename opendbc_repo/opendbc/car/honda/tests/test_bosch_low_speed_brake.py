@@ -109,8 +109,9 @@ def test_bosch_a_harness_civic_gets_low_speed_brake():
 
 
 def test_non_harness_car_gets_none():
-  accord = bosch(CAR.HONDA_ACCORD)
-  assert accord.low_speed_brake is None
+  # Civic 2022 is not a Bosch-A harness car (radarless); the Accord is one since the Bosch-A toggles (PR #45).
+  other = bosch(CAR.HONDA_CIVIC_2022)
+  assert other.low_speed_brake is None
 
 
 def test_low_speed_shortfall_deepens_accel():

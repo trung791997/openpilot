@@ -59,6 +59,11 @@ Safer B variants were also tried and not taken (Peter, 2026-11-08): D (hold limi
 Evidence: replay by Job, 93b pool plus routes a2/a3, default config: 71 seg12 -1.35 -> -0.93, 8a seg2 -0.82 -> -0.72, b0 seg17 t5.7 -0.59 -> -0.11; b0 t51.6 unchanged at -3.40. Nothing brakes harder than the cap alone except 80 seg19's second pulse (+0.20). Full-route fidelity moved <= 0.006 in correlation. Static tests 13/13. Replay only.
 Revisit if: a road drive shows a real far slowdown braked late while the camera lead read a > -0.5, or the 80 seg19 second-pulse cost shows up on the road.
 
+## C-012: Port the bounded Honda brake-pending bridge in the PTM sync (2026-11-10)
+Decision: Port the VASM branch's nonrenewable 30 ms panda-before-Card bridge, which does not refresh the healthy baseline, and adopt Testing's earlier handling of a parser-proven brake. This selects the bound supported by the parser timing evidence instead of Testing's native-first path with its AXIS_MAX_AGE window.
+Evidence: VASM `44f382face`, route 000000ac--138f4b8bb4 segment 14, upstream `9486199bc6`; 220 Honda, radar, planner, EPS, updater and Jetlink tests passed in a Linux ARM64 container. Level: static for this integration; no road validation on longradar.
+Revisit if: replay or road evidence shows the bridge fails to cover a real parser delay, or a failure path does not reset as intended.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)

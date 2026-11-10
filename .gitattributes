@@ -20,7 +20,8 @@ openpilot/starpilot/soloist/bluealsa/bin/bluealsa-aplay -text
 openpilot/starpilot/soloist/bluealsa/bin/bluealsad -text
 
 openpilot/selfdrive/car/tests/test_models_segs.txt -text
-openpilot/common/hardware/comma/updater -text
+openpilot/common/hardware/comma/updater_pyray -text
+openpilot/common/hardware/comma/updater_raylib_nb -text
 
 # Dependency snapshots keep their own storage attributes.
 msgq_repo/** !filter !diff !merge -text
@@ -61,3 +62,6 @@ openpilot/selfdrive/pandad/spi.o -text
 
 # Compressed recorded regression fixture; retain exact binary bytes.
 openpilot/starpilot/tests/testdata/ford_mache_lead_departure.json.gz -text
+
+# Offline GPS timezone grid (tools/scripts/build_timezone_map.py); retain exact binary bytes.
+openpilot/starpilot/timezone_map.bin -text

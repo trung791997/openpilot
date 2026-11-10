@@ -15,6 +15,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, cast
 
+from openpilot.starpilot.local_timezone import local_zone
 from openpilot.starpilot.replay.client import MAX_WORKER_STATUS
 from openpilot.starpilot.replay.frames import ReplayFramePublisher, SESSION
 from openpilot.starpilot.replay.media import MediaMux, MediaStore, web_media_dir
@@ -59,7 +60,7 @@ def recorded_wall_clock(sample, wall_minus_mono_ns: int | None):
   if sample is None or not sample.valid or sample.now_ns is None or type(wall_minus_mono_ns) is not int:
     return None
   try:
-    return datetime.fromtimestamp((sample.now_ns + wall_minus_mono_ns) / 1e9).astimezone()
+    return datetime.fromtimestamp((sample.now_ns + wall_minus_mono_ns) / 1e9, local_zone())
   except (OSError, OverflowError, ValueError):
     return None
 

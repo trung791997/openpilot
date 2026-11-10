@@ -11,3 +11,9 @@ class TestHondaPedal(CurrentCaller):
 
   def test_pedal_2_eps_reverse_recovery(self):
     self.run_current_caller(candidate=CAR.HONDA_ODYSSEY_TWN, word=804, pedal=True)
+
+  # The panda's brake reaches pandad's native read before Card's CAN batch (00000098 seg29 1742.8 s): Card saw
+  # LONG withdrawn with brakePressed still False, cleared the latch and selfdrived raised controlsMismatch.
+  # The Clarity itself can't run here (its cruiseState.enabled stays False); the Civic pedal shares word 544.
+  def test_pedal_brake_race(self):
+    self.run_current_caller(candidate=CAR.HONDA_CIVIC, word=544, pedal=True, brake_race=True)

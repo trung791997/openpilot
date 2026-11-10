@@ -45,6 +45,19 @@ class TestHomeStatsSource(unittest.TestCase):
       self.assertEqual(imperial.records[0].detail, 'miles')
       self.assertEqual(path.read_bytes(), original)
 
+  def test_days_are_the_saved_local_zone_not_utc(self):
+    # Route 99: Friday 7:30 PM Eastern is Saturday 00:30 UTC; Home showed it as a Saturday drive.
+    from zoneinfo import ZoneInfo
+    saturday_0030_utc = datetime(2026, 11, 7, 0, 30, tzinfo=UTC).timestamp()
+    with TemporaryDirectory() as temp:
+      path = Path(temp) / 'drive-stats.json'
+      path.write_text(json.dumps({'schemaVersion': 1, 'scanned': True,
+                                  'routes': {'friday': record('friday', saturday_0030_utc)}}))
+      with patch('openpilot.starpilot.local_timezone.local_zone', return_value=ZoneInfo('America/New_York')):
+        data = read_home_stats(False, store=path, clock=lambda: saturday_0030_utc + 3600)
+    today = next(day for day in data.daily_distance if day.is_today)
+    self.assertEqual((today.label, today.distance), ('Fri', 1.))
+
   def test_missing_corrupt_oversized_and_invalid_records_are_unavailable(self):
     from openpilot.starpilot.galaxy.drive_stats import MAX_CACHE_BYTES
     with TemporaryDirectory() as temp:

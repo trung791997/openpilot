@@ -9,6 +9,8 @@ from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.gps import get_gps_location_service
+from openpilot.starpilot.local_timezone import store_timezone
+from openpilot.starpilot.timezone_map import TimezoneMap
 
 
 def set_time(new_time):
@@ -22,6 +24,34 @@ def set_time(new_time):
     subprocess.run(f"TZ=UTC date -s '{new_time}'", shell=True, check=True)
   except subprocess.CalledProcessError:
     cloudlog.exception("timed.failed_setting_time")
+
+
+class GpsTimezone:
+  """Saves the GPS position's zone as the local zone (next to the phone's, from Galaxy) when it changes, offline."""
+  INTERVAL = 60.
+
+  def __init__(self, load=TimezoneMap.load, store=store_timezone):
+    self.load, self.store = load, store
+    self.map: TimezoneMap | None = None
+    self.zone: str | None = None
+    self.next_check = 0.
+
+  def update(self, latitude: float, longitude: float, now: float) -> str | None:
+    if now < self.next_check or self.load is None:
+      return None
+    self.next_check = now + self.INTERVAL
+    if self.map is None:
+      try:
+        self.map = self.load()
+      except (OSError, ValueError, MemoryError):
+        cloudlog.exception("timed.timezone_map_unavailable")
+        self.load = None
+        return None
+    zone = self.map.clear_zone_at(latitude, longitude)
+    if zone is None or zone == self.zone or not self.store(zone):
+      return None
+    self.zone = zone
+    return zone
 
 
 def clock_message():
@@ -52,6 +82,7 @@ def main() -> NoReturn:
 
   pm = messaging.PubMaster(['clocks'])
   sm = messaging.SubMaster([gps_location_service])
+  gps_timezone = GpsTimezone()
   while True:
     sm.update(1000)
 
@@ -63,6 +94,8 @@ def main() -> NoReturn:
       continue
     if not gps.hasFix:
       continue
+    if (zone := gps_timezone.update(gps.latitude, gps.longitude, time.monotonic())) is not None:
+      cloudlog.event("timed.timezone", zone=zone)
     if gps_time < min_date() or gps_time > MAX_DATE:
       continue
 

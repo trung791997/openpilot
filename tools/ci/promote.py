@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 from branch_guard import PROMOTES_FROM, SNAPSHOT_PREFIX, STABLE, STAGE, TESTING
+from check_prebuilt_receipt import ReceiptError, check_receipt
 
 TARGET = {TESTING: STAGE, STAGE: STABLE}
 SOURCES = {'testing': TESTING, 'stage': STAGE}
@@ -46,6 +47,13 @@ def promote(source, commit, remote):
     sys.exit(f'{sha[:10]} is not in {remote}/{source}: only merged commits can be promoted')
   if subprocess.run(['git', 'merge-base', '--is-ancestor', sha, f'{remote}/{target}']).returncode == 0:
     sys.exit(f'{sha[:10]} is already in {target}: nothing to promote')
+
+  try:
+    check_receipt(run('git', 'rev-parse', '--show-toplevel'), sha)
+  except ReceiptError:
+    sys.exit(f'prebuilt.json does not match {sha[:10]}. Refresh it on {source} first: branch off it, run ' +
+             '`python3 openpilot/common/prebuilt_manifest.py .`, commit only prebuilt.json, merge that pull request, ' +
+             'then promote again (docs/BRANCH_WORKFLOW.md, Device build receipt).')
 
   branch = f'{SNAPSHOT_PREFIX[source]}{sha[:10]}'
   carried = merged_pull_requests(remote, target, sha)

@@ -438,8 +438,8 @@ def main() -> None:
   CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("radard got CarParams")
 
-  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
+  from opendbc.car.honda.bosch_a_radar import bosch_a_radar_platform
+  honda_bosch_a = CP.brand == "honda" and bosch_a_radar_platform(CP.carFingerprint) and not CP.radarUnavailable
 
   # *** setup messaging
   # Honda Bosch-A: card's starpilotCarState carries the radar points' F0 STATUS (radar_point_status); not a validity input

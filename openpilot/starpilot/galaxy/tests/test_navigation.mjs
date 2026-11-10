@@ -91,6 +91,27 @@ function setup() {
 }
 
 {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const { client, requests } = setup()
+  const start = client.start()
+  assert.equal(requests[0].url, "./api/navigation/status")
+  assert.equal(requests[0].options.headers["X-Galaxy-Timezone"], zone)
+  requests[0].resolve(response(snapshot()))
+  await start
+  const search = client.search("Library")
+  assert.equal(requests[1].options.headers["X-Galaxy-Timezone"], zone)
+  assert.equal(requests[1].options.headers["Content-Type"], "application/json")
+  requests[1].resolve(response({ results: [place] }))
+  await search
+  const action = client.action("clear")
+  assert.equal(requests[2].options.headers["X-Galaxy-Timezone"], zone)
+  assert.equal(requests[2].options.headers["Content-Type"], "application/json")
+  requests[2].resolve(response(snapshot("b")))
+  await action
+  client.stop()
+}
+
+{
   const { client, requests, states } = setup()
   const start = client.start()
   requests[0].resolve(response(snapshot()))

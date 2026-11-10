@@ -97,7 +97,7 @@ class TestHondaCurrentCaller(unittest.TestCase):
 
   def run_current_caller(self, *, candidate, word, fault=None, alternate_brake=False, alpha=False, speed_mps=12.5,
                          pedal=False, host_scenario=None, serialized=False, override=False, refault=False, brake_override=None,
-                         cancel=False):
+                         brake_race=False, cancel=False):
     safety = libsafety_py.libsafety
     with (
       OpenpilotPrefix(),
@@ -187,6 +187,8 @@ class TestHondaCurrentCaller(unittest.TestCase):
       def braking(tick):   # brake_override: the brake is held through the override, moving or stopped
         if cancel:   # CANCEL ends long at tick 50 instead of the brake; lateral must stay with the AOL latch
           return brake_override is not None and 70 <= tick < 100
+        if brake_race:   # Card's parser first sees the brake two ticks after the panda does
+          return 52 <= tick < 57 or brake_override is not None and 70 <= tick < 100
         return 50 <= tick < 55 or brake_override is not None and 70 <= tick < 100
 
       def speed(tick):
@@ -210,7 +212,7 @@ class TestHondaCurrentCaller(unittest.TestCase):
           # SET press/release is the real first ordinary native grant, preceding engaged HB.
           incoming = stream.frames(
             cruise_button=3 if tick == 20 or host_scenario == 'long_reengage' and tick == 130 else 2 if cancel and 50 <= tick < 53 else 0,
-            cruise=int(21 <= tick < 50 or reengage),
+            cruise=int(21 <= tick < (52 if brake_race else 50) or reengage),
             brake=braking(tick),
             eps=6 if eps_fault(tick) else 0,
             gear=2 if 110 <= tick < 125 else None,
@@ -311,7 +313,7 @@ class TestHondaCurrentCaller(unittest.TestCase):
           self.assertEqual(cs.gearShifter, structs.CarState.GearShifter.reverse if 110 <= tick < 125 else structs.CarState.GearShifter.drive)
           self.assertEqual(cs.brakePressed, braking(tick))
           self.assertTrue(cs.cruiseState.available)
-          self.assertEqual(cs.cruiseState.enabled, 21 <= tick < 50 or reengage)
+          self.assertEqual(cs.cruiseState.enabled, 21 <= tick < (52 if brake_race else 50) or reengage)
           intent = decode_intent(published['aolIntentWire'].aolIntentWire)
           self.assertIsNotNone(intent)
           # Initial receipt is unavailable until actual negotiator completes its zero acknowledgment.
@@ -330,6 +332,15 @@ class TestHondaCurrentCaller(unittest.TestCase):
           # Held producer snapshots are only for native observation. Simulated
           # receivers get each actual new publication once, never a restamp.
           order = None
+          if brake_race and tick == 50:
+            # 00000098 seg29 1742.8 s: the panda's brake frame reaches pandad's health/native read (here the
+            # tick-50 read) before Card's CAN batch, so Card's next step sees LONG withdrawn with brakePressed False.
+            pt_dbc = ci.can_parsers[Bus.pt].dbc
+            race = stream.packers[Bus.pt].make_can_msg('POWERTRAIN_DATA', ci.can_parsers[Bus.pt].bus,
+              {'ACC_STATUS': 1, 'BRAKE_PRESSED': 1, 'BRAKE_SWITCH': 1, 'PEDAL_GAS': 0})
+            assert race[0] == pt_dbc.name_to_msg['POWERTRAIN_DATA'].address
+            self.assertTrue(safety.safety_rx_hook(libsafety_py.make_CANPacket(race[0], race[2], race[1])), (tick, race))
+            self.assertFalse(safety.get_controls_allowed())
           if tick % 10 == 0:
             receipt, order = pandad.step(driven, published, now)
           feed(controls, now, tick, enabled=sd.enabled, active=sd.active)
@@ -421,7 +432,7 @@ class TestHondaCurrentCaller(unittest.TestCase):
                 # in-flight positive command before the new envelope arrives.
                 self.assertFalse(accepted, row)
                 self.assertTrue(previous.longActive, row)
-                self.assertFalse(command.longActive or row['controls'] or row['permission'] & 2, row)
+                self.assertFalse(command.longActive and not brake_race or row['controls'] or row['permission'] & 2, row)
               else:
                 self.assertTrue(accepted or fault == "relay" and tick >= 110, row)
               if alpha and address == 0x1DF and tick >= 52 and not reengage:

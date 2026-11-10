@@ -7,6 +7,7 @@ import math
 import time
 import uuid
 
+from openpilot.starpilot.local_timezone import local_zone
 from openpilot.starpilot.ui.raylib import rl
 
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, GreyBigButton
@@ -63,7 +64,7 @@ def route_date(route, profile, clock24_hour=False):
     try:
       if not math.isfinite(value) or value <= 0:
         continue
-      date = datetime.fromtimestamp(value).astimezone()
+      date = datetime.fromtimestamp(value, local_zone())
       calendar = date.strftime('%a, %b %-d, %Y' if profile == Profile.LARGE else '%b %-d, %Y')
       clock = date.strftime('%H:%M') if clock24_hour else date.strftime('%I:%M %p').lstrip('0')
       return calendar, clock, date.tzname() or '', 'File date' if key == 'fileTime' else ''

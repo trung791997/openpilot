@@ -11,7 +11,7 @@ from opendbc.car.honda.values import CAR, HondaFlags
 from openpilot.cereal import log, messaging
 from openpilot.selfdrive.car.card import Car
 from openpilot.starpilot.aol.runtime import decide_axes
-from openpilot.starpilot.aol.transport_pause import TransportPauseFeedback, independent_lateral_health, _healthy_transport_native
+from openpilot.starpilot.aol.transport_pause import HONDA_BRAKE_PENDING_NS, TransportPauseFeedback, independent_lateral_health, _healthy_transport_native
 from openpilot.starpilot.aol.wire import PandaSlot, SafetyState, encode_safety
 
 NOW = 10_000_000_000
@@ -108,6 +108,10 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
     assert source == 0
   if mutation == 'no_source':
     source = 0
+  if mutation in ('no_brake', 'no_source'):
+    # The panda-vs-parser hold (test_honda_brake_pending.py) gives one withdrawal 30ms in total;
+    # with that window already spent, a missing source must still fault immediately.
+    feedback.honda_brake_pending_ns = NOW - HONDA_BRAKE_PENDING_NS - 1
   if mutation == 'stale_source':
     source = NOW - 30_000_001
   if mutation == 'future_source':
@@ -153,6 +157,16 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
   if mutation != 'no_latch':
     assert feedback.observe(sm, cp, cs, now, latched=latched, brake_source_ns=source)
   assert feedback.honda_brake_ns == 0
+
+
+def test_native_first_never_becomes_a_proven_brake_source():
+  """An early panda withdrawal may bridge pending, but cannot renew proven brake authority."""
+  cp, cs, sm, native, feedback = fixture(coherent=True, long_allowed=False, brake=False)
+  now = native.observedMonoTime + 20_000_000
+  assert feedback._honda_brake_lateral_current(sm, cp, cs, sm['aolAxisState'], now,
+                                               latched=True, brake_source_ns=0) is None
+  assert feedback.honda_brake_ns == 0
+  # The 30 ms nonrenewable bridge and parser handoff are exercised in test_honda_brake_pending.py.
 
 
 def test_release_and_held_brake_cannot_extend_original_deadline():

@@ -6,6 +6,7 @@ import stat
 import threading
 from dataclasses import dataclass
 from openpilot.common.hardware.hw import Paths
+from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.config import get_available_bytes, get_available_percent
 from openpilot.system.loggerd.uploader import get_directory_sort
@@ -47,20 +48,12 @@ def has_preserve_xattr(d: str, root: str | None = None) -> bool:
       os.close(root_fd)
 
 
-def _recorded_time(root_fd: int, d: str):
+def _identity(root_fd: int, d: str):
   fd = -1
   try:
     fd = os.open(d, DIR_FLAGS, dir_fd=root_fd)
-    for name in ('qlog.zst', 'qlog.bz2'):
-      try:
-        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-        if stat.S_ISREG(info.st_mode):
-          opened = os.fstat(fd)
-          return info.st_mtime, opened.st_dev, opened.st_ino
-      except OSError:
-        continue
     opened = os.fstat(fd)
-    return opened.st_mtime, opened.st_dev, opened.st_ino
+    return opened.st_dev, opened.st_ino
   except OSError:
     return None
   finally:
@@ -68,14 +61,33 @@ def _recorded_time(root_fd: int, d: str):
       os.close(fd)
 
 
+def _route_count() -> int:
+  try:
+    return int(Params().get("RouteCount", return_default=True))
+  except Exception:
+    return 0
+
+
+def _age_key(item: _Directory, route_count: int):
+  # Oldest first by route counter, like upstream: file times are written by a clock that is wrong after every cold
+  # boot until GPS or NTP sets it, so they made a new route's first segments look oldest. A counter at or above
+  # RouteCount was written before RouteCount was reset (a settings wipe), so that generation goes first.
+  route, _, segment = item.name.rpartition('--')
+  counter_text = route.split('--', 1)[0]
+  try:
+    counter = int(counter_text, 16) if len(counter_text) == 8 else None
+  except ValueError:
+    counter = None
+  generation = 0 if counter is None else (1 if counter >= route_count else 2)
+  return (not item.root.legacy, generation, counter or 0, get_directory_sort(item.name), item.root.path)
+
+
 def listdir_by_age(root: str) -> list[str]:
-  # RouteCount resets on migration, so order routes by newest qlog time instead of name.
   return [item.name for item in _directories_by_age(recording_roots(root)[:1])]
 
 
 def _directories_by_age(roots: tuple[RecordingRoot, ...]) -> list[_Directory]:
   candidates = []
-  route_times = {}
   for root in roots:
     fd = -1
     try:
@@ -88,15 +100,11 @@ def _directories_by_age(roots: tuple[RecordingRoot, ...]) -> list[_Directory]:
       pinned = []
       incomplete = False
       for name in dirs:
-        recorded = _recorded_time(fd, name)
-        if recorded is None:
+        identity = _identity(fd, name)
+        if identity is None:
           incomplete = True
           break
-        age, device, inode = recorded
-        route = name.rpartition('--')[0] or name
-        key = (root, route)
-        route_times[key] = max(route_times.get(key, 0.), age)
-        pinned.append(_Directory(root, name, device, inode))
+        pinned.append(_Directory(root, name, *identity))
       if not incomplete and root_current(root, fd):
         candidates.extend(pinned)
     except OSError:
@@ -104,8 +112,8 @@ def _directories_by_age(roots: tuple[RecordingRoot, ...]) -> list[_Directory]:
     finally:
       if fd >= 0:
         os.close(fd)
-  return sorted(candidates, key=lambda item: (route_times[item.root, item.name.rpartition('--')[0] or item.name],
-                                             get_directory_sort(item.name), item.root.path))
+  route_count = _route_count()
+  return sorted(candidates, key=lambda item: _age_key(item, route_count))
 
 
 def _candidate_marked(candidate):
