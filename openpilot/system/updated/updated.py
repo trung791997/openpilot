@@ -336,6 +336,9 @@ def handle_agnos_update() -> None:
     raise RuntimeError(f"This StarPilot build requires existing AGNOS {updated_version}; installed {cur_version}. " +
                        "No OS update was attempted.")
 
+  if not cur_version:
+    raise ValueError("Installed AGNOS version is unavailable")
+
   from openpilot.common.hardware.comma.agnos import flash_agnos_update, get_target_slot_number
   cloudlog.info(f"Beginning background installation for AGNOS {updated_version}")
   manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/common/hardware/comma/agnos.json")
@@ -702,15 +705,18 @@ class Updater:
                          current_os=HARDWARE.get_os_version(), invalidate=invalidate, rollback=rollback, progress=installed_progress,
                          selected_commit=selected_commit, versions_only=versions_only)
     except FastUpdateIncompatible:
-      if not automatic:
+      # Rollback resolves its own saved branch and revision; never substitute the requested branch tip.
+      if rollback or not automatic and selected_commit is None:
         raise
-      return self.normal_update(branch, commit, parked, progress)
+      return self.normal_update(branch, commit, parked, progress, selected_commit=selected_commit)
     finally:
       source.close()
 
-  def normal_update(self, branch: str, commit: str, parked, progress) -> str:
+  def normal_update(self, branch: str, commit: str, parked, progress, *, selected_commit=None) -> str:
+    initial_branch = self.get_branch(BASEDIR)
+
     def admitted():
-      if not parked() or self.get_commit_hash(BASEDIR) != commit:
+      if not parked() or self.get_commit_hash(BASEDIR) != commit or self.get_branch(BASEDIR) != initial_branch:
         raise FastUpdateError("Update source or parked state changed")
 
     admitted()
@@ -720,7 +726,15 @@ class Updater:
     self.params.put("UpdaterState", "checking...", block=True)
     if phone_uplink_active():
       raise FastUpdateError("Software downloads are disabled while using phone internet")
-    if not self.fetch_update():
+    if selected_commit is not None:
+      self.check_for_update(branch)
+      members = commit_history(Path(METADATA_ROOT), self.branches.get(branch, ''), first_parent=True)
+      if branch == initial_branch:
+        members += commit_history(Path(BASEDIR), commit, first_parent=True)
+      if not any(row['hash'] == selected_commit for row in members):
+        raise FastUpdateError('Selected version is no longer in branch history; refresh and try again')
+      admitted()
+    if not self.fetch_update(selected_commit=selected_commit, admitted=admitted):
       raise FastUpdateError("Target branch is no longer available")
     admitted()
     self.params.put_bool("UpdateAvailable", True, block=True)
@@ -737,6 +751,8 @@ class Updater:
     if self.target_branch not in self.branches:
       cloudlog.info("skipping fetch of unpublished target branch %s", self.target_branch)
       return False
+    if admitted is not None:
+      admitted()
 
     cloudlog.info("attempting git fetch inside staging overlay")
 
@@ -790,9 +806,13 @@ class Updater:
     validate_revision(OVERLAY_MERGED, "HEAD")
     cloudlog.info("git reset success: %s", '\n'.join(r))
 
-    # TODO: show agnos download progress
+    # Recheck authority before the OS flash and before finalizing the staged update.
+    if admitted is not None:
+      admitted()
     if AGNOS:
       handle_agnos_update()
+    if admitted is not None:
+      admitted()
 
     # Create the finalized, ready-to-swap update
     self.params.put("UpdaterState", "finalizing update...", block=True)

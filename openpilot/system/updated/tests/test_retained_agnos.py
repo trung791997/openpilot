@@ -61,6 +61,17 @@ class TestRetainedAgnos(unittest.TestCase):
         self.flash.assert_not_called()
         self.slot.assert_not_called()
 
+  def test_unknown_installed_version_cannot_flash_even_under_auto_policy(self):
+    self.environment.write_text('export AGNOS_VERSION="20.2.2"\nexport AGNOS_UPDATE_POLICY="auto"\n')
+    for current in ('', None):
+      with self.subTest(current=current):
+        self.updater.HARDWARE.get_os_version.return_value = current
+        with self.assertRaisesRegex(ValueError, 'Installed AGNOS version is unavailable'):
+          self.updater.handle_agnos_update()
+        self.updater.set_consistent_flag.assert_called_with(False)
+        self.flash.assert_not_called()
+        self.slot.assert_not_called()
+
   def test_other_branch_auto_policy_uses_current_manifest_location(self):
     self.environment.write_text('export AGNOS_VERSION="19.8"\n')
     manifest = self.root / "openpilot/common/hardware/comma/agnos.json"
