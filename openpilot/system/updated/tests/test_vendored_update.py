@@ -515,6 +515,36 @@ class TestVendoredUpdate(unittest.TestCase):
     self.commit_source("Invalid submodule configuration")
     self.assert_rejected_before_checkout()
 
+  def test_root_agents_contract_is_accepted_for_full_update(self):
+    (self.source / "AGENTS.md").write_text("Repository instructions for agents.\n")
+    target = self.commit_source("Track the repository root agent contract")
+    self.assertTrue(self.updater.fetch_update())
+    self.assertEqual(self.git(self.finalized, "rev-parse", "HEAD"), target)
+
+  def test_nested_and_case_variant_agents_are_rejected_before_checkout(self):
+    for name in ("openpilot/AGENTS.md", "panda/AGENTS.md", "agents.md"):
+      with self.subTest(name=name):
+        path = self.source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Excluded nested or case-variant agent metadata.\n")
+        self.commit_source(f"Add excluded {name}")
+        self.assert_rejected_before_checkout()
+        path.unlink()
+        self.git(self.source, "add", "--all")
+        self.git(self.source, "commit", "-m", f"Remove excluded {name}")
+
+  def test_root_agents_symlink_is_rejected_before_checkout(self):
+    (self.source / "AGENTS.md").symlink_to("panda/README.md")
+    self.commit_source("Root agent contract must be a regular file")
+    self.assert_rejected_before_checkout()
+
+  def test_executable_root_agents_contract_is_rejected_before_checkout(self):
+    path = self.source / "AGENTS.md"
+    path.write_text("The exception is only for a regular 100644 root contract.\n")
+    path.chmod(0o755)
+    self.commit_source("Root agent contract must be non-executable")
+    self.assert_rejected_before_checkout()
+
   def test_finalize_invalid_tree_clears_existing_readiness(self):
     self.finalized.mkdir()
     (self.finalized / ".overlay_consistent").touch()

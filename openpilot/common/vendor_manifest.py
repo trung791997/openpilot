@@ -88,7 +88,9 @@ def validate_layout(manifest: dict, entries: dict[str, str]) -> None:
   for path, mode in entries.items():
     if mode == "160000":
       raise ValueError(f"Source tree contains a gitlink: {path}")
-    if PurePosixPath(path).name.lower() in (".gitmodules", "agents.md"):
+    name = PurePosixPath(path).name.lower()
+    root_contract = path == "AGENTS.md" and mode == "100644"
+    if name == ".gitmodules" or (name == "agents.md" and not root_contract):
       raise ValueError(f"Source tree contains excluded metadata: {path}")
   if entries.get(MANIFEST) != "100644":
     raise ValueError("Source manifest must be a tracked regular file")
