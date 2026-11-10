@@ -110,6 +110,7 @@ class TestVendoredUpdate(unittest.TestCase):
     self.updated.FINALIZED = str(self.finalized)
     self.updated.BASEDIR = str(self.merged)
     self.updated.set_consistent_flag = self.set_consistent_flag
+    self.real_handle_agnos_update = self.updated.handle_agnos_update
     self.updated.handle_agnos_update = Mock()
     self.updated.init_overlay = Mock()
     self.commands = []
@@ -170,10 +171,11 @@ class TestVendoredUpdate(unittest.TestCase):
           self.assertEqual(self.updater.fast_update(BRANCH, self.initial_commit, automatic=True), "reboot-requested")
         self.assertEqual(normal.call_count, int(isinstance(error, self.updated.FastUpdateIncompatible)))
     with patch.object(fast_update, "fast_update", side_effect=self.updated.FastUpdateIncompatible("AGNOS changed")), \
-         patch.object(self.updater, "normal_update") as normal:
-      with self.assertRaises(self.updated.FastUpdateIncompatible):
-        self.updater.fast_update(BRANCH, self.initial_commit)
-      normal.assert_not_called()  # Explicit fast/rollback/version operations keep their contract.
+         patch.object(self.updater, "normal_update", return_value="reboot-requested") as normal:
+      for kwargs in ({}, {'rollback': True}):
+        with self.assertRaises(self.updated.FastUpdateIncompatible):
+          self.updater.fast_update(BRANCH, self.initial_commit, **kwargs)
+      normal.assert_not_called()  # Explicit fast and rollback retain their original contracts.
 
   @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
   def test_download_selected_version_stages_exact_commit_without_installing(self, _physical):
@@ -203,6 +205,118 @@ class TestVendoredUpdate(unittest.TestCase):
         self.updater.fast_update(BRANCH, expected, selected, download_only=True)
     self.updated.init_overlay.assert_not_called()
     self.assertEqual(self.git(self.merged, 'rev-parse', 'HEAD'), self.initial_commit)
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_manual_os_mismatch_stages_exact_selected_version_and_reboots(self, _physical):
+    fast = importlib.import_module("openpilot.starpilot.software.fast_update")
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\nexport AGNOS_UPDATE_POLICY="auto"\n')
+    manifest = self.source / 'openpilot/common/hardware/comma/agnos.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('[]')
+    selected = self.commit_source('Selected newer OS')
+    (self.source / 'version.txt').write_text('newer')
+    self.commit_source('Later branch tip')
+    self.updated.AGNOS = True
+    self.updated.HARDWARE.get_os_version.return_value = '20.2.1'
+    self.updated.handle_agnos_update = self.real_handle_agnos_update
+    agnos = ModuleType('openpilot.common.hardware.comma.agnos')
+    agnos.get_target_slot_number = Mock(return_value=1)
+    agnos.flash_agnos_update = Mock()
+    with patch.dict(sys.modules, {agnos.__name__: agnos}), \
+         patch.object(fast, 'fast_update', side_effect=self.updated.FastUpdateIncompatible('OS mismatch')):
+      self.assertEqual(self.updater.fast_update(BRANCH, self.initial_commit, selected), 'reboot-requested')
+    agnos.flash_agnos_update.assert_called_once_with(str(self.merged / 'openpilot/common/hardware/comma/agnos.json'),
+                                                    1, self.updated.cloudlog)
+    self.assertEqual(self.git(installed, 'rev-parse', 'HEAD'), self.initial_commit)
+    self.assertEqual(self.git(self.finalized, 'rev-parse', 'HEAD'), selected)
+    self.assertTrue(self.updater.params.get_bool('DoReboot'))
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_automatic_os_mismatch_stages_latest_branch_and_reboots(self, _physical):
+    fast = importlib.import_module("openpilot.starpilot.software.fast_update")
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\n')
+    target = self.commit_source('Latest newer OS')
+    self.updated.AGNOS = True
+    with patch.object(fast, 'fast_update', side_effect=self.updated.FastUpdateIncompatible('OS mismatch')):
+      self.assertEqual(self.updater.fast_update(BRANCH, self.initial_commit, automatic=True), 'reboot-requested')
+    self.updated.handle_agnos_update.assert_called_once()
+    self.assertEqual(self.git(self.finalized, 'rev-parse', 'HEAD'), target)
+    self.assertTrue(self.updater.params.get_bool('DoReboot'))
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_selected_version_download_existing_os_path_stages_without_reboot(self, _physical):
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\n')
+    selected = self.commit_source('Selected newer OS')
+    self.updated.AGNOS = True
+    with patch.object(self.updater, 'set_params'):
+      self.assertEqual(self.updater.fast_update(BRANCH, self.initial_commit, selected, download_only=True), 'downloaded')
+    self.updated.handle_agnos_update.assert_called_once()
+    self.assertEqual(self.git(self.finalized, 'rev-parse', 'HEAD'), selected)
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_download_selected_new_os_runs_real_handler_before_finalizing(self, _physical):
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\nexport AGNOS_UPDATE_POLICY="auto"\n')
+    manifest = self.source / 'openpilot/common/hardware/comma/agnos.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('[]')
+    selected = self.commit_source('Selected new OS')
+    self.updated.AGNOS = True
+    self.updated.HARDWARE.get_os_version.return_value = '20.2.1'
+    self.updated.handle_agnos_update = self.real_handle_agnos_update
+    agnos = ModuleType('openpilot.common.hardware.comma.agnos')
+    agnos.get_target_slot_number = Mock(return_value=1)
+    agnos.flash_agnos_update = Mock()
+    with patch.dict(sys.modules, {agnos.__name__: agnos}), patch.object(self.updater, 'set_params'):
+      self.assertEqual(self.updater.fast_update(BRANCH, self.initial_commit, selected, download_only=True), 'downloaded')
+    agnos.flash_agnos_update.assert_called_once_with(str(self.merged / 'openpilot/common/hardware/comma/agnos.json'),
+                                                    1, self.updated.cloudlog)
+    self.assertEqual(self.git(self.finalized, 'rev-parse', 'HEAD'), selected)
+    self.assertTrue((self.finalized / '.overlay_consistent').exists())
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_manual_fallback_flash_failure_does_not_reboot(self, _physical):
+    fast = importlib.import_module("openpilot.starpilot.software.fast_update")
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\n')
+    self.commit_source('New OS')
+    self.updated.AGNOS = True
+    self.updated.handle_agnos_update.side_effect = RuntimeError('flash failed')
+    with patch.object(fast, 'fast_update', side_effect=self.updated.FastUpdateIncompatible('OS mismatch')):
+      with self.assertRaisesRegex(RuntimeError, 'flash failed'):
+        self.updater.fast_update(BRANCH, self.initial_commit, automatic=True)
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+    self.assertFalse(self.updater.params.get_bool('UpdateAvailable'))
+    self.assertFalse((self.finalized / '.overlay_consistent').exists())
+
+  @patch('openpilot.starpilot.drive_state.evidence.PhysicalSource', return_value=Mock(update_ready=Mock(return_value=True)))
+  def test_manual_fallback_rejects_unlisted_selected_revision(self, _physical):
+    fast = importlib.import_module("openpilot.starpilot.software.fast_update")
+    with patch.object(fast, 'fast_update', side_effect=self.updated.FastUpdateIncompatible('OS mismatch')):
+      with self.assertRaisesRegex(self.updated.FastUpdateError, 'no longer in branch history'):
+        self.updater.fast_update(BRANCH, self.initial_commit, 'f' * 40)
+    self.updated.handle_agnos_update.assert_not_called()
     self.assertFalse(self.updater.params.get_bool('DoReboot'))
 
   def test_metadata_refresh_does_not_wake_background_but_check_does(self):
@@ -282,6 +396,42 @@ class TestVendoredUpdate(unittest.TestCase):
     with patch.object(self.updated, "init_overlay"), self.assertRaises(self.updated.FastUpdateError):
       self.updater.normal_update(BRANCH, self.initial_commit, lambda: next(parked), Mock())
     self.assertNotIn("DoReboot", self.updater.params.values)
+
+  def test_fallback_rejects_source_branch_change_with_same_commit(self):
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'version.txt').write_text('new target')
+    self.commit_source('Target')
+    original_check = self.updater.check_for_update
+    def change_branch(*args, **kwargs):
+      original_check(*args, **kwargs)
+      self.git(installed, 'checkout', '-b', 'changed-source')
+    with patch.object(self.updater, 'check_for_update', side_effect=change_branch):
+      with self.assertRaisesRegex(self.updated.FastUpdateError, 'source or parked state changed'):
+        self.updater.normal_update(BRANCH, self.initial_commit, lambda: True, Mock())
+    self.assertEqual(self.git(installed, 'rev-parse', 'HEAD'), self.initial_commit)
+    self.updated.init_overlay.assert_not_called()
+    self.updated.handle_agnos_update.assert_not_called()
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+    self.assertFalse((self.finalized / '.overlay_consistent').exists())
+
+  def test_fallback_losing_parked_before_flash_cannot_flash_or_reboot(self):
+    installed = self.root / 'installed'
+    self.git(self.root, 'clone', '--no-local', str(self.merged), str(installed))
+    self.updated.BASEDIR = str(installed)
+    self.git(installed, 'remote', 'set-url', 'origin', str(self.source))
+    (self.source / 'launch_env.sh').write_text('export AGNOS_VERSION="20.2.2"\n')
+    self.commit_source('New OS')
+    self.updated.AGNOS = True
+    parked = iter((True, True, True, False))
+    with self.assertRaises(self.updated.FastUpdateError):
+      self.updater.normal_update(BRANCH, self.initial_commit, lambda: next(parked), Mock())
+    self.updated.handle_agnos_update.assert_not_called()
+    self.assertFalse(self.updater.params.get_bool('DoReboot'))
+    self.assertFalse(self.updater.params.get_bool('UpdateAvailable'))
+    self.assertFalse((self.finalized / '.overlay_consistent').exists())
 
   def test_check_reports_confirmed_os_requirement_without_changing_installed_files(self):
     self.updated.AGNOS = True
