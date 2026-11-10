@@ -1,4 +1,4 @@
-# AGENTS.md (night-star7-vasm-jetson)
+# BRANCH_CONTRACT.md (night-star7-vasm-jetson)
 
 Working contract for every agent on this branch (Claude Code, Cursor, Codex, any account).
 This branch started its own docs on 2026-11-06. They are not copied from any other branch.
