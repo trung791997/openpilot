@@ -16,6 +16,8 @@ Contents:
 - Coast first (depth floor; folded in from bosch_a_coast_first.py 2026-11-11): for a distant lead tapping its brakes, the
   law's target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs last inside step(), on every
   return path, when the caller passes `follow_s`.
+- Need floor (2026-11-11, NEED_FLOOR_ENABLED, on; replay only): need_floor() raises a braking target to -max(need, 0.8)
+  for a steady closing moving lead, after smooth and stop gap; called from longitudinal_planner.py only.
 
 - Newborn lead aLeadK bound (D-080, restored 2026-11-11 as NEWBORN_HOLD_ENABLED, on): planner_radar_state() holds a
   newborn radar lead's aLeadK at -1.0 unless its own range history confirms the braking (MPC and law input only).
@@ -307,6 +309,106 @@ def projected_gap_ok(d_rel: float, v_lead: float, a_lead: float, v_ego: float, f
   return True
 
 
+# ---- Need floor ("arm 13" / arm D; Bosch-A, replay only) ---------------------------------------------------------------
+# Owner 2026-11-11, route 11c8fa231c0499ed/000000bd--3279f521f1 seg 10 (10:20): a radar lead born at 61 m closing at 10.5
+# m/s never stopped (vLead 8.5-9 m/s, then 13), min gap 41 m; -2.23 with the newborn hold 'still feels too hard', owner
+# wants a -1.3 to -1.5 peak. Cause: the MPC asks -2.3..-2.4 to restore time-gap headway, and the Stock Brake Feel depth
+# table is TTC-only (TTC 4.7-5.9 s allows -2.1..-2.25). Replay (Job, open loop at a1ac1afdba + anchored kinematic closed
+# loop, 0.3 s lag, MPC not reacting; one route, three events), against the newborn hold alone: seg 10 peak -2.23 -> -1.52,
+# worst decel jerk -7.2 -> -3.7, closed-loop min gap 38.3 -> 30.7 m, min TTC 4.72 -> 4.63 s; seg 5 (5:34) and seg 18
+# (18:30), both stopped leads: 0 frames differ, the gate never opened (highest vLead while closing 3.9 m/s). Earlier
+# variants without the vLead/aLeadK gate (arms 10-12) softened stops behind a late-born stopped lead (closed-loop stop gap
+# 0.9 m vs 2.5 m at 18:30; seg 5 min gap 4.7 m vs 11.3 m) and must not be used. Multiplier 1.3 gave -1.91, 0.9 gave
+# -1.39. Open: at 630 s the simulated ego is still 2-2.6 m/s faster than the lead, so a late second brake is expected in
+# the car and is not modelled. The gate is tuned on three events; replay only, not driven, not yet scored on the corpus.
+# Frame counts are planner frames at 20 Hz.
+NEED_FLOOR_ENABLED = True       # switch; read at construction so a replay harness can set it before building the planner
+NEED_FLOOR_MULT = 1.15          # floor = -max(MULT * need, MIN); 1.3 gave -1.91, 0.9 gave -1.39 on seg 10. 1.15 (Peter 2026-11-11, replay only): seg 10 -1.75 (hold-only -2.23, 1.0 -1.52); seg 5 / seg 18 stops unchanged; ep1046 REAL -2.30 -> -2.72; 15 of 1141 episodes >0.05 deeper, onsets unchanged
+NEED_FLOOR_MIN = 0.8            # m/s^2; the shallowest the floor may be
+NEED_FLOOR_HEADWAY_S = 1.0      # s; need's gap target = vLead * this + STOP_M
+NEED_FLOOR_STOP_M = 6.0         # m
+NEED_FLOOR_MIN_ROOM_M = 5.0     # m; need's room is never smaller than this
+NEED_FLOOR_RELEASE_TTC_S = 3.0  # s; closing at or under this TTC: floor off and sticky
+NEED_FLOOR_RELEASE_NEED = 2.0   # m/s^2; need at or over this: floor off and sticky
+NEED_FLOOR_MIN_V_EGO = 5.0      # m/s
+NEED_FLOOR_MIN_D = 15.0         # m
+NEED_FLOOR_GATE_V_LEAD = 5.0    # m/s; lead must be moving (stopped leads at 5:34 and 18:30 never opened the gate)
+NEED_FLOOR_GATE_A_LEAD = -1.0   # m/s^2; lead's aLeadK must be above this (not itself braking hard)
+NEED_FLOOR_GATE_FRAMES = 10     # consecutive frames of the gate on one (track id, radar flag): 0.5 s
+NEED_FLOOR_QUIET_FRAMES = 20    # frames with no lead closing before the sticky-off clears: 1.0 s
+
+
+class NeedFloor:
+  """Raises a braking target to at least -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN) for a steady closing moving lead.
+
+  need = closing^2 / (2 * max(d - (max(vLead, 0) * HEADWAY_S + STOP_M), MIN_ROOM_M)), the decel that closes the speed
+  difference in the room left before the headway gap. The floor only RAISES a braking target (never adds braking) and
+  never touches should_stop. It applies to the nearer present planner lead (leadOne or leadTwo, vision or radar) only
+  when the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
+  sticky-off and the gate (vLead >= GATE_V_LEAD and aLeadK > GATE_A_LEAD for GATE_FRAMES consecutive frames on the same
+  (track id, radar flag)) is open. Sticky-off: once the release fires (closing and (ttc <= RELEASE_TTC_S or need >=
+  RELEASE_NEED)) or the Stock Brake Feel emergency latch is on, the floor stays off until QUIET_FRAMES frames with no
+  lead closing, or the lead identity changes to one farther away than the previous frame's gap. No lead: quiet + 1, gate
+  count 0, sticky clears at QUIET_FRAMES. Called after bosch_a_stop_gap.step in longitudinal_planner.py only; it is not
+  in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
+  harness), including its rounding of the lead fields (d and vRel to 0.01, aLeadK to 0.001). Replay only."""
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.off = False
+    self.quiet = 0
+    self.last_id = None
+    self.last_d = None
+    self.gate_id = None
+    self.gate_count = 0
+
+  @staticmethod
+  def _view(lead):
+    return (int(getattr(lead, 'radarTrackId', -1)), int(bool(getattr(lead, 'radar', False))),
+            round(float(lead.dRel), 2), round(float(lead.vRel), 2), round(float(getattr(lead, 'aLeadK', 0.0)), 3))
+
+  def step(self, leads, v_ego: float, emergency: bool, target: float) -> float:
+    views = [self._view(lead) for lead in leads if _present(lead)]
+    a = float(target)
+    if not views:
+      self.quiet += 1
+      self.gate_count = 0
+      if self.off and self.quiet >= NEED_FLOOR_QUIET_FRAMES:
+        self.off = False
+      return a
+    track_id, radar, d, v_rel, a_lead = min(views, key=lambda x: x[2])
+    v_ego = float(v_ego)
+    v_lead = v_ego + v_rel
+    need = (v_rel * v_rel if v_rel < 0 else 0.0) / (2.0 * max(d - (max(v_lead, 0.0) * NEED_FLOOR_HEADWAY_S + NEED_FLOOR_STOP_M),
+                                                               NEED_FLOOR_MIN_ROOM_M))
+    ttc = d / -v_rel if v_rel < -0.1 else float('inf')
+    closing = v_rel < 0
+    lid = (track_id, radar)
+    if closing:
+      self.quiet = 0
+    else:
+      self.quiet += 1
+    if self.off and (self.quiet >= NEED_FLOOR_QUIET_FRAMES or
+                     (self.last_id is not None and lid != self.last_id and self.last_d is not None and d > self.last_d)):
+      self.off = False
+    self.last_id = lid
+    self.last_d = d
+    if (closing and (ttc <= NEED_FLOOR_RELEASE_TTC_S or need >= NEED_FLOOR_RELEASE_NEED)) or bool(emergency):
+      self.off = True
+    if self.gate_id != lid or not (v_lead >= NEED_FLOOR_GATE_V_LEAD and a_lead > NEED_FLOOR_GATE_A_LEAD):
+      self.gate_count = 0
+    else:
+      self.gate_count += 1
+    self.gate_id = lid
+    if (self.gate_count >= NEED_FLOOR_GATE_FRAMES and closing and not self.off and v_ego >= NEED_FLOOR_MIN_V_EGO and
+        d >= NEED_FLOOR_MIN_D and ttc > NEED_FLOOR_RELEASE_TTC_S and need < NEED_FLOOR_RELEASE_NEED):
+      floor = -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN)
+      if a < floor:
+        a = floor
+    return a
+
+
 class HondaBoschALongEnhancement:
   def __init__(self, CP, dt: float):
     """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate."""
@@ -316,6 +418,7 @@ class HondaBoschALongEnhancement:
     # checks in this module (Bosch-A supported, radar available); default ON, no toggle.
     self.drop_bound = ImplausibleDropBound() if active else None
     self.newborn_hold = NewbornLeadHold() if active and NEWBORN_HOLD_ENABLED else None
+    self._need_floor = NeedFloor() if self.stock_feel and NEED_FLOOR_ENABLED else None
     self.dt = dt
     # Coast first: same gate as the old BoschACoastFirst.enabled (not active_for / stock_feel).
     self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
@@ -348,6 +451,17 @@ class HondaBoschALongEnhancement:
   @property
   def coast_active(self) -> bool:
     return self.coast_floor is not None
+
+  def need_floor(self, *, lead_one, lead_two, target: float, v_ego: float, reset_state: bool) -> float:
+    """Need floor (NeedFloor, above): raise a braking `target` for a steady closing moving lead. Call it on the output of
+    bosch_a_stop_gap.step with that call's v_ego, in longitudinal_planner.py only (not in upstream/planner.py); it never
+    touches should_stop. Not active (Stock Brake Feel off, or NEED_FLOOR_ENABLED False at construction) or reset_state:
+    state is cleared and the target passes through."""
+    if self._need_floor is None or reset_state:
+      if self._need_floor is not None:
+        self._need_floor.reset()
+      return float(target)
+    return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target)
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
            stopping: bool, standstill: bool, reset_state: bool, fcw: bool, follow_s: float | None = None) -> float:

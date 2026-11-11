@@ -45,6 +45,7 @@ Started fresh on 2026-11-06 at `ea4c879de8`.
 - Route 20 T285-287: the hard highway slowdown looks like the radar locked onto the wrong object (STATUS 263); still ambiguous on the stills.
 - Everything on this branch until an entry above says otherwise.
 - In-path radar keep — no road evidence. Watch for a phantom brake right after a car leaves our lane or at intersections (cross traffic and next-lane cars were the false keeps in the census), and note that one census event published a glitched radar speed for 2 frames through the keep (84 i3716).
+- Need floor x1.15 (NEED_FLOOR_ENABLED, on; ported 2026-11-11 from the car branch commit 42a07b9983, NeedFloor class identical): static tests only on this branch (20 need-floor tests on x86); not replayed on the unify stack at this commit, not road tested. Car-base replay (Job, open loop): bd seg 10 first brake -2.23 -> -1.75, ep1046 REAL -2.31 -> -2.74, ep645 (Peter: REAL, still some distance away) softened -1.19 -> -0.80 at a 1.4 s gap; a gap-gated variant is being scored. Watch for a soft brake on a close, steadily closing moving lead.
 
 ## Removed / shelved
 - Set Speed Assist removed 2026-11-06 at `eb9a7e584`. Reason: doubled cruise jerk in replay (RMS 0.208 off vs 0.476 on) and on the road (14 SSA-on units read 0.466, limited road evidence); the best smoothing attempt (R4) kept only 71 % of the catch-up gain and still braked deeper on slow traffic after open road. PROGRESS entry 15. Upstream sunnypilot #2083 is still open.
