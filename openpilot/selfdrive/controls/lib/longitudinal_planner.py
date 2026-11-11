@@ -41,7 +41,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-from openpilot.starpilot.longitudinal.bosch_a_onset_ramp import BoschAOnsetRamp
 from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
 from openpilot.starpilot.longitudinal.bosch_a_coast_first import BoschACoastFirst
 from openpilot.starpilot.longitudinal.bosch_a_release_coast import BoschAReleaseCoast
@@ -112,15 +111,14 @@ class LongitudinalPlanner:
     self.mpc = LongitudinalMpc(dt=dt)
     # Optional owners (hooks): HumanFollowing/HumanAcceleration (Bosch-A Hondas, radar or vision) and the
     # Honda Bosch A Long Enhancement (radar on). `bosch_a` holds the owner toggles plannerd read at start
-    # (BoschAHumanFollowing, BoschAStockBrakeFeel); both default Off. The upstream planner applies the same two.
+    # (BoschAHumanFollowing); default Off. Stock Brake Feel is always on for Bosch-A Hondas. The upstream planner applies the same.
     self.human_driving = human_following.enabled_for(CP, bosch_a.human_following)
     if self.human_driving:
       human_following.install(self.mpc)
-    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=bosch_a.stock_brake_feel)
+    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)  # Stock Brake Feel law + brake onset ramp; always on for Bosch-A Hondas
     self.bosch_a_smooth = BoschASmooth(CP, dt)  # always on for Bosch-A Hondas; bosch_a_smooth.py
     self.bosch_a_coast_first = BoschACoastFirst(CP, dt)  # lift off before braking for a distant tap; bosch_a_coast_first.py
     self.bosch_a_release_coast = BoschAReleaseCoast(CP, dt)  # lift off gas when a close radar lead's track releases; bosch_a_release_coast.py
-    self.bosch_a_onset_ramp = BoschAOnsetRamp(CP, dt)  # far-lead brake builds at 8 m/s^3; bosch_a_onset_ramp.py
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
@@ -516,7 +514,7 @@ class LongitudinalPlanner:
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, prev=float(a_prev),
       target=float(output_a_target), v_ego=v_ego,
       stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
-      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
     output_a_target = self.bosch_a_coast_first.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       v_ego=v_ego, follow_s=float(base_follow), fcw=bool(self.fcw), reset_state=bool(reset_state))
@@ -527,11 +525,6 @@ class LongitudinalPlanner:
       reset_state=bool(reset_state))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
-    output_a_target = self.bosch_a_onset_ramp.step(
-      lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, prev=float(a_prev),
-      target=float(output_a_target), fcw=bool(self.fcw),
-      stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
-      reset=bool(reset_state or sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),

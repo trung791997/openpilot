@@ -139,31 +139,30 @@ class TestReadToggles(unittest.TestCase):
   def test_only_exact_one_is_on(self):
     for raw, expected in ((b'1', True), (b'0', False), (b'', False), (b'true', False), (b'1\n', False), (b'\xff', False),
                           (b'1' * 9, False)):
-      self.put(bosch_a_toggles.STOCK_BRAKE_FEEL_KEY, raw)
+      self.put(bosch_a_toggles.STOCK_BRAKE_FEEL_KEY, raw)  # no longer read: must not change anything
       self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, raw)
-      self.assertEqual(read_toggles(self.params), BoschAToggles(expected, expected), raw)
+      self.assertEqual(read_toggles(self.params), BoschAToggles(human_following=expected), raw)
 
   def test_each_toggle_is_independent(self):
     self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, b'1')
-    self.assertEqual(read_toggles(self.params), BoschAToggles(stock_brake_feel=False, human_following=True))
+    self.assertEqual(read_toggles(self.params), BoschAToggles(human_following=True))
+    self.put(bosch_a_toggles.CAMERA_CAP_HOLD_KEY, b'1')
+    self.assertEqual(read_toggles(self.params), BoschAToggles(human_following=True, camera_cap_hold=True))
 
   def test_unreadable_and_broken_params_are_off(self):
-    os.mkdir(os.path.join(self.dir.name, bosch_a_toggles.STOCK_BRAKE_FEEL_KEY))  # not a regular file
+    os.mkdir(os.path.join(self.dir.name, bosch_a_toggles.CAMERA_CAP_HOLD_KEY))  # not a regular file
     self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, b'1')
-    self.assertEqual(read_toggles(self.params), BoschAToggles(stock_brake_feel=False, human_following=True))
+    self.assertEqual(read_toggles(self.params), BoschAToggles(human_following=True))
     self.assertEqual(read_toggles(SimpleNamespace()), OFF)  # no get_param_path
     self.assertEqual(read_toggles(None), OFF)
 
 
 class TestCarGates(unittest.TestCase):
-  def test_stock_brake_feel_needs_toggle_and_bosch_a(self):
-    self.assertFalse(HondaBoschALongEnhancement(BOSCH_A, 0.05).stock_feel)
-    self.assertFalse(HondaBoschALongEnhancement(BOSCH_A, 0.05, stock_brake_feel=False).stock_feel)
-    self.assertTrue(HondaBoschALongEnhancement(BOSCH_A, 0.05, stock_brake_feel=True).stock_feel)
-    self.assertFalse(HondaBoschALongEnhancement(car(radar_unavailable=True), 0.05, stock_brake_feel=True).stock_feel)
+  def test_stock_brake_feel_is_always_on_for_bosch_a_with_radar(self):
+    self.assertTrue(HondaBoschALongEnhancement(BOSCH_A, 0.05).stock_feel)
+    self.assertFalse(HondaBoschALongEnhancement(car(radar_unavailable=True), 0.05).stock_feel)
     for cp in NOT_BOSCH_A:
-      enhancement = HondaBoschALongEnhancement(cp, 0.05, stock_brake_feel=True)
-      self.assertFalse(enhancement.enabled or enhancement.stock_feel, cp)
+      self.assertFalse(HondaBoschALongEnhancement(cp, 0.05).stock_feel, cp)
 
   def test_human_following_needs_toggle_and_bosch_a(self):
     self.assertFalse(human_following.enabled_for(BOSCH_A))
@@ -182,21 +181,26 @@ class TestCarGates(unittest.TestCase):
 
 
 class TestUpstreamPlanner(unittest.TestCase):
-  def test_toggles_off_is_bit_identical_to_upstream(self):
-    reference = run(upstream(BOSCH_A, None))
-    self.assertEqual(run(upstream(BOSCH_A, OFF)), reference)
-    self.assertEqual(run(upstream(BOSCH_A, BoschAToggles())), reference)
+  def test_no_toggles_object_is_upstream_and_off_runs_stock_feel(self):
+    # `bosch_a=None` is the pure upstream planner. With a toggles object, Stock Brake Feel is on for a Bosch-A Honda
+    # whatever the toggles say (2026-11-11), so OFF is no longer bit-identical to upstream there; other cars still are.
+    self.assertIsNone(upstream(BOSCH_A, None).bosch_a_long)
+    for toggles in (OFF, BoschAToggles()):
+      self.assertTrue(upstream(BOSCH_A, toggles).bosch_a_long.stock_feel)
+      for cp in NOT_BOSCH_A:
+        self.assertIsNone(upstream(cp, toggles).bosch_a_long, cp)
+        self.assertEqual(run(upstream(cp, toggles)), run(upstream(cp, None)), cp)
 
   def test_non_bosch_a_car_with_toggles_on_is_bit_identical(self):
     for cp in NOT_BOSCH_A:
       reference = run(upstream(cp, None))
-      stock = upstream(cp, BoschAToggles(True, True))
+      stock = upstream(cp, BoschAToggles(human_following=True))
       self.assertIsNone(stock.bosch_a_long)
       self.assertIsNone(stock.bosch_a_model_leads)
       self.assertEqual(run(stock), reference, cp)
 
   def test_stock_brake_feel_runs_step_on_bosch_a(self):
-    stock = upstream(BOSCH_A, BoschAToggles(stock_brake_feel=True))
+    stock = upstream(BOSCH_A, BoschAToggles())
     self.assertIsNotNone(stock.bosch_a_long)
     self.assertTrue(stock.bosch_a_long.stock_feel)
     self.assertIsNone(stock.bosch_a_model_leads)
@@ -213,13 +217,14 @@ class TestUpstreamPlanner(unittest.TestCase):
       self.assertEqual(output[0], float(np.clip(result, mpc.ACCEL_MIN, mpc.ACCEL_MAX)))
       self.assertEqual(kwargs['lead_one'].dRel, submaster(frame)['radarState'].leadOne.dRel)  # raw radarState leads
       self.assertEqual(kwargs['reset_state'], frame == 0)
+      self.assertIn('fcw', kwargs)
 
   def test_human_following_passes_cap_and_lead_paths_on_bosch_a(self):
     from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
     with patch.object(long_mpc, 'qualified_model_leads', side_effect=lambda sm, now_ns, history: sm['modelV2']):
       stock = upstream(BOSCH_A, BoschAToggles(human_following=True))
     self.assertIsNotNone(stock.bosch_a_model_leads)
-    self.assertIsNone(stock.bosch_a_long)
+    self.assertTrue(stock.bosch_a_long.stock_feel)  # always on for Bosch-A since 2026-11-11
     seen = []
     original = stock.mpc.update
     def spy(radarstate, personality=None, **kwargs):
@@ -263,7 +268,7 @@ class TestUpstreamPlanner(unittest.TestCase):
     class SM:
       def update(self):
         raise InterruptedError('bounded end of mocked loop')
-    toggles = BoschAToggles(True, False)
+    toggles = BoschAToggles(human_following=True)
     with patch.object(plannerd, 'config_realtime_process'), \
          patch.object(plannerd, 'Params', return_value=SimpleNamespace(get=lambda key, **kwargs: b'CP')), \
          patch.object(plannerd.messaging, 'log_from_bytes', return_value=BOSCH_A), \
@@ -289,14 +294,14 @@ class TestStarPilotPlanner(unittest.TestCase):
     for toggles in (None, OFF):
       stock = self.build(BOSCH_A, toggles)
       self.assertFalse(stock.human_driving)
-      self.assertFalse(stock.bosch_a_long.stock_feel)
+      self.assertTrue(stock.bosch_a_long.stock_feel)  # permanent on Bosch-A since 2026-11-11
 
-  def test_toggles_arm_features_on_bosch_a_only(self):
-    stock = self.build(BOSCH_A, BoschAToggles(True, True))
+  def test_human_following_toggle_arms_on_bosch_a_only(self):
+    stock = self.build(BOSCH_A, BoschAToggles(human_following=True))
     self.assertTrue(stock.human_driving)
     self.assertTrue(stock.bosch_a_long.stock_feel)
     for cp in NOT_BOSCH_A:
-      other = self.build(cp, BoschAToggles(True, True))
+      other = self.build(cp, BoschAToggles(human_following=True))
       self.assertFalse(other.human_driving, cp)
       self.assertFalse(other.bosch_a_long.stock_feel, cp)
 

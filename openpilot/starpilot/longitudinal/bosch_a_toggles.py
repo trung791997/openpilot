@@ -1,6 +1,6 @@
 """Owner toggles for the Bosch-A longitudinal features, read once when plannerd starts (either planner).
 
-- BoschAStockBrakeFeel: the Stock Brake Feel law in honda_bosch_a_long (D-086 and its follow-ups).
+- Stock Brake Feel (honda_bosch_a_long, D-086 and its follow-ups) is permanent since 2026-11-11; BoschAStockBrakeFeel is no longer read.
 - BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
 - BoschACameraCapHold: camera-cap mode in radard (radar_camera_witness.py cap tell, C-012): off = VA (default), on = D+E. Read once by radard, not plannerd.
 
@@ -36,7 +36,6 @@ ROWS = (
 
 @dataclass(frozen=True)
 class BoschAToggles:
-  stock_brake_feel: bool = False
   human_following: bool = False
   camera_cap_hold: bool = False  # read by radard (read_camera_cap_hold), carried here so one parser owns every Bosch-A toggle
 
@@ -54,7 +53,7 @@ def _on(params, key: str) -> bool:
 
 def read_toggles(params) -> BoschAToggles:
   """The saved toggles; Off for anything but an exact b'1'."""
-  return BoschAToggles(stock_brake_feel=_on(params, STOCK_BRAKE_FEEL_KEY), human_following=_on(params, HUMAN_FOLLOWING_KEY),
+  return BoschAToggles(human_following=_on(params, HUMAN_FOLLOWING_KEY),
                         camera_cap_hold=_on(params, CAMERA_CAP_HOLD_KEY))
 
 

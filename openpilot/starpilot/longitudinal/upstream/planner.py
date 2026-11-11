@@ -64,8 +64,8 @@ class LongitudinalPlanner:
     # ---- BOSCH-A HOOK 1/3 (owner toggles; not in upstream 521db4c8) ----
     # Same two features, same car gates and same order relative to the MPC and the final clip as StarPilot's
     # selfdrive/controls/lib/longitudinal_planner.py. `bosch_a` is a bosch_a_toggles.BoschAToggles (None = both Off).
-    # With both toggles off both stay None, nothing below runs and the planner is upstream's. The car gates and the
-    # StarPilot imports only happen when a toggle is on.
+    # With `bosch_a` None both stay None, nothing below runs and the planner is upstream's. Stock Brake Feel (with the
+    # brake onset ramp inside it) is always on for a Bosch-A Honda once `bosch_a` is given; HumanFollowing needs its toggle.
     self.bosch_a_model_leads = None  # HumanFollowing + HumanAcceleration
     self.bosch_a_long = None         # Stock Brake Feel
     if bosch_a is not None and bosch_a.human_following:
@@ -75,19 +75,16 @@ class LongitudinalPlanner:
         from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import ModelLeadHistory, qualified_model_leads
         self.bosch_a_model_leads = ModelLeadHistory()
         self.bosch_a_human = (human_following, human_acceleration, qualified_model_leads, time.monotonic_ns)
-    if bosch_a is not None and bosch_a.stock_brake_feel:
+    if bosch_a is not None:
       from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-      enhancement = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=True)
-      self.bosch_a_long = enhancement if enhancement.enabled else None
+      enhancement = HondaBoschALongEnhancement(CP, dt)
+      self.bosch_a_long = enhancement if enhancement.stock_feel else None
     # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
     from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
     self.bosch_a_smooth = BoschASmooth(CP, dt)
     # Bosch-A stop hold + no gas inside the stop gap (always on for Bosch-A Hondas with the radar; bosch_a_stop_gap.py).
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
-    # Bosch-A far-lead brake onset ramp (always on for Bosch-A Hondas; bosch_a_onset_ramp.py).
-    from openpilot.starpilot.longitudinal.bosch_a_onset_ramp import BoschAOnsetRamp
-    self.bosch_a_onset_ramp = BoschAOnsetRamp(CP, dt)
     self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
@@ -190,7 +187,7 @@ class LongitudinalPlanner:
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     # ---- BOSCH-A HOOK 3/3: last shapers before the final clip, in StarPilot's order (HumanAcceleration cap, then
-    # the Stock Brake Feel step). Skipped entirely when the toggles are off. ----
+    # the Stock Brake Feel step). Skipped entirely when `bosch_a` is None. ----
     if self.bosch_a_model_leads is not None:
       output_a_target = min(output_a_target, bosch_a_mpc['acceleration_max'])  # >= 0: braking passes through
     if self.bosch_a_long is not None and self.bosch_a_long.stock_feel and reset_state:
@@ -206,13 +203,9 @@ class LongitudinalPlanner:
       output_a_target = self.bosch_a_long.step(
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
         target=float(output_a_target), v_ego=v_ego, stopping=bool(self.output_should_stop),
-        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
+        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
     output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
                                                reset=bool(reset_state or sm['carState'].standstill))
-    output_a_target = self.bosch_a_onset_ramp.step(
-      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
-      target=float(output_a_target), fcw=bool(self.fcw), stopping=bool(self.output_should_stop),
-      reset=bool(reset_state or sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
       lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target),
       should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),

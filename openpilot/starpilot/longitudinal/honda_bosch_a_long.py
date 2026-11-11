@@ -3,15 +3,18 @@
 Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, selfdrive/controls/lib/longitudinal_planner.py).
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
-switch: Stock Brake Feel is the owner toggle `BoschAStockBrakeFeel` (bosch_a_toggles.py, default Off, read once when
-plannerd starts and passed in as `stock_brake_feel`); BIRTH_RAIL_ENABLED is a constant and stays off. Both longitudinal
-planners (StarPilot's and the upstream one) call it the same way.
+switch: Stock Brake Feel is permanent (owner 2026-11-11: "Make Stock Brake Feel permanent"; the BoschAStockBrakeFeel
+toggle selects nothing); BIRTH_RAIL_ENABLED is a constant and stays off. Both longitudinal planners (StarPilot's and the
+upstream one) call it the same way.
 
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
   takeover hold, lead-stop law (<= 20 s) and the emergency latch.
+- Brake onset ramp (2026-11-05, folded into step() 2026-11-11): a brake that starts with every lead far away deepens at
+  most ONSET_JERK per second; with the law always on it only binds inside the emergency pass-through.
 
-The planner calls `step()` once per cycle, after every other target owner and before the final clip. Every limit
+The planner calls `step()` once per cycle, after the other target owners and before coast first, release coast,
+smooth and stop gap. Every limit
 here only shapes how a brake builds or lets off; the emergency latch passes the planner's target through untouched,
 so the car never brakes harder than the planner would without this module. Replay and limited road evidence only.
 
@@ -44,7 +47,6 @@ STOCK_FEEL_MIN_CLOSING = 0.5  # m/s
 # (STATUS 220: without it the target stepped -0.6..-1.65 in one frame; stock's own p98 is 2-3.4 m/s^3).
 STOCK_FEEL_JERK_OUTSIDE = 5.0  # m/s^3
 # D-125 (329 8:02): soft exit when the closing speed falls under STOCK_FEEL_MIN_CLOSING.
-STOCK_FEEL_SOFT_EXIT = True
 STOCK_FEEL_EXIT_JERK = 0.6   # m/s^3
 STOCK_FEEL_EXIT_HOLD_S = 2.0  # s
 # Takeover hold (owner 2026-10-08, 2f7 26:38): a brake already deeper than the cap is let off at this rate, not cut.
@@ -52,13 +54,11 @@ STOCK_FEEL_CAP_RELEASE_JERK = 0.3  # m/s^3
 # Lead stopping (owner 2026-10-07, 2f2 1099/1483): a closing lead braking at STOCK_FEEL_LEAD_STOP_A or harder moves the
 # cap to the decel needed to stop STOCK_FEEL_LEAD_STOP_GAP behind it. D-120 (324): leads more than
 # STOCK_FEEL_LEAD_STOP_MAX_T s from stopping are left to the table (12 s delayed a real slowing lead on 324 2790).
-STOCK_FEEL_LEAD_STOP = True
 STOCK_FEEL_LEAD_STOP_A = -1.0  # m/s^2
 STOCK_FEEL_LEAD_STOP_GAP = 4.0  # m
 STOCK_FEEL_LEAD_STOP_MAX_T = 20.0  # s
 # Emergency bypass (owner 2026-10-07, 2f5 ~10:01: a lead braking -6.5 was met at stock's depth and the driver had to
 # brake). Latched while any lead is closing: the planner's target passes through with no cap and no jerk limit.
-STOCK_FEEL_EMERGENCY = True
 STOCK_FEEL_EMERGENCY_A_LEAD = -2.0  # m/s^2
 STOCK_FEEL_EMERGENCY_NEED = 2.0  # m/s^2
 # The aLeadK path only latches when the worst TTC is at most this (openpilot-radar STATUS 258, 6db22115e8): 3a3
@@ -120,7 +120,7 @@ def stock_feel_emergency(leads, v_ego: float, active: bool) -> bool:
   """Latch: True while a lead is closing once a closing lead brakes at STOCK_FEEL_EMERGENCY_A_LEAD or harder, or stopping
   behind a braking lead needs at least STOCK_FEEL_EMERGENCY_NEED and more than the table's depth."""
   ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
-  if not STOCK_FEEL_EMERGENCY or ttc == float('inf'):
+  if ttc == float('inf'):
     return False
   if active:
     return True
@@ -162,28 +162,72 @@ def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float
   if emergency:
     return float(target)
   ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
-  if ttc == float('inf') and law_recent and STOCK_FEEL_SOFT_EXIT and not any(
+  if ttc == float('inf') and law_recent and not any(
       _present(lead) and float(lead.aLeadK) <= STOCK_FEEL_LEAD_STOP_A for lead in leads):
     return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_EXIT_JERK)
   if not ttc > STOCK_FEEL_TTC_FLOOR_S or ttc == float('inf'):
     return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_JERK_OUTSIDE)
   depth = stock_feel_depth(leads, ttc, v_ego)
-  if STOCK_FEEL_LEAD_STOP:
-    need = lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T)
-    if need > -depth:
-      return brake_onset_limited_target(prev, max(target, stock_feel_held_cap(prev, -min(need, 3.5), dt)), dt,
-                                        STOCK_FEEL_JERK_OUTSIDE)
+  need = lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T)
+  if need > -depth:
+    return brake_onset_limited_target(prev, max(target, stock_feel_held_cap(prev, -min(need, 3.5), dt)), dt,
+                                      STOCK_FEEL_JERK_OUTSIDE)
   target = max(target, stock_feel_held_cap(prev, depth, dt))
   return brake_onset_limited_target(prev, target, dt, float(np.interp(ttc, STOCK_FEEL_JERK_BP, STOCK_FEEL_JERK_V)))
 
 
+# ---- Brake onset ramp --------------------------------------------------------------------------------------------
+# Brake onset ramp: a brake that starts with every lead far away builds at ONSET_JERK instead of in one frame.
+#
+# Owner 2026-11-05: "Why can we just mimic stock brake for those situations? Instead of just slamming the brake".
+# Stock ACC on route 299 (STATUS 214) brings a brake in at -1.4..-3.4 m/s^3 per step; ours stepped at -36..-52 m/s^3
+# on the route 84 far brakes (E1, E4), e2ae and e2f8. The old D-083 ramp (6f1a05b37) would not have changed them: its
+# lead-braking and need gates stand it down on every one, because the lead is already braking hard at onset.
+#
+# Replay (Job, base dad6bbbb6, open loop, arm R4b; limited road evidence, not driven):
+#   - first-jolt jerk 44-52 -> 8 m/s^3 on 84 E1/E4/vn84_3/vn84_11, 34 -> 8 on e2ae, 43 -> 8 on e2f8; peak decel unchanged
+#     (-3.5 stays -3.5), onset at -2 at most 0.15 s later.
+#   - min gap 0.4-0.9 m smaller on those events (e2ae: -0.62 m, ending at 4.8 m); min TTC within 0.08 s.
+#   - the 2f5 close stop (onset dRel 38.1 m) is exempt and equals today's output; pooled 0.85 h: same brake episode
+#     counts, no episode closer by more than 2 m.
+#   - nothing at onset (need, closing speed) separates e2ae/2f5 from the 84 far brakes; only the onset distance does.
+#     EXEMPT_D_M = 40 sits between 2f5 (38.1 m) and e2f8 (43.9 m); 30 m capped 2f5 and cost it 0.36 m.
+#   - an in-brake close-gap stand-down (R5) changed nothing: the ramp finishes in ~0.4 s, before the gap gets close.
+#
+# Channels: reads radarState leadOne/leadTwo (present, dRel, vRel) as published; a railed vRel (U11 low rail -12) only
+# makes TTC smaller, which stands the ramp down, never extends it. Only the fall rate of the target is capped; the peak is
+# never reduced, rises pass through, and dRel/vLead/radar points are untouched (D-041/D-042).
+#
+# With the law always on (owner 2026-11-11), the ramp only binds inside the emergency pass-through, where the law
+# hands the planner's target through untouched; on the scorecard baseline (44f382face, 36 routes) that was 10 frames in
+# 7 episodes (replay). The episode-end rule below (the law's output and last cycle's published target both back at
+# or above END_ACCEL) replaces the old ramp's own post-smooth input test: static; not replayed yet.
+ONSET_JERK = 8.0         # m/s^3, the fastest a non-exempt brake may deepen
+ONSET_START_ACCEL = -0.3       # m/s^2: the law's output below this starts a brake episode
+ONSET_END_ACCEL = -0.1         # m/s^2: the output and last cycle's target both back at or above this end it
+ONSET_EXEMPT_D_M = 40.0        # any lead closer than this as the episode starts: no ramp for the whole episode
+ONSET_TTC_STAND_DOWN_S = 2.0   # any lead at or below this TTC: no ramp for the rest of the episode
+
+
+def lead_close(leads) -> bool:
+  return any(float(lead.dRel) < ONSET_EXEMPT_D_M for lead in leads if _present(lead))
+
+
+def lead_ttc_low(leads) -> bool:
+  for lead in leads:
+    if not _present(lead):
+      continue
+    closing = -float(lead.vRel)
+    if closing > 1e-3 and float(lead.dRel) / closing <= ONSET_TTC_STAND_DOWN_S:
+      return True
+  return False
+
+
 class HondaBoschALongEnhancement:
-  def __init__(self, CP, dt: float, stock_brake_feel: bool = False):
-    """`stock_brake_feel` is the owner's BoschAStockBrakeFeel toggle (bosch_a_toggles.read_toggles); it only arms the law,
-    active_for(CP) still decides."""
+  def __init__(self, CP, dt: float):
+    """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate."""
     active = active_for(CP)
-    self.stock_feel = active and stock_brake_feel is True
-    self.enabled = self.stock_feel
+    self.stock_feel = active
     # Implausible-drop bound (D-041/D-042; owner bookmark route a2 seg 50, 2026-11-07): same gate as the other active
     # checks in this module (Bosch-A supported, radar available); default ON, no toggle.
     self.drop_bound = ImplausibleDropBound() if active else None
@@ -198,23 +242,40 @@ class HondaBoschALongEnhancement:
     return radar_state
 
   def reset(self):
+    self._reset_law()
+    self.onset_episode = False
+    self.onset_free = False  # this episode passes through (close lead at its start, low TTC, FCW or stopping)
+
+  def _reset_law(self):
     self.emergency = False
     self.law_t = 0.0
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
-           stopping: bool, standstill: bool, reset_state: bool) -> float:
-    """Shape the final acceleration target. `stopping` covers should-stop, force stop and red-light stops."""
-    if not self.enabled or reset_state or standstill:
+           stopping: bool, standstill: bool, reset_state: bool, fcw: bool) -> float:
+    """Shape the final acceleration target. `stopping` covers should-stop, force stop and red-light stops. `prev` is last
+    cycle's published target; `target` is this cycle's before the law and the onset ramp."""
+    if not self.stock_feel or reset_state or standstill:
       self.reset()
       return float(target)
     leads = (lead_one, lead_two)
-    if stopping or not self.stock_feel:
-      self.reset()
+    out = float(target)
+    if stopping:
+      self._reset_law()
     else:
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
-      target = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
+      out = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
       self.law_t = STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
-    return float(target)
+    if self.onset_episode and out >= ONSET_END_ACCEL and prev >= ONSET_END_ACCEL:
+      self.onset_episode = False
+      self.onset_free = False
+    if not self.onset_episode and out < ONSET_START_ACCEL:
+      self.onset_episode = True
+      self.onset_free = lead_close(leads)
+    if self.onset_episode and (fcw or stopping or lead_ttc_low(leads)):
+      self.onset_free = True
+    if self.onset_episode and not self.onset_free:
+      out = brake_onset_limited_target(prev, out, self.dt, ONSET_JERK)
+    return float(out)
 
 
 class _BoundedRadarState:
