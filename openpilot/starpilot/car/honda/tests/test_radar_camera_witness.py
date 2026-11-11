@@ -792,7 +792,7 @@ def gstep(cw, v_rel, a=-0.4, cam=-0.5, cam_a=0.0, tid=TID, **kw):
 
 def test_growth_limit_weight_rise_on_open_gap_follows_the_rate_not_the_weight():
   # (a1) an established track whose cap tell rises from 0 with a 4 m/s gap already open: the weight rises 0.2 per cycle
-  # (0.8, 1.6, 2.4 ...) but the correction follows min(weight * gap, DV_STEP * n) = 0.4, 0.8, 1.2 ...
+  # (0.8, 1.6, 2.4 ...) but the correction is the rate-limited state: DV_STEP * n = 0.4, 0.8, 1.2 ... (weight not used)
   cw = CameraWitness()
   gstep(cw, -0.6, cam=-0.5)                     # established, no tell (gap 0.1)
   assert cw.weights[0] == 0.0 and cw.cap_dv[0] == 0.0
@@ -883,28 +883,58 @@ def test_growth_limit_off_when_weak_tell_is_active():
 
 
 def test_growth_limit_correction_shrinks_freely():
-  # (e) cap-only: the camera gap closes in one frame (radar vRel recovers): the correction drops at once to the new weight * gap
+  # (e) CHANGED (state law, 2026-11-11): cap-only, the camera gap closes in one frame (radar vRel recovers 6 m/s): the
+  # correction is the old cap's state, so it falls DV_STEP per cycle, not at once (the old cap's release; replay ep154)
   cw = CameraWitness()
   crun_g(cw, 40, -10.5)
   assert cw.cap_dv[0] == pytest.approx(10.0)
-  out = gstep(cw, -4.5)                       # gap 4.0 now, weight still 1.0
-  assert out['vRel'] == pytest.approx(-0.5) and cw.cap_dv[0] == pytest.approx(4.0)
-  # and the cap releasing (target 0, gap below CAP_GAP_MIN) shrinks by the weight release, never limited upward
-  out = gstep(cw, -2.0)
-  assert cw.cap_only[0] is True and cw.tell_weights['cap'][0] == 0.0
-  assert out['vRel'] == pytest.approx(-2.0 + (1.0 - RELEASE) * 1.5)
+  for n in range(1, 6):
+    out = gstep(cw, -4.5)                     # gap 4.0 now, target 4.0, state 10.0 - DV_STEP * n
+    assert cw.cap_dv[0] == pytest.approx(10.0 - DV_STEP * n)
+    assert out['vRel'] == pytest.approx(-4.5 + 10.0 - DV_STEP * n)
+  # the known property: the state exceeds the current camera gap while it decays (published less closing than the camera)
+  assert cw.cap_dv[0] > 4.0
+  out = crun_g(cw, 30, -4.5)
+  assert cw.cap_dv[0] == pytest.approx(4.0) and out['vRel'] == pytest.approx(-0.5)
 
 
-def test_cap_release_falls_at_least_at_the_rates():
-  # the cap tell back at zero with a 3.0 aLeadK lift applied: the weight release alone would leave 0.95 * 3.0; the lift falls
-  # DA_STEP per cycle instead (the old cap's release), and never slower than the weight release
+def test_cap_state_falls_at_the_rate_when_the_gap_collapses():
+  # the gap collapses below CAP_GAP_MIN in one frame (tell lost): the correction does not fall faster than DV_STEP / DA_STEP
   cw = CameraWitness()
   crun_g(cw, 40, -4.5, a=-3.0)
-  assert cw.cap_da[0] == pytest.approx(3.0)
+  assert cw.cap_dv[0] == pytest.approx(4.0) and cw.cap_da[0] == pytest.approx(3.0)
   for n in range(1, 6):
-    out = gstep(cw, -2.0, a=-3.0)
+    out = gstep(cw, -2.0, a=-3.0)             # gap 1.5: tell 0, target 0
     assert cw.tell_weights['cap'][0] == 0.0 and cw.cap_only[0] is True
+    assert cw.cap_dv[0] == pytest.approx(4.0 - DV_STEP * n)
+    assert out['vRel'] == pytest.approx(-2.0 + 4.0 - DV_STEP * n)
     assert out['aLeadK'] == pytest.approx(-3.0 + 3.0 - DA_STEP * n)
-    assert out['vRel'] - -2.0 <= (1.0 - RELEASE * n) * 1.5 + 1e-9             # never slower than the weight release
-  out = gstep(cw, -2.0, a=-3.0)
-  assert out['aLeadK'] == pytest.approx(-3.0)
+  out = crun_g(cw, 12, -2.0, a=-3.0)
+  assert cw.cap_dv[0] == 0.0 and cw.cap_da[0] == 0.0 and cw.weights[0] == 0.0
+  assert out['vRel'] == pytest.approx(-2.0) and out['aLeadK'] == pytest.approx(-3.0)
+
+
+def test_cap_state_decays_at_the_rate_when_the_tell_is_lost_by_range():
+  # the tell lost because dRel < CAP_MIN_D (ep356): the state decays at the rate, never at once
+  cw = CameraWitness()
+  crun_g(cw, 40, -10.5)
+  assert cw.cap_dv[0] == pytest.approx(10.0)
+  for n in range(1, 4):
+    out = cstep(cw, lead=cap_lead(d=CAP_MIN_D - 1.0, v_rel=-10.5), model=cap_vision(v_rel=-0.5),
+                camera=ranges(slope=-0.5), tracks={TID: object()})
+    assert cw.tell_weights['cap'][0] == 0.0 and cw.cap_only[0] is True
+    assert cw.cap_dv[0] == pytest.approx(10.0 - DV_STEP * n)
+    assert out['vRel'] == pytest.approx(-10.5 + 10.0 - DV_STEP * n)
+
+
+def test_handover_cap_state_to_blend_and_back():
+  # the weak tell rises while a cap state is applied: the blend applies and cap_dv/cap_da are set to what it applied; when
+  # the weak tell drops the lead is cap-only again and the state continues from there
+  cw = CameraWitness()
+  crun_g(cw, 40, -10.5)
+  assert cw.cap_only[0] is True and cw.cap_dv[0] == pytest.approx(10.0)
+  out = witness(cw, [cap_lead(v_rel=-10.5), ABSENT], [cap_vision(v_rel=-0.5), cap_vision()], v_ego=CAP_V_EGO,
+                probs=(0.95, 0.0), tracks={TID: object()}, statuses=(9, 0), contradictions=(9.9, 0.0),
+                ranges=[ranges(slope=-0.5), deque()])[0]
+  assert cw.cap_only[0] is False
+  assert cw.cap_dv[0] == pytest.approx(out['vRel'] - -10.5)
