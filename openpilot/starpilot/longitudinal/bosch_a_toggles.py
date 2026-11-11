@@ -2,7 +2,7 @@
 
 - BoschAStockBrakeFeel: the Stock Brake Feel law in honda_bosch_a_long (D-086 and its follow-ups).
 - BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
-- BoschACameraCapHold: camera-cap mode in radard (radar_camera_cap.py, C-012): off = VA (default), on = D+E. Read once by radard, not plannerd.
+- BoschACameraCapHold: camera-cap mode in radard (radar_camera_witness.py cap tell, C-012): off = VA (default), on = D+E. Read once by radard, not plannerd.
 
 Like UseStarPilotLongitudinalPlanner, the values are latched for the life of the plannerd process, so a change
 applies on the next drive. Only an exact saved "1" turns a feature on; a missing, unreadable or malformed value is

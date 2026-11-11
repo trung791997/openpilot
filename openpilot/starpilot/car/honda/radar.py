@@ -11,11 +11,9 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.simple_kalman import KF1D
 from openpilot.starpilot.car.honda import radar_point_status
-from openpilot.starpilot.car.honda.radar_lead_bound import (CAMERA_PROB_MIN, TREND_SAMPLES, WeakLeadBound,
-                                                           camera_contradiction, camera_passed_ratio, range_slope)
-from openpilot.starpilot.car.honda.radar_camera_cap import CameraCap
 from openpilot.starpilot.car.honda.radar_camera_slow_bound import CameraSlowBound
-from openpilot.starpilot.car.honda.radar_reversal_bound import ReversalBound
+from openpilot.starpilot.car.honda.radar_camera_witness import (CAMERA_PROB_MIN, TREND_SAMPLES, CameraWitness,
+                                                               camera_contradiction, camera_passed_ratio, range_slope)
 
 if TYPE_CHECKING:
   from openpilot.selfdrive.controls.radard import KalmanParams
@@ -81,7 +79,7 @@ class Track:
     self.identifier = identifier
     self.cnt = 0
     self.objectStatus = 0  # Bosch-A F0 STATUS of the latest point, from card (radar_point_status); 0 = not known
-    self.range_history: deque[float] = deque(maxlen=TREND_SAMPLES)  # dRel per radard cycle, for the WeakLeadBound
+    self.range_history: deque[float] = deque(maxlen=TREND_SAMPLES)  # dRel per radard cycle, for the CameraWitness weak tell
     self.direct = True                 # the parser's measured flag on the latest point (radarTracks, not this cycle's freshness)
     self.last_direct_vrel = math.nan   # vRel of the latest point the parser marked measured
     self.direct_age = 0                # radard cycles since then
@@ -186,12 +184,12 @@ def urgency_v_rel(track: Track | None) -> float | None:
 
 
 def weak_lead_distance_ratio(track: Track, lead: capnp._DynamicStructReader, model_v_ego: float) -> float:
-  # the WeakLeadBound distance tell: how far the model lead is past this track, while it calls for no braking
+  # the CameraWitness weak-tell distance tell: how far the model lead is past this track, while it calls for no braking
   return camera_passed_ratio(track.dRel, lead.x[0] - RADAR_TO_CAMERA, model_v_ego - lead.v[0], lead.a[0])
 
 
 def weak_lead_contradiction(track: Track, camera_ranges, lead: capnp._DynamicStructReader, model_v_ego: float) -> float:
-  # the WeakLeadBound contradiction tell: how much faster this track closes than the model lead's range does
+  # the CameraWitness weak-tell contradiction tell: how much faster this track closes than the model lead's range does
   return camera_contradiction(track.vRel, range_slope(track.range_history), range_slope(camera_ranges),
                               model_v_ego - lead.v[0], lead.a[0])
 
@@ -407,10 +405,8 @@ class BoschALeadPolicy:
     self._post_standstill_candidate_id = -1
     self._post_standstill_candidate_frames = 0
     self._last_tracks_frame = -1
-    self.reversal_bound = ReversalBound()
+    self.camera_witness = CameraWitness(hold=camera_cap_hold)  # C-012: D+E mode of the cap tell, latched here
     self.camera_slow_bound = CameraSlowBound()
-    self.camera_cap = CameraCap(hold=camera_cap_hold)  # C-012: D+E mode, latched here
-    self.weak_lead_bound = WeakLeadBound()
     self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
 
   def update_tracks(self, sm, rr, radar):
@@ -467,20 +463,22 @@ class BoschALeadPolicy:
     lead_tracks = [self.tracks.get(int(lead.get('radarTrackId', -1))) if lead.get('present', False) and lead.get('radar', False)
                    else None for lead in output]
     urgent_v_rels = [urgency_v_rel(track) for track in lead_tracks]
-    weak_weights = self.weak_lead_bound.update(
+    output = self.camera_witness.apply(
       output,
+      leads,
+      self.v_ego,
+      model_v_ego,
+      lead_probs,
+      self.tracks,
       [track.objectStatus if track is not None else 0 for track in lead_tracks],
       [weak_lead_distance_ratio(track, leads[index], model_v_ego) if track is not None else 0.0
        for index, track in enumerate(lead_tracks)],
-      lead_probs,
       [weak_lead_contradiction(track, self.camera_ranges[index], leads[index], model_v_ego) if track is not None else 0.0
        for index, track in enumerate(lead_tracks)],
+      self.camera_ranges,
       urgent_v_rels,
     )
-    output = self.reversal_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs, self.tracks, floor_weights=weak_weights,
-                                       urgent_v_rels=urgent_v_rels)
     output = self.camera_slow_bound.apply(output, leads, self.v_ego, model_v_ego, lead_probs)
-    output = self.camera_cap.apply(output, leads, model_v_ego, lead_probs, self.tracks, self.camera_ranges)
     for index, lead in enumerate(output):
       if lead.get('present', False) and lead.get('radar', False):
         identifier = int(lead.get('radarTrackId', -1))
