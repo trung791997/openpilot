@@ -41,8 +41,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
-from openpilot.starpilot.longitudinal.bosch_a_release_coast import BoschAReleaseCoast
+from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
 from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
@@ -115,8 +114,7 @@ class LongitudinalPlanner:
     if self.human_driving:
       human_following.install(self.mpc)
     self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)  # Stock Brake Feel law + brake onset ramp; always on for Bosch-A Hondas
-    self.bosch_a_smooth = BoschASmooth(CP, dt)  # always on for Bosch-A Hondas; bosch_a_smooth.py
-    self.bosch_a_release_coast = BoschAReleaseCoast(CP, dt)  # lift off gas when a close radar lead's track releases; bosch_a_release_coast.py
+    self.bosch_a_release = BoschARelease(CP, dt)  # release coast (no gas off a departing radar lead) + brake release smoothing; bosch_a_release.py
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
@@ -357,7 +355,7 @@ class LongitudinalPlanner:
 
     action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
-                                              action_t=self.bosch_a_smooth.action_t(self.CP.longitudinalActuatorDelay))
+                                              action_t=self.bosch_a_release.action_t(self.CP.longitudinalActuatorDelay))
     output_should_stop_mpc = forecast_should_stop(
       self.CP, self.v_desired_trajectory, CONTROL_N_T_IDX, action_t,
       fallback=should_stop(v_ego, output_a_target_mpc))
@@ -514,13 +512,11 @@ class LongitudinalPlanner:
       stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
       standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw),
       follow_s=float(base_follow))
-    output_a_target = self.bosch_a_release_coast.update(
-      lead_one=planner_radar_state.leadOne, target=float(output_a_target),
+    output_a_target = self.bosch_a_release.step(
+      lead_one=planner_radar_state.leadOne, prev=float(a_prev), target=float(output_a_target),
       lane_change_state=sm['modelV2'].meta.laneChangeState, left_blinker=bool(sm['carState'].leftBlinker),
       right_blinker=bool(sm['carState'].rightBlinker), gas_pressed=bool(sm['carState'].gasPressed),
-      reset_state=bool(reset_state))
-    output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
-                                               reset=bool(reset_state or sm['carState'].standstill))
+      reset_state=bool(reset_state), standstill=bool(sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),
