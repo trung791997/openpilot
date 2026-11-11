@@ -4,8 +4,9 @@ Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, s
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch: Stock Brake Feel is permanent (owner 2026-11-11: "Make Stock Brake Feel permanent"; the BoschAStockBrakeFeel
-toggle and its settings row are removed); BIRTH_RAIL_ENABLED is a constant and stays off. Both longitudinal planners (StarPilot's and the
-upstream one) call it the same way.
+toggle and its settings row are removed). Both longitudinal planners (StarPilot's and the upstream one) call it the
+same way. The D-077 birth-rail ramps (off, never wired to radard here) were removed 2026-11-11; the code and its
+evidence comment are in git at 3f26fb513c and in openpilot-radar radard.py @ 567495f4ad.
 
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
@@ -562,107 +563,3 @@ def bound_implausible_drop(radar_state, model_v2, state: ImplausibleDropBound):
     fields['aLead'] = a_lead_k_b
   bounded = _FieldBoundedLead(lead, **fields)
   return _BoundedRadarState(radar_state, bounded, radar_state.leadTwo)
-
-
-# ---- Birth-rail ramps (D-077), OFF and not wired --------------------------------------------------------------------
-# Ported from openpilot-radar radard.py (567495f4ad, constants and `_update_birth_rail`), where both ramps are baked on.
-# Owner 2026-10-20: keep it here but off while James's fork is tested as he ships it. BIRTH_RAIL_ENABLED is False, and
-# no radard code calls BirthRail yet, so this changes nothing on this branch. Wiring it needs the track's first-update
-# time and the published-vRel hook in radard, and it must be re-checked against SP7's own newborn handling
-# (bosch_a_radar._bosch_a_newborn_vrel) first, because both act on a track's first seconds.
-# Source evidence (tools/bosch_a_birth_rail_report.py, 8 routes): born-railed moving leads overstated 128/130,
-# excess 1/e ~1.2 s; born-railed stopped objects (ego < 12) genuine 61/81. Replay of the revised LOW (STATUS 207): one
-# firing in ~116 engaged min (268 5:56 cut-in, -1.58 vs -1.84); stopped-object stops 2d9 8:58, 26b 29:58, 236 34:57
-# unchanged. HIGH publishes less opening than the rail (more-closing direction, D-042). LOW publishes less closing than
-# the rail, which narrows D-041, so it only runs with a confident model lead agreeing at the track's range and offset.
-BIRTH_RAIL_ENABLED = False
-BIRTH_RAIL_RAMP_HIGH = True
-BIRTH_RAIL_RAMP_LOW = True
-BIRTH_RAIL_WINDOW_S = 0.5
-BIRTH_RAIL_RAMP_TAU_S = 1.2
-BIRTH_RAIL_RAMP_MAX_AGE_S = 2.5
-BIRTH_RAIL_LOW_MIN_V_EGO_MPS = 12.0
-BIRTH_RAIL_LOW_MIN_LEAD_MPS = 5.0
-BIRTH_RAIL_LOW_VISION_MIN_PROB = 0.5
-BIRTH_RAIL_LOW_VISION_D_TOL_M = 5.0
-BIRTH_RAIL_LOW_VISION_D_TOL_FRAC = 0.15
-BIRTH_RAIL_LOW_VISION_Y_TOL_M = 2.0
-# 2d5 9:44: without the margin the LOW ramp published less closing than the truth for 2.4 s.
-BIRTH_RAIL_LOW_VISION_MARGIN_MPS = 4.0
-
-
-def _u11_rails() -> tuple[float, float, float]:
-  from opendbc.car.honda.bosch_a_radar import (BOSCH_A_DIRECT_VREL_CENTER_RAW, BOSCH_A_DIRECT_VREL_MAX_RAW,
-                                               BOSCH_A_DIRECT_VREL_MIN_RAW, BOSCH_A_DIRECT_VREL_SCALE_MPS)
-  low = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
-  high = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_DIRECT_VREL_SCALE_MPS
-  return low, high, BOSCH_A_DIRECT_VREL_SCALE_MPS
-
-
-def birth_rail_vision_agrees(d_rel: float, y_rel: float, vision_lead) -> bool:
-  """LOW moving test: a confident model lead (dRel, yRel, vLead, prob) at the track's range and offset, moving."""
-  if vision_lead is None:
-    return False
-  vd, vy, vv, prob = vision_lead
-  if not (np.isfinite(vd) and np.isfinite(vy) and np.isfinite(vv)) or prob < BIRTH_RAIL_LOW_VISION_MIN_PROB:
-    return False
-  if abs(vd - d_rel) > max(BIRTH_RAIL_LOW_VISION_D_TOL_M, BIRTH_RAIL_LOW_VISION_D_TOL_FRAC * d_rel):
-    return False
-  return abs(vy - y_rel) <= BIRTH_RAIL_LOW_VISION_Y_TOL_M and vv >= BIRTH_RAIL_LOW_MIN_LEAD_MPS
-
-
-def birth_rail_ramp_fraction(age: float) -> float:
-  """Share of the rail published at track age `age`: 0 at birth, 1 at BIRTH_RAIL_RAMP_MAX_AGE_S."""
-  if age >= BIRTH_RAIL_RAMP_MAX_AGE_S:
-    return 1.0
-  full = 1.0 - np.exp(-BIRTH_RAIL_RAMP_MAX_AGE_S / BIRTH_RAIL_RAMP_TAU_S)
-  return max(0.0, float((1.0 - np.exp(-max(age, 0.0) / BIRTH_RAIL_RAMP_TAU_S)) / full))
-
-
-class BirthRail:
-  """Per-track D-077 state. `update()` returns the vRel to publish while a ramp is active, else None (publish as is).
-  `withhold_rail_fast` is True while the LOW ramp runs (the source zeroes its RAIL_FAST correction then)."""
-
-  def __init__(self, t_first: float, enabled: bool = BIRTH_RAIL_ENABLED):
-    self.t_first = float(t_first)
-    self.enabled = enabled
-    self.rail = 0  # -1 born on the low rail, +1 on the high rail, 0 not (yet)
-    self.done = not enabled
-    self.withhold_rail_fast = False
-
-  def update(self, t_now: float, v_rel: float, v_lead: float, d_rel: float, y_rel: float,
-             range_assist_correction: float = 0.0, vision_lead=None) -> float | None:
-    self.withhold_rail_fast = False
-    if self.done or not (BIRTH_RAIL_RAMP_HIGH or BIRTH_RAIL_RAMP_LOW):
-      return None
-    low_rail, high_rail, scale = _u11_rails()
-    age = float(t_now) - self.t_first
-    on_low = v_rel <= low_rail + scale / 2
-    on_high = v_rel >= high_rail - scale / 2
-    if self.rail == 0:
-      if age > BIRTH_RAIL_WINDOW_S:
-        self.done = True
-        return None
-      self.rail = -1 if on_low else (1 if on_high else 0)
-      if self.rail == 0:
-        return None
-    if age >= BIRTH_RAIL_RAMP_MAX_AGE_S or not (on_low if self.rail < 0 else on_high):
-      self.done = True
-      return None
-    frac = birth_rail_ramp_fraction(age)
-    if self.rail > 0:
-      if not BIRTH_RAIL_RAMP_HIGH:
-        self.done = True
-        return None
-      return min(float(v_rel) - float(range_assist_correction), high_rail * frac)
-    v_ego_aligned = v_lead - v_rel
-    if not BIRTH_RAIL_RAMP_LOW or v_ego_aligned < BIRTH_RAIL_LOW_MIN_V_EGO_MPS or vision_lead is None or \
-       not birth_rail_vision_agrees(d_rel, y_rel, vision_lead):
-      self.done = True
-      return None
-    vision_vrel = float(vision_lead[2]) - v_ego_aligned
-    if vision_vrel < low_rail + BIRTH_RAIL_LOW_VISION_MARGIN_MPS:
-      self.done = True
-      return None
-    self.withhold_rail_fast = True
-    return max(low_rail, min(low_rail * frac, vision_vrel))
