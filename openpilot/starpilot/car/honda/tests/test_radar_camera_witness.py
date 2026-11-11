@@ -19,7 +19,7 @@ from openpilot.selfdrive.controls.radard import RadarD
 from openpilot.starpilot.car.honda import radar_point_status
 from openpilot.starpilot.car.honda.radar import URGENT_LAST_DIRECT_S, urgency_v_rel
 from openpilot.starpilot.car.honda.radar_camera_witness import (CAMERA_CLOSING_MAX, CAMERA_DECEL_MIN, CAMERA_SELF_TOL,
-                                                               CAP_GAP_HOLD, CAP_GAP_MIN, CAP_HOLD_T, CAP_MIN_D, CAP_PROB,
+                                                               CAP_DA_RATE, CAP_DV_RATE, CAP_GAP_HOLD, CAP_GAP_MIN, CAP_HOLD_T, CAP_MIN_D, CAP_PROB,
                                                                CONTRADICTION_FULL, CONTRADICTION_START, DISTANCE_FAR_W,
                                                                DISTANCE_W, LATCH_S, RADAR_TO_CAMERA, RELEASE_S, RISE_S,
                                                                REVERSAL_WINDOW_S, SLEW_W, TREND_MIN_SAMPLES, TREND_MIN_SPAN_S,
@@ -230,20 +230,29 @@ def crun(cw, count, **kw):
   return out
 
 
+DV_STEP = CAP_DV_RATE * DT_MDL
+DA_STEP = CAP_DA_RATE * DT_MDL
+
+
 def test_cap_new_track_applies_weight_one_in_the_first_cycle():
-  # CHANGED (slew): was vRel -5.0 + CAP_DV_RATE * DT_MDL in the first cycle, a ramp over ~0.56 s
+  # CHANGED (growth limit): the weight is 1 in the first cycle but the correction starts from 0 at CAP_DV_RATE * DT_MDL
+  # (as the old cap did); it was vRel -0.5 in the first cycle with the weight slew alone
   cw = CameraWitness()
   out = cstep(cw)
   assert cw.tell_weights['cap'][0] == 1.0 and cw.weights[0] == 1.0
+  assert out['vRel'] == pytest.approx(-5.0 + DV_STEP)
+  assert out['vLead'] == pytest.approx(CAP_V_EGO - 5.0 + DV_STEP)
+  assert out['vLeadK'] == pytest.approx(CAP_V_EGO - 5.0 + DV_STEP)
+  assert out['dRel'] == 70.0 and out['aLeadK'] == pytest.approx(0.0)   # the 0.4 lift is under DA_STEP
+  out = crun(cw, 20)
   assert out['vRel'] == pytest.approx(-0.5)
-  assert out['vLead'] == pytest.approx(CAP_V_EGO - 0.5)
-  assert out['vLeadK'] == pytest.approx(CAP_V_EGO - 0.5)
-  assert out['dRel'] == 70.0 and out['aLeadK'] == pytest.approx(0.0)
 
 
 def test_cap_lifts_aleadk_never_lowers():
-  # CHANGED (slew): the first cycle lifts all the way (was CAP_DA_RATE * DT_MDL of the lift)
+  # CHANGED (growth limit): the first cycle lifts CAP_DA_RATE * DT_MDL of the lift, then it grows at that rate
   out = cstep(CameraWitness(), lead=cap_lead(a=-2.0))
+  assert out['aLeadK'] == pytest.approx(-2.0 + DA_STEP)
+  out = crun(CameraWitness(), 20, lead=cap_lead(a=-2.0))
   assert out['aLeadK'] == pytest.approx(0.0)
   out = crun(CameraWitness(), 20, model=cap_vision(a=-0.3))
   assert out['aLeadK'] == pytest.approx(-0.3)
@@ -252,11 +261,12 @@ def test_cap_lifts_aleadk_never_lowers():
 
 
 def test_cap_releases_slewed_when_camera_drops_and_at_once_when_vetoed():
-  # CHANGED: the release is the shared RELEASE_S slew (was a dv rate of CAP_DV_RATE); prob below WITNESS_PROB is a veto
+  # CHANGED: the release is the faster of the shared RELEASE_S slew and the CAP_DV_RATE fall (2026-11-11); prob below
+  # WITNESS_PROB is a veto
   cw = CameraWitness()
   crun(cw, 20)
   out = cstep(cw, prob=CAP_PROB - 0.01)
-  assert out['vRel'] == pytest.approx(-5.0 + (1.0 - RELEASE) * 4.5)
+  assert out['vRel'] == pytest.approx(-5.0 + min((1.0 - RELEASE) * 4.5, 4.5 - DV_STEP))
   out = crun(cw, frames(RELEASE_S), prob=CAP_PROB - 0.01)
   assert out['vRel'] == pytest.approx(-5.0)
   crun(cw, 20)
@@ -264,11 +274,14 @@ def test_cap_releases_slewed_when_camera_drops_and_at_once_when_vetoed():
   assert out['vRel'] == pytest.approx(-5.0)
 
 
-def test_cap_new_track_takes_weight_at_once_not_from_zero():
-  # CHANGED: was test_new_track_restarts_at_zero (dv and da restarted at 0 and ramped)
+def test_cap_new_track_takes_weight_at_once_but_correction_starts_from_zero():
+  # CHANGED (growth limit): the weight is taken at once but the correction restarts at 0 (as test_new_track_restarts_at_zero)
   cw = CameraWitness()
   crun(cw, 20)
   out = cstep(cw, lead=cap_lead(tid=54))
+  assert cw.weights[0] == 1.0 and cw.cap_dv[0] == pytest.approx(DV_STEP)
+  assert out['vRel'] == pytest.approx(-5.0 + DV_STEP)
+  out = crun(cw, 20, lead=cap_lead(tid=54))
   assert out['vRel'] == pytest.approx(-0.5)
 
 
@@ -281,7 +294,9 @@ def test_cap_vetoed_when_the_lead_is_urgent():
   # the same lead is capped when its direct-reading vRel (the urgency vRel) says it is not closing that fast
   cw = CameraWitness()
   out = cstep(cw, lead=lead, model=cap_vision(d=60.0), camera=ranges(d=60.0), urgent_v_rel=-5.0)
-  assert cw.tell_weights['cap'][0] == 1.0 and out['vRel'] == pytest.approx(-0.5)
+  assert cw.tell_weights['cap'][0] == 1.0 and out['vRel'] == pytest.approx(-20.0 + DV_STEP)   # CHANGED: growth limit
+  out = crun(cw, 60, lead=lead, model=cap_vision(d=60.0), camera=ranges(d=60.0), urgent_v_rel=-5.0)
+  assert out['vRel'] == pytest.approx(-0.5)
   # and under URGENT_D never
   near = cap_lead(d=29.0)
   assert crun(CameraWitness(), 10, lead=near, model=cap_vision(d=29.0), camera=ranges(d=29.0)) == near
@@ -347,7 +362,7 @@ def test_hold_tapers_target_when_gap_drops_5_to_2():
   hrun(cw, 2.0, 20)   # tell = (2 - 1) / (3 - 1) = 0.5 on the gap: the old target gap * 0.5 = 1.0 m/s
   assert cw.tell_weights['cap'][0] == pytest.approx((2.0 - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD))
   assert cw.slewed[0] == pytest.approx(0.5)
-  out = hstep(CameraWitness(hold=True), 5.0)
+  out = hrun(CameraWitness(hold=True), 5.0, 20)      # CHANGED (growth limit): 20 cycles, the first alone gives only DV_STEP
   assert out['vRel'] == pytest.approx(-5.0 + 5.0)   # gap 5 fully applied
   assert cw.hold_t[0] == pytest.approx(20 * DT_MDL)
 
@@ -766,3 +781,130 @@ def test_dRel_never_changed_and_no_lead_dropped_over_a_random_sweep():
     assert all(0.0 <= w <= 1.0 for w in cw.weights)
 
 
+
+
+# ---- cap-only growth limit (CAP_DV_RATE / CAP_DA_RATE restored 2026-11-11, scorecard ep128) ----
+def gstep(cw, v_rel, a=-0.4, cam=-0.5, cam_a=0.0, tid=TID, **kw):
+  """One cycle: radar vRel/aLeadK `v_rel`/`a`, a confident camera lead closing at `cam` (range slope matching)."""
+  return cstep(cw, lead=cap_lead(tid=tid, v_rel=v_rel, a=a), model=cap_vision(v_rel=cam, a=cam_a),
+               camera=ranges(slope=cam), tracks={tid: object()}, **kw)
+
+
+def test_growth_limit_weight_rise_on_open_gap_follows_the_rate_not_the_weight():
+  # (a1) an established track whose cap tell rises from 0 with a 4 m/s gap already open: the weight rises 0.2 per cycle
+  # (0.8, 1.6, 2.4 ...) but the correction follows min(weight * gap, DV_STEP * n) = 0.4, 0.8, 1.2 ...
+  cw = CameraWitness()
+  gstep(cw, -0.6, cam=-0.5)                     # established, no tell (gap 0.1)
+  assert cw.weights[0] == 0.0 and cw.cap_dv[0] == 0.0
+  for n in range(1, 6):
+    out = gstep(cw, -4.5, cam=-0.5)
+    assert cw.slewed[0] == pytest.approx(RISE * n)
+    assert out['vRel'] - -4.5 == pytest.approx(min(RISE * n * 4.0, DV_STEP * n))
+    assert out['vRel'] - -4.5 == pytest.approx(DV_STEP * n)
+  out = crun_g(cw, 30, -4.5)
+  assert out['vRel'] == pytest.approx(-0.5)
+
+
+def crun_g(cw, count, v_rel, **kw):
+  out = None
+  for _ in range(count):
+    out = gstep(cw, v_rel, **kw)
+  return out
+
+
+def test_growth_limit_weight_one_gap_step_grows_at_dv_rate():
+  # (a2) weight already 1, the radar vRel steps 6 m/s more closing in one frame
+  cw = CameraWitness()
+  crun_g(cw, 40, -4.5)
+  assert cw.slewed[0] == 1.0 and cw.cap_dv[0] == pytest.approx(4.0)
+  out = gstep(cw, -10.5)
+  assert out['vRel'] == pytest.approx(-10.5 + 4.0 + DV_STEP)      # moves by the step minus all but DV_STEP of new correction
+  for n in range(2, 6):
+    out = gstep(cw, -10.5)
+    assert out['vRel'] == pytest.approx(-10.5 + 4.0 + DV_STEP * n)
+  out = crun_g(cw, 40, -10.5)
+  assert out['vRel'] == pytest.approx(-0.5) and cw.cap_dv[0] == pytest.approx(10.0)
+
+
+def test_growth_limit_aleadk_grows_at_da_rate():
+  # (b) the aLeadK lift: radar aLeadK steps from -0.4 to -3.0 with weight 1 and the lift already applied
+  cw = CameraWitness()
+  crun_g(cw, 40, -4.5, a=-0.4)
+  assert cw.cap_da[0] == pytest.approx(0.4)
+  out = gstep(cw, -4.5, a=-3.0)
+  assert out['aLeadK'] == pytest.approx(-3.0 + 0.4 + DA_STEP)
+  for n in range(2, 5):
+    out = gstep(cw, -4.5, a=-3.0)
+    assert out['aLeadK'] == pytest.approx(-3.0 + 0.4 + DA_STEP * n)
+  out = crun_g(cw, 20, -4.5, a=-3.0)
+  assert out['aLeadK'] == pytest.approx(0.0)
+
+
+def test_growth_limit_cap_only_new_track_starts_from_zero():
+  # (c)
+  cw = CameraWitness()
+  crun_g(cw, 40, -4.5)
+  assert cw.cap_dv[0] > 0.0
+  out = gstep(cw, -4.5, tid=54)
+  assert cw.slewed[0] == 1.0 and cw.track_ids[0] == 54
+  assert out['vRel'] == pytest.approx(-4.5 + DV_STEP) and cw.cap_dv[0] == pytest.approx(DV_STEP)
+  out = gstep(cw, -4.5, tid=54)
+  assert out['vRel'] == pytest.approx(-4.5 + 2 * DV_STEP)
+
+
+def test_growth_limit_veto_clears_the_correction():
+  cw = CameraWitness()
+  crun_g(cw, 40, -4.5)
+  gstep(cw, -4.5, prob=0.0)
+  assert cw.cap_dv[0] == 0.0 and cw.cap_da[0] == 0.0 and cw.cap_only[0] is False and cw.weights[0] == 0.0
+  out = gstep(cw, -4.5)
+  assert out['vRel'] == pytest.approx(-4.5 + RISE * 0 + DV_STEP)
+
+
+def test_growth_limit_off_when_weak_tell_is_active():
+  # (d) the weak tell (status 9, a contradicted lead) with the cap also active: no growth limit, equal to the unlimited blend
+  def run(contradiction):
+    cw = CameraWitness()
+    gstep(cw, -0.6, cam=-0.5)
+    outs = []
+    for _ in range(8):
+      outs.append(witness(cw, [cap_lead(v_rel=-10.5), ABSENT], [cap_vision(v_rel=-0.5), cap_vision()], v_ego=CAP_V_EGO,
+                          probs=(0.95, 0.0), tracks={TID: object()}, statuses=(9, 0), contradictions=(contradiction, 0.0),
+                          ranges=[ranges(slope=-0.5), deque()])[0])
+    return cw, outs
+  cw, outs = run(9.9)
+  assert cw.cap_only[0] is False and cw.tell_weights['weak'][0] == 1.0 and cw.tell_weights['cap'][0] == 1.0
+  # reference: the blend with no limit at the slewed weight
+  weight = RISE
+  assert outs[0]['vRel'] == pytest.approx(-10.5 + weight * 10.0)     # 2.0 m/s in one cycle: > DV_STEP, i.e. unlimited
+  assert outs[0]['vRel'] - -10.5 > DV_STEP
+  for n, out in enumerate(outs, start=1):
+    assert out['vRel'] == pytest.approx(-10.5 + min(RISE * n, 1.0) * 10.0)
+
+
+def test_growth_limit_correction_shrinks_freely():
+  # (e) cap-only: the camera gap closes in one frame (radar vRel recovers): the correction drops at once to the new weight * gap
+  cw = CameraWitness()
+  crun_g(cw, 40, -10.5)
+  assert cw.cap_dv[0] == pytest.approx(10.0)
+  out = gstep(cw, -4.5)                       # gap 4.0 now, weight still 1.0
+  assert out['vRel'] == pytest.approx(-0.5) and cw.cap_dv[0] == pytest.approx(4.0)
+  # and the cap releasing (target 0, gap below CAP_GAP_MIN) shrinks by the weight release, never limited upward
+  out = gstep(cw, -2.0)
+  assert cw.cap_only[0] is True and cw.tell_weights['cap'][0] == 0.0
+  assert out['vRel'] == pytest.approx(-2.0 + (1.0 - RELEASE) * 1.5)
+
+
+def test_cap_release_falls_at_least_at_the_rates():
+  # the cap tell back at zero with a 3.0 aLeadK lift applied: the weight release alone would leave 0.95 * 3.0; the lift falls
+  # DA_STEP per cycle instead (the old cap's release), and never slower than the weight release
+  cw = CameraWitness()
+  crun_g(cw, 40, -4.5, a=-3.0)
+  assert cw.cap_da[0] == pytest.approx(3.0)
+  for n in range(1, 6):
+    out = gstep(cw, -2.0, a=-3.0)
+    assert cw.tell_weights['cap'][0] == 0.0 and cw.cap_only[0] is True
+    assert out['aLeadK'] == pytest.approx(-3.0 + 3.0 - DA_STEP * n)
+    assert out['vRel'] - -2.0 <= (1.0 - RELEASE * n) * 1.5 + 1e-9             # never slower than the weight release
+  out = gstep(cw, -2.0, a=-3.0)
+  assert out['aLeadK'] == pytest.approx(-3.0)

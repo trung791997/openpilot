@@ -97,9 +97,10 @@ are raised to the camera's closing speed. Only ever less braking, toward a camer
 camera. While the cap is active, aLeadK is also lifted toward the camera lead's a (floored at CAMERA_DECEL_MIN), never
 lowered. dRel and the point are untouched (D-041/D-042). As a tell this is weight 1.0 (the full blend) when the
 conditions above hold, and 0 otherwise. The weight slew (RISE_S / RELEASE_S, shared) replaced the separate dv rate
-CAP_DV_RATE (8 m/s per second) and da rate CAP_DA_RATE (10 m/s^2 per second) the replay below ran at: the replay
-numbers quoted are with the OLD rates and are the evidence quoted; the new slew, and the new urgency veto on this tell
-(a lead under URGENT_D or inside URGENT_TTC is never moved), are static; not replayed yet. Before the unification this ran after
+CAP_DV_RATE (8 m/s per second) and da rate CAP_DA_RATE (10 m/s^2 per second) the replay below ran at; the replay
+numbers quoted are with the OLD rates and are the evidence quoted. The two rates are restored (2026-11-11, see the
+constants) as a growth limit on the applied correction while the cap is the only tell above zero; the urgency veto on
+this tell (a lead under URGENT_D or inside URGENT_TTC is never moved) is static; not replayed yet. Before the unification this ran after
 CameraSlowBound; CameraSlowBound (which only ever makes a lead slower) now runs after the witness.
 
 Replay (open loop, logged radarTracks through radard and the planner, 3b3d + StockBrakeFeel + HumanFollowing, plan
@@ -129,7 +130,11 @@ using radar.urgency_v_rel when the parser has no direct reading; b1 seg14 47.7 s
 One slew: a new track id on an index takes its target at once; otherwise weight = min(max(target, previous - release),
 previous + rise), rise = SLEW_W * dt / RISE_S, release = SLEW_W * dt / RELEASE_S. A veto drops the weight to 0 at once.
 One blend: vLead/vLeadK/vRel move weight * (camera speed - vLead) and aLeadK weight * (model a - aLeadK), each only toward
-the less severe side. `weights` is the applied weight per lead index (0 when the blend changed nothing); `tell_weights`
+the less severe side. While the cap tell is the only one above zero (and while the weight it engaged is still releasing,
+`cap_only`), the applied correction may grow by at most CAP_DV_RATE * dt (speed) and CAP_DA_RATE * dt (aLeadK) per cycle over
+the last cycle's applied correction (`cap_dv`, `cap_da`; 0 on a new track and on a veto), may shrink freely, and once the
+cap tell is back at zero falls by at least those rates per cycle (never slower than the weight release); with the weak
+or reversal tell above zero there is no growth limit. `weights` is the applied weight per lead index (0 when the blend changed nothing); `tell_weights`
 holds each tell's weight after the veto, before the slew, for replay/debug.
 """
 from __future__ import annotations
@@ -177,8 +182,11 @@ CAP_RANGE_FRAC = 0.3   # camera range within this fraction of dRel (b0 17:05: 70
 CAP_GAP_MIN = 3.0      # m/s; the camera must close this much slower than the radar's vRel
 CAP_GAP_HOLD = 1.0     # m/s; D+E: no hold at or below this gap, and the taper reaches 0 here
 CAP_HOLD_T = 1.0       # s; D+E: total hold time per engagement
-# CAP_DV_RATE (8 m/s per second) and CAP_DA_RATE (10 m/s^2 per second) were deleted: the weight slew replaced them (see the
-# cap tell's block above; the replay quoted there ran under the old rates).
+CAP_DV_RATE = 8.0      # m/s per second; the applied vRel/vLead correction may grow this fast while the cap is the only tell
+                       # (the replay in the cap tell's block above ran at 8)
+CAP_DA_RATE = 10.0     # m/s^2 per second; the same for the aLeadK lift (variant A replay ran at 10)
+# 2026-11-11: restored after scorecard ep128 (80 seg19, REAL) came out up to 0.24 m/s^2 softer for ~1.2 s without them: the
+# 0.25 s weight rise on an already-open gap grew the correction at 16-20 m/s per second (replay).
 
 # ---- shared veto and slew ----
 URGENT_D = 30.0           # radar range below this: no bound
@@ -268,6 +276,9 @@ class CameraWitness:
     self.latched_until: dict[int, float] = {}
     self.hold_t = [0.0, 0.0]
     self.track_ids = [-1, -1]
+    self.cap_dv = [0.0, 0.0]               # the speed correction applied last cycle, per lead index
+    self.cap_da = [0.0, 0.0]               # the aLeadK lift applied last cycle
+    self.cap_only = [False, False]         # the cap was the only tell above zero when the weight last had a target
     self.slewed = [0.0, 0.0]               # the slewed target weight, the slew's state
     self.weights = [0.0, 0.0]              # applied weight per lead index (0 when the blend changed nothing), for replay/debug
     self.tell_weights: dict[str, list[float]] = {'reversal': [0.0, 0.0], 'weak': [0.0, 0.0], 'cap': [0.0, 0.0]}
@@ -294,20 +305,22 @@ class CameraWitness:
     return 0.0
 
   @staticmethod
-  def _blend(lead: dict[str, Any], vision, v_ego: float, model_v_ego: float, weight: float) -> tuple[dict[str, Any], float]:
+  def _blend(lead: dict[str, Any], vision, v_ego: float, model_v_ego: float, weight: float, dv_max: float = math.inf,
+             da_max: float = math.inf) -> tuple[dict[str, Any], float, float, float]:
+    """Returns (lead, applied weight, applied dv, applied da). dv/da are capped at dv_max/da_max (growth limits)."""
     if weight <= 0.0:
-      return lead, 0.0
+      return lead, 0.0, 0.0, 0.0
     vision_v = v_ego + (float(vision.v[0]) - model_v_ego)
-    dv = weight * max(vision_v - float(lead['vLead']), 0.0)
-    da = weight * max(float(vision.a[0]) - float(lead['aLeadK']), 0.0)
+    dv = min(weight * max(vision_v - float(lead['vLead']), 0.0), dv_max)
+    da = min(weight * max(float(vision.a[0]) - float(lead['aLeadK']), 0.0), da_max)
     if dv <= 0.0 and da <= 0.0:
-      return lead, 0.0
+      return lead, 0.0, 0.0, 0.0
     out = dict(lead)
     out['vLead'] = float(lead['vLead']) + dv
     out['vLeadK'] = float(lead['vLeadK']) + dv
     out['vRel'] = float(lead['vRel']) + dv
     out['aLeadK'] = float(lead['aLeadK']) + da
-    return out, weight
+    return out, weight, dv, da
 
   def apply(self, output: list[dict[str, Any]], model_leads, v_ego: float, model_v_ego: float, lead_probs, tracks,
             object_statuses, distance_ratios, contradictions, camera_ranges,
@@ -331,8 +344,11 @@ class CameraWitness:
     for index, lead in enumerate(output):
       radar_lead = lead.get('present', False) and lead.get('radar', False)
       track_id = int(lead.get('radarTrackId', -1)) if radar_lead else -1
-      if track_id != self.track_ids[index]:
+      new_track = track_id != self.track_ids[index]
+      if new_track:
         self.hold_t[index] = 0.0
+        self.cap_dv[index] = self.cap_da[index] = 0.0
+        self.cap_only[index] = False
         self.tell_weights['cap'][index] = 0.0   # a hold never carries over to another track
       vetoed = track_id < 0 or float(lead_probs[index]) < WITNESS_PROB or urgent(lead, urgent_v_rels[index])
       tells = {'reversal': 0.0, 'weak': 0.0, 'cap': 0.0}
@@ -347,14 +363,29 @@ class CameraWitness:
         self.tell_weights[name][index] = value
       target = max(tells.values())
       if vetoed:
-        weight = 0.0
-      elif track_id != self.track_ids[index]:
+        weight = 0.0   # a veto drops the weight at once and clears the growth-limit state
+        self.cap_dv[index] = self.cap_da[index] = 0.0
+        self.cap_only[index] = False
+      else:
+        if tells['reversal'] > 0.0 or tells['weak'] > 0.0:
+          self.cap_only[index] = False
+        elif tells['cap'] > 0.0:
+          self.cap_only[index] = True   # all tells 0: stays as it was, so a releasing cap weight stays limited
+      if vetoed:
+        pass
+      elif new_track:
         weight = target   # a new track takes its target at once
       else:
         previous = self.slewed[index]
         weight = min(max(target, previous - release), previous + rise)
       self.track_ids[index] = track_id
       self.slewed[index] = weight
-      lead, self.weights[index] = self._blend(lead, model_leads[index], v_ego, model_v_ego, weight)
+      # cap only: the correction grows at the two rates while the tell is up and falls at least that fast once it is down
+      # (as the old cap did; the weight release alone held the aLeadK lift ~0.5 m/s^2 longer on ep128, replay)
+      sign = 1.0 if target > 0.0 else -1.0
+      dv_max = max(self.cap_dv[index] + sign * CAP_DV_RATE * self.dt, 0.0) if self.cap_only[index] else math.inf
+      da_max = max(self.cap_da[index] + sign * CAP_DA_RATE * self.dt, 0.0) if self.cap_only[index] else math.inf
+      lead, self.weights[index], self.cap_dv[index], self.cap_da[index] = self._blend(
+        lead, model_leads[index], v_ego, model_v_ego, weight, dv_max, da_max)
       published.append(lead)
     return published
