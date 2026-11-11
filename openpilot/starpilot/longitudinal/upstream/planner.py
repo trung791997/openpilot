@@ -146,8 +146,9 @@ class LongitudinalPlanner:
       human_following, human_acceleration, qualified_model_leads, clock_ns = self.bosch_a_human
       human_accel_base = ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego)
       model = qualified_model_leads(sm, clock_ns(), self.bosch_a_model_leads)
-      bosch_a_mpc = {'acceleration_max': human_acceleration.cap(human_accel_base, v_cruise, v_ego),
-                     'lead_paths': human_following.upstream_lead_paths(model, sm['radarState'], self.mpc.x0[1])}
+      bosch_a_mpc = {'lead_paths': human_following.upstream_lead_paths(model, sm['radarState'], self.mpc.x0[1])}
+      if human_acceleration.applies(sm['selfdriveState'].personality):
+        bosch_a_mpc['acceleration_max'] = human_acceleration.cap(human_accel_base, v_cruise, v_ego)
     # ---- end BOSCH-A HOOK ----
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality, **bosch_a_mpc)
 
