@@ -17,6 +17,9 @@ Contents:
   law's target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs last inside step(), on every
   return path, when the caller passes `follow_s`.
 
+- Newborn lead aLeadK bound (D-080, restored 2026-11-11 as NEWBORN_HOLD_ENABLED, on): planner_radar_state() holds a
+  newborn radar lead's aLeadK at -1.0 unless its own range history confirms the braking (MPC and law input only).
+
 The planner calls `step()` once per cycle, after the other target owners and before release coast, smooth and stop gap.
 Depth shaping (the law, the onset ramp, then the coast-first floor) is this one call. Every limit
 here only shapes how a brake builds or lets off; the emergency latch passes the planner's target through untouched,
@@ -71,6 +74,26 @@ STOCK_FEEL_EMERGENCY_NEED = 2.0  # m/s^2
 # The aLeadK path only latches when the worst TTC is at most this (openpilot-radar STATUS 258, 6db22115e8): 3a3
 # 17:28.35 aLeadK -2.09 at TTC 21.7 s latched and stayed on through a separate build 15 s later that ran to -3.03.
 STOCK_FEEL_EMERGENCY_A_LEAD_MAX_TTC = 10.0  # s
+
+
+# ---- Switch: newborn lead aLeadK bound (D-080) -------------------------------------------------------------------------
+# NEWBORN_HOLD_ENABLED turns on the D-080 newborn-lead aLeadK bound (NewbornLeadHold, planner_radar_state()). It was
+# RADAR_LEAD_RECOVERY = False, a group switch for D-089 (far-range recovery), D-075 (newborn range publish) and D-080;
+# only D-080 was ever ported. D-089 and D-075 live in the decoder (bosch_a_radar.BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC = 0,
+# BOSCH_A_NEWBORN_RANGE_PUBLISH) and need radard gates (RECOVERED_CAM_GATE, NEWBORN_*) plus RadarPoint fields
+# (`measured`, `recovered`) that 7.0 does not have, so this switch does NOT turn them on (D-089/D-075 are not ported
+# here, so the group name RADAR_LEAD_RECOVERY no longer fits). Turning those decoder constants on without the gates is
+# the rejected configuration (STATUS 225; D-075 phantom brakes on 280/294/2ae/284).
+# Turned on 2026-11-11 for scoring on bob-unify-bd: route 000000bd seg 10 ~621.8 s (Jason/Job, open-loop replay at
+# a1ac1afdba, single route): new radar track born at 61 m with aLeadK -2.39 (decayed to -0.29 within 1.1 s) tripped the
+# emergency latch for 79 frames; with the hold the peak went -2.44 -> -2.23, worst decel jerk -9.3 -> -7.2, latch 0
+# frames, onset 0.2 s later. Risk to score: the hold delays braking for a genuinely hard-braking newborn lead by up to 40
+# frames unless the range fit confirms it. Replay only; not driven.
+# Scored 2026-11-11 (Job, replay only, vs replay_unify4, 36 routes + second set): 52 episodes move, 0 harder, no REAL or
+# PHANTOM label moves; route bd seg 10 -2.37 -> -2.23, step jerk -8.0 -> -1.4, latch rows 44 -> 0; seg 5 hard stop
+# identical. Owner 2026-11-11: "Port the hold alone to my branch" (car branch bd-newborn-hold fd05f917d8).
+# Read when HondaBoschALongEnhancement is constructed, so a replay harness can set the constant before building the planner.
+NEWBORN_HOLD_ENABLED = True
 
 
 def active_for(CP) -> bool:
@@ -292,6 +315,7 @@ class HondaBoschALongEnhancement:
     # Implausible-drop bound (D-041/D-042; owner bookmark route a2 seg 50, 2026-11-07): same gate as the other active
     # checks in this module (Bosch-A supported, radar available); default ON, no toggle.
     self.drop_bound = ImplausibleDropBound() if active else None
+    self.newborn_hold = NewbornLeadHold() if active and NEWBORN_HOLD_ENABLED else None
     self.dt = dt
     # Coast first: same gate as the old BoschACoastFirst.enabled (not active_for / stock_feel).
     self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
@@ -300,8 +324,10 @@ class HondaBoschALongEnhancement:
     self.reset()
 
   def planner_radar_state(self, radar_state, a_ego: float, model_v2=None):
-    """The radarState the MPC sees: the implausible-drop bound (below) clamps a leadOne velocity-glitch brake;
-    otherwise radar_state itself."""
+    """The radarState the MPC sees: D-080 bounds a newborn radar lead's aLeadK, then the implausible-drop bound
+    (below) clamps a leadOne velocity-glitch brake; otherwise radar_state itself. Chained so both can apply."""
+    if self.newborn_hold is not None:
+      radar_state = bound_newborn_leads(radar_state, a_ego, self.newborn_hold)
     if self.drop_bound is not None:
       radar_state = bound_implausible_drop(radar_state, model_v2, self.drop_bound)
     return radar_state
@@ -393,6 +419,85 @@ class HondaBoschALongEnhancement:
     return float(out)
 
 
+# ---- Newborn lead aLeadK bound (D-080), under NEWBORN_HOLD_ENABLED --------------------------------------------------
+# Ported from openpilot-radar longitudinal_planner.py (567495f4ad), where it is part of the StockBrakeFeel toggle (D-086,
+# default off). Replay only, not driven. STATUS 212: on 2e2 (~283 s) a radar lead first seen while its velocity estimate
+# was still converging published aLeadK -3 / -2.5 when ~0.75 m/s^2 was needed, and on 2e1 a jumping track reached
+# -13.7. For the first NEWBORN_LEAD_FRAMES a radar track has been a lead (or after it drops out for
+# NEWBORN_LEAD_GAP_FRAMES or its range jumps NEWBORN_LEAD_JUMP_M), its aLeadK may go no lower than
+# -NEWBORN_LEAD_MIN_BRAKE, or lower only as far as a quadratic fit to its own range history says it is slowing.
+# MPC input only: dRel, vRel and radarState are untouched and the point is never dropped (D-041/D-042).
+# D-100: removing it alone changed nothing on route 313.
+NEWBORN_LEAD_FRAMES = 40        # 2.0 s as a lead
+NEWBORN_LEAD_GAP_FRAMES = 10    # absent this long (0.5 s): newborn again
+NEWBORN_LEAD_JUMP_M = 4.0       # range step from the last sample: newborn again
+NEWBORN_LEAD_FIT_FRAMES = 16    # 0.8 s of range history before the fit may lower the floor
+NEWBORN_LEAD_MIN_BRAKE = 1.0    # aLeadK floor without range confirmation
+NEWBORN_LEAD_DT = 0.05          # s per planner frame (DT_MDL)
+
+
+def _radar_lead(lead) -> bool:
+  return _present(lead) and bool(getattr(lead, "radar", False))
+
+
+class NewbornLeadHold:
+  """Per radar track, (frame, dRel, aEgo) since it became a lead; bounds aLeadK while it is newborn."""
+  def __init__(self):
+    self.frame = 0
+    self.hist: dict[int, list] = {}
+    self.bound_frames = 0
+
+  def _range_decel(self, h):
+    """Lead accel from a quadratic fit to the range history plus ego accel, or None if too short."""
+    if len(h) < NEWBORN_LEAD_FIT_FRAMES:
+      return None
+    t = np.array([f - h[-1][0] for f, _, _ in h], dtype=float) * NEWBORN_LEAD_DT
+    d = np.array([x for _, x, _ in h], dtype=float)
+    a_rel = 2.0 * float(np.polyfit(t, d, 2)[0])
+    return a_rel + float(np.mean([a for _, _, a in h]))
+
+  def observe(self, lead, a_ego):
+    """Record `lead` this frame; its history, or None for a missing or vision-only lead. Call after tick()."""
+    if lead is None or not _radar_lead(lead):
+      return None
+    tid = int(getattr(lead, "radarTrackId", -1))
+    d_rel = float(lead.dRel)
+    h = self.hist.get(tid)
+    if h is None or self.frame - h[-1][0] > NEWBORN_LEAD_GAP_FRAMES or abs(d_rel - h[-1][1]) > NEWBORN_LEAD_JUMP_M:
+      h = self.hist[tid] = [(self.frame, d_rel, float(a_ego))]
+    elif h[-1][0] != self.frame:  # leadOne and leadTwo on one track: record it once
+      h.append((self.frame, d_rel, float(a_ego)))
+    return h
+
+  def bound(self, lead, a_ego):
+    """aLeadK for `lead`, or None when it is left as is. Call once per lead per frame, after tick()."""
+    h = self.observe(lead, a_ego)
+    if h is None or self.frame - h[0][0] >= NEWBORN_LEAD_FRAMES:
+      return None
+    a_lead = float(lead.aLeadK)
+    a_range = self._range_decel(h)
+    a_floor = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
+    if a_lead >= a_floor:
+      return None
+    self.bound_frames += 1
+    return a_floor
+
+  def tick(self):
+    self.frame += 1
+    if len(self.hist) > 64:
+      self.hist = {k: h for k, h in self.hist.items() if self.frame - h[-1][0] <= NEWBORN_LEAD_GAP_FRAMES}
+
+
+class _BoundedLead:
+  """A lead that reads as `lead` except for aLeadK."""
+  def __init__(self, lead, a_lead: float):
+    self._lead = lead
+    self.aLeadK = float(a_lead)
+
+  def __getattr__(self, name):
+    return getattr(self._lead, name)
+
+
 class _BoundedRadarState:
   def __init__(self, radar_state, lead_one, lead_two):
     self._radar_state = radar_state
@@ -401,6 +506,17 @@ class _BoundedRadarState:
 
   def __getattr__(self, name):
     return getattr(self._radar_state, name)
+
+
+def bound_newborn_leads(radar_state, a_ego: float, hold: NewbornLeadHold):
+  hold.tick()
+  leads = []
+  changed = False
+  for lead in (radar_state.leadOne, radar_state.leadTwo):
+    a_lead = hold.bound(lead, a_ego)
+    leads.append(lead if a_lead is None else _BoundedLead(lead, a_lead))
+    changed |= a_lead is not None
+  return _BoundedRadarState(radar_state, leads[0], leads[1]) if changed else radar_state
 
 
 # ---- Implausible radar-drop bound on leadOne (owner bookmark, route 000000a2--794ebefbf7 seg 50, 2026-11-07) --------
