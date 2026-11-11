@@ -25,7 +25,7 @@ def main():
   cloudlog.info("plannerd got CarParams: %s", CP.brand)
 
   ldw = LaneDepartureWarning()
-  # BOSCH-A HOOK: owner toggles (Stock Brake Feel, Human Following), read once, default Off.
+  # BOSCH-A HOOK: owner toggles (Human Following), read once, default Off.
   longitudinal_planner = LongitudinalPlanner(CP, bosch_a=read_bosch_a_toggles(params))
   conditional = ConditionalPlannerHost(params) if feature_enabled(params, CP, 'conditional', os.environ) else None
   native_inputs = ['carControl', 'carState', 'controlsState', 'vehicleParameters', 'radarState', 'modelV2', 'selfdriveState']

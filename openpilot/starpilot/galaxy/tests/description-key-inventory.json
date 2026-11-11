@@ -13,7 +13,6 @@
   "BlindSpotMetrics",
   "BoschACameraCapHold",
   "BoschAHumanFollowing",
-  "BoschAStockBrakeFeel",
   "CameraView",
   "CurveSpeedController",
   "CurveSpeedControllerNoLead",

@@ -382,7 +382,7 @@ def starpilot_main():
   cloudlog.info("plannerd got CarParams: %s", CP.brand)
 
   ldw = LaneDepartureWarning()
-  # Bosch-A owner toggles (Stock Brake Feel, Human Following): read once here, like the planner selection.
+  # Bosch-A owner toggles (Human Following): read once here, like the planner selection.
   longitudinal_planner = LongitudinalPlanner(CP, bosch_a=read_bosch_a_toggles(params))
   nudge_preferences = NudgePreferences(params)
   # Saved-on features start only for a finalized, supported driving owner. Their

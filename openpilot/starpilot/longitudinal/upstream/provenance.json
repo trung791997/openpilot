@@ -7,8 +7,8 @@
     "plannerd.py": {
       "upstream_path": "openpilot/selfdrive/controls/plannerd.py",
       "upstream_sha256": "9c1591c78522e0f89794eb7301113fc616ec6ac079e576a3c9f9ebec64bcbfde",
-      "adapted_sha256": "14f4c9410db66174c1dfb1d2f1d7b3e7a8b19df14c84808cfb2d580cb609bd9a",
-      "adaptation": "Planner/MPC imports redirected; independent existing conditional-mode owner and bounded transport connected outside unchanged upstream planner/MPC arithmetic. BOSCH-A HOOK: reads the BoschAStockBrakeFeel/BoschAHumanFollowing toggles once at start (bosch_a_toggles.read_toggles) and passes them to LongitudinalPlanner(bosch_a=...)"
+      "adapted_sha256": "83651bf95b45d4b465efa5db899f94187963a3b339e7d1f7f1b909606ef841a7",
+      "adaptation": "Planner/MPC imports redirected; independent existing conditional-mode owner and bounded transport connected outside unchanged upstream planner/MPC arithmetic. BOSCH-A HOOK: reads the BoschAHumanFollowing toggle once at start (bosch_a_toggles.read_toggles) and passes them to LongitudinalPlanner(bosch_a=...)"
     },
     "planner.py": {
       "upstream_path": "openpilot/selfdrive/controls/lib/longitudinal_planner.py",

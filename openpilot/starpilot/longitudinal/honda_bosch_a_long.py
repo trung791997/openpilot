@@ -4,7 +4,7 @@ Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, s
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch: Stock Brake Feel is permanent (owner 2026-11-11: "Make Stock Brake Feel permanent"; the BoschAStockBrakeFeel
-toggle selects nothing); BIRTH_RAIL_ENABLED is a constant and stays off. Both longitudinal planners (StarPilot's and the
+toggle and its settings row are removed); BIRTH_RAIL_ENABLED is a constant and stays off. Both longitudinal planners (StarPilot's and the
 upstream one) call it the same way.
 
 Contents:

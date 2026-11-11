@@ -1,6 +1,6 @@
 """Owner toggles for the Bosch-A longitudinal features, read once when plannerd starts (either planner).
 
-- Stock Brake Feel (honda_bosch_a_long, D-086 and its follow-ups) is permanent since 2026-11-11; BoschAStockBrakeFeel is no longer read.
+- Stock Brake Feel (honda_bosch_a_long, D-086 and its follow-ups) is permanent since 2026-11-11; it has no toggle and no settings row.
 - BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
 - BoschACameraCapHold: camera-cap mode in radard (radar_camera_witness.py cap tell, C-012): off = VA (default), on = D+E. Read once by radard, not plannerd.
 
@@ -13,16 +13,11 @@ from dataclasses import dataclass
 
 from openpilot.starpilot.saved_source import read_saved
 
-STOCK_BRAKE_FEEL_KEY = 'BoschAStockBrakeFeel'
 HUMAN_FOLLOWING_KEY = 'BoschAHumanFollowing'
 CAMERA_CAP_HOLD_KEY = 'BoschACameraCapHold'
-KEYS = (STOCK_BRAKE_FEEL_KEY, HUMAN_FOLLOWING_KEY, CAMERA_CAP_HOLD_KEY)
+KEYS = (HUMAN_FOLLOWING_KEY, CAMERA_CAP_HOLD_KEY)
 # (key, label, reason) for the settings rows on the Long Planner page
 ROWS = (
-  (STOCK_BRAKE_FEEL_KEY, "Stock Brake Feel (Bosch-A)",
-   ("Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. " +
-    "It never brakes harder than the planner asks. Works with either planner. Changes apply on the next drive. " +
-    "Acts only on verified Bosch-A Hondas with openpilot longitudinal.")),
   (HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
    ("Follows the driving model's predicted path for the car ahead instead of a straight-line guess, and eases " +
     "acceleration at low set speeds and near the set speed. Works with either planner. Changes apply on the next drive. " +

@@ -68,7 +68,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StarPilotFavoriteSlots", {PERSISTENT, JSON, R"([{"enabled":false,"show_onroad":false,"key":null,"label":""},{"enabled":false,"show_onroad":false,"key":null,"label":""},{"enabled":false,"show_onroad":false,"key":null,"label":""}])"}},
     {"StarPilotControllerBindings", {PERSISTENT | DONT_LOG, JSON}},
     {"UseStarPilotLongitudinalPlanner", {PERSISTENT, BOOL, "1"}},
-    {"BoschAStockBrakeFeel", {PERSISTENT, BOOL, "0"}},  // Bosch-A Honda stock ACC brake feel, either planner
     {"BoschAHumanFollowing", {PERSISTENT, BOOL, "0"}},  // Bosch-A HumanFollowing + HumanAcceleration, either planner
     {"BoschACameraCapHold", {PERSISTENT, BOOL, "0"}},  // Bosch-A camera cap mode: 0 = VA, 1 = D+E (radard)
     {"UseVOACC", {PERSISTENT, BOOL, "0"}},

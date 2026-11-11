@@ -1,4 +1,4 @@
-"""BoschAStockBrakeFeel / BoschAHumanFollowing owner toggles: parsing, car gates, and both planners.
+"""BoschAHumanFollowing owner toggle and permanent Stock Brake Feel: parsing, car gates, and both planners.
 
 Static tests with a recording stand-in for the native acados solver; no replay or road evidence.
 """
@@ -139,7 +139,6 @@ class TestReadToggles(unittest.TestCase):
   def test_only_exact_one_is_on(self):
     for raw, expected in ((b'1', True), (b'0', False), (b'', False), (b'true', False), (b'1\n', False), (b'\xff', False),
                           (b'1' * 9, False)):
-      self.put(bosch_a_toggles.STOCK_BRAKE_FEEL_KEY, raw)  # no longer read: must not change anything
       self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, raw)
       self.assertEqual(read_toggles(self.params), BoschAToggles(human_following=expected), raw)
 
