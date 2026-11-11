@@ -3341,6 +3341,7 @@ struct Event {
     DRIVER_MONITORING_STATE,
     CHESTNUT_STATE,
     CHESTNUT_GPU_STATE,
+    STARPILOT_BLENDFUL_STATE,
   };
 
   struct _capnpPrivate {
@@ -23392,6 +23393,10 @@ public:
   inline bool hasChestnutGpuState() const;
   inline  ::cereal::ChestnutState::Reader getChestnutGpuState() const;
 
+  inline bool isStarpilotBlendfulState() const;
+  inline bool hasStarpilotBlendfulState() const;
+  inline  ::cereal::StarPilotBlendfulState::Reader getStarpilotBlendfulState() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -24642,6 +24647,14 @@ public:
   inline  ::cereal::ChestnutState::Builder initChestnutGpuState();
   inline void adoptChestnutGpuState(::capnp::Orphan< ::cereal::ChestnutState>&& value);
   inline ::capnp::Orphan< ::cereal::ChestnutState> disownChestnutGpuState();
+
+  inline bool isStarpilotBlendfulState();
+  inline bool hasStarpilotBlendfulState();
+  inline  ::cereal::StarPilotBlendfulState::Builder getStarpilotBlendfulState();
+  inline void setStarpilotBlendfulState( ::cereal::StarPilotBlendfulState::Reader value);
+  inline  ::cereal::StarPilotBlendfulState::Builder initStarpilotBlendfulState();
+  inline void adoptStarpilotBlendfulState(::capnp::Orphan< ::cereal::StarPilotBlendfulState>&& value);
+  inline ::capnp::Orphan< ::cereal::StarPilotBlendfulState> disownStarpilotBlendfulState();
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -59995,6 +60008,60 @@ inline ::capnp::Orphan< ::cereal::ChestnutState> Event::Builder::disownChestnutG
   KJ_IREQUIRE((which() == Event::CHESTNUT_GPU_STATE),
               "Must check which() before get()ing a union member.");
   return ::capnp::_::PointerHelpers< ::cereal::ChestnutState>::disown(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+
+inline bool Event::Reader::isStarpilotBlendfulState() const {
+  return which() == Event::STARPILOT_BLENDFUL_STATE;
+}
+inline bool Event::Builder::isStarpilotBlendfulState() {
+  return which() == Event::STARPILOT_BLENDFUL_STATE;
+}
+inline bool Event::Reader::hasStarpilotBlendfulState() const {
+  if (which() != Event::STARPILOT_BLENDFUL_STATE) return false;
+  return !_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline bool Event::Builder::hasStarpilotBlendfulState() {
+  if (which() != Event::STARPILOT_BLENDFUL_STATE) return false;
+  return !_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline  ::cereal::StarPilotBlendfulState::Reader Event::Reader::getStarpilotBlendfulState() const {
+  KJ_IREQUIRE((which() == Event::STARPILOT_BLENDFUL_STATE),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::get(_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline  ::cereal::StarPilotBlendfulState::Builder Event::Builder::getStarpilotBlendfulState() {
+  KJ_IREQUIRE((which() == Event::STARPILOT_BLENDFUL_STATE),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::get(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void Event::Builder::setStarpilotBlendfulState( ::cereal::StarPilotBlendfulState::Reader value) {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::STARPILOT_BLENDFUL_STATE);
+  ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::set(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
+}
+inline  ::cereal::StarPilotBlendfulState::Builder Event::Builder::initStarpilotBlendfulState() {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::STARPILOT_BLENDFUL_STATE);
+  return ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::init(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void Event::Builder::adoptStarpilotBlendfulState(
+    ::capnp::Orphan< ::cereal::StarPilotBlendfulState>&& value) {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::STARPILOT_BLENDFUL_STATE);
+  ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::adopt(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::cereal::StarPilotBlendfulState> Event::Builder::disownStarpilotBlendfulState() {
+  KJ_IREQUIRE((which() == Event::STARPILOT_BLENDFUL_STATE),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::disown(_builder.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS));
 }
 

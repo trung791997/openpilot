@@ -439,6 +439,7 @@ CAPNP_DECLARE_SCHEMA(db85b982067f1bc1);
 CAPNP_DECLARE_SCHEMA(ef6257bed9318012);
 CAPNP_DECLARE_SCHEMA(bbb8f17940692312);
 CAPNP_DECLARE_SCHEMA(daa1a9f0d8968e31);
+CAPNP_DECLARE_SCHEMA(f7b1a9d3e5c2f486);
 
 }  // namespace schemas
 }  // namespace capnp
@@ -1863,6 +1864,21 @@ struct LiveTrackingResponseWitness {
 
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(daa1a9f0d8968e31, 7, 1)
+    #if !CAPNP_LITE
+    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    #endif  // !CAPNP_LITE
+  };
+};
+
+struct StarPilotBlendfulState {
+  StarPilotBlendfulState() = delete;
+
+  class Reader;
+  class Builder;
+  class Pipeline;
+
+  struct _capnpPrivate {
+    CAPNP_DECLARE_STRUCT_HEADER(f7b1a9d3e5c2f486, 5, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -15148,6 +15164,122 @@ public:
       : _typeless(kj::mv(typeless)) {}
 
   inline  ::cereal::LiveTrackingResponseCertificate::Pipeline getCertificate();
+private:
+  ::capnp::AnyPointer::Pipeline _typeless;
+  friend class ::capnp::PipelineHook;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+};
+#endif  // !CAPNP_LITE
+
+class StarPilotBlendfulState::Reader {
+public:
+  typedef StarPilotBlendfulState Reads;
+
+  Reader() = default;
+  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
+
+  inline ::capnp::MessageSize totalSize() const {
+    return _reader.totalSize().asPublic();
+  }
+
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const {
+    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
+  }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion() const;
+
+  inline float getCurvature() const;
+
+  inline float getTrust() const;
+
+  inline float getModelCurvature() const;
+
+  inline bool getGoingAround() const;
+
+  inline float getLeftProb() const;
+
+  inline float getRightProb() const;
+
+  inline float getLaneWidth() const;
+
+  inline  ::uint64_t getModelMonoTime() const;
+
+private:
+  ::capnp::_::StructReader _reader;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::List;
+  friend class ::capnp::MessageBuilder;
+  friend class ::capnp::Orphanage;
+};
+
+class StarPilotBlendfulState::Builder {
+public:
+  typedef StarPilotBlendfulState Builds;
+
+  Builder() = delete;  // Deleted to discourage incorrect usage.
+                       // You can explicitly initialize to nullptr instead.
+  inline Builder(decltype(nullptr)) {}
+  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
+  inline operator Reader() const { return Reader(_builder.asReader()); }
+  inline Reader asReader() const { return *this; }
+
+  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const { return asReader().toString(); }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion();
+  inline void setVersion( ::uint16_t value);
+
+  inline float getCurvature();
+  inline void setCurvature(float value);
+
+  inline float getTrust();
+  inline void setTrust(float value);
+
+  inline float getModelCurvature();
+  inline void setModelCurvature(float value);
+
+  inline bool getGoingAround();
+  inline void setGoingAround(bool value);
+
+  inline float getLeftProb();
+  inline void setLeftProb(float value);
+
+  inline float getRightProb();
+  inline void setRightProb(float value);
+
+  inline float getLaneWidth();
+  inline void setLaneWidth(float value);
+
+  inline  ::uint64_t getModelMonoTime();
+  inline void setModelMonoTime( ::uint64_t value);
+
+private:
+  ::capnp::_::StructBuilder _builder;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  friend class ::capnp::Orphanage;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+};
+
+#if !CAPNP_LITE
+class StarPilotBlendfulState::Pipeline {
+public:
+  typedef StarPilotBlendfulState Pipelines;
+
+  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
+  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
+      : _typeless(kj::mv(typeless)) {}
+
 private:
   ::capnp::AnyPointer::Pipeline _typeless;
   friend class ::capnp::PipelineHook;
@@ -37354,6 +37486,132 @@ inline  ::uint64_t LiveTrackingResponseWitness::Builder::getValidUntilMonoTime()
 inline void LiveTrackingResponseWitness::Builder::setValidUntilMonoTime( ::uint64_t value) {
   _builder.setDataField< ::uint64_t>(
       ::capnp::bounded<6>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint16_t StarPilotBlendfulState::Reader::getVersion() const {
+  return _reader.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint16_t StarPilotBlendfulState::Builder::getVersion() {
+  return _builder.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setVersion( ::uint16_t value) {
+  _builder.setDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getCurvature() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getCurvature() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setCurvature(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getTrust() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getTrust() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setTrust(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getModelCurvature() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getModelCurvature() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setModelCurvature(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<3>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool StarPilotBlendfulState::Reader::getGoingAround() const {
+  return _reader.getDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS);
+}
+
+inline bool StarPilotBlendfulState::Builder::getGoingAround() {
+  return _builder.getDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setGoingAround(bool value) {
+  _builder.setDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getLeftProb() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getLeftProb() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setLeftProb(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getRightProb() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<5>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getRightProb() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<5>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setRightProb(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<5>() * ::capnp::ELEMENTS, value);
+}
+
+inline float StarPilotBlendfulState::Reader::getLaneWidth() const {
+  return _reader.getDataField<float>(
+      ::capnp::bounded<6>() * ::capnp::ELEMENTS);
+}
+
+inline float StarPilotBlendfulState::Builder::getLaneWidth() {
+  return _builder.getDataField<float>(
+      ::capnp::bounded<6>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setLaneWidth(float value) {
+  _builder.setDataField<float>(
+      ::capnp::bounded<6>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint64_t StarPilotBlendfulState::Reader::getModelMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t StarPilotBlendfulState::Builder::getModelMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS);
+}
+inline void StarPilotBlendfulState::Builder::setModelMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, value);
 }
 
 }  // namespace
