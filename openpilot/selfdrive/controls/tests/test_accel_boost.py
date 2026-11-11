@@ -2,16 +2,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.accel_boost import (
-  ACCEL_BOOST_MAX, ACCEL_BOOST_MIN_SPEED, ACCEL_BOOST_PER_OVERRIDE, AccelBoost,
+  ACCEL_BOOST_INITIAL, ACCEL_BOOST_MAX, ACCEL_BOOST_MIN_SPEED, ACCEL_BOOST_PER_OVERRIDE, AccelBoost,
 )
 
 V = 17.0
 
 
-def make_sm(enabled=True, gas=False, v_ego=V, exp=True):
-  return {'selfdriveState': SimpleNamespace(enabled=enabled, experimentalMode=exp),
+Personality = log.LongitudinalPersonality
+
+
+def make_sm(enabled=True, gas=False, v_ego=V, exp=True, personality=Personality.standard):
+  return {'selfdriveState': SimpleNamespace(enabled=enabled, experimentalMode=exp, personality=personality),
           'carState': SimpleNamespace(gasPressed=gas, vEgo=v_ego)}
 
 
@@ -49,13 +53,34 @@ def test_eligibility_is_latched_before_the_press():
   assert b.total_boost == pytest.approx(ACCEL_BOOST_PER_OVERRIDE)
 
 
-def test_needs_experimental_mode_and_margin():
+def test_needs_margin():
+  b = AccelBoost()
+  run(b, 1.0, e2e=0.95, mpc=1.0)  # within the 0.1 margin
+  run(b, 2.0, e2e=0.95, mpc=1.0, gas=True)
+  assert b.total_boost == 0.0
+
+
+def test_press_counts_outside_experimental_mode():
+  # commaai/openpilot#39097 dropped the Experimental Mode check; the planners only use the e2e target in Experimental Mode
   b = AccelBoost()
   run(b, 1.0, exp=False)
   run(b, 2.0, exp=False, gas=True)
-  assert b.total_boost == 0.0
-  run(b, 1.0, e2e=0.95, mpc=1.0)  # within the 0.1 margin
-  run(b, 2.0, e2e=0.95, mpc=1.0, gas=True)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_PER_OVERRIDE)
+
+
+def test_aggressive_starts_at_initial_boost_and_keeps_it():
+  # commaai/openpilot#39229
+  b = AccelBoost()
+  run(b, 0.1, personality=Personality.aggressive)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_INITIAL)
+  run(b, 0.1, enabled=False, personality=Personality.aggressive)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_INITIAL)
+  run(b, 1.0, personality=Personality.aggressive)
+  run(b, 5.0, gas=True, personality=Personality.aggressive)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_INITIAL + ACCEL_BOOST_PER_OVERRIDE)
+  run(b, 0.1, personality=Personality.standard)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_INITIAL + ACCEL_BOOST_PER_OVERRIDE)
+  run(b, 0.1, enabled=False, personality=Personality.standard)
   assert b.total_boost == 0.0
 
 
