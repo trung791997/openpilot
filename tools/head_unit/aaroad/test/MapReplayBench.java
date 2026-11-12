@@ -120,7 +120,9 @@ public final class MapReplayBench {
     set(v, c, "tickW", new double[2]);
     set(v, c, "frameEN", new float[2]);
     set(v, c, "smEN", new float[2]);
+    set(v, c, "snap", new Snap());  // field initialisers do not run on an allocateInstance view
     set(v, c, "tickEN", new float[2]);
+    set(v, c, "building", new java.util.concurrent.atomic.AtomicBoolean());
     set(v, c, "k", 600 / MapView.R0);
     set(v, c, "heldH", Double.NaN);
     set(v, c, "lastSpd", -1.0);
@@ -323,7 +325,7 @@ public final class MapReplayBench {
       long bt = System.nanoTime();
       MapView.Scene before = (MapView.Scene) sceneF.get(mv);
       rebuild.invoke(mv, now);
-      while ((Boolean) buildingF.get(mv)) Thread.sleep(0, 200000);
+      while (((java.util.concurrent.atomic.AtomicBoolean) buildingF.get(mv)).get()) Thread.sleep(0, 200000);
       MapView.Scene s = (MapView.Scene) sceneF.get(mv);
       double buildMs = (System.nanoTime() - bt) / 1e6;
       if (s == null) continue;  // no tile yet

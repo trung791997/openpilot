@@ -90,7 +90,8 @@ final class CloseView {
     for (int g = 1; g < CloseUp.LAYERS; g++) {
       for (int c : MapView.DRAW_ORDER) {
         float w = Math.max(floor, MapView.ROAD_M[c] * ik) + casing;
-        for (int r : new int[] {CloseUp.range(g, c), CloseUp.deck(g, c)}) {
+        for (int pass = 0; pass < 2; pass++) {  // range, then deck: no array per call
+          int r = pass == 0 ? CloseUp.range(g, c) : CloseUp.deck(g, c);
           // widest/faintest first (phase 2's soft-falloff step), then the two existing hard-edged steps
           p.lines(r, 0, w + MapView.dm(SHADOW_PX3), SHADOW_C, SHADOW_A3 * gr, 0, 0);
           p.lines(r, 0, w + 2 * MapView.dm(SHADOW_PX), SHADOW_C, SHADOW_A * gr, 0, 0);

@@ -57,8 +57,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   // MapView.Scene.stubsDim) -- a stub/road group with nothing in view costs no draw call, same as any other --
   // then the route by traffic: unknown or low, moderate, heavy, severe. ROUTE mirrors MapView's own doubled
   // stubWorld/stubPaths size (2 * MapView.DIM_OFF), so group indices line up the same way on both paths.
-  private static final int ROUTE = 2 * MapView.DIM_OFF, LEVELS = 4;
-  private static final long FRAME_MS = 33, IDLE_MS = 500;
+  private static final int ROUTE = 2 * MapView.OW_OFF, LEVELS = 4;
+  private static final long IDLE_MS = 500;  // the frame cap is Perf.Pace's (FAST_MS 33, SLOW_MS 42)
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
 
@@ -218,6 +218,19 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private int back, pendOff;
   private MapView.Scene asked;     // the last scene the packer was asked for
   private final MapView.Frame glFrame = new MapView.Frame();
+  // adaptive frame cap (Perf.Pace), the GC hint, and the band of road simplification the scene is packed at
+  private final Perf.Pace pace = new Perf.Pace();
+  private final Perf.GcWatch gcWatch = new Perf.GcWatch();
+  private long lastCostNs, gcCount0 = -2, gcAlloc0;
+  private volatile int dpBand;   // Perf.DpBand's state, GL thread writes, the packer reads when it starts a scene
+  private long repackAt;
+  private int repacks, askedBand;
+
+  // The scene on screen packed again, at a different Douglas-Peucker band: the zoom has crossed a boundary (with
+  // Perf.DpBand's margin), the last ask was at another band, and the last ask was MIN_REPACK_MS ago or more.
+  private boolean bandRepack(MapView.Scene s) {
+    return s == glScene && cur != null && askedBand != dpBand && SystemClock.uptimeMillis() - repackAt >= Perf.DpBand.MIN_REPACK_MS;
+  }
   private final int[] surfSize = new int[2];
   // handed between the GL thread and the packer under packLock: the scene to pack, the result, and bytes, which is
   // the packer's from an ask until the GL thread has sent the last slice
@@ -397,6 +410,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         }
         long start = SystemClock.uptimeMillis();
         map.kickTick(start);
+        map.rebuildTick(start);  // a UI stall must not stop the scene being rebuilt (MapView.rebuildTick)
         MapView.Scene newest = map.scene();
         if (newest == null) {
           idle = true;
@@ -443,9 +457,15 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         part(P_LOCK);
         if (counted) addParts();
         last = start;
-        // a frame that ran late is followed at once, not skipped
         idle = !f.moving && f.settled && pend == null;
-        next = idle ? start + IDLE_MS : Math.max(start + FRAME_MS, SystemClock.uptimeMillis());
+        dpBand = Perf.DpBand.next(dpBand, f.ik);
+        Runtime rt = Runtime.getRuntime();
+        gcWatch.sample(rt.totalMemory() - rt.freeMemory());
+        // adaptive cap: the 1 s average of draw + swap decides 33 or 42 ms; a late frame is not followed at once but
+        // MIN_GAP_MS later at least, so the UI thread gets CPU between frames
+        if (idle) pace.rest();
+        else pace.frame(SystemClock.uptimeMillis(), lastCostNs / 1e6);
+        next = idle ? start + IDLE_MS : pace.next(start, SystemClock.uptimeMillis());
         logParts(start);  // after next is set, so its own time comes out of the coming sleep
       }
       if (!failed) quitExit();  // every fail() path returns, so only quit gets here; quit may already be cleared again
@@ -656,8 +676,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           pend = packDone;
           packDone = null;
           pendOff = 0;
-        } else if (s != null && s != glScene && s != asked && !packBusy) {
+        } else if (s != null && ((s != glScene && s != asked) || bandRepack(s)) && !packBusy) {
+          if (s == glScene) repacks++;
           asked = s;
+          askedBand = dpBand;
+          repackAt = SystemClock.uptimeMillis();
           packAsk = s;
           packBusy = true;
           if (!packStarted) {
@@ -744,7 +767,20 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         // software path.
         int[] rcls = new int[roads.cls.length];
         for (int i = 0; i < rcls.length; i++) {
-          rcls[i] = roads.cls[i] + (i < roads.dim.length && roads.dim[i] != 0 ? MapView.DIM_OFF : 0);
+          rcls[i] = roads.cls[i] + (i < roads.dim.length && roads.dim[i] != 0 ? MapView.DIM_OFF : 0)
+              + (i < roads.one.length && roads.one[i] != 0 ? MapView.OW_OFF : 0);  // one-way: its own group, ONEWAY_K of the width
+        }
+        // the roads (not the route) simplified for the zoom band the scene is packed at; the scene's own runs, which
+        // Snap reads, are untouched -- only the copy GlCull packs. The boxes stay the originals (a superset).
+        int band = dpBand;
+        double tol = Perf.DpBand.tolerance(band);
+        float[][] rpts = roads.pts;
+        if (tol > 0) {
+          rpts = new float[roads.pts.length][];
+          for (int i = 0; i < rpts.length; i++) {
+            float[] p = roads.pts[i];
+            rpts[i] = p.length > 4 ? FreeView.simplify(p, p.length / 2, tol) : p;
+          }
         }
         int[] level = new int[route.cls.length];  // a route piece's cls is its traffic, 0 to 4 (MapView.chunks)
         // group LEVELS..2*LEVELS-1 (Peter 2026-11-08) is the same traffic colour but under a higher deck
@@ -753,7 +789,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
           if (route.under[i] != 0) level[i] += LEVELS;
         }
-        g = new GlCull(s, ROUTE, 2 * LEVELS, roads.pts, roads.box, rcls, roads.at, route.pts, route.box, level, route.at);
+        g = new GlCull(s, ROUTE, 2 * LEVELS, rpts, roads.box, rcls, roads.at, route.pts, route.box, level, route.at);
+        g.band = band;
         int size = g.bytes();
         if (b == null || b.capacity() < size) b = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
         b.position(0);
@@ -772,6 +809,13 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
   }
 
+  // Class c's group g at ROAD_M and its one-way group (g + OW_OFF) at MapView.ONEWAY_K of it, each plus extra (the
+  // kerb or casing allowance, not scaled), both with the same floor; two runs lists, one GL call a run as before.
+  private void lines2(int g, int c, float floor, float ik, float extra, int color, float alpha) {
+    lines(g, Math.max(floor, MapView.ROAD_M[c] * ik) + extra, color, alpha);
+    lines(g + MapView.OW_OFF, Math.max(floor, MapView.ROAD_M[c] * MapView.ONEWAY_K * ik) + extra, color, alpha);
+  }
+
   private void lines(int g, float width, int color, float alpha) {
     int[] rFrom = cur.rFrom, rStart = cur.rStart, rLen = cur.rLen;
     if (rFrom[g] == rFrom[g + 1]) return;
@@ -781,6 +825,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
     GLES20.glUniform1f(lR, width / 2);
     GLES20.glUniform4f(lColor, (color >> 16 & 0xff) / 255f, (color >> 8 & 0xff) / 255f, (color & 0xff) / 255f, alpha);
+    // diagnostics only: the bucket this group's draws are counted in (pass, one-way, dimmed, class or route level)
+    int acct = acctBase + (g >= ROUTE ? g - ROUTE & 7 : (g / MapView.OW_OFF & 1) << 4 | (g % MapView.OW_OFF / MapView.DIM_OFF & 1) << 3 | g % MapView.BRIDGE);
     for (int r = rFrom[g]; r < rFrom[g + 1]; r++) {
       for (int st = rStart[r], left = rLen[r]; left > 0; ) {
         // the index buffer holds the quad pattern for one page of MAX_QUADS, so a run inside a page is drawn from an
@@ -797,6 +843,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         GLES20.glDrawElements(GLES20.GL_TRIANGLES, q * 6, GLES20.GL_UNSIGNED_SHORT, (st - page) * 12);
         statDraws++;
         statQuads += q;
+        acctD[acct]++;
+        acctQ[acct] += q;
         st += q;
         left -= q;
       }
@@ -809,9 +857,22 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   // in the dense minutes (ik < 0.15). Peter 2026-11-08: hide them. The route is its own group and always draws.
   static final boolean LOD_MINOR = true;
   static final float LOD_IK = 0.15f, LOD_FADE_IK = 0.18f;
-  private float minorA = 1;
+  private float minorA = 1, statKerbA = 1;
   private int ptrPage = -1;
   private int statDraws, statPtr, statQuads;
+  // Diagnostics (2026-11-08, logging only): draw calls and quads per pass and per bucket inside a pass, summed over the
+  // log window. A bucket is pass * ACCT_B + (one-way 16, dimmed 8, class 0-4) for a ground or bridge group, or pass *
+  // ACCT_B + the traffic level 0-7 for a route group. Primitive arrays, bumped at the draw call sites.
+  private static final int PS_KERB = 0, PS_SURF = 1, PS_DKERB = 2, PS_DSURF = 3, PS_RKERB = 4, PS_RSURF = 5,
+      PS_CARPET_UNDER = 6, PS_BCASE = 7, PS_BKERB = 8, PS_BSURF = 9, PS_CARPET = 10, PS_CLOSE = 11, PS_RAILS = 12,
+      PS_GRID = 13, PS_FADE = 14, PS_SIGNAL = 15, PS_LABEL = 16, ACCT_PASSES = 17, ACCT_B = 32;
+  private static final String[] PASS_NAMES = {"kerb", "surf", "dkerb", "dsurf", "rkerb", "rsurf", "carpet-under", "bcase",
+      "bkerb", "bsurf", "carpet", "close", "rails", "grid", "fade", "signal", "label"};
+  private final long[] acctD = new long[ACCT_PASSES * ACCT_B], acctQ = new long[ACCT_PASSES * ACCT_B];
+  private int acctBase;
+  private long acctRouteFrames, acctCloseFrames, acctSnapFrames, acctRunsMaxSum;
+  private int acctRunsMax;
+  private double acctRunsMeanSum;
   private long sumDraws, sumPtr, sumQuads, sumCand, sumRuns, sumTicks;
   private int statRebuildsNow, statFramesNow, statForced;
   private float statIk;
@@ -854,12 +915,16 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glEnableVertexAttribArray(gA);
     GLES20.glVertexAttribPointer(gA, 2, GLES20.GL_FLOAT, false, 8, 0);
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    acctD[PS_GRID * ACCT_B]++;
     GLES20.glDisableVertexAttribArray(gA);
     part(P_GRID);
     // zoomed in: the rail lines, under the roads (CloseView.rails)
     if (close != null) {
       GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, ibo);
+      long cd0 = close.statDraws, cq0 = close.statQuads;
       close.rails(s, f, proj, v[0], v[1], v[2], v[7], qa, CloseUp.gate(MapView.R0 / ik, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE));
+      acctD[PS_RAILS * ACCT_B] += close.statDraws - cd0;
+      acctQ[PS_RAILS * ACCT_B] += close.statQuads - cq0;
     }
 
     // the roads: every kerb, then every surface, then the carpet, as the view strokes them
@@ -883,20 +948,32 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     float floor = MapView.dm(MapView.MIN_ROAD_PX), kerb = MapView.dm(2 * MapView.KERB_PX);
     float route = Math.max(floor, MapView.ROUTE_M * ik);
     // by class colour (MapView.KERBS/ROADS); the route's own grey road under the tile roads' surfaces
-    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], 1);
+    // Zoomed out (ik < Perf.KerbLod.KERB_IK) the ground kerb passes are not drawn, on the plain ground and the dimmed
+    // branches alike (not the route's, not the bridges' casing/kerb); they fade in over KERB_IK..KERB_FULL_IK, and
+    // the surface is widened by the kerb's width times what is missing of their alpha, so the silhouette is the same.
+    float kerbA = Perf.KerbLod.alpha(ik), surfX = Perf.KerbLod.surfaceExtra(kerb, kerbA);
+    statKerbA = kerbA;
+    acctBase = PS_KERB * ACCT_B;
+    if (kerbA > 0) for (int c : MapView.DRAW_ORDER) lines2(c, c, floor, ik, kerb, MapView.KERBS[c], kerbA);
     // route groups LEVELS..2*LEVELS-1 are the under-a-higher-deck half (Peter 2026-11-08, packLoop); the grey
     // backdrop draws before bridges either way, so both halves go here together same as the over half did.
+    acctBase = PS_RKERB * ACCT_B;
     for (int l = 0; l < 2 * LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
+    acctBase = PS_RSURF * ACCT_B;
     for (int l = 0; l < 2 * LEVELS; l++) lines(ROUTE + l, route, ROAD, 1);
-    for (int c : MapView.DRAW_ORDER) lines(c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], 1);
+    acctBase = PS_SURF * ACCT_B;
+    for (int c : MapView.DRAW_ORDER) lines2(c, c, floor, ik, surfX, MapView.ROADS[c], 1);
+    acctBase = PS_DKERB * ACCT_B;
     // Part B (Peter 2026-11-08): the untaken branch of a split, ground level, dimmed over the plain ground pass
     // above -- group c + MapView.DIM_OFF, MapView.dim()'s colours, same kerb-then-surface order and widths.
-    for (int c : MapView.DRAW_ORDER) lines(c + MapView.DIM_OFF, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.dim(MapView.KERBS[c]), 1);
-    for (int c : MapView.DRAW_ORDER) lines(c + MapView.DIM_OFF, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.dim(MapView.ROADS[c]), 1);
+    if (kerbA > 0) for (int c : MapView.DRAW_ORDER) lines2(c + MapView.DIM_OFF, c, floor, ik, kerb, MapView.dim(MapView.KERBS[c]), kerbA);
+    acctBase = PS_DSURF * ACCT_B;
+    for (int c : MapView.DRAW_ORDER) lines2(c + MapView.DIM_OFF, c, floor, ik, surfX, MapView.dim(MapView.ROADS[c]), 1);
     // the carpet under a higher deck (Peter 2026-11-08, Apple Maps style): drawn before the bridges below so their
     // casing/kerb/surface paint over it; the rest of the carpet (ROUTE + 0..LEVELS-1) still draws last, over them.
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
+      acctBase = PS_CARPET_UNDER * ACCT_B;
       float wide = Math.max(MapView.dm(MapView.LINE_MIN_PX), Math.min(MapView.dm(MapView.LINE_MAX_PX), MapView.LINE_M * ik));
       for (int l = 0; l < LEVELS; l++) lines(ROUTE + LEVELS + l, wide, l == 0 ? color : MapView.TRAFFIC[l - 1], 242 / 255f);
       GLES20.glUniform1f(lCarpet, 0);
@@ -910,15 +987,21 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       // a layer's casing, kerb and surface all before the next layer up, as the view draws them
       for (int ly = 1; ly < CloseUp.LAYERS; ly++) {
         int g = b * ly;
-        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
-        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.KERBS[c], flatA);
-        for (int c : MapView.DRAW_ORDER) lines(g + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.ROADS[c], flatA);
+        acctBase = PS_BCASE * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(g + c, c, floor, ik, casing, MapView.CASING_C, flatA);
+        acctBase = PS_BKERB * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(g + c, c, floor, ik, kerb, MapView.KERBS[c], flatA);
+        acctBase = PS_BSURF * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(g + c, c, floor, ik, 0, MapView.ROADS[c], flatA);
         // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
         // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
         int gd = g + MapView.DIM_OFF;
-        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik) + casing, MapView.CASING_C, flatA);
-        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik) + kerb, MapView.dim(MapView.KERBS[c]), flatA);
-        for (int c : MapView.DRAW_ORDER) lines(gd + c, Math.max(floor, MapView.ROAD_M[c] * ik), MapView.dim(MapView.ROADS[c]), flatA);
+        acctBase = PS_BCASE * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(gd + c, c, floor, ik, casing, MapView.CASING_C, flatA);
+        acctBase = PS_BKERB * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(gd + c, c, floor, ik, kerb, MapView.dim(MapView.KERBS[c]), flatA);
+        acctBase = PS_BSURF * ACCT_B;
+        for (int c : MapView.DRAW_ORDER) lines2(gd + c, c, floor, ik, 0, MapView.dim(MapView.ROADS[c]), flatA);
       }
     }
     // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over
@@ -929,7 +1012,11 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       if (gr > 0 || gw > 0) {
         GLES20.glDisableVertexAttribArray(lSeg);
         GLES20.glDisableVertexAttribArray(lC);
+        long cd0 = close.statDraws, cq0 = close.statQuads;
         close.draw(s, f, proj, v[0], v[1], v[2], v[7], qa, gr, gw);
+        acctD[PS_CLOSE * ACCT_B] += close.statDraws - cd0;
+        acctQ[PS_CLOSE * ACCT_B] += close.statQuads - cq0;
+        if (close.statDraws != cd0) acctCloseFrames++;
         GLES20.glUseProgram(line);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
         GLES20.glEnableVertexAttribArray(lSeg);
@@ -940,6 +1027,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     part(P_ROADS);
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
+      acctBase = PS_CARPET * ACCT_B;
       float wide = Math.max(MapView.dm(MapView.LINE_MIN_PX), Math.min(MapView.dm(MapView.LINE_MAX_PX), MapView.LINE_M * ik));
       for (int l = 0; l < LEVELS; l++) lines(ROUTE + l, wide, l == 0 ? color : MapView.TRAFFIC[l - 1], 242 / 255f);
     }
@@ -951,6 +1039,18 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     sumQuads += statQuads;
     sumCand += cur.candidateCount();
     sumRuns += cur.rFrom[cur.groups];
+    // diagnostics: route / snap frames, and the runs per group (mean over the groups that have any, and the largest)
+    if (s.route.length > 0) acctRouteFrames++;
+    if (map.snap().run >= 0) acctSnapFrames++;
+    int nz = 0, mx = 0;
+    for (int g = 0; g < cur.groups; g++) {
+      int n = cur.rFrom[g + 1] - cur.rFrom[g];
+      if (n > 0) nz++;
+      if (n > mx) mx = n;
+    }
+    if (nz > 0) acctRunsMeanSum += (double) (cur.rFrom[cur.groups] - cur.rFrom[0]) / nz;
+    acctRunsMaxSum += mx;
+    if (mx > acctRunsMax) acctRunsMax = mx;
     sumTicks = cur.ticks;
     statRebuildsNow = cur.rebuilds;
     statFramesNow = cur.frames;
@@ -985,6 +1085,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       return "swap failed, egl error 0x" + Integer.toHexString(err);
     }
     long ns = System.nanoTime() - t0;
+    lastCostNs = ns;
     part(P_SWAP);
     synchronized (lock) {
       part(P_LOCK);
@@ -1050,6 +1151,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       GLES20.glUniform4f(tRect, x0, y0, x0 + ATLAS_W, y0 + ROW);
       GLES20.glUniform4f(tUV, 0, i * ROW / (float) ATLAS_H, 1, (i + 1) * ROW / (float) ATLAS_H);
       GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+      acctD[PS_LABEL * ACCT_B]++;
     }
     GLES20.glDisableVertexAttribArray(tP);
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
@@ -1089,6 +1191,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       GLES20.glUniform4f(tRect, x0, y0, x0 + c, y0 + c);
       GLES20.glUniform4f(tUV, sigSprite[i] / (float) SignalIcon.SPRITES, 0, (sigSprite[i] + 1) / (float) SignalIcon.SPRITES, 1);
       GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+      acctD[PS_SIGNAL * ACCT_B]++;
     }
     GLES20.glDisableVertexAttribArray(tP);
     GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA, GLES20.GL_ZERO, GLES20.GL_ONE);
@@ -1119,6 +1222,24 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     }
   }
 
+  // GC since the last line: Dalvik's global counters (zero unless the runtime counts allocations, so guarded and
+  // only shown when they move) and the heap-drop count, which works either way. No file I/O here; the line goes out
+  // through AsyncLog.
+  private void appendGc(StringBuilder b) {
+    Runtime rt = Runtime.getRuntime();
+    b.append("; gc");
+    try {
+      long c = android.os.Debug.getGlobalGcInvocationCount();
+      if (gcCount0 != -2 && c > gcCount0) b.append(" runs ").append(c - gcCount0);
+      gcCount0 = c;
+    } catch (Throwable t) {
+      // not on this runtime
+    }
+    b.append(" heap drops ").append(gcWatch.drops).append(" worst ").append(gcWatch.worstDrop >> 10).append(" KB, heap ")
+        .append((rt.totalMemory() - rt.freeMemory()) >> 20).append(" MB");
+    gcWatch.clear();
+  }
+
   // Every PARTS_MS, one line if any moving frames were counted; the window starts over either way.
   private void logParts(long now) {
     if (partsFrom == 0) partsFrom = now;
@@ -1131,7 +1252,12 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       }
       b.append("; ").append(partFrames).append(" frames; label uploads ").append(atlasUploads)
           .append("; scene uploads ").append(sceneUploads).append("; slow frames ").append(slowFrames)
-          .append("; tick age ").append(map.tickAge(now));
+          .append("; tick age ").append(map.tickAge(now))
+          .append("; looper max ").append(map.takeLooperMax(now)).append(" ms")
+          .append("; cap ").append(pace.frameMs()).append(" ms (avg ").append(ms((long) (pace.lastAvg * 1e6)))
+          .append(", switches ").append(pace.switches).append(")")
+          .append("; kerb a ").append(statKerbA).append("; dp band ").append(dpBand).append(" repacks ").append(repacks);
+      appendGc(b);
       // the roads' cost this window: per frame, the candidates the cull tests, runs it kept, draw calls (one a run
       // plus one per 16384-quad page crossed), quads drawn; and the culls made (the cull runs on a tick, early when
       // the camera leaves its margin), candidate lists rebuilt, and the zoom
@@ -1140,6 +1266,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           .append(" quads ").append(sumQuads / partFrames).append("; culls ").append(sumTicks - tickLog)
           .append(" (early ").append(statForced - forcedLog).append(") of ").append(statFramesNow - framesLog)
           .append(" frames; rebuilds ").append(statRebuildsNow - rebuildLog).append("; ik ").append(statIk);
+      appendAcct(b);
       tickLog = sumTicks;
       forcedLog = statForced;
       framesLog = statFramesNow;
@@ -1149,14 +1276,62 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         for (int i = 0; i < PARTS; i++) if (slowTop[i] > 0) b.append(' ').append(PART_NAMES[i]).append(' ').append(slowTop[i]);
         b.append(')');
       }
-      MapView.say(b.toString());
+      AsyncLog.say(b.toString());
     }
     java.util.Arrays.fill(partSum, 0);
     java.util.Arrays.fill(partMax, 0);
     java.util.Arrays.fill(slowTop, 0);
     partFrames = slowFrames = atlasUploads = sceneUploads = 0;
     sumDraws = sumPtr = sumQuads = sumCand = sumRuns = 0;
+    java.util.Arrays.fill(acctD, 0);
+    java.util.Arrays.fill(acctQ, 0);
+    acctRouteFrames = acctCloseFrames = acctSnapFrames = acctRunsMaxSum = 0;
+    acctRunsMax = 0;
+    acctRunsMeanSum = 0;
     partsFrom = now;
+  }
+
+  // "; draws by pass: kerb 12.0/900q {0t 2.0 2o 3.0 ...}, ..." per frame, non-zero only; then the frame fractions and
+  // the runs per group. Built once a window, off the draw path.
+  private void appendAcct(StringBuilder b) {
+    double fr = partFrames;
+    b.append("; draws by pass:");
+    boolean first = true;
+    for (int p = 0; p < ACCT_PASSES; p++) {
+      long d = 0, q = 0;
+      for (int k = 0; k < ACCT_B; k++) {
+        d += acctD[p * ACCT_B + k];
+        q += acctQ[p * ACCT_B + k];
+      }
+      if (d == 0) continue;
+      b.append(first ? " " : ", ").append(PASS_NAMES[p]).append(' ').append(r1(d / fr)).append('/').append(r1(q / fr)).append('q');
+      first = false;
+      if (p > PS_CARPET) continue;
+      boolean route = p == PS_RKERB || p == PS_RSURF || p == PS_CARPET_UNDER || p == PS_CARPET;
+      b.append(" {");
+      boolean f2 = true;
+      for (int k = 0; k < ACCT_B; k++) {
+        long n = acctD[p * ACCT_B + k];
+        if (n == 0) continue;
+        if (!f2) b.append(' ');
+        f2 = false;
+        if (route) b.append('L').append(k & 7);
+        else b.append(k & 7).append((k & 16) != 0 ? 'o' : 't').append((k & 8) != 0 ? "d" : "");
+        b.append('=').append(r1(n / fr));
+      }
+      b.append('}');
+    }
+    b.append("; frames route ").append(r2(acctRouteFrames / fr)).append(" close ").append(r2(acctCloseFrames / fr))
+        .append(" snap ").append(r2(acctSnapFrames / fr)).append("; runs/grp mean ").append(r1(acctRunsMeanSum / fr))
+        .append(" max avg ").append(r1(acctRunsMaxSum / fr)).append(" peak ").append(acctRunsMax);
+  }
+
+  private static double r1(double x) {
+    return Math.round(x * 10) / 10.0;
+  }
+
+  private static double r2(double x) {
+    return Math.round(x * 100) / 100.0;
   }
 
   private static String ms(long ns) {
@@ -1168,6 +1343,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     GLES20.glUniform1f(fAxis, axis);
     GLES20.glUniform4f(fA, a0, a1, a2, stop);
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    acctD[PS_FADE * ACCT_B]++;
   }
 
   // MapView's camera as a projection: car frame (x, z, 0, 1) to clip space for a w x h surface, the screen shifted

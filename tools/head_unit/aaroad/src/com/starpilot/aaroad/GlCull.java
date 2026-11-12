@@ -36,6 +36,7 @@ final class GlCull {
   static final float MARGIN_MIN = 3, MARGIN_MAX = 90;  // display metres
 
   final Object scene;  // the MapView.Scene this was made from
+  int band;  // the Douglas-Peucker band (Perf.DpBand) the road pieces were simplified at when packed; GlRoads sets it
   final int groups, count, segs;
   final int[] gFrom;   // pieces of group g: gFrom[g] to gFrom[g + 1]
   final int[] cStart, cCount;  // each piece's first segment in the buffer and its segments

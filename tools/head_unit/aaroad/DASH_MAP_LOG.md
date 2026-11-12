@@ -417,3 +417,18 @@ Replay (`test/MapReplayBench.java` over the real drive, desktop): draws/frame 28
 pass. Installed 15:15; first head-unit reading 15:28, parked, no route: cull 0.4 ms, 18-19 draws, ~29 fps. Next nav
 drive: compare "gl parts" fps, draws and cull with the 13:29 numbers. After a comma reboot the map took ~7 min to show
 (first fresh position; cause not proven).
+
+## Dash map lag: performance batch committed, first drive (Peter 2026-11-12)
+Source of the APK installed 2026-11-12 in Park (md5 c50bda32ed09e907546c0e5322e8ea21, verified on the head unit), ported
+from the `hu-wip-1108` worktree (base b2ddd9664c) to `vasm-jetson-updater-bridge`; the APK md5 matches this tree.
+- `Perf`: adaptive frame pacing (cap drops to ~24 fps while frames are slow, returns after 3 s fast), zoomed-out kerb
+  skip, Douglas-Peucker band, heap-drop GC hint in the log.
+- `AsyncLog`: GL-thread log lines go through one bounded background writer instead of touching the file on that thread.
+- `Snap`: display-only road snapping (clamp to the drawn road edge) for the zoomed-out car and camera; nothing is sent
+  to the car.
+- `GlCull`, `GlRoads`, `GlClose`, `CloseView`, `MapView` wired to these; `test/PerfTest`, `test/SnapTest` added,
+  `test/MapReplayBench` updated. All 12 desktop tests pass (*static*).
+Head-unit log, 14:51-15:22 drive (*limited road evidence*, one drive): 27.5 fps against 24.2 on the 11-08 drive 2;
+roads draw 2.0 ms against 3.9. One 3.6 s tick stall at 14:52 near boot and about 11 looper hiccups of 0.5-0.8 s.
+Low-frame windows near 15:06 and 15:12 are unexplained (screen switch not ruled out). Comma side ruled out from qlog
+procLog: total CPU 397-441% against 473-478% on 11-11, starportd ~5.7% unchanged.

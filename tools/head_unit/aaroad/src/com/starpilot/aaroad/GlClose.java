@@ -68,6 +68,8 @@ final class GlClose implements CloseView.Pass {
 
   private int prog, pP, pW, pV, pCam, pR, pH, pColor, pDash, aSeg, aC, aH;
   private int vbo, back;
+  private int capV, capB;  // each buffer's store, bytes: a high-water mark, only ever grown
+  private int ptrPage = -1;  // the 16384-quad page the attribute pointers are set for in this pass; -1 none
   private ByteBuffer buf;
   private FloatBuffer fb;
   private final float[] corner = new float[PACK_SEGS * 4 * FLOATS];
@@ -98,6 +100,8 @@ final class GlClose implements CloseView.Pass {
     int[] b = new int[2];
     GLES20.glGenBuffers(2, b, 0);
     vbo = b[0];
+    capV = capB = 0;
+    ptrPage = -1;
     back = b[1];
     buf = ByteBuffer.allocateDirect(PACK_SEGS * 4 * STRIDE).order(ByteOrder.nativeOrder());
     fb = buf.asFloatBuffer();
@@ -127,7 +131,11 @@ final class GlClose implements CloseView.Pass {
       packing = d;
       packAt = 0;
       GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
-      GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, d.count() * 4 * STRIDE, null, GLES20.GL_STATIC_DRAW);
+      int need = d.count() * 4 * STRIDE;
+      if (need > capB) {  // grows only: a scene smaller than the high-water mark reuses the store (draws never read past count)
+        capB = need + need / 4;
+        GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, capB, null, GLES20.GL_STATIC_DRAW);
+      }
     }
     int n = Math.min(PACK_SEGS, packing.count() - packAt);
     if (n > 0) {
@@ -140,11 +148,11 @@ final class GlClose implements CloseView.Pass {
       packAt += n;
     }
     if (packAt < packing.count()) return;
-    int was = vbo;
+    int was = vbo, wasCap = capV;
     vbo = back;
+    capV = capB;
     back = was;
-    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, back);
-    GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 4, null, GLES20.GL_STATIC_DRAW);
+    capB = wasCap;  // the old buffer keeps its store as the next back buffer: no orphaning, no realloc
     shown = packing;
     shownScene = packScene;
     packing = null;
@@ -164,6 +172,8 @@ final class GlClose implements CloseView.Pass {
   }
 
   // The rail lines (CloseView.rails), as draw, before the roads.
+  long statDraws, statQuads;  // draw calls and quads issued, ever (GlRoads' log window takes differences)
+
   void rails(MapView.Scene s, MapView.Frame f, float[] proj, float v0, float v1, float v2, float v7, float qa, float gr) {
     CloseUp.Detail d = shown;
     if (d == null || gr <= 0 || d.empty(CloseUp.RAIL)) return;
@@ -181,6 +191,7 @@ final class GlClose implements CloseView.Pass {
       cn = (float) (-(y - u.ay) * u.mpt);
     }
     ik = f.ik;
+    ptrPage = -1;
     GLES20.glUseProgram(prog);
     GLES20.glUniformMatrix4fv(pP, 1, false, proj, 0);
     GLES20.glUniform4f(pW, ch * ik, sh * ik, (-ce * ch + cn * sh) * ik, (-ce * sh - cn * ch) * ik);
@@ -209,11 +220,19 @@ final class GlClose implements CloseView.Pass {
     GLES20.glUniform4f(pColor, (color >> 16 & 0xff) / 255f, (color >> 8 & 0xff) / 255f, (color & 0xff) / 255f,
                        Math.min(1, alpha));
     for (int st = from; left > 0; ) {
-      int q = Math.min(left, MAX_QUADS);
-      GLES20.glVertexAttribPointer(aSeg, 4, GLES20.GL_FLOAT, false, STRIDE, st * 4 * STRIDE);
-      GLES20.glVertexAttribPointer(aC, 3, GLES20.GL_FLOAT, false, STRIDE, st * 4 * STRIDE + 16);
-      GLES20.glVertexAttribPointer(aH, 2, GLES20.GL_FLOAT, false, STRIDE, st * 4 * STRIDE + 28);
-      GLES20.glDrawElements(GLES20.GL_TRIANGLES, q * 6, GLES20.GL_UNSIGNED_SHORT, 0);
+      // GLES2 has no base vertex, so the pointers sit at the start of the 16384-quad page st is in (set once per page
+      // per pass, not per run) and the draw starts (st - page start) quads into the index buffer
+      int page = st / MAX_QUADS, base = page * MAX_QUADS;
+      int q = Math.min(left, base + MAX_QUADS - st);
+      if (page != ptrPage) {
+        GLES20.glVertexAttribPointer(aSeg, 4, GLES20.GL_FLOAT, false, STRIDE, base * 4 * STRIDE);
+        GLES20.glVertexAttribPointer(aC, 3, GLES20.GL_FLOAT, false, STRIDE, base * 4 * STRIDE + 16);
+        GLES20.glVertexAttribPointer(aH, 2, GLES20.GL_FLOAT, false, STRIDE, base * 4 * STRIDE + 28);
+        ptrPage = page;
+      }
+      GLES20.glDrawElements(GLES20.GL_TRIANGLES, q * 6, GLES20.GL_UNSIGNED_SHORT, (st - base) * 12);
+      statDraws++;  // diagnostics: GlRoads reads the difference around rails() and draw()
+      statQuads += q;
       st += q;
       left -= q;
     }

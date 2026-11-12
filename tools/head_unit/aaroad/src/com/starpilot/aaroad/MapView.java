@@ -105,7 +105,8 @@ final class MapView extends View {
   // under its own road, where the tile has it. The orange line is about two lanes wide, between LINE_MIN_PX and
   // LINE_MAX_PX on screen. All of them are drawn ROAD_SCALE times as wide, the same for every road so they keep
   // their real proportions: at real width a street is a hairline beside the car icon.
-  static final float[] ROAD_M = {28 * 2, 18 * 2, 10 * 2, 6 * 2, 5 * 2};  // x ROAD_SCALE 2
+  static final float ROAD_SCALE = 2;
+  static final float[] ROAD_M = {28 * ROAD_SCALE, 18 * ROAD_SCALE, 10 * ROAD_SCALE, 6 * ROAD_SCALE, 5 * ROAD_SCALE};
   // minor (service roads, parking-lot aisles, Peter 2026-10-29: the phone map shows them) under the rest
   static final int[] DRAW_ORDER = {4, 0, 1, 2, 3};
   // Road colours by tile class, kerb and surface, the same on the GPU layer: grey, but motorways and trunks in a muted
@@ -130,6 +131,13 @@ final class MapView extends View {
   // piece's class is its plain class (+ BRIDGE * layer if it's on a deck) plus DIM_OFF, so it shares every other
   // class's drawing code and only needs its own kerb/surface colour pass. See stubsDim() and Scene.stubsDim.
   static final int DIM_OFF = BRIDGE * CloseUp.LAYERS;
+  // One-way lines (tile flag bit 2: each freeway carriageway, a frontage road) are one direction of the road, so they
+  // draw at ONEWAY_K of the both-directions ROAD_M of their class (Peter 2026-11-08): at full width a freeway's two
+  // carriageways and the frontage road beside it merged into one band zoomed out. The kerb and casing keep their
+  // widths. A one-way run is its own group past OW_OFF, the same doubling trick as DIM_OFF (class space
+  // 0..OW_OFF-1 two-way, OW_OFF.. one-way), so it batches as one GL call a run like any other and keeps the draw order.
+  static final int OW_OFF = 2 * DIM_OFF;
+  static final float ONEWAY_K = 0.5f;
   // the night canvas clears to this (see the drawColor call below); blended 50% with a road's own colour for the
   // untaken branch, as the background it's meant to recede toward
   private static final int BG = 0xff050505;
@@ -223,10 +231,10 @@ final class MapView extends View {
   // "the highway lines simply overlay the street below, with no joint seams"). Doubled past DIM_OFF (Part B,
   // 2026-11-08) for the same classes dimmed, the untaken branch of a split (Scene.stubsDim) -- the free-drive
   // roadsChunks path through pieces() never sets a dim flag, so that half of these arrays stays empty there.
-  private final Path[] stubPaths = paths(2 * BRIDGE * CloseUp.LAYERS);
+  private final Path[] stubPaths = paths(2 * OW_OFF);
   private final CloseView closeView = new CloseView();
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
-  private final Path[] stubWorld = paths(2 * BRIDGE * CloseUp.LAYERS);
+  private final Path[] stubWorld = paths(2 * OW_OFF);
   private final Path routeWorld = new Path();
   // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe.
   // carpetUnderPaths (Peter 2026-11-08) holds the same four, split off where Scene.routeUnder says the route runs
@@ -256,18 +264,20 @@ final class MapView extends View {
   private final SimpleDateFormat clock = new SimpleDateFormat("h:mm a", Locale.US);
 
   private volatile Scene scene;
-  private volatile boolean building;
-  private long builtAt, lastFrame, drawMs, drawSum, spdAt, setupSum, pathSum, strokeSum, cardSum;
+  // one scene build at a time; compareAndSet, because the UI tick and the GL thread (GlRoads, rebuildIfNeeded) both start them
+  private final java.util.concurrent.atomic.AtomicBoolean building = new java.util.concurrent.atomic.AtomicBoolean();
+  private volatile long builtAt;  // read by rebuildIfNeeded on either thread
+  private long lastFrame, drawMs, drawSum, spdAt, setupSum, pathSum, strokeSum, cardSum;
   private double heldH = Double.NaN;  // radians, the GPS heading while last moving
   private double[] heldW;              // world position held at a standstill
   private double lastSpd = -1, decel;  // m/s, m/s^2 (positive while slowing), from the fed speed
   private int drawCount;
-  private boolean live;
+  private volatile boolean live;  // the GL thread reads it before starting a scene build
   private String hideWhy = "not started";  // why the map is hidden, for the log
   private boolean holding;                // up only because the comma's feed still talks through a GPS gap
   private long poseGapFrom;               // uptime the position went stale while up (0: it is fresh)
   private static String whereLogged;  // Events.status() as last logged
-  private double k = 600 / R0;
+  private volatile double k = 600 / R0;  // the zoom; rebuildIfNeeded reads it from the GL thread, and a double is not atomic on ARM unless volatile
   private float t0, t1;  // clip parameters of the segment being clipped
   private final float[] cam = new float[9];  // the camera's values, to place labels where the roads are drawn
   private double camPitch = CloseUp.PITCH;  // the tilt cam and camera are at (useCamera), UI thread
@@ -358,6 +368,8 @@ final class MapView extends View {
     int tilesVersion;
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
     int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run, + BRIDGE on a bridge
+    float[] roadsHw = new float[0], roadsHwNoMinor = new float[0];  // each run's drawn half width in metres (Snap), and with class 4 zeroed
+    boolean[] stubsOne = new boolean[0], roadsOne = new boolean[0];  // whether each run is a one-way line, points in its digitised direction
     String[] stubsName = new String[0], roadsName = new String[0];  // street name of each run, null when none
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
@@ -396,6 +408,8 @@ final class MapView extends View {
     // split (Scene.stubsDim); cuts a piece the same way under does, so the dimmed and plain halves of a stub
     // never share one piece.
     int[] dim = new int[0];
+    // 1 where the piece is part of a one-way line (Feed.Tile.oneway), drawn at ONEWAY_K of the width in its own group
+    int[] one = new int[0];
   }
 
   // The roads, the route, the grid, the carpet and the fades over them drawn on the GPU under this view (GlRoads,
@@ -575,6 +589,7 @@ final class MapView extends View {
   private final Runnable tick = new Runnable() {
     @Override
     public void run() {
+      tickStartAt = SystemClock.uptimeMillis();  // tickAt is set when this run ends: start > end means the body is running
       try {
         boolean shown = navi.isShown();
         Feed.wanted = shown;
@@ -631,23 +646,124 @@ final class MapView extends View {
   // until the next boot, so the map never appeared (Peter 2026-11-07).
   private final Handler main = new Handler(Looper.getMainLooper());
   private volatile long tickAt;
+  volatile long tickStartAt;  // when the tick last began; tickStartAt > tickAt means its body is running right now
   private long kickedAt;
   static final long TICK_LOST_MS = 2000;
+
+  // The stall episode in progress, GL thread only (kickTick): the tickAt it began at, the reposts made, and when the
+  // last rebuild check ran (rebuildTick).
+  private boolean stallOn;
+  private long stallTickAt, rebuildCheckAt;
+  private int stallKicks;
+  static final long REBUILD_CHECK_MS = 500;  // the GL thread's look at whether the scene needs rebuilding: 2 Hz
+
+  // The looper-latency probe: once a second the GL thread posts a timestamped Runnable to the main looper; how late
+  // it runs is how long the UI thread was busy or backed up. One in flight at a time.
+  private long probeAt;  // GL thread
+  private volatile long probePostedAt;  // 0 when none is in flight
+  private long looperMax;  // under probeLock
+  private final Object probeLock = new Object();
+  private final Runnable probe = new Runnable() {
+    @Override
+    public void run() {
+      long late = SystemClock.uptimeMillis() - probePostedAt;
+      synchronized (probeLock) {
+        if (late > looperMax) looperMax = late;
+      }
+      probePostedAt = 0;
+    }
+  };
 
   long tickAge(long now) {
     long at = tickAt;
     return at == 0 ? -1 : now - at;
   }
 
+  // The longest the main looper took to run the probe since the last call, ms (a probe still waiting counts as long
+  // as it has waited so far, so a stall in progress shows); -1 if none has been posted yet.
+  long takeLooperMax(long now) {
+    long waiting = probePostedAt;
+    synchronized (probeLock) {
+      long m = looperMax;
+      looperMax = 0;
+      return waiting != 0 ? Math.max(m, now - waiting) : m;
+    }
+  }
+
+  // Called by the GL thread each frame; does no file I/O (AsyncLog). The 11-06 drive: a tick quiet for TICK_LOST_MS
+  // is posted again. 2026-11-08 drive: 206 such stalls, up to 26 s, with the GL thread at 27 fps throughout, so one
+  // is now logged once, with whether the tick body is running (tickStartAt > tickAt: the UI thread is inside it) or
+  // the looper is busy elsewhere, and the main thread's stack; and its length when the tick next completes.
   void kickTick(long now) {
     long at = tickAt;
     // a detached view's tick is stopped on purpose (onDetachedFromWindow)
-    if (at == 0 || now - at < TICK_LOST_MS || now - kickedAt < TICK_LOST_MS || getWindowToken() == null) return;
+    if (at == 0 || getWindowToken() == null) return;
+    if (now - probeAt >= 1000) {
+      probeAt = now;
+      if (probePostedAt == 0) {
+        probePostedAt = now;
+        main.post(probe);
+      }
+    }
+    if (stallOn && at != stallTickAt) {
+      stallOn = false;
+      AsyncLog.say("aaroad: map tick stall over: the tick ran again " + (at - stallTickAt) + " ms after the last one before it ("
+          + stallKicks + " reposts)");
+    }
+    if (now - at < TICK_LOST_MS) return;
+    boolean running = tickStartAt > at;
+    if (!stallOn) {
+      stallOn = true;
+      stallTickAt = at;
+      stallKicks = 0;
+      final String head = "aaroad: map tick quiet for " + (now - at) + " ms: tick body "
+          + (running ? "RUNNING for " + (now - tickStartAt) + " ms" : "not running (looper busy elsewhere or the tick is not queued)")
+          + ", looper probe waiting " + (probePostedAt != 0 ? now - probePostedAt : 0) + " ms; main thread: ";
+      AsyncLog.post(new Runnable() {  // the stack is taken on the logger thread, not here
+        @Override
+        public void run() {
+          MapView.say(head + mainStack(8));
+        }
+      });
+    }
+    if (now - kickedAt < TICK_LOST_MS) return;
     kickedAt = now;
-    say("aaroad: map tick quiet for " + (now - at) + " ms, posted again");
+    // a body in flight cannot be helped by posting another tick, which would only start a second chain when it ends
+    if (running) return;
+    stallKicks++;
     removeCallbacks(tick);
     main.removeCallbacks(tick);
     main.post(tick);
+  }
+
+  // The top n frames of the main thread, "Class.method:line < ...".
+  private static String mainStack(int n) {
+    try {
+      StackTraceElement[] st = Looper.getMainLooper().getThread().getStackTrace();
+      StringBuilder b = new StringBuilder();
+      for (int i = 0; i < st.length && i < n; i++) {
+        if (i > 0) b.append(" < ");
+        String c = st[i].getClassName();
+        b.append(c.substring(c.lastIndexOf('.') + 1)).append('.').append(st[i].getMethodName()).append(':').append(st[i].getLineNumber());
+      }
+      return b.toString();
+    } catch (Throwable t) {
+      return "(no stack: " + t + ")";
+    }
+  }
+
+  // The GL thread's turn at deciding whether the scene needs rebuilding, at most REBUILD_CHECK_MS apart: the UI tick
+  // does it too, but a UI stall of seconds (the 11-08 drive) let the car pass MOVE_R of the kept scene. Only while
+  // the view is up (live, attached); rebuildIfNeeded starts at most one build whichever thread asks.
+  void rebuildTick(long now) {
+    if (now - rebuildCheckAt < REBUILD_CHECK_MS) return;
+    rebuildCheckAt = now;
+    if (!live || getWindowToken() == null) return;
+    try {
+      rebuildIfNeeded(now);
+    } catch (Throwable t) {
+      AsyncLog.say("aaroad: map rebuild check (GL thread) failed: " + t);
+    }
   }
 
   // With the GPU layer drawing everything that moves at 30 a second (Peter 2026-10-30), this view is the slow layer:
@@ -1046,6 +1162,24 @@ final class MapView extends View {
     if (Math.abs(want - l) < 0.3f) l = want;
     lift = f.lift = l;
     f.settled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS && l == want;
+    // Snapping (Peter 2026-11-08, display only): with no route the car icon and the camera go to the foot point on the
+    // road line the car is on (Snap), so beside a freeway's frontage road it sits on the frontage road and not
+    // between carriageways. The 10 Hz pick works from the unsnapped position; the eased offset is added every frame.
+    // v2: a clamp to the road's drawn edge (Snap), in the close-up too -- a car already inside the road's width does not
+    // move, so the lane drawing keeps the car in its lane. With a route the car already rides it.
+    if (s.route.length == 0) {
+      if (now < snapAt || now - snapAt >= SNAP_MS) {
+        snapAt = now;
+        // a class the map does not draw is no road to be on: the minor streets once the GPU map has faded them out
+        boolean noMinor = GPU && GlRoads.LOD_MINOR && 1 / k <= GlRoads.LOD_IK;
+        snap.choose(s, s.roads, s.roadsBox, s.roadsOne, noMinor ? s.roadsHwNoMinor : s.roadsHw, ce, cn, h, spd);
+      }
+    } else if (snap.run >= 0) {
+      snap.choose(s, null, null, null, null, ce, cn, h, spd);
+    }
+    snap.step(now);
+    ce += snap.offE;
+    cn += snap.offN;
     f.ce = ce;
     f.cn = cn;
     f.h = h;
@@ -1068,6 +1202,10 @@ final class MapView extends View {
   private static final double SMOOTH_TAU = 0.06, SNAP_M = 15, SNAP_DEG = 20;
   private static final long SMOOTH_GAP_MS = 500;  // after a longer gap in the fixes the last one says nothing about now
   private final float[] frameEN = new float[2], smEN = new float[2];
+  private final Snap snap = new Snap();
+  private long snapAt;
+  private static final long SNAP_MS = 100;  // Snap.choose runs at 10 Hz
+  Snap snap() { return snap; }
   private Feed.Pose smPose;
   private long smAt;
   private double offE, offN, offH;
@@ -1095,8 +1233,11 @@ final class MapView extends View {
 
   // ---- scene: the route and the roads near it, rebuilt off the UI thread when the car moves on or data arrives
 
+  // Called from the UI tick and, since 2026-11-08, from the GL thread too (rebuildTick), so a long UI stall cannot let
+  // the car drive off the kept scene. Everything it reads is volatile (scene, Feed.*, live, k, builtAt) or immutable
+  // once the scene is published (Scene.area/bh/minor/close.heldOn/ax/ay/mpt); its scratch is its own, not tickW.
   private void rebuildIfNeeded(long now) {
-    if (building) return;
+    if (building.get()) return;
     Scene s = scene;
     Feed.Route r = Feed.route;
     final double lat = Feed.lat, lon = Feed.lon;
@@ -1105,7 +1246,7 @@ final class MapView extends View {
     Feed.Pose p = pose();
     final double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg), kView = Math.max(k, FreeView.range(spd) / R0);
     if (!need) {
-      double[] w = Feed.world(lat, lon, tickW);
+      double[] w = Feed.world(lat, lon);  // not tickW: the UI thread's scratch
       double e = (w[0] - s.ax) * s.mpt, n = -(w[1] - s.ay) * s.mpt;
       need = Math.hypot(e, n) > MOVE_R;
       // with no route, moving: once the view now or LEAD_S s on leaves the roads kept, or service roads should come
@@ -1121,7 +1262,11 @@ final class MapView extends View {
       }
     }
     if (!need) return;
-    building = true;
+    if (!building.compareAndSet(false, true)) return;  // the other thread got there first
+    if (scene != s) {  // it finished a build while this decided: that one may already be enough
+      building.set(false);
+      return;
+    }
     builtAt = now;
     final Feed.Route route = r;
     final int version = Feed.tilesVersion;
@@ -1136,12 +1281,17 @@ final class MapView extends View {
         } catch (Throwable e) {
           Xlog.log("aaroad: map scene failed: " + e);
         } finally {
-          building = false;
+          building.set(false);
         }
       }
     }, "aaroad-scene");
     t.setDaemon(true);
-    t.start();
+    try {
+      t.start();
+    } catch (Throwable e) {  // e.g. no native thread: free the flag so the next tick can try again
+      building.set(false);
+      Xlog.log("aaroad: map scene thread failed: " + e);
+    }
   }
 
   // h, spd: the car's heading (radians) and speed; kView the zoom the view has or is heading to; minor whether the
@@ -1162,6 +1312,7 @@ final class MapView extends View {
     List<byte[]> levels = new ArrayList<byte[]>();
     List<float[]> route = new ArrayList<float[]>(), stubs = new ArrayList<float[]>(), roads = new ArrayList<float[]>();
     List<Integer> stubsCls = new ArrayList<Integer>(), roadsCls = new ArrayList<Integer>();
+    List<Boolean> stubsOne = new ArrayList<Boolean>(), roadsOne = new ArrayList<Boolean>();
     List<String> stubsName = new ArrayList<String>(), roadsName = new ArrayList<String>();
     HashSet<Long> cells = new HashSet<Long>();
     if (r != null) {
@@ -1269,8 +1420,10 @@ final class MapView extends View {
           int rawLayer = layer != null && l < layer.length ? layer[l] : 0;
           int ly = isBridge ? Math.max(1, Math.min(CloseUp.LAYERS - 1, rawLayer)) : 0;
           int sc = isBridge ? dc + BRIDGE * ly : dc;
-          while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsName.add(name); }
-          while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsName.add(name); }
+          boolean[] ow = tile.oneway[c];
+          boolean isOne = ow != null && l < ow.length && ow[l];
+          while (roadsCls.size() < roads.size()) { roadsCls.add(sc); roadsOne.add(isOne); roadsName.add(name); }
+          while (stubsCls.size() < stubs.size()) { stubsCls.add(sc); stubsOne.add(isOne); stubsName.add(name); }
         }
       }
     }
@@ -1283,6 +1436,16 @@ final class MapView extends View {
     s.stubsCls = ints(stubsCls);
     if (r != null) s.stubsDim = stubsDim(s.route, s.routeUnder, s.stubs, s.stubsCls);
     s.roadsCls = ints(roadsCls);
+    s.stubsOne = bools(stubsOne);
+    s.roadsOne = bools(roadsOne);
+    s.roadsHw = new float[s.roadsCls.length];
+    s.roadsHwNoMinor = new float[s.roadsCls.length];
+    for (int i = 0; i < s.roadsHw.length; i++) {
+      int c = s.roadsCls[i] % BRIDGE;
+      float hw = ROAD_M[c] / ROAD_SCALE / 2 * (s.roadsOne[i] ? ONEWAY_K : 1);
+      s.roadsHw[i] = hw;
+      s.roadsHwNoMinor[i] = c == 4 ? 0 : hw;
+    }
     s.stubsName = stubsName.toArray(new String[0]);
     s.roadsName = roadsName.toArray(new String[0]);
     s.routeBox = boxes(s.route);
@@ -1313,8 +1476,8 @@ final class MapView extends View {
     }
     s.signals = Signals.cluster(sig, k / 3, s.ax, s.ay, s.mpt, s.route, s.routeAlong);
     s.routeChunks = chunks(s.route, null, s.routeLevel, s.routeUnder);
-    s.stubsChunks = chunks(s.stubs, s.stubsCls, null, null, s.stubsDim);
-    s.roadsChunks = chunks(s.roads, s.roadsCls, null);
+    s.stubsChunks = chunks(s.stubs, s.stubsCls, null, null, s.stubsDim, s.stubsOne);
+    s.roadsChunks = chunks(s.roads, s.roadsCls, null, null, null, s.roadsOne);
     return s;
   }
 
@@ -1334,8 +1497,14 @@ final class MapView extends View {
   // dim (stubs only, Peter 2026-11-08, Part B): per segment, 1 where it is the dimmed, untaken branch of a split;
   // cuts a piece the same way un does, so the dimmed and plain halves of a stub are never drawn as one piece.
   private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un, byte[][] dim) {
+    return chunks(runs, cls, lv, un, dim, null);
+  }
+
+  // one (stubs and roads only): per run, whether it is a one-way line; a run is cut into pieces whole, so a piece
+  // has the flag of its run.
+  private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un, byte[][] dim, boolean[] one) {
     List<float[]> pts = new ArrayList<float[]>();
-    List<Integer> pcls = new ArrayList<Integer>(), punder = new ArrayList<Integer>(), pdim = new ArrayList<Integer>();
+    List<Integer> pcls = new ArrayList<Integer>(), punder = new ArrayList<Integer>(), pdim = new ArrayList<Integer>(), pone = new ArrayList<Integer>();
     List<Float> pat = new ArrayList<Float>();
     Run run = new Run();
     double along = 0, start;
@@ -1362,6 +1531,7 @@ final class MapView extends View {
             pcls.add(cls == null ? cur : cls[r]);
             punder.add(curU);
             pdim.add(curD);
+            pone.add(one != null && r < one.length && one[r] ? 1 : 0);
             pat.add((float) start);
             start = along;
             run.add(c[c.length - 2], c[c.length - 1]);
@@ -1381,6 +1551,7 @@ final class MapView extends View {
         pcls.add(cls == null ? cur : cls[r]);
         punder.add(curU);
         pdim.add(curD);
+        pone.add(one != null && r < one.length && one[r] ? 1 : 0);
         pat.add((float) start);
       }
       run.size = 0;
@@ -1391,6 +1562,7 @@ final class MapView extends View {
     out.cls = ints(pcls);
     out.under = ints(punder);
     out.dim = ints(pdim);
+    out.one = ints(pone);
     out.at = new float[pat.size()];
     for (int i = 0; i < out.at.length; i++) out.at[i] = pat.get(i);
     out.path = new Path[out.pts.length];
@@ -1410,6 +1582,12 @@ final class MapView extends View {
     Path[] p = new Path[n];
     for (int i = 0; i < n; i++) p[i] = new Path();
     return p;
+  }
+
+  private static boolean[] bools(List<Boolean> l) {
+    boolean[] a = new boolean[l.size()];
+    for (int i = 0; i < a.length; i++) a[i] = l.get(i);
+    return a;
   }
 
   private static int[] ints(List<Integer> l) {
@@ -1987,26 +2165,32 @@ final class MapView extends View {
       // a road W m wide is W / k display metres; never thinner than MIN_ROAD_PX so a far road still shows
       float floor = dm(MIN_ROAD_PX);
       // every kerb first and then every surface, so crossing roads open into each other instead of being cut by a kerb
+      // zoomed out (ik < Perf.KerbLod.KERB_IK) the ground kerbs are skipped and the surface takes their width, so the
+      // silhouette is the same (GlRoads does the same with a fade; this fallback path switches at the edge)
+      boolean kerbOn = ik >= Perf.KerbLod.KERB_IK;
+      float surfX = kerbOn ? 0 : dm(2 * KERB_PX);
       for (int c : DRAW_ORDER) {
+        if (!kerbOn) break;
         sideKerb.setColor(KERBS[c]);
-        stroke(canvas, stubWorld[c], stubPaths[c], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+        strokeC(canvas, c, c, sideKerb, dm(2 * KERB_PX), floor, ik);
       }
       if (s.route.length > 0) stroke(canvas, routeWorld, routePath, kerb, Math.max(floor, ROUTE_M * ik) + dm(2 * KERB_PX));
       if (s.route.length > 0) stroke(canvas, routeWorld, routePath, road, Math.max(floor, ROUTE_M * ik));
       for (int c : DRAW_ORDER) {
         side.setColor(ROADS[c]);
-        stroke(canvas, stubWorld[c], stubPaths[c], side, Math.max(floor, ROAD_M[c] * ik));
+        strokeC(canvas, c, c, side, surfX, floor, ik);
       }
       // Part B (Peter 2026-11-08): the untaken branch of a split, at ground level, drawn dimmed over the plain
       // ground pass above -- same kerb-then-surface order, same widths, just the DIM_OFF half of the classes and
       // dim()'s colours instead of KERBS/ROADS.
       for (int c : DRAW_ORDER) {
+        if (!kerbOn) break;
         sideKerb.setColor(dim(KERBS[c]));
-        stroke(canvas, stubWorld[c + DIM_OFF], stubPaths[c + DIM_OFF], sideKerb, Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+        strokeC(canvas, c + DIM_OFF, c, sideKerb, dm(2 * KERB_PX), floor, ik);
       }
       for (int c : DRAW_ORDER) {
         side.setColor(dim(ROADS[c]));
-        stroke(canvas, stubWorld[c + DIM_OFF], stubPaths[c + DIM_OFF], side, Math.max(floor, ROAD_M[c] * ik));
+        strokeC(canvas, c + DIM_OFF, c, side, surfX, floor, ik);
       }
       // the carpet where the route passes under a higher deck (Scene.routeUnder, Peter 2026-11-08): drawn here,
       // before the bridges below, so their casing/kerb/surface paint over it and the line reads as diving under
@@ -2038,38 +2222,34 @@ final class MapView extends View {
           sideKerb.setColor(CASING_C);
           sideKerb.setAlpha(alpha);
           for (int c : DRAW_ORDER) {
-            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], sideKerb,
-                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+            strokeC(canvas, c + BRIDGE * ly, c, sideKerb, dm(2 * KERB_PX + 2 * CASING_PX), floor, ik);
           }
           for (int c : DRAW_ORDER) {
             sideKerb.setColor(KERBS[c]);
             sideKerb.setAlpha(alpha);
-            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], sideKerb,
-                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+            strokeC(canvas, c + BRIDGE * ly, c, sideKerb, dm(2 * KERB_PX), floor, ik);
           }
           for (int c : DRAW_ORDER) {
             side.setColor(ROADS[c]);
             side.setAlpha(alpha);
-            stroke(canvas, stubWorld[c + BRIDGE * ly], stubPaths[c + BRIDGE * ly], side, Math.max(floor, ROAD_M[c] * ik));
+            strokeC(canvas, c + BRIDGE * ly, c, side, 0, floor, ik);
           }
           // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
           // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
           for (int c : DRAW_ORDER) {
             sideKerb.setColor(CASING_C);
             sideKerb.setAlpha(alpha);
-            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], sideKerb,
-                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX + 2 * CASING_PX));
+            strokeC(canvas, c + BRIDGE * ly + DIM_OFF, c, sideKerb, dm(2 * KERB_PX + 2 * CASING_PX), floor, ik);
           }
           for (int c : DRAW_ORDER) {
             sideKerb.setColor(dim(KERBS[c]));
             sideKerb.setAlpha(alpha);
-            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], sideKerb,
-                   Math.max(floor, ROAD_M[c] * ik) + dm(2 * KERB_PX));
+            strokeC(canvas, c + BRIDGE * ly + DIM_OFF, c, sideKerb, dm(2 * KERB_PX), floor, ik);
           }
           for (int c : DRAW_ORDER) {
             side.setColor(dim(ROADS[c]));
             side.setAlpha(alpha);
-            stroke(canvas, stubWorld[c + BRIDGE * ly + DIM_OFF], stubPaths[c + BRIDGE * ly + DIM_OFF], side, Math.max(floor, ROAD_M[c] * ik));
+            strokeC(canvas, c + BRIDGE * ly + DIM_OFF, c, side, 0, floor, ik);
           }
         }
         sideKerb.setAlpha(255);
@@ -2097,7 +2277,17 @@ final class MapView extends View {
     drawn(canvas, now, t0, t1, t2);
   }
 
+  // The car icon and its glows draw at CAR_FAR_K of their size zoomed out, easing to full size with the close-up gate
+  // (Peter 2026-11-08: at the zoomed-out ranges the icon is bigger than the roads it sits on). About the car point.
+  static final float CAR_FAR_K = 0.65f;
+  private float carScale = 1;
+
+  static float carScale(double k) {
+    return CAR_FAR_K + (1 - CAR_FAR_K) * CloseUp.gate(k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE);
+  }
+
   private void drawCar(Canvas canvas, Frame f) {
+    carScale = f == null ? 1 : carScale(f.k);
     if (f != null) useCamera(f);
     long now = SystemClock.uptimeMillis();
     float g = glow(now);
@@ -2121,20 +2311,28 @@ final class MapView extends View {
     if (a > 0) body(canvas, g * (1 - u), a, bl * (1 - u), br * (1 - u));
     if (outline != null) {
       outlinePaint.setAlpha(Math.round(255 * u));
+      canvas.save();
+      canvas.scale(carScale, carScale, CAR_X, CAR_Y);
       canvas.drawBitmap(outline, CAR_X - CAR_PX, CAR_Y - CAR_PX, outlinePaint);
+      canvas.restore();
     } else {
+      canvas.save();
+      canvas.scale(carScale, carScale, CAR_X, CAR_Y);
       fill.setColor(OUTLINE_C);
       fill.setAlpha(Math.round(255 * u));
       fill.setStyle(Paint.Style.STROKE);
       fill.setStrokeWidth(2);
       canvas.drawPath(arrow(), fill);
       fill.setStyle(Paint.Style.FILL);
+      canvas.restore();
     }
     canvas.restore();
   }
 
   // The car at alpha a (0 to 255) with its brake glow g and its left and right blind-spot glows bl and br.
   private void body(Canvas canvas, float g, int a, float bl, float br) {
+    canvas.save();
+    canvas.scale(carScale, carScale, CAR_X, CAR_Y);  // the glows scale with the sprite so they stay aligned to it
     if (bl > 0) sideGlow(canvas, -1, bl, a);
     if (br > 0) sideGlow(canvas, 1, br, a);
     if (g > 0) lights(canvas, g, true);
@@ -2147,6 +2345,7 @@ final class MapView extends View {
       fill.setAlpha(a);
       canvas.drawPath(arrow(), fill);
     }
+    canvas.restore();
   }
 
   private static Path arrow() {
@@ -2418,6 +2617,13 @@ final class MapView extends View {
     }
   }
 
+  // Class c's two-way pieces at ROAD_M and its one-way pieces (group + OW_OFF) at ONEWAY_K of it, both plus extra,
+  // the kerb and casing allowance, which does not scale; the floor is the same for both.
+  private void strokeC(Canvas canvas, int g, int c, Paint p, float extra, float floor, float ik) {
+    stroke(canvas, stubWorld[g], stubPaths[g], p, Math.max(floor, ROAD_M[c] * ik) + extra);
+    stroke(canvas, stubWorld[g + OW_OFF], stubPaths[g + OW_OFF], p, Math.max(floor, ROAD_M[c] * ONEWAY_K * ik) + extra);
+  }
+
   // The kept pieces in view this frame into kept[class], the ones reaching too near the camera turned and clipped
   // into near[class]. A piece is placed by the corners of its box in the car's frame.
   private void pieces(Chunks pc, Path[] kept, Path[] near, float ce, float cn, float ch, float sh, float ik) {
@@ -2436,7 +2642,8 @@ final class MapView extends View {
       // the route's surface is one path whatever the traffic; a stub piece goes to its own dimmed half (Part B,
       // Scene.stubsDim through Chunks.dim) when it is the untaken branch of a split, same offset GlRoads' route
       // groups use for the under-a-deck half (DIM_OFF mirrors that doubling, just on the stub/road class space)
-      int c = kept.length == 1 ? 0 : pc.cls[i] + (i < pc.dim.length && pc.dim[i] != 0 ? DIM_OFF : 0);
+      int c = kept.length == 1 ? 0 : pc.cls[i] + (i < pc.dim.length && pc.dim[i] != 0 ? DIM_OFF : 0)
+          + (i < pc.one.length && pc.one[i] != 0 ? OW_OFF : 0);
       if (z0 >= NEAR_Z) kept[c].addPath(pc.path[i]);
       else line(pc.pts[i], 0, near[c], ce, cn, ch, sh, ik, Float.NaN, 0);
     }
