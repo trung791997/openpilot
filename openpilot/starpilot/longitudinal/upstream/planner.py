@@ -192,7 +192,7 @@ class LongitudinalPlanner:
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     # ---- BOSCH-A HOOK 3/3: last shapers before the final clip, in StarPilot's order (HumanAcceleration cap, then
     # the Stock Brake Feel step). Skipped entirely when the toggles are off. ----
-    if self.bosch_a_model_leads is not None:
+    if 'acceleration_max' in bosch_a_mpc:  # unset when HumanAcceleration skips this personality
       output_a_target = min(output_a_target, bosch_a_mpc['acceleration_max'])  # >= 0: braking passes through
     if self.bosch_a_long is not None and self.bosch_a_long.stock_feel and reset_state:
       # Engage init (Stock Brake Feel only): while long is off, a_cruise starts the first engaged frame at
