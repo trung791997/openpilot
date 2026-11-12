@@ -27,11 +27,11 @@ def lead_slowing(sm, v_ego):
   except (KeyError, TypeError):
     return False
   for lead in (getattr(radar_state, 'leadOne', None), getattr(radar_state, 'leadTwo', None)):
-    if lead is None or not getattr(lead, 'status', False):
+    if lead is None or not lead.present:
       continue
     if float(lead.dRel) > LEAD_GATE_HEADWAY_S * max(v_ego, 0.0):
       continue
-    if float(lead.vRel) < LEAD_GATE_CLOSING_V or float(getattr(lead, 'aLeadK', 0.0)) < LEAD_GATE_BRAKING_A:
+    if float(lead.vRel) < LEAD_GATE_CLOSING_V or float(lead.aLeadK) < LEAD_GATE_BRAKING_A:
       return True
   return False
 

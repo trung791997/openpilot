@@ -15,14 +15,24 @@ V = 17.0
 Personality = log.LongitudinalPersonality
 
 
+def make_radar_state(lead=None):
+  # Real cereal message, so a wrong field name fails here instead of silently reading as no lead.
+  rs = log.RadarState.new_message()
+  if lead is not None:
+    present, d_rel, v_rel, a_lead = lead
+    rs.leadOne.present = present
+    rs.leadOne.dRel, rs.leadOne.vRel, rs.leadOne.aLeadK = d_rel, v_rel, a_lead
+  return rs
+
+
 def make_lead(status=False, d_rel=0.0, v_rel=0.0, a_lead=0.0):
-  return SimpleNamespace(status=status, dRel=d_rel, vRel=v_rel, aLeadK=a_lead)
+  return (status, d_rel, v_rel, a_lead)
 
 
 def make_sm(enabled=True, gas=False, v_ego=V, exp=True, personality=Personality.standard, lead=None):
   return {'selfdriveState': SimpleNamespace(enabled=enabled, experimentalMode=exp, personality=personality),
           'carState': SimpleNamespace(gasPressed=gas, vEgo=v_ego),
-          'radarState': SimpleNamespace(leadOne=lead or make_lead(), leadTwo=make_lead())}
+          'radarState': make_radar_state(lead)}
 
 
 def run(b, seconds, e2e=0.0, mpc=1.0, a_cruise=1.0, **kw):
