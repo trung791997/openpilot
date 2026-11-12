@@ -77,7 +77,7 @@ class LongitudinalPlanner:
         self.bosch_a_human = (human_following, human_acceleration, qualified_model_leads, time.monotonic_ns)
     if bosch_a is not None:
       from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-      enhancement = HondaBoschALongEnhancement(CP, dt)
+      enhancement = HondaBoschALongEnhancement(CP, dt, need_floor_min_gap=bosch_a.need_floor_min_gap)
       self.bosch_a_long = enhancement if enhancement.stock_feel else None
     # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_release.py).
     from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
@@ -189,7 +189,7 @@ class LongitudinalPlanner:
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     # ---- BOSCH-A HOOK 3/3: last shapers before the final clip, in StarPilot's order (HumanAcceleration cap, then
     # the Stock Brake Feel step). Skipped entirely when `bosch_a` is None. ----
-    if self.bosch_a_model_leads is not None:
+    if 'acceleration_max' in bosch_a_mpc:  # unset when HumanAcceleration skips this personality
       output_a_target = min(output_a_target, bosch_a_mpc['acceleration_max'])  # >= 0: braking passes through
     if self.bosch_a_long is not None and self.bosch_a_long.stock_feel and reset_state:
       # Engage init (Stock Brake Feel only): while long is off, a_cruise starts the first engaged frame at

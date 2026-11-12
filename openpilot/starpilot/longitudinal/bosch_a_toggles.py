@@ -2,6 +2,7 @@
 
 - Stock Brake Feel (honda_bosch_a_long, D-086 and its follow-ups) is permanent since 2026-11-11; it has no toggle and no settings row.
 - BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
+- BoschANeedFloorMinGap: NeedFloor only acts at a gap of at least 1.5 s of headway (honda_bosch_a_long); default off, replay only.
 - BoschACameraCapHold: camera-cap mode in radard (radar_camera_witness.py cap tell, C-012): off = VA (default), on = D+E. Read once by radard, not plannerd.
 
 Like UseStarPilotLongitudinalPlanner, the values are latched for the life of the plannerd process, so a change
@@ -15,7 +16,8 @@ from openpilot.starpilot.saved_source import read_saved
 
 HUMAN_FOLLOWING_KEY = 'BoschAHumanFollowing'
 CAMERA_CAP_HOLD_KEY = 'BoschACameraCapHold'
-KEYS = (HUMAN_FOLLOWING_KEY, CAMERA_CAP_HOLD_KEY)
+NEED_FLOOR_MIN_GAP_KEY = 'BoschANeedFloorMinGap'
+KEYS = (HUMAN_FOLLOWING_KEY, CAMERA_CAP_HOLD_KEY, NEED_FLOOR_MIN_GAP_KEY)
 # (key, label, reason) for the settings rows on the Long Planner page
 ROWS = (
   (HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
@@ -26,6 +28,10 @@ ROWS = (
    ("Off is VA. On adds a 1 s tapered hold to the far-lead camera cap: it never brakes harder than VA, softens real " +
     "far slowdowns by up to about 0.4 m/s\u00b2 for up to about 2 s (replay evidence only), and cuts more residual " +
     "phantoms. Changes apply on the next drive. Acts only on verified Bosch-A Hondas with a radar.")),
+  (NEED_FLOOR_MIN_GAP_KEY, "Need floor: only at 1.5 s gap or more (Bosch-A)",
+   ("Off keeps today's need floor. On stops the braking floor from acting when the lead is closer than 1.5 s of headway, " +
+    "so it does not soften a close lead (replay evidence only). Changes apply on the next drive. " +
+    "Acts only on verified Bosch-A Hondas with openpilot longitudinal.")),
 )
 
 
@@ -33,6 +39,7 @@ ROWS = (
 class BoschAToggles:
   human_following: bool = False
   camera_cap_hold: bool = False  # read by radard (read_camera_cap_hold), carried here so one parser owns every Bosch-A toggle
+  need_floor_min_gap: bool = False  # NeedFloor 1.5 s headway gate (honda_bosch_a_long)
 
 
 OFF = BoschAToggles()
@@ -49,7 +56,8 @@ def _on(params, key: str) -> bool:
 def read_toggles(params) -> BoschAToggles:
   """The saved toggles; Off for anything but an exact b'1'."""
   return BoschAToggles(human_following=_on(params, HUMAN_FOLLOWING_KEY),
-                        camera_cap_hold=_on(params, CAMERA_CAP_HOLD_KEY))
+                        camera_cap_hold=_on(params, CAMERA_CAP_HOLD_KEY),
+                        need_floor_min_gap=_on(params, NEED_FLOOR_MIN_GAP_KEY))
 
 
 def read_camera_cap_hold(params) -> bool:

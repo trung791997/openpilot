@@ -69,6 +69,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StarPilotControllerBindings", {PERSISTENT | DONT_LOG, JSON}},
     {"UseStarPilotLongitudinalPlanner", {PERSISTENT, BOOL, "1"}},
     {"BoschAHumanFollowing", {PERSISTENT, BOOL, "0"}},  // Bosch-A HumanFollowing + HumanAcceleration, either planner
+    {"BoschANeedFloorMinGap", {PERSISTENT, BOOL, "0"}},  // Bosch-A need floor only at >= 1.5 s headway, either planner
     {"BoschACameraCapHold", {PERSISTENT, BOOL, "0"}},  // Bosch-A camera cap mode: 0 = VA, 1 = D+E (radard)
     {"UseVOACC", {PERSISTENT, BOOL, "0"}},
     {"CustomPersonalities", {PERSISTENT, BOOL, "0"}},
