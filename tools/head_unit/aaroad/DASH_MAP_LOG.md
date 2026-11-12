@@ -430,5 +430,7 @@ from the `hu-wip-1108` worktree (base b2ddd9664c) to `vasm-jetson-updater-bridge
   `test/MapReplayBench` updated. All 12 desktop tests pass (*static*).
 Head-unit log, 14:51-15:22 drive (*limited road evidence*, one drive): 27.5 fps against 24.2 on the 11-08 drive 2;
 roads draw 2.0 ms against 3.9. One 3.6 s tick stall at 14:52 near boot and about 11 looper hiccups of 0.5-0.8 s.
-Low-frame windows near 15:06 and 15:12 are unexplained (screen switch not ruled out). Comma side ruled out from qlog
+Low-frame windows near 15:06 and 15:12 (31-139 frames per 10 s) are the car stopped, not lag: qlog carState shows
+standstill 15:05:30-15:05:57, 15:11:30-15:11:50 and 15:12:20, and the GL loop then idles at `IDLE_MS` (500 ms) by
+design; frames in those windows were fast (swap 3-4 ms, sleep ~25 ms, 0 slow frames). Comma side ruled out from qlog
 procLog: total CPU 397-441% against 473-478% on 11-11, starportd ~5.7% unchanged.
