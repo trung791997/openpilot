@@ -410,8 +410,6 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
     return f"Select {request.value} for {row.label.lower()}? The selected planner starts with the next driving process."
   if key in ("BoschAStockBrakeFeel", "BoschAHumanFollowing", "BoschANeedFloorMinGap"):
     return f"Turn {request.value} {row.label}? This applies on the next drive, with either planner."
-  if key == "BoschACameraCapHold":
-    return f"Turn {request.value} {row.label}? This applies on the next drive."
   if key in ("CustomCruise", "CustomCruiseLong"):
     if row.capability and row.capability[0] == "toyota":
       return f"Save {row.label.lower()} as {request.value}? Toyota cruise preferences refresh while this compatible drive is active."

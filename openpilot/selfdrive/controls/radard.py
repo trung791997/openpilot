@@ -11,7 +11,6 @@ import capnp
 from openpilot.cereal import messaging, log
 from opendbc.car.structs import car
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
@@ -214,12 +213,7 @@ class RadarD:
     self.honda_bosch_a = None
     if honda_bosch_a_radar:
       from openpilot.starpilot.car.honda.radar import BoschALeadPolicy
-      from openpilot.starpilot.longitudinal.bosch_a_toggles import read_camera_cap_hold
-      try:
-        camera_cap_hold = read_camera_cap_hold(Params())  # latched for the life of radard (C-012)
-      except Exception:
-        camera_cap_hold = False
-      self.honda_bosch_a = BoschALeadPolicy(camera_cap_hold=camera_cap_hold)
+      self.honda_bosch_a = BoschALeadPolicy()
     if self.honda_bosch_a is not None:
       from opendbc.car.honda.bosch_a_radar import BOSCH_A_FREQ_HZ  # the measured sweep rate (14.35 Hz), not a round 15
       self.kalman_params = KalmanParams(1.0 / BOSCH_A_FREQ_HZ)

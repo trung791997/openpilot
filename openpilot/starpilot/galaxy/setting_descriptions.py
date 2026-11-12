@@ -52,9 +52,6 @@ DESCRIPTIONS = {
   'BoschAHumanFollowing': ('Follows the driving model\u2019s predicted path for the car ahead instead of a straight-line guess, and ' +
                            'eases acceleration at low set speeds and near the set speed. It works with either planner and acts ' +
                            'only on verified Bosch-A Hondas with openpilot longitudinal.'),
-  'BoschACameraCapHold': ('Off is VA. On adds a 1 s tapered hold to the far-lead camera cap. It never brakes harder than VA, ' +
-                          'softens real far slowdowns by up to about 0.4 m/s\u00b2 for up to about 2 s (replay evidence only), and ' +
-                          'cuts more residual phantoms. It acts only on verified Bosch-A Hondas with a radar.'),
   'BoschANeedFloorMinGap': ('Stops the braking floor from acting when the car ahead is closer than 1.5 s of headway, so it does not ' +
                             'soften a close lead (replay evidence only). It needs Stock Brake Feel and acts only on verified ' +
                             'Bosch-A Hondas with openpilot longitudinal.'),
@@ -198,7 +195,6 @@ INITIALIZATION = {
   'BoschAStockBrakeFeel': 'Applies on the next drive: the planner reads this setting once when it starts.',
   'BoschAHumanFollowing': 'Applies on the next drive: the planner reads this setting once when it starts.',
   'BoschANeedFloorMinGap': 'Applies on the next drive: the planner reads this setting once when it starts.',
-  'BoschACameraCapHold': 'Applies on the next drive: radard reads this setting once when it starts.',
   'TurnAssist': ('Applies when driving processes next start: the selected torque controller creates its ' +
     'low-speed feedback controller and filter state at initialization.'),
   'ToyotaRadarMode': 'Chooses the supported Toyota front radar configuration, including the optional ARS510 retrofit.',
