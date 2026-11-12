@@ -69,6 +69,11 @@ Decision: New boolean param `BoschACameraCapHold` (default "0"), a row beside th
 Evidence: replay by Job (variants D+E, see C-011): never brakes harder than VA; softens real far slowdowns by up to about 0.4 m/s^2 for up to about 2 s (99 s15 -0.60 -> -0.24 over 1.95 s, a2 s11 -0.62 -> -0.26, 84 s4 -2.79 -> -2.63); cuts more residual phantoms (8a s2 -0.72 -> -0.58). Static tests only for the setting; not road-validated.
 Revisit if: a road drive with D+E on shows a real far slowdown braked late, or D+E removes no phantom that VA leaves on the road.
 
+## C-013: Held-vRel range-slope bound for far unmeasured radar leads (2026-11-11)
+Decision: On `bob-unify` (replay branch, not on the car), `BoschALeadPolicy.leads()` bounds a radar lead's published vRel/vLead/vLeadK to the track's own range slope minus HELD_VREL_MARGIN (1 m/s) when the point is not measured (`track.direct` False), dRel >= 50 m, vRel <= -4, the range slope is >= -1 and disagrees with the held vRel by 8 m/s+, for 0.3 s+, and the lead is not urgent (`urgent()`: under 30 m or TTC under 4 s, using the last direct vRel). It only raises the speed (removes braking), never deletes the point, and leaves dRel, aLeadK and `track.vRel` raw (D-041: publish a bound, coast nothing). It runs before the camera witness. Cause it answers: ep26 (71 seg 9), a track at 82-85 m held vRel -9.51 unmeasured for 1.8 s while its range opened at +2 m/s. The earlier softening of ep26 by an un-rate-limited camera blend was dropped because it also softened ep292 (REAL, measured, slope agreeing with vRel); range and TTC do not separate the two, the measured flag and the slope disagreement do.
+Evidence: commit b7468b5c2c; radard trace ep292 0 of 168 frames differ, ep26 41 frames; Job's scorecard vs `replay_unify6` (36 routes / 1141 episodes + 280-episode second set): 0 harder, 0 later, 3 softer (ep26, ep909, ep922, all Peter-labelled PHANTOM from stills, brake removed), ep1133 (REAL_MILD) onset and peak unchanged, no REAL row moved, second set row-identical; 9 static tests. Replay only (open-loop). Peter took it 2026-11-11.
+Revisit if: a road drive shows a real far slowdown braked late while the radar point was unmeasured, or ep157/158-type phantoms (not reached by this bound) need the same treatment.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)
