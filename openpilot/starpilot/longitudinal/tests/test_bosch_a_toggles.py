@@ -143,6 +143,13 @@ class TestReadToggles(unittest.TestCase):
       self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, raw)
       self.assertEqual(read_toggles(self.params), BoschAToggles(expected, expected), raw)
 
+  def test_need_floor_min_gap_toggle(self):
+    for raw, expected in ((b'1', True), (b'0', False), (b'', False), (b'true', False), (b'\xff', False)):
+      self.put(bosch_a_toggles.NEED_FLOOR_MIN_GAP_KEY, raw)
+      self.assertIs(read_toggles(self.params).need_floor_min_gap, expected, raw)
+    self.assertEqual(bosch_a_toggles.NEED_FLOOR_MIN_GAP_KEY, 'BoschANeedFloorMinGap')
+    self.assertFalse(OFF.need_floor_min_gap)
+
   def test_each_toggle_is_independent(self):
     self.put(bosch_a_toggles.HUMAN_FOLLOWING_KEY, b'1')
     self.assertEqual(read_toggles(self.params), BoschAToggles(stock_brake_feel=False, human_following=True))
