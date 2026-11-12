@@ -69,6 +69,11 @@ Decision: New boolean param `BoschACameraCapHold` (default "0"), a row beside th
 Evidence: replay by Job (variants D+E, see C-011): never brakes harder than VA; softens real far slowdowns by up to about 0.4 m/s^2 for up to about 2 s (99 s15 -0.60 -> -0.24 over 1.95 s, a2 s11 -0.62 -> -0.26, 84 s4 -2.79 -> -2.63); cuts more residual phantoms (8a s2 -0.72 -> -0.58). Static tests only for the setting; not road-validated.
 Revisit if: a road drive with D+E on shows a real far slowdown braked late, or D+E removes no phantom that VA leaves on the road.
 
+## C-013: Held-vRel range-slope bound (2026-11-11)
+Decision: While the parser holds a far point's vRel without measuring it (`direct` False), and dRel >= 50 m, vRel <= -4 m/s, the track's own range slope >= -1 m/s and the slope exceeds the held vRel by >= 8 m/s, continuously for >= 0.3 s, and the lead is not urgent (urgency_v_rel + reversal-bound `urgent()`: < 30 m or TTC < 4 s), the published vRel/vLead/vLeadK are raised to min(slope, 0) - 1 m/s. It only raises, never deletes the point, and leaves dRel, aLeadK and track.vRel raw (D-041). It runs before the weak-lead, reversal and camera bounds. The radar's own measurement wins the cycle `direct` returns. Switch: `HELD_VREL_SLOPE_BOUND_ENABLED` in radar.py. Ported from b7468b5c2c on the unify stack.
+Evidence: scorecard ep26 (00000071--37216af48f seg 9, PHANTOM): track 58 at 82-85 m held vRel -9.51 for ~1.8 s while its range opened at about +2 m/s; the planner braked to -1.11. Job's scorecard on the unify stack vs replay_unify6 (36 routes, 1141 episodes): 0 harder, 0 later, 3 softer (ep26, ep909, ep922, all PHANTOM, each loses its brake); ep1133 (REAL_MILD) and every REAL row unchanged; the 280-episode second set is row-identical. Replay only (open-loop), and on the unify stack: this car-base port has static tests only (9/9) and has not been replayed.
+Revisit if: a road drive shows a real far slowdown braked late while the radar point was unmeasured.
+
 ## Entry format
 ```
 ## C-NNN: <title> (YYYY-MM-DD)

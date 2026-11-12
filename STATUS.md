@@ -42,6 +42,7 @@ Started fresh on 2026-11-06 at `ea4c879de8`.
 - Route 20 T285-287: the hard highway slowdown looks like the radar locked onto the wrong object (STATUS 263); still ambiguous on the stills.
 - Everything on this branch until an entry above says otherwise.
 - In-path radar keep — no road evidence. Watch for a phantom brake right after a car leaves our lane or at intersections (cross traffic and next-lane cars were the false keeps in the census), and note that one census event published a glitched radar speed for 2 frames through the keep (84 i3716).
+- 2026-11-11: Held-vRel range-slope bound (C-013) — a far radar lead whose closing speed the radar is holding without measuring, while its range is flat or opening, is published at the range slope minus 1 m/s instead. Risk: a real far closing lead the radar is not measuring has its closing speed hidden until it is measured again or turns urgent (< 30 m or TTC < 4 s). Evidence: replay on the unify stack (3 phantoms softened, no real event moved); this port has static tests only. Level: static on this branch.
 
 ## Removed / shelved
 - Set Speed Assist removed 2026-11-06 at `eb9a7e584`. Reason: doubled cruise jerk in replay (RMS 0.208 off vs 0.476 on) and on the road (14 SSA-on units read 0.466, limited road evidence); the best smoothing attempt (R4) kept only 71 % of the catch-up gain and still braked deeper on slow traffic after open road. PROGRESS entry 15. Upstream sunnypilot #2083 is still open.
