@@ -35,8 +35,11 @@ NOW_PLAYING_WIDGET = 'now_playing'
 NOW_PLAYING_SIZE = (640, 264)
 NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
-# projection_theme.SpeedLimitCard with both MAX SET and SLC LIMIT; its button row adds below this when shown.
-SPEED_CARD_SIZE = (346, 460)
+# The shared SET + speed-limit sign card (large_speed_geometry); Accept / Decline are their own widget below it.
+SPEED_CARD_SIZE = (488, 168)
+# Left column on the car screen, top to bottom: speed card, lead badge, curve gauge, exit button, evenly spaced.
+# Gauge box y at 1800 x 1056 content: card bottom 243, badge ink 204.6 tall, gauge ink ~265, exit button top 990 -> gaps ~92.
+CEM_GAUGE_COLUMN_Y = 633
 JETLINK_OPACITY = (0, 100, 85)
 CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}
 PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT, 'following_distance')
@@ -136,12 +139,13 @@ def layout_metadata_for_viewport(viewport):
     widgets[key]['default'].update(opacity=opacity, background=key != CAR_EXIT)
   # Background opacity for the cruise and speed-limit card; its text stays solid.
   widgets['cruise_limits'].update(opacity={'min': 0, 'max': 100, 'default': 100})
-  # The car screen draws its own taller card (MAX SET over SLC LIMIT), without the source rows.
-  widgets['cruise_limits'].update(width=SPEED_CARD_SIZE[0], height=SPEED_CARD_SIZE[1])
+  # The car screen's speed card has no source rows.
   widgets['cruise_limits'].pop('sourcesExtent', None)
   widgets['speed_limit_actions']['note'] = ('On the car screen Accept and Decline sit in a row at the bottom of the speed card; '
                                             'this only turns them on or off.')
   widgets['cruise_limits']['default'].update(opacity=100)
+  # Left column: x=30 is the leftmost the gauge box can sit (its ink then starts ~10 right of the card's left edge).
+  widgets[CEM_GAUGE_WIDGET]['default'].update(x=30, y=CEM_GAUGE_COLUMN_Y)
   profile["widgetOrder"] = [NAV_MAP, *[key for key in profile["widgetOrder"] if key not in (NAV_MAP, NAV_CARD, STOPPED_TIMER_WIDGET)],
                             STOPPED_TIMER_WIDGET, NAV_CARD, *DISPLAY_WIDGETS, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT]
   return profile

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpilot.starpilot.ui.raylib import rl
 
-from openpilot.starpilot.system.starport.projection_layout import SPEED_CARD_SIZE
+from openpilot.starpilot.system.starport.projection_layout import CEM_GAUGE_COLUMN_Y, SPEED_CARD_SIZE
 from openpilot.starpilot.ui.onroad_customization import placement, rgba
 from openpilot.starpilot.ui.onroad_state import AlertSize, slc_controls
 from openpilot.starpilot.ui.onroad_large_widgets import wheel_box
@@ -238,7 +238,8 @@ def overlay(fonts, content, state, mode_label, lead_present, vasm=(False, False)
   edge_glow(state_glow(state, mode_label), content.x, content.y, content.width, content.height)
   appearance = getattr(state, 'appearance', None)
   if appearance is not None and appearance.show_lead_indicator:
-    lead_badge(fonts, content, lead_present, lead, trend, personality=personality, avoid=card_rect(state))
+    avoid, anchor = badge_placement(state, content)
+    lead_badge(fonts, content, lead_present, lead, trend, personality=personality, avoid=avoid, anchor=anchor)
   left, right = side_colors(state, *vasm)
   side_glow(left, content.x, content.y, content.width, content.height, True)
   side_glow(right, content.x, content.y, content.width, content.height, False)
@@ -438,13 +439,54 @@ def card_rect(state):
   if body is None or not placement(state.customization, 'large', 'cruise_limits').get('enabled', True):
     return None
   x, y = body[0], body[1]
-  return x, y, x + CARD_WIDTH, y + card_height(state)
+  # The car screen uses the shared UnifiedSpeedWidget card (SPEED_CARD_SIZE), not the taller SpeedLimitCard body.
+  return x, y, x + SPEED_CARD_SIZE[0], y + SPEED_CARD_SIZE[1]
 
 
-def badge_geometry(content, personality, avoid=None):
+SPRITE_ASPECT = 247 / 256       # lead_civic.png height over width
+
+
+def badge_extent(content):
+  """(top, bottom) of the badge's drawn ink at its home slot, over all three distance settings: the lane lines' far end
+  or the car roof on top, the near lane edge or the tyres at the bottom. Reserve this much height so it never collides."""
+  tops, bottoms = [], []
+  for personality in ('aggressive', 'standard', 'relaxed'):
+    g = badge_geometry(content, personality)
+    sprite_h = round(g['car_width'] / SPRITE_CAR_WIDTH) * SPRITE_ASPECT
+    roof = g['car_ground'] - sprite_h * SPRITE_GROUND
+    tops.append(min(g['y'](ROAD_FAR), roof))
+    bottoms.append(max(g['y'](1) + max(1.5, g['unit'] * .085) / 2, roof + sprite_h))
+  return min(tops), max(bottoms)
+
+
+def badge_anchor(state, content):
+  """Car screen: the badge sits directly under the speed card, left ink edge on the card's, with the same gap above and
+  below it as the curve gauge default below (card -> badge -> gauge -> exit button spaced evenly), or None with no card."""
+  card = card_rect(state)
+  if card is None:
+    return None
+  top, bottom = badge_extent(content)
+  gap = (CEM_GAUGE_COLUMN_Y - card[3] - (bottom - top)) / 2
+  return card[0], card[3] + gap
+
+
+def badge_placement(state, content):
+  """(avoid, anchor) for the lead badge. Normally it is pinned under the speed card; while the Accept / Decline buttons
+  are up they sit in that slot, so the badge slides sideways off the card and the buttons until they close."""
+  card = card_rect(state)
+  controls = slc_controls(Profile.LARGE, state) if card is not None else ()
+  if not controls:
+    return card, badge_anchor(state, content)
+  boxes = [card, *(control.bounds for control in controls)]
+  return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)), None
+
+
+def badge_geometry(content, personality, avoid=None, anchor=None):
   """Where the lead badge draws, like the Honda cluster's distance display: the road runs away from us and the lead
   car sits just past the last bar, so it is close and large at 1 bar and further away and smaller at 3. If its spot
-  overlaps `avoid` (the speed card's rect), it slides sideways off the card rather than drawing over it."""
+  overlaps `avoid` (the speed card's rect), it slides sideways off the card rather than drawing over it.
+  `anchor` = (left, top) pins the badge's drawn ink instead (left edge of the lane lines, top of the highest ink over all
+  three distance settings), which is how the car screen stacks it under the speed card; `avoid` is then moot."""
   unit = content.width * .05
   w = unit * 1.25
   cx, top = content.x + content.width * .28, content.y + content.height * .12
@@ -455,6 +497,10 @@ def badge_geometry(content, personality, avoid=None):
   def y(z):
     return horizon + depth / z
 
+  if anchor is not None:
+    cx = anchor[0] + lane + max(1.5, unit * .085) / 2
+    horizon += anchor[1] - badge_extent(content)[0]
+    avoid = None
   if avoid is not None:
     # widest at the near edge (lane lines plus half their stroke); the top is the highest car roof over all three
     # settings, so the badge does not hop sideways when the distance setting changes
@@ -527,7 +573,7 @@ def _vector_car(cx, top, w, h, braking, pulse):
   _fill(_rounded(box(-.40, .83, .40, .875), w * .02), lambda y: rl.Color(46, 50, 62, 255))
 
 
-def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None, avoid=None):
+def lead_badge(fonts, content, present, lead=None, trend=None, now=None, personality=None, avoid=None, anchor=None):
   """Lead car on the following-distance bars, like the Honda cluster: the Civic sits closer at 1 bar and further away
   at 3. A soft halo carries the state: yellow while the lead holds speed, red with its brake lamps lit while it brakes
   (pulsing when it brakes hard), teal while it pulls away."""
@@ -540,7 +586,7 @@ def lead_badge(fonts, content, present, lead=None, trend=None, now=None, persona
   hard = braking and lead is not None and lead.a_lead <= -2.5
   pulse = .5 + .5 * math.sin(now / .45 * 2 * math.pi) if hard else 1.
 
-  g = badge_geometry(content, personality, avoid)
+  g = badge_geometry(content, personality, avoid, anchor)
   cx, y, lane = g['cx'], g['y'], g['lane']
   car_w, ground = g['car_width'], g['car_ground']
   car_h = car_w * .875  # roof to tyres
