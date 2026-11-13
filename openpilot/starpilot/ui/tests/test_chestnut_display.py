@@ -457,7 +457,7 @@ def test_jetlink_uses_existing_gpu_feedback(phase, started, expected):
   sm.valid = {'modelV2': True}
   sm.alive = {'modelV2': True}
   feed = Mock()
-  feed.snapshot.return_value = JetlinkStatus('Computer', phase, port='connected')
+  feed.snapshot.return_value = JetlinkStatus('Jetson', phase, port='connected')
   state = Mock(spec=UIState, sm=sm, started=started, started_frame=10, jetlink_status_feed=feed,
                           chestnut_output_seen=False, chestnut_present=False)
   with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
@@ -478,7 +478,7 @@ def test_jetlink_cannot_keep_green_without_fresh_big_output(big, valid, alive, a
   sm.valid = {'modelV2': valid}
   sm.alive = {'modelV2': alive}
   feed = Mock()
-  feed.snapshot.return_value = JetlinkStatus('Computer', 'active', port='connected')
+  feed.snapshot.return_value = JetlinkStatus('Jetson', 'active', port='connected')
   state = Mock(spec=UIState, sm=sm, started=True, started_frame=10, jetlink_status_feed=feed,
                           chestnut_output_seen=True, chestnut_present=True)
   with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_000_000_000 + age):
