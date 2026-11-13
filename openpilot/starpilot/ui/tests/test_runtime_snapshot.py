@@ -1180,7 +1180,7 @@ def test_home_jetlink_model_name_and_gpu_share_existing_feed(phase, label, prese
   from openpilot.starpilot.models.jetlink_status import JetlinkStatus
   ui = ui_fake()
   feed = Mock()
-  feed.snapshot.return_value = JetlinkStatus('Computer', phase, port='connected' if present else None)
+  feed.snapshot.return_value = JetlinkStatus('Jetson', phase, port='connected' if present else None)
   ui.jetlink_status_feed = feed
   ui.chestnut_state = NS(value='active' if phase == 'active' else 'loading')
   adapter = RuntimeSnapshotAdapter(ui)

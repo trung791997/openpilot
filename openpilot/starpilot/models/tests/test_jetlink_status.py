@@ -32,15 +32,15 @@ def test_off_reads_nothing_of_jetlink():
 
 
 @pytest.mark.parametrize('kw,expected', [
-  ({'active': True, 'running': 'running'}, JetlinkStatus('Computer', 'active', 24.6, 'connected')),
-  ({'running': 'ready'}, JetlinkStatus('Computer', 'ready', port='connected')),
-  ({'running': 'joining'}, JetlinkStatus('Computer', 'connecting', port='connected')),
-  ({'running': 'retrying'}, JetlinkStatus('Computer', 'connecting', port='connected')),
-  ({'running': None, 'ready': False}, JetlinkStatus('Computer', 'connected', port='connected')),
-  ({'reason': 'service stopped'}, JetlinkStatus('Computer', 'unavailable', port='connected')),
-  ({'present': False, 'port_state': 'device'}, JetlinkStatus('Computer', 'disconnected', port='device')),
-  ({'present': False, 'port_state': 'empty'}, JetlinkStatus('Computer', 'disconnected')),
-  ({'present': False, 'port_state': None}, JetlinkStatus('Computer', 'disconnected')),
+  ({'active': True, 'running': 'running'}, JetlinkStatus('Jetson', 'active', 24.6, 'connected')),
+  ({'running': 'ready'}, JetlinkStatus('Jetson', 'ready', port='connected')),
+  ({'running': 'joining'}, JetlinkStatus('Jetson', 'connecting', port='connected')),
+  ({'running': 'retrying'}, JetlinkStatus('Jetson', 'connecting', port='connected')),
+  ({'running': None, 'ready': False}, JetlinkStatus('Jetson', 'connected', port='connected')),
+  ({'reason': 'service stopped'}, JetlinkStatus('Jetson', 'unavailable', port='connected')),
+  ({'present': False, 'port_state': 'device'}, JetlinkStatus('Jetson', 'disconnected', port='device')),
+  ({'present': False, 'port_state': 'empty'}, JetlinkStatus('Jetson', 'disconnected')),
+  ({'present': False, 'port_state': None}, JetlinkStatus('Jetson', 'disconnected')),
   ({'mode': 'ios', 'active': True}, JetlinkStatus('iPhone', 'active', 24.6, 'connected')),
   ({'enabled': False}, JetlinkStatus()),
 ])

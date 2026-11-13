@@ -123,7 +123,7 @@ def read_status() -> JetlinkStatus:
     return JetlinkStatus(state='unavailable')
   if not status.enabled:
     return JetlinkStatus()  # a Chestnut is fitted
-  device = 'iPhone' if status.mode == 'ios' else 'Computer'
+  device = 'iPhone' if status.mode == 'ios' else 'Jetson'
   port = status.port_state if status.port_state in ('connected', 'device') else None
   extra = {'hud': hud_state(status), 'model': status.active_model or status.model, 'progress': _progress(status)}
   if not status.present:
