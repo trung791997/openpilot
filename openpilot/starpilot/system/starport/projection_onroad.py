@@ -232,7 +232,7 @@ class ProjectionOnroad:
       from openpilot.starpilot.ui.onroad_state import OnroadInput
       def emit_slc(request) -> None:
         self.slc_action(request)
-      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE, slop=30, controls=projection_theme.card_controls,
+      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE, slop=30, controls=projection_theme.slc_controls,
                                     open_prompt=True)
       self.onroad.pressed_action = lambda: self._slc_input.pressed_action
       self.pip = None
@@ -279,9 +279,7 @@ class ProjectionOnroad:
   def apply_theme(view, fonts, overlay, pressed=lambda: None):
     """The car screen's own look over the shared view, also used by The Galaxy's layout preview."""
     from openpilot.starpilot.system.starport import projection_theme
-    view.unified_speed = projection_theme.SpeedLimitCard(
-      fonts, lambda state: projection_theme.state_glow(state, driving_mode_label(state)), pressed)
-    view._slc_actions = lambda state: None  # the card draws them, in its own bottom row
+    # The shared (shorter) UnifiedSpeedWidget card draws, with its own Accept / Decline controls.
     view.steering_wheel = projection_theme.AtomBadge()
     view.extra_overlays = overlay
 
