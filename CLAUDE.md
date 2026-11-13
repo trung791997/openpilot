@@ -16,7 +16,11 @@ Short version, in priority order:
    that set them. **Read the comment block before changing a number.**
 4. **Nothing goes to the car without Peter.** Do not push to this branch unless Peter asked for it.
 5. The checked-in `.so` files are **aarch64**; a test that "cannot run here" is usually that.
-6. More than one agent works this repo. Run `git log --oneline -10` and `git status` before
+6. **"Radar" on this car means the Bosch-A camera's object list.** `0x280`–`0x2FF` is sent by the
+   windshield camera; the radar's own detections never reach CAN. When Peter says radar, read it as the
+   camera's object list. "Radar vs vision" checks are camera against camera. See
+   `docs/BOSCH_A_OBJECT_LIST_IS_CAMERA.md`.
+7. More than one agent works this repo. Run `git log --oneline -10` and `git status` before
    editing. Commit as `YYYY-MM-DD <what changed>`. Never commit `.claude/compact-state*.md`.
 
 # Opus-orchestrator workflow (when the session model is Opus)
