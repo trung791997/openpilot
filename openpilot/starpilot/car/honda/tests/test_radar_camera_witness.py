@@ -319,7 +319,7 @@ def test_cap_never_more_braking_and_vision_leads_untouched():
   assert crun(CameraWitness(), 10, lead=vision_lead) == vision_lead
 
 
-# ---- D+E mode (C-012): limited tapered hold; VA above is unchanged ----
+# ---- cap hold (C-012): the only mode, a limited tapered hold ----
 def gap_model(gap):
   """Camera lead whose closing speed is `gap` m/s slower than the radar's -5.0 (radar v_rel = -5.0)."""
   return cap_vision(v_rel=-5.0 + gap)
@@ -340,28 +340,20 @@ def hrun(cw, gap, count):
   return out
 
 
-def test_default_is_va_and_hold_off():
-  assert CameraWitness().hold is False and CameraWitness().hold_t == [0.0, 0.0]
-  cw = CameraWitness()
-  hrun(cw, 5.0, 20)
-  out = hrun(cw, 2.0, 40)   # VA: gap <= CAP_GAP_MIN releases (slewed over RELEASE_S)
-  assert out['vRel'] == pytest.approx(-5.0)
-  assert cw.hold_t == [0.0, 0.0]
-
-
 def test_hold_tapers_target_when_gap_drops_5_to_2():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
+  assert cw.hold_t == [0.0, 0.0]
   hrun(cw, 5.0, 20)
   assert cw.tell_weights['cap'][0] == 1.0
   hrun(cw, 2.0, 20)   # tell = (2 - 1) / (3 - 1) = 0.5 on the gap: the old target gap * 0.5 = 1.0 m/s
   assert cw.tell_weights['cap'][0] == pytest.approx((2.0 - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD))
-  out = hrun(CameraWitness(hold=True), 5.0, 20)      # CHANGED (growth limit): 20 cycles, the first alone gives only DV_STEP
+  out = hrun(CameraWitness(), 5.0, 20)      # CHANGED (growth limit): 20 cycles, the first alone gives only DV_STEP
   assert out['vRel'] == pytest.approx(-5.0 + 5.0)   # gap 5 fully applied
   assert cw.hold_t[0] == pytest.approx(20 * DT_MDL)
 
 
 def test_hold_ends_after_hold_t():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   hrun(cw, 2.0, round(CAP_HOLD_T / DT_MDL))
   assert cw.tell_weights['cap'][0] == pytest.approx(0.5)
@@ -371,7 +363,7 @@ def test_hold_ends_after_hold_t():
 
 
 def test_no_hold_at_or_below_gap_hold():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   hrun(cw, CAP_GAP_HOLD - 0.1, 40)
   assert cw.tell_weights['cap'][0] == 0.0 and cw.cap_dv[0] == 0.0
@@ -379,7 +371,7 @@ def test_no_hold_at_or_below_gap_hold():
 
 
 def test_hold_t_not_reset_across_recrossing_of_gap_min():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   hrun(cw, 2.0, 10)
   held = cw.hold_t[0]
@@ -391,7 +383,7 @@ def test_hold_t_not_reset_across_recrossing_of_gap_min():
 
 
 def test_new_track_resets_hold_t():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   hrun(cw, 2.0, 10)
   assert cw.hold_t[0] > 0.0
@@ -400,39 +392,17 @@ def test_new_track_resets_hold_t():
 
 
 def test_new_track_does_not_inherit_a_hold():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   hstep(cw, 2.0, lead=cap_lead(tid=54))   # gap 2 on a track that was never capped: no hold
   assert cw.tell_weights['cap'][0] == 0.0
 
 
-def test_hold_mode_matches_va_while_gap_above_gap_min():
-  va, de = CameraWitness(), CameraWitness(hold=True)
-  for _ in range(30):
-    assert hstep(va, 5.0) == hstep(de, 5.0)
-
-
 def test_hold_mode_still_lifts_aleadk_while_holding():
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   hrun(cw, 5.0, 20)
   out = hrun(cw, 2.0, 5)
   assert out['aLeadK'] >= -0.4
-
-
-def test_toggle_parsing_defaults_to_va(tmp_path):
-  from openpilot.starpilot.longitudinal.bosch_a_toggles import CAMERA_CAP_HOLD_KEY, read_camera_cap_hold
-
-  class P:
-    def get_param_path(self, key):
-      return str(tmp_path / key)
-
-  assert read_camera_cap_hold(P()) is False             # missing
-  for raw, expected in ((b'1', True), (b'0', False), (b'', False), (b'true', False), (b'1\n', False), (b'\xff', False),
-                        (b'1' * 9, False)):
-    (tmp_path / CAMERA_CAP_HOLD_KEY).write_bytes(raw)
-    assert read_camera_cap_hold(P()) is expected, raw
-  assert read_camera_cap_hold(None) is False
-  assert read_camera_cap_hold(object()) is False
 
 
 # ---- weak tell (was test_radar_lead_bound) ----
@@ -737,7 +707,7 @@ def test_bounds_keep_their_weight_when_only_the_floor_estimate_is_urgent():
 # ---- the unified rule ----
 def test_dRel_never_changed_and_no_lead_dropped_over_a_random_sweep():
   rng = random.Random(20261111)
-  cw = CameraWitness(hold=True)
+  cw = CameraWitness()
   ids = [-1, -1]
   for _ in range(4000):
     leads, models = [], []
@@ -858,13 +828,22 @@ def test_weak_tell_blends_first_then_the_cap_reads_the_blended_lead():
   cw = CameraWitness()
   gstep(cw, -0.6, cam=-0.5)
   dv = 0.0
+  tell = 0.0
+  held = 0.0
   for n in range(1, 9):
     out = witness(cw, [cap_lead(v_rel=-10.5), ABSENT], [cap_vision(v_rel=-0.5), cap_vision()], v_ego=CAP_V_EGO,
                   probs=(0.95, 0.0), tracks={TID: object()}, statuses=(9, 0), contradictions=(9.9, 0.0),
                   ranges=[ranges(slope=-0.5), deque()])[0]
     stage1 = -10.5 + min(RISE * n, 1.0) * 10.0
     gap = -0.5 - stage1
-    dv = min(max(gap if gap > CAP_GAP_MIN else 0.0, dv - DV_STEP), dv + DV_STEP)
+    if gap > CAP_GAP_MIN:
+      tell = 1.0
+    elif tell > 0.0 and gap > CAP_GAP_HOLD and held < CAP_HOLD_T:   # the tapered hold (the only mode)
+      held += DT_MDL
+      tell = (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD)
+    else:
+      tell = 0.0
+    dv = min(max(tell * gap if tell > 0.0 and gap > 0.0 else 0.0, dv - DV_STEP), dv + DV_STEP)
     assert cw.slewed[0] == pytest.approx(min(RISE * n, 1.0))
     assert out['vRel'] == pytest.approx(stage1 + dv) and cw.cap_dv[0] == pytest.approx(dv)
   assert cw.tell_weights['weak'][0] == 1.0
@@ -924,19 +903,19 @@ def test_growth_limit_correction_shrinks_freely():
 
 
 def test_cap_state_falls_at_the_rate_when_the_gap_collapses():
-  # the gap collapses below CAP_GAP_MIN in one frame (tell lost): the correction does not fall faster than DV_STEP / DA_STEP
+  # the gap collapses to or below CAP_GAP_HOLD in one frame (no hold, tell lost): the correction does not fall faster than DV_STEP / DA_STEP
   cw = CameraWitness()
   crun_g(cw, 40, -4.5, a=-3.0)
   assert cw.cap_dv[0] == pytest.approx(4.0) and cw.cap_da[0] == pytest.approx(3.0)
   for n in range(1, 6):
-    out = gstep(cw, -2.0, a=-3.0)             # gap 1.5: tell 0, target 0
+    out = gstep(cw, -1.0, a=-3.0)             # gap 0.5 <= CAP_GAP_HOLD: tell 0, target 0
     assert cw.tell_weights['cap'][0] == 0.0
     assert cw.cap_dv[0] == pytest.approx(4.0 - DV_STEP * n)
-    assert out['vRel'] == pytest.approx(-2.0 + 4.0 - DV_STEP * n)
+    assert out['vRel'] == pytest.approx(-1.0 + 4.0 - DV_STEP * n)
     assert out['aLeadK'] == pytest.approx(-3.0 + 3.0 - DA_STEP * n)
-  out = crun_g(cw, 12, -2.0, a=-3.0)
+  out = crun_g(cw, 12, -1.0, a=-3.0)
   assert cw.cap_dv[0] == 0.0 and cw.cap_da[0] == 0.0 and cw.weights[0] == 0.0
-  assert out['vRel'] == pytest.approx(-2.0) and out['aLeadK'] == pytest.approx(-3.0)
+  assert out['vRel'] == pytest.approx(-1.0) and out['aLeadK'] == pytest.approx(-3.0)
 
 
 def test_cap_state_decays_at_the_rate_when_the_tell_is_lost_by_range():

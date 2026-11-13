@@ -126,8 +126,8 @@ b0 17:05 -0.59 -> -0.11; b0 t51.6 stays -3.40 (track 53's range-fit vRel, not th
 braked harder than the cap alone except 80 seg19's second pulse (+0.20); full-route fidelity moved <= 0.006.
 Replay evidence only; no road evidence yet.
 
-Mode (C-012): VA (above, default) or D+E (`hold=True`, the BoschACameraCapHold toggle, latched at construction). D+E adds a
-limited, tapered hold: the gap floor is dropped, and while the cap tell was applied last cycle and the gap is at or below
+Hold (C-012, the only mode; the BoschACameraCapHold toggle and the plain VA branch are gone, static only): the cap above
+has a limited, tapered hold: there is no gap floor, and while the cap tell was applied last cycle and the gap is at or below
 CAP_GAP_MIN but above CAP_GAP_HOLD, the cap tell is (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD) (as a weight on the
 gap; the old D+E target was gap * (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD) in m/s), for at most CAP_HOLD_T
 seconds in total per engagement (hold_t is reset on a new track and whenever the cap tell returns to 0, deliberately not
@@ -188,8 +188,8 @@ CAP_MIN_D = 50.0       # m; far leads only (b0 track 53 at 60-80 m). Nearer, the
 CAP_PROB = 0.9         # filtered model lead prob (CameraSlowBound's witness level)
 CAP_RANGE_FRAC = 0.3   # camera range within this fraction of dRel (b0 17:05: 70 vs 79 m)
 CAP_GAP_MIN = 3.0      # m/s; the camera must close this much slower than the radar's vRel
-CAP_GAP_HOLD = 1.0     # m/s; D+E: no hold at or below this gap, and the taper reaches 0 here
-CAP_HOLD_T = 1.0       # s; D+E: total hold time per engagement
+CAP_GAP_HOLD = 1.0     # m/s; no hold at or below this gap, and the taper reaches 0 here
+CAP_HOLD_T = 1.0       # s; total hold time per engagement
 CAP_DV_RATE = 8.0      # m/s per second; the cap-only vRel/vLead correction follows its target at this rate, up and down
                        # (the replay in the cap tell's block above ran at 8)
 CAP_DA_RATE = 10.0     # m/s^2 per second; the same for the aLeadK lift (variant A replay ran at 10)
@@ -209,12 +209,18 @@ RELEASE_S = 1.0
 SLEW_W = max(UNCONFIRMED_W, DISTANCE_FAR_W)  # rise and release rates are this weight per RISE_S / RELEASE_S
 
 
+def closing_ttc(d_rel: float, closing: float, min_closing: float) -> float:
+  """Time to contact (s) d_rel / closing when the closing speed (m/s, positive = closing) is above min_closing, else inf.
+  The one shared TTC expression for the radar and planner code (this module imports nothing from either)."""
+  return d_rel / closing if closing > min_closing else math.inf
+
+
 def urgent(lead: dict[str, Any], v_rel: float | None = None) -> bool:
   """Range or TTC short. `v_rel` replaces the lead's vRel in the TTC when the parser has no direct speed reading for
   the track (radar.urgency_v_rel): b1 seg14 47.7 s, see there."""
   d_rel = float(lead['dRel'])
   closing = max(-float(lead['vRel'] if v_rel is None else v_rel), 0.0)
-  return d_rel < URGENT_D or (closing > 0.1 and d_rel / closing < URGENT_TTC)
+  return d_rel < URGENT_D or closing_ttc(d_rel, closing, 0.1) < URGENT_TTC
 
 
 def camera_passed_ratio(d_rel: float, camera_d_rel: float, camera_closing: float, camera_a: float) -> float:
@@ -280,9 +286,8 @@ def cap_gap(lead: dict[str, Any], model_lead, camera_ranges, model_v_ego: float,
 
 class CameraWitness:
   """Per lead index camera witness over the published Bosch-A leads. Call `apply` once per radard cycle."""
-  def __init__(self, dt: float = DT_MDL, hold: bool = False):
+  def __init__(self, dt: float = DT_MDL):
     self.dt = dt
-    self.hold = bool(hold)
     self.t = 0.0
     self.armed_t: dict[int, float] = {}    # last time aLeadK was above REVERSAL_HIGH, per track
     self.latched_until: dict[int, float] = {}
@@ -310,7 +315,7 @@ class CameraWitness:
     gap = cap_gap(lead, model_lead, camera_ranges, model_v_ego, lead_prob) if track_id in tracks else -math.inf
     if gap > CAP_GAP_MIN:
       return 1.0
-    if self.hold and self.tell_weights['cap'][index] > 0.0 and gap > CAP_GAP_HOLD and self.hold_t[index] < CAP_HOLD_T:
+    if self.tell_weights['cap'][index] > 0.0 and gap > CAP_GAP_HOLD and self.hold_t[index] < CAP_HOLD_T:
       self.hold_t[index] += self.dt
       return (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD)
     return 0.0

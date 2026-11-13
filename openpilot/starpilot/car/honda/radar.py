@@ -12,8 +12,9 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.simple_kalman import KF1D
 from openpilot.starpilot.car.honda import radar_point_status
 from openpilot.starpilot.car.honda.radar_camera_slow_bound import CameraSlowBound
-from openpilot.starpilot.car.honda.radar_camera_witness import (CAMERA_PROB_MIN, TREND_SAMPLES, CameraWitness,
-                                                               camera_contradiction, camera_passed_ratio, range_slope, urgent)
+from openpilot.starpilot.car.honda.radar_camera_witness import (CAMERA_PROB_MIN, RADAR_TO_CAMERA, TREND_SAMPLES,
+                                                               CameraWitness, camera_contradiction, camera_passed_ratio,
+                                                               closing_ttc, range_slope, urgent)
 
 if TYPE_CHECKING:
   from openpilot.selfdrive.controls.radard import KalmanParams
@@ -32,7 +33,6 @@ _LEAD_ACCEL_TAU = 0.6
 BOSCH_A_LEAD_ACCEL_TAU_MIN = 0.3
 BOSCH_A_LEAD_ACCEL_MIN = -3.0
 V_EGO_STATIONARY = 4.0
-RADAR_TO_CAMERA = 1.52
 HONDA_BOSCH_A_LOW_SPEED_MIN_COUNT = 3
 HONDA_BOSCH_A_CHALLENGER_STALE_CYCLES = 2
 HONDA_BOSCH_A_GROSS_DISTANCE_STALE_CYCLES = 3
@@ -184,7 +184,7 @@ def post_standstill_radar_lead_is_urgent(lead: dict[str, Any]) -> bool:
   d_rel = float(lead.get('dRel', math.inf))
   v_rel = float(lead.get('vRel', 0.0))
   closing_speed = max(-v_rel, 0.0)
-  ttc = d_rel / closing_speed if closing_speed > 0.1 else math.inf
+  ttc = closing_ttc(d_rel, closing_speed, 0.1)
   return d_rel <= POST_STANDSTILL_RADAR_LEAD_URGENT_DISTANCE or ttc <= POST_STANDSTILL_RADAR_LEAD_URGENT_TTC
 
 
@@ -442,7 +442,7 @@ class BoschALeadPolicy:
       self._was_standstill = False
       self._standstill_had_lead = False
 
-  def __init__(self, camera_cap_hold: bool = False):
+  def __init__(self):
     self.starpilot_toggles = SimpleNamespace(lead_detection_probability=0.35)
     self.vision_state = SimpleNamespace(prev_aLeadK=0.0)
     self.prev_lead_track_ids = [-1, -1]
@@ -455,7 +455,7 @@ class BoschALeadPolicy:
     self._post_standstill_candidate_id = -1
     self._post_standstill_candidate_frames = 0
     self._last_tracks_frame = -1
-    self.camera_witness = CameraWitness(hold=camera_cap_hold)  # C-012: D+E mode of the cap tell, latched here
+    self.camera_witness = CameraWitness()  # C-012: the 1 s tapered cap hold is always on
     self.camera_slow_bound = CameraSlowBound()
     self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
 

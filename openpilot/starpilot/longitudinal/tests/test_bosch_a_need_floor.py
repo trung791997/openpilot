@@ -14,10 +14,11 @@ def lead(d, v_rel, a=0.0, tid=1, radar=True, present=True):
   return SimpleNamespace(present=present, radar=radar, radarTrackId=tid, dRel=d, vRel=v_rel, aLeadK=a)
 
 
-def make(monkeypatch, enabled=True, active=True, min_gap=False):
+def make(monkeypatch, enabled=True, active=True, min_gap=False):  # min_gap False keeps the floor mechanics tests independent of the headway gate
   monkeypatch.setattr(hb, 'active_for', lambda CP: active)
   monkeypatch.setattr(hb, 'NEED_FLOOR_ENABLED', enabled)
-  return hb.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05, need_floor_min_gap=min_gap)
+  monkeypatch.setattr(hb, 'NEED_FLOOR_MIN_GAP_ENABLED', min_gap)  # read by NeedFloor at construction
+  return hb.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05)
 
 
 def nf(p, ld, target, v_ego=25.0, ld2=None, reset_state=False):
@@ -264,10 +265,10 @@ def test_parity_with_reference_random_walk(monkeypatch):
   assert binding >= 300
 
 
-# BoschANeedFloorMinGap (static, replay only): v_ego 25 -> 1.5 s headway = 37.5 m. A slow-closing lead (vRel -0.5) keeps
+# NEED_FLOOR_MIN_GAP_ENABLED (static, replay only; the module constant is on, make() sets it per test): v_ego 25 -> 1.5 s headway = 37.5 m. A slow-closing lead (vRel -0.5) keeps
 # need, ttc and the other gates open at every gap used below, so only the headway condition differs.
 def test_min_gap_off_floors_inside_1p5_s(monkeypatch):
-  p = make(monkeypatch)
+  p = make(monkeypatch, min_gap=False)
   assert run(p, steady(d=30.0, v_rel=-0.5), 20) == pytest.approx(-0.8)
 
 
@@ -294,8 +295,10 @@ def test_min_gap_is_evaluated_every_frame_not_sticky(monkeypatch):
   assert nf(p, steady(d=40.0, v_rel=-0.5), -2.0) == pytest.approx(-0.8)  # back above 1.5 s: on again at once
 
 
-def test_min_gap_default_is_off(monkeypatch):
+def test_min_gap_default_is_on(monkeypatch):
   monkeypatch.setattr(hb, 'active_for', lambda CP: True)
+  assert hb.NEED_FLOOR_MIN_GAP_ENABLED is True
+  assert hb.NeedFloor().min_gap is True
+  monkeypatch.setattr(hb, 'NEED_FLOOR_MIN_GAP_ENABLED', False)   # a replay harness sets the module constant before construction
   assert hb.NeedFloor().min_gap is False
-  assert hb.NeedFloor(min_gap=True).min_gap is True
   assert hb.NEED_FLOOR_MIN_GAP_S == 1.5

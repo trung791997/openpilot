@@ -33,6 +33,7 @@ also run with the radar off (vision-only).
 import numpy as np
 
 from openpilot.common.realtime import DT_MDL
+from openpilot.starpilot.car.honda.radar_camera_witness import closing_ttc
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 
 # ---- Stock Brake Feel (D-086), comments abridged from the source; see STATUS/DECISIONS for the evidence -------------
@@ -124,8 +125,7 @@ def brake_onset_ttc(leads, min_closing: float = 1e-3) -> float:
     if not _present(lead):
       continue
     closing = max(0.0, -float(lead.vRel))
-    if closing > min_closing:
-      ttc_min = min(ttc_min, float(lead.dRel) / closing)
+    ttc_min = min(ttc_min, closing_ttc(float(lead.dRel), closing, min_closing))
   return ttc_min
 
 
@@ -250,7 +250,7 @@ def lead_ttc_low(leads) -> bool:
     if not _present(lead):
       continue
     closing = -float(lead.vRel)
-    if closing > 1e-3 and float(lead.dRel) / closing <= ONSET_TTC_STAND_DOWN_S:
+    if closing_ttc(float(lead.dRel), closing, 1e-3) <= ONSET_TTC_STAND_DOWN_S:
       return True
   return False
 
@@ -337,8 +337,9 @@ NEED_FLOOR_GATE_A_LEAD = -1.0   # m/s^2; lead's aLeadK must be above this (not i
 NEED_FLOOR_GATE_FRAMES = 10     # consecutive frames of the gate on one (track id, radar flag): 0.5 s
 NEED_FLOOR_QUIET_FRAMES = 20    # frames with no lead closing before the sticky-off clears: 1.0 s
 # Owner 2026-11-11 (via Bob), scorecard ep645, route 000000ae seg 81: gap 22 m at 16.0 m/s (1.37 s), closing 2.2 m/s; floor -0.80
-# vs hold -1.19, owner wants the floor not to soften a lead this close. Behind toggle BoschANeedFloorMinGap, default off; replay only.
-NEED_FLOOR_MIN_GAP_S = 1.5      # s; with the toggle on the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
+# vs hold -1.19, owner wants the floor not to soften a lead this close. Always on (the car's setting; no toggle); replay only.
+NEED_FLOOR_MIN_GAP_ENABLED = True  # read by NeedFloor at construction (module attribute), so a replay harness can set it first
+NEED_FLOOR_MIN_GAP_S = 1.5      # s; the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
 
 
 class NeedFloor:
@@ -355,10 +356,10 @@ class NeedFloor:
   count 0, sticky clears at QUIET_FRAMES. Called after bosch_a_stop_gap.step in longitudinal_planner.py only; it is not
   in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
   harness), including its rounding of the lead fields (d and vRel to 0.01, aLeadK to 0.001). Replay only."""
-  def __init__(self, min_gap: bool = False):
-    """`min_gap` (BoschANeedFloorMinGap toggle, default off): also require d >= v_ego * NEED_FLOOR_MIN_GAP_S, re-evaluated
-    every frame; it never touches gate_count, off or quiet."""
-    self.min_gap = min_gap is True
+  def __init__(self):
+    """Reads NEED_FLOOR_MIN_GAP_ENABLED (module constant, on) at construction: when on, also require d >= v_ego *
+    NEED_FLOOR_MIN_GAP_S, re-evaluated every frame; it never touches gate_count, off or quiet."""
+    self.min_gap = NEED_FLOOR_MIN_GAP_ENABLED is True
     self.reset()
 
   def reset(self):
@@ -388,7 +389,7 @@ class NeedFloor:
     v_lead = v_ego + v_rel
     need = (v_rel * v_rel if v_rel < 0 else 0.0) / (2.0 * max(d - (max(v_lead, 0.0) * NEED_FLOOR_HEADWAY_S + NEED_FLOOR_STOP_M),
                                                                NEED_FLOOR_MIN_ROOM_M))
-    ttc = d / -v_rel if v_rel < -0.1 else float('inf')
+    ttc = closing_ttc(d, -v_rel, 0.1)
     closing = v_rel < 0
     lid = (track_id, radar)
     if closing:
@@ -417,16 +418,16 @@ class NeedFloor:
 
 
 class HondaBoschALongEnhancement:
-  def __init__(self, CP, dt: float, need_floor_min_gap: bool = False):
-    """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate. `need_floor_min_gap` is
-    BoschANeedFloorMinGap (default off), passed to NeedFloor."""
+  def __init__(self, CP, dt: float):
+    """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate. NeedFloor's min-gap gate is
+    always on (NEED_FLOOR_MIN_GAP_ENABLED)."""
     active = active_for(CP)
     self.stock_feel = active
     # Implausible-drop bound (D-041/D-042; owner bookmark route a2 seg 50, 2026-11-07): same gate as the other active
     # checks in this module (Bosch-A supported, radar available); default ON, no toggle.
     self.drop_bound = ImplausibleDropBound() if active else None
     self.newborn_hold = NewbornLeadHold() if active and NEWBORN_HOLD_ENABLED else None
-    self._need_floor = NeedFloor(min_gap=need_floor_min_gap) if self.stock_feel and NEED_FLOOR_ENABLED else None
+    self._need_floor = NeedFloor() if self.stock_feel and NEED_FLOOR_ENABLED else None
     self.dt = dt
     # Coast first: same gate as the old BoschACoastFirst.enabled (not active_for / stock_feel).
     self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
@@ -611,10 +612,16 @@ class NewbornLeadHold:
 
 
 class _BoundedLead:
-  """A lead that reads as `lead` except for aLeadK."""
-  def __init__(self, lead, a_lead: float):
+  """A lead that reads as `lead` except for the given field overrides. Wrapping an already wrapped lead merges the
+  overrides (the new ones win) onto the original lead instead of nesting proxies."""
+  def __init__(self, lead, **fields):
+    if isinstance(lead, _BoundedLead):
+      fields = {**lead._fields, **fields}
+      lead = lead._lead
     self._lead = lead
-    self.aLeadK = float(a_lead)
+    self._fields = fields
+    for name, value in fields.items():
+      setattr(self, name, value)
 
   def __getattr__(self, name):
     return getattr(self._lead, name)
@@ -636,7 +643,7 @@ def bound_newborn_leads(radar_state, a_ego: float, hold: NewbornLeadHold):
   changed = False
   for lead in (radar_state.leadOne, radar_state.leadTwo):
     a_lead = hold.bound(lead, a_ego)
-    leads.append(lead if a_lead is None else _BoundedLead(lead, a_lead))
+    leads.append(lead if a_lead is None else _BoundedLead(lead, aLeadK=float(a_lead)))
     changed |= a_lead is not None
   return _BoundedRadarState(radar_state, leads[0], leads[1]) if changed else radar_state
 
@@ -673,8 +680,9 @@ IMPLAUSIBLE_DROP_DT = 0.05   # s per planner frame (DT_MDL)
 
 
 # Lazy import, same reasoning as active_for's: this module is imported before radard's car gates are known to apply.
+# The single starpilot definition lives in radar_camera_witness.
 def _radar_to_camera() -> float:
-  from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
+  from openpilot.starpilot.car.honda.radar_camera_witness import RADAR_TO_CAMERA
   return RADAR_TO_CAMERA
 
 
@@ -777,18 +785,6 @@ class ImplausibleDropBound:
     return v_lead_b, v_rel_b, a_lead_k_b
 
 
-class _FieldBoundedLead:
-  """A lead that reads as `lead` except for the given field overrides."""
-  def __init__(self, lead, **fields):
-    self._lead = lead
-    for name, value in fields.items():
-      setattr(self, name, value)
-    self._fields = fields
-
-  def __getattr__(self, name):
-    return getattr(self._lead, name)
-
-
 def bound_implausible_drop(radar_state, model_v2, state: ImplausibleDropBound):
   state.tick()
   result = state.update(radar_state.leadOne, model_v2)
@@ -799,5 +795,5 @@ def bound_implausible_drop(radar_state, model_v2, state: ImplausibleDropBound):
   lead = radar_state.leadOne
   if hasattr(lead, 'aLead'):
     fields['aLead'] = a_lead_k_b
-  bounded = _FieldBoundedLead(lead, **fields)
+  bounded = _BoundedLead(lead, **fields)
   return _BoundedRadarState(radar_state, bounded, radar_state.leadTwo)

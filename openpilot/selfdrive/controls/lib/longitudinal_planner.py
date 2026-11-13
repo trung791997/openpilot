@@ -113,7 +113,7 @@ class LongitudinalPlanner:
     self.human_driving = human_following.enabled_for(CP, bosch_a.human_following)
     if self.human_driving:
       human_following.install(self.mpc)
-    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt, need_floor_min_gap=bosch_a.need_floor_min_gap)  # Stock Brake Feel law + brake onset ramp; always on for Bosch-A Hondas
+    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)  # Stock Brake Feel law + brake onset ramp; always on for Bosch-A Hondas
     self.bosch_a_release = BoschARelease(CP, dt)  # release coast (no gas off a departing radar lead) + brake release smoothing; bosch_a_release.py
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
