@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from openpilot.starpilot.system.starport.display_profile import record_screen, read_screen
-from openpilot.starpilot.system.starport.projection_layout import (
+from openpilot.starpilot.system.starport.projection_layout import (SPEED_CARD_Y,
   default_layout, default_layout_for_viewport, validate_layout, validate_layout_for_viewport, decode_layout, layout_metadata,
   projection_customization, ProjectionLayoutSource,
   PROJECTION_WIDGETS, NAV_CARD, NAV_MAP, FAVORITE_WIDGETS, BOOKMARK_WIDGET, CAR_EXIT, ACTION_WIDGETS, placement_size,
@@ -42,7 +42,7 @@ class TestProjectionLayout(unittest.TestCase):
         with self.subTest(viewport=viewport, separate=separate):
           document = default_layout_for_viewport(viewport, {'speedSources': True, 'speedSourcesCard': separate})
           actions = document['widgets']['speed_limit_actions']
-          self.assertEqual(actions['y'], 367 if separate else 359)
+          self.assertEqual(actions['y'], SPEED_CARD_Y + 284 + (8 if separate else 0))
           self.assertEqual(validate_layout_for_viewport(document, viewport), document)
           native = projection_customization(document, default_document())
           self.assertEqual(placement(native, 'large', 'speed_limit_actions'), actions)

@@ -37,9 +37,11 @@ NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
 # The shared SET + speed-limit sign card (large_speed_geometry); Accept / Decline are their own widget below it.
 SPEED_CARD_SIZE = (488, 168)
-# Left column on the car screen, top to bottom: speed card, lead badge, curve gauge, exit button, evenly spaced.
-# Gauge box y at 1800 x 1056 content: card bottom 243, badge ink 204.6 tall, gauge ink ~265, exit button top 990 -> gaps ~92.
-CEM_GAUGE_COLUMN_Y = 633
+# Left column on the car screen, top to bottom: Jetlink pill, speed card, lead badge, curve gauge, exit button, evenly spaced.
+# 1800 x 1056 content: pill 75-159, card 207-375, badge ink 204.6 tall, gauge ink ~265, exit button top 990 -> gaps ~48.
+COLUMN_TOP_Y = 75
+SPEED_CARD_Y = 207
+CEM_GAUGE_COLUMN_Y = 676
 JETLINK_OPACITY = (0, 100, 85)
 CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}
 PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT, 'following_distance')
@@ -127,7 +129,7 @@ def layout_metadata_for_viewport(viewport):
                              'width': JETLINK_SIZE[0], 'height': JETLINK_SIZE[1], 'colors': {},
                              'note': 'Shown while Jetlink is on: connection, device and host processing time. Opacity sets the card background.',
                              'opacity': {'min': JETLINK_OPACITY[0], 'max': JETLINK_OPACITY[1], 'default': JETLINK_OPACITY[2]},
-                             'default': {'x': 30, 'y': 650, 'enabled': False, 'opacity': JETLINK_OPACITY[2]}}
+                             'default': {'x': 88, 'y': COLUMN_TOP_Y, 'enabled': False, 'opacity': JETLINK_OPACITY[2]}}
   exit_w, exit_h = CAR_EXIT_SIZE
   widgets[CAR_EXIT] = {'label': 'Exit to car', 'kind': CAR_EXIT, 'width': exit_w, 'height': exit_h, 'colors': {},
                        'required': True, 'frontmost': True,
@@ -144,6 +146,10 @@ def layout_metadata_for_viewport(viewport):
   widgets['speed_limit_actions']['note'] = ('On the car screen Accept and Decline sit in a row at the bottom of the speed card; '
                                             'this only turns them on or off.')
   widgets['cruise_limits']['default'].update(opacity=100)
+  # The card sits under the Jetlink pill; Accept / Decline keep their offset from the card.
+  shift = SPEED_CARD_Y - widgets['cruise_limits']['default']['y']
+  widgets['cruise_limits']['default']['y'] = SPEED_CARD_Y
+  widgets['speed_limit_actions']['default']['y'] += shift
   # Left column: x=30 is the leftmost the gauge box can sit (its ink then starts ~10 right of the card's left edge).
   widgets[CEM_GAUGE_WIDGET]['default'].update(x=30, y=CEM_GAUGE_COLUMN_Y)
   profile["widgetOrder"] = [NAV_MAP, *[key for key in profile["widgetOrder"] if key not in (NAV_MAP, NAV_CARD, STOPPED_TIMER_WIDGET)],
