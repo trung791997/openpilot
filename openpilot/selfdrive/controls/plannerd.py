@@ -10,7 +10,6 @@ from openpilot.common.realtime import Priority, config_realtime_process, set_cor
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, NATIVE_PLAN_INPUTS
-from openpilot.starpilot.longitudinal.bosch_a_toggles import read_toggles as read_bosch_a_toggles
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.starpilot.speed_limits import history as slc_history
@@ -382,8 +381,7 @@ def starpilot_main():
   cloudlog.info("plannerd got CarParams: %s", CP.brand)
 
   ldw = LaneDepartureWarning()
-  # Bosch-A owner toggles (Human Following): read once here, like the planner selection.
-  longitudinal_planner = LongitudinalPlanner(CP, bosch_a=read_bosch_a_toggles(params))
+  longitudinal_planner = LongitudinalPlanner(CP)
   nudge_preferences = NudgePreferences(params)
   # Saved-on features start only for a finalized, supported driving owner. Their
   # current-source and longitudinal authority checks still run every frame.

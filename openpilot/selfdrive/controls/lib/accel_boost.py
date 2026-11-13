@@ -37,7 +37,10 @@ def lead_slowing(sm, v_ego):
 
 
 class AccelBoost:
-  def __init__(self):
+  def __init__(self, lead_gate: bool = True):
+    # lead_gate: the planners pass bosch_a_toggles.long_tuning_active(CP) (Bosch-A Honda, radar on; owner 2026-11-13).
+    # The default keeps the gate on for tests and replay harnesses. Off: lead_scale stays 1.0 (the pre-gate behaviour).
+    self.lead_gate = lead_gate
     self.total_boost = 0.0
     self.boost_this_override = 0.0
     self.boost_eligible = False
@@ -52,7 +55,7 @@ class AccelBoost:
 
     speed_scale = np.interp(v_ego, [ACCEL_BOOST_MIN_SPEED, 2 * ACCEL_BOOST_MIN_SPEED], [0.0, 1.0])
     boost_scale = speed_scale * np.interp(output_a_target_e2e, [-1.0, -0.5, 5.0], [0.0, 1.0, 1.0], right=0.0)
-    if LEAD_GATE_ENABLED:
+    if LEAD_GATE_ENABLED and self.lead_gate:
       if lead_slowing(sm, v_ego):
         self.lead_scale = max(0.0, self.lead_scale - DT_MDL / LEAD_GATE_FADE_OUT_S)
       else:

@@ -4,7 +4,9 @@ Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, s
 Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch: Stock Brake Feel is permanent (owner 2026-11-11: "Make Stock Brake Feel permanent"; the BoschAStockBrakeFeel
-toggle and its settings row are removed). Both longitudinal planners (StarPilot's and the upstream one) call it the
+toggle and its settings row are removed). HumanFollowing and HumanAcceleration are always on too (owner 2026-11-13: no
+toggle, default for all Bosch-A cars; the HumanFollowing owner toggle is removed). Everything in this class needs the radar on
+(owner 2026-11-13; bosch_a_toggles.long_tuning_active); HumanFollowing and HumanAcceleration still run vision-only. Both longitudinal planners (StarPilot's and the upstream one) call it the
 same way. The D-077 birth-rail ramps (off, never wired to radard here) were removed 2026-11-11; the code and its
 evidence comment are in git at 3f26fb513c and in openpilot-radar radard.py @ 567495f4ad.
 
@@ -36,7 +38,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.car.honda.radar_camera_witness import closing_ttc
 from openpilot.starpilot.longitudinal import bosch_a_release as release
 from openpilot.starpilot.longitudinal.bosch_a_release import let_off_limited_target
-from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
+from openpilot.starpilot.longitudinal.bosch_a_toggles import long_tuning_active, vehicle_supported
 
 # ---- Stock Brake Feel (D-086), comments abridged from the source; see STATUS/DECISIONS for the evidence -------------
 # While a lead closes faster than STOCK_FEEL_MIN_CLOSING and the worst TTC is over STOCK_FEEL_TTC_FLOOR_S, the target may
@@ -100,10 +102,9 @@ NEWBORN_HOLD_ENABLED = True
 
 
 def active_for(CP) -> bool:
-  """Same gate as radard's BoschALeadPolicy: verified Bosch-A Honda, radar on, openpilot longitudinal."""
-  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable and
-              CP.openpilotLongitudinalControl)
+  """Same gate as radard's BoschALeadPolicy: verified Bosch-A Honda, radar on, openpilot longitudinal
+  (bosch_a_toggles.long_tuning_active, the one gate for every Bosch-A longitudinal part)."""
+  return long_tuning_active(CP)
 
 
 def _present(lead) -> bool:
@@ -428,8 +429,8 @@ class HondaBoschALongEnhancement:
     self.newborn_hold = NewbornLeadHold() if active and NEWBORN_HOLD_ENABLED else None
     self._need_floor = NeedFloor() if self.stock_feel and NEED_FLOOR_ENABLED else None
     self.dt = dt
-    # Coast first: same gate as the old BoschACoastFirst.enabled (not active_for / stock_feel).
-    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
+    # Coast first: the same gate as everything else here.
+    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))  # == long_tuning_active(CP)
     self.coast_floor = None      # staged floor while coasting first; None when not active (replay/debug)
     self.coast_bypassed = False  # latched for the rest of this braking event
     self.reset()

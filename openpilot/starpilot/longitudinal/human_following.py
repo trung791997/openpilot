@@ -1,7 +1,7 @@
 """HumanFollowing: the MPC lead path follows the model's lead trajectory instead of the aLeadK extrapolation.
 
 Ported from openpilot-radar (ns-bosch-radar-testing, STATUS 62/63/118/120), which follows FrogPilot-Testing
-728f65472 `process_lead`. The StarPilot planner calls `install(mpc)` when `enabled_for(CP, toggle)`; otherwise StarPilot's own
+728f65472 `process_lead`. The StarPilot planner calls `install(mpc)` when `enabled_for(CP)`; otherwise StarPilot's own
 guarded `build_model_lead_trajectory` stays in place. long_mpc.py is not edited (it is a codegen source). The upstream
 planner (upstream/planner.py) has no model-lead input, so it calls `upstream_lead_paths()` and hands the result to its
 MPC (same builder, same freshness-qualified model leads).
@@ -26,22 +26,20 @@ from opendbc.car.interfaces import ACCEL_MIN
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LEAD_T_IDXS_MODEL, T_DIFFS, T_IDXS
 from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
+from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 
 LEAD_DETECTION_PROBABILITY = 0.35
 MAX_CLOSING_TTC = 2.0
 MIN_CLOSING_SPEED = 0.75
-# Switch: the owner toggle `BoschAHumanFollowing` (bosch_a_toggles.py, default Off; owner 2026-10-20 drove night-star7 as
-# shipped first, 2026-10-22 asked for a toggle usable with either planner). It also switches HumanAcceleration, which
-# shares enabled_for(). Read once when plannerd starts and passed in as `toggle`.
+# Always on for verified Bosch-A Hondas with openpilot longitudinal radar on or off (owner 2026-11-13: no toggle, default
+# for all Bosch-A cars; it was an owner toggle, default Off, until then). It also switches HumanAcceleration, which
+# shares enabled_for(). The car gate is the only switch.
 
 
-def enabled_for(CP, toggle: bool = False) -> bool:
-  """The toggle is on and the car is a Honda with a verified Bosch-A radar and openpilot longitudinal, radar on or off
-  (vision-only shares it)."""
-  if toggle is not True:
-    return False
-  from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-  return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
+def enabled_for(CP) -> bool:
+  """The car is a Honda with a verified Bosch-A radar and openpilot longitudinal, radar on or off (vision-only shares it;
+  owner 2026-11-13: HumanFollowing and HumanAcceleration keep running vision-only)."""
+  return vehicle_supported(CP)
 
 
 def _horizon_matches(model_lead, lead, v_ego, model_v_ego) -> bool:

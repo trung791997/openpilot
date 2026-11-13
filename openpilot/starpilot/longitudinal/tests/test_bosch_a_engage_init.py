@@ -5,7 +5,6 @@ Static tests with the recording solver stand-in from test_bosch_a_toggles; no re
 import unittest
 from unittest.mock import patch
 
-from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF
 from openpilot.starpilot.longitudinal.tests.test_bosch_a_toggles import BOSCH_A, NOT_BOSCH_A, RecordingSolver, submaster, upstream
 
 V_EGO = 22.0
@@ -17,11 +16,11 @@ def engage_sm(a_ego, v_cruise_kph, frame=0):
   return sm
 
 
-def starpilot(cp, toggles):
+def starpilot(cp):
   from openpilot.selfdrive.controls.lib import longitudinal_planner
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
   with patch.object(long_mpc, 'AcadosOcpSolverCython', RecordingSolver):
-    return longitudinal_planner.LongitudinalPlanner(cp, bosch_a=toggles)
+    return longitudinal_planner.LongitudinalPlanner(cp)
 
 
 class EngageInit:
@@ -30,7 +29,7 @@ class EngageInit:
 
   def make(self, cp, law):
     """Stock Brake Feel is permanent now; law=False builds the same planner with the law switched off as the reference."""
-    p = self.build(cp, OFF)  # ty: ignore[call-non-callable]
+    p = self.build(cp)  # ty: ignore[call-non-callable]
     if not law and p.bosch_a_long is not None:
       p.bosch_a_long.stock_feel = False
     return p

@@ -43,7 +43,7 @@ from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
 from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
-from openpilot.starpilot.longitudinal.bosch_a_toggles import OFF as BOSCH_A_OFF, BoschAToggles
+from openpilot.starpilot.longitudinal.bosch_a_toggles import long_tuning_active
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -104,13 +104,13 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
 
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, clock_ns: Callable[[], int] = time.monotonic_ns,
-               *, bosch_a: BoschAToggles = BOSCH_A_OFF):
+               *, bosch_a=None):  # `bosch_a` is ignored: the Bosch-A parts have no toggles (kept so replay harnesses still call it)
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
     # Optional owners (hooks): HumanFollowing/HumanAcceleration (Bosch-A Hondas, radar or vision) and the
-    # Honda Bosch A Long Enhancement (radar on). `bosch_a` holds the owner toggles plannerd read at start
-    # (BoschAHumanFollowing); default Off. Stock Brake Feel is always on for Bosch-A Hondas. The upstream planner applies the same.
-    self.human_driving = human_following.enabled_for(CP, bosch_a.human_following)
+    # Honda Bosch A Long Enhancement (radar on). All of them are always on for verified Bosch-A Hondas with openpilot
+    # longitudinal (owner 2026-11-13: no toggle); each applies its own car gate. The upstream planner applies the same.
+    self.human_driving = human_following.enabled_for(CP)
     if self.human_driving:
       human_following.install(self.mpc)
     self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)  # Stock Brake Feel law + brake onset ramp; always on for Bosch-A Hondas
@@ -121,7 +121,7 @@ class LongitudinalPlanner:
     self.dt = dt
     self.clock_ns = clock_ns
     self.allow_throttle = True
-    self.accel_boost = AccelBoost()
+    self.accel_boost = AccelBoost(lead_gate=long_tuning_active(CP))  # lead gate only on Bosch-A Hondas with the radar on
     self.encouragement = Encouragement()
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()

@@ -1,5 +1,8 @@
 """Bosch-A release shaper: release coast (no gas off a departing radar lead), then the brake release limit and dwell; plus the short plan read-ahead.
 
+Gates (owner 2026-11-13, no toggle): coast needs the radar on (bosch_a_toggles.long_tuning_active); smooth and action_t run on any
+verified Bosch-A Honda with openpilot longitudinal, radar on or vision-only (bosch_a_toggles.vehicle_supported).
+
 Section 1, release coast:
 
 Bosch-A release coast: a lift instead of gas when a radar lead that was braking in our lane leaves it.
@@ -135,8 +138,8 @@ def planner_action_t(actuator_delay: float, enabled: bool) -> float:
 
 class BoschARelease:
   def __init__(self, CP, dt: float = DT_MDL):
-    self.enabled = vehicle_supported(CP)
-    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
+    self.enabled = vehicle_supported(CP)  # smooth + action_t: radar on or off (vision-only too, as at 786d62d5d2)
+    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))  # == long_tuning_active(CP); coast needs the radar (owner 2026-11-13)
     self.dt = dt
     self.hold_s = 0.0
     self.prev_lead = None  # leadOne from the previous cycle

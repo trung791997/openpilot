@@ -315,7 +315,7 @@ class LongitudinalMpc:
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
     # ---- BOSCH-A HOOK (HumanFollowing; not in upstream 521db4c8) ----
     # lead_paths is (leadOne path, leadTwo path) from human_following.upstream_lead_paths; a None entry keeps the stock
-    # extrapolation above. Only passed when the BoschAHumanFollowing toggle is on and the car passes enabled_for.
+    # extrapolation above. Only passed when the car passes human_following.enabled_for (always on for verified Bosch-A Hondas, radar on or off).
     if lead_paths is not None:
       lead_xv_0 = lead_xv_0 if lead_paths[0] is None else lead_paths[0]
       lead_xv_1 = lead_xv_1 if lead_paths[1] is None else lead_paths[1]

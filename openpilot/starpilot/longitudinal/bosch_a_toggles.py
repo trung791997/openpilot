@@ -1,54 +1,26 @@
-"""Owner toggles for the Bosch-A longitudinal features, read once when plannerd starts (either planner).
+"""The Bosch-A longitudinal car gates. There are no owner toggles (owner 2026-11-13: no toggle, default for all Bosch-A cars).
 
-- Stock Brake Feel (honda_bosch_a_long, D-086 and its follow-ups) is permanent since 2026-11-11; it has no toggle and no settings row.
-- BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
-- The NeedFloor 1.5 s min-gap gate (honda_bosch_a_long.NEED_FLOOR_MIN_GAP_ENABLED) and the camera cap hold (radar_camera_witness, C-012)
-  are always on; they have no toggle and no settings row.
+Two gates, both false for None or an unreadable CP:
+- vehicle_supported(CP): a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal, radar on or off.
+- long_tuning_active(CP): vehicle_supported and the radar on (CP.radarUnavailable False), the same gate radard uses to build
+  BoschALeadPolicy (honda_bosch_a_long.active_for).
 
-Like UseStarPilotLongitudinalPlanner, the values are latched for the life of the plannerd process, so a change
-applies on the next drive. Only an exact saved "1" turns a feature on; a missing, unreadable or malformed value is
-Off. A toggle only arms its feature: each one still applies its own car gate (honda_bosch_a_long.active_for,
-human_following.enabled_for), so a car that is not a verified Bosch-A Honda with openpilot longitudinal is unaffected.
+Need the radar (long_tuning_active; owner 2026-11-13: a vision-only Bosch-A Honda falls back to the stock planner for these):
+HondaBoschALongEnhancement (Stock Brake Feel, onset ramp, coast first, need floor, newborn-lead hold, implausible-drop bound),
+BoschARelease.coast, BoschAStopGap, and the Accel Boost lead gate (AccelBoost(lead_gate=...); at HEAD that gate had no car or
+radar check at all, so it ran on every car).
+Run vision-only too (vehicle_supported): HumanFollowing and HumanAcceleration (human_following.enabled_for), BoschARelease.smooth
+(release limit + dwell) and BoschARelease.action_t (plan read-ahead). The NeedFloor 1.5 s min-gap gate and the camera cap hold
+(radar_camera_witness, C-012) are always on inside their gates. The old HumanFollowing owner param (default Off) was removed.
+
+Constructor defaults: HondaBoschALongEnhancement(CP, dt), BoschARelease(CP) and BoschAStopGap(CP) compute their gate from CP;
+AccelBoost() with no argument keeps its lead gate ON (tests and replay harnesses); the planners pass
+lead_gate=long_tuning_active(CP). The planners' `bosch_a=` keyword is ignored (kept for replay harnesses).
 """
-from dataclasses import dataclass
-
-from openpilot.starpilot.saved_source import read_saved
-
-HUMAN_FOLLOWING_KEY = 'BoschAHumanFollowing'
-KEYS = (HUMAN_FOLLOWING_KEY,)
-# (key, label, reason) for the settings rows on the Long Planner page
-ROWS = (
-  (HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
-   ("Follows the driving model's predicted path for the car ahead instead of a straight-line guess, and eases " +
-    "acceleration at low set speeds and near the set speed. Works with either planner. Changes apply on the next drive. " +
-    "Acts only on verified Bosch-A Hondas with openpilot longitudinal.")),
-)
-
-
-@dataclass(frozen=True)
-class BoschAToggles:
-  human_following: bool = False
-
-
-OFF = BoschAToggles()
-
-
-def _on(params, key: str) -> bool:
-  try:
-    raw, readable = read_saved(params, key, 8)
-  except Exception:
-    return False
-  return bool(readable and raw == b'1')
-
-
-def read_toggles(params) -> BoschAToggles:
-  """The saved toggles; Off for anything but an exact b'1'."""
-  return BoschAToggles(human_following=_on(params, HUMAN_FOLLOWING_KEY))
 
 
 def vehicle_supported(CP) -> bool:
-  """Settings-row gate: a Honda with a verified Bosch-A radar and openpilot longitudinal. The planners still apply their
-  own gates; this only decides whether the rows can be turned on."""
+  """Verified Bosch-A Honda with openpilot longitudinal; the radar may be on or off."""
   if CP is None:
     return False
   try:
@@ -56,3 +28,8 @@ def vehicle_supported(CP) -> bool:
     return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
   except Exception:
     return False
+
+
+def long_tuning_active(CP) -> bool:
+  """vehicle_supported and the radar on. A missing radarUnavailable reads as off."""
+  return vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))

@@ -12,7 +12,6 @@ from openpilot.starpilot.conditional_mode.planner_host import ConditionalPlanner
 from openpilot.starpilot.conditional_mode.projection import paired_clocks_ns
 from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.longitudinal.upstream.planner import LongitudinalPlanner
-from openpilot.starpilot.longitudinal.bosch_a_toggles import read_toggles as read_bosch_a_toggles  # BOSCH-A HOOK
 import openpilot.cereal.messaging as messaging
 
 
@@ -25,8 +24,7 @@ def main():
   cloudlog.info("plannerd got CarParams: %s", CP.brand)
 
   ldw = LaneDepartureWarning()
-  # BOSCH-A HOOK: owner toggles (Human Following), read once, default Off.
-  longitudinal_planner = LongitudinalPlanner(CP, bosch_a=read_bosch_a_toggles(params))
+  longitudinal_planner = LongitudinalPlanner(CP)
   conditional = ConditionalPlannerHost(params) if feature_enabled(params, CP, 'conditional', os.environ) else None
   native_inputs = ['carControl', 'carState', 'controlsState', 'vehicleParameters', 'radarState', 'modelV2', 'selfdriveState']
   optional = ['deviceState', 'longitudinalPlan', 'starpilotRadarState', 'starpilotNavigation'] if conditional is not None else []
