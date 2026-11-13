@@ -35,7 +35,7 @@ from typing import Any
 
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.starpilot.system.starport import car_profiles, device_health, identity as identity_store, new_setup, reachability, setup_ladder, system_slice
-from openpilot.starpilot.system.starport import reconnect_notice
+from openpilot.starpilot.system.starport import link_probe, reconnect_notice
 from openpilot.starpilot.system.starport.auto_connect import AutoConnectPolicy
 from openpilot.starpilot.system.starport.bootstrap import MODERN_MAJOR, NAMES, BootstrapError, BootstrapTimeout, WirelessBootstrap
 from openpilot.starpilot.system.starport.bugsink_report import PairingAttempt
@@ -219,10 +219,20 @@ class LinkWatch:
   session; only a definite "not connected" does. The socket itself still fails fast on a real loss.
   """
 
-  def __init__(self, lease, log: Callable[..., None], interval: float = LINK_CHECK_INTERVAL):
+  PROBE_INTERVAL = 2.0
+
+  def __init__(self, lease, log: Callable[..., None], interval: float = LINK_CHECK_INTERVAL, sock=None):
     self.lease, self.log, self.interval = lease, log, interval
+    self.sock = sock
     self.lost = ""
     self.wifi_dbm: int | None = None
+    self.probe = None
+    if not isinstance(lease, (NoLease, UsbLease)):
+      try:
+        self.probe = link_probe.LinkProbe(getattr(lease, "interface", "wlan0"))
+      except Exception:
+        self.probe = None
+    self._next_probe = 0.0
     self._stop = threading.Event()
     self._thread = threading.Thread(target=self._run, name="aa_link_watch", daemon=True)
 
@@ -233,12 +243,27 @@ class LinkWatch:
   def stop(self) -> None:
     self._stop.set()  # a check stuck in D-Bus finishes on its own timeout; nothing waits for it
 
+  def sample_probe(self) -> None:
+    """One link sample for the diagnostics ring; never raises, never touches the streaming thread."""
+    if self.probe is None:
+      return
+    try:
+      self.probe.last_sock = self.sock
+      sample = self.probe.sample(self.sock)
+      if not self.wifi_dbm and sample.get("rssi"):
+        self.wifi_dbm = sample["rssi"]
+    except Exception:
+      pass
+
   def _run(self) -> None:
     check = getattr(self.lease, "still_connected", None)
     wireless = not isinstance(self.lease, (NoLease, UsbLease))
     while not self._stop.is_set():
       if wireless:
         self.wifi_dbm = _wifi_dbm(getattr(self.lease, "interface", "wlan0"))
+        if time.monotonic() >= self._next_probe:
+          self._next_probe = time.monotonic() + self.PROBE_INTERVAL
+          self.sample_probe()
       if check is not None:
         started = time.monotonic()
         try:
@@ -432,6 +457,7 @@ class Supervisor:
     self._strategy: setup_ladder.Strategy | None = None   # the one this attempt runs
     self._video_seen = False                    # video was acknowledged in this session: later failures say nothing about the handshake
     self._run_started = 0.0
+    self._last_probe = None
     self.auto = AutoConnectPolicy()
     self._companion_retry_at = 0.0
     self.log = EventLog()
@@ -1346,6 +1372,7 @@ class Supervisor:
       while not self._stop.is_set():
         started = time.monotonic()
         self._run_started = started
+        self._last_probe = None
         peer_stopped = False
         reach = reachability.OTHER  # set by a failed attempt; a clean end or a car-ended session keeps the standard wait
         self.log("attempt_start")
@@ -1368,6 +1395,7 @@ class Supervisor:
           message = self._describe_error(stage, error)
           self._set(error=message)
           reach = reachability.classify(stage, type(error).__name__, f"{message} {error}")
+          self._log_probe_tail(stage)
           self.log("attempt_failed", stage=stage, error=message, kind=type(error).__name__, where=_where(error), reach=reach)
           if isinstance(error, SharedRadioStall):
             reconnect_notice.write(reconnect_notice.SHARED_RADIO_TEXT)
@@ -1409,6 +1437,17 @@ class Supervisor:
       self.log.close()
       self.log.capture_system()
       self._set(state="idle", detail="", running=False, retry_in=0.0, mode=None)
+
+  def _log_probe_tail(self, stage: str) -> None:
+    """Link samples leading up to a streaming failure, so Wi-Fi and receiver stalls can be told apart."""
+    probe = self._last_probe
+    if stage != "streaming" or probe is None:
+      return
+    try:
+      probe.sample(getattr(probe, "last_sock", None))
+      self.log("link_probe_tail", samples=probe.tail())
+    except Exception:
+      pass
 
   @staticmethod
   def _describe_error(stage: str, error: Exception) -> str:
@@ -1838,7 +1877,9 @@ class Supervisor:
                         touch_path=self._touch_path, control_path=self._control_path, renderer_command=self._renderer_command,
                         renderer_log=identity_store.LOG_DIR / "car_ui.log")
     self._set(view=source.label, encoder=getattr(encoder, "backend", "libx264"), target_fps=fps)
-    watch = LinkWatch(lease, self.log).start()
+    watch = LinkWatch(lease, self.log, sock=getattr(session, "peer", None))
+    self._last_probe = watch.probe
+    watch.start()
     radio = None
     if getattr(lease, "dedicated", False) and getattr(lease, "interface", "wlan0") != "wlan0":
       radio = SharedRadioWatch(self.log).start()
@@ -1999,7 +2040,10 @@ class Supervisor:
                  "uptime_s": round(now - started), "frames_from_view": source.frames, "wifi_dbm": watch.wifi_dbm}
         self._set(stats=stats)
         if int(now - started) % 30 == 0:
-          self.log("stats", **{**device_health.sample(getattr(watch.lease, "interface", "wlan0")), **stats})
+          probe = watch.probe.summary() if watch.probe is not None else {}
+          if not stats.get("wifi_dbm") and probe.get("rssi"):
+            stats = {**stats, "wifi_dbm": probe["rssi"]}
+          self.log("stats", **{**device_health.sample(getattr(watch.lease, "interface", "wlan0")), **probe, **stats})
           encode_peak = 0.0  # the peak covers each logged 30 s window
       spent = time.monotonic() - pass_started
       if spent > STREAM_STALL_LOG:

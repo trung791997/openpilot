@@ -181,7 +181,7 @@ def test_card_rect_only_while_the_card_draws(monkeypatch):
   monkeypatch.setattr(theme, 'card_height', lambda state: 560)
   monkeypatch.setattr(theme, 'placement', lambda customization, profile, key: shown)
   state = SimpleNamespace(customization={})
-  assert theme.card_rect(state) == (81, 210, 81 + theme.CARD_WIDTH, 770)
+  assert theme.card_rect(state) == (81, 210, 81 + theme.SPEED_CARD_SIZE[0], 210 + theme.SPEED_CARD_SIZE[1])
   shown['enabled'] = False
   assert theme.card_rect(state) is None
   monkeypatch.setattr(theme, '_card_body', lambda state: None)
@@ -195,10 +195,23 @@ def test_overlay_passes_the_card_to_the_badge(monkeypatch):
   monkeypatch.setattr(theme, 'state_glow', lambda *a: None)
   monkeypatch.setattr(theme, 'side_colors', lambda *a: (None, None))
   monkeypatch.setattr(theme, 'card_rect', lambda state: PETER_CARD)
+  monkeypatch.setattr(theme, 'slc_controls', lambda *a: ())
   monkeypatch.setattr(theme, 'lead_badge', lambda *a, **k: seen.append(k['avoid']))
   state = SimpleNamespace(appearance=SimpleNamespace(show_lead_indicator=True))
   theme.overlay(Fonts(), SCREEN, state, 'chill', True)
   assert seen == [PETER_CARD]
+
+def test_badge_placement_pins_under_the_card_or_slides_off_the_buttons(monkeypatch):
+  card = (88, 75, 576, 243)
+  state = SimpleNamespace(customization={})
+  monkeypatch.setattr(theme, 'card_rect', lambda state: card)
+  monkeypatch.setattr(theme, 'slc_controls', lambda *a: ())
+  assert theme.badge_placement(state, SCREEN) == (card, theme.badge_anchor(state, SCREEN))
+  assert theme.badge_placement(state, SCREEN)[1] is not None
+  buttons = SimpleNamespace(bounds=(88, 243, 576, 335))  # Accept / Decline row below the card
+  monkeypatch.setattr(theme, 'slc_controls', lambda *a: (buttons,))
+  assert theme.badge_placement(state, SCREEN) == ((88, 75, 576, 335), None)
+
 
 def test_no_lead_word(rl, monkeypatch):
   monkeypatch.setattr(theme, '_load_sprite', lambda path, width: texture(width))
