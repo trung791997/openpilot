@@ -34,6 +34,8 @@ import numpy as np
 
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.car.honda.radar_camera_witness import closing_ttc
+from openpilot.starpilot.longitudinal import bosch_a_release as release
+from openpilot.starpilot.longitudinal.bosch_a_release import let_off_limited_target
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 
 # ---- Stock Brake Feel (D-086), comments abridged from the source; see STATUS/DECISIONS for the evidence -------------
@@ -59,11 +61,9 @@ STOCK_FEEL_MIN_CLOSING = 0.5  # m/s
 # Outside the law (TTC at or under the floor, or no lead closing) the depth is kept but deepens no faster than this
 # (STATUS 220: without it the target stepped -0.6..-1.65 in one frame; stock's own p98 is 2-3.4 m/s^3).
 STOCK_FEEL_JERK_OUTSIDE = 5.0  # m/s^3
-# D-125 (329 8:02): soft exit when the closing speed falls under STOCK_FEEL_MIN_CLOSING.
-STOCK_FEEL_EXIT_JERK = 0.6   # m/s^3
-STOCK_FEEL_EXIT_HOLD_S = 2.0  # s
-# Takeover hold (owner 2026-10-08, 2f7 26:38): a brake already deeper than the cap is let off at this rate, not cut.
-STOCK_FEEL_CAP_RELEASE_JERK = 0.3  # m/s^3
+# Soft exit (D-125: STOCK_FEEL_EXIT_JERK, STOCK_FEEL_EXIT_HOLD_S) and takeover hold (STOCK_FEEL_CAP_RELEASE_JERK) live
+# in the let-off rate table in bosch_a_release.py, with their evidence. Read through the module so a replay harness can
+# patch them there.
 # Lead stopping (owner 2026-10-07, 2f2 1099/1483): a closing lead braking at STOCK_FEEL_LEAD_STOP_A or harder moves the
 # cap to the decel needed to stop STOCK_FEEL_LEAD_STOP_GAP behind it. D-120 (324): leads more than
 # STOCK_FEEL_LEAD_STOP_MAX_T s from stopping are left to the table (12 s delayed a real slowing lead on 324 2790).
@@ -166,10 +166,9 @@ def stock_feel_emergency(leads, v_ego: float, active: bool) -> bool:
 
 
 def stock_feel_held_cap(prev: float, cap: float, dt: float) -> float:
-  """The cap, except that a brake already deeper than it (prev) is only let off at STOCK_FEEL_CAP_RELEASE_JERK."""
-  if prev < cap:
-    return float(min(cap, prev + STOCK_FEEL_CAP_RELEASE_JERK * dt))
-  return float(cap)
+  """The cap, except that a brake already deeper than it (prev) is only let off at STOCK_FEEL_CAP_RELEASE_JERK.
+  Caps are always braking (cap < 0), so this is let_off_limited_target at that rate."""
+  return let_off_limited_target(prev, cap, dt, release.STOCK_FEEL_CAP_RELEASE_JERK)
 
 
 def stock_feel_law_active(leads, emergency: bool) -> bool:
@@ -196,7 +195,7 @@ def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float
   ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
   if ttc == float('inf') and law_recent and not any(
       _present(lead) and float(lead.aLeadK) <= STOCK_FEEL_LEAD_STOP_A for lead in leads):
-    return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_EXIT_JERK)
+    return brake_onset_limited_target(prev, target, dt, release.STOCK_FEEL_EXIT_JERK)
   if not ttc > STOCK_FEEL_TTC_FLOOR_S or ttc == float('inf'):
     return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_JERK_OUTSIDE)
   depth = stock_feel_depth(leads, ttc, v_ego)
@@ -528,7 +527,7 @@ class HondaBoschALongEnhancement:
     else:
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
       out = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
-      self.law_t = STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
+      self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
     if self.onset_episode and out >= ONSET_END_ACCEL and prev >= ONSET_END_ACCEL:
       self.onset_episode = False
       self.onset_free = False

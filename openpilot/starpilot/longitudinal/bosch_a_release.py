@@ -52,9 +52,25 @@ RELEASE_VREL_MAX = -2.0  # m/s; previous lead must be closing at least this fast
 RELEASE_D_MAX = 40.0     # m; previous lead must be inside this (9e: 21 m at release)
 RELEASE_JUMP_M = 20.0    # m; a handover lead farther than prev dRel + this counts as the same release (9e: 21 -> 84+)
 HOLD_S = 1.0             # s; owner asked for "about a second" before resuming (route 9e, 2026-11-07)
-BRAKE_RELEASE_JERK = 2.5  # m/s^3
-BRAKE_RELEASE_DWELL_TICKS = 2  # 0.1 s at DT_MDL
 PLANNER_ACTION_T_S = 0.30  # s; never longer than the car's own delay + DT_MDL
+
+# ---- Brake let-off rate table (unify 2026-11-13; one place for every rate that lets a brake off) --------------------
+# Each entry keeps the evidence that set it. All of them go through let_off_limited_target() below.
+# The Accel Boost lead-gate fades (accel_boost.LEAD_GATE_FADE_OUT_S / _IN_S) are gas-side and stay in accel_boost.py.
+#
+# Planner brake release (ffe967495d, ns replay): while braking, the target rises at most this per second.
+BRAKE_RELEASE_JERK = 2.5  # m/s^3
+# Release dwell (927f430189): a brake is held this many cycles before it may rise.
+BRAKE_RELEASE_DWELL_TICKS = 2  # 0.1 s at DT_MDL
+# Stock Brake Feel takeover hold (owner 2026-10-08, 2f7 26:38): a brake already deeper than the stock-feel cap is let
+# off at this rate, not cut. Replay 2026-11-13 (Job, main set): one shared value X for this and BRAKE_RELEASE_JERK
+# moved 131/79/50/39 episodes at X = 0.3/0.6/1.0/2.5; owner has not picked one, so both stay as driven.
+STOCK_FEEL_CAP_RELEASE_JERK = 0.3  # m/s^3
+# Stock Brake Feel soft exit (D-125, route 329 8:02): for STOCK_FEEL_EXIT_HOLD_S after the law was last active (no lead
+# closing faster than STOCK_FEEL_MIN_CLOSING any more), a brake may deepen at most STOCK_FEEL_EXIT_JERK, so the exit
+# does not step into the planner's own target.
+STOCK_FEEL_EXIT_JERK = 0.6   # m/s^3
+STOCK_FEEL_EXIT_HOLD_S = 2.0  # s
 
 LaneChangeState = log.LaneChangeState
 
@@ -87,11 +103,17 @@ def _snapshot(lead):
                          dRel=float(lead.dRel), vRel=float(lead.vRel))
 
 
-def brake_release_limited_target(prev: float, target: float, dt: float) -> float:
-  """While braking (prev < 0), the target may rise at most BRAKE_RELEASE_JERK * dt per step; it may always fall."""
+def let_off_limited_target(prev: float, target: float, dt: float, jerk: float) -> float:
+  """The one let-off limiter: while braking (prev < 0), the target may rise at most jerk * dt per step; it may always
+  fall, and a throttle (prev >= 0) passes through."""
   if prev >= 0.0:
     return float(target)
-  return float(min(target, prev + BRAKE_RELEASE_JERK * dt))
+  return float(min(target, prev + jerk * dt))
+
+
+def brake_release_limited_target(prev: float, target: float, dt: float) -> float:
+  """Planner brake release: let_off_limited_target at BRAKE_RELEASE_JERK."""
+  return let_off_limited_target(prev, target, dt, BRAKE_RELEASE_JERK)
 
 
 def brake_release_dwell_target(prev: float, target: float, rise_ticks: int) -> tuple[float, int]:
