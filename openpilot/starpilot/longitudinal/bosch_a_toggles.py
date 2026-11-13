@@ -7,15 +7,16 @@ Two gates, both false for None or an unreadable CP:
 
 Need the radar (long_tuning_active; owner 2026-11-13: a vision-only Bosch-A Honda falls back to the stock planner for these):
 HondaBoschALongEnhancement (Stock Brake Feel, onset ramp, coast first, need floor, newborn-lead hold, implausible-drop bound),
-BoschARelease.coast, BoschAStopGap, and the Accel Boost lead gate (AccelBoost(lead_gate=...); at HEAD that gate had no car or
-radar check at all, so it ran on every car).
+BoschARelease.coast and BoschAStopGap.
 Run vision-only too (vehicle_supported): HumanFollowing and HumanAcceleration (human_following.enabled_for), BoschARelease.smooth
-(release limit + dwell) and BoschARelease.action_t (plan read-ahead). The NeedFloor 1.5 s min-gap gate and the camera cap hold
+(release limit + dwell), BoschARelease.action_t (plan read-ahead) and the Accel Boost lead gate (AccelBoost(lead_gate=...);
+at HEAD it had no car check and ran on every car; owner 2026-11-13: keep it vision-only too - replay showed 53 of 283
+vision-only episodes braking later than 0.2 s without it, and row-identical to 786d62d5d2 with it). The NeedFloor 1.5 s min-gap gate and the camera cap hold
 (radar_camera_witness, C-012) are always on inside their gates. The old HumanFollowing owner param (default Off) was removed.
 
 Constructor defaults: HondaBoschALongEnhancement(CP, dt), BoschARelease(CP) and BoschAStopGap(CP) compute their gate from CP;
 AccelBoost() with no argument keeps its lead gate ON (tests and replay harnesses); the planners pass
-lead_gate=long_tuning_active(CP). The planners' `bosch_a=` keyword is ignored (kept for replay harnesses).
+lead_gate=vehicle_supported(CP). The planners' `bosch_a=` keyword is ignored (kept for replay harnesses).
 """
 
 

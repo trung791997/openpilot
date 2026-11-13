@@ -136,10 +136,10 @@ class TestCarGates(unittest.TestCase):
       self.assertEqual(supported, cp in (BOSCH_A, RADAR_OFF), cp)
       self.assertEqual(
         (enh.stock_feel, enh.coast_enabled, enh.newborn_hold is not None, enh.drop_bound is not None,
-         enh._need_floor is not None, BoschARelease(cp).coast_enabled, BoschAStopGap(cp).enabled,
-         AccelBoost(lead_gate=gate).lead_gate),
-        (gate,) * 8, cp)
-      self.assertEqual((human_following.enabled_for(cp), BoschARelease(cp).enabled), (supported,) * 2, cp)
+         enh._need_floor is not None, BoschARelease(cp).coast_enabled, BoschAStopGap(cp).enabled),
+        (gate,) * 7, cp)
+      self.assertEqual((human_following.enabled_for(cp), BoschARelease(cp).enabled, AccelBoost(lead_gate=supported).lead_gate),
+                       (supported,) * 3, cp)
 
   def test_radar_off_radar_parts_inert_and_vision_parts_active(self):
     from openpilot.common.realtime import DT_MDL
@@ -206,7 +206,7 @@ class TestUpstreamPlanner(unittest.TestCase):
     self.assertTrue(vision.bosch_a_release.enabled)
     self.assertFalse(vision.bosch_a_release.coast_enabled)
     self.assertFalse(vision.bosch_a_stop_gap.enabled)
-    self.assertFalse(vision.accel_boost.lead_gate)
+    self.assertTrue(vision.accel_boost.lead_gate)  # owner 2026-11-13: lead gate vision-only too
     for cp in NOT_BOSCH_A:
       self.assertFalse(upstream(cp).accel_boost.lead_gate, cp)
     for cp in NOT_BOSCH_A:
@@ -348,7 +348,7 @@ class TestStarPilotPlanner(unittest.TestCase):
     self.assertFalse(vision.bosch_a_long.coast_enabled)
     self.assertFalse(vision.bosch_a_release.coast_enabled)
     self.assertFalse(vision.bosch_a_stop_gap.enabled)
-    self.assertFalse(vision.accel_boost.lead_gate)
+    self.assertTrue(vision.accel_boost.lead_gate)  # owner 2026-11-13: lead gate vision-only too
 
   def test_other_cars_are_inert(self):
     for cp in NOT_BOSCH_A:

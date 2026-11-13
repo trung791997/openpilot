@@ -43,7 +43,7 @@ from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
 from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
-from openpilot.starpilot.longitudinal.bosch_a_toggles import long_tuning_active
+from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -121,7 +121,7 @@ class LongitudinalPlanner:
     self.dt = dt
     self.clock_ns = clock_ns
     self.allow_throttle = True
-    self.accel_boost = AccelBoost(lead_gate=long_tuning_active(CP))  # lead gate only on Bosch-A Hondas with the radar on
+    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))  # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13: later braking without it)
     self.encouragement = Encouragement()
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()

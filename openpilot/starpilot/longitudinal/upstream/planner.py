@@ -65,8 +65,8 @@ class LongitudinalPlanner:
     # Same two features, same car gates and same order relative to the MPC and the final clip as StarPilot's
     # selfdrive/controls/lib/longitudinal_planner.py. There are no toggles (owner 2026-11-13): on a verified Bosch-A Honda
     # with openpilot longitudinal HumanFollowing, HumanAcceleration and Stock Brake Feel (with the brake onset ramp inside
-    # it) are always on (Stock Brake Feel and the Accel Boost lead gate only with the radar on; HumanFollowing/HumanAcceleration
-    # and the release smoothing also vision-only); any other car gets upstream's planner. `bosch_a` is ignored (kept for replay harnesses).
+    # it) are always on (Stock Brake Feel only with the radar on; HumanFollowing/HumanAcceleration,
+    # the release smoothing and the Accel Boost lead gate also vision-only); any other car gets upstream's planner. `bosch_a` is ignored (kept for replay harnesses).
     self.bosch_a_model_leads = None  # HumanFollowing + HumanAcceleration
     self.bosch_a_long = None         # Stock Brake Feel
     import time
@@ -84,8 +84,8 @@ class LongitudinalPlanner:
     # Bosch-A stop hold + no gas inside the stop gap (always on for Bosch-A Hondas with the radar; bosch_a_stop_gap.py).
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
-    from openpilot.starpilot.longitudinal.bosch_a_toggles import long_tuning_active
-    self.accel_boost = AccelBoost(lead_gate=long_tuning_active(CP))  # lead gate only on Bosch-A Hondas with the radar on; same as the StarPilot planner (commaai/openpilot#39015)
+    from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
+    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))  # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13); same as the StarPilot planner (commaai/openpilot#39015)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
