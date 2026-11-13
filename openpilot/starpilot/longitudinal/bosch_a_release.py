@@ -64,7 +64,8 @@ BRAKE_RELEASE_JERK = 2.5  # m/s^3
 BRAKE_RELEASE_DWELL_TICKS = 2  # 0.1 s at DT_MDL
 # Stock Brake Feel takeover hold (owner 2026-10-08, 2f7 26:38): a brake already deeper than the stock-feel cap is let
 # off at this rate, not cut. Replay 2026-11-13 (Job, main set): one shared value X for this and BRAKE_RELEASE_JERK
-# moved 131/79/50/39 episodes at X = 0.3/0.6/1.0/2.5; owner has not picked one, so both stay as driven.
+# moved 131/79/50/39 episodes at X = 0.3/0.6/1.0/2.5 (none over 0.3 m/s^2 at X >= 0.6). Owner 2026-11-13: keep the
+# split - this rate is the takeover hold, BRAKE_RELEASE_JERK the planner release, and replay cannot judge takeover feel.
 STOCK_FEEL_CAP_RELEASE_JERK = 0.3  # m/s^3
 # Stock Brake Feel soft exit (D-125, route 329 8:02): for STOCK_FEEL_EXIT_HOLD_S after the law was last active (no lead
 # closing faster than STOCK_FEEL_MIN_CLOSING any more), a brake may deepen at most STOCK_FEEL_EXIT_JERK, so the exit
