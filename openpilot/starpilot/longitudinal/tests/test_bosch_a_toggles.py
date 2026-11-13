@@ -25,7 +25,7 @@ def car(fingerprint='HONDA_CIVIC_BOSCH', brand='honda', long=True, radar_unavail
 
 BOSCH_A = car()
 RADAR_OFF = car(radar_unavailable=True)
-NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_ACCORD'), car(long=False))
+NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_CIVIC_2022'), car(long=False))
 
 
 class RecordingSolver:

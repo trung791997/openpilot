@@ -9,7 +9,7 @@ from openpilot.starpilot.longitudinal import bosch_a_release as bs
 
 BOSCH_A = SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=True)
 NOT_BOSCH_A = (SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=False),
-               SimpleNamespace(brand="honda", carFingerprint="HONDA_ACCORD", openpilotLongitudinalControl=True),
+               SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_2022", openpilotLongitudinalControl=True),
                SimpleNamespace(brand="toyota", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=True))
 STEP = bs.BRAKE_RELEASE_JERK * DT_MDL
 
