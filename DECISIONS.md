@@ -2883,3 +2883,38 @@ on-path shadow MPC gets the guard too. `solve_time` is the sum of both solves.
 - Not checked closed loop. There is no closed-loop gap result for 1871.
 
 **Lever:** `MPC_QP_CAP_RESOLVE`.
+
+## D-127 — Park the Bosch-A object-bank fields FW19 and FW2D; do not decode them in car code (2026-11-13, replay/log only)
+
+**Context:** in the 0x280-0x2FF Bosch-A object bank, two bit fields are still unused by the parser: FW19 (39|9) and
+FW2D (7|6). That bank is the windshield camera's object list, not radar points (`docs/BOSCH_A_OBJECT_LIST_IS_CAMERA.md`,
+47bcad7661). Bob (Radar Work) decoded both. Long Sim (Job) then scored them on the 12 stock-ACC routes
+(0000025d-00000267, 00000299; 1.72 h of driving) plus bd segments 5/10/18.
+
+**FW19 = lateral angular rate.** omega = (raw - 250)/192 rad/s, and 510 means invalid. It tracks d(az)/dt with r 0.99
+and about 70 ms of lag. It was tested as a widen-only cut-in warning: t_entry = (|y| - hw - 0.9)/(dRel*|omega|) <= tau,
+counted only when moving toward the ego lane, for 2 sweeps.
+- 68 cut-ins at tau 2.0 s, vmin 0.5:
+  - FW19 warned on 67/68, a median 1.21 s before the centroid crossing (p25 0.70, p75 2.15).
+  - Differenced az over 3 sweeps warned on 68/68, with a median of 1.08 s.
+  - FW19's real gain over differenced az is about 0.2 s (0.3 s over the 6-sweep difference).
+- False warnings on 748 adjacent-lane tracks that never entered: 46/h at tau 2.0, 15/h at tau 2.0 with vmin 1.0, and 11.6/h at tau 1.0.
+- 22 sudden lead-speed drops: none involved lateral motion, so FW19 does not help there.
+
+**FW2D = 62 is the same as FW19 = 510** (6415/6415, with 0 cases of 62 without 510).
+- It is not the new-track gate: 91.8% of 62 sweeps pass the parser's LIFE/incarnation gate.
+- Range jitter is about 3x higher during 62 (robust sd 0.278 vs 0.093 m). The usual run is 1 sweep, mid-track.
+- It does not line up with occlusion or cut-ins.
+- FW2D = 63 marks an empty or invalid slot (STATUS 0xF, RANGE 0xFFF or AZ 0x7FF).
+- Why the camera sets 62 is UNRESOLVED.
+
+**Decision (Peter):** park both fields.
+- No DBC or `bosch_a_radar.py` decode.
+- No early warning or quality gating from them.
+- A differenced-az rate gives nearly the same cut-in lead time without a new car-code field.
+
+**Reopen if:** there is a cut-in that a differenced-az rate misses and FW19 catches, or a measured case where FW2D = 62
+sweeps make a published point worse in a way the existing gates do not handle.
+
+**Evidence files** (on the WSL box): `~/longsim_frames/decode_bank_fields/{fw19_warning,fw2d}/`
+(results_*.txt, fw19_warn.py, fw2d.py, extract_*.py). Route data is not committed.
