@@ -63,32 +63,29 @@ class LongitudinalPlanner:
     self.mpc = LongitudinalMpc(dt=dt)
     # ---- BOSCH-A HOOK 1/3 (owner toggles; not in upstream 521db4c8) ----
     # Same two features, same car gates and same order relative to the MPC and the final clip as StarPilot's
-    # selfdrive/controls/lib/longitudinal_planner.py. `bosch_a` is a bosch_a_toggles.BoschAToggles (None = both Off).
-    # With both toggles off both stay None, nothing below runs and the planner is upstream's. The car gates and the
-    # StarPilot imports only happen when a toggle is on.
+    # selfdrive/controls/lib/longitudinal_planner.py. There are no toggles (owner 2026-11-13): on a verified Bosch-A Honda
+    # with openpilot longitudinal HumanFollowing, HumanAcceleration and Stock Brake Feel (with the brake onset ramp inside
+    # it) are always on (Stock Brake Feel only with the radar on; HumanFollowing/HumanAcceleration,
+    # the release smoothing and the Accel Boost lead gate also vision-only); any other car gets upstream's planner. `bosch_a` is ignored (kept for replay harnesses).
     self.bosch_a_model_leads = None  # HumanFollowing + HumanAcceleration
     self.bosch_a_long = None         # Stock Brake Feel
-    if bosch_a is not None and bosch_a.human_following:
-      import time
-      from openpilot.starpilot.longitudinal import human_acceleration, human_following
-      if human_following.enabled_for(CP, True):
-        from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import ModelLeadHistory, qualified_model_leads
-        self.bosch_a_model_leads = ModelLeadHistory()
-        self.bosch_a_human = (human_following, human_acceleration, qualified_model_leads, time.monotonic_ns)
-    if bosch_a is not None and bosch_a.stock_brake_feel:
-      from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-      enhancement = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=True)
-      self.bosch_a_long = enhancement if enhancement.enabled else None
-    # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
-    from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
-    self.bosch_a_smooth = BoschASmooth(CP, dt)
+    import time
+    from openpilot.starpilot.longitudinal import human_acceleration, human_following
+    if human_following.enabled_for(CP):
+      from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import ModelLeadHistory, qualified_model_leads
+      self.bosch_a_model_leads = ModelLeadHistory()
+      self.bosch_a_human = (human_following, human_acceleration, qualified_model_leads, time.monotonic_ns)
+    from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
+    enhancement = HondaBoschALongEnhancement(CP, dt)
+    self.bosch_a_long = enhancement if enhancement.stock_feel else None
+    # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_release.py).
+    from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
+    self.bosch_a_release = BoschARelease(CP, dt)
     # Bosch-A stop hold + no gas inside the stop gap (always on for Bosch-A Hondas with the radar; bosch_a_stop_gap.py).
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
-    # Bosch-A far-lead brake onset ramp (always on for Bosch-A Hondas; bosch_a_onset_ramp.py).
-    from openpilot.starpilot.longitudinal.bosch_a_onset_ramp import BoschAOnsetRamp
-    self.bosch_a_onset_ramp = BoschAOnsetRamp(CP, dt)
-    self.accel_boost = AccelBoost()  # same as the StarPilot planner (commaai/openpilot#39015)
+    from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
+    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))  # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13); same as the StarPilot planner (commaai/openpilot#39015)
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
@@ -143,7 +140,7 @@ class LongitudinalPlanner:
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
     # ---- BOSCH-A HOOK 2/3: HumanFollowing lead paths and the HumanAcceleration MPC cap (StarPilot planner: the
-    # mpc.update call). Empty (stock call) unless the BoschAHumanFollowing toggle is on and the car passes. ----
+    # mpc.update call). Empty (stock call) unless the car passes human_following.enabled_for. ----
     bosch_a_mpc = {}
     if self.bosch_a_model_leads is not None:
       human_following, human_acceleration, qualified_model_leads, clock_ns = self.bosch_a_human
@@ -167,7 +164,7 @@ class LongitudinalPlanner:
     # Save starting point for next iteration
     a_prev = self.output_a_target
 
-    action_t = self.bosch_a_smooth.action_t(self.CP.longitudinalActuatorDelay)
+    action_t = self.bosch_a_release.action_t(self.CP.longitudinalActuatorDelay)
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
@@ -191,7 +188,7 @@ class LongitudinalPlanner:
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     # ---- BOSCH-A HOOK 3/3: last shapers before the final clip, in StarPilot's order (HumanAcceleration cap, then
-    # the Stock Brake Feel step). Skipped entirely when the toggles are off. ----
+    # the Stock Brake Feel step). Inert on any car that is not a verified Bosch-A Honda. ----
     if 'acceleration_max' in bosch_a_mpc:  # unset when HumanAcceleration skips this personality
       output_a_target = min(output_a_target, bosch_a_mpc['acceleration_max'])  # >= 0: braking passes through
     if self.bosch_a_long is not None and self.bosch_a_long.stock_feel and reset_state:
@@ -207,13 +204,9 @@ class LongitudinalPlanner:
       output_a_target = self.bosch_a_long.step(
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
         target=float(output_a_target), v_ego=v_ego, stopping=bool(self.output_should_stop),
-        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state))
-    output_a_target = self.bosch_a_smooth.step(float(a_prev), float(output_a_target),
-                                               reset=bool(reset_state or sm['carState'].standstill))
-    output_a_target = self.bosch_a_onset_ramp.step(
-      lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, prev=float(a_prev),
-      target=float(output_a_target), fcw=bool(self.fcw), stopping=bool(self.output_should_stop),
-      reset=bool(reset_state or sm['carState'].standstill))
+        standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
+    output_a_target = self.bosch_a_release.smooth(float(a_prev), float(output_a_target),
+                                                 reset=bool(reset_state or sm['carState'].standstill))
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
       lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target),
       should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),

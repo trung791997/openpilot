@@ -24,8 +24,6 @@ from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_A
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
 from openpilot.starpilot.longitudinal.encouragement import KEY as NUDGE_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
-from openpilot.starpilot.longitudinal.bosch_a_toggles import (KEYS as BOSCH_A_KEYS, settings_rows as bosch_a_settings_rows,
-                                                               vehicle_supported as bosch_a_vehicle_supported)
 
 from openpilot.starpilot.longitudinal.profile_document import (
   ACCELERATION_PRESETS, ACCELERATION_SPEEDS_MPH, BRAKING_PRESETS, FOLLOWING_PRESETS, CURVE_BOUNDS,
@@ -94,7 +92,6 @@ BOOL_DEFAULTS = {
   "PauseLateralOnSignal": False,
   "LaneCentering": True, "LaneCenteringPauseOnSignal": True, "Blendful": False,
   "CustomPersonalities": False, PLANNER_SELECTION_KEY: True,
-  **dict.fromkeys(BOSCH_A_KEYS, False),
   LEAD_APPROACH_KEY: False,
   LEAD_TAKEOFF_KEY: False,
   NUDGE_KEY: True,
@@ -1195,8 +1192,6 @@ class FeatureSettingsOwner:
       title = "Long Planner"
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
-      for ba_key, ba_label, ba_editable, ba_reason in bosch_a_settings_rows(self.vehicle_params(), self._value, self.authority("preferences")):
-        rows.append(self._bool_row(ba_key, ba_label, ba_editable, reason=ba_reason))
       allowed = configurable and system_long
       force_enabled, _, _ = self._value("ForceStops")
       rows.append(self._bool_row("ForceStops", "Force Stop", allowed or
@@ -1513,10 +1508,6 @@ class FeatureSettingsOwner:
       long_key = (key in ("CustomPersonalities", "ForceStops", "ForceStopDistanceOffset") or "Personality" in key or
                   key.endswith(("Follow", "FollowHigh")) or "Jerk" in key)
       if key in ("ShowSpeedLimits", "AlwaysAllowUploads", "UploadRlogs", SLC_PRIORITY, SLC_SECONDARY) or (key == "ForceStops" and request.value == "Off"):
-        group = "preferences"
-      elif key in BOSCH_A_KEYS:
-        if request.value == "On" and not bosch_a_vehicle_supported(self.vehicle_params()):
-          return False
         group = "preferences"
       elif key in LANE_LIVE_KEYS and not self.authority("lane"):
         group = "lane_live"

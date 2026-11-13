@@ -2,7 +2,7 @@
 FrogPilot-Testing 728f65472 frogpilot_acceleration.py.
 
 Only the throttle side: `cap()` never goes below 0, so braking targets pass through. Enabled with
-human_following.enabled_for(CP, toggle) (radar on or vision-only; off unless the BoschAHumanFollowing toggle is on).
+human_following.enabled_for(CP) (radar on or vision-only; always on for verified Bosch-A Hondas, owner 2026-11-13: no toggle).
 FrogPilot's launch half (the starting state outputs a_target instead of startAccel) is not ported: Honda has no
 CP.startingState, so it never affected the Civic, and it would change other cars. Unit-test and replay evidence only; not road-validated on this tree.
 """

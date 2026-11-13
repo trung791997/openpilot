@@ -1,5 +1,5 @@
-"""Newborn lead aLeadK bound (D-080, NEWBORN_HOLD_ENABLED): pure python. The class and bound_newborn_leads are unchanged
-on this branch; they had no unit tests (only an ad hoc fuzz), so these are new. Replay only."""
+"""Newborn lead aLeadK bound (D-080, NEWBORN_HOLD_ENABLED): pure python. The class and bound_newborn_leads were restored
+verbatim from 44f382face; the original had no unit tests (only an ad hoc fuzz), so these are new. Replay only."""
 from types import SimpleNamespace
 
 import pytest

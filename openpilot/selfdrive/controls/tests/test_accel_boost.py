@@ -5,7 +5,8 @@ import pytest
 from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.accel_boost import (
-  ACCEL_BOOST_INITIAL, ACCEL_BOOST_MAX, ACCEL_BOOST_MIN_SPEED, ACCEL_BOOST_PER_OVERRIDE, AccelBoost,
+  ACCEL_BOOST_INITIAL, ACCEL_BOOST_MAX, ACCEL_BOOST_MIN_SPEED, ACCEL_BOOST_PER_OVERRIDE, LEAD_GATE_FADE_IN_S, LEAD_GATE_FADE_OUT_S,
+  AccelBoost,
 )
 
 V = 17.0
@@ -14,9 +15,24 @@ V = 17.0
 Personality = log.LongitudinalPersonality
 
 
-def make_sm(enabled=True, gas=False, v_ego=V, exp=True, personality=Personality.standard):
+def make_radar_state(lead=None):
+  # Real cereal message, so a wrong field name fails here instead of silently reading as no lead.
+  rs = log.RadarState.new_message()
+  if lead is not None:
+    present, d_rel, v_rel, a_lead = lead
+    rs.leadOne.present = present
+    rs.leadOne.dRel, rs.leadOne.vRel, rs.leadOne.aLeadK = d_rel, v_rel, a_lead
+  return rs
+
+
+def make_lead(status=False, d_rel=0.0, v_rel=0.0, a_lead=0.0):
+  return (status, d_rel, v_rel, a_lead)
+
+
+def make_sm(enabled=True, gas=False, v_ego=V, exp=True, personality=Personality.standard, lead=None):
   return {'selfdriveState': SimpleNamespace(enabled=enabled, experimentalMode=exp, personality=personality),
-          'carState': SimpleNamespace(gasPressed=gas, vEgo=v_ego)}
+          'carState': SimpleNamespace(gasPressed=gas, vEgo=v_ego),
+          'radarState': make_radar_state(lead)}
 
 
 def run(b, seconds, e2e=0.0, mpc=1.0, a_cruise=1.0, **kw):
@@ -116,3 +132,25 @@ def test_output_shape():
   assert f(0.5) == pytest.approx(0.7)
   assert f(-0.75) == pytest.approx(-0.75 + 0.1)
   assert f(6.0) == 6.0
+
+
+def test_lead_gate_fades_boost_toward_a_slowing_lead_and_back():
+  b = AccelBoost()
+  agg = Personality.aggressive
+  assert run(b, 1.0, personality=agg) == pytest.approx(ACCEL_BOOST_INITIAL)
+  closing = make_lead(True, d_rel=3.0 * V, v_rel=-1.0)
+  assert run(b, LEAD_GATE_FADE_OUT_S, personality=agg, lead=closing) == pytest.approx(0.0, abs=1e-6)
+  assert b.total_boost == pytest.approx(ACCEL_BOOST_INITIAL)  # kept, only the applied boost is gated
+  assert run(b, LEAD_GATE_FADE_IN_S, personality=agg) == pytest.approx(ACCEL_BOOST_INITIAL)
+
+
+@pytest.mark.parametrize('lead, gated', [
+  (make_lead(True, d_rel=3.0 * V, v_rel=0.0, a_lead=-1.0), True),   # braking lead
+  (make_lead(True, d_rel=5.0 * V, v_rel=-3.0), False),               # beyond the headway gate
+  (make_lead(True, d_rel=2.0 * V, v_rel=-0.3, a_lead=-0.3), False),  # steady lead
+  (make_lead(False, d_rel=1.0 * V, v_rel=-3.0), False),              # no lead
+])
+def test_lead_gate_conditions(lead, gated):
+  b = AccelBoost()
+  out = run(b, 1.0, personality=Personality.aggressive, lead=lead)
+  assert out == pytest.approx(0.0 if gated else ACCEL_BOOST_INITIAL, abs=1e-6)

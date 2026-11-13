@@ -1,96 +1,36 @@
-"""Owner toggles for the Bosch-A longitudinal features, read once when plannerd starts (either planner).
+"""The Bosch-A longitudinal car gates. There are no owner toggles (owner 2026-11-13: no toggle, default for all Bosch-A cars).
 
-- BoschAStockBrakeFeel: the Stock Brake Feel law in honda_bosch_a_long (D-086 and its follow-ups).
-- BoschAHumanFollowing: HumanFollowing (human_following.py) and HumanAcceleration (human_acceleration.py).
+Two gates, both false for None or an unreadable CP:
+- vehicle_supported(CP): a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal, radar on or off.
+- long_tuning_active(CP): vehicle_supported and the radar on (CP.radarUnavailable False), the same gate radard uses to build
+  BoschALeadPolicy (honda_bosch_a_long.active_for).
 
-Like UseStarPilotLongitudinalPlanner, the values are latched for the life of the plannerd process, so a change
-applies on the next drive. Only an exact saved "1" turns a feature on; a missing, unreadable or malformed value is
-Off. A toggle only arms its feature: each one still applies its own car gate (honda_bosch_a_long.active_for,
-human_following.enabled_for), so a car that is not on a Bosch-A platform (classic or alt-radar stock) with openpilot longitudinal is unaffected.
+Need the radar (long_tuning_active; owner 2026-11-13: a vision-only Bosch-A Honda falls back to the stock planner for these):
+HondaBoschALongEnhancement (Stock Brake Feel, onset ramp, coast first, need floor, newborn-lead hold, implausible-drop bound),
+BoschARelease.coast and BoschAStopGap.
+Run vision-only too (vehicle_supported): HumanFollowing and HumanAcceleration (human_following.enabled_for), BoschARelease.smooth
+(release limit + dwell), BoschARelease.action_t (plan read-ahead) and the Accel Boost lead gate (AccelBoost(lead_gate=...);
+at HEAD it had no car check and ran on every car; owner 2026-11-13: keep it vision-only too - replay showed 53 of 283
+vision-only episodes braking later than 0.2 s without it, and row-identical to 786d62d5d2 with it). The NeedFloor 1.5 s min-gap gate and the camera cap hold
+(radar_camera_witness, C-012) are always on inside their gates. The old HumanFollowing owner param (default Off) was removed.
+
+Constructor defaults: HondaBoschALongEnhancement(CP, dt), BoschARelease(CP) and BoschAStopGap(CP) compute their gate from CP;
+AccelBoost() with no argument keeps its lead gate ON (tests and replay harnesses); the planners pass
+lead_gate=vehicle_supported(CP). The planners' `bosch_a=` keyword is ignored (kept for replay harnesses).
 """
-from dataclasses import dataclass
-
-from openpilot.starpilot.saved_source import read_saved
-
-STOCK_BRAKE_FEEL_KEY = 'BoschAStockBrakeFeel'
-HUMAN_FOLLOWING_KEY = 'BoschAHumanFollowing'
-KEYS = (STOCK_BRAKE_FEEL_KEY, HUMAN_FOLLOWING_KEY)
-# (key, label, reason) for the settings rows on the Long Planner page
-ROWS = (
-  (STOCK_BRAKE_FEEL_KEY, "Stock Brake Feel (Bosch-A)",
-   ("Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. " +
-    "It never brakes harder than the planner asks. Works with either planner. Changes apply on the next drive. " +
-    "Acts only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.")),
-  (HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
-   ("Follows the driving model's predicted path for the car ahead instead of a straight-line guess, and eases " +
-    "acceleration at low set speeds and near the set speed. Works with either planner. Changes apply on the next drive. " +
-    "Acts only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.")),
-)
-
-
-@dataclass(frozen=True)
-class BoschAToggles:
-  stock_brake_feel: bool = False
-  human_following: bool = False
-
-
-OFF = BoschAToggles()
-
-
-def _on(params, key: str) -> bool:
-  try:
-    raw, readable = read_saved(params, key, 8)
-  except Exception:
-    return False
-  return bool(readable and raw == b'1')
-
-
-def read_toggles(params) -> BoschAToggles:
-  """The saved toggles; Off for anything but an exact b'1'."""
-  return BoschAToggles(stock_brake_feel=_on(params, STOCK_BRAKE_FEEL_KEY), human_following=_on(params, HUMAN_FOLLOWING_KEY))
 
 
 def vehicle_supported(CP) -> bool:
-  """Settings-row gate: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal active, or available through
-  Alpha Longitudinal (alphaLongitudinalAvailable) but not yet on.
-
-  This only decides whether the saved toggles can be edited. The planner hooks still require
-  openpilotLongitudinalControl at runtime, so with Alpha Long off the toggles are saved but do nothing."""
+  """Verified Bosch-A Honda with openpilot longitudinal; the radar may be on or off."""
   if CP is None:
     return False
   try:
     from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-    if CP.brand != "honda" or CP.carFingerprint not in VERIFIED_BOSCH_A_CARS:
-      return False
-    alpha_ready = bool(getattr(CP, "openpilotLongitudinalControl", False) or getattr(CP, "alphaLongitudinalAvailable", False))
-    return alpha_ready
+    return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
   except Exception:
     return False
 
 
-def unavailable_reason(CP, supported: bool) -> str:
-  """Suffix for the Bosch-A settings rows explaining why they cannot be edited ("" when they can)."""
-  if supported or CP is None:
-    return ""
-  try:
-    from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-    if CP.brand == "honda" and CP.carFingerprint not in VERIFIED_BOSCH_A_CARS:
-      return (" Unavailable: the settings vehicle is not a Bosch-A Honda. Set Vehicle Selection " +
-              "to Auto or to a Bosch-A Honda and refresh this page.")
-    elif not getattr(CP, "openpilotLongitudinalControl", False):
-      return (" Unavailable until StarPilot controls speed: enable Alpha Longitudinal under Vehicle Settings, " +
-              "restart, then refresh this page.")
-  except Exception:
-    pass
-  return ""
-
-
-def settings_rows(CP, value, can_edit: bool):
-  """(key, label, editable, reason) for each Bosch-A settings row. value(key) returns (current, ...)."""
-  supported = vehicle_supported(CP)
-  block = unavailable_reason(CP, supported)
-  rows = []
-  for key, label, reason in ROWS:
-    enabled = value(key)[0] == "1"
-    rows.append((key, label, can_edit and (supported or enabled), reason + block))
-  return rows
+def long_tuning_active(CP) -> bool:
+  """vehicle_supported and the radar on. A missing radarUnavailable reads as off."""
+  return vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
