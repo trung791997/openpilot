@@ -1,18 +1,21 @@
 """Honda Bosch A Long Enhancement: longitudinal behavior that is active whenever the Bosch-A radar is on.
 
 Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, selfdrive/controls/lib/longitudinal_planner.py).
-Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
+Active only when `active_for(CP)`: a Honda on a Bosch-A platform (VERIFIED_BOSCH_A_CARS, same as
+`bosch_a_radar_platform`, including alt-radar stock) with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch: Stock Brake Feel is the owner toggle `BoschAStockBrakeFeel` (bosch_a_toggles.py, default Off, read once when
 plannerd starts and passed in as `stock_brake_feel`); STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY and BIRTH_RAIL_ENABLED are
-constants and stay off; NEWBORN_HOLD_ENABLED (D-080 alone) is a constant and is on. Both longitudinal planners (StarPilot's and the upstream one) call it the same way.
+constants and stay off; NEWBORN_HOLD_ENABLED (D-080 alone) is a constant and is on. Both longitudinal planners
+(StarPilot's and the upstream one) call it the same way.
 
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
   takeover hold, lead-stop law (<= 20 s) and the emergency latch.
 - Stop ease (planner side): the brake eases toward about -0.5 m/s^2 at the stop when there is room.
 - Need floor (2026-11-11, NEED_FLOOR_ENABLED, on; replay only): need_floor() raises a braking target to -max(need, 0.8)
-  for a steady closing moving lead, after smooth and stop gap; called from longitudinal_planner.py only.
+  for a steady closing moving lead, after smooth and stop gap; called from longitudinal_planner.py only. It acts only at
+  a gap of at least 1.5 s of headway (NEED_FLOOR_MIN_GAP_ENABLED, on; static tests, replay on a different stack pending).
 
 The planner calls `step()` once per cycle, after every other target owner and before the final clip. Every limit
 here only shapes how a brake builds or lets off; the emergency latch passes the planner's target through untouched,
@@ -101,7 +104,7 @@ NEWBORN_HOLD_ENABLED = True
 
 
 def active_for(CP) -> bool:
-  """Same gate as radard's BoschALeadPolicy: verified Bosch-A Honda, radar on, openpilot longitudinal."""
+  """Same gate as radard's BoschALeadPolicy: Bosch-A Honda (classic or alt-radar), radar on, openpilot longitudinal."""
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
   return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable and
               CP.openpilotLongitudinalControl)
@@ -246,10 +249,12 @@ def stop_eased_target(prev: float, target: float, floor: float | None, dt: float
 # variants without the vLead/aLeadK gate (arms 10-12) softened stops behind a late-born stopped lead (closed-loop stop gap
 # 0.9 m vs 2.5 m at 18:30; seg 5 min gap 4.7 m vs 11.3 m) and must not be used. Multiplier 1.3 gave -1.91, 0.9 gave
 # -1.39. Open: at 630 s the simulated ego is still 2-2.6 m/s faster than the lead, so a late second brake is expected in
-# the car and is not modelled. The gate is tuned on three events; replay only, not driven, not yet scored on the corpus.
+# the car and is not modeled. The gate is tuned on three events; replay only, not driven, not yet scored on the corpus.
 # Frame counts are planner frames at 20 Hz.
 NEED_FLOOR_ENABLED = True       # switch; read at construction so a replay harness can set it before building the planner
-NEED_FLOOR_MULT = 1.15          # floor = -max(MULT * need, MIN); 1.3 gave -1.91, 0.9 gave -1.39 on seg 10. 1.15 (Peter 2026-11-11, replay only): seg 10 -1.75 (hold-only -2.23, 1.0 -1.52); seg 5 / seg 18 stops unchanged; ep1046 REAL -2.30 -> -2.72; 15 of 1141 episodes >0.05 deeper, onsets unchanged
+# 1.3 gave -1.91, 0.9 gave -1.39 on seg 10. 1.15 (Peter 2026-11-11, replay only): seg 10 -1.75 (hold-only -2.23, 1.0 -1.52); seg 5 / seg 18 stops unchanged;
+# ep1046 REAL -2.30 -> -2.72; 15 of 1141 episodes >0.05 deeper, onsets unchanged
+NEED_FLOOR_MULT = 1.15          # floor = -max(MULT * need, MIN)
 NEED_FLOOR_MIN = 0.8            # m/s^2; the shallowest the floor may be
 NEED_FLOOR_HEADWAY_S = 1.0      # s; need's gap target = vLead * this + STOP_M
 NEED_FLOOR_STOP_M = 6.0         # m
@@ -262,9 +267,12 @@ NEED_FLOOR_GATE_V_LEAD = 5.0    # m/s; lead must be moving (stopped leads at 5:3
 NEED_FLOOR_GATE_A_LEAD = -1.0   # m/s^2; lead's aLeadK must be above this (not itself braking hard)
 NEED_FLOOR_GATE_FRAMES = 10     # consecutive frames of the gate on one (track id, radar flag): 0.5 s
 NEED_FLOOR_QUIET_FRAMES = 20    # frames with no lead closing before the sticky-off clears: 1.0 s
-# Owner 2026-11-11 (via Bob), scorecard ep645, route 000000ae seg 81: gap 22 m at 16.0 m/s (1.37 s), closing 2.2 m/s; floor -0.80
-# vs hold -1.19, owner wants the floor not to soften a lead this close. Behind toggle BoschANeedFloorMinGap, default off; replay only.
-NEED_FLOOR_MIN_GAP_S = 1.5      # s; with the toggle on the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
+# Min-gap gate. Owner 2026-11-11 (via Bob), scorecard ep645, route 000000ae seg 81: gap 22 m at 16.0 m/s (1.37 s), closing 2.2 m/s;
+# floor -0.80 vs hold -1.19, owner wants the floor not to soften a lead this close. Evidence level: static tests + replay on a
+# different stack pending; Peter turned it on on his car 2026-11-12. No Param: this module switch is read at construction (like
+# NEED_FLOOR_ENABLED) so a replay harness can set it before building the planner.
+NEED_FLOOR_MIN_GAP_ENABLED = True
+NEED_FLOOR_MIN_GAP_S = 1.5      # s; with the gate on the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
 
 
 class NeedFloor:
@@ -282,8 +290,8 @@ class NeedFloor:
   in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
   harness), including its rounding of the lead fields (d and vRel to 0.01, aLeadK to 0.001). Replay only."""
   def __init__(self, min_gap: bool = False):
-    """`min_gap` (BoschANeedFloorMinGap toggle, default off): also require d >= v_ego * NEED_FLOOR_MIN_GAP_S, re-evaluated
-    every frame; it never touches gate_count, off or quiet."""
+    """`min_gap` (NEED_FLOOR_MIN_GAP_ENABLED, passed by HondaBoschALongEnhancement): also require d >= v_ego *
+    NEED_FLOOR_MIN_GAP_S, re-evaluated every frame; it never touches gate_count, off or quiet."""
     self.min_gap = min_gap is True
     self.reset()
 
@@ -343,9 +351,9 @@ class NeedFloor:
 
 
 class HondaBoschALongEnhancement:
-  def __init__(self, CP, dt: float, stock_brake_feel: bool = False, need_floor_min_gap: bool = False):
+  def __init__(self, CP, dt: float, stock_brake_feel: bool = False):
     """`stock_brake_feel` is the owner's BoschAStockBrakeFeel toggle (bosch_a_toggles.read_toggles); it only arms the law,
-    active_for(CP) still decides. `need_floor_min_gap` is BoschANeedFloorMinGap (default off), passed to NeedFloor."""
+    active_for(CP) still decides."""
     active = active_for(CP)
     self.stock_feel = active and stock_brake_feel is True
     self.stop_ease = active and STOP_EASE_ENABLED
@@ -354,7 +362,7 @@ class HondaBoschALongEnhancement:
     # Implausible-drop bound (D-041/D-042; owner bookmark route a2 seg 50, 2026-11-07): same gate as the other active
     # checks in this module (Bosch-A supported, radar available); default ON, no toggle.
     self.drop_bound = ImplausibleDropBound() if active else None
-    self._need_floor = NeedFloor(min_gap=need_floor_min_gap) if self.stock_feel and NEED_FLOOR_ENABLED else None
+    self._need_floor = NeedFloor(min_gap=NEED_FLOOR_MIN_GAP_ENABLED) if self.stock_feel and NEED_FLOOR_ENABLED else None
     self.dt = dt
     self.reset()
 
@@ -520,7 +528,7 @@ MODEL_DROP_MAX_MPS = 1.5     # m/s the camera lead's v may drop in the window an
 # 7b s8 -3.69, 80 s6 -8.81, 80 s19 -1.06; adjacent-lane truck 8a s2 -2.92; 8a s11 (disengaged, lead steady) -0.09.
 # 0.3 m sits between a2 (+0.50) and the closest real slowdown, 80 s19 (-1.06). A magnitude gate on radar-vs-camera
 # range split was tried first and rejected: 7b s23 split -8.3 m is deeper than a2's -3.4 m. Not firing falls back to
-# the old behaviour (the radar drop is published unbounded), so the gate only narrows the bound.
+# the old behavior (the radar drop is published unbounded), so the gate only narrows the bound.
 MODEL_RANGE_SHRINK_MAX_M = 0.3  # m the camera lead's x may shrink over DROP_WINDOW_S and still call the radar drop a glitch
 AGREE_M = 4.0                # m; radar dRel vs (model x - RADAR_TO_CAMERA) agreement needed at the window start
 MODEL_PROB_MIN = 0.9         # camera lead confidence needed to trust it over the radar

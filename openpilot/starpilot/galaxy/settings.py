@@ -408,7 +408,7 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
     return f"Set lane centering strength to {level:.2f}? 5 is normal."
   if key == "UseStarPilotLongitudinalPlanner":
     return f"Select {request.value} for {row.label.lower()}? The selected planner starts with the next driving process."
-  if key in ("BoschAStockBrakeFeel", "BoschAHumanFollowing", "BoschANeedFloorMinGap"):
+  if key in ("BoschAStockBrakeFeel", "BoschAHumanFollowing"):
     return f"Turn {request.value} {row.label}? This applies on the next drive, with either planner."
   if key in ("CustomCruise", "CustomCruiseLong"):
     if row.capability and row.capability[0] == "toyota":

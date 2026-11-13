@@ -1,19 +1,18 @@
-"""Blendful lateral policy: blend the model's lane-line fit with its plan.
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 
-A port of sunnypilot's Blendful (sunnypilot/sunnypilot PR #2073,
-``sunnypilot/modeld_v2/blendful.py``) for the starpilot model pipeline.
-
-The policy computes a curvature correction on top of the driving model's own
-steering. It trusts the lane lines when they are clear, decays that trust when
-the model intends to move the plant off lane (cones, turns, intersections),
-and yields the correction back to the laneless model path otherwise.
-
-Mutual exclusion with starpilot Lane Centering is the caller's contract:
-modeld enables Blendful only while the ``Blendful`` param is set and
-``LaneCentering`` is not, and the lane centering host refuses to run while
-Blendful is enabled. Both features never apply at the same time.
+This file is part of sunnypilot and is licensed under the MIT License.
+See LICENSE.blendful.md in this directory for the full license.
 """
 
+# Blendful lateral policy: blend the model's lane-line fit with its plan.
+# A port of sunnypilot's Blendful (sunnypilot/sunnypilot PR #2073, sunnypilot/modeld_v2/blendful.py) for the starpilot
+# model pipeline. The policy computes a curvature correction on top of the driving model's own steering. It trusts the
+# lane lines when they are clear, decays that trust when the model intends to move the plant off lane (cones, turns,
+# intersections), and yields the correction back to the laneless model path otherwise.
+# Mutual exclusion with starpilot Lane Centering is the caller's contract: modeld enables Blendful only while the
+# `Blendful` param is set and `LaneCentering` is not, and the lane centering host refuses to run while Blendful is
+# enabled. Both features never apply at the same time.
 import numpy as np
 
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -42,11 +41,11 @@ class Blendful:
     self.since_turning = 0.0
     self.trust = 0.0
     self.line_trust = 0.0
-    self.dk = 0.0  # delta kappa; difference between lane center and model plan
+    self.dk = 0.0 # delta kappa; difference between lane center and model plan
     self.l_prob = 0.0
     self.r_prob = 0.0
     self.model_curvature = 0.0
-    self.smooth = 0.0  # smooths the correction target below .53 lat accel
+    self.smooth = 0.0 # smooths the correction target below .53 lat accel
     self.curvature = 0.0
 
   def update(self, model_output: dict[str, np.ndarray], v_ego: float, active: bool, model_curvature: float, enabled: bool = True) -> float:
@@ -117,7 +116,7 @@ class Blendful:
 
     # Fit curvature to place the plant in center: e ~ dk x^2 / 2
     plan_x = np.interp(x, model_output['plan'][0, :, 0], model_output['plan'][0, :, 1])
-    plan_share = np.interp(abs(model_curvature) * lookahead ** 2 / 2, [0.5, 2.0], [0.3, 0.5])  # up to 50% plan y vs curvature parabola in sharp curves
+    plan_share = np.interp(abs(model_curvature) * lookahead ** 2 / 2, [0.5, 2.0], [0.3, 0.5]) # up to 50% plan y vs curvature parabola in sharp curves
     error = np.clip(center - ((1 - plan_share) * model_curvature * x ** 2 / 2 + plan_share * plan_x), -1.0, 1.0)
     dk = 2.0 * np.sum(weight * error * x ** 2) / np.sum(weight * x ** 4)
 

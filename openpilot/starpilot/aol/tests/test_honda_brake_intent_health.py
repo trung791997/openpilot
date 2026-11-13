@@ -84,7 +84,7 @@ def test_honda_brake_lateral_intent_only_and_long_fail_closed(coherent, long_all
   assert native.validUntilMonoTime == NOW + 180_000_000
 
 
-@pytest.mark.parametrize('mutation', ['no_brake', 'no_source', 'stale_source', 'future_source', 'no_latch',
+@pytest.mark.parametrize('mutation', ['no_source', 'stale_source', 'future_source', 'no_latch',
   'wrong_profile', 'wrong_session', 'serial', 'native_expired', 'no_lat', 'lat_denied',
   'rx_fault', 'heartbeat', 'panda_config', 'axis_fault', 'hard_event', 'stale_axis', 'unacknowledged_long'])
 def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
@@ -157,6 +157,40 @@ def test_honda_brake_cannot_borrow_or_renew_authority(mutation):
   if mutation != 'no_latch':
     assert feedback.observe(sm, cp, cs, now, latched=latched, brake_source_ns=source)
   assert feedback.honda_brake_ns == 0
+
+
+@pytest.mark.parametrize('case', ['held', 'expired', 'controls_allowed', 'long_allowed', 'later_read'])
+def test_native_first_brake_waits_only_for_the_parsed_edge(case):
+  """00000098 seg29 1742.8 s: the panda's brake reached pandad's native read before Card's CAN batch."""
+  cp, cs, sm, native, feedback = fixture(coherent=True, long_allowed=False, brake=False)
+  now = native.observedMonoTime + 20_000_000
+  if case == 'expired':
+    now = native.observedMonoTime + 30_000_001
+    feedback.healthy_feedback_ns = now - 10_000_000
+  if case in ('controls_allowed', 'long_allowed'):
+    slot = replace(native.pandaInventory[0], controlsAllowed=True)
+    native = replace(native, pandaInventory=(slot,), longitudinalAllowed=case == 'long_allowed')
+    safety = messaging.new_message('aolSafetyWire', 0, valid=True, logMonoTime=native.observedMonoTime)
+    safety.aolSafetyWire = encode_safety(native)
+    sm = Peers([safety.as_reader(), *(sm.messages[n] for n in ('pandaStates', 'aolAxisState', 'onroadEvents'))])
+  if case == 'later_read':   # a later native read cannot restart the wait
+    feedback.honda_native_first_ns = native.observedMonoTime - 30_000_001
+  held = feedback._honda_brake_lateral_current(sm, cp, cs, sm['aolAxisState'], now, latched=True, brake_source_ns=0)
+  assert feedback.honda_brake_ns == 0
+  if case == 'held':
+    assert held == native
+    assert feedback.honda_native_first_ns == native.observedMonoTime
+    # The parsed brake edge then anchors the ordinary Honda brake retention.
+    cs.brakePressed = True
+    assert feedback._honda_brake_lateral_current(sm, cp, cs, sm['aolAxisState'], now + 1,
+                                                 latched=True, brake_source_ns=now + 1) == native
+    assert feedback.honda_brake_ns == now + 1
+  elif case == 'later_read':
+    assert held is None
+  else:
+    assert held is None
+    if case != 'long_allowed':
+      assert feedback.observe(sm, cp, cs, now, latched=True)
 
 
 def test_release_and_held_brake_cannot_extend_original_deadline():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 import hashlib
+import time
 
 from openpilot.starpilot.conditional_mode.button_actions import (
   BUTTON_PREFIX, MEDIA_KEYS, DISTANCE_KEYS, capture_sources, commit_assignment, display_action, media_capability,
@@ -42,6 +43,9 @@ SIGNAL_LANE_HELP = {
 }
 MEDIA_LABELS = ("MODE press", "MODE long press", "MODE very long press",
                 "Star button", "Star button long press", "Star button very long press")
+# A save (a mode commit or any Params.put) holds the params lock and replaces files for a few frames; a page keeps its
+# last coherent rows that long, and past this a held lock or unreadable source reads as unavailable
+SETTLE_S = 0.5
 
 
 
@@ -81,6 +85,9 @@ def confirmation_question(request: FeatureSettingsRequest, label: str = "", unit
 class ConditionalFeature:
   def __init__(self, owner):
     self.owner = owner
+    self._settled: dict[str, tuple[FeatureRow, ...]] = {}
+    self._settling_since: dict[str, float] = {}
+    self._coherent = True
 
   def _source(self):
     document, readable = read_saved(self.owner.params, DOCUMENT_KEY, MAX_DOCUMENT_BYTES)
@@ -137,6 +144,21 @@ class ConditionalFeature:
     return self._media_rows(document, safe, safe_readable, config_valid=valid)
 
   def rows(self, page: str, parked: bool) -> list[FeatureRow]:
+    # A frame drawn mid-save reads a busy lock or a file being replaced. Keep that page's last coherent rows instead of
+    # flashing "Unavailable"; their sources are the old bytes, so a tap on them is rejected by apply, not acted on.
+    self._coherent = True
+    rows = self._rows(page, parked)
+    now = time.monotonic()
+    if self._coherent:
+      self._settled[page] = tuple(rows)
+      self._settling_since.pop(page, None)
+      return rows
+    since = self._settling_since.setdefault(page, now)
+    if page in self._settled and now - since < SETTLE_S:
+      return list(self._settled[page])
+    return rows
+
+  def _rows(self, page: str, parked: bool) -> list[FeatureRow]:
     document, units, readable, valid_units, metric = self._source()
     allowed = self.owner.authority("preferences")
     repair_allowed = parked and self.owner.authority("parked_preferences")
@@ -144,6 +166,7 @@ class ConditionalFeature:
     dependencies = (("IsMetric", units),)
     safe, safe_readable = read_saved(self.owner.params, "SafeMode", 8) if page == "conditional" else (None, True)
     if not readable:
+      self._coherent = False
       return [FeatureRow("", "Saved choices", "Unavailable", reason="Saved source cannot be read; no changes allowed")]
     try:
       preferences = SavedPreferences() if document is None else decode_preferences(document)
@@ -159,7 +182,14 @@ class ConditionalFeature:
     manual_dependencies = dependencies + ((MANUAL_KEY, manual.raw), ("SafeMode", safe))
     manual_available = repair_allowed and safe_readable and safe in (None, b"0", b"1")
     if page == "conditional":
-      (mode_document, mode_readable), (baseline, baseline_readable), (mode_safe, mode_safe_readable) = read_mode_sources(self.owner.params)
+      try:
+        mode_sources = read_mode_sources(self.owner.params, defer_busy=True)
+      except BlockingIOError:
+        mode_sources = None
+      (mode_document, mode_readable), (baseline, baseline_readable), (mode_safe, mode_safe_readable) = \
+        mode_sources or ((b"", False), (b"", False), (b"", False))
+      # a writer holds the lock, or landed between the unlocked and locked document reads
+      self._coherent = mode_sources is not None and not (mode_readable and mode_document != document)
       mode_valid = (mode_readable and mode_document == document and baseline_readable and baseline in (None, b"0", b"1") and
                     mode_safe_readable and mode_safe in (None, b"0", b"1"))
       choice = {"stock": "Experimental" if baseline == b"1" else "Chill",

@@ -62,3 +62,6 @@ openpilot/selfdrive/pandad/spi.o -text
 
 # Compressed recorded regression fixture; retain exact binary bytes.
 openpilot/starpilot/tests/testdata/ford_mache_lead_departure.json.gz -text
+
+# Offline GPS timezone grid (tools/scripts/build_timezone_map.py); retain exact binary bytes.
+openpilot/starpilot/timezone_map.bin -text

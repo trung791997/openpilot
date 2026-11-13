@@ -28,7 +28,7 @@ def make_lead(x: float, v: float, prob: float = 0.99, y: float = 0.0, a: float =
 
 
 # The route-9e shape: track 39 was real and closing; the model lead's x jumped out to 50.6 m (prob 0.99).
-TRACK_39_KWARGS = {'d_rel': 28.1, 'y_rel': -0.86, 'v_rel': -7.9, 'cnt': 342}
+TRACK_39_KWARGS: dict = {'d_rel': 28.1, 'y_rel': -0.86, 'v_rel': -7.9, 'cnt': 342}
 V_EGO = 25.0
 NINE_E_LEAD = make_lead(x=50.6, v=V_EGO - 7.9)  # v consistent with a farther car at roughly the same closing rate
 

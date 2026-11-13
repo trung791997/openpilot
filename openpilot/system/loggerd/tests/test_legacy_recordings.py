@@ -53,10 +53,11 @@ class TestLegacyRecordings(unittest.TestCase):
     self.delete(old)
     self.assertTrue(new.exists())
 
-  def test_all_three_roots_share_recording_age_order(self):
-    last = self.segment(self.current, age=30)
-    first = self.segment(self.hd, route='000000ff--abcdef1234', age=10)
-    middle = self.segment(self.konik, age=20)
+  def test_legacy_roots_are_reclaimed_before_the_current_root(self):
+    # New drives only record into the current root, so anything left in a legacy root is older whatever its file time.
+    last = self.segment(self.current, age=1)
+    middle = self.segment(self.hd, route='000000ff--abcdef1234', age=30)
+    first = self.segment(self.konik, age=20)
     for folder in (first, middle, last):
       self.delete(folder)
 
@@ -68,11 +69,11 @@ class TestLegacyRecordings(unittest.TestCase):
       self.delete(folder)
 
   def test_unsynchronized_early_segment_and_changed_directory_mtime(self):
-    before = self.segment(self.current, route='000000e8--abcdef1234', age=20)
+    current = self.segment(self.current, route='000000e8--abcdef1234', age=1)
     unsynced = self.segment(self.konik, number=0, age=1)
     synced = self.segment(self.konik, number=1, age=30)
-    os.utime(before, (1_900_000_000, 1_900_000_000))
-    for folder in (before, unsynced, synced):
+    os.utime(current, (1_900_000_000, 1_900_000_000))
+    for folder in (unsynced, synced, current):
       self.delete(folder)
 
   def test_preserve_predecessors_do_not_preserve_same_named_other_root(self):
@@ -88,9 +89,10 @@ class TestLegacyRecordings(unittest.TestCase):
     marked = [self.segment((self.current, self.hd, self.konik)[i % 3],
                            route=f'{i + 1:08x}--abcdef1234', age=i, preserved=True) for i in range(6)]
     ordinary = self.segment(self.current, route='000000ff--abcdef1234', age=20)
-    self.delete(marked[0])
+    # Oldest first is the legacy HD root's 00000002: the sixth marked segment, so the only one not preserved.
+    self.delete(marked[1])
     self.delete(ordinary)
-    for folder in marked[1:]:
+    for folder in marked[:1] + marked[2:]:
       self.assertTrue(folder.exists())
 
   def test_boot_and_crash_remain_after_preserved_segments(self):
@@ -140,7 +142,7 @@ class TestLegacyRecordings(unittest.TestCase):
 
   def test_byte_floor_and_percent_floor_remain_independent(self):
     first = self.segment(self.konik, age=1)
-    second = self.segment(self.hd, age=2)
+    second = self.segment(self.hd, route='00000002--abcdef1234', age=2)
     with patch.object(deleter, 'get_available_bytes', return_value=deleter.MIN_BYTES + 1):
       self.delete(first)
     with patch.object(deleter, 'get_available_percent', return_value=deleter.MIN_PERCENT + 1):

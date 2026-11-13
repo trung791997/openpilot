@@ -93,6 +93,33 @@ RDX_TJB_A220_RACK = RackMapTable(
   slip_factor=-0.00101,
 )
 
+# CR-V 5G (TLA-A040 PTM rev b), through its A table: the same method on its VSA yaw (0x94 bus 1, 0.2488 deg/s per
+# count + 0.192 clockwise from 1,123 straight-to-straight GPS pairs, tools/lateral/fit_yaw_scale.py) over routes
+# 7528b01c2181d63d/00000003, 04 and 05 (2026-11, 994 s moving at >= 3 deg), 5-173 deg; past that the spec map's shape
+# (spec_rack_table(CRV_2017_SPEC), lock 2.30 turns at 12.3) carries it to lock, matched to the last fitted knot. Held out
+# route by route it predicts the measured curvature within 0.97-1.03 (0.99-1.00 at 9-40 m/s). The spec map it replaces
+# was within 1-3 % in town but delivered 0.93 of the curvature at 25-40 m/s (centre 16.82 vs 16.91, slip factor
+# -0.000585 vs -0.00084). Thin past 50 deg: 20-41 s per band.
+CRV_TLA_A040_RACK = RackMapTable(
+  ratio_bp=(5.4, 13.5, 25.8, 55.4, 85.2, 124.9, 173.4, 228.1, 302.5, 376.8, 414.0),
+  ratio_v=(17.38, 16.91, 16.67, 16.46, 16.25, 16.17, 16.04, 15.86, 15.52, 15.09, 14.83),
+  slip_factor=-0.00084,
+)
+
+# Honda Ridgeline (T6Z-A110 PTM rev b5): a constant-ratio rack and no angle table (steer_ratio RIDGELINE_T6Z_A110_VGR_*).
+# It has no VSA yaw on its bus, so yaw is the rear wheel-speed difference over a 1.70 m track (less a 0.11 % tyre
+# mismatch found on straights) below 9 m/s, where it matches GPS heading within 0.4 %, and livePose / 0.965 above
+# (livePose reads 3-4 % low against GPS at every speed; the wheel-speed yaw over-reads 34 % at 25-35 m/s, likely the
+# rear torque vectoring). On the owner's routes 9b9a340b3a3dd778/0000023d-0000023e the ratio is flat, 17.7-17.9 from 15 to
+# 320 deg at 3-9 m/s, and with the roll term a slip factor of -0.00108 makes it speed-independent within 1.2 % rms
+# (without it -0.00078 leaves 4.6 %). Per route, measured / predicted angle is 0.98-1.02 in every speed x angle cell
+# but the small-angle crawl ones (1.04; angle offset), 0.99-1.14 on the short route 0000023d (small angles only).
+RIDGELINE_T6Z_A110_RACK = RackMapTable(
+  ratio_bp=(5.0, 400.0),
+  ratio_v=(17.08, 17.08),
+  slip_factor=-0.00108,
+)
+
 
 class HondaEpsRackMap:
   """Physical wheel angle (deg, left-positive) <-> curvature (1/m, openpilot's right-positive) for one RackMapTable."""

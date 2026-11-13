@@ -32,9 +32,9 @@ braked harder than the cap alone except 80 seg19's second pulse (+0.20); full-ro
 Replay evidence only; no road evidence yet.
 
 Hold (C-012, the only mode since 2026-11-11 at Peter's request; the BoschACameraCapHold toggle and the plain VA branch are gone,
-static only): D+E adds a limited, tapered hold to the cap above: the gap floor is dropped, and while the gap is at or below CAP_GAP_MIN but above CAP_GAP_HOLD with
-dv > 0, a target of gap * (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD) holds for at most CAP_HOLD_T seconds in total
-per engagement (hold_t is reset on a new track and whenever dv <= 0, deliberately not when the gap re-crosses CAP_GAP_MIN).
+static only): D+E adds a limited, tapered hold to the cap above: the gap floor is dropped, and while the gap is at or
+below CAP_GAP_MIN but above CAP_GAP_HOLD with dv > 0, a target of gap * (gap - CAP_GAP_HOLD) / (CAP_GAP_MIN - CAP_GAP_HOLD) holds for at most
+CAP_HOLD_T seconds in total per engagement (hold_t is reset on a new track and whenever dv <= 0, deliberately not when the gap re-crosses CAP_GAP_MIN).
 """
 from __future__ import annotations
 

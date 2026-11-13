@@ -746,6 +746,14 @@ def test_recorded_wall_clock_uses_only_verified_route_pair():
   assert instant.timestamp() == 1_000_000_010
 
 
+def test_recorded_wall_clock_is_in_the_saved_local_zone(monkeypatch):
+  from zoneinfo import ZoneInfo
+  from openpilot.starpilot.replay import render
+  monkeypatch.setattr(render, 'local_zone', lambda: ZoneInfo('America/New_York'))
+  instant = render.recorded_wall_clock(SimpleNamespace(valid=True, now_ns=0), 1_794_011_400_000_000_000)
+  assert (instant.tzinfo.key, instant.hour, instant.minute) == ('America/New_York', 19, 30)
+
+
 def test_private_wall_offset_protocol_preserves_full_nanoseconds():
   import json
   offset = 1_791_870_000_000_000_123

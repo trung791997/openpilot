@@ -24,7 +24,7 @@ from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_A
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
 from openpilot.starpilot.longitudinal.encouragement import KEY as NUDGE_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
-from openpilot.starpilot.longitudinal.bosch_a_toggles import (KEYS as BOSCH_A_KEYS, ROWS as BOSCH_A_ROWS,
+from openpilot.starpilot.longitudinal.bosch_a_toggles import (KEYS as BOSCH_A_KEYS, settings_rows as bosch_a_settings_rows,
                                                                vehicle_supported as bosch_a_vehicle_supported)
 
 from openpilot.starpilot.longitudinal.profile_document import (
@@ -67,6 +67,7 @@ from openpilot.starpilot.ui.volt_radar_feature import VoltRadarFeature
 from openpilot.starpilot.ui.panda_wake_feature import PandaWakeFeature
 from openpilot.starpilot.panda_wake import KEYS as PANDA_WAKE_KEYS
 from openpilot.starpilot.saved_document import commit_exact
+from openpilot.starpilot.ui import blendful_settings
 from openpilot.starpilot.curve_speed.preferences import (
   DOCUMENT_KEY as CURVE_DOCUMENT_KEY, LEGACY_KEY as CURVE_LEGACY_KEY,
   MASTER_KEY as CURVE_MASTER_KEY, NO_LEAD_KEY as CURVE_NO_LEAD_KEY,
@@ -711,27 +712,6 @@ class FeatureSettingsOwner:
     except (ValueError, TypeError, UnknownKeyName):
       return row
 
-  def _blendful_model_selected(self) -> bool:
-    """Blendful's custom-model gate: a non-Default model chosen for either slot."""
-    try:
-      from openpilot.starpilot.models.catalog import DEFAULT_SMALL
-      from openpilot.starpilot.models.manager import preferences
-      prefs = preferences()
-      return bool(prefs.get("small") != DEFAULT_SMALL or prefs.get("big") != "")
-    except (OSError, ValueError, TypeError):
-      return False
-
-  def _blendful_row(self, allowed: bool) -> FeatureRow:
-    model_selected = self._blendful_model_selected()
-    row = self._bool_row("Blendful", "Blendful (Alpha)", allowed and model_selected)
-    if not model_selected:
-      return replace(row, available=False,
-                     reason="Select a non-Default model to use Blendful")
-    return replace(row, reason=row.reason if not row.available else
-                   ("Adds a gentle nudge toward lane center on top of the model's own steering, stronger when lane " +
-                    "lines are clear. Yields around obstacles. Turns Lane Centering off; not available with the " +
-                    "Default model."))
-
   def _document(self) -> tuple[dict | None, bytes | None, bool]:
     saved = read_document_value(self.params)
     return saved.value if isinstance(saved.value, dict) else None, saved.raw, saved.valid
@@ -1206,7 +1186,7 @@ class FeatureSettingsOwner:
                           minimum=33, maximum=round(STRENGTH_MAX / STRENGTH_BASELINE * 100), step=1 if strength_row.step > 0 else 0,
                           reason="100% is normal; lower values reduce centering and higher values strengthen it" if strength_supported else
                           "Not available with this vehicle configuration"))
-      rows.append(self._blendful_row(allowed))
+      rows.append(blendful_settings.row(self, allowed))
     elif page == FeaturePage.LANE_CHANGE:
       title = "Lane Changes"
       rows.extend(self.lane_changes.rows(parked))
@@ -1215,11 +1195,8 @@ class FeatureSettingsOwner:
       title = "Long Planner"
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
-      bosch_a_supported = bosch_a_vehicle_supported(self.vehicle_params())
-      for ba_key, ba_label, ba_reason in BOSCH_A_ROWS:
-        ba_on, _, _ = self._value(ba_key)
-        rows.append(self._bool_row(ba_key, ba_label, self.authority("preferences") and
-                                   (bosch_a_supported or ba_on == "1"), reason=ba_reason))
+      for ba_key, ba_label, ba_editable, ba_reason in bosch_a_settings_rows(self.vehicle_params(), self._value, self.authority("preferences")):
+        rows.append(self._bool_row(ba_key, ba_label, ba_editable, reason=ba_reason))
       allowed = configurable and system_long
       force_enabled, _, _ = self._value("ForceStops")
       rows.append(self._bool_row("ForceStops", "Force Stop", allowed or
@@ -1396,49 +1373,10 @@ class FeatureSettingsOwner:
       self._snapshot_vehicle.reset(vehicle_token)
       self._snapshot_reads.reset(token)
 
-  def _flip_lane_center_toggle(self, key: str, expected: bytes, group: str) -> bool:
-    def authorized() -> bool:
-      return self.authority(group) and self._readable(key) and self._raw(key) == expected
-    result = commit_exact(self.params, key=key, max_bytes=8, raw=b"0", expected=expected,
-                          authorized=authorized, temp_prefix=".lane-center-toggle-")
-    return result.committed and result.verified
-
-  def _apply_lane_center_toggle(self, request: FeatureSettingsRequest) -> bool:
-    """Lane Centering and Blendful are mutually exclusive: turning either on flips the other off."""
-    from openpilot.starpilot.lateral.lane_runtime import runtime_supported
-    key = request.key
-    other = "Blendful" if key == "LaneCentering" else "LaneCentering"
-    if (request.value not in ("On", "Off") or request.dependencies or request.capability is not None or
-        request.related_source is not None or request.display_unit or request.direction or
-        not request.vehicle_fingerprint or request.vehicle_fingerprint != self.vehicle_fingerprint()):
-      return False
-    group = "lane" if self.authority("lane") else "lane_live"
-    if not self.authority(group) or not self._readable(key) or self._raw(key) != request.expected:
-      return False
-    current, _, valid = self._value(key)
-    if not valid or current not in ("0", "1"):
-      return False
-    if not runtime_supported(self.vehicle_params()):
-      return False
-    if key == "Blendful" and request.value == "On" and not self._blendful_model_selected():
-      return False
-    if request.value == "On" and self._raw(other) == b"1" and not self._flip_lane_center_toggle(other, b"1", group):
-      return False
-
-    def authorized() -> bool:
-      return (self.authority(group) and self._readable(key) and self._raw(key) == request.expected and
-              request.vehicle_fingerprint == self.vehicle_fingerprint() and
-              (request.value == "Off" or self._raw(other) != b"1") and
-              (key != "Blendful" or self._blendful_model_selected()) and
-              runtime_supported(self.vehicle_params()))
-    result = commit_exact(self.params, key=key, max_bytes=8, raw=b"1" if request.value == "On" else b"0",
-                          expected=request.expected, authorized=authorized, temp_prefix=".lane-center-toggle-")
-    return result.committed and result.verified
-
   def _apply(self, request: FeatureSettingsRequest, *, reset_default: bool = False) -> bool:
     key = request.key
     if key in ("LaneCentering", "Blendful"):
-      return self._apply_lane_center_toggle(request)
+      return blendful_settings.apply_toggle(self, request)
     if key == "AlwaysOnLateral" and request.value == "Off":
       def authorized_off():
         return (self.authority("preferences") and self._readable(key) and

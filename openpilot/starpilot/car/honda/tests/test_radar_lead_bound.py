@@ -3,7 +3,7 @@ camera's range contradicting the radar's closing), 2ed T338.6 (a real truck the 
 model lead moved on past the radar lead and calls for no braking)."""
 import math
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -287,7 +287,7 @@ def test_urgency_uses_the_last_direct_reading_on_an_unmeasured_point():
   assert urgent(floor, -17.5)                              # TTC 3.9 s on a fast last reading: still urgent
   assert urgent(radar_lead(4, 29.0, V_EGO - 1.0, -3.0), -1.0)  # under 30 m stays urgent whatever the speed
   hop = [90.0 - 0.75 * k for k in range(31)]               # range falling 15 m/s: a reflector hop, not used
-  track = SimpleNamespace(direct=False, last_direct_vrel=-11.7, direct_age=5, range_history=hop)
+  track: Any = SimpleNamespace(direct=False, last_direct_vrel=-11.7, direct_age=5, range_history=hop)
   assert urgency_v_rel(track) == -11.7                     # the range slope does not override the last reading
   track.direct_age = round(URGENT_LAST_DIRECT_S / DT_MDL) + 1
   assert urgency_v_rel(track) is None                      # too old: the published vRel, as before

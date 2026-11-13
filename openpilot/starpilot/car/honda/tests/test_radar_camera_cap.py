@@ -108,7 +108,7 @@ def test_never_more_braking_and_vision_leads_untouched():
 
 
 # ---- C-012: limited tapered hold (the only mode) ----
-from openpilot.starpilot.car.honda.radar_camera_cap import CAP_GAP_HOLD, CAP_HOLD_T  # noqa: E402
+from openpilot.starpilot.car.honda.radar_camera_cap import CAP_GAP_HOLD, CAP_HOLD_T
 
 
 def gap_model(gap):

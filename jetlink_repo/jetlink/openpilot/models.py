@@ -76,6 +76,12 @@ def _dated(pick) -> dict | None:
           'at': time.time() - float(pick['age_s'])}
 
 
+def _valid_pointer(oid, size) -> Pointer | None:
+  if is_sha256(oid) and type(size) is int and size > 0:
+    return Pointer(oid, size)
+  return None
+
+
 class Models:
   def __init__(self, op):
     self.op = op
@@ -149,18 +155,39 @@ class Models:
     return index
 
   def _row(self, name: str, ref: str | None, sha256: str | None = None) -> dict:
-    """A model as a row: its ONNX by its ref, from the index, else by its hash
-    and sized from the index. oid or size is None where the index does not know."""
+    """A model as a row: its ONNX by ref or hash from the index, with the
+    matching host pick and the pre-index pointer cache as offline fallbacks."""
     index = self.index()
     pointer = index.pointer(ref) if index is not None and ref else None
+    if pointer is None:
+      size = index.size(sha256) if index is not None and sha256 else None
+      pointer = _valid_pointer(sha256, size) or self._host_pointer(ref, sha256) or self._legacy_pointer(ref, sha256)
     if pointer is not None:
       return {'name': name, 'ref': ref, 'oid': pointer.oid, 'size': pointer.size}
-    return {'name': name, 'ref': ref, 'oid': sha256, 'size': index.size(sha256) if index is not None and sha256 else None}
+    return {'name': name, 'ref': ref, 'oid': sha256, 'size': None}
+
+  def _host_pointer(self, ref: str | None, sha256: str | None) -> Pointer | None:
+    # Adopting a host pick records its ref and hash in the slot. The same
+    # hello still supplies its size even though the pick is now local.
+    key, expected = ('sha256', sha256) if sha256 else ('ref', ref)
+    if expected and (pick := self.server_pick()) is not None and pick.get(key) == expected:
+      return _valid_pointer(pick.get('sha256'), pick.get('nbytes'))
+    return None
+
+  def _legacy_pointer(self, ref: str | None, sha256: str | None) -> Pointer | None:
+    key = self.op.keys.pointers
+    known = self.op.get(key) if key else None
+    if isinstance(known, dict):
+      for alias in (sha256, ref):
+        entry = known.get(alias)
+        if isinstance(entry, dict) and (pointer := _valid_pointer(entry.get('oid'), entry.get('size'))) is not None \
+           and (sha256 is None or pointer.oid == sha256):
+          return pointer
+    return None
 
   def resolve(self, ref: str | None, sha256: str | None) -> tuple[str, int]:
-    """A pick's oid and size, from the index; one the comma's copy does not
-    know fetches it again, at most once per INDEX_MISS_RETRY. Raises a
-    RegistryError for a model the index does not know, or no index at all."""
+    """A pick's oid and size. Refresh the index on a miss in all local sources,
+    at most once per INDEX_MISS_RETRY. Raises a RegistryError if unresolved."""
     if (found := self._identity(ref, sha256)) is None and time.monotonic() >= self._refresh_after:
       self._refresh_after = time.monotonic() + INDEX_MISS_RETRY
       self.refresh_index()
@@ -194,7 +221,8 @@ class Models:
         at = os.stat(Path(self.op.params_dir()) / key).st_mtime
       except OSError:
         pass
-    self._note_slot(pick)
+    if self.op.keys.empty_slot_chooses_default:
+      self._note_slot(pick)
     self._slot_cache = (now, pick, at)
     return pick
 

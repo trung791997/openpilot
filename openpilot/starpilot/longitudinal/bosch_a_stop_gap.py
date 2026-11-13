@@ -89,7 +89,7 @@ class BoschAStopGap:
 
     if not self.opened(lead, self.released_d):
       self.released_d = None
-    if self.holding:
+    if self.hold_d is not None:
       if pulling_away(lead, v_ego):
         self.reset()
       elif self.opened(lead, self.hold_d):

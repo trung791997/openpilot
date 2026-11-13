@@ -6,6 +6,7 @@ and leads() with a minimal fake SubMaster/radard. The model lead is given a filt
 below the cap's and the slow bound's 0.9) so only the held-vRel bound can move the lead.
 """
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -136,7 +137,7 @@ def test_never_lowers_vrel():
     assert rig.step(direct=False)['vRel'] == pytest.approx(-0.5)
   # unit level: bound below current vRel never lowers
   lead = {'dRel': 80.0, 'vRel': -0.2, 'vLead': 29.8, 'vLeadK': 29.8, 'aLeadK': 0.0}
-  track = SimpleNamespace(range_history=[80.0 + 2.0 * DT_MDL * i for i in range(20)])
+  track: Any = SimpleNamespace(range_history=[80.0 + 2.0 * DT_MDL * i for i in range(20)])
   assert radar_mod.held_vrel_bound(lead, track) is lead
 
 

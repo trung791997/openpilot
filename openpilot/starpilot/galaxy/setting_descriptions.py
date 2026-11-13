@@ -9,6 +9,8 @@ from openpilot.starpilot.ui.feature_settings_state import SLC_OFFSET_KEYS
 DESCRIPTIONS = {
   'DisengageOnAccelerator': 'When enabled, pressing the accelerator pedal will disengage openpilot.',
   'ReduceMotion': 'Reduces interface animations for a steadier display.',
+  'RadarPoints': ('Draws a dot on the road view for every point the radar reports, on vehicles whose radar is read. ' +
+                  'Display only; it does not change how the car drives.'),
   'IsMetric': 'On displays speed and distance in kilometers; Off uses miles. Saved speed-limit offsets keep their physical values.',
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
@@ -48,13 +50,10 @@ DESCRIPTIONS = {
   'UseStarPilotLongitudinalPlanner': 'Selects the StarPilot acceleration, braking and following planner. Off selects the upstream planner.',
   'BoschAStockBrakeFeel': ('Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. ' +
                            'It never brakes harder than the planner asks and works with either planner. ' +
-                           'It acts only on verified Bosch-A Hondas with openpilot longitudinal.'),
+                           'It acts only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.'),
   'BoschAHumanFollowing': ('Follows the driving model\u2019s predicted path for the car ahead instead of a straight-line guess, and ' +
                            'eases acceleration at low set speeds and near the set speed. It works with either planner and acts ' +
-                           'only on verified Bosch-A Hondas with openpilot longitudinal.'),
-  'BoschANeedFloorMinGap': ('Stops the braking floor from acting when the car ahead is closer than 1.5 s of headway, so it does not ' +
-                            'soften a close lead (replay evidence only). It needs Stock Brake Feel and acts only on verified ' +
-                            'Bosch-A Hondas with openpilot longitudinal.'),
+                           'only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.'),
   'CustomCruise': 'Sets how much a short cruise-button press changes the set speed.',
   'CustomCruiseLong': 'Sets how much holding a cruise button changes the set speed.',
   'ReverseCruise': 'Swaps the Toyota short-press and held-press cruise-speed increments.',
@@ -194,7 +193,6 @@ INITIALIZATION = {
   'UseStarPilotLongitudinalPlanner': 'Applies when the planner next starts: each choice runs a different planner process with its own subscriptions and state.',
   'BoschAStockBrakeFeel': 'Applies on the next drive: the planner reads this setting once when it starts.',
   'BoschAHumanFollowing': 'Applies on the next drive: the planner reads this setting once when it starts.',
-  'BoschANeedFloorMinGap': 'Applies on the next drive: the planner reads this setting once when it starts.',
   'TurnAssist': ('Applies when driving processes next start: the selected torque controller creates its ' +
     'low-speed feedback controller and filter state at initialization.'),
   'ToyotaRadarMode': 'Chooses the supported Toyota front radar configuration, including the optional ARS510 retrofit.',

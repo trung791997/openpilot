@@ -23,19 +23,19 @@ that StarPilot has switched to it. Set up parked, with both devices online.
 The host program is the upstream **Jetlink** application, developed by Zeph
 Leggett / ZoomPilot. Its download identifiers and commands keep their upstream
 names; installing the host does not require installing ZoomPilot on the comma.
-The bundled client uses Jetlink protocol 3 (package 0.8.8). A different host
-release still needs a successful compatible handshake and device validation.
+The bundled client is Jetlink v0.9.0. A different host release still needs a
+successful compatible handshake and device validation.
 
 ### Jetson and Linux PC
 
-On a supported NVIDIA host, review and run the [upstream installer](https://github.com/zoompilot/jetlink/blob/v0.8.12/install.sh).
+On a supported NVIDIA host, review and run the [upstream installer](https://github.com/zoompilot/jetlink/blob/v0.9.0/install.sh).
 The upstream Jetson guide specifies an Orin Nano Super 8 GB and JetPack 7.2.1;
 the Linux guide specifies an RTX 20-series or newer GPU with driver 580 or newer.
 Keep the computer powered, cool, and awake. Connect its USB-A port to the comma's USB-C port.
 Use `jetlink status` to check the host and `jetlink logs` to inspect problems.
 Host power, sleep, and driver setup details remain in the credited
-[Jetson](https://github.com/zoompilot/jetlink/blob/v0.8.12/docs/jetson.md) and
-[Linux](https://github.com/zoompilot/jetlink/blob/v0.8.12/docs/linux-pc.md) references;
+[Jetson](https://github.com/zoompilot/jetlink/blob/v0.9.0/docs/jetson.md) and
+[Linux](https://github.com/zoompilot/jetlink/blob/v0.9.0/docs/linux-pc.md) references;
 their comma-side ZoomPilot instructions are replaced by **Set up StarPilot** above.
 
 ### Mac
@@ -45,7 +45,7 @@ Use an Apple silicon Mac with macOS 15 or newer. Get the Jetlink DMG from
 in Applications, and start it. Keep it awake and connect by USB 3.
 Use **USB computer** in StarPilot's Galaxy, rather than following the comma-side
 ZoomPilot installation instructions in the credited
-[Mac host reference](https://github.com/zoompilot/jetlink/blob/v0.8.12/docs/macos-app.md).
+[Mac host reference](https://github.com/zoompilot/jetlink/blob/v0.9.0/docs/macos-app.md).
 
 ### iPhone and iPad
 
@@ -54,7 +54,7 @@ It requires a USB-C device supporting USB 3 and iOS/iPadOS 26.1 or newer.
 Choose **iPhone / iPad** in StarPilot, allow the host app's Local Network access,
 connect by USB 3, and keep the app open and the device unlocked. Check sustained
 thermal performance with the app's benchmark; that benchmark excludes cable latency.
-The [credited Apple host reference](https://github.com/zoompilot/jetlink/blob/v0.8.12/docs/iphone-app.md)
+The [credited Apple host reference](https://github.com/zoompilot/jetlink/blob/v0.9.0/docs/iphone-app.md)
 contains hardware details. StarPilot supplies the comma-side instructions above.
 
 ### Android
@@ -64,7 +64,7 @@ upstream Jetlink Android APK from [its releases](https://github.com/zoompilot/je
 Use a recent USB 3-capable Android 12+ phone, a powered USB 3 hub, and separate
 comma power. Choose **USB computer** in StarPilot. Follow the host's USB permission
 prompt and benchmark sustained performance before use.
-[Credited Android host reference](https://github.com/zoompilot/jetlink/blob/v0.8.12/docs/android-app.md).
+[Credited Android host reference](https://github.com/zoompilot/jetlink/blob/v0.9.0/docs/android-app.md).
 
 ## Use and recovery
 
@@ -75,6 +75,11 @@ the link stops or stalls while engaged, StarPilot stays engaged on the local Sma
 model and shows **Big Model Lost**; be ready to take control as behavior changes.
 Jetlink reconnects by itself and switches back at the next full disengagement. Set
 Jetlink to **Off** while parked to stop using the remote connection.
+
+In **Active Big**, **Jetlink app's choice** hands model selection to the host.
+An already prepared host engine can reconnect without the online model index
+when the comma has its matching saved identity or the host supplies it in the
+handshake.
 
 With Jetlink on, the USB-C port belongs to its host: a downloaded Chestnut pick is
 used only when a Chestnut is detected, never because a cable is plugged in. When
@@ -89,7 +94,7 @@ and defaults off.
 ## Attribution and license
 
 This StarPilot guide adapts the host setup structure from
-[ZoomPilot / Jetlink at v0.8.12](https://github.com/zoompilot/jetlink/tree/v0.8.12/docs).
+[ZoomPilot / Jetlink at v0.9.0](https://github.com/zoompilot/jetlink/tree/v0.9.0/docs).
 Jetlink is copyright (c) 2026 Zeph Leggett and licensed under the
 [MIT license](../../../jetlink_repo/LICENSE), whose full text is preserved.
 ZoomPilot source links, project names, authorship, and history are attribution;

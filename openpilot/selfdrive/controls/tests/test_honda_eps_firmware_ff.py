@@ -380,7 +380,7 @@ def test_every_vehicle_tells_the_model_the_measured_schedule():
   # C020 have their own, and the same cars take theirs (the A030 the TEG's; the C120 and the TGG the C020's)
   own = {"civic_teg_a010": eps_cal.CIVIC_TEG_A010_LAT_DELAY_SCHEDULE, "civic_tba_a030": eps_cal.CIVIC_TEG_A010_LAT_DELAY_SCHEDULE,
          "civic_tba_c020": eps_cal.CIVIC_TBA_C020_LAT_DELAY_SCHEDULE, "civic_tba_c120": eps_cal.CIVIC_TBA_C020_LAT_DELAY_SCHEDULE,
-         "civic_tgg_a120": eps_cal.CIVIC_TBA_C020_LAT_DELAY_SCHEDULE}
+         "civic_tgg_a120": eps_cal.CIVIC_TBA_C020_LAT_DELAY_SCHEDULE, "rdx_tjb_a220": eps_cal.RDX_TJB_A220_LAT_DELAY_SCHEDULE}
   for _, cal in eps_cal.EPS_FIRMWARE_CALIBRATIONS.values():
     assert cal.lat_delay_schedule == own.get(cal.name, eps_ff.CLARITY_TRW_A020_LAT_DELAY_SCHEDULE), cal.name
   CP = _params(b'39990-TBA,C020\x00\x00', CAR.HONDA_CIVIC_BOSCH)
@@ -397,6 +397,16 @@ def test_a_civic_is_told_its_measured_lag_from_the_frame(schedule, lag):
   # modeld reads a plan model at told + 0.075 s (frame + half a step), so that is where the car's own lag must land
   for v in (3.5, 7.0, 12.0, 20.0, 30.0):
     assert lag[0] - 0.03 <= honda_eps.scheduled_lateral_delay(schedule, v) + 0.075 <= lag[1] + 0.03, v
+
+
+def test_the_rdx_is_told_its_measured_model_delay_schedule():
+  # route 00000035 (night-star7): 0.40 s at 5-12 m/s, 0.22 s at 15-25 m/s, 0.30 s at 30 m/s; crawl still 0.15 s
+  s = eps_cal.RDX_TJB_A220_LAT_DELAY_SCHEDULE
+  assert eps_cal.ACURA_RDX_TJB_A220.lat_delay_schedule == s
+  assert honda_eps.scheduled_lateral_delay(s, 3.5) == pytest.approx(0.15)
+  assert honda_eps.scheduled_lateral_delay(s, 12.0) == pytest.approx(0.40)
+  assert honda_eps.scheduled_lateral_delay(s, 20.0) == pytest.approx(0.22)
+  assert honda_eps.scheduled_lateral_delay(s, 30.0) == pytest.approx(0.30)
 
 
 def test_lateral_delay_dips_in_town_and_rises_from_there():
@@ -518,14 +528,17 @@ ALL_PROFILES = [p for _, _, p in CALIBRATION_CARS]
 NON_RDX_CARS = [(c, fw) for c, fw, _ in CALIBRATION_CARS]
 
 
-def test_the_ride_through_window_is_the_rdx_only(monkeypatch):
-  # the window is the "39990-TJB-A220" calibration's fingerprints and nobody else's
-  assert set(honda_eps.RIDE_THROUGH_CARS) == set(eps_cal.EPS_FIRMWARE_CALIBRATIONS["39990-TJB-A220"][0])
+def test_the_ride_through_window_is_the_tjb_codes_only(monkeypatch):
+  # the window is the "39990-TJB-A220" and "39990-THR-A020" (its code parent) calibrations' fingerprints and nobody else's
+  assert set(honda_eps.RIDE_THROUGH_CARS) == {*eps_cal.EPS_FIRMWARE_CALIBRATIONS["39990-TJB-A220"][0],
+                                              eps_cal.EPS_FIRMWARE_CALIBRATIONS["39990-THR-A020"][0]}
   window = int(round(honda_eps.RIDE_THROUGH_S / DT_CTRL))
   assert window > 0
   for candidate in (CAR.ACURA_RDX_3G, CAR.ACURA_RDX_3G_MMR):   # both RDX fingerprints get it
     lac, _, _ = _rdx_controller(monkeypatch, candidate)
     assert lac.ride_through_frames == window, candidate
+  lac, _, _ = _controller(monkeypatch, fw=b'39990-THR,A020\x00\x00', candidate=CAR.HONDA_ODYSSEY)
+  assert lac.ride_through_frames == window
   for candidate, fw in NON_RDX_CARS:                              # no other calibrated car does
     lac, _, _ = _controller(monkeypatch, fw=fw, candidate=candidate)
     assert lac.ride_through_frames == 0, candidate
@@ -797,8 +810,10 @@ def _ptm_cp(candidate, fw):
 @pytest.mark.parametrize("candidate,fw,table", [
   (CAR.HONDA_CIVIC_BOSCH, b'39990-TBA,C020\x00\x00', rack.CIVIC_TBA_C020_RACK),
   (CAR.HONDA_INSIGHT, b'39990-TXM,A040\x00\x00', rack.INSIGHT_TXM_A040_RACK),
+  (CAR.HONDA_CRV_5G, b'39990-TLA,A040\x00\x00', rack.CRV_TLA_A040_RACK),
+  (CAR.HONDA_CRV_5G, b'39990-TLA,A220\x00\x00', rack.CRV_TLA_A040_RACK),
 ])
-def test_the_civic_c020_and_insight_have_their_own_yaw_fitted_rack_maps(candidate, fw, table):
+def test_the_civic_c020_insight_and_crv_a040_have_their_own_yaw_fitted_rack_maps(candidate, fw, table):
   CP, cal = _ptm_cp(candidate, fw)
   assert cal.rack is table
   rack_map = honda_eps.get_rack_map(CP, cal)
@@ -809,8 +824,7 @@ def test_the_civic_c020_and_insight_have_their_own_yaw_fitted_rack_maps(candidat
       assert rack_map.angle_from_curvature(rack_map.curvature_from_angle(angle, v, 0.01), v, 0.01) == pytest.approx(angle, abs=1e-3)
 
 
-@pytest.mark.parametrize("candidate,fw", [(CAR.HONDA_CIVIC_BOSCH, b'39990-TBA,C120\x00\x00'),
-                                          (CAR.HONDA_CRV_5G, b'39990-TLA,A040\x00\x00')])
+@pytest.mark.parametrize("candidate,fw", [(CAR.HONDA_CIVIC_BOSCH, b'39990-TBA,C120\x00\x00')])
 def test_cars_without_a_yaw_fit_steer_on_a_spec_rack_map(candidate, fw):
   # see test_honda_eps_spec_plant.py for how well the spec map predicts the measured ones
   CP, cal = _ptm_cp(candidate, fw)

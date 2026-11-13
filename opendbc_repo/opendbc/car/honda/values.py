@@ -83,6 +83,10 @@ class CarControllerParams:
         eps_map = ([0, 3840], [0, 3840])   # each image's E4 3840 clamp (the Civic Bosch C020/C120/TGG alike)
       elif CP.carFingerprint in (CAR.HONDA_CRV_5G, CAR.ACURA_RDX_3G, CAR.ACURA_RDX_3G_MMR):
         eps_map = ([0, 4096], [0, 4096])
+      elif CP.carFingerprint == CAR.HONDA_RIDGELINE:
+        eps_map = ([0, 4096], [0, 4096])   # rev b5's target saturates by E4 3732: past 4096 it would only wind up
+      elif CP.carFingerprint == CAR.HONDA_ODYSSEY:
+        eps_map = ([0, 4096], [0, 4096])   # THR-A020 PTM: a = E4 / 4 clamps at 1024, as the RDX's
       elif CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH_DIESEL:
         eps_map = ([0, 4096], [0, 4096])   # its EPS image has not been read
       elif CP.carFingerprint == CAR.HONDA_CIVIC_2022:
@@ -145,6 +149,10 @@ class HondaFlags(IntFlag):
   # measured on the road: the RDX's TJB-A220 image has no angle table (see steer_ratio.py); vfn uses 1048576, which
   # 7.0 gives HYBRID_ALT_BRAKEHOLD
   VGR_RDX_TJB_A220 = 2097152
+  # the Ridgeline's T6Z-A110 rack is constant-ratio and its image has no angle table (see steer_ratio.py)
+  VGR_RIDGELINE_T6Z_A110 = 4194304
+  # the Odyssey's THR-A020 rack is constant-ratio by Honda's spec and its image has no angle table (see steer_ratio.py)
+  VGR_ODYSSEY_THR_A020 = 8388608
 
 
 # Car button codes
@@ -227,7 +235,7 @@ class CAR(Platforms):
       HondaCarDocs("Honda N-Box 2018", "All", min_steer_speed=5.),
     ],
     CarSpecs(mass=890., wheelbase=2.520, steerRatio=18.64),
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'acura_rdx_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_ACCORD = HondaBoschPlatformConfig(
     [
@@ -237,7 +245,7 @@ class CAR(Platforms):
     ],
     # steerRatio: 11.82 is spec end-to-end
     CarSpecs(mass=3279 * CV.LB_TO_KG, wheelbase=2.83, steerRatio=16.33, centerToFrontRatio=0.39, tireStiffnessFactor=0.8467),
-    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated'},
+    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_ACCORD_11G = HondaBoschCANFDPlatformConfig(
     [
@@ -259,7 +267,7 @@ class CAR(Platforms):
   HONDA_CIVIC_BOSCH_DIESEL = HondaBoschPlatformConfig(
     [],  # don't show in docs
     HONDA_CIVIC_BOSCH.specs,
-    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated'},
+    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_CIVIC_2022 = HondaBoschPlatformConfig(
     [
@@ -292,7 +300,7 @@ class CAR(Platforms):
     [HondaCarDocs("Honda CR-V Hybrid 2017-22", min_steer_speed=12. * CV.MPH_TO_MS)],
     # mass: mean of 4 models in kg, steerRatio: 12.3 is spec end-to-end
     CarSpecs(mass=1667, wheelbase=2.66, steerRatio=16, centerToFrontRatio=0.41, tireStiffnessFactor=0.677),
-    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated'},
+    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_HRV_3G = HondaBoschPlatformConfig(
     [HondaCarDocs("Honda HR-V 2023-27", "All")],
@@ -309,29 +317,29 @@ class CAR(Platforms):
   ACURA_RDX_3G = HondaBoschPlatformConfig(
     [HondaCarDocs("Acura RDX 2019-21", "All", min_steer_speed=3. * CV.MPH_TO_MS)],
     CarSpecs(mass=4068 * CV.LB_TO_KG, wheelbase=2.75, steerRatio=11.95, centerToFrontRatio=0.41, tireStiffnessFactor=0.677),  # as spec
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'acura_rdx_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},
     flags=HondaFlags.BOSCH_ALT_BRAKE,
   )
   ACURA_RDX_3G_MMR = HondaBoschPlatformConfig(
     [HondaCarDocs("Acura RDX 2022-24", "All", min_steer_speed=70. * CV.KPH_TO_MS)],
     CarSpecs(mass=4079 * CV.LB_TO_KG, wheelbase=2.75, centerToFrontRatio=0.41, steerRatio=16.2),
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'acura_rdx_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},
     flags=HondaFlags.BOSCH_ALT_BRAKE | HondaFlags.BOSCH_ALT_RADAR,
   )
   HONDA_INSIGHT = HondaBoschPlatformConfig(
     [HondaCarDocs("Honda Insight 2019-22", "All", min_steer_speed=3. * CV.MPH_TO_MS)],
     CarSpecs(mass=2987 * CV.LB_TO_KG, wheelbase=2.7, steerRatio=15.0, centerToFrontRatio=0.39, tireStiffnessFactor=0.82),  # as spec
-    {Bus.pt: 'honda_insight_ex_2019_can_generated'},
+    {Bus.pt: 'honda_insight_ex_2019_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_E = HondaBoschPlatformConfig(
     [HondaCarDocs("Honda e 2020", "All", min_steer_speed=3. * CV.MPH_TO_MS)],
     CarSpecs(mass=3338.8 * CV.LB_TO_KG, wheelbase=2.5, centerToFrontRatio=0.5, steerRatio=16.71, tireStiffnessFactor=0.82),
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'acura_rdx_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},
   )
   HONDA_E_ADVANCE = HondaBoschPlatformConfig(
     [],  # don't show in docs, base trim already in docs
     CarSpecs(mass=1527, wheelbase=2.5, centerToFrontRatio=0.5, steerRatio=16.71, tireStiffnessFactor=0.82),
-    {Bus.pt: 'honda_e_advance_2020_can_generated'}, # 8 bit LKAS_HUD in Advance trim
+    {Bus.pt: 'honda_e_advance_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},  # 8 bit LKAS_HUD in Advance trim
   )
   HONDA_PILOT_4G = HondaBoschCANFDPlatformConfig(
     [HondaCarDocs("Honda Pilot 2023-25", "All")],
@@ -355,7 +363,7 @@ class CAR(Platforms):
   ACURA_MDX_4G = HondaBoschPlatformConfig(
     [HondaCarDocs("Acura MDX 2022-24", "All", min_steer_speed=70. * CV.KPH_TO_MS)],
     CarSpecs(mass=4788 * CV.LB_TO_KG, wheelbase=2.89, steerRatio=15.8, centerToFrontRatio=0.428),  # as spec
-    {Bus.pt: 'honda_common_canfd_generated'}, # not CANFD car but shares same dbc
+    {Bus.pt: 'honda_common_canfd_generated', Bus.radar: 'honda_bosch_a_radar'},  # not CANFD car but shares same dbc
     flags=HondaFlags.BOSCH_ALT_RADAR | HondaFlags.BOSCH_TJA_CONTROL,
   )
   # mid-model refresh
@@ -366,13 +374,13 @@ class CAR(Platforms):
   HONDA_ODYSSEY_5G_MMR = HondaBoschPlatformConfig(
     [HondaCarDocs("Honda Odyssey 2021-26", "All", min_steer_speed=70. * CV.KPH_TO_MS)],
     CarSpecs(mass=4590 * CV.LB_TO_KG, wheelbase=3.00, steerRatio=19.4, centerToFrontRatio=0.41),
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'acura_rdx_2020_can_generated', Bus.radar: 'honda_bosch_a_radar'},
     flags=HondaFlags.BOSCH_ALT_BRAKE | HondaFlags.BOSCH_ALT_RADAR,
   )
   ACURA_TLX_2G = HondaBoschPlatformConfig(
     [HondaCarDocs("Acura TLX 2021-22", "All")],
     CarSpecs(mass=3982 * CV.LB_TO_KG, wheelbase=2.87, steerRatio=14.0, centerToFrontRatio=0.43),
-    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated'},
+    {Bus.pt: 'honda_civic_hatchback_ex_2017_can_generated', Bus.radar: 'honda_bosch_a_radar'},
     flags=HondaFlags.BOSCH_ALT_RADAR,
   )
   # mid-model refresh
@@ -532,6 +540,11 @@ MODIFIED_EPS_FW = {
   CAR.HONDA_INSIGHT: (b'39990-TXM,A040\x00\x00',),
   CAR.ACURA_RDX_3G: (b'39990-TJB,A220\x00\x00',),  # PTM; stock A220 accepts every RDX 3G image as a source
   CAR.ACURA_RDX_3G_MMR: (b'39990-TJB,A220\x00\x00',),
+  # PTM rev b5 only: it reports the hybrid part number (dash, comma). The earlier builds, including the PTM2045 one,
+  # report 39990,T6Z,A110 and are not calibrated, so they stay dashcam.
+  CAR.HONDA_RIDGELINE: (b'39990-T6Z,A110\x00\x00',),
+  # PTM 2026-11-10 (the RDX car build ported to THR, its code parent): every variant record reports the comma
+  CAR.HONDA_ODYSSEY: (b'39990-THR,A020\x00\x00',),
 }
 
 MANUAL_TRANS_CARS = frozenset((CAR.HONDA_ACCORD, CAR.HONDA_CIVIC_2022))

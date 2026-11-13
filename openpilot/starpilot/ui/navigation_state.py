@@ -21,7 +21,9 @@ def navigation_display(message, *, now_ns: int, drive_id: int) -> NavigationDisp
     if (not message.enabled or message.status not in ('guiding', 'arrived') or
         message.startedMonoTime != drive_id or not message.sessionId or
         not drive_id <= message.frameMonoTime <= now_ns <= message.frameMonoTime + 3_000_000_000 or
-        not drive_id <= message.locationMonoTime <= now_ns <= message.locationMonoTime + 3_000_000_000):
+        # The producer reports 'guiding' only while it holds a usable fix (phone fixes up to 10 s, gps/source.py),
+        # so the card needs a fix this drive but not a fresher one; a 3 s limit here blinked with sparse phone fixes.
+        not drive_id <= message.locationMonoTime <= now_ns):
       return None
     instruction = message.instruction
     distances = (instruction.distanceMeters, instruction.remainingDistanceMeters, instruction.remainingDurationSeconds)

@@ -68,10 +68,11 @@ class DriveStatsTest(unittest.TestCase):
     self.now = [NOW]
     self.owners = []
 
-  def owner(self, analyzer=analyzed, permitted=lambda: True, monotonic=None, metric=None):
+  def owner(self, analyzer=analyzed, permitted=lambda: True, monotonic=None, metric=None, clock_valid=lambda: True):
     owner = DriveStatsOwner(root=self.root, store=self.store, history=Mock(wraps=self.history),
                             analyzer=analyzer, permitted=permitted, clock=lambda: self.now[0],
-                            monotonic=monotonic if monotonic is not None else lambda: self.now[0], metric=metric)
+                            monotonic=monotonic if monotonic is not None else lambda: self.now[0], metric=metric,
+                            clock_valid=clock_valid)
     self.owners.append(owner)
     self.addCleanup(owner.close)
     return owner
@@ -145,9 +146,10 @@ class DriveStatsTest(unittest.TestCase):
 
   def test_complete_aggregation_week_models_and_exclusion_persist(self):
     owner = self.owner()
-    owner._start()
+    # Before the scan starts: the worker can finish before a snapshot taken right after _start().
     initial = owner.snapshot()
     self.assertEqual(initial['totals']['drives'], 0)
+    owner._start()
     result = self.completed(owner)
     self.assertEqual(result['totals']['distanceMeters'], 1000)
     self.assertEqual(result['totals']['engagedSeconds'], 30)
@@ -528,6 +530,26 @@ class DriveStatsTest(unittest.TestCase):
     owner.snapshot()
     self.completed(owner, scans=3)
     self.assertEqual(owner._failures['abc']['attempts'], 1)
+
+  def test_no_analysis_while_the_clock_is_not_set(self):
+    # A cold boot reads the OS build date until GPS or NTP: no failure may be stamped with it.
+    owner = self.owner(analyzer=mock.Mock(side_effect=AssertionError('analyzed on an unset clock')), clock_valid=lambda: False)
+    owner._run()
+    owner.analyzer.assert_not_called()
+    self.assertEqual(owner._failures, {})
+
+  def test_failure_stamped_on_an_unset_clock_is_retried(self):
+    owner = self.owner()
+    signature, _ = drive_stats._route_signature(self.root, route('abc'))
+    boot_clock = 1_700_000_000  # before min_date(): written while the clock read the build date
+    owner._failures['abc'] = {'signature': signature, 'analysisVersion': drive_stats.ANALYSIS_VERSION, 'attempts': 5,
+                              'firstAt': boot_clock, 'retryAt': boot_clock + 3600,
+                              'reason': 'Route has no logged or named wall time'}
+    # The runner's own systemd build date would otherwise set min_date(), possibly after the test clock.
+    with mock.patch.object(drive_stats, 'min_date', return_value=datetime(2025, 2, 21)):
+      owner._run()
+    self.assertNotIn('abc', owner._failures)
+    self.assertTrue(owner._records['abc']['complete'])
 
   def test_failed_analysis_leaves_queue_and_retries_after_cooldown(self):
     owner = self.owner(analyzer=mock.Mock(side_effect=TimeoutError('bounded route timeout')))

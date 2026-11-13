@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, gen_empty_fingerprint, structs
-from opendbc.car.honda.bosch_longitudinal import BoschLongitudinal, qualified
+from opendbc.car.honda.bosch_longitudinal import BoschLongitudinal, bosch_a_harness, qualified
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR, CarControllerParams
 
@@ -60,7 +60,8 @@ def test_learning_uses_actual_vehicle_rate_and_driver_gas_override(identity, rat
 
 
 def test_braking_hysteresis_stopping_and_inactive_release():
-  controller = owner()
+  # Civic 2022 is not a Bosch-A harness car, so this checks the plain hysteresis without the brake fixes.
+  controller = owner(CAR.HONDA_CIVIC_2022)
   cc, cs = inputs(state="off")
   assert controller.update(cc, cs, -0.13)[3]
   assert controller.update(cc, cs, -0.03)[3]
@@ -178,11 +179,16 @@ def test_civic_brake_edge_keeps_stopping_and_long_drop_behavior():
 
 
 def test_brake_fixes_run_on_bosch_a_harness_cars_only():
-  for identity in (CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CRV_5G):
+  for identity in (CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CRV_5G, CAR.HONDA_ACCORD):
     controller = owner(identity)
     assert controller.brake_edge is not None and controller.brake_onset is not None
-  accord = owner(CAR.HONDA_ACCORD)
-  assert accord.brake_edge is None and accord.brake_onset is None
+  for identity in CAR:
+    cp = CarInterface.get_params(identity, gen_empty_fingerprint(), [], True, False, False)
+    if qualified(cp):
+      controller = BoschLongitudinal(cp, CarControllerParams(cp))
+      assert (controller.brake_edge is not None) == (controller.brake_onset is not None) == bosch_a_harness(cp), identity
+  civic_2022 = owner(CAR.HONDA_CIVIC_2022)
+  assert civic_2022.brake_edge is None and civic_2022.brake_onset is None
   cp = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False)
   cp.radarUnavailable = True
   no_radar = BoschLongitudinal(cp, CarControllerParams(cp))

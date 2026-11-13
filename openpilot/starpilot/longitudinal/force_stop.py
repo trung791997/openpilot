@@ -15,7 +15,7 @@ MODEL_APPROACH_DECEL = .65
 # The stop profile decelerates at MODEL_APPROACH_DECEL (sign stops: SIGN_APPROACH_DECEL) to the handoff point.
 APPROACH_DECEL = MODEL_APPROACH_DECEL
 # A light seen late puts the car above that profile. Stepping the ceiling down
-# by 8 m/s braked -2.2 then eased to -0.3 (dongle 11c8fa231c0499ed 0e t=169,
+# by 8 m/s braked -2.2 then eased to -0.3 (route 0e t=169,
 # replay, limited road evidence). Above this gap the profile is instead the
 # constant decel that reaches the handoff from the current speed.
 ENTRY_STEP_MPS = 1.0

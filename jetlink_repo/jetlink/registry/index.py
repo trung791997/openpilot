@@ -169,7 +169,7 @@ def parse_index(data) -> ModelIndex:
   for p in refs.values():
     sizes.setdefault(p.oid, p.size)
   default = data.get('default')
-  return ModelIndex(models=tuple(models.values()), refs=refs, sizes=sizes, default=default if default in models else None)
+  return ModelIndex(models=tuple(models.values()), refs=refs, sizes=sizes, default=default if is_ref(default) and default in models else None)
 
 
 def _items(value) -> list[tuple]:

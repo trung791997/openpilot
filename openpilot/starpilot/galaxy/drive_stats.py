@@ -14,6 +14,7 @@ import stat
 import threading
 import time
 
+from openpilot.common.time_helpers import min_date, system_time_valid
 from openpilot.starpilot.galaxy.drive_history import DriveHistory, MAX_ROOT_ENTRIES, MAX_STATS_SEGMENTS_PER_ROUTE
 from openpilot.starpilot.galaxy.drive_analysis import ANALYSIS_VERSION
 from openpilot.starpilot.storage import galaxy_storage_root
@@ -161,7 +162,7 @@ class DriveStatsOwner:
   def __init__(self, root: Path | None = None, store: Path | None = None, history: DriveHistory | None = None,
                analyzer: Callable | None = None, permitted: Callable[[], bool] | None = None,
                clock: Callable[[], float] | None = None, monotonic: Callable[[], float] | None = None,
-               metric: Callable[[], bool] | None = None):
+               metric: Callable[[], bool] | None = None, clock_valid: Callable[[], bool] | None = None):
     self.root = Path(root) if root is not None else None
     self.store = Path(store) if store is not None else galaxy_storage_root() / 'drive-stats.json'
     self.history = history if history is not None else DriveHistory(self.root, max_segments_per_route=MAX_STATS_SEGMENTS_PER_ROUTE,
@@ -174,6 +175,7 @@ class DriveStatsOwner:
     self.permitted = permitted if permitted is not None else lambda: False
     self.clock = clock if clock is not None else lambda: datetime.now(UTC).timestamp()
     self.monotonic = monotonic if monotonic is not None else time.monotonic
+    self.clock_valid = clock_valid if clock_valid is not None else system_time_valid
     self.metric = metric if metric is not None else lambda: True
     self._lock = threading.RLock()
     self._permit_lock = threading.Lock()
@@ -270,7 +272,9 @@ class DriveStatsOwner:
       return self._permit_cached
 
   def _run(self):
-    if not self._allowed():
+    # Until GPS or NTP sets it after a cold boot, the clock reads the OS build date: analysis would reject the
+    # drive's real logged times as future ones and stamp failures with dates that later look a day old.
+    if not self._allowed() or not self.clock_valid():
       return
     assert self.root is not None
     try:
@@ -284,6 +288,7 @@ class DriveStatsOwner:
         self._pending = 0
         route_ids = {route.get('routeId') for route in routes if isinstance(route, dict) and type(route.get('routeId')) is str}
         self._failures = {key: value for key, value in self._failures.items() if key in route_ids}
+        self._drop_failures_stamped_before_the_clock_was_set()
       candidates = []
       for route in routes[:MAX_SCAN_ROUTES]:
         if not self._allowed():
@@ -393,6 +398,15 @@ class DriveStatsOwner:
     except Exception:
       with self._lock:
         self._scan_incomplete = True
+
+  def _drop_failures_stamped_before_the_clock_was_set(self):
+    # A failure recorded on a not-yet-set clock is retried as new: its firstAt otherwise ages it out of retries.
+    earliest = min_date().replace(tzinfo=UTC).timestamp()
+    if self.clock() < earliest:
+      return
+    stale = [key for key, failure in self._failures.items() if min(failure['firstAt'], failure['retryAt']) < earliest]
+    for key in stale:
+      del self._failures[key]
 
   def _failure(self, signature, previous, reason):
     now = self.clock()

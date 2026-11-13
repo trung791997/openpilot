@@ -62,7 +62,8 @@ class CarInterface(CarInterfaceBase):
         cfgs.insert(0, get_safety_config(structs.CarParams.SafetyModel.noOutput))
       ret.safetyConfigs = cfgs
 
-      ret.radarUnavailable = docs or candidate not in (CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CRV_5G)
+      from opendbc.car.honda.bosch_a_radar import bosch_a_radar_platform
+      ret.radarUnavailable = docs or not bosch_a_radar_platform(candidate)
       # Disable the radar and let openpilot control longitudinal
       # WARNING: THIS DISABLES AEB!
       # If Bosch radarless, this blocks ACC messages from the camera
@@ -229,6 +230,11 @@ class CarInterface(CarInterfaceBase):
     elif candidate == CAR.ACURA_RDX_3G:
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.2], [0.06]]
 
+    elif candidate == CAR.HONDA_ODYSSEY and eps_modified:
+      # 39990-THR,A020 PTM: the RDX car build ported to THR (its code parent), so the same Route-A target (30000 at
+      # E4 4096) and the Clarity's gains carry over. LatControlHondaEps steers it (honda_eps_calibrations ODYSSEY_THR_A020).
+      _modified_eps_tune(ret)
+
     elif candidate == CAR.HONDA_ODYSSEY:
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.28], [0.08]]
 
@@ -237,6 +243,12 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate == CAR.HONDA_PILOT:
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.38], [0.11]]
+
+    elif candidate == CAR.HONDA_RIDGELINE and eps_modified:
+      # 39990-T6Z,A110 PTM rev b5: its target, P and fades are folded to the Clarity's percent of full scale at every
+      # E4 (E4 4096 per unit), so the Clarity's gains carry over. LatControlHondaEps steers it
+      # (honda_eps_calibrations RIDGELINE_T6Z_A110).
+      _modified_eps_tune(ret)
 
     elif candidate == CAR.HONDA_RIDGELINE:
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.38], [0.11]]

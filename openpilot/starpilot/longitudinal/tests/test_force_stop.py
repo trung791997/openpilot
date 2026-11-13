@@ -41,6 +41,7 @@ class ForceStopTests(unittest.TestCase):
     self.assertAlmostEqual(plan.speed_ceiling_mps, speed - .5)
     self.assertGreater(plan.speed_ceiling_mps, math.sqrt(1.3 * (horizon - 6)) + 7)
     decel = self.owner.approach_decel
+    assert decel is not None
     self.assertAlmostEqual(decel, (speed - .5) ** 2 / (2 * (horizon - 6)))
     # Following the profile, the ceiling keeps the same decel down to the handoff.
     for tick in range(1, 400):
@@ -49,6 +50,7 @@ class ForceStopTests(unittest.TestCase):
       horizon -= (ceiling + speed) / 2 * .05
       plan = self.owner.step(frame(tick, speed_mps=speed, horizon_m=horizon, model_should_stop=True), self.tune)
       assert plan.speed_ceiling_mps is not None
+      assert self.owner.approach_decel is not None
       self.assertAlmostEqual(self.owner.approach_decel, decel)
       if horizon < 6.3:
         break
@@ -57,6 +59,7 @@ class ForceStopTests(unittest.TestCase):
 
   def test_profile_latch_clears_when_the_ceiling_goes_away(self):
     self.owner.step(frame(0, speed_mps=20., horizon_m=110.), self.tune)
+    assert self.owner.approach_decel is not None
     self.assertGreater(self.owner.approach_decel, .65)
     plan = self.owner.step(frame(1, speed_mps=20., horizon_m=110., light=False), self.tune)
     self.assertIsNone(plan.speed_ceiling_mps)

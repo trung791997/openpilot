@@ -7,7 +7,7 @@ from openpilot.starpilot.longitudinal import bosch_a_smooth as bs
 
 BOSCH_A = SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=True)
 NOT_BOSCH_A = (SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=False),
-               SimpleNamespace(brand="honda", carFingerprint="HONDA_ACCORD", openpilotLongitudinalControl=True),
+               SimpleNamespace(brand="honda", carFingerprint="HONDA_ODYSSEY", openpilotLongitudinalControl=True),
                SimpleNamespace(brand="toyota", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=True))
 STEP = bs.BRAKE_RELEASE_JERK * DT_MDL
 
@@ -42,6 +42,9 @@ class TestHelpers(unittest.TestCase):
 class TestShaper(unittest.TestCase):
   def test_gate(self):
     self.assertTrue(bs.BoschASmooth(BOSCH_A).enabled)
+    # PR #37: every Bosch-A platform is in scope, including the Accord.
+    self.assertTrue(bs.BoschASmooth(SimpleNamespace(brand="honda", carFingerprint="HONDA_ACCORD",
+                                                    openpilotLongitudinalControl=True)).enabled)
     for cp in NOT_BOSCH_A + (None,):
       s = bs.BoschASmooth(cp)
       self.assertFalse(s.enabled, cp)

@@ -1,12 +1,15 @@
-"""Blendful lateral policy tests, ported from sunnypilot's modeld_v2 suite."""
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 
-import unittest
-
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+"""
 import numpy as np
 
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.common.test import OpenpilotTestCase
 from openpilot.starpilot.lateral.blendful import Blendful
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 X = np.array(ModelConstants.X_IDXS)
 BUILD, RELEASE = 0.5, 2.0
@@ -32,8 +35,8 @@ def drive(bf, seconds, v=20.0, k=0.0, **kw):
   return np.array(out) * v ** 2  # m/s^2
 
 
-class TestBlendful(unittest.TestCase):
-  def setUp(self):
+class TestBlendful(OpenpilotTestCase):
+  def setup_method(self):
     self.bf = Blendful()
 
   def test_centered_adds_nothing(self):
@@ -109,7 +112,7 @@ class TestBlendful(unittest.TestCase):
     assert abs(out[-1]) < 1e-6
 
 
-class TestBlendfulExclusion(unittest.TestCase):
+class TestBlendfulExclusion(OpenpilotTestCase):
   """Blendful and starpilot Lane Centering are mutually exclusive at the host level."""
 
   def test_lane_centering_host_yields_while_blendful_enabled(self):
@@ -127,7 +130,3 @@ class TestBlendfulExclusion(unittest.TestCase):
       host.last_refresh_ns = None  # force the host to re-read both preferences
       self.assertIsNone(host.sample(None, now_ns=2_000_000_000, lateral_active=True, longitudinal_active=False))
       self.assertEqual(host.last_refusal, "host_disabled")
-
-
-if __name__ == "__main__":
-  unittest.main()

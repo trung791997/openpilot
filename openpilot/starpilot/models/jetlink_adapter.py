@@ -55,7 +55,8 @@ def _adapter_class():
     # Active Big's choice for Jetlink, by the ONNX's hash (jetlink_settings), and no catalog: jetlink writes a
     # newer choice made in its app into it, and with none runs the app's choice or its default model
     KEYS = Keys(link="JetlinkMode", offroad="IsOffroad", progress="JetlinkProgress", spec="JetlinkSpec",
-                pointers="JetlinkPointers", big_model="JetlinkModel", charge_phone="JetlinkChargePhone")
+                pointers="JetlinkPointers", big_model="JetlinkModel", charge_phone="JetlinkChargePhone",
+                empty_slot_chooses_default=False)
     IN_CONTROL_SERVICES = ("carControl", "selfdriveState")
     _aol = None
     _aol_since = 0.

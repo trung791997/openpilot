@@ -77,7 +77,7 @@ class LongitudinalPlanner:
         self.bosch_a_human = (human_following, human_acceleration, qualified_model_leads, time.monotonic_ns)
     if bosch_a is not None and bosch_a.stock_brake_feel:
       from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
-      enhancement = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=True, need_floor_min_gap=getattr(bosch_a, "need_floor_min_gap", False))
+      enhancement = HondaBoschALongEnhancement(CP, dt, stock_brake_feel=True)
       self.bosch_a_long = enhancement if enhancement.enabled else None
     # Bosch-A brake release smoothing + short plan read-ahead (always on for Bosch-A Hondas; bosch_a_smooth.py).
     from openpilot.starpilot.longitudinal.bosch_a_smooth import BoschASmooth
