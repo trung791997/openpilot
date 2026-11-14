@@ -316,6 +316,8 @@ class SelfdriveD:
       self.steering_authority_unavailable = True
     if getattr(self, 'steering_authority_unavailable', False):
       self.events.add(EventName.controlsMismatch)
+      self._log_aol_critical('steering_authority_unavailable', now_ns,
+        lambda: dict(source_age_ns=now_ns - source_ns if source_ns else None))
 
   def _update_hkg_angle_limit_warning(self, CS):
     if not getattr(self, 'hkg_angle_steering', False):
@@ -1357,6 +1359,27 @@ class SelfdriveD:
   def aol_stale_source_alert_due(source_ns, now_ns):
     return not 0 < source_ns <= now_ns or now_ns - source_ns >= AOL_STALE_ALERT_NS
 
+  def _log_aol_critical(self, branch, now_ns, ages=None):
+    """Diagnostic only (never gates anything): name the branch that raised an AOL critical fault.
+
+    Route 000000cc--31744ab7a6 (segs 5/18): a one-tick selfdrived stall ended in a red controlsMismatch
+    with no log naming which of the critical sites fired. `ages` is a callable returning {name: ns};
+    it is evaluated inside the guard so a missing attribute can never change behaviour. Logged in ms,
+    at most one event per branch per second so a persistent fault cannot flood swaglog.
+    """
+    try:
+      mono = time.monotonic()
+      last = self.__dict__.setdefault('_aol_critical_log_s', {})
+      if mono - last.get(branch, -1e9) < 1.0:
+        return
+      last[branch] = mono
+      fields = {name: round(int(value) / 1e6, 3) for name, value in (ages() if ages else {}).items()
+                if value is not None}
+      cloudlog.event('aol_critical', branch=branch, was_enabled=bool(self.enabled),
+                     fault_reason=str(getattr(self, 'aol_fault_reason', '')), **fields)
+    except Exception:
+      pass
+
   def _expire_axis_source(self, CS, now_ns):
     if REPLAY or not self.aol_replay or not self.axis_transport_required:
       return
@@ -1485,6 +1508,9 @@ class SelfdriveD:
       self.aol_fault_reason = 'critical'
       self.aol_authority_lost = True
       self.events.add(EventName.controlsMismatch)
+      self._log_aol_critical('source_expired', now_ns,
+        lambda: dict(source_age_ns=now_ns - source_ns if source_ns else None,
+                             intent_age_ns=(now_ns - int(intent.carStateLogMonoTime)) if intent is not None else None))
       if ET.IMMEDIATE_DISABLE not in self.state_machine.current_alert_types:
         self.state_machine.current_alert_types.append(ET.IMMEDIATE_DISABLE)
 
@@ -1634,6 +1660,12 @@ class SelfdriveD:
       self.aol_fault_reason = 'critical'
       self.aol_authority_lost = True
       self.events.add(EventName.controlsMismatch)
+      self._log_aol_critical('output_lease_expired', now_ns,
+        lambda: dict(lease_overrun_ns=now_ns - proof[3],
+                             proof_age_ns=now_ns - proof[2],
+                             source_age_ns=now_ns - source_ns if source_ns else None,
+                             pause_baseline_age_ns=now_ns - int(getattr(pause, 'baseline_ns', 0))
+                             if pause is not None and getattr(pause, 'baseline_ns', 0) else None))
       if ET.IMMEDIATE_DISABLE not in self.state_machine.current_alert_types:
         self.state_machine.current_alert_types.append(ET.IMMEDIATE_DISABLE)
     return True
@@ -2101,6 +2133,9 @@ class SelfdriveD:
         native_missing_at_startup = (not self.sm.seen['aolSafetyWire'] and not self.enabled and
                                      not self.active and not lost_active_aol)
         self.events.add(EventName.commIssue if native_missing_at_startup else EventName.controlsMismatch)
+        if not native_missing_at_startup:
+          self._log_aol_critical('native_missing', now_ns,
+            lambda: dict(wire_age_ns=(now_ns - int(self.sm.logMonoTime['aolSafetyWire'])) if self.sm.seen['aolSafetyWire'] else None))
     self.aol_decision_native = native
     if self.aol_replay:
       previous_intent = getattr(self, 'aol_last_intent', None)
@@ -2276,6 +2311,8 @@ class SelfdriveD:
                                'availabilityPause' if availability or aol_hard_soft_fault or stale_alert_deferred else 'transportPause' if pause else 'none')
       if self.aol_authority_lost or pause:
         self.events.add(EventName.controlsMismatch)
+        self._log_aol_critical('authority_lost' if self.aol_authority_lost else 'transport_pause', now_ns,
+          lambda: dict(source_age_ns=(now_ns - self.aol_car_state_log_ns) if self.aol_car_state_log_ns else None))
         lost_active_aol |= pause
     was_enabled = self.enabled
     if self.aol_replay and source_current and was_enabled and (
