@@ -172,3 +172,44 @@ def test_cold_start_timeout_still_exhausts_restart_budget(tmp_path):
     assert source.latest() is None
   finally:
     source.close()
+
+
+def test_renderer_is_parked_after_grace_unfocused_and_restarted_on_demand(tmp_path):
+  from openpilot.starpilot.system.starport import view
+
+  events = []
+  source = crashing_view(tmp_path, events, 'import time; time.sleep(120)')
+  try:
+    process = source.process
+    source.check(1000.0, focused=False)
+    source.check(1000.0 + view.CAR_IDLE_STOP_AFTER - 0.1, focused=False)
+    assert source.process is process and process.poll() is None and not source.parked
+    source.check(1000.0 + view.CAR_IDLE_STOP_AFTER + 0.1, focused=False)
+    assert source.parked and source.process is None and source.touch is None and source.control is None
+    assert process.poll() is not None
+    assert source.latest() is None and source.view == 'car'
+    # Parked is not a failure: no restart is charged and later checks do nothing.
+    source.check(5000.0, focused=False)
+    source.check(5001.0, focused=True)
+    assert not source.restarts and source.process is None
+    source.demand()
+    assert not source.parked and source.process is not None and source.process.poll() is None
+    assert source.process is not process and source.waiting_for_first_frame
+    assert [e for e, _ in events if e.startswith('car_view_') and e != 'car_view_started'] == ['car_view_parked', 'car_view_unparked']
+  finally:
+    source.close()
+
+
+def test_refocus_within_grace_keeps_the_renderer(tmp_path):
+  from openpilot.starpilot.system.starport import view
+
+  source = crashing_view(tmp_path, [], 'import time; time.sleep(120)')
+  try:
+    process = source.process
+    source.check(1000.0, focused=False)
+    source.check(1000.0 + view.CAR_IDLE_STOP_AFTER - 1.0, focused=False)
+    source.check(1000.0 + view.CAR_IDLE_STOP_AFTER, focused=True)
+    source.check(1000.0 + view.CAR_IDLE_STOP_AFTER + 20.0, focused=False)  # the grace restarts from here
+    assert source.process is process and not source.parked
+  finally:
+    source.close()
