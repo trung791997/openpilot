@@ -24,6 +24,9 @@ CAR_FRAME_PATH = "/dev/shm/starpilot_starport_car_frame"
 # frames arrive, the separate five-second stall watchdog remains authoritative.
 CAR_STARTUP_TIMEOUT = 60.0
 CAR_STALL_TIMEOUT = 5.0
+# The renderer holds roughly 280 MB; the comma 4 has no swap. While the car shows its own screen
+# nothing reads its frames, so it is stopped after this long and started again on the next demand.
+CAR_IDLE_STOP_AFTER = 60.0  # Peter 2026-11-13: park the hidden car renderer (~277 MB) after 60 s; short screen flips keep it warm
 MAX_RESTARTS = 2
 RESTART_WINDOW = 300.0
 OUTPUT_TAIL_LINES = 40
@@ -56,6 +59,7 @@ class ViewSource:
     self.unfocused_since: float | None = None
     self.frames = 0
     self.restarts: list[float] = []
+    self.parked = False
     if synthetic:
       self.view = "synthetic"
       self.source = SyntheticFrames()
@@ -110,6 +114,8 @@ class ViewSource:
     return self.frames == 0 and not self.fallback_reason
 
   def demand(self, seconds: float = 1.0) -> None:
+    if self.parked:
+      self._unpark_car()
     self.source.demand(seconds)
 
   def release_demand(self) -> None:
@@ -139,9 +145,14 @@ class ViewSource:
     if self.view != "car":
       return
     now = time.monotonic() if now is None else now
+    if self.parked:
+      return
     if not focused:
       if self.unfocused_since is None:
         self.unfocused_since = now
+      elif now - self.unfocused_since >= CAR_IDLE_STOP_AFTER and self.process is not None and self.process.poll() is None:
+        self._park_car()
+        return
     elif self.unfocused_since is not None:
       paused = now - self.unfocused_since
       self.started_at += paused
@@ -170,6 +181,25 @@ class ViewSource:
       else:
         self.fallback(reason)
 
+  def _park_car(self) -> None:
+    """Stop the renderer while nothing is shown from it. A stop here is not a failure and costs no restart."""
+    self.log("car_view_parked", pid=self.process.pid if self.process is not None else None)
+    self._stop_car()
+    self.source = UnavailableFrames()
+    self.parked = True
+    self.frames = 0
+    self.unfocused_since = None
+
+  def _unpark_car(self) -> None:
+    self.parked = False
+    self.frames = 0
+    self.unfocused_since = None
+    self.log("car_view_unparked")
+    try:
+      self._start_car()
+    except Exception as error:
+      self.fallback(f"renderer would not restart: {error}")
+
   def _output_tail(self) -> list[str]:
     if self.renderer_log is None:
       return []
@@ -197,6 +227,7 @@ class ViewSource:
   def fallback(self, reason: str) -> None:
     self.log("car_view_fallback", reason=reason)
     self._stop_car()
+    self.parked = False
     self.fallback_reason = reason
     self.view = "unavailable"
     self.frames = 0
