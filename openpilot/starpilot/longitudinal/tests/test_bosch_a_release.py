@@ -236,3 +236,13 @@ def test_previous_lead_is_copied_not_aliased(monkeypatch):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_ghost_arm(monkeypatch):
+  """These tests pin the car build's step (coast + FastLetoff); arm G replaces it and has its own tests."""
+  from openpilot.starpilot.longitudinal import bosch_a_release
+  monkeypatch.setattr(bosch_a_release, 'GHOST_ARM', False)

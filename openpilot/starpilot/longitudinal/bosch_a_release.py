@@ -51,6 +51,9 @@ from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 from openpilot.starpilot.longitudinal.bosch_a_turnoff import FastLetoff
+from openpilot.starpilot.longitudinal.bosch_a_ghost import GhostLetoff
+
+GHOST_ARM = True  # arm G (replay only): GhostLetoff replaces the release coast and FastLetoff; bosch_a_ghost.py
 
 RELEASE_VREL_MAX = -2.0  # m/s; previous lead must be closing at least this fast (9e: -7 m/s at release)
 RELEASE_D_MAX = 40.0     # m; previous lead must be inside this (9e: 21 m at release)
@@ -146,6 +149,7 @@ class BoschARelease:
     self.prev_lead = None  # leadOne from the previous cycle
     self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     self.fast_letoff = FastLetoff(dt)  # turn-off let-off (route cc 15:25); radar on only; bosch_a_turnoff.py
+    self.ghost = GhostLetoff(dt)  # arm G: radar on or off (camera-only leads too)
 
   def action_t(self, actuator_delay: float) -> float:
     return planner_action_t(actuator_delay, self.enabled)
@@ -187,9 +191,32 @@ class BoschARelease:
     target, self.rise_ticks = brake_release_dwell_target(prev, target, self.rise_ticks)
     return target
 
+  def smooth_ghost(self, prev: float, target: float, reset: bool, jerk: float | None, floor: float | None) -> float:
+    """Base let-off, except a live ghost may let off faster (up to jerk) as far as its floor allows."""
+    if not self.enabled or reset:
+      self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+      return float(target)
+    base = self.smooth(prev, target, reset=False)
+    if jerk is None or prev >= 0.0:
+      return base
+    fast = min(float(target), max(prev + BRAKE_RELEASE_JERK * self.dt, min(prev + jerk * self.dt, floor)))
+    if fast > base:
+      self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+    return float(max(base, fast))
+
   def step(self, *, lead_one, prev: float, target: float, lane_change_state=None, left_blinker: bool = False,
            right_blinker: bool = False, gas_pressed: bool = False, reset_state: bool = False,
-           standstill: bool = False, raw_y: dict[int, float] | None = None) -> float:
+           standstill: bool = False, raw_y: dict[int, float] | None = None, v_ego: float = 0.0,
+           model_lead0=None) -> float:
+    if GHOST_ARM:
+      if reset_state or standstill or not self.enabled:
+        self.ghost.reset()
+        return self.smooth(prev, target, reset=bool(reset_state or standstill))
+      skip = (lane_change_state is not None and lane_change_state != LaneChangeState.off) or left_blinker or right_blinker or gas_pressed
+      jerk, floor = self.ghost.update(lead_one, float(prev), float(v_ego), raw_y or {}, model_lead0, skip=skip)
+      if self.ghost.no_gas:
+        target = min(float(target), 0.0)
+      return self.smooth_ghost(prev, target, False, jerk, floor)
     target = self.coast(lead_one=lead_one, target=target, lane_change_state=lane_change_state, left_blinker=left_blinker,
                         right_blinker=right_blinker, gas_pressed=gas_pressed, reset_state=reset_state)
     if reset_state or standstill or not self.coast_enabled:
