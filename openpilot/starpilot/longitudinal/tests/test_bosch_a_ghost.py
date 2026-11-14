@@ -63,7 +63,7 @@ def test_ghost_behind_us_is_not_a_clear():
   # 84 s7: the extrapolated ghost passed d < 0 at 1.65 s with the car still there; G3 does not call that a clear
   gl = G.GhostLetoff(DT)
   born(gl, v_ego=14.0, d=6.0, v=-8.0, v_lead=6.0, a_lead=-3.0)
-  for _ in range(int(1.5 / DT)):
+  for _ in range(int(0.9 / DT)):  # inside the shortest no-gas hold tried (1.0 s)
     out = gl.update(GONE, -3.0, 14.0, {}, CAM_SEES)
     assert out == (None, None)
   assert gl.ghost.d < 0.0 and not gl.ghost.letoff_clear and gl.no_gas and gl.cleared == 0
