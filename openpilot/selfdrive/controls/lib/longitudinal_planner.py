@@ -42,6 +42,7 @@ from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApp
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
 from openpilot.starpilot.longitudinal.honda_bosch_a_long import HondaBoschALongEnhancement
 from openpilot.starpilot.longitudinal.bosch_a_release import BoschARelease
+from openpilot.starpilot.longitudinal.bosch_a_turnoff import raw_track_y
 from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
@@ -517,7 +518,8 @@ class LongitudinalPlanner:
       lead_one=planner_radar_state.leadOne, prev=float(a_prev), target=float(output_a_target),
       lane_change_state=sm['modelV2'].meta.laneChangeState, left_blinker=bool(sm['carState'].leftBlinker),
       right_blinker=bool(sm['carState'].rightBlinker), gas_pressed=bool(sm['carState'].gasPressed),
-      reset_state=bool(reset_state), standstill=bool(sm['carState'].standstill))
+      reset_state=bool(reset_state), standstill=bool(sm['carState'].standstill),
+      raw_y=raw_track_y(sm) if self.bosch_a_release.coast_enabled else None)
     output_a_target, self.output_should_stop = self.bosch_a_stop_gap.step(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
       should_stop=bool(self.output_should_stop), v_ego=v_ego, standstill=bool(sm['carState'].standstill),

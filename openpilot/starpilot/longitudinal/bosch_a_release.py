@@ -50,6 +50,7 @@ from types import SimpleNamespace
 from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
+from openpilot.starpilot.longitudinal.bosch_a_turnoff import FastLetoff
 
 RELEASE_VREL_MAX = -2.0  # m/s; previous lead must be closing at least this fast (9e: -7 m/s at release)
 RELEASE_D_MAX = 40.0     # m; previous lead must be inside this (9e: 21 m at release)
@@ -144,6 +145,7 @@ class BoschARelease:
     self.hold_s = 0.0
     self.prev_lead = None  # leadOne from the previous cycle
     self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+    self.fast_letoff = FastLetoff(dt)  # turn-off let-off (route cc 15:25); radar on only; bosch_a_turnoff.py
 
   def action_t(self, actuator_delay: float) -> float:
     return planner_action_t(actuator_delay, self.enabled)
@@ -173,18 +175,28 @@ class BoschARelease:
 
     return min(target, 0.0) if self.hold_s > 0.0 else target
 
-  def smooth(self, prev: float, target: float, reset: bool) -> float:
+  def smooth(self, prev: float, target: float, reset: bool, fast_jerk: float | None = None) -> float:
     """Last shaper before the final clip. `prev` is last cycle's published target. `reset` covers disengaged and standstill."""
     if not self.enabled or reset:
       self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
       return float(target)
+    if fast_jerk is not None:
+      self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
+      return let_off_limited_target(prev, target, self.dt, fast_jerk)
     target = brake_release_limited_target(prev, target, self.dt)
     target, self.rise_ticks = brake_release_dwell_target(prev, target, self.rise_ticks)
     return target
 
   def step(self, *, lead_one, prev: float, target: float, lane_change_state=None, left_blinker: bool = False,
            right_blinker: bool = False, gas_pressed: bool = False, reset_state: bool = False,
-           standstill: bool = False) -> float:
+           standstill: bool = False, raw_y: dict[int, float] | None = None) -> float:
     target = self.coast(lead_one=lead_one, target=target, lane_change_state=lane_change_state, left_blinker=left_blinker,
                         right_blinker=right_blinker, gas_pressed=gas_pressed, reset_state=reset_state)
-    return self.smooth(prev, target, reset=bool(reset_state or standstill))
+    if reset_state or standstill or not self.coast_enabled:
+      self.fast_letoff.reset()
+      fast_jerk = None
+    else:
+      fast_jerk = self.fast_letoff.update(lead_one, float(prev), raw_y or {})
+      if self.fast_letoff.no_gas:
+        target = min(float(target), 0.0)
+    return self.smooth(prev, target, reset=bool(reset_state or standstill), fast_jerk=fast_jerk)
