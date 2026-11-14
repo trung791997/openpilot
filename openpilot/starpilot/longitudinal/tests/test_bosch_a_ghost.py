@@ -85,6 +85,24 @@ def test_lead_back_kills_ghost():
   assert gl.ghost is None and not gl.no_gas
 
 
+def test_farther_closing_lead_keeps_ghost():
+  # pb c1 s13: the 10.5 m turner releases to a camera lead 25.6 m out closing 1.27 m/s; the turner's track then moves out
+  gl = G.GhostLetoff(DT)
+  gl.update(lead(tid=23, d=10.5, v=-2.2, y=-0.7), -2.5, 13.2, {23: -0.7}, CAM_SEES)
+  assert gl.update(lead(tid=-1, d=25.6, v=-1.27, y=0.9), -2.4, 13.1, {23: -0.8}, CAM_SEES) == (None, None)
+  assert gl.ghost is not None
+  gl.update(lead(tid=-1, d=26.4, v=-1.06, y=0.9), -2.3, 13.0, {23: -1.0}, CAM_SEES)
+  assert gl.ghost is not None
+  assert gl.update(lead(tid=-1, d=27.3, v=-1.0, y=0.9), -2.2, 12.9, {23: -1.6}, CAM_SEES) == (G.FAST_JERK, 0.0)
+
+
+def test_nearer_closing_lead_kills_ghost():
+  gl = G.GhostLetoff(DT)
+  born(gl)  # ghost born at 20 m
+  gl.update(lead(tid=30, d=12.0, v=-3.0), -2.0, 13.0, {22: -0.9, 30: 0.2}, CAM_SEES)
+  assert gl.ghost is None and not gl.no_gas
+
+
 def test_blinker_skips():
   gl = G.GhostLetoff(DT)
   gl.update(lead(), -3.0, 13.0, {22: -0.8}, CAM_SEES)

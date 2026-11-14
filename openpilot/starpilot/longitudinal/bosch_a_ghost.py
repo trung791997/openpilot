@@ -72,6 +72,7 @@ class Ghost:
   def __init__(self, src, ttl: float):
     self.tid = src.tid
     self.d = src.dRel
+    self.d0 = src.dRel
     self.v_lead = max(src.vLead, 0.0)
     self.a_lead = min(src.aLead, 0.0)
     self.y0 = abs(src.yRel)
@@ -125,7 +126,10 @@ class GhostLetoff:
     if g is not None:
       g.advance(self.dt, v_ego)
       back = cur is not None and abs(cur.dRel - g.d) < MERGE_M and (g.tid < 0 or cur.tid == g.tid or cur.tid < 0)
-      closing = cur is not None and cur.dRel < CLOSE_D_M and cur.vRel < CLOSE_VREL
+      # Arm G4: only a closing lead no farther than where the ghost was born (+ MERGE_M) takes over. A farther one is the
+      # planner's (the cleared let-off never goes past the planner's target): G3 let a camera lead 25.6 m out, closing
+      # 1.27 m/s, kill the 10.5 m turner's ghost on pb c1 s13 before its raw track moved out (+0.375 vs car for 0.6 s).
+      closing = (cur is not None and cur.dRel < min(CLOSE_D_M, g.d0 + MERGE_M) and cur.vRel < CLOSE_VREL)
       if back or closing or g.age >= g.ttl:
         self.ghost = g = None
         self.nogas_s = 0.0 if (back or closing) else self.nogas_s
