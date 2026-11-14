@@ -1,4 +1,4 @@
-"""Bosch-A ghost let-off (arm G, replay only): one rule for every brake that outlives its lead.
+"""Bosch-A ghost let-off (arm G4, 1.5 s no-gas hold; in the car build 2026-11-14, replay evidence only): one rule for every brake that outlives its lead.
 
 Owner, 2026-11-13: "ideally I want to develop a universal fix for all of those situations" (turn-offs, cut-outs,
 radar dropouts, camera-only leads), replacing the turn-off trigger (bosch_a_turnoff.FastLetoff) and the release coast.
@@ -28,7 +28,7 @@ TRIGGER_JUMP_M = 10.0    # m; a different lead this much farther counts as the o
 TRIGGER_VREL = -0.5      # m/s; the old lead must have been closing at least this fast
 STOP_GAP_M = 4.0         # m; gap a_req stops us at behind the ghost
 GHOST_MAX_S = 3.0        # s
-NOGAS_MAX_S = 1.5        # s; upper bound on the no-gas hold (was 2.0, the fixed FastLetoff hold; Peter 2026-11-14: try 1.0 and 1.5)
+NOGAS_MAX_S = 1.5        # s; upper bound on the no-gas hold (was 2.0, the fixed FastLetoff hold; Peter 2026-11-14 chose 1.5 over 1.0)
 MERGE_M = 6.0            # m; a lead this close to the ghost's predicted gap is the same obstacle back
 CLOSE_D_M = 40.0         # m
 CLOSE_VREL = -1.0        # m/s

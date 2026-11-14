@@ -53,7 +53,7 @@ from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 from openpilot.starpilot.longitudinal.bosch_a_turnoff import FastLetoff
 from openpilot.starpilot.longitudinal.bosch_a_ghost import GhostLetoff
 
-GHOST_ARM = True  # arm G (replay only): GhostLetoff replaces the release coast and FastLetoff; bosch_a_ghost.py
+GHOST_ARM = True  # arm G4 (replay evidence; car build 2026-11-14): GhostLetoff replaces the release coast and FastLetoff; bosch_a_ghost.py
 
 RELEASE_VREL_MAX = -2.0  # m/s; previous lead must be closing at least this fast (9e: -7 m/s at release)
 RELEASE_D_MAX = 40.0     # m; previous lead must be inside this (9e: 21 m at release)
