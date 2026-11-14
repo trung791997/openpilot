@@ -38,6 +38,10 @@ CAM_CLEAR_PROB = 0.3
 CAM_FAR_M = 15.0         # m
 CAM_CLEAR_S = 0.3        # s
 CAM_RADAR_DX = 1.5       # m; device-frame x minus radar dRel, rough
+# Arm G (2a4caf6644) failed replay: the camera clear eased the radar dropouts 84 s7 (+1.62, raw track still at |y| 1.27)
+# and a2 s42 (+0.5). The camera clear now only counts for a camera ghost, or a radar ghost whose raw track was last seen
+# at least this far out (FastLetoff CLEAR_Y); that keeps it for far-off-centre leads (80 s3, y0 4.33).
+CAM_RADAR_Y = 1.8        # m
 
 
 def ghost_a_req(d: float, v_ego: float, v_lead: float, a_lead: float) -> float:
@@ -135,7 +139,10 @@ class GhostLetoff:
           g.gas_clear = True
       elif g.raw_seen and g.y_last >= CLEAR_Y_LETOFF:
         g.gas_clear = True  # vanished after moving out
-      g.cam_clear_s = g.cam_clear_s + self.dt if self._cam_clear(g, model_lead0) else 0.0
+      # A radar ghost whose track was last seen inside CAM_RADAR_Y (still there, or vanished there) is the dropout
+      # signature (84 s7, a2 s42): the camera losing it does not clear it. Far-off-centre leads keep the camera path.
+      cam_ok = g.tid < 0 or g.y_last >= CAM_RADAR_Y
+      g.cam_clear_s = g.cam_clear_s + self.dt if (cam_ok and self._cam_clear(g, model_lead0)) else 0.0
       if g.cam_clear_s >= CAM_CLEAR_S:
         g.letoff_clear = True
       if g.d < 0.0:

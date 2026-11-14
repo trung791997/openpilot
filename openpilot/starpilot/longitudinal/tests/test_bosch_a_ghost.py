@@ -43,9 +43,28 @@ def test_lateral_exit_clears():
 
 def test_camera_clear_needs_dwell():
   gl = G.GhostLetoff(DT)
-  born(gl, cam=CAM_CLEAR)
+  born(gl, tid=-1, cam=CAM_CLEAR)  # camera-only lead: the camera clear applies
   n = int(G.CAM_CLEAR_S / DT)
   outs = [gl.update(GONE, -2.0, 12.0, {}, CAM_CLEAR) for _ in range(n + 1)]
+  assert outs[-1] == (G.FAST_JERK, 0.0)
+
+
+def test_camera_clear_blocked_while_radar_track_near_lane():
+  # 84 s7 shape: camera loses it, raw track still at 1.27 m, then vanishes there
+  gl = G.GhostLetoff(DT)
+  born(gl, v_ego=14.0, d=13.9, v=-8.0, v_lead=6.0, y=-1.19, cam=CAM_CLEAR)
+  for i in range(int(1.0 / DT)):
+    jerk, floor = gl.update(GONE, -3.0, 14.0, {22: -1.27} if i < 6 else {}, CAM_CLEAR)
+    assert floor < 0.0 and not gl.ghost.letoff_clear
+  assert gl.cleared == 0
+
+
+def test_camera_clear_allowed_for_far_off_centre_track():
+  # 80 s3 shape: leadOne track already 4.3 m out and steady; the camera clears it
+  gl = G.GhostLetoff(DT)
+  far = lead(d=37.0, v=-11.7, v_lead=10.0, y=-4.3)
+  assert gl.update(far, -3.0, 22.0, {22: -4.3}, CAM_CLEAR) == (None, None)
+  outs = [gl.update(GONE, -3.0, 22.0, {22: -4.3}, CAM_CLEAR) for _ in range(int(G.CAM_CLEAR_S / DT) + 2)]
   assert outs[-1] == (G.FAST_JERK, 0.0)
 
 
