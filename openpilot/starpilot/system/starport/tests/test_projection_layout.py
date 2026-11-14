@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from openpilot.starpilot.system.starport.display_profile import record_screen, read_screen
-from openpilot.starpilot.system.starport.projection_layout import (SPEED_CARD_Y,
+from openpilot.starpilot.system.starport.projection_layout import (SPEED_CARD_Y, CEM_GAUGE_COLUMN_Y,
   default_layout, default_layout_for_viewport, validate_layout, validate_layout_for_viewport, decode_layout, layout_metadata,
   projection_customization, ProjectionLayoutSource,
   PROJECTION_WIDGETS, NAV_CARD, NAV_MAP, FAVORITE_WIDGETS, BOOKMARK_WIDGET, CAR_EXIT, ACTION_WIDGETS, placement_size,
@@ -65,10 +65,10 @@ class TestProjectionLayout(unittest.TestCase):
     migrated = validate_layout(document, SCREEN)
     self.assertEqual(document, before)
     self.assertEqual(migrated['version'], 5)
-    # The box is the car screen's own speed card, not the comma's 488x168 one.
+    # The car screen uses the comma's 488x168 SET + sign card again (e55711977b), not the 346x460 one.
     card = layout_metadata(SCREEN)['widgets']['cruise_limits']
-    self.assertEqual((card['width'], card['height']), (346, 460))
-    self.assertEqual(migrated['widgets']['cruise_limits']['y'], bottom - 460)
+    self.assertEqual((card['width'], card['height']), (488, 168))
+    self.assertEqual(migrated['widgets']['cruise_limits']['y'], bottom - 168)
     self.assertEqual(migrated['widgets']['speed_limit_actions'], document['widgets']['speed_limit_actions'])
     self.assertEqual(validate_layout(migrated, SCREEN), migrated)
 
@@ -334,8 +334,15 @@ class TestProjectionLayout(unittest.TestCase):
     own = (*PROJECTION_WIDGETS, 'jetlink_status')
     native = {key: value for key, value in converted['layouts']['large'].items() if key not in own}
     hidden_on_aa = ('speed_limit_actions', 'cem_gauge')
-    self.assertEqual(native, {key: ({**value, 'enabled': False} if key in hidden_on_aa else value)
-                              for key, value in base['layouts']['large'].items() if key not in own})
+    # The car screen stacks its own left column (speed card, actions, curve gauge); those differ from the
+    # comma's large layout on purpose (e55711977b, 3426d5bd8a). Everything else must match the comma's.
+    column = ('cruise_limits', 'speed_limit_actions', 'cem_gauge')
+    self.assertEqual({key: value for key, value in native.items() if key not in column},
+                     {key: value for key, value in base['layouts']['large'].items() if key not in own + column})
+    self.assertEqual(native['cruise_limits'], {**base['layouts']['large']['cruise_limits'], 'x': 88, 'y': SPEED_CARD_Y})
+    for key in hidden_on_aa:
+      self.assertFalse(native[key]['enabled'])
+    self.assertEqual((native['cem_gauge']['x'], native['cem_gauge']['y']), (30, CEM_GAUGE_COLUMN_Y))
     shift = document['canvas']['width'] - 1860
     self.assertEqual(converted['layouts']['large'][NAV_MAP], {**document['widgets'][NAV_MAP], 'x': document['widgets'][NAV_MAP]['x'] - shift})
     document['widgets']['current_speed']['x'] += 100
