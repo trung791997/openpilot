@@ -25,9 +25,12 @@ def test_actual_controller_preserves_intentional_lane_hud(identity, active, visi
   decoder = CANParser(DBC[identity][Bus.pt], [("LKAS_HUD", 10)], ci.CC.CAN.lkas)
   assert decoder.update([(10_000_000_000, frames)])
   encoded = decoder.vl["LKAS_HUD"]
-  if cp.flags & HondaFlags.BOSCH_ALT_RADAR or (cp.flags & HondaFlags.BOSCH and not cp.flags & HondaFlags.BOSCH_RADARLESS):
+  if cp.flags & HondaFlags.BOSCH_ALT_RADAR:
     assert bool(encoded["SOLID_LANES"]) == active
     assert bool(encoded["DASHED_LANES"]) == available
+  elif cp.flags & HondaFlags.BOSCH and not cp.flags & HondaFlags.BOSCH_RADARLESS:
+    assert bool(encoded["SOLID_LANES"]) == (active and available)
+    assert bool(encoded["DASHED_LANES"]) == (active and available)
   else:
     assert bool(encoded["SOLID_LANES"]) == (visible or active)
     if cp.flags & HondaFlags.BOSCH_RADARLESS:
@@ -83,3 +86,28 @@ def test_civic_bosch_outlines_lanes_while_driver_turns(pressed_frames, released_
   assert decoder.update([(now, frames)])
   assert bool(decoder.vl["LKAS_HUD"]["SOLID_LANES"]) == solid
   assert decoder.vl["LKAS_HUD"]["DASHED_LANES"]
+
+
+@pytest.mark.parametrize("v_ego, enabled, lat_active, solid, dashed", (
+  (30.0, False, False, False, False),  # main on, openpilot off: no lanes
+  (30.0, True, True, True, True),      # steering: filled
+  (30.0, True, False, False, True),    # engaged, not steering: outline
+  (30.0, False, True, True, True),     # AOL steering with longitudinal off: filled
+  (0.0, True, True, False, True),      # stopped and engaged: outline
+  (0.0, True, False, False, True),     # stopped, engaged, lateral idle: outline
+  (0.0, False, False, False, False),   # stopped, openpilot off: no lanes
+))
+def test_civic_bosch_outline_only_while_engaged(v_ego, enabled, lat_active, solid, dashed):
+  cp = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False)
+  ci = CarInterface(cp)
+  ci.update([])
+  state = structs.CarState(vEgo=v_ego)
+  state.cruiseState.available = True
+  ci.CS.out = state
+  cc = structs.CarControl(enabled=enabled, latActive=lat_active)
+  cc.hudControl.lanesVisible = True
+  _, frames = ci.apply(cc.as_reader(), 10_000_000_000)
+  decoder = CANParser(DBC[cp.carFingerprint][Bus.pt], [("LKAS_HUD", 10)], ci.CC.CAN.lkas)
+  assert decoder.update([(10_000_000_000, frames)])
+  assert bool(decoder.vl["LKAS_HUD"]["SOLID_LANES"]) == solid
+  assert bool(decoder.vl["LKAS_HUD"]["DASHED_LANES"]) == dashed
