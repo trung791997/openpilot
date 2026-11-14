@@ -12,7 +12,8 @@ justifies (a_req: stop behind it, assuming it keeps braking at min(aLeadK, 0) to
 Cleared means evidence the obstacle left our path: its raw radar track grew to |yRel| >= CLEAR_Y_LETOFF by at least
 CLEAR_DY, or the camera's lead 0 has been absent (prob < CAM_CLEAR_PROB, or farther than ghost + CAM_FAR_M) for
 CAM_CLEAR_S. Gas is withheld while the ghost lives and is not GAS-cleared (|yRel| >= CLEAR_Y_GAS, or the raw track
-vanished after passing CLEAR_Y_LETOFF, or the ghost is behind us), for at most NOGAS_MAX_S.
+vanished after passing CLEAR_Y_LETOFF), for at most NOGAS_MAX_S.
+Arm G3: before a clear only the base let-off applies (the a_req bound above is not used; see the end of update).
 The ghost dies when a lead within MERGE_M of it comes back (the planner owns it again), a closing lead inside
 CLOSE_D_M appears, the ghost has been gas-cleared, or after GHOST_MAX_S.
 It never adds braking (every output is min(target, ...) or a slower-than-planner rise) and never removes a radar point.
@@ -145,8 +146,8 @@ class GhostLetoff:
       g.cam_clear_s = g.cam_clear_s + self.dt if (cam_ok and self._cam_clear(g, model_lead0)) else 0.0
       if g.cam_clear_s >= CAM_CLEAR_S:
         g.letoff_clear = True
-      if g.d < 0.0:
-        g.letoff_clear = g.gas_clear = True
+      # Arm G3: a ghost extrapolated behind us is no longer a clear (84 s7 dropout "cleared" that way at 1.65 s): it only
+      # shows the extrapolation was wrong, not that the car left. The ghost then runs out on GHOST_MAX_S.
       if g.letoff_clear and not getattr(g, 'counted', False):
         g.counted = True
         self.cleared += 1
@@ -169,4 +170,7 @@ class GhostLetoff:
       return None, None
     if g.letoff_clear:
       return FAST_JERK, 0.0
-    return FAST_JERK, ghost_a_req(g.d, v_ego, g.v_lead, g.a_lead)
+    # Arm G3: before a clear, the base let-off only. G/G2 let off faster up to ghost_a_req here; on the dropouts 84 s7 and
+    # a2 s42 that eased the brake (+0.25) with no evidence the car left, and on the unfired Part A triggers it gained
+    # <= 0.07. Only the no-gas hold acts on an uncleared ghost.
+    return None, None

@@ -29,7 +29,7 @@ def test_dropout_close_keeps_base():
   # 84 s7 shape: 12.5 m, closing 8 m/s, camera still sees it, raw track gone
   gl = G.GhostLetoff(DT)
   jerk, floor = born(gl, v_ego=14.0, d=12.5, v=-8.0, v_lead=6.0)
-  assert jerk == G.FAST_JERK and floor < -3.0 and gl.no_gas
+  assert (jerk, floor) == (None, None) and gl.no_gas  # G3: base let-off until a clear, gas withheld
 
 
 def test_lateral_exit_clears():
@@ -55,8 +55,18 @@ def test_camera_clear_blocked_while_radar_track_near_lane():
   born(gl, v_ego=14.0, d=13.9, v=-8.0, v_lead=6.0, y=-1.19, cam=CAM_CLEAR)
   for i in range(int(1.0 / DT)):
     jerk, floor = gl.update(GONE, -3.0, 14.0, {22: -1.27} if i < 6 else {}, CAM_CLEAR)
-    assert floor < 0.0 and not gl.ghost.letoff_clear
+    assert jerk is None and floor is None and not gl.ghost.letoff_clear
   assert gl.cleared == 0
+
+
+def test_ghost_behind_us_is_not_a_clear():
+  # 84 s7: the extrapolated ghost passed d < 0 at 1.65 s with the car still there; G3 does not call that a clear
+  gl = G.GhostLetoff(DT)
+  born(gl, v_ego=14.0, d=6.0, v=-8.0, v_lead=6.0, a_lead=-3.0)
+  for _ in range(int(1.5 / DT)):
+    out = gl.update(GONE, -3.0, 14.0, {}, CAM_SEES)
+    assert out == (None, None)
+  assert gl.ghost.d < 0.0 and not gl.ghost.letoff_clear and gl.no_gas and gl.cleared == 0
 
 
 def test_camera_clear_allowed_for_far_off_centre_track():
