@@ -295,9 +295,13 @@ class CarController(CarControllerBase):
       # the cluster shows outline lanes once the driver has turned the wheel for 0.5 s and fills them 1 s after letting
       # go, so a nudge mid-lane does not blink them
       overridden = self.override_frames >= 50 or (-100 < self.override_frames < 0)
+      # outline lanes while openpilot is engaged, at any speed; fill them only while it steers above the minimum
+      # steer speed. The car cannot see an AOL pause, so a paused AOL with openpilot off shows no lanes.
+      engaged = CS.out.cruiseState.available and (CC.enabled or CC.latActive)
       can_sends.extend(hondacan.create_lkas_hud(self.packer, self.CAN.lkas, self.CP, hud_control, CC.latActive,
                                                 steering_available, alert_steer_required, CS.lkas_hud,
-                                                lanes_active=CC.latActive and not overridden))
+                                                lanes_active=CC.latActive and not overridden and steering_available,
+                                                lanes_outline=engaged))
 
       if self.CP.openpilotLongitudinalControl:
         # TODO: combining with create_acc_hud block above will change message order and will need replay logs regenerated
