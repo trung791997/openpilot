@@ -539,7 +539,9 @@ class LongitudinalPlanner:
       reset_state=bool(reset_state))
     output_a_target = self.bosch_a_long.need_floor(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target),
-      v_ego=v_ego, reset_state=bool(reset_state))
+      v_ego=v_ego, reset_state=bool(reset_state),
+      cap=min([self.a_cruise] + ([output_a_target_e2e] if sm['selfdriveState'].experimentalMode else [])),
+      stopping=bool(self.output_should_stop or self.force_stop_plan.forcing))
     if self.ford_stop_approach is not None:
       output_a_target, self.output_should_stop = self.ford_stop_approach.sample(
         sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),

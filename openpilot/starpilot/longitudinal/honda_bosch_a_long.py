@@ -273,6 +273,17 @@ NEED_FLOOR_QUIET_FRAMES = 20    # frames with no lead closing before the sticky-
 # NEED_FLOOR_ENABLED) so a replay harness can set it before building the planner.
 NEED_FLOOR_MIN_GAP_ENABLED = True
 NEED_FLOOR_MIN_GAP_S = 1.5      # s; with the gate on the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
+# Owner 2026-11-14 (fixes A + B), route 000000d2 seg 21 t1298.8 (static + log math): e2e braked -1.89 for a red light; the
+# nearest lead was the camera lead (tid -1, no radar) at 73.7 m closing 5.3 m/s with vLead 8.3, which opened the moving-lead
+# gate; need 0.24 -> floor -0.80 lifted the target -1.89 -> -0.80 in one cycle and the driver braked at -4.0 1.5 s later.
+# B: the floor applies to radar leads only (a camera-only lead still runs the gate / sticky state, it just never lifts).
+# A: the floor only softens braking that is for the lead: never while the plan is stopping (any candidate's should_stop,
+# force stop), and never above `cap`, the most cautious non-lead candidate (cruise; e2e in experimental mode).
+NEED_FLOOR_RADAR_ONLY = True
+# Owner 2026-11-14 (A margin): the cap only binds when it is more than this below the floor; a model target within it is
+# ignored and the floor applies as before. Offline re-run of d1/d2/ca/cb (car-bound frames, cap = logged e2e): without a
+# margin A deepened most binds from -0.80 to -0.83..-1.15; 0.3 keeps those at -0.80; e2e deeper than floor - 0.3 (-1.10 at the -0.80 floor) still binds.
+NEED_FLOOR_CAP_MARGIN = 0.3     # m/s^2
 
 
 class NeedFloor:
@@ -281,7 +292,7 @@ class NeedFloor:
   need = closing^2 / (2 * max(d - (max(vLead, 0) * HEADWAY_S + STOP_M), MIN_ROOM_M)), the decel that closes the speed
   difference in the room left before the headway gap. The floor only RAISES a braking target (never adds braking) and
   never touches should_stop. It applies to the nearer present planner lead (leadOne or leadTwo, vision or radar) only
-  when the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
+  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the plan is not stopping, the lift stays at or below `cap` when `cap` is more than NEED_FLOOR_CAP_MARGIN below the floor, the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
   sticky-off and the gate (vLead >= GATE_V_LEAD and aLeadK > GATE_A_LEAD for GATE_FRAMES consecutive frames on the same
   (track id, radar flag)) is open. Sticky-off: once the release fires (closing and (ttc <= RELEASE_TTC_S or need >=
   RELEASE_NEED)) or the Stock Brake Feel emergency latch is on, the floor stays off until QUIET_FRAMES frames with no
@@ -308,7 +319,10 @@ class NeedFloor:
     return (int(getattr(lead, 'radarTrackId', -1)), int(bool(getattr(lead, 'radar', False))),
             round(float(lead.dRel), 2), round(float(lead.vRel), 2), round(float(getattr(lead, 'aLeadK', 0.0)), 3))
 
-  def step(self, leads, v_ego: float, emergency: bool, target: float) -> float:
+  def step(self, leads, v_ego: float, emergency: bool, target: float, cap: float | None = None,
+           stopping: bool = False) -> float:
+    """`cap` (fix A): the floor never lifts the target above it when it is more than NEED_FLOOR_CAP_MARGIN below the floor (None: no cap). `stopping` (fix A): no lift at all.
+    Neither changes the gate / sticky state, only whether the floor is applied."""
     views = [self._view(lead) for lead in leads if _present(lead)]
     a = float(target)
     if not views:
@@ -343,8 +357,11 @@ class NeedFloor:
     self.gate_id = lid
     if (self.gate_count >= NEED_FLOOR_GATE_FRAMES and closing and not self.off and v_ego >= NEED_FLOOR_MIN_V_EGO and
         d >= NEED_FLOOR_MIN_D and ttc > NEED_FLOOR_RELEASE_TTC_S and need < NEED_FLOOR_RELEASE_NEED and
-        (not self.min_gap or d >= v_ego * NEED_FLOOR_MIN_GAP_S)):
+        (not self.min_gap or d >= v_ego * NEED_FLOOR_MIN_GAP_S) and
+        (radar or not NEED_FLOOR_RADAR_ONLY) and not stopping):
       floor = -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN)
+      if cap is not None and float(cap) < floor - NEED_FLOOR_CAP_MARGIN:
+        floor = float(cap)
       if a < floor:
         a = floor
     return a
@@ -379,16 +396,17 @@ class HondaBoschALongEnhancement:
     self.emergency = False
     self.law_t = 0.0
 
-  def need_floor(self, *, lead_one, lead_two, target: float, v_ego: float, reset_state: bool) -> float:
+  def need_floor(self, *, lead_one, lead_two, target: float, v_ego: float, reset_state: bool,
+                 cap: float | None = None, stopping: bool = False) -> float:
     """Need floor (NeedFloor, above): raise a braking `target` for a steady closing moving lead. Call it on the output of
     bosch_a_stop_gap.step with that call's v_ego, in longitudinal_planner.py only (not in upstream/planner.py); it never
     touches should_stop. Not active (Stock Brake Feel off, or NEED_FLOOR_ENABLED False at construction) or reset_state:
-    state is cleared and the target passes through."""
+    state is cleared and the target passes through. `cap` / `stopping`: fix A (see NEED_FLOOR_RADAR_ONLY's comment)."""
     if self._need_floor is None or reset_state:
       if self._need_floor is not None:
         self._need_floor.reset()
       return float(target)
-    return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target)
+    return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target, cap=cap, stopping=stopping)
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
            stopping: bool, standstill: bool, reset_state: bool) -> float:
