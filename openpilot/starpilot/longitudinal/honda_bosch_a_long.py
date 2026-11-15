@@ -13,8 +13,10 @@ evidence comment are in git at 3f26fb513c and in openpilot-radar radard.py @ 567
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
   takeover hold, lead-stop law (<= 20 s) and the emergency latch.
+  Split 2026-11-15 (option 2): the depth half (stock_feel_cap: depth table, lead-stop need, held-cap let-off) runs in
+  lead() on the lead candidate; the build-rate half (stock_feel_jerk) runs in step() on the final target, every brake.
 - Brake onset ramp (2026-11-05, step() since 2026-11-11): a brake that starts with every lead far away deepens at
-  most ONSET_JERK per second; with the law always on it only binds inside the emergency pass-through.
+  most ONSET_JERK per second; it only binds inside the emergency pass-through, where the law's rate stands down.
 - Coast first (depth floor; folded in from bosch_a_coast_first.py 2026-11-11): for a distant lead tapping its brakes, the
   final target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs in step() after the onset
   ramp when the caller passes `follow_s`, so model (e2e) and cruise braking get the gentle start too.
@@ -25,9 +27,10 @@ Contents:
   newborn radar lead's aLeadK at -1.0 unless its own range history confirms the braking (MPC and law input only).
 
 Placement (d2 t1297.6 red-light let-off, 2026-11-15): the planner calls `lead()` once per cycle on the lead MPC candidate
-only, before min(candidates): the law and the need floor. A shaper on the final target let a calm far camera lead
-lift e2e's red-light brake (-2.6 -> -0.6); e2e and cruise braking now pass the law and floor untouched. `step()` shapes the
-final target, after the other target owners and before release coast, smooth and stop gap: the brake onset ramp, then
+only, before min(candidates): the law's depth cap and the need floor. A depth cap on the final target let a calm far camera
+lead lift e2e's red-light brake (-2.6 -> -0.6); e2e and cruise braking are never capped or let off by it. `step()` shapes
+the final target, after the other target owners and before release coast, smooth and stop gap: the law's build rate (or
+the onset ramp in an emergency) on every brake, then
 coast first (it only stages a new brake from COAST_ACCEL, so it cannot let off one that is built). Every limit here
 only shapes how a brake builds or lets off; the emergency latch passes the target through untouched, so the car never
 brakes harder than the planner would without this module. Replay and limited road evidence only.
@@ -176,7 +179,7 @@ def stock_feel_held_cap(prev: float, cap: float, dt: float) -> float:
 
 
 def stock_feel_law_active(leads, emergency: bool) -> bool:
-  """True while stock_feel_target applies the fitted law (a lead closing, TTC over the floor, no emergency)."""
+  """True while the fitted law applies (a lead closing, TTC over the floor, no emergency)."""
   ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
   return not emergency and ttc > STOCK_FEEL_TTC_FLOOR_S and ttc != float('inf')
 
@@ -191,24 +194,40 @@ def stock_feel_depth(leads, ttc: float, v_ego: float) -> float:
   return float(np.interp(ttc, STOCK_FEEL_DEPTH_BP, depth_v))
 
 
-def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float = 0.0,
-                      emergency: bool = False, law_recent: bool = False) -> float:
-  """D-086 stock Honda ACC brake law (see the constants above)."""
-  if emergency:
+def stock_feel_cap(leads, prev: float, target: float, dt: float, v_ego: float = 0.0) -> float:
+  """The law's depth half: no deeper than the depth table (or the lead-stop need), a brake already deeper than that let
+  off at the held-cap rate. Applied to the lead MPC candidate only (lead()), never to e2e or cruise braking."""
+  ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
+  if not ttc > STOCK_FEEL_TTC_FLOOR_S or ttc == float('inf'):
     return float(target)
+  depth = stock_feel_depth(leads, ttc, v_ego)
+  need = lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T)
+  cap = -min(need, 3.5) if need > -depth else depth
+  return float(max(target, stock_feel_held_cap(prev, cap, dt)))
+
+
+def stock_feel_jerk(leads, v_ego: float = 0.0, law_recent: bool = False) -> float:
+  """The law's build-rate half (m/s^3): how fast a brake may deepen, from the jerk table while a lead closes over the
+  TTC floor, else STOCK_FEEL_JERK_OUTSIDE (or EXIT_JERK just after the law). Applied to the final target (step())."""
   ttc = brake_onset_ttc(leads, STOCK_FEEL_MIN_CLOSING)
   if ttc == float('inf') and law_recent and not any(
       _present(lead) and float(lead.aLeadK) <= STOCK_FEEL_LEAD_STOP_A for lead in leads):
-    return brake_onset_limited_target(prev, target, dt, release.STOCK_FEEL_EXIT_JERK)
+    return release.STOCK_FEEL_EXIT_JERK
   if not ttc > STOCK_FEEL_TTC_FLOOR_S or ttc == float('inf'):
-    return brake_onset_limited_target(prev, target, dt, STOCK_FEEL_JERK_OUTSIDE)
-  depth = stock_feel_depth(leads, ttc, v_ego)
-  need = lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T)
-  if need > -depth:
-    return brake_onset_limited_target(prev, max(target, stock_feel_held_cap(prev, -min(need, 3.5), dt)), dt,
-                                      STOCK_FEEL_JERK_OUTSIDE)
-  target = max(target, stock_feel_held_cap(prev, depth, dt))
-  return brake_onset_limited_target(prev, target, dt, float(np.interp(ttc, STOCK_FEEL_JERK_BP, STOCK_FEEL_JERK_V)))
+    return STOCK_FEEL_JERK_OUTSIDE
+  if lead_stop_need(leads, v_ego, STOCK_FEEL_LEAD_STOP_MAX_T) > -stock_feel_depth(leads, ttc, v_ego):
+    return STOCK_FEEL_JERK_OUTSIDE
+  return float(np.interp(ttc, STOCK_FEEL_JERK_BP, STOCK_FEEL_JERK_V))
+
+
+def stock_feel_target(leads, prev: float, target: float, dt: float, v_ego: float = 0.0,
+                      emergency: bool = False, law_recent: bool = False) -> float:
+  """D-086 stock Honda ACC brake law (see the constants above): the depth cap, then the build rate, both from prev.
+  The planner splits them (2026-11-15, option 2): cap in lead(), rate in step()."""
+  if emergency:
+    return float(target)
+  return brake_onset_limited_target(prev, stock_feel_cap(leads, prev, target, dt, v_ego), dt,
+                                    stock_feel_jerk(leads, v_ego, law_recent))
 
 
 # ---- Brake onset ramp --------------------------------------------------------------------------------------------
@@ -427,7 +446,8 @@ class NeedFloor:
 
 
 class HondaBoschALongEnhancement:
-  """lead() shapes the lead MPC candidate (law, coast first, need floor); step() is the onset ramp on the final target.
+  """lead() shapes the lead MPC candidate (law depth cap, need floor); step() is the build rate and coast first on the
+  final target.
   Placement: d2 t1297.6 red-light let-off (2026-11-15)."""
   def __init__(self, CP, dt: float):
     """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate. NeedFloor's min-gap gate is
@@ -472,6 +492,7 @@ class HondaBoschALongEnhancement:
   def _reset_law(self):
     self.emergency = False
     self.law_t = 0.0
+    self.law_recent = False
 
   def reset_coast(self):
     self.coast_floor = None
@@ -513,7 +534,9 @@ class HondaBoschALongEnhancement:
     else:
       law_prev = target if self.lead_prev is None else self.lead_prev
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
-      out = stock_feel_target(leads, law_prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
+      if not self.emergency:
+        out = stock_feel_cap(leads, law_prev, target, self.dt, v_ego)
+      self.law_recent = self.law_t > 0.0  # read by step() for the build rate this cycle
       self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
     if floor:
       out = self.need_floor(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, reset_state=reset_state)
@@ -524,7 +547,7 @@ class HondaBoschALongEnhancement:
            stopping: bool, standstill: bool, reset_state: bool, fcw: bool, follow_s: float | None = None) -> float:
     """The FINAL target (after min(candidates)): the brake onset ramp, then coast first when `follow_s` is given, so a
     model or cruise brake gets the same gentle start as a lead brake (2026-11-15). The lead-based law is lead()."""
-    out = self._onset(lead_one=lead_one, lead_two=lead_two, prev=prev, target=target, stopping=stopping,
+    out = self._onset(lead_one=lead_one, lead_two=lead_two, prev=prev, target=target, v_ego=v_ego, stopping=stopping,
                       standstill=standstill, reset_state=reset_state, fcw=fcw)
     if follow_s is None:
       return out
@@ -534,8 +557,10 @@ class HondaBoschALongEnhancement:
     return self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s, fcw=fcw,
                              reset_state=reset_state)
 
-  def _onset(self, *, lead_one, lead_two, prev: float, target: float, stopping: bool, standstill: bool,
+  def _onset(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float, stopping: bool, standstill: bool,
              reset_state: bool, fcw: bool) -> float:
+    """Build rate on the final target (prev = last published target): the law's stock jerk, or the onset ramp in an
+    emergency. Never lets off and never limits a rise."""
     out = float(target)
     if not self.stock_feel or reset_state or standstill:
       self.reset_onset()
@@ -549,9 +574,13 @@ class HondaBoschALongEnhancement:
       self.onset_free = lead_close(leads)
     if self.onset_episode and (fcw or stopping or lead_ttc_low(leads)):
       self.onset_free = True
-    if self.onset_episode and not self.onset_free:
-      out = brake_onset_limited_target(prev, out, self.dt, ONSET_JERK)
-    return float(out)
+    if stopping:  # the law stands down while stopping (lead() resets it); so does the ramp (onset_free above)
+      return float(out)
+    if self.emergency:  # the law passes an emergency through; only the onset ramp may bind
+      jerk = ONSET_JERK if self.onset_episode and not self.onset_free else None
+    else:  # the law's build rate, on every brake (option 2, 2026-11-15); its depth cap is lead()'s
+      jerk = stock_feel_jerk(leads, v_ego, self.law_recent)
+    return brake_onset_limited_target(prev, out, self.dt, jerk)
 
   def _coast_first(self, *, lead_one, lead_two, target: float, v_ego: float, follow_s: float, fcw: bool,
                    reset_state: bool) -> float:

@@ -27,8 +27,11 @@ def make(cp=BOSCH_A):
 
 
 def run(enh, l1, targets, prev=0.0, fcw=False, stopping=False, l2=NONE):
+  # the planner calls lead() (on the lead candidate; it updates the emergency latch) before step() every cycle
   out = []
   for target in targets:
+    enh.lead(lead_one=l1, lead_two=l2, target=target, v_ego=V_EGO, stopping=stopping, standstill=False,
+             reset_state=False, fcw=fcw, floor=False)
     prev = enh.step(lead_one=l1, lead_two=l2, prev=prev, target=target, v_ego=V_EGO, stopping=stopping, standstill=False,
                     reset_state=False, fcw=fcw)
     out.append(prev)
@@ -89,13 +92,23 @@ class TestOnsetRamp(unittest.TestCase):
     out = run(make(), lead(80.0, -9.0), [-3.5], l2=lead(20.0, 0.0, a=0.0))
     self.assertEqual(out, [-3.5])
 
-  def test_no_lead_brake_is_limited_by_the_ramp_alone(self):
-    # step() is the onset ramp only (the law lives in lead()): with no lead the ramp builds at ONSET_JERK
+  def test_no_lead_brake_builds_at_the_law_outside_rate(self):
+    # option 2 (2026-11-15): step() applies the law's build rate to every brake; with no lead closing it is JERK_OUTSIDE
     enh = make()
     out = run(enh, NONE, [-2.0, -2.0, -2.0])
-    self.assertAlmostEqual(out[0], -STEP)
-    self.assertAlmostEqual(out[1], -2 * STEP)
+    self.assertAlmostEqual(out[0], -hbl.STOCK_FEEL_JERK_OUTSIDE * DT)
+    self.assertAlmostEqual(out[1], -2 * hbl.STOCK_FEEL_JERK_OUTSIDE * DT)
     self.assertTrue(enh.onset_episode)
+
+  def test_model_brake_under_a_calm_far_lead_builds_at_stock_rate_and_is_never_let_off(self):
+    # d2 t1297 shape: camera lead 73 m closing 5.3 (TTC ~14 s, not braking), e2e asks -2.6 for a red light.
+    # The build rate is the law's jerk table (0.6 m/s^3 at TTC >= 10 s); no depth cap on the final target.
+    far = lead(73.0, -5.3, a=0.0)
+    out = run(make(), far, [-2.6] * 3)
+    self.assertAlmostEqual(out[0], -0.6 * DT)
+    self.assertAlmostEqual(out[2], -3 * 0.6 * DT)
+    enh = make()
+    self.assertEqual(run(enh, far, [-2.6] * 20, prev=-2.6), [-2.6] * 20)  # built: held, not let off to the table's ~-0.85
 
   def test_gentle_target_and_rises_pass_through(self):
     # no lead: a -0.25 target is above ONSET_START_ACCEL, so no episode starts.
@@ -156,19 +169,20 @@ class TestOnsetRamp(unittest.TestCase):
     enh = make()
     out = enh.lead(lead_one=far, lead_two=NONE, target=-0.5, v_ego=V_EGO, stopping=False, standstill=False,
                    reset_state=False, fcw=False, floor=False)
-    self.assertEqual(out, hbl.stock_feel_target((far, NONE), -0.5, -0.5, DT, V_EGO, False, False))  # the law's output
+    self.assertEqual(out, hbl.stock_feel_cap((far, NONE), -0.5, -0.5, DT, V_EGO))  # the law's depth cap
     self.assertEqual(run(make(), far, [-2.6] * 20, prev=-2.6), [-2.6] * 20)
 
   def test_lead_uses_its_own_previous_output_not_the_published_target(self):
-    # the law's brake jerk limit builds from lead_prev (the first output, ~-0.5), not from a deeper published e2e target (-2.6)
+    # the law's depth cap (held-cap let-off) runs from lead_prev (the first output, -0.5), not from a deeper published
+    # e2e target (-2.6); lead() has no build rate since option 2 (step() does)
     enh = make()
     far = lead(80.0, -8.0, a=0.0)
     kw = dict(lead_one=far, lead_two=NONE, v_ego=V_EGO, stopping=False, standstill=False, reset_state=False, fcw=False,
               floor=False)
     first = enh.lead(target=-0.5, **kw)
     self.assertEqual(enh.lead_prev, first)
-    own = hbl.stock_feel_target((far, NONE), first, -2.0, DT, V_EGO, enh.emergency, enh.law_t > 0.0)
-    published = hbl.stock_feel_target((far, NONE), -2.6, -2.0, DT, V_EGO, enh.emergency, enh.law_t > 0.0)
+    own = hbl.stock_feel_cap((far, NONE), first, -2.0, DT, V_EGO)
+    published = hbl.stock_feel_cap((far, NONE), -2.6, -2.0, DT, V_EGO)
     self.assertNotEqual(own, published)
     self.assertEqual(enh.lead(target=-2.0, **kw), own)
     self.assertEqual(enh.lead_prev, own)

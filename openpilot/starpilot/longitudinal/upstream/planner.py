@@ -180,7 +180,7 @@ class LongitudinalPlanner:
     # to the e2e target for the rest of the engagement (scaled off below 10 mph).
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
 
-    # Stock Brake Feel law on the lead MPC candidate only (no coast first / need floor here); d2 t1297.6 red-light let-off, 2026-11-15
+    # Stock Brake Feel depth cap on the lead MPC candidate only (no need floor here; the build rate is in step()); d2 t1297.6 red-light let-off, 2026-11-15
     lead_a = output_a_target_mpc
     if self.bosch_a_long is not None:
       lead_a = self.bosch_a_long.lead(

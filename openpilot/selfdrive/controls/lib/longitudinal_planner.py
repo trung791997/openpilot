@@ -433,7 +433,7 @@ class LongitudinalPlanner:
       blocked=bool(experimental_speed_nudge is not True or reset_state or self.fcw or not self.allow_throttle or self.force_stop_plan.forcing or
                    output_should_stop_mpc or cruise_should_stop or self.mpc.solution_status != 0 or
                    curve.effective_mps is not None or traffic_mode is not False))
-    # Stock Brake Feel law and need floor shape the lead MPC candidate only, so e2e / cruise braking is never
+    # Stock Brake Feel depth cap and need floor shape the lead MPC candidate only, so e2e / cruise braking is never
     # let off by a calm far lead (d2 t1297.6 red-light let-off, 2026-11-15). Every other use of output_a_target_mpc is raw.
     lead_a = self.bosch_a_long.lead(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target_mpc),
