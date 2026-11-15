@@ -421,3 +421,55 @@ def test_held_phone_position_cannot_authorize_stale_navigation_control(tmp_path,
   runtime.route = route
   result = runtime.update(14_000_000_000, position, 1)
   assert result['status'] == 'guiding' and not result['controlValid']
+
+
+def offroad_runtime(tmp_path, enabled):
+  from openpilot.starpilot.navigation.owner import END_WHEN_OFFROAD
+  owner = configured(tmp_path)  # has a destination
+  if enabled:
+    owner.configure({END_WHEN_OFFROAD: True}, owner.read()['revision'], True)
+  return owner, RouteRuntime(owner, engine=SimpleNamespace(fetch=None), executor=Executor())
+
+
+def test_offroad_end_never_cancels_when_the_setting_is_off(tmp_path):
+  owner, runtime = offroad_runtime(tmp_path, False)
+  for t in (0, 10, 31, 600, 36_000):
+    runtime.end_if_offroad(t * 1_000_000_000, False)
+  assert owner.read()['destination'] is not None
+
+
+def test_offroad_end_cancels_only_after_the_debounce(tmp_path):
+  from openpilot.starpilot.navigation.runtime import OFFROAD_END_NS
+  assert OFFROAD_END_NS == 30_000_000_000
+  owner, runtime = offroad_runtime(tmp_path, True)
+  runtime.end_if_offroad(100_000_000_000, True)  # driving
+  runtime.end_if_offroad(101_000_000_000, False)  # parked: the wait starts here
+  runtime.end_if_offroad(130_999_999_999, False)
+  assert owner.read()['destination'] is not None
+  runtime.end_if_offroad(131_000_000_000, False)
+  assert owner.read()['destination'] is None
+  runtime.end_if_offroad(140_000_000_000, False)  # nothing left to end; no error
+  assert owner.read()['destination'] is None
+
+
+def test_offroad_end_wait_restarts_when_the_car_goes_onroad_again(tmp_path):
+  owner, runtime = offroad_runtime(tmp_path, True)
+  runtime.end_if_offroad(100_000_000_000, False)
+  runtime.end_if_offroad(120_000_000_000, False)
+  runtime.end_if_offroad(121_000_000_000, True)  # a blip back onroad
+  runtime.end_if_offroad(122_000_000_000, False)
+  runtime.end_if_offroad(140_000_000_000, False)  # 40 s since the first offroad, only 18 s since the blip
+  assert owner.read()['destination'] is not None
+  runtime.end_if_offroad(152_000_000_000, False)
+  assert owner.read()['destination'] is None
+
+
+def test_offroad_end_uses_the_same_clear_as_arrival(tmp_path):
+  owner, runtime = offroad_runtime(tmp_path, True)
+  revision = owner.read()['revision']
+  calls = []
+  real = owner.clear
+  owner.clear = lambda *args: calls.append(args) or real(*args)
+  runtime.end_if_offroad(0, False)
+  runtime.end_if_offroad(31_000_000_000, False)
+  assert calls == [(revision, True)]

@@ -219,7 +219,7 @@ console.log("POI suggestions: validation, selected-only retrieval, destination s
     destination: { name: "Library", latitude: 41, longitude: -88, temporary: true } })
   client.stop()
   assert(!validNavigation({ ...snapshot(), recents: [{ ...place, label: "gym" }] }))
-  assert(!validNavigation({ ...snapshot(), recents: Array(11).fill(place) }))
+  assert(!validNavigation({ ...snapshot(), recents: Array(21).fill(place) }))
 }
 console.log("Favorites and recents: choose, save and validation passed")
 

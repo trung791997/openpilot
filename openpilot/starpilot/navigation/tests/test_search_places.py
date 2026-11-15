@@ -73,7 +73,7 @@ def test_recents_move_to_top_dedupe_and_are_editable(owner):
   for index in range(12):
     revision = owner.select({'name': f'Place {index}', 'latitude': 30. + index, 'longitude': -90.}, revision, True)['revision']
   recents = owner.read()['recents']
-  assert len(recents) == 10 and recents[0]['name'] == 'Place 11'
+  assert len(recents) == 12 and recents[0]['name'] == 'Place 11' and recents[-1]['name'] == 'Place 0'
 
 
 def test_favorite_edits_keep_route_and_labels_are_unique(owner):
@@ -305,3 +305,51 @@ def test_slow_retrieve_allows_keychange_and_rejects_stale_result(owner):
       thread.join(2)
   assert not thread.is_alive() and len(errors) == 1 and isinstance(errors[0], ConflictError)
   assert owner.snapshot()['destination']['name'] == 'Old address'
+
+
+def test_recents_keep_at_least_five_most_recent_first_and_cap(owner):
+  from openpilot.starpilot.navigation.owner import MAX_RECENTS
+  assert MAX_RECENTS >= 5
+  revision = owner.read()['revision']
+  for index in range(MAX_RECENTS + 5):
+    revision = owner.select({'name': f'Place {index}', 'latitude': 30. + index, 'longitude': -90.}, revision, True)['revision']
+  names = [row['name'] for row in owner.read()['recents']]
+  assert len(names) == MAX_RECENTS
+  assert names[:5] == [f'Place {MAX_RECENTS + 4 - n}' for n in range(5)]  # newest first
+  assert names[-1] == f'Place {5}'  # oldest ones fell off the end
+
+
+def test_renavigating_moves_a_place_to_the_top_without_duplicating(owner):
+  revision = owner.read()['revision']
+  places = [{'name': f'Place {index}', 'latitude': 30. + index, 'longitude': -90.} for index in range(6)]
+  for place in places:
+    revision = owner.select(place, revision, True)['revision']
+  revision = owner.select(places[2], revision, True)['revision']
+  names = [row['name'] for row in owner.read()['recents']]
+  assert names[:3] == ['Place 2', 'Place 5', 'Place 4']
+  assert len(names) == len(set(names))
+
+
+def test_old_single_entry_recents_still_load(owner):
+  import json
+  value = json.loads(owner.path.read_text())
+  assert [row['name'] for row in value['recents']] == ['Old address']
+  value['recents'] = [value['recents'][0]]  # the old format: one stored place
+  owner.path.write_text(json.dumps(value))
+  assert [row['name'] for row in owner.read()['recents']] == ['Old address']
+  revision = owner.read()['revision']
+  after = owner.select({'name': 'Next', 'latitude': 31., 'longitude': -90.}, revision, True)
+  assert [row['name'] for row in after['recents']] == ['Next', 'Old address']
+
+
+def test_end_when_offroad_setting_defaults_off_and_round_trips(owner):
+  from openpilot.starpilot.navigation.owner import END_WHEN_OFFROAD
+  import json
+  value = json.loads(owner.path.read_text())
+  value.pop(END_WHEN_OFFROAD, None)  # a document written before the setting existed
+  owner.path.write_text(json.dumps(value))
+  assert owner.read()[END_WHEN_OFFROAD] is False and owner.snapshot()[END_WHEN_OFFROAD] is False
+  on = owner.configure({END_WHEN_OFFROAD: True}, owner.read()['revision'], True)
+  assert on[END_WHEN_OFFROAD] is True and on['destination']['name'] == 'Old address'  # does not drop the route
+  with pytest.raises(ValidationError):
+    owner.configure({END_WHEN_OFFROAD: 'yes'}, on['revision'], True)

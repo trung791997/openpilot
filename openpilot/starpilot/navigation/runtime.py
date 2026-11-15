@@ -6,7 +6,7 @@ import math
 import time
 import uuid
 
-from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, ROUTE_AVOIDANCES
+from openpilot.starpilot.navigation.owner import ConflictError, END_WHEN_OFFROAD, NavigationOwner, ValidationError, ROUTE_AVOIDANCES
 from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine
 
 from openpilot.starpilot.gps.head_unit import read_head_unit_gps
@@ -15,6 +15,7 @@ from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS, GPS_SERVICES, bearing
 
 ARRIVED_NS = 5_000_000_000      # stopped at the destination this long shows "You have arrived"
 END_ROUTE_NS = 15_000_000_000   # ...and this long ends navigation, like tapping End navigation
+OFFROAD_END_NS = 30_000_000_000  # offroad this long with "End navigation when offroad" on ends navigation; a stall or ignition blip is shorter
 REFRESH_NS = 300_000_000_000    # traffic on the guided route is refreshed this often (Directions Refresh)
 
 
@@ -49,6 +50,7 @@ class RouteRuntime:
     self.retry_after = 0
     self.off_route_since = 0
     self.arrived_since = 0
+    self.offroad_since = None
     self.ended_revision = None
     self.refresh_route = None  # the route the refresh clock runs for
     self.refresh_after = 0
@@ -164,6 +166,20 @@ class RouteRuntime:
       self.refresh_after = now_ns + REFRESH_NS
       self.refresh_future = self.executor.submit(_quiet_refresh, refresh, token, self.route, segment)
 
+  def end_if_offroad(self, now_ns: int, started: bool) -> None:
+    """With the setting on, end navigation once the device has been continuously offroad for OFFROAD_END_NS. Uses
+    the same _end_route as arrival and the Galaxy's End navigation. Going onroad again restarts the wait."""
+    if started:
+      self.offroad_since = None
+      return
+    if self.offroad_since is None:
+      self.offroad_since = now_ns
+    if now_ns - self.offroad_since < OFFROAD_END_NS:
+      return
+    settings = self.owner.read_routing()
+    if settings[END_WHEN_OFFROAD] and settings['destination'] is not None:
+      self._end_route(settings['revision'])
+
   def _end_route(self, revision: str) -> None:
     # Once per destination; a concurrent change (new destination, Galaxy edit) wins over arrival.
     if self.ended_revision == revision:
@@ -229,6 +245,8 @@ def main():
           next_update_ns = now + 1_000_000_000
           last_stamps = stamps
           value = runtime.update(now, location(sm, now, phone_fix, head_unit_fix=head_unit_fix), drive_id)
+          # Unknown (no valid deviceState yet) counts as onroad: never end a route on missing data.
+          runtime.end_if_offroad(now, not sm.valid['deviceState'] or bool(device.started))
           publish_status(pm, value, phone_fix, head_unit_fix=head_unit_fix)
       except (ValidationError, OSError, ValueError):
         cloudlog.warning('navigation settings or route unavailable')

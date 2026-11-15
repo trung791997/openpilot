@@ -26,6 +26,8 @@ const ROUTE_AVOIDANCES = [{ key: "avoidTolls", label: "Avoid tolls" }, { key: "a
   { key: "avoidFerries", label: "Avoid ferries" }]
 const GPS_MODES = [{ value: "backup", label: "Phone GPS as backup" }, { value: "comma", label: "Comma and car GPS only" },
   { value: "phone", label: "Prefer phone GPS" }]
+// Recent places listed under the search box (the comma keeps more, since saved places are hidden from this list).
+const RECENTS_SHOWN = 8
 const GPS_NAMES = { comma: "Comma", car: "Car", phone: "Phone" }
 const coordinate = (value) => !!value && Number.isFinite(value.latitude) && Math.abs(value.latitude) <= 90 &&
   Number.isFinite(value.longitude) && Math.abs(value.longitude) <= 180
@@ -46,11 +48,12 @@ export function validNavigation(value) {
   return !!value && typeof value.enabled === "boolean" && typeof value.isMetric === "boolean" && typeof value.hasKey === "boolean" && STATUS.has(value.status) &&
     ROUTE_AVOIDANCES.every(({ key }) => value[key] === undefined || typeof value[key] === "boolean") &&
     (value.roadSpeedLimit === undefined || typeof value.roadSpeedLimit === "boolean") &&
+    (value.endWhenOffroad === undefined || typeof value.endWhenOffroad === "boolean") &&
     (value.gpsSource === undefined || GPS_MODES.some((mode) => mode.value === value.gpsSource)) &&
     (value.network === undefined || ["online", "offline", "unknown"].includes(value.network)) &&
     typeof value.revision === "string" && value.revision.length > 0 && value.revision.length <= 128 &&
     (value.destination === null || validDestination(value.destination)) && Array.isArray(value.favorites) && value.favorites.length <= 100 &&
-    (value.recents === undefined || Array.isArray(value.recents) && value.recents.length <= 10 && value.recents.every(validDestination)) &&
+    (value.recents === undefined || Array.isArray(value.recents) && value.recents.length <= 20 && value.recents.every(validDestination)) &&
     (value.routeKey === undefined || typeof value.routeKey === "string" && /^[0-9a-f]{16}$/.test(value.routeKey)) &&
     (value.location == null || coordinate(value.location) && Number.isFinite(value.location.validForMs) && value.location.validForMs >= 0 && value.location.validForMs <= 2500 &&
       (value.location.source === undefined || value.location.source in GPS_NAMES)) &&
@@ -327,7 +330,7 @@ export const NavigationPage = {
     favorites() { return this.data?.favorites || [] },
     savedIds() { return new Set(this.favorites.map((place) => place.id)) },
     // Recent places that are not already saved, newest first.
-    recents() { return (this.data?.recents || []).filter((place) => !this.savedIds.has(place.id)) },
+    recents() { return (this.data?.recents || []).filter((place) => !this.savedIds.has(place.id)).slice(0, RECENTS_SHOWN) },
     // Saved places as one-tap buttons: Home and Work first (the comma sends them in that order).
     shortcuts() { return this.favorites.slice(0, 8) },
     showShortcuts() { return this.ready && !this.data.destination && !this.suggestOpen && !this.results.length && this.shortcuts.length > 0 },
@@ -552,6 +555,12 @@ export const NavigationPage = {
               :disabled="!available" @change="reportSave(() => client.action('configure', {patch: {roadSpeedLimit: $event.target.checked}}))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label>
           </div>
           <p class="gx-note">When no destination is set, ask Mapbox every 10 seconds for the posted limit of the road you're on. Speed Limit Controller uses it only when your chosen sources have no limit. Off: Mapbox limits come only from an active route.</p>
+          <div class="gx-row">
+            <span class="gx-row__info gx-row__label">End navigation when offroad</span>
+            <label class="gx-switch"><input type="checkbox" role="switch" aria-label="End navigation when offroad" :checked="!!data?.endWhenOffroad"
+              :disabled="!available" @change="reportSave(() => client.action('configure', {patch: {endWhenOffroad: $event.target.checked}}))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label>
+          </div>
+          <p class="gx-note">Cancels the current route once your comma has been offroad for 30 seconds, so the next drive starts without a leftover destination. Off: the route stays until you end it or arrive.</p>
         </section>
         <section class="gx-card gx-navigation__section">
           <div class="gx-section__header"><i class="bi bi-map" aria-hidden="true"></i><span class="gx-section__title">Mapbox</span></div>
