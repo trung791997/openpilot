@@ -8,27 +8,22 @@ def lead(d, v, a=0.0):
 
 
 def planner(monkeypatch, supported=True):
-  # Stock Brake Feel off (active_for False): lead() hands the target to coast first unchanged, so these tests see coast
-  # first alone. coast_enabled has its own gate (vehicle_supported and radar available).
+  # Stock Brake Feel off (active_for False): step() skips the onset ramp, so these tests see coast first alone. coast_enabled has its own gate (vehicle_supported and radar available).
   monkeypatch.setattr(cf, 'active_for', lambda CP: False)
   monkeypatch.setattr(cf, 'vehicle_supported', lambda CP: supported)
   return cf.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05)
 
 
-def step(p, ld, target, v_ego=31.2, follow_s=1.25, fcw=False, standstill=False, reset_state=False, prev=None):
-  return p.lead(lead_one=ld, lead_two=None, target=target, v_ego=v_ego, stopping=False, standstill=standstill,
-                reset_state=reset_state, fcw=fcw, follow_s=follow_s, floor=False, prev=prev)
+def step(p, ld, target, v_ego=31.2, follow_s=1.25, fcw=False, standstill=False, reset_state=False):
+  return p.step(lead_one=ld, lead_two=None, prev=target, target=target, v_ego=v_ego, stopping=False,
+                standstill=standstill, reset_state=reset_state, fcw=fcw, follow_s=follow_s)
 
 
-def test_no_coast_event_once_the_car_is_already_braking(monkeypatch):
-  # d1 t593 (replay 2026-11-15): e2e had the car at -1.2 when the lead candidate dropped past -0.5; staging that lead
-  # brake from -0.5 at 1 m/s^3 gave -1.50 where the old order gave -2.67. Same lead as route 71 12:03 above.
+def test_model_brake_gets_the_gentle_start(monkeypatch):
+  # coast first shapes the final target, so an e2e (model) brake under a clear radar lead starts at COAST_ACCEL too
   p = planner(monkeypatch)
-  assert step(p, lead(58.0, 27.0, -2.2), -2.25, prev=-1.2) == -2.25
-  assert step(p, lead(57.0, 26.5, -2.5), -2.25, prev=-2.25) == -2.25  # latched for the event
-  p = planner(monkeypatch)
-  assert step(p, lead(58.0, 27.0, -2.2), -2.25, prev=-0.3) == cf.COAST_ACCEL  # car not braking: coasts first
-  assert step(p, lead(57.0, 26.5, -2.5), -2.25, prev=cf.COAST_ACCEL) > -0.6  # its own floor never stops the event
+  assert step(p, lead(80.0, 30.0, 0.0), -1.4) == cf.COAST_ACCEL
+  assert cf.COAST_ACCEL - 0.1 < step(p, lead(80.0, 30.0, 0.0), -1.4) < cf.COAST_ACCEL
 
 
 def test_route_71_1203_distant_tap_coasts_first(monkeypatch):
@@ -91,7 +86,7 @@ def test_below_the_speed_floor_brakes_at_once(monkeypatch):
 
 
 def test_standstill_resets_and_passes_through(monkeypatch):
-  # lead()'s standstill branch resets coast first and returns the target unchanged
+  # step()'s standstill branch resets coast first and returns the target unchanged
   p = planner(monkeypatch)
   assert step(p, lead(58.0, 27.0, -2.2), -2.25, standstill=True) == -2.25
   assert p.coast_floor is None
@@ -114,6 +109,6 @@ def test_coast_disabled_passes_the_target_through(monkeypatch):
 def test_follow_s_none_skips_coast_first(monkeypatch):
   # the upstream planner does not pass follow_s: coast first stays off there
   p = planner(monkeypatch)
-  out = p.lead(lead_one=lead(58.0, 27.0, -2.2), lead_two=None, target=-2.25, v_ego=31.2, stopping=False,
-               standstill=False, reset_state=False, fcw=False, floor=False)
+  out = p.step(lead_one=lead(58.0, 27.0, -2.2), lead_two=None, prev=-2.25, target=-2.25, v_ego=31.2, stopping=False,
+               standstill=False, reset_state=False, fcw=False)
   assert out == -2.25 and p.coast_floor is None

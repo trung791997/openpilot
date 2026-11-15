@@ -433,13 +433,12 @@ class LongitudinalPlanner:
       blocked=bool(experimental_speed_nudge is not True or reset_state or self.fcw or not self.allow_throttle or self.force_stop_plan.forcing or
                    output_should_stop_mpc or cruise_should_stop or self.mpc.solution_status != 0 or
                    curve.effective_mps is not None or traffic_mode is not False))
-    # Stock Brake Feel law, coast first and need floor shape the lead MPC candidate only, so e2e / cruise braking is never
+    # Stock Brake Feel law and need floor shape the lead MPC candidate only, so e2e / cruise braking is never
     # let off by a calm far lead (d2 t1297.6 red-light let-off, 2026-11-15). Every other use of output_a_target_mpc is raw.
     lead_a = self.bosch_a_long.lead(
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target_mpc),
       v_ego=v_ego, stopping=bool(output_should_stop_mpc or self.force_stop_plan.forcing),
-      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw),
-      follow_s=float(base_follow), prev=float(a_prev))
+      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
     manual_model = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
     output_a_target_e2e = max(manual_model, encouraged_model)
 
@@ -520,7 +519,8 @@ class LongitudinalPlanner:
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, prev=float(a_prev),
       target=float(output_a_target), v_ego=v_ego,
       stopping=bool(self.output_should_stop or self.force_stop_plan.forcing),
-      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
+      standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw),
+      follow_s=float(base_follow))
     output_a_target = self.bosch_a_release.step(
       lead_one=planner_radar_state.leadOne, prev=float(a_prev), target=float(output_a_target),
       lane_change_state=sm['modelV2'].meta.laneChangeState, left_blinker=bool(sm['carState'].leftBlinker),

@@ -16,8 +16,8 @@ Contents:
 - Brake onset ramp (2026-11-05, step() since 2026-11-11): a brake that starts with every lead far away deepens at
   most ONSET_JERK per second; with the law always on it only binds inside the emergency pass-through.
 - Coast first (depth floor; folded in from bosch_a_coast_first.py 2026-11-11): for a distant lead tapping its brakes, the
-  law's target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs inside lead() after the law
-  when the caller passes `follow_s`.
+  final target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs in step() after the onset
+  ramp when the caller passes `follow_s`, so model (e2e) and cruise braking get the gentle start too.
 - Need floor (2026-11-11, NEED_FLOOR_ENABLED, on; replay only): need_floor() raises a braking target to -max(need, 0.8)
   for a steady closing moving lead; the last stage of lead(), longitudinal_planner.py only.
 
@@ -25,9 +25,10 @@ Contents:
   newborn radar lead's aLeadK at -1.0 unless its own range history confirms the braking (MPC and law input only).
 
 Placement (d2 t1297.6 red-light let-off, 2026-11-15): the planner calls `lead()` once per cycle on the lead MPC candidate
-only, before min(candidates): the law, coast first, the need floor. A shaper on the final target let a calm far camera lead
-lift e2e's red-light brake (-2.6 -> -0.6); e2e and cruise braking now pass through untouched. `step()` is the brake onset
-ramp on the final target, after the other target owners and before release coast, smooth and stop gap. Every limit here
+only, before min(candidates): the law and the need floor. A shaper on the final target let a calm far camera lead
+lift e2e's red-light brake (-2.6 -> -0.6); e2e and cruise braking now pass the law and floor untouched. `step()` shapes the
+final target, after the other target owners and before release coast, smooth and stop gap: the brake onset ramp, then
+coast first (it only stages a new brake from COAST_ACCEL, so it cannot let off one that is built). Every limit here
 only shapes how a brake builds or lets off; the emergency latch passes the target through untouched, so the car never
 brakes harder than the planner would without this module. Replay and limited road evidence only.
 
@@ -457,16 +458,16 @@ class HondaBoschALongEnhancement:
   def reset(self):
     self.reset_onset()
     self.reset_lead()
+    self.reset_coast()
 
   def reset_onset(self):
     self.onset_episode = False
     self.onset_free = False  # this episode passes through (close lead at its start, low TTC, FCW or stopping)
 
   def reset_lead(self):
-    """Lead-candidate path state: the law, its own previous output, coast first (NeedFloor resets in need_floor)."""
+    """Lead-candidate path state: the law and its own previous output (NeedFloor resets in need_floor)."""
     self._reset_law()
     self.lead_prev = None
-    self.reset_coast()
 
   def _reset_law(self):
     self.emergency = False
@@ -492,13 +493,11 @@ class HondaBoschALongEnhancement:
     return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target)
 
   def lead(self, *, lead_one, lead_two, target: float, v_ego: float, stopping: bool, standstill: bool,
-           reset_state: bool, fcw: bool, follow_s: float | None = None, floor: bool = True,
-           prev: float | None = None) -> float:
+           reset_state: bool, fcw: bool, floor: bool = True) -> float:
     """Shape the lead MPC candidate only (before min(candidates)): the Stock Brake Feel law from this method's own previous
-    output (`lead_prev`, not the published target), then coast first when `follow_s` is given, then the need floor when
-    `floor`. e2e and cruise braking never pass through it (d2 t1297.6 red-light let-off, 2026-11-15). `prev` is the last
-    published target: coast first starts from where the car is, not from this candidate alone. `stopping` covers
-    should-stop and force stop; upstream/planner.py passes follow_s=None, floor=False (it never ran those two)."""
+    output (`lead_prev`, not the published target), then the need floor when `floor`. e2e and cruise braking never pass
+    through it (d2 t1297.6 red-light let-off, 2026-11-15). `stopping` covers should-stop and force stop;
+    upstream/planner.py passes floor=False (it never ran the need floor)."""
     target = float(target)
     if reset_state or standstill:
       self.reset_lead()
@@ -507,7 +506,7 @@ class HondaBoschALongEnhancement:
       return target
     leads = (lead_one, lead_two)
     out = target
-    if not self.stock_feel:  # the law is Stock Brake Feel's; coast first keeps its own gate (coast_enabled)
+    if not self.stock_feel:  # the law is Stock Brake Feel's
       self.lead_prev = None
     elif stopping:
       self._reset_law()
@@ -516,17 +515,27 @@ class HondaBoschALongEnhancement:
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
       out = stock_feel_target(leads, law_prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
       self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
-    if follow_s is not None:
-      out = self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s,
-                              fcw=fcw, reset_state=reset_state, prev=prev)
     if floor:
       out = self.need_floor(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, reset_state=reset_state)
     self.lead_prev = float(out)
     return self.lead_prev
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
-           stopping: bool, standstill: bool, reset_state: bool, fcw: bool) -> float:
-    """The brake onset ramp on the FINAL target (after min(candidates)); the lead-based shaping is lead()."""
+           stopping: bool, standstill: bool, reset_state: bool, fcw: bool, follow_s: float | None = None) -> float:
+    """The FINAL target (after min(candidates)): the brake onset ramp, then coast first when `follow_s` is given, so a
+    model or cruise brake gets the same gentle start as a lead brake (2026-11-15). The lead-based law is lead()."""
+    out = self._onset(lead_one=lead_one, lead_two=lead_two, prev=prev, target=target, stopping=stopping,
+                      standstill=standstill, reset_state=reset_state, fcw=fcw)
+    if follow_s is None:
+      return out
+    if standstill:
+      self.reset_coast()
+      return out
+    return self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s, fcw=fcw,
+                             reset_state=reset_state)
+
+  def _onset(self, *, lead_one, lead_two, prev: float, target: float, stopping: bool, standstill: bool,
+             reset_state: bool, fcw: bool) -> float:
     out = float(target)
     if not self.stock_feel or reset_state or standstill:
       self.reset_onset()
@@ -545,10 +554,9 @@ class HondaBoschALongEnhancement:
     return float(out)
 
   def _coast_first(self, *, lead_one, lead_two, target: float, v_ego: float, follow_s: float, fcw: bool,
-                   reset_state: bool, prev: float | None = None) -> float:
-    """Coast first on the lead candidate. An event only starts from a car that is not already braking past COAST_ACCEL
-    (`prev`, the last published target): lifting off first means nothing once e2e or cruise has the car braking, and
-    staging from -0.5 would soften the lead's brake under it (d1 t593 replay, 2026-11-15: -2.67 -> -1.50)."""
+                   reset_state: bool) -> float:
+    """Coast first on the final target: a new brake past COAST_ACCEL starts at COAST_ACCEL and deepens at
+    COAST_RAMP_JERK while a radar lead is clear; it never lets off a brake that is already built."""
     target = float(target)
     if not self.coast_enabled or reset_state:
       self.reset_coast()
@@ -561,8 +569,7 @@ class HondaBoschALongEnhancement:
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import closest_radar_lead
     lead = closest_radar_lead((lead_one, lead_two))
     floor = COAST_ACCEL if self.coast_floor is None else self.coast_floor - COAST_RAMP_JERK * self.dt
-    braking = self.coast_floor is None and prev is not None and float(prev) < COAST_ACCEL
-    if braking or lead is None or fcw or v_ego < COAST_MIN_V_EGO or not self._clear(lead, v_ego, follow_s, floor):
+    if lead is None or fcw or v_ego < COAST_MIN_V_EGO or not self._clear(lead, v_ego, follow_s, floor):
       self.coast_floor = None
       self.coast_bypassed = True
       return target

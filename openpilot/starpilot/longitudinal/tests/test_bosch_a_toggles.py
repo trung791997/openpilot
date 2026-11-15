@@ -160,8 +160,11 @@ class TestCarGates(unittest.TestCase):
     leads = SimpleNamespace(present=True, dRel=20.0, vLead=10.0, vRel=-12.0, aLeadK=-1.0, radar=True, modelProb=0.9)
     enh = HondaBoschALongEnhancement(RADAR_OFF, 0.05)
     out = enh.lead(lead_one=leads, lead_two=leads, target=-3.0, v_ego=22.0, stopping=False, standstill=False,
-                   reset_state=False, fcw=False, follow_s=1.5)
+                   reset_state=False, fcw=False)
     self.assertEqual(out, -3.0)
+    out = enh.step(lead_one=leads, lead_two=leads, prev=0.0, target=-3.0, v_ego=22.0, stopping=False, standstill=False,
+                   reset_state=False, fcw=False, follow_s=1.5)
+    self.assertEqual(out, -3.0)  # coast first inert without radar
     self.assertEqual(enh.need_floor(lead_one=leads, lead_two=leads, target=-0.3, v_ego=22.0, reset_state=False), -0.3)
     radar_state = SimpleNamespace(leadOne=leads, leadTwo=leads)
     self.assertIs(enh.planner_radar_state(radar_state, 0.0), radar_state)

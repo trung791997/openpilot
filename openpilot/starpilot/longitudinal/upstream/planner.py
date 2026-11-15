@@ -186,7 +186,7 @@ class LongitudinalPlanner:
       lead_a = self.bosch_a_long.lead(
         lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target_mpc),
         v_ego=v_ego, stopping=bool(output_should_stop_mpc), standstill=bool(sm['carState'].standstill),
-        reset_state=bool(reset_state), fcw=bool(self.fcw), follow_s=None, floor=False)
+        reset_state=bool(reset_state), fcw=bool(self.fcw), floor=False)
     candidates = [(lead_a, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if sm['selfdriveState'].experimentalMode:
