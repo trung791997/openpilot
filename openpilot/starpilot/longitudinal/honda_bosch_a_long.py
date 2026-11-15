@@ -13,21 +13,23 @@ evidence comment are in git at 3f26fb513c and in openpilot-radar radard.py @ 567
 Contents:
 - Stock Brake Feel (D-086, D-100, D-103, D-120): stock Honda ACC's TTC depth and jerk tables, with the soft exit,
   takeover hold, lead-stop law (<= 20 s) and the emergency latch.
-- Brake onset ramp (2026-11-05, folded into step() 2026-11-11): a brake that starts with every lead far away deepens at
+- Brake onset ramp (2026-11-05, step() since 2026-11-11): a brake that starts with every lead far away deepens at
   most ONSET_JERK per second; with the law always on it only binds inside the emergency pass-through.
 - Coast first (depth floor; folded in from bosch_a_coast_first.py 2026-11-11): for a distant lead tapping its brakes, the
-  law's target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs last inside step(), on every
-  return path, when the caller passes `follow_s`.
+  law's target is floored at COAST_ACCEL and the floor descends at COAST_RAMP_JERK. It runs inside lead() after the law
+  when the caller passes `follow_s`.
 - Need floor (2026-11-11, NEED_FLOOR_ENABLED, on; replay only): need_floor() raises a braking target to -max(need, 0.8)
-  for a steady closing moving lead, after smooth and stop gap; called from longitudinal_planner.py only.
+  for a steady closing moving lead; the last stage of lead(), longitudinal_planner.py only.
 
 - Newborn lead aLeadK bound (D-080, restored 2026-11-11 as NEWBORN_HOLD_ENABLED, on): planner_radar_state() holds a
   newborn radar lead's aLeadK at -1.0 unless its own range history confirms the braking (MPC and law input only).
 
-The planner calls `step()` once per cycle, after the other target owners and before release coast, smooth and stop gap.
-Depth shaping (the law, the onset ramp, then the coast-first floor) is this one call. Every limit
-here only shapes how a brake builds or lets off; the emergency latch passes the planner's target through untouched,
-so the car never brakes harder than the planner would without this module. Replay and limited road evidence only.
+Placement (d2 t1297.6 red-light let-off, 2026-11-15): the planner calls `lead()` once per cycle on the lead MPC candidate
+only, before min(candidates): the law, coast first, the need floor. A shaper on the final target let a calm far camera lead
+lift e2e's red-light brake (-2.6 -> -0.6); e2e and cruise braking now pass through untouched. `step()` is the brake onset
+ramp on the final target, after the other target owners and before release coast, smooth and stop gap. Every limit here
+only shapes how a brake builds or lets off; the emergency latch passes the target through untouched, so the car never
+brakes harder than the planner would without this module. Replay and limited road evidence only.
 
 HumanFollowing and HumanAcceleration are separate modules (human_following.py, human_acceleration.py) because they
 also run with the radar off (vision-only).
@@ -340,17 +342,12 @@ NEED_FLOOR_QUIET_FRAMES = 20    # frames with no lead closing before the sticky-
 # vs hold -1.19, owner wants the floor not to soften a lead this close. Always on (the car's setting; no toggle); replay only.
 NEED_FLOOR_MIN_GAP_ENABLED = True  # read by NeedFloor at construction (module attribute), so a replay harness can set it first
 NEED_FLOOR_MIN_GAP_S = 1.5      # s; the floor applies only at d >= v_ego * this (evaluated every frame, not sticky)
-# Owner 2026-11-14 (fixes A + B), route 000000d2 seg 21 t1298.8 (static + log math): e2e braked -1.89 for a red light; the
+# Owner 2026-11-14 (fix B), route 000000d2 seg 21 t1298.8 (static + log math): e2e braked -1.89 for a red light; the
 # nearest lead was the camera lead (tid -1, no radar) at 73.7 m closing 5.3 m/s with vLead 8.3, which opened the moving-lead
 # gate; need 0.24 -> floor -0.80 lifted the target -1.89 -> -0.80 in one cycle and the driver braked at -4.0 1.5 s later.
 # B: the floor applies to radar leads only (a camera-only lead still runs the gate / sticky state, it just never lifts).
-# A: the floor only softens braking that is for the lead: never while the plan is stopping (any candidate's should_stop,
-# force stop), and never above `cap`, the most cautious non-lead candidate (cruise; e2e in experimental mode).
+# (Fix A, a cap/stopping special case, was deleted 2026-11-15: the floor now acts on the lead candidate only, see lead().)
 NEED_FLOOR_RADAR_ONLY = True
-# Owner 2026-11-14 (A margin): the cap only binds when it is more than this below the floor; a model target within it is
-# ignored and the floor applies as before. Offline re-run of d1/d2/ca/cb (car-bound frames, cap = logged e2e): without a
-# margin A deepened most binds from -0.80 to -0.83..-1.15; 0.3 keeps those at -0.80; e2e deeper than floor - 0.3 (-1.10 at the -0.80 floor) still binds.
-NEED_FLOOR_CAP_MARGIN = 0.3     # m/s^2
 
 
 class NeedFloor:
@@ -359,13 +356,14 @@ class NeedFloor:
   need = closing^2 / (2 * max(d - (max(vLead, 0) * HEADWAY_S + STOP_M), MIN_ROOM_M)), the decel that closes the speed
   difference in the room left before the headway gap. The floor only RAISES a braking target (never adds braking) and
   never touches should_stop. It applies to the nearer present planner lead (leadOne or leadTwo, vision or radar) only
-  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the plan is not stopping, the lift stays at or below `cap` when `cap` is more than NEED_FLOOR_CAP_MARGIN below the floor, the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
+  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
   sticky-off and the gate (vLead >= GATE_V_LEAD and aLeadK > GATE_A_LEAD for GATE_FRAMES consecutive frames on the same
   (track id, radar flag)) is open. Sticky-off: once the release fires (closing and (ttc <= RELEASE_TTC_S or need >=
   RELEASE_NEED)) or the Stock Brake Feel emergency latch is on, the floor stays off until QUIET_FRAMES frames with no
   lead closing, or the lead identity changes to one farther away than the previous frame's gap. No lead: quiet + 1, gate
-  count 0, sticky clears at QUIET_FRAMES. Called after bosch_a_stop_gap.step in longitudinal_planner.py only; it is not
-  in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
+  count 0, sticky clears at QUIET_FRAMES. It acts on the lead MPC candidate only (HondaBoschALongEnhancement.lead(),
+  d2 t1297.6 red-light let-off, 2026-11-15), so e2e or cruise braking deeper than the lead is never lifted; that is why
+  there is no cap / stopping special case. longitudinal_planner.py only; not in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
   harness), including its rounding of the lead fields (d and vRel to 0.01, aLeadK to 0.001). Replay only."""
   def __init__(self):
     """Reads NEED_FLOOR_MIN_GAP_ENABLED (module constant, on) at construction: when on, also require d >= v_ego *
@@ -386,10 +384,7 @@ class NeedFloor:
     return (int(getattr(lead, 'radarTrackId', -1)), int(bool(getattr(lead, 'radar', False))),
             round(float(lead.dRel), 2), round(float(lead.vRel), 2), round(float(getattr(lead, 'aLeadK', 0.0)), 3))
 
-  def step(self, leads, v_ego: float, emergency: bool, target: float, cap: float | None = None,
-           stopping: bool = False) -> float:
-    """`cap` (fix A): the floor never lifts the target above it when it is more than NEED_FLOOR_CAP_MARGIN below the floor (None: no cap). `stopping` (fix A): no lift at all.
-    Neither changes the gate / sticky state, only whether the floor is applied."""
+  def step(self, leads, v_ego: float, emergency: bool, target: float) -> float:
     views = [self._view(lead) for lead in leads if _present(lead)]
     a = float(target)
     if not views:
@@ -425,16 +420,14 @@ class NeedFloor:
     if (self.gate_count >= NEED_FLOOR_GATE_FRAMES and closing and not self.off and v_ego >= NEED_FLOOR_MIN_V_EGO and
         d >= NEED_FLOOR_MIN_D and ttc > NEED_FLOOR_RELEASE_TTC_S and need < NEED_FLOOR_RELEASE_NEED and
         (not self.min_gap or d >= v_ego * NEED_FLOOR_MIN_GAP_S) and
-        (radar or not NEED_FLOOR_RADAR_ONLY) and not stopping):
-      floor = -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN)
-      if cap is not None and float(cap) < floor - NEED_FLOOR_CAP_MARGIN:
-        floor = float(cap)
-      if a < floor:
-        a = floor
+        (radar or not NEED_FLOOR_RADAR_ONLY)):
+      a = max(a, -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN))
     return a
 
 
 class HondaBoschALongEnhancement:
+  """lead() shapes the lead MPC candidate (law, coast first, need floor); step() is the onset ramp on the final target.
+  Placement: d2 t1297.6 red-light let-off (2026-11-15)."""
   def __init__(self, CP, dt: float):
     """Stock Brake Feel is permanent (owner 2026-11-11); active_for(CP) is the only gate. NeedFloor's min-gap gate is
     always on (NEED_FLOOR_MIN_GAP_ENABLED)."""
@@ -462,9 +455,18 @@ class HondaBoschALongEnhancement:
     return radar_state
 
   def reset(self):
-    self._reset_law()
+    self.reset_onset()
+    self.reset_lead()
+
+  def reset_onset(self):
     self.onset_episode = False
     self.onset_free = False  # this episode passes through (close lead at its start, low TTC, FCW or stopping)
+
+  def reset_lead(self):
+    """Lead-candidate path state: the law, its own previous output, coast first (NeedFloor resets in need_floor)."""
+    self._reset_law()
+    self.lead_prev = None
+    self.reset_coast()
 
   def _reset_law(self):
     self.emergency = False
@@ -478,30 +480,67 @@ class HondaBoschALongEnhancement:
   def coast_active(self) -> bool:
     return self.coast_floor is not None
 
-  def need_floor(self, *, lead_one, lead_two, target: float, v_ego: float, reset_state: bool,
-                 cap: float | None = None, stopping: bool = False) -> float:
-    """Need floor (NeedFloor, above): raise a braking `target` for a steady closing moving lead. Call it on the output of
-    bosch_a_stop_gap.step with that call's v_ego, in longitudinal_planner.py only (not in upstream/planner.py); it never
-    touches should_stop. Not active (Stock Brake Feel off, or NEED_FLOOR_ENABLED False at construction) or reset_state:
-    state is cleared and the target passes through. `cap` / `stopping`: fix A (see NEED_FLOOR_RADAR_ONLY's comment)."""
+  def need_floor(self, *, lead_one, lead_two, target: float, v_ego: float, reset_state: bool) -> float:
+    """Need floor (NeedFloor, above): raise a braking lead-candidate `target` for a steady closing moving lead. Called
+    from lead() (longitudinal_planner.py only, not upstream/planner.py), so it only ever sees the lead MPC candidate.
+    Not active (Stock Brake Feel off, or NEED_FLOOR_ENABLED False at construction) or reset_state: state is cleared and
+    the target passes through."""
     if self._need_floor is None or reset_state:
       if self._need_floor is not None:
         self._need_floor.reset()
       return float(target)
-    return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target, cap=cap, stopping=stopping)
+    return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target)
+
+  def lead(self, *, lead_one, lead_two, target: float, v_ego: float, stopping: bool, standstill: bool,
+           reset_state: bool, fcw: bool, follow_s: float | None = None, floor: bool = True) -> float:
+    """Shape the lead MPC candidate only (before min(candidates)): the Stock Brake Feel law from this method's own previous
+    output (`lead_prev`, not the published target), then coast first when `follow_s` is given, then the need floor when
+    `floor`. e2e and cruise braking never pass through it (d2 t1297.6 red-light let-off, 2026-11-15). `stopping` covers
+    should-stop and force stop; upstream/planner.py passes follow_s=None, floor=False (it never ran those two)."""
+    target = float(target)
+    if reset_state or standstill:
+      self.reset_lead()
+      if floor:
+        self.need_floor(lead_one=lead_one, lead_two=lead_two, target=target, v_ego=v_ego, reset_state=True)
+      return target
+    leads = (lead_one, lead_two)
+    out = target
+    if not self.stock_feel:  # the law is Stock Brake Feel's; coast first keeps its own gate (coast_enabled)
+      self.lead_prev = None
+    elif stopping:
+      self._reset_law()
+    else:
+      prev = target if self.lead_prev is None else self.lead_prev
+      self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
+      out = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
+      self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
+    if follow_s is not None:
+      out = self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s,
+                              fcw=fcw, reset_state=reset_state)
+    if floor:
+      out = self.need_floor(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, reset_state=reset_state)
+    self.lead_prev = float(out)
+    return self.lead_prev
 
   def step(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
-           stopping: bool, standstill: bool, reset_state: bool, fcw: bool, follow_s: float | None = None) -> float:
-    """Shape the final acceleration target: the law and onset ramp, then the coast-first floor on every return path.
-    `stopping` covers should-stop, force stop and red-light stops. `prev` is last cycle's published target; `target` is
-    this cycle's before the law and the onset ramp. `follow_s` is the planner's follow time; None skips coast first
-    (the upstream planner never ran it)."""
-    out = self._shape(lead_one=lead_one, lead_two=lead_two, prev=prev, target=target, v_ego=v_ego,
-                      stopping=stopping, standstill=standstill, reset_state=reset_state, fcw=fcw)
-    if follow_s is None:
+           stopping: bool, standstill: bool, reset_state: bool, fcw: bool) -> float:
+    """The brake onset ramp on the FINAL target (after min(candidates)); the lead-based shaping is lead()."""
+    out = float(target)
+    if not self.stock_feel or reset_state or standstill:
+      self.reset_onset()
       return out
-    return self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s,
-                             fcw=fcw, reset_state=reset_state)
+    leads = (lead_one, lead_two)
+    if self.onset_episode and out >= ONSET_END_ACCEL and prev >= ONSET_END_ACCEL:
+      self.onset_episode = False
+      self.onset_free = False
+    if not self.onset_episode and out < ONSET_START_ACCEL:
+      self.onset_episode = True
+      self.onset_free = lead_close(leads)
+    if self.onset_episode and (fcw or stopping or lead_ttc_low(leads)):
+      self.onset_free = True
+    if self.onset_episode and not self.onset_free:
+      out = brake_onset_limited_target(prev, out, self.dt, ONSET_JERK)
+    return float(out)
 
   def _coast_first(self, *, lead_one, lead_two, target: float, v_ego: float, follow_s: float, fcw: bool,
                    reset_state: bool) -> float:
@@ -532,32 +571,6 @@ class HondaBoschALongEnhancement:
             (closing <= 0.0 or d_rel / closing >= COAST_MIN_TTC_S) and
             a_lead >= COAST_MAX_LEAD_DECEL and
             projected_gap_ok(d_rel, v_lead, a_lead, v_ego, floor))
-
-  def _shape(self, *, lead_one, lead_two, prev: float, target: float, v_ego: float,
-             stopping: bool, standstill: bool, reset_state: bool, fcw: bool) -> float:
-    """The Stock Brake Feel law plus the brake onset ramp (before coast first)."""
-    if not self.stock_feel or reset_state or standstill:
-      self.reset()
-      return float(target)
-    leads = (lead_one, lead_two)
-    out = float(target)
-    if stopping:
-      self._reset_law()
-    else:
-      self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
-      out = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
-      self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
-    if self.onset_episode and out >= ONSET_END_ACCEL and prev >= ONSET_END_ACCEL:
-      self.onset_episode = False
-      self.onset_free = False
-    if not self.onset_episode and out < ONSET_START_ACCEL:
-      self.onset_episode = True
-      self.onset_free = lead_close(leads)
-    if self.onset_episode and (fcw or stopping or lead_ttc_low(leads)):
-      self.onset_free = True
-    if self.onset_episode and not self.onset_free:
-      out = brake_onset_limited_target(prev, out, self.dt, ONSET_JERK)
-    return float(out)
 
 
 # ---- Newborn lead aLeadK bound (D-080), under NEWBORN_HOLD_ENABLED --------------------------------------------------

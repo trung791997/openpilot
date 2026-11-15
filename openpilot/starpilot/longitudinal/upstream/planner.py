@@ -180,7 +180,14 @@ class LongitudinalPlanner:
     # to the e2e target for the rest of the engagement (scaled off below 10 mph).
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
 
-    candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
+    # Stock Brake Feel law on the lead MPC candidate only (no coast first / need floor here); d2 t1297.6 red-light let-off, 2026-11-15
+    lead_a = output_a_target_mpc
+    if self.bosch_a_long is not None:
+      lead_a = self.bosch_a_long.lead(
+        lead_one=sm['radarState'].leadOne, lead_two=sm['radarState'].leadTwo, target=float(output_a_target_mpc),
+        v_ego=v_ego, stopping=bool(output_should_stop_mpc), standstill=bool(sm['carState'].standstill),
+        reset_state=bool(reset_state), fcw=bool(self.fcw), follow_s=None, floor=False)
+    candidates = [(lead_a, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if sm['selfdriveState'].experimentalMode:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))

@@ -163,39 +163,9 @@ def test_d2_camera_lead_never_lifts(monkeypatch):
   assert run(p, d2_lead(), 30, target=-1.89, v_ego=13.6) == -1.89
 
 
-def test_d2_radar_lead_lifted_without_cap(monkeypatch):  # the old behaviour, for a radar lead and no cap: -0.80
+def test_d2_radar_lead_lifted(monkeypatch):  # a radar lead: -0.80
   p = make(monkeypatch, min_gap=True)
   assert run(p, d2_lead(radar=True, tid=6), 30, target=-1.89, v_ego=13.6) == pytest.approx(-0.8)
-
-
-def test_d2_cap_keeps_e2e_braking(monkeypatch):  # radar lead, but e2e (the cap) is the one braking: no lift above it
-  p = make(monkeypatch, min_gap=True)
-  assert run(p, d2_lead(radar=True, tid=6), 30, target=-1.89, v_ego=13.6, cap=-1.89) == -1.89
-
-
-def test_cap_limits_lift_part_way(monkeypatch):  # lead MPC -2.0, e2e/cruise -1.2: lift stops at -1.2, not -0.8
-  p = make(monkeypatch)
-  assert run(p, steady(), 15, target=-2.0, cap=-1.2) == pytest.approx(-1.2)
-
-
-def test_cap_within_margin_is_ignored(monkeypatch):  # e2e -1.05 is only 0.25 below the -0.8 floor: floor as before
-  p = make(monkeypatch)
-  assert run(p, steady(), 15, target=-2.0, cap=-1.05) == pytest.approx(-0.8)
-
-
-def test_cap_margin_default():
-  assert hb.NEED_FLOOR_CAP_MARGIN == 0.3
-
-
-def test_cap_above_floor_changes_nothing(monkeypatch):  # cruise 0.3 / e2e -0.5: the floor -0.8 is the binding value
-  p = make(monkeypatch)
-  assert run(p, steady(), 15, target=-2.0, cap=-0.5) == pytest.approx(-0.8)
-
-
-def test_stopping_never_lifts_and_keeps_gate(monkeypatch):
-  p = make(monkeypatch)
-  assert run(p, steady(), 15, target=-2.0, stopping=True) == -2.0
-  assert nf(p, steady(), -2.0) == pytest.approx(-0.8)  # gate stayed open through the stop frames
 
 
 def test_camera_lead_keeps_state_machine(monkeypatch):  # camera lead still latches sticky-off (it just never lifts)

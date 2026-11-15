@@ -1,6 +1,5 @@
 """Static tests for the brake onset ramp inside HondaBoschALongEnhancement.step (stock-like brake onset for far leads).
 Not road evidence."""
-import random
 from types import SimpleNamespace
 import unittest
 
@@ -90,18 +89,16 @@ class TestOnsetRamp(unittest.TestCase):
     out = run(make(), lead(80.0, -9.0), [-3.5], l2=lead(20.0, 0.0, a=0.0))
     self.assertEqual(out, [-3.5])
 
-  def test_no_lead_brake_is_limited_by_the_law_not_the_ramp(self):
-    # REWRITTEN: with no lead the law (jerk outside, 5 m/s^3) is tighter than the ramp (8) and binds first, so the output
-    # equals stock_feel_target and the ramp never changes it (the old test ran the ramp alone).
+  def test_no_lead_brake_is_limited_by_the_ramp_alone(self):
+    # step() is the onset ramp only (the law lives in lead()): with no lead the ramp builds at ONSET_JERK
     enh = make()
     out = run(enh, NONE, [-2.0, -2.0, -2.0])
-    self.assertAlmostEqual(out[0], -hbl.STOCK_FEEL_JERK_OUTSIDE * DT)
-    self.assertAlmostEqual(out[1], -2 * hbl.STOCK_FEEL_JERK_OUTSIDE * DT)
+    self.assertAlmostEqual(out[0], -STEP)
+    self.assertAlmostEqual(out[1], -2 * STEP)
     self.assertTrue(enh.onset_episode)
-    self.assertLess(hbl.STOCK_FEEL_JERK_OUTSIDE, hbl.ONSET_JERK)
 
   def test_gentle_target_and_rises_pass_through(self):
-    # REWRITTEN: no lead, so the law's jerk limit (0.25 per frame) does not touch a -0.25 target.
+    # no lead: a -0.25 target is above ONSET_START_ACCEL, so no episode starts.
     enh = make()
     self.assertEqual(run(enh, NONE, [-0.25, 0.5, 1.0]), [-0.25, 0.5, 1.0])
     self.assertFalse(enh.onset_episode)
@@ -152,33 +149,29 @@ class TestOnsetRamp(unittest.TestCase):
     # TTC recovers, the target lets off to -2 and deepens again: still free for the rest of the episode
     self.assertEqual(run(enh, lead(60.0, -12.0), [-2.0, -3.5], prev=-3.5), [-2.0, -3.5])
 
-  def test_non_emergency_law_output_is_never_changed_by_the_ramp(self):
-    # (d) seeded sweep, fresh state per sample: step() == stock_feel_target() whenever the emergency latch is off
-    rng = random.Random(20261111)
-    checked = binding = 0
-    for _ in range(20000):
-      leads = []
-      for _ in range(2):
-        if rng.random() < 0.25:
-          leads.append(NONE)
-          continue
-        d = rng.uniform(3.0, 150.0)
-        v_rel = rng.uniform(-18.0, 6.0)
-        leads.append(lead(d, v_rel, a=rng.uniform(-4.0, 1.5)))
-      v_ego = rng.uniform(0.0, 32.0)
-      prev = rng.uniform(-3.5, 1.5)
-      target = rng.uniform(-3.5, 1.5)
-      if hbl.stock_feel_emergency(tuple(leads), v_ego, False):
-        continue
-      expected = hbl.stock_feel_target(tuple(leads), prev, target, DT, v_ego, False, False)
-      enh = make()
-      got = enh.step(lead_one=leads[0], lead_two=leads[1], prev=prev, target=target, v_ego=v_ego, stopping=False,
-                     standstill=False, reset_state=False, fcw=False)
-      self.assertEqual(got, expected, (leads, v_ego, prev, target))
-      checked += 1
-      binding += expected < hbl.ONSET_START_ACCEL
-    self.assertGreater(checked, 5000)
-    self.assertGreater(binding, 500)  # the sweep does start brake episodes, so the ramp was in play
+  def test_lead_does_not_touch_a_deeper_e2e_candidate(self):
+    # lead() shapes only the lead MPC candidate: a calm far lead's -0.5 candidate passes the law, and step() alone
+    # (no law) leaves a deep e2e-sized -2.6 final target at the ramp, never lifted. d2 t1297.6, 2026-11-15
+    far = lead(120.0, -2.0, a=0.0)  # TTC 60 s, calm
+    enh = make()
+    out = enh.lead(lead_one=far, lead_two=NONE, target=-0.5, v_ego=V_EGO, stopping=False, standstill=False,
+                   reset_state=False, fcw=False, floor=False)
+    self.assertEqual(out, hbl.stock_feel_target((far, NONE), -0.5, -0.5, DT, V_EGO, False, False))  # the law's output
+    self.assertEqual(run(make(), far, [-2.6] * 20, prev=-2.6), [-2.6] * 20)
+
+  def test_lead_uses_its_own_previous_output_not_the_published_target(self):
+    # the law's brake jerk limit builds from lead_prev (the first output, ~-0.5), not from a deeper published e2e target (-2.6)
+    enh = make()
+    far = lead(80.0, -8.0, a=0.0)
+    kw = dict(lead_one=far, lead_two=NONE, v_ego=V_EGO, stopping=False, standstill=False, reset_state=False, fcw=False,
+              floor=False)
+    first = enh.lead(target=-0.5, **kw)
+    self.assertEqual(enh.lead_prev, first)
+    own = hbl.stock_feel_target((far, NONE), first, -2.0, DT, V_EGO, enh.emergency, enh.law_t > 0.0)
+    published = hbl.stock_feel_target((far, NONE), -2.6, -2.0, DT, V_EGO, enh.emergency, enh.law_t > 0.0)
+    self.assertNotEqual(own, published)
+    self.assertEqual(enh.lead(target=-2.0, **kw), own)
+    self.assertEqual(enh.lead_prev, own)
 
 
 if __name__ == "__main__":
