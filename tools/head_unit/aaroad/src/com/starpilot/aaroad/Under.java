@@ -201,6 +201,7 @@ final class Under {
         for (int i = d.from[r]; i < d.from[r + 1] && n < out.length; i++) {
           int o = i * CloseUp.SEG;
           if (Math.max(v[o + 4], v[o + 5]) < hc + OVER_M) continue;
+          if (carOnSegment(v, o, ce, cn, ch, sh, roadM[c] / 2)) continue;
           float[] q = lifted(v, o, ce, cn, ch, sh, ik, hs, LIFTED);
           float dx = q[2] - q[0], dz = q[3] - q[1], l2 = dx * dx + dz * dz;
           float t = l2 <= 0 ? 0 : Math.max(0, Math.min(1, -(q[0] * dx + q[1] * dz) / l2));
@@ -213,6 +214,21 @@ final class Under {
       }
     }
     return n;
+  }
+
+  // The car is ON this deck segment, not beneath it (owner 2026-11-15: the outline showed while driving along
+  // Exchange Pkwy over US-75): the segment runs the car's way (within ON_DECK_DEG, either direction) and its nearest
+  // point is within reach (half the road's width, no ON_DECK_M slack, so a frontage road 20 m beside a viaduct stays "under" it). A deck crossing the car's way, even at a
+  // shallow 45 deg, is never this. Independent of carHeight, whose nearest-candidate pick can land on the ground
+  // road below (or fall to 0 on a curve or ramp past ON_DECK_DEG) and then call the car's own deck "over" it.
+  // Stateless; the heading boundary is smoothed only by the outline's Fade ease in MapView.
+  static boolean carOnSegment(float[] v, int o, float ce, float cn, float ch, float sh, float reach) {
+    float dx = v[o + 2] - v[o], dy = v[o + 3] - v[o + 1], len = (float) Math.hypot(dx, dy);
+    if (len <= 0) return false;
+    if (Math.abs((dx * sh + dy * ch) / len) < COS_ON) return false;
+    float t = Math.max(0, Math.min(1, ((ce - v[o]) * dx + (cn - v[o + 1]) * dy) / (len * len)));
+    float ex = v[o] + t * dx - ce, ey = v[o + 1] + t * dy - cn;
+    return ex * ex + ey * ey <= reach * reach;
   }
 
   private static final float[] LIFTED = new float[4];  // UI thread only

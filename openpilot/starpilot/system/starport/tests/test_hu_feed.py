@@ -739,3 +739,76 @@ def test_instruction_sends_the_lanes_and_toward_only_when_given():
   assert len(json.dumps(sent, separators=(',', ':'))) < 400
   step.lanes, step.toward = [], ''
   assert 'lanes' not in hf.instruction(step) and 'toward' not in hf.instruction(step)
+
+
+class FakeTraffic:
+  def __init__(self, payloads):
+    self.payloads, self.wanted, self.idled = payloads, [], 0
+  def want(self, keys): self.wanted.append(list(keys))
+  def idle(self): self.idled += 1
+  def current(self, keys): return [(k, *self.payloads[k]) for k in keys if k in self.payloads]
+  def close(self): pass
+
+
+def test_traffic_tiles_go_only_to_head_units_that_draw_them():
+  big = bytes(range(256)) * 9  # 2304 bytes: three datagrams
+  traffic = FakeTraffic({'1/1': (1, big), '1/2': (1, b'x')})
+  feed, sock, now, _ = make()
+  feed.traffic = traffic
+  sock.hello()
+  feed.tick()
+  assert 'q' not in sock.kinds() and traffic.wanted == []   # no tq: nothing asked, nothing sent
+  sock.hello(tq=1)
+  now[0] += 0.05
+  feed.tick()
+  parts = [m for m, _ in sock.sent if m['t'] == 'q']
+  assert {p['k'] for p in parts} == {'1/1'} and [p['i'] for p in parts] == [0, 1, 2]
+  assert all(set(p) == {'v', 't', 'k', 'i', 'n', 'b'} and p['n'] == 3 for p in parts)
+  assert b''.join(base64.b64decode(p['b']) for p in parts) == big
+  assert max(len(json.dumps(m, separators=(',', ':'))) for m, _ in sock.sent) < 1472
+  sock.sent.clear()
+  now[0] += 0.05
+  sock.hello(tq=1)
+  feed.tick()
+  assert [p['k'] for p, _ in sock.sent if p['t'] == 'q'] == ['1/2']   # the next tile, nearest first
+  sock.sent.clear()
+  for _ in range(3):
+    now[0] += 0.05
+    sock.hello(tq=1)
+    feed.tick()
+  assert 'q' not in sock.kinds()                                     # all sent, nothing changed
+  traffic.payloads['1/2'] = (2, b'y')                                # a refetch that changed
+  now[0] += 0.05
+  sock.hello(tq=1)
+  feed.tick()
+  assert [p['k'] for p, _ in sock.sent if p['t'] == 'q'] == ['1/2']
+  sock.sent.clear()
+  sock.hello(address=('10.122.0.21', 40001), tq=1)                   # a head unit (re)connecting gets them all again
+  feed.tick()
+  now[0] += 0.05
+  sock.hello(address=('10.122.0.21', 40001), tq=1)
+  feed.tick()
+  assert {p['k'] for p, a in sock.sent if p['t'] == 'q' and a == ('10.122.0.21', 40001)} == {'1/1', '1/2'}
+
+
+def test_traffic_fetching_stops_when_the_head_unit_does_not_draw_it():
+  traffic = FakeTraffic({})
+  feed, sock, now, _ = make()
+  feed.traffic = traffic
+  sock.hello(tq=1)
+  feed.tick()
+  assert traffic.wanted
+  sock.hello()
+  now[0] += 0.05
+  feed.tick()
+  assert traffic.idled >= 1
+
+
+def test_traffic_chunks_never_take_the_road_tiles_share():
+  raw = bytes(range(256)) * 200   # 51200 bytes: 52 datagrams, more than a tick's share
+  feed, sock, now, _ = make(tiles=lambda key: raw if key == '1/1' else None)
+  feed.traffic = FakeTraffic({'1/2': (1, b'z' * 3000)})
+  sock.hello(have=[], tq=1)
+  feed.tick()
+  assert sum(1 for m, _ in sock.sent if m['t'] == 'm') == hf.TILE_CHUNKS_PER_TICK
+  assert 'q' not in sock.kinds()

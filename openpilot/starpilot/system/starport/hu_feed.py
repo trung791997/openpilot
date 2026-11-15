@@ -17,7 +17,7 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      rt is the newest road tile format it reads (2: street names per line, 3: bridge flags too, 4: traffic signal
      points too, 5: layers, lanes and walks too, 6: railroad crossings and rail lines too); a newer tile, or any
      but format 1 without rt, is turned back into the format it reads (an older app drops anything else, and the
-     comma would resend it every TILE_RETRY s)
+     comma would resend it every TILE_RETRY s); "tq": 1 says it draws traffic tiles (q), else it gets none
   s  state, 1 Hz and on change: {"mode", "metric", "nav", "limit", "media", "pos"}; nav is null unless a route is guiding;
      nav may carry "lanes": [[directions, use, arrow], ...] left to right (directions the OR of the lane's arrows:
      straight 1, slight right 2, right 4, sharp right 8, uturn 16, sharp left 32, left 64, slight left 128, merge left
@@ -43,6 +43,9 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      the last pose goes on with age 0, spd 0 and "held": 1 (StopHold), left out otherwise
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
+  q  traffic tile, only to a head unit whose hello has "tq": 1 (it draws traffic): {"k": "x/y", "i", "n", "b": base64},
+     the 3x3 zoom-14 tiles around the car, chunked as m; payload layout in navigation/traffic_tiles.py. A tile
+     with no congested roads is still sent (no lines) so stale traffic is cleared; resent when it changes and on connect
   a  album cover, once it is downloaded and every COVER_EVERY s while a song is on: {"id", "i", "n", "b": base64};
      a COVER_PX square JPEG, id as media's art
 """
@@ -554,7 +557,12 @@ class HeadUnitFeed:
                broadcasts: Callable[[], list[str]] = broadcast_addresses, tiles: Callable[[str], bytes | None] | None = None,
                around: Callable[[float, float], list[str]] = tiles_around, clock: Callable[[], float] = time.monotonic,
                clock_ns: Callable[[], int] = time.monotonic_ns, log: Callable[..., None] = lambda *_, **__: None,
-               cover: Callable[[str], bytes | None] | None = None):
+               cover: Callable[[str], bytes | None] | None = None, traffic=None):
+    self.traffic = traffic  # TrafficTiles, made on the first tq hello when not given
+    self.tq = False        # the head unit draws traffic tiles
+    self._road_sent = 0
+    self.sending_q: list[bytes] = []
+    self.traffic_sent: dict[str, int] = {}  # tile -> generation the head unit has been sent
     self._read, self.broadcasts, self._tiles, self.around = read, broadcasts, tiles, around
     self._cover = cover or fetch_cover
     self.clock, self.clock_ns, self.log = clock, clock_ns, log
@@ -595,6 +603,8 @@ class HeadUnitFeed:
     if self._thread is not None:
       self._thread.join(timeout=2)
     self.sock.close()
+    if self.traffic is not None:
+      self.traffic.close()
     closer = getattr(self._read, 'close', None)
     if callable(closer):
       try:
@@ -636,10 +646,12 @@ class HeadUnitFeed:
         self.log('hu_feed_peer', port=address[1])
         self.peer, self.sent_state, self.sent_route, self.last_route = address, None, None, -math.inf
         self.sending, self.tile_sent = [], {}
+        self.sending_q, self.traffic_sent = [], {}
         self.sent_cover, self.last_cover = None, -math.inf
       self.peer_seen = now
       have = message.get('have')
       self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
+      self.tq = message.get('tq') == 1 and not isinstance(message.get('tq'), bool)
       rt = message.get('rt')
       self.tile_version = rt if isinstance(rt, int) and not isinstance(rt, bool) and rt >= 1 else 1
 
@@ -655,7 +667,11 @@ class HeadUnitFeed:
       self.log('hu_feed_peer_lost')
       self.peer = None
     if self.peer is None:
+      if self.traffic is not None:
+        self.traffic.idle()
       return True
+    if not self.tq and self.traffic is not None:
+      self.traffic.idle()
     if self._read is None:
       self._read = CerealReader()
       self._read._vasm_log = self.log  # the V-ASM gate and swallowed-exception lines
@@ -708,9 +724,41 @@ class HeadUnitFeed:
       if turn[1]:
         pose['tr'] = 1
       self._send('p', pose)
+      self._road_sent = 0
       if self.have is not None:
         self.send_tiles(pose['lat'], pose['lon'], now)
+      if self.tq:
+        self.send_traffic(pose['lat'], pose['lon'])
     return False
+
+  @staticmethod
+  def chunk_tile(kind: str, key: str, raw: bytes) -> list[bytes]:
+    """The datagrams of one tile: TILE_CHUNK-byte pieces, base64'd (the m road tile and the q traffic tile)."""
+    parts = [base64.b64encode(raw[i:i + TILE_CHUNK]).decode() for i in range(0, len(raw), TILE_CHUNK)]
+    return [json.dumps({'v': VERSION, 't': kind, 'k': key, 'i': i, 'n': len(parts), 'b': part},
+                       separators=(',', ':')).encode() for i, part in enumerate(parts)]
+
+  def send_traffic(self, lat: float, lon: float) -> None:
+    """Asks the traffic fetcher for the tiles around the car and sends the ones the head unit lacks or that changed,
+    one tile at a time, after the road tile chunks of this tick so traffic never takes the road tiles' share."""
+    if self.traffic is None:
+      from openpilot.starpilot.navigation.traffic_tiles import TrafficTiles
+      self.traffic = TrafficTiles(log=self.log)
+    keys = self.around(lat, lon)
+    self.traffic.want(keys)
+    if not self.sending_q:
+      for key, generation, payload in self.traffic.current(keys):
+        if self.traffic_sent.get(key) != generation:
+          self.sending_q = self.chunk_tile('q', key, payload)
+          self.traffic_sent[key] = generation
+          break
+    budget = 0 if self.sending else TILE_CHUNKS_PER_TICK - self._road_sent
+    for data in self.sending_q[:budget]:
+      try:
+        self.sock.sendto(data, self.peer)
+      except OSError:
+        pass
+    del self.sending_q[:budget]
 
   def send_tiles(self, lat: float, lon: float, now: float) -> None:
     if not self.sending and now - self.last_tile_scan >= TILE_SCAN_EVERY:
@@ -728,9 +776,7 @@ class HeadUnitFeed:
           except ValueError:
             self.tile_sent[key] = now  # a broken file: try again after TILE_RETRY, maybe re-downloaded by then
             continue
-          parts = [base64.b64encode(raw[i:i + TILE_CHUNK]).decode() for i in range(0, len(raw), TILE_CHUNK)]
-          self.sending = [json.dumps({'v': VERSION, 't': 'm', 'k': key, 'i': i, 'n': len(parts), 'b': part},
-                                     separators=(',', ':')).encode() for i, part in enumerate(parts)]
+          self.sending = self.chunk_tile('m', key, raw)
           self.tile_sent[key] = now
           break
     for data in self.sending[:TILE_CHUNKS_PER_TICK]:
@@ -738,6 +784,7 @@ class HeadUnitFeed:
         self.sock.sendto(data, self.peer)
       except OSError:
         pass
+    self._road_sent = len(self.sending[:TILE_CHUNKS_PER_TICK])
     del self.sending[:TILE_CHUNKS_PER_TICK]
 
   def send_cover(self, url: str, art: int, now: float) -> None:

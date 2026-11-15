@@ -342,7 +342,7 @@ final class Feed {
     // rt: the newest road tile format this app reads, 6 with railroad crossings and rail lines (2026-11-01); the
     // comma sends an older app's tiles as format 5 (layers, lanes, sidewalks), 4 (signals), 3 (bridges), 2 (names,
     // 2026-10-30) or 1 (no "rt")
-    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", VERSION).toString().getBytes("UTF-8");
+    return new JSONObject().put("v", 1).put("t", "h").put("have", have).put("rt", VERSION).put("tq", 1).toString().getBytes("UTF-8");
   }
 
   private static void handle(JSONObject m) throws Exception {
@@ -400,6 +400,8 @@ final class Feed {
       onRoute(m);
     } else if (t.equals("m")) {
       onTile(m);
+    } else if (t.equals("q")) {
+      onTraffic(m);
     } else if (t.equals("a")) {
       onCover(m);
     }
@@ -464,6 +466,29 @@ final class Feed {
     tiles.put(key, tile);
     evict(tile);
     tilesVersion++;
+  }
+
+  // Live traffic for one tile (hello "tq": 1), chunked like a road tile; TrafficLayer decodes and keeps it.
+  private static final Map<String, String[]> trafficParts = new HashMap<String, String[]>();
+
+  private static void onTraffic(JSONObject m) throws Exception {
+    String key = m.getString("k");
+    int i = m.getInt("i"), n = m.getInt("n");
+    if (n <= 0 || n > 2100 || i < 0 || i >= n) return;
+    String[] parts = trafficParts.get(key);
+    if (parts == null || parts.length != n) {
+      if (trafficParts.size() > 4) trafficParts.clear();
+      parts = new String[n];
+      trafficParts.put(key, parts);
+    }
+    parts[i] = m.getString("b");
+    ByteArrayOutputStream raw = new ByteArrayOutputStream();
+    for (String p : parts) {
+      if (p == null) return;
+      raw.write(Base64.decode(p, Base64.DEFAULT));
+    }
+    trafficParts.remove(key);
+    TrafficLayer.receive(key, raw.toByteArray());
   }
 
   // The album cover, a small JPEG in a few datagrams; only the latest one is kept.

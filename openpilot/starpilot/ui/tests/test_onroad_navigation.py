@@ -171,6 +171,14 @@ def test_original_maneuver_assets_and_fallback_are_bounded():
   assert icon_name('turn', 'slightRight') == 'direction_turn_slight_right.png'
   assert icon_name('roundabout', 'left') == 'direction_roundabout_left.png'
   assert icon_name('unknown/../../', 'anything') == 'direction_turn_straight.png'
+  # Mapbox types that had no file of their own and fell back to the straight arrow
+  assert icon_name('roundabout turn', 'left') == 'direction_turn_left.png'
+  assert icon_name('roundabout turn', 'sharp right') == 'direction_turn_sharp_right.png'
+  assert icon_name('exit roundabout', 'right') == 'direction_roundabout_right.png'
+  assert icon_name('exit rotary', 'slight left') == 'direction_roundabout_slight_left.png'
+  assert icon_name('exit roundabout', '') == 'direction_roundabout.png'
+  assert icon_name('exit rotary', '') == 'direction_roundabout.png'
+  assert icon_name('exit roundabout', 'uturn') == 'direction_uturn.png'
   for name, row in MANIFEST.items():
     data = (ASSETS / name).read_bytes()
     assert len(data) == row['bytes']
