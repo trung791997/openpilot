@@ -21,8 +21,8 @@ def make(monkeypatch, enabled=True, active=True, min_gap=False):  # min_gap Fals
   return hb.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05)
 
 
-def nf(p, ld, target, v_ego=25.0, ld2=None, reset_state=False):
-  return p.need_floor(lead_one=ld, lead_two=ld2, target=target, v_ego=v_ego, reset_state=reset_state)
+def nf(p, ld, target, v_ego=25.0, ld2=None, reset_state=False, **kw):
+  return p.need_floor(lead_one=ld, lead_two=ld2, target=target, v_ego=v_ego, reset_state=reset_state, **kw)
 
 
 # steady closing moving lead: v_ego 25, vRel -3 (vLead 22), d 80: need = 9 / (2 * (80 - 28)) = 0.0865 -> floor -0.8
@@ -152,6 +152,53 @@ def test_track_id_change_restarts_gate(monkeypatch):
   assert nf(p, steady(tid=2), -2.0) == pytest.approx(-0.8)
 
 
+# ---- fixes A + B (owner 2026-11-14, route 000000d2 seg 21 t1298.8) ---------------------------------------------------------
+# d2 case: camera lead (tid -1, radar False) 73.7 m, vRel -5.34, v_ego 13.6 (vLead 8.3); e2e braking -1.89 for a red light.
+def d2_lead(radar=False, tid=-1):
+  return lead(73.7, -5.34, 0.0, tid=tid, radar=radar)
+
+
+def test_d2_camera_lead_never_lifts(monkeypatch):
+  p = make(monkeypatch, min_gap=True)
+  assert run(p, d2_lead(), 30, target=-1.89, v_ego=13.6) == -1.89
+
+
+def test_d2_radar_lead_lifted_without_cap(monkeypatch):  # the old behaviour, for a radar lead and no cap: -0.80
+  p = make(monkeypatch, min_gap=True)
+  assert run(p, d2_lead(radar=True, tid=6), 30, target=-1.89, v_ego=13.6) == pytest.approx(-0.8)
+
+
+def test_d2_cap_keeps_e2e_braking(monkeypatch):  # radar lead, but e2e (the cap) is the one braking: no lift above it
+  p = make(monkeypatch, min_gap=True)
+  assert run(p, d2_lead(radar=True, tid=6), 30, target=-1.89, v_ego=13.6, cap=-1.89) == -1.89
+
+
+def test_cap_limits_lift_part_way(monkeypatch):  # lead MPC -2.0, e2e/cruise -1.2: lift stops at -1.2, not -0.8
+  p = make(monkeypatch)
+  assert run(p, steady(), 15, target=-2.0, cap=-1.2) == pytest.approx(-1.2)
+
+
+def test_cap_above_floor_changes_nothing(monkeypatch):  # cruise 0.3 / e2e -0.5: the floor -0.8 is the binding value
+  p = make(monkeypatch)
+  assert run(p, steady(), 15, target=-2.0, cap=-0.5) == pytest.approx(-0.8)
+
+
+def test_stopping_never_lifts_and_keeps_gate(monkeypatch):
+  p = make(monkeypatch)
+  assert run(p, steady(), 15, target=-2.0, stopping=True) == -2.0
+  assert nf(p, steady(), -2.0) == pytest.approx(-0.8)  # gate stayed open through the stop frames
+
+
+def test_camera_lead_keeps_state_machine(monkeypatch):  # camera lead still latches sticky-off (it just never lifts)
+  p = make(monkeypatch)
+  nf(p, lead(40.0, -15.0, tid=-1, radar=False), -2.0)  # ttc 2.7 -> off
+  assert p._need_floor.off
+
+
+def test_default_radar_only_is_on():
+  assert hb.NEED_FLOOR_RADAR_ONLY is True
+
+
 def test_radar_flag_change_restarts_gate(monkeypatch):
   p = make(monkeypatch)
   assert run(p, steady(radar=True), 11) == pytest.approx(-0.8)
@@ -217,7 +264,7 @@ def ref_d(sticky, ld, ve, a_, emergency, MULT=None):
     if sticky.get('gid') != lid or not cond: sticky['gcnt'] = 0
     else: sticky['gcnt'] = sticky.get('gcnt', 0) + 1
     sticky['gid'] = lid; gate_ok = sticky['gcnt'] >= 10
-    if gate_ok and closing and not sticky['off'] and ve >= 5.0 and d >= 15.0 and ttc > 3.0 and need < 2.0:
+    if gate_ok and closing and not sticky['off'] and ve >= 5.0 and d >= 15.0 and ttc > 3.0 and need < 2.0 and l['radar']:  # + fix B
       fl = -max(MULT * need, 0.8)
       if a_ < fl: a_ = fl
   else:
