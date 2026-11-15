@@ -49,9 +49,10 @@ from types import SimpleNamespace
 
 from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
 from openpilot.starpilot.longitudinal.bosch_a_turnoff import FastLetoff
-from openpilot.starpilot.longitudinal.bosch_a_ghost import GhostLetoff
+from openpilot.starpilot.longitudinal.bosch_a_ghost import CLEAR_DY, CLEAR_Y_LETOFF, GhostLetoff
 
 GHOST_ARM = True  # arm G4 (replay evidence; car build 2026-11-14): GhostLetoff replaces the release coast and FastLetoff; bosch_a_ghost.py
 
@@ -140,6 +141,30 @@ def planner_action_t(actuator_delay: float, enabled: bool) -> float:
   return min(PLANNER_ACTION_T_S, default) if enabled else default
 
 
+def _ghost_marks(ghost):
+  g = ghost.ghost
+  return ghost.fired, ghost.cleared, g, (g.age if g is not None else 0.0)
+
+
+def _log_ghost(ghost, before, prev, target, v_ego):
+  """cloudlog 'bosch_a_ghost' on fire / clear / end, so a drive shows what the ghost let-off did (route d1 needed an
+  offline re-run). Transitions only (a few per drive); guarded so it can never change behaviour."""
+  try:
+    fired0, cleared0, g0, age0 = before
+    g = ghost.ghost
+    common = dict(prev=round(float(prev), 2), target=round(float(target), 2), v=round(float(v_ego), 1))
+    if g0 is not None and g is not g0:
+      cloudlog.event('bosch_a_ghost', ev='end', why=ghost.end_reason, tid=g0.tid, d0=round(g0.d0, 1),
+                     age=round(age0 + ghost.dt, 2), cleared=bool(g0.letoff_clear), nogas=round(ghost.nogas_s, 2), **common)
+    if ghost.fired > fired0 and g is not None:
+      cloudlog.event('bosch_a_ghost', ev='fire', tid=g.tid, d0=round(g.d0, 1), y0=round(g.y0, 2), **common)
+    if ghost.cleared > cleared0 and g is not None:
+      how = 'raw_y' if g.raw_seen and g.y_last >= max(g.y0 + CLEAR_DY, CLEAR_Y_LETOFF) else 'camera'
+      cloudlog.event('bosch_a_ghost', ev='clear', how=how, tid=g.tid, age=round(g.age, 2), y_last=round(g.y_last, 2), **common)
+  except Exception:
+    pass
+
+
 class BoschARelease:
   def __init__(self, CP, dt: float = DT_MDL):
     self.enabled = vehicle_supported(CP)  # smooth + action_t: radar on or off (vision-only too, as at 786d62d5d2)
@@ -209,11 +234,14 @@ class BoschARelease:
            standstill: bool = False, raw_y: dict[int, float] | None = None, v_ego: float = 0.0,
            model_lead0=None) -> float:
     if GHOST_ARM:
+      before = _ghost_marks(self.ghost)
       if reset_state or standstill or not self.enabled:
         self.ghost.reset()
+        _log_ghost(self.ghost, before, prev, target, v_ego)
         return self.smooth(prev, target, reset=bool(reset_state or standstill))
       skip = (lane_change_state is not None and lane_change_state != LaneChangeState.off) or left_blinker or right_blinker or gas_pressed
       jerk, floor = self.ghost.update(lead_one, float(prev), float(v_ego), raw_y or {}, model_lead0, skip=skip)
+      _log_ghost(self.ghost, before, prev, target, v_ego)
       if self.ghost.no_gas:
         target = min(float(target), 0.0)
       return self.smooth_ghost(prev, target, False, jerk, floor)

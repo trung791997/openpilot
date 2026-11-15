@@ -99,8 +99,11 @@ class GhostLetoff:
     self.nogas_s = 0.0
     self.fired = 0      # ghosts born
     self.cleared = 0    # ghosts cleared for the fast let-off
+    self.end_reason = ''  # why the last ghost ended (back/closing/ttl/skip/reset); diagnostic only
 
   def reset(self):
+    if self.ghost is not None:
+      self.end_reason = 'reset'
     self.prev = None
     self.ghost = None
     self.nogas_s = 0.0
@@ -131,6 +134,7 @@ class GhostLetoff:
       # 1.27 m/s, kill the 10.5 m turner's ghost on pb c1 s13 before its raw track moved out (+0.375 vs car for 0.6 s).
       closing = (cur is not None and cur.dRel < min(CLOSE_D_M, g.d0 + MERGE_M) and cur.vRel < CLOSE_VREL)
       if back or closing or g.age >= g.ttl:
+        self.end_reason = 'back' if back else ('closing' if closing else 'ttl')  # diagnostic only (bosch_a_ghost log)
         self.ghost = g = None
         self.nogas_s = 0.0 if (back or closing) else self.nogas_s
     if g is not None:
@@ -159,6 +163,8 @@ class GhostLetoff:
         self.nogas_s = 0.0
 
     if skip:  # lane change, blinker or gas pressed: passing a slower car also releases its lead, and we want gas there
+      if g is not None:
+        self.end_reason = 'skip'
       self.ghost = g = None
       self.nogas_s = 0.0
     elif (g is None and prev is not None and prev.vRel < TRIGGER_VREL and prev_target < TRIGGER_PREV_TARGET and
