@@ -16,7 +16,9 @@ final class Turn {
   static String icon(String type, String modifier, Set<String> have) {
     if (type == null) type = "";
     if (modifier == null) modifier = "";
-    String kind = type.equals("rotary") ? "roundabout" : type.equals("new name") || type.equals("continue") ? "turn" : type;
+    // 'roundabout turn' is the plain turn for its modifier; the exits of a roundabout or rotary are the roundabout
+    String kind = type.equals("rotary") || type.equals("exit roundabout") || type.equals("exit rotary") ? "roundabout"
+        : type.equals("new name") || type.equals("continue") || type.equals("roundabout turn") ? "turn" : type;
     kind = kind.replace(' ', '_');
     String suffix = modifier.equals("slightLeft") ? "slight_left" : modifier.equals("slightRight") ? "slight_right"
         : modifier.equals("sharpLeft") ? "sharp_left" : modifier.equals("sharpRight") ? "sharp_right" : modifier;
@@ -61,6 +63,24 @@ final class Turn {
       b.append(w);
     }
     return b.length() > 240 ? b.substring(0, 240) : b.toString();
+  }
+
+  // Whether the maneuver is a roundabout or rotary of any kind (the card draws its own ring for these, RoundaboutIcon).
+  static boolean isRoundabout(String type) {
+    return "roundabout".equals(type) || "rotary".equals(type) || "roundabout turn".equals(type)
+        || "exit roundabout".equals(type) || "exit rotary".equals(type);
+  }
+
+  // Whether the maneuver turns the car round (the modifier is uturn, in either spelling).
+  static boolean isUturn(String type, String modifier) {
+    return "uturn".equals(modifier) || "u-turn".equals(modifier) || "u turn".equals(modifier);
+  }
+
+  // A U-turn's text: "Make a U-turn", with " onto <road>" after it when a road is given. The card (MapView.cardLines)
+  // tries it with the road first and keeps it when it fits on one line.
+  static String uturnText(String road) {
+    String r = text(road);
+    return r.isEmpty() ? "Make a U-turn" : "Make a U-turn onto " + r;
   }
 
   private Turn() {}

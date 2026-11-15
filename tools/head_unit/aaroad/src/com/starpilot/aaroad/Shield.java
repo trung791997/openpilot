@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 // Plain Java, no Android: test/ShieldTest.java runs it on the desktop.
 //
 // A route number is one of the forms Mapbox's banners, step refs and road tiles use, written the one way the badge
-// shows it: "I-635" (I 635, I-635, IH 635, Interstate 635), "US 75" (US-75, U.S. 75, US Highway 75), "SH 121" (State
+// shows it: "I-635" (I 635, I-635, IH 635, Interstate 635), "US 75" (a freeway, U.S. 75, US Highway 75), "SH 121" (State
 // Highway 121), "SR 1" (State Route 1), a state's own ("TX 121", "CA-1"), and Texas's "Loop 12", "Spur 366", "FM 1709",
 // "RM 620", "Beltway 8", "CR 123". A letter stuck to the number stays ("I-35E"); a direction after a space does not
 // ("I-635 E" is the badge "I-635" then "E"). Named roads stay text, tollways too ("Dallas North Tollway"), and so does

@@ -71,6 +71,14 @@ def test_arrow_is_the_car_screens_for_every_maneuver(java):
   assert got == [icon_name(t or '', m or '') for t, m in cases]
 
 
+def test_roundabout_exit_and_turn_types_are_not_the_straight_arrow(java):
+  cases = [('roundabout turn', 'left'), ('roundabout turn', 'sharp right'), ('exit roundabout', 'right'),
+           ('exit rotary', 'slight left'), ('exit roundabout', ''), ('exit rotary', '')]
+  got = java([f'icon {_hex(t)} {_hex(m)}' for t, m in cases])
+  assert got == ['direction_turn_left.png', 'direction_turn_sharp_right.png', 'direction_roundabout_right.png',
+                 'direction_roundabout_slight_left.png', 'direction_roundabout.png', 'direction_roundabout.png']
+
+
 @pytest.mark.parametrize('metric', [False, True])
 def test_distance_matches_across_the_range_and_at_rounding_ties(java, metric):
   meters = [i * 0.1 for i in range(20000)] + [i * 1.0 for i in range(2000, 40000, 7)]

@@ -243,6 +243,9 @@ final class MapView extends View {
   private final CloseView closeView = new CloseView();
   // this frame's kept pieces by class, in world metres, drawn through `world`; the near ones go in stubPaths/routePath
   private final Path[] stubWorld = paths(2 * OW_OFF);
+  // live traffic (TrafficLayer): per level and road class, kept in world metres and the near ones in the frame
+  private final Path[] trafficPaths = paths(TrafficLayer.GROUPS), trafficWorld = paths(TrafficLayer.GROUPS);
+  private final Paint trafficPaint = stroke(Color.WHITE, 0);
   private final Path routeWorld = new Path();
   // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe.
   // carpetUnderPaths (the owner 2026-11-08) holds the same four, split off where Scene.routeUnder says the route runs
@@ -373,7 +376,8 @@ final class MapView extends View {
   static final class Scene {
     double ax, ay, mpt;  // anchor in zoom-14 tile units; metres per tile unit there
     long routeId = -1;
-    int tilesVersion;
+    int tilesVersion, trafficVersion;
+    Chunks trafficChunks = new Chunks();  // TrafficLayer lines, cls = TrafficLayer group (level, road class)
     float[][] route = new float[0][], stubs = new float[0][], roads = new float[0][];
     int[] stubsCls = new int[0], roadsCls = new int[0];  // tile class of each run, + BRIDGE on a bridge
     float[] roadsHw = new float[0], roadsHwNoMinor = new float[0];  // each run's drawn half width in metres (Snap), and with class 4 zeroed
@@ -1250,8 +1254,9 @@ final class MapView extends View {
     Scene s = scene;
     Feed.Route r = Feed.route;
     final double lat = Feed.lat, lon = Feed.lon;
+    TrafficLayer.sweep();  // drops tiles 15 min after receipt
     boolean need = s == null || (r == null ? -1 : r.id) != s.routeId
-        || (Feed.tilesVersion != s.tilesVersion && now - builtAt > TILE_REBUILD_MS);
+        || ((Feed.tilesVersion != s.tilesVersion || TrafficLayer.version != s.trafficVersion) && now - builtAt > TILE_REBUILD_MS);
     Feed.Pose p = pose();
     final double spd = Math.max(0, p.spd), h = Math.toRadians(p.hdg), kView = Math.max(k, FreeView.range(spd) / R0);
     if (!need) {
@@ -1313,6 +1318,7 @@ final class MapView extends View {
     s.ay = a[1];
     s.mpt = Feed.metersPerTile(lat);
     s.tilesVersion = version;
+    s.trafficVersion = TrafficLayer.version;  // before the snapshot below: a tile landing meanwhile asks for another build
     if (r == null) {
       s.area = FreeView.area(spd, kView);
       s.bh = h;
@@ -1460,6 +1466,12 @@ final class MapView extends View {
     s.routeBox = boxes(s.route);
     s.stubsBox = boxes(s.stubs);
     s.roadsBox = boxes(s.roads);
+    {  // live traffic on the roads kept above, in the same frame; the class of the nearest road sets its width
+      boolean withRoute = s.route.length > 0;
+      TrafficLayer.Lines tl = TrafficLayer.lines(TrafficLayer.snapshot(), s.ax, s.ay, s.mpt,
+          withRoute ? s.stubs : s.roads, withRoute ? s.stubsBox : s.roadsBox, withRoute ? s.stubsCls : s.roadsCls);
+      s.trafficChunks = chunks(tl.runs, tl.group, null);
+    }
     if (r != null) s.junctions = junctions(s.route, s.stubs);
     s.routeAlong = new float[s.route.length][];
     double along = 0;
@@ -2144,12 +2156,15 @@ final class MapView extends View {
       for (Path p : carpetUnderPaths) p.rewind();
       for (Path p : stubPaths) p.rewind();
       for (Path p : stubWorld) p.rewind();
+      for (Path p : trafficPaths) p.rewind();
+      for (Path p : trafficWorld) p.rewind();
       gridPath.rewind();
       gridLines(s, ce, cn, ch, sh, ik);
       pieces(s.routeChunks, routeWorlds, routeFrames, ce, cn, ch, sh, ik);
       if (s.route.length > 0) pieces(s.stubsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
       if (s.route.length > 0) carpet(s, f, ce, cn, ch, sh, ik, reach);
       else pieces(s.roadsChunks, stubWorld, stubPaths, ce, cn, ch, sh, ik);
+      pieces(s.trafficChunks, trafficWorld, trafficPaths, ce, cn, ch, sh, ik);
     }
 
     currentRoad(s, ce, cn, h, now);
@@ -2264,6 +2279,13 @@ final class MapView extends View {
         sideKerb.setAlpha(255);
         side.setAlpha(255);
       }
+      // live traffic (TrafficLayer): over the road fill and the flat bridges, under the carpet; TrafficLayer.WIDTH_K of the
+      // road's drawn width, round caps (the paint's)
+      for (int g = 0; g < TrafficLayer.GROUPS; g++) {
+        trafficPaint.setColor(TRAFFIC[g / TrafficLayer.CLASSES]);
+        stroke(canvas, trafficWorld[g], trafficPaths[g], trafficPaint,
+            TrafficLayer.WIDTH_K * Math.max(floor, ROAD_M[g % TrafficLayer.CLASSES] * ik));
+      }
       // zoomed in: the raised bridges, lane lines and sidewalks (CloseView), under the carpet
       closeView.draw(canvas, s.close, ce, cn, ch, sh, ik, CloseUp.gate(f.k * R0, CloseUp.ROAD_SHOW, CloseUp.ROAD_HIDE),
                      CloseUp.gate(f.k * R0, CloseUp.WALK_SHOW, CloseUp.WALK_HIDE));
@@ -2279,12 +2301,75 @@ final class MapView extends View {
       canvas.restore();
     }
 
+    maneuverArrow(canvas, s, f, now);
     drawCar(canvas, f);
     canvas.restore();
     long t2 = SystemClock.uptimeMillis();
     overlay(canvas, now, free, onGpu);
     drawn(canvas, now, t0, t1, t2);
   }
+
+  // The roundabout / U-turn arrow on the route (ManeuverArrow, the owner 2026-11-15): white with a dark outline and an
+  // arrowhead, when the maneuver is within SHOW_M. Always on this canvas, above the carpet and under the car: the GPU
+  // layer draws the roads and the carpet underneath and this canvas is composited over it, so one path serves the GPU,
+  // the software fallback and the close-up. Its line is found again only when the maneuver moves 5 m along the route.
+  private final Path arrowShaft = new Path(), arrowHead = new Path();
+  private final Paint arrowPaint = stroke(Color.WHITE, 0), arrowFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final float[] arrowDir = new float[2], arrowTri = new float[6];
+  private Scene arrowScene;
+  private long arrowKey = Long.MIN_VALUE;
+  private float[] arrowLine;
+
+  private void maneuverArrow(Canvas canvas, Scene s, Frame f, long now) {
+    Feed.Nav nav = f.free ? null : turnNav(now);
+    if (nav == null || s.route.length == 0 || Float.isNaN(f.cut) || !ManeuverArrow.wants(nav.type, nav.modifier)) return;
+    double left = turnLeft(nav, now);
+    if (left < 0 || left > ManeuverArrow.SHOW_M) return;
+    double at = f.cut + left;
+    long key = Math.round(at / 5) * 4 + (ManeuverArrow.ring(nav.type) ? 1 : 0);
+    if (s != arrowScene || key != arrowKey) {
+      arrowScene = s;
+      arrowKey = key;
+      arrowLine = ManeuverArrow.line(nav.type, s.route, s.routeAlong, Math.round(at / 5) * 5.0);
+    }
+    float[] p = arrowLine;
+    if (p == null) return;
+    float ce = f.ce, cn = f.cn, ch = f.ch, sh = f.sh, ik = f.ik;
+    arrowShaft.rewind();
+    line(p, 0, arrowShaft, ce, cn, ch, sh, ik, Float.NaN, 0);
+    ManeuverArrow.endDirection(p, 6, arrowDir);
+    int n = p.length / 2;
+    float tipE = p[2 * n - 2], tipN = p[2 * n - 1];
+    float de = tipE - ce, dn = tipN - cn;
+    float tx = (de * ch - dn * sh) * ik, tz = (de * sh + dn * ch) * ik;  // the tip in the car's frame
+    float dx = (arrowDir[0] * ch - arrowDir[1] * sh), dz = (arrowDir[0] * sh + arrowDir[1] * ch);
+    RoundaboutGeom.head(tx, tz, dx, dz, dm(ARROW_HEAD_PX), dm(ARROW_HEAD_PX * 0.6f), arrowTri);
+    arrowHead.rewind();
+    arrowHead.moveTo(arrowTri[0], arrowTri[1]);
+    arrowHead.lineTo(arrowTri[2], arrowTri[3]);
+    arrowHead.lineTo(arrowTri[4], arrowTri[5]);
+    arrowHead.close();
+    canvas.save();
+    canvas.concat(camera);
+    arrowPaint.setStrokeCap(Paint.Cap.BUTT);
+    arrowPaint.setColor(ARROW_EDGE);
+    arrowPaint.setStrokeWidth(dm(ARROW_PX + 2 * ARROW_EDGE_PX));
+    canvas.drawPath(arrowShaft, arrowPaint);
+    arrowFill.setStyle(Paint.Style.FILL_AND_STROKE);
+    arrowFill.setStrokeJoin(Paint.Join.ROUND);
+    arrowFill.setColor(ARROW_EDGE);
+    arrowFill.setStrokeWidth(dm(2 * ARROW_EDGE_PX));
+    canvas.drawPath(arrowHead, arrowFill);
+    arrowPaint.setColor(Color.WHITE);
+    arrowPaint.setStrokeWidth(dm(ARROW_PX));
+    canvas.drawPath(arrowShaft, arrowPaint);
+    arrowFill.setStyle(Paint.Style.FILL);
+    arrowFill.setColor(Color.WHITE);
+    canvas.drawPath(arrowHead, arrowFill);
+    canvas.restore();
+  }
+  private static final float ARROW_PX = 4, ARROW_EDGE_PX = 1.6f, ARROW_HEAD_PX = 14;
+  private static final int ARROW_EDGE = 0xff202428;
 
   // The car icon and its glows draw at CAR_FAR_K of their size zoomed out, easing to full size with the close-up gate
   // (the owner 2026-11-08: at the zoomed-out ranges the icon is bigger than the roads it sits on). About the car point.
@@ -3028,6 +3113,7 @@ final class MapView extends View {
     if (nav != null) {
       double m = turnLeft(nav, now);
       k.append('|').append(nav.type).append('|').append(nav.modifier).append('|').append(Turn.text(nav.text));
+      k.append('|').append(nav.exit).append('|').append(nav.degrees).append('|').append(nav.left).append('|').append(nav.road);
       k.append('|').append(m >= 0 ? Turn.distance(m, Feed.metric) : null).append('|').append(nav.toward);
       if (Lanes.shown(nav.lanes, m)) {
         k.append('|').append(Lanes.at).append(java.util.Arrays.toString(nav.lanes)).append(java.util.Arrays.toString(nav.take));
@@ -3061,9 +3147,12 @@ final class MapView extends View {
     Feed.Nav nav = free ? null : turnNav(now);
     double meters = nav != null ? turnLeft(nav, now) : -1;
     String d = meters >= 0 ? Turn.distance(meters, Feed.metric) : null;
-    Bitmap arrow = nav != null ? NavArrow.get(nav.type, nav.modifier) : null;
-    List<List<Shield.Piece>> lines = nav != null ? turnLines(Turn.text(nav.text)) : NO_LINES;
-    boolean top = nav != null && (d != null || arrow != null), road = !lines.isEmpty();
+    // a roundabout gets its own picture, with the exit's number and angle (RoundaboutIcon), not the stock PNG
+    boolean ringIcon = nav != null && Turn.isRoundabout(nav.type);
+    Bitmap arrow = nav != null && !ringIcon ? NavArrow.get(nav.type, nav.modifier) : null;
+    boolean pic = arrow != null || ringIcon;
+    List<List<Shield.Piece>> lines = nav != null ? cardLines(nav) : NO_LINES;
+    boolean top = nav != null && (d != null || pic), road = !lines.isEmpty();
     boolean trip = !free && Feed.remainingSec >= 0;  // a card for the trip alone when there is no turn
     // where the maneuver leads, under its text as Google Maps writes it: "toward Garland"
     String toward = nav != null && road && !TextUtils.isEmpty(nav.toward) ? "toward " + nav.toward : null;
@@ -3100,11 +3189,12 @@ final class MapView extends View {
       float y = TURN_T + (top ? 0 : PAD);  // the top of the next row
       if (top) {
         if (arrow != null) canvas.drawBitmap(arrow, null, new RectF(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON), smooth);
+        else if (ringIcon) RoundaboutIcon.draw(canvas, new RectF(ICON_LEFT, ICON_TOP, ICON_LEFT + ICON, ICON_TOP + ICON), nav.exit, nav.degrees, nav.modifier, nav.left);
         if (!TextUtils.isEmpty(d)) {
           String t = d.toString().trim();
           int sp = t.lastIndexOf(' ');
           String num = sp > 0 ? t.substring(0, sp) : t, u = sp > 0 ? t.substring(sp + 1) : "";
-          float x = arrow != null ? TEXT_X : ROW_X, textW = right(y + 34, b) - x;
+          float x = pic ? TEXT_X : ROW_X, textW = right(y + 34, b) - x;
           float size = 30;  // a long distance shrinks to fit
           big.setTextSize(size);
           while (big.measureText(num) + 5 + unit.measureText(u) > textW && size > 22) big.setTextSize(--size);
@@ -3212,6 +3302,18 @@ final class MapView extends View {
   }
 
   private static final List<List<Shield.Piece>> NO_LINES = new ArrayList<List<Shield.Piece>>();
+
+  // The card's text: the instruction as it is, but "Make a U-turn" for a U-turn (the owner 2026-11-15), with the road
+  // after it ("Make a U-turn onto Main St") only when that still fits on one line.
+  private List<List<Shield.Piece>> cardLines(Feed.Nav nav) {
+    if (!Turn.isUturn(nav.type, nav.modifier)) return turnLines(Turn.text(nav.text));
+    String road = Turn.text(nav.road);
+    if (!road.isEmpty()) {
+      List<List<Shield.Piece>> with = turnLines(Turn.uturnText(road));
+      if (with.size() == 1) return with;
+    }
+    return turnLines(Turn.uturnText(null));
+  }
   private static final float LINE_W = CARD_R - 6 - 0.6f * SLANT - ROW_X;  // about where the lean cuts a text row
   // a badge's text against the line's: the card's 18-15 px text gets 15-13 px badges (a 20-17 px box in the 24 px
   // row); the tag's 18-14 px a little smaller, to stay inside its 26 px

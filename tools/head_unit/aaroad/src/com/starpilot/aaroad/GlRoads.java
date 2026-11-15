@@ -57,7 +57,8 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   // MapView.Scene.stubsDim) -- a stub/road group with nothing in view costs no draw call, same as any other --
   // then the route by traffic: unknown or low, moderate, heavy, severe. ROUTE mirrors MapView's own doubled
   // stubWorld/stubPaths size (2 * MapView.DIM_OFF), so group indices line up the same way on both paths.
-  private static final int ROUTE = 2 * MapView.OW_OFF, LEVELS = 4;
+  // live traffic (TrafficLayer) takes TrafficLayer.GROUPS road groups after the class groups: TRAFFIC + (level, class)
+  private static final int TRAFFIC = 2 * MapView.OW_OFF, ROUTE = TRAFFIC + TrafficLayer.GROUPS, LEVELS = 4;
   private static final long IDLE_MS = 500;  // the frame cap is Perf.Pace's (FAST_MS 33, SLOW_MS 42)
   private static final int ATLAS_W = 256, ATLAS_H = 128, ROW = 32, PAD = 4, BASE = 22;  // a label per row, its baseline at BASE
   private static boolean loggedOn;
@@ -772,13 +773,29 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         }
         // the roads (not the route) simplified for the zoom band the scene is packed at; the scene's own runs, which
         // Snap reads, are untouched -- only the copy GlCull packs. The boxes stay the originals (a superset).
+        // the live traffic lines ride along as road pieces of their own groups (TRAFFIC + TrafficLayer group)
+        MapView.Chunks tc = s.trafficChunks;
+        int nr = roads.pts.length, nt = tc.pts.length;
+        float[][] allPts = new float[nr + nt][], allBox = new float[nr + nt][];
+        float[] allAt = new float[nr + nt];
+        int[] allCls = new int[nr + nt];
+        System.arraycopy(roads.pts, 0, allPts, 0, nr);
+        System.arraycopy(roads.box, 0, allBox, 0, nr);
+        System.arraycopy(roads.at, 0, allAt, 0, nr);
+        System.arraycopy(rcls, 0, allCls, 0, nr);
+        for (int i = 0; i < nt; i++) {
+          allPts[nr + i] = tc.pts[i];
+          allBox[nr + i] = tc.box[i];
+          allAt[nr + i] = tc.at[i];
+          allCls[nr + i] = TRAFFIC + tc.cls[i];
+        }
         int band = dpBand;
         double tol = Perf.DpBand.tolerance(band);
-        float[][] rpts = roads.pts;
+        float[][] rpts = allPts;
         if (tol > 0) {
-          rpts = new float[roads.pts.length][];
+          rpts = new float[allPts.length][];
           for (int i = 0; i < rpts.length; i++) {
-            float[] p = roads.pts[i];
+            float[] p = allPts[i];
             rpts[i] = p.length > 4 ? FreeView.simplify(p, p.length / 2, tol) : p;
           }
         }
@@ -789,7 +806,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
           if (route.under[i] != 0) level[i] += LEVELS;
         }
-        g = new GlCull(s, ROUTE, 2 * LEVELS, rpts, roads.box, rcls, roads.at, route.pts, route.box, level, route.at);
+        g = new GlCull(s, ROUTE, 2 * LEVELS, rpts, allBox, allCls, allAt, route.pts, route.box, level, route.at);
         g.band = band;
         int size = g.bytes();
         if (b == null || b.capacity() < size) b = ByteBuffer.allocateDirect(Math.max(size, 1 << 16)).order(ByteOrder.nativeOrder());
@@ -1003,6 +1020,13 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         acctBase = PS_BSURF * ACCT_B;
         for (int c : MapView.DRAW_ORDER) lines2(gd + c, c, floor, ik, 0, MapView.dim(MapView.ROADS[c]), flatA);
       }
+    }
+    // live traffic (TrafficLayer): over the road fill and the flat bridges, under the carpet; WIDTH_K of the road's
+    // drawn width (the width the fill used, floor included); the lines program rounds the caps
+    acctBase = PS_DSURF * ACCT_B;
+    for (int g = 0; g < TrafficLayer.GROUPS; g++) {
+      lines(TRAFFIC + g, TrafficLayer.WIDTH_K * Math.max(floor, MapView.ROAD_M[g % TrafficLayer.CLASSES] * ik),
+          MapView.TRAFFIC[g / TrafficLayer.CLASSES], 1);
     }
     // zoomed in: the raised decks, lane lines, sidewalks and crosswalks, as the view's CloseView, then the carpet over
     if (close != null) {

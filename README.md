@@ -8,7 +8,10 @@ fed by the comma device running openpilot. It shows:
 - road tiles with bridges, ramps, lanes and traffic signals;
 - a 3D close-up near turns;
 - the car sprite with brake lights, turn signals and a red blind-spot halo;
-- now-playing info and a trip line.
+- now-playing info and a trip line;
+- slow traffic (Mapbox Traffic: moderate, heavy, severe) coloured on the roads, with or without a route;
+- roundabouts and U-turns: an exit-numbered roundabout icon and "Make a U-turn" on the turn card, and a
+  white maneuver arrow on the map.
 
 This branch holds only that feature, taken from a working openpilot fork
 (`trung791997/openpilot`, commit `f5738be617`). It is meant to be read by a person or an LLM porting
@@ -17,6 +20,21 @@ the feature into another fork. File paths match the source fork, so they map one
 **Status.** It runs on one car. Most of the code has static and desktop tests only. The comments
 record what was seen on the car and what was not. It is not a drop-in package: the comma side
 depends on modules from the source fork (see "Comma side").
+
+## Demo
+
+Rendered on a desktop JVM by the app's own drawing code (the software canvas path, with Java2D
+stand-ins for the Android classes) against a synthetic street grid. `tools/head_unit/aaroad/desktop/`
+has the harness; `desktop/render.sh` rebuilds these. Fonts and anti-aliasing differ slightly from
+the car.
+
+| | |
+|---|---|
+| Navigation with music playing | ![nav and music](tools/head_unit/aaroad/docs/demo/nav_music.png) |
+| Navigation, no music | ![nav only](tools/head_unit/aaroad/docs/demo/nav_only.png) |
+| Music, no navigation (traffic shown) | ![music only](tools/head_unit/aaroad/docs/demo/music_only.png) |
+| No music, no navigation | ![idle](tools/head_unit/aaroad/docs/demo/idle.png) |
+| U-turn | ![u-turn](tools/head_unit/aaroad/docs/demo/uturn.png) |
 
 ## Requirements
 
@@ -82,6 +100,12 @@ cleanup.callback(hu_feed.close)
 
 To port it, start `HeadUnitFeed` from any long-running process and call `close()` on exit.
 
+**Traffic.** `openpilot/starpilot/navigation/traffic_tiles.py` fetches Mapbox Traffic v1 tiles
+(zoom 14, 3x3 around the car, every 5 minutes at most) with the comma's Mapbox token, keeps only the
+moderate, heavy and severe roads, and packs them into a small `SPTQ` payload. `hu_feed.py` sends
+them as `q` messages to head units that say `"tq":1` in their hello. It imports `road_tiles.py` from
+the source fork. The head unit drops traffic older than 15 minutes.
+
 **Hotspot rejoin.** `starport/wifi_rejoin.py` keeps the comma on the phone hotspot that the feed uses.
 It needs `starport/scan_quiet.py` (included) and `DATA_DIR` and `boot_id` from `starport/identity.py`
 (not included).
@@ -112,11 +136,11 @@ protocol below.
 
 - `test_hu_feed.py`;
 - `test_dash_turn_card.py`, which compiles `Turn.java` and so needs `java`;
-- `test_wifi_rejoin.py`.
+- `test_wifi_rejoin.py`;
+- and, outside `starport/`, `openpilot/starpilot/navigation/tests/test_traffic_tiles.py`.
 
-These tests run in the full source fork. On this branch alone, 80 of the `hu_feed` and
-`wifi_rejoin` tests pass. 7 fail, and `test_dash_turn_card.py` does not load, because they import
-fork modules that are not on this branch.
+These tests run in the full source fork. On this branch alone some of them fail or do not load,
+because they import fork modules that are not on this branch.
 
 ## Protocol
 
