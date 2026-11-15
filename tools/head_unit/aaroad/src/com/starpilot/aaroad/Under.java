@@ -193,6 +193,7 @@ final class Under {
     float hc = carHeight(d, ce, cn, ch, sh, roadM);
     if (d.maxH < hc + OVER_M) return 0;
     float[] v = d.seg;
+    boolean[] own = ownRoad(d, ce, cn, ch, sh, hc, roadM);
     int n = 0;
     for (int g = 1; g < CloseUp.LAYERS; g++) {
       for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {  // ramps and decks of each class
@@ -201,7 +202,7 @@ final class Under {
         for (int i = d.from[r]; i < d.from[r + 1] && n < out.length; i++) {
           int o = i * CloseUp.SEG;
           if (Math.max(v[o + 4], v[o + 5]) < hc + OVER_M) continue;
-          if (carOnSegment(v, o, ce, cn, ch, sh, roadM[c] / 2)) continue;
+          if (own[i]) continue;
           float[] q = lifted(v, o, ce, cn, ch, sh, ik, hs, LIFTED);
           float dx = q[2] - q[0], dz = q[3] - q[1], l2 = dx * dx + dz * dz;
           float t = l2 <= 0 ? 0 : Math.max(0, Math.min(1, -(q[0] * dx + q[1] * dz) / l2));
@@ -229,6 +230,78 @@ final class Under {
     float t = Math.max(0, Math.min(1, ((ce - v[o]) * dx + (cn - v[o + 1]) * dy) / (len * len)));
     float ex = v[o] + t * dx - ce, ey = v[o + 1] + t * dy - cn;
     return ex * ex + ey * ey <= reach * reach;
+  }
+
+  // 2026-11-15 (owner: the outline still showed on Exchange Pkwy's own deck, found by replaying the real tiles and Konik
+  // GPS): the deck and the ramp pieces it is cut into are one road, and a raised end of the NEXT piece, 25 to 50 m
+  // along, lifts over the car's own piece. carOnSegment sees only the piece under the car. So the car's road is
+  // grown from those pieces: a piece that runs the car's way (within ON_DECK_DEG, either direction), shares an end
+  // (within JOIN_M) with a piece already on the car's road, and its nearer end lies within CHAIN_M of the car, is the car's road too.
+  // The tile data carries no road id on a piece (only its class and height), so joined-and-aligned is the test; a
+  // road crossing at more than ON_DECK_DEG, or a parallel road that does not touch the car's chain, is not grown in
+  // and still draws the outline. CHAIN_M covers the longest raised end that can lift over the car (CloseUp.lift of a
+  // 24 m deck stays well inside it).
+  static final float JOIN_M = 1.5f, CHAIN_M = 150;
+  private static boolean[] OWN = new boolean[0];  // UI thread only
+  private static int[] CAND = new int[0];
+
+  // Which ramp and deck pieces (segment indices into d.seg) are the car's own road this frame. hc the car's height.
+  static boolean[] ownRoad(CloseUp.Detail d, float ce, float cn, float ch, float sh, float hc, float[] roadM) {
+    int total = d.count();
+    if (OWN.length < total) OWN = new boolean[total + 64];
+    else java.util.Arrays.fill(OWN, 0, total, false);
+    if (CAND.length < total) CAND = new int[total + 64];
+    float[] v = d.seg;
+    int nc = 0;
+    boolean seed = false, risk = false;
+    for (int g = 1; g < CloseUp.LAYERS; g++) {
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {
+        int c = k % CloseUp.CLASSES, r = k < CloseUp.CLASSES ? CloseUp.range(g, c) : CloseUp.deck(g, c);
+        for (int i = d.from[r]; i < d.from[r + 1]; i++) {
+          int o = i * CloseUp.SEG;
+          CAND[nc++] = i;
+          if (carOnSegment(v, o, ce, cn, ch, sh, roadM[c] / 2)) {
+            OWN[i] = true;
+            seed = true;
+          } else if (Math.max(v[o + 4], v[o + 5]) >= hc + OVER_M) {
+            risk = true;  // a piece that could cover the car and is not under it: worth growing the chain for
+          }
+        }
+      }
+    }
+    if (!seed || !risk) return OWN;
+    for (int pass = 0; pass < 8; pass++) {
+      boolean grew = false;
+      for (int a = 0; a < nc; a++) {
+        int i = CAND[a], o = i * CloseUp.SEG;
+        if (OWN[i] || !aligned(v, o, ch, sh) || !near(v, o, ce, cn)) continue;
+        for (int b = 0; b < nc; b++) {
+          int j = CAND[b];
+          if (!OWN[j] || !joined(v, o, j * CloseUp.SEG)) continue;
+          OWN[i] = true;
+          grew = true;
+          break;
+        }
+      }
+      if (!grew) break;
+    }
+    return OWN;
+  }
+
+  private static boolean aligned(float[] v, int o, float ch, float sh) {
+    float dx = v[o + 2] - v[o], dy = v[o + 3] - v[o + 1], len = (float) Math.hypot(dx, dy);
+    return len > 0 && Math.abs((dx * sh + dy * ch) / len) >= COS_ON;
+  }
+
+  private static boolean near(float[] v, int o, float ce, float cn) {
+    return Math.min(Math.hypot(v[o] - ce, v[o + 1] - cn), Math.hypot(v[o + 2] - ce, v[o + 3] - cn)) <= CHAIN_M;  // its nearer end
+  }
+
+  private static boolean joined(float[] v, int o, int p) {
+    for (int e = 0; e < 2; e++)
+      for (int f = 0; f < 2; f++)
+        if (Math.hypot(v[o + 2 * e] - v[p + 2 * f], v[o + 2 * e + 1] - v[p + 2 * f + 1]) <= JOIN_M) return true;
+    return false;
   }
 
   private static final float[] LIFTED = new float[4];  // UI thread only

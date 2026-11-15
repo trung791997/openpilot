@@ -16,9 +16,11 @@ public class UnderOnBridgeTest {
     if (!ok) bad++;
   }
 
+  static float IK = 1 / 3f;  // world m to display m, as MapView's f.ik
+
   static int over(CloseUp.Detail d, float e, float n, float hdg) {
     float ch = (float) Math.cos(Math.toRadians(hdg)), sh = (float) Math.sin(Math.toRadians(hdg));
-    return Under.covering(d, e, n, ch, sh, 1 / 3f, 1, ROAD_M, FLOOR, CASING, CAR, new int[48]);
+    return Under.covering(d, e, n, ch, sh, IK, 1, ROAD_M, FLOOR, CASING, CAR, new int[48]);
   }
 
   public static void main(String[] a) {
@@ -40,6 +42,48 @@ public class UnderOnBridgeTest {
     check(over(d, 0, 0, 180) > 0, "same going south: outline");
     check(over(d, 0, 0, 45) > 0, "below, crossing at 45 deg: outline");
     check(over(d, 0, 0, 135) > 0, "below, crossing at 45 deg the other way: outline");
+    // The car's own road is one piece after another (2026-11-15, found replaying real Exchange Pkwy tiles + GPS): the
+    // deck and its 60 m ramp pieces. A raised end of the next piece, 25 to 50 m along, must not draw the outline.
+    // Bridge e -300..300 over US-75: ramps -300..-240 and 240..300, flat deck between.
+    // the replay's failing case: a ground road (a service lane, a ramp tail) runs under the deck 3 m off its line and is
+    // nearer the car than the deck, so carHeight reads 0 on the deck and every raised piece looks "over" it
+    in.road(new float[] {-300, -3, 300, -3}, 3, false, 0, 0, false);
+    d = CloseUp.build(in);
+    check(Under.carHeight(d, 200, -3, 0, 1, ROAD_M) == 0, "scene check: carHeight reads 0 on the deck beside the ground lane (the replay's case)");
+    int wrongNext = 0, nextTried = 0, wrongRamp = 0, rampTried = 0;
+    for (float ik : new float[] {1 / 6f, 1 / 3f, 1 / 2f, 1f, 2f}) {  // the zoom changes how far a raised end lifts
+      IK = ik;
+      for (float e : new float[] {190, 200, 205, 210, 215}) {  // 25 to 50 m before the east ramp (starts at 240)
+        for (float off : new float[] {0, 3, -3}) {
+          wrongNext += over(d, e, off, 90) != 0 ? 1 : 0;
+          wrongNext += over(d, -e, off, 270) != 0 ? 1 : 0;
+          nextTried += 2;
+        }
+      }
+      for (float e = 245; e <= 295; e += 10) {
+        for (float off : new float[] {0, 3, -3}) {
+          wrongRamp += over(d, e, off, 270) != 0 ? 1 : 0;  // rising towards the deck
+          wrongRamp += over(d, -e, off, 90) != 0 ? 1 : 0;
+          rampTried += 2;
+        }
+      }
+    }
+    IK = 1 / 3f;
+    check(wrongNext == 0, "on the flat deck 25-50 m short of the next ramp piece, either way, 0-3 m off, 5 zooms: no outline (" + wrongNext + " of " + nextTried + " wrong)");
+    check(wrongRamp == 0, "on the ramp rising to the deck, either way, 5 zooms: no outline (" + wrongRamp + " of " + rampTried + " wrong)");
+    check(over(d, 0, 0, 0) > 0 && over(d, 0, 30, 180) > 0, "the crossing road under the same bridge still draws (grown chain does not eat crossings)");
+
+    // a DIFFERENT road beside it: a raised frontage bridge 18 m to the north over US-75, the car on its own ground road
+    CloseUp.Lines side = new CloseUp.Lines();
+    side.road(new float[] {0, -800, 0, 800}, 0, false, 0, 0, false);
+    side.road(new float[] {-900, 0, 900, 0}, 3, false, 0, 0, false);  // the car's road
+    side.road(new float[] {-300, 18, 0, 18, 300, 18}, 3, true, 1, 0, false);  // raised, parallel, not touching it
+    CloseUp.Detail ds = CloseUp.build(side);
+    int sideOld = 0;
+    for (float e = -30; e <= 30; e += 5) sideOld += over(ds, e, 0, 90) > 0 ? 1 : 0;
+    System.out.println("info side road: " + sideOld + " of 13 frames draw the outline");
+    check(sideOld > 0, "car on its own road with a different, unconnected raised road 18 m beside it: still outline (" + sideOld + ")");
+
     System.out.println(bad == 0 ? "all ok" : bad + " failed");
     System.exit(bad == 0 ? 0 : 1);
   }
