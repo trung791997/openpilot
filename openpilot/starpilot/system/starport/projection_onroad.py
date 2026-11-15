@@ -10,6 +10,7 @@ from openpilot.starpilot.system.starport.identity import EXPIRY_WARNING_DAYS
 from openpilot.starpilot.system.starport.projection_exit import ProjectionExit
 from openpilot.starpilot.system.starport.projection_geometry import FALLBACK_VIEWPORT
 from openpilot.starpilot.system.starport.projection_map_lease import MapLeaseWriter
+from openpilot.starpilot.ui.radar_points import radar_points_enabled
 
 CERTIFICATE_NOTICE_NS = 10_000_000_000  # how long the expiry heads-up stays at the start of a drive
 BOOKMARK_NOTICE_NS = 2_000_000_000  # how long "Bookmark Saved" stays after the drive is bookmarked
@@ -339,7 +340,10 @@ class ProjectionOnroad:
                     if appearance is not None else (False, 0, None))
     self.camera.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
                                           reverse_driver=state.reverse_driver_camera,
-                                          road_style=self._theme.road_style(state.customization['roadColors']['large']), lead_display=lead_display)
+                                          road_style=self._theme.road_style(state.customization['roadColors']['large']), lead_display=lead_display,
+                                          # The comma's "Radar Point Display" choice: projection_customization copies the comma's
+                                          # document, so this follows it as the adapter re-reads it, with no file read here.
+                                          radar_points=radar_points_enabled(state.customization))
     # The camera can switch narrow/wide while rendering. Pace the stream actually
     # drawn, not the previous selection (whose next frame may arrive later).
     self.camera_stream = self.camera.stream_type
