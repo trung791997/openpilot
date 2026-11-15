@@ -492,10 +492,12 @@ class HondaBoschALongEnhancement:
     return self._need_floor.step((lead_one, lead_two), v_ego, self.emergency, target)
 
   def lead(self, *, lead_one, lead_two, target: float, v_ego: float, stopping: bool, standstill: bool,
-           reset_state: bool, fcw: bool, follow_s: float | None = None, floor: bool = True) -> float:
+           reset_state: bool, fcw: bool, follow_s: float | None = None, floor: bool = True,
+           prev: float | None = None) -> float:
     """Shape the lead MPC candidate only (before min(candidates)): the Stock Brake Feel law from this method's own previous
     output (`lead_prev`, not the published target), then coast first when `follow_s` is given, then the need floor when
-    `floor`. e2e and cruise braking never pass through it (d2 t1297.6 red-light let-off, 2026-11-15). `stopping` covers
+    `floor`. e2e and cruise braking never pass through it (d2 t1297.6 red-light let-off, 2026-11-15). `prev` is the last
+    published target: coast first starts from where the car is, not from this candidate alone. `stopping` covers
     should-stop and force stop; upstream/planner.py passes follow_s=None, floor=False (it never ran those two)."""
     target = float(target)
     if reset_state or standstill:
@@ -510,13 +512,13 @@ class HondaBoschALongEnhancement:
     elif stopping:
       self._reset_law()
     else:
-      prev = target if self.lead_prev is None else self.lead_prev
+      law_prev = target if self.lead_prev is None else self.lead_prev
       self.emergency = stock_feel_emergency(leads, v_ego, self.emergency)
-      out = stock_feel_target(leads, prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
+      out = stock_feel_target(leads, law_prev, target, self.dt, v_ego, self.emergency, self.law_t > 0.0)
       self.law_t = release.STOCK_FEEL_EXIT_HOLD_S if stock_feel_law_active(leads, self.emergency) else max(0.0, self.law_t - self.dt)
     if follow_s is not None:
       out = self._coast_first(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, follow_s=follow_s,
-                              fcw=fcw, reset_state=reset_state)
+                              fcw=fcw, reset_state=reset_state, prev=prev)
     if floor:
       out = self.need_floor(lead_one=lead_one, lead_two=lead_two, target=out, v_ego=v_ego, reset_state=reset_state)
     self.lead_prev = float(out)
@@ -543,7 +545,10 @@ class HondaBoschALongEnhancement:
     return float(out)
 
   def _coast_first(self, *, lead_one, lead_two, target: float, v_ego: float, follow_s: float, fcw: bool,
-                   reset_state: bool) -> float:
+                   reset_state: bool, prev: float | None = None) -> float:
+    """Coast first on the lead candidate. An event only starts from a car that is not already braking past COAST_ACCEL
+    (`prev`, the last published target): lifting off first means nothing once e2e or cruise has the car braking, and
+    staging from -0.5 would soften the lead's brake under it (d1 t593 replay, 2026-11-15: -2.67 -> -1.50)."""
     target = float(target)
     if not self.coast_enabled or reset_state:
       self.reset_coast()
@@ -556,7 +561,8 @@ class HondaBoschALongEnhancement:
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import closest_radar_lead
     lead = closest_radar_lead((lead_one, lead_two))
     floor = COAST_ACCEL if self.coast_floor is None else self.coast_floor - COAST_RAMP_JERK * self.dt
-    if lead is None or fcw or v_ego < COAST_MIN_V_EGO or not self._clear(lead, v_ego, follow_s, floor):
+    braking = self.coast_floor is None and prev is not None and float(prev) < COAST_ACCEL
+    if braking or lead is None or fcw or v_ego < COAST_MIN_V_EGO or not self._clear(lead, v_ego, follow_s, floor):
       self.coast_floor = None
       self.coast_bypassed = True
       return target

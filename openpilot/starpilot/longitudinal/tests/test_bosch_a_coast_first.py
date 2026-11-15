@@ -15,9 +15,20 @@ def planner(monkeypatch, supported=True):
   return cf.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05)
 
 
-def step(p, ld, target, v_ego=31.2, follow_s=1.25, fcw=False, standstill=False, reset_state=False):
+def step(p, ld, target, v_ego=31.2, follow_s=1.25, fcw=False, standstill=False, reset_state=False, prev=None):
   return p.lead(lead_one=ld, lead_two=None, target=target, v_ego=v_ego, stopping=False, standstill=standstill,
-                reset_state=reset_state, fcw=fcw, follow_s=follow_s, floor=False)
+                reset_state=reset_state, fcw=fcw, follow_s=follow_s, floor=False, prev=prev)
+
+
+def test_no_coast_event_once_the_car_is_already_braking(monkeypatch):
+  # d1 t593 (replay 2026-11-15): e2e had the car at -1.2 when the lead candidate dropped past -0.5; staging that lead
+  # brake from -0.5 at 1 m/s^3 gave -1.50 where the old order gave -2.67. Same lead as route 71 12:03 above.
+  p = planner(monkeypatch)
+  assert step(p, lead(58.0, 27.0, -2.2), -2.25, prev=-1.2) == -2.25
+  assert step(p, lead(57.0, 26.5, -2.5), -2.25, prev=-2.25) == -2.25  # latched for the event
+  p = planner(monkeypatch)
+  assert step(p, lead(58.0, 27.0, -2.2), -2.25, prev=-0.3) == cf.COAST_ACCEL  # car not braking: coasts first
+  assert step(p, lead(57.0, 26.5, -2.5), -2.25, prev=cf.COAST_ACCEL) > -0.6  # its own floor never stops the event
 
 
 def test_route_71_1203_distant_tap_coasts_first(monkeypatch):
