@@ -347,6 +347,10 @@ NEED_FLOOR_MIN_GAP_S = 1.5      # s; the floor applies only at d >= v_ego * this
 # A: the floor only softens braking that is for the lead: never while the plan is stopping (any candidate's should_stop,
 # force stop), and never above `cap`, the most cautious non-lead candidate (cruise; e2e in experimental mode).
 NEED_FLOOR_RADAR_ONLY = True
+# Owner 2026-11-14 (A margin): the cap only binds when it is more than this below the floor; a model target within it is
+# ignored and the floor applies as before. Offline re-run of d1/d2/ca/cb (car-bound frames, cap = logged e2e): without a
+# margin A deepened most binds from -0.80 to -0.83..-1.15; 0.3 keeps those at -0.80; e2e deeper than floor - 0.3 (-1.10 at the -0.80 floor) still binds.
+NEED_FLOOR_CAP_MARGIN = 0.3     # m/s^2
 
 
 class NeedFloor:
@@ -355,7 +359,7 @@ class NeedFloor:
   need = closing^2 / (2 * max(d - (max(vLead, 0) * HEADWAY_S + STOP_M), MIN_ROOM_M)), the decel that closes the speed
   difference in the room left before the headway gap. The floor only RAISES a braking target (never adds braking) and
   never touches should_stop. It applies to the nearer present planner lead (leadOne or leadTwo, vision or radar) only
-  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the plan is not stopping, the lift stays at or below `cap`, the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
+  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the plan is not stopping, the lift stays at or below `cap` when `cap` is more than NEED_FLOOR_CAP_MARGIN below the floor, the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
   sticky-off and the gate (vLead >= GATE_V_LEAD and aLeadK > GATE_A_LEAD for GATE_FRAMES consecutive frames on the same
   (track id, radar flag)) is open. Sticky-off: once the release fires (closing and (ttc <= RELEASE_TTC_S or need >=
   RELEASE_NEED)) or the Stock Brake Feel emergency latch is on, the floor stays off until QUIET_FRAMES frames with no
@@ -384,7 +388,7 @@ class NeedFloor:
 
   def step(self, leads, v_ego: float, emergency: bool, target: float, cap: float | None = None,
            stopping: bool = False) -> float:
-    """`cap` (fix A): the floor never lifts the target above it (None: no cap). `stopping` (fix A): no lift at all.
+    """`cap` (fix A): the floor never lifts the target above it when it is more than NEED_FLOOR_CAP_MARGIN below the floor (None: no cap). `stopping` (fix A): no lift at all.
     Neither changes the gate / sticky state, only whether the floor is applied."""
     views = [self._view(lead) for lead in leads if _present(lead)]
     a = float(target)
@@ -423,8 +427,8 @@ class NeedFloor:
         (not self.min_gap or d >= v_ego * NEED_FLOOR_MIN_GAP_S) and
         (radar or not NEED_FLOOR_RADAR_ONLY) and not stopping):
       floor = -max(NEED_FLOOR_MULT * need, NEED_FLOOR_MIN)
-      if cap is not None:
-        floor = min(floor, float(cap))
+      if cap is not None and float(cap) < floor - NEED_FLOOR_CAP_MARGIN:
+        floor = float(cap)
       if a < floor:
         a = floor
     return a

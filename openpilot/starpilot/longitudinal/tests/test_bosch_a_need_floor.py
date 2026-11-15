@@ -178,6 +178,15 @@ def test_cap_limits_lift_part_way(monkeypatch):  # lead MPC -2.0, e2e/cruise -1.
   assert run(p, steady(), 15, target=-2.0, cap=-1.2) == pytest.approx(-1.2)
 
 
+def test_cap_within_margin_is_ignored(monkeypatch):  # e2e -1.05 is only 0.25 below the -0.8 floor: floor as before
+  p = make(monkeypatch)
+  assert run(p, steady(), 15, target=-2.0, cap=-1.05) == pytest.approx(-0.8)
+
+
+def test_cap_margin_default():
+  assert hb.NEED_FLOOR_CAP_MARGIN == 0.3
+
+
 def test_cap_above_floor_changes_nothing(monkeypatch):  # cruise 0.3 / e2e -0.5: the floor -0.8 is the binding value
   p = make(monkeypatch)
   assert run(p, steady(), 15, target=-2.0, cap=-0.5) == pytest.approx(-0.8)
