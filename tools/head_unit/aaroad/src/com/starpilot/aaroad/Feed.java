@@ -167,6 +167,7 @@ final class Feed {
   static volatile Pose pose;       // the same fix as one piece, so a reader on another thread never mixes two
   static volatile boolean brake;   // the pose's "b": the driver on the pedal or openpilot braking firmly; the rear lights
   static volatile boolean blindLeft, blindRight;  // the pose's "bl"/"br": that side's blind spot warns (car or V-ASM); the side glows
+  static volatile boolean turnLeft, turnRight;    // the pose's "tl"/"tr": that side's turn signal is on (both = hazards); its lamp flashes amber
   static volatile long stateAt;    // when turnMeters was current
   static volatile String mode = "off";
   static volatile boolean metric;
@@ -362,8 +363,17 @@ final class Feed {
       poseAt = now - (long) (m.optDouble("age", 0) * 1000);
       pose = new Pose(lat, lon, hdg, spd, poseAt);
       brake = m.optInt("b", 0) == 1;  // left out unless braking, and by a comma from before 2026-10-31
-      blindLeft = m.optInt("bl", 0) == 1;   // left out unless that side warns, and by a comma from before 2026-11-08
-      blindRight = m.optInt("br", 0) == 1;
+      boolean bl = m.optInt("bl", 0) == 1, br = m.optInt("br", 0) == 1;  // left out unless that side warns, and by a comma from before 2026-11-08
+      boolean tl = m.optInt("tl", 0) == 1, tr = m.optInt("tr", 0) == 1;  // left out unless that side signals, and by a comma from before 2026-11-14
+      if (bl != blindLeft || br != blindRight || tl != turnLeft || tr != turnRight) {
+        // evidence for "the dash never glowed" (2026-11-14): when each flag flipped and how old the pose it came on was
+        Xlog.log("aaroad: pose flags blind " + blindLeft + "/" + blindRight + " -> " + bl + "/" + br
+            + ", turn " + turnLeft + "/" + turnRight + " -> " + tl + "/" + tr + ", pose age " + (now - poseAt) + " ms");
+      }
+      blindLeft = bl;
+      blindRight = br;
+      turnLeft = tl;
+      turnRight = tr;
     } else if (t.equals("s")) {
       stateAt = now;
       mode = m.optString("mode", "off");

@@ -36,9 +36,10 @@ Every datagram is one JSON object with "v" (VERSION) and "t" (kind):
      c is the traffic on each point's stretch to the next, one per pts entry (0 unknown, 1 low, 2 moderate, 3 heavy,
      4 severe), left out when navigationd gives none. id is the crc32 of a key that includes c's hash, so new traffic
      makes a new id (the head unit ignores a repeated one); an older app ignores c
-  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b", "bl", "br", "held"}, the last GPS fix carried forward to now; "b": 1 while
+  p  pose, 20 Hz: {"lat", "lon", "hdg", "spd", "age", "b", "bl", "br", "tl", "tr", "held"}, the last GPS fix carried forward to now; "b": 1 while
      the car is braking (brake_of), left out otherwise, so an older app ignores it; "bl"/"br": 1 while that side's blind
-     spot warns (car or V-ASM, blind_of), likewise left out otherwise; at a standstill with no fresh fix
+     spot warns (car or V-ASM, blind_of), likewise left out otherwise; "tl"/"tr": 1 while carState's left/right turn
+     signal is on (both = hazards, blinkers_of; 2026-11-14), left out otherwise, so an older app ignores it; at a standstill with no fresh fix
      the last pose goes on with age 0, spd 0 and "held": 1 (StopHold), left out otherwise
   m  road tile, one at a time: {"k": "x/y", "i", "n", "b": base64}; the stored zoom-14 file (road_tiles.py),
      in the hello's rt format or older
@@ -75,6 +76,7 @@ TILE_RETRY = 3.            # s after sending a tile before it goes again, if the
 # navigationd publishes once a second but can pause for a few seconds while it reroutes. A missing nav makes the
 # cluster drop the route and fall back to every nearby street in grey, so a pause shorter than this keeps the last turn.
 NAV_HOLD_NS = 10_000_000_000
+VASM_ERROR_EVERY = 30.      # s between logs of the exception vasm() swallows
 MAX_CARRY = 1.             # s: past this a fix is too old to carry forward
 METERS_PER_DEG = 111_320.
 MODES = ('exp', 'chill', 'aol', 'off')
@@ -196,6 +198,13 @@ def blind_of(car_state, vasm) -> tuple[bool, bool]:
   right = bool(car_state.rightBlindspot) if car_state is not None else False
   vasm_left, vasm_right = (bool(vasm[0]), bool(vasm[1])) if vasm is not None else (False, False)
   return left or vasm_left, right or vasm_right
+
+
+def blinkers_of(car_state) -> tuple[bool, bool]:
+  """(left, right) turn signal as carState says it. car_state None (not seen yet or stale) is (False, False)."""
+  if car_state is None:
+    return False, False
+  return bool(car_state.leftBlinker), bool(car_state.rightBlinker)
 
 
 def carry(fix: tuple, speed: float, yaw_rate: float, now_ns: int) -> dict | None:
@@ -329,6 +338,10 @@ class CerealReader:
   SERVICES = ('selfdriveState', 'carControl', 'carState', 'aolAxisState', 'deviceMotion', 'starpilotNavigation',
               'gpsLocationExternal', 'gpsLocation', 'starpilotCarState', 'slcState')
 
+  _vasm_log = staticmethod(lambda *_, **__: None)  # HeadUnitFeed sets the instance's to its log; evidence only
+  _vasm_gate = None
+  _vasm_error_at = -math.inf
+
   def __init__(self):
     from openpilot.cereal import messaging
     from openpilot.common.params import Params
@@ -345,6 +358,18 @@ class CerealReader:
     self._vasm_saved = None
     self._vasm_read = -math.inf
 
+  def _gate(self, name: str) -> None:
+    """Log which gate vasm() returned at, once per change (2026-11-14: V-ASM warned on the comma, never glowed on the dash)."""
+    if name != self._vasm_gate:
+      self._vasm_gate = name
+      self._vasm_log('hu_feed_vasm_gate', gate=name)
+
+  def _vasm_failed(self, where: str, error: BaseException, now: float) -> None:
+    """The exception a swallowed failure hid, at most once per VASM_ERROR_EVERY s."""
+    if now - self._vasm_error_at >= VASM_ERROR_EVERY:
+      self._vasm_error_at = now
+      self._vasm_log('hu_feed_vasm_error', where=where, error=f'{type(error).__name__}: {error}')
+
   def close(self) -> None:
     source, self._vasm_source = self._vasm_source, None
     if source is not None:
@@ -357,28 +382,41 @@ class CerealReader:
     """V-ASM side warnings, gated as projection_onroad._vasm_warning is (fresh drive-gear carState with canValid, saved
     preferences readable/valid/enabled, a clock pair). Anything wrong, or any exception: (False, False)."""
     try:
-      if not fresh or not car_state.canValid:
+      if not fresh:
+        self._gate('not_fresh')
+        return False, False
+      if not car_state.canValid:
+        self._gate('can_invalid')
         return False, False
       from openpilot.cereal import car
       if car_state.gearShifter != car.CarState.GearShifter.drive:
+        self._gate('gear')
         return False, False
       if self._vasm_source is None:
         from openpilot.starpilot.ui.pip_warning import PiPWarningSource
         self._vasm_source = PiPWarningSource()
+      def on_error(error):
+        self._vasm_failed('PiPWarningSource.sample', error, now)
       if now - self._vasm_read >= 1.:  # re-read the saved preferences at most once a second
         from openpilot.starpilot.spot_monitor.preferences import read_preferences
         self._vasm_saved = read_preferences(self.params)
         self._vasm_read = now
       saved = self._vasm_saved
       if saved is None or not (saved.readable and saved.valid and saved.preferences.enabled):
-        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0)
+        self._gate('prefs_disabled')
+        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0,
+                                        on_error=on_error)
       from openpilot.starpilot.speed_limits.vision.observation import clock_pair_ns
       pair = clock_pair_ns()
       if pair is None:
-        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0)
+        self._gate('no_clock_pair')
+        return self._vasm_source.sample(enabled=False, settings_fingerprint='', now_mono_ns=0, now_boot_ns=0,
+                                        on_error=on_error)
+      self._gate('sampled')
       return self._vasm_source.sample(enabled=True, settings_fingerprint=saved.fingerprint,
-                                      now_mono_ns=pair[0], now_boot_ns=pair[1])
-    except Exception:
+                                      now_mono_ns=pair[0], now_boot_ns=pair[1], on_error=on_error)
+    except Exception as error:
+      self._vasm_failed('vasm', error, now)
       return False, False  # an optional glow must never break the feed
 
   def metric(self, now: float) -> bool:
@@ -422,6 +460,7 @@ class CerealReader:
                                control if sm.seen['carControl'] else None)}
     car_seen = sm['carState'] if sm.seen['carState'] else None
     value['blind'] = blind_of(car_seen, self.vasm(bool(fresh), car_seen, time.monotonic()))
+    value['turn'] = blinkers_of(car_seen if fresh else None)  # same freshness as still_speed
     motion = sm['deviceMotion'].angularVelocityDevice
     if sm.seen['deviceMotion'] and motion.valid and abs(motion.z) < 1.:
       value['yaw_rate'] = math.degrees(motion.z)  # device z points down: + is a right turn, as compass heading runs
@@ -531,6 +570,7 @@ class HeadUnitFeed:
     self.have: set[str] | None = None  # None: this head unit takes no road tiles
     self.tile_version = 1  # newest road tile format the head unit reads
     self.last_beacon = self.last_state = self.last_route = -math.inf
+    self._blind_logged = None  # (left, right, pose sent) as last logged
     self.sent_state: dict | None = None
     self.sent_route: str | None = None
     self.sending: list[bytes] = []  # datagrams of the tile on its way
@@ -618,6 +658,7 @@ class HeadUnitFeed:
       return True
     if self._read is None:
       self._read = CerealReader()
+      self._read._vasm_log = self.log  # the V-ASM gate and swallowed-exception lines
     value = self._read()
     song = value.get('media')
     media = media_of(song)
@@ -648,6 +689,11 @@ class HeadUnitFeed:
     now_ns = self.clock_ns()
     pose = carry(value['fix'], value['speed'], value['yaw_rate'], now_ns) if value['fix'] else None
     pose = self._stop_hold(pose, value.get('still_speed'), now_ns)
+    shown = value.get('blind') or (False, False)
+    blind_key = (bool(shown[0]), bool(shown[1]), pose is not None)
+    if blind_key != self._blind_logged:  # evidence for "V-ASM warned on the comma, the dash never glowed" (2026-11-14)
+      self._blind_logged = blind_key
+      self.log('hu_feed_blind', left=blind_key[0], right=blind_key[1], pose_sent=blind_key[2])
     if pose is not None:
       if value.get('brake'):
         pose['b'] = 1
@@ -656,6 +702,11 @@ class HeadUnitFeed:
         pose['bl'] = 1
       if blind[1]:
         pose['br'] = 1
+      turn = value.get('turn') or (False, False)
+      if turn[0]:
+        pose['tl'] = 1
+      if turn[1]:
+        pose['tr'] = 1
       self._send('p', pose)
       if self.have is not None:
         self.send_tiles(pose['lat'], pose['lon'], now)

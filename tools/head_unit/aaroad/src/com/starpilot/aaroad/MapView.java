@@ -78,6 +78,14 @@ final class MapView extends View {
   private final float[] blindFrom = new float[2], blindDrawn = new float[2];
   private final long[] blindAt = new long[2];
   private final RectF blindRect = new RectF();
+  // Turn signals (2026-11-14): the 10th-gen US Civic sedan's rear signal is an amber lamp in the OUTER limb of the C-shaped
+  // tail light. Sprite pixels (assets/civic_map.png, car point 26,26): the left C's outer limb is the red run at dx -20..-17,
+  // dy 5..17 with its centroid at dx -17.8, dy 9.5 from the car point, so the lamp sits at TURN_DX 18.5, TURN_DY 9.5 (mirrored
+  // for the right). It flashes with Blink (1.5 Hz, first flash lit) while the flag is on and the pose is fresh, two layers
+  // like lights(): a wide amber halo under the sprite, a bright core over it, on top of any red brake glow.
+  static final float TURN_DX = 18.5f, TURN_DY = 9.5f;
+  private final boolean[] turnOn = new boolean[2], turnDrawn = new boolean[2];
+  private final long[] turnSince = new long[2];
   // Under an overpass (Under, Peter 2026-11-01): where a raised deck is drawn over the car, the car is cut away so the
   // deck shows, and a light outline of it (OUTLINE_C, a faint OUTLINE_FILL inside) shows through, easing over
   // Under.FADE_MS. The sprite's body is its alpha over OUTLINE_ALPHA (under it is the soft shadow). cover holds the
@@ -626,7 +634,7 @@ final class MapView extends View {
       long delay = SLOW_MS;
       try {
         long t = SystemClock.uptimeMillis();
-        long slow = glowing(t) || blinding(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
+        long slow = glowing(t) || blinding(t) || turning(t) || lift != drawnLift || drawnUnder > 0 || under.moving(t)
             ? Math.max(GLOW_TICK_MS, 2 * drawMs) : SLOW_MS;
         delay = !live ? IDLE_MS : gpu != null && gpu.ready() ? slow : Math.max(FRAME_MS, 2 * drawMs);
       } catch (Throwable t) {
@@ -804,6 +812,7 @@ final class MapView extends View {
     if (st != drawnStamp) gpu.poke();
     if (s != drawnScene || st != drawnStamp || !TextUtils.equals(road, drawnRoad)
         || !cardKey(now, s.route.length == 0).equals(cardsKey) || glow(now) != drawnGlow || blind(0, now) != blindDrawn[0] || blind(1, now) != blindDrawn[1]
+        || turn(0, now) != turnDrawn[0] || turn(1, now) != turnDrawn[1]
         || Math.abs(lift - drawnLift) > 0.5f
         || (f != null && f.s == s && underWanted(f) != under.on()) || underMoving(now)) {
       invalidate();
@@ -944,7 +953,7 @@ final class MapView extends View {
     if (s == null) return false;
     if (s != drawnScene || now - drawnAt >= REDRAW_MS || !zoomSettled || stamp(now) != drawnStamp) return true;
     if (rolled(now) != drawnRoll) return true;
-    if (glow(now) != drawnGlow || blind(0, now) != blindDrawn[0] || blind(1, now) != blindDrawn[1] || under.moving(now)) return true;
+    if (glow(now) != drawnGlow || blind(0, now) != blindDrawn[0] || blind(1, now) != blindDrawn[1] || turn(0, now) != turnDrawn[0] || turn(1, now) != turnDrawn[1] || under.moving(now)) return true;
     Feed.Pose p = pose();
     double spd = Math.max(0, p.spd);
     boolean moving = spd >= HOLD_SPEED;
@@ -2295,6 +2304,8 @@ final class MapView extends View {
     float bl = blind(0, now), br = blind(1, now);
     blindDrawn[0] = bl;
     blindDrawn[1] = br;
+    turnDrawn[0] = turn(0, now);
+    turnDrawn[1] = turn(1, now);
     float u = underDeck(f, now);
     if (u <= 0) {
       body(canvas, g, 255, bl, br);
@@ -2336,10 +2347,12 @@ final class MapView extends View {
     if (bl > 0) sideGlow(canvas, -1, bl, a);
     if (br > 0) sideGlow(canvas, 1, br, a);
     if (g > 0) lights(canvas, g, true);
+    turnLamps(canvas, true, a);
     if (car != null) {
       carPaint.setAlpha(a);
       canvas.drawBitmap(car, CAR_X - CAR_PX, CAR_Y - CAR_PX, a == 255 ? null : carPaint);
       if (g > 0) lights(canvas, g, false);
+      turnLamps(canvas, false, a);  // over the red brake core: the amber lamp is a separate lamp on this car
     } else {
       fill.setColor(Color.WHITE);
       fill.setAlpha(a);
@@ -2513,6 +2526,32 @@ final class MapView extends View {
     return g != (glowOn ? 1f : 0f) || g != drawnGlow;
   }
 
+  // Whether that side's turn lamp is lit now (0 left, 1 right): its flag on, the pose fresh, and the flash on its lit half,
+  // counted from when the flag came on; with both sides on (hazards) both count from the earlier, so they flash in phase.
+  private boolean turn(int side, long now) {
+    for (int i = 0; i < 2; i++) {
+      boolean on = (i == 0 ? Feed.turnLeft : Feed.turnRight) && now - Feed.poseAt < STALE_MS;
+      if (on != turnOn[i]) {
+        turnOn[i] = on;
+        if (on) turnSince[i] = now;
+      }
+    }
+    if (!turnOn[side]) return false;
+    long since = turnOn[1 - side] ? Math.min(turnSince[0], turnSince[1]) : turnSince[side];
+    return Blink.lit(since, now);
+  }
+
+  // A turn signal is on (or its lamp changed since the last draw): the tick runs every GLOW_TICK_MS so the flash shows.
+  private boolean turning(long now) {
+    boolean any = false;
+    for (int side = 0; side < 2; side++) {
+      boolean lit = turn(side, now);
+      any |= turnOn[side];
+      if (lit != turnDrawn[side]) return true;
+    }
+    return any;
+  }
+
   // The blind-spot glow of one side (0 left, 1 right), 0 to 1: the same fade and stale rule as the brake glow.
   private float blind(int side, long now) {
     boolean on = (side == 0 ? Feed.blindLeft : Feed.blindRight) && now - Feed.poseAt < STALE_MS;
@@ -2567,6 +2606,28 @@ final class MapView extends View {
         canvas.drawCircle(x, y, 6, glowPaint);
         glowPaint.setColor(0xffff9a80);
         glowPaint.setAlpha(Math.round(200 * g));
+        canvas.drawCircle(x, y, 2.5f, glowPaint);
+      }
+    }
+  }
+
+  // The lit turn lamps, as lights() draws the brake lamps: under the sprite a wide amber halo, over it a bright core.
+  private void turnLamps(Canvas canvas, boolean under, int a) {
+    for (int side = -1; side <= 1; side += 2) {
+      if (!turnDrawn[side < 0 ? 0 : 1]) continue;
+      float x = CAR_X + side * TURN_DX, y = CAR_Y + TURN_DY, k = a / 255f;
+      if (under) {
+        glowPaint.setColor(0xffff8c00);
+        glowPaint.setAlpha(Math.round(70 * k));
+        canvas.drawCircle(x, y, 13, glowPaint);
+        glowPaint.setAlpha(Math.round(110 * k));
+        canvas.drawCircle(x, y, 9, glowPaint);
+      } else {
+        glowPaint.setColor(0xffffa000);
+        glowPaint.setAlpha(Math.round(230 * k));
+        canvas.drawCircle(x, y, 5.5f, glowPaint);
+        glowPaint.setColor(0xffffe0a0);
+        glowPaint.setAlpha(Math.round(230 * k));
         canvas.drawCircle(x, y, 2.5f, glowPaint);
       }
     }

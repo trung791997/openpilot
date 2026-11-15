@@ -39,7 +39,8 @@ class PiPWarningSource:
           pass  # Losing an optional visual feed cannot interrupt the UI.
 
   def sample(self, *, enabled: bool, settings_fingerprint: str,
-             now_mono_ns: int, now_boot_ns: int) -> tuple[bool, bool]:
+             now_mono_ns: int, now_boot_ns: int,
+             on_error: Callable[[BaseException], None] | None = None) -> tuple[bool, bool]:
     if not enabled or not isinstance(settings_fingerprint, str) or len(settings_fingerprint) != 64:
       self.close()
       return False, False
@@ -55,7 +56,12 @@ class PiPWarningSource:
                  self._reader.current_at(now_mono_ns=now_mono_ns, now_boot_ns=now_boot_ns,
                                          settings_fingerprint=settings_fingerprint))
       return bool(warning.display_left.warning), bool(warning.display_right.warning)
-    except Exception:
-      # An optional display feed cannot take down the onroad UI.
+    except Exception as error:
+      # An optional display feed cannot take down the onroad UI. on_error (hu_feed's evidence log) sees what was swallowed.
+      if on_error is not None:
+        try:
+          on_error(error)
+        except Exception:
+          pass
       self.close()
       return False, False

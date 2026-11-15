@@ -180,6 +180,89 @@ def test_pose_carries_blind_flags_only_for_the_warning_side():
   assert 'bl' not in pose() and 'br' not in pose()               # a reader without the key
 
 
+def test_blinkers_of_reads_the_two_signals():
+  from types import SimpleNamespace as NS
+  for l in (False, True):
+    for r in (False, True):
+      assert hf.blinkers_of(NS(leftBlinker=l, rightBlinker=r)) == (l, r)
+  assert hf.blinkers_of(None) == (False, False)                   # no fresh carState
+
+
+def test_pose_carries_turn_flags_only_for_the_signalling_side():
+  def pose(**kw):
+    feed, sock, now, _ = make(snapshot(**kw))
+    sock.hello()
+    feed.tick()
+    return [m for m, a in sock.sent if m['t'] == 'p'][-1]
+  hazards = pose(turn=(True, True))
+  assert hazards['tl'] == 1 and hazards['tr'] == 1
+  left = pose(turn=(True, False))
+  assert left['tl'] == 1 and 'tr' not in left
+  right = pose(turn=(False, True))
+  assert right['tr'] == 1 and 'tl' not in right
+  quiet = pose(turn=(False, False))
+  assert 'tl' not in quiet and 'tr' not in quiet
+  assert 'tl' not in pose() and 'tr' not in pose()                # a reader without the key
+
+
+def test_blind_tuple_and_pose_sent_are_logged_once_per_change():
+  logs = []
+  feed, sock, now, _ = make(snapshot(blind=(False, False)))
+  feed.log = lambda name, **kw: logs.append((name, kw))
+  sock.hello()
+  feed.tick()
+  feed.tick()
+  assert [kw for n, kw in logs if n == 'hu_feed_blind'] == [{'left': False, 'right': False, 'pose_sent': True}]
+  feed._read = lambda: snapshot(blind=(True, False))
+  feed.tick()
+  feed.tick()
+  feed._read = lambda: snapshot(blind=(True, False), fix=None)    # same tuple, but no pose to carry it
+  feed.tick()
+  assert [kw for n, kw in logs if n == 'hu_feed_blind'][1:] == [
+    {'left': True, 'right': False, 'pose_sent': True}, {'left': True, 'right': False, 'pose_sent': False}]
+
+
+def test_vasm_logs_its_gate_once_per_change_and_the_swallowed_error_rate_limited():
+  from types import SimpleNamespace as NS
+  logs = []
+  reader = object.__new__(hf.CerealReader)
+  reader._vasm_source, reader._vasm_saved, reader._vasm_read, reader.params = None, None, -math.inf, None
+  reader._vasm_log = lambda name, **kw: logs.append((name, kw))
+  gates = lambda: [kw['gate'] for n, kw in logs if n == 'hu_feed_vasm_gate']
+  reader.vasm(False, NS(canValid=True), 100.)
+  reader.vasm(False, NS(canValid=True), 100.1)                    # unchanged: not logged again
+  reader.vasm(True, NS(canValid=False), 100.2)
+  assert gates() == ['not_fresh', 'can_invalid']
+  class Broken:
+    @property
+    def canValid(self): raise RuntimeError('boom')
+  assert reader.vasm(True, Broken(), 200.) == (False, False)
+  assert reader.vasm(True, Broken(), 210.) == (False, False)      # within 30 s: quiet
+  assert reader.vasm(True, Broken(), 231.) == (False, False)
+  errors = [kw for n, kw in logs if n == 'hu_feed_vasm_error']
+  assert [e['error'] for e in errors] == ['RuntimeError: boom'] * 2 and errors[0]['where'] == 'vasm'
+  reader.close()
+
+
+def test_pip_warning_source_hands_its_swallowed_error_to_on_error(monkeypatch):
+  import sys
+  import types
+  # pip_warning only needs the messaging module's names at import; stub it so this runs without capnp (macOS)
+  cereal, messaging = types.ModuleType('openpilot.cereal'), types.ModuleType('openpilot.cereal.messaging')
+  cereal.messaging = messaging
+  monkeypatch.setitem(sys.modules, 'openpilot.cereal', cereal)
+  monkeypatch.setitem(sys.modules, 'openpilot.cereal.messaging', messaging)
+  monkeypatch.delitem(sys.modules, 'openpilot.starpilot.ui.pip_warning', raising=False)
+  from openpilot.starpilot.ui.pip_warning import PiPWarningSource
+  seen = []
+  def boom(): raise OSError('no socket')
+  source = PiPWarningSource(subscribe=boom, receive=lambda s: None)
+  assert source.sample(enabled=True, settings_fingerprint='0' * 64, now_mono_ns=1, now_boot_ns=1,
+                       on_error=seen.append) == (False, False)
+  assert [type(e).__name__ for e in seen] == ['OSError']
+  assert source.sample(enabled=True, settings_fingerprint='0' * 64, now_mono_ns=1, now_boot_ns=1) == (False, False)  # UI path unchanged
+
+
 def test_vasm_failure_is_quiet_not_fatal():
   from types import SimpleNamespace as NS
   reader = object.__new__(hf.CerealReader)

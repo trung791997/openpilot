@@ -434,3 +434,19 @@ Low-frame windows near 15:06 and 15:12 (31-139 frames per 10 s) are the car stop
 standstill 15:05:30-15:05:57, 15:11:30-15:11:50 and 15:12:20, and the GL loop then idles at `IDLE_MS` (500 ms) by
 design; frames in those windows were fast (swap 3-4 ms, sleep ~25 ms, 0 slow frames). Comma side ruled out from qlog
 procLog: total CPU 397-441% against 473-478% on 11-11, starportd ~5.7% unchanged.
+
+## Turn-signal flash and blind-spot diagnostics (2026-11-14)
+- Turn signals: pose keys `tl`/`tr` (carState `leftBlinker`/`rightBlinker`, fresh carState only, left out otherwise; `hu_feed.blinkers_of`)
+  flash that side's amber lamp on the car while the pose is under `STALE_MS` old. Lamp at 18.5 px out, 9.5 px down from the car point,
+  in the outer limb of the sprite's C-shaped tail light (read off `assets/civic_map.png`: the left C's outer limb is the red run at
+  dx -20..-17, dy 5..17, centroid dx -17.8, dy 9.5). Halo 0xffff8c00 under the sprite, core 0xffffa000 over it, over the red brake
+  glow. Flash `Blink.lit`: 666 ms period (1.5 Hz, ~90/min, inside FMVSS 108's 60-120), 50% duty, first flash lit, phase from when the
+  flag came on; hazards flash in phase. The tick runs every `GLOW_TICK_MS` only while a flag is on. *Static* only: desktop
+  `test/BlinkTest`, a type-check compile of the view, and an offline mock; not yet seen on the head unit. The amber-lamp position is
+  from the sprite, not from a photo of the real car.
+- Blind-spot glow diagnostics (Peter has seen V-ASM warn on the comma but never glow on the dash; installed module 2026-11-12 is after
+  the 11-08 glow commit). Behaviour unchanged, evidence only: `hu_feed_blind` (left, right, pose_sent) on each change, `hu_feed_vasm_gate`
+  (not_fresh / can_invalid / gear / prefs_disabled / no_clock_pair / sampled) on each change, `hu_feed_vasm_error` (class: message, at most
+  once per 30 s) from `vasm()` and from `PiPWarningSource.sample` (new optional `on_error`); head unit logs
+  `aaroad: pose flags blind a/b -> c/d, turn ... , pose age N ms` when a flag flips. Next drive: compare the comma's swaglog with the
+  head-unit error.log around a V-ASM warning.
