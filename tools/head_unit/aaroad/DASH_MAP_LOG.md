@@ -22,7 +22,7 @@ Where the cluster-map work stands, so it can be paused and picked up again. Newe
 
 | | APK | Notes |
 |---|---|---|
-| Installed now | `aaroad.apk` (sha256 1478ef52…) | stop signs kept as STOP (4750c53e0f) and the overpass outline fix (b9710a6875); installed 2026-11-15 in Park (Peter's OK) through the phone hotspot. The 11-12 build's debug key is lost, so `install -r` failed on the certificate; uninstalled and installed fresh (the app keeps no data), Success. Waiting on Peter's head-unit power cycle; not driven yet. Every later build must be signed with this worktree's `debug.keystore` (cert c747ce62…) or it will need the same uninstall |
+| Installed now | `aaroad.apk` (sha256 1478ef52…) | stop signs kept as STOP (4750c53e0f) and the overpass outline fix (b9710a6875); installed 2026-11-15 in Park (Peter's OK) through the phone hotspot. The 11-12 build's debug key is lost, so `install -r` failed on the certificate; uninstalled and installed fresh (the app keeps no data), Success. Head unit rebooted 16:18 via adb `su -c reboot` after the carState Park check (Peter asked; one-time exception, `hu-reboot` no longer exists); the map loaded and drew at 16:19 with pose and blind flags arriving; not driven yet. Every later build must be signed with this worktree's `debug.keystore` (cert c747ce62…) or it will need the same uninstall |
 | Previous (lost key) | 11-12 build | last update 2026-11-12 13:19, cert f8d2868b…; the keystore is not on this Mac |
 | Previous | `aaroad-hold.apk` | built at `ba1ecd65f`: events.log fallback dirs, time-stamped error.log lines; installed 2026-11-03 |
 | Rollback | `aaroad-cards.apk` | the last software-only build |
