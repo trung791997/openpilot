@@ -291,3 +291,59 @@ def test_sd_honda_unexpected_zero_grant_loss_is_not_cold_or_commanded_pause(muta
     source_current=source_current, previous_intent=prior_intent, intent=intent, now_ns=NOW) == (mutation == 'none')
   assert native.validUntilMonoTime == (NOW - 1 if mutation == 'latest_expired' else NOW + 190_000_000)
   assert not native.lateralAllowed and not native.longitudinalAllowed
+
+
+@pytest.mark.parametrize('mutation', ['none', 'unqualified', 'lat_denied', 'long_allowed', 'not_requested',
+  'cold', 'withdrawn', 'immediate', 'soft', 'acc_fault', 'can_invalid', 'can_timeout', 'no_native'])
+def test_sd_honda_long_withdrawal_waits_one_cycle_for_cancel_edge(mutation, monkeypatch):
+  """000000d2 seg 15: panda LONG-off led carState's CANCEL by 17 ms; hold the critical class <= 30 ms."""
+  from openpilot.selfdrive.selfdrived.events import Events
+  from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveD
+  from openpilot.starpilot.aol.runtime import AxisDecision
+
+  cp, cs, sm, prior, _ = fixture(coherent=True, brake=False)
+  native = replace(prior, requestedLateral=True, lateralAllowed=True,
+                   requestedLongitudinal=True, longitudinalAllowed=False)
+  cs.canValid, cs.canTimeout, cs.accFaulted = True, False, False
+  sd: Any = SelfdriveD.__new__(SelfdriveD)
+  sd.CP, sd.sm, sd.events = cp, sm, Events()
+  previous = AxisDecision(lateral_active=True, longitudinal_active=True)
+  requested = AxisDecision(desired_lateral=True, desired_longitudinal=True)
+  if mutation == 'unqualified':
+    import openpilot.selfdrive.selfdrived.selfdrived as sd_module
+    monkeypatch.setattr(sd_module, 'honda_aol_qualified', lambda *args, **kwargs: False)
+  elif mutation == 'lat_denied':
+    native = replace(native, lateralAllowed=False)
+  elif mutation == 'long_allowed':
+    native = replace(native, longitudinalAllowed=True)
+  elif mutation == 'not_requested':
+    native = replace(native, requestedLongitudinal=False)
+  elif mutation == 'cold':
+    previous = AxisDecision(lateral_active=True)
+  elif mutation == 'withdrawn':
+    requested = AxisDecision(desired_lateral=True)
+  elif mutation == 'immediate':
+    sd.events.add(log.OnroadEvent.EventName.controlsMismatch)
+  elif mutation == 'soft':
+    sd.events.add(log.OnroadEvent.EventName.overheat)
+  elif mutation == 'acc_fault':
+    cs.accFaulted = True
+  elif mutation == 'can_invalid':
+    cs.canValid = False
+  elif mutation == 'can_timeout':
+    cs.canTimeout = True
+  elif mutation == 'no_native':
+    native = None
+  hold = mutation == 'none'
+  pending = sd.honda_long_withdrawal_pending
+  assert pending(cs, native, previous, requested, now_ns=NOW) == hold
+  if not hold:
+    return
+  assert pending(cs, native, previous, requested, now_ns=NOW + HONDA_BRAKE_PENDING_NS)
+  assert not pending(cs, native, previous, requested, now_ns=NOW + HONDA_BRAKE_PENDING_NS + 1)
+  # Sticky: the same withdrawal never reopens a window.
+  assert not pending(cs, native, previous, requested, now_ns=NOW + 10 * HONDA_BRAKE_PENDING_NS)
+  # Only a native LONG grant ends it; a later withdrawal then gets a fresh window.
+  later = NOW + 20 * HONDA_BRAKE_PENDING_NS
+  assert not pending(cs, replace(native, longitudinalAllowed=True), previous, requested, now_ns=later)
+  assert pending(cs, native, previous, requested, now_ns=later + 10_000_000)

@@ -2045,6 +2045,32 @@ class SelfdriveD:
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)
 
+  def honda_long_withdrawal_pending(self, CS, native, previous, requested, *, now_ns):
+    """Give a Honda LONG-only native withdrawal one card cycle for its driver edge.
+
+    Route 000000d2--7ea616abbb seg 15 (limited road evidence, one event): the panda saw the
+    wheel CANCEL on CAN and withdrew LONG at 4073.893; carState carried the press 17 ms later
+    and buttonCancel (USER_DISABLE) one step after that. In between, LONG-off with no driver
+    edge was classed lost_permission -> Controls Mismatch. Same race as HONDA_BRAKE_PENDING_NS
+    (route 000000ac seg 14, brake switch) and the same 30 ms bound. Only the critical
+    classification waits: the native mask already blocks LONG, LAT must still be granted, and
+    the stamp is sticky, so one withdrawal gets at most 30 ms and windows never chain. If no
+    pedal/cancel edge arrives in that time, lost_permission fires exactly as before.
+    """
+    from openpilot.starpilot.aol.transport_pause import HONDA_BRAKE_PENDING_NS
+    if native is not None and (native.longitudinalAllowed or not native.requestedLongitudinal):
+      self.aol_honda_long_pending_ns = 0
+    if (native is None or not honda_aol_qualified(self.CP, marked_only=True) or
+        not previous.lateral_active or not previous.longitudinal_active or
+        not requested.desired_longitudinal or not native.requestedLongitudinal or native.longitudinalAllowed or
+        not native.requestedLateral or not native.lateralAllowed or
+        CS.accFaulted or not CS.canValid or CS.canTimeout or
+        any(self.events.contains(kind) for kind in (ET.IMMEDIATE_DISABLE, ET.SOFT_DISABLE))):
+      return False
+    pending_ns = getattr(self, 'aol_honda_long_pending_ns', 0) or now_ns
+    self.aol_honda_long_pending_ns = pending_ns
+    return 0 <= now_ns - pending_ns <= HONDA_BRAKE_PENDING_NS
+
   def honda_native_lateral_grant_lost(self, CS, native, previous, requested, *, source_current, previous_intent, intent, now_ns):
     """An established host LAT request lost its native grant, not a cold wait."""
     pause = getattr(self, 'aol_transport_pause', None)
@@ -2185,12 +2211,13 @@ class SelfdriveD:
       stopped_lateral_withdrawal = bool(source_current and requested.desired_lateral and
         expected_stopped_lateral_denial(self.CP, CS, native, sm=self.sm,
           axis_session_id=self.aol_session_id, now_ns=now_ns))
+      honda_long_pending = self.honda_long_withdrawal_pending(CS, native, previous, requested, now_ns=now_ns)
       lost_permission = bool(lost_honda_lateral_grant or native is not None and not driver_override and (
         previous.lateral_active and requested.desired_lateral and native.requestedLateral and
         not native.lateralAllowed and not stopped_lateral_withdrawal and
         not CS.steeringPressed and not self.events.contains(ET.OVERRIDE_LATERAL) or
         previous.longitudinal_active and requested.desired_longitudinal and native.requestedLongitudinal and
-        not native.longitudinalAllowed and not ordinary_long_withdrawal and
+        not native.longitudinalAllowed and not ordinary_long_withdrawal and not honda_long_pending and
         not self.events.contains(ET.OVERRIDE_LONGITUDINAL)))
       if not hasattr(self, 'aol_transport_pause'):
         self.aol_transport_pause = TransportPause(self.CP, self.aol_session_id)
