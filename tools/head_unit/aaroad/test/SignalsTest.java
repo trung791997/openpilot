@@ -4,7 +4,7 @@ package com.starpilot.aaroad;
 //   javac -d /tmp/signals src/com/starpilot/aaroad/Signals.java test/SignalsTest.java
 //   java -cp /tmp/signals com.starpilot.aaroad.SignalsTest
 // Fails (exit 1) unless: the signals OSM maps at each corner of a divided intersection merge into one icon at its
-// centre, two intersections a block apart stay two, a stop and a signal together are a signal, points far from the
+// centre, two intersections a block apart stay two, a stop beside a signal stays its own icon, points far from the
 // anchor and unknown kinds are left out; only icons within AHEAD_M and not more than BEHIND_M behind are chosen, at
 // most MAX of them, the nearest, farthest first; and the next one on the route ahead is the larger one, with none
 // off the route or behind the car. Railroad crossings merge only with crossings (a double track is one icon, a
@@ -29,6 +29,12 @@ public class SignalsTest {
       o[i + 2] = enk[i + 2];
     }
     return o;
+  }
+
+  static int countKind(float[] g, int k) {
+    int n = 0;
+    for (int i = 2; i < g.length; i += 4) if (g[i] == k) n++;
+    return n;
   }
 
   static float[] cluster(float[][] route, double... enk) {
@@ -61,9 +67,18 @@ public class SignalsTest {
     g = cluster(none, 0, 0, S, 0, 31, S);
     check(g.length == 8, "31 m apart is two icons");
 
-    // a stop and a signal at one corner draw as a signal; a stop alone stays a stop
+    // a stop beside a signal is not swallowed by it; two stops at one corner merge
     g = cluster(none, 0, 0, T, 5, 5, S, 300, 0, T);
-    check(g.length == 8 && g[2] == S && g[6] == T, "signal wins over stop");
+    check(g.length == 12 && countKind(g, S) == 1 && countKind(g, T) == 2, "stop survives beside a signal");
+    g = cluster(none, 0, 0, S, 20, 0, T);
+    check(g.length == 8 && countKind(g, S) == 1 && countKind(g, T) == 1, "stop 20 m from a signal survives");
+    Signals.Choice ch = new Signals.Choice();
+    Signals.choose(g, 0, -50, 1, 0, ch);
+    boolean gotStop = false;
+    for (int i = 0; i < ch.count; i++) gotStop |= g[4 * ch.idx[i] + 2] == T;
+    check(ch.count == 2 && gotStop, "the stop beside a signal is chosen");
+    g = cluster(none, 0, 0, T, 10, 0, T);
+    check(g.length == 4 && g[2] == T, "two stops at one corner are one");
 
     // far from the anchor and unknown kinds are dropped
     g = cluster(none, Signals.KEEP_M + 10, 0, S, 0, 0, 7, 0, 0, 0);
@@ -124,9 +139,9 @@ public class SignalsTest {
     // railroad crossings: a double track (two points 6 m apart) is one icon; a crossing 15 m from a light is its own
     int X = Signals.CROSSING;
     g = cluster(none, 0, 0, X, 0, 6, X, 15, 0, S, 18, 3, T);
-    check(g.length == 8, "a double track is one crossing and the light its own, got " + g.length / 4);
-    check(g.length == 8 && g[2] == X && Math.abs(g[1] - 3) < 0.5, "the crossing at the middle of its tracks");
-    check(g.length == 8 && g[6] == S, "the light and stop beside it merge as before");
+    check(g.length == 12 && countKind(g, X) == 1, "a double track is one crossing; the light and the stop beside it are their own, got " + g.length / 4);
+    check(g.length == 12 && g[2] == X && Math.abs(g[1] - 3) < 0.5, "the crossing at the middle of its tracks");
+    check(g.length == 12 && g[6] == S && g[10] == T, "the light and the stop beside it stay separate");
 
     // the next light and the next crossing on the route are both larger
     float[] mixed = {

@@ -8,7 +8,7 @@ import pytest
 from openpilot.starpilot.navigation.road_tiles import (
   CROSSING, FOOTWAY, ONEWAY, PEDESTRIAN, SIDEWALK, decode_mvt_road_detail,
   LEVEL_CROSSING, MAJOR_RAIL, MAX_RAIL_LINES, MINOR_RAIL, RAIL_BRIDGE, SERVICE_RAIL,
-  BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MINOR, MOTORWAY, SIGNAL, STOP, STREET, TUNNEL, VERSION, TileFormatError,
+  BRIDGE, DATA_ZOOM, EXTENT, LINK, MAJOR, MAX_NAME_BYTES, MAX_POINTS, MINOR, MOTORWAY, SIGNAL, STOP, STREET, TUNNEL, VERSION, TileFormatError,
   TileKey, corridor_tiles, decode_mvt_named_roads, decode_mvt_road_layer, decode_mvt_road_tile, decode_mvt_roads, decode_road_tile,
   downgrade_road_tile, encode_road_tile, lat_lon,
   meters_per_tile, road_tile_version, tiles_in_radius, world_xy,
@@ -286,6 +286,20 @@ def test_decoder_keeps_traffic_signal_points_inside_the_tile_only():
   assert decode_mvt_road_layer(data)[0].keys() == roads.keys(), "the three-list reader is unchanged"
   half = decode_mvt_road_tile(mvt([("traffic_signals", 1, [[(256, 100)]])], extent=2048))[3]
   assert half == [(512, 200, SIGNAL)], "other extents scale like the lines"
+
+
+def test_decoder_keeps_stop_signs_as_stop_and_signals_unchanged():
+  data = mvt([("primary", 2, [[(0, 0), (4096, 4096)]], {"name": "Main St"}),
+              ("traffic_signals", 1, [[(100, 200)]]),
+              ("stop_sign", 1, [[(300, 400)], [(4096, 10)]]),   # the second is outside the tile
+              ("yield_sign", 1, [[(500, 500)]])])                # not kept
+  points = decode_mvt_road_tile(data)[3]
+  assert points == [(100, 200, SIGNAL), (300, 400, STOP)]
+  # a full tile drops stops before signals
+  many = mvt([("stop_sign", 1, [[(i % 4000, 1)] for i in range(MAX_POINTS)]),
+              ("traffic_signals", 1, [[(7, 7)]])])
+  kept = decode_mvt_road_tile(many)[3]
+  assert len(kept) == MAX_POINTS and (7, 7, SIGNAL) in kept
 
 
 def test_signal_points_round_trip_and_older_versions_drop_only_the_points():

@@ -46,8 +46,9 @@ MAGIC = b"SPRT"
 # so the dash map can draw an overpass over the road under it (Peter). Older versions still decode (no
 # flags), and downgrade_road_tile() makes a version 2 (names, no flags) or 1 copy for older head units.
 # Version 4 (2026-10-31) adds the tile's traffic signal points after the classes, so the dash map can draw
-# a small traffic-light icon at a signalised intersection like Google Maps (Peter). Mapbox Streets has no
-# stop or give-way points; STOP is reserved for a future source. Older versions still decode (no points),
+# a small traffic-light icon at a signalised intersection like Google Maps (Peter). Mapbox Streets v8's
+# road layer also carries ``stop_sign`` points (OSM highway=stop), kept as STOP from 2026-11-15 (no format
+# change: kind 2 was always in the table); ``yield_sign`` points are not kept. Older versions still decode (no points),
 # and downgrade_road_tile() makes a version 3 (flags, no points) or older copy for older head units.
 # Version 5 (2026-11-01) adds, for the dash map's close-up (Peter: Google Maps' immersive view and sidewalks),
 # two bytes per line after the flags, the vector tile's ``layer`` (int8, the stacking order of bridges and
@@ -69,7 +70,7 @@ _WALK_TYPE = {"sidewalk": SIDEWALK, "crossing": CROSSING, "footway": FOOTWAY, "p
 MAX_WALK_LINES = 16384
 MAX_WALK_POINTS = 65535
 SIGNAL, STOP, LEVEL_CROSSING = 1, 2, 3  # point kinds; LEVEL_CROSSING from version 6
-_POINT_KIND = {"traffic_signals": SIGNAL, "level_crossing": LEVEL_CROSSING}
+_POINT_KIND = {"traffic_signals": SIGNAL, "stop_sign": STOP, "level_crossing": LEVEL_CROSSING}
 MAJOR_RAIL, MINOR_RAIL, SERVICE_RAIL = 1, 2, 3  # rail kinds (version 6): mainline, light rail/tram, yards/sidings
 RAIL_BRIDGE = 0x80  # rail kind bit: the rail is on a bridge
 _RAIL_KIND = {"major_rail": MAJOR_RAIL, "minor_rail": MINOR_RAIL, "service_rail": SERVICE_RAIL}
@@ -340,6 +341,7 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
   layers: dict[int, list[int]] = {}
   lanes: dict[int, list[int]] = {}
   signals: list[tuple[float, float, int]] = []
+  stops: list[tuple[float, float, int]] = []  # stop signs: after the signals, so a full tile drops stops first
   walks: list[np.ndarray] = []
   walk_kinds: list[int] = []
   walk_points = 0
@@ -404,8 +406,8 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
         if point_kind:
           for px, py in _points(geometry):
             px, py = px * scale, py * scale
-            if 0 <= px < EXTENT and 0 <= py < EXTENT and len(signals) < MAX_POINTS:
-              signals.append((px, py, point_kind))
+            if 0 <= px < EXTENT and 0 <= py < EXTENT:
+              (stops if point_kind == STOP else signals).append((px, py, point_kind))
         continue
       if kind != 2 or class_key < 0:
         continue
@@ -473,6 +475,7 @@ def decode_mvt_road_detail(data: bytes) -> MvtRoads:
         flags.setdefault(road_class, []).append(road_flags)
         layers.setdefault(road_class, []).append(road_layer)
         lanes.setdefault(road_class, []).append(road_lanes)
+  signals = (signals[:MAX_POINTS] + stops)[:MAX_POINTS]
   return MvtRoads(roads, names, flags, layers, lanes, signals, walks, walk_kinds, rails, rail_kinds)
 
 

@@ -298,14 +298,14 @@ The APKs are in `/tmp/hu/`, which does not survive the VM. Rebuild from the comm
     - With a route, the next one on it ahead is drawn 1.25x.
   - `SignalIcon.java`: the icon is upright, centred on the intersection, and drawn under the street names.
     - A light is a dark pill, 7 x 15 px, with a light rim and red, yellow and green dots.
-    - A stop sign is a red octagon, about 15 px with its white rim. None arrive yet, because the data has no stop signs.
+    - A stop sign is a red octagon, about 15 px with its white rim. None arrived at first; corrected 2026-11-15: the tiles do carry `stop_sign` points, now kept as kind 2 (see the 2026-11-15 note below).
   - Both paths draw the icons the same way:
     - Both place them with `MapView.placeSignals`, which hides them where a label would be hidden.
     - The view draws them with `SignalIcon.draw`. The GPU layer draws the same routine once into a 96 x 24 sprite texture and lays the sprites at the same whole pixels; the harness compares them and no pixels differ.
   - Harness renders are in `/tmp/hu/signals/`. The software path costs +0.2 to 0.4 ms a frame on the desktop JVM.
 - **Road tiles carry traffic signals (format 4), comma side.** *static*.
   - Problem: Peter asked for Google's small traffic-light icon at signalised intersections. The road tiles held only lines, so the head unit had no signal positions.
-  - `road_tiles.py`: format 4 ends with a points table (`<H` count, then `<h x, <h y, <B kind` per point; kind 1 a signal, 2 a stop, reserved). The points are Mapbox Streets' `traffic_signals` points in the z14 `road` layer, which come from OSM `highway=traffic_signals`. Mapbox has no stop or give-way points, and mapd has no node tags, so no stop signs reach the map.
+  - `road_tiles.py`: format 4 ends with a points table (`<H` count, then `<h x, <h y, <B kind` per point; kind 1 a signal, 2 a stop, reserved). The points are Mapbox Streets' `traffic_signals` points in the z14 `road` layer, which come from OSM `highway=traffic_signals`. (Wrong, found 2026-11-15: the same `road` layer also carries `stop_sign` and `yield_sign` points; `stop_sign` is now kept as kind 2, `yield_sign` is not.)
   - `navtilesd.py`: format 4 is current. A tile near the car saved without the points is fetched again once. `hu_feed` sends a head unit that asks `rt` 3 or older its format with the points dropped.
   - Tests: `test_road_tiles.py`, `test_navtilesd.py`, `test_hu_feed.py`.
   - Not checked: how many US signals the z14 tiles actually carry (no token on this VM).
@@ -450,3 +450,5 @@ procLog: total CPU 397-441% against 473-478% on 11-11, starportd ~5.7% unchanged
   once per 30 s) from `vasm()` and from `PiPWarningSource.sample` (new optional `on_error`); head unit logs
   `aaroad: pose flags blind a/b -> c/d, turn ... , pose age N ms` when a flag flips. Next drive: compare the comma's swaglog with the
   head-unit error.log around a V-ASM warning.
+
+- **Stop signs reach the dash map (2026-11-15):** *static and replay*, not driven. Mapbox Streets v8's z14 `road` layer carries `stop_sign` points (OSM highway=stop); `road_tiles.py` ignored them. Nine tiles around Allen/Plano held 258 `stop_sign`, 345 `traffic_signals`, 2 `yield_sign`. `_POINT_KIND` now maps `stop_sign` to STOP (no format change; yield is not drawn). A full tile drops stops before signals. `Signals.cluster` merges each kind only with its own, so a stop beside a light stays a stop icon.
