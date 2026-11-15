@@ -812,3 +812,18 @@ def test_traffic_chunks_never_take_the_road_tiles_share():
   feed.tick()
   assert sum(1 for m, _ in sock.sent if m['t'] == 'm') == hf.TILE_CHUNKS_PER_TICK
   assert 'q' not in sock.kinds()
+
+
+def test_vasm_reaches_the_gear_gate_without_an_import_error():
+  # 2026-11-15: line 394 imported car from openpilot.cereal, which has none; every fresh, CAN-valid sample raised
+  # ImportError, was swallowed, and the dash never got a V-ASM flag. A park-gear sample must stop at the gear gate.
+  from types import SimpleNamespace as NS
+  from opendbc.car.structs import car
+  logs = []
+  reader = object.__new__(hf.CerealReader)
+  reader._vasm_source, reader._vasm_saved, reader._vasm_read, reader.params = None, None, -math.inf, None
+  reader._vasm_log = lambda name, **kw: logs.append((name, kw))
+  assert reader.vasm(True, NS(canValid=True, gearShifter=car.CarState.GearShifter.park), 100.) == (False, False)
+  assert [n for n, kw in logs if n == 'hu_feed_vasm_error'] == []
+  assert [kw['gate'] for n, kw in logs if n == 'hu_feed_vasm_gate'] == ['gear']
+  reader.close()
