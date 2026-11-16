@@ -6,7 +6,7 @@ car took the 80; later Mapbox 50 then 30, camera read 70 at 19 mph and that was 
 import pytest
 
 from openpilot.starpilot.speed_limits import acceptance as acc, selection as sel
-from openpilot.starpilot.speed_limits.map_observation import MAPBOX_RECENT_NS, MapboxCeiling
+from openpilot.starpilot.speed_limits.map_observation import MAPBOX_RECENT_NS, RAISE_MIN_SUPPORT, MapboxCeiling
 from openpilot.starpilot.speed_limits.tests.test_turn_override import UNKNOWN, Drive, online, vision
 
 S = 1_000_000_000
@@ -22,7 +22,7 @@ def test_far_above_mapbox_is_dropped():
 def test_close_to_mapbox_passes():
   rule = MapboxCeiling()
   assert not rule.step(vision(55), online(55), 0)
-  assert not rule.step(vision(70, sign='s2'), online(55), S)  # 15 over: a real step up Mapbox is a little behind on
+  assert not rule.step(vision(65, sign='s2'), online(55), S)  # 10 over: a real step up Mapbox is a little behind on
   assert not rule.step(vision(25, sign='s3'), online(55), 2 * S)  # lower is never this rule's business
   assert not rule.step(UNKNOWN, online(55), 3 * S)
 
@@ -69,3 +69,49 @@ def test_runtime_shield_read_during_mapbox_gap(monkeypatch):
   assert chosen.selected_source is sel.Source.ONLINE  # a new Mapbox value after the sign: 30
   car.runtime.reset()
   assert car.runtime.mapbox_ceiling.mapbox_mps is None
+
+
+def test_route_d3_shield_70_over_mapbox_55_is_dropped():
+  # 000000d3--9c433f2bf4 508.3 s: Vision 31.293 m/s (70) with Mapbox 24.722 m/s (55.3): 14.70 mph over, passed
+  # the old 15 mph ceiling and the car presented 80. It was a one-sighting read.
+  rule = MapboxCeiling()
+  over = acc.Observation(acc.ObservationKind.VALID, acc.Candidate('vision',
+    acc.ObservationIdentity(acc.IdentityKind.PRODUCER_EPISODE, value='e2'), 31.293))
+  mapbox = acc.Observation(acc.ObservationKind.VALID, acc.Candidate('online',
+    acc.ObservationIdentity(acc.IdentityKind.GEOGRAPHIC, value='r'), 24.722))
+  assert rule.step(over, mapbox, 0, support=1)
+  assert rule.step(over, mapbox, S, support=5)  # more sightings do not clear a misread; only Mapbox agreeing does
+
+
+def test_ceiling_is_ten_mph():
+  assert not MapboxCeiling().step(vision(66), online(55), 0)  # 11 over, inside the 0.5 m/s rounding margin
+  assert MapboxCeiling().step(vision(67), online(55), 0)  # 12 over
+
+
+def test_a_raise_over_mapbox_waits_for_a_second_sighting():
+  rule = MapboxCeiling()
+  assert rule.step(vision(60), online(55), 0, support=1)
+  assert not rule.step(vision(60), online(55), S, support=RAISE_MIN_SUPPORT)
+  assert not rule.step(vision(60), online(55), 2 * S, support=1)  # passed once: not re-judged
+  assert not MapboxCeiling().step(vision(55), online(55), 0, support=1)  # equal to Mapbox is not a raise
+  assert not MapboxCeiling().step(vision(45), online(55), 0, support=1)  # lower is not a raise
+  assert not MapboxCeiling().step(vision(60), UNKNOWN, 0, support=1)  # no Mapbox: unchecked
+  assert not MapboxCeiling().step(vision(60), online(55), 0)  # support unknown: unchecked
+
+
+def test_runtime_one_sighting_raise_is_held_until_the_second(monkeypatch):
+  monkeypatch.setattr('openpilot.starpilot.gps.source.gps_mode', lambda now=None: 'backup')
+  from openpilot.starpilot.speed_limits.tests import test_turn_override as t
+  car = Drive()
+  car.tick(55, 55, 90.)
+  orig = t.vision_message
+  def one(mph, now, episode):
+    m = orig(mph, now, episode)
+    m.vision.supportCount = 1
+    return m
+  monkeypatch.setattr(t, 'vision_message', one)
+  values, chosen = car.tick(60, 55, 90., episode=2)
+  assert values[sel.Source.VISION].kind is acc.ObservationKind.UNKNOWN
+  monkeypatch.setattr(t, 'vision_message', orig)
+  values, chosen = car.tick(60, 55, 90., episode=2)
+  assert values[sel.Source.VISION].kind is acc.ObservationKind.VALID

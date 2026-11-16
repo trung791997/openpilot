@@ -166,7 +166,13 @@ class TurnOverride:
     return self.active and vision_valid
 
 
-ABOVE_MAPBOX_MPS = 15 * 0.44704 + SAME_LIMIT_MPS  # 15 mph; Mapbox vs signs on the same road differed by 5 mph at most
+# 10 mph (was 15): Mapbox vs signs on the same road differed by 5 mph at most. Route 000000d3--9c433f2bf4
+# 508.3 s (US-78, Wylie): a single-frame 70 read with Mapbox 55.3 was 14.70 mph over and passed the 15 mph
+# ceiling; the car presented 80 (70 + offset) for 1.45 s.
+ABOVE_MAPBOX_MPS = 10 * 0.44704 + SAME_LIMIT_MPS
+# A Vision reading above Mapbox waits for this many sightings (the producer's supportCount) before it can
+# raise the limit. The d3 70 above had supportCount 1; the real 55 after it reached 2 within 0.1 s and 7 by 2 s.
+RAISE_MIN_SUPPORT = 2
 MAPBOX_RECENT_NS = 30 * 1_000_000_000  # Mapbox drops out for seconds between Map Matching answers
 
 
@@ -187,6 +193,11 @@ class MapboxCeiling:
   passed is never re-judged, so a sign held after a turn onto a slower road is the
   turn override's business, not this one's. Without any recent Mapbox value Vision
   passes unchecked.
+
+  A reading above Mapbox but within the ceiling is a raise: it stays hidden until its
+  support count reaches RAISE_MIN_SUPPORT (route 000000d3: a one-sighting 70 over a
+  55 Mapbox). Once it has, it passes and is not re-judged. support=None (unknown)
+  skips this check.
   """
 
   def __init__(self):
@@ -197,8 +208,9 @@ class MapboxCeiling:
     self.mapbox_ns = 0
     self.reading = None   # identity of the current vision reading
     self.misread = False
+    self.confirmed = True  # False while a raise over Mapbox waits for RAISE_MIN_SUPPORT sightings
 
-  def step(self, vision: acc.Observation, online: acc.Observation, now_ns: int) -> bool:
+  def step(self, vision: acc.Observation, online: acc.Observation, now_ns: int, support: int | None = None) -> bool:
     """True while the current Vision reading should be hidden from selection."""
     if online.kind is acc.ObservationKind.VALID:
       self.mapbox_mps, self.mapbox_ns = online.candidate.speed_mps, now_ns
@@ -207,8 +219,11 @@ class MapboxCeiling:
     if vision.kind is not acc.ObservationKind.VALID:
       return False
     above = self.mapbox_mps is not None and vision.candidate.speed_mps > self.mapbox_mps + ABOVE_MAPBOX_MPS
+    raise_ = self.mapbox_mps is not None and vision.candidate.speed_mps > self.mapbox_mps + SAME_LIMIT_MPS
     if vision.candidate.observation_identity != self.reading:
-      self.reading, self.misread = vision.candidate.observation_identity, above
+      self.reading, self.misread, self.confirmed = vision.candidate.observation_identity, above, False
     elif self.misread and self.mapbox_mps is not None:  # only Mapbox agreeing clears it, not Mapbox going quiet
       self.misread = above
-    return self.misread
+    if not self.confirmed:
+      self.confirmed = not raise_ or support is None or support >= RAISE_MIN_SUPPORT
+    return self.misread or not self.confirmed

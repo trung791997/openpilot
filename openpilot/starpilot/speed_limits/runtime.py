@@ -147,6 +147,7 @@ class Runtime:
     self.sign_first_online = SignFirst()
     self.turn_override = TurnOverride()
     self.mapbox_ceiling = MapboxCeiling()
+    self._vision_support: int | None = None  # supportCount of the last Vision message read
     self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)  # Vision as read, while hidden from selection
     self.advance = Advance()
     self.vision_enabled = vision_enabled
@@ -189,6 +190,7 @@ class Runtime:
     self.sign_first_online.reset()
     self.turn_override.reset()
     self.mapbox_ceiling.reset()
+    self._vision_support = None
     self.vision_held = acc.Observation(acc.ObservationKind.UNKNOWN)
     self.advance = Advance()
     self.vision_diagnostic = acc.Observation(acc.ObservationKind.UNKNOWN)
@@ -370,6 +372,7 @@ class Runtime:
       pair = clock_pair_ns() if now_boot_ns is None else (now_ns, now_boot_ns)
       if pair is not None:
         evidence = sm['slcVisionObservation'].vision
+        self._vision_support = int(evidence.supportCount)
         self.vision_diagnostic = vision_observation(
           evidence, receipt_mono_ns=int(sm.logMonoTime['slcVisionObservation']),
           now_mono_ns=pair[0], now_boot_ns=pair[1], car_fingerprint=str(CP.carFingerprint),
@@ -401,7 +404,8 @@ class Runtime:
                                       car_fingerprint=str(CP.carFingerprint))
       # A reading far above Mapbox is a misread (a route shield), not a sign: drop it
       # before any sign-hold logic counts it as seen.
-      if self.mapbox_ceiling.step(values[sel.Source.VISION], online, now_ns):
+      support = self._vision_support if values[sel.Source.VISION].kind is acc.ObservationKind.VALID else None
+      if self.mapbox_ceiling.step(values[sel.Source.VISION], online, now_ns, support):
         self.vision_held = values[sel.Source.VISION]
         values[sel.Source.VISION] = acc.Observation(acc.ObservationKind.UNKNOWN)
     if (sel.Source.MAP in self.settings.selection.slots or
