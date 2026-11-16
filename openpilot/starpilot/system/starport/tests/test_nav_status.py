@@ -110,7 +110,7 @@ def test_roundabout_turn_carries_angle_and_exit(nav):
   tick(stream, now)
   fields = ns.parse_fields(next(payload for _, kind, payload in session.sent if kind == ns.NAV_TURN))
   assert fields[2] == [ns.SIDE_RIGHT] and fields[3] == [ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT]
-  assert fields[5] == [92] and fields[6] == [1]
+  assert fields[5] == [1] and fields[6] == [92]  # turn_number = 5, turn_angle = 6
   session.sent.clear()
   feed.value = {**GUIDING, 'type': 'roundabout', 'modifier': 'right', 'degrees': 180, 'exit': 2}
   tick(stream, now)
@@ -338,9 +338,10 @@ def test_navigation_wire_schema_golden_bytes():
   # Independent literals from the proto field numbers. Legacy turn: road = 1, turn_side = 2 (LEFT = 1),
   # event = 3 (TURN = 4). Notification: Maneuver.TYPE_TURN_NORMAL_LEFT (7).
   assert ns.turn_message('Main', ns.EVENT_TURN, ns.SIDE_LEFT) == bytes.fromhex('0a044d61696e10011804')
-  # Roundabout: turn_angle = 5 (90), turn_number = 6 (2); ROUNDABOUT_ENTER_AND_EXIT = 13, RIGHT = 2.
+  # Roundabout: turn_number = 5 (2), turn_angle = 6 (90); ROUNDABOUT_ENTER_AND_EXIT = 13, RIGHT = 2.
+  # Field numbers from the head unit's Protos.NavigationNextTurnEvent (AndroidAuto.odex, 2026-11-16).
   assert ns.turn_message('Main', ns.EVENT_ROUNDABOUT_ENTER_AND_EXIT, ns.SIDE_RIGHT, None, 90, 2) == \
-    bytes.fromhex('0a044d61696e1002180d285a3002')
+    bytes.fromhex('0a044d61696e1002180d2802305a')
   # NavigationStep: maneuver = 1, road = 2 {name = 1}, cue = 4 {alternate_text = 1}.
   assert ns.notification_message('Main', 7) == bytes.fromhex('0a140a02080712060a044d61696e22060a044d61696e')
   assert ns.notification_message('', 7) == bytes.fromhex('0a080a02080712020a00')

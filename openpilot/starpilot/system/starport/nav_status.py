@@ -192,9 +192,11 @@ def status_message(status: int) -> bytes:
 def turn_message(road: str, event: int, side: int, image: bytes | None = None, angle: int | None = None,
                  exit_number: int = 0) -> bytes:
   # NavigationNextTurnEvent: road = 1, turn_side = 2, event = 3 (legacy NextTurnEnum), image = 4,
-  # turn_angle = 5, turn_number = 6 (roundabouts only)
+  # turn_number = 5, turn_angle = 6 (roundabouts only). Field numbers from the head unit's own Protos.java
+  # (TURN_NUMBER_FIELD_NUMBER = 5, TURN_ANGLE_FIELD_NUMBER = 6; Peter's AndroidAuto.odex decompile 2026-11-16). They were
+  # swapped here before: the head unit read the exit number as the angle and drew the roundabout arrow pointing back.
   return (field(1, road[:128]) + field(2, side) + field(3, event) + (field(4, image) if image else b'') +
-          (field(5, angle) if angle is not None else b'') + (field(6, exit_number) if angle is not None and exit_number else b''))
+          (field(5, exit_number) if angle is not None and exit_number else b'') + (field(6, angle) if angle is not None else b''))
 
 
 def distance_message(meters: float, seconds: float, metric: bool) -> bytes:
