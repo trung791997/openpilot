@@ -426,8 +426,7 @@ def test_held_phone_position_cannot_authorize_stale_navigation_control(tmp_path,
 def offroad_runtime(tmp_path, enabled):
   from openpilot.starpilot.navigation.owner import END_WHEN_OFFROAD
   owner = configured(tmp_path)  # has a destination
-  if enabled:
-    owner.configure({END_WHEN_OFFROAD: True}, owner.read()['revision'], True)
+  owner.configure({END_WHEN_OFFROAD: enabled}, owner.read()['revision'], True)
   return owner, RouteRuntime(owner, engine=SimpleNamespace(fetch=None), executor=Executor())
 
 

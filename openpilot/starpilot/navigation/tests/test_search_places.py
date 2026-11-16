@@ -342,14 +342,16 @@ def test_old_single_entry_recents_still_load(owner):
   assert [row['name'] for row in after['recents']] == ['Next', 'Old address']
 
 
-def test_end_when_offroad_setting_defaults_off_and_round_trips(owner):
+def test_end_when_offroad_setting_defaults_on_and_round_trips(owner):
   from openpilot.starpilot.navigation.owner import END_WHEN_OFFROAD
   import json
   value = json.loads(owner.path.read_text())
   value.pop(END_WHEN_OFFROAD, None)  # a document written before the setting existed
   owner.path.write_text(json.dumps(value))
-  assert owner.read()[END_WHEN_OFFROAD] is False and owner.snapshot()[END_WHEN_OFFROAD] is False
-  on = owner.configure({END_WHEN_OFFROAD: True}, owner.read()['revision'], True)
-  assert on[END_WHEN_OFFROAD] is True and on['destination']['name'] == 'Old address'  # does not drop the route
+  assert owner.read()[END_WHEN_OFFROAD] is True and owner.snapshot()[END_WHEN_OFFROAD] is True  # on by default (Peter 2026-11-15)
+  off = owner.configure({END_WHEN_OFFROAD: False}, owner.read()['revision'], True)
+  assert off[END_WHEN_OFFROAD] is False and off['destination']['name'] == 'Old address'  # does not drop the route
+  on = owner.configure({END_WHEN_OFFROAD: True}, off['revision'], True)
+  assert on[END_WHEN_OFFROAD] is True and on['destination']['name'] == 'Old address'
   with pytest.raises(ValidationError):
     owner.configure({END_WHEN_OFFROAD: 'yes'}, on['revision'], True)

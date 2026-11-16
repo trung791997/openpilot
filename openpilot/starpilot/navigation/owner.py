@@ -41,7 +41,7 @@ MAX_FAVORITES = 100
 MAX_RECENTS = 20  # stored; Galaxy hides the ones already saved as favorites and shows the first RECENTS_SHOWN (navigation.js)
 FAVORITE_LABELS = ('home', 'work')
 ROUTE_AVOIDANCES = {'avoidTolls': 'toll', 'avoidHighways': 'motorway', 'avoidFerries': 'ferry'}
-END_WHEN_OFFROAD = 'endWhenOffroad'  # end navigation after the comma has been offroad a while (runtime.py); off unless turned on
+END_WHEN_OFFROAD = 'endWhenOffroad'  # end navigation after the comma has been offroad a while (runtime.py); on unless turned off (Peter 2026-11-15)
 ROAD_SPEED_LIMIT = 'roadSpeedLimit'  # Mapbox limit without a destination (road_limit.py); on unless turned off
 # Fixed provider styles matching Galaxy; cache entries are separate for each theme.
 MAP_STYLES = {'light': 'mapbox/light-v11', 'dark': 'mapbox/dark-v11'}
@@ -149,7 +149,7 @@ class NavigationOwner:
       info = os.stat(self.path)
     except FileNotFoundError:
       return {'version': 1, 'revision': '0', 'enabled': False, 'token': '', 'destination': None, 'favorites': [], 'recents': [], 'gpsSource': 'backup',
-              **dict.fromkeys(ROUTE_AVOIDANCES, False), ROAD_SPEED_LIMIT: True, END_WHEN_OFFROAD: False}
+              **dict.fromkeys(ROUTE_AVOIDANCES, False), ROAD_SPEED_LIMIT: True, END_WHEN_OFFROAD: True}
     key = (info.st_ino, info.st_mtime_ns, info.st_size)
     cached = getattr(self, '_read_cache', None)
     if cached is not None and cached[0] == key:
@@ -159,7 +159,7 @@ class NavigationOwner:
         raw = source.read(MAX_DOCUMENT + 1)
     except FileNotFoundError:
       return {'version': 1, 'revision': '0', 'enabled': False, 'token': '', 'destination': None, 'favorites': [], 'recents': [], 'gpsSource': 'backup',
-              **dict.fromkeys(ROUTE_AVOIDANCES, False), ROAD_SPEED_LIMIT: True, END_WHEN_OFFROAD: False}
+              **dict.fromkeys(ROUTE_AVOIDANCES, False), ROAD_SPEED_LIMIT: True, END_WHEN_OFFROAD: True}
     try:
       value = json.loads(raw)
       if (len(raw) > MAX_DOCUMENT or not isinstance(value, dict) or value.get('version') != 1 or
@@ -178,7 +178,7 @@ class NavigationOwner:
       for setting in ROUTE_AVOIDANCES:
         if type(value.setdefault(setting, False)) is not bool:
           raise ValueError
-      if type(value.setdefault(ROAD_SPEED_LIMIT, True)) is not bool or type(value.setdefault(END_WHEN_OFFROAD, False)) is not bool:
+      if type(value.setdefault(ROAD_SPEED_LIMIT, True)) is not bool or type(value.setdefault(END_WHEN_OFFROAD, True)) is not bool:
         raise ValueError
       if value.setdefault('gpsSource', 'backup') not in GPS_MODES:
         raise ValueError
