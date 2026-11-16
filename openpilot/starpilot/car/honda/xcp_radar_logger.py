@@ -41,7 +41,9 @@ OTHER_MAX_STALE_NS = 350_000_000
 STATIONARY_MAX_STALE_NS = 2_000_000_000
 INACTIVE_PROBE_PERIOD_WITH_LEAD = 6
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
-ARRAY_B_RANGE_OFFSET_M = 2.9       # Array B raw X_raw/128 sits ~2.9 m ahead of 0x280 op_tracks.dRel
+# Empirical e3 mapping between Array B and forwarded 0x280 op_tracks: XCP ≈ 1.08 * op - 0.7 m
+OP_MATCH_RANGE_SCALE = 1.08
+OP_MATCH_RANGE_OFFSET_M = 0.7
 OP_TRACKS_MAX_AGE_NS = 500_000_000
 
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
@@ -567,12 +569,12 @@ class XcpRadarLogger:
       return [], None
     candidates: list[tuple[float, int, int, float]] = []
     for ti, t in enumerate(targets):
-      d_adj = t["dRel_m"] - ARRAY_B_RANGE_OFFSET_M
+      d_adj = (t["dRel_m"] + OP_MATCH_RANGE_OFFSET_M) / OP_MATCH_RANGE_SCALE
       for oi, o in enumerate(op_tracks):
         dd = abs(d_adj - o["dRel"])
         dy = abs(t["yRel_m"] - o["yRel"])
         dv = abs(t["vRel_mps"] - o["vRel"])
-        max_dd = max(4.5, 0.14 * max(d_adj, o["dRel"], 0.0))
+        max_dd = max(4.5, 0.10 * max(d_adj, o["dRel"], 0.0))
         if dd < max_dd and dy < 2.2 and dv < 3.5:
           cost = dd * dd + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
           dist_m = math.hypot(dd, dy)
