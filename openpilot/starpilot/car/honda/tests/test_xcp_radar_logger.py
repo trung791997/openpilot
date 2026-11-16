@@ -1,10 +1,10 @@
 """Tests for the read-only Honda Bosch-A XCP Array B 20 Hz diagnostic logger."""
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 from opendbc.car.honda.values import HondaFlags
+import openpilot.starpilot.car.honda.xcp_radar_logger as xcp_mod
 from openpilot.starpilot.car.honda.xcp_radar_logger import (
   NUM_SLOTS,
   REC0,
@@ -34,16 +34,15 @@ def _write_slot(ram: bytearray, slot: int, cfg: dict) -> None:
   ram[base + 128] = cfg["cls"]
 
 
-class _FakeParams:
-  def __init__(self, route: str = "000000f0--testrouteA", offroad: bool = False):
-    self.route = route
-    self.offroad = offroad
+def _capture_events(monkeypatch) -> list[dict]:
+  rows: list[dict] = []
 
-  def get_bool(self, key: str) -> bool:
-    return self.offroad if key == "IsOffroad" else False
+  def _fake_event(name: str, **kwargs):
+    if name == "xcp_array_b_20hz":
+      rows.append(kwargs)
 
-  def get(self, key: str):
-    return self.route if key == "CurrentRoute" else None
+  monkeypatch.setattr(xcp_mod.cloudlog, "event", _fake_event)
+  return rows
 
 
 def test_decode_flags_and_seed_key():
@@ -72,14 +71,15 @@ def test_decode_flags_and_seed_key():
   assert decode_flags(0xE0C0, 0x0400, 4)["trust_accel"] is False
 
 
-def test_non_honda_bosch_disabled(tmp_path):
+def test_non_honda_bosch_disabled():
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH | HondaFlags.BOSCH_RADARLESS), passive=False)
-  logger = XcpRadarLogger(cp, params=_FakeParams(), log_dir=tmp_path)
+  logger = XcpRadarLogger(cp)
   assert not logger.enabled
   assert logger.next_can_sends(1_000_000_000) == []
 
 
-def test_20hz_scheduler_all_slots_matching_and_rotation(tmp_path):
+def test_20hz_scheduler_all_slots_matching_and_track_id(monkeypatch):
+  rows = _capture_events(monkeypatch)
   ram = bytearray(NUM_SLOTS * STRIDE)
   active_defs = {
     2: {"x": 18.0, "vx": -0.5, "ax": -1.2, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82},
@@ -94,9 +94,8 @@ def test_20hz_scheduler_all_slots_matching_and_rotation(tmp_path):
   for s, cfg in active_defs.items():
     _write_slot(ram, s, cfg)
 
-  params = _FakeParams()
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
-  logger = XcpRadarLogger(cp, params=params, log_dir=tmp_path)
+  logger = XcpRadarLogger(cp)
   assert logger.enabled
 
   t = 1_000_000_000
@@ -132,8 +131,6 @@ def test_20hz_scheduler_all_slots_matching_and_rotation(tmp_path):
   probed_slots: set[int] = set()
   lead_kin_reads = 0
   for i in range(400):
-    if i == 200:
-      params.route = "000000f1--testrouteB"
     if i == 250:
       active_defs[31]["age"] = 1
       active_defs[31]["x"] = 14.0
@@ -158,12 +155,8 @@ def test_20hz_scheduler_all_slots_matching_and_rotation(tmp_path):
 
   assert probed_slots == set(range(NUM_SLOTS))
   assert lead_kin_reads >= 65
-  files = sorted(tmp_path.glob("xcp_array_b_20hz_*.jsonl"))
-  assert len(files) == 2
-  assert (tmp_path / "latest.jsonl").resolve() == files[-1].resolve()
-
-  rows = [json.loads(line) for f in files for line in f.read_text().splitlines()]
   assert 75 <= len(rows) <= 85
+  assert all(r["debug"] is True for r in rows)
   by_slot = {tgt["slot"]: tgt for tgt in rows[-1]["targets"]}
   assert set(by_slot.keys()) == set(active_defs.keys())
   assert by_slot[2]["op_track_id"] == 17
@@ -197,7 +190,8 @@ def _unlock_logger(logger: XcpRadarLogger, t_start: int, v_ego: float = 15.0) ->
   return t
 
 
-def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(tmp_path):
+def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(monkeypatch):
+  rows = _capture_events(monkeypatch)
   ram = bytearray(NUM_SLOTS * STRIDE)
   # Slot 5 is the real moving lead; slot 3 is closer stationary in-path clutter; slots 10..29 are roadside stationary clutter
   _write_slot(ram, 5, {"x": 28.0, "vx": -1.0, "ax": -1.5, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82})
@@ -206,7 +200,7 @@ def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(tmp_path):
     _write_slot(ram, s, {"x": 15.0 + s, "vx": -15.0, "ax": 0.0, "y": -4.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 10, "qual": 15, "cls": 50})
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
-  logger = XcpRadarLogger(cp, params=_FakeParams(), log_dir=tmp_path)
+  logger = XcpRadarLogger(cp)
   t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
 
   # 5 seconds at 20 ms RTT (50 reads/sec)
@@ -233,21 +227,20 @@ def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(tmp_path):
   post_warmup_gaps_ms = [(b - a) / 1e6 for a, b in zip(lead_kin_times[5:-1], lead_kin_times[6:], strict=True)]
   assert max(post_warmup_gaps_ms) <= 90.0
 
-  files = sorted(tmp_path.glob("xcp_array_b_20hz_*.jsonl"))
-  rows = [json.loads(line) for f in files for line in f.read_text().splitlines()]
   matched_rows = [r for r in rows if r["lead"] is not None and r["lead"]["slot"] == 5]
   assert len(matched_rows) >= 50
   assert all(r["lead"]["op_track_id"] == 91 for r in matched_rows[-20:])
 
 
-def test_offset_matching_and_moving_lead_fallback(tmp_path):
+def test_offset_matching_and_moving_lead_fallback(monkeypatch):
+  rows = _capture_events(monkeypatch)
   ram = bytearray(NUM_SLOTS * STRIDE)
   # Closer stationary in-path clutter (slot 1) vs actual distant moving lead (slot 4 at x=103.0, op dRel=100.0)
   _write_slot(ram, 1, {"x": 8.0, "vx": -15.0, "ax": 0.0, "y": 0.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 20, "qual": 20, "cls": 60})
   _write_slot(ram, 4, {"x": 103.0, "vx": -1.0, "ax": -0.5, "y": -0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 30, "qual": 25, "cls": 85})
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
-  logger = XcpRadarLogger(cp, params=_FakeParams(), log_dir=tmp_path)
+  logger = XcpRadarLogger(cp)
   t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
 
   # First 2.0s without op_tracks (verifies moving-lead fallback skips closer stationary clutter in slot 1)
@@ -264,8 +257,6 @@ def test_offset_matching_and_moving_lead_fallback(tmp_path):
     t += 20_000_000
 
   logger.close()
-  files = sorted(tmp_path.glob("xcp_array_b_20hz_*.jsonl"))
-  rows = [json.loads(line) for f in files for line in f.read_text().splitlines()]
   # Once both slot 1 and slot 4 have flags, lead should pick slot 4 (both via moving fallback and via op_tracks offset match)
   rows_both = [r for r in rows if {tgt["slot"] for tgt in r["targets"]} >= {1, 4}]
   assert rows_both

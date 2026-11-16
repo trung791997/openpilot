@@ -9,11 +9,8 @@ from __future__ import annotations
 
 import atexit
 from collections import deque
-import json
 import math
 import os
-from pathlib import Path
-import re
 import threading
 import time
 
@@ -32,8 +29,6 @@ NUM_SLOTS = 40
 MAX_ACTIVE_TARGETS = 40
 LEAD_PRIORITY_COUNT = 2
 
-LOG_DIR = Path("/data/media/0/xcp_radar_logs")
-
 EPOCH_NS = 50_000_000          # 20 Hz output logging cadence
 LEAD_KIN_INTERVAL_NS = 35_000_000  # ~20-25 Hz kinematics for primary lead
 LEAD_META_INTERVAL_NS = 120_000_000  # ~8 Hz alternating age / flags (~4 Hz each) for primary lead
@@ -48,13 +43,10 @@ INACTIVE_PROBE_PERIOD_WITH_LEAD = 6
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
 ARRAY_B_RANGE_OFFSET_M = 2.9       # Array B raw X_raw/128 sits ~2.9 m ahead of 0x280 op_tracks.dRel
 OP_TRACKS_MAX_AGE_NS = 500_000_000
-ROUTE_POLL_INTERVAL_NS = 1_000_000_000
 
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
-
-_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 
 def key_for_seed(seed_be: bytes) -> bytes:
@@ -102,21 +94,6 @@ def decode_flags(flags: int, subflags: int, age: int) -> dict:
   }
 
 
-def _read_boot_id8() -> str:
-  try:
-    raw = _BOOT_ID_PATH.read_text().strip().replace("-", "")
-    return raw[:8] or "nobootid"
-  except Exception:
-    return "nobootid"
-
-
-def _sanitize_tag(raw: str | None) -> str:
-  if not raw:
-    return "offroad"
-  cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_")
-  return cleaned or "offroad"
-
-
 def _empty_slot_record() -> dict:
   return {
     "X_raw": 0,
@@ -144,7 +121,8 @@ def _empty_slot_record() -> dict:
 
 
 class XcpRadarLogger:
-  def __init__(self, CP, *, send_lock: threading.Lock | None = None, pm=None, params=None, log_dir: Path = LOG_DIR) -> None:
+  def __init__(self, CP, *, send_lock: threading.Lock | None = None, pm=None, params=None) -> None:
+    del params
     self.enabled = False
     self.state = "DISABLED"
     self.in_flight = None  # (cmd_type, slot, offset, size, sent_ns)
@@ -170,16 +148,8 @@ class XcpRadarLogger:
     self._op_matched_slots: list[int] = []
 
     self._lock = threading.RLock()
-    self._file_lock = threading.Lock()
     self._send_lock = send_lock
     self._pm = pm
-    self._params = params
-    self._log_dir = Path(log_dir)
-    self._boot_id8 = _read_boot_id8()
-    self._fd: int | None = None
-    self._log_path: Path | None = None
-    self._current_route_tag: str | None = None
-    self._last_route_check_ns = 0
 
     self._tx_armed = False
     self._tx_armed_ns = 0
@@ -197,13 +167,6 @@ class XcpRadarLogger:
         and not bool(CP.flags & (HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD))
         and not bool(CP.passive)
       ):
-        if self._params is None:
-          try:
-            from openpilot.common.params import Params
-            self._params = Params()
-          except Exception:
-            self._params = None
-        self._log_dir.mkdir(parents=True, exist_ok=True)
         self.enabled = True
         self.state = "NEED_CONNECT"
         atexit.register(self.close)
@@ -215,85 +178,6 @@ class XcpRadarLogger:
       self.enabled = False
       self.close()
 
-  def _desired_route_tag(self) -> str:
-    if self._params is None:
-      return "offroad"
-    try:
-      is_offroad = bool(self._params.get_bool("IsOffroad"))
-      if is_offroad:
-        return "offroad"
-      cur_route = self._params.get("CurrentRoute")
-      if isinstance(cur_route, bytes):
-        cur_route = cur_route.decode("utf-8", errors="ignore")
-      return _sanitize_tag(cur_route)
-    except Exception:
-      return "offroad"
-
-  def _close_fd_locked(self) -> None:
-    if self._fd is not None:
-      fd = self._fd
-      self._fd = None
-      try:
-        os.fsync(fd)
-      except OSError:
-        pass
-      try:
-        os.close(fd)
-      except OSError:
-        pass
-
-  def _rotate_log_file_if_needed_locked(self, now_ns: int, *, open_if_missing: bool = False) -> None:
-    if not open_if_missing and self._fd is not None and now_ns - self._last_route_check_ns < ROUTE_POLL_INTERVAL_NS:
-      return
-    self._last_route_check_ns = now_ns
-    desired_tag = self._desired_route_tag()
-    if self._fd is not None and desired_tag == self._current_route_tag:
-      return
-    if self._fd is None and not open_if_missing:
-      return
-    if self._closed:
-      return
-    self._close_fd_locked()
-    self._log_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = self._log_dir / f"xcp_array_b_20hz_{desired_tag}_{self._boot_id8}_{ts}.jsonl"
-    if path.exists():
-      path = self._log_dir / f"xcp_array_b_20hz_{desired_tag}_{self._boot_id8}_{ts}_{now_ns % 1_000_000_000}.jsonl"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    self._fd = os.open(path, flags, 0o644)
-    self._log_path = path
-    self._current_route_tag = desired_tag
-    tmp_link = self._log_dir / f".latest.{os.getpid()}.{threading.get_ident()}.tmp"
-    latest_link = self._log_dir / "latest.jsonl"
-    try:
-      if tmp_link.exists() or tmp_link.is_symlink():
-        tmp_link.unlink()
-      os.symlink(path.name, tmp_link)
-      os.replace(tmp_link, latest_link)
-    except OSError:
-      try:
-        if tmp_link.exists() or tmp_link.is_symlink():
-          tmp_link.unlink()
-      except OSError:
-        pass
-
-  def _write_line(self, payload_line: str, now_ns: int) -> None:
-    data = payload_line.encode("utf-8")
-    with self._file_lock:
-      if self._closed:
-        return
-      self._rotate_log_file_if_needed_locked(now_ns, open_if_missing=True)
-      fd = self._fd
-      if fd is None:
-        return
-      view = memoryview(data)
-      written = 0
-      while written < len(data):
-        n = os.write(fd, view[written:])
-        if n <= 0:
-          break
-        written += n
-
   def close(self) -> None:
     if self._closed:
       return
@@ -303,8 +187,6 @@ class XcpRadarLogger:
     io_thread = self._io_thread
     if io_thread is not None and io_thread is not threading.current_thread():
       io_thread.join(timeout=0.5)
-    with self._file_lock:
-      self._close_fd_locked()
 
   def _alloc_track_id_locked(self) -> int:
     tid = self._next_radar_track_id
@@ -789,21 +671,13 @@ class XcpRadarLogger:
         lead = min(moving_in_path or in_path, key=lambda t: t["dRel_m"]) if in_path else None
       else:
         lead = min(in_path, key=lambda t: t["dRel_m"]) if in_path else None
-    row = {
-      "mono_ns": now_ns,
-      "v_ego": round(v_ego, 3),
-      "lead": lead,
-      "targets": targets,
-      "op_tracks": op_tracks,
-    }
-    self._write_line(json.dumps(row, separators=(",", ":")) + "\n", now_ns)
     cloudlog.event(
       "xcp_array_b_20hz",
-      mono_ns=row["mono_ns"],
-      v_ego=row["v_ego"],
-      lead=row["lead"],
-      targets=row["targets"],
-      op_tracks=row["op_tracks"],
+      mono_ns=now_ns,
+      v_ego=round(v_ego, 3),
+      lead=lead,
+      targets=targets,
+      op_tracks=op_tracks,
       debug=True,
     )
 
