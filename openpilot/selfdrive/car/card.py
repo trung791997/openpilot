@@ -321,6 +321,14 @@ class Car:
         raise ValueError('explicit car interface requires a radar interface')
       self.RI = RI
 
+    from openpilot.starpilot.car.honda.xcp_radar_logger import XcpRadarLogger
+    self.xcp_radar_logger = XcpRadarLogger(
+      self.CP,
+      send_lock=self.vehicle_startup.send_lock,
+      pm=self.pm,
+      params=self.params,
+    )
+
     self.volt_cc_selected = gm_cc_transport_required(self.CP)
     self.volt_cc_boot_offset_ns = None
     self.volt_cc_source_floor_ns = 0
@@ -529,6 +537,8 @@ class Car:
     # Update carState from CAN
     observe_controller_can(self.CI, can_list)
     CS = self.CI.update(can_list)
+    if getattr(self, "xcp_radar_logger", None) is not None:
+      self.xcp_radar_logger.observe_can(can_list, time.monotonic_ns(), v_ego=float(CS.vEgo))
     self.RI.v_ego = CS.vEgo   # the Honda Bosch-A decoder bounds a reversing coast with it
     seatbelt_check = getattr(self, 'seatbelt_check', None)
     if seatbelt_check is not None:
@@ -1525,7 +1535,8 @@ class Car:
       with self.ioniq6_keepalive.lock:
         self.pm.send('sendcan', packet)
     else:
-      self.pm.send('sendcan', packet)
+      with self.vehicle_startup.send_lock:
+        self.pm.send('sendcan', packet)
     self.learning_send_committed_mono_ns=self.learning_send_mono_ns
 
   def volt_cc_control_current(self):
@@ -1844,6 +1855,8 @@ class Car:
         from openpilot.starpilot.car.subaru.stop_start_caller import update as update_subaru_startup
         update_subaru_startup(self, now_nanos)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
+      if getattr(self, "xcp_radar_logger", None) is not None:
+        can_sends.extend(self.xcp_radar_logger.next_can_sends(time.monotonic_ns()))
       self.publish_sendcan(can_sends, valid=CS.canValid)
       if learning_snapshot is not None and self.learning_send_committed_mono_ns:
         try:
@@ -1881,7 +1894,10 @@ class Car:
 
     radar_can = self._deferred_radar_can
     self._deferred_radar_can = None
-    self.radar_publish(self.radar_update(radar_can))
+    RD = self.radar_update(radar_can)
+    self.radar_publish(RD)
+    if getattr(self, "xcp_radar_logger", None) is not None and RD is not None:
+      self.xcp_radar_logger.observe_radar_tracks(RD, time.monotonic_ns())
     self.initialized_prev = initialized
     self.CS_prev = CS
 
@@ -1944,6 +1960,8 @@ def main():
     Car.__init__(car)
     car.card_thread()
   finally:
+    if getattr(car, 'xcp_radar_logger', None) is not None:
+      car.xcp_radar_logger.close()
     if getattr(car, 'vehicle_startup', None) is not None:
       try:
         car.prepare_pe_restoration()
