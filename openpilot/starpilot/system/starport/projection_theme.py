@@ -471,14 +471,30 @@ def badge_anchor(state, content):
 
 
 def badge_placement(state, content):
-  """(avoid, anchor) for the lead badge. Normally it is pinned under the speed card; while the Accept / Decline buttons
-  are up they sit in that slot, so the badge slides sideways off the card and the buttons until they close."""
+  """(avoid, anchor) for the lead badge. Normally it is pinned under the speed card. The Accept / Decline buttons draw
+  beside the card, so the badge stays pinned while they are up unless they reach into its slot; only then does it slide
+  sideways off the card and the buttons until they close. (2026-11-16 photo: sliding whenever they were up put the
+  badge over the speedometer in the middle of the screen.)"""
   card = card_rect(state)
   controls = slc_controls(Profile.LARGE, state) if card is not None else ()
-  if not controls:
-    return card, badge_anchor(state, content)
+  anchor = badge_anchor(state, content)
+  if not controls or (anchor is not None and not any(_overlaps(_anchored_ink(content, anchor), control.bounds)
+                                                     for control in controls)):
+    return card, anchor
   boxes = [card, *(control.bounds for control in controls)]
   return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)), None
+
+
+def _anchored_ink(content, anchor):
+  """(left, top, right, bottom) the badge's ink covers when pinned at anchor, over all three distance settings."""
+  unit = content.width * .05
+  half = unit * 1.25 * 1.15 + max(1.5, unit * .085) / 2
+  top, bottom = badge_extent(content)
+  return anchor[0], anchor[1], anchor[0] + 2 * half, anchor[1] + bottom - top
+
+
+def _overlaps(a, b):
+  return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 def badge_geometry(content, personality, avoid=None, anchor=None):

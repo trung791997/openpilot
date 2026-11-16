@@ -208,9 +208,22 @@ def test_badge_placement_pins_under_the_card_or_slides_off_the_buttons(monkeypat
   monkeypatch.setattr(theme, 'slc_controls', lambda *a: ())
   assert theme.badge_placement(state, SCREEN) == (card, theme.badge_anchor(state, SCREEN))
   assert theme.badge_placement(state, SCREEN)[1] is not None
-  buttons = SimpleNamespace(bounds=(88, 243, 576, 335))  # Accept / Decline row below the card
+  buttons = SimpleNamespace(bounds=(88, 243, 576, 700))  # Accept / Decline reaching down into the badge's slot
   monkeypatch.setattr(theme, 'slc_controls', lambda *a: (buttons,))
-  assert theme.badge_placement(state, SCREEN) == ((88, 75, 576, 335), None)
+  assert theme._overlaps(theme._anchored_ink(SCREEN, theme.badge_anchor(state, SCREEN)), buttons.bounds)
+  assert theme.badge_placement(state, SCREEN) == ((88, 75, 576, 700), None)
+
+
+def test_badge_stays_pinned_when_the_buttons_draw_beside_the_card(monkeypatch):
+  # 2026-11-16 photo: Accept / Reject drew to the right of the card and the badge slid off them onto the speedometer
+  card = (88, 75, 576, 243)
+  state = SimpleNamespace(customization={})
+  monkeypatch.setattr(theme, 'card_rect', lambda state: card)
+  buttons = SimpleNamespace(bounds=(600, 75, 1100, 250))
+  monkeypatch.setattr(theme, 'slc_controls', lambda *a: (buttons,))
+  anchor = theme.badge_anchor(state, SCREEN)
+  assert theme.badge_placement(state, SCREEN) == (card, anchor)
+  assert not theme._overlaps(theme._anchored_ink(SCREEN, anchor), buttons.bounds)
 
 
 def test_no_lead_word(rl, monkeypatch):
