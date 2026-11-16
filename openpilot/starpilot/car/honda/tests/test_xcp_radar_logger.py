@@ -170,3 +170,104 @@ def test_20hz_scheduler_all_slots_matching_and_rotation(tmp_path):
   assert by_slot[13]["op_track_id"] == 29
   assert rows[-1]["lead"]["slot"] == 2
   assert len({tgt["radar_track_id"] for r in rows for tgt in r["targets"] if tgt["slot"] == 31}) >= 2
+
+
+def _unlock_logger(logger: XcpRadarLogger, t_start: int, v_ego: float = 15.0) -> int:
+  t = t_start
+  logger.next_can_sends(t)
+  t = logger._tx_armed_ns + 600_000_000
+  for _ in range(4):
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      pid = pkt[0]
+      if pid == 0xFF:
+        rep = b"\xFF\x05\x01\x08\x00\x08\x01\x01"
+      elif pid == 0xFD:
+        rep = b"\xFF\x00\x05\x00\x00\x00"
+      elif pid == 0xF8:
+        rep = b"\xFF\x00\x12\x34\x56\x78"
+      elif pid == 0xF7:
+        rep = b"\xFF\x01"
+      else:
+        raise AssertionError(f"Unexpected pid {pid:#x}")
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=v_ego)
+    t += 20_000_000
+  assert logger.state == "READY"
+  return t
+
+
+def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(tmp_path):
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  # Slot 5 is the real moving lead; slot 3 is closer stationary in-path clutter; slots 10..29 are roadside stationary clutter
+  _write_slot(ram, 5, {"x": 28.0, "vx": -1.0, "ax": -1.5, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82})
+  _write_slot(ram, 3, {"x": 12.0, "vx": -15.0, "ax": 0.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 12, "qual": 20, "cls": 60})
+  for s in range(10, 30):
+    _write_slot(ram, s, {"x": 15.0 + s, "vx": -15.0, "ax": 0.0, "y": -4.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 10, "qual": 15, "cls": 50})
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, params=_FakeParams(), log_dir=tmp_path)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+
+  # 5 seconds at 20 ms RTT (50 reads/sec)
+  lead_kin_times: list[int] = []
+  for i in range(250):
+    if i >= 25:
+      # Once slot 5 is discovered, publish openpilot track shifted by -2.9 m
+      logger.observe_radar_tracks(SimpleNamespace(points=[SimpleNamespace(trackId=91, dRel=25.1, yRel=0.2, vRel=-1.0)]), t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      s = off // STRIDE
+      if s == 5 and (off % STRIDE) == 16:
+        lead_kin_times.append(t + 19_000_000)
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  logger.close()
+  assert len(lead_kin_times) >= 60
+  # Check post-warmup gaps between primary lead kinematics reads stay bounded (< 90 ms) despite 21 clutter slots
+  post_warmup_gaps_ms = [(b - a) / 1e6 for a, b in zip(lead_kin_times[5:-1], lead_kin_times[6:], strict=True)]
+  assert max(post_warmup_gaps_ms) <= 90.0
+
+  files = sorted(tmp_path.glob("xcp_array_b_20hz_*.jsonl"))
+  rows = [json.loads(line) for f in files for line in f.read_text().splitlines()]
+  matched_rows = [r for r in rows if r["lead"] is not None and r["lead"]["slot"] == 5]
+  assert len(matched_rows) >= 50
+  assert all(r["lead"]["op_track_id"] == 91 for r in matched_rows[-20:])
+
+
+def test_offset_matching_and_moving_lead_fallback(tmp_path):
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  # Closer stationary in-path clutter (slot 1) vs actual distant moving lead (slot 4 at x=103.0, op dRel=100.0)
+  _write_slot(ram, 1, {"x": 8.0, "vx": -15.0, "ax": 0.0, "y": 0.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 20, "qual": 20, "cls": 60})
+  _write_slot(ram, 4, {"x": 103.0, "vx": -1.0, "ax": -0.5, "y": -0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 30, "qual": 25, "cls": 85})
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, params=_FakeParams(), log_dir=tmp_path)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+
+  # First 2.0s without op_tracks (verifies moving-lead fallback skips closer stationary clutter in slot 1)
+  for i in range(150):
+    if i >= 100:
+      logger.observe_radar_tracks(SimpleNamespace(points=[SimpleNamespace(trackId=55, dRel=100.0, yRel=-0.3, vRel=-1.0)]), t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  logger.close()
+  files = sorted(tmp_path.glob("xcp_array_b_20hz_*.jsonl"))
+  rows = [json.loads(line) for f in files for line in f.read_text().splitlines()]
+  # Once both slot 1 and slot 4 have flags, lead should pick slot 4 (both via moving fallback and via op_tracks offset match)
+  rows_both = [r for r in rows if {tgt["slot"] for tgt in r["targets"]} >= {1, 4}]
+  assert rows_both
+  assert all(r["lead"]["slot"] == 4 for r in rows_both)
+  assert rows_both[-1]["lead"]["op_track_id"] == 55

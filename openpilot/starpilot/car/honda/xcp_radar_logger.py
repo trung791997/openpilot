@@ -35,14 +35,18 @@ LEAD_PRIORITY_COUNT = 2
 LOG_DIR = Path("/data/media/0/xcp_radar_logs")
 
 EPOCH_NS = 50_000_000          # 20 Hz output logging cadence
-LEAD_KIN_INTERVAL_NS = 38_000_000  # ~20 Hz kinematics for primary lead (accounts for ~9.4ms RTT)
-LEAD_META_INTERVAL_NS = 65_000_000 # ~15 Hz alternating age / flags (~7.5 Hz each) for primary lead
-LEAD_LAT_INTERVAL_NS = 200_000_000
-LEAD_QUAL_INTERVAL_NS = 300_000_000
-LEAD2_KIN_INTERVAL_NS = 88_000_000 # ~10 Hz kinematics for secondary priority target
-LEAD2_META_INTERVAL_NS = 200_000_000
-OTHER_META_INTERVAL_NS = 250_000_000
+LEAD_KIN_INTERVAL_NS = 35_000_000  # ~20-25 Hz kinematics for primary lead
+LEAD_META_INTERVAL_NS = 120_000_000  # ~8 Hz alternating age / flags (~4 Hz each) for primary lead
+LEAD_LAT_INTERVAL_NS = 300_000_000
+LEAD_QUAL_INTERVAL_NS = 500_000_000
+LEAD2_KIN_INTERVAL_NS = 90_000_000 # ~10 Hz kinematics for secondary priority target
+LEAD2_META_INTERVAL_NS = 250_000_000
+OTHER_META_INTERVAL_NS = 300_000_000
 OTHER_MAX_STALE_NS = 350_000_000
+STATIONARY_MAX_STALE_NS = 2_000_000_000
+INACTIVE_PROBE_PERIOD_WITH_LEAD = 6
+INACTIVE_PROBE_PERIOD_NO_LEAD = 3
+ARRAY_B_RANGE_OFFSET_M = 2.9       # Array B raw X_raw/128 sits ~2.9 m ahead of 0x280 op_tracks.dRel
 OP_TRACKS_MAX_AGE_NS = 500_000_000
 ROUTE_POLL_INTERVAL_NS = 1_000_000_000
 
@@ -151,6 +155,7 @@ class XcpRadarLogger:
     self.scan_cursor = 0
     self._rr_cursor = 0
     self._read_seq = 0
+    self._last_probe_seq = -INACTIVE_PROBE_PERIOD_WITH_LEAD
     self._next_radar_track_id = 1
 
     self.last_handshake_tx_ns = -HANDSHAKE_RETRY_NS
@@ -306,11 +311,23 @@ class XcpRadarLogger:
     self._next_radar_track_id += 1
     return tid
 
-  def _enqueue_init_locked(self, slot: int) -> None:
-    for task in ((slot, 106, 2), (slot, 2, 6), (slot, 22, 6), (slot, 127, 2)):
-      if task not in self._init_queued:
-        self._init_queued.add(task)
-        self._init_queue.append(task)
+  def _is_moving_target_locked(self, rec: dict) -> bool:
+    if self.last_v_ego < 3.0:
+      return True
+    return abs(self.last_v_ego + rec["Vx_raw"] / 256.0) >= 1.5
+
+  def _enqueue_init_locked(self, slot: int, *, moving: bool = True) -> None:
+    if moving or self.last_v_ego < 3.0:
+      # Push moving targets to front so initial flags/age/Y arrive before stale clutter
+      for task in ((slot, 22, 6), (slot, 2, 6), (slot, 106, 2)):
+        if task not in self._init_queued:
+          self._init_queued.add(task)
+          self._init_queue.appendleft(task)
+    else:
+      for task in ((slot, 106, 2), (slot, 22, 6)):
+        if task not in self._init_queued:
+          self._init_queued.add(task)
+          self._init_queue.append(task)
 
   def _clear_session_locked(self, target_state: str = "NEED_CONNECT") -> None:
     self.state = target_state
@@ -372,7 +389,7 @@ class XcpRadarLogger:
         if rec["radar_track_id"] == 0:
           rec["radar_track_id"] = self._alloc_track_id_locked()
         self.active_slots[slot] = rec
-        self._enqueue_init_locked(slot)
+        self._enqueue_init_locked(slot, moving=self._is_moving_target_locked(rec))
       elif slot in self.active_slots:
         self.active_slots[slot] = rec
 
@@ -438,9 +455,11 @@ class XcpRadarLogger:
       s, rec = item
       x_raw = rec["X_raw"]
       y_raw = rec["Y_raw"]
+      is_moving = self._is_moving_target_locked(rec)
       in_path = bool(rec["subflags"] & 0x0400) or (x_raw > 0 and abs(y_raw) < 320)
       forward = x_raw > 0
-      return (0 if (in_path and forward) else 1, x_raw if forward else abs(x_raw) + 100_000, s)
+      tier = 0 if (in_path and forward and is_moving) else (1 if (in_path and forward) else (2 if (forward and is_moving) else 3))
+      return (tier, x_raw if forward else abs(x_raw) + 100_000, s)
 
     for s, _ in sorted(self.active_slots.items(), key=_prio_key):
       if s not in prio:
@@ -452,23 +471,10 @@ class XcpRadarLogger:
   def _next_read_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
     self._read_seq += 1
 
-    # Guarantee 25% of read bandwidth continuously discovers inactive slots (40-slot sweep)
-    if (self._read_seq & 3) == 0 and len(self.active_slots) < NUM_SLOTS:
-      probe = self._next_inactive_probe_locked()
-      if probe is not None:
-        return probe
-
-    # Newly promoted active slots get immediate initial flags/age/Y/qual
-    while self._init_queue:
-      task = self._init_queue.popleft()
-      self._init_queued.discard(task)
-      if task[0] in self.active_slots:
-        return task
-
     prio_slots = self._select_priority_slots_locked()
     prio_set = set(prio_slots)
 
-    # Primary lead (prio_slots[0]): guaranteed 20 Hz kinematics (16, 6) + ~7.5 Hz each age/flags
+    # Primary lead (prio_slots[0]) sits strictly above init queue and inactive probing
     if prio_slots:
       s = prio_slots[0]
       rec = self.slot_cache[s]
@@ -485,22 +491,42 @@ class XcpRadarLogger:
       if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # Anti-starvation check for all other active slots (guarantee >=2.5 Hz kinematics & age/flags)
+    # Adaptive inactive slot discovery (1/6 when tracking a lead, 1/3 otherwise)
+    probe_period = INACTIVE_PROBE_PERIOD_WITH_LEAD if prio_slots else INACTIVE_PROBE_PERIOD_NO_LEAD
+    if (self._read_seq - self._last_probe_seq) >= probe_period and len(self.active_slots) < NUM_SLOTS:
+      probe = self._next_inactive_probe_locked()
+      if probe is not None:
+        self._last_probe_seq = self._read_seq
+        return probe
+
+    # Newly promoted active slots get initial flags/age/Y (moving targets queued at front)
+    while self._init_queue:
+      task = self._init_queue.popleft()
+      self._init_queued.discard(task)
+      if task[0] in self.active_slots:
+        return task
+
+    # Anti-starvation check for other active slots: moving traffic at >=2.8 Hz, stationary clutter at 0.5 Hz
     lead1 = prio_slots[0] if prio_slots else -1
     others_all = [s for s in sorted(self.active_slots) if s != lead1]
     if others_all:
-      stale_kin_slot = min(others_all, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
-      if now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"] >= OTHER_MAX_STALE_NS:
-        return (stale_kin_slot, 16, 6)
-      stale_meta_slot = min(
-        others_all,
-        key=lambda s: (min(self.slot_cache[s]["age_updated_ns"], self.slot_cache[s]["flags_updated_ns"]), s),
-      )
-      rec = self.slot_cache[stale_meta_slot]
-      if now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"]) >= 2 * OTHER_MAX_STALE_NS:
-        return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+      moving_others = [s for s in others_all if self._is_moving_target_locked(self.slot_cache[s])]
+      stationary_others = [s for s in others_all if s not in moving_others]
+      for group, max_stale_ns in ((moving_others, OTHER_MAX_STALE_NS), (stationary_others, STATIONARY_MAX_STALE_NS)):
+        if not group:
+          continue
+        stale_kin_slot = min(group, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
+        if now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"] >= max_stale_ns:
+          return (stale_kin_slot, 16, 6)
+        stale_meta_slot = min(
+          group,
+          key=lambda s: (min(self.slot_cache[s]["age_updated_ns"], self.slot_cache[s]["flags_updated_ns"]), s),
+        )
+        rec = self.slot_cache[stale_meta_slot]
+        if now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"]) >= 2 * max_stale_ns:
+          return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
 
-    # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics + ~5 Hz alternating age/flags
+    # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics + ~4 Hz alternating age/flags
     if len(prio_slots) > 1:
       s = prio_slots[1]
       rec = self.slot_cache[s]
@@ -517,8 +543,8 @@ class XcpRadarLogger:
       if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # All remaining active slots: balanced oldest-first round-robin over kinematics + metadata
-    others = [s for s in sorted(self.active_slots) if s not in prio_set]
+    # Remaining non-priority moving targets: balanced oldest-first round-robin over kinematics + metadata
+    others = [s for s in sorted(self.active_slots) if s not in prio_set and self._is_moving_target_locked(self.slot_cache[s])]
     if others:
       oldest_kin_slot = min(others, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
       rec = self.slot_cache[oldest_kin_slot]
@@ -535,10 +561,11 @@ class XcpRadarLogger:
         return stalest_meta_task
       return (oldest_kin_slot, 16, 6)
 
-    # If no non-priority active slots need updating right now, sweep inactive slots faster
+    # If no active slots need updating right now, sweep inactive slots faster
     if len(self.active_slots) < NUM_SLOTS:
       probe = self._next_inactive_probe_locked()
       if probe is not None:
+        self._last_probe_seq = self._read_seq
         return probe
 
     if prio_slots:
@@ -653,17 +680,18 @@ class XcpRadarLogger:
         except Exception:
           pass
 
-  def _match_openpilot_tracks(self, targets: list[dict], op_tracks: list[dict]) -> list[int]:
+  def _match_openpilot_tracks(self, targets: list[dict], op_tracks: list[dict]) -> tuple[list[int], int | None]:
     if not targets or not op_tracks:
-      return []
+      return [], None
     candidates: list[tuple[float, int, int, float]] = []
     for ti, t in enumerate(targets):
+      d_adj = t["dRel_m"] - ARRAY_B_RANGE_OFFSET_M
       for oi, o in enumerate(op_tracks):
-        dd = abs(t["dRel_m"] - o["dRel"])
+        dd = abs(d_adj - o["dRel"])
         dy = abs(t["yRel_m"] - o["yRel"])
         dv = abs(t["vRel_mps"] - o["vRel"])
-        max_dd = max(4.0, 0.12 * max(t["dRel_m"], o["dRel"], 0.0))
-        if dd < max_dd and dy < 2.0 and dv < 3.0:
+        max_dd = max(4.5, 0.14 * max(d_adj, o["dRel"], 0.0))
+        if dd < max_dd and dy < 2.2 and dv < 3.5:
           cost = dd * dd + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
           dist_m = math.hypot(dd, dy)
           candidates.append((cost, ti, oi, dist_m))
@@ -675,6 +703,7 @@ class XcpRadarLogger:
     op_lead_tid = min(op_in_path, key=lambda o: o["dRel"])["tid"] if op_in_path else None
     lead_matched_slots: list[int] = []
     matched_slots: list[int] = []
+    op_lead_slot: int | None = None
 
     for _, ti, oi, dist_m in candidates:
       if ti in used_targets or oi in used_op:
@@ -687,9 +716,10 @@ class XcpRadarLogger:
       slot = targets[ti]["slot"]
       if tid == op_lead_tid:
         lead_matched_slots.insert(0, slot)
+        op_lead_slot = slot
       else:
         matched_slots.append(slot)
-    return lead_matched_slots + matched_slots
+    return lead_matched_slots + matched_slots, op_lead_slot
 
   def _maybe_log_20hz(self, now_ns: int) -> None:
     with self._lock:
@@ -746,13 +776,19 @@ class XcpRadarLogger:
           "last_rtt_ms": round(rec["last_rtt_ns"] / 1_000_000.0, 2),
         })
 
-    matched_slots = self._match_openpilot_tracks(targets, op_tracks)
+    matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks)
     with self._lock:
       self._op_matched_slots = matched_slots
 
     targets.sort(key=lambda t: (abs(t["dRel_m"]), t["slot"]))
-    in_path = [t for t in targets if t["dRel_m"] > 0.0 and abs(t["yRel_m"]) < 2.0]
-    lead = min(in_path, key=lambda t: t["dRel_m"]) if in_path else None
+    lead = next((t for t in targets if t["slot"] == op_lead_slot), None) if op_lead_slot is not None else None
+    if lead is None:
+      in_path = [t for t in targets if t["dRel_m"] > 0.0 and abs(t["yRel_m"]) < 2.0]
+      if v_ego >= 3.0:
+        moving_in_path = [t for t in in_path if abs(v_ego + t["vRel_mps"]) >= 1.5]
+        lead = min(moving_in_path or in_path, key=lambda t: t["dRel_m"]) if in_path else None
+      else:
+        lead = min(in_path, key=lambda t: t["dRel_m"]) if in_path else None
     row = {
       "mono_ns": now_ns,
       "v_ego": round(v_ego, 3),
