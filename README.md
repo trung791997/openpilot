@@ -52,16 +52,30 @@ the car.
 An Xposed module written in plain Java, with no Gradle. `tools/head_unit/aaroad/README.md` has the
 full details.
 
-**Build.** Run `build.sh`. It needs:
+**Build your own apk.** No apk is published; build it yourself (about a minute). You need a JDK (17 works),
+`python3`, the Android SDK command-line tools, and the Xposed API jar.
 
-- Android SDK build-tools 34.0.0 and the `platforms;android-17` `android.jar`, both under `/tmp/hu/sdk`;
-- the Xposed API jar at `/tmp/hu/api-82.jar` (not included);
-- `javac`, `d8`, `aapt`, `zipalign`, `apksigner` and `keytool`.
+```bash
+# 1. Android SDK: build-tools 34.0.0 and the API 17 platform (sdkmanager is in Android's command-line tools)
+export SDK=$HOME/android-sdk
+sdkmanager --sdk_root=$SDK "build-tools;34.0.0" "platforms;android-17"
 
-`build.sh` makes a local debug keystore; no keystore is committed. It also copies
-`openpilot/starpilot/ui/navigation-assets.json` and `openpilot/starpilot/ui/assets/navigation/*` from
-the source fork; these are the turn-arrow icons, and this branch does not include them. Take them
-from the source fork, or point `build.sh` at your own.
+# 2. Xposed API 82 (compile-only; the device's Xposed provides it at runtime)
+export XPOSED_JAR=$HOME/api-82.jar
+curl -L -o $XPOSED_JAR https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar
+
+# 3. Build: writes tools/head_unit/aaroad/out/aaroad.apk
+tools/head_unit/aaroad/build.sh
+```
+
+`build.sh` puts build-tools on `PATH` itself (`aapt`, `d8`, `zipalign`, `apksigner`); `javac` and `keytool` come
+from your JDK. Without `SDK` / `XPOSED_JAR` set it looks in `/tmp/hu/sdk` and `/tmp/hu/api-82.jar`. The turn-card
+arrows are copied in from `openpilot/starpilot/ui/assets/navigation/` (included on this branch; set `NAV=` to use
+your own).
+
+The first build makes `tools/head_unit/aaroad/debug.keystore` (git-ignored). Keep it: Android refuses an update
+signed with a different key, so losing it means uninstalling before the next install. An apk someone else built
+is signed with their key, so switching between builds also needs an uninstall first.
 
 **Install.** Run `adb install` on the apk, then reboot the head unit (Xposed modules load in zygote).
 To uninstall, run `pm uninstall cn.autohack.coolui`, then reboot.

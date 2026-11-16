@@ -25,7 +25,7 @@ final class NavFake {
   private static boolean builtin = true;
   private static long checkedAt, configTime = -1;
   // The replies seen, so each is logged once: the cluster answers about 4 a second, flipping between a few values,
-  // and logging every flip wrote ~14,600 lines in one drive (the owner 2026-11-08). Forgotten after REPLY_KEEP of them.
+  // and logging every flip wrote ~14,600 lines in one drive (Peter 2026-11-08). Forgotten after REPLY_KEEP of them.
   private static final java.util.ArrayList<byte[]> replies = new java.util.ArrayList<>();
   private static final int REPLY_KEEP = 16;
 

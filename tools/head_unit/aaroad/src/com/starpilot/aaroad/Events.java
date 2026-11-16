@@ -10,7 +10,7 @@ import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
-// The map's show/hide events and its frame-timing lines, kept in a small rolling file on the head unit (the owner
+// The map's show/hide events and its frame-timing lines, kept in a small rolling file on the head unit (Peter
 // 2026-11-01: the cluster map sometimes drops to the Honda Hack view and comes back, and the head unit's logcat
 // ring holds only about 18 minutes, so the moment is gone by the time anyone looks).
 //

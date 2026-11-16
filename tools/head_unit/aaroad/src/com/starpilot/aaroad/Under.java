@@ -1,6 +1,6 @@
 package com.starpilot.aaroad;
 
-// The car under an overpass (the owner 2026-11-01: "add like an outline of the car if I go beneath a bridge or overpass
+// The car under an overpass (Peter 2026-11-01: "add like an outline of the car if I go beneath a bridge or overpass
 // for some realism effect", as Google Maps' immersive view does it): while the close-up shows its raised decks
 // (CloseUp), a deck drawn over the car's place hides the car there, and a light outline of the car shows through it.
 //
@@ -20,9 +20,9 @@ final class Under {
   static final float CAR_PX = 11;  // the car's body on screen, px from its point: a deck reaching this far covers it
   static final long FADE_MS = 150;  // the outline eases over this at or under FADE_REF_SPD, so a deck's edge does
   // not flicker
-  // Fade scales down with speed (2026-11-07, the owner: a pass under an overpass at highway speed is itself under a
+  // Fade scales down with speed (2026-11-07, Peter: a pass under an overpass at highway speed is itself under a
   // second, so a flat 150 ms ease either side ate most of it): FADE_MS still applies at and under FADE_REF_SPD,
-  // falling straight to FADE_MIN_MS by about 28 m/s (100 km/h) and staying there above it. *static*: the owner's ask
+  // falling straight to FADE_MIN_MS by about 28 m/s (100 km/h) and staying there above it. *static*: Peter's ask
   // (the two endpoints are his numbers), not measured against a real pass under a deck.
   static final long FADE_MIN_MS = 80;
   static final double FADE_REF_SPD = 15;  // m/s (54 km/h)
@@ -105,7 +105,7 @@ final class Under {
   // road it is itself on by more than OVER_M (own height rh from carHeight, which already keeps only the segment's
   // own way). Split out of underCuts below so a long route edge can be sampled at more than its one midpoint.
   //
-  // A raised segment running along the route (within ALONG_DEG) is never over it (the owner 2026-11-08, split
+  // A raised segment running along the route (within ALONG_DEG) is never over it (Peter 2026-11-08, split
   // harness: on the I-10/I-35 and McDermott connectors the route's own curving deck missed carHeight's ON_DECK_DEG
   // match, its height fell back to the ground, and the deck it rides then hid it). A hidden route line is worse
   // than one drawn over a parallel viaduct. No road found at all still reads as the ground: a minor street the
@@ -136,7 +136,7 @@ final class Under {
   }
 
   // A route edge's own shape points can be far apart (a straight highway stretch may carry only its two ends), so
-  // testing only the edge's midpoint can step clean over a deck that crosses a short way into it (the owner 2026-11-08,
+  // testing only the edge's midpoint can step clean over a deck that crosses a short way into it (Peter 2026-11-08,
   // found on the walk3d close-up harness, where a 1450 m synthetic edge's midpoint missed a crossing 475 m off it).
   // UNDER_STEP_M, a deck's narrowest expected width (two lanes plus shoulders) so no crossing is thin enough to
   // fall between samples: static choice, not road-measured. Capped at UNDER_SAMPLES so one long highway edge can't
@@ -156,7 +156,7 @@ final class Under {
 
   // A route edge's own shape points can be far apart (a straight highway stretch may carry only its two ends), so
   // testing only the edge's midpoint can step clean over a deck that crosses a short way into it, or -- the Part A
-  // bug (the owner 2026-11-08) -- miss that the edge is only PARTLY under a higher deck: a long straight edge can ride
+  // bug (Peter 2026-11-08) -- miss that the edge is only PARTLY under a higher deck: a long straight edge can ride
   // its own overpass through part of its length (not under anything higher than itself there) and duck under a
   // different, higher flyover through another part. underHigherDeck used to collapse that to one flag for the
   // whole edge, so the edge's own deck then painted over the route on the bridge the car is actually driving on.
@@ -193,6 +193,7 @@ final class Under {
     float hc = carHeight(d, ce, cn, ch, sh, roadM);
     if (d.maxH < hc + OVER_M) return 0;
     float[] v = d.seg;
+    boolean[] own = ownRoad(d, ce, cn, ch, sh, hc, roadM);
     int n = 0;
     for (int g = 1; g < CloseUp.LAYERS; g++) {
       for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {  // ramps and decks of each class
@@ -201,7 +202,7 @@ final class Under {
         for (int i = d.from[r]; i < d.from[r + 1] && n < out.length; i++) {
           int o = i * CloseUp.SEG;
           if (Math.max(v[o + 4], v[o + 5]) < hc + OVER_M) continue;
-          if (carOnSegment(v, o, ce, cn, ch, sh, roadM[c] / 2)) continue;
+          if (own[i]) continue;
           float[] q = lifted(v, o, ce, cn, ch, sh, ik, hs, LIFTED);
           float dx = q[2] - q[0], dz = q[3] - q[1], l2 = dx * dx + dz * dz;
           float t = l2 <= 0 ? 0 : Math.max(0, Math.min(1, -(q[0] * dx + q[1] * dz) / l2));
@@ -217,7 +218,7 @@ final class Under {
   }
 
   // The car is ON this deck segment, not beneath it (owner 2026-11-15: the outline showed while driving along
-  // a parkway bridge over a freeway): the segment runs the car's way (within ON_DECK_DEG, either direction) and its nearest
+  // Exchange Pkwy over US-75): the segment runs the car's way (within ON_DECK_DEG, either direction) and its nearest
   // point is within reach (half the road's width, no ON_DECK_M slack, so a frontage road 20 m beside a viaduct stays "under" it). A deck crossing the car's way, even at a
   // shallow 45 deg, is never this. Independent of carHeight, whose nearest-candidate pick can land on the ground
   // road below (or fall to 0 on a curve or ramp past ON_DECK_DEG) and then call the car's own deck "over" it.
@@ -229,6 +230,78 @@ final class Under {
     float t = Math.max(0, Math.min(1, ((ce - v[o]) * dx + (cn - v[o + 1]) * dy) / (len * len)));
     float ex = v[o] + t * dx - ce, ey = v[o + 1] + t * dy - cn;
     return ex * ex + ey * ey <= reach * reach;
+  }
+
+  // 2026-11-15 (owner: the outline still showed on Exchange Pkwy's own deck, found by replaying the real tiles and Konik
+  // GPS): the deck and the ramp pieces it is cut into are one road, and a raised end of the NEXT piece, 25 to 50 m
+  // along, lifts over the car's own piece. carOnSegment sees only the piece under the car. So the car's road is
+  // grown from those pieces: a piece that runs the car's way (within ON_DECK_DEG, either direction), shares an end
+  // (within JOIN_M) with a piece already on the car's road, and its nearer end lies within CHAIN_M of the car, is the car's road too.
+  // The tile data carries no road id on a piece (only its class and height), so joined-and-aligned is the test; a
+  // road crossing at more than ON_DECK_DEG, or a parallel road that does not touch the car's chain, is not grown in
+  // and still draws the outline. CHAIN_M covers the longest raised end that can lift over the car (CloseUp.lift of a
+  // 24 m deck stays well inside it).
+  static final float JOIN_M = 1.5f, CHAIN_M = 150;
+  private static boolean[] OWN = new boolean[0];  // UI thread only
+  private static int[] CAND = new int[0];
+
+  // Which ramp and deck pieces (segment indices into d.seg) are the car's own road this frame. hc the car's height.
+  static boolean[] ownRoad(CloseUp.Detail d, float ce, float cn, float ch, float sh, float hc, float[] roadM) {
+    int total = d.count();
+    if (OWN.length < total) OWN = new boolean[total + 64];
+    else java.util.Arrays.fill(OWN, 0, total, false);
+    if (CAND.length < total) CAND = new int[total + 64];
+    float[] v = d.seg;
+    int nc = 0;
+    boolean seed = false, risk = false;
+    for (int g = 1; g < CloseUp.LAYERS; g++) {
+      for (int k = 0; k < 2 * CloseUp.CLASSES; k++) {
+        int c = k % CloseUp.CLASSES, r = k < CloseUp.CLASSES ? CloseUp.range(g, c) : CloseUp.deck(g, c);
+        for (int i = d.from[r]; i < d.from[r + 1]; i++) {
+          int o = i * CloseUp.SEG;
+          CAND[nc++] = i;
+          if (carOnSegment(v, o, ce, cn, ch, sh, roadM[c] / 2)) {
+            OWN[i] = true;
+            seed = true;
+          } else if (Math.max(v[o + 4], v[o + 5]) >= hc + OVER_M) {
+            risk = true;  // a piece that could cover the car and is not under it: worth growing the chain for
+          }
+        }
+      }
+    }
+    if (!seed || !risk) return OWN;
+    for (int pass = 0; pass < 8; pass++) {
+      boolean grew = false;
+      for (int a = 0; a < nc; a++) {
+        int i = CAND[a], o = i * CloseUp.SEG;
+        if (OWN[i] || !aligned(v, o, ch, sh) || !near(v, o, ce, cn)) continue;
+        for (int b = 0; b < nc; b++) {
+          int j = CAND[b];
+          if (!OWN[j] || !joined(v, o, j * CloseUp.SEG)) continue;
+          OWN[i] = true;
+          grew = true;
+          break;
+        }
+      }
+      if (!grew) break;
+    }
+    return OWN;
+  }
+
+  private static boolean aligned(float[] v, int o, float ch, float sh) {
+    float dx = v[o + 2] - v[o], dy = v[o + 3] - v[o + 1], len = (float) Math.hypot(dx, dy);
+    return len > 0 && Math.abs((dx * sh + dy * ch) / len) >= COS_ON;
+  }
+
+  private static boolean near(float[] v, int o, float ce, float cn) {
+    return Math.min(Math.hypot(v[o] - ce, v[o + 1] - cn), Math.hypot(v[o + 2] - ce, v[o + 3] - cn)) <= CHAIN_M;  // its nearer end
+  }
+
+  private static boolean joined(float[] v, int o, int p) {
+    for (int e = 0; e < 2; e++)
+      for (int f = 0; f < 2; f++)
+        if (Math.hypot(v[o + 2 * e] - v[p + 2 * f], v[o + 2 * e + 1] - v[p + 2 * f + 1]) <= JOIN_M) return true;
+    return false;
   }
 
   private static final float[] LIFTED = new float[4];  // UI thread only
@@ -248,7 +321,7 @@ final class Under {
   // The 0 to 1 ease of the outline: set() notes the wanted end, level() moves toward it at 1 / ms a millisecond from
   // where it was, so a deck edge crossed back part way turns back part way (as the brake glow). ms is the pace of
   // the ease in flight: set(want, now) keeps whatever pace was last given (FADE_MS until told otherwise);
-  // set(want, now, fadeMs) is for the speed-scaled pace (fadeMs(), the owner 2026-11-07) and only takes hold on a new
+  // set(want, now, fadeMs) is for the speed-scaled pace (fadeMs(), Peter 2026-11-07) and only takes hold on a new
   // transition, not mid-ease, so an ease already running does not jump.
   static final class Fade {
     private boolean on;

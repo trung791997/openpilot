@@ -37,7 +37,7 @@ import java.util.zip.ZipFile;
 
 // The continuous map on Honda Hack's meter nav page (Layout B of the 2026-10-29 mockup, map2.py): a heading-up
 // map tilted away like a road seen from above and behind the car, every road to the same scale, the route marked
-// only by a line in openpilot's mode colour, and the owner's Civic where the car is. Honda Hack's arrow moves
+// only by a line in openpilot's mode colour, and Peter's Civic where the car is. Honda Hack's arrow moves
 // to the left column; the distance, the 500 ft bar, the street, the speed limit and the arrival time are drawn here.
 //
 // It sits behind navi_layout in the meter's root and only shows while the nav page is up and the comma's feed
@@ -54,7 +54,7 @@ final class MapView extends View {
   // a little past the screen; see FreeView (2026-10-31: the right edge 240 left the free-drive map's top right bare)
   static final float BOX_X0 = FreeView.X0, BOX_X1 = FreeView.X1, BOX_Z0 = FreeView.Z0, BOX_Z1 = FreeView.Z1;
   private static final float BOX_R = 430;          // display metres: covers the box from the car
-  // Road shapes are kept between frames (the owner 2026-10-30: building them was 46 of 158 ms a frame on the Tegra): each
+  // Road shapes are kept between frames (Peter 2026-10-30: building them was 46 of 158 ms a frame on the Tegra): each
   // run is cut into pieces of at most CHUNK_M m, each a Path in world metres built with the scene, and a frame only
   // picks the pieces in view and draws them through a matrix. A piece reaching nearer than NEAR_Z display metres is
   // still turned and clipped point by point: the camera's horizon line behind the car is at z -264, and anything past
@@ -62,7 +62,7 @@ final class MapView extends View {
   private static final float CHUNK_M = 150, NEAR_Z = -200;
   static final float FREE_X = 292;  // the meter's centre
   static final float CAR_X = 369, CAR_Y = 180, CAR_PX = 26;  // car point is (26, 26) in the sprite
-  // Brake lights (the owner 2026-10-31): the sprite's tail lights, the C shapes at rows 30 to 38, glow red while the pose
+  // Brake lights (Peter 2026-10-31): the sprite's tail lights, the C shapes at rows 30 to 38, glow red while the pose
   // says the car is braking, fading in and out over GLOW_MS. The view redraws only while the glow changes; the tick
   // runs every GLOW_TICK_MS during a fade on the GPU path, so the fade shows as a few steps rather than one.
   static final float BLIND_EDGE_DX = 22, BLIND_UP = 20, BLIND_DOWN = 26;  // the blind-spot halo: inner edge and extent from the car point (sprite body spans x -24..24, y -23..31; 2026-11-08 mock render)
@@ -86,13 +86,13 @@ final class MapView extends View {
   static final float TURN_DX = 18.5f, TURN_DY = 9.5f;
   private final boolean[] turnOn = new boolean[2], turnDrawn = new boolean[2];
   private final long[] turnSince = new long[2];
-  // Under an overpass (Under, the owner 2026-11-01): where a raised deck is drawn over the car, the car is cut away so the
+  // Under an overpass (Under, Peter 2026-11-01): where a raised deck is drawn over the car, the car is cut away so the
   // deck shows, and a light outline of it (OUTLINE_C, a faint OUTLINE_FILL inside) shows through, easing over
   // Under.FADE_MS. The sprite's body is its alpha over OUTLINE_ALPHA (under it is the soft shadow). cover holds the
   // decks over the car, kept from the last frame that had one while the outline fades out; deckClip their outline on
   // screen. The tick runs every GLOW_TICK_MS while under a deck on the GPU path, as the deck slides by the car.
   private static final int OUTLINE_C = 0xfff4f4f4, OUTLINE_FILL = 0x30ffffff, OUTLINE_ALPHA = 170;
-  // Back on (the owner 2026-11-08, after turning it off the same day): he wants the outline under overpasses. The
+  // Back on (Peter 2026-11-08, after turning it off the same day): he wants the outline under overpasses. The
   // under-deck check could outline the car while it drove on the bridge itself; that is part of the deck audit.
   private static final boolean UNDER_OUTLINE = true;
   private static Bitmap outline;
@@ -107,7 +107,7 @@ final class MapView extends View {
   private float drawnUnder;
   private float drawnUE = Float.NaN, drawnUN, drawnUH;
   static final float KERB_PX = 2, MIN_ROAD_PX = 2, GRID_DM = 50;
-  // Every road at its real width, so an intersection looks like the one out of the windscreen (the owner 2026-10-29:
+  // Every road at its real width, so an intersection looks like the one out of the windscreen (Peter 2026-10-29:
   // the route drawn wider than the roads around it looked wrong; the orange line alone marks the route). Metres
   // kerb to kerb, both directions, by tile class: motorway, major, street, link; the route itself as a street
   // under its own road, where the tile has it. The orange line is about two lanes wide, between LINE_MIN_PX and
@@ -115,32 +115,32 @@ final class MapView extends View {
   // their real proportions: at real width a street is a hairline beside the car icon.
   static final float ROAD_SCALE = 2;
   static final float[] ROAD_M = {28 * ROAD_SCALE, 18 * ROAD_SCALE, 10 * ROAD_SCALE, 6 * ROAD_SCALE, 5 * ROAD_SCALE};
-  // minor (service roads, parking-lot aisles, the owner 2026-10-29: the phone map shows them) under the rest
+  // minor (service roads, parking-lot aisles, Peter 2026-10-29: the phone map shows them) under the rest
   static final int[] DRAW_ORDER = {4, 0, 1, 2, 3};
   // Road colours by tile class, kerb and surface, the same on the GPU layer: grey, but motorways and trunks in a muted
-  // gold and their ramps a dimmer gold, so a highway reads as one at a glance (the owner 2026-10-31). The gold is dark
+  // gold and their ramps a dimmer gold, so a highway reads as one at a glance (Peter 2026-10-31). The gold is dark
   // enough to keep the orange route line and the amber traffic colour (#ffb300) the brightest things on the map.
   // The route's own road is grey (KERB_C/ROAD_C), drawn under the tile roads' surfaces, so on a highway it is the gold.
   static final int KERB_C = 0xff6a6a6a, ROAD_C = 0xff383838;
   static final int[] KERBS = {0xff54451a, KERB_C, KERB_C, 0xff433816, KERB_C};
   static final int[] ROADS = {0xff7a6420, ROAD_C, ROAD_C, 0xff5a4b1e, ROAD_C};
-  // Bridges (format 3 tiles, road_tiles.BRIDGE) go over the roads under them, the owner 2026-10-31: after every other
+  // Bridges (format 3 tiles, road_tiles.BRIDGE) go over the roads under them, Peter 2026-10-31: after every other
   // road's kerb and surface, in their own colours, with a dark casing CASING_PX wide each side so the road below
   // reads as passing under. A bridge's class in the scene is its tile class + BRIDGE; the carpet stays on top of
-  // the deck it rides on, but not of a higher deck it passes under (the owner 2026-11-08, overriding the above: Apple
+  // the deck it rides on, but not of a higher deck it passes under (Peter 2026-11-08, overriding the above: Apple
   // Maps shows the route diving under a bridge it doesn't use). The under-a-higher-deck piece of carpet is drawn
   // here, before the bridges, so the bridge draws over it -- see Scene.routeUnder, Under.underCuts, and the
   // carpetUnderPaths split of carpet()/carpetLine().
   static final int BRIDGE = 5, CASING_C = 0xff101010;
   static final float CASING_PX = 2;
-  // Part B (the owner 2026-11-08 approved): the branch not taken at a split ahead -- the other ramp, or the mainline
+  // Part B (Peter 2026-11-08 approved): the branch not taken at a split ahead -- the other ramp, or the mainline
   // continuing ahead when the route exits -- draws dimmed, the way Apple Maps does it. The dimmed half of a stub
   // road's class space, same doubling trick as the route's under-a-deck half above (GlRoads.LEVELS): a dimmed
   // piece's class is its plain class (+ BRIDGE * layer if it's on a deck) plus DIM_OFF, so it shares every other
   // class's drawing code and only needs its own kerb/surface colour pass. See stubsDim() and Scene.stubsDim.
   static final int DIM_OFF = BRIDGE * CloseUp.LAYERS;
   // One-way lines (tile flag bit 2: each freeway carriageway, a frontage road) are one direction of the road, so they
-  // draw at ONEWAY_K of the both-directions ROAD_M of their class (the owner 2026-11-08): at full width a freeway's two
+  // draw at ONEWAY_K of the both-directions ROAD_M of their class (Peter 2026-11-08): at full width a freeway's two
   // carriageways and the frontage road beside it merged into one band zoomed out. The kerb and casing keep their
   // widths. A one-way run is its own group past OW_OFF, the same doubling trick as DIM_OFF (class space
   // 0..OW_OFF-1 two-way, OW_OFF.. one-way), so it batches as one GL call a run like any other and keeps the draw order.
@@ -164,7 +164,7 @@ final class MapView extends View {
   // stays put while the fix wanders within HOLD_DRIFT m.
   private static final double HOLD_DRIFT = 10;
   private static final float JCELL = 50, JUNCTION_GAP = 8, JUNCTION_MERGE = 20, JUNCTION_SIDE = 20, JUNCTION_PAST = 8;
-  // Part B (the owner 2026-11-08 approved, "grey out the ramp not taken"): a stub run whose end lands within
+  // Part B (Peter 2026-11-08 approved, "grey out the ramp not taken"): a stub run whose end lands within
   // FORK_MERGE_M of the route (loose, OSM nodes rarely coincide exactly, unlike the junction dots above which only
   // need to find a crossing) and which leaves there at between FORK_MIN_DEG and FORK_MAX_DEG off the route's own
   // heading is the other branch of a split -- too small an angle and it is the route's own road re-matched (or a
@@ -181,16 +181,16 @@ final class MapView extends View {
   // the turn card goes once the comma's nav state is this old (it sends it once a second)
   private static final long NAV_STALE_MS = 3000;
   private static final long FRAME_MS = 66, IDLE_MS = 500, STALE_MS = 2000, TILE_REBUILD_MS = 1000;
-  // once showing, the map rides out a position gap with the car held where it was (the owner 2026-10-30 photo: mid-route
+  // once showing, the map rides out a position gap with the car held where it was (Peter 2026-10-30 photo: mid-route
   // the cluster flipped back to Honda Hack's page for a moment, once the comma's feed paused); see Liveness
   private static final String[] HIDE = {"background", "turn_layout", "route_remain", "cur_road", "compass_layout",
                                         "limited_speed", "limited_speed_text", "traffic_layout", "turn_icon"};
-  // arrow in the turn card, right of its bar (the owner 2026-10-29: loose over the map it looked out of place).
+  // arrow in the turn card, right of its bar (Peter 2026-10-29: loose over the map it looked out of place).
   // Drawn here from the stock view's picture: moving the view itself put it 70 px right of this, over the road
   // name, on the car (2026-10-30), its parent being offset in a way the layout dump did not show.
-  // 34 px beside the distance, down from 52, so the card fits the narrow column (the owner 2026-10-31)
+  // 34 px beside the distance, down from 52, so the card fits the narrow column (Peter 2026-10-31)
   private static final int ICON = 34, ICON_LEFT = 52, ICON_TOP = 35;
-  // Street names from the road tiles (the owner 2026-10-30: the street the car is on even with no route, and the names of
+  // Street names from the road tiles (Peter 2026-10-30: the street the car is on even with no route, and the names of
   // the streets around it). The car is on the nearest named road within ON_ROAD m that runs within ON_ROAD_DEG of its
   // heading, so a cross street at a junction does not take over. Looked up every ROAD_EVERY_MS, not per frame.
   // A different road has to be ROAD_CLEARLY m closer for ROAD_SWITCH_MS before it replaces the shown name, so a
@@ -219,7 +219,7 @@ final class MapView extends View {
       fill = new Paint(), mask = new Paint(), fog = new Paint(), panel = new Paint(), edge = new Paint(),
       rim = new Paint(), ring = new Paint(), turnGlow = new Paint(), greenGlow = new Paint(),
       badgeBox = new Paint(Paint.ANTI_ALIAS_FLAG);
-  // Inter on the cards and the street tag, sized to the owner's mockup; the speed sign keeps the system bold
+  // Inter on the cards and the street tag, sized to Peter's mockup; the speed sign keeps the system bold
   private final TextPaint big = text(30, inter(true), Color.WHITE), unit = text(15, inter(false), 0xffc8d0dc),
       street = text(17, inter(true), Color.WHITE), cardDim = text(13, inter(false), 0xffaab4c8),
       cardRoad = text(18, inter(true), Color.WHITE), badgeInk = text(15, inter(true), BADGE_INK),
@@ -235,7 +235,7 @@ final class MapView extends View {
   private final Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);  // the 56 px cover scaled to 40
   private final Paint waves = new Paint(Paint.ANTI_ALIAS_FLAG);  // black: the waves are cut out of the green disc
   // by scene class: the tile classes, then their bridges, one bucket of BRIDGE classes per deck layer (1 to
-  // CloseUp.LAYERS - 1) so draw() can paint a higher layer's casing and fill over a lower one's (the owner 2026-11-08,
+  // CloseUp.LAYERS - 1) so draw() can paint a higher layer's casing and fill over a lower one's (Peter 2026-11-08,
   // "the highway lines simply overlay the street below, with no joint seams"). Doubled past DIM_OFF (Part B,
   // 2026-11-08) for the same classes dimmed, the untaken branch of a split (Scene.stubsDim) -- the free-drive
   // roadsChunks path through pieces() never sets a dim flag, so that half of these arrays stays empty there.
@@ -248,7 +248,7 @@ final class MapView extends View {
   private final Paint trafficPaint = stroke(Color.WHITE, 0);
   private final Path routeWorld = new Path();
   // the carpet in the car's frame by traffic: unknown or low in the mode's colour, then moderate, heavy, severe.
-  // carpetUnderPaths (the owner 2026-11-08) holds the same four, split off where Scene.routeUnder says the route runs
+  // carpetUnderPaths (Peter 2026-11-08) holds the same four, split off where Scene.routeUnder says the route runs
   // under a higher deck -- drawn before the bridges/decks instead of after, so it goes under them (Apple Maps style).
   private final Path[] carpetPaths = {new Path(), new Path(), new Path(), new Path()};
   private final Path[] carpetUnderPaths = {new Path(), new Path(), new Path(), new Path()};
@@ -256,7 +256,7 @@ final class MapView extends View {
   private final Path[] routeWorlds = {routeWorld}, routeFrames = {routePath};
   private final Matrix world = new Matrix();  // world metres to the car's frame, this frame
   private final float[] worldV = new float[9], tickEN = new float[2];
-  // What the last frame showed, so the tick only asks for a frame when something on screen would change (the owner
+  // What the last frame showed, so the tick only asks for a frame when something on screen would change (Peter
   // 2026-10-30): the car moved a pixel or turned, the zoom is still easing, or anything else drawn changed (stamp()).
   private Scene drawnScene;
   private float drawnE, drawnN;
@@ -304,7 +304,7 @@ final class MapView extends View {
   volatile float[] tagShown = new float[4];     // the same, handed to the GPU layer whenever it changes
   volatile Labels labels;                       // the chosen labels, handed to the GPU layer at each choice
 
-  // The labels as chosen, for the GPU layer: it moves them with the map on its own clock (the owner 2026-10-30).
+  // The labels as chosen, for the GPU layer: it moves them with the map on its own clock (Peter 2026-10-30).
   static final class Labels {
     final Scene s;  // whose anchor e, n are from: a rebuild moves it
     final String[] text;
@@ -334,7 +334,7 @@ final class MapView extends View {
   private final TextPaint[] labelBadge = labelPaints();  // the overlay's route-number labels, drawn as the GPU's are
 
   // A street label at left, base (the halo then the text), or a route number ("US 75", "I-635") as a white badge
-  // with a dark rim, the way Google Maps writes them over the map (the owner 2026-10-31). p is labelPaints(). The GPU
+  // with a dark rim, the way Google Maps writes them over the map (Peter 2026-10-31). p is labelPaints(). The GPU
   // layer draws its atlas with this too, so the two paths match; a badge is placeLabels' labelW wide, no wider.
   static void drawLabel(Canvas c, String t, boolean ref, float left, float base, TextPaint[] p) {
     if (!ref) {
@@ -386,11 +386,11 @@ final class MapView extends View {
     float[][] routeBox, stubsBox, roadsBox;  // min e, min n, max e, max n of each run
     float[] junctions = new float[0];  // e, n of every place a side road meets or crosses the route
     byte[][] routeLevel = new byte[0][];  // traffic per segment of each route run, 0 unknown to 4 severe (Feed.Route.lvl)
-    // whether each segment of each route run passes under a deck higher than the road it is on (the owner 2026-11-08,
+    // whether each segment of each route run passes under a deck higher than the road it is on (Peter 2026-11-08,
     // Under.underCuts against s.close), found once here at build; carpet()/carpetLine() read it, no new work
     // per frame. Same run/segment shape as routeLevel, built right after s.close so the heights it reads are ready.
     byte[][] routeUnder = new byte[0][];
-    // Part B (the owner 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch not taken at a split,
+    // Part B (Peter 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch not taken at a split,
     // found once here at build by stubsDim() against the finished route and stubs; same run/segment shape as
     // stubsCls. draw() reads it through stubsChunks' dim field below, no work per frame.
     byte[][] stubsDim = new byte[0][];
@@ -412,11 +412,11 @@ final class MapView extends View {
     float[][] pts = new float[0][], box = new float[0][];
     int[] cls = new int[0];
     float[] at = new float[0];  // metres along the runs, end to end, at each piece's first point
-    // route chunks only (the owner 2026-11-08): 1 where the whole piece passes under a higher deck (Scene.routeUnder),
+    // route chunks only (Peter 2026-11-08): 1 where the whole piece passes under a higher deck (Scene.routeUnder),
     // 0 otherwise; a piece is cut at a change the same way a traffic-level change cuts one (chunks()'s un param),
     // so GlRoads' route groups can split on it without a piece straddling both.
     int[] under = new int[0];
-    // stubs chunks only (the owner 2026-11-08, Part B): 1 where the whole piece is the dimmed, untaken branch of a
+    // stubs chunks only (Peter 2026-11-08, Part B): 1 where the whole piece is the dimmed, untaken branch of a
     // split (Scene.stubsDim); cuts a piece the same way under does, so the dimmed and plain halves of a stub
     // never share one piece.
     int[] dim = new int[0];
@@ -425,7 +425,7 @@ final class MapView extends View {
   }
 
   // The roads, the route, the grid, the carpet and the fades over them drawn on the GPU under this view (GlRoads,
-  // the owner 2026-10-30: stroking them in software was most of a frame on the Tegra). It runs its own clock, taking each
+  // Peter 2026-10-30: stroking them in software was most of a frame on the Tegra). It runs its own clock, taking each
   // frame's camera from frame(). Meter adds it when GPU is set; the desktop harness has no GL and leaves it off. Until
   // it has drawn a frame, and for good if it fails, the view draws them itself.
   interface Roads {
@@ -469,7 +469,7 @@ final class MapView extends View {
     fog.setShader(new LinearGradient(0, 0, 0, 78, new int[] {0xff050505, 0xe6050505, 0x00050505},
                                      new float[] {0, 0.6f, 1}, Shader.TileMode.CLAMP));
     panel.setAntiAlias(true);
-    panel.setColor(0xff000000);  // black as the rest of the dash (the owner 2026-10-30)
+    panel.setColor(0xff000000);  // black as the rest of the dash (Peter 2026-10-30)
     edge.setAntiAlias(true);
     edge.setStyle(Paint.Style.STROKE);
     edge.setStrokeWidth(1);
@@ -552,7 +552,7 @@ final class MapView extends View {
     return bold ? semiBold : medium;
   }
 
-  // The Civic (Crystal Black Sport), rendered from the owner's reference photos; a white chevron if it will not load.
+  // The Civic (Crystal Black Sport), rendered from Peter's reference photos; a white chevron if it will not load.
   private static synchronized void loadCar() {
     if (carTried || modulePath == null) return;
     carTried = true;
@@ -650,12 +650,12 @@ final class MapView extends View {
     }
   };
 
-  // the owner's drive 2026-11-06: from about 21:00 this tick stopped running while the GPU layer went on at 30 a second,
+  // Peter's drive 2026-11-06: from about 21:00 this tick stopped running while the GPU layer went on at 30 a second,
   // so the scene was never rebuilt and the map drove off its roads into a blank page for over an hour (no error in
   // the log). The GPU thread calls this each frame; a tick quiet for TICK_LOST_MS is posted again, and said once.
   // Not static: Hook.initZygote loads this class in the zygote, which has no main looper yet. A static Handler threw
   // there at every head unit boot after the 11-06 install, and a class whose static init fails cannot be used again
-  // until the next boot, so the map never appeared (the owner 2026-11-07).
+  // until the next boot, so the map never appeared (Peter 2026-11-07).
   private final Handler main = new Handler(Looper.getMainLooper());
   private volatile long tickAt;
   volatile long tickStartAt;  // when the tick last began; tickStartAt > tickAt means its body is running right now
@@ -778,7 +778,7 @@ final class MapView extends View {
     }
   }
 
-  // With the GPU layer drawing everything that moves at 30 a second (the owner 2026-10-30), this view is the slow layer:
+  // With the GPU layer drawing everything that moves at 30 a second (Peter 2026-10-30), this view is the slow layer:
   // the street under the car and the labels are chosen here from the GPU layer's last frame, and the view redraws
   // only when the car, tag, sign or cards would look different, about once a second (the clock and countdown are in
   // the cards' key). The GPU layer is poked when the feed's state changes, so a new mode colour shows while it idles.
@@ -949,7 +949,7 @@ final class MapView extends View {
     say("aaroad: " + (on ? "shown" : "hidden") + " reason=" + (on ? "page shown, position fresh" : hideWhy));
   }
 
-  // Whether a frame now would look different from the last one drawn (the owner 2026-10-30: most frames at a light or on
+  // Whether a frame now would look different from the last one drawn (Peter 2026-10-30: most frames at a light or on
   // a straight redrew the same picture). Reads the held pose, never sets it; at a standstill the car does not move
   // on screen unless the fix wanders past HOLD_DRIFT.
   private boolean changed(long now) {
@@ -974,7 +974,7 @@ final class MapView extends View {
   // Everything drawn besides the car's place and the zoom, folded into one number: the feed's state (mode, limit,
   // trip, street, song), the cover, Honda Hack's distance, next street and arrow, the lane bar, a song line's scroll.
   // Not the state's arrival time: the comma sends it once a second even when nothing in it changed, and each one
-  // redrew the whole view for nothing (the owner 2026-11-08, parked: 4-6 redraws a second at 31-37 ms each). Not the
+  // redrew the whole view for nothing (Peter 2026-11-08, parked: 4-6 redraws a second at 31-37 ms each). Not the
   // song lines' scroll either: that is rolled(), redrawn on its own small strip.
   private long stamp(long now) {
     long h = Feed.metric ? 1 : 2;
@@ -1007,7 +1007,7 @@ final class MapView extends View {
   }
 
   // How far the song lines are scrolled. A change redraws only their strip (rollBox): the lines are drawn live over
-  // the cards' bitmap, not into it, so a scroll step no longer redraws the cards and the whole view (the owner 2026-11-08:
+  // the cards' bitmap, not into it, so a scroll step no longer redraws the cards and the whole view (Peter 2026-11-08:
   // a long title sliding at 25 px a second redrew everything up to 10 times a second, ~35 ms each on the Tegra).
   private int rolled(long now) {
     return titleRoll.shift(now) * 31 + artistRoll.shift(now);
@@ -1072,7 +1072,7 @@ final class MapView extends View {
     return nav != null && Lanes.shown(nav.lanes, turnLeft(nav, now));
   }
 
-  // The lane row under the car (Lanes.AT_CAR, the owner 2026-11-01): the map and car drawn LIFT px higher while it
+  // The lane row under the car (Lanes.AT_CAR, Peter 2026-11-01): the map and car drawn LIFT px higher while it
   // shows, easing over LIFT_TAU (frame()), and the zoom LANE_ZOOM closer. lift is the last frame's, for the slow
   // layer and project(); drawnLift what the slow layer last drew the car with.
   static final float LIFT = 38;
@@ -1084,7 +1084,7 @@ final class MapView extends View {
   // onDraw and the GPU layer's own clock both take it from here, so the two agree; synchronized, as both may ask
   // while the GPU layer warms up.
   //
-  // Each caller owns its Frame and frame() fills every field, so the 30 frames a second allocate nothing (the owner's drive
+  // Each caller owns its Frame and frame() fills every field, so the 30 frames a second allocate nothing (Peter's drive
   // 2026-10-31: camera 160-225 ms in some frames; on Dalvik a thread that allocates while a collection runs waits for
   // it). latest is the view's own copy of the last one, made under the lock and copied out under it.
   static final class Frame {
@@ -1175,7 +1175,7 @@ final class MapView extends View {
     if (Math.abs(want - l) < 0.3f) l = want;
     lift = f.lift = l;
     f.settled = Math.abs(rng / R0 / k - 1) <= ZOOM_EPS && l == want;
-    // Snapping (the owner 2026-11-08, display only): with no route the car icon and the camera go to the foot point on the
+    // Snapping (Peter 2026-11-08, display only): with no route the car icon and the camera go to the foot point on the
     // road line the car is on (Snap), so beside a freeway's frontage road it sits on the frontage road and not
     // between carriageways. The 10 Hz pick works from the unsnapped position; the eased offset is added every frame.
     // v2: a clamp to the road's drawn edge (Snap), in the close-up too -- a car already inside the road's width does not
@@ -1366,12 +1366,12 @@ final class MapView extends View {
     }
     // the close-up detail first: it finds which bridges are overpasses (CloseUp.overpasses), and the rest are drawn
     // as plain road here too. One copy of the tile set for both, so they judge the same tiles; and the link roads that
-    // are not highway ramps, drawn as streets in both (CloseView.links, the owner 2026-11-05)
+    // are not highway ramps, drawn as streets in both (CloseView.links, Peter 2026-11-05)
     List<Feed.Tile> tiles = new ArrayList<Feed.Tile>(Feed.tiles.values());
     java.util.Map<Feed.Tile, boolean[]> streets = CloseView.links(tiles, s.ax, s.ay, s.mpt);
     java.util.IdentityHashMap<Feed.Tile, byte[][]> raised = new java.util.IdentityHashMap<Feed.Tile, byte[][]>();
     s.close = CloseView.detail(tiles, s.ax, s.ay, s.mpt, route.toArray(new float[0][]), h, raised, streets);
-    // the route under a higher deck (the owner 2026-11-08, Part A fix): classified per *sample* along an edge, not
+    // the route under a higher deck (Peter 2026-11-08, Part A fix): classified per *sample* along an edge, not
     // once for the whole edge between two route vertices -- a long, straight highway edge can ride its own deck
     // through part of its length and duck under a different, higher one through another part (its own bridge
     // deck would then paint over the route on the bridge it is actually driving on, Under.underCuts' comment).
@@ -1446,7 +1446,7 @@ final class MapView extends View {
     s.routeLevel = levels.toArray(new byte[0][]);
     s.stubs = stubs.toArray(new float[0][]);
     s.roads = roads.toArray(new float[0][]);
-    // Part B (the owner 2026-11-08): against the finished route and stubs, so stubsDim() matches real route-to-road
+    // Part B (Peter 2026-11-08): against the finished route and stubs, so stubsDim() matches real route-to-road
     // geometry (Under.carHeight's own ON_DECK-style matching, not a guess); found once here, not per frame.
     s.stubsCls = ints(stubsCls);
     if (r != null) s.stubsDim = stubsDim(s.route, s.routeUnder, s.stubs, s.stubsCls);
@@ -1509,13 +1509,13 @@ final class MapView extends View {
     return chunks(runs, cls, lv, null, null);
   }
 
-  // un (route only, the owner 2026-11-08): per segment, 1 where it passes under a higher deck; a change in it cuts a
+  // un (route only, Peter 2026-11-08): per segment, 1 where it passes under a higher deck; a change in it cuts a
   // piece the same way a change in lv (traffic level) does, so GlRoads can group route pieces by it too.
   private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un) {
     return chunks(runs, cls, lv, un, null);
   }
 
-  // dim (stubs only, the owner 2026-11-08, Part B): per segment, 1 where it is the dimmed, untaken branch of a split;
+  // dim (stubs only, Peter 2026-11-08, Part B): per segment, 1 where it is the dimmed, untaken branch of a split;
   // cuts a piece the same way un does, so the dimmed and plain halves of a stub are never drawn as one piece.
   private static Chunks chunks(float[][] runs, int[] cls, byte[][] lv, byte[][] un, byte[][] dim) {
     return chunks(runs, cls, lv, un, dim, null);
@@ -1671,7 +1671,7 @@ final class MapView extends View {
     return out;
   }
 
-  // Part B (the owner 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch leaving the route at a
+  // Part B (Peter 2026-11-08): 1 on a stubs segment that is the first DIM_M of a branch leaving the route at a
   // split not taken (FORK_MERGE_M, FORK_MIN_DEG..FORK_MAX_DEG above); 0 elsewhere. Checked at both ends of each
   // run, since either end may be the one that meets the route (near() and around() keep a stub's points in the
   // tile's own direction, not the route's direction of travel).
@@ -2204,7 +2204,7 @@ final class MapView extends View {
         side.setColor(ROADS[c]);
         strokeC(canvas, c, c, side, surfX, floor, ik);
       }
-      // Part B (the owner 2026-11-08): the untaken branch of a split, at ground level, drawn dimmed over the plain
+      // Part B (Peter 2026-11-08): the untaken branch of a split, at ground level, drawn dimmed over the plain
       // ground pass above -- same kerb-then-surface order, same widths, just the DIM_OFF half of the classes and
       // dim()'s colours instead of KERBS/ROADS.
       for (int c : DRAW_ORDER) {
@@ -2216,7 +2216,7 @@ final class MapView extends View {
         side.setColor(dim(ROADS[c]));
         strokeC(canvas, c + DIM_OFF, c, side, surfX, floor, ik);
       }
-      // the carpet where the route passes under a higher deck (Scene.routeUnder, the owner 2026-11-08): drawn here,
+      // the carpet where the route passes under a higher deck (Scene.routeUnder, Peter 2026-11-08): drawn here,
       // before the bridges below, so their casing/kerb/surface paint over it and the line reads as diving under
       // the deck it doesn't use -- the rest of the carpet (carpetPaths) still draws last, on top, below.
       if (s.route.length > 0) {
@@ -2232,7 +2232,7 @@ final class MapView extends View {
       // (CloseUp.overpasses); zoomed in they fade out as CloseView draws them raised, with deck, piers and shadow,
       // so the flat copy doesn't show under the deck as a second road.
       //
-      // the owner 2026-11-08 ("the highway lines simply overlay the street below, with no joint seams"): each layer's
+      // Peter 2026-11-08 ("the highway lines simply overlay the street below, with no joint seams"): each layer's
       // casing, then kerb, then fill are drawn fully before the next layer up starts, so a layer-2 flyover's fill
       // always paints over a layer-1 ramp's deck where they cross, and a ramp joining the mainline at the same
       // layer has its casing hidden by whichever piece's fill is drawn last there -- no round-cap seam crossing the
@@ -2258,7 +2258,7 @@ final class MapView extends View {
             side.setAlpha(alpha);
             strokeC(canvas, c + BRIDGE * ly, c, side, 0, floor, ik);
           }
-          // Part B (the owner 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
+          // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
           // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
           for (int c : DRAW_ORDER) {
             sideKerb.setColor(CASING_C);
@@ -2309,7 +2309,7 @@ final class MapView extends View {
     drawn(canvas, now, t0, t1, t2);
   }
 
-  // The roundabout / U-turn arrow on the route (ManeuverArrow, the owner 2026-11-15): white with a dark outline and an
+  // The roundabout / U-turn arrow on the route (ManeuverArrow, Peter 2026-11-15): white with a dark outline and an
   // arrowhead, when the maneuver is within SHOW_M. Always on this canvas, above the carpet and under the car: the GPU
   // layer draws the roads and the carpet underneath and this canvas is composited over it, so one path serves the GPU,
   // the software fallback and the close-up. Its line is found again only when the maneuver moves 5 m along the route.
@@ -2372,7 +2372,7 @@ final class MapView extends View {
   private static final int ARROW_EDGE = 0xff202428;
 
   // The car icon and its glows draw at CAR_FAR_K of their size zoomed out, easing to full size with the close-up gate
-  // (the owner 2026-11-08: at the zoomed-out ranges the icon is bigger than the roads it sits on). About the car point.
+  // (Peter 2026-11-08: at the zoomed-out ranges the icon is bigger than the roads it sits on). About the car point.
   static final float CAR_FAR_K = 0.65f;
   private float carScale = 1;
 
@@ -2523,7 +2523,7 @@ final class MapView extends View {
     return r;
   }
 
-  // Keeps only out[0..n) whose own deck layer is strictly above the layer of the road the car is on (the owner
+  // Keeps only out[0..n) whose own deck layer is strictly above the layer of the road the car is on (Peter
   // 2026-11-08: Under.covering's height margin (OVER_M) alone can still call the car's own bridge "covering" it
   // right at a layer boundary -- this is why UNDER_OUTLINE was once turned off, d852f9f41). Under.carHeight and
   // CloseUp.layerOf are both package-visible helpers already used elsewhere; nothing here is per-frame allocation,
@@ -2795,7 +2795,7 @@ final class MapView extends View {
     }
   }
 
-  // Part B (the owner 2026-11-08): a road colour blended halfway to the background (BG), for the untaken branch of a
+  // Part B (Peter 2026-11-08): a road colour blended halfway to the background (BG), for the untaken branch of a
   // split -- Apple Maps' own look for it. Alpha untouched: the blend already reads as dimmed against BG, and the
   // roads it is mixed with are opaque already (KERBS/ROADS have none).
   static int dim(int color) {
@@ -2841,7 +2841,7 @@ final class MapView extends View {
     }
   }
 
-  // line() into carpetPaths (or carpetUnderPaths, Scene.routeUnder, the owner 2026-11-08), each segment into the path
+  // line() into carpetPaths (or carpetUnderPaths, Scene.routeUnder, Peter 2026-11-08), each segment into the path
   // for its traffic level (lv per segment, may be short) and under/over group.
   private void carpetLine(float[] p, byte[] lv, byte[] un, int from, float ce, float cn, float ch, float sh, float ik,
                           float fe, float fn) {
@@ -2935,26 +2935,26 @@ final class MapView extends View {
     return true;
   }
 
-  // ---- the owner's mockup (2026-10-30, second version): a turn card down the left, the next street as a tag over the
+  // ---- Peter's mockup (2026-10-30, second version): a turn card down the left, the next street as a tag over the
   // map, the speed limit at the right, all on the dash's black. No close button: nothing on the cluster takes a touch.
   // The trip card is folded into the turn card as its last line and the column is 210 wide, not 270: the cards took
-  // about half the meter (the owner 2026-10-31).
+  // about half the meter (Peter 2026-10-31).
 
   static final float COL = 236;  // the dark band behind the cards, solid as far as they reach: roads showed between them
-  // left of x 36 the tach needle rests on the cards at idle (the owner's photo 2026-10-29)
+  // left of x 36 the tach needle rests on the cards at idle (Peter's photo 2026-10-29)
   // the turn card starts 28 down: at 12 its top left corner almost met the tach ring, and at 18 it still looked
-  // cut off by it (the owner's photos 2026-10-30)
+  // cut off by it (Peter's photos 2026-10-30)
   static final float CARD_L = 36, CARD_R = 210, TURN_T = 28;
   // the turn card's rows, each there only when it has something: the arrow and the distance, the road across the
   // card, then time left, distance left and arrival. Its height follows them.
   private static final float STRIP_W = 10, ROW_X = 50, TEXT_X = 92, TOP_H = 42, ROAD_H = 24, ETA_H = 20, PAD = 6;
-  // every card ends in a lean, its top right corner this much further right than its bottom right (the owner's mockup)
+  // every card ends in a lean, its top right corner this much further right than its bottom right (Peter's mockup)
   private static final float SLANT = 14, RADIUS = 10, CORNER = 5;
   private static final int ACCENT = 0xfff2f2f2, ACCENT_DIM = 0xff3a3a3a;
   // the music card, with or without a route: the cover, where the sound comes from, the song, and whether it
   // plays. Only a glyph for that, no skip buttons, since the dash takes no touch.
-  // at 270 wide it touched the car without a route (the owner 2026-10-30); now as wide as the turn card, and while
-  // routing drawn SONG_GAP under it rather than here at the bottom (the owner 2026-10-31)
+  // at 270 wide it touched the car without a route (Peter 2026-10-30); now as wide as the turn card, and while
+  // routing drawn SONG_GAP under it rather than here at the bottom (Peter 2026-10-31)
   private static final float SONG_T = 160, SONG_B = 208, SONG_R = CARD_R, COVER_L = 46, COVER_T = 164, COVER_PX = 40, SONG_X = 96;
   private static final float GLYPH_X = SONG_R - 32, GLYPH_R = 14, SONG_GAP = 8;
   private static final int SPOTIFY = 0xff1ed760;
@@ -3018,9 +3018,9 @@ final class MapView extends View {
     float streetY = lanes != null && lanes.isShown() ? navi.getTop() + lanes.getBottom() + 22 : 48;
     boolean hasSign = Feed.limitMs > 0;
     // the road the car is on, from the comma's route. Android Auto's next_road is the next turn's street, already on the
-    // turn card; over the map it read as the current road (the owner's photo 2026-10-30, East Bethany Drive was the next turn)
+    // turn card; over the map it read as the current road (Peter's photo 2026-10-30, East Bethany Drive was the next turn)
     // With no route, or a route step without a road name, the street found under the car in the road tiles
-    // (the owner 2026-10-30).
+    // (Peter 2026-10-30).
     CharSequence name = !TextUtils.isEmpty(Feed.road) ? Feed.road : onRoad;
     tagBox[2] = tagBox[0];
     if (!TextUtils.isEmpty(name)) {
@@ -3029,7 +3029,7 @@ final class MapView extends View {
       float maxw = Math.min(right - left - 40, 300), size = 18;
       float cx = free && hasSign ? 292 : (left + right) / 2;
       // A route number in it, or the comma's ref for the road ("US 75" for North Central Expressway), is a white
-      // badge before the name, as Google Maps writes the road (the owner 2026-10-31); the badge alone if the name will
+      // badge before the name, as Google Maps writes the road (Peter 2026-10-31); the badge alone if the name will
       // not fit beside it even at 14 px.
       List<Shield.Piece> pieces = tagPieces(name.toString());
       boolean badges = pieces.size() > 1 || pieces.get(0).kind != Shield.TEXT;
@@ -3072,7 +3072,7 @@ final class MapView extends View {
     }
 
     // The cards are drawn into a bitmap and only redrawn when something on them changes: drawing them every frame was
-    // most of a frame on the Tegra (30-48 ms of 45-59 ms with a route, the owner 2026-10-30), though the map moved and they
+    // most of a frame on the Tegra (30-48 ms of 45-59 ms with a route, Peter 2026-10-30), though the map moved and they
     // did not. Their panels are opaque, so the bitmap over the map looks as drawing them straight on did.
     String key = cardKey(now, free);
     if (cardBmp == null) {
@@ -3142,7 +3142,7 @@ final class MapView extends View {
     // the turn card: a blue strip down its left edge that empties over the last 500 ft as the stock bar did, the
     // arrow and the distance, the maneuver's text, and the trip. The turn is the comma's own (Feed.nav, the step the
     // StarPilot Auto car screen draws), not Honda Hack's panel: that came through Android Auto's throttled next-turn
-    // path and lagged or froze (the owner 2026-10-31: the dash said "0.2 mi US 75 South" while the car screen said
+    // path and lagged or froze (Peter 2026-10-31: the dash said "0.2 mi US 75 South" while the car screen said
     // "Exit 6 Walnut Hill Lane 1.9 mi"). Gone when the comma has not said for NAV_STALE_MS.
     Feed.Nav nav = free ? null : turnNav(now);
     double meters = nav != null ? turnLeft(nav, now) : -1;
@@ -3233,7 +3233,7 @@ final class MapView extends View {
     else titleRoll.over = artistRoll.over = 0;
   }
 
-  // The lane row (Lanes, the owner 2026-11-01, after Google Maps): each lane's arrows in a cell of its own, left to right,
+  // The lane row (Lanes, Peter 2026-11-01, after Google Maps): each lane's arrows in a cell of its own, left to right,
   // the one to take in white over the rest in grey, thin lines between the lanes. Under the turn card or under the
   // car (Lanes.at).
   static final float LANE_H = 34, LANE_GAP = 4, LANE_CELL = 34, LANE_PX = 26, TOWARD_H = 20, SONG_LAST = 213;
@@ -3303,7 +3303,7 @@ final class MapView extends View {
 
   private static final List<List<Shield.Piece>> NO_LINES = new ArrayList<List<Shield.Piece>>();
 
-  // The card's text: the instruction as it is, but "Make a U-turn" for a U-turn (the owner 2026-11-15), with the road
+  // The card's text: the instruction as it is, but "Make a U-turn" for a U-turn (Peter 2026-11-15), with the road
   // after it ("Make a U-turn onto Main St") only when that still fits on one line.
   private List<List<Shield.Piece>> cardLines(Feed.Nav nav) {
     if (!Turn.isUturn(nav.type, nav.modifier)) return turnLines(Turn.text(nav.text));
@@ -3410,7 +3410,7 @@ final class MapView extends View {
     return pieces;
   }
 
-  // The trip as one line: "11 min · 5.2 mi · 2:10 AM", the values the trip card showed (the owner 2026-10-31). A piece
+  // The trip as one line: "11 min · 5.2 mi · 2:10 AM", the values the trip card showed (Peter 2026-10-31). A piece
   // that is missing is left out; the distance goes first if the line is too long for w.
   private String eta(long now, float w) {
     double left = Math.max(0, Feed.remainingSec - (now - Feed.stateAt) / 1000.0);
@@ -3477,7 +3477,7 @@ final class MapView extends View {
     float cy = (t + b) / 2;
     fill.setColor(0xff2e2e2e);
     canvas.drawCircle(GLYPH_X, cy, GLYPH_R, fill);
-    // a green ring round the button fills clockwise from the top as the song plays (the owner 2026-10-30)
+    // a green ring round the button fills clockwise from the top as the song plays (Peter 2026-10-30)
     long dur = Feed.mediaDur, pos = Feed.mediaPos;
     if (dur > 0 && pos >= 0) {
       if ("playing".equals(status)) pos += SystemClock.uptimeMillis() - Feed.mediaAt;
@@ -3550,7 +3550,7 @@ final class MapView extends View {
     return p;
   }
 
-  // A song line too long for the card scrolls (the owner 2026-10-30): it holds at the start, slides left slowly until
+  // A song line too long for the card scrolls (Peter 2026-10-30): it holds at the start, slides left slowly until
   // its end shows, holds there, then jumps back and starts over. Lines that fit stay still. Each line keeps its
   // own clock and restarts when its text changes.
   private static final class Roll {

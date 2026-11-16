@@ -19,14 +19,14 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
-// The map's grid, roads, route and carpet drawn with GLES2 (the owner 2026-10-30: the software canvas spent most of a
+// The map's grid, roads, route and carpet drawn with GLES2 (Peter 2026-10-30: the software canvas spent most of a
 // frame stroking them on the Tegra), and the fades over them: the dark band behind the cards and the fog at the top.
 // and the street labels over those. MapView keeps the cards, car, tag and sign, and leaves the road area clear when
 // this layer has drawn. The view still chooses the labels; each name is written once, by the same text code and font
 // as the view's, into a row of a texture, and every frame the row is laid on the map at whole pixels, so it reads as
 // sharp as before.
 //
-// When it draws: on its own clock, every FRAME_MS (30 a second, the owner 2026-10-30; the view drew at most 15), taking
+// When it draws: on its own clock, every FRAME_MS (30 a second, Peter 2026-10-30; the view drew at most 15), taking
 // the camera from MapView.frame() each time, so the map moves without the view redrawing. With the car standing and
 // the zoom settled it draws every IDLE_MS, or at once when MapView pokes it (a new scene, anything else redrawn).
 //
@@ -37,7 +37,7 @@ import java.nio.FloatBuffer;
 //
 // How it draws: every piece of every road is uploaded once per scene as one quad per segment carrying both end
 // points. The quads are packed off the GL thread (aaroad-pack) and sent a slice a frame into a second buffer while the
-// last scene goes on drawing; the new scene is drawn from the frame after its last slice (the owner's drive 2026-10-31:
+// last scene goes on drawing; the new scene is drawn from the frame after its last slice (Peter's drive 2026-10-31:
 // the upload in one frame stalled it 330-360 ms). The vertex shader turns them with the car's pose and the zoom and
 // widens the quad by the half width; the fragment shader keeps what lies within the half width of the segment, so joins and caps come
 // out round as Skia strokes them, smoothed over one screen pixel. A frame changes only a few uniforms: the camera is
@@ -53,7 +53,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private static final float NEAR_W = 0.05f;  // the near plane, in the camera's w: 1 at the car, 0 at the horizon
   private static final int BG = 0xff050505, KERB = MapView.KERB_C, ROAD = MapView.ROAD_C, GRID = 0xff2a2a2a;
   // groups 0-4 the road classes, then their bridges by deck layer (class + MapView.BRIDGE * layer, layers 1 to
-  // CloseUp.LAYERS - 1), then the same again past MapView.DIM_OFF for the dimmed half (Part B, the owner 2026-11-08,
+  // CloseUp.LAYERS - 1), then the same again past MapView.DIM_OFF for the dimmed half (Part B, Peter 2026-11-08,
   // MapView.Scene.stubsDim) -- a stub/road group with nothing in view costs no draw call, same as any other --
   // then the route by traffic: unknown or low, moderate, heavy, severe. ROUTE mirrors MapView's own doubled
   // stubWorld/stubPaths size (2 * MapView.DIM_OFF), so group indices line up the same way on both paths.
@@ -243,7 +243,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   private boolean checkNext;
   private final float[] proj = new float[16];
 
-  // Where a moving frame's time goes (the owner 2026-10-31: 32-43 ms a frame and 233-378 ms worst while driving, 10-12 ms
+  // Where a moving frame's time goes (Peter 2026-10-31: 32-43 ms a frame and 233-378 ms worst while driving, 10-12 ms
   // standing), logged every PARTS_MS. GL calls only queue work, so the GPU's own time shows up where the driver
   // blocks: mostly the swap. Each part() closes the stage since the last mark; primitives only, nothing allocated.
   private static final int P_LOCK = 0, P_CAMERA = 1, P_UPLOAD = 2, P_CLEAR = 3, P_GRID = 4, P_CULL = 5, P_ROADS = 6,
@@ -307,7 +307,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     setVisibility(on && !failed ? VISIBLE : INVISIBLE);
   }
 
-  // The meter page is re-created several times a day (the owner's drive 2026-11-06: 6 old aaroad-gl/aaroad-pack pairs
+  // The meter page is re-created several times a day (Peter's drive 2026-11-06: 6 old aaroad-gl/aaroad-pack pairs
   // found still alive in the meter process); without this the old threads sit in their wait loops forever and keep
   // their EGL context alive.
   @Override
@@ -763,7 +763,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
       try {
         MapView.Chunks roads = s.route.length > 0 ? s.stubsChunks : s.roadsChunks;
         MapView.Chunks route = s.routeChunks;
-        // a stub/road piece's own class, offset into the dimmed half (Part B, the owner 2026-11-08, MapView.Chunks.dim)
+        // a stub/road piece's own class, offset into the dimmed half (Part B, Peter 2026-11-08, MapView.Chunks.dim)
         // when it is the untaken branch of a split -- same offset trick as level below, mirroring pieces() on the
         // software path.
         int[] rcls = new int[roads.cls.length];
@@ -800,7 +800,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
           }
         }
         int[] level = new int[route.cls.length];  // a route piece's cls is its traffic, 0 to 4 (MapView.chunks)
-        // group LEVELS..2*LEVELS-1 (the owner 2026-11-08) is the same traffic colour but under a higher deck
+        // group LEVELS..2*LEVELS-1 (Peter 2026-11-08) is the same traffic colour but under a higher deck
         // (MapView.Chunks.under); drawFrame draws that half before the bridges instead of after, Apple Maps style.
         for (int i = 0; i < level.length; i++) {
           level[i] = route.cls[i] < 2 ? 0 : Math.min(LEVELS - 1, route.cls[i] - 1);
@@ -871,7 +871,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
   // The page of the scene buffer the line program's attribute pointers are on (-1: none), and the frame's counts.
   // LOD: zoomed out past LOD_IK the minor streets (class 4, the narrowest) are not drawn; they fade out between
   // LOD_FADE_IK and LOD_IK so the speed-driven zoom does not pop them. On the I-35 replay they are 63% of the quads
-  // in the dense minutes (ik < 0.15). the owner 2026-11-08: hide them. The route is its own group and always draws.
+  // in the dense minutes (ik < 0.15). Peter 2026-11-08: hide them. The route is its own group and always draws.
   static final boolean LOD_MINOR = true;
   static final float LOD_IK = 0.15f, LOD_FADE_IK = 0.18f;
   private float minorA = 1, statKerbA = 1;
@@ -972,7 +972,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     statKerbA = kerbA;
     acctBase = PS_KERB * ACCT_B;
     if (kerbA > 0) for (int c : MapView.DRAW_ORDER) lines2(c, c, floor, ik, kerb, MapView.KERBS[c], kerbA);
-    // route groups LEVELS..2*LEVELS-1 are the under-a-higher-deck half (the owner 2026-11-08, packLoop); the grey
+    // route groups LEVELS..2*LEVELS-1 are the under-a-higher-deck half (Peter 2026-11-08, packLoop); the grey
     // backdrop draws before bridges either way, so both halves go here together same as the over half did.
     acctBase = PS_RKERB * ACCT_B;
     for (int l = 0; l < 2 * LEVELS; l++) lines(ROUTE + l, route + kerb, KERB, 1);
@@ -981,12 +981,12 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
     acctBase = PS_SURF * ACCT_B;
     for (int c : MapView.DRAW_ORDER) lines2(c, c, floor, ik, surfX, MapView.ROADS[c], 1);
     acctBase = PS_DKERB * ACCT_B;
-    // Part B (the owner 2026-11-08): the untaken branch of a split, ground level, dimmed over the plain ground pass
+    // Part B (Peter 2026-11-08): the untaken branch of a split, ground level, dimmed over the plain ground pass
     // above -- group c + MapView.DIM_OFF, MapView.dim()'s colours, same kerb-then-surface order and widths.
     if (kerbA > 0) for (int c : MapView.DRAW_ORDER) lines2(c + MapView.DIM_OFF, c, floor, ik, kerb, MapView.dim(MapView.KERBS[c]), kerbA);
     acctBase = PS_DSURF * ACCT_B;
     for (int c : MapView.DRAW_ORDER) lines2(c + MapView.DIM_OFF, c, floor, ik, surfX, MapView.dim(MapView.ROADS[c]), 1);
-    // the carpet under a higher deck (the owner 2026-11-08, Apple Maps style): drawn before the bridges below so their
+    // the carpet under a higher deck (Peter 2026-11-08, Apple Maps style): drawn before the bridges below so their
     // casing/kerb/surface paint over it; the rest of the carpet (ROUTE + 0..LEVELS-1) still draws last, over them.
     if (!Float.isNaN(cut)) {
       GLES20.glUniform1f(lCarpet, 1);
@@ -1010,7 +1010,7 @@ final class GlRoads extends SurfaceView implements SurfaceHolder.Callback, MapVi
         for (int c : MapView.DRAW_ORDER) lines2(g + c, c, floor, ik, kerb, MapView.KERBS[c], flatA);
         acctBase = PS_BSURF * ACCT_B;
         for (int c : MapView.DRAW_ORDER) lines2(g + c, c, floor, ik, 0, MapView.ROADS[c], flatA);
-        // Part B (the owner 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
+        // Part B (Peter 2026-11-08): the untaken branch on this deck layer, same dim() treatment as the ground
         // pass above, same casing-then-kerb-then-surface order and the layer's own fade alpha.
         int gd = g + MapView.DIM_OFF;
         acctBase = PS_BCASE * ACCT_B;

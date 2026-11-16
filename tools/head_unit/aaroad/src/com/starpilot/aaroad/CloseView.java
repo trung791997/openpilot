@@ -13,14 +13,14 @@ final class CloseView {
   // SHADOW_PX past a deck's casing, in two steps
   static final float WALK_PX = 1.2f, CROSS_PX = 3, LANE_PX = 1.2f, SHADOW_PX = 5;
   static final float WALK_A = 0.55f, CROSS_A = 0.7f, LANE_A = 0.8f, SHADOW_A = 0.22f;
-  // the owner 2026-11-08, Apple-style 3D: a third, wider and fainter shadow stroke so the two hard-edged steps above
+  // Peter 2026-11-08, Apple-style 3D: a third, wider and fainter shadow stroke so the two hard-edged steps above
   // read as a soft falloff instead of a double outline. Drawn widest/faintest first, same as the two steps already
   // there. *static*: picked by eye in the desktop harness, not measured on the head unit.
   static final float SHADOW_PX3 = 9, SHADOW_A3 = 0.10f;
   // the deck's side wall: the deck drawn dark at these fractions of its height under it (a quarter apart, so a thin
   // link ramp two layers up still shows one wall, not stripes)
   static final float[] WALL_AT = {0, 0.25f, 0.5f, 0.75f};
-  // the owner 2026-11-08, Apple-style 3D: baked directional shading, one fixed light implied from above/the deck top -
+  // Peter 2026-11-08, Apple-style 3D: baked directional shading, one fixed light implied from above/the deck top -
   // WALL_AT is ordered bottom (0, nearest the ground, darkest) to top (0.75, nearest the deck, lightest), so a
   // per-band brightness scalar here reads as a lit gradient down the wall at zero extra fragment cost (same strokes,
   // same draw calls, just a baked uColor.rgb multiplier instead of per-pixel lighting). *static*: a visual choice,
@@ -36,17 +36,17 @@ final class CloseView {
   static final float[] FASCIA_AT = {0.8f, 0.87f, 0.94f};
   static final int UNDER_C = 0xff2b2a27, FASCIA_C = 0xff6e6b64, PARAPET_C = 0xff8c8981, PIER_C = 0xff5f5c56;
   static final float PIER_PX = 3;
-  // the owner 2026-11-08, Apple-style 3D: FASCIA_AT is ordered soffit (darkest, unlit) to top band (lightest, nearest
+  // Peter 2026-11-08, Apple-style 3D: FASCIA_AT is ordered soffit (darkest, unlit) to top band (lightest, nearest
   // the lit deck top); PIER_SHADE darkens the piers below even the darkest wall band, so the stack reads
   // top-lightest to pier-darkest. *static*: a visual choice, not measured.
   static final float[] FASCIA_SHADE = {0.85f, 0.92f, 1.05f};
   static final float PIER_SHADE = 0.55f;
-  // the owner 2026-11-08, Apple-style 3D: the deck's own top surface (the road colour drawn on the lifted deck range)
+  // Peter 2026-11-08, Apple-style 3D: the deck's own top surface (the road colour drawn on the lifted deck range)
   // lightened a little versus the same class's ground-level colour, so the deck top reads as the lit face next to
   // the darker wall/fascia bands below it. *static*: a visual choice, not measured.
   static final float DECK_TOP_SHADE = 1.12f;
 
-  // the owner 2026-11-08, Apple-style 3D: scales color's rgb by f (clamping each channel to 255), alpha unchanged.
+  // Peter 2026-11-08, Apple-style 3D: scales color's rgb by f (clamping each channel to 255), alpha unchanged.
   // Called only while building the shaded colour tables below (class init, not per frame or per segment).
   private static int shade(int color, float f) {
     int r = Math.min(255, Math.round(((color >> 16) & 0xff) * f));
@@ -55,7 +55,7 @@ final class CloseView {
     return (color & 0xff000000) | (r << 16) | (g << 8) | b;
   }
 
-  // the owner 2026-11-08, Apple-style 3D: baked once, not per frame - WALL_C/FASCIA_C/UNDER_C shaded per band above,
+  // Peter 2026-11-08, Apple-style 3D: baked once, not per frame - WALL_C/FASCIA_C/UNDER_C shaded per band above,
   // and the deck-top (lightened) road/kerb colours by class, so passes() below just looks the right one up.
   private static final int[] WALL_SHADED = new int[WALL_AT.length];
   private static final int[] FASCIA_SHADED = new int[FASCIA_AT.length];

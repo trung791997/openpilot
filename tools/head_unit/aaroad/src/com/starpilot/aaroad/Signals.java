@@ -1,9 +1,9 @@
 package com.starpilot.aaroad;
 
-// Traffic signals on the dash map, as Google Maps marks a signalised intersection with a small traffic light (the owner
+// Traffic signals on the dash map, as Google Maps marks a signalised intersection with a small traffic light (Peter
 // 2026-10-31: "for intersection with stoplight or stop sign, can you draw it like this?"). The points come in the road
-// tiles from format 4 (road_tiles.py: Mapbox Streets' traffic_signals points, OSM highway=traffic_signals). Mapbox
-// has no stop or give-way points, so STOP is drawn when a tile carries one but no tile does today.
+// tiles from format 4 (road_tiles.py: Mapbox Streets' traffic_signals points, OSM highway=traffic_signals) and the
+// stop_sign points (OSM highway=stop) of the same road layer, kept as STOP (Peter 2026-11-15: stop signs were missing).
 //
 // Which ones show, and where; plain Java, no Android: test/SignalsTest.java runs it on the desktop. SignalIcon draws
 // them, the same for the view and the GPU layer.
@@ -14,7 +14,7 @@ package com.starpilot.aaroad;
 // With a route, the nearest one on it ahead (within ROUTE_M of the line, more than NEXT_MIN_M ahead) is drawn larger:
 // the next light the car will stop at.
 //
-// Railroad crossings (the owner 2026-11-01) come the same way from format 6 (Mapbox Streets' level_crossing points, OSM
+// Railroad crossings (Peter 2026-11-01) come the same way from format 6 (Mapbox Streets' level_crossing points, OSM
 // railway=level_crossing: a road crossing a railway on the same level). They follow the same rules, but merge only
 // with other crossings (a double track is two points a few metres apart; a crossing next to a light stays its own
 // icon), and the next crossing on the route is drawn larger on its own, as well as the next light.
@@ -29,8 +29,8 @@ final class Signals {
   // The scene's icons from the tiles' points: pts is x, y, kind in threes, x and y in zoom-14 tile units (Feed.world),
   // ax, ay the scene's anchor and mpt its metres per tile unit. route and along are the scene's route runs (e, n
   // pairs) and the metres along it at each point, both empty with no route. Returns e, n, kind, along in fours: e, n
-  // in metres east and north of the anchor, kind SIGNAL when any merged point is one (CROSSING when the group is
-  // crossings, which merge only with each other), along the metres along the
+  // in metres east and north of the anchor, kind the group's own (signals, stops and crossings each merge only with
+  // their own kind), along the metres along the
   // route at the point of it nearest the icon, or NaN when the icon is not within ROUTE_M of the route.
   static float[] cluster(double[] pts, int count, double ax, double ay, double mpt, float[][] route, float[][] along) {
     float[] e = new float[count], n = new float[count];
@@ -44,7 +44,7 @@ final class Signals {
       int best = -1;
       double bestD = CLUSTER_M;
       for (int g = 0; g < groups; g++) {
-        if ((kind[g] == CROSSING) != (k == CROSSING)) continue;
+        if (kind[g] != k) continue;  // a kind merges only with its own: a stop beside a light stays a stop
         double d = Math.hypot(e[g] - pe, n[g] - pn);
         if (d <= bestD) {
           bestD = d;
@@ -61,7 +61,6 @@ final class Signals {
         int m = ++members[best];
         e[best] += (float) ((pe - e[best]) / m);  // the group's centre
         n[best] += (float) ((pn - n[best]) / m);
-        if (k == SIGNAL) kind[best] = SIGNAL;
       }
     }
     float[] out = new float[groups * 4];

@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
-SDK=/tmp/hu/sdk; BT=$SDK/build-tools/34.0.0; AJ=$SDK/platforms/android-17/android.jar
+# SDK (build-tools 34.0.0 + platforms;android-17) and the Xposed API jar; override with SDK=... XPOSED_JAR=...
+SDK=${SDK:-/tmp/hu/sdk}; BT=$SDK/build-tools/34.0.0; AJ=$SDK/platforms/android-17/android.jar
+XPOSED_JAR=${XPOSED_JAR:-/tmp/hu/api-82.jar}; export PATH="$BT:$PATH"  # aapt, zipalign, apksigner from build-tools
 rm -rf out; mkdir -p out/classes out/dex
-javac -source 8 -target 8 -bootclasspath $AJ -cp /tmp/hu/api-82.jar -d out/classes $(find src -name '*.java') 2>&1 | grep -v "bootstrap\|^warning\|^1 warning" || true
-$BT/d8 --min-api 17 --lib $AJ --classpath /tmp/hu/api-82.jar --output out/dex $(find out/classes -name '*.class')
+javac -source 8 -target 8 -bootclasspath $AJ -cp "$XPOSED_JAR" -d out/classes $(find src -name '*.java') 2>&1 | grep -v "bootstrap\|^warning\|^1 warning" || true
+$BT/d8 --min-api 17 --lib $AJ --classpath "$XPOSED_JAR" --output out/dex $(find out/classes -name '*.class')
 # the turn card's arrows are the StarPilot Auto car screen's own (the files its manifest lists), copied in at build
 # time so the two screens cannot drift apart; NavArrow reads them from assets/nav/
-NAV=../../../openpilot/starpilot/ui
+NAV=${NAV:-../../../openpilot/starpilot/ui}
 cp -r assets out/assets && mkdir -p out/assets/nav
 python3 -c 'import json,sys; print("\n".join(f["file"] for f in json.load(open(sys.argv[1]))["files"]))' $NAV/navigation-assets.json \
   | while read -r f; do cp "$NAV/assets/navigation/$f" out/assets/nav/; done

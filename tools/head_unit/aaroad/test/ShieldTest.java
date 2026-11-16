@@ -20,7 +20,7 @@ public final class ShieldTest {
   public static void main(String[] a) {
     // a whole name that is a route number
     eq("US 75", Shield.ref("US 75"), "US 75");
-    eq("a freeway", Shield.ref("a freeway"), "US 75");
+    eq("US-75", Shield.ref("US-75"), "US 75");
     eq("U.S. 75", Shield.ref("U.S. 75"), "US 75");
     eq("US Highway 75", Shield.ref("US Highway 75"), "US 75");
     eq("I-635", Shield.ref("I-635"), "I-635");
@@ -76,7 +76,7 @@ public final class ShieldTest {
     split("Turn right onto Main St", "[Turn right onto Main St]");
     split("Keep right toward Dallas North Tollway", "[Keep right toward Dallas North Tollway]");
     split("Continue on US Highway", "[Continue on US Highway]");
-    split("Turn onto a freeway", "[Turn onto, [US 75]]");
+    split("Turn onto US-75", "[Turn onto, [US 75]]");
     split("Head north on I-635 E", "[Head north on, [I-635], E]");
     split("Turn right onto Interstate Drive", "[Turn right onto Interstate Drive]");
     split("Turn right onto I-635E-Express", "[Turn right onto I-635E-Express]");

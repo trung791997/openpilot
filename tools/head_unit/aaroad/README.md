@@ -20,7 +20,7 @@ sent now ("onto X" / "on X", or a bare name); the present-location name gets the
 
 The resend was removed 2026-10-29: Android Auto repeats the turn every second, so it replayed
 every second, and each replay carries no distance, which made the stock cluster distance bar
-flicker between 0 and the real distance (the owner, on the car). It never got the turn stored.
+flicker between 0 and the real distance (Peter, on the car). It never got the turn stored.
 
 Live result 2026-10-28 16:48–16:50 (parked, route started): real street names went out
 ("Westgate Way", "South State Highway 78 / TX 78"), each turn was resent once, and the cluster
@@ -130,7 +130,7 @@ Head unit side (`Feed.java`, `Relay.java`, `MapView.java`, 2026-10-29):
   `aaroad.feed`. Logs: `map feed listening [through Honda Hack]`, `map relay carrying the feed`.
 - `MapView` shows only while the nav page is up and the pose is under 2 s old; otherwise Honda Hack's
   page is left as it was. Layout B of the mockup: heading-up tilted map (car at 369,180), route road
-  with the carpet in the mode colour, faint cross-street stubs, the owner's Civic (`assets/civic_map.png`,
+  with the carpet in the mode colour, faint cross-street stubs, Peter's Civic (`assets/civic_map.png`,
   read from the module apk), Honda Hack's arrow moved to the top left, distance + 500 ft bar,
   street, speed limit, arrival. Zoom about 20 s ahead (200 to 600 m), held on the turn from 500 ft.
   Logs: `meter map showing` / `hidden`, `map draw N ms average` (it draws less often past 33 ms).

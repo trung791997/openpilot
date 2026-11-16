@@ -265,14 +265,14 @@ def test_no_drop_logged_at_start_when_down():
 
 
 def test_ssid_with_colon_matches():
-  fake = Nmcli(visible=("the owner:s phone",))
+  fake = Nmcli(visible=("Peter:s phone",))
   watch, _ = make(fake)
-  watch._saved, watch._saved_at = [{"name": "p", "uuid": "pppp", "ssid": "the owner:s phone", "used": 1}], 100.
+  watch._saved, watch._saved_at = [{"name": "p", "uuid": "pppp", "ssid": "Peter:s phone", "used": 1}], 100.
   assert watch.check(100.) == "con_up"
 
 
 def test_terse_fields_unescape():
-  assert wr.fields(r"the owner\:s phone:conn\\x") == ["the owner:s phone", "conn\\x"]
+  assert wr.fields(r"Peter\:s phone:conn\\x") == ["Peter:s phone", "conn\\x"]
 
 
 def test_watchdog_thread_errors_never_raise(monkeypatch):

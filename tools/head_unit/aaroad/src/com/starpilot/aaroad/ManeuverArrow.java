@@ -1,6 +1,6 @@
 package com.starpilot.aaroad;
 
-// The white arrow MapView draws on the route at a roundabout or U-turn (the owner 2026-11-15): the route from BACK_M
+// The white arrow MapView draws on the route at a roundabout or U-turn (Peter 2026-11-15): the route from BACK_M
 // before the maneuver point to FWD_M after it (for a roundabout up to where the route leaves the ring, at most
 // RING_FWD_M), with an arrowhead at the end. Plain Java so it can be tested on the desktop; MapView draws it.
 // Positions are metres east, north in the scene's frame, and distances are metres along the route as

@@ -1,6 +1,6 @@
 package com.starpilot.aaroad;
 
-// Which roads the scene keeps with no route, and when the car has outrun them (the owner 2026-10-31: "sometimes the map
+// Which roads the scene keeps with no route, and when the car has outrun them (Peter 2026-10-31: "sometimes the map
 // doesn't load fully, like I have to drive up to a certain point then it can load the upcoming portion").
 //
 // The scene used to keep only the roads within 700 m of its anchor, a square, and was rebuilt only once the car was

@@ -17,7 +17,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 // The cluster answers every send with reply 2 (not stored). A replay of the turn on reply 2
 // (2026-10-28) never got it stored, and since Android Auto repeats the turn every second it
 // replayed every second; each replay carries no distance, so the stock distance bar flickered
-// to 0 (the owner, 2026-10-29). Removed.
+// to 0 (Peter, 2026-10-29). Removed.
 public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
   private static volatile String lastStreetLine;  // the last "street from" line logged
@@ -130,7 +130,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
       }
     });
 
-    // Panel off (the owner 2026-11-07 drive): each turn it sends makes Honda Hack's receiver in the cluster process
+    // Panel off (Peter 2026-11-07 drive): each turn it sends makes Honda Hack's receiver in the cluster process
     // re-read its settings three times on the cluster's main thread, each read starting a thread. At 17:54 one of
     // those thread starts hung that main thread for good: the map froze, and Android Auto's own turn arrow (its route,
     // not the comma's) sat over it. The dash turn card comes from the comma, so nothing is lost while the map shows.

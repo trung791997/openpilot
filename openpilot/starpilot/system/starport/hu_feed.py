@@ -391,7 +391,7 @@ class CerealReader:
       if not car_state.canValid:
         self._gate('can_invalid')
         return False, False
-      from openpilot.cereal import car
+      from opendbc.car.structs import car  # not openpilot.cereal: it has no car (11-15: every sample raised ImportError)
       if car_state.gearShifter != car.CarState.GearShifter.drive:
         self._gate('gear')
         return False, False

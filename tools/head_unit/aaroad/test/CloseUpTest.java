@@ -240,7 +240,7 @@ public class CloseUpTest {
     for (int r = 0; r < CloseUp.RANGES; r++) order &= d.from[r] <= d.from[r + 1];
     check(order, "ranges ordered, " + d.count() + " segments");
 
-    // which bridges are raised (CloseUp.overpasses, the owner 2026-11-05 FM 544): only one the car could drive under
+    // which bridges are raised (CloseUp.overpasses, Peter 2026-11-05 FM 544): only one the car could drive under
     in = new CloseUp.Lines();
     in.road(line(0, 0, 150, 0, 300, 0), 1, true, 1, 0, false);  // a creek bridge: nothing under it
     d = CloseUp.build(in);
@@ -361,7 +361,7 @@ public class CloseUpTest {
     check(same, "GPU corners carry the ends, heights, corner and along (mod both dash periods)");
     check(CloseUp.CORNER * 4 == 36, "36 bytes a corner");
 
-    // link roads (class 3): the ramp gold only for a highway ramp (CloseUp.ramps, the owner 2026-11-05 Angel Pkwy)
+    // link roads (class 3): the ramp gold only for a highway ramp (CloseUp.ramps, Peter 2026-11-05 Angel Pkwy)
     List<float[]> lk = new ArrayList<float[]>(), hw = new ArrayList<float[]>();
     hw.add(line(-100, -1500, -100, 1500));                         // a motorway, one straight line
     lk.add(line(180, 0, 195, 5, 200, 20));                         // 0 primary_link: a slip lane at a street corner

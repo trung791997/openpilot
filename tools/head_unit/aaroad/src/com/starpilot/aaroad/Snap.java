@@ -1,11 +1,11 @@
 package com.starpilot.aaroad;
 
-// Display-only road snapping for the zoomed-out map (the owner 2026-11-08). GPS puts the car a few metres off its road, and
+// Display-only road snapping for the zoomed-out map (Peter 2026-11-08). GPS puts the car a few metres off its road, and
 // beside a freeway's frontage road that is the difference between "on the frontage road" and "on the freeway"; the
 // map draws the car and centres the camera so the car sits on the road's drawn surface instead. Nothing here is sent
 // to the car: it moves only where the map is drawn.
 //
-// v2 (the owner 2026-11-08): a clamp to the road's edge, not a pull to its centreline. With hw the road's half width
+// v2 (Peter 2026-11-08): a clamp to the road's edge, not a pull to its centreline. With hw the road's half width
 // (one-way lines half of that) the car is moved toward the line only as far as it is outside hw - EDGE_MARGIN_M:
 // a car already on the road does not move, one on a frontage road 7 m from a freeway carriageway goes to just
 // inside that carriageway's edge, and a car in its lane on a two-way road stays where it is.

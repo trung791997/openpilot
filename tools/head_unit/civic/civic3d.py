@@ -1,5 +1,5 @@
 # ruff: noqa: E701, E702, E731, B905, B007, UP031  -- dense geometry tables from the head-unit mockups, kept as drawn
-# 2016-2021 Civic sedan (10th gen) as a small 3D model for the cluster car icon, built from the owner's
+# 2016-2021 Civic sedan (10th gen) as a small 3D model for the cluster car icon, built from Peter's
 # photos: a 2016 sedan straight from behind (775 px/m) and a top view (360 px/m). Metres: x right,
 # y up, z forward from the rear bumper. 4.64 m long, 1.80 m wide, 1.415 m tall.
 # The map is heading-up, so the car is always seen from straight behind: the head unit can draw a
@@ -289,7 +289,7 @@ def aspect(elev=25.0, dist=9.0):
 if __name__ == '__main__':
     import sys
     FONT = 'font-family="Liberation Sans, Arial, sans-serif"'
-    if 'check' in sys.argv:      # outline the model over the owner's reference photos
+    if 'check' in sys.argv:      # outline the model over Peter's reference photos
         rear = Cam(0, 0, None)
         polys, rl, dk = model('Platinum White', 'ex', rear)
         place = lambda p: (965 + 775 * p[0], 1335 + 775 * (p[1] - rear.T[1]))

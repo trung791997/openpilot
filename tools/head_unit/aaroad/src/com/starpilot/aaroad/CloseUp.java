@@ -5,7 +5,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-// The zoomed-in look (the owner 2026-11-01, after Google Maps' immersive close-up, not extruded buildings): bridges raised
+// The zoomed-in look (Peter 2026-11-01, after Google Maps' immersive close-up, not extruded buildings): bridges raised
 // over the roads they cross, with ramps at their ends, a dark side wall and a soft shadow on the ground; lane lines on
 // motorways; thin sidewalks and dashed crosswalks; rail lines with cross ties (drawn under the roads, CloseView.rails).
 // All of it fades in only while the map is zoomed in (gate below): cruising, the map draws exactly what it drew
@@ -87,7 +87,7 @@ final class CloseUp {
 
   // The deck layer group a raised range or a deck range belongs to (1 to LAYERS - 1; 0 for everything else, which
   // Under.covering never asks about since it only ever looks up range(g, c)/deck(g, c) ranges with g >= 1). Added
-  // for MapView's under-outline gate (the owner 2026-11-08): the car's own bridge must not count as covering it, which
+  // for MapView's under-outline gate (Peter 2026-11-08): the car's own bridge must not count as covering it, which
   // a height margin alone can miss right at a layer boundary.
   static int layerOf(int r) {
     if (r >= DECK0 && r < PIER0) return (r - DECK0) / CLASSES + 1;
@@ -161,7 +161,7 @@ final class CloseUp {
     return t * t * (3 - 2 * t);
   }
 
-  // The camera's tilt (the owner's immersive-nav request): it looks down PITCH below the horizon cruising, and CLOSE_PITCH,
+  // The camera's tilt (Peter's immersive-nav request): it looks down PITCH below the horizon cruising, and CLOSE_PITCH,
   // further toward the horizon, zoomed in. The tilt follows the displayed range, so it glides with the zoom's own
   // easing (MapView.frame): today's tilt from TILT_HIDE m out (the close-up look's ROAD_HIDE), all of it by TILT_SHOW.
   // The camera stays where it is (CAM_H, CAM_ZC, so lift() holds), and the focal length and centre row move with the
@@ -215,7 +215,7 @@ final class CloseUp {
     }
   }
 
-  // ---- which bridges are drawn raised (the owner 2026-11-05, FM 544: a creek bridge on the road he was on drew as a grey
+  // ---- which bridges are drawn raised (Peter 2026-11-05, FM 544: a creek bridge on the road he was on drew as a grey
   // slab floating over it, "like another route on top")
   //
   // A tile bridge is raised only when the car could drive under it: an overpass. That is, a road crosses it in plan
@@ -254,7 +254,7 @@ final class CloseUp {
     if (nb == 0) return out;
     float[][] box = new float[n][];
     for (int i = 0; i < n; i++) box[i] = bounds(in.pts.get(i));
-    // bridges joined end to end on one layer: one group; at any layer: one chain, raised or flat as a whole (the owner
+    // bridges joined end to end on one layer: one group; at any layer: one chain, raised or flat as a whole (Peter
     // 2026-11-08: a ramp deck at one layer joining a flyover at another was raised while the flyover was drawn flat,
     // so the bridge read as pieces laid on top of each other). Only the road being driven, a group, stays down.
     int[] parent = new int[nb], chain = new int[nb];
@@ -332,7 +332,7 @@ final class CloseUp {
     return out;
   }
 
-  // ---- which link roads are highway ramps (the owner 2026-11-05, Angel Pkwy: short olive strokes inside grey streets
+  // ---- which link roads are highway ramps (Peter 2026-11-05, Angel Pkwy: short olive strokes inside grey streets
   // looked like traffic)
   //
   // Tile class 3 (road_tiles._CLASS_OF LINK) is every Mapbox "_link": motorway and trunk ramps, but also the
@@ -588,7 +588,7 @@ final class CloseUp {
         for (int[] o : meeting(ends, p[j], p[j + 1], pts, i)) {
           int[] oa = attr.get(o[0]);
           if (oa[1] != 0) {
-            // another deck carries on from here, at any layer: not an end that ramps to the ground (the owner 2026-11-08:
+            // another deck carries on from here, at any layer: not an end that ramps to the ground (Peter 2026-11-08:
             // two decks at different layers each dived to the ground at their joint, one drawn on top of the other)
             cont = true;
             int ol = Math.max(1, oa[2]);

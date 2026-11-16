@@ -21,7 +21,7 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
 
-// One-time check whether the head unit can draw the 3D close-up (the owner 2026-10-29: 3D for the zoomed-in view
+// One-time check whether the head unit can draw the 3D close-up (Peter 2026-10-29: 3D for the zoomed-in view
 // near a turn only, 2D while cruising). Off screen, on its own thread, nothing shown: a GLES2 context on a
 // 584x215 pbuffer draws a 15k-triangle mesh, about the size of the mockup close-ups, and logs the frame and
 // read-back times. It runs once per marker version: the marker is written before the first GL call, so if the

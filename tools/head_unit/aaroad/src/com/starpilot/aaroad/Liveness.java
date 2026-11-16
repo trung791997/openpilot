@@ -4,7 +4,7 @@ package com.starpilot.aaroad;
 // checked on a desktop (test/LivenessTest.java).
 //
 // The map comes up once Honda Hack's nav page is on screen and the comma's position is fresh. Once up, it used to go
-// back to Honda Hack's page whenever the position was GAP_HOLD_MS old (the owner 2026-11-01: the whole cluster map drops
+// back to Honda Hack's page whenever the position was GAP_HOLD_MS old (Peter 2026-11-01: the whole cluster map drops
 // to the Honda Hack view now and then and comes back). The comma sends a position only while its GPS fix is under
 // MAX_CARRY (1 s) old (hu_feed.py carry), and the car's GPS goes quiet for longer than that: drive
 // 00000071--37216af48f (2026-10-31) had a 25.9 s gap at 67 mph with no route, so the map would have gone for

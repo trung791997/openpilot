@@ -347,7 +347,7 @@ def test_tiles_go_as_is_to_new_head_units_and_in_the_format_each_older_app_reads
 
 
 def test_free_drive_at_70_mph_has_the_tiles_ahead_long_before_the_car_gets_there():
-  # the owner 2026-10-31: off navigation the dash map sometimes did not load ahead until the car got close. The comma side
+  # Peter 2026-10-31: off navigation the dash map sometimes did not load ahead until the car got close. The comma side
   # is not why: with no route it sends the 3x3 tiles around the car (each about 2 km across), so a tile reaches the head
   # unit about a tile's drive before the car does. The head unit dropped them (MapView kept 700 m; FreeView now).
   from openpilot.starpilot.navigation.road_tiles import world_xy
@@ -812,3 +812,18 @@ def test_traffic_chunks_never_take_the_road_tiles_share():
   feed.tick()
   assert sum(1 for m, _ in sock.sent if m['t'] == 'm') == hf.TILE_CHUNKS_PER_TICK
   assert 'q' not in sock.kinds()
+
+
+def test_vasm_reaches_the_gear_gate_without_an_import_error():
+  # 2026-11-15: line 394 imported car from openpilot.cereal, which has none; every fresh, CAN-valid sample raised
+  # ImportError, was swallowed, and the dash never got a V-ASM flag. A park-gear sample must stop at the gear gate.
+  from types import SimpleNamespace as NS
+  from opendbc.car.structs import car
+  logs = []
+  reader = object.__new__(hf.CerealReader)
+  reader._vasm_source, reader._vasm_saved, reader._vasm_read, reader.params = None, None, -math.inf, None
+  reader._vasm_log = lambda name, **kw: logs.append((name, kw))
+  assert reader.vasm(True, NS(canValid=True, gearShifter=car.CarState.GearShifter.park), 100.) == (False, False)
+  assert [n for n, kw in logs if n == 'hu_feed_vasm_error'] == []
+  assert [kw['gate'] for n, kw in logs if n == 'hu_feed_vasm_gate'] == ['gear']
+  reader.close()

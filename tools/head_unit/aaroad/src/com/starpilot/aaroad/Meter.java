@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 //
 // The map is added behind navi_layout once per meter view, on the first text Honda Hack sets inside it (the
 // speed and compass update with no route). It used to wait for a nav text, so the map only came up once a route
-// started (the owner 2026-10-30), although navi_layout shows with nav off too. Honda Hack re-creates the meter when
+// started (Peter 2026-10-30), although navi_layout shows with nav off too. Honda Hack re-creates the meter when
 // its settings change. Any failure leaves its layout untouched.
 final class Meter {
   private static final double FEET_PER_METER = 3.28084;
@@ -46,7 +46,7 @@ final class Meter {
           MapView map = new MapView(root.getContext(), navi, pkg);
           root.addView(map, 0,
               new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-          // The roads on the GPU, under the map (the owner 2026-10-30); without it the map draws them itself as before.
+          // The roads on the GPU, under the map (Peter 2026-10-30); without it the map draws them itself as before.
           if (MapView.GPU) {
             try {
               GlRoads gl = new GlRoads(root.getContext(), map);

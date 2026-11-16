@@ -20,7 +20,7 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
 
-// A visible test of the 3D turn close-up (the owner 2026-10-30: "Yeah let's try that"). The GPU test drew to the dash
+// A visible test of the 3D turn close-up (Peter 2026-10-30: "Yeah let's try that"). The GPU test drew to the dash
 // through its own layer in about 22 ms a frame, but drew nothing visible, so it did not show the layer actually
 // appears. This draws a made-up 3D road with a right turn in the map's spot, x 300..540 (inside the tach ring),
 // with the camera driving through it, for 20 s and then takes it away. It waits 20 s after the map comes up, runs

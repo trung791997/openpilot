@@ -7,7 +7,7 @@ import java.nio.FloatBuffer;
 // test of which pieces are in view. Plain Java with no GL or Android in it, so the desktop test (test/GlCullTest.java)
 // can hold the cull against the old one and time both.
 //
-// the owner's drive 2026-10-31 logged cull at 46-49 ms a frame: the old test turned all four corners of every piece's box
+// Peter's drive 2026-10-31 logged cull at 46-49 ms a frame: the old test turned all four corners of every piece's box
 // into the car's frame, 16 Math.min/max calls a piece (not inlined on Dalvik), for some tens of thousands of pieces.
 // Now each piece has a centre and a radius, and the pieces whose circle comes near a circle round the view box are
 // kept as candidates, from a circle SLACK times wider, so the list holds until the view has moved out of it. Each
@@ -244,7 +244,7 @@ final class GlCull {
     rFrom[groups] = r;
   }
 
-  // The cull for this frame's camera, at most every TICK_MS (the owner's drive 2026-11-08: 15 to 21 ms a frame of it
+  // The cull for this frame's camera, at most every TICK_MS (Peter's drive 2026-11-08: 15 to 21 ms a frame of it
   // on I-35 North). The result stays valid for the frames in between because the cull is made on the view box
   // widened by the margin the camera can move in a tick -- the speed and turn and zoom rates since the last cull --
   // and a frame whose camera is already outside that margin culls at once. The margin is exact, not a guess:
