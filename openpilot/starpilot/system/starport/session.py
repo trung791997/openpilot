@@ -15,6 +15,7 @@ desktop head unit over TCP; here the transport is the head unit's Wi-Fi TCP port
 from __future__ import annotations
 
 import math
+import os
 import re
 import select
 import ssl
@@ -78,6 +79,12 @@ BLUETOOTH_PAIRING_REQUEST = 0x8001
 BLUETOOTH_PAIRING_RESPONSE = 0x8002
 BLUETOOTH_AUTH_DATA = 0x8003
 SENSOR_LOCATION, SENSOR_NIGHT, SENSOR_DRIVING_STATUS = 1, 10, 13
+
+# Vendor extension service (field 12 of a channel descriptor). The 2019 Civic offers one named
+# "com.honda.mdve.protocol.VendorExtension" (session-000175). Probe only: open it and log what comes back, send nothing.
+# On while this file exists; remove it to turn the probe off without a code change.
+VENDOR_EXTENSION_SERVICE = 12
+VENDOR_EXTENSION_PROBE_FLAG = "/data/starport/probe_vendor_extension"
 
 CODEC_H264_BP = 3
 CODEC_H265 = 7          # MediaCodecType VIDEO_H265, offered by some head units instead of H.264
@@ -561,6 +568,13 @@ class Session:
           item["bluetooth"] = parse_bluetooth(one(fields, BLUETOOTH_SERVICE))
         except ValueError:
           item["bluetooth"] = {}
+      if isinstance(one(fields, VENDOR_EXTENSION_SERVICE), bytes):
+        try:
+          vendor = parse_fields(one(fields, VENDOR_EXTENSION_SERVICE))
+          item["vendor_extension"] = {"name": str(one(vendor, 1, b"").decode(errors="replace") if isinstance(one(vendor, 1), bytes) else ""),
+                                      "fields": describe_fields(vendor)}
+        except ValueError:
+          item["vendor_extension"] = {}
       if isinstance(one(fields, 4), bytes):
         item["input"] = True
         try:
@@ -708,6 +722,8 @@ class ProjectionSession(Session):
     self.sensor_events: dict[int, int] = {}
     self.location = None  # HeadUnitGps, attached by the supervisor; takes the car's own GPS fixes
     self.bluetooth_channel: int | None = None
+    self.vendor_channel: int | None = None
+    self.vendor_messages = 0
     self.car_address = ""  # the car's Bluetooth address, from its Bluetooth service descriptor
     self.phone_link_ready = False  # set by the supervisor's thread once the hands-free link to the car is up
     self.nav = None  # NavStatus, attached by the supervisor when the head unit offers turn-by-turn
@@ -811,6 +827,27 @@ class ProjectionSession(Session):
       self._send_pairing_request()
       self.event("bluetooth_opened", channel=bluetooth["id"], phone_address=self.phone_address,
                  car_address=bluetooth["bluetooth"].get("car_address", ""), pairing_methods=methods)
+
+    self._probe_vendor_extension()
+
+  def _probe_vendor_extension(self) -> None:
+    """Open the head unit's vendor extension channel and log its answer. Sends no data on it."""
+    if not os.path.exists(VENDOR_EXTENSION_PROBE_FLAG):
+      return
+    vendor = next((ch for ch in self.channels if "vendor_extension" in ch), None)
+    if vendor is None:
+      self.event("vendor_extension_absent")
+      return
+    try:
+      self.send(vendor["id"], MSG_CHANNEL_OPEN_REQUEST, field(1, 0) + field(2, vendor["id"]), control=True)
+      opened = parse_fields(self.wait_for(vendor["id"], MSG_CHANNEL_OPEN_RESPONSE, timeout=3.0))
+      status = signed(one(opened, 1, 0))
+      self.event("vendor_extension_open_response", channel=vendor["id"], status=status,
+                 service=vendor["vendor_extension"].get("name", ""), response=describe_fields(opened))
+      if status == 0:
+        self.vendor_channel = vendor["id"]
+    except (TimeoutError, ValueError) as error:
+      self.event("vendor_extension_unavailable", channel=vendor["id"], error=str(error))
 
   def _send_pairing_request(self) -> None:
     channel = next((ch for ch in self.channels if ch["id"] == self.bluetooth_channel), None)
@@ -938,6 +975,12 @@ class ProjectionSession(Session):
         self.event("bluetooth_auth_data", data=describe_fields(fields))
       else:
         self.ignored("bluetooth_ignored", channel, kind, data)
+    elif channel is not None and channel == self.vendor_channel:
+      # Probe: the first 20 messages in full (bounded by describe), then counts only.
+      self.vendor_messages += 1
+      if self.vendor_messages <= 20:
+        self.event("vendor_extension_message", channel=channel, kind=kind, bytes=len(data), data=data[:256].hex(),
+                   message=describe(data), n=self.vendor_messages)
     else:
       self.ignored("channel_ignored", channel, kind, data)
 
