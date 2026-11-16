@@ -235,9 +235,9 @@ def test_stationary_clutter_does_not_starve_primary_lead_at_20ms_rtt(monkeypatch
 def test_offset_matching_and_moving_lead_fallback(monkeypatch):
   rows = _capture_events(monkeypatch)
   ram = bytearray(NUM_SLOTS * STRIDE)
-  # Closer stationary in-path clutter (slot 1) vs actual distant moving lead (slot 4 at x=107.3, op dRel=100.0 per 1.08*op - 0.7)
+  # Closer stationary in-path clutter (slot 1) vs distant highway moving lead (slot 4 at x=106.0, op dRel=100.0)
   _write_slot(ram, 1, {"x": 8.0, "vx": -15.0, "ax": 0.0, "y": 0.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 20, "qual": 20, "cls": 60})
-  _write_slot(ram, 4, {"x": 107.3, "vx": -1.0, "ax": -0.5, "y": -0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 30, "qual": 25, "cls": 85})
+  _write_slot(ram, 4, {"x": 106.0, "vx": -1.0, "ax": -0.5, "y": -0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 30, "qual": 25, "cls": 85})
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
   logger = XcpRadarLogger(cp)
@@ -257,9 +257,10 @@ def test_offset_matching_and_moving_lead_fallback(monkeypatch):
     t += 20_000_000
 
   logger.close()
-  # Once both slot 1 and slot 4 have flags, lead should pick slot 4 (both via moving fallback and via op_tracks offset match)
+  # Once both slot 1 and slot 4 have flags, lead should pick slot 4 (both via moving fallback and via op_tracks range-proportional tolerance)
   rows_both = [r for r in rows if {tgt["slot"] for tgt in r["targets"]} >= {1, 4}]
   assert rows_both
   assert all(r["lead"]["slot"] == 4 for r in rows_both)
   assert rows_both[-1]["lead"]["op_track_id"] == 55
-  assert rows_both[-1]["lead"]["op_match_dist_m"] < 0.2
+  assert rows_both[-1]["lead"]["op_dRel"] == 100.0
+  assert rows_both[-1]["lead"]["op_match_dist_m"] <= 6.1
