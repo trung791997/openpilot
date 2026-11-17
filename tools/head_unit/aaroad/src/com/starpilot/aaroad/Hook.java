@@ -59,7 +59,7 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     }
     if (!PKG.equals(lpparam.packageName)) return;
     try {
-      VendorTunnel.install(lpparam.packageName, lpparam.classLoader);
+      VendorTunnel.install(lpparam.packageName, lpparam.processName, lpparam.classLoader);
     } catch (Throwable t) {
       Xlog.log("aaroad: aa vendor tunnel hook failed: " + t);
     }

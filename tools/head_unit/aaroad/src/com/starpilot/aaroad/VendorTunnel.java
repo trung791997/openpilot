@@ -27,8 +27,8 @@ final class VendorTunnel {
   private static LocalSocket currentClient;
   private static DataOutputStream clientOut;
 
-  static synchronized void install(String pkg, ClassLoader cl) {
-    if (started || !PKG.equals(pkg)) return;
+  static synchronized void install(String pkg, String process, ClassLoader cl) {
+    if (started || !PKG.equals(pkg) || !PKG.equals(process)) return;
     Class<?> vec = XposedHelpers.findClass(CHANNEL_CLASS, cl);
     started = true;
 
