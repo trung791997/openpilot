@@ -259,6 +259,7 @@ def main() -> int:
       try:
         from openpilot.starpilot.system.starport.hu_feed import HeadUnitFeed
         hu_feed = HeadUnitFeed(log=lambda event, **fields: print(json.dumps({"event": event, **fields}), flush=True)).start()
+        supervisor.hu_feed = hu_feed
         cleanup.callback(hu_feed.close)
       except Exception as error:  # the cluster map feed is optional; projection must never depend on it
         print(json.dumps({"event": "hu_feed_unavailable", "error": str(error)}), flush=True)

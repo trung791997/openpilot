@@ -85,6 +85,8 @@ SENSOR_LOCATION, SENSOR_NIGHT, SENSOR_DRIVING_STATUS = 1, 10, 13
 # On while this file exists; remove it to turn the probe off without a code change.
 VENDOR_EXTENSION_SERVICE = 12
 VENDOR_EXTENSION_PROBE_FLAG = "/data/starport/probe_vendor_extension"
+VENDOR_TUNNEL_KIND = 0x5350  # 'SP' prefix for aaroad VendorTunnel frames on the raw vendor channel
+VENDOR_TUNNEL_BURST = 8
 
 CODEC_H264_BP = 3
 CODEC_H265 = 7          # MediaCodecType VIDEO_H265, offered by some head units instead of H.264
@@ -724,6 +726,7 @@ class ProjectionSession(Session):
     self.bluetooth_channel: int | None = None
     self.vendor_channel: int | None = None
     self.vendor_messages = 0
+    self.hu_feed = None  # HeadUnitFeed, attached by the supervisor to tunnel dash-map frames over channel 13
     self.car_address = ""  # the car's Bluetooth address, from its Bluetooth service descriptor
     self.phone_link_ready = False  # set by the supervisor's thread once the hands-free link to the car is up
     self.nav = None  # NavStatus, attached by the supervisor when the head unit offers turn-by-turn
@@ -831,12 +834,15 @@ class ProjectionSession(Session):
     self._probe_vendor_extension()
 
   def _probe_vendor_extension(self) -> None:
-    """Open the head unit's vendor extension channel and log its answer. Sends no data on it."""
-    if not os.path.exists(VENDOR_EXTENSION_PROBE_FLAG):
+    """Open the head unit's vendor extension channel for the aaroad tunnel (or diagnostic probe)."""
+    hu_feed = getattr(self, "hu_feed", None)
+    probing = os.path.exists(VENDOR_EXTENSION_PROBE_FLAG)
+    if hu_feed is None and not probing:
       return
     vendor = next((ch for ch in self.channels if "vendor_extension" in ch), None)
     if vendor is None:
-      self.event("vendor_extension_absent")
+      if probing:
+        self.event("vendor_extension_absent")
       return
     try:
       self.send(vendor["id"], MSG_CHANNEL_OPEN_REQUEST, field(1, 0) + field(2, vendor["id"]), control=True)
@@ -846,8 +852,18 @@ class ProjectionSession(Session):
                  service=vendor["vendor_extension"].get("name", ""), response=describe_fields(opened))
       if status == 0:
         self.vendor_channel = vendor["id"]
+        if hu_feed is not None:
+          hu_feed.attach_aa()
     except (TimeoutError, ValueError) as error:
       self.event("vendor_extension_unavailable", channel=vendor["id"], error=str(error))
+
+  def service_vendor(self) -> None:
+    """Non-blocking: drain queued hu_feed datagrams onto the raw vendor extension channel."""
+    hu_feed = getattr(self, "hu_feed", None)
+    if self.vendor_channel is None or hu_feed is None:
+      return
+    for payload in hu_feed.drain_aa(VENDOR_TUNNEL_BURST):
+      self.send(self.vendor_channel, VENDOR_TUNNEL_KIND, payload)
 
   def _send_pairing_request(self) -> None:
     channel = next((ch for ch in self.channels if ch["id"] == self.bluetooth_channel), None)
@@ -976,11 +992,15 @@ class ProjectionSession(Session):
       else:
         self.ignored("bluetooth_ignored", channel, kind, data)
     elif channel is not None and channel == self.vendor_channel:
-      # Probe: the first 20 messages in full (bounded by describe), then counts only.
-      self.vendor_messages += 1
-      if self.vendor_messages <= 20:
-        self.event("vendor_extension_message", channel=channel, kind=kind, bytes=len(data), data=data[:256].hex(),
-                   message=describe(data), n=self.vendor_messages)
+      hu_feed = getattr(self, "hu_feed", None)
+      if kind == VENDOR_TUNNEL_KIND and hu_feed is not None:
+        hu_feed.receive_aa(data)
+      else:
+        # Probe: the first 20 messages in full (bounded by describe), then counts only.
+        self.vendor_messages += 1
+        if self.vendor_messages <= 20:
+          self.event("vendor_extension_message", channel=channel, kind=kind, bytes=len(data), data=data[:256].hex(),
+                     message=describe(data), n=self.vendor_messages)
     else:
       self.ignored("channel_ignored", channel, kind, data)
 

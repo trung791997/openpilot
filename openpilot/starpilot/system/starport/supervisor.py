@@ -458,6 +458,7 @@ class Supervisor:
     self._video_seen = False                    # video was acknowledged in this session: later failures say nothing about the handshake
     self._run_started = 0.0
     self._last_probe = None
+    self.hu_feed = None
     self.auto = AutoConnectPolicy()
     self._companion_retry_at = 0.0
     self.log = EventLog()
@@ -1834,6 +1835,7 @@ class Supervisor:
         session.location = HeadUnitGps()  # the car's GPS, a backup for navigation when the comma has no fix
       except Exception as error:  # optional; projection must never depend on it
         self.log("head_unit_gps_unavailable", error=str(error))
+    session.hu_feed = self.hu_feed
     self._stage("authenticating")
     session.authenticate()
     self._stage("negotiating")
@@ -1902,6 +1904,8 @@ class Supervisor:
       self._stream(session, encoder, source, watch, interval)
     finally:
       self._note_streamed(session)
+      if getattr(session, "hu_feed", None) is not None:
+        session.hu_feed.detach_aa()
       if session.audio is not None:
         session.audio.close()
       if getattr(session, "nav", None) is not None:
@@ -1980,6 +1984,15 @@ class Supervisor:
           self.log("nav_status_failed", error=f"{type(error).__name__}: {error}")
           nav.close()
           nav = session.nav = None
+      if session.vendor_channel is not None and getattr(session, "hu_feed", None) is not None:
+        try:
+          session.service_vendor()
+        except (OSError, TimeoutError):
+          raise
+        except Exception as error:
+          self.log("vendor_tunnel_failed", error=f"{type(error).__name__}: {error}")
+          session.hu_feed.detach_aa()
+          session.hu_feed = None
       now = time.monotonic()
       wait_for_frame = True
       if session.focused:
