@@ -32,16 +32,20 @@ MAX_ACTIVE_TARGETS = 40
 LEAD_PRIORITY_COUNT = 2
 
 EPOCH_NS = 50_000_000          # 20 Hz output logging cadence
-LEAD_KIN_INTERVAL_NS = 35_000_000  # ~20-25 Hz kinematics for primary lead
-LEAD_META_INTERVAL_NS = 120_000_000  # ~8 Hz alternating age / flags (~4 Hz each) for primary lead
-LEAD_LAT_INTERVAL_NS = 300_000_000
-LEAD_QUAL_INTERVAL_NS = 500_000_000
-LEAD2_KIN_INTERVAL_NS = 90_000_000 # ~10 Hz kinematics for secondary priority target
-LEAD2_META_INTERVAL_NS = 250_000_000
-OTHER_META_INTERVAL_NS = 300_000_000
+LEAD_KIN_INTERVAL_NS = 18_000_000  # ~25 Hz (every 40 ms) at 20 ms RTT, ~33 Hz at 10 ms RTT
+LEAD_META_INTERVAL_NS = 250_000_000  # ~4 Hz alternating age / flags (~2 Hz each) for primary lead
+LEAD_LAT_INTERVAL_NS = 180_000_000   # ~5.5 Hz Y / Vy for primary lead
+LEAD_QUAL_INTERVAL_NS = 1_000_000_000
+LEAD2_KIN_INTERVAL_NS = 110_000_000  # ~8 Hz kinematics for secondary priority target
+LEAD2_LAT_INTERVAL_NS = 150_000_000  # ~6.7 Hz Y / Vy for secondary priority target
+LEAD2_META_INTERVAL_NS = 500_000_000
+OTHER_LAT_INTERVAL_NS = 250_000_000  # ~4 Hz Y / Vy target cadence for moving cut-in traffic
+OTHER_META_INTERVAL_NS = 600_000_000
+OTHER_QUAL_INTERVAL_NS = 1_000_000_000
 OTHER_MAX_STALE_NS = 350_000_000
-STATIONARY_MAX_STALE_NS = 2_000_000_000
-INACTIVE_PROBE_PERIOD_WITH_LEAD = 6
+OTHER_META_MAX_STALE_NS = 1_000_000_000
+STATIONARY_MAX_STALE_NS = 3_000_000_000
+INACTIVE_PROBE_PERIOD_WITH_LEAD = 10
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
 OP_TRACKS_MAX_AGE_NS = 500_000_000
 
@@ -366,6 +370,32 @@ class XcpRadarLogger:
           break
     return prio
 
+  def _stale_group_task_locked(
+    self,
+    group: list[int],
+    now_ns: int,
+    max_stale_ns: int,
+    meta_stale_ns: int,
+    lat_stale_ns: int | None = None,
+  ) -> tuple[int, int, int] | None:
+    if not group:
+      return None
+    stale_kin_slot = min(group, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
+    if now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"] >= max_stale_ns:
+      return (stale_kin_slot, 16, 6)
+    if lat_stale_ns is not None:
+      stale_lat_slot = min(group, key=lambda s: (self.slot_cache[s]["lat_updated_ns"], s))
+      if now_ns - self.slot_cache[stale_lat_slot]["lat_updated_ns"] >= lat_stale_ns:
+        return (stale_lat_slot, 22, 6)
+    stale_meta_slot = min(
+      group,
+      key=lambda s: (min(self.slot_cache[s]["age_updated_ns"], self.slot_cache[s]["flags_updated_ns"]), s),
+    )
+    rec = self.slot_cache[stale_meta_slot]
+    if now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"]) >= meta_stale_ns:
+      return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+    return None
+
   def _next_read_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
     self._read_seq += 1
 
@@ -397,34 +427,31 @@ class XcpRadarLogger:
         self._last_probe_seq = self._read_seq
         return probe
 
-    # Newly promoted active slots get initial flags/age/Y (moving targets queued at front)
+    # Newly promoted active slots get initial flags/age/Y: moving targets run ahead of other traffic;
+    # stationary clutter while ego is moving runs only after moving traffic is served.
     while self._init_queue:
-      task = self._init_queue.popleft()
-      self._init_queued.discard(task)
-      if task[0] in self.active_slots:
-        return task
+      front = self._init_queue[0]
+      if front[0] not in self.active_slots:
+        self._init_queue.popleft()
+        self._init_queued.discard(front)
+        continue
+      if not self._is_moving_target_locked(self.slot_cache[front[0]]):
+        break
+      self._init_queue.popleft()
+      self._init_queued.discard(front)
+      return front
 
-    # Anti-starvation check for other active slots: moving traffic at >=2.8 Hz, stationary clutter at 0.5 Hz
+    # Anti-starvation check for moving non-lead active slots (kinematics, Y/Vy lateral, then age/flags)
     lead1 = prio_slots[0] if prio_slots else -1
     others_all = [s for s in sorted(self.active_slots) if s != lead1]
-    if others_all:
-      moving_others = [s for s in others_all if self._is_moving_target_locked(self.slot_cache[s])]
-      stationary_others = [s for s in others_all if s not in moving_others]
-      for group, max_stale_ns in ((moving_others, OTHER_MAX_STALE_NS), (stationary_others, STATIONARY_MAX_STALE_NS)):
-        if not group:
-          continue
-        stale_kin_slot = min(group, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
-        if now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"] >= max_stale_ns:
-          return (stale_kin_slot, 16, 6)
-        stale_meta_slot = min(
-          group,
-          key=lambda s: (min(self.slot_cache[s]["age_updated_ns"], self.slot_cache[s]["flags_updated_ns"]), s),
-        )
-        rec = self.slot_cache[stale_meta_slot]
-        if now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"]) >= 2 * max_stale_ns:
-          return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+    moving_others = [s for s in others_all if self._is_moving_target_locked(self.slot_cache[s])]
+    stationary_others = [s for s in others_all if s not in moving_others]
+    if task := self._stale_group_task_locked(
+      moving_others, now_ns, OTHER_MAX_STALE_NS, OTHER_META_MAX_STALE_NS, lat_stale_ns=OTHER_LAT_INTERVAL_NS
+    ):
+      return task
 
-    # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics + ~4 Hz alternating age/flags
+    # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics, ~6.7 Hz Y/Vy, slower age/flags/qual
     if len(prio_slots) > 1:
       s = prio_slots[1]
       rec = self.slot_cache[s]
@@ -434,30 +461,43 @@ class XcpRadarLogger:
         return (s, 2, 6)
       if rec["flags_updated_ns"] == 0:
         return (s, 106, 2)
+      if rec["lat_updated_ns"] == 0 or now_ns - rec["lat_updated_ns"] >= LEAD2_LAT_INTERVAL_NS:
+        return (s, 22, 6)
       if now_ns - max(rec["age_updated_ns"], rec["flags_updated_ns"]) >= LEAD2_META_INTERVAL_NS:
         return (s, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (s, 106, 2)
-      if now_ns - rec["lat_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
-        return (s, 22, 6)
-      if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
+      if rec["qual_updated_ns"] == 0 or now_ns - rec["qual_updated_ns"] >= OTHER_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # Remaining non-priority moving targets: balanced oldest-first round-robin over kinematics + metadata
-    others = [s for s in sorted(self.active_slots) if s not in prio_set and self._is_moving_target_locked(self.slot_cache[s])]
+    # Remaining non-priority moving targets: balanced oldest-first round-robin favoring kinematics + Y/Vy for cut-ins
+    others = [s for s in moving_others if s not in prio_set]
     if others:
       oldest_kin_slot = min(others, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
       rec = self.slot_cache[oldest_kin_slot]
-      meta_candidates = [
-        (rec["flags_updated_ns"], (oldest_kin_slot, 106, 2)),
-        (rec["age_updated_ns"], (oldest_kin_slot, 2, 6)),
-        (rec["lat_updated_ns"], (oldest_kin_slot, 22, 6)),
-        (rec["qual_updated_ns"], (oldest_kin_slot, 127, 2)),
-      ]
-      stalest_meta_ts, stalest_meta_task = min(meta_candidates, key=lambda item: item[0])
-      if stalest_meta_ts == 0 or (
-        now_ns - stalest_meta_ts >= OTHER_META_INTERVAL_NS and stalest_meta_ts < rec["kin_updated_ns"]
+      kin_ts = rec["kin_updated_ns"]
+      if rec["flags_updated_ns"] == 0:
+        return (oldest_kin_slot, 106, 2)
+      if rec["age_updated_ns"] == 0:
+        return (oldest_kin_slot, 2, 6)
+      for field_key, interval_ns, task in (
+        ("lat_updated_ns", OTHER_LAT_INTERVAL_NS, (oldest_kin_slot, 22, 6)),
+        ("flags_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 106, 2)),
+        ("age_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 2, 6)),
+        ("qual_updated_ns", OTHER_QUAL_INTERVAL_NS, (oldest_kin_slot, 127, 2)),
       ):
-        return stalest_meta_task
+        ts = rec[field_key]
+        if ts == 0 or (now_ns - ts >= interval_ns and ts < kin_ts):
+          return task
       return (oldest_kin_slot, 16, 6)
+
+    # Deferred stationary clutter init + low-rate anti-starvation (never preempts moving traffic)
+    while self._init_queue:
+      task = self._init_queue.popleft()
+      self._init_queued.discard(task)
+      if task[0] in self.active_slots:
+        return task
+
+    if task := self._stale_group_task_locked(stationary_others, now_ns, STATIONARY_MAX_STALE_NS, 2 * STATIONARY_MAX_STALE_NS):
+      return task
 
     # If no active slots need updating right now, sweep inactive slots faster
     if len(self.active_slots) < NUM_SLOTS:

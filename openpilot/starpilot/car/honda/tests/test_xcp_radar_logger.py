@@ -305,3 +305,46 @@ def test_ui_shm_snapshot_filters_roadside_stationary_clutter_and_unlinks(tmp_pat
   assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5], [45.0, -3.2]]}
   logger.close()
   assert not shm_path.exists()
+
+
+def test_cutin_lateral_y_vy_prioritized_over_qual_on_adjacent_cars(monkeypatch):
+  _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  # Lead (slot 2), secondary adjacent car (slot 6), and third moving adjacent car (slot 9), plus 10 stationary clutter slots
+  _write_slot(ram, 2, {"x": 25.0, "vx": -0.5, "ax": 0.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82})
+  _write_slot(ram, 6, {"x": 20.0, "vx": 1.0, "ax": 0.0, "y": -3.1, "vy": 0.4, "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 22, "cls": 75})
+  _write_slot(ram, 9, {"x": 38.0, "vx": 0.8, "ax": 0.0, "y": 3.2, "vy": -0.3, "flags": 0xE0C0, "sub": 0x0000, "age": 18, "qual": 21, "cls": 74})
+  for s in range(15, 25):
+    _write_slot(ram, s, {"x": 15.0 + s, "vx": -15.0, "ax": 0.0, "y": -5.0, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 10, "qual": 15, "cls": 50})
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  counts = {s: {16: 0, 22: 0, 127: 0} for s in (2, 6, 9)}
+  rd = SimpleNamespace(points=[
+    SimpleNamespace(trackId=1, dRel=25.0, yRel=0.1, vRel=-0.5),
+    SimpleNamespace(trackId=2, dRel=20.0, yRel=-3.1, vRel=1.0),
+  ])
+  # 5 seconds at 20 ms RTT (50 reads/sec)
+  for i in range(250):
+    if i >= 20:
+      logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      s = off // STRIDE
+      fld = off % STRIDE
+      if i >= 50 and s in counts and fld in counts[s]:
+        counts[s][fld] += 1
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    t += 20_000_000
+  logger.close()
+
+  # Over 4s post-warmup: lead keeps ~25 Hz kin (16) and ~5 Hz lat (22); both adjacent moving cars get >=2.5 Hz (22) and more (22) than (127)
+  assert counts[2][16] >= 80
+  assert counts[2][22] >= 16
+  assert counts[6][22] > counts[6][127] and counts[6][22] >= 10
+  assert counts[9][22] > counts[9][127] and counts[9][22] >= 10 and counts[9][16] >= 8
