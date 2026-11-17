@@ -295,14 +295,17 @@ def test_ui_shm_snapshot_filters_roadside_stationary_clutter_and_unlinks(tmp_pat
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
   logger = XcpRadarLogger(cp, shm_path=shm_path)
   targets = [
-    {"dRel_m": 20.0, "yRel_m": 3.5, "vRel_mps": -15.0},   # stationary off-path clutter -> excluded
-    {"dRel_m": 15.0, "yRel_m": 0.5, "vRel_mps": -15.0},   # stationary in-path -> included
-    {"dRel_m": 45.0, "yRel_m": -3.2, "vRel_mps": -1.0},   # moving adjacent lane -> included
-    {"dRel_m": -4.0, "yRel_m": 0.0, "vRel_mps": 0.0},     # behind bumper -> excluded
+    {"dRel_m": 20.0, "yRel_m": 3.5, "vRel_mps": -15.0, "vyRel_mps": 0.0, "age": 10, "ghost": False, "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000},   # stationary off-path clutter -> excluded
+    {"dRel_m": 15.0, "yRel_m": 0.5, "vRel_mps": -15.0, "vyRel_mps": 0.0, "age": 10, "ghost": False, "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000},   # stationary in-path -> included
+    {"dRel_m": 45.0, "yRel_m": -3.2, "vRel_mps": -2.0, "vyRel_mps": 1.0, "age": 10, "ghost": False, "lat_updated_ns": 4_900_000_000, "kin_updated_ns": 4_950_000_000},   # moving + time-aligned -> (44.9, -3.1)
+    {"dRel_m": 30.0, "yRel_m": 0.0, "vRel_mps": 0.0, "vyRel_mps": 0.0, "age": 10, "ghost": False, "lat_updated_ns": 0, "kin_updated_ns": 5_000_000_000},               # uninitialized Y -> excluded
+    {"dRel_m": 35.0, "yRel_m": -3.0, "vRel_mps": 0.0, "vyRel_mps": 0.0, "age": 10, "ghost": True, "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000},     # ghost -> excluded
+    {"dRel_m": 40.0, "yRel_m": -3.0, "vRel_mps": 0.0, "vyRel_mps": 0.0, "age": 2, "ghost": False, "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000},     # newborn age<3 -> excluded
+    {"dRel_m": -4.0, "yRel_m": 0.0, "vRel_mps": 0.0, "vyRel_mps": 0.0, "age": 10, "ghost": False, "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000},      # behind bumper -> excluded
   ]
   logger._write_ui_snapshot(5_000_000_000, 15.0, targets)
   data = json.loads(shm_path.read_text())
-  assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5], [45.0, -3.2]]}
+  assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5], [44.9, -3.1]]}
   logger.close()
   assert not shm_path.exists()
 

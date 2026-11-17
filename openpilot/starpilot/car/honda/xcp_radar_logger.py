@@ -220,13 +220,13 @@ class XcpRadarLogger:
 
   def _enqueue_init_locked(self, slot: int, *, moving: bool = True) -> None:
     if moving or self.last_v_ego < 3.0:
-      # Push moving targets to front so initial flags/age/Y arrive before stale clutter
-      for task in ((slot, 22, 6), (slot, 2, 6), (slot, 106, 2)):
+      # Push moving targets to front so Y/Vy + age arrive before flags unlocks emission
+      for task in ((slot, 106, 2), (slot, 2, 6), (slot, 22, 6)):
         if task not in self._init_queued:
           self._init_queued.add(task)
           self._init_queue.appendleft(task)
     else:
-      for task in ((slot, 106, 2), (slot, 22, 6)):
+      for task in ((slot, 22, 6), (slot, 106, 2)):
         if task not in self._init_queued:
           self._init_queued.add(task)
           self._init_queue.append(task)
@@ -714,6 +714,7 @@ class XcpRadarLogger:
           "op_dRel": None,
           "op_match_dist_m": None,
           "kin_updated_ns": rec["kin_updated_ns"],
+          "lat_updated_ns": rec["lat_updated_ns"],
           "age_updated_ns": rec["age_updated_ns"],
           "flags_updated_ns": rec["flags_updated_ns"],
           "updated_ns": rec["updated_ns"],
@@ -748,11 +749,16 @@ class XcpRadarLogger:
     if self._shm_path is None:
       return
     try:
-      points = [
-        [round(t["dRel_m"], 2), round(t["yRel_m"], 2)]
-        for t in targets
-        if t["dRel_m"] > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(t["yRel_m"]) < 2.2)
-      ]
+      points: list[list[float]] = []
+      for t in targets:
+        if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
+          continue
+        dt_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), 300_000_000) / 1e9
+        dt_lat = min(max(now_ns - t.get("lat_updated_ns", now_ns), 0), 300_000_000) / 1e9
+        d_ui = t["dRel_m"] + t.get("vRel_mps", 0.0) * dt_kin
+        y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * dt_lat
+        if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
+          points.append([round(d_ui, 2), round(y_ui, 2)])
       payload = json.dumps({"mono_ns": int(now_ns), "points": points}, separators=(",", ":")).encode("utf-8")
       tmp = self._shm_path.with_name(f".{self._shm_path.name}.{os.getpid()}.tmp")
       tmp.write_bytes(payload)
