@@ -597,7 +597,11 @@ class HeadUnitFeed:
     self._aa_peer_seen = -math.inf
     self._aa_peer_was_active = False
     self._aa_in: deque[bytes] = deque(maxlen=64)
-    self._aa_out: deque[bytes] = deque(maxlen=512)
+    self._aa_beacon: bytes | None = None
+    self._aa_state: bytes | None = None
+    self._aa_pose: bytes | None = None
+    self._aa_ctrl: deque[bytes] = deque(maxlen=64)
+    self._aa_bulk: deque[bytes] = deque(maxlen=256)
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
 
@@ -620,6 +624,13 @@ class HeadUnitFeed:
       except Exception:
         pass
 
+  def _clear_aa_queues_locked(self) -> None:
+    self._aa_beacon = None
+    self._aa_state = None
+    self._aa_pose = None
+    self._aa_ctrl.clear()
+    self._aa_bulk.clear()
+
   def attach_aa(self) -> None:
     with self._aa_lock:
       self._aa_connected = True
@@ -627,7 +638,7 @@ class HeadUnitFeed:
       self._aa_peer_seen = -math.inf
       self._aa_peer_was_active = False
       self._aa_in.clear()
-      self._aa_out.clear()
+      self._clear_aa_queues_locked()
 
   def detach_aa(self) -> None:
     with self._aa_lock:
@@ -636,26 +647,38 @@ class HeadUnitFeed:
       self._aa_peer_seen = -math.inf
       self._aa_peer_was_active = False
       self._aa_in.clear()
-      self._aa_out.clear()
+      self._clear_aa_queues_locked()
 
   def receive_aa(self, data: bytes) -> None:
     with self._aa_lock:
       if self._aa_connected:
         self._aa_in.append(data)
 
-  def drain_aa(self, limit: int = 8) -> list[bytes]:
+  def drain_aa(self, limit: int = 8, bulk_limit: int = 2) -> list[bytes]:
     with self._aa_lock:
-      if not self._aa_out:
-        return []
-      items = []
-      while self._aa_out and len(items) < limit:
-        items.append(self._aa_out.popleft())
+      items: list[bytes] = []
+      for slot in ('_aa_beacon', '_aa_state', '_aa_pose'):
+        if len(items) >= limit:
+          break
+        val = getattr(self, slot)
+        if val is not None:
+          items.append(val)
+          setattr(self, slot, None)
+      while self._aa_ctrl and len(items) < limit:
+        items.append(self._aa_ctrl.popleft())
+      bulk_cap = min(limit, len(items) + max(0, bulk_limit))
+      while self._aa_bulk and len(items) < bulk_cap:
+        items.append(self._aa_bulk.popleft())
       return items
 
   def aa_active(self, now: float | None = None) -> bool:
     now = self.clock() if now is None else now
     with self._aa_lock:
       return self._aa_connected and self._aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT
+
+  def _aa_bulk_full(self, now: float) -> bool:
+    with self._aa_lock:
+      return self._aa_connected and self._aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT and len(self._aa_bulk) >= 16
 
   def _run(self) -> None:
     while not self._stop.is_set():
@@ -666,12 +689,22 @@ class HeadUnitFeed:
         idle = True
       self._stop.wait(BEACON_EVERY / 4 if idle else 1 / POSE_HZ)
 
-  def _queue_aa(self, data: bytes) -> None:
+  def _queue_aa(self, data: bytes, kind: str = 'm') -> None:
     with self._aa_lock:
-      if self._aa_connected and self._aa_tunnel:
-        self._aa_out.append(data)
+      if not (self._aa_connected and self._aa_tunnel):
+        return
+      if kind == 'b':
+        self._aa_beacon = data
+      elif kind == 's':
+        self._aa_state = data
+      elif kind == 'p':
+        self._aa_pose = data
+      elif kind in ('r', 'a'):
+        self._aa_ctrl.append(data)
+      else:
+        self._aa_bulk.append(data)
 
-  def _send_raw(self, data: bytes, to: tuple[str, int] | None = None) -> None:
+  def _send_raw(self, data: bytes, to: tuple[str, int] | None = None, kind: str = 'm') -> None:
     if to is not None:
       try:
         self.sock.sendto(data, to)
@@ -679,7 +712,7 @@ class HeadUnitFeed:
         pass
       return
     if self.aa_active(self.clock()):
-      self._queue_aa(data)
+      self._queue_aa(data, kind)
       return
     if self.peer is not None:
       try:
@@ -689,7 +722,7 @@ class HeadUnitFeed:
 
   def _send(self, kind: str, body: dict, to: tuple[str, int] | None = None) -> None:
     data = json.dumps({'v': VERSION, 't': kind, **body}, separators=(',', ':')).encode()
-    self._send_raw(data, to)
+    self._send_raw(data, to, kind)
 
   def _reset_peer_state(self) -> None:
     self.sent_state, self.sent_route, self.last_route = None, None, -math.inf
@@ -773,7 +806,7 @@ class HeadUnitFeed:
     if now - self.last_beacon >= BEACON_EVERY:
       self.last_beacon = now
       if aa_connected and aa_tunnel:
-        self._queue_aa(json.dumps({'v': VERSION, 't': 'b', 'port': PORT}, separators=(',', ':')).encode())
+        self._queue_aa(json.dumps({'v': VERSION, 't': 'b', 'port': PORT}, separators=(',', ':')).encode(), 'b')
       if not aa_active:
         for address in self.broadcasts():
           self._send('b', {'port': PORT}, (address, PORT))
@@ -860,6 +893,8 @@ class HeadUnitFeed:
       self.traffic = TrafficTiles(log=self.log)
     keys = self.around(lat, lon)
     self.traffic.want(keys)
+    if self._aa_bulk_full(self.clock()):
+      return
     if not self.sending_q:
       for key, generation, payload in self.traffic.current(keys):
         if self.traffic_sent.get(key) != generation:
@@ -868,10 +903,12 @@ class HeadUnitFeed:
           break
     budget = 0 if self.sending else TILE_CHUNKS_PER_TICK - self._road_sent
     for data in self.sending_q[:budget]:
-      self._send_raw(data)
+      self._send_raw(data, kind='q')
     del self.sending_q[:budget]
 
   def send_tiles(self, lat: float, lon: float, now: float) -> None:
+    if self._aa_bulk_full(now):
+      return
     if not self.sending and now - self.last_tile_scan >= TILE_SCAN_EVERY:
       self.last_tile_scan = now
       if self._tiles is None:
@@ -891,7 +928,7 @@ class HeadUnitFeed:
           self.tile_sent[key] = now
           break
     for data in self.sending[:TILE_CHUNKS_PER_TICK]:
-      self._send_raw(data)
+      self._send_raw(data, kind='m')
     self._road_sent = len(self.sending[:TILE_CHUNKS_PER_TICK])
     del self.sending[:TILE_CHUNKS_PER_TICK]
 

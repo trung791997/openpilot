@@ -87,6 +87,7 @@ VENDOR_EXTENSION_SERVICE = 12
 VENDOR_EXTENSION_PROBE_FLAG = "/data/starport/probe_vendor_extension"
 VENDOR_TUNNEL_KIND = 0x5350  # 'SP' prefix for aaroad VendorTunnel frames on the raw vendor channel
 VENDOR_TUNNEL_BURST = 8
+VENDOR_TUNNEL_BULK_BURST = 2
 
 CODEC_H264_BP = 3
 CODEC_H265 = 7          # MediaCodecType VIDEO_H265, offered by some head units instead of H.264
@@ -862,7 +863,8 @@ class ProjectionSession(Session):
     hu_feed = getattr(self, "hu_feed", None)
     if self.vendor_channel is None or hu_feed is None:
       return
-    for payload in hu_feed.drain_aa(VENDOR_TUNNEL_BURST):
+    bulk_limit = VENDOR_TUNNEL_BULK_BURST if self.can_send() else 0
+    for payload in hu_feed.drain_aa(VENDOR_TUNNEL_BURST, bulk_limit=bulk_limit):
       self.send(self.vendor_channel, VENDOR_TUNNEL_KIND, payload)
 
   def _send_pairing_request(self) -> None:

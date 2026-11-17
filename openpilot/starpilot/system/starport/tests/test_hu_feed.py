@@ -870,3 +870,20 @@ def test_aa_tunnel_carries_feed_and_silences_udp_when_active():
   feed.detach_aa()
   assert not feed.aa_active()
   assert feed.drain_aa() == []
+
+
+def test_aa_tunnel_prioritizes_state_and_pose_over_tile_burst():
+  big_tile = b'x' * (hf.TILE_CHUNK * 30)
+  feed, _, now, _ = make(tiles=lambda key: big_tile if key == '1/1' else None)
+  feed.attach_aa()
+  feed.receive_aa(json.dumps({'v': 1, 't': 'h', 'have': [], 'rt': 6, 'tq': 1}).encode())
+  now[0] += 0.05
+  feed.tick()  # queues 's', 'p', and 20 chunks of 'm'
+  # Advance 1 s and tick again before draining: state and pose update, while bulk backpressure holds extra tiles.
+  now[0] += 1.0
+  feed.tick()
+  batch = [json.loads(item) for item in feed.drain_aa(limit=8, bulk_limit=2)]
+  kinds = [m['t'] for m in batch]
+  assert kinds[:3] == ['b', 's', 'p']
+  assert kinds.count('m') == 2
+  assert len(feed._aa_bulk) == 18

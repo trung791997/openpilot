@@ -65,6 +65,7 @@ def test_vendor_tunnel_opens_without_probe_flag_and_bridges_hu_feed(monkeypatch,
     def __init__(self):
       self.attached = 0
       self.received = []
+      self.calls = []
       self.outgoing = [b'{"v":1,"t":"b","port":47312}', b'{"v":1,"t":"p"}']
 
     def attach_aa(self):
@@ -73,12 +74,14 @@ def test_vendor_tunnel_opens_without_probe_flag_and_bridges_hu_feed(monkeypatch,
     def receive_aa(self, data):
       self.received.append(data)
 
-    def drain_aa(self, limit=8):
+    def drain_aa(self, limit=8, bulk_limit=2):
+      self.calls.append((limit, bulk_limit))
       items = self.outgoing[:limit]
       self.outgoing = self.outgoing[limit:]
       return items
 
   s = _session(monkeypatch, tmp_path, flag=False)
+  s.can_send = lambda: True
   s.hu_feed = FakeFeed()
   s.channels = [{"id": 13, "vendor_extension": {"name": "com.honda.mdve.protocol.VendorExtension"}}]
   s.wait_for = lambda ch, kind, timeout=10.0, patient=False: field(1, 0)
@@ -94,7 +97,11 @@ def test_vendor_tunnel_opens_without_probe_flag_and_bridges_hu_feed(monkeypatch,
 
   s.sent.clear()
   s.service_vendor()
+  assert s.hu_feed.calls == [(S.VENDOR_TUNNEL_BURST, S.VENDOR_TUNNEL_BULK_BURST)]
   assert s.sent == [
     (13, S.VENDOR_TUNNEL_KIND, b'{"v":1,"t":"b","port":47312}'),
     (13, S.VENDOR_TUNNEL_KIND, b'{"v":1,"t":"p"}'),
   ]
+  s.can_send = lambda: False
+  s.service_vendor()
+  assert s.hu_feed.calls[-1] == (S.VENDOR_TUNNEL_BURST, 0)
