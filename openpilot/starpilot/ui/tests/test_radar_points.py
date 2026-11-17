@@ -191,3 +191,17 @@ def test_settings_row_saves_only_while_parked_and_keeps_the_layout(tmp_path, pro
   path.write_bytes(b"corrupt layout")
   assert not owner.apply(request) and path.read_bytes() == b"corrupt layout"
   assert (row().value, row().available) == ("Unavailable", False)
+
+
+def test_xcp_overlay_points_project_cache_and_expire(tmp_path):
+  xcp_path = tmp_path / "xcp_radar_points.json"
+  xcp_path.write_text(json.dumps({"mono_ns": 10_000_000_000, "points": [[15.0, -25.0], [500.0, -40.0]]}))
+  view, sm, rect = _renderer_inputs()
+  dots = RadarPointsRenderer(7.0, 9.0, rect_relative=True, xcp_path=xcp_path)
+  assert dots.xcp_screen_points(sm, view, rect, now_ns=10_100_000_000).shape == (0, 2)
+  dots.enabled = True
+  np.testing.assert_allclose(dots.xcp_screen_points(sm, view, rect, now_ns=10_100_000_000), [[20.0, 32.0]])
+  # Stale (> 1.0s) or missing snapshot clears points cleanly
+  assert dots.xcp_screen_points(sm, view, rect, now_ns=11_200_000_000).shape == (0, 2)
+  xcp_path.unlink()
+  assert dots.xcp_screen_points(sm, view, rect, now_ns=10_100_000_000).shape == (0, 2)

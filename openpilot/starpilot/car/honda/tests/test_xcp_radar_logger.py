@@ -287,3 +287,21 @@ def test_tolerance_stationary_flat_and_moving_far_range():
   assert targets[2]["op_dRel"] == 78.0
   assert op_lead_slot == 3
   assert matched_slots == [3, 2]
+
+
+def test_ui_shm_snapshot_filters_roadside_stationary_clutter_and_unlinks(tmp_path):
+  import json
+  shm_path = tmp_path / "xcp_radar_points.json"
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, shm_path=shm_path)
+  targets = [
+    {"dRel_m": 20.0, "yRel_m": 3.5, "vRel_mps": -15.0},   # stationary off-path clutter -> excluded
+    {"dRel_m": 15.0, "yRel_m": 0.5, "vRel_mps": -15.0},   # stationary in-path -> included
+    {"dRel_m": 45.0, "yRel_m": -3.2, "vRel_mps": -1.0},   # moving adjacent lane -> included
+    {"dRel_m": -4.0, "yRel_m": 0.0, "vRel_mps": 0.0},     # behind bumper -> excluded
+  ]
+  logger._write_ui_snapshot(5_000_000_000, 15.0, targets)
+  data = json.loads(shm_path.read_text())
+  assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5], [45.0, -3.2]]}
+  logger.close()
+  assert not shm_path.exists()

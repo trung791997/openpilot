@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import atexit
 from collections import deque
+import json
 import math
 import os
+from pathlib import Path
 import threading
 import time
 
@@ -46,6 +48,7 @@ OP_TRACKS_MAX_AGE_NS = 500_000_000
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
+XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 
 
 def key_for_seed(seed_be: bytes) -> bytes:
@@ -120,7 +123,15 @@ def _empty_slot_record() -> dict:
 
 
 class XcpRadarLogger:
-  def __init__(self, CP, *, send_lock: threading.Lock | None = None, pm=None, params=None) -> None:
+  def __init__(
+    self,
+    CP,
+    *,
+    send_lock: threading.Lock | None = None,
+    pm=None,
+    params=None,
+    shm_path: Path | None = XCP_UI_SHM_PATH,
+  ) -> None:
     del params
     self.enabled = False
     self.state = "DISABLED"
@@ -149,6 +160,7 @@ class XcpRadarLogger:
     self._lock = threading.RLock()
     self._send_lock = send_lock
     self._pm = pm
+    self._shm_path = Path(shm_path) if shm_path is not None else None
 
     self._tx_armed = False
     self._tx_armed_ns = 0
@@ -186,6 +198,11 @@ class XcpRadarLogger:
     io_thread = self._io_thread
     if io_thread is not None and io_thread is not threading.current_thread():
       io_thread.join(timeout=0.5)
+    if self._shm_path is not None:
+      try:
+        self._shm_path.unlink(missing_ok=True)
+      except OSError:
+        pass
 
   def _alloc_track_id_locked(self) -> int:
     tid = self._next_radar_track_id
@@ -685,6 +702,23 @@ class XcpRadarLogger:
       op_tracks=op_tracks,
       debug=True,
     )
+    self._write_ui_snapshot(now_ns, v_ego, targets)
+
+  def _write_ui_snapshot(self, now_ns: int, v_ego: float, targets: list[dict]) -> None:
+    if self._shm_path is None:
+      return
+    try:
+      points = [
+        [round(t["dRel_m"], 2), round(t["yRel_m"], 2)]
+        for t in targets
+        if t["dRel_m"] > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(t["yRel_m"]) < 2.2)
+      ]
+      payload = json.dumps({"mono_ns": int(now_ns), "points": points}, separators=(",", ":")).encode("utf-8")
+      tmp = self._shm_path.with_name(f".{self._shm_path.name}.{os.getpid()}.tmp")
+      tmp.write_bytes(payload)
+      os.replace(tmp, self._shm_path)
+    except Exception:
+      pass
 
   def observe_radar_tracks(self, RD, now_ns: int) -> None:
     if not self.enabled or RD is None:
