@@ -264,3 +264,26 @@ def test_offset_matching_and_moving_lead_fallback(monkeypatch):
   assert rows_both[-1]["lead"]["op_track_id"] == 55
   assert rows_both[-1]["lead"]["op_dRel"] == 100.0
   assert rows_both[-1]["lead"]["op_match_dist_m"] <= 6.1
+
+
+def test_tolerance_stationary_flat_and_moving_far_range():
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  targets = [
+    {"slot": 1, "dRel_m": 60.0, "yRel_m": 3.0, "vRel_mps": -15.0, "op_track_id": None, "op_dRel": None},
+    {"slot": 2, "dRel_m": 58.0, "yRel_m": -3.0, "vRel_mps": -14.8, "op_track_id": None, "op_dRel": None},
+    {"slot": 3, "dRel_m": 92.0, "yRel_m": 0.1, "vRel_mps": -1.0, "op_track_id": None, "op_dRel": None},
+  ]
+  op_tracks = [
+    {"tid": 10, "dRel": 54.0, "yRel": 3.0, "vRel": -15.0},
+    {"tid": 11, "dRel": 54.0, "yRel": -3.0, "vRel": -14.8},
+    {"tid": 12, "dRel": 78.0, "yRel": 0.1, "vRel": -1.0},
+  ]
+  matched_slots, op_lead_slot = logger._match_openpilot_tracks(targets, op_tracks, v_ego=15.0)
+  assert targets[0]["op_track_id"] is None
+  assert targets[1]["op_track_id"] == 11
+  assert targets[1]["op_dRel"] == 54.0
+  assert targets[2]["op_track_id"] == 12
+  assert targets[2]["op_dRel"] == 78.0
+  assert op_lead_slot == 3
+  assert matched_slots == [3, 2]

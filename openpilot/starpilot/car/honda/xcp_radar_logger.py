@@ -561,16 +561,21 @@ class XcpRadarLogger:
         except Exception:
           pass
 
-  def _match_openpilot_tracks(self, targets: list[dict], op_tracks: list[dict]) -> tuple[list[int], int | None]:
+  def _match_openpilot_tracks(self, targets: list[dict], op_tracks: list[dict], v_ego: float = 0.0) -> tuple[list[int], int | None]:
     if not targets or not op_tracks:
       return [], None
     candidates: list[tuple[float, int, int, float]] = []
     for ti, t in enumerate(targets):
+      is_stationary = v_ego >= 3.0 and abs(v_ego + t["vRel_mps"]) < 0.7
       for oi, o in enumerate(op_tracks):
         dd = abs(t["dRel_m"] - o["dRel"])
         dy = abs(t["yRel_m"] - o["yRel"])
         dv = abs(t["vRel_mps"] - o["vRel"])
-        max_dd = max(4.5, 0.14 * max(t["dRel_m"], o["dRel"], 0.0))
+        if is_stationary:
+          max_dd = 4.5
+        else:
+          r = max(t["dRel_m"], o["dRel"], 0.0)
+          max_dd = max(4.5, (0.20 if r > 70.0 else 0.14) * r)
         if dd < max_dd and dy < 2.2 and dv < 3.5:
           cost = dd * dd + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
           dist_m = math.hypot(dd, dy)
@@ -658,7 +663,7 @@ class XcpRadarLogger:
           "last_rtt_ms": round(rec["last_rtt_ns"] / 1_000_000.0, 2),
         })
 
-    matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks)
+    matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks, v_ego)
     with self._lock:
       self._op_matched_slots = matched_slots
 
