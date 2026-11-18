@@ -33,7 +33,7 @@ from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.lateral.pause import LateralPause, read_settings as read_lateral_pause
 from openpilot.starpilot.lateral.model_turn_assist import ModelTurnAssist, update_twitch_guard
 from openpilot.starpilot.aol.runtime import (current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged,
-                                            refresh_expired_lateral_snapshot, COMBINED_REFRESH_MARGIN_NS, axis_drop_reason)
+                                            refresh_expired_lateral_snapshot, COMBINED_REFRESH_MARGIN_NS, axis_drop_reason, AxisHold)
 from openpilot.starpilot.aol.transition_diagnostic import TransitionDiagnostic
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed, allow_lateral_onset
 from openpilot.starpilot.lateral.lane_centering import (
@@ -305,11 +305,21 @@ class Controls:
           self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
           now_ns = time.monotonic_ns()
       axis = current_axis(self.sm, now_ns=now_ns)
+      lateral_requested = bool(axis.desiredLateral) if axis is not None else None
+      published_axis = axis
+      if self.CP.brand == 'honda':
+        # Honda only (route f4): bridge one silently paused axis, at most STALE_ALERT_NS from the last active one; a late or
+        # missing axis is not bridged and drops exactly as on base.
+        if not hasattr(self, 'aol_axis_hold'):
+          self.aol_axis_hold = AxisHold()
+        axis = self.aol_axis_hold.resolve(self.sm, axis, now_ns=now_ns, allowed=bool(
+          CC.enabled and not CS.gasPressed and not CS.brakePressed and not CS.regenBraking and not CS.steeringPressed and
+          not any(e.userDisable or e.softDisable or e.immediateDisable or e.overrideLongitudinal or e.overrideLateral
+                  for e in self.sm['onroadEvents'])))
       native = current_native(self.sm, self.CP, now_ns=now_ns,
                               axis_session_id=str(axis.sessionId) if axis is not None else None)
       self.flm_native_witness = native
       acknowledged = axis is not None and native is not None and axis.nativeAcknowledged
-      lateral_requested = bool(axis.desiredLateral) if axis is not None else None
       CC.latActive = bool(acknowledged and axis.lateralActive and
                           bool(axis.desiredLateral) == bool(native.requestedLateral) and native.lateralAllowed and
                           not CS.steerFaultTemporary and not CS.steerFaultPermanent and
@@ -573,7 +583,7 @@ class Controls:
           native_flags=(self.sm.seen['aolSafetyWire'], self.sm.valid['aolSafetyWire'], self.sm.alive['aolSafetyWire']),
           native_raw=self.sm['aolSafetyWire'] if diagnostic_native is None else b'',
           reason=diagnostic_reason, cs=CS, enabled=CC.enabled, long_active=CC.longActive,
-          axis=axis, standstill=standstill, steer_at_standstill=self.CP.steerAtStandstill)
+          axis=published_axis, standstill=standstill, steer_at_standstill=self.CP.steerAtStandstill)
       except Exception:
         diagnostic_observer.disabled = True
         diagnostic_observer.pending = None

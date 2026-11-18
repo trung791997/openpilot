@@ -1742,6 +1742,11 @@ class SelfdriveD:
       if not axis_deferred:
         self.aol_sequence = next_sequence
         self.pm.send('aolAxisState', axis_msg)
+        # Route f4: remember when this lease lapsed before its successor, for honda_native_lateral_grant_lost.
+        prev_lease = getattr(self, 'aol_last_axis_lease', None)
+        if prev_lease is not None and now_ns > prev_lease[1]:
+          self.aol_axis_lease_lapse = (prev_lease[1], now_ns, prev_lease[0])
+        self.aol_last_axis_lease = (now_ns, now_ns + 30_000_000)
         # Bind critical history to the actual completed axis publication. The
         # working decision can change again during later source-expiry checks.
         self.aol_published_fault_proof = ((str(axis.sessionId), str(axis.faultReason),
@@ -2072,6 +2077,25 @@ class SelfdriveD:
     self.aol_honda_long_pending_ns = pending_ns
     return 0 <= now_ns - pending_ns <= HONDA_BRAKE_PENDING_NS
 
+  def honda_native_withdrawn_by_lease_lapse(self, native, now_ns):
+    """True when this native snapshot was taken while selfdrived's own last axis lease had lapsed.
+
+    pandad withdraws both requests when the 30 ms axis lease lapses (AolAxisNegotiator::prepare, aol_protocol.h).
+    Route 000000f4 seg 5 and seg 16 (limited road evidence): axis publications 53 ms and 44.5 ms apart, the 100 ms
+    safety wire sampled inside the gap showed requested=False/allowed=False, and that was classed as a lost grant
+    (authority_lost -> controlsMismatch). It is the host's own lapse, so it is not a lost grant. Bounded: the
+    gap from the last published axis to the next must stay within AOL_STALE_ALERT_NS; a native snapshot taken
+    after the next axis, or any longer gap, is classified exactly as before.
+    """
+    lease = getattr(self, 'aol_last_axis_lease', None)
+    window = None
+    if lease is not None and now_ns > lease[1]:
+      window = (lease[1], now_ns, lease[0])  # lapsed, no successor published yet
+    else:
+      window = getattr(self, 'aol_axis_lease_lapse', None)
+    return bool(window is not None and window[0] < native.observedMonoTime <= window[1] and
+                window[1] - window[2] <= AOL_STALE_ALERT_NS)
+
   def honda_native_lateral_grant_lost(self, CS, native, previous, requested, *, source_current, previous_intent, intent, now_ns):
     """An established host LAT request lost its native grant, not a cold wait."""
     pause = getattr(self, 'aol_transport_pause', None)
@@ -2084,6 +2108,7 @@ class SelfdriveD:
         now_ns - previous_intent.carStateLogMonoTime > INTENT_MAX_AGE_NS or
         native.requestedLateral or native.lateralAllowed or
         prior is None or not prior.requestedLateral or not prior.lateralAllowed or
+        self.honda_native_withdrawn_by_lease_lapse(native, now_ns) or
         getattr(self, 'aol_fault_reason', 'none') != 'none' or
         pause.active or getattr(getattr(self, 'aol_availability_pause', None), 'active', False) or
         CS.brakePressed or CS.regenBraking or CS.gasPressed or CS.steeringPressed or

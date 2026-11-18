@@ -320,3 +320,55 @@ def ordinary_axis_acknowledged(sm, CP, *, now_ns: int, on_validated_native=None)
     except Exception:
       pass  # Optional evidence observation cannot change actuator admission.
   return acknowledged
+
+
+class AxisHold:
+  """Bridge one silent availabilityPause publication, never past STALE_ALERT_NS from the last active axis.
+
+  Route 000000f4 (limited road evidence): selfdrived paused its axis silently on a 30-70 ms carState gap 14 times
+  (axis_inactive; seg 12 let go a -2.5 brake for one ACC frame). controlsd read it as no authority and dropped
+  lat/long for a tick. The held axis is the last one that was active, acknowledged and fault-free; it is used only
+  while that axis is at most STALE_ALERT_NS old, the current (paused) axis is itself still inside its own
+  validUntilMonoTime, and that axis is the silent source-zero availabilityPause of the same session. A late or
+  missing axis (axis is None, e.g. the lease lapsed or the axis expired) is NOT bridged: it clears the hold and
+  drops exactly as on base. Any other axis, a fault, a session change or a user/override/pedal condition (caller
+  passes allowed=False) clears it. Native permission is still checked by the caller exactly as before.
+  """
+
+  def __init__(self):
+    self.last = None  # (axis log ns, snapshot)
+
+  @staticmethod
+  def _snapshot(axis):
+    from types import SimpleNamespace
+    return SimpleNamespace(sessionId=str(axis.sessionId), nativeAcknowledged=True,
+                           desiredLateral=bool(axis.desiredLateral), lateralActive=bool(axis.lateralActive),
+                           desiredLongitudinal=bool(axis.desiredLongitudinal),
+                           longitudinalActive=bool(axis.longitudinalActive))
+
+  def resolve(self, sm, axis, *, now_ns: int, allowed: bool):
+    if axis is not None and str(axis.faultReason) == 'none' and axis.nativeAcknowledged and (axis.lateralActive or axis.longitudinalActive):
+      self.last = (int(sm.logMonoTime['aolAxisState']), self._snapshot(axis))
+      return axis
+    if axis is None:
+      # late or missing axis: never bridged, drops exactly as on base
+      self.last = None
+      return None
+    last = self.last
+    if last is None:
+      return axis
+    log_ns, snap = last
+    if not allowed or not 0 <= now_ns - log_ns <= STALE_ALERT_NS:
+      self.last = None
+      return axis
+    silent_pause = (str(axis.faultReason) == 'availabilityPause' and not axis.sourceCarStateMonoTime and
+                    not axis.lateralActive and not axis.longitudinalActive and axis.qualified and
+                    str(axis.sessionId) == snap.sessionId)
+    if silent_pause:
+      valid_until = getattr(axis, 'validUntilMonoTime', None)
+      if valid_until is not None and now_ns > int(valid_until):
+        self.last = None
+        return axis
+      return snap
+    self.last = None
+    return axis
