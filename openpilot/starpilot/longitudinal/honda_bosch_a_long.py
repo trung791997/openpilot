@@ -644,6 +644,15 @@ NEWBORN_MODEL_MIN_BRAKE = 0.95    # m/s^2 soft floor (> STOCK_FEEL_LEAD_STOP_A =
 NEWBORN_MODEL_ACCEL_MARGIN = 0.35 # m/s^2 below smoothed model.a before floor drops
 NEWBORN_MODEL_A_ALPHA = 0.25      # EMA alpha per 50 ms frame to suppress single-frame model.a spikes
 NEWBORN_RELEASE_RATE = 0.5        # m/s^2 per s D-042 slew-out when a camera-held newborn window expires
+# Camera-floor limits, REPLAY ONLY (nb_census, routes e3 e5 e6 d1..d6 ed; not road-validated).
+# (1) The floor may move at most NEWBORN_FLOOR_SLEW per frame toward MORE braking, and at NEWBORN_RELEASE_RATE toward
+#     less, so a match loss, an urgent bypass or the range fit crossing the floor cannot step aLeadK (e5 seg1 tid5
+#     +57.53 s: urgent flip, e6 seg14 tid59 +28.75 s: match lost then re-armed, steps of 1.8 to 1.9 m/s^2 in the patch).
+# (2) A far fast closer keeps radar authority: e3 seg12 tid52 (107 m, vRel -9.85, TTC 10.9 s) was a real braking lead
+#     (hindsight -3.2) that the -0.95 floor hid (aT -1.62 base, -1.24 patch). ed seg6 tid6 (TTC 6.5 s at birth, the
+#     case the floor exists for) is under 8 s and stays lifted. e3/ed are the only two data points for the 8 s cut.
+NEWBORN_FLOOR_SLEW = 0.25         # m/s^2 per 50 ms frame, toward more braking
+NEWBORN_CAMERA_MAX_TTC = 8.0      # s; the camera lift applies only below this time to collision
 
 
 def _radar_lead(lead) -> bool:
@@ -688,6 +697,7 @@ class NewbornLeadHold:
     self.bound_frames = 0
     self._model_a_ema: dict[int, tuple[int, float]] = {}
     self._cam_floor_state: dict[int, tuple[int, float]] = {}
+    self._floor_slew: dict[int, tuple[int, float, bool]] = {}
 
   def _range_decel(self, h):
     """Lead accel from a quadratic fit to the range history plus ego accel, or None if too short."""
@@ -708,6 +718,7 @@ class NewbornLeadHold:
     if h is None or self.frame - h[-1][0] > NEWBORN_LEAD_GAP_FRAMES or abs(d_rel - h[-1][1]) > NEWBORN_LEAD_JUMP_M:
       h = self.hist[tid] = [(self.frame, d_rel, float(a_ego))]
       self._cam_floor_state.pop(tid, None)
+      self._floor_slew.pop(tid, None)
     elif h[-1][0] != self.frame:  # leadOne and leadTwo on one track: record it once
       h.append((self.frame, d_rel, float(a_ego)))
     return h
@@ -742,25 +753,38 @@ class NewbornLeadHold:
 
     if self.frame - h[0][0] < NEWBORN_LEAD_FRAMES:
       a_range = self._range_decel(h)
-      a_floor = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
+      a_base = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
       cam_a_ema = self._update_model_a(tid, d_rel, model_v2) if model_v2 is not None else None
-      used_cam = False
-      if non_urgent and cam_a_ema is not None:
-        cam_floor = min(-NEWBORN_MODEL_MIN_BRAKE, cam_a_ema - NEWBORN_MODEL_ACCEL_MARGIN)
-        a_floor = max(a_floor, cam_floor)
-        used_cam = True
+      # camera lift: calm matching camera, not urgent, and not a far fast closer (TTC above NEWBORN_CAMERA_MAX_TTC)
+      lift = non_urgent and cam_a_ema is not None and (v_rel >= -0.5 or d_rel / -v_rel <= NEWBORN_CAMERA_MAX_TTC)
+      cam_floor = min(-NEWBORN_MODEL_MIN_BRAKE, cam_a_ema - NEWBORN_MODEL_ACCEL_MARGIN) if lift else a_base
+      a_floor = max(a_base, cam_floor)
+      slew = self._floor_slew.get(tid)  # (frame, floor, lifted); leadOne and leadTwo on one track share the frame's floor
+      if slew is not None and slew[0] == self.frame:
+        a_floor, lifted = slew[1], slew[2]
+      else:
+        if slew is not None and self.frame - slew[0] <= 1 and (a_floor > a_base or slew[2]):
+          if a_floor < slew[1]:
+            a_floor = max(a_floor, slew[1] - NEWBORN_FLOOR_SLEW)
+          else:
+            a_floor = min(a_floor, slew[1] + NEWBORN_RELEASE_RATE * NEWBORN_LEAD_DT)
+        a_floor = max(a_floor, a_base)
+        lifted = a_floor > a_base + 1e-9
+        self._floor_slew[tid] = (self.frame, a_floor, lifted)
       if a_lead >= a_floor:
         return None
-      if used_cam:
+      if lifted:
         self._cam_floor_state[tid] = (self.frame, a_floor)
       self.bound_frames += 1
       return a_floor
 
     prev = self._cam_floor_state.get(tid)
-    if prev is None or model_v2 is None or not non_urgent or (self.frame - prev[0]) > 1:
+    if prev is None or (self.frame - prev[0]) > 1:
       self._cam_floor_state.pop(tid, None)
       return None
-    a_floor = prev[1] if prev[0] == self.frame else prev[1] - NEWBORN_RELEASE_RATE * NEWBORN_LEAD_DT
+    # slew out at the D-042 rate while the camera still corroborates, at NEWBORN_FLOOR_SLEW when it does not (no step)
+    rate = NEWBORN_RELEASE_RATE * NEWBORN_LEAD_DT if (model_v2 is not None and non_urgent) else NEWBORN_FLOOR_SLEW
+    a_floor = prev[1] if prev[0] == self.frame else prev[1] - rate
     if a_lead >= a_floor:
       if prev[0] != self.frame:
         self._cam_floor_state.pop(tid, None)
@@ -775,6 +799,7 @@ class NewbornLeadHold:
       self.hist = {k: h for k, h in self.hist.items() if self.frame - h[-1][0] <= NEWBORN_LEAD_GAP_FRAMES}
       self._model_a_ema = {k: v for k, v in self._model_a_ema.items() if k in self.hist}
       self._cam_floor_state = {k: v for k, v in self._cam_floor_state.items() if k in self.hist}
+      self._floor_slew = {k: v for k, v in self._floor_slew.items() if k in self.hist}
 
 
 class _BoundedLead:

@@ -135,3 +135,49 @@ def test_camera_hard_brake_and_close_urgency_keep_full_authority():
     l = SimpleNamespace(present=True, radar=True, radarTrackId=8, dRel=d, vLead=12.0, vRel=-8.0, aLeadK=-3.0)
     out = hb.bound_newborn_leads(rs(l), 0.0, h2, model_v2=mv(d + 1.5, a=-0.1))
   assert out.leadOne.aLeadK == pytest.approx(-3.0, abs=0.05)
+
+
+def _track(h, n, d0, closing, a_cam_fn, cam_fn=None, tid=9, a_rel=3.0, a_ego=0.0):
+  """Drive one radar track for n frames: d = d0 - closing*t - a_rel/2*t^2 (a real a_rel m/s^2 relative accel). Returns leadOne aLeadK per frame."""
+  out = []
+  for i in range(n):
+    t = i * hb.NEWBORN_LEAD_DT
+    d = d0 - closing * t - 0.5 * a_rel * t * t
+    l = SimpleNamespace(present=True, radar=True, radarTrackId=tid, dRel=d, vLead=20.0 - closing - a_rel * t, vRel=-closing - a_rel * t, aLeadK=-a_rel)
+    mdl = mv(d + 5.0, a=a_cam_fn(i)) if (cam_fn is None or cam_fn(i)) else None
+    out.append(hb.bound_newborn_leads(rs(l), a_ego, h, model_v2=mdl).leadOne.aLeadK)
+  return out
+
+
+def test_far_fast_closer_with_braking_range_keeps_authority():
+  # e3 seg12 tid52 shape (replay only): 107 m, closing 9.85 m/s (TTC 10.9 s) with the range closing faster and faster
+  # (lead braking), matching camera calm (-0.25). While TTC is above NEWBORN_CAMERA_MAX_TTC the camera floor must not
+  # lift it above -1.0 (the patch hid it at -0.95), and once the range fit exists the full braking passes.
+  h = hb.NewbornLeadHold()
+  out = _track(h, 40, 107.0, 9.85, lambda i: -0.25, a_rel=1.5)
+  far = []
+  for i, a in enumerate(out):
+    t = i * hb.NEWBORN_LEAD_DT
+    d, v = 107.0 - 9.85 * t - 0.75 * t * t, 9.85 + 1.5 * t
+    if d / v > hb.NEWBORN_CAMERA_MAX_TTC:
+      far.append(i)
+      assert a <= -1.0
+  assert len(far) >= 20 and out[far[-1]] <= -1.0 and min(out[15:]) <= -1.4  # (range fit sees the -1.5 braking)
+
+
+def _steps_beyond_plain_hold(out, ref):
+  """Largest frame step in `out` above what the plain D-080 hold (no camera) already has on the same track, and above 0.5."""
+  return max(max(abs(b - a) - max(abs(rb - ra), 0.5), 0.0) for (a, b), (ra, rb) in zip(zip(out, out[1:]), zip(ref, ref[1:])))
+
+
+def test_no_step_over_half_m_s2_across_match_loss_and_urgent_bypass():
+  # Replay shape: 65 m, closing 10 m/s (TTC 6.5 s, camera calm) with a range that really closes harder. The plain hold (no
+  # camera) steps -1.0 -> range fit once; the camera floor must add no step of its own.
+  ref = _track(hb.NewbornLeadHold(), hb.NEWBORN_LEAD_FRAMES, 65.0, 10.0, lambda i: -0.25, cam_fn=lambda i: False)
+  # (a) camera match lost mid-window, then re-armed (e6 seg14 tid59 shape)
+  out = _track(hb.NewbornLeadHold(), hb.NEWBORN_LEAD_FRAMES, 65.0, 10.0, lambda i: -0.25, cam_fn=lambda i: not (22 <= i < 30))
+  assert _steps_beyond_plain_hold(out, ref) == pytest.approx(0.0, abs=1e-9)
+  # (b) urgent bypass (d < 40 m, here at frame 36) while the camera is calm (e5 seg1 tid5 shape)
+  out = _track(hb.NewbornLeadHold(), hb.NEWBORN_LEAD_FRAMES, 65.0, 10.0, lambda i: -0.25)
+  assert out[20] > -1.0 and out[-1] < -2.5  # the floor is lifted before the bypass and gives way to the range fit after it
+  assert _steps_beyond_plain_hold(out, ref) == pytest.approx(0.0, abs=1e-9)
