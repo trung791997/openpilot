@@ -467,10 +467,11 @@ class HondaBoschALongEnhancement:
     self.reset()
 
   def planner_radar_state(self, radar_state, a_ego: float, model_v2=None):
-    """The radarState the MPC sees: D-080 bounds a newborn radar lead's aLeadK, then the implausible-drop bound
-    (below) clamps a leadOne velocity-glitch brake; otherwise radar_state itself. Chained so both can apply."""
+    """The radarState the MPC sees: D-080 bounds a newborn radar lead's aLeadK (with confident matching model_v2
+    corroboration so filter-convergence range curves cannot force a false emergency stop), then the implausible-drop
+    bound (below) clamps a leadOne velocity-glitch brake; otherwise radar_state itself. Chained so both can apply."""
     if self.newborn_hold is not None:
-      radar_state = bound_newborn_leads(radar_state, a_ego, self.newborn_hold)
+      radar_state = bound_newborn_leads(radar_state, a_ego, self.newborn_hold, model_v2=model_v2)
     if self.drop_bound is not None:
       radar_state = bound_implausible_drop(radar_state, model_v2, self.drop_bound)
     return radar_state
@@ -630,10 +631,53 @@ NEWBORN_LEAD_JUMP_M = 4.0       # range step from the last sample: newborn again
 NEWBORN_LEAD_FIT_FRAMES = 16    # 0.8 s of range history before the fit may lower the floor
 NEWBORN_LEAD_MIN_BRAKE = 1.0    # aLeadK floor without range confirmation
 NEWBORN_LEAD_DT = 0.05          # s per planner frame (DT_MDL)
+# Camera-corroborated newborn range-fit cap (000000ed--fc469136cd seg 6, 384.8..387.1 s; closed-loop replay only, no
+# XCP dependency): track 6 converged 65.2 -> 50.0 m over 1.4 s with fake quadratic curvature (_range_decel) while
+# matching modelV2 (prob ~0.98) stayed calm (a ~ -0.2..-0.4 m/s^2). Without camera corroboration, the converging fit
+# lowered aLeadK to -2.75 at 50-44 m (TTC > 4.1 s) and -1.00 still tripped STOCK_FEEL_LEAD_STOP_A (-1.0) emergency.
+NEWBORN_MODEL_MIN_D = 40.0        # m; urgent close leads (< 40 m) bypass camera floor immediately
+NEWBORN_MODEL_MIN_TTC = 4.0       # s; urgent short-TTC leads (<= 4 s) bypass camera floor immediately
+NEWBORN_MODEL_PROB_MIN = 0.9      # modelV2 confidence required to constrain newborn range fit
+NEWBORN_MODEL_RANGE_M = 8.0       # m minimum camera/radar range match window
+NEWBORN_MODEL_RANGE_FRAC = 0.25   # fraction of dRel match window
+NEWBORN_MODEL_MIN_BRAKE = 0.95    # m/s^2 soft floor (> STOCK_FEEL_LEAD_STOP_A = -1.0 cliff) while camera is calm
+NEWBORN_MODEL_ACCEL_MARGIN = 0.35 # m/s^2 below smoothed model.a before floor drops
+NEWBORN_MODEL_A_ALPHA = 0.25      # EMA alpha per 50 ms frame to suppress single-frame model.a spikes
+NEWBORN_RELEASE_RATE = 0.5        # m/s^2 per s D-042 slew-out when a camera-held newborn window expires
 
 
 def _radar_lead(lead) -> bool:
   return _present(lead) and bool(getattr(lead, "radar", False))
+
+
+def _matched_model_lead(d_rel: float, model_v2, prob_min: float, range_m: float, range_frac: float):
+  """Best matching confident modelV2.leadsV3 entry near d_rel, returning (prob, x, v, a) or None."""
+  if model_v2 is None:
+    return None
+  try:
+    leads = model_v2.leadsV3
+  except (AttributeError, TypeError):
+    return None
+  tol = max(range_m, range_frac * d_rel)
+  cam_offset = _radar_to_camera()
+  best = None
+  best_err = float('inf')
+  for i in range(min(2, len(leads))):
+    try:
+      lead = leads[i]
+      prob = float(lead.prob)
+      mx = float(lead.x[0])
+      mv = float(lead.v[0])
+      ma = float(lead.a[0])
+    except (AttributeError, IndexError, TypeError, ValueError):
+      continue
+    if prob < prob_min:
+      continue
+    err = abs(d_rel - (mx - cam_offset))
+    if err <= tol and err < best_err:
+      best_err = err
+      best = (prob, mx, mv, ma)
+  return best
 
 
 class NewbornLeadHold:
@@ -642,6 +686,8 @@ class NewbornLeadHold:
     self.frame = 0
     self.hist: dict[int, list] = {}
     self.bound_frames = 0
+    self._model_a_ema: dict[int, tuple[int, float]] = {}
+    self._cam_floor_state: dict[int, tuple[int, float]] = {}
 
   def _range_decel(self, h):
     """Lead accel from a quadratic fit to the range history plus ego accel, or None if too short."""
@@ -661,20 +707,65 @@ class NewbornLeadHold:
     h = self.hist.get(tid)
     if h is None or self.frame - h[-1][0] > NEWBORN_LEAD_GAP_FRAMES or abs(d_rel - h[-1][1]) > NEWBORN_LEAD_JUMP_M:
       h = self.hist[tid] = [(self.frame, d_rel, float(a_ego))]
+      self._cam_floor_state.pop(tid, None)
     elif h[-1][0] != self.frame:  # leadOne and leadTwo on one track: record it once
       h.append((self.frame, d_rel, float(a_ego)))
     return h
 
-  def bound(self, lead, a_ego):
+  def _update_model_a(self, tid: int, d_rel: float, model_v2) -> float | None:
+    if model_v2 is None:
+      return None
+    prev = self._model_a_ema.get(tid)
+    if prev is not None and prev[0] == self.frame:
+      return prev[1]
+    ml = _matched_model_lead(d_rel, model_v2, NEWBORN_MODEL_PROB_MIN, NEWBORN_MODEL_RANGE_M, NEWBORN_MODEL_RANGE_FRAC)
+    if ml is None:
+      self._model_a_ema.pop(tid, None)
+      return None
+    if prev is None or self.frame - prev[0] > NEWBORN_LEAD_GAP_FRAMES:
+      ema = ml[3]
+    else:
+      ema = (1.0 - NEWBORN_MODEL_A_ALPHA) * prev[1] + NEWBORN_MODEL_A_ALPHA * ml[3]
+    self._model_a_ema[tid] = (self.frame, ema)
+    return ema
+
+  def bound(self, lead, a_ego, model_v2=None):
     """aLeadK for `lead`, or None when it is left as is. Call once per lead per frame, after tick()."""
     h = self.observe(lead, a_ego)
-    if h is None or self.frame - h[0][0] >= NEWBORN_LEAD_FRAMES:
+    if h is None:
       return None
+    tid = int(getattr(lead, "radarTrackId", -1))
+    d_rel = float(lead.dRel)
+    v_rel = float(getattr(lead, "vRel", 0.0))
+    non_urgent = d_rel >= NEWBORN_MODEL_MIN_D and (v_rel >= 0.0 or d_rel / -v_rel > NEWBORN_MODEL_MIN_TTC)
     a_lead = float(lead.aLeadK)
-    a_range = self._range_decel(h)
-    a_floor = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
-    if a_lead >= a_floor:
+
+    if self.frame - h[0][0] < NEWBORN_LEAD_FRAMES:
+      a_range = self._range_decel(h)
+      a_floor = -NEWBORN_LEAD_MIN_BRAKE if a_range is None else min(-NEWBORN_LEAD_MIN_BRAKE, a_range)
+      cam_a_ema = self._update_model_a(tid, d_rel, model_v2) if model_v2 is not None else None
+      used_cam = False
+      if non_urgent and cam_a_ema is not None:
+        cam_floor = min(-NEWBORN_MODEL_MIN_BRAKE, cam_a_ema - NEWBORN_MODEL_ACCEL_MARGIN)
+        a_floor = max(a_floor, cam_floor)
+        used_cam = True
+      if a_lead >= a_floor:
+        return None
+      if used_cam:
+        self._cam_floor_state[tid] = (self.frame, a_floor)
+      self.bound_frames += 1
+      return a_floor
+
+    prev = self._cam_floor_state.get(tid)
+    if prev is None or model_v2 is None or not non_urgent or (self.frame - prev[0]) > 1:
+      self._cam_floor_state.pop(tid, None)
       return None
+    a_floor = prev[1] if prev[0] == self.frame else prev[1] - NEWBORN_RELEASE_RATE * NEWBORN_LEAD_DT
+    if a_lead >= a_floor:
+      if prev[0] != self.frame:
+        self._cam_floor_state.pop(tid, None)
+      return None
+    self._cam_floor_state[tid] = (self.frame, a_floor)
     self.bound_frames += 1
     return a_floor
 
@@ -682,6 +773,8 @@ class NewbornLeadHold:
     self.frame += 1
     if len(self.hist) > 64:
       self.hist = {k: h for k, h in self.hist.items() if self.frame - h[-1][0] <= NEWBORN_LEAD_GAP_FRAMES}
+      self._model_a_ema = {k: v for k, v in self._model_a_ema.items() if k in self.hist}
+      self._cam_floor_state = {k: v for k, v in self._cam_floor_state.items() if k in self.hist}
 
 
 class _BoundedLead:
@@ -710,12 +803,12 @@ class _BoundedRadarState:
     return getattr(self._radar_state, name)
 
 
-def bound_newborn_leads(radar_state, a_ego: float, hold: NewbornLeadHold):
+def bound_newborn_leads(radar_state, a_ego: float, hold: NewbornLeadHold, model_v2=None):
   hold.tick()
   leads = []
   changed = False
   for lead in (radar_state.leadOne, radar_state.leadTwo):
-    a_lead = hold.bound(lead, a_ego)
+    a_lead = hold.bound(lead, a_ego, model_v2=model_v2)
     leads.append(lead if a_lead is None else _BoundedLead(lead, aLeadK=float(a_lead)))
     changed |= a_lead is not None
   return _BoundedRadarState(radar_state, leads[0], leads[1]) if changed else radar_state
