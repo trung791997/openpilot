@@ -401,3 +401,120 @@ def test_standing_traffic_and_adjacent_lat_not_starved_by_wide_traffic(monkeypat
   logger.close()
   assert max_adj_lat_age_s <= 0.9
   assert standing_visible_at is not None and standing_visible_at <= 7.5
+
+
+def test_stale_measured_downgraded_and_trailer_offset_lead_match(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  logger.state = "READY"
+  logger.last_v_ego = 9.8
+  t0 = 10_000_000_000
+
+  # Slot 33: s4 tid 22 style lead (dd = 5.93 m > 4.5 m, trailer-compensated dd_eff = 2.54 m)
+  logger.slot_cache[33].update({
+    "X_raw": int(round(34.16 * 128)),
+    "Vx_raw": int(round(-2.45 * 256)),
+    "Ax_raw": int(round(-0.8 * 2048)),
+    "Y_raw": int(round(0.44 * 128)),
+    "Vy_raw": 0,
+    "age": 120,
+    "flags": 0xE0C0,
+    "subflags": 0x0400,
+    "qual": 25,
+    "cls_conf": 80,
+    "radar_track_id": 403,
+    "kin_updated_ns": t0 - 25_000_000,
+    "lat_updated_ns": t0 - 25_000_000,
+    "age_updated_ns": t0 - 25_000_000,
+    "flags_updated_ns": t0 - 25_000_000,
+    "updated_ns": t0 - 25_000_000,
+    "last_rtt_ns": 10_000_000,
+  })
+  logger.active_slots[33] = logger.slot_cache[33]
+
+  # Slot 10: background measured slot with stale kinematics (> 200 ms old)
+  logger.slot_cache[10].update({
+    "X_raw": int(round(20.84 * 128)),
+    "Vx_raw": int(round(-2.14 * 256)),
+    "Ax_raw": 0,
+    "Y_raw": int(round(3.43 * 128)),
+    "Vy_raw": 0,
+    "age": 90,
+    "flags": 0xE0C0,
+    "subflags": 0x0000,
+    "qual": 20,
+    "cls_conf": 70,
+    "radar_track_id": 407,
+    "kin_updated_ns": t0 - 350_000_000,
+    "lat_updated_ns": t0 - 25_000_000,
+    "age_updated_ns": t0 - 25_000_000,
+    "flags_updated_ns": t0 - 25_000_000,
+    "updated_ns": t0 - 25_000_000,
+    "last_rtt_ns": 10_000_000,
+  })
+  logger.active_slots[10] = logger.slot_cache[10]
+
+  logger.observe_radar_tracks(
+    SimpleNamespace(points=[SimpleNamespace(trackId=22, dRel=28.23, yRel=0.18, vRel=-1.04)]),
+    t0,
+  )
+  logger._maybe_log_20hz(t0)
+  assert len(rows) == 1
+  by_slot = {tgt["slot"]: tgt for tgt in rows[0]["targets"]}
+  assert by_slot[33]["stage"] == "measured"
+  assert by_slot[33]["fw_stage"] == "measured"
+  assert by_slot[33]["measured"] is True
+  assert by_slot[33]["trust_accel"] is True
+  assert by_slot[33]["kin_age_ms"] == 25.0
+  assert by_slot[33]["op_track_id"] == 22
+  assert rows[0]["lead"]["slot"] == 33
+  assert rows[0]["lead"]["op_track_id"] == 22
+  assert rows[0]["lead"]["lead_source"] == "op_lead"
+
+  assert by_slot[10]["stage"] == "stale"
+  assert by_slot[10]["fw_stage"] == "measured"
+  assert by_slot[10]["measured"] is False
+  assert by_slot[10]["trust_accel"] is False
+  assert by_slot[10]["kin_age_ms"] == 350.0
+
+  # When op_tracks has no lead, fallback sets lead_source == 'xcp_fallback'
+  logger.observe_radar_tracks(SimpleNamespace(points=[]), t0 + 100_000_000)
+  logger._maybe_log_20hz(t0 + 100_000_000)
+  assert len(rows) == 2
+  assert rows[1]["lead"]["slot"] == 33
+  assert rows[1]["lead"]["op_track_id"] is None
+  assert rows[1]["lead"]["lead_source"] == "xcp_fallback"
+  assert logger._next_read_task_locked(t0 + 100_000_000) is not None
+  logger.close()
+
+
+def test_fast_inactive_probe_when_op_lead_unmatched():
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  logger.state = "READY"
+  logger.last_v_ego = 16.0
+  t0 = 10_000_000_000
+  # Seed a non-matching active target so prio_slots is non-empty, plus an unmatched in-path op_track
+  logger.slot_cache[2].update({
+    "X_raw": int(round(30.0 * 128)),
+    "Vx_raw": int(round(-1.0 * 256)),
+    "Y_raw": int(round(-3.5 * 128)),
+    "age": 20,
+    "flags": 0xE0C0,
+    "flags_updated_ns": t0,
+    "age_updated_ns": t0,
+    "lat_updated_ns": t0,
+    "kin_updated_ns": t0,
+    "qual_updated_ns": t0,
+  })
+  logger.active_slots[2] = logger.slot_cache[2]
+  logger._op_matched_slots = []
+  logger.observe_radar_tracks(SimpleNamespace(points=[SimpleNamespace(trackId=41, dRel=83.0, yRel=-0.2, vRel=-12.0)]), t0)
+
+  # After 3 reads (INACTIVE_PROBE_PERIOD_NO_LEAD), should probe an inactive slot (offset 16, size 6 on slot != 2)
+  logger._read_seq = 2
+  logger._last_probe_seq = 0
+  task = logger._next_read_task_locked(t0 + 5_000_000)
+  assert task is not None and task[0] != 2 and task[1:] == (16, 6)
+  logger.close()

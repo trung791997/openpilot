@@ -55,6 +55,8 @@ STATIONARY_MAX_STALE_NS = 3_000_000_000
 INACTIVE_PROBE_PERIOD_WITH_LEAD = 10
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
 OP_TRACKS_MAX_AGE_NS = 500_000_000
+MEASURED_MAX_KIN_AGE_NS = 200_000_000  # 200 ms freshness ceiling for stage=='measured'
+ARRAY_B_TRAILER_OFFSET_M = 434.0 / 128.0  # 3.390625 m A150 Array B -> Array A range offset
 
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
@@ -524,8 +526,17 @@ class XcpRadarLogger:
       if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # Adaptive inactive slot discovery (1/10 when tracking a lead, 1/3 otherwise)
-    probe_period = INACTIVE_PROBE_PERIOD_WITH_LEAD if prio_slots else INACTIVE_PROBE_PERIOD_NO_LEAD
+    # Adaptive inactive slot discovery (1/10 when tracking a matched lead, 1/3 if no lead or op_tracks lead is unmatched)
+    has_unmatched_op_in_path = (
+      not self._op_matched_slots
+      and (now_ns - self._op_tracks_ns <= OP_TRACKS_MAX_AGE_NS)
+      and any(o["dRel"] > 0.0 and abs(o["yRel"]) < 2.0 for o in self._op_tracks)
+    )
+    probe_period = (
+      INACTIVE_PROBE_PERIOD_NO_LEAD
+      if (not prio_slots or has_unmatched_op_in_path)
+      else INACTIVE_PROBE_PERIOD_WITH_LEAD
+    )
     if (self._read_seq - self._last_probe_seq) >= probe_period and len(self.active_slots) < NUM_SLOTS:
       probe = self._next_inactive_probe_locked()
       if probe is not None:
@@ -729,12 +740,14 @@ class XcpRadarLogger:
         dy = abs(t["yRel_m"] - o["yRel"])
         dv = abs(t["vRel_mps"] - o["vRel"])
         if is_stationary:
+          dd_eff = dd
           max_dd = 4.5
         else:
+          dd_eff = min(dd, abs((t["dRel_m"] - ARRAY_B_TRAILER_OFFSET_M) - o["dRel"])) if t["dRel_m"] >= o["dRel"] else dd
           r = max(t["dRel_m"], o["dRel"], 0.0)
-          max_dd = max(4.5, (0.20 if r > 70.0 else 0.14) * r)
-        if dd < max_dd and dy < 2.2 and dv < 3.5:
-          cost = dd * dd + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
+          max_dd = max(5.5, (0.20 if r > 70.0 else 0.14) * r)
+        if dd_eff < max_dd and dy < 2.2 and dv < 3.5:
+          cost = dd_eff * dd_eff + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
           dist_m = math.hypot(dd, dy)
           candidates.append((cost, ti, oi, dist_m))
     candidates.sort(key=lambda item: item[0])
@@ -791,6 +804,17 @@ class XcpRadarLogger:
         subflags = rec["subflags"]
         age = rec["age"]
         dec = decode_flags(flags, subflags, age)
+        kin_age_ns = max(0, now_ns - rec["kin_updated_ns"])
+        kin_age_ms = round(kin_age_ns / 1_000_000.0, 2)
+        is_fresh_kin = rec["kin_updated_ns"] > 0 and kin_age_ns <= MEASURED_MAX_KIN_AGE_NS
+        if dec["stage"] == "measured" and not is_fresh_kin:
+          stage = "stale"
+          measured = False
+          trust_accel = False
+        else:
+          stage = dec["stage"]
+          measured = dec["measured"]
+          trust_accel = dec["trust_accel"]
         targets.append({
           "slot": slot,
           "radar_track_id": rec["radar_track_id"],
@@ -804,12 +828,14 @@ class XcpRadarLogger:
           "age": age,
           "qual": rec["qual"],
           "cls_conf": rec["cls_conf"],
-          "stage": dec["stage"],
-          "measured": dec["measured"],
+          "stage": stage,
+          "fw_stage": dec["stage"],
+          "measured": measured,
           "conf_band": dec["conf_band"],
           "ghost": dec["ghost"],
           "in_path": dec["in_path"],
-          "trust_accel": dec["trust_accel"],
+          "trust_accel": trust_accel,
+          "kin_age_ms": kin_age_ms,
           "op_track_id": None,
           "op_dRel": None,
           "op_match_dist_m": None,
@@ -826,14 +852,22 @@ class XcpRadarLogger:
       self._op_matched_slots = matched_slots
 
     targets.sort(key=lambda t: (abs(t["dRel_m"]), t["slot"]))
-    lead = next((t for t in targets if t["slot"] == op_lead_slot), None) if op_lead_slot is not None else None
-    if lead is None:
+    matched_lead = next((t for t in targets if t["slot"] == op_lead_slot), None) if op_lead_slot is not None else None
+    if matched_lead is not None:
+      lead = dict(matched_lead)
+      lead["lead_source"] = "op_lead"
+    else:
       in_path = [t for t in targets if t["dRel_m"] > 0.0 and abs(t["yRel_m"]) < 2.0]
       if v_ego >= 3.0:
         moving_in_path = [t for t in in_path if abs(v_ego + t["vRel_mps"]) >= 1.5]
-        lead = min(moving_in_path or in_path, key=lambda t: t["dRel_m"]) if in_path else None
+        fallback = min(moving_in_path or in_path, key=lambda t: t["dRel_m"]) if in_path else None
       else:
-        lead = min(in_path, key=lambda t: t["dRel_m"]) if in_path else None
+        fallback = min(in_path, key=lambda t: t["dRel_m"]) if in_path else None
+      if fallback is not None:
+        lead = dict(fallback)
+        lead["lead_source"] = "xcp_fallback"
+      else:
+        lead = None
     cloudlog.event(
       "xcp_array_b_20hz",
       mono_ns=now_ns,
