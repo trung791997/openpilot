@@ -163,6 +163,7 @@ class HondaPcmEnableBase(common.CarSafetyTest):
 
 class HondaBase(common.CarSafetyTest):
   MAX_BRAKE = 255
+  GAS_PRESSED_THRESHOLD = 1  # PEDAL_GAS raw count 1 is noise (eb seg15 blip), >= 2 is pressed
   PT_BUS: int | None = None  # must be set when inherited
   STEER_BUS: int | None = None  # must be set when inherited
   BUTTONS_BUS: int | None = None  # must be set when inherited, tx on this bus, rx on PT_BUS
@@ -207,6 +208,19 @@ class HondaBase(common.CarSafetyTest):
 
   def _user_gas_msg(self, gas):
     return self._powertrain_data_msg(gas_pressed=gas)
+
+  def test_gas_one_count_is_not_pressed(self):
+    self._rx(self._user_gas_msg(0))
+    self.safety.set_controls_allowed(True)
+    self._rx(self._user_gas_msg(1))
+    self.assertFalse(self.safety.get_gas_pressed_prev())
+    self.assertTrue(self.safety.get_longitudinal_allowed())
+    self._rx(self._user_gas_msg(2))
+    self.assertTrue(self.safety.get_gas_pressed_prev())
+    self.assertFalse(self.safety.get_longitudinal_allowed())
+    self._rx(self._user_gas_msg(1))
+    self.assertFalse(self.safety.get_gas_pressed_prev())
+    self.assertTrue(self.safety.get_longitudinal_allowed())
 
   def _send_steer_msg(self, steer):
     values = {"STEER_TORQUE": steer}

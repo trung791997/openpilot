@@ -188,7 +188,8 @@ class CarState(CarStateBase):
       sensor = cp.vl["GAS_SENSOR"]
       ret.gasPressed = sensor["STATE"] != 0 or (sensor["INTERCEPTOR_GAS"] + sensor["INTERCEPTOR_GAS2"]) / 2.0 > 492
     else:
-      ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1e-5
+      # PEDAL_GAS is a raw count (DBC scale 1); one count (noise or a resting foot) is not a press. Must match panda honda.h (byte0 >= 2).
+      ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1.5
 
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     if self.modified_eps:

@@ -200,7 +200,11 @@ static void honda_rx_hook(const CANPacket_t *msg) {
 
   honda_interceptor_rx(msg);
   if (!honda_interceptor && (msg->addr == 0x17CU)) {
-    gas_pressed = msg->data[0] != 0U;
+    // PEDAL_GAS is a raw count (DBC scale 1, offset 0). A one-count reading (noise or a resting foot) is not a press.
+    // Evidence (logs/replay only): route 11c8fa231c0499ed/000000eb--b19339c260 seg 15, 152 ms of byte0 == 1 dropped
+    // braking (ACCEL_CMD 0, BRAKE_REQ 0); a 4.96 s run of 1 there also blocked braking before. eb/f1/e6: 95 real
+    // presses, 55 start >= 2, 37 add 10 ms, 3 add 20 ms. Keep in sync with carstate.py (PEDAL_GAS >= 2).
+    gas_pressed = msg->data[0] >= 2U;
   }
 
   // disable stock Honda AEB in alternative experience
