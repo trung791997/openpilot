@@ -341,11 +341,11 @@ class StarShellSession:
     alert_allowed = state.alert.size == AlertSize.NONE or allow_personality_notice and is_personality_notice(state.alert)
     return bool(self._mode == ShellMode.ONROAD and state.camera_available and alert_allowed and camera_allowed)
 
-  def _bookmark_authority(self) -> bool:
-    if (getattr(ui_state, "replay_clock", None) is not None or
-        self._mode != ShellMode.ONROAD or not ui_state.started):
+  def _bookmark_authority(self, now_ns: int | None = None) -> bool:
+    if getattr(ui_state, "replay_clock", None) is not None or not ui_state.started:
       return False
-    car_state = display_message(ui_state.sm, 'carState', time.monotonic_ns(), after_frame=ui_state.started_frame)
+    check_ns = time.monotonic_ns() if now_ns is None else now_ns
+    car_state = display_message(ui_state.sm, 'carState', check_ns, after_frame=ui_state.started_frame)
     return bool(car_state is not None and car_state.canValid and not car_state.canTimeout)
 
   def _render_driver_monitor(self, rect, state):
@@ -557,9 +557,9 @@ class StarShellSession:
       self._projection_tap = False
 
   def _poll_wheel_screen_off(self, now_ns):
-    # The render path polls the wheel only while the screen draws; events live 250 ms, so with the screen off they expired unread.
-    if not native_device.awake:
-      self._poll_wheel(now_ns, screen_off=True)
+    # The render path polls the wheel only while the onroad page draws; events live 250 ms, so with the screen off or another page active they expired unread.
+    if not native_device.awake or self._mode != ShellMode.ONROAD:
+      self._poll_wheel(now_ns, screen_off=not native_device.awake)
 
   def _poll_wheel(self, now_ns, screen_off=False):
     if getattr(ui_state, "replay_clock", None) is not None:
@@ -585,11 +585,17 @@ class StarShellSession:
       if command.action == 0:
         continue
       if screen_off:
-        # With the screen off only the personality cycle is safe to run: it needs live onroad state, not a page.
-        if command.action != 1 or not (ui_state.started and display_message(
-            ui_state.sm, 'carState', now_ns, after_frame=ui_state.started_frame) is not None):
+        # With the screen off only live onroad-state wheel actions (personality cycle and bookmark) are safe to run.
+        if command.action == 1:
+          if not (ui_state.started and display_message(
+              ui_state.sm, 'carState', now_ns, after_frame=ui_state.started_frame) is not None):
+            continue
+        elif command.action == 8:
+          if not self._bookmark_authority(now_ns):
+            continue
+        else:
           continue
-      elif not (self._bookmark_authority() if command.action == 8 else
+      elif not (self._bookmark_authority(now_ns) if command.action == 8 else
                 self._favorite_authority(allow_personality_notice=command.action == 1)):
         _wheel_debug(f"authority denied action={command.action} mode={self._mode} replay={getattr(ui_state, 'replay_clock', None) is not None}")
         continue

@@ -351,3 +351,53 @@ def test_cutin_lateral_y_vy_prioritized_over_qual_on_adjacent_cars(monkeypatch):
   assert counts[2][22] >= 16
   assert counts[6][22] > counts[6][127] and counts[6][22] >= 10
   assert counts[9][22] > counts[9][127] and counts[9][22] >= 10 and counts[9][16] >= 8
+
+
+def test_standing_traffic_and_adjacent_lat_not_starved_by_wide_traffic(monkeypatch, tmp_path):
+  import json
+  _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  # Lead (slot 2), adjacent moving lanes (slots 5, 8, 11), standing car (slot 12, born age=1), wide oncoming traffic |y|>6m (slots 14..21)
+  _write_slot(ram, 2, {"x": 45.0, "vx": -1.0, "ax": 0.0, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82})
+  for idx, s in enumerate((5, 8, 11)):
+    _write_slot(ram, s, {"x": 30.0 + idx * 8.0, "vx": 0.5, "ax": 0.0, "y": -3.2 if idx % 2 == 0 else 3.4, "vy": 0.0,
+                         "flags": 0xE0C0, "sub": 0x0000, "age": 25, "qual": 22, "cls": 75})
+  _write_slot(ram, 12, {"x": 65.0, "vx": -15.0, "ax": 0.0, "y": 0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 1, "qual": 24, "cls": 80})
+  for idx, s in enumerate(range(14, 22)):
+    _write_slot(ram, s, {"x": 55.0 + idx * 6.0, "vx": -30.0, "ax": 0.0, "y": 8.0 if idx % 2 == 0 else -8.5, "vy": 0.0,
+                         "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 20, "cls": 70})
+
+  shm_path = tmp_path / "xcp_radar_points.json"
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, shm_path=shm_path)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=1, dRel=45.0, yRel=0.2, vRel=-1.0)])
+
+  max_adj_lat_age_s = 0.0
+  standing_visible_at = None
+  for i in range(400):  # 8.0 s at 20 ms RTT
+    if i == 15:
+      _write_slot(ram, 12, {"x": 62.0, "vx": -15.0, "ax": 0.0, "y": 0.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 5, "qual": 24, "cls": 80})
+    if i >= 10:
+      logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    if i >= 260:  # post-discovery steady state across 11 active moving + 1 standing slots
+      for adj in (5, 8, 11):
+        lat_ts = logger.slot_cache[adj]["lat_updated_ns"]
+        assert lat_ts > 0
+        max_adj_lat_age_s = max(max_adj_lat_age_s, (t - lat_ts) / 1e9)
+    if standing_visible_at is None and shm_path.exists():
+      pts = json.loads(shm_path.read_text())["points"]
+      if any(55.0 <= px <= 63.0 and abs(py - 0.3) < 0.5 for px, py in pts):
+        standing_visible_at = i * 0.02
+    t += 20_000_000
+
+  logger.close()
+  assert max_adj_lat_age_s <= 0.9
+  assert standing_visible_at is not None and standing_visible_at <= 7.5

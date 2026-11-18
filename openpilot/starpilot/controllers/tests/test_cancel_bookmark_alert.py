@@ -73,3 +73,17 @@ def test_bookmark_still_requires_current_onroad_source(native_session, monkeypat
   monkeypatch.setattr(runtime.messaging, 'recv_one_or_none', lambda _: queue.popleft() if queue else None)
   session._poll_wheel(NOW)
   assert not calls
+
+
+@pytest.mark.parametrize('context', ['screen_off', 'settings_page'])
+def test_wheel_bookmark_succeeds_while_screen_off_or_off_onroad_page(native_session, monkeypatch, context):  # noqa: F811
+  runtime, session, ui, _, calls = native_session
+  event = setup(runtime, session, ui, OnroadAlert(size=AlertSize.NONE))
+  if context == 'screen_off':
+    monkeypatch.setattr(runtime, 'native_device', NS(awake=False))
+  else:
+    session._mode = ShellMode.SETTINGS
+  queue = deque((event,))
+  monkeypatch.setattr(runtime.messaging, 'recv_one_or_none', lambda _: queue.popleft() if queue else None)
+  session._poll_wheel_screen_off(NOW)
+  assert calls == ['bookmark']

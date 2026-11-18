@@ -38,12 +38,19 @@ LEAD_LAT_INTERVAL_NS = 180_000_000   # ~5.5 Hz Y / Vy for primary lead
 LEAD_QUAL_INTERVAL_NS = 1_000_000_000
 LEAD2_KIN_INTERVAL_NS = 110_000_000  # ~8 Hz kinematics for secondary priority target
 LEAD2_LAT_INTERVAL_NS = 150_000_000  # ~6.7 Hz Y / Vy for secondary priority target
-LEAD2_META_INTERVAL_NS = 500_000_000
+LEAD2_META_INTERVAL_NS = 800_000_000
 OTHER_LAT_INTERVAL_NS = 250_000_000  # ~4 Hz Y / Vy target cadence for moving cut-in traffic
-OTHER_META_INTERVAL_NS = 600_000_000
+OTHER_META_INTERVAL_NS = 1_000_000_000
 OTHER_QUAL_INTERVAL_NS = 1_000_000_000
 OTHER_MAX_STALE_NS = 350_000_000
 OTHER_META_MAX_STALE_NS = 1_000_000_000
+FAR_OTHER_KIN_INTERVAL_NS = 700_000_000
+FAR_OTHER_LAT_INTERVAL_NS = 700_000_000
+FAR_OTHER_META_INTERVAL_NS = 1_200_000_000
+NEWBORN_AGE_REFRESH_NS = 100_000_000  # re-poll newborn track age < 3 quickly so UI unlocks promptly
+NEAR_MOVING_Y_RAW = 768               # ±6.0 m (1/128 m/lsb) keeps adjacent lanes ahead of wide oncoming cars
+STATIONARY_IN_PATH_Y_RAW = 384        # ±3.0 m fast age < 3 refresh for oncoming standing traffic
+STATIONARY_INIT_YIELD_READS = 8       # yield 1 read per 8 non-lead cycles to init waiting stopped slots without starving adjacent lanes
 STATIONARY_MAX_STALE_NS = 3_000_000_000
 INACTIVE_PROBE_PERIOD_WITH_LEAD = 10
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
@@ -148,6 +155,7 @@ class XcpRadarLogger:
     self._rr_cursor = 0
     self._read_seq = 0
     self._last_probe_seq = -INACTIVE_PROBE_PERIOD_WITH_LEAD
+    self._stationary_init_skip_count = 0
     self._next_radar_track_id = 1
 
     self.last_handshake_tx_ns = -HANDSHAKE_RETRY_NS
@@ -226,10 +234,11 @@ class XcpRadarLogger:
           self._init_queued.add(task)
           self._init_queue.appendleft(task)
     else:
-      for task in ((slot, 22, 6), (slot, 106, 2)):
-        if task not in self._init_queued:
-          self._init_queued.add(task)
-          self._init_queue.append(task)
+      # Queue lateral read first; only near/in-path stationary targets enqueue age+flags to protect moving bandwidth
+      task = (slot, 22, 6)
+      if task not in self._init_queued:
+        self._init_queued.add(task)
+        self._init_queue.append(task)
 
   def _clear_session_locked(self, target_state: str = "NEED_CONNECT") -> None:
     self.state = target_state
@@ -262,6 +271,14 @@ class XcpRadarLogger:
       rec["raw24"] = int.from_bytes(data[2:4], "big", signed=False)
       rec["Vy_raw"] = int.from_bytes(data[4:6], "big", signed=True)
       rec["lat_updated_ns"] = now_ns
+      if slot in self.active_slots and not self._is_moving_target_locked(rec):
+        if rec["X_raw"] > 0 and (bool(rec["subflags"] & 0x0400) or abs(rec["Y_raw"]) < STATIONARY_IN_PATH_Y_RAW):
+          for follow in ((slot, 2, 6), (slot, 106, 2)):
+            if follow not in self._init_queued and (
+              (follow[1] == 2 and rec["age_updated_ns"] == 0) or (follow[1] == 106 and rec["flags_updated_ns"] == 0)
+            ):
+              self._init_queued.add(follow)
+              self._init_queue.append(follow)
     elif offset == 2 and size == 6:
       new_age = int.from_bytes(data[0:2], "big", signed=False)
       rec["marker"] = int.from_bytes(data[2:4], "big", signed=False)
@@ -358,7 +375,7 @@ class XcpRadarLogger:
       x_raw = rec["X_raw"]
       y_raw = rec["Y_raw"]
       is_moving = self._is_moving_target_locked(rec)
-      in_path = bool(rec["subflags"] & 0x0400) or (x_raw > 0 and abs(y_raw) < 320)
+      in_path = bool(rec["subflags"] & 0x0400) or (rec["lat_updated_ns"] > 0 and x_raw > 0 and abs(y_raw) < 320)
       forward = x_raw > 0
       tier = 0 if (in_path and forward and is_moving) else (1 if (in_path and forward) else (2 if (forward and is_moving) else 3))
       return (tier, x_raw if forward else abs(x_raw) + 100_000, s)
@@ -370,6 +387,31 @@ class XcpRadarLogger:
           break
     return prio
 
+  def _pop_init_task_locked(self, *, allow_stationary: bool) -> tuple[int, int, int] | None:
+    while self._init_queue:
+      front = self._init_queue[0]
+      if front not in self._init_queued or front[0] not in self.active_slots:
+        self._init_queue.popleft()
+        self._init_queued.discard(front)
+        continue
+      if not allow_stationary and not self._is_moving_target_locked(self.slot_cache[front[0]]):
+        return None
+      self._init_queue.popleft()
+      self._init_queued.discard(front)
+      if allow_stationary:
+        self._stationary_init_skip_count = 0
+      return front
+    return None
+
+  def _has_pending_init_locked(self) -> bool:
+    while self._init_queue:
+      front = self._init_queue[0]
+      if front in self._init_queued and front[0] in self.active_slots:
+        return True
+      self._init_queue.popleft()
+      self._init_queued.discard(front)
+    return False
+
   def _stale_group_task_locked(
     self,
     group: list[int],
@@ -377,24 +419,87 @@ class XcpRadarLogger:
     max_stale_ns: int,
     meta_stale_ns: int,
     lat_stale_ns: int | None = None,
+    *,
+    fast_newborn_age: bool = False,
   ) -> tuple[int, int, int] | None:
     if not group:
       return None
+    best_ratio = 0.0
+    best_task: tuple[int, int, int] | None = None
+
+    def _consider(ratio: float, task: tuple[int, int, int]) -> None:
+      nonlocal best_ratio, best_task
+      if ratio > best_ratio:
+        best_ratio = ratio
+        best_task = task
+
     stale_kin_slot = min(group, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
-    if now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"] >= max_stale_ns:
-      return (stale_kin_slot, 16, 6)
+    kin_age = now_ns - self.slot_cache[stale_kin_slot]["kin_updated_ns"]
+    if kin_age >= max_stale_ns:
+      _consider(kin_age / max_stale_ns, (stale_kin_slot, 16, 6))
+
     if lat_stale_ns is not None:
       stale_lat_slot = min(group, key=lambda s: (self.slot_cache[s]["lat_updated_ns"], s))
-      if now_ns - self.slot_cache[stale_lat_slot]["lat_updated_ns"] >= lat_stale_ns:
-        return (stale_lat_slot, 22, 6)
+      lat_ts = self.slot_cache[stale_lat_slot]["lat_updated_ns"]
+      if lat_ts == 0:
+        _consider(2_000_000.0, (stale_lat_slot, 22, 6))
+      else:
+        lat_age = now_ns - lat_ts
+        if lat_age >= lat_stale_ns:
+          _consider(lat_age / lat_stale_ns, (stale_lat_slot, 22, 6))
+
+    if fast_newborn_age:
+      newborn = [
+        s for s in group
+        if self.slot_cache[s]["age"] < 3 and (
+          self._is_moving_target_locked(self.slot_cache[s])
+          or (self.slot_cache[s]["lat_updated_ns"] > 0 and abs(self.slot_cache[s]["Y_raw"]) < STATIONARY_IN_PATH_Y_RAW)
+        )
+      ]
+      if newborn:
+        stale_newborn = min(newborn, key=lambda s: (self.slot_cache[s]["age_updated_ns"], s))
+        age_ts = self.slot_cache[stale_newborn]["age_updated_ns"]
+        if age_ts == 0:
+          _consider(1_000_000.0, (stale_newborn, 2, 6))
+        else:
+          nb_age = now_ns - age_ts
+          if nb_age >= NEWBORN_AGE_REFRESH_NS:
+            _consider(nb_age / NEWBORN_AGE_REFRESH_NS, (stale_newborn, 2, 6))
+
+    if best_task is not None:
+      return best_task
+
     stale_meta_slot = min(
       group,
       key=lambda s: (min(self.slot_cache[s]["age_updated_ns"], self.slot_cache[s]["flags_updated_ns"]), s),
     )
     rec = self.slot_cache[stale_meta_slot]
-    if now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"]) >= meta_stale_ns:
+    meta_age = now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"])
+    if meta_age >= meta_stale_ns:
       return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+
     return None
+
+  def _round_robin_task_locked(self, others: list[int], now_ns: int) -> tuple[int, int, int] | None:
+    if not others:
+      return None
+    oldest_kin_slot = min(others, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
+    rec = self.slot_cache[oldest_kin_slot]
+    kin_ts = rec["kin_updated_ns"]
+    if rec["flags_updated_ns"] == 0:
+      return (oldest_kin_slot, 106, 2)
+    if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
+      return (oldest_kin_slot, 2, 6)
+    for field_key, interval_ns, task in (
+      ("lat_updated_ns", OTHER_LAT_INTERVAL_NS, (oldest_kin_slot, 22, 6)),
+      ("flags_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 106, 2)),
+      ("age_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 2, 6)),
+      ("qual_updated_ns", OTHER_QUAL_INTERVAL_NS, (oldest_kin_slot, 127, 2)),
+    ):
+      ts = rec[field_key]
+      if ts == 0 or (now_ns - ts >= interval_ns and ts < kin_ts):
+        return task
+    return (oldest_kin_slot, 16, 6)
 
   def _next_read_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
     self._read_seq += 1
@@ -408,7 +513,7 @@ class XcpRadarLogger:
       rec = self.slot_cache[s]
       if now_ns - rec["kin_updated_ns"] >= LEAD_KIN_INTERVAL_NS:
         return (s, 16, 6)
-      if rec["age_updated_ns"] == 0:
+      if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
         return (s, 2, 6)
       if rec["flags_updated_ns"] == 0:
         return (s, 106, 2)
@@ -419,7 +524,7 @@ class XcpRadarLogger:
       if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # Adaptive inactive slot discovery (1/6 when tracking a lead, 1/3 otherwise)
+    # Adaptive inactive slot discovery (1/10 when tracking a lead, 1/3 otherwise)
     probe_period = INACTIVE_PROBE_PERIOD_WITH_LEAD if prio_slots else INACTIVE_PROBE_PERIOD_NO_LEAD
     if (self._read_seq - self._last_probe_seq) >= probe_period and len(self.active_slots) < NUM_SLOTS:
       probe = self._next_inactive_probe_locked()
@@ -427,27 +532,33 @@ class XcpRadarLogger:
         self._last_probe_seq = self._read_seq
         return probe
 
-    # Newly promoted active slots get initial flags/age/Y: moving targets run ahead of other traffic;
-    # stationary clutter while ego is moving runs only after moving traffic is served.
-    while self._init_queue:
-      front = self._init_queue[0]
-      if front[0] not in self.active_slots:
-        self._init_queue.popleft()
-        self._init_queued.discard(front)
-        continue
-      if not self._is_moving_target_locked(self.slot_cache[front[0]]):
-        break
-      self._init_queue.popleft()
-      self._init_queued.discard(front)
-      return front
+    # Newly promoted moving slots run immediately ahead of other traffic
+    if task := self._pop_init_task_locked(allow_stationary=False):
+      return task
 
-    # Anti-starvation check for moving non-lead active slots (kinematics, Y/Vy lateral, then age/flags)
     lead1 = prio_slots[0] if prio_slots else -1
     others_all = [s for s in sorted(self.active_slots) if s != lead1]
     moving_others = [s for s in others_all if self._is_moving_target_locked(self.slot_cache[s])]
     stationary_others = [s for s in others_all if s not in moving_others]
+    near_moving_others = [
+      s for s in moving_others
+      if self.slot_cache[s]["lat_updated_ns"] == 0 or abs(self.slot_cache[s]["Y_raw"]) <= NEAR_MOVING_Y_RAW
+    ]
+    far_moving_others = [s for s in moving_others if s not in near_moving_others]
+
+    # Periodic anti-starvation yield so standing traffic ahead still initializes Y/age/flags in busy moving traffic
+    if self._has_pending_init_locked():
+      if self._stationary_init_skip_count >= STATIONARY_INIT_YIELD_READS or not near_moving_others:
+        if task := self._pop_init_task_locked(allow_stationary=True):
+          return task
+      self._stationary_init_skip_count += 1
+    else:
+      self._stationary_init_skip_count = 0
+
+    # Near-path / adjacent moving lanes stay fresh on both kinematics and Y/Vy (wide oncoming traffic separated below)
     if task := self._stale_group_task_locked(
-      moving_others, now_ns, OTHER_MAX_STALE_NS, OTHER_META_MAX_STALE_NS, lat_stale_ns=OTHER_LAT_INTERVAL_NS
+      near_moving_others, now_ns, OTHER_MAX_STALE_NS, OTHER_META_MAX_STALE_NS,
+      lat_stale_ns=OTHER_LAT_INTERVAL_NS, fast_newborn_age=True,
     ):
       return task
 
@@ -457,7 +568,7 @@ class XcpRadarLogger:
       rec = self.slot_cache[s]
       if now_ns - rec["kin_updated_ns"] >= LEAD2_KIN_INTERVAL_NS:
         return (s, 16, 6)
-      if rec["age_updated_ns"] == 0:
+      if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
         return (s, 2, 6)
       if rec["flags_updated_ns"] == 0:
         return (s, 106, 2)
@@ -468,35 +579,24 @@ class XcpRadarLogger:
       if rec["qual_updated_ns"] == 0 or now_ns - rec["qual_updated_ns"] >= OTHER_QUAL_INTERVAL_NS:
         return (s, 127, 2)
 
-    # Remaining non-priority moving targets: balanced oldest-first round-robin favoring kinematics + Y/Vy for cut-ins
-    others = [s for s in moving_others if s not in prio_set]
-    if others:
-      oldest_kin_slot = min(others, key=lambda s: (self.slot_cache[s]["kin_updated_ns"], s))
-      rec = self.slot_cache[oldest_kin_slot]
-      kin_ts = rec["kin_updated_ns"]
-      if rec["flags_updated_ns"] == 0:
-        return (oldest_kin_slot, 106, 2)
-      if rec["age_updated_ns"] == 0:
-        return (oldest_kin_slot, 2, 6)
-      for field_key, interval_ns, task in (
-        ("lat_updated_ns", OTHER_LAT_INTERVAL_NS, (oldest_kin_slot, 22, 6)),
-        ("flags_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 106, 2)),
-        ("age_updated_ns", OTHER_META_INTERVAL_NS, (oldest_kin_slot, 2, 6)),
-        ("qual_updated_ns", OTHER_QUAL_INTERVAL_NS, (oldest_kin_slot, 127, 2)),
-      ):
-        ts = rec[field_key]
-        if ts == 0 or (now_ns - ts >= interval_ns and ts < kin_ts):
-          return task
-      return (oldest_kin_slot, 16, 6)
+    if task := self._stale_group_task_locked(
+      far_moving_others, now_ns, FAR_OTHER_KIN_INTERVAL_NS, FAR_OTHER_META_INTERVAL_NS,
+      lat_stale_ns=FAR_OTHER_LAT_INTERVAL_NS,
+    ):
+      return task
 
-    # Deferred stationary clutter init + low-rate anti-starvation (never preempts moving traffic)
-    while self._init_queue:
-      task = self._init_queue.popleft()
-      self._init_queued.discard(task)
-      if task[0] in self.active_slots:
-        return task
+    # Near-path stationary newborn slots refresh age >= 3 promptly; bulk roadside clutter stays at low cadence
+    if task := self._stale_group_task_locked(
+      stationary_others, now_ns, STATIONARY_MAX_STALE_NS, 2 * STATIONARY_MAX_STALE_NS, fast_newborn_age=True,
+    ):
+      return task
 
-    if task := self._stale_group_task_locked(stationary_others, now_ns, STATIONARY_MAX_STALE_NS, 2 * STATIONARY_MAX_STALE_NS):
+    if task := self._round_robin_task_locked([s for s in near_moving_others if s not in prio_set], now_ns):
+      return task
+    if task := self._round_robin_task_locked([s for s in far_moving_others if s not in prio_set], now_ns):
+      return task
+
+    if task := self._pop_init_task_locked(allow_stationary=True):
       return task
 
     # If no active slots need updating right now, sweep inactive slots faster
