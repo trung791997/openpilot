@@ -135,41 +135,47 @@ def test_alpha_toggle_gate_and_galaxy_integration(tmp_path):
 def test_policy_xcp_off_is_strictly_stock_and_on_removes_lag(tmp_path):
   t0 = 10_000_000_000
   shm_path = tmp_path / "xcp_radar_points.json"
-  xcp_payload = {
-    "mono_ns": t0,
-    "points": [[31.39, 0.2]],
-    "tracks_by_op_id": {
-      "22": {
-        "slot": 33,
-        "rtid": 403,
-        "age": 40,
-        "stage": "measured",
-        "ghost": False,
-        "flags": 0xE0C0,
-        "dRel_m": 31.39,
-        "yRel_m": 0.2,
-        "vRel_mps": -18.5,
-        "ax_mps2": -3.2,
-        "kin_age_ms": 25.0,
-        "trust_accel": True,
-      }
-    },
-    "targets": [],
-  }
-  shm_path.write_bytes(json.dumps(xcp_payload).encode("utf-8"))
+
+  def _make_target(ts: int, v_rel: float) -> dict:
+    return {
+      "slot": 33,
+      "rtid": 403,
+      "age": 40,
+      "stage": "measured",
+      "ghost": False,
+      "flags": 0xE0C0,
+      "dRel_m": 31.39,
+      "yRel_m": 0.2,
+      "vRel_mps": v_rel,
+      "ax_mps2": -3.2,
+      "kin_age_ms": 20.0,
+      "kin_updated_ns": ts,
+      "lat_valid": True,
+      "trust_accel": True,
+    }
 
   # Run baseline stock policy (xcp_assist=False, no file) vs xcp_assist=False with live file: must be identical.
+  import os
   pol_stock = BoschALeadPolicy(xcp_assist=False, xcp_path=None)
   pol_off = BoschALeadPolicy(xcp_assist=False, xcp_path=shm_path)
   pol_on = BoschALeadPolicy(xcp_assist=True, xcp_path=shm_path)
 
   rad_stock, rad_off, rad_on = _dummy_radar(), _dummy_radar(), _dummy_radar()
-  # Simulate 0x2C8 U11 railed at -12.0 m/s & unmeasured coast while actual XCP target is closing at -18.5 m/s, -3.2 m/s^2.
+  # Simulate 0x2C8 U11 railed at -12.0 m/s & unmeasured coast while actual XCP target ramps faster.
   rr = SimpleNamespace(points=[_make_point(22, 28.0, 0.2, -12.0, measured=False)])
-  for step in range(3):
+  v_seq = tuple(round(-17.5 - 0.35 * i, 2) for i in range(8))
+  for step, xv in enumerate(v_seq):
     ts = t0 + step * 50_000_000
-    xcp_payload["mono_ns"] = ts
-    shm_path.write_bytes(json.dumps(xcp_payload).encode("utf-8"))
+    t_entry = _make_target(ts, xv)
+    xcp_payload = {
+      "mono_ns": ts,
+      "boot_offset_ns": 0,
+      "tracks_by_op_id": {"22": t_entry},
+      "targets": [t_entry],
+    }
+    tmp_shm = shm_path.with_suffix(".tmp")
+    tmp_shm.write_bytes(json.dumps(xcp_payload).encode("utf-8"))
+    os.replace(tmp_shm, shm_path)
     sm = _make_sm(ts, a_ego=0.2, frame=step + 1)
     pol_stock.update_tracks(sm, rr, rad_stock)
     pol_off.update_tracks(sm, rr, rad_off)
@@ -179,22 +185,25 @@ def test_policy_xcp_off_is_strictly_stock_and_on_removes_lag(tmp_path):
   assert (t_off.vRel, t_off.vLeadK, t_off.aLeadK, t_off.cnt, t_off.direct) == (
     t_stock.vRel, t_stock.vLeadK, t_stock.aLeadK, t_stock.cnt, t_stock.direct
   )
-  assert t_on.vRel == -18.5
-  assert t_on.direct is True and t_on.measured is True
+  assert t_on.vRel == v_seq[-1]
+  # S6: direct/measured remain faithful to the underlying 0x280 point.
+  assert t_on.direct is False and t_on.measured is False
   assert t_on.vLead < t_off.vLead - 5.0
-  assert t_on.aLeadK <= -1.4  # -3.2 + 0.2 = -3.0 blended with KF
+  assert t_on.vLeadK < t_off.vLeadK - 5.0
+  # S7/S8: aLeadK comes from KF velocity evolution, not raw ax_mps2 injection.
+  assert -2.0 < t_on.aLeadK < -0.5
 
 
 def test_policy_gates_reject_stale_coasting_ghost_lowconf_and_clutter():
   t0 = 20_000_000_000
   cases = [
-    ("stale_snapshot", t0 - 250_000_000, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": True}, -2.0),
-    ("stale_kin", t0, {"stage": "measured", "kin_age_ms": 250.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": True}, -2.0),
-    ("coasting", t0, {"stage": "coasting", "kin_age_ms": 20.0, "ghost": False, "flags": 0xA0C0, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
-    ("ghost", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": True, "flags": 0xE0E0, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
-    ("low_conf", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xF040, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
-    ("immature_age", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 4, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -8.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
-    ("stationary_clutter", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -19.8, "ax_mps2": 0.0, "trust_accel": True}, -1.5),
+    ("stale_snapshot", t0 - 250_000_000, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": True}, -2.0),
+    ("stale_kin", t0, {"stage": "measured", "kin_age_ms": 250.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": True}, -2.0),
+    ("coasting", t0, {"stage": "coasting", "kin_age_ms": 20.0, "ghost": False, "flags": 0xA0C0, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
+    ("ghost", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": True, "flags": 0xE0E0, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
+    ("low_conf", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xF040, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
+    ("immature_age", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 4, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -4.0, "ax_mps2": -2.0, "trust_accel": False}, -2.0),
+    ("stationary_clutter", t0, {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 30, "dRel_m": 28.0, "yRel_m": 0.1, "lat_valid": True, "vRel_mps": -19.8, "ax_mps2": 0.0, "trust_accel": True}, -1.5),
   ]
   for name, snap_mono, target, op_vrel in cases:
     pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
@@ -232,7 +241,28 @@ def test_xcp_logger_shm_export_and_trailer_fallback_replay(tmp_path):
     "updated_ns": t0 - 20_000_000,
     "last_rtt_ns": 10_000_000,
   })
+  # S2: Slot with uninitialized lateral read (lat_updated_ns == 0) must be excluded from assist export.
+  logger.slot_cache[11].update({
+    "X_raw": int(round(20.0 * 128)),
+    "Vx_raw": int(round(-5.0 * 256)),
+    "Ax_raw": 0,
+    "Y_raw": 0,
+    "Vy_raw": 0,
+    "age": 30,
+    "flags": 0xE0C0,
+    "subflags": 0x0400,
+    "qual": 25,
+    "cls_conf": 80,
+    "radar_track_id": 404,
+    "kin_updated_ns": t0 - 20_000_000,
+    "lat_updated_ns": 0,
+    "age_updated_ns": t0 - 20_000_000,
+    "flags_updated_ns": t0 - 20_000_000,
+    "updated_ns": t0 - 20_000_000,
+    "last_rtt_ns": 10_000_000,
+  })
   logger.active_slots[33] = logger.slot_cache[33]
+  logger.active_slots[11] = logger.slot_cache[11]
   # dv = 2.2 < 3.5 with 3.39 m trailer offset populates tracks_by_op_id["22"] cleanly.
   logger.observe_radar_tracks(SimpleNamespace(points=[SimpleNamespace(trackId=22, dRel=28.20, yRel=0.20, vRel=-4.20)]), t0)
   logger._maybe_log_20hz(t0)
@@ -240,8 +270,10 @@ def test_xcp_logger_shm_export_and_trailer_fallback_replay(tmp_path):
   ui_data = json.loads(ui_path.read_text())
   assert set(ui_data) == {"mono_ns", "points"}
   data = json.loads(assist_path.read_text())
+  assert "boot_offset_ns" in data
   assert "22" in data["tracks_by_op_id"]
   assert len(data["targets"]) == 1
+  assert data["targets"][0]["lat_valid"] is True
 
   # radard slightly earlier (t0 - 15 ms within future skew tolerance) reads assist shm file cleanly.
   pol = BoschALeadPolicy(xcp_assist=True, xcp_path=assist_path)
@@ -250,23 +282,31 @@ def test_xcp_logger_shm_export_and_trailer_fallback_replay(tmp_path):
   pol.update_tracks(_make_sm(t0 - 15_000_000, a_ego=-0.1, frame=1), rr, rad)
   expected_vrel = round(int(round(-6.4 * 256)) / 256.0, 4)
   assert rad.tracks[22].vRel == expected_vrel
-  assert rad.tracks[22].aLeadK < -1.0
+  assert rad.tracks[22].vLeadK == expected_vrel + rad.v_ego_hist[0]
 
   # close() unlinks both shm files cleanly.
   logger.close()
   assert not ui_path.exists()
   assert not assist_path.exists()
 
-  # Fallback via targets list recovers larger dv (4.6 m/s) when tracks_by_op_id is absent (e.g. pre-fix rlog replay on s4 tid 22).
+  # S3: Non-railed fallback accepts dv <= 3.0 (dv = 2.6) and rejects dv = 4.6 (> 3.0).
   pol_fb = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
   rad_fb = _dummy_radar()
-  pol_fb.set_xcp_snapshot({"mono_ns": t0, "targets": data["targets"]})
-  rr_lag = SimpleNamespace(points=[_make_point(22, 28.20, 0.20, -1.80, measured=True)])
-  pol_fb.update_tracks(_make_sm(t0, a_ego=-0.1, frame=1), rr_lag, rad_fb)
+  targets_no_id = [{k: v for k, v in data["targets"][0].items() if k != "op_track_id"}]
+  pol_fb.set_xcp_snapshot({"mono_ns": t0, "targets": targets_no_id})
+  rr_ok = SimpleNamespace(points=[_make_point(22, 28.20, 0.20, -3.80, measured=True)])
+  pol_fb.update_tracks(_make_sm(t0, a_ego=-0.1, frame=1), rr_ok, rad_fb)
   assert rad_fb.tracks[22].vRel == expected_vrel
 
+  pol_rej = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad_rej = _dummy_radar()
+  pol_rej.set_xcp_snapshot({"mono_ns": t0, "targets": targets_no_id})
+  rr_wide_dv = SimpleNamespace(points=[_make_point(22, 28.20, 0.20, -1.80, measured=True)])
+  pol_rej.update_tracks(_make_sm(t0, a_ego=-0.1, frame=1), rr_wide_dv, rad_rej)
+  assert rad_rej.tracks[22].vRel == -1.80
 
-def test_handoff_guard_avoids_aleadk_step_spike():
+
+def test_handoff_guard_avoids_aleadk_step_spike_and_no_hold():
   t0 = 40_000_000_000
   pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
   rad = _dummy_radar()
@@ -276,19 +316,112 @@ def test_handoff_guard_avoids_aleadk_step_spike():
     pol.update_tracks(_make_sm(t0 + step * 50_000_000, a_ego=0.0, frame=step + 1), rr, rad)
   assert abs(rad.tracks[22].aLeadK) < 0.2
 
-  # Frame 4: XCP activates at vRel = -4.0 m/s with ax = -0.2 m/s^2 -> must NOT spike to -3.0 from KF step!
+  # Frame 4: XCP activates at vRel = -3.5 m/s -> must NOT spike KF accel on handoff (S10)!
   t_on = t0 + 3 * 50_000_000
-  target = {"stage": "measured", "kin_age_ms": 20.0, "ghost": False, "flags": 0xE0C0, "age": 30,
-            "dRel_m": 35.0, "yRel_m": 0.2, "vRel_mps": -4.0, "ax_mps2": -0.2, "trust_accel": True}
+  target = {"slot": 33, "rtid": 10, "stage": "measured", "kin_age_ms": 20.0, "kin_updated_ns": t_on,
+            "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 30,
+            "dRel_m": 35.0, "yRel_m": 0.2, "vRel_mps": -3.5, "ax_mps2": -3.5, "trust_accel": True}
   pol.set_xcp_snapshot({"mono_ns": t_on, "tracks_by_op_id": {"22": target}, "targets": [target]})
   pol.update_tracks(_make_sm(t_on, a_ego=0.0, frame=4), rr, rad)
-  assert rad.tracks[22].vRel == -4.0
-  assert -0.6 < rad.tracks[22].aLeadK <= 0.1
+  assert rad.tracks[22].vRel == -3.5
+  assert abs(rad.tracks[22].aLeadK) < 0.2
 
-  # Exhaust hold (4 frames after expiry) -> transition back to 0x280 (-1.0) must NOT spike upward!
+  # S5: XCP_ASSIST_HOLD_FRAMES == 0 -> immediately on next frame without snapshot, revert cleanly to base_kf without spike.
   pol.set_xcp_snapshot(None)
-  for extra in range(1, 6):
+  for extra in range(1, 3):
     ts = t_on + extra * 50_000_000
     pol.update_tracks(_make_sm(ts, a_ego=0.0, frame=4 + extra), rr, rad)
-  assert rad.tracks[22].vRel == -1.0
-  assert rad.tracks[22].aLeadK < 0.5
+    assert rad.tracks[22].vRel == -1.0
+    assert abs(rad.tracks[22].aLeadK) < 0.2
+
+
+def test_bob_audit_s1_to_s10_guards(tmp_path):
+  t0 = 50_000_000_000
+  # S1 + S2: eb s8 adjacent-lane slot (21.9 m, y=1.82 vs point 16.4 m, y=0.3) and zero/uninitialized yRel rejected.
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  eb_s8_adj = {"slot": 24, "stage": "measured", "kin_age_ms": 10.0, "kin_updated_ns": t0,
+               "lat_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE240, "age": 54,
+               "dRel_m": 21.95, "yRel_m": 1.82, "vRel_mps": -2.62, "ax_mps2": -3.1}
+  uninit_y = {"slot": 14, "stage": "measured", "kin_age_ms": 10.0, "kin_updated_ns": t0,
+              "lat_updated_ns": 0, "ghost": False, "flags": 0xE0C0, "age": 30,
+              "dRel_m": 16.5, "yRel_m": 0.0, "vRel_mps": -5.0, "ax_mps2": -2.0}
+  legacy_zero_y = {"slot": 15, "stage": "measured", "kin_age_ms": 10.0,
+                   "ghost": False, "flags": 0xE0C0, "age": 30,
+                   "dRel_m": 16.5, "yRel_m": 0.0, "vRel_mps": -5.0, "ax_mps2": -2.0}
+  pol.set_xcp_snapshot({"mono_ns": t0, "targets": [eb_s8_adj, uninit_y, legacy_zero_y]})
+  rr = SimpleNamespace(points=[_make_point(35, 16.4, 0.3, -1.31, measured=True)])
+  pol.update_tracks(_make_sm(t0, frame=1), rr, rad)
+  assert rad.tracks[35].vRel == -1.31 and not rad.tracks[35].xcp_active
+
+  # S3: e6 s22 moving-vs-moving dv=6.76 m/s > 3.0 m/s rejected.
+  e6_s22_adj = {"slot": 19, "op_track_id": 99, "stage": "measured", "kin_age_ms": 10.0,
+                "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+                "dRel_m": 28.0, "yRel_m": 0.2, "vRel_mps": -8.26, "ax_mps2": -1.5}
+  pol.set_xcp_snapshot({"mono_ns": t0 + 50_000_000, "targets": [e6_s22_adj]})
+  pol.update_tracks(_make_sm(t0 + 50_000_000, frame=2), SimpleNamespace(points=[_make_point(34, 27.5, 0.2, -1.50, measured=True)]), rad)
+  assert rad.tracks[34].vRel == -1.50
+
+  # S4: Global 1-to-1 assignment prevents one XCP slot from feeding two 0x280 tracks.
+  shared_slot = {"slot": 5, "rtid": 77, "stage": "measured", "kin_age_ms": 10.0, "kin_updated_ns": t0,
+                 "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+                 "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -4.0, "ax_mps2": 0.0}
+  pol.set_xcp_snapshot({"mono_ns": t0 + 100_000_000, "targets": [shared_slot]})
+  rr_two = SimpleNamespace(points=[
+    _make_point(10, 30.1, 0.1, -2.5, measured=True),
+    _make_point(11, 31.2, 0.3, -2.5, measured=True),
+  ])
+  pol.update_tracks(_make_sm(t0 + 100_000_000, frame=3), rr_two, rad)
+  assert rad.tracks[10].vRel == -4.0 and rad.tracks[10].xcp_active
+  assert rad.tracks[11].vRel == -2.5 and not rad.tracks[11].xcp_active
+
+  # S5 inter-read hold + S10 latch guard + S9 boot_offset_ns alignment.
+  import os
+  def _write_shm(path, payload):
+    tmp_p = path.with_suffix(".tmp")
+    tmp_p.write_bytes(json.dumps(payload).encode("utf-8"))
+    os.replace(tmp_p, path)
+
+  shm_path = tmp_path / "xcp_assist_boot.json"
+  pol_s9 = BoschALeadPolicy(xcp_assist=True, xcp_path=shm_path)
+  rad_s9 = _dummy_radar()
+  snap_mono = t0 - 1_000_000_000  # CLOCK_MONOTONIC 1s behind CLOCK_BOOTTIME
+  t_s9 = {"slot": 8, "rtid": 51, "op_track_id": 22, "stage": "measured", "kin_age_ms": 15.0,
+          "kin_updated_ns": snap_mono, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+          "dRel_m": 35.0, "yRel_m": 0.1, "vRel_mps": -3.0, "ax_mps2": 0.0}
+  _write_shm(shm_path, {
+    "mono_ns": snap_mono,
+    "boot_offset_ns": 1_000_000_000,
+    "tracks_by_op_id": {"22": t_s9},
+    "targets": [t_s9],
+  })
+  rr_22 = SimpleNamespace(points=[_make_point(22, 35.0, 0.1, -2.5, measured=True)])
+  pol_s9.update_tracks(_make_sm(t0, frame=1), rr_22, rad_s9)
+  assert rad_s9.tracks[22].xcp_active and rad_s9.tracks[22].vRel == -3.0
+
+  # Same kin_updated_ns while ego brakes (v_ego 20 -> 18.5 m/s) preserves absolute v_lead (17.0 m/s), not vRel!
+  rad_s9.v_ego = 18.5
+  rad_s9.v_ego_hist.appendleft(18.5)
+  _write_shm(shm_path, {
+    "mono_ns": snap_mono + 50_000_000,
+    "boot_offset_ns": 1_000_000_000,
+    "tracks_by_op_id": {"22": t_s9},
+    "targets": [t_s9],
+  })
+  pol_s9.update_tracks(_make_sm(t0 + 50_000_000, frame=2), rr_22, rad_s9)
+  assert abs(rad_s9.tracks[22].vLead - 17.0) < 1e-6
+
+  # S10: Large negative XCP step while base 0x280 is steady does not cross aLeadK <= -2.0 latch threshold.
+  rad_s9.v_ego = 20.0
+  rad_s9.v_ego_hist.appendleft(20.0)
+  for step in range(3, 10):
+    ts = t0 + step * 50_000_000
+    t_step = dict(t_s9, kin_updated_ns=snap_mono + step * 50_000_000, vRel_mps=round(-3.0 - 0.5 * (step - 2), 2))
+    _write_shm(shm_path, {
+      "mono_ns": snap_mono + step * 50_000_000,
+      "boot_offset_ns": 1_000_000_000,
+      "tracks_by_op_id": {"22": t_step},
+      "targets": [t_step],
+    })
+    pol_s9.update_tracks(_make_sm(ts, frame=step + 1), rr_22, rad_s9)
+    assert rad_s9.tracks[22].aLeadK > -2.0

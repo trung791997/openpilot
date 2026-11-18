@@ -81,6 +81,16 @@ WAYB_SEL_CAM_OFFSET = 3414
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None
 _DEFAULT_ASSIST_SHM_PATH = object()
+_CLOCK_BOOTTIME = getattr(time, "CLOCK_BOOTTIME", None)
+
+
+def _boot_minus_mono_ns() -> int:
+  if _CLOCK_BOOTTIME is not None:
+    try:
+      return max(0, time.clock_gettime_ns(_CLOCK_BOOTTIME) - time.monotonic_ns())
+    except OSError:
+      pass
+  return 0
 
 
 def _write_atomic_json(path: Path, data: dict) -> None:
@@ -941,6 +951,8 @@ class XcpRadarLogger:
       return [], None
     candidates: list[tuple[float, int, int, float]] = []
     for ti, t in enumerate(targets):
+      if int(t.get("lat_updated_ns", 1)) <= 0:
+        continue
       is_stationary = v_ego >= 3.0 and abs(v_ego + t["vRel_mps"]) < 0.7
       for oi, o in enumerate(op_tracks):
         dd = abs(t["dRel_m"] - o["dRel"])
@@ -950,7 +962,8 @@ class XcpRadarLogger:
           dd_eff = dd
           max_dd = 4.5
         else:
-          dd_eff = min(dd, abs((t["dRel_m"] - ARRAY_B_TRAILER_OFFSET_M) - o["dRel"])) if t["dRel_m"] >= o["dRel"] else dd
+          allow_trailer = t["dRel_m"] >= o["dRel"] and o["dRel"] >= 25.0 and dy < 1.0
+          dd_eff = min(dd, abs((t["dRel_m"] - ARRAY_B_TRAILER_OFFSET_M) - o["dRel"])) if allow_trailer else dd
           r = max(t["dRel_m"], o["dRel"], 0.0)
           max_dd = max(5.5, (0.20 if r > 70.0 else 0.14) * r)
         if dd_eff < max_dd and dy < 2.2 and dv < 3.5:
@@ -1101,7 +1114,12 @@ class XcpRadarLogger:
       tracks_by_op_id: dict[str, dict] = {}
       shm_targets: list[dict] = []
       for t in targets:
-        if self._assist_shm_path is not None and t.get("stage") == "measured" and not t.get("ghost", False):
+        if (
+          self._assist_shm_path is not None
+          and t.get("stage") == "measured"
+          and not t.get("ghost", False)
+          and int(t.get("lat_updated_ns", 1)) > 0
+        ):
           entry = {
             "slot": t["slot"],
             "rtid": t["radar_track_id"],
@@ -1114,6 +1132,8 @@ class XcpRadarLogger:
             "vRel_mps": t["vRel_mps"],
             "ax_mps2": t["ax_mps2"],
             "kin_age_ms": t["kin_age_ms"],
+            "kin_updated_ns": int(t.get("kin_updated_ns", 0)),
+            "lat_valid": True,
             "trust_accel": t["trust_accel"],
             "op_track_id": t.get("op_track_id"),
           }
@@ -1136,7 +1156,12 @@ class XcpRadarLogger:
       if self._assist_shm_path is not None:
         _write_atomic_json(
           self._assist_shm_path,
-          {"mono_ns": int(now_ns), "tracks_by_op_id": tracks_by_op_id, "targets": shm_targets},
+          {
+            "mono_ns": int(now_ns),
+            "boot_offset_ns": int(_boot_minus_mono_ns()),
+            "tracks_by_op_id": tracks_by_op_id,
+            "targets": shm_targets,
+          },
         )
     except Exception:
       pass
