@@ -79,6 +79,19 @@ def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: 
     return gas_pedal_force <= BOSCH_BRAKE_FORCE_RELEASE
   return gas_pedal_force < BOSCH_BRAKE_FORCE_ON
 
+# Near-standstill brake hold. Route f4 seg1 (2026-11-18), stop at mono ~48729.5 s: vEgo fell below 0.3 m/s, LowSpeedBrakeAssist
+# (V_RESET 0.3) dropped its extra brake and the command went -0.52 -> -0.36. The road was uphill (pitch 0.037 rad), so
+# hill_brake was ~+0.37 and gas_pedal_force = accel + hill_brake + wind was ~0.0, above BOSCH_BRAKE_FORCE_RELEASE. The 1.5 s
+# minimum hold had expired, so the edge released: ACC_CONTROL sent BRAKE_REQUEST=0 with gas 35-38 for 4 frames, the car let go
+# of its brakes for ~130 ms and re-applied them when longControlState went to stopping (a felt jolt). It repeated at +3.35 s,
+# and two other flaps had only 0.01-0.02 of margin. Static reasoning from that log; no closed-loop evidence.
+#   BOSCH_A_NEAR_STOP_HOLD_V: below this speed an existing brake request is kept while the commanded accel (before
+#     hill/wind compensation) is not asking to move.
+#   BOSCH_A_NEAR_STOP_GO_ACCEL: a commanded accel above this (launch, or the planner asking to creep) releases exactly as before.
+# The hold never starts a brake request from not-braking.
+BOSCH_A_NEAR_STOP_HOLD_V = 1.0
+BOSCH_A_NEAR_STOP_GO_ACCEL = 0.0
+
 class BoschABrakeEdge:
   """Bosch-A harness brake request with a deeper on threshold, a minimum hold and a gas ramp after release."""
   def __init__(self, dt: float):
@@ -92,7 +105,8 @@ class BoschABrakeEdge:
     self.stopping = False
     self.ramp_s = BOSCH_A_RELEASE_GAS_RAMP_S
 
-  def update(self, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
+  def update(self, gas_pedal_force: float, stopping: bool, long_active: bool,
+             v_ego: float = math.inf, accel: float = 0.0) -> bool:
     if not long_active:
       self.reset()
       return False
@@ -103,7 +117,8 @@ class BoschABrakeEdge:
       self.braking = True
     elif self.braking:
       held = self.hold_s < BOSCH_A_BRAKE_MIN_HOLD_S and gas_pedal_force <= BOSCH_A_BRAKE_HOLD_ESCAPE
-      self.braking = held or gas_pedal_force <= BOSCH_BRAKE_FORCE_RELEASE
+      near_stop_hold = v_ego < BOSCH_A_NEAR_STOP_HOLD_V and accel <= BOSCH_A_NEAR_STOP_GO_ACCEL
+      self.braking = near_stop_hold or held or gas_pedal_force <= BOSCH_BRAKE_FORCE_RELEASE
     else:
       self.braking = gas_pedal_force < BOSCH_A_BRAKE_FORCE_ON
     if self.braking:
@@ -232,7 +247,7 @@ class BoschLongitudinal:
     self.gas = float(np.interp(gas_lookup_input, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
     self.gas = min(self.gas, max(60.0, self.bosch_last_gas + 60.0))
     stopping = actuators.longControlState == LongCtrlState.stopping
-    self.bosch_braking = self._update_braking(gas_pedal_force, stopping, CC.longActive)
+    self.bosch_braking = self._update_braking(gas_pedal_force, stopping, CC.longActive, CS.out.vEgo)
     self.bosch_last_gas = self.gas
     return self.accel, self.gas, gas_pedal_force, self.bosch_braking
 
@@ -251,14 +266,14 @@ class BoschLongitudinal:
     self.gas = float(np.interp(lookup, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
     self.gas = min(self.gas, max(60.0, self.bosch_last_gas + 60.0))
     stopping = actuators.longControlState == LongCtrlState.stopping
-    self.bosch_braking = self._update_braking(gas_pedal_force, stopping, CC.longActive)
+    self.bosch_braking = self._update_braking(gas_pedal_force, stopping, CC.longActive, CS.out.vEgo)
     self.bosch_last_gas = self.gas
     return self.accel, self.gas, gas_pedal_force, self.bosch_braking
 
-  def _update_braking(self, gas_pedal_force, stopping, long_active):
+  def _update_braking(self, gas_pedal_force, stopping, long_active, v_ego=math.inf):
     """Brake request; on Bosch-A harness cars also the minimum hold and the gas ramp after release (self.gas)."""
     if self.brake_edge is None:
       return update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, long_active)
-    braking = self.brake_edge.update(gas_pedal_force, stopping, long_active)
+    braking = self.brake_edge.update(gas_pedal_force, stopping, long_active, v_ego, self.accel)
     self.gas = self.brake_edge.limit_gas(self.gas)
     return braking

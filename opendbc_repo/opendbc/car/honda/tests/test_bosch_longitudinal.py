@@ -231,3 +231,44 @@ def test_brake_edge_launch_from_stopping_ramps_gas_faster_than_a_brake_cycle_rel
   assert launch[n_launch] == 500. and cycle[n_launch] < 500.
   assert all(a >= b for a, b in zip(launch, cycle, strict=True))
   assert cycle[-1] == 500.
+
+
+def _edge_braking_for(seconds, stopping=False):
+  from opendbc.car.honda.bosch_longitudinal import BoschABrakeEdge
+  edge = BoschABrakeEdge(0.02)
+  for _ in range(int(seconds / 0.02)):
+    assert edge.update(-0.5, stopping, True, 3.0, -0.5)
+  return edge
+
+
+def test_brake_edge_near_stop_hold_keeps_brake_on_uphill_f4_case():
+  # route f4 s1 2026-11-18: v 0.29, accel -0.36, force ~0.0 (uphill) used to release after the 1.5 s hold
+  edge = _edge_braking_for(2.0)
+  assert edge.update(0.0, False, True, 0.29, -0.36)
+
+
+def test_brake_edge_near_stop_hold_not_active_above_hold_speed():
+  edge = _edge_braking_for(2.0)
+  assert not edge.update(0.0, False, True, 1.2, -0.36)
+
+
+def test_brake_edge_near_stop_hold_releases_on_positive_accel_with_launch_ramp():
+  from opendbc.car.honda.bosch_longitudinal import BOSCH_A_LAUNCH_GAS_RAMP_S, BOSCH_A_RELEASE_GAS_START
+  edge = _edge_braking_for(2.0, stopping=True)
+  assert not edge.update(0.3, False, True, 0.2, 0.3)
+  assert edge.ramp_s == BOSCH_A_LAUNCH_GAS_RAMP_S
+  assert edge.limit_gas(500.) == BOSCH_A_RELEASE_GAS_START
+
+
+def test_brake_edge_near_stop_hold_never_starts_braking():
+  from opendbc.car.honda.bosch_longitudinal import BoschABrakeEdge
+  edge = BoschABrakeEdge(0.02)
+  for _ in range(50):
+    assert not edge.update(0.0, False, True, 0.2, -0.1)
+
+
+def test_brake_edge_near_stop_hold_resets_when_long_inactive():
+  edge = _edge_braking_for(2.0)
+  assert not edge.update(0.0, False, False, 0.2, -0.36)
+  assert not edge.braking and edge.hold_s == 0.0
+  assert not edge.update(0.0, False, True, 0.2, -0.1)
