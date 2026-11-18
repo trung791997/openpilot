@@ -1,5 +1,6 @@
 """D-118/D-121 radar pass hold: PassHold tests ported from iq-nav-on-pr10 test_vasm_assist.py (focus tests not
 ported, the focus cadence is not), plus the inert-safe RadarPassHold adapter. Static only."""
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -261,3 +262,182 @@ def test_adapter_reset_clears_hold():
   assert _pass_and_lose(assist)["right"]
   assist.reset()
   assert assist.step(FakeSM(), 0.2, NO_CAMERA) == NO_CAMERA
+
+
+# --- XCP assist snapshot as a second sighting source ---
+
+T0 = 100.0  # injected monotonic clock, seconds
+
+
+def _target(d=5.0, y=3.0, v=-4.0, **kw):
+  t = {"stage": "measured", "ghost": False, "flags": 0, "age": 10, "dRel_m": d, "yRel_m": y, "vRel_mps": v,
+       "kin_age_ms": 20.0, "lat_valid": True, "rtid": 3}
+  t.update(kw)
+  return {k: v_ for k, v_ in t.items() if v_ is not _DROP}
+
+
+_DROP = object()
+
+
+def _xcp_assist(tmp_path, *targets, now=T0, age_ms=10, raw=None):
+  path = tmp_path / "xcp_radar_assist.json"
+  if raw is not None:
+    path.write_text(raw)
+  elif targets is not None:
+    path.write_text(json.dumps({"mono_ns": int(now * 1e9) - age_ms * 1_000_000, "targets": list(targets)}))
+  assist = RadarPassHold(xcp_path=path)
+  assist.refresh(FakeParams(True))
+  return assist, path
+
+
+def _write(path, *targets, now=T0, age_ms=10):
+  path.write_text(json.dumps({"mono_ns": int(now * 1e9) - age_ms * 1_000_000, "targets": list(targets)}))
+
+
+def _xcp_pass(tmp_path, target, **kw):
+  """XCP sees the target at T0; at T0+0.1 the file shows nothing: does the side hold?"""
+  assist, path = _xcp_assist(tmp_path, target, **kw)
+  first = assist.step(FakeSM(), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  return first, assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)
+
+
+def test_xcp_left_and_right_sightings_hold_their_side(tmp_path):
+  assert _xcp_pass(tmp_path, _target(y=3.0))[1] == {"left": True, "right": False}
+  assert _xcp_pass(tmp_path, _target(y=-3.0))[1] == {"left": False, "right": True}
+
+
+def test_xcp_lateral_band_edges(tmp_path):
+  for y in (1.0, 6.0, -1.0, -6.0, 0.0):
+    assert _xcp_pass(tmp_path, _target(y=y))[1] == NO_CAMERA, y
+  assert _xcp_pass(tmp_path, _target(y=1.8))[1]["left"]
+  assert _xcp_pass(tmp_path, _target(y=-5.4))[1]["right"]
+
+
+def test_xcp_range_window_is_22_m_raw(tmp_path):
+  assert _xcp_pass(tmp_path, _target(d=21.0))[1]["left"]
+  assert _xcp_pass(tmp_path, _target(d=23.0))[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(d=-0.5))[1] == NO_CAMERA
+
+
+def test_xcp_must_be_closing(tmp_path):
+  assert _xcp_pass(tmp_path, _target(v=-0.4))[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(v=+2.0))[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(v=-0.5))[1]["left"]
+
+
+def test_xcp_hold_time_uses_raw_range(tmp_path):
+  first, held = _xcp_pass(tmp_path, _target(d=10.0, v=-5.0))  # (10+12)/5 = 4.4 s from the sighting at T0
+  assist, path = _xcp_assist(tmp_path, _target(d=10.0, v=-5.0))
+  assist.step(FakeSM(), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)["left"]
+  assert assist.step(FakeSM(), T0 + 4.3, NO_CAMERA)["left"]
+  assert not assist.step(FakeSM(), T0 + 4.5, NO_CAMERA)["left"]
+
+
+@pytest.mark.parametrize("bad", [
+  {"ghost": True}, {"flags": 0x1000}, {"flags": 0x0020}, {"age": 4}, {"kin_age_ms": 250.0}, {"kin_age_ms": _DROP},
+  {"stage": "tentative"}, {"lat_valid": False}, {"yRel_m": None}, {"dRel_m": "x"}, {"vRel_mps": float("nan")},
+])
+def test_xcp_unqualified_targets_are_rejected(tmp_path, bad):
+  assert _xcp_pass(tmp_path, _target(**bad))[1] == NO_CAMERA
+
+
+def test_xcp_other_flag_bits_and_boundary_values_qualify(tmp_path):
+  assert _xcp_pass(tmp_path, _target(flags=0xE000, age=5, kin_age_ms=200.0))[1]["left"]
+
+
+def test_xcp_stale_or_future_snapshot_is_ignored(tmp_path):
+  assert _xcp_pass(tmp_path, _target(), age_ms=250)[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(), age_ms=-100)[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(), age_ms=200)[1]["left"]
+  assert _xcp_pass(tmp_path, _target(), age_ms=-60)[1]["left"]
+
+
+def test_xcp_malformed_or_missing_file_equals_camera_only(tmp_path):
+  for raw in ("{not json", "[]", '{"mono_ns": "x", "targets": []}', '{"targets": [1, 2]}',
+              json.dumps({"mono_ns": int(T0 * 1e9), "targets": [None, 5, {"stage": "measured"}]}), ""):
+    assist, _ = _xcp_assist(tmp_path, raw=raw)
+    assert assist.step(FakeSM(), T0, NO_CAMERA) == NO_CAMERA
+    assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA) == NO_CAMERA
+  missing = RadarPassHold(xcp_path=tmp_path / "nope.json")
+  missing.refresh(FakeParams(True))
+  assert missing.step(FakeSM(), T0, NO_CAMERA) == NO_CAMERA
+  assert _pass_and_lose(missing) == {"left": False, "right": True}, "camera path still works"
+  none_path = RadarPassHold(xcp_path=None)  # None selects the default; an unreadable path is the same fail-closed case
+  none_path.refresh(FakeParams(True))
+  none_path.step(FakeSM(), T0, NO_CAMERA)
+
+
+def test_xcp_never_clears_a_camera_held_side(tmp_path):
+  assist, path = _xcp_assist(tmp_path, _target(y=-3.0))  # XCP says only the right side is busy
+  car = _lead(True, 3.0, -10 * MPH, 7)
+  assist.step(FakeSM(left=car), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)  # XCP now shows nothing, nothing contradicts
+  assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA) == {"left": True, "right": True}
+  _write(path, _target(y=-3.0, v=+5.0), now=T0 + 0.2)  # XCP shows a car pulling away on the left side: still held
+  _write(path, _target(y=3.0, v=+5.0), now=T0 + 0.2)
+  assert assist.step(FakeSM(), T0 + 0.2, NO_CAMERA)["left"]
+
+
+def test_xcp_toggle_off_has_no_effect(tmp_path):
+  assist, path = _xcp_assist(tmp_path, _target())
+  assist.refresh(FakeParams(False))
+  assist.step(FakeSM(), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA) == NO_CAMERA
+  assist.refresh(FakeParams(True))
+  assert assist.step(FakeSM(), T0 + 0.2, NO_CAMERA) == NO_CAMERA, "nothing remembered from while it was off"
+
+
+def test_xcp_and_camera_same_side_hold_is_the_later_deadline(tmp_path):
+  # camera sighting: d=3, closing 10 mph -> hold 3.35 s... XCP sighting: d=10, v=-2 -> (10+12)/2 = 11 -> capped 6 s
+  assist, path = _xcp_assist(tmp_path, _target(d=10.0, v=-2.0))
+  car = _lead(True, 3.0, -10 * MPH, 7)
+  assist.step(FakeSM(left=car), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)["left"]
+  camera_end = T0 + pass_hold_seconds(3.0, 10 * MPH)
+  assert pass_hold_seconds(10.0, 2.0) == PASS_HOLD_MAX_S and camera_end < T0 + PASS_HOLD_MAX_S
+  assert assist.step(FakeSM(), camera_end + 0.5, NO_CAMERA)["left"], "XCP deadline outlasts the camera's"
+  assert not assist.step(FakeSM(), T0 + PASS_HOLD_MAX_S + 0.2, NO_CAMERA)["left"]
+
+
+def test_xcp_stale_sighting_proves_nothing(tmp_path):
+  assist, path = _xcp_assist(tmp_path, _target())
+  assist.step(FakeSM(), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.7)
+  assert assist.step(FakeSM(), T0 + 0.7, NO_CAMERA) == NO_CAMERA, "0.7 s since the last sighting: older than 0.5 s"
+
+
+def _long_vehicle_run(xcp_path_hold_cls_kwargs, tmp_path):
+  assist, path = _xcp_assist(tmp_path, _target(d=8.0, v=-4.0))
+  assist.xcp_hold = PassHold(**xcp_path_hold_cls_kwargs)
+  sm = FakeSM(v_ego=32.0)
+  assist.step(sm, T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  t = T0 + 0.1
+  while t < T0 + 5.0:  # camera follows it for 4 m/s * 4.9 s ~ 19 m of relative travel: longer than any car
+    assist.step(sm, t, {"left": True, "right": False})
+    _write(path, now=t)
+    t += 0.05
+  off_at = t
+  while t < off_at + 1.0:  # camera lets go
+    out = assist.step(sm, t, NO_CAMERA)
+    t += 0.05
+  return out["left"]
+
+
+def test_xcp_long_vehicle_rule_is_not_applied(tmp_path):
+  assert not _long_vehicle_run({"handoff_dist": 22.0, "allow_long": False}, tmp_path), "bridge 0.6 s then released"
+  # control: the same run with the rule on holds a long vehicle, so the test can tell the difference
+  assert _long_vehicle_run({"handoff_dist": 22.0, "allow_long": True}, tmp_path)
+
+
+def test_xcp_prefers_closing_target_and_nearest(tmp_path):
+  assist, path = _xcp_assist(tmp_path, _target(d=2.0, v=+3.0, rtid=1), _target(d=9.0, v=-4.0, rtid=2),
+                             _target(d=6.0, v=-4.0, rtid=4))
+  assist.step(FakeSM(), T0, NO_CAMERA)
+  _write(path, now=T0 + 0.1)
+  assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)["left"], "the closing car, not the pulling-away one, was remembered"

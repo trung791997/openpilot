@@ -13,6 +13,7 @@ producer fills them. Static unit tests only; not road-validated on this branch.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 PARAM_KEY = "VASMRadarAssist"
@@ -73,10 +74,11 @@ class _Pass:
   seen: bool = False    # the camera has picked it up since radar lost it
   seen_m: float = 0.0   # relative travel while the camera saw it
   camera_off_at: float | None = None  # last camera-on -> off edge; None while on or never seen
+  allow_long: bool = True  # False for a source with no length evidence (XCP sightings)
 
   @property
   def long_vehicle(self) -> bool:
-    return self.seen_m >= LONG_VEHICLE_SEEN_M
+    return self.allow_long and self.seen_m >= LONG_VEHICLE_SEEN_M
 
   def advance(self, now: float, v_ego: float | None, camera: bool) -> bool:
     """Move it on to now; True while it still holds the side."""
@@ -111,7 +113,9 @@ class PassHold:
   behind. Without them it is the D-118 hold alone.
   """
 
-  def __init__(self):
+  def __init__(self, handoff_dist: float = PASS_HANDOFF_DIST, allow_long: bool = True):
+    self.handoff_dist = handoff_dist
+    self.allow_long = allow_long
     self._sighting: dict[str, tuple[AdjacentLead, float, float | None]] = {}
     self._until = {"left": 0.0, "right": 0.0}
     self._pass: dict[str, _Pass] = {}
@@ -133,10 +137,11 @@ class PassHold:
           hold_until = seen_at + pass_hold_seconds(seen.d_rel, -seen.v_rel)
           self._until[side] = max(self._until[side], hold_until)
           if v_ego is not None:
-            self._pass[side] = _Pass(seen_at, hold_until, seen_v_ego, seen.v_rel, seen.d_rel, seen_at)
+            self._pass[side] = _Pass(seen_at, hold_until, seen_v_ego, seen.v_rel, seen.d_rel, seen_at,
+                                           allow_long=self.allow_long)
         del self._sighting[side]
 
-    if present and -lead.v_rel >= PASS_MIN_CLOSING and 0.0 <= lead.d_rel <= PASS_HANDOFF_DIST:
+    if present and -lead.v_rel >= PASS_MIN_CLOSING and 0.0 <= lead.d_rel <= self.handoff_dist:
       self._sighting[side] = (lead, now, v_ego)
     elif present and side in self._sighting:
       del self._sighting[side]  # same car, but it pulled away or matched our speed: not being passed
@@ -162,8 +167,13 @@ class RadarPassHold:
   """Runtime adapter: reads the toggle, starpilotRadarState.leadLeft/leadRight and carState.vEgo, and ORs the holds
   into a WarningState. Every failure path yields no hold (stock behaviour)."""
 
-  def __init__(self):
+  def __init__(self, xcp_path: Path | str | None = None):
+    from openpilot.starpilot.spot_monitor.xcp_side_sightings import XCP_ASSIST_PATH, XCP_MAX_D_M, XcpSideSightings
     self.pass_hold = PassHold()
+    # Second sighting source (Bosch-A XCP assist snapshot), its own hold state so camera-bank behaviour is untouched;
+    # the two holds are ORed (= max of the deadlines). 22 m window, no long-vehicle rule (no length evidence).
+    self.xcp = XcpSideSightings(XCP_ASSIST_PATH if xcp_path is None else xcp_path)
+    self.xcp_hold = PassHold(handoff_dist=XCP_MAX_D_M, allow_long=False)
     self.enabled = False
     self.hold = {"left": False, "right": False}
 
@@ -179,6 +189,7 @@ class RadarPassHold:
 
   def reset(self) -> None:
     self.pass_hold.reset()
+    self.xcp_hold.reset()
     self.hold = {"left": False, "right": False}
 
   def step(self, sm: Any, now_s: float, camera: dict[str, bool]) -> dict[str, bool]:
@@ -196,8 +207,15 @@ class RadarPassHold:
         v_ego = float(sm["carState"].vEgo)
     except Exception:
       leads, v_ego = {"left": None, "right": None}, None
-    self.hold = {side: self.pass_hold.update(side, leads[side], now_s, v_ego, bool(camera.get(side, False)))
-                 for side in ("left", "right")}
+    cam = {side: self.pass_hold.update(side, leads[side], now_s, v_ego, bool(camera.get(side, False)))
+           for side in ("left", "right")}
+    try:
+      xcp_leads = self.xcp.read(int(now_s * 1e9))  # one file read per step; same monotonic clock as the writer
+    except Exception:
+      xcp_leads = {"left": None, "right": None}
+    xcp = {side: self.xcp_hold.update(side, xcp_leads[side], now_s, v_ego, bool(camera.get(side, False)))
+           for side in ("left", "right")}
+    self.hold = {side: cam[side] or xcp[side] for side in ("left", "right")}
     return self.hold
 
   def apply(self, state):
