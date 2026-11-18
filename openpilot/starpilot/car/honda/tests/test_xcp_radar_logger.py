@@ -518,3 +518,94 @@ def test_fast_inactive_probe_when_op_lead_unmatched():
   task = logger._next_read_task_locked(t0 + 5_000_000)
   assert task is not None and task[0] != 2 and task[1:] == (16, 6)
   logger.close()
+
+
+def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  t1_base = 0x40032AEC
+  out18_base = 0x4003681C
+  p_base = 0x400397DC
+  t1_slot = 7
+
+  # Mock ECU memory map for Way B pointer table + P + T1[7] + OUT18[7] + T1+3414
+  ecu_mem: dict[int, bytes] = {
+    xcp_mod.WAYB_PTR_T1_PRI: t1_base.to_bytes(4, "big"),
+    xcp_mod.WAYB_PTR_OUT18: out18_base.to_bytes(4, "big"),
+    xcp_mod.WAYB_PTR_T1_LOW: t1_base.to_bytes(4, "big"),
+    xcp_mod.WAYB_PTR_P_LOW: p_base.to_bytes(4, "big"),
+    # P[0]+2..8: b2..5, valid=1, t1_slot=7, b8=0
+    p_base + 2: bytes([0x00, 0x01, 0x00, 0x02, 1, t1_slot, 0]),
+    # T1[7]+24..29: X_raw=32*128, u26=0, Vx28_raw=-1.5*256
+    t1_base + 104 * t1_slot + 24: (
+      int(round(32.0 * 128)).to_bytes(2, "big", signed=True)
+      + (0).to_bytes(2, "big", signed=True)
+      + int(round(-1.5 * 256)).to_bytes(2, "big", signed=True)
+    ),
+    # T1[7]+40..43: Vx40_raw=-1.5*256, Vy42_raw=0
+    t1_base + 104 * t1_slot + 40: (
+      int(round(-1.5 * 256)).to_bytes(2, "big", signed=True)
+      + (0).to_bytes(2, "big", signed=True)
+    ),
+    # T1[7]+86..91: flags=0x8800, b88..90, valid=1
+    t1_base + 104 * t1_slot + 86: (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 1]),
+    # OUT18[7]+16..17: cam_track_id=22, cam_flags=0x03
+    out18_base + 18 * t1_slot + 16: bytes([22, 0x03]),
+    # T1+3414..3420: sel_flags=0x0400, b3416..17, sel_cam_id=22, b3419, sel_state=1
+    t1_base + 3414: (0x0400).to_bytes(2, "big") + bytes([0, 0, 22, 0, 1]),
+  }
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, probe_wayb=True)
+  assert logger._wayb_probe_enabled is True
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=22, dRel=28.6, yRel=0.1, vRel=-1.5)])
+
+  wayb_p0_reads = 0
+  lead_kin_reads = 0
+  for i in range(180):  # 3.6 s at 20 ms RTT
+    if i >= 15:
+      logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
+        off = addr - REC0
+        if (off // STRIDE) == 4 and (off % STRIDE) == 16 and i >= 20:
+          lead_kin_reads += 1
+        rep = b"\xFF" + bytes(ram[off : off + sz])
+      elif addr == xcp_mod.WAYB_PTR_P_ALT:
+        # Simulate XCP error 0xFE on optional pointer without dropping READY Array B session
+        rep = b"\xFE\x22"
+      elif addr in ecu_mem:
+        if addr == p_base + 2:
+          wayb_p0_reads += 1
+        rep = b"\xFF" + ecu_mem[addr][:sz]
+      else:
+        raise AssertionError(f"Unexpected XCP probe address {addr:#x} size={sz}")
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  assert logger.state == "READY"
+  logger.close()
+
+  assert 3 <= wayb_p0_reads <= 4
+  assert lead_kin_reads >= 45
+  wb = rows[-1].get("wayb_probe")
+  assert wb is not None
+  assert wb["t1_base"] == hex(t1_base)
+  assert wb["out18_base"] == hex(out18_base)
+  assert wb["p_base"] == hex(p_base)
+  assert wb["ptrs_raw"]["ptr_p_alt"] == "err_fe22"
+  assert wb["p0_valid"] == 1
+  assert wb["p0_t1_slot"] == t1_slot
+  assert wb["t1_x_raw"] == int(round(32.0 * 128))
+  assert wb["t1_vx40_raw"] == int(round(-1.5 * 256))
+  assert wb["t1_valid"] == 1
+  assert wb["out18_cam_id"] == 22
+  assert wb["sel_cam_id"] == 22
+  assert wb["sel_state"] == 1
