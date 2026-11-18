@@ -6,6 +6,7 @@
   "AggressiveJerkDeceleration",
   "AggressiveJerkSpeed",
   "AggressiveJerkSpeedDecrease",
+  "AlphaHondaXcpRadarAssist",
   "AlphaLongitudinalEnabled",
   "AlwaysAllowUploads",
   "AlwaysOnLateral",

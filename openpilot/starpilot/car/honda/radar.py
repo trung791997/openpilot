@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
+import time
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -95,6 +98,58 @@ POST_STANDSTILL_RADAR_LEAD_PERSISTENCE_FRAMES = 3
 POST_STANDSTILL_RADAR_LEAD_URGENT_TTC = 1.5
 POST_STANDSTILL_RADAR_LEAD_URGENT_DISTANCE = 1.5
 SPEED, ACCEL = (0, 1)
+XCP_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json")
+XCP_ASSIST_MAX_SNAPSHOT_AGE_NS = 200_000_000
+XCP_ASSIST_MAX_FUTURE_SKEW_NS = 60_000_000
+XCP_ASSIST_MAX_KIN_AGE_MS = 200.0
+XCP_ASSIST_MIN_AGE = 5
+XCP_ASSIST_HOLD_FRAMES = 4
+XCP_ASSIST_ACCEL_BLEND = 0.5
+XCP_TRAILER_OFFSET_M = 434.0 / 128.0
+
+
+def _xcp_target_qualifies(t: dict[str, Any], point, v_ego: float) -> tuple[bool, float]:
+  """Check the 5 XCP Array B assist gates plus geometry and clutter consistency for one point."""
+  if t.get("stage") != "measured":
+    return False, math.inf
+  try:
+    kin_age_ms = float(t.get("kin_age_ms", 9999.0))
+    flags = int(t.get("flags", 0))
+    age = int(t.get("age", 0))
+    xd = float(t["dRel_m"])
+    xy = float(t.get("yRel_m", 0.0))
+    xv = float(t["vRel_mps"])
+  except (KeyError, TypeError, ValueError):
+    return False, math.inf
+  if not (math.isfinite(kin_age_ms) and math.isfinite(xd) and math.isfinite(xy) and math.isfinite(xv)):
+    return False, math.inf
+  if kin_age_ms > XCP_ASSIST_MAX_KIN_AGE_MS:
+    return False, math.inf
+  if bool(t.get("ghost", False)) or (flags & 0x1020) != 0:
+    return False, math.inf
+  if age < XCP_ASSIST_MIN_AGE:
+    return False, math.inf
+  pd = float(point.dRel)
+  py = float(point.yRel)
+  pv = float(point.vRel)
+  dd = min(abs(xd - pd), abs((xd - XCP_TRAILER_OFFSET_M) - pd))
+  if dd > max(5.5, 0.14 * pd):
+    return False, math.inf
+  if xy != 0.0 and abs(xy - py) > 2.0:
+    return False, math.inf
+  dv = abs(xv - pv)
+  if pv <= -11.5 and xv <= pv + 1.0:
+    if dv > 25.0:
+      return False, math.inf
+  elif (abs(v_ego + xv) > 1.8) != (abs(v_ego + pv) > 1.8):
+    if dv > 3.0:
+      return False, math.inf
+  elif abs(v_ego + xv) > 1.8 and abs(v_ego + pv) > 1.8:
+    if dv > 12.0:
+      return False, math.inf
+  elif dv > 3.0:
+    return False, math.inf
+  return True, dd * dd + (2.0 * abs(xy - py)) ** 2
 
 
 class Track:
@@ -112,6 +167,9 @@ class Track:
     self.K_C = kalman_params.C
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
+    self.xcp_active = False
+    self.xcp_hold_frames = 0
+    self.last_xcp_match: dict[str, Any] | None = None
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool, measurement_update: bool | None = None):
     self.dRel = d_rel
@@ -442,7 +500,7 @@ class BoschALeadPolicy:
       self._was_standstill = False
       self._standstill_had_lead = False
 
-  def __init__(self):
+  def __init__(self, *, xcp_assist: bool = False, xcp_path: Path | None = XCP_SHM_PATH):
     self.starpilot_toggles = SimpleNamespace(lead_detection_probability=0.35)
     self.vision_state = SimpleNamespace(prev_aLeadK=0.0)
     self.prev_lead_track_ids = [-1, -1]
@@ -458,6 +516,82 @@ class BoschALeadPolicy:
     self.camera_witness = CameraWitness()  # C-012: the 1 s tapered cap hold is always on
     self.camera_slow_bound = CameraSlowBound()
     self.camera_ranges: list[deque[float]] = [deque(maxlen=TREND_SAMPLES) for _ in range(2)]  # model lead x per cycle
+    self.xcp_assist = bool(xcp_assist)
+    self._xcp_path = Path(xcp_path) if xcp_path is not None else None
+    self._xcp_file_sig: tuple[int, int] | None = None
+    self._xcp_snapshot: dict[str, Any] | None = None
+    self._replay_xcp_snapshot: dict[str, Any] | None = None
+
+  def set_xcp_snapshot(self, snapshot: dict[str, Any] | None, *, mono_ns: int | None = None) -> None:
+    """Inject an XCP snapshot (from rlog xcp_array_b_20hz or /dev/shm JSON) for offline replay/tests."""
+    if snapshot is None:
+      self._replay_xcp_snapshot = None
+      return
+    snap_mono = snapshot.get("mono_ns", 0) if mono_ns is None else mono_ns
+    targets = list(snapshot.get("targets") or ())
+    by_id = dict(snapshot.get("tracks_by_op_id") or {})
+    if not by_id and targets:
+      for t in targets:
+        op_tid = t.get("op_track_id")
+        if op_tid is not None and t.get("stage") == "measured" and not t.get("ghost", False):
+          by_id[str(op_tid)] = t
+    self._replay_xcp_snapshot = {"mono_ns": int(snap_mono), "tracks_by_op_id": by_id, "targets": targets}
+
+  def _read_xcp_snapshot(self, now_ns: int) -> dict[str, Any] | None:
+    if not self.xcp_assist:
+      return None
+    snap = self._replay_xcp_snapshot
+    if snap is None:
+      if self._xcp_path is None:
+        return None
+      try:
+        st = self._xcp_path.stat()
+      except OSError:
+        self._xcp_file_sig = None
+        self._xcp_snapshot = None
+        return None
+      sig = (int(getattr(st, "st_ino", 0)), int(st.st_mtime_ns))
+      if sig != self._xcp_file_sig:
+        try:
+          data = json.loads(self._xcp_path.read_bytes())
+          self._xcp_file_sig = sig
+          self._xcp_snapshot = data if isinstance(data, dict) else None
+        except Exception:
+          self._xcp_file_sig = None
+          self._xcp_snapshot = None
+          return None
+      snap = self._xcp_snapshot
+    if snap is None:
+      return None
+    try:
+      snap_mono = int(snap.get("mono_ns", 0))
+    except (TypeError, ValueError):
+      return None
+    if not (-XCP_ASSIST_MAX_FUTURE_SKEW_NS <= (now_ns - snap_mono) <= XCP_ASSIST_MAX_SNAPSHOT_AGE_NS):
+      return None
+    return snap
+
+  @staticmethod
+  def _match_xcp_for_point(point, xcp_snapshot: dict[str, Any] | None, v_ego: float) -> dict[str, Any] | None:
+    if xcp_snapshot is None:
+      return None
+    by_id = xcp_snapshot.get("tracks_by_op_id")
+    if isinstance(by_id, dict):
+      direct = by_id.get(str(point.trackId))
+      if isinstance(direct, dict):
+        ok, _ = _xcp_target_qualifies(direct, point, v_ego)
+        if ok:
+          return direct
+    best: dict[str, Any] | None = None
+    best_cost = math.inf
+    for t in xcp_snapshot.get("targets") or ():
+      if not isinstance(t, dict):
+        continue
+      ok, cost = _xcp_target_qualifies(t, point, v_ego)
+      if ok and cost < best_cost:
+        best = t
+        best_cost = cost
+    return best
 
   def update_tracks(self, sm, rr, radar):
     self.ready = radar.ready
@@ -473,19 +607,70 @@ class BoschALeadPolicy:
         del self.tracks[identifier]
     if len(sm['modelV2'].leadsV3) < 2:
       self._remember_post_standstill_state(bool(sm['carState'].standstill), False)
+    log_times = getattr(sm, 'logMonoTime', None)
+    now_ns = int((log_times.get('radarTracks', 0) or log_times.get('modelV2', 0)) if isinstance(log_times, dict) else 0)
+    if now_ns <= 0:
+      now_ns = time.monotonic_ns()
+    xcp_snapshot = self._read_xcp_snapshot(now_ns) if self.xcp_assist else None
+    a_ego = float(getattr(sm['carState'], 'aEgo', 0.0)) if self.xcp_assist else 0.0
     for identifier, point in points.items():
-      v_lead = point.vRel + radar.v_ego_hist[0]
-      if identifier not in self.tracks:
-        self.tracks[identifier] = Track(identifier, v_lead, radar.kalman_params)
-      measured = bool(point.deprecated.measured and fresh)
-      track = self.tracks[identifier]
-      track.update(point.dRel, point.yRel, point.vRel, v_lead, measured, measured)
-      track.direct = bool(point.deprecated.measured)
-      if track.direct:
-        track.last_direct_vrel = float(point.vRel)
+      existing_track = self.tracks.get(identifier)
+      xcp_match = self._match_xcp_for_point(point, xcp_snapshot, self.v_ego) if xcp_snapshot is not None else None
+      if self.xcp_assist and existing_track is not None:
+        if xcp_match is not None:
+          existing_track.last_xcp_match = xcp_match
+          existing_track.xcp_hold_frames = XCP_ASSIST_HOLD_FRAMES
+        elif existing_track.xcp_hold_frames > 0 and existing_track.last_xcp_match is not None:
+          existing_track.xcp_hold_frames -= 1
+          xcp_match = existing_track.last_xcp_match
+      xcp_on = xcp_match is not None
+      if xcp_on:
+        v_rel = float(xcp_match['vRel_mps'])
+        v_lead = v_rel + radar.v_ego_hist[0]
+        if existing_track is None:
+          existing_track = Track(identifier, v_lead, radar.kalman_params)
+          existing_track.last_xcp_match = xcp_match
+          existing_track.xcp_hold_frames = XCP_ASSIST_HOLD_FRAMES
+          self.tracks[identifier] = existing_track
+        elif existing_track.cnt > 0 and not existing_track.xcp_active:
+          existing_track.kf.x[SPEED][0] = float(v_lead)
+        track = existing_track
+        track.xcp_active = True
+        track.update(point.dRel, point.yRel, v_rel, v_lead, True, bool(fresh))
+        track.vLeadK = float(v_lead)
+        track.direct = True
+        track.last_direct_vrel = v_rel
         track.direct_age = 0
+        if bool(xcp_match.get('trust_accel', False)) and xcp_match.get('ax_mps2') is not None:
+          try:
+            ax_rel = float(xcp_match['ax_mps2'])
+          except (TypeError, ValueError):
+            ax_rel = math.nan
+          if math.isfinite(ax_rel):
+            a_lead_xcp = ax_rel + a_ego
+            if v_lead > 0.5 or a_lead_xcp >= -0.2:
+              a_fused = (1.0 - XCP_ASSIST_ACCEL_BLEND) * float(track.kf.x[ACCEL][0]) + XCP_ASSIST_ACCEL_BLEND * a_lead_xcp
+              if abs(a_fused) >= 0.5:
+                track.aLeadTau.update(0.0)
+                track.aLeadTau.x = max(track.aLeadTau.x, BOSCH_A_LEAD_ACCEL_TAU_MIN)
+              track.aLeadK = max(min(a_fused, 4.0), BOSCH_A_LEAD_ACCEL_MIN)
       else:
-        track.direct_age += 1
+        v_lead = point.vRel + radar.v_ego_hist[0]
+        if existing_track is None:
+          existing_track = Track(identifier, v_lead, radar.kalman_params)
+          self.tracks[identifier] = existing_track
+        elif self.xcp_assist and existing_track.cnt > 0 and existing_track.xcp_active:
+          existing_track.kf.x[SPEED][0] = float(v_lead)
+        measured = bool(point.deprecated.measured and fresh)
+        track = existing_track
+        track.xcp_active = False
+        track.update(point.dRel, point.yRel, point.vRel, v_lead, measured, measured)
+        track.direct = bool(point.deprecated.measured)
+        if track.direct:
+          track.last_direct_vrel = float(point.vRel)
+          track.direct_age = 0
+        else:
+          track.direct_age += 1
       track.held_vrel_cycles = track.held_vrel_cycles + 1 if held_vrel_condition(track) else 0
       self.tracks[identifier].objectStatus = statuses.get(identifier, 0)
 

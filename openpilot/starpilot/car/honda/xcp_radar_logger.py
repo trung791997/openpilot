@@ -62,6 +62,15 @@ F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
+XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None
+_DEFAULT_ASSIST_SHM_PATH = object()
+
+
+def _write_atomic_json(path: Path, data: dict) -> None:
+  payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
+  tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+  tmp.write_bytes(payload)
+  os.replace(tmp, path)
 
 
 def key_for_seed(seed_be: bytes) -> bytes:
@@ -144,6 +153,7 @@ class XcpRadarLogger:
     pm=None,
     params=None,
     shm_path: Path | None = XCP_UI_SHM_PATH,
+    assist_shm_path: Path | None | object = _DEFAULT_ASSIST_SHM_PATH,
   ) -> None:
     del params
     self.enabled = False
@@ -175,6 +185,10 @@ class XcpRadarLogger:
     self._send_lock = send_lock
     self._pm = pm
     self._shm_path = Path(shm_path) if shm_path is not None else None
+    if assist_shm_path is _DEFAULT_ASSIST_SHM_PATH:
+      self._assist_shm_path = XCP_ASSIST_SHM_PATH if shm_path is XCP_UI_SHM_PATH else None
+    else:
+      self._assist_shm_path = Path(assist_shm_path) if assist_shm_path is not None else None
 
     self._tx_armed = False
     self._tx_armed_ns = 0
@@ -212,11 +226,12 @@ class XcpRadarLogger:
     io_thread = self._io_thread
     if io_thread is not None and io_thread is not threading.current_thread():
       io_thread.join(timeout=0.5)
-    if self._shm_path is not None:
-      try:
-        self._shm_path.unlink(missing_ok=True)
-      except OSError:
-        pass
+    for path in (self._shm_path, self._assist_shm_path):
+      if path is not None:
+        try:
+          path.unlink(missing_ok=True)
+        except OSError:
+          pass
 
   def _alloc_track_id_locked(self) -> int:
     tid = self._next_radar_track_id
@@ -880,11 +895,35 @@ class XcpRadarLogger:
     self._write_ui_snapshot(now_ns, v_ego, targets)
 
   def _write_ui_snapshot(self, now_ns: int, v_ego: float, targets: list[dict]) -> None:
-    if self._shm_path is None:
+    if self._shm_path is None and self._assist_shm_path is None:
       return
     try:
       points: list[list[float]] = []
+      tracks_by_op_id: dict[str, dict] = {}
+      shm_targets: list[dict] = []
       for t in targets:
+        if self._assist_shm_path is not None and t.get("stage") == "measured" and not t.get("ghost", False):
+          entry = {
+            "slot": t["slot"],
+            "rtid": t["radar_track_id"],
+            "age": t["age"],
+            "stage": t["stage"],
+            "ghost": t["ghost"],
+            "flags": t["flags"],
+            "dRel_m": t["dRel_m"],
+            "yRel_m": t["yRel_m"],
+            "vRel_mps": t["vRel_mps"],
+            "ax_mps2": t["ax_mps2"],
+            "kin_age_ms": t["kin_age_ms"],
+            "trust_accel": t["trust_accel"],
+            "op_track_id": t.get("op_track_id"),
+          }
+          shm_targets.append(entry)
+          op_tid = t.get("op_track_id")
+          if op_tid is not None:
+            tracks_by_op_id[str(op_tid)] = {k: v for k, v in entry.items() if k != "op_track_id"}
+        if self._shm_path is None:
+          continue
         if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
           continue
         dt_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), 300_000_000) / 1e9
@@ -893,10 +932,13 @@ class XcpRadarLogger:
         y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * dt_lat
         if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
           points.append([round(d_ui, 2), round(y_ui, 2)])
-      payload = json.dumps({"mono_ns": int(now_ns), "points": points}, separators=(",", ":")).encode("utf-8")
-      tmp = self._shm_path.with_name(f".{self._shm_path.name}.{os.getpid()}.tmp")
-      tmp.write_bytes(payload)
-      os.replace(tmp, self._shm_path)
+      if self._shm_path is not None:
+        _write_atomic_json(self._shm_path, {"mono_ns": int(now_ns), "points": points})
+      if self._assist_shm_path is not None:
+        _write_atomic_json(
+          self._assist_shm_path,
+          {"mono_ns": int(now_ns), "tracks_by_op_id": tracks_by_op_id, "targets": shm_targets},
+        )
     except Exception:
       pass
 

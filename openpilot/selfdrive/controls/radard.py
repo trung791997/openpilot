@@ -203,7 +203,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 class RadarD:
   def __init__(self, delay: float = 0.0, *, adjacent_enabled: bool = False, radar_available: bool = False,
                clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False,
-               adjacent_leads: bool = False):
+               adjacent_leads: bool = False, honda_bosch_a_xcp_assist: bool = False):
     self.use_voacc = use_voacc
     # leadLeft/leadRight (lib/adjacent_leads.py). Published inside starpilotRadarState; main() enables it for VASMRadarAssist too.
     self.adjacent_leads = adjacent_leads
@@ -214,7 +214,7 @@ class RadarD:
     self.honda_bosch_a = None
     if honda_bosch_a_radar:
       from openpilot.starpilot.car.honda.radar import BoschALeadPolicy
-      self.honda_bosch_a = BoschALeadPolicy()
+      self.honda_bosch_a = BoschALeadPolicy(xcp_assist=honda_bosch_a_xcp_assist)
     if self.honda_bosch_a is not None:
       from opendbc.car.honda.bosch_a_radar import BOSCH_A_FREQ_HZ  # the measured sweep rate (14.35 Hz), not a round 15
       self.kalman_params = KalmanParams(1.0 / BOSCH_A_FREQ_HZ)
@@ -440,6 +440,8 @@ def main() -> None:
 
   from opendbc.car.honda.bosch_a_radar import bosch_a_radar_platform
   honda_bosch_a = CP.brand == "honda" and bosch_a_radar_platform(CP.carFingerprint) and not CP.radarUnavailable
+  from openpilot.starpilot.car.honda.xcp_radar_assist import enabled as xcp_assist_enabled
+  honda_bosch_a_xcp = honda_bosch_a and xcp_assist_enabled(params, CP)
 
   # *** setup messaging
   # Honda Bosch-A: card's starpilotCarState carries the radar points' F0 STATUS (radar_point_status); not a validity input
@@ -456,7 +458,8 @@ def main() -> None:
   pm = messaging.PubMaster(['radarState', 'starpilotRadarState'] if adjacent_enabled else ['radarState'])
 
   RD = RadarD(CP.radarDelay, adjacent_enabled=adjacent_enabled, radar_available=not CP.radarUnavailable,
-              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP), adjacent_leads=adjacent_leads)
+              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP), adjacent_leads=adjacent_leads,
+              honda_bosch_a_xcp_assist=honda_bosch_a_xcp)
   set_core_affinity([3, 5])
 
   while 1:
