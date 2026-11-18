@@ -13,15 +13,15 @@ from openpilot.cereal import messaging
 from openpilot.selfdrive.controls.radard import RadarD
 
 
-def source_tick(sm, tick, rr=None, speed=0.0, probability=0.0, distance=10.0, standstill=False):
+def source_tick(sm, tick, rr=None, speed=0.0, probability=0.0, distance=10.0, standstill=False, distances=None):
   stamp = 1_000_000_000 + tick * 50_000_000
   model_event = messaging.new_message('modelV2', valid=True)
   model_event.logMonoTime = stamp
   model = model_event.modelV2
   model.velocity.x = [speed]
   leads = model.init('leadsV3', 2)
-  for lead in leads:
-    lead.x = [distance + 1.52]
+  for index, lead in enumerate(leads):
+    lead.x = [(distances[index] if distances else distance) + 1.52]
     lead.y = [0.0]
     lead.v = [speed]
     lead.a = [0.0]
@@ -107,3 +107,37 @@ def test_actual_decoder_radard_maturity_stale_retirement_and_recovery(identity):
   source_tick(sm, 5, rr)
   radar.update(sm, sm['radarTracks'])
   assert not radar.tracks
+
+
+def _dedup_radar(tracks, camera, probability=0.99):
+  """A Bosch-A RadarD run through its real update(): `tracks` is [(trackId, dRel)] on the radar, `camera` the two camera lead ranges."""
+  radar = RadarD(honda_bosch_a_radar=True)
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'])
+  for tick in range(8):
+    rr = structs.RadarData()
+    for point, (track_id, distance) in zip(rr.init('points', len(tracks)), tracks, strict=True):
+      point.trackId, point.dRel, point.yRel, point.vRel = track_id, distance, 0.0, -1.0
+      point.deprecated.measured = True
+    source_tick(sm, tick, rr, speed=20.0, probability=probability, distances=camera)
+    radar.update(sm, sm['radarTracks'])
+  return radar.radar_state.leadOne, radar.radar_state.leadTwo
+
+
+def test_dedup_same_track_in_both_slots_publishes_leadtwo_as_no_lead():
+  one, two = _dedup_radar([(1, 30.0)], camera=(30.0, 30.0))  # both camera leads match the one radar track
+  assert one.present and one.radar and one.radarTrackId == 1
+  assert not two.present
+
+
+def test_dedup_different_tracks_leave_leadtwo_unchanged():
+  one, two = _dedup_radar([(1, 30.0), (2, 60.0)], camera=(30.0, 60.0))
+  assert one.present and one.radar and one.radarTrackId == 1
+  assert two.present and two.radar and two.radarTrackId == 2
+
+
+def test_dedup_without_leadone_leaves_leadtwo_unchanged():
+  one, two = _dedup_radar([], camera=(30.0, 60.0), probability=0.0)  # no lead in either slot
+  assert not one.present and not two.present
+  one, two = _dedup_radar([], camera=(30.0, 60.0))  # vision-only leads: no radar track to duplicate
+  assert one.present and not one.radar
+  assert two.present and not two.radar

@@ -388,6 +388,14 @@ class RadarD:
                             monitor=self.adjacent_rail_monitor, lead_track_id=lead_track_id)
           for left in (True, False))
 
+    # leadTwo on leadOne's radar track bypasses the leadOne-only bounds (bound_implausible_drop); publish it as no-lead
+    # (a2 s50 t3025.7 track 24: aT min -3.50 -> -1.86). Placed last so the adjacent labels still see both slots.
+    if self.honda_bosch_a is not None and len(leads_v3) > 1:
+      lead_one, lead_two = self.radar_state.leadOne, self.radar_state.leadTwo
+      if (lead_one.present and lead_one.radar and lead_two.present and lead_two.radar and
+          lead_one.radarTrackId == lead_two.radarTrackId):
+        self.radar_state.leadTwo = {'present': False}
+
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
 
