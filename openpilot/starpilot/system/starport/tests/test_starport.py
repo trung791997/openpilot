@@ -1135,6 +1135,7 @@ def test_network_lease_settings_keep_internet_route():
   assert settings["ipv4"]["never-default"] == ("b", True) and settings["ipv4"]["ignore-auto-dns"] == ("b", True)
   assert settings["connection"]["autoconnect"] == ("b", False) and settings["802-11-wireless-security"]["psk"] == ("s", "secret-key")
   assert settings["802-11-wireless"]["bssid"] == ("ay", bytes.fromhex("AABBCCDDEEFF"))
+  assert settings["802-11-wireless"]["powersave"] == ("u", 2)
 
 
 def test_network_lease_retries_without_bssid_and_restores_previous():

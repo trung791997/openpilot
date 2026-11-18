@@ -110,6 +110,7 @@ def connection_settings(credentials: WifiCredentials, interface: str) -> dict:
     "ssid": ("ay", credentials.ssid.encode("utf-8")),
     "mode": ("s", "infrastructure"),
     "hidden": ("b", True),  # projection networks are often hidden; harmless when broadcast
+    "powersave": ("u", 2),  # NM_SETTING_WIRELESS_POWERSAVE_DISABLE: keep aa0 out of auto_ps_timer 1500 ms sleep
   }
   if credentials.bssid:
     wireless["bssid"] = ("ay", bytes.fromhex(credentials.bssid.replace(":", "")))
@@ -140,13 +141,16 @@ def connection_settings(credentials: WifiCredentials, interface: str) -> dict:
 
 
 class NetworkLease:
-  def __init__(self, log: Callable[..., None], interface: str = "wlan0", dedicated: bool = False):
-    """``dedicated``: the interface exists only for the car, so never fall back to another one or touch its previous network."""
+  def __init__(self, log: Callable[..., None], interface: str = "wlan0", dedicated: bool = False,
+               yield_interface: str = "wlan0"):
+    """``dedicated``: the interface exists only for the car, so yield ``yield_interface`` instead of sharing the radio."""
     self.log = log
     self.interface = interface
     self.dedicated = dedicated
+    self.yield_interface = yield_interface if dedicated and interface != yield_interface else ""
     self.router: DBusRouter | None = None
     self.device_path = ""
+    self.yield_device_path = ""
     self.connection_path = ""
     self.active_path = ""
     self.previous_connection = ""
@@ -291,6 +295,8 @@ class NetworkLease:
     if self.dedicated:
       self._check_overlap()
     self.log("wifi_joined", interface=self.interface, local_ip=self.local_ip, **self._radio())
+    if self.dedicated and self.yield_interface:
+      self._yield_other_wifi()
     return self.local_ip
 
   def _frequency(self, path: str) -> int:
@@ -357,29 +363,53 @@ class NetworkLease:
     except NetworkError as error:
       self.log("wifi_scan_request_failed", error=str(error))
 
-  def _pause_autoconnect(self) -> None:
-    """Keep NetworkManager from rejoining home Wi-Fi between attempts; release(restore=True) turns it back on."""
-    if self.autoconnect_paused:
+  def _pause_autoconnect(self, device_path: str = "", interface: str = "") -> None:
+    """Keep NetworkManager from rejoining home Wi-Fi/hotspot between attempts; release(restore=True) turns it back on."""
+    target_path = device_path or self.device_path
+    target_interface = interface or self.interface
+    if self.autoconnect_paused or not target_path:
       return
     try:
-      if self._get(self.device_path, NM_DEVICE_IFACE, "Autoconnect"):
-        if not self._write_marker():
+      if self._get(target_path, NM_DEVICE_IFACE, "Autoconnect"):
+        if not self._write_marker(target_interface):
           return
-        self._set(self.device_path, NM_DEVICE_IFACE, "Autoconnect", "b", False)
+        self._set(target_path, NM_DEVICE_IFACE, "Autoconnect", "b", False)
         self.autoconnect_paused = True
-      elif _paused_interface(self.marker) == self.interface:
+      elif _paused_interface(self.marker) == target_interface:
         self.autoconnect_paused = True
     except NetworkError as error:
       self.log("wifi_autoconnect_pause_failed", error=str(error))
 
-  def _write_marker(self) -> bool:
+  def _write_marker(self, interface: str = "") -> bool:
     try:
       self.marker.parent.mkdir(parents=True, exist_ok=True)
-      self.marker.write_text(json.dumps({"interface": self.interface, "boot": _boot_id()}))
+      self.marker.write_text(json.dumps({"interface": interface or self.interface, "boot": _boot_id()}))
       return True
     except OSError as error:
       self.log("wifi_autoconnect_marker_failed", error=str(error))
       return False
+
+  def _yield_other_wifi(self) -> None:
+    """Pause autoconnect and disconnect wlan0 while aa0 projects, so a non-DBS radio stays on aa0's channel."""
+    try:
+      path = next((item for item, name in self._wifi_devices() if name == self.yield_interface), "")
+      if not path:
+        return
+      self.yield_device_path = path
+      self._pause_autoconnect(path, self.yield_interface)
+      active = self._get(path, NM_DEVICE_IFACE, "ActiveConnection")
+      if active and active != "/":
+        if not self.previous_connection:
+          try:
+            previous = self._get(active, NM_ACTIVE_IFACE, "Connection")
+            if self._connection_id(previous) != CONNECTION_ID:
+              self.previous_connection = previous
+          except NetworkError:
+            pass
+        self._call(NM_PATH, NM_IFACE, "DeactivateConnection", "o", (active,))
+        self.log("wifi_yielded", interface=self.yield_interface, had_previous=bool(self.previous_connection))
+    except NetworkError as error:
+      self.log("wifi_yield_failed", interface=self.yield_interface, error=str(error))
 
   def _networks(self, path: str) -> list:
     config = self._get(path, NM_DEVICE_IFACE, "Ip4Config")
@@ -448,9 +478,13 @@ class NetworkLease:
     with self._lock:
       if self.router is None and not (restore and (self.previous_connection or self.autoconnect_paused)):
         return
+      restore_device = self.yield_device_path or self.device_path
       ours_active = False
       try:
-        if self.device_path:
+        if self.yield_device_path:
+          current = self._get(self.yield_device_path, NM_DEVICE_IFACE, "ActiveConnection")
+          ours_active = current in ("", "/")
+        elif self.device_path:
           current = self._get(self.device_path, NM_DEVICE_IFACE, "ActiveConnection")
           ours_active = current == self.active_path or current in ("", "/")
       except NetworkError:
@@ -465,22 +499,23 @@ class NetworkLease:
           self._call(self.connection_path, NM_SETTINGS_CONNECTION_IFACE, "Delete")
         except NetworkError:
           pass  # volatile profiles delete themselves on deactivation
-      if restore and self.autoconnect_paused:
+      if restore and self.autoconnect_paused and restore_device:
         try:
-          self._set(self.device_path, NM_DEVICE_IFACE, "Autoconnect", "b", True)
+          self._set(restore_device, NM_DEVICE_IFACE, "Autoconnect", "b", True)
           self.marker.unlink(missing_ok=True)
         except (NetworkError, OSError) as error:
           self.log("wifi_autoconnect_restore_failed", error=str(error))
         self.autoconnect_paused = False
-      if restore and ours_active and self.previous_connection and self.device_path:
+      if restore and ours_active and self.previous_connection and restore_device:
         try:
-          self._call(NM_PATH, NM_IFACE, "ActivateConnection", "ooo", (self.previous_connection, self.device_path, "/"))
+          self._call(NM_PATH, NM_IFACE, "ActivateConnection", "ooo", (self.previous_connection, restore_device, "/"))
           self.log("wifi_restored_previous")
         except NetworkError as error:
           self.log("wifi_restore_failed", error=str(error))
       self.connection_path = self.active_path = self.local_ip = ""
       if restore:
         self.previous_connection = ""
+        self.yield_device_path = ""
       try:
         if self.router is not None:
           self.router.close()

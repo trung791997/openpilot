@@ -178,7 +178,8 @@ def test_session_stop_cancels_a_slow_aa0_setup():
 class FakeNM:
   def __init__(self, devices=None, autoconnect=True, overlap=False, appears_after=0, state=lambda path: 30):
     self.devices = devices if devices is not None else {"/dev/wlan0": "wlan0", "/dev/aa0": "aa0"}
-    self.autoconnect = autoconnect
+    self.autoconnect = {path: autoconnect for path in self.devices}
+    self.active = {path: ("/active/home" if name == "wlan0" else "/") for path, name in self.devices.items()}
     self.overlap = overlap
     self.appears_after = appears_after  # GetDevices calls before NetworkManager lists aa0
     self.state = state
@@ -193,7 +194,18 @@ class FakeNM:
         return [[path for path, name in self.devices.items() if name != "aa0"]]
       return [list(self.devices)]
     if member == "AddAndActivateConnection2":
+      dev = body[1] if len(body) > 1 else "/dev/aa0"
+      self.active[dev] = "/active/aa"
       return ["/settings/aa", "/active/aa"]
+    if member == "DeactivateConnection":
+      target = body[0]
+      for dev, act in list(self.active.items()):
+        if act == target:
+          self.active[dev] = "/"
+      return []
+    if member == "ActivateConnection":
+      self.active[body[1]] = "/active/restored"
+      return ["/active/restored"]
     if member == "GetSettings":
       return [{"connection": {"id": ("s", "home")}}]
     return []
@@ -209,36 +221,58 @@ class FakeNM:
       return [{"address": ("s", "192.168.180.183"), "prefix": ("u", 24)}]
     if name == "Frequency":
       return 5745 if path == "/ap/aa0" else 2437
-    return {"WirelessEnabled": True, "DeviceType": 2, "ActiveConnection": "/active/home", "State": self.state(path) if path.startswith("/dev") else 2,
-            "Autoconnect": self.autoconnect, "Connection": "/settings/home", "ActiveAccessPoint": "/ap/" + path.rsplit("/", 1)[-1]}[name]
+    if name == "ActiveConnection":
+      return self.active.get(path, "/")
+    if name == "Autoconnect":
+      return self.autoconnect.get(path, True)
+    return {"WirelessEnabled": True, "DeviceType": 2, "State": self.state(path) if path.startswith("/dev") else 2,
+            "Connection": "/settings/home", "ActiveAccessPoint": "/ap/" + path.rsplit("/", 1)[-1]}[name]
 
   def set_property(self, path, interface, name, signature, value):
     self.set.append((path, name, value))
-    self.autoconnect = value
+    if name == "Autoconnect":
+      self.autoconnect[path] = value
 
 
-def nm_lease(nm, dedicated=True, monkeypatch=None):
+def nm_lease(nm, dedicated=True, tmp_path=None):
   lease: Any = NetworkLease(Log(), "aa0", dedicated=dedicated)
+  if tmp_path is not None:
+    lease.marker = tmp_path / "paused.json"
   lease._call, lease._get, lease._set = nm.call, nm.get, nm.set_property
   lease._delete_stale_profiles = lambda: None  # test double
   lease.router = type("R", (), {"close": lambda self: None})()
   return lease
 
 
-def test_dedicated_network_lease_leaves_home_wifi_alone(monkeypatch):
-  nm = FakeNM(autoconnect=False)
-  lease = nm_lease(nm)
-  assert lease.acquire(credentials(), timeout=2.0) == "192.168.180.183"
-  assert lease.previous_connection == ""
-  lease.release(restore=True)
-  assert "ActivateConnection" not in nm.calls
-
-
-def test_dedicated_network_lease_turns_off_autoconnect_before_joining():
+def test_dedicated_network_lease_yields_wlan0_and_restores_on_stop(tmp_path):
   nm = FakeNM(autoconnect=True)
-  lease = nm_lease(nm)
+  lease = nm_lease(nm, tmp_path=tmp_path)
+  assert lease.acquire(credentials(), timeout=2.0) == "192.168.180.183"
+  assert nm.active["/dev/wlan0"] == "/" and not nm.autoconnect["/dev/wlan0"]
+  assert lease.previous_connection == "/settings/home"
+  assert "wifi_yielded" in lease.log.names()
+  lease.release(restore=False)  # retrying keeps wlan0 yielded
+  assert nm.active["/dev/wlan0"] == "/" and not nm.autoconnect["/dev/wlan0"]
+  assert "ActivateConnection" not in nm.calls
+  lease.release(restore=True)
+  assert nm.autoconnect["/dev/wlan0"] and nm.active["/dev/wlan0"] == "/active/restored"
+  assert "ActivateConnection" in nm.calls and not lease.marker.exists()
+
+
+def test_dedicated_network_lease_does_not_overwrite_user_wlan0_choice(tmp_path):
+  nm = FakeNM(autoconnect=True)
+  lease = nm_lease(nm, tmp_path=tmp_path)
   lease.acquire(credentials(), timeout=2.0)
-  assert nm.set == [("/dev/aa0", "Autoconnect", False)]
+  nm.active["/dev/wlan0"] = "/active/user-picked"
+  lease.release(restore=True)
+  assert nm.autoconnect["/dev/wlan0"] and "ActivateConnection" not in nm.calls
+
+
+def test_dedicated_network_lease_turns_off_autoconnect_before_joining(tmp_path):
+  nm = FakeNM(autoconnect=True)
+  lease = nm_lease(nm, tmp_path=tmp_path)
+  lease.acquire(credentials(), timeout=2.0)
+  assert ("/dev/aa0", "Autoconnect", False) in nm.set
   assert nm.calls.index("AddAndActivateConnection2") > 0
   joined = dict(lease.log.events)["wifi_joined"]
   assert joined["freq"] == 5745 and joined["wlan0_freq"] == 2437 and joined["wlan0_state"] == 30
