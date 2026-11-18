@@ -62,21 +62,25 @@ F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
 
-# 1 Hz Way B internal-fusion diagnostic probe (Bosch-A A150 verified SRAM bases & SDA r13=0x4001F6F0 pointer slots)
+# 1 Hz Way B internal-fusion diagnostic probe (Bosch-A 36802-TBA-A150 verified SRAM bases).
+# Offline route evidence (bob-unify-car):
+# - T1=0x40032AEC and OUT18=0x4003681C (from 8f88b00741) were confirmed on routes
+#   000000f4--618185d0bb and 000000f5--6e8e645f02 (valid T1[0] kinematics/flags and exact
+#   OUT18[0]+16 trackId matches 2 and 32); 8343dbb36f's +0x20 shift (0x40032B0C / 0x4003683C)
+#   moved off both tables (t1_flags=0, wrapping 16-bit counter at +42) on f7/f8.
+# - P=0x400397FC (-4 from 8343dbb36f's 0x40039800): places P+6 at 0x40039802 (0 idle / 1..12 active)
+#   and P+7 at 0x40039803 (0xFF idle / 1..30 active slot) on 000000f7--38344bf8d6 and
+#   000000f8--c8cda6c897 (8f88b00741's 0x400397E0 read static 00..ff..00 on f4/f5).
+# - T1+3414 = 0x40033842 was live on f4, f5, and f8.
+# - Legacy 0x40017... r13 SDA pointer slots returned 0x80000000 (or 0x4001A8AC) across f4/f5/f7/f8.
 WAYB_PROBE_INTERVAL_NS = 1_000_000_000
-WAYB_SRAM_MIN = 0x40020000
-WAYB_SRAM_MAX = 0x4005F000
-WAYB_PTR_T1_PRI = 0x40017E40    # r13 - 30896 (A150 -> 0x40032B0C, cleared to 0x80000000 between ticks)
-WAYB_PTR_OUT18 = 0x40017E4C     # r13 - 30884 (A150 -> 0x4003683C)
-WAYB_PTR_T1_LOW = 0x4001771C    # r13 - 32724 (A150 -> 0x40032B0C)
-WAYB_PTR_P_LOW = 0x40017700     # r13 - 32752 (A150 -> 0x40039800)
-WAYB_PTR_P_ALT = 0x40017EA0     # r13 - 30800 (secondary P ptr)
-WAYB_DEFAULT_T1_BASE = 0x40032B0C
-WAYB_DEFAULT_OUT18_BASE = 0x4003683C
-WAYB_DEFAULT_P_BASE = 0x40039800
+WAYB_DEFAULT_T1_BASE = 0x40032AEC
+WAYB_DEFAULT_OUT18_BASE = 0x4003681C
+WAYB_DEFAULT_P_BASE = 0x400397FC
 WAYB_T1_STRIDE = 104
 WAYB_OUT18_STRIDE = 18
-WAYB_SEL_CAM_OFFSET = 3382      # A150 T1+3382 (0x40033842) = 0x40032AEC+3414
+WAYB_T1_NUM_SLOTS = 32
+WAYB_SEL_CAM_OFFSET = 3414
 
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None
@@ -214,8 +218,6 @@ class XcpRadarLogger:
     self._pm = pm
     self._wayb_probe_enabled = bool(probe_wayb if probe_wayb is not None else (pm is not None))
     self._wayb_queue: deque[tuple[str, int, int]] = deque()
-    self._wayb_ptrs_queued = False
-    self._wayb_ptrs_done = False
     self._wayb_last_round_ns = 0
     self._wayb_t1_base = WAYB_DEFAULT_T1_BASE
     self._wayb_out18_base = WAYB_DEFAULT_OUT18_BASE
@@ -297,7 +299,6 @@ class XcpRadarLogger:
   @staticmethod
   def _empty_wayb_state() -> dict:
     return {
-      "ptrs_raw": {},
       "t1_base": hex(WAYB_DEFAULT_T1_BASE),
       "out18_base": hex(WAYB_DEFAULT_OUT18_BASE),
       "p_base": hex(WAYB_DEFAULT_P_BASE),
@@ -328,8 +329,6 @@ class XcpRadarLogger:
     self._init_queue.clear()
     self._init_queued.clear()
     self._wayb_queue.clear()
-    self._wayb_ptrs_queued = False
-    self._wayb_ptrs_done = False
     self._wayb_last_round_ns = 0
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
@@ -421,12 +420,8 @@ class XcpRadarLogger:
     if pid == 0xFE:
       if cmd_type == "WAYB":
         self._wayb_state["last_err"] = data.hex()
-        if isinstance(slot, str) and slot.startswith("ptr_"):
-          self._wayb_state["ptrs_raw"][slot] = f"err_{data.hex()}"
-          if not self._wayb_queue:
-            self._resolve_wayb_bases_locked()
-        else:
-          self._wayb_queue.clear()
+        self._wayb_state["updated_ns"] = now_ns
+        self._wayb_queue.clear()
         return
       self._clear_session_locked("NEED_CONNECT")
       return
@@ -451,46 +446,11 @@ class XcpRadarLogger:
     elif cmd_type == "WAYB":
       self._handle_wayb_reply_locked(slot, size, data, now_ns)
 
-  def _resolve_wayb_bases_locked(self) -> None:
-    ptrs = self._wayb_state["ptrs_raw"]
-    def _parse(name: str) -> int | None:
-      raw = ptrs.get(name)
-      return int(raw, 16) if (isinstance(raw, str) and raw.startswith("0x")) else None
-
-    t1_pri = _parse("ptr_t1_pri")
-    t1_base = t1_pri if (t1_pri is not None and WAYB_SRAM_MIN <= t1_pri <= WAYB_SRAM_MAX and (t1_pri & 1) == 0) else WAYB_DEFAULT_T1_BASE
-    out18_ptr = _parse("ptr_out18")
-    out18_base = out18_ptr if (out18_ptr is not None and WAYB_SRAM_MIN <= out18_ptr <= WAYB_SRAM_MAX and (out18_ptr & 1) == 0) else WAYB_DEFAULT_OUT18_BASE
-    p_alt = _parse("ptr_p_alt")
-    p_low = _parse("ptr_p_low")
-    t1_low = _parse("ptr_t1_low")
-    p_base = WAYB_DEFAULT_P_BASE
-    if t1_low == t1_base and p_low is not None and 0x40039000 <= p_low <= 0x4003A000 and (p_low & 1) == 0:
-      p_base = p_low
-    elif p_alt is not None and 0x40039000 <= p_alt <= 0x4003A000 and (p_alt & 1) == 0:
-      p_base = p_alt
-    elif p_low is not None and 0x40039000 <= p_low <= 0x4003A000 and (p_low & 1) == 0:
-      p_base = p_low
-    self._wayb_t1_base = t1_base
-    self._wayb_out18_base = out18_base
-    self._wayb_p_base = p_base
-    self._wayb_state["t1_base"] = hex(t1_base)
-    self._wayb_state["out18_base"] = hex(out18_base)
-    self._wayb_state["p_base"] = hex(p_base)
-    self._wayb_ptrs_done = True
-
   def _handle_wayb_reply_locked(self, tag: str, size: int, payload: bytes, now_ns: int) -> None:
     if len(payload) < 1 + size:
       return
     data = payload[1 : 1 + size]
     wb = self._wayb_state
-    if tag.startswith("ptr_") and size == 4:
-      val = int.from_bytes(data, "big")
-      wb["ptrs_raw"][tag] = hex(val)
-      wb["updated_ns"] = now_ns
-      if not self._wayb_queue:
-        self._resolve_wayb_bases_locked()
-      return
     if tag == "p0" and size == 7:
       wb["p0_b2_b5"] = int.from_bytes(data[0:4], "big")
       p0_valid = int(data[4])
@@ -498,7 +458,7 @@ class XcpRadarLogger:
       wb["p0_valid"] = p0_valid
       wb["p0_t1_slot"] = p0_t1_slot
       wb["p0_b8"] = int(data[6])
-      slot = p0_t1_slot if (p0_valid != 0 and 0 <= p0_t1_slot < 32) else 0
+      slot = p0_t1_slot if (p0_valid != 0 and 0 <= p0_t1_slot < WAYB_T1_NUM_SLOTS) else 0
       wb["p0_slot_queried"] = slot
       wb["updated_ns"] = now_ns
       t1_slot_base = self._wayb_t1_base + WAYB_T1_STRIDE * slot
@@ -549,19 +509,9 @@ class XcpRadarLogger:
   def _next_wayb_task_locked(self, now_ns: int) -> tuple[str, int, int] | None:
     if not self._wayb_probe_enabled:
       return None
-    if not self._wayb_ptrs_queued:
-      self._wayb_ptrs_queued = True
-      for item in (
-        ("ptr_t1_pri", WAYB_PTR_T1_PRI, 4),
-        ("ptr_out18", WAYB_PTR_OUT18, 4),
-        ("ptr_t1_low", WAYB_PTR_T1_LOW, 4),
-        ("ptr_p_low", WAYB_PTR_P_LOW, 4),
-        ("ptr_p_alt", WAYB_PTR_P_ALT, 4),
-      ):
-        self._wayb_queue.append(item)
     if self._wayb_queue:
       return self._wayb_queue.popleft()
-    if self._wayb_ptrs_done and (self._wayb_last_round_ns == 0 or now_ns - self._wayb_last_round_ns >= WAYB_PROBE_INTERVAL_NS):
+    if self._wayb_last_round_ns == 0 or now_ns - self._wayb_last_round_ns >= WAYB_PROBE_INTERVAL_NS:
       self._wayb_last_round_ns = now_ns
       return ("p0", self._wayb_p_base + 2, 7)
     return None
@@ -1071,7 +1021,7 @@ class XcpRadarLogger:
     with self._lock:
       self._op_matched_slots = matched_slots
       wayb_probe = (
-        {**self._wayb_state, "ptrs_raw": dict(self._wayb_state["ptrs_raw"])}
+        dict(self._wayb_state)
         if self._wayb_probe_enabled and self._wayb_state["updated_ns"] > 0
         else None
       )

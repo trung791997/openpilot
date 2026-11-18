@@ -520,41 +520,42 @@ def test_fast_inactive_probe_when_op_lead_unmatched():
   logger.close()
 
 
-def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
+def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
   rows = _capture_events(monkeypatch)
   ram = bytearray(NUM_SLOTS * STRIDE)
   _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
 
-  t1_base = 0x40032B0C
-  out18_base = 0x4003683C
-  p_base = 0x40039800
+  assert not any(name.startswith("WAYB_PTR_") for name in dir(xcp_mod))
+  t1_base = 0x40032AEC
+  out18_base = 0x4003681C
+  p_base = 0x400397FC
   t1_slot = 7
+  assert xcp_mod.WAYB_DEFAULT_T1_BASE == t1_base
+  assert xcp_mod.WAYB_DEFAULT_OUT18_BASE == out18_base
+  assert xcp_mod.WAYB_DEFAULT_P_BASE == p_base
+  assert t1_base + xcp_mod.WAYB_SEL_CAM_OFFSET == 0x40033842
 
-  # Mock ECU memory map for Way B pointer table + P + T1[7] + OUT18[7] + T1+WAYB_SEL_CAM_OFFSET
+  # Mock ECU memory map for A150 P (0x400397FC) + T1[7] (0x40032AEC) + OUT18[7] (0x4003681C) + T1+3414 (0x40033842)
   ecu_mem: dict[int, bytes] = {
-    xcp_mod.WAYB_PTR_T1_PRI: t1_base.to_bytes(4, "big"),
-    xcp_mod.WAYB_PTR_OUT18: out18_base.to_bytes(4, "big"),
-    xcp_mod.WAYB_PTR_T1_LOW: t1_base.to_bytes(4, "big"),
-    xcp_mod.WAYB_PTR_P_LOW: p_base.to_bytes(4, "big"),
-    # P[0]+2..8: b2..5, valid=1, t1_slot=7, b8=0
-    p_base + 2: bytes([0x00, 0x01, 0x00, 0x02, 1, t1_slot, 0]),
+    # P[0]+2..8 (0x400397FE..0x40039804): b2..5, p0_valid=5 (@0x40039802), p0_t1_slot=7 (@0x40039803), b8=0
+    0x400397FE: bytes([0x00, 0x01, 0x00, 0x02, 5, t1_slot, 0]),
     # T1[7]+24..29: X_raw=32*128, u26=0, Vx28_raw=-1.5*256
     t1_base + 104 * t1_slot + 24: (
       int(round(32.0 * 128)).to_bytes(2, "big", signed=True)
       + (0).to_bytes(2, "big", signed=True)
       + int(round(-1.5 * 256)).to_bytes(2, "big", signed=True)
     ),
-    # T1[7]+40..43: Vx40_raw=-1.5*256, Vy42_raw=0
+    # T1[7]+40..43: Vx40_raw=-15.0*256, Vy42_raw=0
     t1_base + 104 * t1_slot + 40: (
-      int(round(-1.5 * 256)).to_bytes(2, "big", signed=True)
+      int(round(-15.0 * 256)).to_bytes(2, "big", signed=True)
       + (0).to_bytes(2, "big", signed=True)
     ),
-    # T1[7]+86..91: flags=0x8800, b88..90, valid=1
-    t1_base + 104 * t1_slot + 86: (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 1]),
+    # T1[7]+86..91: flags=0x8800, b88..90, valid=4
+    t1_base + 104 * t1_slot + 86: (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 4]),
     # OUT18[7]+16..17: cam_track_id=22, cam_flags=0x03
     out18_base + 18 * t1_slot + 16: bytes([22, 0x03]),
-    # T1+WAYB_SEL_CAM_OFFSET..+6: sel_flags=0x0400, b3416..17, sel_cam_id=22, b3419, sel_state=1
-    t1_base + xcp_mod.WAYB_SEL_CAM_OFFSET: (0x0400).to_bytes(2, "big") + bytes([0, 0, 22, 0, 1]),
+    # T1+3414 (0x40033842): sel_flags=0x0400, b3416..17, sel_cam_id=22, b3419, sel_state=255
+    0x40033842: (0x0400).to_bytes(2, "big") + bytes([0, 0, 22, 0, 255]),
   }
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
@@ -578,9 +579,6 @@ def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
         if (off // STRIDE) == 4 and (off % STRIDE) == 16 and i >= 20:
           lead_kin_reads += 1
         rep = b"\xFF" + bytes(ram[off : off + sz])
-      elif addr == xcp_mod.WAYB_PTR_P_ALT:
-        # Simulate XCP error 0xFE on optional pointer without dropping READY Array B session
-        rep = b"\xFE\x22"
       elif addr in ecu_mem:
         if addr == p_base + 2:
           wayb_p0_reads += 1
@@ -597,15 +595,114 @@ def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
   assert lead_kin_reads >= 45
   wb = rows[-1].get("wayb_probe")
   assert wb is not None
+  assert "ptrs_raw" not in wb
   assert wb["t1_base"] == hex(t1_base)
   assert wb["out18_base"] == hex(out18_base)
   assert wb["p_base"] == hex(p_base)
-  assert wb["ptrs_raw"]["ptr_p_alt"] == "err_fe22"
-  assert wb["p0_valid"] == 1
+  assert wb["p0_valid"] == 5
   assert wb["p0_t1_slot"] == t1_slot
+  assert wb["p0_slot_queried"] == t1_slot
   assert wb["t1_x_raw"] == int(round(32.0 * 128))
-  assert wb["t1_vx40_raw"] == int(round(-1.5 * 256))
-  assert wb["t1_valid"] == 1
+  assert wb["t1_vx28_raw"] == int(round(-1.5 * 256))
+  assert wb["t1_vx40_raw"] == int(round(-15.0 * 256))
+  assert wb["t1_flags"] == 0x8800
+  assert wb["t1_valid"] == 4
   assert wb["out18_cam_id"] == 22
+  assert wb["out18_cam_flags"] == 0x03
   assert wb["sel_cam_id"] == 22
-  assert wb["sel_state"] == 1
+  assert wb["sel_state"] == 255
+  assert wb["last_err"] is None
+
+
+def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  # Only slot 0 addresses (T1[0] = 0x40032AEC, OUT18[0] = 0x4003681C) and T1+3414 = 0x40033842 are allowed.
+  slot0_mem: dict[int, bytes] = {
+    0x40032B04: bytes(6),  # T1[0]+24
+    0x40032B14: bytes(4),  # T1[0]+40
+    0x40032B42: bytes(6),  # T1[0]+86
+    0x4003682C: bytes(2),  # OUT18[0]+16
+    0x40033842: bytes(7),  # T1+3414
+  }
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, probe_wayb=True)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=22, dRel=28.6, yRel=0.1, vRel=-1.5)])
+
+  # Round 1: idle p0 (p0_valid=0, p0_t1_slot=255) -> must query slot 0
+  # Round 2: out-of-range slot (p0_valid=1, p0_t1_slot=32) -> must clamp/fallback to slot 0
+  # Round 3: XCP 0xFE error on p0 -> must log last_err="fe22", set updated_ns > 0, clear _wayb_queue, stay READY
+  p0_replies = [
+    b"\xFF" + bytes([0x00, 0x00, 0x00, 0x00, 0, 255, 0]),
+    b"\xFF" + bytes([0x00, 0x01, 0x00, 0x02, 1, 32, 0]),
+    b"\xFE\x22",
+  ]
+  p0_round = 0
+  seen_slot0_t1 = 0
+  seen_slot0_out18 = 0
+
+  for i in range(160):  # 3.2 s at 20 ms RTT
+    if i >= 10:
+      logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
+        off = addr - REC0
+        rep = b"\xFF" + bytes(ram[off : off + sz])
+      elif addr == 0x400397FE:
+        rep = p0_replies[min(p0_round, len(p0_replies) - 1)]
+        p0_round += 1
+      elif addr in slot0_mem:
+        if addr == 0x40032B04:
+          seen_slot0_t1 += 1
+        elif addr == 0x4003682C:
+          seen_slot0_out18 += 1
+        rep = b"\xFF" + slot0_mem[addr][:sz]
+      else:
+        raise AssertionError(f"Out-of-bounds or unexpected Way B address {addr:#x} size={sz}")
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  assert logger.state == "READY"
+  assert p0_round >= 3
+  assert seen_slot0_t1 == 2
+  assert seen_slot0_out18 == 2
+  assert len(logger._wayb_queue) == 0
+  logger.close()
+
+  wb = rows[-1].get("wayb_probe")
+  assert wb is not None
+  assert wb["p0_slot_queried"] == 0
+  assert wb["last_err"] == "fe22"
+  assert wb["updated_ns"] > 0
+
+  # Also verify first-read 0xFE error alone sets updated_ns > 0 and emits wayb_probe
+  rows.clear()
+  logger2 = XcpRadarLogger(cp, probe_wayb=True)
+  t2 = _unlock_logger(logger2, 1_000_000_000, v_ego=15.0)
+  for _ in range(30):
+    sends = logger2.next_can_sends(t2)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
+        rep = b"\xFF" + bytes(ram[addr - REC0 : addr - REC0 + sz])
+      elif addr == 0x400397FE:
+        rep = b"\xFE\x22"
+      else:
+        raise AssertionError(f"Unexpected address {addr:#x}")
+      logger2.observe_can([(t2, [(XCP_DTO, rep, XCP_BUS)])], t2 + 19_000_000, v_ego=15.0)
+    t2 += 20_000_000
+  assert logger2.state == "READY"
+  assert len(logger2._wayb_queue) == 0
+  logger2.close()
+  wb2 = rows[-1].get("wayb_probe")
+  assert wb2 is not None and wb2["last_err"] == "fe22" and wb2["updated_ns"] > 0
