@@ -62,21 +62,21 @@ F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
 
-# 1 Hz Way B internal-fusion diagnostic probe (Bosch-A A150 flash-verified anchors + A160 -0x20 candidates)
+# 1 Hz Way B internal-fusion diagnostic probe (Bosch-A A150 verified SRAM bases & SDA r13=0x4001F6F0 pointer slots)
 WAYB_PROBE_INTERVAL_NS = 1_000_000_000
 WAYB_SRAM_MIN = 0x40020000
 WAYB_SRAM_MAX = 0x4005F000
-WAYB_PTR_T1_PRI = 0x40017E3C    # r13 - 30896 (A150 0xae380 -> expected 0x40032AEC)
-WAYB_PTR_OUT18 = 0x40017E48     # r13 - 30884 (A150 0xae380 -> expected 0x4003681C)
-WAYB_PTR_T1_LOW = 0x40017718    # r13 - 32724 (A160 0x4001771C - 4; cross-check == T1)
-WAYB_PTR_P_LOW = 0x400176FC     # r13 - 32752 (A160 0x40017700 - 4 -> P base)
-WAYB_PTR_P_ALT = 0x40017E9C     # r13 - 30800 (A160 0xb121a secondary P ptr)
-WAYB_DEFAULT_T1_BASE = 0x40032AEC
-WAYB_DEFAULT_OUT18_BASE = 0x4003681C
-WAYB_DEFAULT_P_BASE = 0x400397E0
+WAYB_PTR_T1_PRI = 0x40017E40    # r13 - 30896 (A150 -> 0x40032B0C, cleared to 0x80000000 between ticks)
+WAYB_PTR_OUT18 = 0x40017E4C     # r13 - 30884 (A150 -> 0x4003683C)
+WAYB_PTR_T1_LOW = 0x4001771C    # r13 - 32724 (A150 -> 0x40032B0C)
+WAYB_PTR_P_LOW = 0x40017700     # r13 - 32752 (A150 -> 0x40039800)
+WAYB_PTR_P_ALT = 0x40017EA0     # r13 - 30800 (secondary P ptr)
+WAYB_DEFAULT_T1_BASE = 0x40032B0C
+WAYB_DEFAULT_OUT18_BASE = 0x4003683C
+WAYB_DEFAULT_P_BASE = 0x40039800
 WAYB_T1_STRIDE = 104
 WAYB_OUT18_STRIDE = 18
-WAYB_SEL_CAM_OFFSET = 3414
+WAYB_SEL_CAM_OFFSET = 3382      # A150 T1+3382 (0x40033842) = 0x40032AEC+3414
 
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None

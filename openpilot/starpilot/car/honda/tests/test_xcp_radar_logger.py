@@ -525,12 +525,12 @@ def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
   ram = bytearray(NUM_SLOTS * STRIDE)
   _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
 
-  t1_base = 0x40032AEC
-  out18_base = 0x4003681C
-  p_base = 0x400397DC
+  t1_base = 0x40032B0C
+  out18_base = 0x4003683C
+  p_base = 0x40039800
   t1_slot = 7
 
-  # Mock ECU memory map for Way B pointer table + P + T1[7] + OUT18[7] + T1+3414
+  # Mock ECU memory map for Way B pointer table + P + T1[7] + OUT18[7] + T1+WAYB_SEL_CAM_OFFSET
   ecu_mem: dict[int, bytes] = {
     xcp_mod.WAYB_PTR_T1_PRI: t1_base.to_bytes(4, "big"),
     xcp_mod.WAYB_PTR_OUT18: out18_base.to_bytes(4, "big"),
@@ -553,8 +553,8 @@ def test_wayb_1hz_probe_discovers_pointers_and_preserves_lead_rate(monkeypatch):
     t1_base + 104 * t1_slot + 86: (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 1]),
     # OUT18[7]+16..17: cam_track_id=22, cam_flags=0x03
     out18_base + 18 * t1_slot + 16: bytes([22, 0x03]),
-    # T1+3414..3420: sel_flags=0x0400, b3416..17, sel_cam_id=22, b3419, sel_state=1
-    t1_base + 3414: (0x0400).to_bytes(2, "big") + bytes([0, 0, 22, 0, 1]),
+    # T1+WAYB_SEL_CAM_OFFSET..+6: sel_flags=0x0400, b3416..17, sel_cam_id=22, b3419, sel_state=1
+    t1_base + xcp_mod.WAYB_SEL_CAM_OFFSET: (0x0400).to_bytes(2, "big") + bytes([0, 0, 22, 0, 1]),
   }
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
