@@ -1,8 +1,18 @@
 """Reason-qualified intent retention; this module never grants an axis."""
+import sys
+
 from openpilot.cereal import log
 from openpilot.starpilot.aol.panda_faults import blocking_fault_mask, blocking_fault_list
-from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, current_native, native_inventory_matches_cp
+from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, STALE_ALERT_NS, current_native, native_inventory_matches_cp
 from openpilot.starpilot.aol.wire import SafetyState, decode_intent
+
+
+def _stale_alert_ns() -> int:
+  # Honor tests patching selfdrived.AOL_STALE_ALERT_NS directly without importing selfdrived inside card.
+  selfdrived_mod = sys.modules.get('openpilot.selfdrive.selfdrived.selfdrived')
+  if selfdrived_mod is not None and hasattr(selfdrived_mod, 'AOL_STALE_ALERT_NS'):
+    return int(selfdrived_mod.AOL_STALE_ALERT_NS)
+  return STALE_ALERT_NS
 
 
 def cp_identity(cp):
@@ -309,6 +319,8 @@ class TransportPauseFeedback:
     self.retention_event_ns = 0
     self.retention_started_ns = 0
     self.retention_verified = False
+    self.stale_grace_source_ns = 0
+    self.stale_grace_prior_signature = None
     self.availability_producer = ''
     self.availability_epoch = None
     self.source_retention_started_ns = 0
@@ -949,16 +961,26 @@ class TransportPauseFeedback:
       cs.gasPressed and not cs.brakePressed and not cs.regenBraking and self.lateral_only_baseline and
       not native.requestedLongitudinal and not native.longitudinalAllowed)
     stock_user = stock_lateral_user_event(cp)
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    grace_prev = (self.stale_grace_prior_signature
+      if (self.stale_grace_source_ns and previous is not None and
+          previous[5] == 'availabilityPause' and previous[8] == 0 and not previous[9] and
+          self.stale_grace_prior_signature is not None and
+          (max(int(axis.faultEventMonoTime), event_ns) >= self.stale_grace_source_ns + _stale_alert_ns() or
+           event_ns > previous[6]))
+      else previous)
     stock_lateral = bool(reason == 'availabilityPause' and axis.sourceCarStateMonoTime == 0 and
       not axis.lateralActive and not axis.longitudinalActive and not axis.desiredLongitudinal and
       stock_lateral_off(cp, cs, native, allow_independent_brake=toyota_pedal,
-                        allow_independent_gas=stock_gas or toyota_pedal and cs.gasPressed) and previous is not None and
-      previous[0] == self.session and previous[7] == self.session and
-      previous[14] == intent_producer_session and previous[15] == self.availability_epoch and
-      (previous[11] and not previous[12] and previous[13] and not previous[10] and
-       (previous[9] and previous[5] == 'none' or (self.retention_verified or self.retention_started_ns) and
-        previous[5] == 'availabilityPause' and previous[8] == 0 and not previous[9] and
-        previous[6] == axis.faultEventMonoTime) or
+                        allow_independent_gas=stock_gas or toyota_pedal and cs.gasPressed) and
+      previous is not None and grace_prev is not None and
+      grace_prev[0] == self.session and grace_prev[7] == self.session and
+      grace_prev[14] == intent_producer_session and grace_prev[15] == self.availability_epoch and
+      (grace_prev[11] and not grace_prev[12] and grace_prev[13] and not grace_prev[10] and
+       (grace_prev[9] and grace_prev[5] == 'none' or (self.retention_verified or self.retention_started_ns) and
+        grace_prev[5] == 'availabilityPause' and grace_prev[8] == 0 and not grace_prev[9] and
+        (grace_prev[6] == axis.faultEventMonoTime or
+         self.retention_verified and 0 < grace_prev[6] <= axis.faultEventMonoTime == event_ns <= stamp)) or
        # Critical signature: matched temporary lag only; unmatched joins keep pending_event.
        # Else fail/clear LAT-only baseline before signature change.
        self.lateral_only_baseline and not self.failed and not self.pending_event and
@@ -984,12 +1006,18 @@ class TransportPauseFeedback:
           event.userDisable and not event.softDisable and not event.immediateDisable)]
     event_ns = int(sm.logMonoTime['onroadEvents'])
     faults = [event for event in events if event.immediateDisable or event.softDisable]
+    users = [event for event in events if event.userDisable]
     live_event = bool(sm.valid['onroadEvents'] and sm.alive['onroadEvents'] and
       0 < event_ns <= now_ns and now_ns - event_ns <= 1_500_000_000)
     host_source_off = bool(reason == 'availabilityPause' and axis.sourceCarStateMonoTime == 0 and
       not axis.lateralActive and not axis.longitudinalActive)
     issue = live_event and (availability_only(events) or host_source_off and host_source_availability_only(events))
-    if reason not in ('none', 'availabilityPause') or faults and not issue:
+    # A user disable inside the stale-carState grace ends it, whether or not the hold has started
+    # (a non-stock cancel makes the hold refuse, so it can arrive here first). Elsewhere keep the base
+    # rule: a blanket users reject broke held-gas source-expiry recovery on HKG CAN-FD.
+    in_stale_grace = bool(self.stale_grace_source_ns or host_source_off and
+      0 < self.lateral_source_ns <= stamp and stamp - self.lateral_source_ns < _stale_alert_ns())
+    if reason not in ('none', 'availabilityPause') or users and in_stale_grace or faults and not issue:
       return False
     typed = bool(reason == 'availabilityPause' and not axis.lateralActive and not axis.longitudinalActive and
                  0 < axis.faultEventMonoTime <= stamp)
@@ -1005,6 +1033,10 @@ class TransportPauseFeedback:
     matched = typed and issue and axis.faultEventMonoTime == event_ns
     occurrence = max(int(axis.faultEventMonoTime) if typed else 0, event_ns if issue else 0)
     if not occurrence or occurrence < self.retention_event_ns:
+      return False
+    if self.stale_grace_source_ns and not (
+        occurrence >= self.stale_grace_source_ns + _stale_alert_ns() or
+        issue and previous is not None and event_ns > previous[6]):
       return False
     if matched:
       if not self.retention_verified and not 0 <= now_ns - self.lateral_baseline_ns <= baseline_age_limit:
@@ -1024,6 +1056,8 @@ class TransportPauseFeedback:
         return False
     self.retention_qualified, self.retention_pending = matched, not matched
     self.lateral_native_ns = native.observedMonoTime
+    self.stale_grace_source_ns = 0
+    self.stale_grace_prior_signature = None
     return True
 
   def _availability_recovery_current(self, sm, cp, cs, axis, stamp, now_ns, *, latched, current, continuity, producer):
@@ -1344,6 +1378,75 @@ class TransportPauseFeedback:
     return bool((granted or withdrawn) and native.observedMonoTime >= self.healthy_native_ns and
       self.healthy_inventory == (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)))
 
+  def _stale_grace_hold_current(self, sm, cp, cs, axis, stamp, now_ns, *, latched, current, continuity, producer, signature):
+    """Hold an active latch across SelfdriveD's <100 ms stale-carState alert grace without renewing baselines."""
+    stale_alert_ns = _stale_alert_ns()
+    if (stale_alert_ns <= 0 or not latched or self.failed or self.paused or self.pending_event or
+        self.retention_started_ns or self.source_retention_started_ns or
+        not current or not continuity or not self.session or cp_identity(cp) != self.cp):
+      return False
+    if (str(axis.faultReason) != 'availabilityPause' or str(axis.mode) != 'off' or
+        axis.lateralActive or axis.longitudinalActive or axis.desiredLongitudinal or
+        str(axis.sessionId) != self.session or str(axis.faultSessionId) != self.session or
+        not producer or str(getattr(axis, 'intentProducerSessionId', '')) != producer or
+        not 0 < axis.faultEventMonoTime <= stamp):
+      return False
+    previous = self.signature
+    if previous is None or previous[0] != self.session or previous[7] != self.session or previous[14:16] != signature[14:16]:
+      return False
+    if self.stale_grace_source_ns:
+      if previous[5] != 'availabilityPause' or previous[9] or previous[10] or self.stale_grace_prior_signature is None:
+        return False
+      grace_source_ns = self.stale_grace_source_ns
+      prior = self.stale_grace_prior_signature
+      if prior[14:16] != signature[14:16]:
+        return False
+    else:
+      if (previous[5] != 'none' or not (previous[9] or previous[10] or (previous[11] and previous[13])) or
+          not 0 < previous[8] <= previous[2] <= now_ns):
+        return False
+      if previous[9] and (self.lateral_source_ns != previous[8] or
+          not 0 < self.lateral_baseline_ns <= now_ns or
+          producer != self.availability_producer or
+          signature[15] != self.availability_epoch or not self.lateral_inventory):
+        return False
+      grace_source_ns = int(previous[8])
+      prior = previous
+    if not (0 < grace_source_ns <= now_ns and now_ns - grace_source_ns < stale_alert_ns):
+      return False
+    if not (axis.sourceCarStateMonoTime == 0 or
+            axis.sourceCarStateMonoTime == grace_source_ns and now_ns - grace_source_ns > AXIS_MAX_AGE_NS):
+      return False
+    if prior[11] and axis.desiredLateral and not axis.nativeAcknowledged:
+      return False
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000):
+      return False
+    native = _healthy_transport_native(sm, cp, cs, self.session, now_ns)
+    if native is None or not native.pandaInventory:
+      return False
+    inventory = (native.pandaSerial, tuple(p.hardwareSerial for p in native.pandaInventory))
+    expected_inventory = self.lateral_inventory if prior[9] and self.lateral_inventory is not None else self.healthy_inventory
+    if (expected_inventory is None or inventory != expected_inventory or
+        native.observedMonoTime < max(self.healthy_native_ns, self.lateral_native_ns)):
+      return False
+    if axis.desiredLateral and not (native.requestedLateral and native.lateralAllowed):
+      return False
+    events = sm['onroadEvents']
+    stock_user = stock_lateral_user_event(cp)
+    allow_stock_user = bool(not prior[10] and not axis.desiredLongitudinal and stock_user is not None and
+      stock_lateral_off(cp, cs, native))
+    if any(event.immediateDisable or event.softDisable or
+           (event.userDisable and not (allow_stock_user and event.name == stock_user))
+           for event in events):
+      return False
+    self.stale_grace_source_ns = grace_source_ns
+    self.stale_grace_prior_signature = prior
+    self.sequence = int(axis.sequence)
+    self.signature = signature
+    return True
+
   def observe(self, sm, cp, cs, now_ns, *, latched=True, cancel_source_ns=0, brake_source_ns=0,
               gm_withdrawal_source_ns=0, intent_producer_session='', main_arm_ns=0, startup_calibration_pending=False, intent_paused=False):
     self.ordinary_warning_qualified = False
@@ -1361,6 +1464,8 @@ class TransportPauseFeedback:
         self.ccnc_main_off_source_ns = 0
         self.cold_park_waiting = False
         self.cold_main_sparse_waiting = False
+        self.stale_grace_source_ns = 0
+        self.stale_grace_prior_signature = None
       stamp = int(sm.logMonoTime['aolAxisState'])
       reason = str(axis.faultReason)
       signature = (str(axis.sessionId), int(axis.sequence), stamp, int(axis.observedMonoTime),
@@ -1598,6 +1703,10 @@ class TransportPauseFeedback:
           latched=latched, continuity=continuity, producer=intent_producer_session, signature=signature):
         self.sequence, self.signature = int(axis.sequence), signature
         return False
+      if self._stale_grace_hold_current(sm, cp, cs, axis, stamp, now_ns,
+          latched=latched, current=current, continuity=continuity,
+          producer=intent_producer_session, signature=signature):
+        return False
       if not self.failed and self._availability_retention(sm, cp, cs, axis, stamp, now_ns,
           latched=latched, current=current, continuity=continuity, intent_producer_session=intent_producer_session):
         self.sequence, self.signature = int(axis.sequence), signature
@@ -1702,6 +1811,8 @@ class TransportPauseFeedback:
         self.pending_event = 0
         self.failed = False
         self.longitudinal_cancel_ns = 0
+        self.stale_grace_source_ns = 0
+        self.stale_grace_prior_signature = None
         continuity = True
       if self.failed:
         self.longitudinal_cancel_ns = 0
@@ -1727,6 +1838,8 @@ class TransportPauseFeedback:
           self.longitudinal_cancel_ns = 0
       if not current or not continuity or reason not in ('none', 'transportPause'):
         self.longitudinal_cancel_ns = 0
+        self.stale_grace_source_ns = 0
+        self.stale_grace_prior_signature = None
         hard = (self.paused or bool(self.pending_event) or reason == 'critical' or
                 bool(self.session and (latched or not continuity)))
         self.paused = False
@@ -1736,8 +1849,10 @@ class TransportPauseFeedback:
         return hard
       known = bool(self.session)
       if reason == 'none':
-        if not baseline:
+        if not baseline or self.stale_grace_source_ns and not axis.sourceCarStateMonoTime > self.stale_grace_source_ns:
           hard = self.paused or bool(self.pending_event) or bool(self.session and latched)
+          self.stale_grace_source_ns = 0
+          self.stale_grace_prior_signature = None
           self.paused = False
           self.pending_event = 0
           self.failed = hard
@@ -1770,6 +1885,8 @@ class TransportPauseFeedback:
           self.longitudinal_cancel_ns = int(cancel_source_ns)
           self.last_cancel_source_ns = int(cancel_source_ns)
         self.source_retention_started_ns = 0
+        self.stale_grace_source_ns = 0
+        self.stale_grace_prior_signature = None
         self.healthy_feedback_ns = now_ns
         self.healthy_native_ns = int(native.observedMonoTime) if native is not None else 0
         self.healthy_inventory = ((native.pandaSerial, tuple(p.hardwareSerial for p in native.pandaInventory))
@@ -1826,6 +1943,8 @@ class TransportPauseFeedback:
       return False
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):
       self.longitudinal_cancel_ns = 0
+      self.stale_grace_source_ns = 0
+      self.stale_grace_prior_signature = None
       hard = self.paused or bool(self.pending_event) or bool(self.session and latched)
       self.paused = False
       self.pending_event = 0

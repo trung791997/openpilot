@@ -25,5 +25,10 @@ class TestHondaCancel(CurrentCaller):
   def test_rdx_stock_acc_cancel(self):
     self.run_current_caller(candidate=CAR.ACURA_RDX_3G, word=1, cancel=True)
 
+  # Route 000000ee seg 0: a <100 ms stale-carState availabilityPause without commIssue cleared allowedLatch
+  # before CANCEL arrived; the next CANCEL then dropped lateral steering altogether.
+  def test_civic_bosch_alpha_stale_grace_then_cancel(self):
+    self.run_current_caller(candidate=CAR.HONDA_CIVIC_BOSCH, word=2082, alpha=True, cancel=True, stale_grace_tick=35)
+
   def test_rdx_alpha_cancel(self):
     self.run_current_caller(candidate=CAR.ACURA_RDX_3G, word=2211, alpha=True, cancel=True)
