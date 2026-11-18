@@ -16,6 +16,7 @@ from openpilot.starpilot.aol.wire import INTENT_SERVICE, SAFETY_SERVICE, IntentS
 INTENT_MAX_AGE_NS = 30_000_000
 SAFETY_MAX_AGE_NS = 200_000_000
 AXIS_MAX_AGE_NS = 30_000_000
+STALE_ALERT_NS = 100_000_000
 
 
 @dataclass(frozen=True)

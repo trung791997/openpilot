@@ -97,11 +97,12 @@ class TestHondaCurrentCaller(unittest.TestCase):
 
   def run_current_caller(self, *, candidate, word, fault=None, alternate_brake=False, alpha=False, speed_mps=12.5,
                          pedal=False, host_scenario=None, serialized=False, override=False, refault=False, brake_override=None,
-                         brake_race=False, cancel=False):
+                         brake_race=False, cancel=False, stale_grace_tick=None):
     safety = libsafety_py.libsafety
     with (
       OpenpilotPrefix(),
       patch('opendbc.car.honda.interface.disable_ecu', return_value=True),
+      patch('openpilot.selfdrive.selfdrived.selfdrived.AOL_STALE_ALERT_NS', 100_000_000 if stale_grace_tick is not None else 0),
       patch.dict(os.environ, {'SIMULATION': '1', 'AOL_REPLAY_RUNTIME': '0', 'FINGERPRINT': '', 'SKIP_FW_QUERY': '', 'DISABLE_FW_CACHE': '1'}),
     ):
       saved = Params()
@@ -183,6 +184,7 @@ class TestHondaCurrentCaller(unittest.TestCase):
       tx_parser = CANParser(tx_dbc.name, tx_messages, ci.CC.CAN.lkas)
       previous, driven, receipt = structs.CarControl(), {}, None
       controls_published, controls_latest, driven_new = {}, {}, {}
+      buffered_can = []
       base = time.monotonic_ns() + 100_000_000
       def braking(tick):   # brake_override: the brake is held through the override, moving or stopped
         if cancel:   # CANCEL ends long at tick 50 instead of the brake; lateral must stay with the AOL latch
@@ -238,6 +240,23 @@ class TestHondaCurrentCaller(unittest.TestCase):
             pre_host_status = (int(safety.aol_get_request_mask()), int(safety.aol_get_permission_mask()))
             self.assertEqual(pre_host_status, (0, 0), (tick, pre_host_status))
             self.assertFalse(pandad.heartbeat)
+          if stale_grace_tick is not None and stale_grace_tick < tick < stale_grace_tick + 4:
+            buffered_can.append((now, incoming))
+            continue
+          if stale_grace_tick is not None and tick == stale_grace_tick + 4:
+            stale_now = now - 5_000_000
+            absent = messaging.new_message('aolSafetyWire', 0, valid=False, logMonoTime=stale_now)
+            current_receipt = receipt if receipt is not None else absent
+            driven_new = selfdrive_step(
+              sd, published, current_receipt, controls_published, cp, safety, stale_now, calibration='calibrated',
+              driver_lockout=host_scenario == 'driver_lockout' and tick >= 135,
+              driver_monitoring_valid=not (host_scenario == 'driver_lockout' and tick >= 140))
+            driven.update(driven_new)
+            pause_axis = driven_new['aolAxisState'].aolAxisState
+            pause_events = [e.name for e in driven_new['onroadEvents'].onroadEvents]
+            self.assertEqual(str(pause_axis.faultReason), 'availabilityPause', pause_axis.to_dict())
+            self.assertEqual(pause_axis.sourceCarStateMonoTime, 0)
+            self.assertNotIn('commIssue', pause_events)
           panda = messaging.new_message('pandaStates', 1, valid=True, logMonoTime=now)
           panda.pandaStates[0].safetyModel = cp.safetyConfigs[0].safetyModel
           panda.pandaStates[0].safetyParam, panda.pandaStates[0].alternativeExperience = word, 32
@@ -249,7 +268,10 @@ class TestHondaCurrentCaller(unittest.TestCase):
           previous_event = controls_latest.get('carControl')
           if previous_event is not None:
             self.assertEqual(previous_event.carControl.to_dict(), previous.to_dict())
-            self.assertEqual(int(previous_event.logMonoTime), int(((base + (tick - 1) * 10_000_000 + 2000) / 1e9) * 1e9))
+            if stale_grace_tick is not None and tick == stale_grace_tick + 4:
+              self.assertEqual(int(previous_event.logMonoTime), int(((base + stale_grace_tick * 10_000_000 + 2000) / 1e9) * 1e9))
+            else:
+              self.assertEqual(int(previous_event.logMonoTime), int(((base + (tick - 1) * 10_000_000 + 2000) / 1e9) * 1e9))
             self.assertGreater(now - int(previous_event.logMonoTime), 0)
             self.assertLessEqual(now - int(previous_event.logMonoTime), 150_000_000)
           # No fabricated validity or renewed source stamp at the consumer boundary.
@@ -271,11 +293,13 @@ class TestHondaCurrentCaller(unittest.TestCase):
           def stamped(service, size=None, _new=real_new, _now=now, **kwargs):
             return _new(service, size, **({'logMonoTime': _now} | kwargs))
 
+          card_can = buffered_can + [(now, incoming)]
+          buffered_can.clear()
           controller_frame_before = ci.CC.frame
           with (
             patch.object(card.sm, 'update'),
             patch('openpilot.selfdrive.car.card.messaging.drain_sock_raw', return_value=[b'can']),
-            patch('openpilot.selfdrive.car.card.can_capnp_to_list', return_value=[(now, incoming)]),
+            patch('openpilot.selfdrive.car.card.can_capnp_to_list', return_value=card_can),
             patch('openpilot.selfdrive.car.card.REPLAY', False),
             patch('openpilot.selfdrive.car.card.time.monotonic_ns', return_value=now + 2000),
             patch('openpilot.selfdrive.car.card.time.monotonic', return_value=(now + 2000) / 1e9),
@@ -316,6 +340,13 @@ class TestHondaCurrentCaller(unittest.TestCase):
           self.assertEqual(cs.cruiseState.enabled, 21 <= tick < (52 if brake_race else 50) or reengage)
           intent = decode_intent(published['aolIntentWire'].aolIntentWire)
           self.assertIsNotNone(intent)
+          if stale_grace_tick is not None and tick == stale_grace_tick + 4:
+            self.assertTrue(card.aol_card_intent.allowed_latch)
+            self.assertTrue(intent.allowedLatch)
+            self.assertFalse(card.aol_transport_feedback.failed)
+          elif stale_grace_tick is not None and tick == stale_grace_tick + 5:
+            self.assertFalse(card.aol_transport_feedback.failed)
+            self.assertTrue(card.aol_card_intent.allowed_latch)
           # Initial receipt is unavailable until actual negotiator completes its zero acknowledgment.
           absent = messaging.new_message('aolSafetyWire', 0, valid=False, logMonoTime=now)
           current_receipt = receipt if receipt is not None else absent

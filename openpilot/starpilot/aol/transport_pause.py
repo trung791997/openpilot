@@ -1,7 +1,7 @@
 """Reason-qualified intent retention; this module never grants an axis."""
 from openpilot.cereal import log
 from openpilot.starpilot.aol.panda_faults import blocking_fault_mask, blocking_fault_list
-from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, current_native, native_inventory_matches_cp
+from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, STALE_ALERT_NS, current_native, native_inventory_matches_cp
 from openpilot.starpilot.aol.wire import SafetyState, decode_intent
 
 
@@ -989,6 +989,14 @@ class TransportPauseFeedback:
     host_source_off = bool(reason == 'availabilityPause' and axis.sourceCarStateMonoTime == 0 and
       not axis.lateralActive and not axis.longitudinalActive)
     issue = live_event and (availability_only(events) or host_source_off and host_source_availability_only(events))
+    # SelfdriveD's <100 ms stale-carState grace publishes availabilityPause with source 0 and NO fault event
+    # (no commIssue/selfdrivedLagging). That is a silent pause, not an unverifiable one: treat it as an issue
+    # only when no fault and no userDisable event is present, so pedal/steer/critical paths are unchanged,
+    # and only while the last source is inside that grace (past it selfdrived must have sent commIssue).
+    # Route 000000f1 seg 8: a 39.6 ms carState gap cleared the latch (disarming_fault) without this.
+    silent_grace = bool(live_event and host_source_off and not faults and not any(e.userDisable for e in events) and
+      0 < self.lateral_source_ns <= stamp and stamp - self.lateral_source_ns < STALE_ALERT_NS)
+    issue = issue or silent_grace
     if reason not in ('none', 'availabilityPause') or faults and not issue:
       return False
     typed = bool(reason == 'availabilityPause' and not axis.lateralActive and not axis.longitudinalActive and

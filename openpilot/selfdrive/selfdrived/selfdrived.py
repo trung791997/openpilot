@@ -48,7 +48,8 @@ from openpilot.starpilot.aol.transport_pause import AvailabilityPause, Transport
 from openpilot.starpilot.aol.source_availability import (
   ordinary_source_availability, fresh_ordinary_lag_continuation, stock_lateral_role, stock_lateral_fault_proof,
 )
-from openpilot.starpilot.aol.runtime import (INTENT_MAX_AGE_NS, SAFETY_MAX_AGE_NS, AxisDecision, current_intent, current_native, decide_axes,
+from openpilot.starpilot.aol.runtime import (INTENT_MAX_AGE_NS, SAFETY_MAX_AGE_NS, STALE_ALERT_NS, AxisDecision,
+                                            current_intent, current_native, decide_axes,
                                             ordinary_lateral_requested, decide_ordinary_axis, known_reverse_pause)
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed
 from openpilot.starpilot.conditional_mode.consumer import ConsumerResult, ModeConsumer
@@ -73,7 +74,7 @@ REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
-AOL_STALE_ALERT_NS = 100_000_000  # stale carState must last this long before commIssue sounds; commands go at 30 ms
+AOL_STALE_ALERT_NS = STALE_ALERT_NS  # stale carState must last this long before commIssue sounds; commands go at 30 ms
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
 
 ThermalStatus = log.DeviceState.ThermalStatus

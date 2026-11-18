@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from openpilot.cereal import log
+from openpilot.cereal import log, messaging
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.selfdrive.selfdrived import selfdrived
 from openpilot.starpilot.aol.tests import test_ioniq_availability as fixture
@@ -214,3 +214,137 @@ def test_gas_held_stall_growing_past_100ms_long_modes_alerts_once_due(mode, age_
     assert not command.latActive and not command.longActive
     assert CONTROLS_MISMATCH in sd.events.names and sd.aol_authority_lost
     assert not state.enabled and state.alertType == 'controlsMismatch/immediateDisable'
+
+
+@pytest.mark.parametrize(
+  'mode, gas, retention, offset_ns, recovery_tick, recovery_stamp',
+  [
+    ('combined', False, True, AGE_35_MS, 6, BASE + 40_000_000),
+    ('combined', True, True, AGE_35_MS, 6, BASE + 40_000_000),
+    ('combined', True, True, AGE_65_MS, 9, BASE + 70_000_000),
+    ('combined', False, False, AGE_35_MS, 6, BASE + 40_000_000),
+    ('lateral_only', True, True, AGE_35_MS, 6, BASE + 40_000_000),
+    ('lateral_only', True, True, AGE_65_MS, 9, BASE + 70_000_000),
+    ('lateral_only', False, False, AGE_35_MS, 6, BASE + 40_000_000),
+    ('long_only', True, True, AGE_35_MS, 6, BASE + 40_000_000),
+    ('combined_unarmed', True, True, AGE_35_MS, 6, BASE + 40_000_000),
+  ],
+)
+def test_card_preserves_latch_across_stale_grace_and_recovery(mode, gas, retention, offset_ns, recovery_tick, recovery_stamp):
+  case = fixture.IoniqAvailabilityTests(methodName='runTest')
+  cleanup = ExitStack()
+  cleanup.callback(case.doCleanups)
+  cleanup.enter_context(OpenpilotPrefix())
+  cleanup.enter_context(mock.patch.object(selfdrived, 'AOL_STALE_ALERT_NS', 100_000_000))
+  with cleanup:
+    sd, _, drive, card, receive = case._ioniq_availability_callers(full_op=True)
+    feedback = card.aol_transport_feedback
+    ax2, _, _ = drive(2, state_stamp=BASE, offset_ns=4_497_535, gas=gas, **settings(mode, BASE, 3))
+    assert receive(int(ax2.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    if not retention:
+      cleanup.enter_context(mock.patch.object(sd, 'retain_ordinary_source_state', return_value=False))
+    ax5, _, _ = drive(5, timeout=True, gas=gas, state_stamp=BASE, offset_ns=offset_ns, **settings(mode, BASE, 3))
+    assert str(ax5.faultReason) == 'availabilityPause' and COMM_ISSUE not in sd.events.names
+    assert receive(int(ax5.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    # The silent pause is a qualified availability issue: retained at once, nothing left pending.
+    assert not feedback.failed and feedback.retention_verified and not feedback.retention_started_ns
+    assert card.aol_card_intent.allowed_latch
+    ax_rec, state_rec, _ = drive(recovery_tick, gas=gas, state_stamp=recovery_stamp, **settings(mode, recovery_stamp, 4))
+    assert str(ax_rec.faultReason) == 'none' and state_rec.enabled
+    assert receive(int(ax_rec.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    assert not feedback.failed and card.aol_card_intent.allowed_latch
+
+
+@pytest.mark.parametrize('mode, gas', [('combined', False), ('combined', True), ('lateral_only', True)])
+def test_card_preserves_latch_when_stale_grace_grows_past_100ms_into_comm_issue(mode, gas):
+  case = fixture.IoniqAvailabilityTests(methodName='runTest')
+  cleanup = ExitStack()
+  cleanup.callback(case.doCleanups)
+  cleanup.enter_context(OpenpilotPrefix())
+  cleanup.enter_context(mock.patch.object(selfdrived, 'AOL_STALE_ALERT_NS', 100_000_000))
+  with cleanup:
+    sd, _, drive, card, receive = case._ioniq_availability_callers(full_op=True)
+    feedback = card.aol_transport_feedback
+    ax2, _, _ = drive(2, state_stamp=BASE, offset_ns=4_497_535, gas=gas, **settings(mode, BASE, 3))
+    assert receive(int(ax2.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    for tick in (5, 8, 11):
+      ax_grace, _, _ = drive(tick, timeout=True, gas=gas, state_stamp=BASE, offset_ns=AGE_35_MS, **settings(mode, BASE, 3))
+      assert COMM_ISSUE not in sd.events.names
+      assert receive(int(ax_grace.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+      assert not feedback.failed and card.aol_card_intent.allowed_latch
+    ax_due, _, _ = drive(12, timeout=True, gas=gas, state_stamp=BASE, offset_ns=AGE_35_MS, **settings(mode, BASE, 3))
+    assert COMM_ISSUE in sd.events.names
+    assert receive(int(ax_due.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    assert not feedback.failed and feedback.retention_verified
+    fresh = BASE + 110_000_000
+    ax_rec, state_rec, _ = drive(13, gas=gas, state_stamp=fresh, **settings(mode, fresh, 4))
+    assert str(ax_rec.faultReason) == 'none' and ax_rec.lateralActive
+    assert state_rec.enabled == (not gas)
+    assert receive(int(ax_rec.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    assert not feedback.failed and not feedback.retention_started_ns
+
+
+@pytest.mark.parametrize(
+  'fault',
+  ['past_100ms_no_comm', 'unexpected_user', 'unexpected_soft', 'unexpected_hard', 'stale_recovery_none', 'native_lat_denied'],
+)
+def test_card_stale_grace_refusal_boundaries(fault):
+  from dataclasses import replace
+  from openpilot.starpilot.aol.wire import decode_safety, encode_safety
+
+  case = fixture.IoniqAvailabilityTests(methodName='runTest')
+  cleanup = ExitStack()
+  cleanup.callback(case.doCleanups)
+  cleanup.enter_context(OpenpilotPrefix())
+  cleanup.enter_context(mock.patch.object(selfdrived, 'AOL_STALE_ALERT_NS', 100_000_000))
+  with cleanup:
+    sd, _, drive, card, receive = case._ioniq_availability_callers(full_op=True)
+    ax2, _, _ = drive(2, state_stamp=BASE, offset_ns=4_497_535, **settings('combined', BASE, 3))
+    assert receive(int(ax2.observedMonoTime), axis=sd.pm.messages['aolAxisState'], event=sd.pm.messages['onroadEvents'])
+    ax5, _, _ = drive(5, timeout=True, state_stamp=BASE, offset_ns=AGE_35_MS, **settings('combined', BASE, 3))
+    t5 = int(ax5.observedMonoTime)
+    proof = sd.pm.messages['aolAxisState']
+    ev = sd.pm.messages['onroadEvents']
+    if fault == 'past_100ms_no_comm':
+      assert receive(t5, axis=proof, event=ev)
+      bad_t = BASE + 100_000_000
+      bad_proof = proof.as_builder()
+      bad_proof.logMonoTime = bad_t
+      bad_proof.aolAxisState.sequence += 1
+      bad_proof.aolAxisState.observedMonoTime = bad_t
+      bad_proof.aolAxisState.validUntilMonoTime = bad_t + 30_000_000
+      assert not receive(bad_t, axis=bad_proof.as_reader(), event=ev)
+    elif fault in ('unexpected_user', 'unexpected_soft', 'unexpected_hard'):
+      bad_ev = messaging.new_message('onroadEvents', 1, valid=True, logMonoTime=t5)
+      if fault == 'unexpected_user':
+        bad_ev.onroadEvents[0].name = 'buttonCancel'
+        bad_ev.onroadEvents[0].userDisable = True
+      elif fault == 'unexpected_soft':
+        bad_ev.onroadEvents[0].name = 'steerTempUnavailable'
+        bad_ev.onroadEvents[0].softDisable = True
+      else:
+        bad_ev.onroadEvents[0].name = 'controlsMismatch'
+        bad_ev.onroadEvents[0].immediateDisable = True
+      assert not receive(t5, axis=proof, event=bad_ev.as_reader())
+    elif fault == 'stale_recovery_none':
+      assert receive(t5, axis=proof, event=ev)
+      t6 = t5 + 10_000_000
+      bad_rec = proof.as_builder()
+      bad_rec.logMonoTime = t6
+      bad_rec.aolAxisState.sequence += 1
+      bad_rec.aolAxisState.faultReason = 'none'
+      bad_rec.aolAxisState.mode = 'combined'
+      bad_rec.aolAxisState.lateralActive = bad_rec.aolAxisState.longitudinalActive = True
+      bad_rec.aolAxisState.desiredLateral = bad_rec.aolAxisState.desiredLongitudinal = True
+      bad_rec.aolAxisState.nativeAcknowledged = True
+      bad_rec.aolAxisState.sourceCarStateMonoTime = BASE
+      bad_rec.aolAxisState.observedMonoTime = t6
+      bad_rec.aolAxisState.validUntilMonoTime = t6 + 30_000_000
+      assert not receive(t6, axis=bad_rec.as_reader(), event=ev)
+    elif fault == 'native_lat_denied':
+      nat = decode_safety(sd.sm['aolSafetyWire'])
+      pkt = messaging.new_message('aolSafetyWire', 0, valid=True, logMonoTime=t5)
+      pkt.aolSafetyWire = encode_safety(replace(nat, observedMonoTime=t5, validUntilMonoTime=t5 + 200_000_000, lateralAllowed=False))
+      sd.sm.update_msgs(t5 / 1e9, [pkt.as_reader()])
+      assert not receive(t5, axis=proof, event=ev)
+    assert not card.aol_card_intent.allowed_latch
