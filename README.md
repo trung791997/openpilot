@@ -167,24 +167,34 @@ rest), its `SConscript`, `LICENSE`, and `hw/` (the encoder source `starport_enco
 and the prebuilt `libstarport_encoder.so`, which is **aarch64** — rebuild it with the `SConscript` for any other
 target; the `SConscript` is not wired into a build on this branch). Only Python syntax was checked; nothing was run.
 
-Everything below is outside `starport/`, is in the source fork at `5044693486`, and is **not on this branch**.
-`starportd` will not import until each exists or is replaced. A port that has its own AA stack only needs the
-hu_feed hooks in `session.py` / `supervisor.py` described above.
+**Also included from `5044693486`** (copied unchanged, 58 files): every fork `starpilot/` module that the
+`starport/` package imports directly — `aol/runtime`, `bluetooth/owner`, `conditional_mode/policy`,
+`drive_state/{evidence,owner}`, `galaxy/{evidence,hotspot_netlink,settings,spotify_setup}`, `gps/{head_unit,source}`,
+`models/jetlink_status`, `navigation/{guidance_hold,offline_roads,owner,road_tiles,wire}`, `saved_source`,
+`soloist/{backend,now_playing,paths}`, `speed_limits/vision/observation`, `spot_monitor/preferences`,
+`system/pipe_worker`, and the projected-UI modules in `starpilot/ui/` (`appearance_preferences`,
+`large_speed_geometry`, `navigation_favorites_state`, `navigation_icons`, `onroad*`, `pip_*`, `presentation`,
+`radar_points`, `raylib`, `runtime_snapshot`, `shell`, `unified_speed_presentation`), with their package `__init__.py`.
 
-**What the `starport/` package imports from outside it:**
+**Still not on this branch.** `starportd` will not import until each exists or is replaced. Following imports past
+the first level reaches ~480 fork files (car, lateral, longitudinal and flm control code included), so the rest is
+listed, not copied — check out `5044693486` (bob-unify-car) for the full tree. A port that has its own AA stack only
+needs the hu_feed hooks in `session.py` / `supervisor.py` described above.
 
-- stock openpilot: `cereal` (`messaging`, `visionipc`), `common/{params,basedir,hardware,utils,version}`,
-  `common/transformations/camera`, `opendbc.car.structs`, `system/ui/lib/application`, and
+- stock openpilot: `cereal` (`messaging`, `services`, `visionipc`), `msgq.visionipc`,
+  `common/{params,basedir,constants,hardware,swaglog,utils,version}`, `common/transformations/camera`,
+  `opendbc.car`, `system/ui/lib/application`, `tools/replay`, and
   `selfdrive/ui/{ui_state,onroad/augmented_road_view,onroad/cameraview,onroad/model_renderer}` (the projected
   onroad view);
-- fork `starpilot/`: `aol/runtime`, `bluetooth/owner`, `conditional_mode/policy`, `drive_state/{evidence,owner}`,
-  `galaxy/{evidence,hotspot_netlink,settings,spotify_setup}`, `gps/{head_unit,source}`,
-  `models/{jetlink_adapter,jetlink_status}`, `navigation/{guidance_hold,offline_roads,owner,road_tiles,wire}`,
-  `saved_source`, `soloist/{backend,now_playing,paths}`, `speed_limits/vision/observation`,
-  `spot_monitor/preferences`, `system/pipe_worker`, and the projected-UI modules in `starpilot/ui/`
-  (`appearance_preferences`, `large_speed_geometry`, `navigation_favorites_state`, `navigation_icons`, `onroad*`,
-  `pip_*`, `presentation`, `radar_points`, `raylib`, `runtime_snapshot`, `shell`, `unified_speed_presentation`);
-- libraries: `cv2`, numpy, PIL.
+- fork `starpilot/` modules imported by the 58 files above (second level), about 90, mostly more `starpilot/ui/`
+  (`onroad_*` widgets, `*_owner`, `*_state`, `settings`, `toggles`, `home`, `pip_shaders`, ...), plus
+  `aol/{panda_faults,vehicle,wire}`, `conditional_mode/{manual,projection,runtime_settings,status}`,
+  `controllers/{mode_actions,toyota_cruise}`, `drive_state/resolver`, `galaxy/{access,developer_settings,
+  localization_settings,setting_descriptions,vehicle_configuration}`, `gps/acquisition`, `lateral/lane_runtime`,
+  `longitudinal/profile_runtime`, `maps/storage`, `speed_limits/{acceptance,toyota,vision_gate}`,
+  `spot_monitor/{observation,policy}`, `replay/render`, `audio/alert_volume`, `bluetooth/radio_preference`,
+  `curve_speed/status`, `feature_capabilities`, `local_timezone`, `parked_evidence`, `schema_cache`, `storage`;
+- libraries: `cv2`, numpy, PIL, `capnp`, `jeepney`, `raylib_nb`, `websocket`.
 
 **Modules `hu_feed.py` imports from the source fork:**
 
