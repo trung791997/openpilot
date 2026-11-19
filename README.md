@@ -49,8 +49,8 @@ the car.
   - **UDP over a shared Wi-Fi (fallback).** With no AA session, or a head-unit apk without
     `VendorTunnel`, the comma and head unit must be on the same Wi-Fi, normally a phone hotspot (the head
     unit's Wi-Fi is 2.4 GHz only).
-  - The channel-13 path needs **both halves**: the comma-side sender in `starport/session.py` (not on
-    this branch, see "Missing components") and a head-unit apk built from this branch. An old apk or an
+  - The channel-13 path needs **both halves**: the comma-side sender in `starport/session.py` (included;
+    its supervisor/daemon still need the modules in "Missing components") and a head-unit apk built from this branch. An old apk or an
     unpatched comma leaves only UDP.
 - **Comma:** openpilot with the feed server below, and Mapbox access on the comma for road tiles
   and routes. The token stays on the comma; nothing secret is built into the head-unit app.
@@ -130,7 +130,7 @@ channel 13 you also need the AA session wiring below.
 **Channel-13 sender (AA session wiring).** `hu_feed.py` exposes `attach_aa()`, `detach_aa()`,
 `receive_aa(data)` and `drain_aa(limit)`; while a head unit answers over the tunnel, `aa_active()` is true
 and frames are queued for AA instead of sent over UDP (nav/state/pose first, tiles rate-limited). The
-AA side lives in the source fork, not here:
+AA side is included here, copied unchanged from `5044693486`:
 
 - `starport/session.py`: `VENDOR_EXTENSION_SERVICE = 12`, `VENDOR_TUNNEL_KIND = 0x5350`,
   `VENDOR_TUNNEL_BURST = 8`. When the head unit's service discovery lists the vendor extension service,
@@ -160,15 +160,26 @@ It needs `starport/scan_quiet.py` (included) and `DATA_DIR` and `boot_id` from `
 
 ## Missing components
 
+**Included from `5044693486`** (copied unchanged): `starport/session.py`, `supervisor.py`, `daemon.py`,
+and the modules `session.py` imports: `wire.py` (protobuf field helpers), `touch.py`, `nav_status.py`.
+`session.py` and `tests/test_vendor_extension_probe.py` import cleanly once `nav_status.py`'s navigation
+and UI deps (below) exist. `supervisor.py` and `daemon.py` are the full `starportd` and will **not** import
+on this branch without the modules below; they are here as the reference for where the hu_feed hooks sit.
+
 Everything below is in the source fork at `5044693486` and **not on this branch**. A port needs each one
 or a replacement.
 
-**AA transport (needed for channel 13):** `starport/session.py`, `starport/supervisor.py`,
-`starport/daemon.py`, `starport/wire.py` (protobuf field helpers; `session.py` and
-`tests/test_vendor_extension_probe.py` import it), and the rest of the `starportd` Android Auto stack they
-belong to. Optional: `starport/network.py` (wlan0 yield).
+**Rest of the `starportd` stack (imported by `supervisor.py` / `daemon.py`):** `starport/{auto_connect,
+bluetooth_bridge, bootstrap, bt_sockets, bugsink_report, bugsink_transport, car_interface, car_profiles,
+device_health, display_profile, frame_source, hw_encoder, identity, link_probe, media_audio, media_status,
+network, new_setup, placement, projection_control, protocol, reachability, reconnect_notice, sdp, settings,
+setup_ladder, source_verifier, system_slice, usb_accessory, view}.py`; outside starport:
+`starpilot/bluetooth/owner.py`, `starpilot/gps/head_unit.py`, `starpilot/models/jetlink_adapter.py`,
+`starpilot/saved_source.py`, `starpilot/galaxy/{evidence,settings}.py`, `starpilot/ui/navigation_icons.py`
+(for `nav_status.py`), `common/hardware.py` (`COMMA_HARDWARE`), and `cv2`, numpy, PIL. A port that has
+its own AA stack only needs the hu_feed hooks in `session.py` / `supervisor.py` described above.
 
-**Starport support:** `starport/identity.py` (`DATA_DIR`, `boot_id`, used by `wifi_rejoin.py`).
+**Starport support:** `starport/identity.py` (`DATA_DIR`, `boot_id`, used by `wifi_rejoin.py` and `supervisor.py`).
 
 **Modules `hu_feed.py` imports from the source fork:**
 
@@ -199,7 +210,7 @@ protocol below.
 - `test_hu_feed.py`;
 - `test_dash_turn_card.py`, which compiles `Turn.java` and so needs `java`;
 - `test_wifi_rejoin.py`;
-- `test_vendor_extension_probe.py` (channel-13 session wiring; needs `session.py` and `wire.py`);
+- `test_vendor_extension_probe.py` (channel-13 session wiring; needs `session.py`, `wire.py`, `touch.py`, `nav_status.py`, all included, plus `nav_status.py`'s navigation/UI deps);
 - and, outside `starport/`, `openpilot/starpilot/navigation/tests/test_traffic_tiles.py`.
 
 These tests run in the full source fork. On this branch alone some of them fail or do not load,
