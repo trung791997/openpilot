@@ -11,8 +11,14 @@ from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
 
 def sgsp_v5(guidance=True, **extra):
-  """SGSP's version 5: turnSignalGuidance, no Force turn desires."""
-  return {**to_value(LaneChangePolicy()), "version": 5, "turnSignalGuidance": guidance, **extra}
+  """SGSP's version 5: turnSignalGuidance, no Force turn desires (and no Dom's version 6 autoRequiresCruise)."""
+  value = {key: item for key, item in to_value(LaneChangePolicy()).items() if key != "autoRequiresCruise"}
+  return {**value, "version": 5, "turnSignalGuidance": guidance, **extra}
+
+
+def ours_v6(turn=True, speed=6.7):
+  """Our earlier version 6: guidance with the Force turn desire fields, before Dom's version 6 (autoRequiresCruise)."""
+  return {**sgsp_v5(), "version": 6, "turnDesires": turn, "turnDesireSpeedMps": speed}
 
 
 def ours_v5(turn=True, speed=6.7):
@@ -24,10 +30,11 @@ def ours_v5(turn=True, speed=6.7):
 def test_turn_desires_roundtrip_and_older_documents_keep_them_off():
   policy = replace(LaneChangePolicy(), turn_desires=True, turn_desire_speed_mps=12 * CV.MPH_TO_MS)
   raw = json.dumps(to_value(policy)).encode()
-  assert json.loads(raw)["version"] == 6
+  assert json.loads(raw)["version"] == 6 and json.loads(raw)["autoRequiresCruise"] is False
   assert decode(raw) == policy
+  # an untouched document is Dom's version 6, with no turn desire fields
   default = to_value(LaneChangePolicy())
-  assert default["version"] == 5 and "turnDesires" not in default and default["turnSignalGuidance"] is True
+  assert default["version"] == 6 and "turnDesires" not in default and default["turnSignalGuidance"] is True
   assert decode(json.dumps(default).encode()) == LaneChangePolicy()
   turned_off = to_value(replace(policy, turn_desires=False))
   assert turned_off["version"] == 6 and decode(json.dumps(turned_off).encode()).turn_desire_speed_mps == 12 * CV.MPH_TO_MS
@@ -56,6 +63,20 @@ def test_our_earlier_version_5_document_still_reads(turn):
   policy = decode(json.dumps(ours_v5(turn)).encode())
   assert policy is not None and policy.turn_desires is turn and policy.turn_desire_speed_mps == 6.7
   assert policy.turn_signal_guidance and policy.enabled
+
+
+@pytest.mark.parametrize("turn", (True, False))
+def test_our_earlier_version_6_document_still_reads(turn):
+  policy = decode(json.dumps(ours_v6(turn)).encode())
+  assert policy is not None and policy.turn_desires is turn and policy.turn_desire_speed_mps == 6.7
+  assert not policy.auto_requires_cruise
+
+
+def test_dom_version_6_document_reads_with_force_turn_desires_off():
+  value = to_value(replace(LaneChangePolicy(), auto_requires_cruise=True))
+  assert "turnDesires" not in value
+  policy = decode(json.dumps(value).encode())
+  assert policy is not None and policy.auto_requires_cruise and not policy.turn_desires
 
 
 @pytest.mark.parametrize("guidance", (True, False))

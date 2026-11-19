@@ -8,7 +8,8 @@ def lead(d, v, a=0.0):
 
 
 def planner(monkeypatch, supported=True):
-  # Stock Brake Feel off (active_for False): step() skips the onset ramp, so these tests see coast first alone. coast_enabled has its own gate (vehicle_supported and radar available).
+  # Stock Brake Feel off (active_for False): step() skips the onset ramp, so these tests see coast first alone. coast_enabled has its own gate
+  # (vehicle_supported and radar available).
   monkeypatch.setattr(cf, 'active_for', lambda CP: False)
   monkeypatch.setattr(cf, 'vehicle_supported', lambda CP: supported)
   return cf.HondaBoschALongEnhancement(SimpleNamespace(radarUnavailable=False), 0.05)

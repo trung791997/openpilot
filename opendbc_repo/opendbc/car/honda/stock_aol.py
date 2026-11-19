@@ -40,11 +40,12 @@ MANUAL_SELECTION_PORTS = CLASSIC_BOSCH | NIDEC | RADARLESS | CANFD_STOCK | ALT_R
 _DETECTED = int(HondaFlags.BOSCH_EXT_HUD | HondaFlags.BOSCH_ALT_BRAKE | HondaFlags.HAS_BSM |
                 HondaFlags.EPS_MODIFIED | HondaFlags.HYBRID | HondaFlags.GAS_INTERCEPTOR)
 # Night Star port: the VGR bits name the exact EPS image's steering-ratio table; they are geometry only, never safety.
-# HYBRID_ALT_BRAKEHOLD only says where a Nidec hybrid reports brake hold.
+# HYBRID_ALT_BRAKEHOLD only says where a Nidec hybrid reports brake hold. EPS_ANGLE_LOOP_FW changes what the Accord's
+# 0xE4 carries, not who may send it.
 _DETECTED |= int(HondaFlags.VGR_CLARITY_TRW_A020 | HondaFlags.VGR_CIVIC_TBA_C020 | HondaFlags.VGR_INSIGHT_TXM_A040 |
                  HondaFlags.VGR_CRV_TLA_A040 | HondaFlags.VGR_CIVIC_TBA_C120 | HondaFlags.VGR_RDX_TJB_A220 |
                  HondaFlags.VGR_RIDGELINE_T6Z_A110 | HondaFlags.VGR_ODYSSEY_THR_A020 |
-                 HondaFlags.HYBRID_ALT_BRAKEHOLD)
+                 HondaFlags.HYBRID_ALT_BRAKEHOLD | HondaFlags.EPS_ANGLE_LOOP_FW)
 _ALLOWED_FLAGS = {str(car): int(car.config.flags) | _DETECTED
                   for car in CLASSIC_BOSCH | NIDEC | RADARLESS | CANFD_STOCK | ALT_RADAR_STOCK | {CAR.HONDA_ACCORD_11G}}
 _BOSCH, _BOSCH_RADARLESS, _BOSCH_ALT_BRAKE = int(HondaFlags.BOSCH), int(HondaFlags.BOSCH_RADARLESS), int(HondaFlags.BOSCH_ALT_BRAKE)

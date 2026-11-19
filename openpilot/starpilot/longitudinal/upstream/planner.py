@@ -15,6 +15,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
+from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed
+from openpilot.starpilot.longitudinal.cruise_ceiling import select_cruise_ceiling
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -66,7 +68,8 @@ class LongitudinalPlanner:
     # selfdrive/controls/lib/longitudinal_planner.py. There are no toggles (owner 2026-11-13): on a verified Bosch-A Honda
     # with openpilot longitudinal HumanFollowing, HumanAcceleration and Stock Brake Feel (with the brake onset ramp inside
     # it) are always on (Stock Brake Feel only with the radar on; HumanFollowing/HumanAcceleration,
-    # the release smoothing and the Accel Boost lead gate also vision-only); any other car gets upstream's planner. `bosch_a` is ignored (kept for replay harnesses).
+    # the release smoothing and the Accel Boost lead gate also vision-only); any other car gets upstream's planner. `bosch_a` is ignored (kept for
+    # replay harnesses).
     self.bosch_a_model_leads = None  # HumanFollowing + HumanAcceleration
     self.bosch_a_long = None         # Stock Brake Feel
     import time
@@ -85,10 +88,12 @@ class LongitudinalPlanner:
     from openpilot.starpilot.longitudinal.bosch_a_stop_gap import BoschAStopGap
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)
     from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
-    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))  # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13); same as the StarPilot planner (commaai/openpilot#39015)
+    # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13); same as the StarPilot planner (commaai/openpilot#39015)
+    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
+    self.curve_speed = CurveSpeed(dt)
     self.allow_throttle = True
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -100,7 +105,7 @@ class LongitudinalPlanner:
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
-  def update(self, sm):
+  def update(self, sm, *, cruise_ceiling=None):
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
     else:
@@ -109,10 +114,16 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
+    long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
+    ceiling = select_cruise_ceiling(
+      cruise_ceiling, driver_v_cruise_kph=sm['carState'].vCruise, driver_cruise_mps=v_cruise,
+      system_long_available=self.CP.openpilotLongitudinalControl, long_control_active=not long_control_off,
+      selfdrive_enabled=sm['selfdriveState'].enabled, force_decel=sm['controlsState'].forceDecel,
+    )
+    if ceiling.effective_mps is not None:
+      v_cruise = ceiling.effective_mps
     if sm['controlsState'].forceDecel:
       v_cruise = 0.0
-
-    long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
     # Reset current state when not engaged, or user is controlling the speed
     reset_state = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
@@ -130,6 +141,7 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       self.output_a_target = np.clip(sm['carState'].aEgo, ACCEL_MIN, ACCEL_MAX)
       self.a_cruise = self.output_a_target
+      self.curve_speed.reset()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -168,7 +180,8 @@ class LongitudinalPlanner:
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
-    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
+    curve_offset = self.curve_speed.update(sm['modelV2'], sm['vehicleParameters'].roll)
+    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + curve_offset
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,

@@ -50,7 +50,7 @@ HONDA_BOSCH_A_GROSS_DISTANCE_M = 25.0
 #   KEEP_Y_MAX: in-lane bound in the radar frame (ego-centred). First set to 1.5; Job's camera stills of the census
 #   events at |yRel| 1.44-1.5 (2026-11-06) showed two next-lane cars kept (7b i5143 box truck right lane, 71 i16009
 #   left lane) and three real in-lane leads, so |yRel| cannot separate them near 1.5. 1.2 drops all five back to the
-#   old behaviour and still holds the route-9e track for ~1 s (its yRel reached -1.06 at -5.36 s, -1.45 at -5.0 s).
+#   old behavior and still holds the route-9e track for ~1 s (its yRel reached -1.06 at -5.36 s, -1.45 at -5.0 s).
 #   KEEP_VREL_MAX: closing bound; 0.0 m/s means the track must be closing, not holding or separating.
 #   KEEP_VLEAD_MIN: the kept track must not itself be moving toward us. Job's census of all 46 keep events over
 #   pool14 + r99 + r9b (2026-11-06, replay + camera stills): the only two with vEgo+vRel < -1 were cross traffic seen
@@ -72,7 +72,7 @@ KEEP_VLEAD_MIN = -1.0
 # are untouched, and dRel < 30 m stays urgent. One event, one road (limited road evidence).
 URGENT_LAST_DIRECT_S = 1.0
 # Held-vRel range-slope bound (scratch candidate, 2026-11-11; level: replay only, not road tested). Scorecard episode 26,
-# route 00000071--37216af48f seg 9 (t0_ns 763779770390, labelled PHANTOM by the owner): track 58 at 81.6 -> 84.7 m. The
+# route 00000071--37216af48f seg 9 (t0_ns 763779770390, labeled PHANTOM by the owner): track 58 at 81.6 -> 84.7 m. The
 # parser marked the point NOT measured (track.direct False) for ~1.8 s and held vRel at exactly -9.51 while the track's own
 # range slope was +1.6..+2.5 m/s (the gap opening); the planner braked to -1.11. Counter-example that must not change:
 # REAL episode 292 (000000a4--34c412c0ef seg 16): direct True throughout, range slope -1.5..-5.8 agreeing with vRel.
@@ -821,7 +821,7 @@ class BoschALeadPolicy:
                    else None for lead in output]
     if HELD_VREL_SLOPE_BOUND_ENABLED:
       # Before the witness stages see the lead; track.vRel stays raw (the witness's camera_contradiction reads it).
-      output = [held_vrel_bound(lead, track) if held_vrel_active(track) else lead for lead, track in zip(output, lead_tracks)]
+      output = [held_vrel_bound(lead, track) if held_vrel_active(track) else lead for lead, track in zip(output, lead_tracks, strict=False)]  # ty: ignore[invalid-argument-type]
     urgent_v_rels = [urgency_v_rel(track) for track in lead_tracks]
     output = self.camera_witness.apply(
       output,

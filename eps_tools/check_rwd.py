@@ -30,6 +30,41 @@ ROM_CRC_START, ROM_CRC_LENGTH = 0xc000, 0x74000
 ROM_CRC_REGIONS = ((0x40000, 0x4ff60, 0x4ff7c), (0x60000, 0x6ff60, 0x6ff7c))
 
 
+# THR and TJB also keep a monitor copy of the LKAS calibration: monitors at 0x68000-0x6Bxxx re-run each stage
+# from the shadow and fault the EPS when it disagrees with the primary. A primary edit with a stale shadow
+# passes every checksum and CRC (once they are recomputed) and faults on the car. Fields are (label, primary
+# row-0 address, THR shadow row-0 address, words); TJB's shadow sits 0x4D00 below THR's. Rows are 0x300
+# apart; THR mirrors banks 1-7 (rows 0-6), TJB rows 0-4 (its rows 5-6 are erased in the primary only).
+SHADOW_FIELDS = (
+    ("speed_clamp_lo", 0x57b00, 0x67b00, 1), ("torque_fault_debounce", 0x57b16, 0x67b1a, 1),
+    ("speed_limit_x", 0x57b2a, 0x67b2e, 9), ("speed_limit_y", 0x57b3c, 0x67b40, 9), ("tracker_2", 0x57b4e, 0x67b56, 2),
+    ("override_fade_X1", 0x57b54, 0x67b5e, 8), ("override_fade_Y1", 0x57b64, 0x67b6e, 8),
+    ("override_fade_X2", 0x57b74, 0x67b82, 8), ("override_fade_Y2", 0x57b84, 0x67b92, 8),
+    ("command_input_clamp", 0x57bac, 0x67bc2, 1), ("target_map_x", 0x57bae, 0x67bc4, 9), ("target_map_y", 0x57bc0, 0x67bd6, 9),
+    ("tracker_1", 0x57bd2, 0x67be8, 2), ("d_p_u_clamps", 0x57bd6, 0x67bec, 3),
+    ("helper_E_x", 0x57bdc, 0x67bf2, 8), ("helper_E_y", 0x57bec, 0x67c02, 8), ("helper_F_x", 0x57bfc, 0x67c16, 8),
+    ("helper_F_y", 0x57c0c, 0x67c26, 8), ("helper_G_x", 0x57c1c, 0x67c3a, 6), ("helper_G_y", 0x57c28, 0x67c46, 6),
+    ("helper_H_x", 0x57c34, 0x67c56, 6), ("helper_H_y", 0x57c40, 0x67c62, 6),
+    ("d_gain_x", 0x57c4c, 0x67c72, 9), ("d_gain_y", 0x57c5e, 0x67c84, 9), ("p_gain_x", 0x57c70, 0x67c9a, 9), ("p_gain_y", 0x57c82, 0x67cac, 9),
+)
+SHADOW_ROW = 0x300
+SHADOW_FAMILIES = ((b'39990-THR', 0, 7), (b'39990-TJB', 0x4d00, 5))  # (software ID prefix, shadow offset below THR, rows)
+
+
+def shadow_family(fw):
+    ids = [value.value for value in fw.file_headers[3].values]
+    return next(((offset, rows) for prefix, offset, rows in SHADOW_FAMILIES if any(i.startswith(prefix) for i in ids)), None)
+
+
+def validate_shadows(decrypted, start, offset, rows):
+    for row in range(rows):
+        for label, primary, shadow, n in SHADOW_FIELDS:
+            p, s = primary + SHADOW_ROW * row, shadow - offset + SHADOW_ROW * row
+            if decrypted[p - start:p - start + 2 * n] != decrypted[s - start:s - start + 2 * n]:
+                raise ValueError(f"monitor shadow stale: {label} row {row} at 0x{p:x} differs from its shadow at 0x{s:x}")
+    print(f"  Monitor shadows ({len(SHADOW_FIELDS)} fields x {rows} rows): PASS")
+
+
 def _crc32_bzip2_table():
     table = []
     for i in range(256):
@@ -62,13 +97,64 @@ def rom_crc_definitions(fw):
     return ROM_CRC_REGIONS
 
 
+# Ridgeline T6Z-A110 images are a different family: a V850 (Pilot codebase) app at flash 0x10000, length
+# 0x50000, encrypted with the H5 keys as out = k0 + (k1 ^ (in - k2)) (boot FUN_0000e962). Honda pads each
+# bank so its little-endian 32-bit word sum is 0, and the bootloader's FF01 validate checks that the running
+# LE32 sum of everything programmed (0x0..0x4FF00, the last 0x36 block being 256 bytes) is still 0. Their
+# header 3 lists the dash, comma and dash-comma IDs against two seed secrets, so the 3/4 counts differ.
+T6Z_SOFTWARE_IDS = (b'39990-T6Z', b'39990,T6Z')
+T6Z_START, T6Z_LENGTH = 0x10000, 0x50000
+T6Z_SUM_WINDOWS = ((0x00000, 0x0a000), (0x0a000, 0x1d000), (0x1d000, 0x4ff00))
+T6Z_VALIDATE_END = 0x4ff00
+T6Z_FLASHER = ("T6Z-A110 (V850) images are programmed through its bootloader sequence (erase/validate "
+               "routines FF00/FF01), which eps-update.py does not implement")
+
+
+def is_t6z(fw):
+    return any(v.value.startswith(T6Z_SOFTWARE_IDS) for v in fw.file_headers[3].values)
+
+
+def t6z_decrypt(encrypted, keys):
+    k0, k1, k2 = keys[0], keys[1], keys[2]
+    return bytes((k0 + (k1 ^ ((b - k2) & 0xff))) & 0xff for b in encrypted)
+
+
+def le32_sum(data, start, end):
+    return sum(struct.unpack_from(f'<{(end - start) // 4}I', data, start)) & 0xffffffff
+
+
+def validate_t6z_firmware(fw):
+    block = fw.firmware_blocks[0]
+    if (block["start"], block["length"]) != (T6Z_START, T6Z_LENGTH):
+        raise ValueError(f"T6Z image must start at 0x{T6Z_START:x} with length 0x{T6Z_LENGTH:x}, "
+                         f"got 0x{block['start']:x}/0x{block['length']:x}")
+    plain = t6z_decrypt(fw.firmware_encrypted[0], fw.keys)
+    if b'HNAB' not in plain or not any(i in plain for i in T6Z_SOFTWARE_IDS):
+        raise ValueError("T6Z image does not decrypt to a T6Z application (wrong keys or not this ECU)")
+    for start, end in T6Z_SUM_WINDOWS:
+        total = le32_sum(plain, start, end)
+        if total:
+            raise ValueError(f"T6Z bank sum failed: LE32 [0x{start:x},0x{end:x}) = {total:08x}, must be 0")
+        print(f"  T6Z bank LE32 sum [0x{start:x},0x{end:x}): PASS")
+    total = le32_sum(plain, 0, T6Z_VALIDATE_END)
+    if total:
+        raise ValueError(f"T6Z validate sum failed: LE32 [0,0x{T6Z_VALIDATE_END:x}) = {total:08x}, must be 0")
+    print(f"  T6Z validate (FF01) sum [0,0x{T6Z_VALIDATE_END:x}): PASS")
+
+
+def require_uds_flashable(fw):
+    """Refuse images eps-update.py's UDS sequence must not program."""
+    if is_t6z(fw):
+        raise ValueError(T6Z_FLASHER)
+
+
 def validate_container(fw):
     """Check the headers the flasher reads."""
     headers = fw.file_headers
     if len(headers[2].values) != 1 or len(headers[2].values[0].value) != 1:
         raise ValueError("header 2 must hold exactly one 1-byte ECU address")
     ids, secrets = headers[3].values, headers[4].values
-    if not ids or len(ids) != len(secrets):
+    if not ids or not secrets or (len(ids) != len(secrets) and not is_t6z(fw)):
         raise ValueError(f"header 3/4 mismatch: {len(ids)} software IDs, {len(secrets)} seed secrets")
     if any(len(s.value) != 6 for s in secrets):
         raise ValueError("seed secrets in header 4 must be 6 bytes")
@@ -77,12 +163,15 @@ def validate_container(fw):
 
 
 def validate_firmware(fw):
-    """Validate the container headers, both firmware checksums and any THR/TJB ROM CRCs."""
+    """Validate the container headers, both firmware checksums and any THR/TJB ROM CRCs and monitor shadows."""
     validate_container(fw)
     length = fw.firmware_blocks[0]["length"]
     encrypted = fw.firmware_encrypted[0]
     if len(encrypted) != length:
         raise ValueError("firmware length incorrect")
+    if is_t6z(fw):
+        validate_t6z_firmware(fw)
+        return
     definitions = checksum_definitions(length)
     decrypted = bytes(DECRYPT_LOOKUP[b] for b in encrypted)
     for func, offset, label in definitions:
@@ -100,6 +189,9 @@ def validate_firmware(fw):
             raise ValueError(f"ROM CRC failed: [0x{region_start:x},0x{region_end:x}) at 0x{slot:x} "
                              f"stores {stored:08x}, image gives {calculated:08x}")
         print(f"  ROM CRC at 0x{slot:x}: PASS")
+    family = shadow_family(fw)
+    if family is not None:
+        validate_shadows(decrypted, start, *family)
 
 
 def check(path):
@@ -114,6 +206,8 @@ def check(path):
         print(f"  NOT VALIDATED: {e}")
         return False
     print("  Fully validated: PASS")
+    if is_t6z(fw):
+        print(f"  Note: {T6Z_FLASHER}.")
     return True
 
 

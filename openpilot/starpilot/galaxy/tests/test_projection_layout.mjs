@@ -29,15 +29,15 @@ metadata.widgets.now_playing = { label: "Now playing", kind: "now_playing", widt
 metadata.widgetOrder = [...(metadata.widgetOrder || Object.keys(native.metadata.profiles.large.widgets)), "jetlink_status", "now_playing", "car_exit"]
 const widgets = Object.fromEntries(Object.entries(metadata.widgets).map(([id, widget]) => [id,
   { ...widget.default, ...(widget.resizable ? { size: widget.resizable.default } : {}) }]))
-const doc = { version: 5, clock24Hour: false, largeUiGammaTrial: false, blindSpotBorder: false, signalBorder: false, blindSpotCamera: false, hidePersonalityAlerts: false, wheelPedalFeedback: false, leadIndicator: false, leadInfo: "Off", speedSources: false, speedSourcesCard: false, speedAlign: "center", canvas: { width: 2880, height: 1080 }, widgets }
+const doc = { version: 6, clock24Hour: false, largeUiGammaTrial: false, blindSpotBorder: false, signalBorder: false, blindSpotCamera: false, hidePersonalityAlerts: false, wheelPedalFeedback: false, leadIndicator: false, leadInfo: "Off", speedSources: false, speedSourcesCard: false, speedAlign: "center", canvas: { width: 2880, height: 1080 }, widgets }
 const raw = { version: 1, document: doc, defaults: copy(doc), metadata,
   screen: { width: 1280, height: 720, margin_width: 0, margin_height: 240 },
   revision: "aa-screen-and-layout", editable: true, valid: true,
   colors: { palette: native.document.palette, widgetColors: native.document.widgetColors.large, roadColors: {} } }
 const data = editorSnapshot(raw)
 assert.deepEqual(editorSnapshot({ ...raw, document: { ...doc, version: 4 }, defaults: { ...doc, version: 4 } }).document,
-  data.document, "version 4 layouts remain readable alongside the backend's version 5")
-for (const bad of [{ version: 6 }, { version: "5" }, { canvas: { width: 1920, height: 1080 } }])
+  data.document, "version 4 layouts remain readable alongside the backend's version 6")
+for (const bad of [{ version: 7 }, { version: "5" }, { canvas: { width: 1920, height: 1080 } }])
   assert.throws(() => editorSnapshot({ ...raw, document: { ...doc, ...bad } }), /does not match/)
 
 assert.equal(validSnapshot(data), true)

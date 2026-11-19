@@ -16,6 +16,7 @@ static std::map<std::string, service> services = {
   { "can", {"can", true, 100.000000, 2053, 10485760}},
   { "controlsState", {"controlsState", true, 100.000000, 10, 2097152}},
   { "starpilotLateralState", {"starpilotLateralState", true, 100.000000, 10, 256000}},
+  { "starpilotBlendfulState", {"starpilotBlendfulState", true, 20.000000, 10, 256000}},
   { "selfdriveState", {"selfdriveState", true, 100.000000, 10, 256000}},
   { "starpilotSelfdriveState", {"starpilotSelfdriveState", true, 100.000000, 10, 256000}},
   { "pandaStates", {"pandaStates", true, 10.000000, 1, 256000}},

@@ -21,9 +21,9 @@ def _run(rel, steps):
 
 
 def _ghost_then_moves_out():
-  steps = [dict(lead_one=_lead(20.0, -3.0), target=-1.5, raw_y={39: 0.2})] * 3
-  steps += [dict(lead_one=None, target=0.5, raw_y={39: 0.2 + 0.3 * i}) for i in range(10)]  # lead dropped, track slides out
-  steps += [dict(lead_one=None, target=0.5, raw_y={})] * 70  # runs out on GHOST_MAX_S
+  steps = [{"lead_one": _lead(20.0, -3.0), "target": -1.5, "raw_y": {39: 0.2}}] * 3
+  steps += [{"lead_one": None, "target": 0.5, "raw_y": {39: 0.2 + 0.3 * i}} for i in range(10)]  # lead dropped, track slides out
+  steps += [{"lead_one": None, "target": 0.5, "raw_y": {}}] * 70  # runs out on GHOST_MAX_S
   return steps
 
 
@@ -53,8 +53,8 @@ def test_logging_never_changes_output():
     for _ in range(200):
       r = rng.random()
       lead = None if r < 0.2 else _lead(rng.uniform(5, 80), rng.uniform(-6, 3), tid=rng.choice([-1, 3, 39]), y=rng.uniform(-3, 3))
-      steps.append(dict(lead_one=lead, target=rng.uniform(-3, 1), raw_y={39: rng.uniform(-4, 4)} if rng.random() < 0.7 else {},
-                        gas_pressed=rng.random() < 0.03, reset_state=rng.random() < 0.02))
+      steps.append({"lead_one": lead, "target": rng.uniform(-3, 1), "raw_y": {39: rng.uniform(-4, 4)} if rng.random() < 0.7 else {},
+                        "gas_pressed": rng.random() < 0.03, "reset_state": rng.random() < 0.02})
     with patch.object(bs, 'cloudlog'):
       quiet = _run(bs.BoschARelease(CP), steps)
     with patch.object(bs, 'cloudlog') as log:

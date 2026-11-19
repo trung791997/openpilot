@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 import random
 import unittest
+from unittest import mock
 
 from openpilot.common.realtime import DT_MDL
 from openpilot.cereal import log
@@ -86,6 +87,12 @@ def _lead(present, d, v, track_id=39):
 
 
 class TestStep(unittest.TestCase):
+  def setUp(self):
+    # unittest runner (tools/test_runner.py) does not apply the pytest autouse fixture below; pin the coast + FastLetoff step here.
+    patcher = mock.patch.object(bs, 'GHOST_ARM', False)
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
   def test_step_is_coast_then_smooth(self):
     cp = SimpleNamespace(brand="honda", carFingerprint="HONDA_CIVIC_BOSCH", openpilotLongitudinalControl=True, radarUnavailable=False)
     a, b = bs.BoschARelease(cp), bs.BoschARelease(cp)
@@ -101,6 +108,12 @@ class TestStep(unittest.TestCase):
 
 
 class TestStepParity(unittest.TestCase):
+  def setUp(self):
+    # unittest runner (tools/test_runner.py) does not apply the pytest autouse fixture below; pin the coast + FastLetoff step here.
+    patcher = mock.patch.object(bs, 'GHOST_ARM', False)
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
   """Self-contained: one instance driven through step() vs a twin driven through coast() then smooth(), random cycles."""
   def test_random_cycles_match_twin(self):
     rng = random.Random(7)
@@ -114,7 +127,7 @@ class TestStepParity(unittest.TestCase):
                 'lane_change_state': rng.choice((None, LaneChangeState.off, LaneChangeState.laneChangeStarting)),
                 'left_blinker': rng.random() < 0.1, 'right_blinker': rng.random() < 0.1, 'gas_pressed': rng.random() < 0.1}
           prev, reset, standstill = rng.uniform(-4, 2), rng.random() < 0.05, rng.random() < 0.05
-          got = a.step(prev=prev, reset_state=reset, standstill=standstill, **kw)
+          got = a.step(prev=prev, reset_state=reset, standstill=standstill, **kw)  # ty: ignore[invalid-argument-type]
           want = b.smooth(prev, b.coast(reset_state=reset, **kw), reset=bool(reset or standstill))
           self.assertEqual(got, want)
           self.assertEqual((a.hold_s, a.rise_ticks, a.prev_lead), (b.hold_s, b.rise_ticks, b.prev_lead))
@@ -238,7 +251,7 @@ if __name__ == "__main__":
   unittest.main()
 
 
-import pytest  # noqa: E402
+import pytest
 
 
 @pytest.fixture(autouse=True)

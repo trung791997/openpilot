@@ -148,11 +148,11 @@ def _ghost_marks(ghost):
 
 def _log_ghost(ghost, before, prev, target, v_ego):
   """cloudlog 'bosch_a_ghost' on fire / clear / end, so a drive shows what the ghost let-off did (route d1 needed an
-  offline re-run). Transitions only (a few per drive); guarded so it can never change behaviour."""
+  offline re-run). Transitions only (a few per drive); guarded so it can never change behavior."""
   try:
     fired0, cleared0, g0, age0 = before
     g = ghost.ghost
-    common = dict(prev=round(float(prev), 2), target=round(float(target), 2), v=round(float(v_ego), 1))
+    common = {'prev': round(float(prev), 2), 'target': round(float(target), 2), 'v': round(float(v_ego), 1)}
     if g0 is not None and g is not g0:
       cloudlog.event('bosch_a_ghost', ev='end', why=ghost.end_reason, tid=g0.tid, d0=round(g0.d0, 1),
                      age=round(age0 + ghost.dt, 2), cleared=bool(g0.letoff_clear), nogas=round(ghost.nogas_s, 2), **common)
@@ -168,7 +168,8 @@ def _log_ghost(ghost, before, prev, target, v_ego):
 class BoschARelease:
   def __init__(self, CP, dt: float = DT_MDL):
     self.enabled = vehicle_supported(CP)  # smooth + action_t: radar on or off (vision-only too, as at 786d62d5d2)
-    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))  # == long_tuning_active(CP); coast needs the radar (owner 2026-11-13)
+    # == long_tuning_active(CP); coast needs the radar (owner 2026-11-13)
+    self.coast_enabled = vehicle_supported(CP) and not bool(getattr(CP, 'radarUnavailable', True))
     self.dt = dt
     self.hold_s = 0.0
     self.prev_lead = None  # leadOne from the previous cycle
@@ -224,7 +225,7 @@ class BoschARelease:
     base = self.smooth(prev, target, reset=False)
     if jerk is None or prev >= 0.0:
       return base
-    fast = min(float(target), max(prev + BRAKE_RELEASE_JERK * self.dt, min(prev + jerk * self.dt, floor)))
+    fast = min(float(target), max(prev + BRAKE_RELEASE_JERK * self.dt, min(prev + jerk * self.dt, floor)))  # ty: ignore[invalid-argument-type]
     if fast > base:
       self.rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     return float(max(base, fast))

@@ -768,7 +768,7 @@ def test_the_civics_hold_their_command_delay_on_the_highway():
 
 def test_every_vehicle_has_its_own_command_delay():
   delays = {cal.name: cal.cmd_delay_s for _, cal in eps_cal.EPS_FIRMWARE_CALIBRATIONS.values()}
-  measured = {"clarity_trw_a020": 0.20, "civic_tba_c020": 0.15, "civic_teg_a010": 0.15}
+  measured = {"clarity_trw_a020": 0.20, "civic_tba_c020": 0.15, "civic_teg_a010": 0.15, "crv_tla_a040": 0.18}
   same_chassis_as_c020 = {"civic_tba_c120": 0.15, "civic_tgg_a120": 0.15}
   inferred = {"insight_txm_a040": 0.15, "civic_tba_a030": 0.15}  # the A030: the TEG's (same Nidec image family)
   for name, delay in delays.items():

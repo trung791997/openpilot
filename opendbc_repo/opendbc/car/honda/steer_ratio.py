@@ -22,6 +22,8 @@ HONDA_VGR_CIVIC_TBA_C120 = "civic_tba_c120"
 HONDA_VGR_RDX_TJB_A220 = "rdx_tjb_a220"
 HONDA_VGR_RIDGELINE_T6Z_A110 = "ridgeline_t6z_a110"
 HONDA_VGR_ODYSSEY_THR_A020 = "odyssey_thr_a020"
+# A firmware family, not an exact image: interface.py sets its flag, so it has no HONDA_VGR_PROFILE_BY_FW entry.
+HONDA_VGR_ACCORD_ANGLE_LOOP = "accord_tva_angle_loop"
 
 
 # Firmware queries return the modified image with a comma in place of the
@@ -53,6 +55,7 @@ HONDA_VGR_PROFILE_FLAGS = {
   HONDA_VGR_RDX_TJB_A220: HondaFlags.VGR_RDX_TJB_A220,
   HONDA_VGR_RIDGELINE_T6Z_A110: HondaFlags.VGR_RIDGELINE_T6Z_A110,
   HONDA_VGR_ODYSSEY_THR_A020: HondaFlags.VGR_ODYSSEY_THR_A020,
+  HONDA_VGR_ACCORD_ANGLE_LOOP: HondaFlags.EPS_ANGLE_LOOP_FW,
 }
 
 
@@ -253,6 +256,22 @@ RIDGELINE_T6Z_A110_VGR_LINEAR_BP = [0.0, 600.0]
 ODYSSEY_THR_A020_VGR_ANGLE_BP = [0.0, 600.0]
 ODYSSEY_THR_A020_VGR_LINEAR_BP = [0.0, 600.0]
 
+# Honda Accord on the angle-loop EPS firmware (39990-TVA,A16x / A34x). Measured, not traced: the overall ratio
+# (wheel angle / road-wheel angle) by published wheel angle over 82 routes. Not measurements: 0-23 deg (pinned by
+# convention, not identified), 31-61 deg (interpolated across two bins that failed the lag test), 236+ deg (frozen;
+# above 303 deg the data is parking speed). A compensation curve for calc_curvature's k = d/L, not the rack's true
+# geometry. Bands: shape +/-0.12, level +/-0.57.
+_ACCORD_ANGLE_LOOP_RATIO_BP = [0, 23, 31, 61, 76, 95, 116, 151, 178, 227, 236, 303, 380]
+_ACCORD_ANGLE_LOOP_RATIO = [16.88, 16.88, 16.88, 16.25, 15.97, 15.45, 15.03, 14.68, 14.45, 14.09, 14.25, 12.98, 12.31]
+# The on-centre ratio every angle drive ran; CP.steerRatio, so the learner's seed. The map is relative to the centre.
+ACCORD_ANGLE_LOOP_STEER_RATIO = 16.84
+
+# An overall ratio R, not a local gain: the road wheels are at published / R(published) = linear / R(0). One degree
+# steps follow the curve between knots; past the last one the ratio is held, a straight line out to the sensor's 500 deg.
+ACCORD_ANGLE_LOOP_VGR_ANGLE_BP = [float(a) for a in (*range(_ACCORD_ANGLE_LOOP_RATIO_BP[-1] + 1), 500)]
+ACCORD_ANGLE_LOOP_VGR_LINEAR_BP = [a * _ACCORD_ANGLE_LOOP_RATIO[0] / _piecewise(a, _ACCORD_ANGLE_LOOP_RATIO_BP, _ACCORD_ANGLE_LOOP_RATIO)
+                                   for a in ACCORD_ANGLE_LOOP_VGR_ANGLE_BP]
+
 
 HONDA_VGR_INVERSE_BY_PROFILE = {
   HONDA_VGR_CLARITY_TRW_A020: (CLARITY_TRW_A020_VGR_LINEAR_BP, CLARITY_TRW_A020_VGR_ANGLE_BP),
@@ -263,6 +282,7 @@ HONDA_VGR_INVERSE_BY_PROFILE = {
   HONDA_VGR_RDX_TJB_A220: (RDX_TJB_A220_VGR_LINEAR_BP, RDX_TJB_A220_VGR_ANGLE_BP),
   HONDA_VGR_RIDGELINE_T6Z_A110: (RIDGELINE_T6Z_A110_VGR_LINEAR_BP, RIDGELINE_T6Z_A110_VGR_ANGLE_BP),
   HONDA_VGR_ODYSSEY_THR_A020: (ODYSSEY_THR_A020_VGR_LINEAR_BP, ODYSSEY_THR_A020_VGR_ANGLE_BP),
+  HONDA_VGR_ACCORD_ANGLE_LOOP: (ACCORD_ANGLE_LOOP_VGR_LINEAR_BP, ACCORD_ANGLE_LOOP_VGR_ANGLE_BP),
 }
 
 # Each A table's centre divisor (Y[0]): the published angle is raw * 2**14 / Y, so a published degree near centre is
@@ -296,7 +316,7 @@ def get_honda_vgr_inverse(flags):
 # was measured across 7 routes / 23k samples and tracks this map from 5 to 200 degrees
 # (predicted 18.0/17.7/16.8 against measured 18.7/17.6/16.3 at 5-10/40-80/80-200), with a
 # centre near 17.8.  The C020 and Insight maps are traced but have no such validation, so
-# they keep the previous behaviour until someone drives them.
+# they keep the previous behavior until someone drives them.
 HONDA_VGR_LEARNING_FLAGS = (HondaFlags.VGR_CLARITY_TRW_A020,)
 
 

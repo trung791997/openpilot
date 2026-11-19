@@ -27,7 +27,9 @@ class TestHondaNidecInterceptorAol(TestHondaInterceptor):
     self.safety.set_timer(0)
 
   def tearDown(self):
-    self.safety.set_alternative_experience(0)
+    # Dom's inherited native-callback probes run in a subprocess and never set up self.safety.
+    if hasattr(self, 'safety'):
+      self.safety.set_alternative_experience(0)
 
   def feed(self, tick, **kw):
     super().feed(tick, **kw)

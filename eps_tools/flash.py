@@ -84,6 +84,21 @@ def validate(path):
         return False
 
 
+def not_flashable_reason(path):
+    """Why eps-update.py must not program a valid image (None when it may)."""
+    from rwd_format.x5a import x5a
+    try:
+        with open(path, 'rb') as stream:
+            fw = x5a(stream.read())
+    except (OSError, ValueError):
+        return None  # unreadable or malformed: validate() has already refused it
+    try:
+        check_rwd.require_uds_flashable(fw)
+    except ValueError as e:
+        return str(e)
+    return None
+
+
 def find_images():
     files = set(glob.glob(os.path.join(RWD_DIR, "*.rwd")))
     files |= set(glob.glob(os.path.join(HERE, "*.rwd")))
@@ -478,8 +493,12 @@ def main():
     rows = []
     for i, f in enumerate(shown):
         ok = validate(f)
-        rows.append((f, ok))
-        status = "valid ✓" if ok else "INVALID ✗  -> malformed or failed checksum; cannot be flashed"
+        reason = not_flashable_reason(f) if ok else None
+        rows.append((f, ok, reason))
+        if not ok:
+            status = "INVALID ✗  -> malformed or failed checksum; cannot be flashed"
+        else:
+            status = "valid ✓" if reason is None else "valid ✓ but NOT flashable with this tool"
         print(f"  [{i + 1:>2}] {os.path.basename(f):<44} {status}")
 
     sel = input("\nSelect a firmware number to flash (q to quit): ").strip()
@@ -492,7 +511,7 @@ def main():
     # Reject 0 and out-of-range: int("0")-1 == -1 would silently pick the last row.
     if idx < 0 or idx >= len(rows):
         sys.exit("Invalid selection.")
-    path, ok = rows[idx]
+    path, ok, reason = rows[idx]
 
     rel = os.path.relpath(path, HERE)
     name = os.path.basename(path)
@@ -500,6 +519,8 @@ def main():
     if not ok:
         sys.exit(f"\n{name} is malformed or failed a checksum — refusing to flash it. "
                  f"Run `python3 check_rwd.py {rel}` for details.")
+    if reason is not None:
+        sys.exit(f"\n{name}: {reason} — refusing to flash it here.")
 
     # Power sequence: kill openpilot with the car OFF, then switch the ignition
     # ON — so openpilot doesn't re-grab the panda when CAN comes alive.

@@ -137,7 +137,7 @@ def test_never_lowers_vrel():
   # unit level: bound below current vRel never lowers
   lead = {'dRel': 80.0, 'vRel': -0.2, 'vLead': 29.8, 'vLeadK': 29.8, 'aLeadK': 0.0}
   track = SimpleNamespace(range_history=[80.0 + 2.0 * DT_MDL * i for i in range(20)])
-  assert radar_mod.held_vrel_bound(lead, track) is lead
+  assert radar_mod.held_vrel_bound(lead, track) is lead  # ty: ignore[invalid-argument-type]
 
 
 def test_distance_accel_track_untouched():
@@ -149,7 +149,7 @@ def test_distance_accel_track_untouched():
   try:
     for _ in range(CYCLES_MIN + 4):
       on = rig.step(direct=False)
-      radar_mod.HELD_VREL_SLOPE_BOUND_ENABLED = False
+      radar_mod.HELD_VREL_SLOPE_BOUND_ENABLED = False  # ty: ignore[invalid-assignment]
       try:
         off = rig_off.step(direct=False)
       finally:

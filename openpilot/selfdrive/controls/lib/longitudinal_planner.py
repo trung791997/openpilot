@@ -32,11 +32,13 @@ from openpilot.starpilot.longitudinal.ioniq6_start import eligible as ioniq6_lon
 from openpilot.starpilot.longitudinal.lane_change_gap import LaneChangeGap, project as project_lane_gap
 from openpilot.starpilot.longitudinal.experimental_release import ConditionalHandoff, ExperimentalRelease, project as project_release
 from openpilot.starpilot.longitudinal.force_stop import StopPlan
+from openpilot.starpilot.longitudinal.force_stop_braking import distance_target, eligible as distance_braking_eligible
 from openpilot.starpilot.longitudinal.follow_jerk import FollowJerk
 from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project as project_takeoff
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
 from openpilot.starpilot.longitudinal.hkg_vision_stop import owner_for as vision_stop_owner
 from openpilot.starpilot.car.ford.stopped_lead import owner_for as ford_stop_owner
+from openpilot.starpilot.car.volkswagen.stopped_lead import owner_for as vw_stop_owner
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.longitudinal import human_acceleration, human_following
@@ -64,8 +66,9 @@ _A_TOTAL_MAX_BP = [20., 40.]
 _TAKEOFF_TOTAL_BP = [0., 2., 5., 20., 40.]
 _TAKEOFF_TOTAL_MAX = [3.5, 3.5, 1.7, 1.7, 3.2]
 
-def get_max_accel(v_ego):
-  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+def get_max_accel(v_ego, faster_takeoffs=False):
+  max_accel = np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+  return np.interp(v_ego, [2., 5.], [ACCEL_MAX, max_accel]) if faster_takeoffs else max_accel
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
@@ -74,7 +77,7 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
                      profile: AppliedProfile | None = None,
                      base_brake_floor: float = A_CRUISE_MIN, selected_acceleration_max: float | None = None, faster_takeoffs: bool = False,
                      *, a_target_prev: float | None = None, jerk_limit: bool = True):
-  max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
+  max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, faster_takeoffs)
   if selected_acceleration_max is not None and not e2e:
     max_accel = selected_acceleration_max
   if profile is not None:
@@ -115,7 +118,8 @@ class LongitudinalPlanner:
     self.human_driving = human_following.enabled_for(CP)
     if self.human_driving:
       human_following.install(self.mpc)
-    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)  # lead(): law/coast/need floor on the lead candidate; step(): brake onset ramp; always on for Bosch-A Hondas
+    # lead(): law/coast/need floor on the lead candidate; step(): brake onset ramp; always on for Bosch-A Hondas
+    self.bosch_a_long = HondaBoschALongEnhancement(CP, dt)
     self.bosch_a_release = BoschARelease(CP, dt)  # release coast (no gas off a departing radar lead) + brake release smoothing; bosch_a_release.py
     self.bosch_a_stop_gap = BoschAStopGap(CP, dt)  # stop hold + no gas inside the stop gap; bosch_a_stop_gap.py
     self.model_lead_history = ModelLeadHistory()
@@ -123,11 +127,13 @@ class LongitudinalPlanner:
     self.dt = dt
     self.clock_ns = clock_ns
     self.allow_throttle = True
-    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))  # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13: later braking without it)
+    # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13: later braking without it)
+    self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))
     self.encouragement = Encouragement()
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()
     self.ioniq6_throttle_gate_enabled = ioniq6_long_eligible(CP)
+    self.force_stop_distance_braking = distance_braking_eligible(CP)
     self.lane_change_gap = LaneChangeGap()
     self.experimental_release = ExperimentalRelease()
     self.lead_approach = LeadApproach(dt, CP.longitudinalActuatorDelay)
@@ -151,7 +157,7 @@ class LongitudinalPlanner:
     self.lead_takeoff = LeadTakeoff()
     self.vehicle_far_follow = far_follow_owner(CP, dt)
     self.vision_stop_buffer = vision_stop_owner(CP)
-    self.ford_stop_approach = ford_stop_owner(CP, STOP_DISTANCE - .5)
+    self.ford_stop_approach = ford_stop_owner(CP, STOP_DISTANCE - .5) or vw_stop_owner(CP, STOP_DISTANCE - .5)
     self.preap_adaptive = preap_adaptive_owner(CP)
 
   def update(self, sm, *, cruise_ceiling: CruiseCeiling | None = None,
@@ -444,6 +450,9 @@ class LongitudinalPlanner:
 
     candidates = [(lead_a, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
+    if self.force_stop_distance_braking and self.force_stop_plan.forcing and self.force_stop_plan.obstacle_m is not None:
+      stop_target = distance_target(v_ego, sm['carState'].aEgo, self.force_stop_plan.obstacle_m, action_t)
+      candidates.append((stop_target, LongitudinalPlanSource.cruise, False))
     if sm['selfdriveState'].experimentalMode:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
@@ -472,7 +481,7 @@ class LongitudinalPlanner:
       force_stop=self.force_stop_plan.forcing, traffic_mode=traffic_mode, accel_min=ACCEL_MIN)
     if faster_lead_takeoff:
       # Dom takeoff bypasses the standstill cruise slew, never its final bounds.
-      takeoff_max = ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego)
+      takeoff_max = ACCEL_MAX if sm['selfdriveState'].experimentalMode else get_max_accel(v_ego, faster_takeoffs)
       if selected_acceleration is not None and not sm['selfdriveState'].experimentalMode:
         takeoff_max = selected_acceleration
       if cruise_profile is not None:
@@ -573,5 +582,9 @@ class LongitudinalPlanner:
     hold.modelMonoTime = longitudinalPlan.modelMonoTime
     hold.driveStartMonoTime = self.plan_drive_id
     hold.forceStopHolding = bool(self.force_stop_plan.manual_hold)
+    hold.forceStopBraking = bool(self.force_stop_distance_braking and self.force_stop_plan.forcing and
+                                self.force_stop_plan.should_stop)
+    hold.forceStopEpisodeMonoTime = self.force_stop_plan.episode_ns
     pm.send('longitudinalPlan', plan_send)
     pm.send('starpilotLongitudinalPlan', companion)
+

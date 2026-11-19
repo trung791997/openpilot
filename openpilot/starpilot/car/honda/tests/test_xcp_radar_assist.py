@@ -13,7 +13,7 @@ from opendbc.car.honda.values import CAR as HondaCAR, HondaFlags
 from openpilot.common.params import Params
 from openpilot.starpilot.car.honda.radar import BoschALeadPolicy
 from openpilot.starpilot.car.honda.xcp_radar_assist import KEY, LABEL, capability, enabled
-from openpilot.starpilot.car.honda.xcp_radar_logger import NUM_SLOTS, STRIDE, XcpRadarLogger
+from openpilot.starpilot.car.honda.xcp_radar_logger import XcpRadarLogger
 from openpilot.starpilot.galaxy.settings import AuthorityContext, SettingsGateway
 from openpilot.starpilot.ui.feature_settings_owner import FeatureSettingsOwner
 from openpilot.starpilot.ui.feature_settings_state import FeaturePage

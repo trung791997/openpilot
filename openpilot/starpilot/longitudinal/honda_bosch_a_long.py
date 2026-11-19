@@ -6,7 +6,8 @@ disabled (`HondaBoschARadar`), which is the same gate radard uses to build Bosch
 switch: Stock Brake Feel is permanent (owner 2026-11-11: "Make Stock Brake Feel permanent"; the BoschAStockBrakeFeel
 toggle and its settings row are removed). HumanFollowing and HumanAcceleration are always on too (owner 2026-11-13: no
 toggle, default for all Bosch-A cars; the HumanFollowing owner toggle is removed). Everything in this class needs the radar on
-(owner 2026-11-13; bosch_a_toggles.long_tuning_active); HumanFollowing and HumanAcceleration still run vision-only. Both longitudinal planners (StarPilot's and the upstream one) call it the
+(owner 2026-11-13; bosch_a_toggles.long_tuning_active); HumanFollowing and HumanAcceleration still run vision-only. Both longitudinal planners
+(StarPilot's and the upstream one) call it the
 same way. The D-077 birth-rail ramps (off, never wired to radard here) were removed 2026-11-11; the code and its
 evidence comment are in git at 3f26fb513c and in openpilot-radar radard.py @ 567495f4ad.
 
@@ -311,7 +312,7 @@ COAST_HORIZON_S = 3.0
 COAST_LEAD_DECEL_HOLD_S = 1.5  # s; the projected lead brakes this long, then holds its speed (was the whole horizon)
 COAST_FLOOR_GAP_S = 0.8      # projected gap floor: 0.8 s * v + 6 m (long_mpc STOP_DISTANCE)
 COAST_FLOOR_GAP_M = 6.0
-COAST_MIN_TTC_S = 5.0        # 71 12:03 at the trough: 51 m / 5.8 m/s = 8.8 s
+COAST_MIN_TTC_S = 5.0        # 71 12:03 at the low point: 51 m / 5.8 m/s = 8.8 s
 COAST_MAX_LEAD_DECEL = -4.0  # m/s^2; harder than this is not a tap
 
 
@@ -342,10 +343,12 @@ def projected_gap_ok(d_rel: float, v_lead: float, a_lead: float, v_ego: float, f
 # variants without the vLead/aLeadK gate (arms 10-12) softened stops behind a late-born stopped lead (closed-loop stop gap
 # 0.9 m vs 2.5 m at 18:30; seg 5 min gap 4.7 m vs 11.3 m) and must not be used. Multiplier 1.3 gave -1.91, 0.9 gave
 # -1.39. Open: at 630 s the simulated ego is still 2-2.6 m/s faster than the lead, so a late second brake is expected in
-# the car and is not modelled. The gate is tuned on three events; replay only, not driven, not yet scored on the corpus.
+# the car and is not modeled. The gate is tuned on three events; replay only, not driven, not yet scored on the corpus.
 # Frame counts are planner frames at 20 Hz.
 NEED_FLOOR_ENABLED = True       # switch; read at construction so a replay harness can set it before building the planner
-NEED_FLOOR_MULT = 1.15          # floor = -max(MULT * need, MIN); 1.3 gave -1.91, 0.9 gave -1.39 on seg 10. 1.15 (Peter 2026-11-11, replay only): seg 10 -1.75 (hold-only -2.23, 1.0 -1.52); seg 5 / seg 18 stops unchanged; ep1046 REAL -2.30 -> -2.72; 15 of 1141 episodes >0.05 deeper, onsets unchanged
+# floor = -max(MULT * need, MIN); 1.3 gave -1.91, 0.9 gave -1.39 on seg 10. 1.15 (Peter 2026-11-11, replay only): seg 10 -1.75 (hold-only
+# -2.23, 1.0 -1.52); seg 5 / seg 18 stops unchanged; ep1046 REAL -2.30 -> -2.72; 15 of 1141 episodes >0.05 deeper, onsets unchanged
+NEED_FLOOR_MULT = 1.15
 NEED_FLOOR_MIN = 0.8            # m/s^2; the shallowest the floor may be
 NEED_FLOOR_HEADWAY_S = 1.0      # s; need's gap target = vLead * this + STOP_M
 NEED_FLOOR_STOP_M = 6.0         # m
@@ -376,14 +379,16 @@ class NeedFloor:
   need = closing^2 / (2 * max(d - (max(vLead, 0) * HEADWAY_S + STOP_M), MIN_ROOM_M)), the decel that closes the speed
   difference in the room left before the headway gap. The floor only RAISES a braking target (never adds braking) and
   never touches should_stop. It applies to the nearer present planner lead (leadOne or leadTwo, vision or radar) only
-  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need < RELEASE_NEED, the floor is not
+  when the lead is a radar lead (NEED_FLOOR_RADAR_ONLY), the lead is closing, v_ego >= MIN_V_EGO, d >= MIN_D, ttc > RELEASE_TTC_S, need <
+  RELEASE_NEED, the floor is not
   sticky-off and the gate (vLead >= GATE_V_LEAD and aLeadK > GATE_A_LEAD for GATE_FRAMES consecutive frames on the same
   (track id, radar flag)) is open. Sticky-off: once the release fires (closing and (ttc <= RELEASE_TTC_S or need >=
   RELEASE_NEED)) or the Stock Brake Feel emergency latch is on, the floor stays off until QUIET_FRAMES frames with no
   lead closing, or the lead identity changes to one farther away than the previous frame's gap. No lead: quiet + 1, gate
   count 0, sticky clears at QUIET_FRAMES. It acts on the lead MPC candidate only (HondaBoschALongEnhancement.lead(),
   d2 t1297.6 red-light let-off, 2026-11-15), so e2e or cruise braking deeper than the lead is never lifted; that is why
-  there is no cap / stopping special case. longitudinal_planner.py only; not in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D' block of replay_bd.py (Job's scorecard
+  there is no cap / stopping special case. longitudinal_planner.py only; not in starpilot/longitudinal/upstream/planner.py. Parity target: the ARM 'D'
+  block of replay_bd.py (Job's scorecard
   harness), including its rounding of the lead fields (d and vRel to 0.01, aLeadK to 0.001). Replay only."""
   def __init__(self):
     """Reads NEED_FLOOR_MIN_GAP_ENABLED (module constant, on) at construction: when on, also require d >= v_ego *
@@ -857,7 +862,7 @@ MODEL_DROP_MAX_MPS = 1.5     # m/s the camera lead's v may drop in the window an
 # 7b s8 -3.69, 80 s6 -8.81, 80 s19 -1.06; adjacent-lane truck 8a s2 -2.92; 8a s11 (disengaged, lead steady) -0.09.
 # 0.3 m sits between a2 (+0.50) and the closest real slowdown, 80 s19 (-1.06). A magnitude gate on radar-vs-camera
 # range split was tried first and rejected: 7b s23 split -8.3 m is deeper than a2's -3.4 m. Not firing falls back to
-# the old behaviour (the radar drop is published unbounded), so the gate only narrows the bound.
+# the old behavior (the radar drop is published unbounded), so the gate only narrows the bound.
 MODEL_RANGE_SHRINK_MAX_M = 0.3  # m the camera lead's x may shrink over DROP_WINDOW_S and still call the radar drop a glitch
 AGREE_M = 4.0                # m; radar dRel vs (model x - RADAR_TO_CAMERA) agreement needed at the window start
 MODEL_PROB_MIN = 0.9         # camera lead confidence needed to trust it over the radar

@@ -1323,6 +1323,8 @@ class StarShellSession:
                                   compact_scroll_x=self.compact_scroll_x, sidebar_expanded=self.sidebar_expanded,
                                   menu_only=self.profile == Profile.COMPACT and mode == ShellMode.SETTINGS,
                                   onroad_view_only=mode == ShellMode.ONROAD, stopped_timer_profile=str(self.profile))
+    from openpilot.starpilot.ui.onroad_rear_fog import update_rear_fog
+    snapshot = update_rear_fog(self, snapshot, onroad=mode == ShellMode.ONROAD)
     if mode == ShellMode.ONROAD and self.profile == Profile.LARGE:
       width = getattr(self, '_onroad_page_width', 2160.0) - (SIDEBAR_WIDTH if snapshot.onroad.appearance.show_developer_sidebar else 0)
       fitted = fit_to_road(snapshot.onroad.customization, width)
@@ -1740,6 +1742,8 @@ class StarShellSession:
     self._favorite_claimed = False
 
   def close(self) -> None:
+    if receiver := getattr(self, "rear_fog", None):
+      receiver.close()
     if layer := getattr(self, 'onroad_jetlink', None):
       layer.close()
       self.onroad_jetlink = None

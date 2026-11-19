@@ -64,7 +64,7 @@ class TestProjectionLayout(unittest.TestCase):
     before = copy.deepcopy(document)
     migrated = validate_layout(document, SCREEN)
     self.assertEqual(document, before)
-    self.assertEqual(migrated['version'], 5)
+    self.assertEqual(migrated['version'], 6)
     # The car screen uses the comma's 488x168 SET + sign card again (e55711977b), not the 346x460 one.
     card = layout_metadata(SCREEN)['widgets']['cruise_limits']
     self.assertEqual((card['width'], card['height']), (488, 168))

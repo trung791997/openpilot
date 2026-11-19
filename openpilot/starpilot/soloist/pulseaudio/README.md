@@ -3,8 +3,9 @@
 Spotify Soloist plays only through PulseAudio or PipeWire. AGNOS up to 19.8.1 shipped PulseAudio's
 client library without a server; AGNOS 20.2.1 ships neither, so the client libraries are vendored too. This directory is the minimal server needed to carry Soloist's audio to one output:
 the `pulseaudio` daemon, `pactl` (to switch between the speaker and the silent sink without
-restarting Soloist), their private libraries, and four modules (native protocol, ALSA sink for
-BlueALSA, null sink, and the real-time pipe sink used for Android Auto).
+restarting Soloist), the client libraries Soloist and the phone relay load (`libpulse`,
+`libpulse-simple`, `libpulsecommon`, `libsndfile` and its codecs), and four modules (native protocol,
+ALSA sink for BlueALSA, null sink, and the real-time pipe sink used for StarPort).
 
 - Source: Ubuntu 24.04 (noble) arm64 binary packages, `pulseaudio` and `pulseaudio-utils`
   `1:16.1+dfsg1-2ubuntu10.1`, and the

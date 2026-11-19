@@ -48,9 +48,10 @@ def read_file(fn):
 
 def validate_fw(fw):
   # No bypass: an image that is malformed or fails a checksum is never flashed.
-  from check_rwd import validate_container, validate_firmware
+  from check_rwd import require_uds_flashable, validate_container, validate_firmware
   validate_container(fw)
   validate_firmware(fw)
+  require_uds_flashable(fw)
 
 
 def calculate_session_key(const_bytes, seed_bytes):

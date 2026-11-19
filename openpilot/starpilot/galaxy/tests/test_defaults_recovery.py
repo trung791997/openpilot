@@ -86,18 +86,16 @@ class TestCanonicalRecovery(TestCase):
     self.assertEqual(len(selected), 1)
     pending = recovery.preview(view['view'], selected, self.session, self.generation)
     self.assertTrue(recovery.confirm(pending['intent'], self.session, self.generation)['saved'])
-    self.assertFalse(self.params.get_bool('SLCConfirmation'))
-    for key in ('SLCConfirmationLower', 'SLCConfirmationHigher'):
-      self.assertTrue(self.params.get_bool(key))
+    self.assertFalse(self.params.get('SLCConfirmation'))
 
   def test_unsupported_rows_remain_visible_but_cannot_block_available_reset_all(self):
     from dataclasses import replace
-    self.params.put_bool('SLCConfirmation', True, block=True)
+    self.params.put('SLCConfirmation', 1, block=True)
     self.params.put_bool('ShowBrakeStatus', True, block=True)
     self.context.value = replace(self.context.value, cp=None, cp_raw=None)
     recovery = self.recovery()
     view = recovery.snapshot(self.session, self.generation)
-    unsupported = next(row for row in view['rows'] if row['label'] == 'Automatic adoption')
+    unsupported = next(row for row in view['rows'] if row['label'] == 'Confirm limits')
     self.assertFalse(unsupported['resetAvailable'])
     with self.assertRaises(SettingsChanged):
       recovery.preview(view['view'], [unsupported['id']], self.session, self.generation)
@@ -105,7 +103,7 @@ class TestCanonicalRecovery(TestCase):
     self.assertTrue(selected)
     pending = recovery.preview(view['view'], selected, self.session, self.generation)
     self.assertTrue(recovery.confirm(pending['intent'], self.session, self.generation)['saved'])
-    self.assertTrue(self.params.get_bool('SLCConfirmation'))
+    self.assertTrue(self.params.get('SLCConfirmation'))
     self.assertFalse(self.params.get_bool('ShowBrakeStatus'))
 
   def test_other_canonical_inactive_children_reset_without_turning_their_masters_on(self):

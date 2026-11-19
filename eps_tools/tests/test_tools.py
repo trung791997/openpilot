@@ -61,9 +61,11 @@ def image(length=0x4c000, key=b'\x01\x02\x03', ids=1, secrets=1):
     return body + struct.pack('<I', sum(body) & 0xffffffff)
 
 
-def rom_crc_image(software_id=b'39990-TJB,A220', start=0xc000, length=0x74000, stale=False):
-    """A THR/TJB-shaped image whose checksums are right and ROM CRCs right unless stale."""
+def rom_crc_image(software_id=b'39990-TJB,A220', start=0xc000, length=0x74000, stale=False, edits=()):
+    """A THR/TJB-shaped image whose checksums are right and ROM CRCs right unless stale; edits = (flash addr, bytes)."""
     app = bytearray(length)
+    for addr, data in edits:
+        app[addr - start:addr - start + len(data)] = data
     for region_start, region_end, slot in check_rwd.ROM_CRC_REGIONS:
         app[region_start - start + 7] = 0x5a  # some content to CRC
         crc = check_rwd.crc32_bzip2(app[region_start - start:region_end - start])
@@ -75,6 +77,27 @@ def rom_crc_image(software_id=b'39990-TJB,A220', start=0xc000, length=0x74000, s
     header = (b'\x00\x00\x01\x01\x30\x01' + bytes([len(software_id)]) + software_id +
               b'\x01\x06' + b'\x00' * 6 + b'\x01\x03\x01\x02\x03')
     body = b'\x5a\x0d\x0a' + header + struct.pack('!II', start, length) + bytes(inverse[b] for b in app)
+    return body + struct.pack('<I', sum(body) & 0xffffffff)
+
+
+def t6z_image(software_ids=(b'39990-T6Z-A110', b'39990,T6Z,A110', b'39990-T6Z,A110'), corrupt=False, start=0x10000):
+    """A T6Z-shaped image: HNAB + part number in the app, each bank LE32-summing to 0 via its last word."""
+    length, keys = check_rwd.T6Z_LENGTH, b'\x01\x02\x03'
+    app = bytearray(b'\xff' * length)
+    app[0x3428:0x3438] = b'HNAB11FMM022518A'
+    app[0x3438:0x3446] = b'39990-T6Z,A110'
+    for win_start, win_end in check_rwd.T6Z_SUM_WINDOWS:
+        hole = win_end - 4
+        app[hole:hole + 4] = b'\x00' * 4
+        app[hole:hole + 4] = struct.pack('<I', (-check_rwd.le32_sum(app, win_start, win_end)) & 0xffffffff)
+    if corrupt:
+        app[0x20000] ^= 1
+    k0, k1, k2 = keys
+    encrypted = bytes(((((p - k0) & 0xff) ^ k1) + k2) & 0xff for p in app)
+    ids = b''.join(bytes([len(i)]) + i for i in software_ids)
+    header = (b'\x00\x00\x01\x01\x30' + bytes([len(software_ids)]) + ids +
+              b'\x02' + (b'\x06' + b'\x00\x11\x00\x12\x10\x20') * 2 + b'\x01\x03' + keys)
+    body = b'\x5a\x0d\x0a' + header + struct.pack('!II', start, length) + encrypted
     return body + struct.pack('<I', sum(body) & 0xffffffff)
 
 
@@ -125,6 +148,40 @@ class ValidationTests(unittest.TestCase):
                 with self.subTest(length=len(raw), expected=expected), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(check_rwd.check(path), expected)
 
+    def test_t6z_images_get_their_own_checks(self):
+        # Ridgeline T6Z-A110: its own cipher and LE32 bank sums, 3 software IDs against 2 seed secrets.
+        cases = ((t6z_image(), True), (t6z_image(corrupt=True), False), (t6z_image(start=0xc000), False))
+        with tempfile.TemporaryDirectory(dir=TOOLS / 'tests') as folder:
+            path = Path(folder) / 't6z.rwd'
+            for raw, expected in cases:
+                path.write_bytes(raw)
+                with self.subTest(expected=expected), contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(check_rwd.check(path), expected)
+                if expected:
+                    self.assertIn('T6Z validate (FF01) sum', output.getvalue())
+        # The 3/4 count exception is T6Z's only; other images still need one secret per ID.
+        with tempfile.TemporaryDirectory(dir=TOOLS / 'tests') as folder:
+            path = Path(folder) / 'image.rwd'
+            path.write_bytes(image(ids=3, secrets=2))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertFalse(check_rwd.check(path))
+
+    def test_t6z_is_never_programmed_by_eps_update(self):
+        fw = x5a(t6z_image())
+        with self.assertRaises(ValueError):
+            check_rwd.require_uds_flashable(fw)
+        check_rwd.require_uds_flashable(x5a(image()))
+        modules = dependencies()
+        with tempfile.TemporaryDirectory(dir=TOOLS / 'tests') as folder:
+            path = Path(folder) / 't6z.rwd'
+            path.write_bytes(t6z_image())
+            with patch.dict(sys.modules, modules), \
+                 patch.object(sys, 'argv', ['eps-update.py', str(path), '--danger']), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as status:
+                runpy.run_path(str(TOOLS / 'eps-update.py'), run_name='__main__')
+        self.assertIn('bootloader sequence', str(status.exception))
+        modules['panda'].Panda.assert_not_called()
+
     def test_thr_tjb_rom_crcs(self):
         # Odyssey THR and RDX TJB images must also carry valid runtime ROM CRCs;
         # other software IDs are not held to them.
@@ -139,6 +196,28 @@ class ValidationTests(unittest.TestCase):
                     self.assertEqual(check_rwd.check(path), expected)
                 if not expected:
                     self.assertTrue('ROM CRC failed' in output.getvalue() or 'THR/TJB image' in output.getvalue())
+
+    def test_thr_tjb_monitor_shadows(self):
+        # A primary calibration edit must be mirrored to the monitor shadow (TJB's sits 0x4D00 below THR's),
+        # in every populated row; checksums and ROM CRCs are recomputed here, so only the shadow check can catch it.
+        tracker = struct.pack('!H', 1641)
+        cases = (
+            (b'39990-THR,A020', ((0x57bd2, tracker), (0x67be8, tracker)), True),
+            (b'39990-THR,A020', ((0x57bd2, tracker),), False),
+            (b'39990-THR,A020', ((0x57bd2 + 6 * 0x300, tracker),), False),
+            (b'39990-TJB,A220', ((0x57bd2, tracker), (0x67be8 - 0x4d00, tracker)), True),
+            (b'39990-TJB,A220', ((0x57bd2, tracker), (0x67be8, tracker)), False),
+            (b'39990-TJB,A220', ((0x57bd2 + 5 * 0x300, tracker),), True),  # TJB rows 5-6 are erased in the primary only
+            (b'39990-TLA,A040', ((0x57bd2, tracker),), True),  # no monitor shadow outside THR/TJB
+        )
+        with tempfile.TemporaryDirectory(dir=TOOLS / 'tests') as folder:
+            path = Path(folder) / 'image.rwd'
+            for software_id, edits, expected in cases:
+                path.write_bytes(rom_crc_image(software_id, edits=edits))
+                with self.subTest(software_id=software_id, edits=edits), contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(check_rwd.check(path), expected)
+                if not expected:
+                    self.assertIn('monitor shadow stale: tracker_1', output.getvalue())
 
     def test_known_lengths_match_published_offsets(self):
         # Offsets the per-vehicle tables used before validation was generalized, including
@@ -336,6 +415,24 @@ class FlashTests(unittest.TestCase):
                 self.assertEqual(exit_status.exception.code, rc)
                 self.assertEqual(menu.call_args.kwargs['flash_succeeded'], rc == 0)
                 self.assertEqual('Firmware programming completed.' in output.getvalue(), rc == 0)
+
+    def test_valid_t6z_is_listed_but_refused(self):
+        with tempfile.TemporaryDirectory(dir=TOOLS / 'tests') as folder:
+            path = Path(folder) / 't6z.rwd'
+            path.write_bytes(t6z_image())
+            self.assertIn('bootloader sequence', self.flash.not_flashable_reason(str(path)))
+            with patch.object(sys, 'argv', ['flash.py']), \
+                 patch.object(self.flash, 'find_images', return_value=[str(path)]), \
+                 patch.object(self.flash, 'car_eps_fw', return_value=None), \
+                 patch('builtins.input', side_effect=['1', 'yes', '', 'FLASH']), \
+                 patch.object(self.flash, 'stop_openpilot') as stop, \
+                 patch.object(self.flash, 'run_real_flash') as flash, \
+                 contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as status:
+                self.flash.main()
+        self.assertIn('NOT flashable with this tool', output.getvalue())
+        self.assertIn('refusing to flash it here', str(status.exception.code))
+        stop.assert_not_called()
+        flash.assert_not_called()
 
     def run_main_with_status(self, status):
         with patch.object(sys, 'argv', ['flash.py']), \

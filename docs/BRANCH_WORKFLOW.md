@@ -29,7 +29,7 @@ Never open a pull request straight into Stage or Stable.
 
 Changes move in one direction only: Testing → Stage → Stable.
 
-- **Testing → Stage:** when Testing has a set of changes worth driving, first refresh the device build receipt on Testing (see [Device build receipt](#device-build-receipt)), then run `tools/ci/promote.py testing`. It pushes a snapshot branch `promote-testing-<commit>` at the tip of Testing and opens its pull request into `Honda-PTM-Stage`, listing the pull requests it carries.
+- **Testing → Stage:** when Testing has a set of changes worth driving, check that Testing's device build receipt matches (see [Device build receipt](#device-build-receipt)), then run `tools/ci/promote.py testing`. It pushes a snapshot branch `promote-testing-<commit>` at the tip of Testing and opens its pull request into `Honda-PTM-Stage`, listing the pull requests it carries.
 - **Stage → Stable:** once Stage has been driven and nothing new is wrong, run `tools/ci/promote.py stage`. It does the same from Stage into `Honda-PTM-Stable`.
 
 Promote from a snapshot, not from the long-lived branch itself. A pull request from `Honda-PTM-Testing` follows the branch, so every later merge into Testing joins the promotion and reruns its full CI. A snapshot never moves: its checks and approval stay on exactly the commit that was tested, and Testing keeps taking merges while the promotion waits for review or driving. Pass a commit (`tools/ci/promote.py testing <commit>`) to promote an earlier point of Testing. After the promotion merges, `tools/ci/promote.py cleanup` deletes the snapshot branches whose pull requests are closed. A pull request straight from `Honda-PTM-Testing` or `Honda-PTM-Stage` is still accepted.
@@ -55,12 +55,13 @@ Upstream changes come in like any other change. Merge `night-star7` into a branc
 
 `prebuilt.json` holds one hash of every tracked file except the UI Python files and itself. The comma's Fast Update reads it: when it does not match the commit being installed, the device takes the full update instead. Nothing else on the device uses it, so a stale receipt makes an update slower, never unsafe.
 
-Because it hashes the whole tree, every merge changes the right value. A feature pull request into Testing does **not** refresh it; if each one did, every merge would put all the other open pull requests in conflict on that one line. It is refreshed once per promotion instead:
+Because it hashes the whole tree, every change moves the right value, so **every pull request into Testing refreshes it as its last commit**, the same way Dom keeps it on every push:
 
-1. Branch off Testing (for example `prebuilt-receipt-refresh`), run `python3 openpilot/common/prebuilt_manifest.py .`, commit only `prebuilt.json`, and merge that pull request into Testing.
-2. Run `tools/ci/promote.py testing`. It refuses to cut a snapshot whose receipt does not match.
+1. Finish the change (rebuild and commit native binaries in Docker first, if any).
+2. Run `python3 openpilot/common/prebuilt_manifest.py .` and commit only `prebuilt.json`, as the last commit.
+3. If Testing moves before you merge (the rulesets require the branch to be up to date), merge Testing in, run the command again and commit the new `prebuilt.json`. A conflict on `prebuilt.json` is always settled by regenerating it, never by picking a side.
 
-`source integrity` checks the receipt on every pull request into Stage and Stable, so a stale one cannot be promoted. Between promotions, a device on Testing may take the full update instead of Fast Update.
+`source integrity` checks the receipt on every pull request into Testing, Stage and Stable, and the unit tests check it again, so a stale receipt fails CI instead of reaching a device. Because Testing's tip always carries a matching receipt, `tools/ci/promote.py testing` can cut a snapshot without a separate refresh.
 
 ## Rules and guardrails
 
@@ -96,7 +97,7 @@ The guard also runs on every push to Clean.
 
 ### Before you ask for review
 
-- Do not refresh `prebuilt.json`; it is refreshed once per promotion (see [Device build receipt](#device-build-receipt)). If native code changed, rebuild and commit the binaries in Docker in the same pull request.
+- Refresh `prebuilt.json` as your last commit (`python3 openpilot/common/prebuilt_manifest.py .`), and again after every merge of Testing into your branch (see [Device build receipt](#device-build-receipt)). If native code changed, rebuild and commit the binaries in Docker before that, in the same pull request.
 - Say in the description what the change does on the car and how it was checked: static, replay or road.
 
 ### Reviewing

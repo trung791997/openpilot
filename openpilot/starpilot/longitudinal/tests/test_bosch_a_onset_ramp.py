@@ -177,8 +177,8 @@ class TestOnsetRamp(unittest.TestCase):
     # e2e target (-2.6); lead() has no build rate since option 2 (step() does)
     enh = make()
     far = lead(80.0, -8.0, a=0.0)
-    kw = dict(lead_one=far, lead_two=NONE, v_ego=V_EGO, stopping=False, standstill=False, reset_state=False, fcw=False,
-              floor=False)
+    kw = {"lead_one": far, "lead_two": NONE, "v_ego": V_EGO, "stopping": False, "standstill": False, "reset_state": False, "fcw": False,
+              "floor": False}
     first = enh.lead(target=-0.5, **kw)
     self.assertEqual(enh.lead_prev, first)
     own = hbl.stock_feel_cap((far, NONE), first, -2.0, DT, V_EGO)

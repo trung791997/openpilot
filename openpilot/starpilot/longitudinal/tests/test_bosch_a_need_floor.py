@@ -1,4 +1,4 @@
-"""Need floor (NeedFloor / HondaBoschALongEnhancement.need_floor): pure python, replay-only behaviour.
+"""Need floor (NeedFloor / HondaBoschALongEnhancement.need_floor): pure python, replay-only behavior.
 
 The parity test compares against an independent port of the ARM 'D' block of
 ~/longsim_frames/scorecard/replay_bd.py (Job's scorecard harness)."""
@@ -238,11 +238,16 @@ def ref_d(sticky, ld, ve, a_, emergency, MULT=None):
       sticky['off'] = False
     sticky['id'] = lid; sticky['d'] = d
     rel_now = closing and (ttc <= 3.0 or need >= 2.0)
-    if rel_now or emergency: sticky['off'] = True
-    al = float(l.get('a', 0.0)); cond = vl >= 5.0 and al > -1.0
-    if sticky.get('gid') != lid or not cond: sticky['gcnt'] = 0
-    else: sticky['gcnt'] = sticky.get('gcnt', 0) + 1
-    sticky['gid'] = lid; gate_ok = sticky['gcnt'] >= 10
+    if rel_now or emergency:
+      sticky['off'] = True
+    al = float(l.get('a', 0.0))
+    cond = vl >= 5.0 and al > -1.0
+    if sticky.get('gid') != lid or not cond:
+      sticky['gcnt'] = 0
+    else:
+      sticky['gcnt'] = sticky.get('gcnt', 0) + 1
+    sticky['gid'] = lid
+    gate_ok = sticky['gcnt'] >= 10
     if gate_ok and closing and not sticky['off'] and ve >= 5.0 and d >= 15.0 and ttc > 3.0 and need < 2.0 and l['radar']:  # + fix B
       fl = -max(MULT * need, 0.8)
       if a_ < fl: a_ = fl
@@ -261,7 +266,7 @@ def test_parity_with_reference_random_walk(monkeypatch):
   v_ego = 22.0
   emergency = False
   mismatches = binding = 0
-  for i in range(N):
+  for _ in range(N):
     v_ego = min(35.0, max(0.0, v_ego + rng.gauss(0, 0.05)))
     for t in tracks:
       t['v'] = min(6.0, max(-25.0, t['v'] + rng.gauss(0, 0.15) - 0.01 * t['v']))
@@ -291,7 +296,8 @@ def test_parity_with_reference_random_walk(monkeypatch):
   assert binding >= 300
 
 
-# NEED_FLOOR_MIN_GAP_ENABLED (static, replay only; the module constant is on, make() sets it per test): v_ego 25 -> 1.5 s headway = 37.5 m. A slow-closing lead (vRel -0.5) keeps
+# NEED_FLOOR_MIN_GAP_ENABLED (static, replay only; the module constant is on, make() sets it per test): v_ego 25 -> 1.5 s headway = 37.5 m. A
+# slow-closing lead (vRel -0.5) keeps
 # need, ttc and the other gates open at every gap used below, so only the headway condition differs.
 def test_min_gap_off_floors_inside_1p5_s(monkeypatch):
   p = make(monkeypatch, min_gap=False)

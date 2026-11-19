@@ -36,6 +36,7 @@ class LaneChangePolicy:
   close_gap_seconds: float = 0.75
   duration_s: float = 3.0 + 25.0 / 9.0
   turn_signal_guidance: bool = True
+  auto_requires_cruise: bool = False
   turn_desires: bool = False
   turn_desire_speed_mps: float = DEFAULT_TURN_DESIRE_SPEED_MPS
 
@@ -79,11 +80,16 @@ def decode(raw: bytes) -> LaneChangePolicy | None:
   if version in (4, 5, 6):
     fields |= {"durationS"}
   # Version 5 is SGSP's (turnSignalGuidance), or the shape our Force turn desires wrote before the two settings shared a
-  # document (turnDesires / turnDesireSpeedMps, guidance then at its default). Version 6 carries all three.
+  # document (turnDesires / turnDesireSpeedMps, guidance then at its default). Version 6 is Dom's (autoRequiresCruise),
+  # or our earlier version 6 (turnSignalGuidance with the turn desire fields, no autoRequiresCruise). Night Star adds the
+  # turn desire fields to Dom's version 6 only when they leave their defaults.
+  turn_fields = {"turnDesires", "turnDesireSpeedMps"} & set(data)
   if version == 5:
     fields |= {"turnDesires", "turnDesireSpeedMps"} if "turnDesires" in data else {"turnSignalGuidance"}
   if version == 6:
-    fields |= {"turnSignalGuidance", "turnDesires", "turnDesireSpeedMps"}
+    fields |= {"turnSignalGuidance"} | ({"autoRequiresCruise"} if "autoRequiresCruise" in data else set())
+    if turn_fields or "autoRequiresCruise" not in data:
+      fields |= {"turnDesires", "turnDesireSpeedMps"}
   if set(data) != fields:
     return None
   enabled = data["enabled"]
@@ -123,13 +129,14 @@ def decode(raw: bytes) -> LaneChangePolicy | None:
   if type(duration) not in (int, float) or not math.isfinite(duration) or not 3.0 <= duration <= 8.0:
     return None
   guidance = data.get("turnSignalGuidance", True)
-  if type(guidance) is not bool:
+  requires_cruise = data.get("autoRequiresCruise", False)
+  if type(guidance) is not bool or type(requires_cruise) is not bool:
     return None
   turn, turn_speed = data.get("turnDesires", False), data.get("turnDesireSpeedMps", DEFAULT_TURN_DESIRE_SPEED_MPS)
   if type(turn) is not bool or type(turn_speed) not in (int, float) or not valid_turn_desire_speed(turn_speed):
     return None
   return LaneChangePolicy(enabled, finite_speed, once, auto, delay, width, close_gap, seconds, float(duration), guidance,
-                          turn, float(turn_speed))
+                          requires_cruise, turn, float(turn_speed))
 
 
 def valid_turn_desire_speed(value) -> bool:
@@ -167,18 +174,19 @@ def to_value(policy: LaneChangePolicy) -> dict[str, int | bool | float]:
     raise ValueError("invalid lane-change close gap")
   if type(policy.duration_s) not in (int, float) or not math.isfinite(policy.duration_s) or not 3.0 <= policy.duration_s <= 8.0:
     raise ValueError("invalid lane-change duration")
-  if type(policy.turn_signal_guidance) is not bool:
+  if type(policy.turn_signal_guidance) is not bool or type(policy.auto_requires_cruise) is not bool:
     raise ValueError("invalid turn signal guidance")
   if (type(policy.turn_desires) is not bool or type(policy.turn_desire_speed_mps) not in (int, float) or
       not valid_turn_desire_speed(policy.turn_desire_speed_mps)):
     raise ValueError("invalid turn desire policy")
-  value = {"version": 5, "enabled": policy.enabled, "minimumSpeedMps": finite_speed,
+  value = {"version": 6, "enabled": policy.enabled, "minimumSpeedMps": finite_speed,
            "onePerSignal": policy.one_per_signal, "autoLaneChange": policy.auto_lane_change,
            "autoDelayS": delay, "minimumLaneWidthM": width,
-           "closeGap": policy.close_gap, "closeGapSeconds": seconds, "durationS": policy.duration_s, "turnSignalGuidance": policy.turn_signal_guidance}
-  # version 6 only once the Force turn desires fields leave their defaults, so an untouched document stays SGSP's version 5
+           "closeGap": policy.close_gap, "closeGapSeconds": seconds, "durationS": policy.duration_s, "turnSignalGuidance": policy.turn_signal_guidance,
+           "autoRequiresCruise": policy.auto_requires_cruise}
+  # the Force turn desire fields only once they leave their defaults, so an untouched document stays Dom's version 6
   if policy.turn_desires or policy.turn_desire_speed_mps != DEFAULT_TURN_DESIRE_SPEED_MPS:
-    value |= {"version": 6, "turnDesires": policy.turn_desires, "turnDesireSpeedMps": float(policy.turn_desire_speed_mps)}
+    value |= {"turnDesires": policy.turn_desires, "turnDesireSpeedMps": float(policy.turn_desire_speed_mps)}
   return value
 
 
@@ -226,7 +234,7 @@ class LiveLaneChangePolicy:
 
   @classmethod
   def _from_saved(cls, saved):
-    # An unreadable or unrecognised document disables assistance.
+    # An unreadable or unrecognized document disables assistance.
     return effective(saved) if saved.readable and saved.valid else cls._disabled()
 
   @staticmethod

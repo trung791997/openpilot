@@ -46,6 +46,11 @@ def bundle_ready(root: Path = SERVER_ROOT) -> bool:
   return os.access(root / 'bin' / 'pulseaudio', os.X_OK) and (root / 'modules').is_dir()
 
 
+def library_path(root: Path = SERVER_ROOT, inherited: str = '') -> str:
+  """AGNOS 20 ships no libpulse0, so the server, pactl, Soloist and the phone relay all load it from the bundle."""
+  return ':'.join(filter(None, (str(root / 'lib'), inherited)))
+
+
 def can_switch(root: Path = SERVER_ROOT) -> bool:
   return os.access(root / 'bin' / 'pactl', os.X_OK)
 
@@ -70,7 +75,7 @@ class Launch:
 def runtime_paths(layout: Layout) -> dict[str, Path]:
   run = layout.runtime
   return {'run': run, 'home': run / 'home', 'pulse': run / 'pulse', 'socket': run / 'pulse' / 'native', 'alsa': run / 'alsa.conf',
-          'starport': run / 'starport.pcm'}
+          'starport': run / 'starport.pcm', 'daemon': run / 'daemon.conf'}
 
 
 def starport_pipe(layout: Layout | None = None) -> Path:
@@ -95,8 +100,9 @@ def server_launch(layout: Layout, prefs: Preferences, *, silent: bool = False, a
   env = {
     'HOME': str(paths['home']), 'XDG_RUNTIME_DIR': str(paths['run']), 'XDG_CONFIG_HOME': str(paths['home']),
     'PULSE_RUNTIME_PATH': str(paths['pulse']), 'PULSE_STATE_PATH': str(paths['pulse']),
-    'LD_LIBRARY_PATH': library_path(root), 'PATH': '/usr/bin:/bin',
+    'LD_LIBRARY_PATH': library_path(root), 'PATH': '/usr/bin:/bin', 'PULSE_CONFIG': str(paths['daemon']),
   }
+  paths['daemon'].write_text('nice-level = -5\n')
   if prefs.output == 'bluetooth':
     # Written even when starting silent, so the speaker can be added to the running server later.
     paths['alsa'].write_text(alsa_config(prefs.output_address, alsa_base))
@@ -106,16 +112,10 @@ def server_launch(layout: Layout, prefs: Preferences, *, silent: bool = False, a
     paths['starport'].unlink(missing_ok=True)
   sink = ' '.join(_sink('silent' if silent else prefs.output, paths))
   argv = [str(root / 'bin' / 'pulseaudio'), '--daemonize=no', '--system=no', '--use-pid-file=no', '-n',
-          '--exit-idle-time=-1', '--realtime=no', '--high-priority=no', '--disallow-exit', '--log-target=stderr',
-          '--log-level=notice', f'--dl-search-path={root / "modules"}',
+          '--exit-idle-time=-1', '--realtime=no', '--high-priority=yes', '--disallow-exit', '--log-target=stderr',
+          '--log-level=notice', '--resample-method=speex-float-3', f'--dl-search-path={root / "modules"}',
           '-L', f'module-native-protocol-unix socket={paths["socket"]} auth-anonymous=1', '-L', sink]
   return Launch(argv, env)
-
-
-def library_path(root: Path = SERVER_ROOT, inherited: str = '') -> str:
-  """LD_LIBRARY_PATH with the vendored PulseAudio libraries first. AGNOS 20.2.1 has no libpulse.so.0, which
-  Soloist loads at run time, so without this Spotify failed with "audio output could not open"."""
-  return ':'.join(part for part in (str(root / 'lib'), inherited) if part)
 
 
 def player_launch(layout: Layout, prefs: Preferences, api_key: str, root: Path = SERVER_ROOT) -> Launch:

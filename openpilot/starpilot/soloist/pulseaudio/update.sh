@@ -15,8 +15,10 @@ docker run --rm --platform linux/arm64 -v "$PWD:/out" ubuntu:24.04 bash -euc '
   rm -rf /out/bin /out/lib /out/modules /out/licenses && mkdir -p /out/bin /out/lib /out/modules /out/licenses
   cp $R/usr/bin/pulseaudio $R/usr/bin/pactl /out/bin/
   for m in module-native-protocol-unix module-alsa-sink module-null-sink module-pipe-sink; do cp $M/$m.so /out/modules/; done
+  # Soloist loads libpulse.so.0 and the phone relay libpulse-simple.so.0 from here as well.
+  cp -L $R/usr/lib/aarch64-linux-gnu/libpulse.so.0 $R/usr/lib/aarch64-linux-gnu/libpulse-simple.so.0 /out/lib/
   export LD_LIBRARY_PATH=$R/usr/lib/aarch64-linux-gnu:$R/usr/lib/aarch64-linux-gnu/pulseaudio:$M
-  for f in /out/bin/* /out/modules/*.so; do ldd "$f"; done | awk "/=>/{print \$3}" | sort -u | grep "^$R" |
+  for f in /out/bin/* /out/modules/*.so /out/lib/*; do ldd "$f"; done | awk "/=>/{print \$3}" | sort -u | grep "^$R" |
     while read -r lib; do cp -L "$lib" /out/lib/; done
   cp -L $R/usr/lib/aarch64-linux-gnu/libpulse-simple.so.0 /out/lib/  # loaded at run time by phone_audio.py
   for p in pulseaudio pulseaudio-utils libltdl7 liborc-0.4-0t64 libsoxr0 libspeexdsp1 libtdb1 $CLIENT; do cp -L $R/usr/share/doc/$p/copyright /out/licenses/$p.copyright; done

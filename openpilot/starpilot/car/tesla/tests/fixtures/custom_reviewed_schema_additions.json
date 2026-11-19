@@ -1084,12 +1084,117 @@
           }
         }
       ]
+    },
+    "0x9e04a179bcb4ab72": {
+      "kind": "struct",
+      "before_name": "StarPilotModelDataV2.VisionObservation",
+      "after_name": "StarPilotModelDataV2.VisionObservation",
+      "old_field_count": 12,
+      "old_storage": {
+        "dataWordCount": 6,
+        "pointerCount": 2,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "new_storage": {
+        "dataWordCount": 6,
+        "pointerCount": 3,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "added_fields": [
+        {
+          "slot": {
+            "offset": 2,
+            "type": {
+              "struct": {
+                "typeId": 12978956571779529976
+              }
+            },
+            "defaultValue": {
+              "schemaValueHex": "00000000040000000000000002000100100000000000000000000000000000000000000000000000"
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "stopSigns",
+          "codeOrder": 12,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 12
+          }
+        }
+      ]
+    },
+    "0xda96579883444c35": {
+      "kind": "struct",
+      "before_name": "StarPilotLongitudinalPlan",
+      "after_name": "StarPilotLongitudinalPlan",
+      "old_field_count": 5,
+      "old_storage": {
+        "dataWordCount": 4,
+        "pointerCount": 0,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "new_storage": {
+        "dataWordCount": 5,
+        "pointerCount": 0,
+        "preferredListEncoding": "inlineComposite",
+        "isGroup": false,
+        "discriminantCount": 0,
+        "discriminantOffset": 0
+      },
+      "added_fields": [
+        {
+          "slot": {
+            "offset": 17,
+            "type": {
+              "bool": null
+            },
+            "defaultValue": {
+              "bool": false
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "forceStopBraking",
+          "codeOrder": 5,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 5
+          }
+        },
+        {
+          "slot": {
+            "offset": 4,
+            "type": {
+              "uint64": null
+            },
+            "defaultValue": {
+              "uint64": 0
+            },
+            "hadExplicitDefault": false
+          },
+          "name": "forceStopEpisodeMonoTime",
+          "codeOrder": 6,
+          "discriminantValue": 65535,
+          "ordinal": {
+            "explicit": 6
+          }
+        }
+      ]
     }
   },
   "published_addition_commits": {
     "slc": "ab8368f287b78b42f8590722878c7d5834609e19",
     "flm": "b151ca11cb4d88f32d7adfdbcff50baf29f4fbbc",
-    "tesla_cooperative_steering": "63beafc6af294d0759b47dc3bc546f24082a2a5d"
+    "tesla_cooperative_steering": "63beafc6af294d0759b47dc3bc546f24082a2a5d",
+    "vision_stop_signs": "0571890b8e6d023050ae0ec1e0c5fa9163422568"
   },
   "review_basis": "Published SLC, FLM, and Tesla cooperative-steering additions. Every incumbent wire field descriptor and enum prefix was independently checked unchanged; only the exact typed deltas listed here are permitted. Tesla adds steeringLimitInfo @39 at pointer slot 6 using the existing SteeringLimitInfo type. ToyotaCruise @38 retains pointer slot 5, type, and default; only its declaration codeOrder changes from 38 to 39."
 }

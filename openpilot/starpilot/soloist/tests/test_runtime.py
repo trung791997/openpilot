@@ -61,6 +61,10 @@ def test_launch_commands_isolate_the_server_and_player(layout):
   prefs = preferences.Preferences(output_address='AA:BB:CC:DD:EE:FF', initial_volume=60)
   server = backend.server_launch(layout, prefs, alsa_base=Path('/usr/share/alsa/alsa.conf'))
   assert '-n' in server.argv and '--system=no' in server.argv
+  assert '--realtime=no' in server.argv and '--high-priority=yes' in server.argv
+  assert '--resample-method=speex-float-3' in server.argv
+  assert (layout.runtime / 'daemon.conf').read_text() == 'nice-level = -5\n'
+  assert server.env['PULSE_CONFIG'] == str(layout.runtime / 'daemon.conf')
   assert any(arg.startswith('module-alsa-sink device=starpilot_spotify') for arg in server.argv)
   assert server.env['ALSA_CONFIG_PATH'].startswith(str(layout.runtime))
   assert (layout.runtime / 'alsa.conf').stat().st_mode & 0o777 == 0o600
@@ -89,6 +93,9 @@ def test_vendored_server_matches_its_checksums():
   for name in ('pulseaudio', 'libltdl7', 'liborc-0.4-0t64', 'libsoxr0', 'libspeexdsp1', 'libtdb1', 'libpulse0', 'libsndfile1',
                'libasyncns0', 'libflac12t64', 'libvorbis0a', 'libvorbisenc2', 'libogg0', 'libmpg123-0t64', 'libmp3lame0'):
     assert (root / 'licenses' / f'{name}.copyright').is_file()
+  # AGNOS 20 dropped libpulse0 and libsndfile1; Soloist and the phone relay load them from the bundle.
+  for name in ('libpulse.so.0', 'libpulse-simple.so.0', 'libpulsecommon-16.1.so', 'libsndfile.so.1'):
+    assert any(path == f'lib/{name}' for _, path in sums), name
 
 
 # Shared libraries the vendored PulseAudio files need that AGNOS 20.2.1 does provide (checked on the comma, 2026-11-05).

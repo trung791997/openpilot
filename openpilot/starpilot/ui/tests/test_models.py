@@ -156,10 +156,16 @@ class TestModelManager(unittest.TestCase):
     self.assertFalse(model_action_allowed(self.data, "delete", self.big))
     self.assertTrue(model_action_allowed({**self.data, "activeBigModel": ""}, "delete", self.big))
     self.assertFalse(model_action_allowed({**self.data, "capabilities": {}}, "active", self.small, "small"))
-    moving = {**self.data, "isOnroad": True, "downloading": True}
-    self.assertFalse(model_action_allowed(moving, "active", self.small, "small"))
+    moving = {**self.data, "isOnroad": True, "downloading": False}
+    self.assertTrue(model_action_allowed(moving, "active", self.small, "small"))
+    self.assertTrue(model_action_allowed(moving, "active", self.big, "big"))
+    self.assertFalse(model_action_allowed(moving | {"jetlinkBig": True}, "active", self.big, "big"))
+    self.assertFalse(model_action_allowed(moving, "download", self.missing))
     self.assertTrue(model_action_allowed(moving, "preferences", self.small))
-    self.assertTrue(model_action_allowed(moving, "cancel"))
+    downloading = {**moving, "downloading": True}
+    self.assertFalse(model_action_allowed(downloading, "active", self.small, "small"))
+    self.assertFalse(model_action_allowed(downloading, "active", self.big, "big"))
+    self.assertTrue(model_action_allowed(downloading, "cancel"))
 
   def test_large_profile_rows_are_open_actions_and_receipt_stays_inert(self):
     state = model_page(ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.UNAVAILABLE, False, None, None), self.data)
@@ -197,8 +203,9 @@ class TestModelManager(unittest.TestCase):
     self.assertEqual([(row.label, row.value, row.available) for row in rows[3:6]],
                      [("Download a model", "None to download", False), ("Cancel download", "40%", True), ("Refresh catalog", "Check for new models", False)])
     self.assertEqual({row.reason for row in rows[1:3]}, {"Wait for the download to finish"})
+    # Dom selects models onroad too (except a Jetlink big model); only the running download blocks it.
     rows = model_page(status, data | {"isOnroad": True, "downloading": True}).rows
-    self.assertEqual({row.reason for row in rows[1:3]}, {"Turn the vehicle off to change models"})
+    self.assertEqual({row.reason for row in rows[1:3]}, {"Wait for the download to finish"})
 
   def _session(self, data):
     from openpilot.starpilot.ui import runtime_app
@@ -363,7 +370,7 @@ class TestModelManager(unittest.TestCase):
     self.assertTrue(model_action_allowed(data, "active", self.small, "small"))
     self.assertTrue(model_action_allowed(data, "active", self.big, "big"))
     self.assertFalse(model_action_allowed(data, "active", self.pending, "small"))
-    self.assertFalse(model_action_allowed(data | {"isOnroad": True}, "active", self.big, "big"))
+    self.assertTrue(model_action_allowed(data | {"isOnroad": True}, "active", self.big, "big"))
     self.assertFalse(model_action_allowed(data | {"randomizer": True}, "active", self.big, "big"))
     self.assertFalse(model_action_allowed(data | {"refreshing": False}, "active", self.big, "big"))
     self.assertFalse(model_action_allowed(data, "delete", self.small))

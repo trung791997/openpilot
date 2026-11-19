@@ -7,7 +7,7 @@ import { GalaxySelect } from "./galaxy-select.js"
 import { ModelManagerFeed } from "./models.js"
 
 export const laboratoryModels = data => data?.models || []
-export const laboratoryReady = data => laboratoryModels(data).filter(m => m.small === true && m.modelLabEligible === true && m.modelLabArtifactAvailable === true && m.modelLabArtifactInstalled === true)
+export const laboratoryReady = data => laboratoryModels(data).filter(m => m.modelLabEligible === true && m.modelLabArtifactAvailable === true && m.modelLabArtifactInstalled === true)
 
 export const laboratoryStatusLabel = model => ({
   unsupported: "Not supported", unpublished: "Not published", checking: "Checking download",
@@ -25,6 +25,9 @@ export function laboratorySelectionError(data, configuration) {
   if (!configuration.lateralModel || !configuration.longitudinalModel) return "Choose two downloaded eGPU variants"
   if (configuration.lateralModel === configuration.longitudinalModel) return "Choose two different models"
   if (![configuration.lateralModel, configuration.longitudinalModel].every(id => ready.some(m => m.value === id))) return "Both models must have downloaded eGPU variants"
+  const selected = ready.filter(m => [configuration.lateralModel, configuration.longitudinalModel].includes(m.value))
+  if (selected.every(m => m.small === false)) return "Two Big models cannot run together at the required speed. Choose a Small model for one role."
+  if (selected.every(m => m.modelLabChestnut === false)) return "Choose at least one model with a Chestnut variant"
   return ""
 }
 
@@ -34,8 +37,8 @@ export function laboratoryActionAllowed(data, action, model, configuration = dat
   if (data.isOnroad !== false || data.download?.downloading) return false
   if (action === "enable") return !laboratorySelectionError(data, configuration)
   if (action === "disable") return data.configuration.enabled === true
-  if (action === "download") return laboratoryModels(data).some(m => m.value === model?.value && m.small === true && m.modelLabEligible === true && m.modelLabArtifactAvailable === true && !m.modelLabArtifactInstalled)
-  if (action === "delete") return laboratoryReady(data).some(m => m.value === model?.value) &&
+  if (action === "download") return laboratoryModels(data).some(m => m.value === model?.value && m.modelLabEligible === true && m.modelLabArtifactAvailable === true && !m.modelLabArtifactInstalled)
+  if (action === "delete") return model?.small === true && model.modelLabChestnut !== false && laboratoryReady(data).some(m => m.value === model?.value) &&
     !(data.configuration.enabled && [data.configuration.lateralModel, data.configuration.longitudinalModel].includes(model.value))
   return action === "refresh"
 }
@@ -173,14 +176,6 @@ export const LaboratoryPage = {
       <GxNotice v-if="message" tone="info">{{ message }}</GxNotice>
       <template v-if="mode === 'local' && !loading">
       <section class="gx-card">
-        <div class="gx-section__header"><i class="bi bi-download"></i><span class="gx-section__title">Available models</span></div>
-        <GxSummary :items="[{label: 'Catalog models', value: availableModels.length}, {label: 'Published versions', value: status?.summary?.published || 0}, {label: 'Verified downloads', value: readyModels.length}]" />
-        <p class="gx-note gx-inset">Browse Small and Big models here. Combining models requires compatible Chestnut downloads and support for running them together.</p>
-        <p v-if="status && !availableModels.length" class="gx-note gx-inset">The model catalog is unavailable. Refresh to retry.</p>
-        <article v-for="m in availableModels" :key="m.value" class="gx-row gx-row--wrap"><div class="gx-row__info gx-row__info--wide"><span class="gx-row__label">{{ m.label }}</span><span class="gx-row__desc">{{ m.value }} · {{ m.small ? 'Small' : 'Big' }} · {{ m.series || 'Unknown series' }} · {{ m.version }}</span><span class="gx-row__desc">{{ m.modelLabReason || 'Pair artifact status unavailable' }}</span></div><div class="gx-actions"><span class="gx-chip">{{ statusLabel(m) }}</span><button v-if="m.small && m.modelLabEligible && m.modelLabArtifactAvailable && !m.modelLabArtifactInstalled" class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('download',m)" @click="act('download',m)">Download eGPU variant</button><button v-else-if="m.modelLabArtifactInstalled" class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('delete',m)" @click="act('delete',m)">Delete eGPU variant</button></div></article>
-        <div v-if="status?.download.downloading" class="gx-row"><div class="gx-row__info"><span class="gx-row__desc">{{ status.download.progress || 'Downloading…' }}</span></div><button class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('cancel')" @click="act('cancel')">Cancel download</button></div>
-      </section>
-      <section class="gx-card">
         <div class="gx-section__header"><i class="bi bi-collection"></i><span class="gx-section__title">Compose a pair</span><span class="gx-chip">{{ configuration.enabled ? 'Enabled' : 'Disabled' }}</span></div>
         <div class="gx-panel gx-stack">
           <label class="gx-field-group"><strong>Lateral model</strong><small>Path shape, curvature, lane geometry, and driving desire</small><GalaxySelect class="gx-field" aria-label="Lateral model" :disabled="!status || status.isOnroad || status.download.downloading" :value="configuration.lateralModel" @change="changeLateral($event.target.value)"><option value="">Choose a model</option><option v-for="m in readyModels" :key="m.value" :value="m.value">{{ m.label }} · {{ m.version }}</option></GalaxySelect></label>
@@ -193,6 +188,15 @@ export const LaboratoryPage = {
               @change="$event.target.checked=status.configuration.enabled; reportSave(() => act(status.configuration.enabled ? 'disable' : 'enable'))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label></div>
           <div class="gx-actions"><button class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('refresh')" @click="act('refresh')">Check model catalog</button></div>
         </div>
+      </section>
+      <section class="gx-card">
+        <div class="gx-section__header"><i class="bi bi-download"></i><span class="gx-section__title">Available models</span></div>
+        <GxSummary :items="[{label: 'Catalog models', value: availableModels.length}, {label: 'Published versions', value: status?.summary?.published || 0}, {label: 'Verified downloads', value: readyModels.length}]" />
+        <p class="gx-note gx-inset">Browse Small and Big models here. Combining models requires compatible Chestnut downloads and support for running them together.</p>
+        <p class="gx-note gx-inset">Pairing increases inference time. Two Big models cannot run together at the required speed. Choose a Small model for one role. Other combinations can also cause model lag warnings. Small downloads prepare the available variants. When available, the comma GPU runs one Small role while Chestnut runs the other role.</p>
+        <p v-if="status && !availableModels.length" class="gx-note gx-inset">The model catalog is unavailable. Refresh to retry.</p>
+        <article v-for="m in availableModels" :key="m.value" class="gx-row gx-row--wrap"><div class="gx-row__info gx-row__info--wide"><span class="gx-row__label">{{ m.label }}</span><span class="gx-row__desc">{{ m.value }} · {{ m.small ? 'Small' : 'Big' }} · {{ m.series || 'Unknown series' }} · {{ m.version }}</span><span class="gx-row__desc">{{ m.modelLabReason || 'Pair artifact status unavailable' }}</span></div><div class="gx-actions"><span class="gx-chip">{{ statusLabel(m) }}</span><button v-if="m.modelLabEligible && m.modelLabArtifactAvailable && !m.modelLabArtifactInstalled" class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('download',m)" @click="act('download',m)">{{ m.small ? (m.modelLabChestnut === false ? 'Download Small model' : 'Download pair variants') : 'Download Big model' }}</button><button v-else-if="m.small && m.modelLabChestnut !== false && m.modelLabArtifactInstalled" class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('delete',m)" @click="act('delete',m)">Delete eGPU variant</button></div></article>
+        <div v-if="status?.download.downloading" class="gx-row"><div class="gx-row__info"><span class="gx-row__desc">{{ status.download.progress || 'Downloading…' }}</span></div><button class="gx-btn gx-btn--tonal" :disabled="!actionAvailable('cancel')" @click="act('cancel')">Cancel download</button></div>
       </section>
       <section class="gx-card"><div class="gx-section__header"><i class="bi bi-activity"></i><span class="gx-section__title">Runtime</span><span class="gx-chip">{{ runtimeState }}</span></div><div class="gx-row"><div class="gx-row__info"><span class="gx-row__desc">Lateral: {{ modelLabel(status?.runtime.lateralModel) }}</span><span class="gx-row__desc">Longitudinal: {{ modelLabel(status?.runtime.longitudinalModel) }}</span><span v-if="status && !status.runtimeSupported" class="gx-row__desc">{{ status.runtimeUnavailableReason || 'Pair runtime is unavailable.' }}</span></div></div><GxNotice v-if="status?.runtime.error" tone="danger">{{ status.runtime.error }}</GxNotice></section>
       </template>

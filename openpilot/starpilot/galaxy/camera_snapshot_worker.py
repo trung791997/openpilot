@@ -137,7 +137,9 @@ def capture(camera, *, client_factory=VisionIpcClient, clock=boot_ns, exposure_f
 
 if __name__ == '__main__':
   try:
-    result = capture(sys.argv[1]) if len(sys.argv) == 2 and sys.argv[1] in STREAMS else None
+    # The parent may add 'parked'; this worker's exposure settle does not depend on it.
+    valid = len(sys.argv) in (2, 3) and sys.argv[1] in STREAMS and sys.argv[2:] in ([], ['parked'])
+    result = capture(sys.argv[1]) if valid else None
     if result is not None:
       sys.stdout.buffer.write(result)
     else:

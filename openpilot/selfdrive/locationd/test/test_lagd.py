@@ -85,6 +85,25 @@ class TestLagd(OpenpilotTestCase):
     assert lag == msg.lateralDelay.lateralDelayEstimate
     assert valid_blocks == msg.lateralDelay.validBlocks
 
+  def test_saved_params_dropped_when_steer_control_type_changes(self):
+    # a lag learned on a torque-controlled EPS must not seed the same car's angle loop (and back)
+    params = Params()
+    torque_CP = get_test_car_params()
+    angle_CP = torque_CP.copy()
+    angle_CP.steerControlType = car.CarParams.SteerControlType.angle
+
+    msg = messaging.new_message('lateralDelay')
+    msg.lateralDelay.lateralDelayEstimate = 0.25
+    msg.lateralDelay.validBlocks = 5
+    msg.lateralDelay.version = VERSION
+    put_cache(params, "CarParamsPrevRoute", torque_CP, block=True)
+
+    put_cache(params, "LiveDelay", msg, block=True)
+    assert retrieve_initial_lag(params, torque_CP) == (0.25, 5)
+
+    assert retrieve_initial_lag(params, angle_CP) is None
+    assert params.get("LiveDelay") is None
+
   def test_read_invalid_saved_params(self, subtests):
     params = Params()
 

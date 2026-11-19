@@ -279,7 +279,7 @@ class JetsonNet:
     self.stats = {'jetson': 0, 'cpu': 0, 'loads': 0, 'unloads': 0, 'yield_skips': 0, 'miss_skips': 0}
     self.misses = 0   # passes in a row the live Jetson missed
 
-  def setInput(self, blob):  # noqa: N802 (cv2's name)
+  def setInput(self, blob):
     self.blob = blob
 
   def forward(self):

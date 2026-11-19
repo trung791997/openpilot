@@ -301,6 +301,8 @@ struct StarPilotLongitudinalPlan @0xda96579883444c35 {
   modelMonoTime @2 :UInt64;
   driveStartMonoTime @3 :UInt64;
   forceStopHolding @4 :Bool;
+  forceStopBraking @5 :Bool;
+  forceStopEpisodeMonoTime @6 :UInt64;
 }
 
 struct SlcState @0xa1680744031fdb2d {
@@ -671,6 +673,27 @@ struct StarPilotModelDataV2 @0x80ae746ee2596b11 {
     modelId @9 :Text; # exact bundled detector/classifier identity
     frameId @10 :UInt32;
     stream @11 :Stream;
+    stopSigns @12 :StopObservation;
+
+    struct StopObservation {
+      status @0 :Status;
+      observedMonoTime @1 :UInt64;
+      validUntilMonoTime @2 :UInt64;
+      cameraFrameEofBootTime @3 :UInt64;
+      frameId @4 :UInt32;
+      imageWidth @5 :UInt16;
+      imageHeight @6 :UInt16;
+      detections @7 :List(StopDetection);
+    }
+
+    struct StopDetection {
+      confidence @0 :Float32;
+      x1Pixels @1 :UInt16;
+      y1Pixels @2 :UInt16;
+      x2Pixels @3 :UInt16;
+      y2Pixels @4 :UInt16;
+    }
+
 
     enum Status @0xc97a1c56dc1427ae {
       unknown @0;

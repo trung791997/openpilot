@@ -87,7 +87,7 @@ class _CpuNet:
   def __init__(self, shape):
     self.shape, self.calls = shape, 0
 
-  def setInput(self, blob):  # noqa: N802
+  def setInput(self, blob):
     self.blob = blob
 
   def forward(self):

@@ -330,6 +330,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HideDMIcon", {PERSISTENT, BOOL, "0"}},
     {"HidePersonalityAlerts", {PERSISTENT, BOOL, "0"}},
     {"ShowSpeedLimits", {PERSISTENT, BOOL, "1"}},
+    {"CabinWhiteBalance", {PERSISTENT, BOOL, "1"}},
+    {"ExperimentalEngage66Mph", {PERSISTENT, BOOL, "1"}},
     {"SLCConfirmation", {PERSISTENT, BOOL, "0"}},
     {"SLCAdvanceSeconds", {PERSISTENT, INT, "0"}},
     {"SLCConfirmationHigher", {PERSISTENT, BOOL, "0"}},

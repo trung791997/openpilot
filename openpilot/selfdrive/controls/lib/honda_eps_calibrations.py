@@ -296,6 +296,7 @@ CRV_TLA_A040 = EpsFirmwareCalibration(
   kp_key_bp=tuple(round(k * 4096 / 3840) for k in CLARITY_TRW_A020_P_KEYS), kp_v=P_ROW_PMINUS5,
   r6_per_deg_s=CRV_TLA_A040_R6_CENTRE, r6_angle_bp=R6_GAIN_BP, r6_angle_gain=CRV_TLA_A040_R6_GAIN,
   load=CRV_TLA_A040_LOAD, p_scale=CRV_TLA_A040_P_SCALE, i_scale=CRV_TLA_A040_I_SCALE,
+  cmd_delay_s=0.18,  # measured
   rack=CRV_TLA_A040_RACK,
 )
 # CR-V 5G 39990-TLA-A220 (2020+), the CORRECTED PTM build of 2026-10-16, revision b (payload sha256 a62337a9, RWD 2c992997;
@@ -343,8 +344,12 @@ CRV_TLA_A220 = EpsFirmwareCalibration(
   rack=CRV_TLA_A040_RACK,
 )
 
-# Acura RDX 3G 39990-TJB-A220, the Route-A PTM, Trk1641 build with the runtime ROM CRC fix (RDX-PTM-101526-RomCRC.rwd,
-# RWD sha256 3dd8b91b = KB TJB_A220_PTM_ROUTE_A_20261014/BUILD_Trk1641). Not the Clarity's controller family: TJB runs
+# Acura RDX 3G 39990-TJB-A220, the Route-A PTM: the owner's car build with the A030 variant keys added
+# (RDX-PTM-102026-RomCRC-FadeMatch-VariantKeys.rwd, RWD sha256 68a6fdb4; KB TJB_VARIANT_KEY_CHECK_20261110/BUILD). Against
+# the Trk1641 runtime-ROM-CRC build this law was read from (RDX-PTM-101526-RomCRC.rwd, RWD 3dd8b91b, KB
+# TJB_A220_PTM_ROUTE_A_20261014/BUILD_Trk1641) it changes only the override and helper fade tables (rows 0-3, primary
+# and shadow), the runtime ROM CRC and two identity records (keys TJBA1 / TJBA2, so an A030-coded EPS finds its
+# record); no table below moves. Not the Clarity's controller family: TJB runs
 # THR (Odyssey) code shifted +0x9C, with its own units, and the build ports the Clarity's tables into them (Route A).
 # In the Clarity's units the law is the one honda_eps_firmware_ff inverts:
 # - key: TJB takes a = E4/4 (|a| <= 1024, E4 4096); the Clarity's key is q = trunc(E4 * 56756/32768 / 4) = 1.732 a, so
@@ -593,7 +598,7 @@ CALIBRATION_PROVENANCE = {
     "r6": "firmware: computed from its A table; the owner's telemetry fit (route 82bb) agrees at centre",
     "load": "measured: the owner's telemetry route 82bb",
     "trims": "measured: the owner drives it untrimmed",
-    "cmd_delay": "default (the owner's LatControlPID drive ran 0.08 s late: re-check on this controller)",
+    "cmd_delay": "measured: plan_timing 5-12 m/s on 7 routes (02/03/04/05/0a/0b/15) 0.07 s early with 0.12 s (Nov 7/12 0.11-0.15); highway unmeasured",
     "model_delay": "default: the Clarity's schedule",
     "rack": "measured: VSA yaw (GPS-checked scale), routes 00000003 / 04 / 05 on rev b; spec shape past 173 deg",
   },
@@ -649,7 +654,7 @@ REQUIRED_PTM_RWD = {
   "insight_txm_a040": "7ba37432",
   "crv_tla_a040": "2e6a8802",
   "crv_tla_a220": "2c992997",
-  "rdx_tjb_a220": "3dd8b91b",
+  "rdx_tjb_a220": "68a6fdb4",
   "ridgeline_t6z_a110": "e7e2d909",
   "odyssey_thr_a020": "b89d20f0",
 }

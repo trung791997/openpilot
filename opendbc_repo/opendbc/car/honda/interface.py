@@ -6,12 +6,14 @@ from opendbc.car import Bus, get_safety_config, structs, uds
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.honda.hondacan import CanBus
-from opendbc.car.honda.values import CarControllerParams, HondaFlags, CAR, HondaSafetyFlags, MANUAL_TRANS_CARS, MODIFIED_EPS_FW, DBC
-from opendbc.car.honda.steer_ratio import get_honda_vgr_profile, HONDA_VGR_PROFILE_FLAGS
+from opendbc.car.honda.values import CarControllerParams, HondaFlags, CAR, HondaSafetyFlags, MANUAL_TRANS_CARS, MODIFIED_EPS_FW, DBC, \
+                                     is_accord_eps_angle_loop_fw
+from opendbc.car.honda.steer_ratio import get_honda_vgr_profile, HONDA_VGR_PROFILE_FLAGS, ACCORD_ANGLE_LOOP_STEER_RATIO
 from opendbc.car.honda.carcontroller import CarController
 from opendbc.car.honda.carstate import CarState
 from opendbc.car.honda.radar_interface import RadarInterface
 from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.car.lateral import MAX_LATERAL_ACCEL
 
 TransmissionType = structs.CarParams.TransmissionType
 RADARLESS_PORTS = frozenset((CAR.HONDA_FIT_4G, CAR.ACURA_INTEGRA, CAR.ACURA_ADX))
@@ -120,12 +122,15 @@ class CarInterface(CarInterfaceBase):
     # allow-listed modified EPS look unknown and forced dashcam (seen on 39990-TBA,C020, 2026-10-21)
     eps_observations = [fw for fw in car_fw if fw.ecu == "eps" and not fw.logging]
     modified_eps = any(b"," in fw.fwVersion for fw in eps_observations)
-    eps_modified = bool(modified_eps) and all(
-      fw.address == 0x18DA30F1 and fw.subAddress == 0 and
+    eps_addressed = all(fw.address == 0x18DA30F1 and fw.subAddress == 0 for fw in eps_observations)
+    eps_modified = bool(modified_eps) and eps_addressed and all(
       fw.fwVersion in MODIFIED_EPS_FW.get(candidate, ()) for fw in eps_observations)
+    # The Accord angle-loop firmware is a comma image too, but not a torque-mod one: it never takes EPS_MODIFIED.
+    eps_angle_loop = candidate == CAR.HONDA_ACCORD and modified_eps and eps_addressed and all(
+      is_accord_eps_angle_loop_fw(fw.fwVersion) for fw in eps_observations)
     if eps_modified:
       ret.flags |= HondaFlags.EPS_MODIFIED.value
-    elif modified_eps:
+    elif modified_eps and not eps_angle_loop:
       ret.dashcamOnly = True
 
     # VGR is selected by the exact EPS image, not by vehicle family. Unknown firmware gets no VGR override and
@@ -156,6 +161,14 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate == CAR.HONDA_ACCORD:
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = ([[0.3], [0.09]] if eps_modified else [[0.6], [0.18]])
+      if eps_angle_loop:
+        # the EPS closes the angle loop, openpilot sends the setpoint
+        ret.flags |= HondaFlags.EPS_ANGLE_LOOP_FW.value
+        ret.steerControlType = structs.CarParams.SteerControlType.angle
+        ret.steerActuatorDelay = CarControllerParams.ANGLE_STEER_ACTUATOR_DELAY
+        ret.steerRatio = ACCORD_ANGLE_LOOP_STEER_RATIO
+        # the onroad torque bar divides by this; the torque fit's 0.32 m/s^2 means nothing to an angle setpoint
+        ret.maxLateralAccel = MAX_LATERAL_ACCEL
 
     elif candidate == CAR.HONDA_ACCORD_11G:
       ret.longitudinalActuatorDelay = 0.05
@@ -178,7 +191,8 @@ class CarInterface(CarInterfaceBase):
       if eps_modified:
         _modified_eps_tune(ret)
       else:
-        ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.64], [0.192]]
+        ret.lateralTuning.pid.kpBP, ret.lateralTuning.pid.kpV = [[0, 10], [0.16, 0.64]]
+        ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kiV = [[0, 10], [0.048, 0.192]]
       ret.wheelSpeedFactor = 1.025
 
     elif candidate == CAR.HONDA_CRV_HYBRID:

@@ -49,6 +49,17 @@ CAR_ANCHOR = 0.68            # the car sits below center so more road ahead is v
 ZOOM_SLOW_M_PER_PX = 0.9     # parking-lot and city detail
 ZOOM_FAST_M_PER_PX = 3.4     # highway overview
 MIN_HEADING_SPEED = 1.5      # m/s; GPS heading is noise below this
+ROTATE_MIN_SPEED = 3.0       # m/s; below this the map holds its rotation
+HEADING_DEADBAND_DEG = 3.0   # heading changes smaller than this leave the map still
+HEADING_RATE = 1.5           # 1/s: how quickly the map eases toward the heading
+MAX_TURN_DEG_S = 45.0        # the map never spins faster than this
+JUNCTION_LOOKAHEAD_S = 14.0  # zoom in on the next maneuver this far ahead
+JUNCTION_MIN_M, JUNCTION_MAX_M = 80.0, 300.0
+STOPPED_SPEED = 0.5          # m/s
+OVERVIEW_AFTER_S = 30.0      # stopped this long: zoom out to an overview
+OVERVIEW_MIN_MANEUVER_M = 50.0  # ...unless a maneuver is about to happen
+NAME_HOLD_S = 1.5            # a new road name must hold this long to replace the old one
+ROAD_NAME_MAX_AGE_S = 3.0
 GUIDANCE_SLACK_PX = 4.0      # screen pixels of driven route left under the puck before guidance is trimmed again
 
 
@@ -73,7 +84,7 @@ ROUTE_GLOW = (150, 110, 255, 90)
 ROUTE_CORE = (178, 150, 255, 255)
 ROUTE_DONE = (118, 104, 150, 200)
 # Traffic on the route line (Navigation.routeCongestion: 0 unknown, 1 low, 2 moderate, 3 heavy, 4 severe), the
-# head unit's dash-map colours. Unknown and low keep ROUTE_CORE and ROUTE_GLOW; a slow stretch's glow takes its colour
+# head unit's dash-map colors. Unknown and low keep ROUTE_CORE and ROUTE_GLOW; a slow stretch's glow takes its color
 # at the glow's alpha, so the whole width of the line shows the traffic (Peter 2026-10-31).
 # Severe is #e53935, one shade brighter than the head unit's #c62828: on this dark map #c62828 is only ~2.5:1 against
 # the road background and reads as a dark gap in the line; #e53935 is ~3.3:1 and still distinct from heavy orange.
@@ -96,6 +107,19 @@ def zoom_for_speed(speed_mps: float) -> float:
   t = min(1.0, max(0.0, (speed_mps - 8.0) / 24.0))
   t = t * t * (3 - 2 * t)
   return ZOOM_SLOW_M_PER_PX + (ZOOM_FAST_M_PER_PX - ZOOM_SLOW_M_PER_PX) * t
+
+
+def zoom_target(speed_mps: float, maneuver_m: float | None = None, stopped_s: float = 0.0) -> float:
+  """Meters per screen pixel: speed-based, closer ahead of a maneuver, wider after sitting still."""
+  base = zoom_for_speed(speed_mps)
+  near = maneuver_m is not None and maneuver_m <= OVERVIEW_MIN_MANEUVER_M
+  if stopped_s >= OVERVIEW_AFTER_S and not near:
+    return ZOOM_FAST_M_PER_PX
+  if maneuver_m is not None:
+    reach = min(JUNCTION_MAX_M, max(JUNCTION_MIN_M, speed_mps * JUNCTION_LOOKAHEAD_S))
+    t = min(1.0, max(0.0, (reach - maneuver_m) / (reach * 0.5)))
+    base -= (base - ZOOM_SLOW_M_PER_PX) * t * t * (3 - 2 * t)
+  return base
 
 
 # ---------------------------------------------------------------- geometry
@@ -224,7 +248,7 @@ def route_guidance(route, request: CanvasRequest, latitude: float, levels: np.nd
   """Build only the remaining route; the road canvas never bakes in a driven tail.
 
   ``levels`` is the traffic on each of the route's segments (len(route) - 1), or None for a plain route. Glow and core
-  are each one strip per traffic colour (runs of the same colour batched); every glow is drawn before any core, so a
+  are each one strip per traffic color (runs of the same color batched); every glow is drawn before any core, so a
   neighbour's glow never covers a core.
   """
   if route is None or len(route) < 2:
@@ -248,7 +272,7 @@ def route_guidance(route, request: CanvasRequest, latitude: float, levels: np.nd
 
 
 def core_colors(keep: np.ndarray, levels: np.ndarray | None) -> list[tuple[tuple[int, int, int, int], np.ndarray]]:
-  """(colour, segment mask) for the route core, bottom to top: ROUTE_CORE, then moderate, heavy, severe.
+  """(color, segment mask) for the route core, bottom to top: ROUTE_CORE, then moderate, heavy, severe.
 
   Without traffic, or with levels that do not match the segments, it is the plain route: one ROUTE_CORE mask.
   """
@@ -350,6 +374,8 @@ class MapInput:
   destination: str = ''                             # where navigation is going: "Home", "Work" or the place name
   source: str = ''                                  # where the fix comes from: comma, car or phone
   congestion: tuple[int, ...] = ()                  # Navigation.routeCongestion, one level per route point
+  maneuver_distance_m: float | None = None          # meters to the next maneuver while guiding
+  road_name: str = ''                               # the road the car is on, from the map data
 
 
 class TileReader:
@@ -507,6 +533,11 @@ class MapOverlay:
     self._latitude = 0.0
     self._bearing = 0.0
     self._has_heading = False
+    self._stopped_since: float | None = None
+    self._name = ''
+    self._name_candidate = ''
+    self._name_since = 0.0
+    self._name_layout: tuple | None = None
     self._m_per_px = ZOOM_SLOW_M_PER_PX
     self._last_prepare: float | None = None
     self.status = "waiting"
@@ -518,6 +549,7 @@ class MapOverlay:
     self._input = data
     self.status = "live" if data.fix is not None and 0 <= now - data.fix.monotonic <= fix_hold_seconds(data.source) else "waiting"
     fix = data.fix
+    self._track_name(data.road_name if self.status == "live" else '', now)
     dt = 0.0 if self._last_prepare is None else min(0.2, max(0.0, now - self._last_prepare))
     self._last_prepare = now
     if fix is None:
@@ -529,8 +561,11 @@ class MapOverlay:
       heading = math.radians(fix.bearing)
       target_world = (target_world[0] + math.sin(heading) * units, target_world[1] - math.cos(heading) * units)
       delta = (fix.bearing - self._bearing + 540.0) % 360.0 - 180.0
-      self._bearing = (self._bearing + delta * (min(1.0, dt * 6.0) if self._has_heading else 1.0)) % 360.0
-      self._has_heading = True
+      if not self._has_heading:
+        self._bearing, self._has_heading = fix.bearing % 360.0, True
+      elif fix.speed > ROTATE_MIN_SPEED and abs(delta) > HEADING_DEADBAND_DEG:
+        limit = MAX_TURN_DEG_S * dt
+        self._bearing = (self._bearing + max(-limit, min(limit, delta * min(1.0, dt * HEADING_RATE)))) % 360.0
     if self._world is None or math.hypot(target_world[0] - self._world[0], target_world[1] - self._world[1]) > 0.5:
       self._world = target_world                               # first fix or a jump: no slow glide across town
     else:
@@ -538,8 +573,22 @@ class MapOverlay:
       self._world = (self._world[0] + (target_world[0] - self._world[0]) * k,
                      self._world[1] + (target_world[1] - self._world[1]) * k)
     self._latitude = fix.latitude
-    target_zoom = zoom_for_speed(fix.speed) if math.isfinite(fix.speed) else self._m_per_px
+    stopped = math.isfinite(fix.speed) and fix.speed < STOPPED_SPEED
+    if not stopped:
+      self._stopped_since = None
+    elif self._stopped_since is None:
+      self._stopped_since = now
+    stopped_s = 0.0 if self._stopped_since is None else now - self._stopped_since
+    maneuver = data.maneuver_distance_m if data.navigation_active else None
+    target_zoom = zoom_target(fix.speed, maneuver, stopped_s) if math.isfinite(fix.speed) else self._m_per_px
     self._m_per_px += (target_zoom - self._m_per_px) * min(1.0, dt * 0.8)
+
+  def _track_name(self, name: str, now: float) -> None:
+    name = ' '.join(name.split())[:64]
+    if name != self._name_candidate:
+      self._name_candidate, self._name_since = name, now
+    if not name or now - self._name_since >= NAME_HOLD_S:
+      self._name = name
 
   def _route(self, route: tuple[tuple[float, float], ...], congestion: tuple[int, ...] = ()) -> None:
     if route is self._route_key and congestion is self._congestion_key:
@@ -551,7 +600,7 @@ class MapOverlay:
       levels = segment_levels(route, congestion)
       if not (levels is None and self._route_levels is None or
               levels is not None and self._route_levels is not None and np.array_equal(levels, self._route_levels)):
-        self._guidance_key = None                              # new traffic colours: rebuild the guidance strips
+        self._guidance_key = None                              # new traffic colors: rebuild the guidance strips
       self._route_levels = levels
     self._route_key, self._congestion_key = route, congestion
 
@@ -807,11 +856,32 @@ class MapOverlay:
       self._draw_starting_navigation(rect)
       return
     text = "" if self.has_roads or self._canvas_request is None else "No map data here yet"
+    if not text and self._name and self.fonts is not None:
+      self._draw_road_name(rect)
     if text and self.fonts is not None:
       from openpilot.starpilot.ui.presentation import FontRole
       measured = self.fonts.measure(text, FontRole.MEDIUM, 26)
       self.fonts.draw(text, FontRole.MEDIUM, 26, rect.x + (rect.width - measured.width) / 2,
                       rect.y + rect.height * CAR_ANCHOR + 40, rl.Color(225, 228, 238, round(200 * opacity)))
+
+  def _draw_road_name(self, rect: rl.Rectangle) -> None:
+    """Draw the current road below the car, independent of map opacity."""
+    from openpilot.starpilot.ui.presentation import FontRole
+    size = max(18, round(min(rect.width, rect.height) * 0.075))
+    limit = rect.width * 0.8 - size
+    key = (self._name, size, round(limit))
+    if self._name_layout is None or self._name_layout[0] != key:
+      text = self._name
+      while len(text) > 3 and self.fonts.measure(text, FontRole.MEDIUM, size).width > limit:
+        text = text[:-4] + "..." if text.endswith("...") else text[:-1] + "..."
+      self._name_layout = key, text, self.fonts.measure(text, FontRole.MEDIUM, size).width
+    _, text, text_width = self._name_layout
+    pad = size * 0.55
+    pill = rl.Rectangle(rect.x + (rect.width - text_width) / 2 - pad, rect.y + rect.height * CAR_ANCHOR + 38,
+                        text_width + pad * 2, size * 1.55)
+    rl.draw_rectangle_rounded(pill, 0.5, 8, rl.Color(15, 13, 23, 255))
+    rl.draw_rectangle_rounded_lines_ex(pill, 0.5, 8, 1.5, rl.Color(150, 140, 200, 255))
+    self.fonts.draw(text, FontRole.MEDIUM, size, pill.x + pad, pill.y + size * 0.27, rl.Color(240, 242, 250, 255))
 
   def _draw_source_chip(self, rect: rl.Rectangle) -> None:
     """Where the fix comes from, left of the compass; solid whatever the map's opacity so it always reads."""
@@ -916,7 +986,7 @@ class MapFeed:
     from openpilot.starpilot.gps.source import GPS_SERVICES
     if sm is None:
       from openpilot.cereal import messaging
-      sm = messaging.SubMaster(list(GPS_SERVICES))
+      sm = messaging.SubMaster([*GPS_SERVICES, "mapdOut"])
     self.sm = sm
     self._fix: MapFix | None = None
     self._source = ''
@@ -926,6 +996,9 @@ class MapFeed:
     self._congestion: tuple[int, ...] = ()
     self._navigation_active = False
     self._destination = ''
+    self._maneuver_m: float | None = None
+    self._road = ''
+    self._road_at = -math.inf
     self._acquisition = acquisition if acquisition is not None else GpsAcquisition()
     self._acquisition_polled = -math.inf
 
@@ -970,6 +1043,7 @@ class MapFeed:
           active = bool(nav is not None and nav.enabled and nav.destinationName)
           self._destination = nav.destinationName if active else ''
           self._route_valid_until = 0
+          self._maneuver_m = None
           if (nav is not None and nav.enabled and nav.status in ("guiding", "arrived") and
               0 < nav.frameMonoTime <= now_ns <= nav.frameMonoTime + 3_000_000_000):
             self._route_valid_until = nav.frameMonoTime + 3_000_000_000
@@ -978,6 +1052,7 @@ class MapFeed:
               congestion = tuple(nav.routeCongestion)              # an older navigationd has none: the plain route
             except Exception:
               congestion = ()
+            self._maneuver_m = self._maneuver(nav)
         except Exception:
           route, congestion = (), ()
         if route != self._route:
@@ -987,6 +1062,7 @@ class MapFeed:
         self._navigation_active = active
       if now_ns > self._route_valid_until:
         self._route, self._congestion = (), ()
+        self._maneuver_m = None
       route, congestion, active = self._route, self._congestion, self._navigation_active
     acquisition_elapsed = 0.0
     if not fresh:
@@ -996,7 +1072,21 @@ class MapFeed:
     return MapInput(self._fix, route, active if navigation_requested is None else navigation_requested,
                     None if fresh else self._acquisition.satellites(now),
                     acquisition_elapsed, self._destination if destination is None else destination,
-                    self._source if self._fix is not None else '', congestion)
+                    self._source if self._fix is not None else '', congestion,
+                    self._maneuver_m if route else None, self._road_name(now))
+
+  @staticmethod
+  def _maneuver(nav) -> float | None:
+    meters = float(nav.instruction.distanceMeters)
+    return meters if nav.status == "guiding" and math.isfinite(meters) and meters >= 0 else None
+
+  def _road_name(self, now: float) -> str:
+    if self.sm.updated.get("mapdOut", False):
+      out = self.sm["mapdOut"]
+      self._road = (out.roadName or out.wayName) if self.sm.valid["mapdOut"] else ''
+      self._road_at = now
+    return self._road if 0 <= now - self._road_at <= ROAD_NAME_MAX_AGE_S else ''
+
 
 
 # ---------------------------------------------------------------- parked preview
@@ -1051,4 +1141,4 @@ def sample_input() -> MapInput:
     return lat_lon(SAMPLE_TILE.x + x / EXTENT, SAMPLE_TILE.y + y / EXTENT)
   latitude, longitude = world(*SAMPLE_CAR)
   route = tuple(world(x, y) for x, y in ((1450, 4200), (1450, 2620), (1200, 2620), (-1800, 2460)))
-  return MapInput(MapFix(latitude, longitude, SAMPLE_BEARING, 8.0, time.monotonic()), route)
+  return MapInput(MapFix(latitude, longitude, SAMPLE_BEARING, 8.0, time.monotonic()), route, road_name="Desert Inn Road")

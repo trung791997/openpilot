@@ -167,7 +167,8 @@ def test_far_fast_closer_with_braking_range_keeps_authority():
 
 def _steps_beyond_plain_hold(out, ref):
   """Largest frame step in `out` above what the plain D-080 hold (no camera) already has on the same track, and above 0.5."""
-  return max(max(abs(b - a) - max(abs(rb - ra), 0.5), 0.0) for (a, b), (ra, rb) in zip(zip(out, out[1:]), zip(ref, ref[1:])))
+  pairs = zip(zip(out, out[1:], strict=False), zip(ref, ref[1:], strict=False), strict=False)
+  return max(max(abs(b - a) - max(abs(rb - ra), 0.5), 0.0) for (a, b), (ra, rb) in pairs)
 
 
 def test_no_step_over_half_m_s2_across_match_loss_and_urgent_bypass():

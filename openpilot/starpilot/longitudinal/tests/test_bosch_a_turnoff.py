@@ -115,7 +115,7 @@ def test_release_step_without_radar_never_fast(monkeypatch):
   assert rel.fast_letoff.fired == 0
 
 
-import pytest  # noqa: E402
+import pytest
 
 
 @pytest.fixture(autouse=True)

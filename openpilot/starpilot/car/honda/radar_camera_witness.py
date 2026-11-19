@@ -7,7 +7,7 @@ radar_reversal_bound (ReversalBound) and radar_camera_cap (CameraCap), in their 
 block per tell, in the words of its owner. The shared veto and the order against CameraSlowBound are static; not replayed
 beyond the scorecard traces: every replay number below was measured on the separate modules.
 
-Why the cap reads the stage-1 lead, and why the reversal tell is not slewed (scorecard ep292, a4 seg16, labelled REAL by
+Why the cap reads the stage-1 lead, and why the reversal tell is not slewed (scorecard ep292, a4 seg16, labeled REAL by
 Peter; replay trace): the first unification ran the cap on the raw lead and slewed all tells together. The raw-lead gap was
 3.2-4.4 m/s and fired the cap where the post-reversal gap (the lead the old cap saw) was 1.3-1.8, and the slewed release
 left a 0.3 s tail after the reversal latch ended and hid a -2.9 aLeadK frame. So the cap measures its gap on the lead the
@@ -107,7 +107,7 @@ computed on the stage-1 lead, and its correction is the old cap's rate-limited s
 replays: ep128 softer/later under weight * gap forms, ep154 and ep356 harder while the cap's release was still running; replay).
 Its target is the tell times the camera gap (m/s); it follows that target at +-CAP_DV_RATE (8 m/s per second) for
 vLead/vLeadK/vRel and +-CAP_DA_RATE (10 m/s^2 per second) for the aLeadK lift, in and out, so it never falls faster than
-the rate. Known property, kept as baseline behaviour (not replayed as a change): while it decays the correction can exceed
+the rate. Known property, kept as baseline behavior (not replayed as a change): while it decays the correction can exceed
 the current camera gap (ep154 +1.57..+1.9 s: published up to ~1.3 m/s less closing than the camera). The replay numbers
 below are with these rates. The urgency veto on this tell (a lead under URGENT_D or inside URGENT_TTC is never moved) is
 static; it is the one intended difference from the old CameraCap (ep64). Before the unification this ran after
@@ -197,7 +197,7 @@ CAP_DA_RATE = 10.0     # m/s^2 per second; the same for the aLeadK lift (variant
 # ep128 (80 seg19, REAL) came out up to 0.24 m/s^2 softer/later (the 0.25 s weight rise on an already-open gap grew the
 # correction at 16-20 m/s per second) and ep154/ep356 harder (the weight * gap forms let the correction fall with the gap,
 # faster than the old release) (replay). The shared weight slew applies to the weak and reversal tells only.
-# Known property, baseline behaviour, kept and not replayed as a change: while the state decays it can exceed the current
+# Known property, baseline behavior, kept and not replayed as a change: while the state decays it can exceed the current
 # camera gap (ep154 +1.57..+1.9 s: published up to ~1.3 m/s less closing than the camera).
 
 # ---- shared veto and slew ----

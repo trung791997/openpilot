@@ -6,6 +6,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.docs_definitions import CarFootnote, CarHarness, CarDocs, CarParts, Column
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries, p16
 from opendbc.car.honda.firmware_validation import validate_fw_match
+from opendbc.car.lateral import AngleSteeringLimitsVM
 
 Ecu = structs.CarParams.Ecu
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -40,6 +41,23 @@ class CarControllerParams:
   STEER_DELTA_UP = 3  # min/max in 0.33s for all Honda
   STEER_DELTA_DOWN = 3
   STEER_GLOBAL_MIN_SPEED = 3 * CV.MPH_TO_MS
+
+  # Accord on the angle-loop EPS firmware (HondaFlags.EPS_ANGLE_LOOP_FW): 0xE4 STEER_TORQUE carries an angle setpoint,
+  # raw = round(-10 * deg) in carState.steeringAngleDeg's frame, and the EPS closes a 1 kHz angle loop on it. The panda
+  # bounds nothing on 0xE4 beyond "bytes 0-1 zero while not allowed", so every limit below is ours.
+  ANGLE_LIMITS = AngleSteeringLimitsVM(
+    400,  # deg; the EPS clamps its setpoint at raw +-4096
+    MAX_ANGLE_RATE=2.5,  # deg/frame = 250 deg/s, as the V299 drives ran
+  )
+  # Error clip |setpoint - measured angle| <= ANGLE_ERROR_MAX(v): bounds the P torque the setpoint can demand. Each
+  # knot is the error at which the firmware's P term alone fills the room left under the PID sum clamp when the
+  # integral sits at its cap, P = Kmax - Imax, read from the V300 image:
+  # P = ((16*10*deg * G(v)) >> 8) * 112 >> 8, Kmax = 15360 after the 254/256 taper (15481 before it),
+  # Imax = 4096 (<= 6 m/s), 6144 (6-12.5 m/s), 8192 (above), G(v) = 1178/1465/760/560/1068/2188 at the knots.
+  ANGLE_ERROR_MAX_BP = [3.1, 8.0, 10.0, 11.75, 17.5, 26.9]  # m/s, the firmware gain-table knots
+  ANGLE_ERROR_MAX_V = [35.4, 23.4, 45.0, 61.0, 25.0, 12.2]  # deg
+  ANGLE_ARM = 2  # 0xE4 STEER_CONTROL_ARM: the EPS lane runs only while it reads 2; sent on every frame
+  ANGLE_STEER_ACTUATOR_DELAY = 0.15  # s, the inner angle loop's lag (model value; lagd learns the rest)
 
   def __init__(self, CP):
     self.BOSCH_GAS_LOOKUP_BP = list(type(self).BOSCH_GAS_LOOKUP_BP)
@@ -153,6 +171,19 @@ class HondaFlags(IntFlag):
   VGR_RIDGELINE_T6Z_A110 = 4194304
   # the Odyssey's THR-A020 rack is constant-ratio by Honda's spec and its image has no angle table (see steer_ratio.py)
   VGR_ODYSSEY_THR_A020 = 8388608
+  # the Accord EPS reports the angle-loop firmware (is_accord_eps_angle_loop_fw); also selects its rack map (steer_ratio.py)
+  EPS_ANGLE_LOOP_FW = 16777216
+
+
+# Accord EPS angle-loop firmware families: 39990-TVA,A16 (the A160 compile: A16A, A16B, A16C ...) or 39990-TVA,A34
+# (the A340 compile, a different build of the same EPS: A34C ...) + exactly one capital letter. Torque images read
+# 39990-TVA,A160 / 39990-TVA,A340 (a digit) and stock 39990-TVA-A1x0 / -A340, so none of those matches.
+ACCORD_EPS_ANGLE_LOOP_FW_FAMILIES = (b"39990-TVA,A16", b"39990-TVA,A34")
+
+
+def is_accord_eps_angle_loop_fw(fw_version: bytes) -> bool:
+  v = fw_version.rstrip(b"\x00")  # the EPS pads fwVersion with NULs
+  return v[:-1] in ACCORD_EPS_ANGLE_LOOP_FW_FAMILIES and v[-1:].isupper()
 
 
 # Car button codes
@@ -532,7 +563,8 @@ MODIFIED_EPS_FW = {
   CAR.HONDA_CLARITY: (b'39990-TRW,A020\x00\x00',),
   # TEG-A010 shares the Civic fingerprint (its own measured calibration lives in honda_eps_firmware_ff)
   CAR.HONDA_CIVIC: (b'39990-TBA,A030\x00\x00', b'39990-TEG,A010\x00\x00'),
-  CAR.HONDA_ACCORD: (b'39990-TVA,A150\x00\x00',),
+  # 2x torque images. ,A160 / ,A340 end in a digit: the angle-loop family (is_accord_eps_angle_loop_fw) ends in a letter
+  CAR.HONDA_ACCORD: (b'39990-TVA,A150\x00\x00', b'39990-TVA,A160\x00\x00', b'39990-TVA,A340\x00\x00'),
   # C020 and C120 are modified Civic Bosch images with their own calibrations
   CAR.HONDA_CIVIC_BOSCH: (b'39990-TGG,A020\x00\x00', b'39990-TGG,A120\x00\x00', b'39990-TBA,C020\x00\x00', b'39990-TBA,C120\x00\x00'),
   CAR.HONDA_CRV_5G: (b'39990-TLA,A040\x00\x00', b'39990-TLA,A220\x00\x00'),

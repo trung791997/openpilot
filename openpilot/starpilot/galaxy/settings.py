@@ -52,7 +52,7 @@ TTL = 60.0
 
 # Android Auto lists binary controls only.
 CAR_CONTROL_SECTIONS = (
-  ("lateral", "Lateral (Steering)", ("aol", "lane_change", "torque", "lane")),
+  ("lateral", "Lateral (Steering)", ("aol", "lane_change", "torque", "lane", "vehicle")),
   ("longitudinal", "Longitudinal (Speed & Following)",
    ("profiles", "conditional", "curve", "slc", "aggressive", "standard", "relaxed", "traffic")),
   ("wheel", "Wheel Controls", ("wheel",)),
@@ -394,7 +394,8 @@ def _projection(row: FeatureRow) -> dict:
           "repairValue": row.repair_value, "defaultValue": row.default_value, "resetAvailable": row_default(row) is not None,
           "displayScale": "lane-strength" if row.key == "LaneCenteringStrength" else None,
           **({"coordinate": row.key.removeprefix("torque:surface:")} if row.key.startswith("torque:surface:") and row.key != "torque:surface:reset" else {}),
-          "heading": is_heading(row.key)}
+          "heading": is_heading(row.key), "collapsed": bool(row.collapsed),
+          **({"previewSound": row.key} if row.key in SOUND_SPECS else {})}
 
 
 def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:

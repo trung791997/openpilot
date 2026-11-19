@@ -39,10 +39,10 @@ def test_mixed_nonlogging_eps_still_refuses_modified_profile(other):
   assert not cp.flags & HondaFlags.EPS_MODIFIED
 
 
-def test_recorded_custom_angle_eps_remains_unsupported_in_mainline():
+def test_angle_loop_eps_ignores_logged_diagnostic_response():
   cp = params(CAR.HONDA_ACCORD, [eps(ANGLE), eps(SERIAL, logging=True)])
-  assert cp.dashcamOnly
-  assert not cp.flags & HondaFlags.EPS_MODIFIED
+  assert cp.flags & HondaFlags.EPS_ANGLE_LOOP_FW and not cp.dashcamOnly
+  assert cp.to_dict() == params(CAR.HONDA_ACCORD, [eps(ANGLE)]).to_dict()
 
 
 def test_logged_comma_payload_cannot_create_modified_profile():

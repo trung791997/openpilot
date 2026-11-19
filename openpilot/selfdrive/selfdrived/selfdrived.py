@@ -1173,7 +1173,9 @@ class SelfdriveD:
     from openpilot.starpilot.audio.blindspot_alert import ALERT_TYPE as BSM_ALERT, blindspot_alert
     loud, without_lateral = getattr(self, 'blindspot_alert_settings', (False, False))
     blindspot = blindspot_alert(CS, self.sm, loud=loud, without_lateral=without_lateral,
-                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns)
+                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns,
+                                car_ns=getattr(self, 'aol_car_state_log_ns', 0),
+                                car_valid=getattr(self, 'conditional_car_state_valid', False))
     if blindspot is not None:
       alerts = [alert for alert in alerts if alert.alert_type != 'laneChangeBlocked/warning']
       self.AM.alerts.pop('laneChangeBlocked/warning', None)
@@ -1365,7 +1367,7 @@ class SelfdriveD:
 
     Route 000000cc--31744ab7a6 (segs 5/18): a one-tick selfdrived stall ended in a red controlsMismatch
     with no log naming which of the critical sites fired. `ages` is a callable returning {name: ns};
-    it is evaluated inside the guard so a missing attribute can never change behaviour. Logged in ms,
+    it is evaluated inside the guard so a missing attribute can never change behavior. Logged in ms,
     at most one event per branch per second so a persistent fault cannot flood swaglog.
     """
     try:

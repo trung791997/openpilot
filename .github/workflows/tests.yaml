@@ -49,11 +49,10 @@ jobs:
     - name: Validate published device build receipt
       if: github.event_name == 'push' && github.ref == 'refs/heads/Dom'
       run: python3 tools/ci/check_prebuilt_receipt.py --revision HEAD
-    # Feature pull requests into Testing do not refresh prebuilt.json: it hashes the whole tree, so every merge
-    # would put each open pull request in conflict on it. It is refreshed on Testing once, right before a
-    # promotion, and checked here on the promotion's own commit (docs/BRANCH_WORKFLOW.md, Device build receipt).
-    - name: Validate promoted device build receipt
-      if: github.event_name == 'pull_request' && (github.base_ref == 'Honda-PTM-Stage' || github.base_ref == 'Honda-PTM-Stable')
+    # Every pull request into Testing refreshes prebuilt.json as its last commit, so Testing's tip always carries
+    # a matching receipt (docs/BRANCH_WORKFLOW.md, Device build receipt). Promotions are checked on their own commit.
+    - name: Validate pull request device build receipt
+      if: github.event_name == 'pull_request' && (github.base_ref == 'Honda-PTM-Testing' || github.base_ref == 'Honda-PTM-Stage' || github.base_ref == 'Honda-PTM-Stable')
       env:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
@@ -79,6 +78,9 @@ jobs:
     - name: Test CI tools
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       run: python3 -m unittest discover -s tools/ci/tests -v
+    - name: Test authenticated monitoring release artifacts
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      run: python3 -m pytest -q tools/ci/tests/test_stock_monitoring_release.py
     - name: Test updater
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       run: python3 -m unittest discover -s openpilot/system/updated/tests -v
@@ -266,6 +268,11 @@ jobs:
       run: |
         uv pip install --python .venv/bin/python --only-binary av av==19.0.1
         .venv/bin/python -c "import av; assert 'libx264' in av.codecs_available"
+    - name: Provide pinned OpenCV DNN for vision contract tests
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      run: |
+        uv pip install --python .venv/bin/python --no-deps --only-binary :all: opencv-python-headless==4.11.0.86
+        .venv/bin/python -c "import cv2; assert cv2.__version__ == '4.11.0'; assert callable(cv2.dnn.readNetFromONNX); assert callable(cv2.dnn.NMSBoxes)"
     - name: Run unit tests
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       timeout-minutes: ${{ contains(runner.name, 'nsc') && 2 || 20 }}
@@ -405,7 +412,7 @@ jobs:
     - name: Build native host dependencies
       run: scons
     - name: Gate every assigned lifecycle module serially
-      timeout-minutes: 10
+      timeout-minutes: 15
       env:
         RAYLIB_BACKEND: headless
       run: python3 tools/ci/run_vehicle_tests.py --suite aol-lifecycle --shard-index "${{ matrix.shard }}" --shard-count 2 --output "ci-results/aol-lifecycle-${{ matrix.shard }}"

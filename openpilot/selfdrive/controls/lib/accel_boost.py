@@ -39,7 +39,7 @@ def lead_slowing(sm, v_ego):
 class AccelBoost:
   def __init__(self, lead_gate: bool = True):
     # lead_gate: the planners pass bosch_a_toggles.vehicle_supported(CP) (Bosch-A Honda, radar on or vision-only; owner 2026-11-13).
-    # The default keeps the gate on for tests and replay harnesses. Off: lead_scale stays 1.0 (the pre-gate behaviour).
+    # The default keeps the gate on for tests and replay harnesses. Off: lead_scale stays 1.0 (the pre-gate behavior).
     self.lead_gate = lead_gate
     self.total_boost = 0.0
     self.boost_this_override = 0.0

@@ -100,6 +100,43 @@ def ui_fake():
             has_longitudinal_control=True, CP=None, recording_audio=False)
 
 
+def test_slc_offset_schedule_uses_cached_validated_settings(tmp_path):
+  from pathlib import Path
+  from openpilot.common.params import Params
+  from openpilot.starpilot.saved_source import read_saved
+  from openpilot.starpilot.speed_limits import offset_document as od
+  from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
+  ui = ui_fake()
+  ui.params = Params(str(tmp_path))
+  document = od.OffsetDocument((0., 10., 15., 20., 25., 30., 35., 40.), (7., 7., 7., 0., 7., 7., 7.))
+  ui.params.put('SLCOffsetSchedule', od.to_value(document), block=True)
+  adapter = RuntimeSnapshotAdapter(ui)
+  with patch('openpilot.starpilot.ui.runtime_snapshot.read_saved', wraps=read_saved) as reads:
+    first = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
+    assert first.slc_offset_schedule == document.schedule()
+    assert not resolve_unified_speed(first).offset_configured
+    document = od.OffsetDocument(document.bounds_mps, (7.,) * 7)
+    ui.params.put('SLCOffsetSchedule', od.to_value(document), block=True)
+    cached = adapter.build(ShellMode.ONROAD, now_ns=NOW + 50_000_000).onroad
+    assert cached.slc_offset_schedule is first.slc_offset_schedule
+    reads.assert_called_once()
+    adapter.invalidate_appearance()
+    updated = adapter.build(ShellMode.ONROAD, now_ns=NOW + 100_000_000).onroad
+    assert updated.slc_offset_schedule == document.schedule()
+    assert resolve_unified_speed(updated).offset_configured
+    assert reads.call_count == 2
+  path = Path(ui.params.get_param_path('SLCOffsetSchedule'))
+  for raw in (b'{bad', od.encode(od.NEEDS_REVIEW), b'x' * (od.MAX_DOCUMENT_BYTES + 1), None):
+    if raw is None:
+      path.unlink()
+    else:
+      path.write_bytes(raw)
+    adapter.invalidate_appearance()
+    invalid = adapter.build(ShellMode.ONROAD, now_ns=NOW + 100_000_000).onroad
+    assert invalid.slc_offset_schedule is None
+    assert not resolve_unified_speed(invalid).offset_configured
+
+
 class TestRuntimeSnapshot(unittest.TestCase):
 
   def test_home_uses_shared_statistics_source_without_onroad_polling(self):
@@ -175,6 +212,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
     adapter = RuntimeSnapshotAdapter(ui)
     state = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
     self.assertTrue(state.lead_detected and state.gas_pressed_override and state.right_hand_drive)
+    state = adapter.build(ShellMode.ONROAD, now_ns=NOW + 1_000_000_000).onroad
+    self.assertTrue(state.gas_pressed_override, 'events last until the next once-a-second send, so the blink stays steady')
     ui.sm.recv_frame['longitudinalPlan'] = ui.sm.recv_frame['onroadEvents'] = 0
     state = adapter.build(ShellMode.ONROAD, now_ns=NOW + 1).onroad
     self.assertFalse(state.lead_detected or state.gas_pressed_override)
@@ -822,6 +861,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
   def test_zero_speed_remains_visible_across_signed_filtered_estimates(self):
     from openpilot.starpilot.ui.raylib import rl
     from openpilot.starpilot.ui.onroad_large_widgets import CurrentSpeedHud
+    from openpilot.starpilot.ui.presentation import Profile
+    from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
 
     for metric in (False, True):
       ui = ui_fake()
@@ -834,12 +875,13 @@ class TestRuntimeSnapshot(unittest.TestCase):
           state = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
           self.assertEqual(state.speed_mps, max(0.0, speed))
           fonts = Mock(spec=BitmapFonts)
+          fonts.profile = Profile.LARGE
           fonts.measure.return_value = NS(width=10, height=20)
           fonts.vertical_ink.return_value = (0., 20.)
           CurrentSpeedHud(fonts).render(rl.Rectangle(0, 0, 1800, 1020), state)
-          self.assertEqual(fonts.draw.call_args_list[0].args[0], "1" if speed == 0.44704 and not metric else
+          self.assertEqual(foreground_calls(fonts.draw)[0].args[0], "1" if speed == 0.44704 and not metric else
                            str(round(max(0., speed) * (3.6 if metric else 2.2369362921))))
-          self.assertEqual(fonts.draw.call_args_list[1].args[0], "km/h" if metric else "mph")
+          self.assertEqual(foreground_calls(fonts.draw)[1].args[0], "km/h" if metric else "mph")
       ui.sm.logMonoTime["carState"] = NOW - 2_000_000_000
       self.assertIsNone(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.speed_mps)
 
@@ -955,7 +997,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
     adapter = RuntimeSnapshotAdapter(ui)
     state = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
     self.assertTrue(state.torque_source_available)
-    self.assertAlmostEqual(state.torque_utilization, (0.002 * 16 ** 2 - 0.01 * 9.81) / 3)
+    self.assertTrue(state.torque_is_demand)
+    self.assertAlmostEqual(state.torque_utilization, 0.002 * 16 ** 2 / 3)
     ui.sm.logMonoTime["vehicleParameters"] = NOW - 1_000_000_000
     self.assertFalse(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.torque_source_available)
 

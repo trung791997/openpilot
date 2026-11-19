@@ -1,5 +1,7 @@
 """Load existing bank and stock artifacts with one explicitly selected runtime."""
 import hashlib
+import os
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -16,7 +18,7 @@ _GUARD_HASHES = {
   'libbounded_wait.so': '24ed559861c8636c1026cad9a244854bb2236b5ee8b91bf21c5efbf688fa4a69',
   'libusb_guards.so': '66a3dfe48ac17899862ab80160cf6dac2c9b9707234527ba0d808f3b68404114',
 }
-_POLICY_SHA256 = 'aa6883ca3804a4daa56764a24ff8874afdc801a92177e9168cc4515f9c5a16c2'
+_POLICY_SHA256 = '2c08d96b7bf30f19ffcfa3c1089003f0f9fe858c2d2cadb7ff154086de26b837'
 # NovaSpark only runs on the f6fc4e3 tinygrad runtime. It is selected per start and falls back to
 # the 9d0446 runtime (and the shipped default model) once a start with it has failed.
 F6_BUNDLE = Path(__file__).resolve().parents[4] / 'tinygrad_model_runtime/legacyf6'
@@ -26,6 +28,58 @@ MARKER_DIR = Path('/data/starpilot-model-runtime')
 _selection = None
 _protection = None
 _f6_sha = None
+_laboratory_request_json = None
+
+
+def _inference_cache_root(role):
+  if role not in ('driving', 'monitoring'):
+    raise ValueError('Unsupported model runtime role')
+  root = Path('/data/starpilot-model-runtime')
+  leaf = root / LEGACY_REVISION / role / MANIFEST_SHA256
+  uid = os.geteuid()
+  trusted_parent = True
+  for current in (*reversed(root.parents), root, root / LEGACY_REVISION,
+                  root / LEGACY_REVISION / role, leaf, leaf / 'xdg'):
+    try:
+      status = current.lstat()
+    except FileNotFoundError:
+      break
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+      raise ValueError('Invalid runtime cache directory')
+    if current in root.parents:
+      trusted_parent = trusted_parent and status.st_uid in (0, uid) and not stat.S_IMODE(status.st_mode) & 0o022
+    if current.is_relative_to(root) and status.st_uid != uid:
+      if uid == 0:
+        raise ValueError('Root ownership mismatch requires an explicit private runtime cache')
+      if not trusted_parent:
+        raise ValueError('Untrusted parent for per-user runtime cache')
+      sibling = root.with_name(root.name + '-uid' + str(uid))
+      try:
+        owner = sibling.lstat()
+      except FileNotFoundError:
+        return sibling
+      if (not stat.S_ISDIR(owner.st_mode) or owner.st_uid != uid or
+          stat.S_IMODE(owner.st_mode) & 0o022):
+        raise ValueError('Invalid per-user runtime cache root')
+      return sibling
+  return root
+
+
+def bind_laboratory_request(request):
+  global _laboratory_request_json
+  import json
+  if (_selection is None or _selection.get('role') != 'driving' or _selection.get('purpose') == 'compiler' or
+      _protection is not None or request.get('target_runtime_revision') != LEGACY_REVISION):
+    raise ValueError('Laboratory must bind its source identities before loading models')
+  raw = json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False)
+  if _laboratory_request_json is not None and _laboratory_request_json != raw:
+    raise ValueError('A model process cannot replace its Laboratory sources')
+  _laboratory_request_json = raw
+
+
+def frozen_laboratory_request():
+  import json
+  return json.loads(_laboratory_request_json) if _laboratory_request_json is not None else None
 
 
 def prepare(role):
@@ -53,7 +107,8 @@ def prepare(role):
         pass
       raise SystemExit(F6_FALLBACK_EXIT) from None
     return _selection
-  _selection = activate(BUNDLE, MANIFEST_SHA256, LEGACY_REVISION, role, MARKER_DIR)
+  cache = _inference_cache_root(role)
+  _selection = activate(BUNDLE, MANIFEST_SHA256, LEGACY_REVISION, role, cache)
   return _selection
 
 
@@ -148,7 +203,8 @@ def _verify_policy():
   if (policy['compiler_revision'] != LEGACY_REVISION or policy['runtime_manifest_sha256'] != MANIFEST_SHA256 or
       policy['native_abi'] != 'linux-aarch64-64bit' or set(policy['files']) !=
       {'bootstrap.py', 'qcom.py', 'usb.py', 'capture.py', 'bounded_wait.c', 'usb_guards.c',
-       'libbounded_wait.so', 'libusb_guards.so'}):
+       'libbounded_wait.so', 'libusb_guards.so', 'adapter.py', 'ops-mapping.json', 'dom_admission.py',
+       'dom_loader.py', 'dom_usb.py'}):
     raise RuntimeError('Model submission guard identity mismatch')
   for name, expected in policy['files'].items():
     path = root / name
@@ -180,7 +236,13 @@ def _guard(chestnut):
     # Driving can load its verified QCOM fallback before attempting Chestnut.
     if _selection['role'] == 'driving':
       from openpilot.starpilot.models.runtime_bridge.usb import USBProtection
-      candidate = USBProtection(_library('libbounded_wait.so'), _library('libusb_guards.so'))
+      cls = USBProtection
+      request = frozen_laboratory_request()
+      if request is not None and any(role['source_contract'].get('_source_contract') == 'dom_v25_protocol5'
+                                     for role in request['roles'].values()):
+        from openpilot.starpilot.models.runtime_bridge.dom_usb import DomUSBProtection
+        cls = DomUSBProtection
+      candidate = cls(_library('libbounded_wait.so'), _library('libusb_guards.so'))
       candidate.install_fresh_guard()
     else:
       from openpilot.starpilot.models.runtime_bridge.qcom import Protection
@@ -283,6 +345,15 @@ def load_oob(path, chestnut=False):
     raise RuntimeError('A model compiler cannot load inference artifacts')
   if _f6_sha is not None:
     return _load_f6(path, chestnut)
+  request = frozen_laboratory_request()
+  if chestnut and request is not None:
+    matches = [role for role in request['roles'].values() if role['path'] == str(Path(path)) and
+               role['source_contract'].get('_source_contract') == 'dom_v25_protocol5']
+    if matches:
+      if len(matches) != 1 or _selection['role'] != 'driving':
+        raise ValueError('Ambiguous or wrong-role Laboratory artifact')
+      from openpilot.starpilot.models.runtime_bridge.dom_loader import load_admitted_dom
+      return load_admitted_dom(Path(path), expected_contract=matches[0], protection=_guard(True))
   monitoring = _selection['role'] == 'monitoring'
   authenticated = _stock_bytes(path) if monitoring else None
   from tinygrad import Context, Device
