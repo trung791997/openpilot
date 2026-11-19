@@ -49,8 +49,8 @@ the car.
   - **UDP over a shared Wi-Fi (fallback).** With no AA session, or a head-unit apk without
     `VendorTunnel`, the comma and head unit must be on the same Wi-Fi, normally a phone hotspot (the head
     unit's Wi-Fi is 2.4 GHz only).
-  - The channel-13 path needs **both halves**: the comma-side sender in `starport/session.py` (included;
-    its supervisor/daemon still need the modules in "Missing components") and a head-unit apk built from this branch. An old apk or an
+  - The channel-13 path needs **both halves**: the comma-side sender in `starport/session.py` (included,
+    with the whole `starport/` package; its outside-starport deps are listed in "Missing components") and a head-unit apk built from this branch. An old apk or an
     unpatched comma leaves only UDP.
 - **Comma:** openpilot with the feed server below, and Mapbox access on the comma for road tiles
   and routes. The token stays on the comma; nothing secret is built into the head-unit app.
@@ -160,26 +160,31 @@ It needs `starport/scan_quiet.py` (included) and `DATA_DIR` and `boot_id` from `
 
 ## Missing components
 
-**Included from `5044693486`** (copied unchanged): `starport/session.py`, `supervisor.py`, `daemon.py`,
-and the modules `session.py` imports: `wire.py` (protobuf field helpers), `touch.py`, `nav_status.py`.
-`session.py` and `tests/test_vendor_extension_probe.py` import cleanly once `nav_status.py`'s navigation
-and UI deps (below) exist. `supervisor.py` and `daemon.py` are the full `starportd` and will **not** import
-on this branch without the modules below; they are here as the reference for where the hu_feed hooks sit.
+**Included from `5044693486`** (copied unchanged): the whole `starportd` package,
+`openpilot/starpilot/system/starport/` — every module (`daemon.py`, `supervisor.py`, `session.py`, `hu_feed.py`,
+`wire.py`, `touch.py`, `nav_status.py`, `identity.py`, the Bluetooth/USB/network/projection/encoder modules and the
+rest), its `SConscript`, `LICENSE`, and `hw/` (the encoder source `starport_encoder.cc` / `rgba_to_nv12.h`, its test,
+and the prebuilt `libstarport_encoder.so`, which is **aarch64** — rebuild it with the `SConscript` for any other
+target; the `SConscript` is not wired into a build on this branch). Only Python syntax was checked; nothing was run.
 
-Everything below is in the source fork at `5044693486` and **not on this branch**. A port needs each one
-or a replacement.
+Everything below is outside `starport/`, is in the source fork at `5044693486`, and is **not on this branch**.
+`starportd` will not import until each exists or is replaced. A port that has its own AA stack only needs the
+hu_feed hooks in `session.py` / `supervisor.py` described above.
 
-**Rest of the `starportd` stack (imported by `supervisor.py` / `daemon.py`):** `starport/{auto_connect,
-bluetooth_bridge, bootstrap, bt_sockets, bugsink_report, bugsink_transport, car_interface, car_profiles,
-device_health, display_profile, frame_source, hw_encoder, identity, link_probe, media_audio, media_status,
-network, new_setup, placement, projection_control, protocol, reachability, reconnect_notice, sdp, settings,
-setup_ladder, source_verifier, system_slice, usb_accessory, view}.py`; outside starport:
-`starpilot/bluetooth/owner.py`, `starpilot/gps/head_unit.py`, `starpilot/models/jetlink_adapter.py`,
-`starpilot/saved_source.py`, `starpilot/galaxy/{evidence,settings}.py`, `starpilot/ui/navigation_icons.py`
-(for `nav_status.py`), `common/hardware.py` (`COMMA_HARDWARE`), and `cv2`, numpy, PIL. A port that has
-its own AA stack only needs the hu_feed hooks in `session.py` / `supervisor.py` described above.
+**What the `starport/` package imports from outside it:**
 
-**Starport support:** `starport/identity.py` (`DATA_DIR`, `boot_id`, used by `wifi_rejoin.py` and `supervisor.py`).
+- stock openpilot: `cereal` (`messaging`, `visionipc`), `common/{params,basedir,hardware,utils,version}`,
+  `common/transformations/camera`, `opendbc.car.structs`, `system/ui/lib/application`, and
+  `selfdrive/ui/{ui_state,onroad/augmented_road_view,onroad/cameraview,onroad/model_renderer}` (the projected
+  onroad view);
+- fork `starpilot/`: `aol/runtime`, `bluetooth/owner`, `conditional_mode/policy`, `drive_state/{evidence,owner}`,
+  `galaxy/{evidence,hotspot_netlink,settings,spotify_setup}`, `gps/{head_unit,source}`,
+  `models/{jetlink_adapter,jetlink_status}`, `navigation/{guidance_hold,offline_roads,owner,road_tiles,wire}`,
+  `saved_source`, `soloist/{backend,now_playing,paths}`, `speed_limits/vision/observation`,
+  `spot_monitor/preferences`, `system/pipe_worker`, and the projected-UI modules in `starpilot/ui/`
+  (`appearance_preferences`, `large_speed_geometry`, `navigation_favorites_state`, `navigation_icons`, `onroad*`,
+  `pip_*`, `presentation`, `radar_points`, `raylib`, `runtime_snapshot`, `shell`, `unified_speed_presentation`);
+- libraries: `cv2`, numpy, PIL.
 
 **Modules `hu_feed.py` imports from the source fork:**
 
@@ -210,7 +215,7 @@ protocol below.
 - `test_hu_feed.py`;
 - `test_dash_turn_card.py`, which compiles `Turn.java` and so needs `java`;
 - `test_wifi_rejoin.py`;
-- `test_vendor_extension_probe.py` (channel-13 session wiring; needs `session.py`, `wire.py`, `touch.py`, `nav_status.py`, all included, plus `nav_status.py`'s navigation/UI deps);
+- `test_vendor_extension_probe.py` (channel-13 session wiring; needs `session.py`, `wire.py`, `touch.py`, `nav_status.py`, all included, plus their outside-starport deps);
 - and, outside `starport/`, `openpilot/starpilot/navigation/tests/test_traffic_tiles.py`.
 
 These tests run in the full source fork. On this branch alone some of them fail or do not load,
