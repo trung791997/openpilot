@@ -62,6 +62,7 @@ import time
 import unicodedata
 import urllib.request
 import zlib
+from collections import deque
 from collections.abc import Callable
 
 PORT = 47312
@@ -590,6 +591,17 @@ class HeadUnitFeed:
     self.last_cover = -math.inf
     self._cover_thread: threading.Thread | None = None
     self._stop_hold = StopHold()
+    self._aa_lock = threading.Lock()
+    self._aa_connected = False
+    self._aa_tunnel = False
+    self._aa_peer_seen = -math.inf
+    self._aa_peer_was_active = False
+    self._aa_in: deque[bytes] = deque(maxlen=64)
+    self._aa_beacon: bytes | None = None
+    self._aa_state: bytes | None = None
+    self._aa_pose: bytes | None = None
+    self._aa_ctrl: deque[bytes] = deque(maxlen=64)
+    self._aa_bulk: deque[bytes] = deque(maxlen=256)
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
 
@@ -612,6 +624,62 @@ class HeadUnitFeed:
       except Exception:
         pass
 
+  def _clear_aa_queues_locked(self) -> None:
+    self._aa_beacon = None
+    self._aa_state = None
+    self._aa_pose = None
+    self._aa_ctrl.clear()
+    self._aa_bulk.clear()
+
+  def attach_aa(self) -> None:
+    with self._aa_lock:
+      self._aa_connected = True
+      self._aa_tunnel = False
+      self._aa_peer_seen = -math.inf
+      self._aa_peer_was_active = False
+      self._aa_in.clear()
+      self._clear_aa_queues_locked()
+
+  def detach_aa(self) -> None:
+    with self._aa_lock:
+      self._aa_connected = False
+      self._aa_tunnel = False
+      self._aa_peer_seen = -math.inf
+      self._aa_peer_was_active = False
+      self._aa_in.clear()
+      self._clear_aa_queues_locked()
+
+  def receive_aa(self, data: bytes) -> None:
+    with self._aa_lock:
+      if self._aa_connected:
+        self._aa_in.append(data)
+
+  def drain_aa(self, limit: int = 8, bulk_limit: int = 2) -> list[bytes]:
+    with self._aa_lock:
+      items: list[bytes] = []
+      for slot in ('_aa_beacon', '_aa_state', '_aa_pose'):
+        if len(items) >= limit:
+          break
+        val = getattr(self, slot)
+        if val is not None:
+          items.append(val)
+          setattr(self, slot, None)
+      while self._aa_ctrl and len(items) < limit:
+        items.append(self._aa_ctrl.popleft())
+      bulk_cap = min(limit, len(items) + max(0, bulk_limit))
+      while self._aa_bulk and len(items) < bulk_cap:
+        items.append(self._aa_bulk.popleft())
+      return items
+
+  def aa_active(self, now: float | None = None) -> bool:
+    now = self.clock() if now is None else now
+    with self._aa_lock:
+      return self._aa_connected and self._aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT
+
+  def _aa_bulk_full(self, now: float) -> bool:
+    with self._aa_lock:
+      return self._aa_connected and self._aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT and len(self._aa_bulk) >= 16
+
   def _run(self) -> None:
     while not self._stop.is_set():
       try:
@@ -621,14 +689,87 @@ class HeadUnitFeed:
         idle = True
       self._stop.wait(BEACON_EVERY / 4 if idle else 1 / POSE_HZ)
 
+  def _queue_aa(self, data: bytes, kind: str = 'm') -> None:
+    with self._aa_lock:
+      if not (self._aa_connected and self._aa_tunnel):
+        return
+      if kind == 'b':
+        self._aa_beacon = data
+      elif kind == 's':
+        self._aa_state = data
+      elif kind == 'p':
+        self._aa_pose = data
+      elif kind in ('r', 'a'):
+        self._aa_ctrl.append(data)
+      else:
+        self._aa_bulk.append(data)
+
+  def _send_raw(self, data: bytes, to: tuple[str, int] | None = None, kind: str = 'm') -> None:
+    if to is not None:
+      try:
+        self.sock.sendto(data, to)
+      except OSError:
+        pass
+      return
+    if self.aa_active(self.clock()):
+      self._queue_aa(data, kind)
+      return
+    if self.peer is not None:
+      try:
+        self.sock.sendto(data, self.peer)
+      except OSError:
+        pass
+
   def _send(self, kind: str, body: dict, to: tuple[str, int] | None = None) -> None:
     data = json.dumps({'v': VERSION, 't': kind, **body}, separators=(',', ':')).encode()
-    try:
-      self.sock.sendto(data, to or self.peer)
-    except OSError:
-      pass
+    self._send_raw(data, to, kind)
+
+  def _reset_peer_state(self) -> None:
+    self.sent_state, self.sent_route, self.last_route = None, None, -math.inf
+    self.sending, self.tile_sent = [], {}
+    self.sending_q, self.traffic_sent = [], {}
+    self.sent_cover, self.last_cover = None, -math.inf
+
+  def _apply_hello(self, message: dict) -> None:
+    have = message.get('have')
+    self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
+    self.tq = message.get('tq') == 1 and not isinstance(message.get('tq'), bool)
+    rt = message.get('rt')
+    self.tile_version = rt if isinstance(rt, int) and not isinstance(rt, bool) and rt >= 1 else 1
+
+  def _receive_aa_queue(self, now: float) -> None:
+    with self._aa_lock:
+      incoming = list(self._aa_in)
+      self._aa_in.clear()
+    for raw in incoming:
+      try:
+        message = json.loads(raw)
+      except ValueError:
+        continue
+      if not (isinstance(message, dict) and message.get('v') == VERSION):
+        continue
+      kind = message.get('t')
+      if kind == 'ready':
+        with self._aa_lock:
+          first = not self._aa_tunnel
+          self._aa_tunnel = True
+        if first:
+          self.log('hu_feed_aa_tunnel_ready')
+          self.last_beacon = -math.inf
+      elif kind == 'h':
+        with self._aa_lock:
+          was_active = self._aa_connected and self._aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT
+          self._aa_tunnel = True
+          self._aa_peer_seen = now
+        if not was_active:
+          self.log('hu_feed_aa_peer')
+          self._reset_peer_state()
+          self._aa_peer_was_active = True
+        self._apply_hello(message)
 
   def receive(self, now: float) -> None:
+    self._receive_aa_queue(now)
+    aa_up = self.aa_active(now)
     while True:
       try:
         data, address = self.sock.recvfrom(4096)
@@ -636,6 +777,8 @@ class HeadUnitFeed:
         return
       except OSError:
         return
+      if aa_up:
+        continue
       try:
         message = json.loads(data)
       except ValueError:
@@ -644,29 +787,33 @@ class HeadUnitFeed:
         continue
       if self.peer != address:
         self.log('hu_feed_peer', port=address[1])
-        self.peer, self.sent_state, self.sent_route, self.last_route = address, None, None, -math.inf
-        self.sending, self.tile_sent = [], {}
-        self.sending_q, self.traffic_sent = [], {}
-        self.sent_cover, self.last_cover = None, -math.inf
+        self.peer = address
+        self._reset_peer_state()
       self.peer_seen = now
-      have = message.get('have')
-      self.have = {key for key in have[:64] if isinstance(key, str)} if isinstance(have, list) else None
-      self.tq = message.get('tq') == 1 and not isinstance(message.get('tq'), bool)
-      rt = message.get('rt')
-      self.tile_version = rt if isinstance(rt, int) and not isinstance(rt, bool) and rt >= 1 else 1
+      self._apply_hello(message)
 
   def tick(self) -> bool:
     """One pass; True when there is no head unit to feed."""
     now = self.clock()
     self.receive(now)
+    with self._aa_lock:
+      aa_connected = self._aa_connected
+      aa_tunnel = self._aa_tunnel
+      aa_active = aa_connected and aa_tunnel and now - self._aa_peer_seen <= PEER_TIMEOUT
+    if self._aa_peer_was_active and not aa_active:
+      self._aa_peer_was_active = False
+      self.log('hu_feed_aa_peer_lost')
     if now - self.last_beacon >= BEACON_EVERY:
       self.last_beacon = now
-      for address in self.broadcasts():
-        self._send('b', {'port': PORT}, (address, PORT))
+      if aa_connected and aa_tunnel:
+        self._queue_aa(json.dumps({'v': VERSION, 't': 'b', 'port': PORT}, separators=(',', ':')).encode(), 'b')
+      if not aa_active:
+        for address in self.broadcasts():
+          self._send('b', {'port': PORT}, (address, PORT))
     if self.peer is not None and now - self.peer_seen > PEER_TIMEOUT:
       self.log('hu_feed_peer_lost')
       self.peer = None
-    if self.peer is None:
+    if not aa_active and self.peer is None:
       if self.traffic is not None:
         self.traffic.idle()
       return True
@@ -746,6 +893,8 @@ class HeadUnitFeed:
       self.traffic = TrafficTiles(log=self.log)
     keys = self.around(lat, lon)
     self.traffic.want(keys)
+    if self._aa_bulk_full(self.clock()):
+      return
     if not self.sending_q:
       for key, generation, payload in self.traffic.current(keys):
         if self.traffic_sent.get(key) != generation:
@@ -754,13 +903,12 @@ class HeadUnitFeed:
           break
     budget = 0 if self.sending else TILE_CHUNKS_PER_TICK - self._road_sent
     for data in self.sending_q[:budget]:
-      try:
-        self.sock.sendto(data, self.peer)
-      except OSError:
-        pass
+      self._send_raw(data, kind='q')
     del self.sending_q[:budget]
 
   def send_tiles(self, lat: float, lon: float, now: float) -> None:
+    if self._aa_bulk_full(now):
+      return
     if not self.sending and now - self.last_tile_scan >= TILE_SCAN_EVERY:
       self.last_tile_scan = now
       if self._tiles is None:
@@ -780,10 +928,7 @@ class HeadUnitFeed:
           self.tile_sent[key] = now
           break
     for data in self.sending[:TILE_CHUNKS_PER_TICK]:
-      try:
-        self.sock.sendto(data, self.peer)
-      except OSError:
-        pass
+      self._send_raw(data, kind='m')
     self._road_sent = len(self.sending[:TILE_CHUNKS_PER_TICK])
     del self.sending[:TILE_CHUNKS_PER_TICK]
 

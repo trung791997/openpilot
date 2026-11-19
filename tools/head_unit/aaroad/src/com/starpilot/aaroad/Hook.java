@@ -58,6 +58,11 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
       return;
     }
     if (!PKG.equals(lpparam.packageName)) return;
+    try {
+      VendorTunnel.install(lpparam.packageName, lpparam.processName, lpparam.classLoader);
+    } catch (Throwable t) {
+      Xlog.log("aaroad: aa vendor tunnel hook failed: " + t);
+    }
     Class<?> nfm = XposedHelpers.findClass(NFM, lpparam.classLoader);
 
     XposedHelpers.findAndHookMethod(nfm, "setGuidancePointName", new XC_MethodHook() {

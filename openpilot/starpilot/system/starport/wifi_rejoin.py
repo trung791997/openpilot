@@ -23,17 +23,15 @@ hotspot on another channel at 16:02:34, and at 16:02:38 StarPort's send timed ou
   - no rescan from here, ever; only the last scan results are read (``--rescan no``);
   - a scan_quiet lease is held, so the UI's Wi-Fi manager skips its scans too;
   - if wlan0 is down, its device autoconnect is turned off (`nmcli device set wlan0 autoconnect no`; no saved profile
-    is edited, and a connected wlan0 is never touched), so NetworkManager does not join anything and hop the radio.
-    A marker in DATA_DIR records that we did it.
-  - but if that pause is ours and the last scan shows a saved network in range, at most once every QUIET_JOIN_EVERY s
-    an explicit `connection up` is still run (check() returns "quiet_join"), because a join that hops the shared
-    radio and drops projection once (2026-11-06: one drop, back on the 2nd attempt) beats a whole drive with no dash
-    map. A session that holds wlan0 itself (network.py) is left alone; check() still returns "paused" for that.
+    is edited, and a connected wlan0 is never touched here — `network.py` yields wlan0 when aa0 connects), so
+    NetworkManager does not join anything and hop the radio. A marker in DATA_DIR records that we did it.
+  - no quiet_join during projection: `hu_feed` moved to Android Auto channel 13 (2026-11-17), so joining a 2.4 GHz
+    hotspot mid-drive only causes single-radio MCC contention (session-000188: 12 drops in 10 min on 2412 MHz).
 When the heartbeat stops (projection ended, loop hung, starportd gone) the lease expires on its own, autoconnect is
 turned back on (on the next poll, after a starportd restart from the marker, or at reboot by NetworkManager itself),
-and the fast-scan window and the quiet-join window both restart. Not covered: NetworkManager 1.46 still runs its own
-periodic scans, with hidden probes, on a disconnected wlan0 regardless of autoconnect, and wpa_supplicant scans to
-reconnect after a drop and for bgscan while weakly connected.
+and the fast-scan window restarts. Not covered: NetworkManager 1.46 still runs its own periodic scans, with hidden
+probes, on a disconnected wlan0 regardless of autoconnect, and wpa_supplicant scans to reconnect after a drop and
+for bgscan while weakly connected.
 
 Band: the hotspot profile is pinned to 802-11-wireless.band "bg" because the head unit only sees 2.4 GHz (2026-11-03).
 2026-11-06: the phone hotspot moved to 5 GHz, so every join failed as ssid-not-found with nothing in the logs saying
@@ -64,9 +62,6 @@ SCAN_EVERY = 15.        # s between scans at first: never more often
 SCAN_FAST_FOR = 120.    # s after wlan0 drops (or the daemon starts) that scans stay SCAN_EVERY apart
 SCAN_MAX = 120.         # s: the longest gap the doubling reaches
 CON_UP_EVERY = 30.      # s: never start a join more often
-QUIET_JOIN_EVERY = 600. # s: while Android Auto streams, at most one join this often. A join hops the shared radio
-                        # and can drop projection once (2026-11-06: one drop, back on the 2nd attempt), which beats
-                        # a whole drive with no dash map.
 SAVED_EVERY = 300.      # s a read of the saved connections is reused
 COMMAND_TIMEOUT = 5.
 CON_UP_WAIT = 25        # s nmcli waits for the join to finish
@@ -147,7 +142,6 @@ class HotspotRejoin:
     self._scan_gap = SCAN_EVERY
     self._down_since: float | None = None  # when the current outage began (a drop, or the first look at a down wlan0)
     self._con_up_at = -CON_UP_EVERY
-    self._quiet_join_at = -QUIET_JOIN_EVERY
     self._wrong_band_logged = False  # at most one wlan0_hotspot_wrong_band log per outage
     self._saved: list[dict] = []
     self._saved_at = -SAVED_EVERY
@@ -227,7 +221,6 @@ class HotspotRejoin:
         scan_quiet.drop(self.lease)
         self.log("wlan0_scans_quiet", ts=self.wall(), on=False)
         self._restart_scans(now)  # projection ended: look for the hotspot quickly again
-        self._quiet_join_at = -QUIET_JOIN_EVERY  # and re-arm the quiet join for the next projection
       if self._paused and not self.car_joining():  # never flip wlan0 in the middle of a car join
         self._resume(now)
     if not up and now - self._checked_at >= CHECK_EVERY:
@@ -383,15 +376,14 @@ class HotspotRejoin:
                 freqs=sorted(freqs))
     return None, "wrong_band"
 
-  def _join(self, target: dict, quiet: bool) -> None:
+  def _join(self, target: dict) -> None:
     started, error = time.monotonic(), ""
     try:
       self.run(["-w", str(CON_UP_WAIT), "connection", "up", "uuid", target["uuid"], "ifname", INTERFACE], CON_UP_WAIT + 5.)
     except Exception as failure:
       error = str(failure)[:200] or type(failure).__name__
     self.log("wlan0_rejoin", ts=self.wall(), connection=target["name"], ok=not error,
-             s=round(time.monotonic() - started, 1), **({"quiet": True} if quiet else {}),
-             **({"error": error} if error else {}))
+             s=round(time.monotonic() - started, 1), **({"error": error} if error else {}))
 
   def check(self, now: float) -> str:
     """One rejoin decision; returns what it did, for tests and logs."""
@@ -421,22 +413,14 @@ class HotspotRejoin:
       return "paused"  # a session holds wlan0 for the car itself, or this isn't even our pause
 
     if quiet:
-      if not device_paused:
-        return "streaming"  # nothing paused yet on our side: leave it to NetworkManager, no scan, no join
-      # our own pause is holding wlan0 off: a join is still worth one shot per QUIET_JOIN_EVERY, last scan only
-      target, status = self._pick_target(now)
-      if target is not None and now - self._quiet_join_at >= QUIET_JOIN_EVERY:
-        self._quiet_join_at = now
-        self._join(target, quiet=True)
-        return "quiet_join"
-      return "wrong_band" if status == "wrong_band" else "streaming"
+      return "streaming"
 
     target, status = self._pick_target(now)
     if target is not None:
       if now - self._con_up_at < CON_UP_EVERY:
         return "backoff"
       self._con_up_at = now
-      self._join(target, quiet=False)
+      self._join(target)
       return "con_up"
     if status in ("no_saved", "nmcli_failed"):
       return status  # wrong_band falls through: keep scanning, the phone may switch bands

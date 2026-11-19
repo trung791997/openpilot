@@ -509,60 +509,32 @@ def test_nothing_visible_at_all_still_falls_back_to_scan():
   assert watch.check(100.) == "scan"
 
 
-# ---- quiet join: one join per QUIET_JOIN_EVERY s while Android Auto streams (2026-11-06 band fix + this) ----
+# ---- quiet projection: never join or scan while Android Auto streams (channel 13 carries hu_feed; 2026-11-17) ----
 
 
-def test_quiet_join_once_per_window_then_rechecks(tmp_path):
+def test_streaming_never_joins_even_after_our_pause_and_with_hotspot_visible(tmp_path):
   fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
   beat = Beat(-0.5)
   watch, logs, _ = make_quiet(fake, tmp_path, beat)
-  # down + quiet: poll() pauses wlan0 autoconnect, and its own check() (CHECK_EVERY is due at t=0) does the first join
+  # down + quiet: poll() pauses wlan0 autoconnect, and check() returns "streaming" without joining
   watch.poll(0.)
   assert fake.autoconnect == "no"
-  assert fake.did("up") == [["-w", str(wr.CON_UP_WAIT), "connection", "up", "uuid", "8a97", "ifname", "wlan0"]]
-  assert [f for e, f in logs if e == "wlan0_rejoin"][-1]["quiet"] is True
-  beat.at = 0.5
-  assert watch.check(1.) == "streaming"  # within the window: no second join
-  assert len(fake.did("up")) == 1
-  beat.at = wr.QUIET_JOIN_EVERY - 0.5
-  assert watch.check(wr.QUIET_JOIN_EVERY) == "quiet_join"  # window elapsed: joins again
-  assert len(fake.did("up")) == 2
-  assert not fake.did("rescan")
+  assert not fake.did("up") and not fake.did("list") and not fake.did("rescan")
+  beat.at = 600.0
+  assert watch.check(600.5) == "streaming"
+  assert not fake.did("up") and not fake.did("list") and not fake.did("rescan")
+  assert "wlan0_rejoin" not in events(logs)
 
 
-def test_quiet_session_marker_blocks_the_join(tmp_path):
+def test_quiet_session_marker_returns_paused_and_does_not_join(tmp_path):
   fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
   beat = Beat(-0.5)
   watch, _, _ = make_quiet(fake, tmp_path, beat)
-  watch.poll(0.)  # pauses, and its own check() does the first quiet join
-  ups = len(fake.did("up"))
+  watch.poll(0.)
   (tmp_path / "session.json").write_text(json.dumps({"interface": "wlan0", "boot": boot_id()}))
   beat.at = 1.5
   assert watch.check(2.) == "paused"
-  assert len(fake.did("up")) == ups  # no further join once a session holds wlan0
-
-
-def test_quiet_without_our_pause_does_not_join(tmp_path):
-  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
-  watch, _, _ = make_quiet(fake, tmp_path, Beat(99.5))  # check() called directly: poll() never paused it
-  assert watch.check(100.) == "streaming"
   assert not fake.did("up") and not fake.did("list") and not fake.did("rescan")
-
-
-def test_projection_end_rearms_the_quiet_join(tmp_path):
-  fake = Nmcli(visible=[("Galaxy S20 FE 5G6CC3", 2412)])
-  beat = Beat(-0.5)
-  watch, _, _ = make_quiet(fake, tmp_path, beat)
-  watch.poll(0.)  # pauses, and its own check() does the first quiet join
-  assert len(fake.did("up")) == 1
-  beat.at = None  # projection ends
-  watch.poll(2.)
-  assert watch._quiet_join_at == -wr.QUIET_JOIN_EVERY
-  beat.at = 2.5  # projecting again almost at once
-  watch.poll(3.)  # re-pauses; CHECK_EVERY isn't due yet, so no check() inside this poll
-  beat.at = 3.5
-  assert watch.check(4.) == "quiet_join"  # re-armed: does not wait out the old window
-  assert len(fake.did("up")) == 2
 
 
 def test_supervisor_streaming_beat():

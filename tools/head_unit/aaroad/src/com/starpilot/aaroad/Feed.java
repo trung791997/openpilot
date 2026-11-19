@@ -190,6 +190,9 @@ final class Feed {
   static volatile long coverId;
 
   private static boolean started;
+  private static final Object HANDLE_LOCK = new Object();
+  private static volatile Relayed aaLink;
+  private static volatile long aaSeenAt;
   private static final Map<String, String[]> tileParts = new HashMap<String, String[]>();
   private static final Map<Long, JSONObject[]> routeParts = new HashMap<Long, JSONObject[]>();
   private static long coverPartsId;
@@ -203,9 +206,14 @@ final class Feed {
     void send(byte[] data) throws Exception;   // to the comma that beaconed last
   }
 
+  private static boolean aaActive() {
+    return aaLink != null && SystemClock.uptimeMillis() - aaSeenAt < 5000;
+  }
+
   static synchronized void start() {
     if (started) return;
     started = true;
+    startAaThread();
     Thread t = new Thread(new Runnable() {
       @Override
       public void run() {
@@ -227,6 +235,68 @@ final class Feed {
     }, "aaroad-feed");
     t.setDaemon(true);
     t.start();
+  }
+
+  private static void startAaThread() {
+    Thread aa = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        boolean logged = false;
+        while (true) {
+          Relayed r = new Relayed();
+          final boolean[] dead = {false};
+          try {
+            r.sock.connect(new LocalSocketAddress(VendorTunnel.SOCKET_NAME));
+            r.in = new DataInputStream(r.sock.getInputStream());
+            r.out = new DataOutputStream(r.sock.getOutputStream());
+            aaLink = r;
+            Xlog.log("aaroad: map feed connected to AA channel");
+            logged = false;
+            final Relayed aaOut = r;
+            Thread hello = new Thread(new Runnable() {
+              @Override
+              public void run() {
+                boolean heard = false;
+                while (!dead[0]) {
+                  try {
+                    boolean active = aaActive();
+                    if (active != heard && wanted) {
+                      MapView.say("aaroad: comma AA feed " + (active ? "active" : "lost"));
+                    }
+                    heard = active;
+                    if (wanted && active) aaOut.send(hello());
+                  } catch (Throwable ignored) {
+                  }
+                  SystemClock.sleep(HELLO_MS);
+                }
+              }
+            }, "aaroad-aa-hello");
+            hello.setDaemon(true);
+            hello.start();
+            byte[] buf = new byte[65536];
+            while (true) {
+              int n = r.receive(buf);
+              if (n <= 0) continue;
+              aaSeenAt = SystemClock.uptimeMillis();
+              handleBytes(buf, n);
+            }
+          } catch (Throwable e) {
+            if (!logged) Xlog.log("aaroad: AA channel feed waiting: " + e);
+            logged = true;
+          } finally {
+            dead[0] = true;
+            if (aaLink == r) aaLink = null;
+            try {
+              r.sock.close();
+            } catch (Throwable ignored) {
+            }
+          }
+          SystemClock.sleep(2000);
+        }
+      }
+    }, "aaroad-aa-feed");
+    aa.setDaemon(true);
+    aa.start();
   }
 
   private static Link direct() {
@@ -302,7 +372,7 @@ final class Feed {
             boolean h = SystemClock.uptimeMillis() - commaAt < 5000;
             if (h != heard && wanted) MapView.say("aaroad: comma feed " + (h ? "back" : "lost: nothing from the comma for 5 s"));
             heard = h;
-            if (wanted && h) link.send(hello());
+            if (wanted && h && !aaActive()) link.send(hello());
           } catch (Throwable ignored) {
             // the receive side sees a broken link and starts over
           }
@@ -316,15 +386,22 @@ final class Feed {
     try {
       while (true) {
         int n = link.receive(buf);
-        if (n <= 0) continue;
-        try {
-          handle(new JSONObject(new String(buf, 0, n, "UTF-8")));
-        } catch (Throwable e) {
-          Xlog.log("aaroad: map feed dropped a datagram: " + e);
-        }
+        if (n <= 0 || aaActive()) continue;
+        handleBytes(buf, n);
       }
     } finally {
       dead[0] = true;
+    }
+  }
+
+  private static void handleBytes(byte[] buf, int n) {
+    try {
+      JSONObject m = new JSONObject(new String(buf, 0, n, "UTF-8"));
+      synchronized (HANDLE_LOCK) {
+        handle(m);
+      }
+    } catch (Throwable e) {
+      Xlog.log("aaroad: map feed dropped a datagram: " + e);
     }
   }
 

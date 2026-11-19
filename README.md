@@ -14,7 +14,7 @@ fed by the comma device running openpilot. It shows:
   white maneuver arrow on the map.
 
 This branch holds only that feature, taken from a working openpilot fork
-(`trung791997/openpilot`, commit `f5738be617`). It is meant to be read by a person or an LLM porting
+(`trung791997/openpilot`, commit `5044693486`; first extracted at `f5738be617`). It is meant to be read by a person or an LLM porting
 the feature into another fork. File paths match the source fork, so they map one to one.
 
 **Status.** It runs on one car. Most of the code has static and desktop tests only. The comments
@@ -41,9 +41,17 @@ the car.
 - **Head unit:** Honda Hack (`cn.autohack.hondahack`) installed, with its Xposed bridge and its
   custom Civic meter page. The module installs as package `cn.autohack.coolui`, because Honda Hack's
   bridge only loads modules from its own and CoolUI's apk slots. CoolUI itself must not be installed.
-- **Network:** the comma and the head unit on the same Wi-Fi, normally a phone hotspot. The head
-  unit's Wi-Fi is 2.4 GHz only. A wireless Android Auto dongle's link does not carry IP to the head
-  unit, so the feed cannot use it.
+- **Transport:** two paths, chosen at run time.
+  - **Android Auto channel 13 (preferred).** While the comma is projecting Android Auto, the feed rides
+    inside the AA session itself, on the vendor-extension service (service 12, channel 13). The head
+    unit's `VendorTunnel.java` receives it. No shared Wi-Fi is needed, and the comma's wlan0 is not
+    loaded with 20 Hz UDP while aa0 streams video.
+  - **UDP over a shared Wi-Fi (fallback).** With no AA session, or a head-unit apk without
+    `VendorTunnel`, the comma and head unit must be on the same Wi-Fi, normally a phone hotspot (the head
+    unit's Wi-Fi is 2.4 GHz only).
+  - The channel-13 path needs **both halves**: the comma-side sender in `starport/session.py` (not on
+    this branch, see "Missing components") and a head-unit apk built from this branch. An old apk or an
+    unpatched comma leaves only UDP.
 - **Comma:** openpilot with the feed server below, and Mapbox access on the comma for road tiles
   and routes. The token stays on the comma; nothing secret is built into the head-unit app.
 
@@ -84,7 +92,10 @@ To uninstall, run `pm uninstall cn.autohack.coolui`, then reboot.
 
 - `Hook.java` is the entry point. It hooks the Mitsubishi Android Auto app.
 - `Meter.java` and `Panel.java` add the map into Honda Hack's meter page.
-- `Feed.java` receives the comma feed.
+- `Feed.java` receives the comma feed (UDP, or frames handed over by `VendorTunnel`).
+- `VendorTunnel.java` binds to the Mitsubishi AA app's raw vendor channel (13) in the main androidauto
+  process only (not `:logoutprocess`), strips the 2-byte `SP` (0x5350) prefix and passes each JSON
+  datagram to `Feed`. `Hook.java` installs it.
 - `Relay.java` runs in Honda Hack's process. When the meter process may not open sockets, it bridges
   the feed over the local socket `aaroad.feed`, framed as a u16 length followed by the datagram.
 - The map and its GLES2 layers are `MapView`, `GlRoads`, `CloseUp`, `CloseView`, `Gl3d`, `GlCull`
@@ -103,16 +114,39 @@ To uninstall, run `pm uninstall cn.autohack.coolui`, then reboot.
 
 **The feed server.** It is `openpilot/starpilot/system/starport/hu_feed.py` (`HeadUnitFeed`), and its
 docstring is the protocol reference. It has no process of its own. In the source fork the Android
-Auto daemon `starportd` starts it on comma hardware (`starport/daemon.py` lines 258-266, at
-`f5738be617`):
+Auto daemon `starportd` starts it on comma hardware and hands it to the AA supervisor
+(`starport/daemon.py` lines 258-266, at `5044693486`):
 
 ```python
 from openpilot.starpilot.system.starport.hu_feed import HeadUnitFeed
 hu_feed = HeadUnitFeed(log=lambda event, **fields: print(json.dumps({"event": event, **fields}), flush=True)).start()
+supervisor.hu_feed = hu_feed
 cleanup.callback(hu_feed.close)
 ```
 
-To port it, start `HeadUnitFeed` from any long-running process and call `close()` on exit.
+For UDP only, start `HeadUnitFeed` from any long-running process and call `close()` on exit. For
+channel 13 you also need the AA session wiring below.
+
+**Channel-13 sender (AA session wiring).** `hu_feed.py` exposes `attach_aa()`, `detach_aa()`,
+`receive_aa(data)` and `drain_aa(limit)`; while a head unit answers over the tunnel, `aa_active()` is true
+and frames are queued for AA instead of sent over UDP (nav/state/pose first, tiles rate-limited). The
+AA side lives in the source fork, not here:
+
+- `starport/session.py`: `VENDOR_EXTENSION_SERVICE = 12`, `VENDOR_TUNNEL_KIND = 0x5350`,
+  `VENDOR_TUNNEL_BURST = 8`. When the head unit's service discovery lists the vendor extension service,
+  the session opens that channel (`vendor_channel`) and calls `hu_feed.attach_aa()`. `service_vendor()`
+  sends `hu_feed.drain_aa(8)` frames as kind 0x5350 on it; incoming 0x5350 frames go to
+  `hu_feed.receive_aa()`.
+- `starport/supervisor.py`: holds `hu_feed`, gives it to each new session, calls `service_vendor()` in the
+  session loop, and `detach_aa()` when the session ends or the tunnel throws.
+- `starport/daemon.py`: `supervisor.hu_feed = hu_feed` (above).
+- Source commits: `1eddcb9646` (tunnel), `1353173b6b` (main-process bind on the head unit), `95233e3757`
+  (nav/state/pose ahead of tile chunks). Read them with
+  `git show <commit> -- openpilot/starpilot/system/starport/{session,supervisor,daemon}.py`.
+
+**Wi-Fi during projection.** `5044693486` also changes `starport/network.py` (not on this branch) so the
+comma yields wlan0 while aa0 projects and turns off AA Wi-Fi power save; `wifi_rejoin.py` (included)
+honours that. Without it the map still works, but wlan0 and aa0 contend for the radio.
 
 **Traffic.** `openpilot/starpilot/navigation/traffic_tiles.py` fetches Mapbox Traffic v1 tiles
 (zoom 14, 3x3 around the car, every 5 minutes at most) with the comma's Mapbox token, keeps only the
@@ -124,18 +158,32 @@ the source fork. The head unit drops traffic older than 15 minutes.
 It needs `starport/scan_quiet.py` (included) and `DATA_DIR` and `boot_id` from `starport/identity.py`
 (not included).
 
-**Modules `hu_feed.py` imports from the source fork** (not on this branch):
+## Missing components
 
-- navigation: `openpilot/starpilot/navigation/{offline_roads,road_tiles,guidance_hold,wire}.py`.
+Everything below is in the source fork at `5044693486` and **not on this branch**. A port needs each one
+or a replacement.
+
+**AA transport (needed for channel 13):** `starport/session.py`, `starport/supervisor.py`,
+`starport/daemon.py`, `starport/wire.py` (protobuf field helpers; `session.py` and
+`tests/test_vendor_extension_probe.py` import it), and the rest of the `starportd` Android Auto stack they
+belong to. Optional: `starport/network.py` (wlan0 yield).
+
+**Starport support:** `starport/identity.py` (`DATA_DIR`, `boot_id`, used by `wifi_rejoin.py`).
+
+**Modules `hu_feed.py` imports from the source fork:**
+
+- navigation: `openpilot/starpilot/navigation/{offline_roads,road_tiles,guidance_hold,wire,traffic_tiles}.py`.
   The tiles come from `navigation/navtilesd.py`, which reads the Mapbox token from the comma's settings.
 - GPS and lateral state: `gps/source.py` and `aol/runtime.py`.
+- `opendbc.car.structs` (`car`), plus `openpilot.cereal.messaging` and `openpilot.common.params` from stock
+  openpilot; `PIL` for album art.
 - other UI state:
   - `ui/pip_warning.py` (blind-spot camera);
   - `spot_monitor/preferences.py`;
   - `speed_limits/vision/observation.py`;
   - `soloist/now_playing.py` and `soloist/paths.py`.
 
-Read them at https://github.com/trung791997/openpilot/tree/f5738be617/openpilot/starpilot.
+Read them at https://github.com/trung791997/openpilot/tree/5044693486/openpilot/starpilot.
 
 **cereal services it reads:**
 
@@ -151,6 +199,7 @@ protocol below.
 - `test_hu_feed.py`;
 - `test_dash_turn_card.py`, which compiles `Turn.java` and so needs `java`;
 - `test_wifi_rejoin.py`;
+- `test_vendor_extension_probe.py` (channel-13 session wiring; needs `session.py` and `wire.py`);
 - and, outside `starport/`, `openpilot/starpilot/navigation/tests/test_traffic_tiles.py`.
 
 These tests run in the full source fork. On this branch alone some of them fail or do not load,
@@ -158,8 +207,13 @@ because they import fork modules that are not on this branch.
 
 ## Protocol
 
-UDP port 47312. Each datagram is one JSON object, under 1472 bytes. Every message carries `v`
-(version) and `t` (kind).
+The same JSON messages travel on either transport:
+
+- **AA channel 13:** each message is one AA frame on the vendor-extension channel, payload =
+  `SP` (0x53 0x50) + the JSON bytes. The head unit's hello comes back the same way.
+- **UDP port 47312:** each datagram is one JSON object, under 1472 bytes.
+
+Every message carries `v` (version) and `t` (kind).
 
 | kind `t` | direction, rate | body |
 |---|---|---|
@@ -176,6 +230,7 @@ The comma:
 - unicasts only to the source of the latest hello;
 - answers only private addresses;
 - serves one head unit at a time;
-- stops 5 s after the hellos stop.
+- stops 5 s after the hellos stop;
+- prefers the AA tunnel while a hello arrives on it, and falls back to UDP when it stops.
 
 `hu_feed.py`'s docstring and `tools/head_unit/aaroad/README.md` define every field.
