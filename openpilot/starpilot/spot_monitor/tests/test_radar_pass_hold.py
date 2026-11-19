@@ -294,12 +294,12 @@ def _write(path, *targets, now=T0, age_ms=10):
   path.write_text(json.dumps({"mono_ns": int(now * 1e9) - age_ms * 1_000_000, "targets": list(targets)}))
 
 
-def _xcp_pass(tmp_path, target, **kw):
+def _xcp_pass(tmp_path, target, v_ego=32.0, **kw):
   """XCP sees the target at T0; at T0+0.1 the file shows nothing: does the side hold?"""
   assist, path = _xcp_assist(tmp_path, target, **kw)
-  first = assist.step(FakeSM(), T0, NO_CAMERA)
+  first = assist.step(FakeSM(v_ego=v_ego), T0, NO_CAMERA)
   _write(path, now=T0 + 0.1)
-  return first, assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)
+  return first, assist.step(FakeSM(v_ego=v_ego), T0 + 0.1, NO_CAMERA)
 
 
 def test_xcp_left_and_right_sightings_hold_their_side(tmp_path):
@@ -441,3 +441,32 @@ def test_xcp_prefers_closing_target_and_nearest(tmp_path):
   assist.step(FakeSM(), T0, NO_CAMERA)
   _write(path, now=T0 + 0.1)
   assert assist.step(FakeSM(), T0 + 0.1, NO_CAMERA)["left"], "the closing car, not the pulling-away one, was remembered"
+
+
+# --- ground-speed gate: only vehicles moving our way (vEgo + vRel >= 1.5 m/s) ---
+
+def test_xcp_static_target_is_ignored(tmp_path):
+  # at 20 m/s a parked car / pole closes at exactly vEgo: ground speed 0
+  assert _xcp_pass(tmp_path, _target(v=-20.0), v_ego=20.0)[1] == NO_CAMERA
+  assert _xcp_pass(tmp_path, _target(v=-19.0), v_ego=20.0)[1] == NO_CAMERA  # ground speed 1.0 < 1.5
+
+
+def test_xcp_oncoming_target_is_ignored(tmp_path):
+  assert _xcp_pass(tmp_path, _target(v=-35.0), v_ego=20.0)[1] == NO_CAMERA  # ground speed -15
+
+
+def test_xcp_same_direction_mover_holds(tmp_path):
+  assert _xcp_pass(tmp_path, _target(v=-18.5), v_ego=20.0)[1]["left"]  # ground speed exactly 1.5
+  assert _xcp_pass(tmp_path, _target(v=-3.0), v_ego=20.0)[1]["left"]  # ground speed 17
+
+
+@pytest.mark.parametrize("v_ego", [None, float("nan"), float("inf")])
+def test_xcp_without_vego_adds_nothing(tmp_path, v_ego):
+  assist, _ = _xcp_assist(tmp_path, _target())
+  assert assist.xcp.read(int(T0 * 1e9), v_ego) == {"left": None, "right": None}
+
+
+def test_xcp_mover_behind_closer_static_target_is_chosen(tmp_path):
+  assist, _ = _xcp_assist(tmp_path, _target(d=3.0, v=-20.0, rtid=1), _target(d=12.0, v=-4.0, rtid=2))
+  lead = assist.xcp.read(int(T0 * 1e9), 20.0)["left"]
+  assert lead is not None and lead.d_rel == 12.0 and lead.track_id == 2

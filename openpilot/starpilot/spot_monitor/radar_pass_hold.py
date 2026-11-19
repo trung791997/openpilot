@@ -210,7 +210,7 @@ class RadarPassHold:
     cam = {side: self.pass_hold.update(side, leads[side], now_s, v_ego, bool(camera.get(side, False)))
            for side in ("left", "right")}
     try:
-      xcp_leads = self.xcp.read(int(now_s * 1e9))  # one file read per step; same monotonic clock as the writer
+      xcp_leads = self.xcp.read(int(now_s * 1e9), v_ego)  # one file read per step; same monotonic clock as the writer
     except Exception:
       xcp_leads = {"left": None, "right": None}
     xcp = {side: self.xcp_hold.update(side, xcp_leads[side], now_s, v_ego, bool(camera.get(side, False)))

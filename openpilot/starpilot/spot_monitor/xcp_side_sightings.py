@@ -37,6 +37,12 @@ SIDE_Y_MAX_M = 5.4
 # costs nuisance holds, not safety. Raw XCP range: no 434/128 offset subtracted (no constant offset in the study).
 XCP_MAX_D_M = 22.0
 
+# Only vehicles moving our way: ground speed vEgo + vRel >= 1.5 m/s. Replay 2026-11-18 (Long Sim, 9 XCP routes, 8422 s):
+# unfiltered, XCP added 660/646 s (left/right) of hold, 65-73% on static targets plus oncoming; with this gate 141/176 s,
+# XCP-only holds with nothing nearby 72/96 -> 1/5 episodes, 23 of 63 camera-missed passes kept (the 40 lost are oncoming).
+# 1.0 and 3.0 m/s scored similarly. No vEgo -> no sightings (fail-closed: the hold only adds).
+MIN_GROUND_SPEED_MPS = 1.5
+
 
 def _qualifies(t: Any) -> tuple[float, float, float, int] | None:
   """radar.py's assist gates minus its consistency-to-op-track checks. Returns (d, y, v_rel, rtid) or None."""
@@ -79,10 +85,16 @@ class XcpSideSightings:
       return None
     return data
 
-  def read(self, now_ns: int) -> dict[str, AdjacentLead | None]:
+  def read(self, now_ns: int, v_ego: float | None = None) -> dict[str, AdjacentLead | None]:
     """One file read. Car-frame sides: left = positive y. Per side the nearest closing target in the window, else the
     nearest non-closing one (present, so a pull-away is seen as such), else None."""
     out: dict[str, AdjacentLead | None] = {"left": None, "right": None}
+    try:
+      v_ego_f = float(v_ego) if v_ego is not None else math.nan
+    except (TypeError, ValueError):
+      v_ego_f = math.nan
+    if not math.isfinite(v_ego_f):
+      return out
     snap = self._snapshot(now_ns)
     if snap is None:
       return out
@@ -96,7 +108,7 @@ class XcpSideSightings:
       if q is None:
         continue
       d, y, v, rtid = q
-      if not 0.0 <= d <= XCP_MAX_D_M:
+      if not 0.0 <= d <= XCP_MAX_D_M or v_ego_f + v < MIN_GROUND_SPEED_MPS:
         continue
       if SIDE_Y_MIN_M <= y <= SIDE_Y_MAX_M:
         side = "left"
