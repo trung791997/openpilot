@@ -5858,6 +5858,16 @@ msgstr "Cải thiện khởi hành từ trạng thái dừng và phản hồi s�
 msgid "In"
 msgstr "Trong"
 
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back."
+msgstr "Ở chế độ Thử nghiệm, kéo xe về tốc độ đã đặt và khoảng cách bám xe khi mô hình lái do dự."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back. The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "Ở chế độ Thử nghiệm, kéo xe về tốc độ đã đặt và khoảng cách bám xe khi mô hình lái do dự. Mô hình vẫn thực hiện mọi lần giảm tốc. Tắt Accel Boost khi đang bật."
+
 #: openpilot/starpilot/galaxy/web/js/spotify.js
 #: openpilot/starpilot/galaxy/web/js/starport.js
 msgid "In Files, open Downloads."
@@ -11607,6 +11617,10 @@ msgstr "Đặt đang hoạt động"
 msgid "Set Resolution to 480p, 720p or 1080p and Video Codec to H.264 or Auto."
 msgstr "Đặt Resolution thành 480p, 720p hoặc 1080p và Video Codec thành H.264 hoặc Auto."
 
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "Set Speed Assist"
+msgstr "Hỗ trợ tốc độ đặt"
+
 #: openpilot/starpilot/ui/runtime_app.py
 msgid "Set Speed To"
 msgstr "Đặt tốc độ thành"
@@ -13255,6 +13269,11 @@ msgstr "Gói bản đồ không khả dụng"
 #: openpilot/starpilot/galaxy/web/js/model-laboratory.js
 msgid "The model catalog is unavailable. Refresh to retry."
 msgstr "Danh mục mô hình không khả dụng. Làm mới để thử lại."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "Mô hình vẫn thực hiện mọi lần giảm tốc. Tắt Accel Boost khi đang bật."
 
 #: openpilot/starpilot/galaxy/setting_descriptions.py
 msgid "The native torque learner and controller eligibility are initialized when driving"

@@ -13,6 +13,8 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.starpilot.longitudinal.encouragement import Encouragement
+from openpilot.starpilot.longitudinal.set_speed_assist.controller import SetSpeedAssistController
+from openpilot.starpilot.longitudinal.set_speed_assist.hook import e2e_candidate as set_speed_assist_candidate
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW, get_jerk_factor,
                                                                                       qualified_model_leads, ModelLeadHistory, should_trigger_planner_fcw)
@@ -129,6 +131,8 @@ class LongitudinalPlanner:
     self.allow_throttle = True
     # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13: later braking without it)
     self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))
+    self.set_speed_assist = SetSpeedAssistController(dt=dt)
+    self.set_speed_assist_active = False  # SetSpeedAssist owns the e2e candidate this frame; Accel Boost is off
     self.encouragement = Encouragement()
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()
@@ -428,6 +432,7 @@ class LongitudinalPlanner:
                    accel_coast, self.allow_throttle, cruise_profile)
     cruise_kwargs = {'base_brake_floor': global_floor, 'selected_acceleration_max': selected_acceleration,
                      'faster_takeoffs': faster_takeoffs, 'a_target_prev': self.output_a_target}
+    a_cruise_prev = self.a_cruise  # Set Speed Assist's floor takes last frame's cruise candidate
     self.a_cruise = get_cruise_accel(*cruise_args, **cruise_kwargs)  # ty: ignore[invalid-argument-type]
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
@@ -445,7 +450,14 @@ class LongitudinalPlanner:
       lead_one=planner_radar_state.leadOne, lead_two=planner_radar_state.leadTwo, target=float(output_a_target_mpc),
       v_ego=v_ego, stopping=bool(output_should_stop_mpc or self.force_stop_plan.forcing),
       standstill=bool(sm['carState'].standstill), reset_state=bool(reset_state), fcw=bool(self.fcw))
-    manual_model = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    # Set Speed Assist (param SetSpeedAssist, default off) or Accel Boost, never both: with it off and no lift left to
+    # ease out this is exactly the Accel Boost call. is_e2e is the condition below under which the e2e candidate is
+    # taken (experimentalMode); a_mpc is the MPC candidate above at the planner's action time; v_target is v_cruise
+    # after every ceiling, the target of get_cruise_accel. The Experimental Speed Nudge floor still takes the max.
+    manual_model, self.set_speed_assist_active = set_speed_assist_candidate(
+      self.set_speed_assist, self.accel_boost, sm, a_model=output_a_target_e2e, a_mpc=output_a_target_mpc,
+      a_cruise_prev=a_cruise_prev, a_cruise=self.a_cruise, v_target=v_cruise,
+      is_e2e=bool(sm['selfdriveState'].experimentalMode), reset_state=bool(reset_state))
     output_a_target_e2e = max(manual_model, encouraged_model)
 
     candidates = [(lead_a, self.mpc.source, output_should_stop_mpc),
@@ -568,7 +580,7 @@ class LongitudinalPlanner:
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)
-    longitudinalPlan.accelBoost = float(self.accel_boost.total_boost)
+    longitudinalPlan.accelBoost = 0.0 if self.set_speed_assist_active else float(self.accel_boost.total_boost)
     longitudinalPlan.shouldStop = bool(self.output_should_stop)
     longitudinalPlan.allowBrake = True
     longitudinalPlan.allowThrottle = bool(self.allow_throttle)

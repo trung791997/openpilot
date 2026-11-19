@@ -65,6 +65,8 @@ DESCRIPTIONS = {
                               'Off uses the saved initial cruise speed.'),
   'ExperimentalSpeedNudge': ('Gently recovers toward set speed when Experimental mode hesitates on a clear road. ' +
                             'Leads, stops, curve limits and driver overrides retain priority.'),
+  'SetSpeedAssist': ('In Experimental mode, pulls toward your set speed and following distance when the driving model holds back. ' +
+                     'The model still makes every slowdown. Turns off Accel Boost while on.'),
   'FasterLeadTakeoff': ('Improves launches from a stop and responds sooner when a lead starts moving. ' +
                         'Selected acceleration profiles, stop detection and vehicle limits still apply.'),
   'CustomPersonalities': 'Uses your following-time and jerk settings for the selected driving personality.',

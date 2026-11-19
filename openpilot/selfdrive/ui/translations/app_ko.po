@@ -5858,6 +5858,16 @@ msgstr "정지 후 출발을 개선하고 선행 차량이 움직이면 더 빨�
 msgid "In"
 msgstr "안으로"
 
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back."
+msgstr "실험 모드에서 주행 모델이 소극적일 때 설정 속도와 추종 거리 쪽으로 당겨 줍니다."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back. The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "실험 모드에서 주행 모델이 소극적일 때 설정 속도와 추종 거리 쪽으로 당겨 줍니다. 감속은 여전히 모델이 모두 수행합니다. 켜져 있는 동안 Accel Boost가 꺼집니다."
+
 #: openpilot/starpilot/galaxy/web/js/spotify.js
 #: openpilot/starpilot/galaxy/web/js/starport.js
 msgid "In Files, open Downloads."
@@ -11607,6 +11617,10 @@ msgstr "활성으로 설정"
 msgid "Set Resolution to 480p, 720p or 1080p and Video Codec to H.264 or Auto."
 msgstr "Resolution을 480p, 720p 또는 1080p로, Video Codec을 H.264 또는 Auto로 설정하세요."
 
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "Set Speed Assist"
+msgstr "설정 속도 어시스트"
+
 #: openpilot/starpilot/ui/runtime_app.py
 msgid "Set Speed To"
 msgstr "속도 설정 대상"
@@ -13255,6 +13269,11 @@ msgstr "지도 패키지 사용 불가"
 #: openpilot/starpilot/galaxy/web/js/model-laboratory.js
 msgid "The model catalog is unavailable. Refresh to retry."
 msgstr "모델 카탈로그를 사용할 수 없습니다. 새로고침하여 다시 시도하세요."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "감속은 여전히 모델이 모두 수행합니다. 켜져 있는 동안 Accel Boost가 꺼집니다."
 
 #: openpilot/starpilot/galaxy/setting_descriptions.py
 msgid "The native torque learner and controller eligibility are initialized when driving"

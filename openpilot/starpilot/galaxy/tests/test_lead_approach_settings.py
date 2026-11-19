@@ -19,6 +19,7 @@ from openpilot.starpilot.ui.feature_settings_owner import FeatureSettingsOwner
   ("FasterLeadTakeoff", "Faster Takeoffs", "Off"),
   ("ExperimentalSpeedNudge", "Experimental Speed Nudge", "On"),
   ("ExperimentalEngage66Mph", "Engage at 66 mph in Experimental", "On"),
+  ("SetSpeedAssist", "Set Speed Assist", "Off"),
   ("DisengageOnAccelerator", "Disengage on Accelerator Pedal", "Off"),
 ])
 def setup(tmp_path, request):

@@ -23,6 +23,7 @@ from openpilot.starpilot.longitudinal.profile_runtime import TRAFFIC_CRUISE_BRAK
 from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_APPROACH_KEY
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
 from openpilot.starpilot.longitudinal.encouragement import KEY as NUDGE_KEY
+from openpilot.starpilot.longitudinal.set_speed_assist.controller import PARAM as SET_SPEED_ASSIST_KEY
 from openpilot.selfdrive.car.cruise import ENGAGE_66_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
 
@@ -81,7 +82,8 @@ from openpilot.starpilot.curve_speed.actions import ACTION_KEYS as CURVE_ACTION_
 from openpilot.starpilot.controllers.toyota_cruise import capability as toyota_cruise_capability
 
 
-GLOBAL_BOOL_PREFERENCES = frozenset((LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY, NUDGE_KEY, ENGAGE_66_KEY, "DisengageOnAccelerator"))
+GLOBAL_BOOL_PREFERENCES = frozenset((LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY, NUDGE_KEY, SET_SPEED_ASSIST_KEY, ENGAGE_66_KEY,
+                                    "DisengageOnAccelerator"))
 
 BOOL_DEFAULTS = {
   "GMPedalLongitudinal": False, "ForceStops": False, "AlwaysAllowUploads": False, "UploadRlogs": False, "TurnAssist": True,
@@ -99,6 +101,7 @@ BOOL_DEFAULTS = {
   LEAD_APPROACH_KEY: False,
   LEAD_TAKEOFF_KEY: False,
   NUDGE_KEY: True,
+  SET_SPEED_ASSIST_KEY: False,
   ENGAGE_66_KEY: True,
   "DisengageOnAccelerator": False,
   CURVE_MASTER_KEY: False, CURVE_NO_LEAD_KEY: False,
@@ -1219,6 +1222,9 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row(NUDGE_KEY, "Experimental Speed Nudge", self.authority("preferences"),
                                 reason="Gently recovers toward set speed when Experimental mode hesitates on a clear road. " +
                                        "Leads, stops, curve limits and driver overrides retain priority."))
+      rows.append(self._bool_row(SET_SPEED_ASSIST_KEY, "Set Speed Assist", self.authority("preferences"),
+                                reason="In Experimental mode, pulls toward your set speed and following distance when the driving " +
+                                       "model holds back. The model still makes every slowdown. Turns off Accel Boost while on."))
       rows.append(self._bool_row(ENGAGE_66_KEY, "Engage at 66 mph in Experimental", self.authority("preferences"),
                                 reason="With the upstream planner in Experimental mode, engaging sets 66 mph or the current " +
                                        "speed if faster. Off uses the saved initial cruise speed."))

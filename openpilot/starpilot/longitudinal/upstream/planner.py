@@ -16,6 +16,8 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed
+from openpilot.starpilot.longitudinal.set_speed_assist.controller import SetSpeedAssistController
+from openpilot.starpilot.longitudinal.set_speed_assist.hook import e2e_candidate as set_speed_assist_candidate
 from openpilot.starpilot.longitudinal.cruise_ceiling import select_cruise_ceiling
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -90,6 +92,8 @@ class LongitudinalPlanner:
     from openpilot.starpilot.longitudinal.bosch_a_toggles import vehicle_supported
     # lead gate on Bosch-A Hondas, radar on or vision-only (owner 2026-11-13); same as the StarPilot planner (commaai/openpilot#39015)
     self.accel_boost = AccelBoost(lead_gate=vehicle_supported(CP))
+    self.set_speed_assist = SetSpeedAssistController(dt=dt)
+    self.set_speed_assist_active = False  # SetSpeedAssist owns the e2e candidate this frame; Accel Boost is off
     # ---- end BOSCH-A HOOK ----
     self.fcw = False
     self.dt = dt
@@ -184,6 +188,7 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + curve_offset
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
+    a_cruise_prev = self.a_cruise  # Set Speed Assist's floor takes last frame's cruise candidate
     self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
                                      accel_coast, self.allow_throttle)
@@ -191,7 +196,13 @@ class LongitudinalPlanner:
 
     # Accel Boost: in Experimental Mode, a gas press while the model is the slowest source adds up to +0.2 m/s^2
     # to the e2e target for the rest of the engagement (scaled off below 10 mph).
-    output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    # With the SetSpeedAssist param on (default off) Set Speed Assist replaces Accel Boost, which then does not run. Off, and
+    # with no lift left to ease out, this is exactly the Accel Boost call. is_e2e: the e2e candidate is taken below only in
+    # experimentalMode; a_mpc: the MPC candidate above at the planner's action time; v_target: v_cruise after the ceiling.
+    output_a_target_e2e, self.set_speed_assist_active = set_speed_assist_candidate(
+      self.set_speed_assist, self.accel_boost, sm, a_model=output_a_target_e2e, a_mpc=output_a_target_mpc,
+      a_cruise_prev=a_cruise_prev, a_cruise=self.a_cruise, v_target=v_cruise,
+      is_e2e=bool(sm['selfdriveState'].experimentalMode), reset_state=bool(reset_state))
 
     # Stock Brake Feel depth cap on the lead MPC candidate only (no need floor here; the build rate is in step()); d2 t1297.6 red-light let-off, 2026-11-15
     lead_a = output_a_target_mpc
@@ -258,6 +269,6 @@ class LongitudinalPlanner:
     longitudinalPlan.shouldStop = bool(self.output_should_stop)
     longitudinalPlan.allowBrake = True
     longitudinalPlan.allowThrottle = bool(self.allow_throttle)
-    longitudinalPlan.accelBoost = float(self.accel_boost.total_boost)
+    longitudinalPlan.accelBoost = 0.0 if self.set_speed_assist_active else float(self.accel_boost.total_boost)
 
     pm.send('longitudinalPlan', plan_send)

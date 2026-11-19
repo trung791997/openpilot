@@ -5862,6 +5862,16 @@ msgstr "Mejora las salidas desde parado y responde antes cuando un precedente co
 msgid "In"
 msgstr "En"
 
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back."
+msgstr "En modo Experimental, tira hacia la velocidad establecida y la distancia de seguimiento cuando el modelo de conducción se contiene."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "In Experimental mode, pulls toward your set speed and following distance when the driving model holds back. The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "En modo Experimental, tira hacia la velocidad establecida y la distancia de seguimiento cuando el modelo de conducción se contiene. El modelo sigue decidiendo cada desaceleración. Desactiva Accel Boost mientras está activado."
+
 #: openpilot/starpilot/galaxy/web/js/spotify.js
 #: openpilot/starpilot/galaxy/web/js/starport.js
 msgid "In Files, open Downloads."
@@ -11611,6 +11621,10 @@ msgstr "Activar"
 msgid "Set Resolution to 480p, 720p or 1080p and Video Codec to H.264 or Auto."
 msgstr "Establece Resolution en 480p, 720p o 1080p y Video Codec en H.264 o Auto."
 
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "Set Speed Assist"
+msgstr "Asistente de velocidad establecida"
+
 #: openpilot/starpilot/ui/runtime_app.py
 msgid "Set Speed To"
 msgstr "Establecer velocidad en"
@@ -13259,6 +13273,11 @@ msgstr "El paquete de mapas no está disponible"
 #: openpilot/starpilot/galaxy/web/js/model-laboratory.js
 msgid "The model catalog is unavailable. Refresh to retry."
 msgstr "El catálogo de modelos no está disponible. Actualiza para reintentar."
+
+#: openpilot/starpilot/galaxy/setting_descriptions.py
+#: openpilot/starpilot/ui/feature_settings_owner.py
+msgid "The model still makes every slowdown. Turns off Accel Boost while on."
+msgstr "El modelo sigue decidiendo cada desaceleración. Desactiva Accel Boost mientras está activado."
 
 #: openpilot/starpilot/galaxy/setting_descriptions.py
 msgid "The native torque learner and controller eligibility are initialized when driving"

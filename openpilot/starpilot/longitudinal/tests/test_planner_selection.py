@@ -88,6 +88,7 @@ class TestPlannerSelection(unittest.TestCase):
     self.assertNotIn('openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc', imports)
     self.assertEqual({value for value in imports if value and value.startswith('openpilot.starpilot.')}, {
       'openpilot.starpilot.longitudinal.upstream.mpc', 'openpilot.starpilot.longitudinal.cruise_ceiling',
+      'openpilot.starpilot.longitudinal.set_speed_assist.controller', 'openpilot.starpilot.longitudinal.set_speed_assist.hook',
     })
 
 
