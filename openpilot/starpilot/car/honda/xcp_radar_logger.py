@@ -65,14 +65,17 @@ STARTUP_DELAY_NS = 500_000_000
 # 1 Hz Way B internal-fusion diagnostic probe (Bosch-A 36802-TBA-A150 verified SRAM bases).
 # Offline route evidence (bob-unify-car):
 # - T1=0x40032AEC and OUT18=0x4003681C (from 8f88b00741) were confirmed on routes
-#   000000f4--618185d0bb and 000000f5--6e8e645f02 (valid T1[0] kinematics/flags and exact
-#   OUT18[0]+16 trackId matches 2 and 32); 8343dbb36f's +0x20 shift (0x40032B0C / 0x4003683C)
-#   moved off both tables (t1_flags=0, wrapping 16-bit counter at +42) on f7/f8.
-# - P=0x400397FC (-4 from 8343dbb36f's 0x40039800): places P+6 at 0x40039802 (0 idle / 1..12 active)
-#   and P+7 at 0x40039803 (0xFF idle / 1..30 active slot) on 000000f7--38344bf8d6 and
-#   000000f8--c8cda6c897 (8f88b00741's 0x400397E0 read static 00..ff..00 on f4/f5).
-# - T1+3414 = 0x40033842 was live on f4, f5, and f8.
-# - Legacy 0x40017... r13 SDA pointer slots returned 0x80000000 (or 0x4001A8AC) across f4/f5/f7/f8.
+#   000000f4--618185d0bb and 000000f5--6e8e645f02; 8343dbb36f's +0x20 shift moved off both tables.
+# - P=0x400397FC (-4 from 8343dbb36f's 0x40039800) and full 26-segment scan of
+#   000000fa--148773dcd2 (948d8c2f5, 1483 rounds, 0 XCP errors):
+#   - T1+86 bit 0x0010 matched OUT18+16 != 0 on 1481/1483 rounds.
+#   - T1+28 (t1_vx28_raw, name retained for log compatibility) is lateral Y at 1/128 m
+#     (p50 err = 0.035 m vs radarTracks yRel, n=168); T1+40 is vRel at 1/256 m/s (p50 |err| = 0.189 m/s, n=124).
+#   - P[0] (0x400397FC) tracked yRel > 0 (left-side) targets on 124/124 matched rounds.
+#   - T1+3414 = 0x40033842 (T1[32]+86) returned static sel_cam_id=7, sel_state=255 on all 75/75 nonzero rounds; removed.
+# - Added bounded 1 Hz discovery reads: 4 OUT18[0..31]+16 scan reads/round (full 32-slot sweep in 8 s) to lock onto
+#   the live in-lane lead slot; 2 P-window 7 B reads/round across 0x400397DC..0x400398DE (37 chunks = 259 B,
+#   full sweep in 18.5 s); 1 rotating 7 B chunk/round across T1[slot]+0..103 (15 chunks = 104 B).
 WAYB_PROBE_INTERVAL_NS = 1_000_000_000
 WAYB_DEFAULT_T1_BASE = 0x40032AEC
 WAYB_DEFAULT_OUT18_BASE = 0x4003681C
@@ -80,7 +83,12 @@ WAYB_DEFAULT_P_BASE = 0x400397FC
 WAYB_T1_STRIDE = 104
 WAYB_OUT18_STRIDE = 18
 WAYB_T1_NUM_SLOTS = 32
-WAYB_SEL_CAM_OFFSET = 3414
+WAYB_OUT18_SCAN_PER_ROUND = 4
+WAYB_P_WIN_START = WAYB_DEFAULT_P_BASE - 0x20  # 0x400397DC (-0x20..+0xE2 around P[0], inside valid BSS 0x400396FC..0x40039A64)
+WAYB_P_WIN_CHUNK_SIZE = 7
+WAYB_P_WIN_NUM_CHUNKS = 37  # 37 * 7 = 259 B -> 0x400397DC..0x400398DE
+WAYB_P_WIN_CHUNKS_PER_ROUND = 2
+WAYB_T1_DUMP_CHUNK_SIZE = 7
 
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None
@@ -222,6 +230,11 @@ class XcpRadarLogger:
     self._wayb_t1_base = WAYB_DEFAULT_T1_BASE
     self._wayb_out18_base = WAYB_DEFAULT_OUT18_BASE
     self._wayb_p_base = WAYB_DEFAULT_P_BASE
+    self._wayb_lead_slot: int | None = None
+    self._wayb_lead_cam_id: int | None = None
+    self._wayb_out18_cursor = 0
+    self._wayb_pwin_cursor = 0
+    self._wayb_t1_dump_off = 0
     self._wayb_state: dict = self._empty_wayb_state()
     self._shm_path = Path(shm_path) if shm_path is not None else None
     if assist_shm_path is _DEFAULT_ASSIST_SHM_PATH:
@@ -316,10 +329,14 @@ class XcpRadarLogger:
       "t1_valid": None,
       "out18_cam_id": None,
       "out18_cam_flags": None,
-      "sel_flags": None,
-      "sel_cam_id": None,
-      "sel_state": None,
+      "slot_source": None,       # "lead_scan" | "p0" | "idle0"
+      "lead_slot": None,         # T1/OUT18 slot locked via out18_scan matching current in-lane op_lead tid
+      "lead_cam_id": None,       # matched op_lead tid
+      "out18_scan": [],          # [[slot, cam_id, cam_flags], ...] from current 1 Hz round (reassigned, never mutated in place)
+      "p_win": [],               # [[addr_hex, data_hex], ...] from current 1 Hz round (reassigned, never mutated in place)
+      "t1_dump": None,           # [slot, offset, data_hex] single 7B (or 6B at off=98) slice of queried T1[slot]
       "last_err": None,
+      "last_err_addr": None,     # hex(addr) of most recent WAYB 0xFE error
       "updated_ns": 0,
     }
 
@@ -330,6 +347,8 @@ class XcpRadarLogger:
     self._init_queued.clear()
     self._wayb_queue.clear()
     self._wayb_last_round_ns = 0
+    self._wayb_lead_slot = None
+    self._wayb_lead_cam_id = None
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
 
@@ -420,6 +439,7 @@ class XcpRadarLogger:
     if pid == 0xFE:
       if cmd_type == "WAYB":
         self._wayb_state["last_err"] = data.hex()
+        self._wayb_state["last_err_addr"] = hex(offset)
         self._wayb_state["updated_ns"] = now_ns
         self._wayb_queue.clear()
         return
@@ -446,6 +466,14 @@ class XcpRadarLogger:
     elif cmd_type == "WAYB":
       self._handle_wayb_reply_locked(slot, size, data, now_ns)
 
+  def _current_op_lead_tid_locked(self, now_ns: int) -> int | None:
+    if now_ns - self._op_tracks_ns > OP_TRACKS_MAX_AGE_NS or not self._op_tracks:
+      return None
+    in_path = [o for o in self._op_tracks if o["dRel"] > 0.0 and abs(o["yRel"]) < 2.0]
+    if not in_path:
+      return None
+    return int(min(in_path, key=lambda o: o["dRel"])["tid"])
+
   def _handle_wayb_reply_locked(self, tag: str, size: int, payload: bytes, now_ns: int) -> None:
     if len(payload) < 1 + size:
       return
@@ -458,19 +486,51 @@ class XcpRadarLogger:
       wb["p0_valid"] = p0_valid
       wb["p0_t1_slot"] = p0_t1_slot
       wb["p0_b8"] = int(data[6])
-      slot = p0_t1_slot if (p0_valid != 0 and 0 <= p0_t1_slot < WAYB_T1_NUM_SLOTS) else 0
+      cur_lead_tid = self._current_op_lead_tid_locked(now_ns)
+      if cur_lead_tid is None or cur_lead_tid != self._wayb_lead_cam_id:
+        self._wayb_lead_slot = None
+        self._wayb_lead_cam_id = None
+      wb["lead_slot"] = self._wayb_lead_slot
+      wb["lead_cam_id"] = self._wayb_lead_cam_id
+      if self._wayb_lead_slot is not None and 0 <= self._wayb_lead_slot < WAYB_T1_NUM_SLOTS:
+        slot = self._wayb_lead_slot
+        slot_source = "lead_scan"
+      elif p0_valid != 0 and 0 <= p0_t1_slot < WAYB_T1_NUM_SLOTS:
+        slot = p0_t1_slot
+        slot_source = "p0"
+      else:
+        slot = 0
+        slot_source = "idle0"
       wb["p0_slot_queried"] = slot
+      wb["slot_source"] = slot_source
+      wb["out18_scan"] = []
+      wb["p_win"] = []
       wb["updated_ns"] = now_ns
       t1_slot_base = self._wayb_t1_base + WAYB_T1_STRIDE * slot
       out18_slot_base = self._wayb_out18_base + WAYB_OUT18_STRIDE * slot
+      # Queue verified core reads first, then OUT18 lead scan & T1 struct dump, then p_win discovery last
+      # so any 0xFE on p_win cannot drop core/scan/dump reads.
       for item in (
         ("t1_kin", t1_slot_base + 24, 6),
         ("t1_vx", t1_slot_base + 40, 4),
         ("t1_meta", t1_slot_base + 86, 6),
         ("out18", out18_slot_base + 16, 2),
-        ("t1_sel", self._wayb_t1_base + WAYB_SEL_CAM_OFFSET, 7),
       ):
         self._wayb_queue.append(item)
+      for _ in range(WAYB_OUT18_SCAN_PER_ROUND):
+        s = self._wayb_out18_cursor
+        self._wayb_out18_cursor = (self._wayb_out18_cursor + 1) % WAYB_T1_NUM_SLOTS
+        self._wayb_queue.append((f"o18s:{s}", self._wayb_out18_base + WAYB_OUT18_STRIDE * s + 16, 2))
+      dump_off = self._wayb_t1_dump_off
+      dump_sz = min(WAYB_T1_DUMP_CHUNK_SIZE, WAYB_T1_STRIDE - dump_off)
+      next_off = dump_off + WAYB_T1_DUMP_CHUNK_SIZE
+      self._wayb_t1_dump_off = next_off if next_off < WAYB_T1_STRIDE else 0
+      self._wayb_queue.append((f"t1d:{slot}:{dump_off}", t1_slot_base + dump_off, dump_sz))
+      for _ in range(WAYB_P_WIN_CHUNKS_PER_ROUND):
+        chunk_idx = self._wayb_pwin_cursor
+        self._wayb_pwin_cursor = (self._wayb_pwin_cursor + 1) % WAYB_P_WIN_NUM_CHUNKS
+        addr = WAYB_P_WIN_START + chunk_idx * WAYB_P_WIN_CHUNK_SIZE
+        self._wayb_queue.append((f"pwin:{addr:x}", addr, WAYB_P_WIN_CHUNK_SIZE))
     elif tag == "t1_kin" and size == 6:
       wb["t1_x_raw"] = int.from_bytes(data[0:2], "big", signed=True)
       wb["t1_u26"] = int.from_bytes(data[2:4], "big", signed=True)
@@ -485,13 +545,44 @@ class XcpRadarLogger:
       wb["t1_valid"] = int(data[5])
       wb["updated_ns"] = now_ns
     elif tag == "out18" and size == 2:
-      wb["out18_cam_id"] = int(data[0])
-      wb["out18_cam_flags"] = int(data[1])
+      cam_id = int(data[0])
+      cam_flags = int(data[1])
+      wb["out18_cam_id"] = cam_id
+      wb["out18_cam_flags"] = cam_flags
+      cur_lead_tid = self._current_op_lead_tid_locked(now_ns)
+      if wb.get("slot_source") == "lead_scan":
+        if cur_lead_tid is None or cam_id != cur_lead_tid:
+          self._wayb_lead_slot = None
+          self._wayb_lead_cam_id = None
+          wb["lead_slot"] = None
+          wb["lead_cam_id"] = None
+      elif cur_lead_tid is not None and cam_id != 0 and cam_id == cur_lead_tid:
+        q_slot = wb.get("p0_slot_queried")
+        if isinstance(q_slot, int) and 0 <= q_slot < WAYB_T1_NUM_SLOTS:
+          self._wayb_lead_slot = q_slot
+          self._wayb_lead_cam_id = cam_id
+          wb["lead_slot"] = q_slot
+          wb["lead_cam_id"] = cam_id
       wb["updated_ns"] = now_ns
-    elif tag == "t1_sel" and size == 7:
-      wb["sel_flags"] = int.from_bytes(data[0:2], "big", signed=False)
-      wb["sel_cam_id"] = int(data[4])
-      wb["sel_state"] = int(data[6])
+    elif tag.startswith("o18s:") and size == 2:
+      scan_slot = int(tag.split(":", 1)[1])
+      cam_id = int(data[0])
+      cam_flags = int(data[1])
+      wb["out18_scan"] = [*wb["out18_scan"], [scan_slot, cam_id, cam_flags]]
+      cur_lead_tid = self._current_op_lead_tid_locked(now_ns)
+      if cur_lead_tid is not None and cam_id != 0 and cam_id == cur_lead_tid:
+        self._wayb_lead_slot = scan_slot
+        self._wayb_lead_cam_id = cam_id
+        wb["lead_slot"] = scan_slot
+        wb["lead_cam_id"] = cam_id
+      wb["updated_ns"] = now_ns
+    elif tag.startswith("t1d:"):
+      _, s_str, off_str = tag.split(":", 2)
+      wb["t1_dump"] = [int(s_str), int(off_str), data.hex()]
+      wb["updated_ns"] = now_ns
+    elif tag.startswith("pwin:"):
+      addr = int(tag.split(":", 1)[1], 16)
+      wb["p_win"] = [*wb["p_win"], [hex(addr), data.hex()]]
       wb["updated_ns"] = now_ns
 
   def _primary_lead_urgent_locked(self, now_ns: int) -> bool:
