@@ -178,6 +178,34 @@ class TestController(unittest.TestCase):
         self.assertAlmostEqual(ctl.plan_fade, plan_fade, places=6)
         self.assertAlmostEqual(ctl.lift, plan_fade * A_CRUISE, places=6)
 
+  def test_lead_gate_fades_the_lift_for_a_braking_lead(self):
+    # Accel Boost's lead gate (Bosch-A Honda): a braking lead inside 4 s headway takes the lift out
+    # over 0.5 s, and it comes back over 2 s once the lead stops braking. Without the gate, no change.
+    def lead_sm(a_lead):
+      sm = build_sm(V_EGO)
+      rs = messaging.new_message('radarState')
+      rs.radarState.leadOne.present = True
+      rs.radarState.leadOne.dRel = 40.  # 2 s headway at V_EGO
+      rs.radarState.leadOne.vRel = 0.   # not closing: the plan fade stays 1
+      rs.radarState.leadOne.aLeadK = a_lead
+      return {**sm, 'radarState': rs.radarState.as_reader()}
+    braking, steady = lead_sm(-1.), lead_sm(0.)
+    out_s = c.LEAD_GATE_FADE_OUT_S + 0.5  # the fade, then the lift's own fall at LIFT_FALL
+    for gate in (False, True):
+      with self.subTest(lead_gate=gate):
+        ctl = self.settled(lead_gate=gate)
+        out = [run(ctl, 1, braking, lead_gate=gate) for _ in range(round(out_s / DT))]
+        self.assertGreaterEqual(min(out), 0.)
+        if gate:
+          self.assertEqual(ctl.lead_scale, 0.)
+          self.assertEqual(ctl.lift, 0.)
+          run(ctl, round(c.LEAD_GATE_FADE_IN_S / DT) + SETTLE_FRAMES, steady, lead_gate=gate)
+          self.assertEqual(ctl.lead_scale, 1.)
+          self.assertAlmostEqual(ctl.lift, A_CRUISE, places=6)
+        else:
+          self.assertEqual(ctl.lead_scale, 1.)
+          self.assertAlmostEqual(ctl.lift, A_CRUISE, places=6)
+
   def test_closing_lead_fade_is_smooth(self):
     ctl = new_controller()
     fades = []
