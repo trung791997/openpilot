@@ -44,4 +44,6 @@ def e2e_candidate(assist: SetSpeedAssistController, accel_boost, sm, *, a_model:
   # chill mode's answer: the MPC candidate, and last frame's cruise candidate, capped at the approach pace
   a_chill = min(float(a_mpc), float(a_cruise_prev),
                 approach_accel(v_ego, v_target, raw_personality(sm['selfdriveState'].personality)))
-  return assist.update(sm, a_model, a_chill, is_e2e, reset_state, steer_lat_accel), True
+  # the planner's Accel Boost lead gate (Bosch-A Honda) also gates the lift
+  lead_gate = bool(getattr(accel_boost, 'lead_gate', False))
+  return assist.update(sm, a_model, a_chill, is_e2e, reset_state, steer_lat_accel, lead_gate), True

@@ -44,6 +44,7 @@ from opendbc.car import rate_limit
 from openpilot.cereal import log
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.accel_boost import lead_slowing
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 LaneChangeState = log.LaneChangeState
@@ -101,6 +102,16 @@ REENGAGE_JERK = 0.3  # m/s^3
 FADE_JERK = 0.3  # m/s^3
 MIN_GAP = 0.05  # m/s^2, only to bound the step at a closed gap
 
+# Lead gate (owner, 2026-11-20; replay only, not driven): the same rule as Accel Boost's lead gate
+# (selfdrive/controls/lib/accel_boost.py lead_slowing: a lead within 4 s headway closing faster than
+# 0.5 m/s or braking harder than 0.5 m/s^2), so no lift toward a lead the car is catching or that is
+# slowing. Replay of f9 (a9d3ed8ef1): without it the lift was on in 817 such rows, up to +0.6 over the
+# model, while the TTC gate (LEAD_TTC_BP) saw ~50 s. The authority fades out over LEAD_GATE_FADE_OUT_S
+# and back in over LEAD_GATE_FADE_IN_S, as Accel Boost's does. The planner passes its AccelBoost's
+# lead_gate (Bosch-A Honda), so other cars keep the ported behaviour.
+LEAD_GATE_FADE_OUT_S = 0.5
+LEAD_GATE_FADE_IN_S = 2.0
+
 T_IDXS = np.asarray(ModelConstants.T_IDXS)
 HORIZON_MASK = T_IDXS <= HORIZON
 
@@ -134,6 +145,7 @@ class SetSpeedAssistController:
     self.floor = 0.
     self.authority = 0.
     self.lift = 0.
+    self.lead_scale = 1.
     self.inhibit = reason
     self._fresh = True  # the fade starts from the road as it is, with nothing to smooth yet
 
@@ -164,10 +176,11 @@ class SetSpeedAssistController:
     return self.enabled or self.lift != 0.
 
   def update(self, sm, a_model: float, a_chill: float, is_e2e: bool, reset_state: bool,
-             steer_lat_accel: float = 0.) -> float:
+             steer_lat_accel: float = 0., lead_gate: bool = False) -> float:
     """Return the e2e candidate; a_model unchanged whenever the feature is off or idle.
     a_chill: the floor, the lower of the planner's lead MPC and cruise candidates and the approach pace.
-    steer_lat_accel: lateral acceleration from the measured steering angle."""
+    steer_lat_accel: lateral acceleration from the measured steering angle.
+    lead_gate: fade the lift out toward a closing or braking lead (Accel Boost's lead_slowing)."""
     if not self._polled:
       self.poll()
     self._polled = False
@@ -213,7 +226,14 @@ class SetSpeedAssistController:
       self.inhibit = Inhibit.laneChange
     else:
       self.inhibit = Inhibit.none
-    authority = self.gain * self.fade if self.inhibit == Inhibit.none else 0.
+    if lead_gate:
+      if lead_slowing(sm, v_ego):
+        self.lead_scale = max(0., self.lead_scale - self.dt / LEAD_GATE_FADE_OUT_S)
+      else:
+        self.lead_scale = min(1., self.lead_scale + self.dt / LEAD_GATE_FADE_IN_S)
+    else:
+      self.lead_scale = 1.
+    authority = self.gain * self.fade * self.lead_scale if self.inhibit == Inhibit.none else 0.
     self.authority = min(authority, self.authority + self.reengage_jerk * self.dt / max(gap, MIN_GAP))
     target = self.authority * gap
     # Normally the lift eases off at LIFT_FALL. When the model starts to brake the gain drops, and
