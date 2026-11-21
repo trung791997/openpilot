@@ -56,6 +56,10 @@ INACTIVE_PROBE_PERIOD_WITH_LEAD = 10
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
 OP_TRACKS_MAX_AGE_NS = 500_000_000
 MEASURED_MAX_KIN_AGE_NS = 200_000_000  # 200 ms freshness ceiling for stage=='measured'
+ASSIST_SHM_MIN_INTERVAL_NS = 20_000_000  # 50 Hz max assist-only SHM publish on primary-lead kin arrival
+OP_MATCH_LOCKED_CLOSING_MAX_DV_MPS = 8.0
+OP_MATCH_LOCKED_CLOSING_MAX_DY_M = 1.5
+OP_MATCH_LOCKED_MIN_VLEAD_MPS = -0.5
 ARRAY_B_TRAILER_OFFSET_M = 434.0 / 128.0  # 3.390625 m A150 Array B -> Array A range offset
 
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
@@ -220,6 +224,9 @@ class XcpRadarLogger:
     self._op_tracks: list[dict] = []
     self._op_tracks_ns = 0
     self._op_matched_slots: list[int] = []
+    self._prev_op_slot_by_tid: dict[int, int] = {}
+    self._last_assist_shm_ns: int = 0
+    self._assist_shm_dirty: bool = False
 
     self._lock = threading.RLock()
     self._send_lock = send_lock
@@ -351,6 +358,8 @@ class XcpRadarLogger:
     self._wayb_lead_cam_id = None
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
+    self._prev_op_slot_by_tid.clear()
+    self._assist_shm_dirty = False
 
   def _reset_slot_locked(self, slot: int) -> None:
     self.active_slots.pop(slot, None)
@@ -427,6 +436,10 @@ class XcpRadarLogger:
         task = (slot, 106, 2)
         self._init_queued.add(task)
         self._init_queue.append(task)
+
+    if offset == 16 and size == 6 and slot in self.active_slots and self._assist_shm_path is not None:
+      if (self._op_matched_slots and slot == self._op_matched_slots[0]) or slot in self._select_priority_slots_locked()[:1]:
+        self._assist_shm_dirty = True
 
   def _process_dto_locked(self, data: bytes, now_ns: int) -> None:
     if not data or self.in_flight is None:
@@ -978,6 +991,8 @@ class XcpRadarLogger:
             pkt = self._build_next_cto_locked(now_ns)
         if pkt is not None:
           self._send_cto(pkt)
+        if can_strs:
+          self._maybe_publish_assist_shm(now_ns)
     except Exception:
       pass
     finally:
@@ -988,55 +1003,139 @@ class XcpRadarLogger:
           pass
 
   def _match_openpilot_tracks(self, targets: list[dict], op_tracks: list[dict], v_ego: float = 0.0) -> tuple[list[int], int | None]:
-    if not targets or not op_tracks:
-      return [], None
-    candidates: list[tuple[float, int, int, float]] = []
-    for ti, t in enumerate(targets):
-      if int(t.get("lat_updated_ns", 1)) <= 0:
-        continue
-      is_stationary = v_ego >= 3.0 and abs(v_ego + t["vRel_mps"]) < 0.7
-      for oi, o in enumerate(op_tracks):
-        dd = abs(t["dRel_m"] - o["dRel"])
-        dy = abs(t["yRel_m"] - o["yRel"])
-        dv = abs(t["vRel_mps"] - o["vRel"])
-        if is_stationary:
-          dd_eff = dd
-          max_dd = 4.5
+    with self._lock:
+      if not targets or not op_tracks:
+        self._prev_op_slot_by_tid = {}
+        return [], None
+      prev_slot_by_tid = self._prev_op_slot_by_tid
+      candidates: list[tuple[float, int, int, float]] = []
+      for ti, t in enumerate(targets):
+        if int(t.get("lat_updated_ns", 1)) <= 0:
+          continue
+        is_stationary = v_ego >= 3.0 and abs(v_ego + t["vRel_mps"]) < 0.7
+        for oi, o in enumerate(op_tracks):
+          dd = abs(t["dRel_m"] - o["dRel"])
+          dy = abs(t["yRel_m"] - o["yRel"])
+          dv = abs(t["vRel_mps"] - o["vRel"])
+          if is_stationary:
+            dd_eff = dd
+            max_dd = 4.5
+          else:
+            allow_trailer = t["dRel_m"] >= o["dRel"] and o["dRel"] >= 25.0 and dy < 1.0
+            dd_eff = min(dd, abs((t["dRel_m"] - ARRAY_B_TRAILER_OFFSET_M) - o["dRel"])) if allow_trailer else dd
+            r = max(t["dRel_m"], o["dRel"], 0.0)
+            max_dd = max(5.5, (0.20 if r > 70.0 else 0.14) * r)
+          prev_matched_same = prev_slot_by_tid.get(o["tid"]) == t["slot"]
+          closing_lag = o["vRel"] - t["vRel_mps"]
+          rail_ok = o["vRel"] <= -11.5 and t["vRel_mps"] <= o["vRel"] + 1.0 and dv <= 25.0
+          locked_closing_ok = (
+            prev_matched_same
+            and not is_stationary
+            and (v_ego < 3.0 or (v_ego + t["vRel_mps"]) >= OP_MATCH_LOCKED_MIN_VLEAD_MPS)
+            and dy < OP_MATCH_LOCKED_CLOSING_MAX_DY_M
+            and 0.0 < closing_lag <= OP_MATCH_LOCKED_CLOSING_MAX_DV_MPS
+          )
+          if dd_eff < max_dd and dy < 2.2 and (dv < 3.5 or rail_ok or locked_closing_ok):
+            cost = dd_eff * dd_eff + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
+            dist_m = math.hypot(dd, dy)
+            candidates.append((cost, ti, oi, dist_m))
+      candidates.sort(key=lambda item: item[0])
+
+      used_targets: set[int] = set()
+      used_op: set[int] = set()
+      op_in_path = [o for o in op_tracks if o["dRel"] > 0.0 and abs(o["yRel"]) < 2.0]
+      op_lead_tid = min(op_in_path, key=lambda o: o["dRel"])["tid"] if op_in_path else None
+      lead_matched_slots: list[int] = []
+      matched_slots: list[int] = []
+      op_lead_slot: int | None = None
+      new_op_slot_by_tid: dict[int, int] = {}
+
+      for _, ti, oi, dist_m in candidates:
+        if ti in used_targets or oi in used_op:
+          continue
+        used_targets.add(ti)
+        used_op.add(oi)
+        tid = op_tracks[oi]["tid"]
+        targets[ti]["op_track_id"] = tid
+        targets[ti]["op_dRel"] = op_tracks[oi]["dRel"]
+        targets[ti]["op_match_dist_m"] = round(dist_m, 3)
+        slot = targets[ti]["slot"]
+        new_op_slot_by_tid[tid] = slot
+        if tid == op_lead_tid:
+          lead_matched_slots.insert(0, slot)
+          op_lead_slot = slot
         else:
-          allow_trailer = t["dRel_m"] >= o["dRel"] and o["dRel"] >= 25.0 and dy < 1.0
-          dd_eff = min(dd, abs((t["dRel_m"] - ARRAY_B_TRAILER_OFFSET_M) - o["dRel"])) if allow_trailer else dd
-          r = max(t["dRel_m"], o["dRel"], 0.0)
-          max_dd = max(5.5, (0.20 if r > 70.0 else 0.14) * r)
-        if dd_eff < max_dd and dy < 2.2 and dv < 3.5:
-          cost = dd_eff * dd_eff + (2.0 * dy) * (2.0 * dy) + (0.8 * dv) * (0.8 * dv)
-          dist_m = math.hypot(dd, dy)
-          candidates.append((cost, ti, oi, dist_m))
-    candidates.sort(key=lambda item: item[0])
+          matched_slots.append(slot)
+      self._prev_op_slot_by_tid = new_op_slot_by_tid
+      return lead_matched_slots + matched_slots, op_lead_slot
 
-    used_targets: set[int] = set()
-    used_op: set[int] = set()
-    op_in_path = [o for o in op_tracks if o["dRel"] > 0.0 and abs(o["yRel"]) < 2.0]
-    op_lead_tid = min(op_in_path, key=lambda o: o["dRel"])["tid"] if op_in_path else None
-    lead_matched_slots: list[int] = []
-    matched_slots: list[int] = []
-    op_lead_slot: int | None = None
+  def _collect_targets_locked(self, now_ns: int) -> tuple[float, list[dict], list[dict], int | None]:
+    v_ego = self.last_v_ego
+    op_tracks = list(self._op_tracks) if (now_ns - self._op_tracks_ns <= OP_TRACKS_MAX_AGE_NS) else []
 
-    for _, ti, oi, dist_m in candidates:
-      if ti in used_targets or oi in used_op:
+    targets: list[dict] = []
+    for slot, rec in self.active_slots.items():
+      if rec["flags_updated_ns"] <= 0:
         continue
-      used_targets.add(ti)
-      used_op.add(oi)
-      tid = op_tracks[oi]["tid"]
-      targets[ti]["op_track_id"] = tid
-      targets[ti]["op_dRel"] = op_tracks[oi]["dRel"]
-      targets[ti]["op_match_dist_m"] = round(dist_m, 3)
-      slot = targets[ti]["slot"]
-      if tid == op_lead_tid:
-        lead_matched_slots.insert(0, slot)
-        op_lead_slot = slot
+      flags = rec["flags"]
+      if (flags & 0x2000) == 0:
+        continue
+      X = rec["X_raw"]
+      Y = rec["Y_raw"]
+      Vx = rec["Vx_raw"]
+      Vy = rec["Vy_raw"]
+      Ax = rec["Ax_raw"]
+      if X == 0 and Y == 0 and Vx == 0 and Vy == 0:
+        continue
+      subflags = rec["subflags"]
+      age = rec["age"]
+      dec = decode_flags(flags, subflags, age)
+      kin_age_ns = max(0, now_ns - rec["kin_updated_ns"])
+      kin_age_ms = round(kin_age_ns / 1_000_000.0, 2)
+      is_fresh_kin = rec["kin_updated_ns"] > 0 and kin_age_ns <= MEASURED_MAX_KIN_AGE_NS
+      if dec["stage"] == "measured" and not is_fresh_kin:
+        stage = "stale"
+        measured = False
+        trust_accel = False
       else:
-        matched_slots.append(slot)
-    return lead_matched_slots + matched_slots, op_lead_slot
+        stage = dec["stage"]
+        measured = dec["measured"]
+        trust_accel = dec["trust_accel"]
+      targets.append({
+        "slot": slot,
+        "radar_track_id": rec["radar_track_id"],
+        "dRel_m": round(X / 128.0, 4),
+        "vRel_mps": round(Vx / 256.0, 4),
+        "yRel_m": round(Y / 128.0, 4),
+        "vyRel_mps": round(Vy / 256.0, 4),
+        "ax_mps2": round(Ax / 2048.0, 4),
+        "flags": flags,
+        "subflags": subflags,
+        "age": age,
+        "qual": rec["qual"],
+        "cls_conf": rec["cls_conf"],
+        "stage": stage,
+        "fw_stage": dec["stage"],
+        "measured": measured,
+        "conf_band": dec["conf_band"],
+        "ghost": dec["ghost"],
+        "in_path": dec["in_path"],
+        "trust_accel": trust_accel,
+        "kin_age_ms": kin_age_ms,
+        "op_track_id": None,
+        "op_dRel": None,
+        "op_match_dist_m": None,
+        "kin_updated_ns": rec["kin_updated_ns"],
+        "lat_updated_ns": rec["lat_updated_ns"],
+        "age_updated_ns": rec["age_updated_ns"],
+        "flags_updated_ns": rec["flags_updated_ns"],
+        "updated_ns": rec["updated_ns"],
+        "last_rtt_ms": round(rec["last_rtt_ns"] / 1_000_000.0, 2),
+      })
+
+    matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks, v_ego)
+    self._op_matched_slots = matched_slots
+    return v_ego, op_tracks, targets, op_lead_slot
 
   def _maybe_log_20hz(self, now_ns: int) -> None:
     with self._lock:
@@ -1045,77 +1144,15 @@ class XcpRadarLogger:
       if now_ns - self.last_log_ns < EPOCH_NS:
         return
       self.last_log_ns = now_ns
-      v_ego = self.last_v_ego
-      op_tracks = list(self._op_tracks) if (now_ns - self._op_tracks_ns <= OP_TRACKS_MAX_AGE_NS) else []
-
-      targets: list[dict] = []
-      for slot, rec in self.active_slots.items():
-        if rec["flags_updated_ns"] <= 0:
-          continue
-        flags = rec["flags"]
-        if (flags & 0x2000) == 0:
-          continue
-        X = rec["X_raw"]
-        Y = rec["Y_raw"]
-        Vx = rec["Vx_raw"]
-        Vy = rec["Vy_raw"]
-        Ax = rec["Ax_raw"]
-        if X == 0 and Y == 0 and Vx == 0 and Vy == 0:
-          continue
-        subflags = rec["subflags"]
-        age = rec["age"]
-        dec = decode_flags(flags, subflags, age)
-        kin_age_ns = max(0, now_ns - rec["kin_updated_ns"])
-        kin_age_ms = round(kin_age_ns / 1_000_000.0, 2)
-        is_fresh_kin = rec["kin_updated_ns"] > 0 and kin_age_ns <= MEASURED_MAX_KIN_AGE_NS
-        if dec["stage"] == "measured" and not is_fresh_kin:
-          stage = "stale"
-          measured = False
-          trust_accel = False
-        else:
-          stage = dec["stage"]
-          measured = dec["measured"]
-          trust_accel = dec["trust_accel"]
-        targets.append({
-          "slot": slot,
-          "radar_track_id": rec["radar_track_id"],
-          "dRel_m": round(X / 128.0, 4),
-          "vRel_mps": round(Vx / 256.0, 4),
-          "yRel_m": round(Y / 128.0, 4),
-          "vyRel_mps": round(Vy / 256.0, 4),
-          "ax_mps2": round(Ax / 2048.0, 4),
-          "flags": flags,
-          "subflags": subflags,
-          "age": age,
-          "qual": rec["qual"],
-          "cls_conf": rec["cls_conf"],
-          "stage": stage,
-          "fw_stage": dec["stage"],
-          "measured": measured,
-          "conf_band": dec["conf_band"],
-          "ghost": dec["ghost"],
-          "in_path": dec["in_path"],
-          "trust_accel": trust_accel,
-          "kin_age_ms": kin_age_ms,
-          "op_track_id": None,
-          "op_dRel": None,
-          "op_match_dist_m": None,
-          "kin_updated_ns": rec["kin_updated_ns"],
-          "lat_updated_ns": rec["lat_updated_ns"],
-          "age_updated_ns": rec["age_updated_ns"],
-          "flags_updated_ns": rec["flags_updated_ns"],
-          "updated_ns": rec["updated_ns"],
-          "last_rtt_ms": round(rec["last_rtt_ns"] / 1_000_000.0, 2),
-        })
-
-    matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks, v_ego)
-    with self._lock:
-      self._op_matched_slots = matched_slots
+      v_ego, op_tracks, targets, op_lead_slot = self._collect_targets_locked(now_ns)
       wayb_probe = (
         dict(self._wayb_state)
         if self._wayb_probe_enabled and self._wayb_state["updated_ns"] > 0
         else None
       )
+      if self._assist_shm_path is not None:
+        self._last_assist_shm_ns = now_ns
+        self._assist_shm_dirty = False
 
     targets.sort(key=lambda t: (abs(t["dRel_m"]), t["slot"]))
     matched_lead = next((t for t in targets if t["slot"] == op_lead_slot), None) if op_lead_slot is not None else None
@@ -1147,63 +1184,80 @@ class XcpRadarLogger:
     cloudlog.event("xcp_array_b_20hz", **event_kwargs)
     self._write_ui_snapshot(now_ns, v_ego, targets)
 
+  @staticmethod
+  def _build_assist_payload(now_ns: int, targets: list[dict]) -> dict:
+    tracks_by_op_id: dict[str, dict] = {}
+    shm_targets: list[dict] = []
+    for t in targets:
+      if (
+        t.get("stage") == "measured"
+        and not t.get("ghost", False)
+        and int(t.get("lat_updated_ns", 1)) > 0
+      ):
+        entry = {
+          "slot": t["slot"],
+          "rtid": t["radar_track_id"],
+          "age": t["age"],
+          "stage": t["stage"],
+          "ghost": t["ghost"],
+          "flags": t["flags"],
+          "dRel_m": t["dRel_m"],
+          "yRel_m": t["yRel_m"],
+          "vRel_mps": t["vRel_mps"],
+          "ax_mps2": t["ax_mps2"],
+          "kin_age_ms": t["kin_age_ms"],
+          "kin_updated_ns": int(t.get("kin_updated_ns", 0)),
+          "lat_valid": True,
+          "trust_accel": t["trust_accel"],
+          "op_track_id": t.get("op_track_id"),
+        }
+        shm_targets.append(entry)
+        op_tid = t.get("op_track_id")
+        if op_tid is not None:
+          tracks_by_op_id[str(op_tid)] = {k: v for k, v in entry.items() if k != "op_track_id"}
+    return {
+      "mono_ns": int(now_ns),
+      "boot_offset_ns": int(_boot_minus_mono_ns()),
+      "tracks_by_op_id": tracks_by_op_id,
+      "targets": shm_targets,
+    }
+
+  def _maybe_publish_assist_shm(self, now_ns: int) -> None:
+    with self._lock:
+      if (
+        self._assist_shm_path is None
+        or self.state != "READY"
+        or not self._assist_shm_dirty
+        or (now_ns - self._last_assist_shm_ns) < ASSIST_SHM_MIN_INTERVAL_NS
+      ):
+        return
+      self._assist_shm_dirty = False
+      self._last_assist_shm_ns = now_ns
+      _, _, targets, _ = self._collect_targets_locked(now_ns)
+      assist_path = self._assist_shm_path
+    try:
+      _write_atomic_json(assist_path, self._build_assist_payload(now_ns, targets))
+    except Exception:
+      pass
+
   def _write_ui_snapshot(self, now_ns: int, v_ego: float, targets: list[dict]) -> None:
     if self._shm_path is None and self._assist_shm_path is None:
       return
     try:
-      points: list[list[float]] = []
-      tracks_by_op_id: dict[str, dict] = {}
-      shm_targets: list[dict] = []
-      for t in targets:
-        if (
-          self._assist_shm_path is not None
-          and t.get("stage") == "measured"
-          and not t.get("ghost", False)
-          and int(t.get("lat_updated_ns", 1)) > 0
-        ):
-          entry = {
-            "slot": t["slot"],
-            "rtid": t["radar_track_id"],
-            "age": t["age"],
-            "stage": t["stage"],
-            "ghost": t["ghost"],
-            "flags": t["flags"],
-            "dRel_m": t["dRel_m"],
-            "yRel_m": t["yRel_m"],
-            "vRel_mps": t["vRel_mps"],
-            "ax_mps2": t["ax_mps2"],
-            "kin_age_ms": t["kin_age_ms"],
-            "kin_updated_ns": int(t.get("kin_updated_ns", 0)),
-            "lat_valid": True,
-            "trust_accel": t["trust_accel"],
-            "op_track_id": t.get("op_track_id"),
-          }
-          shm_targets.append(entry)
-          op_tid = t.get("op_track_id")
-          if op_tid is not None:
-            tracks_by_op_id[str(op_tid)] = {k: v for k, v in entry.items() if k != "op_track_id"}
-        if self._shm_path is None:
-          continue
-        if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
-          continue
-        dt_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), 300_000_000) / 1e9
-        dt_lat = min(max(now_ns - t.get("lat_updated_ns", now_ns), 0), 300_000_000) / 1e9
-        d_ui = t["dRel_m"] + t.get("vRel_mps", 0.0) * dt_kin
-        y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * dt_lat
-        if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
-          points.append([round(d_ui, 2), round(y_ui, 2)])
       if self._shm_path is not None:
+        points: list[list[float]] = []
+        for t in targets:
+          if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
+            continue
+          dt_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), 300_000_000) / 1e9
+          dt_lat = min(max(now_ns - t.get("lat_updated_ns", now_ns), 0), 300_000_000) / 1e9
+          d_ui = t["dRel_m"] + t.get("vRel_mps", 0.0) * dt_kin
+          y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * dt_lat
+          if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
+            points.append([round(d_ui, 2), round(y_ui, 2)])
         _write_atomic_json(self._shm_path, {"mono_ns": int(now_ns), "points": points})
       if self._assist_shm_path is not None:
-        _write_atomic_json(
-          self._assist_shm_path,
-          {
-            "mono_ns": int(now_ns),
-            "boot_offset_ns": int(_boot_minus_mono_ns()),
-            "tracks_by_op_id": tracks_by_op_id,
-            "targets": shm_targets,
-          },
-        )
+        _write_atomic_json(self._assist_shm_path, self._build_assist_payload(now_ns, targets))
     except Exception:
       pass
 
@@ -1238,6 +1292,7 @@ class XcpRadarLogger:
               if src == XCP_BUS and addr == XCP_DTO:
                 self._process_dto_locked(bytes(dat), now_ns)
       self._maybe_log_20hz(now_ns)
+      self._maybe_publish_assist_shm(now_ns)
     except Exception:
       pass
 

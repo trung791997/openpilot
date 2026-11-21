@@ -900,3 +900,102 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
   logger.close()
   assert dump_slices == {**dict.fromkeys(range(0, 98, 7), 7), 98: 6}
   assert sum(dump_slices.values()) == 104
+
+
+def test_match_openpilot_tracks_keeps_locked_closing_lead_and_railed_u11():
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  op_tracks = [{"tid": 34, "dRel": 45.0, "yRel": -0.1, "vRel": 2.5}]
+
+  # Initial acquisition with dv = 4.5 m/s (> 3.5) must still reject when not previously locked.
+  t_wide = [{"slot": 11, "dRel_m": 44.5, "yRel_m": -0.2, "vRel_mps": -2.0, "lat_updated_ns": 1}]
+  matched, op_lead_slot = logger._match_openpilot_tracks(t_wide, op_tracks, v_ego=11.0)
+  assert matched == [] and op_lead_slot is None and t_wide[0].get("op_track_id") is None
+
+  # Railed U11 (o["vRel"] <= -11.5) matches on initial acquisition up to dv <= 25.0.
+  t_rail = [{"slot": 12, "dRel_m": 45.0, "yRel_m": 0.0, "vRel_mps": -17.5, "lat_updated_ns": 1}]
+  matched_rail, op_lead_rail = logger._match_openpilot_tracks(
+    t_rail, [{"tid": 40, "dRel": 44.5, "yRel": 0.0, "vRel": -12.0}], v_ego=22.0
+  )
+  assert matched_rail == [12] and op_lead_rail == 12
+
+  # Acquire moving lead within dv < 3.5, then keep locked across closing_lag = 6.0 m/s (dv = 6.0 > 3.5).
+  t_acq = [{"slot": 11, "dRel_m": 44.5, "yRel_m": -0.2, "vRel_mps": 0.5, "lat_updated_ns": 1}]
+  matched1, lead1 = logger._match_openpilot_tracks(t_acq, op_tracks, v_ego=11.0)
+  assert matched1 == [11] and lead1 == 11
+
+  t_brake = [{"slot": 11, "dRel_m": 44.0, "yRel_m": -0.2, "vRel_mps": -3.5, "lat_updated_ns": 1}]
+  matched2, lead2 = logger._match_openpilot_tracks(t_brake, op_tracks, v_ego=11.0)
+  assert matched2 == [11] and lead2 == 11 and t_brake[0].get("op_track_id") == 34
+
+  # Stationary target or wide lateral dy >= 1.5 must NOT use the locked continuation window.
+  t_stat = [{"slot": 11, "dRel_m": 44.0, "yRel_m": -0.2, "vRel_mps": -11.0, "lat_updated_ns": 1}]
+  matched3, _ = logger._match_openpilot_tracks(t_stat, op_tracks, v_ego=11.0)
+  assert matched3 == []
+
+  logger._match_openpilot_tracks(t_acq, op_tracks, v_ego=11.0)
+  t_adj = [{"slot": 11, "dRel_m": 44.0, "yRel_m": 1.6, "vRel_mps": -3.5, "lat_updated_ns": 1}]
+  matched4, _ = logger._match_openpilot_tracks(t_adj, op_tracks, v_ego=11.0)
+  assert matched4 == []
+  logger.close()
+
+
+def test_fast_assist_shm_publishes_on_primary_lead_kin_arrival_rate_limited(monkeypatch, tmp_path):
+  import json
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 5, {"x": 30.0, "vx": -1.5, "ax": -1.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  ui_path = tmp_path / "xcp_radar_points.json"
+  assist_path = tmp_path / "xcp_radar_assist.json"
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, shm_path=ui_path, assist_shm_path=assist_path)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=12, dRel=30.0, yRel=0.1, vRel=-1.5)])
+
+  # Initialize slot 5 so it becomes prio_slots[0] and reaches first 50 ms epoch log
+  for _ in range(15):
+    logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 10_000_000, v_ego=15.0)
+    t += 15_000_000
+
+  assert assist_path.exists()
+  # Sync cleanly to a fresh 50 ms epoch boundary ahead of any initialization timestamps.
+  epoch_ns = max(t, logger.last_log_ns + 60_000_000)
+  logger.observe_radar_tracks(rd, epoch_ns)
+  logger.observe_can([], epoch_ns, v_ego=15.0)
+  assert logger.last_log_ns == epoch_ns
+  assert json.loads(assist_path.read_text())["mono_ns"] == epoch_ns
+  events_before = len(rows)
+
+  # Drive a direct priority-lead kinematics reply only 22 ms after the 50 ms log epoch (< 50 ms EPOCH_NS):
+  # assist SHM must update immediately with new vRel, without emitting a second cloudlog.event.
+  t_mid = epoch_ns + 22_000_000
+  _write_slot(ram, 5, {"x": 29.8, "vx": -3.25, "ax": -3.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 36, "qual": 25, "cls": 85})
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 16, 6, t_mid - 8_000_000)
+  rep_mid = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger.observe_can([(t_mid, [(XCP_DTO, rep_mid, XCP_BUS)])], t_mid, v_ego=15.0)
+
+  assert len(rows) == events_before
+  assist_mid = json.loads(assist_path.read_text())
+  assert assist_mid["mono_ns"] == t_mid
+  assert assist_mid["tracks_by_op_id"]["12"]["vRel_mps"] == -3.25
+
+  # Another reply only 10 ms later (< 20 ms ASSIST_SHM_MIN_INTERVAL_NS) is rate-limited until the next 20 ms window.
+  t_soon = t_mid + 10_000_000
+  _write_slot(ram, 5, {"x": 29.7, "vx": -3.75, "ax": -3.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 36, "qual": 25, "cls": 85})
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 16, 6, t_soon - 5_000_000)
+  rep_soon = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger.observe_can([(t_soon, [(XCP_DTO, rep_soon, XCP_BUS)])], t_soon, v_ego=15.0)
+  assert len(rows) == events_before
+  assert json.loads(assist_path.read_text())["mono_ns"] == t_mid
+
+  logger.close()

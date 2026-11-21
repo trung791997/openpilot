@@ -425,3 +425,132 @@ def test_bob_audit_s1_to_s10_guards(tmp_path):
     })
     pol_s9.update_tracks(_make_sm(ts, frame=step + 1), rr_22, rad_s9)
     assert rad_s9.tracks[22].aLeadK > -2.0
+
+
+def test_xcp_updates_kf_on_non_fresh_radar_ticks_and_holds_without_damping():
+  t0 = 60_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+
+  # Seed base track on frame 1
+  rr = SimpleNamespace(points=[_make_point(22, 35.0, 0.1, 0.0, measured=True)])
+  pol.update_tracks(_make_sm(t0, frame=1), rr, rad)
+
+  # Drive 20 Hz XCP -3.0 m/s^2 ramp while radarTracks stays on frame=1 (fresh == False for 11 consecutive ticks!).
+  # Variable-dt XCP KF must NOT drop those readings or lag behind true -3.0 m/s^2.
+  for step in range(1, 13):
+    ts = t0 + step * 50_000_000
+    v_rel = round(-0.15 * (step - 1), 3)
+    target = {
+      "slot": 32,
+      "rtid": 28,
+      "op_track_id": 22,
+      "stage": "measured",
+      "kin_age_ms": 15.0,
+      "kin_updated_ns": ts,
+      "lat_valid": True,
+      "ghost": False,
+      "flags": 0xE0C0,
+      "age": 40,
+      "dRel_m": 34.0,
+      "yRel_m": 0.1,
+      "vRel_mps": v_rel,
+      "ax_mps2": -3.0,
+    }
+    pol.set_xcp_snapshot({"mono_ns": ts, "tracks_by_op_id": {"22": target}, "targets": [target]})
+    pol.update_tracks(_make_sm(ts, frame=1), rr, rad)
+
+  tr = rad.tracks[22]
+  # Unclamped internal KF tracks true -3.0 m/s^2 (within 0.6s) even when 0x280 radarTracks had fresh == False;
+  # published aLeadK respects S10 -1.95 guard while base_kf is flat.
+  assert tr.kf.x[1][0] <= -2.4
+  assert tr.aLeadK == -1.95
+
+  # Inter-read hold tick when radarTracks advances (fresh == True) with repeated kin_updated_ns
+  # must NOT damp kf.x[1][0] toward zero.
+  kf_accel_before_hold = tr.kf.x[1][0]
+  kf_v_before_hold = tr.kf.x[0][0]
+  for hold_step in range(1, 4):
+    ts_hold = t0 + (12 + hold_step) * 50_000_000
+    pol.set_xcp_snapshot({"mono_ns": ts_hold, "tracks_by_op_id": {"22": target}, "targets": [target]})
+    pol.update_tracks(_make_sm(ts_hold, frame=1 + hold_step), rr, rad)
+    assert tr.kf.x[1][0] == kf_accel_before_hold
+    assert tr.kf.x[0][0] == kf_v_before_hold
+
+
+def test_xcp_locked_closing_continuation_prevents_mid_brake_drop():
+  t0 = 70_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 12.0
+  rad.v_ego_hist.appendleft(12.0)
+
+  # Step 1 (unlocked): initial dv = 4.5 m/s (> 3.0) must be rejected; stationary clutter too.
+  t_init_bad = {
+    "slot": 11, "rtid": 781, "op_track_id": 34, "stage": "measured", "kin_age_ms": 15.0,
+    "kin_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+    "dRel_m": 44.0, "yRel_m": -0.1, "vRel_mps": -2.0, "ax_mps2": -2.0,
+  }
+  rr_init = SimpleNamespace(points=[_make_point(34, 44.0, -0.1, 2.5, measured=True)])
+  pol.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"34": t_init_bad}, "targets": [t_init_bad]})
+  pol.update_tracks(_make_sm(t0, frame=1), rr_init, rad)
+  assert not rad.tracks[34].xcp_active
+
+  # Step 2 (acquire within dv <= 3.0)
+  t_lock = dict(t_init_bad, kin_updated_ns=t0 + 50_000_000, vRel_mps=0.5)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 50_000_000, "tracks_by_op_id": {"34": t_lock}, "targets": [t_lock]})
+  pol.update_tracks(_make_sm(t0 + 50_000_000, frame=2), rr_init, rad)
+  assert rad.tracks[34].xcp_active and rad.tracks[34].vRel == 0.5
+
+  # Step 3: mid-brake dv = 5.0 m/s closing (pv=+2.5, xv=-2.5) stays locked on same (slot, rtid)
+  t_brake = dict(t_lock, kin_updated_ns=t0 + 100_000_000, dRel_m=42.5, vRel_mps=-2.5)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 100_000_000, "tracks_by_op_id": {"34": t_brake}, "targets": [t_brake]})
+  pol.update_tracks(_make_sm(t0 + 100_000_000, frame=3), rr_init, rad)
+  assert rad.tracks[34].xcp_active and rad.tracks[34].vRel == -2.5
+
+  # Step 4: locked closing range lead xd < pd (pd=42.1, xd=38.4, dd=3.7 < 0.12*42.1) stays locked
+  rr_close = SimpleNamespace(points=[_make_point(34, 42.1, -0.1, -1.5, measured=True)])
+  t_close = dict(t_brake, kin_updated_ns=t0 + 150_000_000, dRel_m=38.4, vRel_mps=-5.5)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 150_000_000, "tracks_by_op_id": {"34": t_close}, "targets": [t_close]})
+  pol.update_tracks(_make_sm(t0 + 150_000_000, frame=4), rr_close, rad)
+  assert rad.tracks[34].xcp_active and rad.tracks[34].vRel == -5.5
+
+  # Step 5: upward velocity jump (xv > pv + 3.0) while locked must still be rejected
+  rr_slow = SimpleNamespace(points=[_make_point(34, 38.0, -0.1, -4.0, measured=True)])
+  t_up = dict(t_close, kin_updated_ns=t0 + 200_000_000, dRel_m=38.0, vRel_mps=1.0)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 200_000_000, "tracks_by_op_id": {"34": t_up}, "targets": [t_up]})
+  pol.update_tracks(_make_sm(t0 + 200_000_000, frame=5), rr_slow, rad)
+  assert not rad.tracks[34].xcp_active and rad.tracks[34].vRel == -4.0
+
+
+def test_xcp_active_track_skips_held_vrel_slope_bound():
+  t0 = 80_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 18.0
+  rad.v_ego_hist.appendleft(18.0)
+
+  # Even when 0x280 point satisfies HELD_VREL_* (dRel >= 50 m, vRel <= -4.0 m/s, measured=False, flat range slope),
+  # an active XCP Doppler track must NOT accumulate held_vrel_cycles or get lifted by held_vrel_bound.
+  rr = SimpleNamespace(points=[_make_point(22, 80.0, 0.1, -9.5, measured=False)])
+  for step in range(20):
+    ts = t0 + step * 50_000_000
+    target = {
+      "slot": 11, "rtid": 100, "op_track_id": 22, "stage": "measured", "kin_age_ms": 15.0,
+      "kin_updated_ns": ts, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 30,
+      "dRel_m": 80.0, "yRel_m": 0.1, "vRel_mps": -10.0, "ax_mps2": -1.0,
+    }
+    pol.set_xcp_snapshot({"mono_ns": ts, "tracks_by_op_id": {"22": target}, "targets": [target]})
+    pol.update_tracks(_make_sm(ts, frame=step + 1), rr, rad)
+
+  assert rad.tracks[22].xcp_active is True
+  assert rad.tracks[22].direct is False
+  assert rad.tracks[22].held_vrel_cycles == 0
+  # Compare against same track with XCP off -> held_vrel_cycles builds cleanly
+  pol_off = BoschALeadPolicy(xcp_assist=False, xcp_path=None)
+  rad_off = _dummy_radar()
+  rad_off.v_ego = 18.0
+  rad_off.v_ego_hist.appendleft(18.0)
+  for step in range(20):
+    pol_off.update_tracks(_make_sm(t0 + step * 50_000_000, frame=step + 1), rr, rad_off)
+  assert rad_off.tracks[22].held_vrel_cycles > 0

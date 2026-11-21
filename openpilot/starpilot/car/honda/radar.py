@@ -108,12 +108,29 @@ XCP_ASSIST_MAX_DY_M = 1.2
 XCP_ASSIST_SCALE_ALIAS_MIN_D_M = 28.0
 XCP_ASSIST_SCALE_ALIAS_MAX_DY_M = 0.75
 XCP_ASSIST_MAX_DV_MPS = 3.0
+XCP_ASSIST_LOCKED_CLOSING_MAX_DV_MPS = 8.0
+XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M = 1.0
+XCP_ASSIST_LOCKED_CLOSING_MIN_DD_M = 3.0
+XCP_ASSIST_LOCKED_CLOSING_DD_RATIO = 0.12
+XCP_ASSIST_LOCKED_CLOSING_MIN_VREL_MPS = -1.0
+XCP_ASSIST_LOCKED_MIN_VLEAD_MPS = -0.5
+XCP_ASSIST_KF_JERK_Q_OVER_R = 30.0
+XCP_ASSIST_KF_MIN_DT_S = 0.02
+XCP_ASSIST_KF_MAX_DT_S = 0.20
 XCP_ASSIST_MAX_STEP_DV_MPS = 0.35
+XCP_ASSIST_MAX_STEP_DECEL_MPS2 = 7.0
+XCP_ASSIST_MAX_STEP_DV_CAP_MPS = 0.85
 XCP_ASSIST_LATCH_GUARD_ACCEL = -1.95
 XCP_TRAILER_OFFSET_M = 434.0 / 128.0
 
 
-def _xcp_target_qualifies(t: dict[str, Any], point, v_ego: float) -> tuple[bool, float]:
+def _xcp_target_qualifies(
+  t: dict[str, Any],
+  point,
+  v_ego: float,
+  *,
+  locked_slot_key: tuple[Any, Any] | None = None,
+) -> tuple[bool, float]:
   """Check XCP Array B assist gates, lateral validity, track ID, and range/velocity consistency."""
   if t.get("stage") != "measured":
     return False, math.inf
@@ -142,6 +159,8 @@ def _xcp_target_qualifies(t: dict[str, Any], point, v_ego: float) -> tuple[bool,
     return False, math.inf
   if age < XCP_ASSIST_MIN_AGE:
     return False, math.inf
+  slot_key = (t.get("slot"), t.get("rtid", t.get("radar_track_id")))
+  is_locked = locked_slot_key is not None and slot_key == locked_slot_key
   pd = float(point.dRel)
   py = float(point.yRel)
   pv = float(point.vRel)
@@ -162,9 +181,20 @@ def _xcp_target_qualifies(t: dict[str, Any], point, v_ego: float) -> tuple[bool,
   allow_scale_alias = xd >= pd and (
     op_confirmed or (pd >= XCP_ASSIST_SCALE_ALIAS_MIN_D_M and dy <= XCP_ASSIST_SCALE_ALIAS_MAX_DY_M and abs(py) <= 1.0)
   )
+  non_stationary_closing = v_ego < 3.0 or (v_ego + xv) >= XCP_ASSIST_LOCKED_MIN_VLEAD_MPS
+  allow_closing_dd = (
+    is_locked
+    and xd < pd
+    and xv < XCP_ASSIST_LOCKED_CLOSING_MIN_VREL_MPS
+    and dy <= XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M
+    and non_stationary_closing
+  )
   if allow_scale_alias:
     dd = min(dd_raw, abs((xd - XCP_TRAILER_OFFSET_M) - pd))
     max_dd = max(2.5, 0.12 * pd)
+  elif allow_closing_dd:
+    dd = dd_raw
+    max_dd = max(XCP_ASSIST_LOCKED_CLOSING_MIN_DD_M, XCP_ASSIST_LOCKED_CLOSING_DD_RATIO * pd)
   else:
     dd = dd_raw
     max_dd = max(2.5, 0.08 * pd)
@@ -174,9 +204,53 @@ def _xcp_target_qualifies(t: dict[str, Any], point, v_ego: float) -> tuple[bool,
   if pv <= -11.5 and xv <= pv + 1.0:
     if dv > 25.0:
       return False, math.inf
+  elif is_locked and dy <= XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M and (pv - xv) > 0.0 and non_stationary_closing:
+    if (pv - xv) > XCP_ASSIST_LOCKED_CLOSING_MAX_DV_MPS:
+      return False, math.inf
   elif dv > XCP_ASSIST_MAX_DV_MPS:
     return False, math.inf
   return True, dd * dd + (2.0 * dy) ** 2 + (0.5 * dv) ** 2
+
+
+class _XcpDopplerKF:
+  """Variable-dt 2D constant-acceleration Kalman filter tuned for clean Bosch-A XCP Doppler velocity."""
+
+  def __init__(self, v0: float, a0: float = 0.0, q_over_r: float = XCP_ASSIST_KF_JERK_Q_OVER_R):
+    self.q = float(q_over_r)
+    self.v = float(v0)
+    self.a = float(a0)
+    self.p00 = 0.3
+    self.p01 = 0.5
+    self.p11 = 4.0
+
+  def reset(self, v0: float, a0: float = 0.0) -> None:
+    self.v = float(v0)
+    self.a = float(a0)
+    self.p00 = 0.3
+    self.p01 = 0.5
+    self.p11 = 4.0
+
+  def update(self, v_meas: float, dt: float, *, max_neg_step: float | None = None) -> tuple[float, float]:
+    dt_clamped = max(XCP_ASSIST_KF_MIN_DT_S, min(XCP_ASSIST_KF_MAX_DT_S, float(dt)))
+    v_pred = self.v + self.a * dt_clamped
+    a_pred = self.a
+    q = self.q
+    p00 = self.p00 + 2.0 * dt_clamped * self.p01 + dt_clamped * dt_clamped * self.p11 + q * (dt_clamped ** 3) / 3.0
+    p01 = self.p01 + dt_clamped * self.p11 + q * (dt_clamped ** 2) / 2.0
+    p11 = self.p11 + q * dt_clamped
+    s = p00 + 1.0
+    k0 = p00 / s
+    k1 = p01 / s
+    meas = float(v_meas)
+    if max_neg_step is not None:
+      meas = max(meas, self.v - max_neg_step)
+    innov = meas - v_pred
+    self.v = v_pred + k0 * innov
+    self.a = a_pred + k1 * innov
+    self.p00 = (1.0 - k0) * p00
+    self.p01 = (1.0 - k0) * p01
+    self.p11 = max(1e-6, p11 - k1 * p01)
+    return self.v, self.a
 
 
 class Track:
@@ -196,6 +270,8 @@ class Track:
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
     self.base_kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
     self.base_cnt = 0
+    self.xcp_var_kf = _XcpDopplerKF(v_lead, 0.0)
+    self.xcp_last_kin_ts_ns: int = 0
     self.xcp_active = False
     self.xcp_hold_frames = 0
     self.last_xcp_match: dict[str, Any] | None = None
@@ -213,6 +289,7 @@ class Track:
     measurement_update: bool | None = None,
     *,
     kf_v_lead: float | None = None,
+    xcp_kf_state: tuple[float, float] | None = None,
   ):
     self.dRel = d_rel
     self.range_history.append(float(d_rel))
@@ -222,7 +299,9 @@ class Track:
     self.measured = measured
     if measurement_update is None:
       measurement_update = True
-    if measurement_update and self.cnt > 0:
+    if xcp_kf_state is not None:
+      self.kf.set_x([[float(xcp_kf_state[0])], [float(xcp_kf_state[1])]])
+    elif measurement_update and self.cnt > 0:
       self.kf.update(self.vLead if kf_v_lead is None else float(kf_v_lead))
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
@@ -309,7 +388,7 @@ def urgency_v_rel(track: Track | None) -> float | None:
 
 def held_vrel_condition(track: Track) -> bool:
   """The held-vRel range-slope condition on one track this cycle (see HELD_VREL_*). Reads the raw track, not a lead."""
-  if track.direct or track.dRel < HELD_VREL_MIN_D or track.vRel > HELD_VREL_CLOSING:
+  if track.direct or track.xcp_active or track.dRel < HELD_VREL_MIN_D or track.vRel > HELD_VREL_CLOSING:
     return False
   slope = range_slope(track.range_history)
   if math.isnan(slope) or slope < HELD_VREL_SLOPE_MIN or slope - track.vRel < HELD_VREL_DISAGREE:
@@ -618,7 +697,11 @@ class BoschALeadPolicy:
 
   @staticmethod
   def _match_xcp_targets_one_to_one(
-    points: dict[int, Any], xcp_snapshot: dict[str, Any] | None, v_ego: float
+    points: dict[int, Any],
+    xcp_snapshot: dict[str, Any] | None,
+    v_ego: float,
+    *,
+    locked_slot_keys: dict[int, tuple[Any, Any]] | None = None,
   ) -> dict[int, dict[str, Any]]:
     if xcp_snapshot is None or not points:
       return {}
@@ -649,8 +732,9 @@ class BoschALeadPolicy:
 
     pairs: list[tuple[int, float, int, int]] = []
     for identifier, point in points.items():
+      locked_sk = locked_slot_keys.get(identifier) if locked_slot_keys else None
       for ti, t in enumerate(candidates_list):
-        ok, cost = _xcp_target_qualifies(t, point, v_ego)
+        ok, cost = _xcp_target_qualifies(t, point, v_ego, locked_slot_key=locked_sk)
         if not ok:
           continue
         op_tid = t.get("op_track_id")
@@ -708,7 +792,20 @@ class BoschALeadPolicy:
     if now_ns <= 0:
       now_ns = time.monotonic_ns()
     xcp_snapshot = self._read_xcp_snapshot(now_ns, used_boot_clock=used_boot_clock) if self.xcp_assist else None
-    matches = self._match_xcp_targets_one_to_one(points, xcp_snapshot, self.v_ego) if xcp_snapshot is not None else {}
+    locked_slot_keys = (
+      {
+        ident: tr.xcp_slot_key
+        for ident, tr in self.tracks.items()
+        if tr.xcp_active and tr.xcp_slot_key is not None
+      }
+      if xcp_snapshot is not None
+      else None
+    )
+    matches = (
+      self._match_xcp_targets_one_to_one(points, xcp_snapshot, self.v_ego, locked_slot_keys=locked_slot_keys)
+      if xcp_snapshot is not None
+      else {}
+    )
     for identifier, point in points.items():
       v_lead_base = float(point.vRel + radar.v_ego_hist[0])
       measured_base = bool(point.deprecated.measured and fresh)
@@ -747,9 +844,12 @@ class BoschALeadPolicy:
           v_lead_raw = v_rel_raw + float(radar.v_ego_hist[0])
           handoff = (not track.xcp_active) or (track.xcp_slot_key != slot_key)
           if handoff:
-            track.kf.set_x([[float(v_lead_raw)], [float(track.base_kf.x[ACCEL][0]) if track.cnt > 0 else 0.0]])
+            init_a = float(track.base_kf.x[ACCEL][0]) if track.cnt > 0 else 0.0
+            track.xcp_var_kf.reset(v_lead_raw, init_a)
+            track.kf.set_x([[float(v_lead_raw)], [init_a]])
             track.xcp_slot_key = slot_key
             track.xcp_kin_sig = kin_sig
+            track.xcp_last_kin_ts_ns = kin_ts_int
             track.xcp_v_lead = float(v_lead_raw)
             track.xcp_active = True
             track.last_xcp_match = xcp_match
@@ -757,19 +857,30 @@ class BoschALeadPolicy:
             if track.cnt == 0 and measured_base:
               track.cnt = 1
           elif kin_sig != track.xcp_kin_sig:
-            cur_v_kf = float(track.kf.x[SPEED][0])
-            kf_input = max(float(v_lead_raw), cur_v_kf - XCP_ASSIST_MAX_STEP_DV_MPS)
+            if kin_ts_int > 0 and track.xcp_last_kin_ts_ns > 0 and kin_ts_int > track.xcp_last_kin_ts_ns:
+              dt_real = max(
+                XCP_ASSIST_KF_MIN_DT_S,
+                min(XCP_ASSIST_KF_MAX_DT_S, (kin_ts_int - track.xcp_last_kin_ts_ns) * 1e-9),
+              )
+            else:
+              dt_real = DT_MDL
+            max_neg_step = max(
+              XCP_ASSIST_MAX_STEP_DV_MPS,
+              min(XCP_ASSIST_MAX_STEP_DV_CAP_MPS, XCP_ASSIST_MAX_STEP_DECEL_MPS2 * dt_real),
+            )
+            vk, ak = track.xcp_var_kf.update(v_lead_raw, dt_real, max_neg_step=max_neg_step)
             track.xcp_kin_sig = kin_sig
+            track.xcp_last_kin_ts_ns = kin_ts_int
             track.xcp_v_lead = float(v_lead_raw)
             track.xcp_active = True
             track.last_xcp_match = xcp_match
-            track.update(point.dRel, point.yRel, v_rel_raw, v_lead_raw, measured_base, bool(fresh), kf_v_lead=kf_input)
+            track.update(point.dRel, point.yRel, v_rel_raw, v_lead_raw, measured_base, True, xcp_kf_state=(vk, ak))
           else:
             v_lead_hold = float(track.xcp_v_lead)
             v_rel_hold = v_lead_hold - float(radar.v_ego_hist[0])
             track.xcp_active = True
             track.last_xcp_match = xcp_match
-            track.update(point.dRel, point.yRel, v_rel_hold, v_lead_hold, measured_base, bool(fresh))
+            track.update(point.dRel, point.yRel, v_rel_hold, v_lead_hold, measured_base, False)
           a_base = float(track.base_kf.x[ACCEL][0]) if track.base_cnt > 0 else 0.0
           if a_base > -2.0 and track.aLeadK <= -2.0:
             track.aLeadK = XCP_ASSIST_LATCH_GUARD_ACCEL
@@ -780,6 +891,7 @@ class BoschALeadPolicy:
             track.last_xcp_match = None
             track.xcp_slot_key = None
             track.xcp_kin_sig = None
+            track.xcp_last_kin_ts_ns = 0
             track.update(point.dRel, point.yRel, point.vRel, v_lead_base, measured_base, False)
             if track.cnt == 0 and measured_base:
               track.cnt = 1
