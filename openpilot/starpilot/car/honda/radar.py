@@ -542,6 +542,15 @@ def get_lead(
   return lead_dict
 
 
+def _parse_ns_int(val: Any) -> int:
+  if val is None:
+    return 0
+  try:
+    return int(val)
+  except (TypeError, ValueError):
+    return 0
+
+
 class BoschALeadPolicy:
   def _reset_preferred_stale_evidence(self, lead_index: int, track_id: int = -1) -> None:
     self.preferred_stale_track_ids[lead_index] = track_id
@@ -835,20 +844,24 @@ class BoschALeadPolicy:
         xcp_match = matches.get(identifier)
         if xcp_match is not None:
           slot_key = (xcp_match.get("slot"), xcp_match.get("rtid", xcp_match.get("radar_track_id")))
-          kin_ts = xcp_match.get("kin_updated_ns")
-          if kin_ts is not None:
-            try:
-              kin_ts_int = int(kin_ts)
-            except (TypeError, ValueError):
-              kin_ts_int = 0
-          else:
-            kin_ts_int = 0
-          kin_sig = (slot_key, kin_ts_int) if kin_ts_int > 0 else (
-            slot_key, xcp_match.get("dRel_m"), xcp_match.get("vRel_mps"), xcp_match.get("ax_mps2")
+          kin_poll_ts_int = _parse_ns_int(xcp_match.get("kin_updated_ns"))
+          kin_chg_ts_int = _parse_ns_int(xcp_match.get("kin_changed_ns"))
+          kin_ts_int = kin_chg_ts_int if kin_chg_ts_int > 0 else kin_poll_ts_int
+          kin_sig = (
+            (slot_key, kin_chg_ts_int)
+            if kin_chg_ts_int > 0
+            else (slot_key, xcp_match.get("dRel_m"), xcp_match.get("vRel_mps"), xcp_match.get("ax_mps2"))
           )
           v_rel_raw = float(xcp_match["vRel_mps"])
           v_lead_raw = v_rel_raw + float(radar.v_ego_hist[0])
           handoff = (not track.xcp_active) or (track.xcp_slot_key != slot_key)
+          flat_heartbeat = (
+            not handoff
+            and kin_sig == track.xcp_kin_sig
+            and kin_poll_ts_int > 0
+            and track.xcp_last_kin_ts_ns > 0
+            and (kin_poll_ts_int - track.xcp_last_kin_ts_ns) >= int(XCP_ASSIST_KF_MAX_DT_S * 1e9)
+          )
           if handoff:
             init_a = float(track.base_kf.x[ACCEL][0]) if track.cnt > 0 else 0.0
             track.xcp_var_kf.reset(v_lead_raw, init_a)
@@ -862,11 +875,12 @@ class BoschALeadPolicy:
             track.update(point.dRel, point.yRel, v_rel_raw, v_lead_raw, measured_base, False)
             if track.cnt == 0 and measured_base:
               track.cnt = 1
-          elif kin_sig != track.xcp_kin_sig:
-            if kin_ts_int > 0 and track.xcp_last_kin_ts_ns > 0 and kin_ts_int > track.xcp_last_kin_ts_ns:
+          elif kin_sig != track.xcp_kin_sig or flat_heartbeat:
+            step_ts_int = kin_poll_ts_int if flat_heartbeat else kin_ts_int
+            if step_ts_int > 0 and track.xcp_last_kin_ts_ns > 0 and step_ts_int > track.xcp_last_kin_ts_ns:
               dt_real = max(
                 XCP_ASSIST_KF_MIN_DT_S,
-                min(XCP_ASSIST_KF_MAX_DT_S, (kin_ts_int - track.xcp_last_kin_ts_ns) * 1e-9),
+                min(XCP_ASSIST_KF_MAX_DT_S, (step_ts_int - track.xcp_last_kin_ts_ns) * 1e-9),
               )
             else:
               dt_real = DT_MDL
@@ -876,7 +890,7 @@ class BoschALeadPolicy:
             )
             vk, ak = track.xcp_var_kf.update(v_lead_raw, dt_real, max_neg_step=max_neg_step)
             track.xcp_kin_sig = kin_sig
-            track.xcp_last_kin_ts_ns = kin_ts_int
+            track.xcp_last_kin_ts_ns = step_ts_int
             track.xcp_v_lead = float(v_lead_raw)
             track.xcp_active = True
             track.last_xcp_match = xcp_match

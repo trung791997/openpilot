@@ -179,6 +179,8 @@ def _empty_slot_record() -> dict:
     "cls_conf": 0,
     "radar_track_id": 0,
     "kin_updated_ns": 0,
+    "kin_changed_ns": 0,
+    "kin_value_changes": 0,
     "lat_updated_ns": 0,
     "age_updated_ns": 0,
     "flags_updated_ns": 0,
@@ -385,10 +387,23 @@ class XcpRadarLogger:
     rec["updated_ns"] = now_ns
     rec["last_rtt_ns"] = rtt_ns
 
+    kin_changed = False
     if offset == 16 and size == 6:
-      rec["X_raw"] = int.from_bytes(data[0:2], "big", signed=True)
-      rec["Vx_raw"] = int.from_bytes(data[2:4], "big", signed=True)
-      rec["Ax_raw"] = int.from_bytes(data[4:6], "big", signed=True)
+      new_x = int.from_bytes(data[0:2], "big", signed=True)
+      new_vx = int.from_bytes(data[2:4], "big", signed=True)
+      new_ax = int.from_bytes(data[4:6], "big", signed=True)
+      if (
+        rec["kin_changed_ns"] == 0
+        or new_x != rec["X_raw"]
+        or new_vx != rec["Vx_raw"]
+        or new_ax != rec["Ax_raw"]
+      ):
+        kin_changed = True
+        rec["kin_changed_ns"] = now_ns
+        rec["kin_value_changes"] += 1
+      rec["X_raw"] = new_x
+      rec["Vx_raw"] = new_vx
+      rec["Ax_raw"] = new_ax
       rec["kin_updated_ns"] = now_ns
     elif offset == 22 and size == 6:
       rec["Y_raw"] = int.from_bytes(data[0:2], "big", signed=True)
@@ -410,6 +425,8 @@ class XcpRadarLogger:
       prev_age = rec["prev_age"]
       if slot in self.active_slots and prev_age is not None and new_age < prev_age:
         rec["radar_track_id"] = self._alloc_track_id_locked()
+        rec["kin_changed_ns"] = 0
+        rec["kin_value_changes"] = 0
       rec["age"] = new_age
       rec["prev_age"] = new_age
       rec["age_updated_ns"] = now_ns
@@ -451,6 +468,7 @@ class XcpRadarLogger:
     if (
       offset == 16
       and size == 6
+      and kin_changed
       and slot in self.active_slots
       and self._assist_shm_path is not None
       and self._assist_fast_publish_enabled
@@ -1145,6 +1163,8 @@ class XcpRadarLogger:
         "op_dRel": None,
         "op_match_dist_m": None,
         "kin_updated_ns": rec["kin_updated_ns"],
+        "kin_changed_ns": rec["kin_changed_ns"],
+        "kin_value_changes": rec["kin_value_changes"],
         "lat_updated_ns": rec["lat_updated_ns"],
         "age_updated_ns": rec["age_updated_ns"],
         "flags_updated_ns": rec["flags_updated_ns"],
@@ -1226,6 +1246,8 @@ class XcpRadarLogger:
           "ax_mps2": t["ax_mps2"],
           "kin_age_ms": t["kin_age_ms"],
           "kin_updated_ns": int(t.get("kin_updated_ns", 0)),
+          "kin_changed_ns": int(t.get("kin_changed_ns", 0)),
+          "kin_value_changes": int(t.get("kin_value_changes", 0)),
           "lat_valid": True,
           "trust_accel": t["trust_accel"],
           "op_track_id": t.get("op_track_id"),

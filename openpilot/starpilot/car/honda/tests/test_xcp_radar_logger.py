@@ -1112,3 +1112,92 @@ def test_fast_assist_shm_gated_by_param_and_skipped_on_card_loop_when_io_thread_
   logger_on.observe_can([], epoch_ns + 25_000_000, v_ego=15.0)
   assert publish_calls == 0
   logger_on.close()
+
+
+def test_kin_changed_ns_and_value_changes_counter_skip_duplicate_reads(monkeypatch, tmp_path):
+  import json
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 5, {"x": 30.0, "vx": -1.5, "ax": -1.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  ui_path = tmp_path / "xcp_radar_points.json"
+  assist_path = tmp_path / "xcp_radar_assist.json"
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, shm_path=ui_path, assist_shm_path=assist_path, assist_fast_publish=True)
+  t = _unlock_logger(logger, 3_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=12, dRel=30.0, yRel=0.1, vRel=-1.5)])
+
+  for _ in range(15):
+    logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 10_000_000, v_ego=15.0)
+    t += 15_000_000
+
+  epoch_ns = max(t, logger.last_log_ns + 60_000_000)
+  logger.observe_radar_tracks(rd, epoch_ns)
+  logger.observe_can([], epoch_ns, v_ego=15.0)
+  t0_meta = next(tgt for tgt in rows[-1]["targets"] if tgt["slot"] == 5)
+  chg0 = t0_meta["kin_changed_ns"]
+  cnt0 = t0_meta["kin_value_changes"]
+  assert chg0 > 0 and cnt0 >= 1
+
+  # Duplicate identical (16, 6) bytes 25 ms later (> 20 ms fast-SHM interval):
+  # kin_updated_ns advances, but kin_changed_ns/kin_value_changes hold and no 50 Hz SHM write fires.
+  t_dup = epoch_ns + 25_000_000
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 16, 6, t_dup - 5_000_000)
+  rep_dup = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger.observe_can([(t_dup, [(XCP_DTO, rep_dup, XCP_BUS)])], t_dup, v_ego=15.0)
+  rec = logger.slot_cache[5]
+  assert rec["kin_updated_ns"] == t_dup
+  assert rec["kin_changed_ns"] == chg0
+  assert rec["kin_value_changes"] == cnt0
+  assert logger._assist_shm_dirty is False
+  assert json.loads(assist_path.read_text())["mono_ns"] == epoch_ns
+
+  # Changed (16, 6) bytes at +40 ms: updates kin_changed_ns, increments counter, and publishes 50 Hz SHM.
+  t_chg = epoch_ns + 40_000_000
+  _write_slot(ram, 5, {"x": 29.8, "vx": -3.25, "ax": -3.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 36, "qual": 25, "cls": 85})
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 16, 6, t_chg - 5_000_000)
+  rep_chg = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger.observe_can([(t_chg, [(XCP_DTO, rep_chg, XCP_BUS)])], t_chg, v_ego=15.0)
+  assert rec["kin_updated_ns"] == t_chg
+  assert rec["kin_changed_ns"] == t_chg
+  assert rec["kin_value_changes"] == cnt0 + 1
+  assist_mid = json.loads(assist_path.read_text())
+  assert assist_mid["mono_ns"] == t_chg
+  assert assist_mid["tracks_by_op_id"]["12"]["kin_changed_ns"] == t_chg
+  assert assist_mid["tracks_by_op_id"]["12"]["kin_value_changes"] == cnt0 + 1
+
+  # Next 20 Hz log carries kin_changed_ns and kin_value_changes.
+  epoch2_ns = max(t_chg + 60_000_000, logger.last_log_ns + 60_000_000)
+  logger.observe_radar_tracks(rd, epoch2_ns)
+  logger.observe_can([], epoch2_ns, v_ego=15.0)
+  t2_meta = next(tgt for tgt in rows[-1]["targets"] if tgt["slot"] == 5)
+  assert t2_meta["kin_changed_ns"] == t_chg
+  assert t2_meta["kin_value_changes"] == cnt0 + 1
+
+  # Age rollover resets kin_changed_ns and kin_value_changes for the new track lifecycle.
+  t_roll = epoch2_ns + 10_000_000
+  _write_slot(ram, 5, {"x": 29.8, "vx": -3.25, "ax": -3.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 1, "qual": 25, "cls": 85})
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 2, 6, t_roll - 5_000_000)
+  rep_roll = b"\xFF" + bytes(ram[5 * STRIDE + 2 : 5 * STRIDE + 8])
+  logger.observe_can([(t_roll, [(XCP_DTO, rep_roll, XCP_BUS)])], t_roll, v_ego=15.0)
+  assert rec["kin_changed_ns"] == 0
+  assert rec["kin_value_changes"] == 0
+
+  t_after = t_roll + 15_000_000
+  with logger._lock:
+    logger.in_flight = ("F4", 5, 16, 6, t_after - 5_000_000)
+  rep_after = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger.observe_can([(t_after, [(XCP_DTO, rep_after, XCP_BUS)])], t_after, v_ego=15.0)
+  assert rec["kin_changed_ns"] == t_after
+  assert rec["kin_value_changes"] == 1
+  logger.close()

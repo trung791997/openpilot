@@ -644,3 +644,78 @@ def test_xcp_20ms_kf_step_cap_scales_to_0_15_mps():
   tr = rad.tracks[22]
   assert -0.10 < tr.kf.x[1][0] < 0.0
   assert tr.kf.x[0][0] > 19.95
+
+
+def test_xcp_kf_skips_duplicate_poll_values_and_decays_on_200ms_flat_heartbeat():
+  t0 = 110_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 20.0
+  rad.v_ego_hist.appendleft(20.0)
+  rr = SimpleNamespace(points=[_make_point(22, 35.0, 0.1, 0.0, measured=True)])
+
+  # Part A (kin_changed_ns present): duplicate polls advance kin_updated_ns without stepping KF;
+  # actual value change uses dt spanning the last kin_changed_ns.
+  base_t = {
+    "slot": 15, "rtid": 502, "op_track_id": 22, "stage": "measured", "kin_age_ms": 10.0,
+    "kin_updated_ns": t0, "kin_changed_ns": t0, "lat_valid": True, "ghost": False,
+    "flags": 0xE0C0, "age": 40, "dRel_m": 35.0, "yRel_m": 0.1, "vRel_mps": 0.0, "ax_mps2": 0.0,
+  }
+  pol.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"22": base_t}, "targets": [base_t]})
+  pol.update_tracks(_make_sm(t0, frame=1), rr, rad)
+
+  t_chg1 = t0 + 25_000_000
+  chg1 = dict(base_t, kin_updated_ns=t_chg1, kin_changed_ns=t_chg1, vRel_mps=-0.15, ax_mps2=-3.0)
+  pol.set_xcp_snapshot({"mono_ns": t_chg1, "tracks_by_op_id": {"22": chg1}, "targets": [chg1]})
+  pol.update_tracks(_make_sm(t_chg1, frame=2), rr, rad)
+  tr = rad.tracks[22]
+  v_after_chg1, a_after_chg1 = tr.kf.x[0][0], tr.kf.x[1][0]
+  assert a_after_chg1 < 0.0
+
+  # +25 ms duplicate poll: kin_updated_ns advances, kin_changed_ns unchanged -> KF must hold exact state.
+  t_dup = t0 + 50_000_000
+  dup1 = dict(chg1, kin_updated_ns=t_dup)
+  pol.set_xcp_snapshot({"mono_ns": t_dup, "tracks_by_op_id": {"22": dup1}, "targets": [dup1]})
+  pol.update_tracks(_make_sm(t_dup, frame=3), rr, rad)
+  assert tr.kf.x[0][0] == v_after_chg1
+  assert tr.kf.x[1][0] == a_after_chg1
+
+  # Next value change at +75 ms spans dt = 50 ms (from t_chg1) cleanly.
+  t_chg2 = t0 + 75_000_000
+  chg2 = dict(chg1, kin_updated_ns=t_chg2, kin_changed_ns=t_chg2, vRel_mps=-0.30, ax_mps2=-3.0)
+  pol.set_xcp_snapshot({"mono_ns": t_chg2, "tracks_by_op_id": {"22": chg2}, "targets": [chg2]})
+  pol.update_tracks(_make_sm(t_chg2, frame=4), rr, rad)
+  assert tr.kf.x[1][0] < a_after_chg1
+
+  # Part B (legacy payload without kin_changed_ns): build real -3.0 m/s^2 decel over 12 steps,
+  # verify duplicate (dRel, vRel, ax) holds over < 200 ms, then flat heartbeat at >= 200 ms decays toward 0.
+  pol_b = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad_b = _dummy_radar()
+  rad_b.v_ego = 20.0
+  rad_b.v_ego_hist.appendleft(20.0)
+  leg0 = {
+    "slot": 16, "rtid": 503, "op_track_id": 23, "stage": "measured", "kin_age_ms": 10.0,
+    "kin_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+    "dRel_m": 35.0, "yRel_m": 0.1, "vRel_mps": 0.0, "ax_mps2": 0.0,
+  }
+  rr_b = SimpleNamespace(points=[_make_point(23, 35.0, 0.1, 0.0, measured=True)])
+  for step in range(13):
+    ts_s = t0 + step * 50_000_000
+    leg_s = dict(leg0, kin_updated_ns=ts_s, vRel_mps=round(-0.15 * step, 3), ax_mps2=-3.0)
+    pol_b.set_xcp_snapshot({"mono_ns": ts_s, "tracks_by_op_id": {"23": leg_s}, "targets": [leg_s]})
+    pol_b.update_tracks(_make_sm(ts_s, frame=step + 1), rr_b, rad_b)
+
+  tr_b = rad_b.tracks[23]
+  v_brake, a_brake = tr_b.kf.x[0][0], tr_b.kf.x[1][0]
+  assert a_brake <= -2.0
+
+  leg_dup = dict(leg_s, kin_updated_ns=ts_s + 50_000_000)
+  pol_b.set_xcp_snapshot({"mono_ns": ts_s + 50_000_000, "tracks_by_op_id": {"23": leg_dup}, "targets": [leg_dup]})
+  pol_b.update_tracks(_make_sm(ts_s + 50_000_000, frame=14), rr_b, rad_b)
+  assert tr_b.kf.x[0][0] == v_brake
+  assert tr_b.kf.x[1][0] == a_brake
+
+  leg_flat = dict(leg_s, kin_updated_ns=ts_s + 200_000_000)
+  pol_b.set_xcp_snapshot({"mono_ns": ts_s + 200_000_000, "tracks_by_op_id": {"23": leg_flat}, "targets": [leg_flat]})
+  pol_b.update_tracks(_make_sm(ts_s + 200_000_000, frame=15), rr_b, rad_b)
+  assert tr_b.kf.x[1][0] > a_brake
