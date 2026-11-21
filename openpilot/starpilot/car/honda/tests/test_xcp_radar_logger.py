@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from opendbc.car.honda.values import HondaFlags
+from opendbc.car.honda.values import CAR, HondaFlags
 import openpilot.starpilot.car.honda.xcp_radar_logger as xcp_mod
 from openpilot.starpilot.car.honda.xcp_radar_logger import (
   NUM_SLOTS,
@@ -928,7 +928,8 @@ def test_match_openpilot_tracks_keeps_locked_closing_lead_and_railed_u11():
   matched2, lead2 = logger._match_openpilot_tracks(t_brake, op_tracks, v_ego=11.0)
   assert matched2 == [11] and lead2 == 11 and t_brake[0].get("op_track_id") == 34
 
-  # Stationary target or wide lateral dy >= 1.5 must NOT use the locked continuation window.
+  # Stationary target, wide lateral dy >= 1.5, zero yRel_m, or out-of-lane |yRel| > 1.5 must NOT use
+  # the locked continuation window.
   t_stat = [{"slot": 11, "dRel_m": 44.0, "yRel_m": -0.2, "vRel_mps": -11.0, "lat_updated_ns": 1}]
   matched3, _ = logger._match_openpilot_tracks(t_stat, op_tracks, v_ego=11.0)
   assert matched3 == []
@@ -937,6 +938,20 @@ def test_match_openpilot_tracks_keeps_locked_closing_lead_and_railed_u11():
   t_adj = [{"slot": 11, "dRel_m": 44.0, "yRel_m": 1.6, "vRel_mps": -3.5, "lat_updated_ns": 1}]
   matched4, _ = logger._match_openpilot_tracks(t_adj, op_tracks, v_ego=11.0)
   assert matched4 == []
+
+  op_y0 = [{"tid": 34, "dRel": 44.5, "yRel": 0.0, "vRel": 2.5}]
+  t_y0_acq = [{"slot": 11, "dRel_m": 44.5, "yRel_m": 0.1, "vRel_mps": 0.5, "lat_updated_ns": 1}]
+  logger._match_openpilot_tracks(t_y0_acq, op_y0, v_ego=11.0)
+  t_y0_brake = [{"slot": 11, "dRel_m": 44.0, "yRel_m": 0.0, "vRel_mps": -3.5, "lat_updated_ns": 1}]
+  matched5, _ = logger._match_openpilot_tracks(t_y0_brake, op_y0, v_ego=11.0)
+  assert matched5 == []
+
+  op_out = [{"tid": 35, "dRel": 44.5, "yRel": 1.6, "vRel": 2.5}]
+  t_out_acq = [{"slot": 12, "dRel_m": 44.5, "yRel_m": 1.6, "vRel_mps": 0.5, "lat_updated_ns": 1}]
+  logger._match_openpilot_tracks(t_out_acq, op_out, v_ego=11.0)
+  t_out_brake = [{"slot": 12, "dRel_m": 44.0, "yRel_m": 1.6, "vRel_mps": -3.5, "lat_updated_ns": 1}]
+  matched6, _ = logger._match_openpilot_tracks(t_out_brake, op_out, v_ego=11.0)
+  assert matched6 == []
   logger.close()
 
 
@@ -949,7 +964,7 @@ def test_fast_assist_shm_publishes_on_primary_lead_kin_arrival_rate_limited(monk
   ui_path = tmp_path / "xcp_radar_points.json"
   assist_path = tmp_path / "xcp_radar_assist.json"
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
-  logger = XcpRadarLogger(cp, shm_path=ui_path, assist_shm_path=assist_path)
+  logger = XcpRadarLogger(cp, shm_path=ui_path, assist_shm_path=assist_path, assist_fast_publish=True)
   t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
   rd = SimpleNamespace(points=[SimpleNamespace(trackId=12, dRel=30.0, yRel=0.1, vRel=-1.5)])
 
@@ -999,3 +1014,101 @@ def test_fast_assist_shm_publishes_on_primary_lead_kin_arrival_rate_limited(monk
   assert json.loads(assist_path.read_text())["mono_ns"] == t_mid
 
   logger.close()
+
+
+def test_fast_assist_shm_gated_by_param_and_skipped_on_card_loop_when_io_thread_active(monkeypatch, tmp_path):
+  import json
+
+  class _FakeParams:
+    def __init__(self, root):
+      self.root = root
+
+    def get_param_path(self, key: str) -> str:
+      return str(self.root / key)
+
+  _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 5, {"x": 30.0, "vx": -1.5, "ax": -1.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  params_dir = tmp_path / "params"
+  params_dir.mkdir()
+  (params_dir / "IsReleaseBranch").write_bytes(b"0")
+  (params_dir / "AlphaHondaXcpRadarAssist").write_bytes(b"0")
+  fake_params = _FakeParams(params_dir)
+
+  cp = SimpleNamespace(
+    brand="honda",
+    carFingerprint=CAR.HONDA_CIVIC_BOSCH,
+    flags=int(HondaFlags.BOSCH),
+    alternativeExperience=0,
+    openpilotLongitudinalControl=True,
+    pcmCruise=True,
+    radarUnavailable=False,
+    notCar=False,
+    passive=False,
+    dashcamOnly=False,
+  )
+
+  ui_off = tmp_path / "points_off.json"
+  assist_off = tmp_path / "assist_off.json"
+  logger_no_params = XcpRadarLogger(cp, shm_path=ui_off, assist_shm_path=assist_off)
+  assert logger_no_params._assist_fast_publish_enabled is False
+  logger_no_params.close()
+
+  logger_off = XcpRadarLogger(cp, params=fake_params, shm_path=ui_off, assist_shm_path=assist_off)
+  assert logger_off._assist_fast_publish_enabled is False
+
+  t = _unlock_logger(logger_off, 2_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=12, dRel=30.0, yRel=0.1, vRel=-1.5)])
+  for _ in range(15):
+    logger_off.observe_radar_tracks(rd, t)
+    sends = logger_off.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger_off.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 10_000_000, v_ego=15.0)
+    t += 15_000_000
+
+  # 20 Hz _write_ui_snapshot still runs for V-ASM side_sightings even when AlphaHondaXcpRadarAssist is Off.
+  assert assist_off.exists()
+  epoch_ns = max(t, logger_off.last_log_ns + 60_000_000)
+  logger_off.observe_radar_tracks(rd, epoch_ns)
+  logger_off.observe_can([], epoch_ns, v_ego=15.0)
+  assert json.loads(assist_off.read_text())["mono_ns"] == epoch_ns
+
+  # Mid-epoch F4 reply must NOT trigger 50 Hz fast-publish when assist toggle is Off.
+  t_mid = epoch_ns + 25_000_000
+  _write_slot(ram, 5, {"x": 29.7, "vx": -3.5, "ax": -3.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 36, "qual": 25, "cls": 85})
+  with logger_off._lock:
+    logger_off.in_flight = ("F4", 5, 16, 6, t_mid - 5_000_000)
+  rep_mid = b"\xFF" + bytes(ram[5 * STRIDE + 16 : 5 * STRIDE + 22])
+  logger_off.observe_can([(t_mid, [(XCP_DTO, rep_mid, XCP_BUS)])], t_mid, v_ego=15.0)
+  assert logger_off._assist_shm_dirty is False
+  assert json.loads(assist_off.read_text())["mono_ns"] == epoch_ns
+  logger_off.close()
+
+  # With AlphaHondaXcpRadarAssist=1, fast publish enables, and observe_can skips _maybe_publish_assist_shm
+  # whenever the dedicated IO thread owns fast publishing.
+  (params_dir / "AlphaHondaXcpRadarAssist").write_bytes(b"1")
+  logger_on = XcpRadarLogger(
+    cp,
+    params=fake_params,
+    shm_path=tmp_path / "points_on.json",
+    assist_shm_path=tmp_path / "assist_on.json",
+  )
+  assert logger_on._assist_fast_publish_enabled is True
+  publish_calls = 0
+
+  def _count_publish(ns: int) -> None:
+    nonlocal publish_calls
+    publish_calls += 1
+
+  monkeypatch.setattr(logger_on, "_maybe_publish_assist_shm", _count_publish)
+  logger_on.state = "READY"
+  logger_on._use_io_thread = True
+  logger_on._assist_shm_dirty = True
+  logger_on.observe_can([], epoch_ns + 25_000_000, v_ego=15.0)
+  assert publish_calls == 0
+  logger_on.close()

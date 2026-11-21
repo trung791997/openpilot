@@ -110,6 +110,7 @@ XCP_ASSIST_SCALE_ALIAS_MAX_DY_M = 0.75
 XCP_ASSIST_MAX_DV_MPS = 3.0
 XCP_ASSIST_LOCKED_CLOSING_MAX_DV_MPS = 8.0
 XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M = 1.0
+XCP_ASSIST_LOCKED_CLOSING_MAX_ABS_Y_M = 1.5
 XCP_ASSIST_LOCKED_CLOSING_MIN_DD_M = 3.0
 XCP_ASSIST_LOCKED_CLOSING_DD_RATIO = 0.12
 XCP_ASSIST_LOCKED_CLOSING_MIN_VREL_MPS = -1.0
@@ -117,7 +118,7 @@ XCP_ASSIST_LOCKED_MIN_VLEAD_MPS = -0.5
 XCP_ASSIST_KF_JERK_Q_OVER_R = 30.0
 XCP_ASSIST_KF_MIN_DT_S = 0.02
 XCP_ASSIST_KF_MAX_DT_S = 0.20
-XCP_ASSIST_MAX_STEP_DV_MPS = 0.35
+XCP_ASSIST_MAX_STEP_DV_MPS = 0.15
 XCP_ASSIST_MAX_STEP_DECEL_MPS2 = 7.0
 XCP_ASSIST_MAX_STEP_DV_CAP_MPS = 0.85
 XCP_ASSIST_LATCH_GUARD_ACCEL = -1.95
@@ -182,11 +183,16 @@ def _xcp_target_qualifies(
     op_confirmed or (pd >= XCP_ASSIST_SCALE_ALIAS_MIN_D_M and dy <= XCP_ASSIST_SCALE_ALIAS_MAX_DY_M and abs(py) <= 1.0)
   )
   non_stationary_closing = v_ego < 3.0 or (v_ego + xv) >= XCP_ASSIST_LOCKED_MIN_VLEAD_MPS
+  locked_lat_valid = (
+    xy != 0.0
+    and dy <= XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M
+    and abs(py) <= XCP_ASSIST_LOCKED_CLOSING_MAX_ABS_Y_M
+  )
   allow_closing_dd = (
     is_locked
     and xd < pd
     and xv < XCP_ASSIST_LOCKED_CLOSING_MIN_VREL_MPS
-    and dy <= XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M
+    and locked_lat_valid
     and non_stationary_closing
   )
   if allow_scale_alias:
@@ -204,7 +210,7 @@ def _xcp_target_qualifies(
   if pv <= -11.5 and xv <= pv + 1.0:
     if dv > 25.0:
       return False, math.inf
-  elif is_locked and dy <= XCP_ASSIST_LOCKED_CLOSING_MAX_DY_M and (pv - xv) > 0.0 and non_stationary_closing:
+  elif is_locked and locked_lat_valid and (pv - xv) > 0.0 and non_stationary_closing:
     if (pv - xv) > XCP_ASSIST_LOCKED_CLOSING_MAX_DV_MPS:
       return False, math.inf
   elif dv > XCP_ASSIST_MAX_DV_MPS:

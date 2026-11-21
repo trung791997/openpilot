@@ -59,6 +59,7 @@ MEASURED_MAX_KIN_AGE_NS = 200_000_000  # 200 ms freshness ceiling for stage=='me
 ASSIST_SHM_MIN_INTERVAL_NS = 20_000_000  # 50 Hz max assist-only SHM publish on primary-lead kin arrival
 OP_MATCH_LOCKED_CLOSING_MAX_DV_MPS = 8.0
 OP_MATCH_LOCKED_CLOSING_MAX_DY_M = 1.5
+OP_MATCH_LOCKED_CLOSING_MAX_ABS_Y_M = 1.5
 OP_MATCH_LOCKED_MIN_VLEAD_MPS = -0.5
 ARRAY_B_TRAILER_OFFSET_M = 434.0 / 128.0  # 3.390625 m A150 Array B -> Array A range offset
 
@@ -197,9 +198,19 @@ class XcpRadarLogger:
     params=None,
     shm_path: Path | None = XCP_UI_SHM_PATH,
     assist_shm_path: Path | None | object = _DEFAULT_ASSIST_SHM_PATH,
+    assist_fast_publish: bool | None = None,
     probe_wayb: bool | None = None,
   ) -> None:
-    del params
+    if assist_fast_publish is not None:
+      self._assist_fast_publish_enabled = bool(assist_fast_publish)
+    elif params is not None:
+      try:
+        from openpilot.starpilot.car.honda.xcp_radar_assist import enabled as xcp_assist_enabled
+        self._assist_fast_publish_enabled = bool(xcp_assist_enabled(params, CP))
+      except Exception:
+        self._assist_fast_publish_enabled = False
+    else:
+      self._assist_fast_publish_enabled = False
     self.enabled = False
     self.state = "DISABLED"
     self.in_flight = None  # (cmd_type, slot, offset, size, sent_ns)
@@ -437,7 +448,13 @@ class XcpRadarLogger:
         self._init_queued.add(task)
         self._init_queue.append(task)
 
-    if offset == 16 and size == 6 and slot in self.active_slots and self._assist_shm_path is not None:
+    if (
+      offset == 16
+      and size == 6
+      and slot in self.active_slots
+      and self._assist_shm_path is not None
+      and self._assist_fast_publish_enabled
+    ):
       if (self._op_matched_slots and slot == self._op_matched_slots[0]) or slot in self._select_priority_slots_locked()[:1]:
         self._assist_shm_dirty = True
 
@@ -1032,6 +1049,8 @@ class XcpRadarLogger:
             prev_matched_same
             and not is_stationary
             and (v_ego < 3.0 or (v_ego + t["vRel_mps"]) >= OP_MATCH_LOCKED_MIN_VLEAD_MPS)
+            and t["yRel_m"] != 0.0
+            and abs(o["yRel"]) <= OP_MATCH_LOCKED_CLOSING_MAX_ABS_Y_M
             and dy < OP_MATCH_LOCKED_CLOSING_MAX_DY_M
             and 0.0 < closing_lag <= OP_MATCH_LOCKED_CLOSING_MAX_DV_MPS
           )
@@ -1226,6 +1245,7 @@ class XcpRadarLogger:
     with self._lock:
       if (
         self._assist_shm_path is None
+        or not self._assist_fast_publish_enabled
         or self.state != "READY"
         or not self._assist_shm_dirty
         or (now_ns - self._last_assist_shm_ns) < ASSIST_SHM_MIN_INTERVAL_NS
@@ -1292,7 +1312,8 @@ class XcpRadarLogger:
               if src == XCP_BUS and addr == XCP_DTO:
                 self._process_dto_locked(bytes(dat), now_ns)
       self._maybe_log_20hz(now_ns)
-      self._maybe_publish_assist_shm(now_ns)
+      if not self._use_io_thread:
+        self._maybe_publish_assist_shm(now_ns)
     except Exception:
       pass
 

@@ -554,3 +554,93 @@ def test_xcp_active_track_skips_held_vrel_slope_bound():
   for step in range(20):
     pol_off.update_tracks(_make_sm(t0 + step * 50_000_000, frame=step + 1), rr, rad_off)
   assert rad_off.tracks[22].held_vrel_cycles > 0
+
+
+def test_xcp_locked_closing_requires_nonzero_yrel_and_inlane_py():
+  t0 = 90_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 14.0
+  rad.v_ego_hist.appendleft(14.0)
+
+  # Case A: Lock onto valid target, then send yRel_m == 0.0 (even with lat_valid=True and py == 0.0).
+  # Relaxed dv > 3.0 and relaxed closing dd > 0.08*pd must be rejected, while normal dv <= 3.0 still qualifies.
+  t_lock = {
+    "slot": 11, "rtid": 781, "op_track_id": 34, "stage": "measured", "kin_age_ms": 15.0,
+    "kin_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+    "dRel_m": 40.0, "yRel_m": 0.1, "vRel_mps": -1.0, "ax_mps2": -1.0,
+  }
+  rr_a = SimpleNamespace(points=[_make_point(34, 40.0, 0.0, -1.0, measured=True)])
+  pol.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"34": t_lock}, "targets": [t_lock]})
+  pol.update_tracks(_make_sm(t0, frame=1), rr_a, rad)
+  assert rad.tracks[34].xcp_active
+
+  t_y0_dv = dict(t_lock, kin_updated_ns=t0 + 50_000_000, yRel_m=0.0, vRel_mps=-6.0)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 50_000_000, "tracks_by_op_id": {"34": t_y0_dv}, "targets": [t_y0_dv]})
+  pol.update_tracks(_make_sm(t0 + 50_000_000, frame=2), rr_a, rad)
+  assert not rad.tracks[34].xcp_active
+
+  # Re-lock, then send yRel_m == 0.0 with closing dd = 3.8 (> 0.08*40 = 3.2) and dv = 1.0 (<= 3.0).
+  pol.set_xcp_snapshot({
+    "mono_ns": t0 + 100_000_000,
+    "tracks_by_op_id": {"34": dict(t_lock, kin_updated_ns=t0 + 100_000_000)},
+    "targets": [dict(t_lock, kin_updated_ns=t0 + 100_000_000)],
+  })
+  pol.update_tracks(_make_sm(t0 + 100_000_000, frame=3), rr_a, rad)
+  assert rad.tracks[34].xcp_active
+  t_y0_dd = dict(t_lock, kin_updated_ns=t0 + 150_000_000, yRel_m=0.0, dRel_m=36.2, vRel_mps=-2.0)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 150_000_000, "tracks_by_op_id": {"34": t_y0_dd}, "targets": [t_y0_dd]})
+  pol.update_tracks(_make_sm(t0 + 150_000_000, frame=4), rr_a, rad)
+  assert not rad.tracks[34].xcp_active
+
+  # Normal dv <= 3.0 and dd <= 2.5 with yRel_m == 0.0 + lat_valid=True still qualifies cleanly.
+  t_y0_ok = dict(t_lock, kin_updated_ns=t0 + 200_000_000, yRel_m=0.0, dRel_m=39.5, vRel_mps=-2.0)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 200_000_000, "tracks_by_op_id": {"34": t_y0_ok}, "targets": [t_y0_ok]})
+  pol.update_tracks(_make_sm(t0 + 200_000_000, frame=5), rr_a, rad)
+  assert rad.tracks[34].xcp_active and rad.tracks[34].vRel == -2.0
+
+  # Case B: Out-of-lane py (abs(py) = 1.7 > 1.5, with matching xy = 1.7) must block relaxed dv/dd branches.
+  pol_b = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad_b = _dummy_radar()
+  rad_b.v_ego = 14.0
+  rad_b.v_ego_hist.appendleft(14.0)
+  rr_b = SimpleNamespace(points=[_make_point(35, 40.0, 1.7, -1.0, measured=True)])
+  t_b_lock = {
+    "slot": 12, "rtid": 782, "op_track_id": 35, "stage": "measured", "kin_age_ms": 15.0,
+    "kin_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+    "dRel_m": 40.0, "yRel_m": 1.7, "vRel_mps": -1.0, "ax_mps2": -1.0,
+  }
+  pol_b.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"35": t_b_lock}, "targets": [t_b_lock]})
+  pol_b.update_tracks(_make_sm(t0, frame=1), rr_b, rad_b)
+  assert rad_b.tracks[35].xcp_active
+
+  t_b_dv = dict(t_b_lock, kin_updated_ns=t0 + 50_000_000, vRel_mps=-6.0)
+  pol_b.set_xcp_snapshot({"mono_ns": t0 + 50_000_000, "tracks_by_op_id": {"35": t_b_dv}, "targets": [t_b_dv]})
+  pol_b.update_tracks(_make_sm(t0 + 50_000_000, frame=2), rr_b, rad_b)
+  assert not rad_b.tracks[35].xcp_active
+
+
+def test_xcp_20ms_kf_step_cap_scales_to_0_15_mps():
+  t0 = 100_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 20.0
+  rad.v_ego_hist.appendleft(20.0)
+
+  t_init = {
+    "slot": 15, "rtid": 501, "op_track_id": 22, "stage": "measured", "kin_age_ms": 10.0,
+    "kin_updated_ns": t0, "lat_valid": True, "ghost": False, "flags": 0xE0C0, "age": 40,
+    "dRel_m": 35.0, "yRel_m": 0.1, "vRel_mps": 0.0, "ax_mps2": 0.0,
+  }
+  rr = SimpleNamespace(points=[_make_point(22, 35.0, 0.1, 0.0, measured=True)])
+  pol.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"22": t_init}, "targets": [t_init]})
+  pol.update_tracks(_make_sm(t0, frame=1), rr, rad)
+  assert rad.tracks[22].xcp_active
+
+  # 20 ms later with a -2.0 m/s jump: max_neg_step must cap at 0.15 m/s (7.5 m/s^2), not 0.35 m/s.
+  t_20ms = dict(t_init, kin_updated_ns=t0 + 20_000_000, vRel_mps=-2.0)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 20_000_000, "tracks_by_op_id": {"22": t_20ms}, "targets": [t_20ms]})
+  pol.update_tracks(_make_sm(t0 + 20_000_000, frame=2), rr, rad)
+  tr = rad.tracks[22]
+  assert -0.10 < tr.kf.x[1][0] < 0.0
+  assert tr.kf.x[0][0] > 19.95
