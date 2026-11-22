@@ -868,7 +868,8 @@ class BoschALeadPolicy:
             track.kf.set_x([[float(v_lead_raw)], [init_a]])
             track.xcp_slot_key = slot_key
             track.xcp_kin_sig = kin_sig
-            track.xcp_last_kin_ts_ns = kin_ts_int
+            # seeded now: an old kin_changed_ns here would fire a dt=0.2 flat heartbeat next cycle and decay init_a
+            track.xcp_last_kin_ts_ns = max(kin_poll_ts_int, kin_ts_int)
             track.xcp_v_lead = float(v_lead_raw)
             track.xcp_active = True
             track.last_xcp_match = xcp_match

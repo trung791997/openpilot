@@ -719,3 +719,29 @@ def test_xcp_kf_skips_duplicate_poll_values_and_decays_on_200ms_flat_heartbeat()
   pol_b.set_xcp_snapshot({"mono_ns": ts_s + 200_000_000, "tracks_by_op_id": {"23": leg_flat}, "targets": [leg_flat]})
   pol_b.update_tracks(_make_sm(ts_s + 200_000_000, frame=15), rr_b, rad_b)
   assert tr_b.kf.x[1][0] > a_brake
+
+
+def test_xcp_handoff_onto_flat_slot_does_not_heartbeat_next_cycle():
+  # Handoff onto a slot whose kin_changed_ns is 500 ms old: the next poll (+50 ms, same values) must hold, not step.
+  t0 = 120_000_000_000
+  pol = BoschALeadPolicy(xcp_assist=True, xcp_path=None)
+  rad = _dummy_radar()
+  rad.v_ego = 20.0
+  rad.v_ego_hist.appendleft(20.0)
+  rr = SimpleNamespace(points=[_make_point(24, 30.0, 0.1, -1.0, measured=True)])
+  m = {
+    "slot": 17, "rtid": 504, "op_track_id": 24, "stage": "measured", "kin_age_ms": 10.0,
+    "kin_updated_ns": t0, "kin_changed_ns": t0 - 500_000_000, "lat_valid": True, "ghost": False,
+    "flags": 0xE0C0, "age": 40, "dRel_m": 30.0, "yRel_m": 0.1, "vRel_mps": -1.0, "ax_mps2": -2.0,
+  }
+  pol.set_xcp_snapshot({"mono_ns": t0, "tracks_by_op_id": {"24": m}, "targets": [m]})
+  pol.update_tracks(_make_sm(t0, frame=1), rr, rad)
+  tr = rad.tracks[24]
+  assert tr.xcp_last_kin_ts_ns == t0
+  state = (tr.kf.x[0][0], tr.kf.x[1][0])
+
+  m2 = dict(m, kin_updated_ns=t0 + 50_000_000)
+  pol.set_xcp_snapshot({"mono_ns": t0 + 50_000_000, "tracks_by_op_id": {"24": m2}, "targets": [m2]})
+  pol.update_tracks(_make_sm(t0 + 50_000_000, frame=2), rr, rad)
+  assert (tr.kf.x[0][0], tr.kf.x[1][0]) == state
+  assert tr.xcp_last_kin_ts_ns == t0

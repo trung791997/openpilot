@@ -112,7 +112,8 @@ def _boot_minus_mono_ns() -> int:
 
 def _write_atomic_json(path: Path, data: dict) -> None:
   payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
-  tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+  # per thread: the IO thread and card's thread both write the same paths
+  tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
   tmp.write_bytes(payload)
   os.replace(tmp, path)
 
