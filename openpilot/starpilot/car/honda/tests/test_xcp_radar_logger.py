@@ -1602,6 +1602,7 @@ def test_cutin_prio1_outranks_far_inpath_preempts_near_moving_and_yields_wayb(mo
 
   wayb_p0_reads = 0
   probe: list[float] = []  # true per-tick kin age of cut-in slot 7 (ms), independent of snapshot cadence
+  lead_probe: list[float] = []  # true per-tick kin age of primary lead slot 2 (ms)
   for i in range(180):  # 3.6 s at 20 ms RTT
     if i >= 15:
       e2e.observe_radar_tracks(rd, t)
@@ -1627,6 +1628,7 @@ def test_cutin_prio1_outranks_far_inpath_preempts_near_moving_and_yields_wayb(mo
     if t >= t_unlock + 1_200_000_000:
       with e2e._lock:
         probe.append((t - e2e.slot_cache[7]["kin_updated_ns"]) / 1e6)
+        lead_probe.append((t - e2e.slot_cache[2]["kin_updated_ns"]) / 1e6)
     t += 20_000_000
 
   assert wayb_p0_reads >= 3
@@ -1634,18 +1636,16 @@ def test_cutin_prio1_outranks_far_inpath_preempts_near_moving_and_yields_wayb(mo
   assert len(post) >= 40
   assert all(r["lead"] is not None and r["lead"]["slot"] == 2 and r["lead"]["stage"] == "measured" for r in post)
   assert max(r["lead"]["kin_age_ms"] for r in post) <= 120.0
+  assert max(lead_probe) <= 120.0
   cutin_targets = [next((tgt for tgt in r["targets"] if tgt["slot"] == 7), None) for r in post]
   assert all(tgt is not None for tgt in cutin_targets)
   cutin_ka = sorted(tgt["kin_age_ms"] for tgt in cutin_targets if tgt is not None)
   # Anti-starvation fair share keeps competing near_moving_others alive (tested above) while
-  # direct Way B yield + meta ordering hold cut-in p50 <= 140 ms (vs ~660 ms prior).
+  # direct Way B yield + CUTIN_URGENT_KIN_NS floor hold cut-in p50 <= 140 ms and true per-tick max <= 400 ms.
   assert cutin_ka[len(cutin_ka) // 2] <= 140.0
   assert sum(1 for ka in cutin_ka if ka > 200.0) <= 12
-  # KNOWN GAP (2026-11-23): the old <= 400 ms max only held because the 18 Hz gate sampled every 3rd tick.
-  # Per-tick truth is max ~681 ms (pre-patch-2 scheduler: 1601 ms): init-queue reads for newly found
-  # slots 12-14 plus primary-lead meta preempt cut-in prio[1]. Regression guard at 700 ms until fixed; target 400.
-  assert cutin_ka[-1] <= 700.0
-  assert max(probe) <= 700.0
+  assert cutin_ka[-1] <= 400.0
+  assert max(probe) <= 400.0
   e2e.close()
 
 

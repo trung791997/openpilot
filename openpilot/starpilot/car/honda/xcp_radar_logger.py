@@ -60,6 +60,15 @@ CUTIN_VY_THRESH_RAW = round(0.3 * 256)  # 0.3 m/s lateral velocity tie-breaker f
 # cut-in kin_age >= 140 ms keeps WAYB at 8.82/s while cutting Group 2 >200 ms from 34.40% to 12.16%
 # and active cut-in >200 ms from 33.57% to 14.10%, without starving other near moving lanes.
 CUTIN_WAYB_YIELD_NS = 140_000_000
+# Hard urgent kinematic ceiling for an active CAN-matched cut-in candidate (prio_slots[1]) above
+# prio_slots[0] low-urgency meta/lat/qual, inactive slot probing, and new-slot init bursts.
+# Evidence: e2e 20 ms RTT unit probe hit 681 ms (init-queue bursts on slots 12-14 + prio[0]
+# meta/lat/qual); 280 ms preserves fair-share s6/s9 >= 10 lat reads in
+# test_cutin_lateral_y_vy_prioritized_over_qual_on_adjacent_cars while bounding per-tick e2e
+# max kin_age to 281 ms (lead max 1 ms) and on route 00000105--c4d0cd8039 offline sim reduces
+# op_lead >200 ms from 0.25% to 0.14%, xcp_fallback >200 ms from 0.26% to 0.11%, and Group 2
+# >200 ms from 15.46% to 9.77% (p95 517.1 -> 249.9 ms) without regressing near_moving.
+CUTIN_URGENT_KIN_NS = 280_000_000
 STATIONARY_IN_PATH_Y_RAW = 384        # ±3.0 m fast age < 3 refresh for oncoming standing traffic
 STATIONARY_INIT_YIELD_READS = 8       # yield 1 read per 8 non-lead cycles to init waiting stopped slots without starving adjacent lanes
 STATIONARY_MAX_STALE_NS = 3_000_000_000
@@ -964,7 +973,7 @@ class XcpRadarLogger:
     prio_slots = self._select_priority_slots_locked()
     prio_set = set(prio_slots)
 
-    # Primary lead (prio_slots[0]) sits strictly above init queue and inactive probing
+    # Primary lead (prio_slots[0]) urgent tasks stay strictly at the top
     if prio_slots:
       s = prio_slots[0]
       rec = self.slot_cache[s]
@@ -974,6 +983,18 @@ class XcpRadarLogger:
         return (s, 2, 6)
       if rec["flags_updated_ns"] == 0:
         return (s, 106, 2)
+
+    # Bound active near cut-in candidate (prio_slots[1]) kinematic age ahead of primary meta/lat/qual,
+    # inactive probing, and new-slot init bursts so multi-slot discovery cannot push cut-in >400 ms.
+    if len(prio_slots) > 1 and self._is_near_cutin_candidate_locked(prio_slots[1]):
+      cutin_slot = prio_slots[1]
+      if now_ns - self.slot_cache[cutin_slot]["kin_updated_ns"] >= CUTIN_URGENT_KIN_NS:
+        return (cutin_slot, 16, 6)
+
+    # Remaining primary lead (prio_slots[0]) cadence still sits above inactive probing and init queue
+    if prio_slots:
+      s = prio_slots[0]
+      rec = self.slot_cache[s]
       if now_ns - max(rec["age_updated_ns"], rec["flags_updated_ns"]) >= LEAD_META_INTERVAL_NS:
         return (s, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (s, 106, 2)
       if now_ns - rec["lat_updated_ns"] >= LEAD_LAT_INTERVAL_NS:
