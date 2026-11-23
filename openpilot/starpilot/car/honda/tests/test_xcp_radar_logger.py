@@ -527,17 +527,17 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
 
   assert not any(name.startswith("WAYB_PTR_") for name in dir(xcp_mod))
   assert not hasattr(xcp_mod, "WAYB_SEL_CAM_OFFSET")
+  assert not hasattr(xcp_mod, "WAYB_P_WIN_START")
+  assert not hasattr(xcp_mod, "WAYB_T1_DUMP_CHUNK_SIZE")
   t1_base = 0x40032AEC
   out18_base = 0x4003681C
   p_base = 0x400397FC
-  p_win_start = 0x400397DC
   t1_slot = 7
   assert xcp_mod.WAYB_DEFAULT_T1_BASE == t1_base
   assert xcp_mod.WAYB_DEFAULT_OUT18_BASE == out18_base
   assert xcp_mod.WAYB_DEFAULT_P_BASE == p_base
-  assert xcp_mod.WAYB_P_WIN_START == p_win_start
 
-  # Mock bounded A150 SRAM for P (0x400397FC), P-window (0x400397DC..0x400398DE), T1[7], and OUT18[0..31]+16.
+  # Mock bounded A150 SRAM for P (0x400397FC), core T1[7], and OUT18[0..31]+16.
   t1_slot7 = bytearray(bytes((i & 0xFF) for i in range(104)))
   t1_slot7[24:30] = (
     int(round(32.0 * 128)).to_bytes(2, "big", signed=True)
@@ -548,7 +548,6 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
   t1_slot7[86:92] = (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 4])
   out18_table = {s: bytes([0, 0]) for s in range(32)}
   out18_table[t1_slot] = bytes([22, 0x03])
-  p_win_mem = bytes(((i + 0x10) & 0xFF) for i in range(37 * 7))
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
   logger = XcpRadarLogger(cp, probe_wayb=True)
@@ -576,13 +575,11 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
         rep = b"\xFF" + bytes([0x00, 0x01, 0x00, 0x02, 5, t1_slot, 0])
       elif (t1_base + 104 * t1_slot) <= addr and (addr + sz) <= (t1_base + 104 * (t1_slot + 1)):
         off = addr - (t1_base + 104 * t1_slot)
+        assert (off, sz) in ((24, 6), (40, 4), (86, 6))
         rep = b"\xFF" + bytes(t1_slot7[off : off + sz])
       elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
         s = (addr - out18_base) // 18
         rep = b"\xFF" + out18_table[s]
-      elif sz == 7 and p_win_start <= addr and (addr + sz) <= p_win_start + len(p_win_mem) and ((addr - p_win_start) % 7) == 0:
-        off = addr - p_win_start
-        rep = b"\xFF" + p_win_mem[off : off + sz]
       else:
         raise AssertionError(f"Unexpected XCP probe address {addr:#x} size={sz}")
       logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
@@ -597,6 +594,7 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
   assert wb is not None
   assert "ptrs_raw" not in wb
   assert "sel_cam_id" not in wb and "sel_flags" not in wb and "sel_state" not in wb
+  assert "p_win" not in wb and "t1_dump" not in wb
   assert wb["t1_base"] == hex(t1_base)
   assert wb["out18_base"] == hex(out18_base)
   assert wb["p_base"] == hex(p_base)
@@ -611,11 +609,6 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
   assert wb["out18_cam_id"] == 22
   assert wb["out18_cam_flags"] == 0x03
   assert len(wb["out18_scan"]) == 4
-  assert len(wb["p_win"]) == 2
-  assert all(len(bytes.fromhex(hx)) == 7 for _, hx in wb["p_win"])
-  td_slot, td_off, td_hex = wb["t1_dump"]
-  assert td_slot == t1_slot
-  assert len(bytes.fromhex(td_hex)) == min(7, 104 - td_off)
   assert wb["last_err"] is None
   assert wb["last_err_addr"] is None
 
@@ -627,7 +620,6 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
 
   t1_base = 0x40032AEC
   out18_base = 0x4003681C
-  p_win_start = 0x400397DC
   slot0_t1 = bytes(104)
 
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
@@ -663,6 +655,7 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
         p0_round += 1
       elif t1_base <= addr and (addr + sz) <= t1_base + 104:
         off = addr - t1_base
+        assert (off, sz) in ((24, 6), (40, 4), (86, 6))
         if off == 24:
           seen_slot0_t1 += 1
         rep = b"\xFF" + slot0_t1[off : off + sz]
@@ -670,8 +663,6 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
         if addr == out18_base + 16:
           seen_slot0_out18 += 1
         rep = b"\xFF" + bytes(2)
-      elif sz == 7 and p_win_start <= addr and (addr + sz) <= p_win_start + 37 * 7 and ((addr - p_win_start) % 7) == 0:
-        rep = b"\xFF" + bytes(7)
       else:
         raise AssertionError(f"Out-of-bounds or unexpected Way B address {addr:#x} size={sz}")
       logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
@@ -716,14 +707,15 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
   wb2 = rows[-1].get("wayb_probe")
   assert wb2 is not None and wb2["last_err"] == "fe22" and wb2["last_err_addr"] == "0x400397fe" and wb2["updated_ns"] > 0
 
-  # Verify 0xFE error on first p_win chunk does not block core/scan/dump reads or stall next round's cursor
+  # Verify 0xFE error on an out18_scan read (o18s:1) drops only the rest of round 1 and advances cursor in round 2
   rows.clear()
   logger3 = XcpRadarLogger(cp, probe_wayb=True)
   t3 = _unlock_logger(logger3, 1_000_000_000, v_ego=15.0)
-  pwin_seen_round2: list[int] = []
+  p0_count = 0
+  r1_out18_slots: list[int] = []
+  r2_out18_slots: list[int] = []
   saw_r1_core = False
-  saw_r1_scan = False
-  saw_r1_dump = False
+  scan_err_addr = out18_base + 18 * 1 + 16  # 0x4003683e (o18s:1)
   for _ in range(95):  # 1.9 s -> completes rounds 1 and 2 before round 3 starts at +2.0 s
     sends = logger3.next_can_sends(t3)
     if sends:
@@ -733,34 +725,35 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
       if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
         rep = b"\xFF" + bytes(ram[addr - REC0 : addr - REC0 + sz])
       elif addr == 0x400397FE and sz == 7:
+        p0_count += 1
         rep = b"\xFF" + bytes([0, 0, 0, 0, 0, 255, 0])
       elif t1_base <= addr and (addr + sz) <= t1_base + 104:
         off = addr - t1_base
-        if off == 24:
+        assert (off, sz) in ((24, 6), (40, 4), (86, 6))
+        if p0_count == 1 and off == 24:
           saw_r1_core = True
-        if off == 0 and sz == 7:
-          saw_r1_dump = True
         rep = b"\xFF" + slot0_t1[off : off + sz]
       elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
-        if addr != out18_base + 16:
-          saw_r1_scan = True
-        rep = b"\xFF" + bytes(2)
-      elif addr == p_win_start and sz == 7:
-        rep = b"\xFE\x22"
-      elif sz == 7 and p_win_start < addr and (addr + sz) <= p_win_start + 37 * 7 and ((addr - p_win_start) % 7) == 0:
-        pwin_seen_round2.append(addr)
-        rep = b"\xFF" + bytes(7)
+        s = (addr - out18_base) // 18
+        if p0_count == 1:
+          r1_out18_slots.append(s)
+        elif p0_count == 2:
+          r2_out18_slots.append(s)
+        rep = b"\xFE\x22" if addr == scan_err_addr else b"\xFF" + bytes(2)
       else:
         raise AssertionError(f"Unexpected address {addr:#x} size={sz}")
       logger3.observe_can([(t3, [(XCP_DTO, rep, XCP_BUS)])], t3 + 19_000_000, v_ego=15.0)
     t3 += 20_000_000
   assert logger3.state == "READY"
+  assert len(logger3._wayb_queue) == 0
   logger3.close()
-  assert saw_r1_core and saw_r1_scan and saw_r1_dump
-  assert pwin_seen_round2 == [0x400397EA, 0x400397F1]
+  assert p0_count == 2
+  assert saw_r1_core
+  assert r1_out18_slots == [0, 0, 1]  # core slot 0 + o18s:0 + o18s:1 (0xFE drops o18s:2..3)
+  assert r2_out18_slots == [0, 4, 5, 6, 7]  # core slot 0 + o18s:4..7
   wb3 = rows[-1].get("wayb_probe")
-  assert wb3 is not None and wb3["last_err"] == "fe22" and wb3["last_err_addr"] == "0x400397dc"
-  assert [a for a, _ in wb3["p_win"]] == ["0x400397ea", "0x400397f1"]
+  assert wb3 is not None and wb3["last_err"] == "fe22" and wb3["last_err_addr"] == hex(scan_err_addr)
+  assert [s for s, _, _ in wb3["out18_scan"]] == [4, 5, 6, 7]
 
 
 def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monkeypatch):
@@ -770,7 +763,6 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
 
   t1_base = 0x40032AEC
   out18_base = 0x4003681C
-  p_win_start = 0x400397DC
   lead_slot = 13
 
   t1_tables: dict[int, bytearray] = {s: bytearray(104) for s in range(32)}
@@ -808,12 +800,10 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
       elif t1_base <= addr and (addr + sz) <= t1_base + 32 * 104:
         s = (addr - t1_base) // 104
         off = (addr - t1_base) % 104
-        assert off + sz <= 104
+        assert (off, sz) in ((24, 6), (40, 4), (86, 6))
         rep = b"\xFF" + bytes(t1_tables[s][off : off + sz])
       elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
         rep = b"\xFF" + out18_table[(addr - out18_base) // 18]
-      elif sz == 7 and p_win_start <= addr and (addr + sz) <= p_win_start + 37 * 7 and ((addr - p_win_start) % 7) == 0:
-        rep = b"\xFF" + bytes(7)
       else:
         raise AssertionError(f"Unexpected address {addr:#x} size={sz}")
       logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
@@ -826,13 +816,13 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
   locked = [w for w in phase1_snapshots if w.get("slot_source") == "lead_scan"]
   assert len(locked) >= 2
   last_locked = locked[-1]
+  assert "p_win" not in last_locked and "t1_dump" not in last_locked
   assert last_locked["lead_slot"] == lead_slot
   assert last_locked["lead_cam_id"] == 42
   assert last_locked["p0_slot_queried"] == lead_slot
   assert last_locked["t1_x_raw"] == int(round(25.0 * 128))
   assert last_locked["t1_vx40_raw"] == int(round(-1.0 * 256))
   assert last_locked["t1_flags"] == 0x4C50
-  assert last_locked["t1_dump"][0] == lead_slot
 
   # Phase 2: clear OUT18[13] and run 2 more rounds -> must release lock back to idle0 / slot 0
   out18_table[lead_slot] = bytes([0, 0])
@@ -850,12 +840,10 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
       elif t1_base <= addr and (addr + sz) <= t1_base + 32 * 104:
         s = (addr - t1_base) // 104
         off = (addr - t1_base) % 104
-        assert off + sz <= 104
+        assert (off, sz) in ((24, 6), (40, 4), (86, 6))
         rep = b"\xFF" + bytes(t1_tables[s][off : off + sz])
       elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
         rep = b"\xFF" + out18_table[(addr - out18_base) // 18]
-      elif sz == 7 and p_win_start <= addr and (addr + sz) <= p_win_start + 37 * 7 and ((addr - p_win_start) % 7) == 0:
-        rep = b"\xFF" + bytes(7)
       else:
         raise AssertionError(f"Unexpected address {addr:#x} size={sz}")
       logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
@@ -866,40 +854,7 @@ def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monke
   assert wb_rel["lead_cam_id"] is None
   assert wb_rel["slot_source"] == "idle0"
   assert wb_rel["p0_slot_queried"] == 0
-
-  # Phase 3: run 15+ rounds and verify T1 dump covers all 104 bytes (off=98 -> 6 B)
-  dump_slices: dict[int, int] = {}
-  for _ in range(780):  # +15.6 s (15+ full 1 Hz rounds)
-    logger.observe_radar_tracks(rd, t)
-    sends = logger.next_can_sends(t)
-    if sends:
-      pkt = bytes(sends[0].dat)
-      sz = pkt[1]
-      addr = int.from_bytes(pkt[4:8], "big")
-      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
-        rep = b"\xFF" + bytes(ram[addr - REC0 : addr - REC0 + sz])
-      elif addr == 0x400397FE and sz == 7:
-        rep = b"\xFF" + bytes([0, 0, 0, 0, 0, 255, 0])
-      elif t1_base <= addr and (addr + sz) <= t1_base + 32 * 104:
-        s = (addr - t1_base) // 104
-        off = (addr - t1_base) % 104
-        assert off + sz <= 104
-        rep = b"\xFF" + bytes(t1_tables[s][off : off + sz])
-      elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
-        rep = b"\xFF" + out18_table[(addr - out18_base) // 18]
-      elif sz == 7 and p_win_start <= addr and (addr + sz) <= p_win_start + 37 * 7 and ((addr - p_win_start) % 7) == 0:
-        rep = b"\xFF" + bytes(7)
-      else:
-        raise AssertionError(f"Unexpected address {addr:#x} size={sz}")
-      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=15.0)
-    td = rows[-1].get("wayb_probe", {}).get("t1_dump")
-    if td is not None:
-      dump_slices[td[1]] = len(bytes.fromhex(td[2]))
-    t += 20_000_000
-
   logger.close()
-  assert dump_slices == {**dict.fromkeys(range(0, 98, 7), 7), 98: 6}
-  assert sum(dump_slices.values()) == 104
 
 
 def test_match_openpilot_tracks_keeps_locked_closing_lead_and_railed_u11():
