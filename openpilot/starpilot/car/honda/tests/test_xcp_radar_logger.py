@@ -1257,3 +1257,101 @@ def test_timeout_drain_discards_late_wayb_reply_without_corrupting_lead_kin(monk
   assert bytes(sends_conn[0].dat) == b"\xFF\x00" + bytes(6)
   assert logger.in_flight is not None and logger.in_flight[0] == "CONNECT"
   logger.close()
+
+
+def test_timeout_and_drain_discard_counters_logged_in_20hz_event(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, probe_wayb=True)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  for _ in range(15):
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      off = addr - REC0
+      rep = b"\xFF" + (bytes(ram[off : off + sz]) if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE else bytes(sz))
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 10_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  # 1) WAYB timeout -> wayb_timeout_count=1, consecutive_f4_timeouts=1, logged while consecutive > 0.
+  t_wb = t + 20_000_000
+  with logger._lock:
+    logger.in_flight = ("WAYB", "t1_kin", xcp_mod.WAYB_DEFAULT_T1_BASE + 24, 6, t_wb)
+  t_wb_to = t_wb + xcp_mod.F4_TIMEOUT_NS
+  assert logger.next_can_sends(t_wb_to) == []
+  assert logger.wayb_timeout_count == 1
+  assert logger.consecutive_f4_timeouts == 1
+  epoch1 = max(t_wb_to + 5_000_000, logger.last_log_ns + xcp_mod.EPOCH_NS)
+  logger.observe_can([], epoch1, v_ego=15.0)
+  assert rows[-1]["wayb_timeouts"] == 1
+  assert rows[-1]["consecutive_f4_timeouts"] == 1
+  assert rows[-1]["f4_timeouts"] == 0
+  assert rows[-1]["handshake_timeouts"] == 0
+  assert rows[-1]["drain_discards"] == 0
+
+  # Late 0xFF DTO during drain -> drain_discards=1; non-DTO 0xAA during drain -> unchanged.
+  logger.observe_can([(t_wb_to + 10_000_000, [(XCP_DTO, b"\xFF" + bytes(6), XCP_BUS)])], t_wb_to + 10_000_000, v_ego=15.0)
+  logger.observe_can([(t_wb_to + 12_000_000, [(XCP_DTO, b"\xAA" + bytes(6), XCP_BUS)])], t_wb_to + 12_000_000, v_ego=15.0)
+  assert logger.drain_discard_count == 1
+
+  # Unsolicited 0xFF DTO after drain window expires (with in_flight is None) -> NOT counted as drain discard.
+  t_after_drain = max(epoch1, t_wb_to + xcp_mod.F4_TIMEOUT_DRAIN_NS) + 5_000_000
+  logger.observe_can([(t_after_drain, [(XCP_DTO, b"\xFF" + bytes(6), XCP_BUS)])], t_after_drain, v_ego=15.0)
+  assert logger.drain_discard_count == 1
+
+  # 2) F4 timeout -> f4_timeout_count=1, consecutive_f4_timeouts=2; late 0xFE during drain -> drain_discards=2, stays READY.
+  t_f4 = t_after_drain + 5_000_000
+  with logger._lock:
+    logger.in_flight = ("F4", 4, 16, 6, t_f4)
+  t_f4_to = t_f4 + xcp_mod.F4_TIMEOUT_NS
+  assert logger.next_can_sends(t_f4_to) == []
+  assert logger.f4_timeout_count == 1
+  assert logger.consecutive_f4_timeouts == 2
+  logger.observe_can([(t_f4_to + 10_000_000, [(XCP_DTO, b"\xFE\x22", XCP_BUS)])], t_f4_to + 10_000_000, v_ego=15.0)
+  assert logger.drain_discard_count == 2
+  assert logger.state == "READY"
+
+  # 3) Valid F4 reply resets consecutive_f4_timeouts to 0 while keeping cumulative counts.
+  t_ok = t_f4_to + xcp_mod.F4_TIMEOUT_DRAIN_NS + 5_000_000
+  with logger._lock:
+    logger.in_flight = ("F4", 4, 16, 6, t_ok - 5_000_000)
+  logger.observe_can([(t_ok, [(XCP_DTO, b"\xFF" + bytes(ram[4 * STRIDE + 16 : 4 * STRIDE + 22]), XCP_BUS)])], t_ok, v_ego=15.0)
+  assert logger.consecutive_f4_timeouts == 0
+
+  # 4) HANDSHAKE (STATUS) timeout -> handshake_timeout_count=1, reconnects cleanly, preserves all cumulative counters.
+  t_hs = t_ok + 2_500_000_000
+  with logger._lock:
+    logger.state = "NEED_STATUS"
+    logger.in_flight = ("STATUS", -1, 0, 0, t_hs)
+  t_hs_to = t_hs + xcp_mod.HANDSHAKE_RETRY_NS
+  assert logger.next_can_sends(t_hs_to) == []
+  assert logger.state == "NEED_CONNECT"
+  assert logger.handshake_timeout_count == 1
+  t_reconn = t_hs_to + xcp_mod.F4_TIMEOUT_DRAIN_NS
+  for _ in range(4):
+    sends = logger.next_can_sends(t_reconn)
+    assert len(sends) == 1
+    pid = bytes(sends[0].dat)[0]
+    rep = {
+      0xFF: b"\xFF\x05\x01\x08\x00\x08\x01\x01",
+      0xFD: b"\xFF\x00\x05\x00\x00\x00",
+      0xF8: b"\xFF\x00\x12\x34\x56\x78",
+      0xF7: b"\xFF\x01",
+    }[pid]
+    logger.observe_can([(t_reconn, [(XCP_DTO, rep, XCP_BUS)])], t_reconn + 10_000_000, v_ego=15.0)
+    t_reconn += 20_000_000
+  assert logger.state == "READY"
+  epoch2 = max(t_reconn + 10_000_000, logger.last_log_ns + xcp_mod.EPOCH_NS)
+  logger.observe_can([], epoch2, v_ego=15.0)
+  ev = rows[-1]
+  assert ev["consecutive_f4_timeouts"] == 0
+  assert ev["f4_timeouts"] == 1
+  assert ev["wayb_timeouts"] == 1
+  assert ev["handshake_timeouts"] == 1
+  assert ev["drain_discards"] == 2
+  logger.close()

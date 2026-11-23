@@ -237,6 +237,10 @@ class XcpRadarLogger:
     self.start_ns = time.monotonic_ns()
     self.consecutive_f4_timeouts = 0
     self._timeout_drain_until_ns = 0
+    self.f4_timeout_count = 0
+    self.wayb_timeout_count = 0
+    self.handshake_timeout_count = 0
+    self.drain_discard_count = 0
     self.seed_bytes: bytes | None = None
     self.last_v_ego = 0.0
 
@@ -480,10 +484,14 @@ class XcpRadarLogger:
         self._assist_shm_dirty = True
 
   def _process_dto_locked(self, data: bytes, now_ns: int) -> None:
-    if not data or self.in_flight is None:
+    if not data:
       return
     pid = data[0]
     if pid not in (0xFF, 0xFE):
+      return
+    if self.in_flight is None:
+      if now_ns < self._timeout_drain_until_ns:
+        self.drain_discard_count += 1
       return
     cmd_type, slot, offset, size, sent_ns = self.in_flight
     self.in_flight = None
@@ -915,13 +923,19 @@ class XcpRadarLogger:
       if now_ns - sent_ns < timeout:
         return None
       self.in_flight = None
-      if cmd_type in ("F4", "WAYB"):
+      if cmd_type == "F4":
         self.consecutive_f4_timeouts += 1
-        if cmd_type == "WAYB":
-          self._wayb_queue.clear()
+        self.f4_timeout_count += 1
+        if self.consecutive_f4_timeouts >= 5:
+          self._clear_session_locked("NEED_CONNECT")
+      elif cmd_type == "WAYB":
+        self.consecutive_f4_timeouts += 1
+        self.wayb_timeout_count += 1
+        self._wayb_queue.clear()
         if self.consecutive_f4_timeouts >= 5:
           self._clear_session_locked("NEED_CONNECT")
       else:
+        self.handshake_timeout_count += 1
         self._clear_session_locked("NEED_CONNECT")
       self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
       return None
@@ -1177,6 +1191,11 @@ class XcpRadarLogger:
         if self._wayb_probe_enabled and self._wayb_state["updated_ns"] > 0
         else None
       )
+      consecutive_f4_timeouts = int(self.consecutive_f4_timeouts)
+      f4_timeouts = int(self.f4_timeout_count)
+      wayb_timeouts = int(self.wayb_timeout_count)
+      handshake_timeouts = int(self.handshake_timeout_count)
+      drain_discards = int(self.drain_discard_count)
       if self._assist_shm_path is not None:
         self._last_assist_shm_ns = now_ns
         self._assist_shm_dirty = False
@@ -1204,6 +1223,11 @@ class XcpRadarLogger:
       lead=lead,
       targets=targets,
       op_tracks=op_tracks,
+      consecutive_f4_timeouts=consecutive_f4_timeouts,
+      f4_timeouts=f4_timeouts,
+      wayb_timeouts=wayb_timeouts,
+      handshake_timeouts=handshake_timeouts,
+      drain_discards=drain_discards,
       debug=True,
     )
     if wayb_probe is not None:
