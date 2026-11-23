@@ -522,6 +522,7 @@ def test_fast_inactive_probe_when_op_lead_unmatched():
 
 def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
   rows = _capture_events(monkeypatch)
+  monkeypatch.setattr(xcp_mod, "WAYB_PROBE_ENABLED", True)  # Way B is off by default (Peter 2026-11-23); this test exercises the inert probe code
   ram = bytearray(NUM_SLOTS * STRIDE)
   _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
 
@@ -615,6 +616,7 @@ def test_wayb_1hz_probe_reads_a150_bases_and_preserves_lead_rate(monkeypatch):
 
 def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
   rows = _capture_events(monkeypatch)
+  monkeypatch.setattr(xcp_mod, "WAYB_PROBE_ENABLED", True)  # Way B is off by default (Peter 2026-11-23); this test exercises the inert probe code
   ram = bytearray(NUM_SLOTS * STRIDE)
   _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
 
@@ -758,6 +760,7 @@ def test_wayb_1hz_probe_idle_oob_slot_and_error_isolation(monkeypatch):
 
 def test_wayb_1hz_out18_scan_locks_inlane_lead_slot_and_releases_on_change(monkeypatch):
   rows = _capture_events(monkeypatch)
+  monkeypatch.setattr(xcp_mod, "WAYB_PROBE_ENABLED", True)  # Way B is off by default (Peter 2026-11-23); this test exercises the inert probe code
   ram = bytearray(NUM_SLOTS * STRIDE)
   _write_slot(ram, 4, {"x": 28.4, "vx": -1.0, "ax": -0.2, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
 
@@ -1479,6 +1482,7 @@ def test_inpath_fallback_lead_not_starved_by_offpath_op_match(monkeypatch):
 
 def test_cutin_prio1_outranks_far_inpath_preempts_near_moving_and_yields_wayb(monkeypatch):
   rows = _capture_events(monkeypatch)
+  monkeypatch.setattr(xcp_mod, "WAYB_PROBE_ENABLED", True)  # Way B is off by default (Peter 2026-11-23); this test exercises the inert probe code
   cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
   logger = XcpRadarLogger(cp, probe_wayb=True)
   logger.state = "READY"
@@ -1782,3 +1786,125 @@ def test_20hz_event_kwargs_keys_unchanged(monkeypatch):
     "f4_timeouts", "wayb_timeouts", "handshake_timeouts", "drain_discards", "debug",
   }
   logger.close()
+
+
+def _protect_logger(monkeypatch):
+  _capture_events(monkeypatch)
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  logger.state = "READY"
+  logger.last_v_ego = 18.0
+  t0 = 20_000_000_000
+
+  def seed(s: int, *, x: float, y: float, vx: float = -2.0, vy: float = 0.0, kin_age_ms: float = 0.0, lat_ts: int = t0) -> None:
+    logger.slot_cache[s].update({
+      "X_raw": int(round(x * 128)), "Y_raw": int(round(y * 128)),
+      "Vx_raw": int(round(vx * 256)), "Vy_raw": int(round(vy * 256)),
+      "age": 30, "flags": 0xE0C0, "subflags": 0x0000,
+      "flags_updated_ns": t0, "age_updated_ns": t0, "lat_updated_ns": lat_ts,
+      "kin_updated_ns": t0 - int(kin_age_ms * 1e6), "qual_updated_ns": t0,
+    })
+    logger.active_slots[s] = logger.slot_cache[s]
+
+  # lead slot 2: fresh everywhere so lead steps do not fire
+  seed(2, x=45.0, y=0.2, vx=-1.0)
+  logger._op_lead_slot = 2
+  logger._last_probe_seq = logger._read_seq
+  return logger, seed, t0
+
+
+def test_cutin_protect_top3_band_candidates_and_not_fourth(monkeypatch):
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  # four band candidates; time-to-path |y|/vy_toward: s5 1.5/1.0, s6 2.0/1.0, s7 2.5/1.0, s8 3.0/0.2
+  seed(5, x=20.0, y=1.5, vy=-1.0)
+  seed(6, x=22.0, y=-2.0, vy=1.0)
+  seed(7, x=25.0, y=2.5, vy=-1.0)
+  seed(8, x=30.0, y=3.0, vy=-0.2)
+  prio = logger._select_priority_slots_locked()
+  assert logger._cutin_protect_slots_locked(prio) == [5, 6, 7]
+  # 4th (slot 8) at 200 ms is not protected: the protect step does not read it (stale-group ceiling is 350 ms)
+  logger.slot_cache[8]["kin_updated_ns"] = t0 - 200_000_000
+  assert 8 not in logger._cutin_protect_slots_locked(prio)
+  # a protected one at 150 ms is read; the stalest of the protected set goes first
+  logger.slot_cache[8]["kin_updated_ns"] = t0
+  logger.slot_cache[5]["kin_updated_ns"] = t0 - xcp_mod.CUTIN_PROTECT_KIN_NS
+  logger.slot_cache[6]["kin_updated_ns"] = t0 - xcp_mod.CUTIN_PROTECT_KIN_NS - 20_000_000
+  assert logger._next_read_task_locked(t0) == (6, 16, 6)
+  # just under the ceiling: not read by the protect step
+  logger.slot_cache[5]["kin_updated_ns"] = t0 - xcp_mod.CUTIN_PROTECT_KIN_NS + 1_000_000
+  logger.slot_cache[6]["kin_updated_ns"] = t0 - xcp_mod.CUTIN_PROTECT_KIN_NS + 1_000_000
+  assert logger._next_read_task_locked(t0) not in ((6, 16, 6), (7, 16, 6))
+  logger.close()
+
+
+def test_cutin_protect_excludes_out_of_band_and_stationary(monkeypatch):
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  seed(5, x=20.0, y=1.0, vy=-1.0)     # |y| 1.0 inside path width: not band
+  seed(6, x=20.0, y=4.0, vy=-1.0)     # |y| 4.0 outside band
+  seed(7, x=20.0, y=2.5, vx=-18.0, vy=-1.0)  # v_ego 18 + vrel -18 = stationary
+  seed(8, x=45.0, y=2.5, vy=-1.0)     # d 45 m beyond band
+  seed(9, x=20.0, y=2.5, vy=-1.0, lat_ts=0)  # lat never read
+  prio = logger._select_priority_slots_locked()
+  assert logger._cutin_protect_slots_locked(prio) == []
+  for s in (5, 6, 7, 8, 9):
+    logger.slot_cache[s]["kin_updated_ns"] = t0 - 300_000_000
+  assert logger._cutin_protect_slots_locked(prio) == []
+  assert logger._next_read_task_locked(t0) not in [(s, 16, 6) for s in (5, 6, 7, 8, 9)]
+  logger.close()
+
+
+def test_cutin_protect_lead_kin_still_preempts(monkeypatch):
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  assert logger._next_read_task_locked(t0) == (5, 16, 6)
+  logger.slot_cache[2]["kin_updated_ns"] = t0 - xcp_mod.LEAD_KIN_INTERVAL_NS
+  assert logger._next_read_task_locked(t0) == (2, 16, 6)
+  logger.close()
+
+
+def test_cutin_protect_yields_to_init_after_guard_wait(monkeypatch):
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=200)
+  seed(12, x=60.0, y=5.0, vx=-2.0)
+  init_task = (12, 22, 6)
+  logger._init_queue.append(init_task)
+  logger._init_queued.add(init_task)
+  # init item first seen at t0: it has not waited past the guard, so protect still fires
+  assert logger._next_read_task_locked(t0) == (5, 16, 6)
+  # later, with everything else fresh and the protected slot stale again
+  def refresh(now, kin_age_ms):
+    for s_ in (2, 12):
+      logger.slot_cache[s_].update({"kin_updated_ns": now, "lat_updated_ns": now, "qual_updated_ns": now,
+                                    "age_updated_ns": now, "flags_updated_ns": now})
+    logger.slot_cache[5].update({"kin_updated_ns": now - int(kin_age_ms * 1e6), "lat_updated_ns": now,
+                                 "qual_updated_ns": now, "age_updated_ns": now, "flags_updated_ns": now})
+    logger._protect_hist.clear()
+  within = t0 + xcp_mod.CUTIN_PROTECT_GUARD_NS - 10_000_000
+  refresh(within, 200)
+  assert logger._next_read_task_locked(within) == (5, 16, 6)
+  logger._init_queue.append(init_task)
+  logger._init_queued.add(init_task)
+  after = t0 + xcp_mod.CUTIN_PROTECT_GUARD_NS + 10_000_000
+  refresh(after, 200)
+  assert logger._next_read_task_locked(after) == init_task
+  logger.close()
+
+
+def test_wayb_probe_disabled_by_default_issues_zero_reads(monkeypatch):
+  _capture_events(monkeypatch)
+  assert xcp_mod.WAYB_PROBE_ENABLED is False
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, probe_wayb=True)
+  assert logger._wayb_probe_enabled is False
+  logger.state = "READY"
+  logger.last_v_ego = 18.0
+  t0 = 20_000_000_000
+  logger._wayb_queue.append(("t1_kin", xcp_mod.WAYB_DEFAULT_T1_BASE + 24, 6))
+  for i in range(200):
+    now = t0 + i * 20_000_000
+    logger.in_flight = None
+    logger._build_next_cto_locked(now)
+    if logger.in_flight is not None:
+      assert logger.in_flight[0] != "WAYB"
+  assert logger._next_wayb_task_locked(t0) is None
+  assert logger._wayb_pending_locked(t0 + 5_000_000_000) is False

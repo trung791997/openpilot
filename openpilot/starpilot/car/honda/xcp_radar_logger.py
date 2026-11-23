@@ -36,6 +36,13 @@ EPOCH_NS = 50_000_000          # 20 Hz output logging cadence
 XCP_READS_LOG = True           # per-read "xcp_reads" event (logging only; no effect on scheduling or control)
 READS_FLUSH_NS = 250_000_000   # xcp_reads flush grid
 READS_BUF_MAX = 128            # max buffered read records between flushes
+# Evidence (route 109 logged lead kin reads, 996 value-change intervals; 38 ms median read gap limits resolution):
+# 0% of change intervals < 29 ms, 2.8% < 30-59 ms, 3.4% < 60 ms, 4.8% < 70 ms, mode 89-91 ms. W = 29 ms is the largest
+# hold with < 2% shorter intervals. Sim (stepwise 90 ms truth, 3 seeds): lead kin reads/s 20.8 -> 18.4, lead
+# change-to-read latency p50/p90 19.3/37.4 -> 19.4/37.4 ms. A 60 ms hold (3.4% shorter intervals) cut lead kin reads/s to 11.8
+# at +2/+3 ms latency; see longsim_frames/xcp_assist/cutin/REPORT.md round 4.
+LEAD_KIN_HOLD_NS = 29_000_000
+LEAD_KIN_HOLD_MAX_NS = 150_000_000
 LEAD_KIN_INTERVAL_NS = 18_000_000  # ~25 Hz (every 40 ms) at 20 ms RTT, ~33 Hz at 10 ms RTT
 LEAD_META_INTERVAL_NS = 250_000_000  # ~4 Hz alternating age / flags (~2 Hz each) for primary lead
 LEAD_LAT_INTERVAL_NS = 180_000_000   # ~5.5 Hz Y / Vy for primary lead
@@ -61,15 +68,32 @@ CUTIN_VY_THRESH_RAW = round(0.3 * 256)  # 0.3 m/s lateral velocity tie-breaker f
 # cut-in kin_age >= 140 ms keeps WAYB at 8.82/s while cutting Group 2 >200 ms from 34.40% to 12.16%
 # and active cut-in >200 ms from 33.57% to 14.10%, without starving other near moving lanes.
 CUTIN_WAYB_YIELD_NS = 140_000_000
-# Hard urgent kinematic ceiling for an active CAN-matched cut-in candidate (prio_slots[1]) above
-# prio_slots[0] low-urgency meta/lat/qual, inactive slot probing, and new-slot init bursts.
-# Evidence: e2e 20 ms RTT unit probe hit 681 ms (init-queue bursts on slots 12-14 + prio[0]
-# meta/lat/qual); 280 ms preserves fair-share s6/s9 >= 10 lat reads in
-# test_cutin_lateral_y_vy_prioritized_over_qual_on_adjacent_cars while bounding per-tick e2e
-# max kin_age to 281 ms (lead max 1 ms) and on route 00000105--c4d0cd8039 offline sim reduces
-# op_lead >200 ms from 0.25% to 0.14%, xcp_fallback >200 ms from 0.26% to 0.11%, and Group 2
-# >200 ms from 15.46% to 9.77% (p95 517.1 -> 249.9 ms) without regressing near_moving.
-CUTIN_URGENT_KIN_NS = 280_000_000
+# Protected cut-in set: up to CUTIN_PROTECT_N moving, lat-and-kin-read non-lead targets in the cut-in
+# band (0 < d < 40 m, 1.2 < |y| < 3.5 m), ranked by time-to-path |y| / max(toward-speed, 0.1) then X,
+# plus the CAN-matched prio_slots[1] candidate above, share the urgent step. Each step reads the
+# protected slot with the largest staleness ratio over {kin age / CUTIN_PROTECT_KIN_NS,
+# lat age / CUTIN_PROTECT_LAT_NS} (kin or Y/Vy read accordingly), once any ratio is >= 1.
+# Evidence (offline simulation of route 109, real scheduler == sim rows, 3 seeds, no road evidence;
+# longsim_frames/xcp_assist/cutin/REPORT.md round 6, arm D = this cap + guard + LEAD_KIN_HOLD + Way B off), base -> D:
+# 70 reads/s: cut-in risk kin_age >200 ms 54.0% -> 28.4% (p90 1184 -> 678 ms), band lat p90 701 -> 399 ms,
+# non-band near-moving lat p90 775 -> 600 ms, lead >200 ms 0.43% -> 0.39%, lead lat p90 290 -> 190 ms,
+# discovery p50 1441 -> 1228 ms. 48.6 reads/s (synthetic): risk 52.3% -> 48.4% but risk p90 2283 -> 3468 ms.
+# Uncapped protection (CL3I) cut risk to ~1% but starved non-band lat and failed two logger tests; kin-only
+# protection (C3_150) starved band lat. The cap without the guard (17.0%) failed the standing-traffic and
+# adjacent-lat tests during multi-slot discovery.
+CUTIN_PROTECT_N = 3
+CUTIN_PROTECT_KIN_NS = 150_000_000
+CUTIN_PROTECT_LAT_NS = 250_000_000
+CUTIN_PROTECT_CAP = 6
+CUTIN_PROTECT_WINDOW = 20
+# Discovery guard: the protect step is skipped while the oldest queued init item (new-slot kin/lat/age/flags
+# reads, moving or stationary) has waited longer than this, so the init queue and the near-moving group behind it are reached even
+# when protect + probe would otherwise take every spare read. Peter 2026-11-23: arm D, round 6; offline replay
+# evidence (no road evidence): ~/longsim_frames/xcp_assist/cutin/REPORT.md (Round 6).
+CUTIN_PROTECT_GUARD_NS = 300_000_000
+CUTIN_PROTECT_MAX_X_M = 40.0
+CUTIN_PROTECT_MIN_ABS_Y_M = 1.2
+CUTIN_PROTECT_MAX_ABS_Y_M = 3.5
 STATIONARY_IN_PATH_Y_RAW = 384        # ±3.0 m fast age < 3 refresh for oncoming standing traffic
 STATIONARY_INIT_YIELD_READS = 8       # yield 1 read per 8 non-lead cycles to init waiting stopped slots without starving adjacent lanes
 STATIONARY_MAX_STALE_NS = 3_000_000_000
@@ -111,6 +135,9 @@ STARTUP_DELAY_NS = 500_000_000
 #   - OUT18[0..31]+16 4-slot/sec scan + lock tracked live in-lane lead on 384/510 rounds (374/384 in radarTracks, 345/384 == lead.op).
 # - Temporary p_win and t1_dump sweeps removed once completed (12 -> 9 reads/sec: p0 + 4 core reads + 4 OUT18 scan reads,
 #   always deferred behind _primary_lead_urgent_locked).
+# Peter 2026-11-23: off; reads go to cut-in protection; study ~/longsim_frames/xcp_assist/wayb_study/REPORT.md inconclusive.
+# Master switch: with False the probe never issues a read (no p0/t1/out18 reads, no cut-in yield read), whatever probe_wayb says.
+WAYB_PROBE_ENABLED = False
 WAYB_PROBE_INTERVAL_NS = 1_000_000_000
 WAYB_DEFAULT_T1_BASE = 0x40032AEC
 WAYB_DEFAULT_OUT18_BASE = 0x4003681C
@@ -253,6 +280,7 @@ class XcpRadarLogger:
     self.in_flight = None  # (cmd_type, slot, offset, size, sent_ns)
     self._init_queue: deque[tuple[int, int, int]] = deque()
     self._init_queued: set[tuple[int, int, int]] = set()
+    self._init_stamp: dict[tuple[int, int, int], int] = {}  # first-seen time of queued init items (guard)
     self.active_slots: dict[int, dict] = {}
     self.slot_cache: dict[int, dict] = {s: _empty_slot_record() for s in range(NUM_SLOTS)}
     self.scan_cursor = 0
@@ -260,6 +288,7 @@ class XcpRadarLogger:
     self._read_seq = 0
     self._last_probe_seq = -INACTIVE_PROBE_PERIOD_WITH_LEAD
     self._stationary_init_skip_count = 0
+    self._protect_hist: deque = deque(maxlen=CUTIN_PROTECT_WINDOW)
     self._next_radar_track_id = 1
 
     self.last_handshake_tx_ns = -HANDSHAKE_RETRY_NS
@@ -295,7 +324,7 @@ class XcpRadarLogger:
       resolved_lock_path = _default_sender_lock_path() if self._pm is not None else None
     else:
       resolved_lock_path = Path(sender_lock_path) if sender_lock_path is not None else None
-    self._wayb_probe_enabled = bool(probe_wayb if probe_wayb is not None else (pm is not None))
+    self._wayb_probe_enabled = WAYB_PROBE_ENABLED and bool(probe_wayb if probe_wayb is not None else (pm is not None))
     self._wayb_queue: deque[tuple[str, int, int]] = deque()
     self._wayb_last_round_ns = 0
     self._wayb_t1_base = WAYB_DEFAULT_T1_BASE
@@ -730,6 +759,35 @@ class XcpRadarLogger:
       and abs(rec["Y_raw"]) <= CUTIN_MAX_ABS_Y_RAW
     )
 
+  def _is_cutin_band_locked(self, rec: dict) -> bool:
+    if rec["lat_updated_ns"] == 0 or rec["kin_updated_ns"] == 0:
+      return False
+    d = rec["X_raw"] / 128.0
+    ay = abs(rec["Y_raw"]) / 128.0
+    return (
+      0 < d < CUTIN_PROTECT_MAX_X_M
+      and CUTIN_PROTECT_MIN_ABS_Y_M < ay < CUTIN_PROTECT_MAX_ABS_Y_M
+      and self._is_moving_target_locked(rec)
+    )
+
+  def _cutin_protect_slots_locked(self, prio_slots: list[int]) -> list[int]:
+    """Top CUTIN_PROTECT_N band targets by time-to-path, then the prio_slots[1] near cut-in candidate if not included."""
+    lead = prio_slots[0] if prio_slots else -1
+    cands = []
+    for s, rec in self.active_slots.items():
+      if s == lead or not self._is_cutin_band_locked(rec):
+        continue
+      if rec["flags_updated_ns"] == 0 or rec["age_updated_ns"] == 0:
+        continue  # newborn: let its init reads finish before it is protected
+      y = rec["Y_raw"] / 128.0
+      toward = max(-math.copysign(1.0, y) * rec["Vy_raw"] / 256.0, 0.1)
+      cands.append((abs(y) / toward, rec["X_raw"], s))
+    cands.sort()
+    top = [s for _, _, s in cands[:CUTIN_PROTECT_N]]
+    if len(prio_slots) > 1 and prio_slots[1] not in top and self._is_near_cutin_candidate_locked(prio_slots[1]):
+      top.append(prio_slots[1])
+    return top
+
   def _primary_lead_urgent_locked(self, now_ns: int) -> bool:
     prio_slots = self._select_priority_slots_locked()
     if not prio_slots:
@@ -743,7 +801,7 @@ class XcpRadarLogger:
     )
 
   def _wayb_pending_locked(self, now_ns: int) -> bool:
-    return self._wayb_probe_enabled and (
+    return WAYB_PROBE_ENABLED and self._wayb_probe_enabled and (
       bool(self._wayb_queue)
       or self._wayb_last_round_ns == 0
       or now_ns - self._wayb_last_round_ns >= WAYB_PROBE_INTERVAL_NS
@@ -758,7 +816,7 @@ class XcpRadarLogger:
     return None
 
   def _next_wayb_task_locked(self, now_ns: int) -> tuple[str, int, int] | None:
-    if not self._wayb_probe_enabled:
+    if not WAYB_PROBE_ENABLED or not self._wayb_probe_enabled:
       return None
     if self._wayb_queue:
       return self._wayb_queue.popleft()
@@ -867,6 +925,15 @@ class XcpRadarLogger:
             break
     return prio
 
+  def _init_oldest_wait_locked(self, now_ns: int) -> int:
+    live = [f for f in self._init_queue if f in self._init_queued and f[0] in self.active_slots]
+    liveset = set(live)
+    for k in [k for k in self._init_stamp if k not in liveset]:
+      del self._init_stamp[k]
+    for f in live:
+      self._init_stamp.setdefault(f, now_ns)
+    return (now_ns - min(self._init_stamp[f] for f in live)) if live else 0
+
   def _pop_init_task_locked(self, *, allow_stationary: bool) -> tuple[int, int, int] | None:
     while self._init_queue:
       front = self._init_queue[0]
@@ -878,6 +945,7 @@ class XcpRadarLogger:
         return None
       self._init_queue.popleft()
       self._init_queued.discard(front)
+      self._init_stamp.pop(front, None)
       if allow_stationary:
         self._stationary_init_skip_count = 0
       return front
@@ -1016,29 +1084,55 @@ class XcpRadarLogger:
       s = prio_slots[0]
       rec = self.slot_cache[s]
       if now_ns - rec["kin_updated_ns"] >= LEAD_KIN_INTERVAL_NS:
-        return (s, 16, 6)
+        # The radar refreshes the lead about every 90 ms: after a read that returned a changed value, skip lead kin
+        # reads until LEAD_KIN_HOLD_NS has passed, then poll every LEAD_KIN_INTERVAL_NS as before.
+        # A lead whose value has not changed for LEAD_KIN_HOLD_MAX_NS is polled plainly.
+        since_change = now_ns - rec["kin_changed_ns"]
+        if rec["kin_changed_ns"] == 0 or since_change >= LEAD_KIN_HOLD_NS or since_change >= LEAD_KIN_HOLD_MAX_NS:
+          return (s, 16, 6)
       if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
         return (s, 2, 6)
       if rec["flags_updated_ns"] == 0:
         return (s, 106, 2)
 
-    # Bound active near cut-in candidate (prio_slots[1]) kinematic age ahead of primary meta/lat/qual,
-    # inactive probing, and new-slot init bursts so multi-slot discovery cannot push cut-in >400 ms.
-    if len(prio_slots) > 1 and self._is_near_cutin_candidate_locked(prio_slots[1]):
-      cutin_slot = prio_slots[1]
-      if now_ns - self.slot_cache[cutin_slot]["kin_updated_ns"] >= CUTIN_URGENT_KIN_NS:
-        return (cutin_slot, 16, 6)
-
-    # Remaining primary lead (prio_slots[0]) cadence still sits above inactive probing and init queue
+    # Remaining primary lead (prio_slots[0]) cadence stays above the cut-in protect step and the inactive probing / init queue
     if prio_slots:
       s = prio_slots[0]
       rec = self.slot_cache[s]
+      lead_task = None
       if now_ns - max(rec["age_updated_ns"], rec["flags_updated_ns"]) >= LEAD_META_INTERVAL_NS:
-        return (s, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (s, 106, 2)
-      if now_ns - rec["lat_updated_ns"] >= LEAD_LAT_INTERVAL_NS:
-        return (s, 22, 6)
-      if now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
-        return (s, 127, 2)
+        lead_task = (s, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (s, 106, 2)
+      elif now_ns - rec["lat_updated_ns"] >= LEAD_LAT_INTERVAL_NS:
+        lead_task = (s, 22, 6)
+      elif now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
+        lead_task = (s, 127, 2)
+      if lead_task is not None:
+        self._protect_hist.append(0)  # window counts every scheduler call that gets this far
+        return lead_task
+
+    # Bound active near cut-in candidate (prio_slots[1]) and band target kinematic/lateral age ahead of inactive probing
+    # and new-slot init bursts so multi-slot discovery cannot push cut-in >400 ms. The protected set (up to
+    # CUTIN_PROTECT_N band targets plus that prio_slots[1] candidate) is held to CUTIN_PROTECT_KIN_NS kin age and
+    # CUTIN_PROTECT_LAT_NS lat age; the largest staleness ratio is read first. The step may take at most
+    # CUTIN_PROTECT_CAP of the last CUTIN_PROTECT_WINDOW scheduler calls; beyond that it falls through to the normal order
+    # so other near-moving slots, discovery and standing traffic keep a share at low read rates.
+    protect_read = None
+    guard_hold = self._init_oldest_wait_locked(now_ns) > CUTIN_PROTECT_GUARD_NS
+    if sum(self._protect_hist) < CUTIN_PROTECT_CAP and not guard_hold:
+      best = None
+      for s in self._cutin_protect_slots_locked(prio_slots):
+        rec = self.slot_cache[s]
+        for ratio, off in (
+          ((now_ns - rec["kin_updated_ns"]) / CUTIN_PROTECT_KIN_NS, 16),
+          ((now_ns - rec["lat_updated_ns"]) / CUTIN_PROTECT_LAT_NS, 22),
+        ):
+          if ratio >= 1.0 and (best is None or (-ratio, s) < best[0]):
+            best = ((-ratio, s), (s, off, 6))
+      if best is not None:
+        protect_read = best[1]
+    self._protect_hist.append(1 if protect_read is not None else 0)
+    if protect_read is not None:
+      return protect_read
 
     # Adaptive inactive slot discovery (1/10 when tracking a matched lead, 1/3 if no lead or op_tracks lead is unmatched)
     has_unmatched_op_in_path = (
