@@ -49,6 +49,14 @@ FAR_OTHER_LAT_INTERVAL_NS = 700_000_000
 FAR_OTHER_META_INTERVAL_NS = 1_200_000_000
 NEWBORN_AGE_REFRESH_NS = 100_000_000  # re-poll newborn track age < 3 quickly so UI unlocks promptly
 NEAR_MOVING_Y_RAW = 768               # ±6.0 m (1/128 m/lsb) keeps adjacent lanes ahead of wide oncoming cars
+IN_PATH_Y_RAW = 256                   # ±2.0 m (1/128 m/lsb) matching _maybe_log_20hz fallback width once lat is known
+CUTIN_MAX_X_RAW = 40 * 128            # 40.0 m range ceiling for CAN-matched cut-in protection in prio_slots[1]
+CUTIN_MAX_ABS_Y_RAW = 4 * 128         # ±4.0 m lateral ceiling for CAN-matched cut-in protection in prio_slots[1]
+CUTIN_VY_THRESH_RAW = round(0.3 * 256)  # 0.3 m/s lateral velocity tie-breaker for active cut-in candidates
+# Route 00000105--c4d0cd8039 sim: yielding 1 Hz read-only Way B diagnostic reads once prio_slots[1]
+# cut-in kin_age >= 140 ms keeps WAYB at 8.82/s while cutting Group 2 >200 ms from 34.40% to 12.16%
+# and active cut-in >200 ms from 33.57% to 14.10%, without starving other near moving lanes.
+CUTIN_WAYB_YIELD_NS = 140_000_000
 STATIONARY_IN_PATH_Y_RAW = 384        # ±3.0 m fast age < 3 refresh for oncoming standing traffic
 STATIONARY_INIT_YIELD_READS = 8       # yield 1 read per 8 non-lead cycles to init waiting stopped slots without starving adjacent lanes
 STATIONARY_MAX_STALE_NS = 3_000_000_000
@@ -247,6 +255,7 @@ class XcpRadarLogger:
     self._op_tracks: list[dict] = []
     self._op_tracks_ns = 0
     self._op_matched_slots: list[int] = []
+    self._op_lead_slot: int | None = None
     self._prev_op_slot_by_tid: dict[int, int] = {}
     self._last_assist_shm_ns: int = 0
     self._assist_shm_dirty: bool = False
@@ -378,6 +387,7 @@ class XcpRadarLogger:
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
     self._timeout_drain_until_ns = 0
+    self._op_lead_slot = None
     self._prev_op_slot_by_tid.clear()
     self._assist_shm_dirty = False
 
@@ -480,7 +490,7 @@ class XcpRadarLogger:
       and self._assist_shm_path is not None
       and self._assist_fast_publish_enabled
     ):
-      if (self._op_matched_slots and slot == self._op_matched_slots[0]) or slot in self._select_priority_slots_locked()[:1]:
+      if (self._op_lead_slot is not None and slot == self._op_lead_slot) or slot in self._select_priority_slots_locked()[:1]:
         self._assist_shm_dirty = True
 
   def _process_dto_locked(self, data: bytes, now_ns: int) -> None:
@@ -624,6 +634,16 @@ class XcpRadarLogger:
         wb["lead_cam_id"] = cam_id
       wb["updated_ns"] = now_ns
 
+  def _is_near_cutin_candidate_locked(self, slot: int) -> bool:
+    if slot not in self._op_matched_slots:
+      return False
+    rec = self.slot_cache[slot]
+    return (
+      rec["lat_updated_ns"] > 0
+      and 0 < rec["X_raw"] < CUTIN_MAX_X_RAW
+      and abs(rec["Y_raw"]) <= CUTIN_MAX_ABS_Y_RAW
+    )
+
   def _primary_lead_urgent_locked(self, now_ns: int) -> bool:
     prio_slots = self._select_priority_slots_locked()
     if not prio_slots:
@@ -635,6 +655,21 @@ class XcpRadarLogger:
       or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS)
       or rec["flags_updated_ns"] == 0
     )
+
+  def _wayb_pending_locked(self, now_ns: int) -> bool:
+    return self._wayb_probe_enabled and (
+      bool(self._wayb_queue)
+      or self._wayb_last_round_ns == 0
+      or now_ns - self._wayb_last_round_ns >= WAYB_PROBE_INTERVAL_NS
+    )
+
+  def _cutin_wayb_yield_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
+    prio_slots = self._select_priority_slots_locked()
+    if len(prio_slots) > 1 and self._is_near_cutin_candidate_locked(prio_slots[1]):
+      s = prio_slots[1]
+      if now_ns - self.slot_cache[s]["kin_updated_ns"] >= CUTIN_WAYB_YIELD_NS:
+        return (s, 16, 6)
+    return None
 
   def _next_wayb_task_locked(self, now_ns: int) -> tuple[str, int, int] | None:
     if not self._wayb_probe_enabled:
@@ -655,28 +690,95 @@ class XcpRadarLogger:
     return None
 
   def _select_priority_slots_locked(self) -> list[int]:
+    # Put matched in-path op_lead first; never let off-path _op_matched_slots hijack prio[0]
+    # from an in-path xcp_fallback lead. When prio[0] is taken, rank near CAN-matched cut-in
+    # candidates (0 < d < 40 m, |y| <= 4.0 m) first for prio[1] ahead of far unmatched slots.
+    # Do NOT gate on flags & 0x1020: route 00000105 showed 0x1000 (low-conf) is set on 945/1,912
+    # real xcp_fallback frames (0xF040) and 0x0020 (ghost) appears on 86 real fallback frames;
+    # filtering either blew up xcp_fallback >200 ms from 0.11-0.32% to 7.28-12.66% in offline sim.
     prio: list[int] = []
-    for s in self._op_matched_slots:
-      if s in self.active_slots and s not in prio:
-        prio.append(s)
-        if len(prio) >= LEAD_PRIORITY_COUNT:
-          return prio
+    if self._op_lead_slot is not None and self._op_lead_slot in self.active_slots:
+      prio.append(self._op_lead_slot)
 
-    def _prio_key(item: tuple[int, dict]) -> tuple[int, int, int]:
-      s, rec = item
-      x_raw = rec["X_raw"]
-      y_raw = rec["Y_raw"]
-      is_moving = self._is_moving_target_locked(rec)
-      in_path = bool(rec["subflags"] & 0x0400) or (rec["lat_updated_ns"] > 0 and x_raw > 0 and abs(y_raw) < 320)
-      forward = x_raw > 0
-      tier = 0 if (in_path and forward and is_moving) else (1 if (in_path and forward) else (2 if (forward and is_moving) else 3))
-      return (tier, x_raw if forward else abs(x_raw) + 100_000, s)
+    op_matched_set = set(self._op_matched_slots)
 
-    for s, _ in sorted(self.active_slots.items(), key=_prio_key):
-      if s not in prio:
-        prio.append(s)
-        if len(prio) >= LEAD_PRIORITY_COUNT:
-          break
+    def _is_in_path(rec: dict) -> bool:
+      return rec["X_raw"] > 0 and (
+        (rec["lat_updated_ns"] > 0 and abs(rec["Y_raw"]) < IN_PATH_Y_RAW)
+        or (rec["lat_updated_ns"] == 0 and bool(rec["subflags"] & 0x0400))
+      )
+
+    if not prio and self.active_slots:
+      def _fallback_key(item: tuple[int, dict]) -> tuple[int, int, int, int]:
+        s, rec = item
+        x_raw = rec["X_raw"]
+        y_raw = rec["Y_raw"]
+        vy_raw = rec["Vy_raw"]
+        forward = x_raw > 0
+        in_path = _is_in_path(rec)
+        is_moving = self._is_moving_target_locked(rec)
+        is_op = s in op_matched_set
+        near_cutin_bonus = 0
+        if in_path and is_moving:
+          tier = 0
+        elif in_path:
+          tier = 1
+        elif is_op and forward:
+          tier = 2
+          lat_ok = rec["lat_updated_ns"] > 0
+          near_cutin = lat_ok and x_raw < CUTIN_MAX_X_RAW and abs(y_raw) <= CUTIN_MAX_ABS_Y_RAW
+          moving_lat = lat_ok and abs(vy_raw) > CUTIN_VY_THRESH_RAW
+          near_cutin_bonus = 0 if (near_cutin and moving_lat) else (1 if near_cutin else 2)
+        elif forward and is_moving:
+          tier = 3
+        else:
+          tier = 4
+        return (tier, near_cutin_bonus, x_raw if forward else abs(x_raw) + 100_000, s)
+
+      prio.append(min(self.active_slots.items(), key=_fallback_key)[0])
+
+    rem_matched = [s for s in self._op_matched_slots if s in self.active_slots and s not in prio]
+    if len(rem_matched) > 1:
+      def _matched_key(idx_s: tuple[int, int]) -> tuple[int, int, int, int, int]:
+        idx, s = idx_s
+        rec = self.slot_cache[s]
+        x_raw = rec["X_raw"]
+        y_raw = rec["Y_raw"]
+        vy_raw = rec["Vy_raw"]
+        lat_ok = rec["lat_updated_ns"] > 0
+        near_cutin = lat_ok and 0 < x_raw < CUTIN_MAX_X_RAW and abs(y_raw) <= CUTIN_MAX_ABS_Y_RAW
+        moving_lat = lat_ok and abs(vy_raw) > CUTIN_VY_THRESH_RAW
+        ghost_pen = 1 if bool(rec["flags"] & 0x0020) else 0
+        return (
+          0 if near_cutin else 1,
+          0 if (near_cutin and moving_lat) else 1,
+          ghost_pen,
+          x_raw if x_raw > 0 else abs(x_raw) + 100_000,
+          idx,
+        )
+
+      rem_matched = [s for _, s in sorted(enumerate(rem_matched), key=_matched_key)]
+
+    for s in rem_matched:
+      prio.append(s)
+      if len(prio) >= LEAD_PRIORITY_COUNT:
+        return prio
+
+    if len(prio) < LEAD_PRIORITY_COUNT:
+      def _rem_key(item: tuple[int, dict]) -> tuple[int, int, int]:
+        s, rec = item
+        x_raw = rec["X_raw"]
+        forward = x_raw > 0
+        in_path = _is_in_path(rec)
+        is_moving = self._is_moving_target_locked(rec)
+        tier = 0 if (in_path and is_moving) else (1 if in_path else (2 if (forward and is_moving) else 3))
+        return (tier, x_raw if forward else abs(x_raw) + 100_000, s)
+
+      for s, _ in sorted(self.active_slots.items(), key=_rem_key):
+        if s not in prio:
+          prio.append(s)
+          if len(prio) >= LEAD_PRIORITY_COUNT:
+            break
     return prio
 
   def _pop_init_task_locked(self, *, allow_stationary: bool) -> tuple[int, int, int] | None:
@@ -793,6 +895,30 @@ class XcpRadarLogger:
         return task
     return (oldest_kin_slot, 16, 6)
 
+  def _secondary_lead_task_locked(
+    self,
+    slot: int,
+    now_ns: int,
+    *,
+    include_meta: bool,
+  ) -> tuple[int, int, int] | None:
+    rec = self.slot_cache[slot]
+    if now_ns - rec["kin_updated_ns"] >= LEAD2_KIN_INTERVAL_NS:
+      return (slot, 16, 6)
+    if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
+      return (slot, 2, 6)
+    if rec["flags_updated_ns"] == 0:
+      return (slot, 106, 2)
+    if rec["lat_updated_ns"] == 0 or now_ns - rec["lat_updated_ns"] >= LEAD2_LAT_INTERVAL_NS:
+      return (slot, 22, 6)
+    if not include_meta:
+      return None
+    if now_ns - max(rec["age_updated_ns"], rec["flags_updated_ns"]) >= LEAD2_META_INTERVAL_NS:
+      return (slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (slot, 106, 2)
+    if rec["qual_updated_ns"] == 0 or now_ns - rec["qual_updated_ns"] >= OTHER_QUAL_INTERVAL_NS:
+      return (slot, 127, 2)
+    return None
+
   def _next_read_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
     self._read_seq += 1
 
@@ -818,7 +944,7 @@ class XcpRadarLogger:
 
     # Adaptive inactive slot discovery (1/10 when tracking a matched lead, 1/3 if no lead or op_tracks lead is unmatched)
     has_unmatched_op_in_path = (
-      not self._op_matched_slots
+      self._op_lead_slot is None
       and (now_ns - self._op_tracks_ns <= OP_TRACKS_MAX_AGE_NS)
       and any(o["dRel"] > 0.0 and abs(o["yRel"]) < 2.0 for o in self._op_tracks)
     )
@@ -856,6 +982,21 @@ class XcpRadarLogger:
     else:
       self._stationary_init_skip_count = 0
 
+    # Promote near CAN-matched cut-in candidate in prio_slots[1] ahead of near_moving_others
+    # meta/own-250ms-lat checks ONLY when no other adjacent moving slot is stale on kin/lat.
+    if len(prio_slots) > 1 and self._is_near_cutin_candidate_locked(prio_slots[1]):
+      cutin_slot = prio_slots[1]
+      other_near_stale = any(
+        self.slot_cache[s]["lat_updated_ns"] == 0
+        or (now_ns - self.slot_cache[s]["lat_updated_ns"] >= OTHER_LAT_INTERVAL_NS)
+        or (now_ns - self.slot_cache[s]["kin_updated_ns"] >= OTHER_MAX_STALE_NS)
+        for s in near_moving_others
+        if s != cutin_slot
+      )
+      if not other_near_stale:
+        if task := self._secondary_lead_task_locked(cutin_slot, now_ns, include_meta=False):
+          return task
+
     # Near-path / adjacent moving lanes stay fresh on both kinematics and Y/Vy (wide oncoming traffic separated below)
     if task := self._stale_group_task_locked(
       near_moving_others, now_ns, OTHER_MAX_STALE_NS, OTHER_META_MAX_STALE_NS,
@@ -865,20 +1006,8 @@ class XcpRadarLogger:
 
     # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics, ~6.7 Hz Y/Vy, slower age/flags/qual
     if len(prio_slots) > 1:
-      s = prio_slots[1]
-      rec = self.slot_cache[s]
-      if now_ns - rec["kin_updated_ns"] >= LEAD2_KIN_INTERVAL_NS:
-        return (s, 16, 6)
-      if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
-        return (s, 2, 6)
-      if rec["flags_updated_ns"] == 0:
-        return (s, 106, 2)
-      if rec["lat_updated_ns"] == 0 or now_ns - rec["lat_updated_ns"] >= LEAD2_LAT_INTERVAL_NS:
-        return (s, 22, 6)
-      if now_ns - max(rec["age_updated_ns"], rec["flags_updated_ns"]) >= LEAD2_META_INTERVAL_NS:
-        return (s, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (s, 106, 2)
-      if rec["qual_updated_ns"] == 0 or now_ns - rec["qual_updated_ns"] >= OTHER_QUAL_INTERVAL_NS:
-        return (s, 127, 2)
+      if task := self._secondary_lead_task_locked(prio_slots[1], now_ns, include_meta=True):
+        return task
 
     if task := self._stale_group_task_locked(
       far_moving_others, now_ns, FAR_OTHER_KIN_INTERVAL_NS, FAR_OTHER_META_INTERVAL_NS,
@@ -968,14 +1097,18 @@ class XcpRadarLogger:
       return b"\xF7\x04" + key + bytes(2)
 
     if self.state == "READY":
-      if not self._primary_lead_urgent_locked(now_ns):
-        wb_task = self._next_wayb_task_locked(now_ns)
-        if wb_task is not None:
-          tag, addr, size = wb_task
-          pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
-          self.in_flight = ("WAYB", tag, addr, size, now_ns)
-          return pkt
-      task = self._next_read_task_locked(now_ns)
+      task: tuple[int, int, int] | None = None
+      if not self._primary_lead_urgent_locked(now_ns) and self._wayb_pending_locked(now_ns):
+        task = self._cutin_wayb_yield_task_locked(now_ns)
+        if task is None:
+          wb_task = self._next_wayb_task_locked(now_ns)
+          if wb_task is not None:
+            tag, addr, size = wb_task
+            pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
+            self.in_flight = ("WAYB", tag, addr, size, now_ns)
+            return pkt
+      if task is None:
+        task = self._next_read_task_locked(now_ns)
       if task is None:
         return None
       slot, offset, size = task
@@ -1176,6 +1309,7 @@ class XcpRadarLogger:
 
     matched_slots, op_lead_slot = self._match_openpilot_tracks(targets, op_tracks, v_ego)
     self._op_matched_slots = matched_slots
+    self._op_lead_slot = op_lead_slot
     return v_ego, op_tracks, targets, op_lead_slot
 
   def _maybe_log_20hz(self, now_ns: int) -> None:

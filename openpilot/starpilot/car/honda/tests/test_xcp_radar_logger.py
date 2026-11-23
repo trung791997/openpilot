@@ -1355,3 +1355,287 @@ def test_timeout_and_drain_discard_counters_logged_in_20hz_event(monkeypatch):
   assert ev["handshake_timeouts"] == 1
   assert ev["drain_discards"] == 2
   logger.close()
+
+
+def test_inpath_fallback_lead_not_starved_by_offpath_op_match(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  # Crawl/moving in-path fallback lead (slot 4, unmatched in CAN) vs off-path CAN-matched target (slot 1 at y=-7.3 m)
+  # plus 6 adjacent/clutter slots that compete for near_moving_others / init_queue when v_ego < 3.0.
+  _write_slot(ram, 1, {"x": 23.6, "vx": 3.5, "ax": 0.0, "y": -7.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 40, "qual": 25, "cls": 82})
+  _write_slot(ram, 4, {"x": 25.0, "vx": -2.1, "ax": -0.5, "y": 0.5, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 89, "qual": 25, "cls": 82})
+  for s in range(10, 16):
+    _write_slot(
+      ram,
+      s,
+      {"x": 12.0 + s, "vx": -2.2, "ax": 0.0, "y": -3.2 if s % 2 == 0 else 3.3, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 20, "cls": 70},
+    )
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp)
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=2.2)
+  t_unlock = t
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=13, dRel=23.6, yRel=-7.3, vRel=3.5)])
+
+  for i in range(200):  # 4.0 s at 20 ms RTT
+    if i >= 15:
+      logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      rep = b"\xFF" + bytes(ram[off : off + sz])
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=2.2)
+    t += 20_000_000
+
+  prio = logger._select_priority_slots_locked()
+  assert prio[:2] == [4, 1]
+  post_warmup = [r for r in rows if r["mono_ns"] >= t_unlock + 1_500_000_000]
+  assert len(post_warmup) >= 35
+  assert all(
+    r["lead"] is not None
+    and r["lead"]["lead_source"] == "xcp_fallback"
+    and r["lead"]["slot"] == 4
+    and r["lead"]["stage"] == "measured"
+    for r in post_warmup
+  )
+  assert max(r["lead"]["kin_age_ms"] for r in post_warmup) <= 120.0
+  logger.close()
+
+  # 2) Approaching stopped in-path fallback (y=1.6 m) must outrank adjacent moving traffic outside 2.0 m (y=2.35 m).
+  logger2 = XcpRadarLogger(cp)
+  logger2.state = "READY"
+  logger2.last_v_ego = 5.0
+  t0 = 10_000_000_000
+  for s, x_m, y_m, vx_mps in ((6, 80.0, 2.35, 5.0), (28, 40.0, 1.6, -5.0)):
+    logger2.slot_cache[s].update({
+      "X_raw": int(round(x_m * 128)),
+      "Y_raw": int(round(y_m * 128)),
+      "Vx_raw": int(round(vx_mps * 256)),
+      "age": 30,
+      "flags": 0xE0C0,
+      "subflags": 0x0000,
+      "flags_updated_ns": t0,
+      "age_updated_ns": t0,
+      "lat_updated_ns": t0,
+      "kin_updated_ns": t0,
+      "qual_updated_ns": t0,
+    })
+    logger2.active_slots[s] = logger2.slot_cache[s]
+  logger2._op_matched_slots = []
+  logger2._op_lead_slot = None
+  assert logger2._select_priority_slots_locked()[0] == 28
+
+  # 3) Unmatched in-path CAN op_track still uses INACTIVE_PROBE_PERIOD_NO_LEAD (3) when off-path CAN is matched.
+  logger2.slot_cache[1].update({
+    "X_raw": int(round(23.6 * 128)),
+    "Y_raw": int(round(-7.3 * 128)),
+    "Vx_raw": int(round(3.5 * 256)),
+    "age": 30,
+    "flags": 0xE0C0,
+    "flags_updated_ns": t0,
+    "age_updated_ns": t0,
+    "lat_updated_ns": t0,
+    "kin_updated_ns": t0,
+    "qual_updated_ns": t0,
+  })
+  logger2.active_slots[1] = logger2.slot_cache[1]
+  logger2._op_matched_slots = [1]
+  logger2._op_lead_slot = None
+  logger2.observe_radar_tracks(SimpleNamespace(points=[SimpleNamespace(trackId=99, dRel=35.0, yRel=0.3, vRel=-1.0)]), t0)
+  logger2._read_seq = 2
+  logger2._last_probe_seq = 0
+  probe = logger2._next_read_task_locked(t0 + 5_000_000)
+  assert probe is not None and probe[0] not in (1, 6, 28) and probe[1:] == (16, 6)
+
+  # 4) Matched in-path op_lead always takes prio_slots[0] over closer moving in-path fallback.
+  logger2.slot_cache[3].update({
+    "X_raw": int(round(15.0 * 128)),
+    "Y_raw": int(round(0.2 * 128)),
+    "Vx_raw": int(round(-0.5 * 256)),
+    "age": 30,
+    "flags": 0xE0C0,
+    "flags_updated_ns": t0,
+    "age_updated_ns": t0,
+    "lat_updated_ns": t0,
+    "kin_updated_ns": t0,
+    "qual_updated_ns": t0,
+  })
+  logger2.active_slots[3] = logger2.slot_cache[3]
+  logger2._op_lead_slot = 28
+  logger2._op_matched_slots = [28, 1]
+  assert logger2._select_priority_slots_locked()[0] == 28
+
+  # 5) 0x1000 (conf_band="low", 0xF040) on a close in-path fallback must NOT demote it below
+  # off-path CAN matches or farther 0xE0C0 in-path targets (regression for route 00000105 bug).
+  logger2._op_lead_slot = None
+  logger2._op_matched_slots = [1]
+  logger2.slot_cache[28]["flags"] = 0xE0C0
+  logger2.slot_cache[3]["flags"] = 0xF040
+  assert logger2._select_priority_slots_locked()[0] == 3
+  logger2.close()
+
+
+def test_cutin_prio1_outranks_far_inpath_preempts_near_moving_and_yields_wayb(monkeypatch):
+  rows = _capture_events(monkeypatch)
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(cp, probe_wayb=True)
+  logger.state = "READY"
+  logger.last_v_ego = 18.0
+  t0 = 20_000_000_000
+
+  def _seed(s: int, *, x: float, y: float, vx: float, vy: float, flags: int = 0xE0C0, kin_ts: int = t0, lat_ts: int = t0) -> None:
+    logger.slot_cache[s].update({
+      "X_raw": int(round(x * 128)),
+      "Y_raw": int(round(y * 128)),
+      "Vx_raw": int(round(vx * 256)),
+      "Vy_raw": int(round(vy * 256)),
+      "age": 30,
+      "flags": flags,
+      "subflags": 0x0400 if abs(y) < 1.8 else 0x0000,
+      "flags_updated_ns": t0,
+      "age_updated_ns": t0,
+      "lat_updated_ns": lat_ts,
+      "kin_updated_ns": kin_ts,
+      "qual_updated_ns": t0,
+    })
+    logger.active_slots[s] = logger.slot_cache[s]
+
+  # slot 2: matched in-path op_lead
+  # slot 7: near CAN-matched laterally moving cut-in (d=24 m, y=3.2 m, vy=-0.5 m/s)
+  # slot 8: closer laterally steady CAN-matched adjacent (d=20 m, y=-3.2 m, vy=0.0 m/s)
+  # slot 9: far CAN-matched slot (d=60 m, y=3.0 m, vy=-0.6 m/s)
+  # slot 10: far unmatched in-path slot (d=70 m, y=0.5 m, vy=0.0 m/s)
+  # slot 11: stale near_moving_other competing for bandwidth (kin_age = 500 ms)
+  _seed(2, x=45.0, y=0.2, vx=-1.0, vy=0.0)
+  _seed(7, x=24.0, y=3.2, vx=-2.0, vy=-0.5)
+  _seed(8, x=20.0, y=-3.2, vx=-1.5, vy=0.0)
+  _seed(9, x=60.0, y=3.0, vx=-2.0, vy=-0.6)
+  _seed(10, x=70.0, y=0.5, vx=-1.0, vy=0.0)
+  _seed(11, x=35.0, y=-4.5, vx=-1.0, vy=0.0, kin_ts=t0 - 500_000_000, lat_ts=t0 - 500_000_000)
+
+  # 1) Ranking: near moving cut-in (slot 7) wins prio[1] over far in-path (10), far match (9), and steady match (8).
+  logger._op_lead_slot = 2
+  logger._op_matched_slots = [2, 8, 9, 7]
+  assert logger._select_priority_slots_locked() == [2, 7]
+
+  # 2) Scheduler anti-starvation vs meta promotion:
+  # When another near_moving_other (slot 11) is stale on kin/lat, it runs ahead of cut-in slot 7 at 110 ms.
+  logger._last_probe_seq = logger._read_seq
+  logger.slot_cache[7]["kin_updated_ns"] = t0 - xcp_mod.LEAD2_KIN_INTERVAL_NS
+  assert logger._next_read_task_locked(t0) == (11, 22, 6)
+
+  # Once near_moving_others are fresh on kin/lat (only stale on meta), cut-in slot 7 runs kin/lat ahead of meta.
+  logger.slot_cache[11]["kin_updated_ns"] = t0
+  logger.slot_cache[11]["lat_updated_ns"] = t0
+  logger.slot_cache[11]["age_updated_ns"] = t0 - 1_500_000_000
+  assert logger._next_read_task_locked(t0) == (7, 16, 6)
+  logger.slot_cache[7]["kin_updated_ns"] = t0
+  logger.slot_cache[7]["lat_updated_ns"] = t0 - xcp_mod.LEAD2_LAT_INTERVAL_NS
+  assert logger._next_read_task_locked(t0) == (7, 22, 6)
+
+  # Non-cut-in prio[1] (far off-path d=60 m, y=8.0 m) does NOT preempt near_moving_others meta (slot 11).
+  logger.slot_cache[7]["lat_updated_ns"] = t0
+  logger._op_matched_slots = [2, 12]
+  _seed(12, x=60.0, y=8.0, vx=-1.5, vy=0.0, kin_ts=t0 - xcp_mod.LEAD2_KIN_INTERVAL_NS - 50_000_000)
+  assert logger._select_priority_slots_locked() == [2, 12]
+  assert logger._next_read_task_locked(t0) == (11, 2, 6)
+
+  # 3) Direct Way B cut-in yield in _build_next_cto_locked: primary urgency stays False;
+  # yields single Way B read when cut-in prio[1] kin_age >= 140 ms while leaving _wayb_queue queued.
+  logger._tx_armed = True
+  logger._tx_armed_ns = t0 - 1_000_000_000
+  logger.in_flight = None
+  logger.slot_cache[2]["kin_updated_ns"] = t0
+  logger._op_matched_slots = [2, 7]
+  wayb_entry = ("t1_kin", xcp_mod.WAYB_DEFAULT_T1_BASE + 24, 6)
+  logger._wayb_queue.append(wayb_entry)
+  logger.slot_cache[7]["kin_updated_ns"] = t0 - (xcp_mod.CUTIN_WAYB_YIELD_NS - 1_000_000)
+  assert logger._primary_lead_urgent_locked(t0) is False
+  assert logger._build_next_cto_locked(t0) is not None
+  assert logger.in_flight is not None and logger.in_flight[0] == "WAYB"
+  assert len(logger._wayb_queue) == 0
+
+  logger.in_flight = None
+  logger._wayb_queue.append(wayb_entry)
+  logger.slot_cache[7]["kin_updated_ns"] = t0 - xcp_mod.CUTIN_WAYB_YIELD_NS
+  assert logger._primary_lead_urgent_locked(t0) is False
+  assert logger._build_next_cto_locked(t0) is not None
+  assert logger.in_flight is not None and logger.in_flight[:4] == ("F4", 7, 16, 6)
+  assert len(logger._wayb_queue) == 1
+
+  logger.in_flight = None
+  logger._op_matched_slots = [2, 12]
+  logger.slot_cache[12]["kin_updated_ns"] = t0 - 500_000_000
+  assert logger._build_next_cto_locked(t0) is not None
+  assert logger.in_flight is not None and logger.in_flight[0] == "WAYB"
+  logger.close()
+
+  # 4) End-to-end 3.6 s loop at 20 ms RTT: Way B still completes rounds and cut-in prio[1] stays fresh (<200 ms)
+  # despite 4 competing near_moving_others and 1 Hz Way B rounds.
+  rows.clear()
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 2, {"x": 42.0, "vx": -1.0, "ax": 0.0, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+  _write_slot(ram, 7, {"x": 22.0, "vx": -2.5, "ax": -0.2, "y": 2.9, "vy": -0.6, "flags": 0xE0C0, "sub": 0x0000, "age": 25, "qual": 25, "cls": 80})
+  for s in range(12, 16):
+    _write_slot(
+      ram,
+      s,
+      {"x": 20.0 + s, "vx": -1.5, "ax": 0.0, "y": -4.2 if s % 2 == 0 else 4.5, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 20, "cls": 70},
+    )
+
+  t1_base = xcp_mod.WAYB_DEFAULT_T1_BASE
+  out18_base = xcp_mod.WAYB_DEFAULT_OUT18_BASE
+  p_base = xcp_mod.WAYB_DEFAULT_P_BASE
+  t1_slot = 7
+  t1_slot7 = bytearray(104)
+  t1_slot7[86:92] = (0x8800).to_bytes(2, "big") + bytes([0, 0, 0, 4])
+
+  e2e = XcpRadarLogger(cp, probe_wayb=True)
+  t = _unlock_logger(e2e, 1_000_000_000, v_ego=18.0)
+  t_unlock = t
+  rd = SimpleNamespace(points=[
+    SimpleNamespace(trackId=101, dRel=38.6, yRel=0.1, vRel=-1.0),
+    SimpleNamespace(trackId=202, dRel=18.6, yRel=2.9, vRel=-2.5),
+  ])
+
+  wayb_p0_reads = 0
+  for i in range(180):  # 3.6 s at 20 ms RTT
+    if i >= 15:
+      e2e.observe_radar_tracks(rd, t)
+    sends = e2e.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
+        off = addr - REC0
+        rep = b"\xFF" + bytes(ram[off : off + sz])
+      elif addr == p_base + 2 and sz == 7:
+        wayb_p0_reads += 1
+        rep = b"\xFF" + bytes([0x00, 0x01, 0x00, 0x02, 5, t1_slot, 0])
+      elif (t1_base + 104 * t1_slot) <= addr and (addr + sz) <= (t1_base + 104 * (t1_slot + 1)):
+        off = addr - (t1_base + 104 * t1_slot)
+        rep = b"\xFF" + bytes(t1_slot7[off : off + sz])
+      elif sz == 2 and ((addr - out18_base) % 18) == 16 and 0 <= ((addr - out18_base) // 18) < 32:
+        rep = b"\xFF" + (bytes([101, 0x03]) if ((addr - out18_base) // 18) == t1_slot else bytes(2))
+      else:
+        raise AssertionError(f"Unexpected XCP probe address {addr:#x} size={sz}")
+      e2e.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 19_000_000, v_ego=18.0)
+    t += 20_000_000
+
+  assert wayb_p0_reads >= 3
+  post = [r for r in rows if r["mono_ns"] >= t_unlock + 1_200_000_000]
+  assert len(post) >= 40
+  assert all(r["lead"] is not None and r["lead"]["slot"] == 2 and r["lead"]["stage"] == "measured" for r in post)
+  assert max(r["lead"]["kin_age_ms"] for r in post) <= 120.0
+  cutin_targets = [next((tgt for tgt in r["targets"] if tgt["slot"] == 7), None) for r in post]
+  assert all(tgt is not None for tgt in cutin_targets)
+  cutin_ka = sorted(tgt["kin_age_ms"] for tgt in cutin_targets if tgt is not None)
+  # Anti-starvation fair share keeps competing near_moving_others alive (tested above) while
+  # direct Way B yield + meta ordering hold cut-in p50 <= 140 ms and max <= 400 ms (vs ~660/1620 ms prior).
+  assert cutin_ka[len(cutin_ka) // 2] <= 140.0
+  assert sum(1 for ka in cutin_ka if ka > 200.0) <= 12
+  assert cutin_ka[-1] <= 400.0
+  e2e.close()
