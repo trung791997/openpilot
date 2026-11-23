@@ -98,6 +98,11 @@ def ioniq6_settings_capable(CP) -> bool:
   return _stock_ioniq6(CP) or (IONIQ6_LONG_PREARM_ENABLED and ioniq6_long_eligible(CP))
 
 
+def ioniq6_alpha_long_available(CP) -> bool:
+  # The UI settings layouts import this; the 11-18 Honda-PTM merge brought those callers without it.
+  return _stock_ioniq6(CP) or (IONIQ6_LONG_PREARM_ENABLED and ioniq6_long_eligible(CP))
+
+
 def qualified_ccnc_long_aol(CP, *, marked_only=False):
   return qualified_ev9_long_aol(CP, marked_only=marked_only) or qualified_pe_long_aol(CP, marked_only=marked_only)
 
