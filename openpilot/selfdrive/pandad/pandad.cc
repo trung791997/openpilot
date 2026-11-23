@@ -90,11 +90,18 @@ Panda *connect(std::string serial, uint32_t index) {
   return panda.release();
 }
 
-void can_send_thread(std::vector<Panda *> pandas, bool fake_send) {
-  util::set_thread_name("pandad_can_send");
+namespace {
+
+void can_send_thread_for_service(
+    std::vector<Panda *> pandas,
+    bool fake_send,
+    const char *service_name,
+    const char *thread_name,
+    bool (*extract_can)(const cereal::Event::Reader &, capnp::List<cereal::CanData>::Reader &)) {
+  util::set_thread_name(thread_name);
 
   AlignedBuffer aligned_buf;
-  std::unique_ptr<SubSocket> subscriber(SubSocket::create("sendcan", false, services.at("sendcan").queue_size));
+  std::unique_ptr<SubSocket> subscriber(SubSocket::create(service_name, false, services.at(service_name).queue_size));
   assert(subscriber != NULL);
   subscriber->setTimeout(100);
 
@@ -108,18 +115,48 @@ void can_send_thread(std::vector<Panda *> pandas, bool fake_send) {
     capnp::FlatArrayMessageReader cmsg(aligned_buf.align(msg.get()));
     cereal::Event::Reader event = cmsg.getRoot<cereal::Event>();
 
+    capnp::List<cereal::CanData>::Reader can_data_list;
+    if (!extract_can(event, can_data_list)) {
+      continue;
+    }
+
     // Don't send if older than 1 second
     if ((nanos_since_boot() - event.getLogMonoTime() < 1e9) && !fake_send) {
       for (const auto& panda : pandas) {
-        LOGT("sending sendcan to panda: %s", (panda->hw_serial()).c_str());
-        panda->can_send(event.getSendcan());
-        LOGT("sendcan sent to panda: %s", (panda->hw_serial()).c_str());
+        LOGT("sending %s to panda: %s", service_name, (panda->hw_serial()).c_str());
+        panda->can_send(can_data_list);
+        LOGT("%s sent to panda: %s", service_name, (panda->hw_serial()).c_str());
       }
-    } else {
-      LOGE("sendcan too old to send: %" PRIu64 ", %" PRIu64, nanos_since_boot(), event.getLogMonoTime());
+    } else if (!fake_send) {
+      LOGE("%s too old to send: %" PRIu64 ", %" PRIu64, service_name, nanos_since_boot(), event.getLogMonoTime());
     }
-
   }
+}
+
+bool extract_sendcan(const cereal::Event::Reader &event, capnp::List<cereal::CanData>::Reader &out) {
+  if (!event.isSendcan()) {
+    return false;
+  }
+  out = event.getSendcan();
+  return true;
+}
+
+bool extract_xcp_sendcan(const cereal::Event::Reader &event, capnp::List<cereal::CanData>::Reader &out) {
+  if (!event.isXcpSendcan()) {
+    return false;
+  }
+  out = event.getXcpSendcan();
+  return true;
+}
+
+}  // namespace
+
+void can_send_thread(std::vector<Panda *> pandas, bool fake_send) {
+  can_send_thread_for_service(std::move(pandas), fake_send, "sendcan", "pandad_can_send", extract_sendcan);
+}
+
+void xcp_can_send_thread(std::vector<Panda *> pandas, bool fake_send) {
+  can_send_thread_for_service(std::move(pandas), fake_send, "xcpSendcan", "pandad_xcp_send", extract_xcp_sendcan);
 }
 
 void can_recv(std::vector<Panda *> &pandas, PubMaster *pm) {
@@ -453,8 +490,9 @@ void pandad_run(std::vector<Panda *> &pandas) {
   const char *aol_env = getenv("AOL_REPLAY_RUNTIME");
   const bool aol_replay = aol_env != nullptr && strcmp(aol_env, "1") == 0;
 
-  // Start helper thread for event-driven sendcan.
+  // Start helper threads for event-driven sendcan and xcpSendcan.
   std::thread send_thread(can_send_thread, pandas, fake_send);
+  std::thread xcp_send_thread(xcp_can_send_thread, pandas, fake_send);
   hwmon_power.store(0);
   std::thread hardware_thread;
   if (Hardware::get_device_type() == cereal::InitData::DeviceType::TICI) {
@@ -592,6 +630,7 @@ void pandad_run(std::vector<Panda *> &pandas) {
   }
 
   send_thread.join();
+  xcp_send_thread.join();
   if (hardware_thread.joinable()) hardware_thread.join();
 }
 

@@ -45,6 +45,7 @@ _services: dict[str, tuple] = {
   "narrowRoadEncodeIdx": (False, 20., 1),
   "radarTracks": (True, 20.),
   "sendcan": (True, 100., 139, QueueSize.MEDIUM),
+  "xcpSendcan": (True, 100., None, QueueSize.SMALL),
   "logMessage": (True, 0., None, QueueSize.BIG),
   # Recorder-only transport carrying Event.logMessage, retained in qlog.
   "modelIdentity": (True, 0.2, 1),

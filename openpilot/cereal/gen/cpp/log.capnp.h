@@ -3342,6 +3342,7 @@ struct Event {
     CHESTNUT_STATE,
     CHESTNUT_GPU_STATE,
     STARPILOT_BLENDFUL_STATE,
+    XCP_SENDCAN,
   };
 
   struct _capnpPrivate {
@@ -23397,6 +23398,10 @@ public:
   inline bool hasStarpilotBlendfulState() const;
   inline  ::cereal::StarPilotBlendfulState::Reader getStarpilotBlendfulState() const;
 
+  inline bool isXcpSendcan() const;
+  inline bool hasXcpSendcan() const;
+  inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Reader getXcpSendcan() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -24655,6 +24660,14 @@ public:
   inline  ::cereal::StarPilotBlendfulState::Builder initStarpilotBlendfulState();
   inline void adoptStarpilotBlendfulState(::capnp::Orphan< ::cereal::StarPilotBlendfulState>&& value);
   inline ::capnp::Orphan< ::cereal::StarPilotBlendfulState> disownStarpilotBlendfulState();
+
+  inline bool isXcpSendcan();
+  inline bool hasXcpSendcan();
+  inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Builder getXcpSendcan();
+  inline void setXcpSendcan( ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Builder initXcpSendcan(unsigned int size);
+  inline void adoptXcpSendcan(::capnp::Orphan< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>> disownXcpSendcan();
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -60062,6 +60075,60 @@ inline ::capnp::Orphan< ::cereal::StarPilotBlendfulState> Event::Builder::disown
   KJ_IREQUIRE((which() == Event::STARPILOT_BLENDFUL_STATE),
               "Must check which() before get()ing a union member.");
   return ::capnp::_::PointerHelpers< ::cereal::StarPilotBlendfulState>::disown(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+
+inline bool Event::Reader::isXcpSendcan() const {
+  return which() == Event::XCP_SENDCAN;
+}
+inline bool Event::Builder::isXcpSendcan() {
+  return which() == Event::XCP_SENDCAN;
+}
+inline bool Event::Reader::hasXcpSendcan() const {
+  if (which() != Event::XCP_SENDCAN) return false;
+  return !_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline bool Event::Builder::hasXcpSendcan() {
+  if (which() != Event::XCP_SENDCAN) return false;
+  return !_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Reader Event::Reader::getXcpSendcan() const {
+  KJ_IREQUIRE((which() == Event::XCP_SENDCAN),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Builder Event::Builder::getXcpSendcan() {
+  KJ_IREQUIRE((which() == Event::XCP_SENDCAN),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void Event::Builder::setXcpSendcan( ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Reader value) {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::XCP_SENDCAN);
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>::Builder Event::Builder::initXcpSendcan(unsigned int size) {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::XCP_SENDCAN);
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), size);
+}
+inline void Event::Builder::adoptXcpSendcan(
+    ::capnp::Orphan< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>&& value) {
+  _builder.setDataField<Event::Which>(
+      ::capnp::bounded<4>() * ::capnp::ELEMENTS, Event::XCP_SENDCAN);
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>> Event::Builder::disownXcpSendcan() {
+  KJ_IREQUIRE((which() == Event::XCP_SENDCAN),
+              "Must check which() before get()ing a union member.");
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::CanData,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS));
 }
 

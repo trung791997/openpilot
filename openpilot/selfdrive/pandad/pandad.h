@@ -3,9 +3,13 @@
 #include <string>
 
 #include "common/params.h"
+#include "common/util.h"
 #include "selfdrive/pandad/panda.h"
 
+extern ExitHandler do_exit;
 void pandad_main_thread(std::vector<std::string> serials);
+void can_send_thread(std::vector<Panda *> pandas, bool fake_send);
+void xcp_can_send_thread(std::vector<Panda *> pandas, bool fake_send);
 
 class PandaSafety {
 public:

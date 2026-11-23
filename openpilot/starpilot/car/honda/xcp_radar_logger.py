@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 from collections import deque
+import fcntl
 import json
 import math
 import os
@@ -122,7 +123,13 @@ WAYB_OUT18_SCAN_PER_ROUND = 4
 XCP_UI_SHM_PATH = Path("/dev/shm/xcp_radar_points.json") if Path("/dev/shm").is_dir() else None
 XCP_ASSIST_SHM_PATH = Path("/dev/shm/xcp_radar_assist.json") if Path("/dev/shm").is_dir() else None
 _DEFAULT_ASSIST_SHM_PATH = object()
+_DEFAULT_SENDER_LOCK_PATH = object()
 _CLOCK_BOOTTIME = getattr(time, "CLOCK_BOOTTIME", None)
+
+
+def _default_sender_lock_path() -> Path:
+  base = Path("/dev/shm") if Path("/dev/shm").is_dir() else Path("/tmp")
+  return base / "honda_xcp_sender.lock"
 
 
 def _boot_minus_mono_ns() -> int:
@@ -223,6 +230,9 @@ class XcpRadarLogger:
     send_lock: threading.Lock | None = None,
     pm=None,
     params=None,
+    send_topic: str = "sendcan",
+    use_io_thread: bool | None = None,
+    sender_lock_path: Path | None | object = _DEFAULT_SENDER_LOCK_PATH,
     shm_path: Path | None = XCP_UI_SHM_PATH,
     assist_shm_path: Path | None | object = _DEFAULT_ASSIST_SHM_PATH,
     assist_fast_publish: bool | None = None,
@@ -279,6 +289,12 @@ class XcpRadarLogger:
     self._lock = threading.RLock()
     self._send_lock = send_lock
     self._pm = pm
+    self._send_topic = send_topic
+    self._sender_lock_fd: int | None = None
+    if sender_lock_path is _DEFAULT_SENDER_LOCK_PATH:
+      resolved_lock_path = _default_sender_lock_path() if self._pm is not None else None
+    else:
+      resolved_lock_path = Path(sender_lock_path) if sender_lock_path is not None else None
     self._wayb_probe_enabled = bool(probe_wayb if probe_wayb is not None else (pm is not None))
     self._wayb_queue: deque[tuple[str, int, int]] = deque()
     self._wayb_last_round_ns = 0
@@ -311,10 +327,20 @@ class XcpRadarLogger:
         and not bool(CP.flags & (HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD))
         and not bool(CP.passive)
       ):
+        if resolved_lock_path is not None:
+          fd = os.open(resolved_lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+          try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+          except BlockingIOError:
+            os.close(fd)
+            cloudlog.warning("xcp_radar_logger: sender lock held by another process, refusing second sender")
+            return
+          self._sender_lock_fd = fd
         self.enabled = True
         self.state = "NEED_CONNECT"
         atexit.register(self.close)
-        if self._pm is not None:
+        want_io_thread = (self._pm is not None) if use_io_thread is None else (bool(use_io_thread) and self._pm is not None)
+        if want_io_thread:
           self._use_io_thread = True
           self._io_thread = threading.Thread(target=self._io_loop, name="xcp_radar_io", daemon=True)
           self._io_thread.start()
@@ -331,12 +357,24 @@ class XcpRadarLogger:
     io_thread = self._io_thread
     if io_thread is not None and io_thread is not threading.current_thread():
       io_thread.join(timeout=0.5)
-    for path in (self._shm_path, self._assist_shm_path):
-      if path is not None:
-        try:
-          path.unlink(missing_ok=True)
-        except OSError:
-          pass
+    lock_fd = self._sender_lock_fd
+    self._sender_lock_fd = None
+    if lock_fd is not None:
+      try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+      except OSError:
+        pass
+      try:
+        os.close(lock_fd)
+      except OSError:
+        pass
+    if self.enabled:
+      for path in (self._shm_path, self._assist_shm_path):
+        if path is not None:
+          try:
+            path.unlink(missing_ok=True)
+          except OSError:
+            pass
 
   def _alloc_track_id_locked(self) -> int:
     tid = self._next_radar_track_id
@@ -1185,12 +1223,52 @@ class XcpRadarLogger:
       return
     from openpilot.selfdrive.pandad import can_list_to_can_capnp
 
-    frame = can_list_to_can_capnp([(XCP_CTO, pkt, XCP_BUS)], msgtype="sendcan", valid=True)
+    frame = can_list_to_can_capnp([(XCP_CTO, pkt, XCP_BUS)], msgtype=self._send_topic, valid=True)
     if self._send_lock is not None:
       with self._send_lock:
-        self._pm.send("sendcan", frame)
+        self._pm.send(self._send_topic, frame)
     else:
-      self._pm.send("sendcan", frame)
+      self._pm.send(self._send_topic, frame)
+
+  def arm_tx(self, now_ns: int | None = None) -> None:
+    if not self.enabled:
+      return
+    with self._lock:
+      if not self._tx_armed:
+        self._tx_armed = True
+        self._tx_armed_ns = int(time.monotonic_ns() if now_ns is None else now_ns)
+        self._tx_event.set()
+
+  def step_io(self, can_strs: list[bytes], now_ns: int, *, v_ego: float | None = None, radar_data=None) -> bool:
+    """Single-threaded daemon IO step: reply DTO -> next CTO first, then logs/SHM."""
+    if not self.enabled:
+      return False
+    from openpilot.selfdrive.pandad import can_capnp_to_list
+
+    pkt: bytes | None = None
+    can_list = can_capnp_to_list(can_strs) if can_strs else []
+    with self._lock:
+      if not self._tx_armed:
+        self._tx_armed = True
+        self._tx_armed_ns = int(now_ns)
+        self._tx_event.set()
+      for _, packet in can_list:
+        for addr, dat, src in packet:
+          if src == XCP_BUS and addr == XCP_DTO:
+            self._process_dto_locked(bytes(dat), now_ns)
+      pkt = self._build_next_cto_locked(now_ns)
+    if pkt is not None:
+      self._send_cto(pkt)
+    if v_ego is not None:
+      with self._lock:
+        self.last_v_ego = float(v_ego)
+    if radar_data is not None:
+      self.observe_radar_tracks(radar_data, now_ns)
+    if can_strs:
+      self._maybe_publish_assist_shm(now_ns)
+    self._maybe_log_20hz(now_ns)
+    self._maybe_flush_reads(now_ns)
+    return pkt is not None
 
   def _io_loop(self) -> None:
     import openpilot.cereal.messaging as messaging

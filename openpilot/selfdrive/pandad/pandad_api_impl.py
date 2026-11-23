@@ -31,7 +31,7 @@ def can_list_to_can_capnp(can_msgs, msgtype='can', valid=True, *, source_observe
 
   Args:
     can_msgs: List of tuples [(address, data_bytes, src), ...]
-    msgtype: 'can' or 'sendcan'
+    msgtype: 'can', 'sendcan', or 'xcpSendcan'
     valid: Whether the event is valid
 
   Returns:
@@ -69,7 +69,7 @@ def can_capnp_to_list(strings, msgtype='can'):
 
   Args:
     strings: Tuple/list of serialized Cap'n Proto bytes
-    msgtype: 'can' or 'sendcan'
+    msgtype: 'can', 'sendcan', or 'xcpSendcan'
 
   Returns:
     List of tuples [(nanos, [(address, data, src), ...]), ...]

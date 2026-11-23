@@ -27,6 +27,7 @@ static std::map<std::string, service> services = {
   { "narrowRoadEncodeIdx", {"narrowRoadEncodeIdx", false, 20.000000, 1, 256000}},
   { "radarTracks", {"radarTracks", true, 20.000000, -1, 256000}},
   { "sendcan", {"sendcan", true, 100.000000, 139, 2097152}},
+  { "xcpSendcan", {"xcpSendcan", true, 100.000000, -1, 256000}},
   { "logMessage", {"logMessage", true, 0.000000, -1, 10485760}},
   { "modelIdentity", {"modelIdentity", true, 0.200000, 1, 256000}},
   { "errorLogMessage", {"errorLogMessage", true, 0.000000, 1, 10485760}},

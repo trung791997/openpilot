@@ -76,6 +76,18 @@ def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
+
+def xcpd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if not started or not params.get_bool("AlphaHondaXcpDaemon"):
+    return False
+  from opendbc.car.honda.values import HondaFlags
+  return (
+    CP.brand == "honda"
+    and bool(CP.flags & HondaFlags.BOSCH)
+    and not bool(CP.flags & (HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD))
+    and not bool(CP.passive)
+  )
+
 def reproject(started: bool, params: Params, CP: car.CarParams) -> bool:
   # The session is chosen as soon as the onroad process graph is evaluated, then latched for the drive, so a
   # Chestnut that drops for a moment does not flip modeld's camera source underneath it.
@@ -235,6 +247,7 @@ procs = [
   PythonProcess("joystickd", "openpilot.tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "openpilot.selfdrive.selfdrived.selfdrived", only_onroad),
   PythonProcess("card", "openpilot.selfdrive.car.card", only_onroad),
+  PythonProcess("xcpd", "openpilot.starpilot.car.honda.xcpd", xcpd_enabled),
   PythonProcess("deleter", "openpilot.system.loggerd.deleter", always_run),
   PythonProcess("dmonitoringd", "openpilot.selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "openpilot.system.qcomgpsd.qcomgpsd", qcomgps, enabled=COMMA_HARDWARE),

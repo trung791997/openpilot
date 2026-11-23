@@ -321,13 +321,16 @@ class Car:
         raise ValueError('explicit car interface requires a radar interface')
       self.RI = RI
 
-    from openpilot.starpilot.car.honda.xcp_radar_logger import XcpRadarLogger
-    self.xcp_radar_logger = XcpRadarLogger(
-      self.CP,
-      send_lock=self.vehicle_startup.send_lock,
-      pm=self.pm,
-      params=self.params,
-    )
+    if self.params.get_bool("AlphaHondaXcpDaemon"):
+      self.xcp_radar_logger = None
+    else:
+      from openpilot.starpilot.car.honda.xcp_radar_logger import XcpRadarLogger
+      self.xcp_radar_logger = XcpRadarLogger(
+        self.CP,
+        send_lock=self.vehicle_startup.send_lock,
+        pm=self.pm,
+        params=self.params,
+      )
 
     self.volt_cc_selected = gm_cc_transport_required(self.CP)
     self.volt_cc_boot_offset_ns = None
