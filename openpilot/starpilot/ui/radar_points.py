@@ -1,4 +1,7 @@
-"""Radar points on the road view: one dot per point in radarTracks (plus optional XCP Array B overlay).
+"""Radar points on the road view: one dot per object, colored by which source saw it.
+
+red = camera objects (radarTracks), blue = radar (XCP Array B overlay), purple = seen by both (drawn once, at the
+radar position, when a camera object and an XCP point agree within FUSE_* gates in car space).
 
 Off by default. The choice is the optional `radarPoints` boolean in the onroad layout document, set from
 "Radar Point Display" in the appearance settings. Display only: this never touches radar or control code.
@@ -13,11 +16,46 @@ import numpy as np
 SERVICE = "radarTracks"
 DOCUMENT_KEY = "radarPoints"
 FILL_COLOR = (255, 40, 40, 230)
-XCP_FILL_COLOR = (0, 220, 255, 220)
+XCP_FILL_COLOR = (40, 110, 255, 230)
+FUSED_FILL_COLOR = (170, 70, 255, 235)
 OUTLINE_COLOR = (0, 0, 0, 170)
 NO_POINTS = np.empty((0, 2), dtype=np.float64)
 XCP_PATH = Path("/dev/shm/xcp_radar_points.json")
 XCP_STALE_NS = 1_000_000_000
+FUSE_D_MIN_M = 2.0
+FUSE_D_FRAC = 0.08
+FUSE_Y_M = 1.0
+
+
+def match_fused(cam: np.ndarray, xcp: np.ndarray) -> list[tuple[int, int]]:
+  """One-to-one greedy match of camera (d, y) rows to XCP (d, y) rows in car space.
+
+  A pair is eligible when |dd| <= max(FUSE_D_MIN_M, FUSE_D_FRAC * d_xcp) and |dy| <= FUSE_Y_M. Eligible pairs are
+  taken lowest normalized cost first (|dd| / d_gate + |dy| / FUSE_Y_M); used indices are skipped. Non-finite rows
+  never match. Returns (cam_index, xcp_index) pairs.
+  """
+  cam = np.asarray(cam, dtype=np.float64).reshape(-1, 2)
+  xcp = np.asarray(xcp, dtype=np.float64).reshape(-1, 2)
+  pairs = []
+  for i, (cd, cy) in enumerate(cam):
+    if not (np.isfinite(cd) and np.isfinite(cy)):
+      continue
+    for j, (xd, xy) in enumerate(xcp):
+      if not (np.isfinite(xd) and np.isfinite(xy)):
+        continue
+      d_gate = max(FUSE_D_MIN_M, FUSE_D_FRAC * xd)
+      dd, dy = abs(cd - xd), abs(cy - xy)
+      if dd <= d_gate and dy <= FUSE_Y_M:
+        pairs.append((dd / d_gate + dy / FUSE_Y_M, i, j))
+  pairs.sort()
+  used_c, used_x, out = set(), set(), []
+  for _, i, j in pairs:
+    if i in used_c or j in used_x:
+      continue
+    used_c.add(i)
+    used_x.add(j)
+    out.append((i, j))
+  return out
 
 
 def radar_points_enabled(document) -> bool:
@@ -210,14 +248,43 @@ class RadarPointsRenderer:
     self._xcp_key, self._xcp_points = key, screen
     return screen
 
-  def draw(self, sm, renderer, rect) -> None:
+  def _raw_camera(self, sm) -> np.ndarray:
+    if not (sm.seen[SERVICE] and sm.alive[SERVICE] and sm.valid[SERVICE]):
+      return NO_POINTS
+    points = sm[SERVICE].points
+    return np.asarray([(float(p.dRel), float(p.yRel)) for p in points], dtype=np.float64).reshape(-1, 2)
+
+  def _raw_xcp(self, now_ns: int) -> np.ndarray:
+    sig, raw_pts = self._read_xcp_snapshot(now_ns)
+    if sig is None:
+      return NO_POINTS
+    return np.asarray(raw_pts, dtype=np.float64).reshape(-1, 2)
+
+  def _project_raw(self, pts: np.ndarray, renderer, rect) -> np.ndarray:
+    if not pts.size:
+      return NO_POINTS
+    return self._project_view_points(pts[:, 0], -pts[:, 1], renderer._path.raw_points, renderer, rect)
+
+  def draw(self, sm, renderer, rect, *, now_ns: int | None = None) -> None:
     if not self.enabled:
       return
     from openpilot.starpilot.ui.raylib import rl
+    if renderer._path.raw_points.size == 0:
+      return
+    now = time.monotonic_ns() if now_ns is None else int(now_ns)
+    cam, xcp = self._raw_camera(sm), self._raw_xcp(now)
+    pairs = match_fused(cam, xcp) if cam.size and xcp.size else []
+    fused_c = {i for i, _ in pairs}
+    fused_x = {j for _, j in pairs}
+    cam_only = cam[[i for i in range(len(cam)) if i not in fused_c]] if cam.size else NO_POINTS
+    xcp_only = xcp[[j for j in range(len(xcp)) if j not in fused_x]] if xcp.size else NO_POINTS
+    fused = xcp[[j for _, j in pairs]] if pairs else NO_POINTS
+    small = (max(2.5, self._radius * 0.72), max(4.0, self._outline_radius * 0.72))
     outline = rl.Color(*OUTLINE_COLOR)
     layers = (
-      (self.screen_points(sm, renderer, rect), FILL_COLOR, self._radius, self._outline_radius),
-      (self.xcp_screen_points(sm, renderer, rect), XCP_FILL_COLOR, max(2.5, self._radius * 0.72), max(4.0, self._outline_radius * 0.72)),
+      (self._project_raw(cam_only, renderer, rect), FILL_COLOR, self._radius, self._outline_radius),
+      (self._project_raw(xcp_only, renderer, rect), XCP_FILL_COLOR, *small),
+      (self._project_raw(fused, renderer, rect), FUSED_FILL_COLOR, self._radius, self._outline_radius),
     )
     for pts, fill_color, rad, out_rad in layers:
       if not pts.size:
