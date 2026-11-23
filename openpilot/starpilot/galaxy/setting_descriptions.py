@@ -17,6 +17,9 @@ DESCRIPTIONS = {
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
   'AlphaHondaXcpRadarAssist': ('Fuses live 20 Hz Bosch Array B XCP Doppler velocity and acceleration into verified radar tracks ' +
                                'to reduce lead lag. Off keeps XCP strictly read-only for logging.'),
+  'AlphaHondaXcpDaemon': ('Runs the XCP radar reader as its own process with a dedicated send path, so its requests no longer wait on ' +
+                          'the car-controls loop. Off keeps it inside card. Same reads, faster cycle; logging-only unless ' +
+                          'XCP Radar Lag Removal is also on.'),
   'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
                               'Applies after the next startup; exact vehicle takeover checks remain required.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',
@@ -204,6 +207,7 @@ INITIALIZATION = {
     'PID/filter state are constructed together.'),
   'UseStarPilotLongitudinalPlanner': 'Applies when the planner next starts: each choice runs a different planner process with its own subscriptions and state.',
   'AlphaHondaXcpRadarAssist': 'Applies on the next drive: radard reads this setting once when it starts.',
+  'AlphaHondaXcpDaemon': 'Applies on the next drive: the choice is read when the car starts and held until it goes offroad.',
   'TurnAssist': ('Applies when driving processes next start: the selected torque controller creates its ' +
     'low-speed feedback controller and filter state at initialization.'),
   'ToyotaRadarMode': 'Chooses the supported Toyota front radar configuration, including the optional ARS510 retrofit.',

@@ -360,6 +360,7 @@ def test_card_gating_and_params_key_and_process_config(monkeypatch):
     other_cp.brand = "honda"
     other_cp.flags = int(HondaFlags.BOSCH | HondaFlags.BOSCH_RADARLESS)
     other_cp.passive = False
+    assert xcpd_enabled(False, params, other_cp) is False  # new onroad session: the choice is latched per drive
     assert xcpd_enabled(True, params, other_cp) is False
     assert "xcpd" in managed_processes and managed_processes["xcpd"].enabled is True
 

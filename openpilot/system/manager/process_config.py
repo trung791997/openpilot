@@ -77,9 +77,23 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 
+_xcpd_latch: bool | None = None
+
+
 def xcpd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if not started or not params.get_bool("AlphaHondaXcpDaemon"):
+  # The param is read once per onroad session, like card's startup read of the same param, so a mid-drive toggle neither
+  # starts a second XCP sender next to card's in-card logger nor kills xcpd and leaves the drive with no XCP at all.
+  # The CarParams checks stay live: at the first onroad tick manager's carParams is not yet published for this drive.
+  global _xcpd_latch
+  if not started:
+    _xcpd_latch = None
     return False
+  if _xcpd_latch is None:
+    _xcpd_latch = params.get_bool("AlphaHondaXcpDaemon")
+  return _xcpd_latch and _xcpd_car_ok(CP)
+
+
+def _xcpd_car_ok(CP: car.CarParams) -> bool:
   from opendbc.car.honda.values import HondaFlags
   return (
     CP.brand == "honda"
