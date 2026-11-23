@@ -58,6 +58,12 @@ def displayed_limit_mps(observation):
   return observation.accepted_speed_limit_mps if retaining_limit(observation) else None
 
 
+def displayed_limit_source(observation):
+  if str(observation.kind) == 'valid':
+    return observation.source
+  return observation.last_received_source if positive(observation.last_received_speed_limit_mps) else observation.accepted_source
+
+
 def displayed_adjusted_limit_mps(observation):
   posted = displayed_limit_mps(observation)
   if not positive(posted):
