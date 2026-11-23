@@ -32,6 +32,9 @@ MAX_ACTIVE_TARGETS = 40
 LEAD_PRIORITY_COUNT = 2
 
 EPOCH_NS = 50_000_000          # 20 Hz output logging cadence
+XCP_READS_LOG = True           # per-read "xcp_reads" event (logging only; no effect on scheduling or control)
+READS_FLUSH_NS = 250_000_000   # xcp_reads flush grid
+READS_BUF_MAX = 128            # max buffered read records between flushes
 LEAD_KIN_INTERVAL_NS = 18_000_000  # ~25 Hz (every 40 ms) at 20 ms RTT, ~33 Hz at 10 ms RTT
 LEAD_META_INTERVAL_NS = 250_000_000  # ~4 Hz alternating age / flags (~2 Hz each) for primary lead
 LEAD_LAT_INTERVAL_NS = 180_000_000   # ~5.5 Hz Y / Vy for primary lead
@@ -242,6 +245,10 @@ class XcpRadarLogger:
 
     self.last_handshake_tx_ns = -HANDSHAKE_RETRY_NS
     self.last_log_ns = 0
+    self._next_log_ns = 0
+    self._reads_buf: list[tuple] = []
+    self._reads_dropped = 0
+    self._next_reads_flush_ns = 0
     self.start_ns = time.monotonic_ns()
     self.consecutive_f4_timeouts = 0
     self._timeout_drain_until_ns = 0
@@ -374,6 +381,34 @@ class XcpRadarLogger:
       "last_err_addr": None,     # hex(addr) of most recent WAYB 0xFE error
       "updated_ns": 0,
     }
+
+  def _record_read_locked(self, kind: int, now_ns: int, dur_ns: int, a, b, c, d) -> None:
+    if not XCP_READS_LOG:
+      return
+    if len(self._reads_buf) >= READS_BUF_MAX:
+      self._reads_dropped += 1
+      return
+    self._reads_buf.append((kind, int(now_ns), int(dur_ns), a, b, c, d))
+
+  def _maybe_flush_reads(self, now_ns: int) -> None:
+    if not XCP_READS_LOG:
+      return
+    with self._lock:
+      if not self._reads_buf or now_ns < self._next_reads_flush_ns:
+        return
+      if now_ns - self._next_reads_flush_ns > READS_FLUSH_NS:
+        self._next_reads_flush_ns = now_ns + READS_FLUSH_NS
+      else:
+        self._next_reads_flush_ns += READS_FLUSH_NS
+      buf = self._reads_buf
+      self._reads_buf = []
+      dropped = int(self._reads_dropped)
+    base_ns = buf[0][1]
+    records = []
+    for kind, t_ns, dur_ns, a, b, c, d in buf:
+      dt_us = (t_ns - base_ns) // 1000
+      records.append([kind, dt_us, dur_ns // 1000, a, b, c, d])
+    cloudlog.event("xcp_reads", base_ns=base_ns, records=records, dropped=dropped, n=len(records), debug=True)
 
   def _clear_session_locked(self, target_state: str = "NEED_CONNECT") -> None:
     self.state = target_state
@@ -531,8 +566,12 @@ class XcpRadarLogger:
     elif cmd_type == "UNLOCK":
       self.state = "READY"
     elif cmd_type == "F4":
+      if len(data) >= 1 + size:
+        self._record_read_locked(0, now_ns, max(0, now_ns - sent_ns), slot, offset, size, bytes(data[1 : 1 + size]).hex())
       self._handle_f4_reply_locked(slot, offset, size, data, now_ns, sent_ns)
     elif cmd_type == "WAYB":
+      if len(data) >= 1 + size:
+        self._record_read_locked(1, now_ns, max(0, now_ns - sent_ns), slot, offset, size, bytes(data[1 : 1 + size]).hex())
       self._handle_wayb_reply_locked(slot, size, data, now_ns)
 
   def _current_op_lead_tid_locked(self, now_ns: int) -> int | None:
@@ -1047,11 +1086,12 @@ class XcpRadarLogger:
       return None
 
     if self.in_flight is not None:
-      cmd_type, _, _, _, sent_ns = self.in_flight
+      cmd_type, to_slot, to_off, to_size, sent_ns = self.in_flight
       timeout = F4_TIMEOUT_NS if cmd_type in ("F4", "WAYB") else HANDSHAKE_RETRY_NS
       if now_ns - sent_ns < timeout:
         return None
       self.in_flight = None
+      self._record_read_locked(2, now_ns, max(0, now_ns - sent_ns), cmd_type, to_slot, to_off, to_size)
       if cmd_type == "F4":
         self.consecutive_f4_timeouts += 1
         self.f4_timeout_count += 1
@@ -1163,6 +1203,7 @@ class XcpRadarLogger:
           self._send_cto(pkt)
         if can_strs:
           self._maybe_publish_assist_shm(now_ns)
+        self._maybe_flush_reads(now_ns)
     except Exception:
       pass
     finally:
@@ -1316,8 +1357,12 @@ class XcpRadarLogger:
     with self._lock:
       if self.state != "READY":
         return
-      if now_ns - self.last_log_ns < EPOCH_NS:
+      if now_ns < self._next_log_ns:
         return
+      if now_ns - self._next_log_ns > EPOCH_NS:
+        self._next_log_ns = now_ns + EPOCH_NS
+      else:
+        self._next_log_ns += EPOCH_NS
       self.last_log_ns = now_ns
       v_ego, op_tracks, targets, op_lead_slot = self._collect_targets_locked(now_ns)
       wayb_probe = (
@@ -1482,6 +1527,7 @@ class XcpRadarLogger:
       self._maybe_log_20hz(now_ns)
       if not self._use_io_thread:
         self._maybe_publish_assist_shm(now_ns)
+        self._maybe_flush_reads(now_ns)
     except Exception:
       pass
 
