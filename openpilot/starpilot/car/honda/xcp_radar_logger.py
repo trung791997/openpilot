@@ -64,6 +64,12 @@ OP_MATCH_LOCKED_MIN_VLEAD_MPS = -0.5
 ARRAY_B_TRAILER_OFFSET_M = 434.0 / 128.0  # 3.390625 m A150 Array B -> Array A range offset
 
 F4_TIMEOUT_NS = 150_000_000     # single SHORT_UPLOAD timeout
+# Quiet drain after any CTO timeout before sending the next CTO so a late ECU reply
+# (arriving in 150..200 ms) hits in_flight is None and is discarded instead of mismatching
+# a fresh F4/WAYB/CONNECT request or causing a 1-frame pipeline shift.
+# Evidence: route 00000105--c4d0cd8039 (6e465d40dc, 9.06 min): 0 active-drive timeouts,
+# 2,109/25,463 (8.28%) valid sendcan->can replies < 5 ms (min 1.36 ms), max sendcan->can 28.78 ms.
+F4_TIMEOUT_DRAIN_NS = 50_000_000
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
 
@@ -230,6 +236,7 @@ class XcpRadarLogger:
     self.last_log_ns = 0
     self.start_ns = time.monotonic_ns()
     self.consecutive_f4_timeouts = 0
+    self._timeout_drain_until_ns = 0
     self.seed_bytes: bytes | None = None
     self.last_v_ego = 0.0
 
@@ -366,6 +373,7 @@ class XcpRadarLogger:
     self._wayb_lead_cam_id = None
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
+    self._timeout_drain_until_ns = 0
     self._prev_op_slot_by_tid.clear()
     self._assist_shm_dirty = False
 
@@ -909,12 +917,17 @@ class XcpRadarLogger:
       self.in_flight = None
       if cmd_type in ("F4", "WAYB"):
         self.consecutive_f4_timeouts += 1
+        if cmd_type == "WAYB":
+          self._wayb_queue.clear()
         if self.consecutive_f4_timeouts >= 5:
           self._clear_session_locked("NEED_CONNECT")
-          return None
       else:
         self._clear_session_locked("NEED_CONNECT")
-        return None
+      self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
+      return None
+
+    if now_ns < self._timeout_drain_until_ns:
+      return None
 
     if self.state == "NEED_CONNECT":
       if now_ns - self.last_handshake_tx_ns < HANDSHAKE_RETRY_NS:

@@ -1156,3 +1156,104 @@ def test_kin_changed_ns_and_value_changes_counter_skip_duplicate_reads(monkeypat
   assert rec["kin_changed_ns"] == t_after
   assert rec["kin_value_changes"] == 1
   logger.close()
+
+
+def test_timeout_drain_discards_late_wayb_reply_without_corrupting_lead_kin(monkeypatch, tmp_path):
+  _capture_events(monkeypatch)
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 4, {"x": 32.0, "vx": -1.5, "ax": -0.8, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 35, "qual": 25, "cls": 85})
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  logger = XcpRadarLogger(
+    cp,
+    probe_wayb=True,
+    shm_path=tmp_path / "points.json",
+    assist_shm_path=tmp_path / "assist.json",
+    assist_fast_publish=True,
+  )
+  t = _unlock_logger(logger, 1_000_000_000, v_ego=15.0)
+  rd = SimpleNamespace(points=[SimpleNamespace(trackId=22, dRel=28.6, yRel=0.1, vRel=-1.5)])
+
+  for _ in range(25):
+    logger.observe_radar_tracks(rd, t)
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      sz = pkt[1]
+      addr = int.from_bytes(pkt[4:8], "big")
+      if REC0 <= addr < REC0 + NUM_SLOTS * STRIDE:
+        off = addr - REC0
+        rep = b"\xFF" + bytes(ram[off : off + sz])
+      else:
+        rep = b"\xFF" + bytes(sz)
+      logger.observe_can([(t, [(XCP_DTO, rep, XCP_BUS)])], t + 10_000_000, v_ego=15.0)
+    t += 20_000_000
+
+  assert logger.state == "READY"
+  assert logger.slot_cache[4]["X_raw"] == int(round(32.0 * 128))
+  assert logger.slot_cache[4]["Vx_raw"] == int(round(-1.5 * 256))
+  logger._assist_shm_dirty = False
+
+  # Simulate in-flight 6-byte WAYB t1_kin read timing out at 150 ms, followed by its late reply at 160 ms.
+  t_sent = t + 20_000_000
+  with logger._lock:
+    logger.in_flight = ("WAYB", "t1_kin", xcp_mod.WAYB_DEFAULT_T1_BASE + 104 * 7 + 24, 6, t_sent)
+    logger._wayb_queue.append(("t1_vx", xcp_mod.WAYB_DEFAULT_T1_BASE + 104 * 7 + 40, 4))
+
+  t_to = t_sent + xcp_mod.F4_TIMEOUT_NS
+  assert logger.next_can_sends(t_to) == []
+  assert logger.in_flight is None
+  assert logger.consecutive_f4_timeouts == 1
+  assert len(logger._wayb_queue) == 0
+
+  # During the 50 ms drain window, next_can_sends must stay silent so no fresh F4 CTO is in flight.
+  assert logger.next_can_sends(t_to + 1_000_000) == []
+
+  # Late 6-byte WAYB t1_kin reply arrives 10 ms after timeout (160 ms after t_sent) and must be discarded.
+  t_late = t_to + 10_000_000
+  late_t1_reply = (
+    b"\xFF"
+    + int(round(99.0 * 128)).to_bytes(2, "big", signed=True)
+    + (0).to_bytes(2, "big", signed=True)
+    + int(round(-12.0 * 256)).to_bytes(2, "big", signed=True)
+  )
+  logger.observe_can([(t_late, [(XCP_DTO, late_t1_reply, XCP_BUS)])], t_late, v_ego=15.0)
+  assert logger.slot_cache[4]["X_raw"] == int(round(32.0 * 128))
+  assert logger.slot_cache[4]["Vx_raw"] == int(round(-1.5 * 256))
+  assert logger._assist_shm_dirty is False
+  assert logger.consecutive_f4_timeouts == 1
+  assert logger.next_can_sends(t_to + xcp_mod.F4_TIMEOUT_DRAIN_NS - 1_000_000) == []
+
+  # Once drain window expires, scheduler resumes with primary lead F4 (slot 4, offset 16, size 6).
+  t_resume = t_to + xcp_mod.F4_TIMEOUT_DRAIN_NS
+  logger.observe_radar_tracks(rd, t_resume)
+  sends_after = logger.next_can_sends(t_resume)
+  assert len(sends_after) == 1
+  assert logger.in_flight is not None and logger.in_flight[:4] == ("F4", 4, 16, 6)
+
+  _write_slot(ram, 4, {"x": 31.5, "vx": -1.6, "ax": -0.7, "y": 0.1, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 36, "qual": 25, "cls": 85})
+  rep_fresh = b"\xFF" + bytes(ram[4 * STRIDE + 16 : 4 * STRIDE + 22])
+  logger.observe_can([(t_resume + 15_000_000, [(XCP_DTO, rep_fresh, XCP_BUS)])], t_resume + 15_000_000, v_ego=15.0)
+  assert logger.slot_cache[4]["X_raw"] == int(round(31.5 * 128))
+  assert logger.slot_cache[4]["Vx_raw"] == int(round(-1.6 * 256))
+  assert logger.consecutive_f4_timeouts == 0
+  assert logger.state == "READY"
+
+  # 5th consecutive timeout transitions to NEED_CONNECT and still enforces the drain before CONNECT.
+  t_f5 = t_resume + 2_500_000_000
+  with logger._lock:
+    logger.consecutive_f4_timeouts = 4
+    logger.in_flight = ("F4", 4, 16, 6, t_f5)
+  t_f5_to = t_f5 + xcp_mod.F4_TIMEOUT_NS
+  assert logger.next_can_sends(t_f5_to) == []
+  assert logger.state == "NEED_CONNECT"
+  assert logger.next_can_sends(t_f5_to + 1_000_000) == []
+
+  logger.observe_can([(t_f5_to + 10_000_000, [(XCP_DTO, b"\xFF" + bytes(7), XCP_BUS)])], t_f5_to + 10_000_000, v_ego=15.0)
+  assert logger.state == "NEED_CONNECT"
+
+  sends_conn = logger.next_can_sends(t_f5_to + xcp_mod.F4_TIMEOUT_DRAIN_NS)
+  assert len(sends_conn) == 1
+  assert bytes(sends_conn[0].dat) == b"\xFF\x00" + bytes(6)
+  assert logger.in_flight is not None and logger.in_flight[0] == "CONNECT"
+  logger.close()
