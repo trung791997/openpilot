@@ -119,6 +119,20 @@ F4_TIMEOUT_DRAIN_NS = 50_000_000
 HANDSHAKE_RETRY_NS = 2_000_000_000
 STARTUP_DELAY_NS = 500_000_000
 
+# XCP SHORT_UPLOAD request pipelining depth.
+#   1  -> today's strict single-in-flight schedule (default; byte-identical to HEAD).
+#   >1 -> allow up to this many READY-state SHORT_UPLOADs outstanding at once so our next
+#         request overlaps the radar's ~10 ms reply slot instead of waiting a full RTT.
+# SHORT_UPLOAD positive replies carry NO tag, so outstanding requests are matched to replies
+# strictly in send (FIFO) order. Any timeout, XCP error (0xFE), or length mismatch flushes the
+# pending tail and resyncs to single-in-flight (+ the normal post-timeout quiet drain), so a lost
+# or reordered reply cannot silently mis-assign to the wrong request for more than one round.
+# Only READY-state F4/WAYB SHORT_UPLOADs pipeline; the CONNECT/STATUS/SEED/UNLOCK handshake is
+# always strictly serial (stateful, and its reply gates the next request).
+# UNPROVEN on-car: whether this radar tolerates 2 outstanding SHORT_UPLOADs is unknown and needs a
+# parked-car probe before any road use. Default stays 1 until that probe passes.
+XCP_PIPELINE_DEPTH = max(1, int(os.environ.get("XCP_PIPELINE_DEPTH", "1") or "1"))
+
 # 1 Hz Way B internal-fusion diagnostic probe (Bosch-A 36802-TBA-A150 verified SRAM bases).
 # Offline route evidence (bob-unify-car):
 # - T1=0x40032AEC and OUT18=0x4003681C (from 8f88b00741) confirmed on 000000f4--618185d0bb and 000000f5--6e8e645f02.
@@ -265,6 +279,7 @@ class XcpRadarLogger:
     assist_shm_path: Path | None | object = _DEFAULT_ASSIST_SHM_PATH,
     assist_fast_publish: bool | None = None,
     probe_wayb: bool | None = None,
+    pipeline_depth: int | None = None,
   ) -> None:
     if assist_fast_publish is not None:
       self._assist_fast_publish_enabled = bool(assist_fast_publish)
@@ -278,7 +293,12 @@ class XcpRadarLogger:
       self._assist_fast_publish_enabled = False
     self.enabled = False
     self.state = "DISABLED"
-    self.in_flight = None  # (cmd_type, slot, offset, size, sent_ns)
+    self.in_flight = None  # oldest outstanding request (cmd_type, slot, offset, size, sent_ns)
+    # Additional outstanding SHORT_UPLOADs beyond the head when pipelining (depth > 1). Always
+    # empty at depth 1, so the single-in-flight schedule is byte-identical to HEAD.
+    self._pipeline_depth = max(1, int(pipeline_depth if pipeline_depth is not None else XCP_PIPELINE_DEPTH))
+    self._inflight_tail: deque[tuple] = deque()
+    self.pipeline_collision_skips = 0  # pipelined picks rolled back for hitting an outstanding address
     self._init_queue: deque[tuple[int, int, int]] = deque()
     self._init_queued: set[tuple[int, int, int]] = set()
     self._init_stamp: dict[tuple[int, int, int], int] = {}  # first-seen time of queued init items (guard)
@@ -490,6 +510,7 @@ class XcpRadarLogger:
   def _clear_session_locked(self, target_state: str = "NEED_CONNECT") -> None:
     self.state = target_state
     self.in_flight = None
+    self._inflight_tail.clear()
     self._init_queue.clear()
     self._init_queued.clear()
     self._wayb_queue.clear()
@@ -616,6 +637,16 @@ class XcpRadarLogger:
         self.drain_discard_count += 1
       return
     cmd_type, slot, offset, size, sent_ns = self.in_flight
+    # Pipelining (depth > 1): untagged SHORT_UPLOAD replies are matched to outstanding requests in
+    # strict send (FIFO) order. A positive reply whose length differs from the head's expected size means we
+    # have lost sync (a dropped/reordered reply), so flush the pending tail, resync to single, and
+    # take the normal post-timeout quiet drain rather than mis-decode. No-op at depth 1 (guarded),
+    # which keeps HEAD's "short reply -> _handle no-op" behavior byte-identical.
+    if self._pipeline_depth > 1 and pid == 0xFF and cmd_type in ("F4", "WAYB") and len(data) != 1 + size:
+      self.in_flight = None
+      self._inflight_tail.clear()
+      self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
+      return
     self.in_flight = None
     if pid == 0xFE:
       if cmd_type == "WAYB":
@@ -623,6 +654,7 @@ class XcpRadarLogger:
         self._wayb_state["last_err_addr"] = hex(offset)
         self._wayb_state["updated_ns"] = now_ns
         self._wayb_queue.clear()
+        self._inflight_tail.clear()
         return
       self._clear_session_locked("NEED_CONNECT")
       return
@@ -650,6 +682,9 @@ class XcpRadarLogger:
       if len(data) >= 1 + size:
         self._record_read_locked(1, now_ns, max(0, now_ns - sent_ns), slot, offset, size, bytes(data[1 : 1 + size]).hex())
       self._handle_wayb_reply_locked(slot, size, data, now_ns)
+    # Pipelining: promote the next outstanding request to head. No-op at depth 1 (tail is empty).
+    if self.in_flight is None and self._inflight_tail:
+      self.in_flight = self._inflight_tail.popleft()
 
   def _current_op_lead_tid_locked(self, now_ns: int) -> int | None:
     if now_ns - self._op_tracks_ns > OP_TRACKS_MAX_AGE_NS or not self._op_tracks:
@@ -816,21 +851,26 @@ class XcpRadarLogger:
         return (s, 16, 6)
     return None
 
-  def _next_wayb_task_locked(self, now_ns: int) -> tuple[str, int, int] | None:
+  def _next_wayb_task_locked(self, now_ns: int, exclude: frozenset = frozenset()) -> tuple[str, int, int] | None:
+    # exclude: start addresses of outstanding requests; a blocked task stays queued (not consumed).
     if not WAYB_PROBE_ENABLED or not self._wayb_probe_enabled:
       return None
     if self._wayb_queue:
+      if self._wayb_queue[0][1] in exclude:
+        return None
       return self._wayb_queue.popleft()
     if self._wayb_last_round_ns == 0 or now_ns - self._wayb_last_round_ns >= WAYB_PROBE_INTERVAL_NS:
+      if self._wayb_p_base + 2 in exclude:
+        return None
       self._wayb_last_round_ns = now_ns
       return ("p0", self._wayb_p_base + 2, 7)
     return None
 
-  def _next_inactive_probe_locked(self) -> tuple[int, int, int] | None:
+  def _next_inactive_probe_locked(self, exclude: frozenset = frozenset()) -> tuple[int, int, int] | None:
     for _ in range(NUM_SLOTS):
       s = self.scan_cursor
       self.scan_cursor = (self.scan_cursor + 1) % NUM_SLOTS
-      if s not in self.active_slots:
+      if s not in self.active_slots and REC0 + STRIDE * s + 16 not in exclude:
         return (s, 16, 6)
     return None
 
@@ -935,7 +975,7 @@ class XcpRadarLogger:
       self._init_stamp.setdefault(f, now_ns)
     return (now_ns - min(self._init_stamp[f] for f in live)) if live else 0
 
-  def _pop_init_task_locked(self, *, allow_stationary: bool) -> tuple[int, int, int] | None:
+  def _pop_init_task_locked(self, *, allow_stationary: bool, exclude: frozenset = frozenset()) -> tuple[int, int, int] | None:
     while self._init_queue:
       front = self._init_queue[0]
       if front not in self._init_queued or front[0] not in self.active_slots:
@@ -944,6 +984,8 @@ class XcpRadarLogger:
         continue
       if not allow_stationary and not self._is_moving_target_locked(self.slot_cache[front[0]]):
         return None
+      if exclude and REC0 + STRIDE * front[0] + front[1] in exclude:
+        return None  # blocked: leave it queued for a later call
       self._init_queue.popleft()
       self._init_queued.discard(front)
       self._init_stamp.pop(front, None)
@@ -970,6 +1012,7 @@ class XcpRadarLogger:
     lat_stale_ns: int | None = None,
     *,
     fast_newborn_age: bool = False,
+    exclude: frozenset = frozenset(),
   ) -> tuple[int, int, int] | None:
     if not group:
       return None
@@ -978,6 +1021,8 @@ class XcpRadarLogger:
 
     def _consider(ratio: float, task: tuple[int, int, int]) -> None:
       nonlocal best_ratio, best_task
+      if exclude and REC0 + STRIDE * task[0] + task[1] in exclude:
+        return
       if ratio > best_ratio:
         best_ratio = ratio
         best_task = task
@@ -1025,7 +1070,9 @@ class XcpRadarLogger:
     rec = self.slot_cache[stale_meta_slot]
     meta_age = now_ns - min(rec["age_updated_ns"], rec["flags_updated_ns"])
     if meta_age >= meta_stale_ns:
-      return (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+      task = (stale_meta_slot, 2, 6) if rec["age_updated_ns"] <= rec["flags_updated_ns"] else (stale_meta_slot, 106, 2)
+      if not exclude or REC0 + STRIDE * task[0] + task[1] not in exclude:
+        return task
 
     return None
 
@@ -1074,7 +1121,12 @@ class XcpRadarLogger:
       return (slot, 127, 2)
     return None
 
-  def _next_read_task_locked(self, now_ns: int) -> tuple[int, int, int] | None:
+  def _next_read_task_locked(self, now_ns: int, exclude: frozenset = frozenset()) -> tuple[int, int, int] | None:
+    # exclude: start addresses of outstanding requests; blocked tasks are skipped for the next-best one.
+    # An empty set leaves the selection unchanged (depth 1).
+    def blocked(t: tuple[int, int, int]) -> bool:
+      return bool(exclude) and REC0 + STRIDE * t[0] + t[1] in exclude
+
     self._read_seq += 1
 
     prio_slots = self._select_priority_slots_locked()
@@ -1089,11 +1141,13 @@ class XcpRadarLogger:
         # reads until LEAD_KIN_HOLD_NS has passed, then poll every LEAD_KIN_INTERVAL_NS as before.
         # A lead whose value has not changed for LEAD_KIN_HOLD_MAX_NS is polled plainly.
         since_change = now_ns - rec["kin_changed_ns"]
-        if rec["kin_changed_ns"] == 0 or since_change >= LEAD_KIN_HOLD_NS or since_change >= LEAD_KIN_HOLD_MAX_NS:
+        if (rec["kin_changed_ns"] == 0 or since_change >= LEAD_KIN_HOLD_NS or since_change >= LEAD_KIN_HOLD_MAX_NS) \
+            and not blocked((s, 16, 6)):
           return (s, 16, 6)
-      if rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS):
+      if (rec["age_updated_ns"] == 0 or (rec["age"] < 3 and now_ns - rec["age_updated_ns"] >= NEWBORN_AGE_REFRESH_NS)) \
+          and not blocked((s, 2, 6)):
         return (s, 2, 6)
-      if rec["flags_updated_ns"] == 0:
+      if rec["flags_updated_ns"] == 0 and not blocked((s, 106, 2)):
         return (s, 106, 2)
 
     # Remaining primary lead (prio_slots[0]) cadence stays above the cut-in protect step and the inactive probing / init queue
@@ -1107,7 +1161,7 @@ class XcpRadarLogger:
         lead_task = (s, 22, 6)
       elif now_ns - rec["qual_updated_ns"] >= LEAD_QUAL_INTERVAL_NS:
         lead_task = (s, 127, 2)
-      if lead_task is not None:
+      if lead_task is not None and not blocked(lead_task):
         self._protect_hist.append(0)  # window counts every scheduler call that gets this far
         return lead_task
 
@@ -1127,7 +1181,7 @@ class XcpRadarLogger:
           ((now_ns - rec["kin_updated_ns"]) / CUTIN_PROTECT_KIN_NS, 16),
           ((now_ns - rec["lat_updated_ns"]) / CUTIN_PROTECT_LAT_NS, 22),
         ):
-          if ratio >= 1.0 and (best is None or (-ratio, s) < best[0]):
+          if ratio >= 1.0 and not blocked((s, off, 6)) and (best is None or (-ratio, s) < best[0]):
             best = ((-ratio, s), (s, off, 6))
       if best is not None:
         protect_read = best[1]
@@ -1147,13 +1201,13 @@ class XcpRadarLogger:
       else INACTIVE_PROBE_PERIOD_WITH_LEAD
     )
     if (self._read_seq - self._last_probe_seq) >= probe_period and len(self.active_slots) < NUM_SLOTS:
-      probe = self._next_inactive_probe_locked()
+      probe = self._next_inactive_probe_locked(exclude)
       if probe is not None:
         self._last_probe_seq = self._read_seq
         return probe
 
     # Newly promoted moving slots run immediately ahead of other traffic
-    if task := self._pop_init_task_locked(allow_stationary=False):
+    if task := self._pop_init_task_locked(allow_stationary=False, exclude=exclude):
       return task
 
     lead1 = prio_slots[0] if prio_slots else -1
@@ -1169,7 +1223,7 @@ class XcpRadarLogger:
     # Periodic anti-starvation yield so standing traffic ahead still initializes Y/age/flags in busy moving traffic
     if self._has_pending_init_locked():
       if self._stationary_init_skip_count >= STATIONARY_INIT_YIELD_READS or not near_moving_others:
-        if task := self._pop_init_task_locked(allow_stationary=True):
+        if task := self._pop_init_task_locked(allow_stationary=True, exclude=exclude):
           return task
       self._stationary_init_skip_count += 1
     else:
@@ -1187,49 +1241,52 @@ class XcpRadarLogger:
         if s != cutin_slot
       )
       if not other_near_stale:
-        if task := self._secondary_lead_task_locked(cutin_slot, now_ns, include_meta=False):
+        task = self._secondary_lead_task_locked(cutin_slot, now_ns, include_meta=False)
+        if task and not blocked(task):
           return task
 
     # Near-path / adjacent moving lanes stay fresh on both kinematics and Y/Vy (wide oncoming traffic separated below)
     if task := self._stale_group_task_locked(
       near_moving_others, now_ns, OTHER_MAX_STALE_NS, OTHER_META_MAX_STALE_NS,
-      lat_stale_ns=OTHER_LAT_INTERVAL_NS, fast_newborn_age=True,
+      lat_stale_ns=OTHER_LAT_INTERVAL_NS, fast_newborn_age=True, exclude=exclude,
     ):
       return task
 
     # Secondary priority lead (prio_slots[1]): ~10 Hz kinematics, ~6.7 Hz Y/Vy, slower age/flags/qual
     if len(prio_slots) > 1:
-      if task := self._secondary_lead_task_locked(prio_slots[1], now_ns, include_meta=True):
+      task = self._secondary_lead_task_locked(prio_slots[1], now_ns, include_meta=True)
+      if task and not blocked(task):
         return task
 
     if task := self._stale_group_task_locked(
       far_moving_others, now_ns, FAR_OTHER_KIN_INTERVAL_NS, FAR_OTHER_META_INTERVAL_NS,
-      lat_stale_ns=FAR_OTHER_LAT_INTERVAL_NS,
+      lat_stale_ns=FAR_OTHER_LAT_INTERVAL_NS, exclude=exclude,
     ):
       return task
 
     # Near-path stationary newborn slots refresh age >= 3 promptly; bulk roadside clutter stays at low cadence
     if task := self._stale_group_task_locked(
       stationary_others, now_ns, STATIONARY_MAX_STALE_NS, 2 * STATIONARY_MAX_STALE_NS, fast_newborn_age=True,
+      exclude=exclude,
     ):
       return task
 
-    if task := self._round_robin_task_locked([s for s in near_moving_others if s not in prio_set], now_ns):
-      return task
-    if task := self._round_robin_task_locked([s for s in far_moving_others if s not in prio_set], now_ns):
-      return task
+    for grp in (near_moving_others, far_moving_others):
+      task = self._round_robin_task_locked([s for s in grp if s not in prio_set], now_ns)
+      if task and not blocked(task):
+        return task
 
-    if task := self._pop_init_task_locked(allow_stationary=True):
+    if task := self._pop_init_task_locked(allow_stationary=True, exclude=exclude):
       return task
 
     # If no active slots need updating right now, sweep inactive slots faster
     if len(self.active_slots) < NUM_SLOTS:
-      probe = self._next_inactive_probe_locked()
+      probe = self._next_inactive_probe_locked(exclude)
       if probe is not None:
         self._last_probe_seq = self._read_seq
         return probe
 
-    if prio_slots:
+    if prio_slots and not blocked((prio_slots[0], 16, 6)):
       return (prio_slots[0], 16, 6)
     return None
 
@@ -1243,8 +1300,17 @@ class XcpRadarLogger:
       cmd_type, to_slot, to_off, to_size, sent_ns = self.in_flight
       timeout = F4_TIMEOUT_NS if cmd_type in ("F4", "WAYB") else HANDSHAKE_RETRY_NS
       if now_ns - sent_ns < timeout:
+        # Head still outstanding and not timed out. At depth 1 this is strictly single-in-flight
+        # (byte-identical to HEAD). When pipelining, we may overlap another READY SHORT_UPLOAD while
+        # the head's reply slot is in flight, as long as we stay under the configured depth.
+        if (self._pipeline_depth > 1 and self.state == "READY"
+            and self._outstanding_count_locked() < self._pipeline_depth):
+          return self._build_ready_cto_locked(now_ns)
         return None
+      # Head timed out: its reply (and, when pipelining, every queued reply behind it) can no longer
+      # be matched by send order, so flush the tail and resync to single-in-flight.
       self.in_flight = None
+      self._inflight_tail.clear()
       self._record_read_locked(2, now_ns, max(0, now_ns - sent_ns), cmd_type, to_slot, to_off, to_size)
       if cmd_type == "F4":
         self.consecutive_f4_timeouts += 1
@@ -1291,32 +1357,110 @@ class XcpRadarLogger:
       return b"\xF7\x04" + key + bytes(2)
 
     if self.state == "READY":
-      task: tuple[int, int, int] | None = None
-      # Cheap Way B check first: with WAYB_PROBE_ENABLED False it is always False, so the priority-slot ranking inside
-      # _primary_lead_urgent_locked is not run a second time on every read (both checks are side-effect free; the read
-      # order is unchanged). Offline sim 2026-11-23, routes 109 and 10b, replay evidence only: read sequence and all
-      # metrics identical to HEAD f39f8507dc; scheduler CPU per read on x86 157 -> 119 us (109), 186 -> 112 us (10b),
-      # noisy (parallel runs); aarch64 not measured. See longsim_frames/xcp_assist/budget/step1_table_s1.out.
-      if self._wayb_pending_locked(now_ns) and not self._primary_lead_urgent_locked(now_ns):
-        task = self._cutin_wayb_yield_task_locked(now_ns)
-        if task is None:
-          wb_task = self._next_wayb_task_locked(now_ns)
-          if wb_task is not None:
-            tag, addr, size = wb_task
-            pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
-            self.in_flight = ("WAYB", tag, addr, size, now_ns)
-            return pkt
-      if task is None:
-        task = self._next_read_task_locked(now_ns)
-      if task is None:
-        return None
-      slot, offset, size = task
-      addr = REC0 + STRIDE * slot + offset
-      pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
-      self.in_flight = ("F4", slot, offset, size, now_ns)
-      return pkt
+      return self._build_ready_cto_locked(now_ns)
 
     return None
+
+  def _outstanding_count_locked(self) -> int:
+    """Number of SHORT_UPLOAD requests currently outstanding (head + pipelined tail)."""
+    return (1 if self.in_flight is not None else 0) + len(self._inflight_tail)
+
+  def _arm_outstanding_locked(self, entry: tuple) -> None:
+    """Record a just-sent request as outstanding: head when idle, else append to the FIFO tail."""
+    if self.in_flight is None:
+      self.in_flight = entry
+    else:
+      self._inflight_tail.append(entry)
+
+  # Scheduler fields that the READY task selectors mutate as a side effect of choosing a task.
+  # A pipelined (tail) pick that is rejected for targeting an outstanding address is rolled back
+  # over exactly these, so the rejection leaves no trace (no lost init task, no cursor drift).
+  _SCHED_SCALARS = ("_read_seq", "_last_probe_seq", "scan_cursor", "_stationary_init_skip_count", "_wayb_last_round_ns")
+  _SCHED_CONTAINERS = ("_protect_hist", "_init_queue", "_init_queued", "_init_stamp", "_wayb_queue")
+
+  def _sched_snapshot_locked(self) -> tuple[dict, dict]:
+    scalars = {k: getattr(self, k) for k in self._SCHED_SCALARS}
+    containers = {k: (dict(v) if isinstance(v, dict) else list(v))
+                  for k in self._SCHED_CONTAINERS for v in (getattr(self, k),)}
+    return scalars, containers
+
+  def _sched_restore_locked(self, snap: tuple[dict, dict]) -> None:
+    scalars, containers = snap
+    for k, v in scalars.items():
+      setattr(self, k, v)
+    for k, v in containers.items():
+      obj = getattr(self, k)  # restore in place: keep the same objects (deque maxlen, aliases)
+      obj.clear()
+      if isinstance(obj, dict):
+        obj.update(v)
+      elif isinstance(obj, set):
+        obj.update(v)
+      else:
+        obj.extend(v)
+
+  @staticmethod
+  def _entry_addr(entry: tuple) -> int:
+    """Absolute start address of an outstanding request entry (F4: slot/offset, WAYB: raw addr)."""
+    if entry[0] == "WAYB":
+      return entry[2]
+    return REC0 + STRIDE * entry[1] + entry[2]
+
+  def _build_ready_cto_locked(self, now_ns: int) -> bytes | None:
+    """Pick and arm the next READY-state SHORT_UPLOAD.
+
+    Idle (in_flight is None): exactly HEAD's selection and arming (depth 1 always takes this path).
+    Pipelined (a head is outstanding, depth > 1): the pick must target a different (slot, offset),
+    i.e. a different start address, than every outstanding request. SHORT_UPLOAD replies do not echo
+    the address, so two outstanding reads of one field cannot be told apart if the radar overwrites
+    or drops a queued CTO. A colliding (or empty) pick is rolled back and nothing is sent this call."""
+    if self.in_flight is None:
+      return self._select_ready_cto_locked(now_ns)
+    snap = self._sched_snapshot_locked()
+    outstanding = frozenset({self._entry_addr(self.in_flight)} | {self._entry_addr(e) for e in self._inflight_tail})
+    picked = self._select_ready_cto_locked(now_ns, arm=False, exclude=outstanding)
+    # Backstop: selectors skip outstanding targets, so a collision here should not happen.
+    if picked is None or self._entry_addr(picked[0]) in outstanding:
+      self._sched_restore_locked(snap)
+      if picked is not None:
+        self.pipeline_collision_skips += 1
+      return None
+    entry, pkt = picked
+    self._arm_outstanding_locked(entry)
+    return pkt
+
+  def _select_ready_cto_locked(self, now_ns: int, arm: bool = True, exclude: frozenset = frozenset()):
+    """HEAD's READY task selection. With arm=True arms the request and returns the CTO bytes;
+    with arm=False returns (entry, pkt) without arming so the caller can vet the target."""
+    def _done(entry: tuple, pkt: bytes):
+      if arm:
+        self._arm_outstanding_locked(entry)
+        return pkt
+      return entry, pkt
+
+    task: tuple[int, int, int] | None = None
+    # Cheap Way B check first: with WAYB_PROBE_ENABLED False it is always False, so the priority-slot ranking inside
+    # _primary_lead_urgent_locked is not run a second time on every read (both checks are side-effect free; the read
+    # order is unchanged). Offline sim 2026-11-23, routes 109 and 10b, replay evidence only: read sequence and all
+    # metrics identical to HEAD f39f8507dc; scheduler CPU per read on x86 157 -> 119 us (109), 186 -> 112 us (10b),
+    # noisy (parallel runs); aarch64 not measured. See longsim_frames/xcp_assist/budget/step1_table_s1.out.
+    if self._wayb_pending_locked(now_ns) and not self._primary_lead_urgent_locked(now_ns):
+      task = self._cutin_wayb_yield_task_locked(now_ns)
+      if task is not None and exclude and REC0 + STRIDE * task[0] + task[1] in exclude:
+        task = None
+      if task is None:
+        wb_task = self._next_wayb_task_locked(now_ns, exclude)
+        if wb_task is not None:
+          tag, addr, size = wb_task
+          pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
+          return _done(("WAYB", tag, addr, size, now_ns), pkt)
+    if task is None:
+      task = self._next_read_task_locked(now_ns, exclude)
+    if task is None:
+      return None
+    slot, offset, size = task
+    addr = REC0 + STRIDE * slot + offset
+    pkt = bytes([0xF4, size, 0x00, 0x00]) + addr.to_bytes(4, "big")
+    return _done(("F4", slot, offset, size, now_ns), pkt)
 
   def _send_cto(self, pkt: bytes) -> None:
     if self._pm is None:
@@ -1339,13 +1483,22 @@ class XcpRadarLogger:
         self._tx_armed_ns = int(time.monotonic_ns() if now_ns is None else now_ns)
         self._tx_event.set()
 
+  def _build_ctos_locked(self, now_ns: int) -> list[bytes]:
+    """Build one CTO, or at depth > 1 keep building until the pipeline is full or nothing is ready."""
+    pkts: list[bytes] = []
+    while (pkt := self._build_next_cto_locked(now_ns)) is not None:
+      pkts.append(pkt)
+      if self._pipeline_depth == 1 or self._outstanding_count_locked() >= self._pipeline_depth:
+        break
+    return pkts
+
   def step_io(self, can_strs: list[bytes], now_ns: int, *, v_ego: float | None = None, radar_data=None) -> bool:
     """Single-threaded daemon IO step: reply DTO -> next CTO first, then logs/SHM."""
     if not self.enabled:
       return False
     from openpilot.selfdrive.pandad import can_capnp_to_list
 
-    pkt: bytes | None = None
+    pkts: list[bytes] = []
     can_list = can_capnp_to_list(can_strs) if can_strs else []
     with self._lock:
       if not self._tx_armed:
@@ -1356,8 +1509,8 @@ class XcpRadarLogger:
         for addr, dat, src in packet:
           if src == XCP_BUS and addr == XCP_DTO:
             self._process_dto_locked(bytes(dat), now_ns)
-      pkt = self._build_next_cto_locked(now_ns)
-    if pkt is not None:
+      pkts = self._build_ctos_locked(now_ns)
+    for pkt in pkts:
       self._send_cto(pkt)
     if v_ego is not None:
       with self._lock:
@@ -1368,7 +1521,7 @@ class XcpRadarLogger:
       self._maybe_publish_assist_shm(now_ns)
     self._maybe_log_20hz(now_ns)
     self._maybe_flush_reads(now_ns)
-    return pkt is not None
+    return bool(pkts)
 
   def _io_loop(self) -> None:
     import openpilot.cereal.messaging as messaging
@@ -1394,11 +1547,11 @@ class XcpRadarLogger:
               for addr, dat, src in packet:
                 if src == XCP_BUS and addr == XCP_DTO:
                   self._process_dto_locked(bytes(dat), now_ns)
-            pkt = self._build_next_cto_locked(now_ns)
+            pkts = self._build_ctos_locked(now_ns)
         else:
           with self._lock:
-            pkt = self._build_next_cto_locked(now_ns)
-        if pkt is not None:
+            pkts = self._build_ctos_locked(now_ns)
+        for pkt in pkts:
           self._send_cto(pkt)
         if can_strs:
           self._maybe_publish_assist_shm(now_ns)

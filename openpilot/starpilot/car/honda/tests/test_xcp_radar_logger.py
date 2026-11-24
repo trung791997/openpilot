@@ -1963,3 +1963,287 @@ def test_build_cto_lead_urgent_still_preempts_wayb_when_enabled(monkeypatch):
   logger._build_next_cto_locked(t0)
   assert logger.in_flight[:4] == ("F4", 2, 16, 6)
   logger.close()
+
+
+# --- Step 4: XCP SHORT_UPLOAD request pipelining (flag XCP_PIPELINE_DEPTH; default 1 == off) ---
+
+def _kin6(x: float, vx: float = -1.0, ax: float = 0.0) -> bytes:
+  """A size-6 kinematics (offset 16) SHORT_UPLOAD payload body, big-endian signed."""
+  return (int(round(x * 128)).to_bytes(2, "big", signed=True)
+          + int(round(vx * 256)).to_bytes(2, "big", signed=True)
+          + int(round(ax * 2048)).to_bytes(2, "big", signed=True))
+
+
+def test_pipeline_fifo_matches_two_outstanding_in_send_order(monkeypatch):
+  # Depth 2: two outstanding untagged SHORT_UPLOADs are matched to replies strictly in send order.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  # Arm two distinct kin reads: slot 5 first, slot 7 second.
+  logger._arm_outstanding_locked(("F4", 5, 16, 6, t0))
+  logger._arm_outstanding_locked(("F4", 7, 16, 6, t0 + 1_000_000))
+  assert logger._outstanding_count_locked() == 2
+  assert logger.in_flight[:4] == ("F4", 5, 16, 6)
+  assert list(logger._inflight_tail)[0][:4] == ("F4", 7, 16, 6)
+
+  # Reply #1 (for request #1, slot 5): X = 20.0 m. FIFO must assign it to slot 5 and promote slot 7.
+  logger._process_dto_locked(b"\xFF" + _kin6(20.0), t0 + 5_000_000)
+  assert logger.slot_cache[5]["X_raw"] == int(round(20.0 * 128))
+  assert logger.slot_cache[7]["X_raw"] != int(round(20.0 * 128))  # slot 7 untouched by reply #1
+  assert logger.in_flight[:4] == ("F4", 7, 16, 6)
+  assert logger._outstanding_count_locked() == 1
+
+  # Reply #2 (for request #2, slot 7): X = 35.0 m -> slot 7; slot 5 unchanged.
+  logger._process_dto_locked(b"\xFF" + _kin6(35.0), t0 + 6_000_000)
+  assert logger.slot_cache[7]["X_raw"] == int(round(35.0 * 128))
+  assert logger.slot_cache[5]["X_raw"] == int(round(20.0 * 128))
+  assert logger.in_flight is None
+  assert logger._outstanding_count_locked() == 0
+  logger.close()
+
+
+def test_pipeline_issues_second_cto_only_while_first_outstanding_and_caps_at_depth(monkeypatch):
+  # Depth 2 overlaps a second SHORT_UPLOAD while the first is still in flight; depth 1 does not.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)  # a real cut-in protect read task exists
+
+  # Peek at the selector's natural pick (rolled back, no side effects), then make the head a
+  # DIFFERENT field so the pipelined pick is distinct and may be issued.
+  snap = logger._sched_snapshot_locked()
+  natural_entry, _ = logger._select_ready_cto_locked(t0, arm=False)
+  logger._sched_restore_locked(snap)
+  head = ("F4", 9, 22, 6, t0) if natural_entry[1:3] != (9, 22) else ("F4", 9, 2, 6, t0)
+  logger._arm_outstanding_locked(head)
+  assert logger._outstanding_count_locked() == 1
+  # No reply yet: depth 2 issues a second outstanding request to a different address.
+  pkt2 = logger._build_next_cto_locked(t0 + 1_000_000)
+  assert pkt2 is not None and logger._outstanding_count_locked() == 2
+  assert list(logger._inflight_tail)[0][:3] == natural_entry[:3]
+  # At the cap: no further request until a reply arrives.
+  assert logger._build_next_cto_locked(t0 + 2_000_000) is None
+  assert logger._outstanding_count_locked() == 2
+  logger.close()
+
+  # Contrast: default depth 1 never issues a second CTO while one is outstanding.
+  logger1, seed1, t1 = _protect_logger(monkeypatch)
+  assert logger1._pipeline_depth == 1
+  logger1._tx_armed = True
+  logger1._tx_armed_ns = 0
+  seed1(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  assert logger1._build_next_cto_locked(t1) is not None
+  assert logger1._build_next_cto_locked(t1 + 10_000_000) is None
+  assert logger1._outstanding_count_locked() == 1
+  logger1.close()
+
+
+def _sched_state(logger):
+  return (logger._read_seq, logger._last_probe_seq, logger.scan_cursor, logger._stationary_init_skip_count,
+          logger._wayb_last_round_ns, list(logger._protect_hist), list(logger._init_queue),
+          sorted(logger._init_queued), dict(logger._init_stamp), list(logger._wayb_queue))
+
+
+def test_pipeline_second_request_must_target_a_different_slot_offset(monkeypatch):
+  # SHORT_UPLOAD replies carry no address, so at depth > 1 the pipelined request may never repeat the
+  # (slot, offset) of any outstanding request. A colliding pick sends nothing and leaves no trace.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  logger._enqueue_init_locked(13)  # selector state that a rejected pick must not consume
+
+  # Idle pick goes out as the head (HEAD behavior).
+  pkt1 = logger._build_next_cto_locked(t0)
+  assert pkt1 is not None and logger._outstanding_count_locked() == 1
+  head = logger.in_flight
+
+  # Nothing replied: the selectors skip the outstanding target and issue a DISTINCT second read (no collision skip).
+  skips0 = logger.pipeline_collision_skips
+  assert logger._build_next_cto_locked(t0 + 1_000_000) is not None
+  assert logger._outstanding_count_locked() == 2 and logger.in_flight == head
+  assert logger._entry_addr(logger._inflight_tail[0]) != logger._entry_addr(head)
+  assert logger.pipeline_collision_skips == skips0
+  logger._inflight_tail.clear()
+
+  # Backstop: a selector that ignores the exclude set still cannot repeat an address (rolled back, counted).
+  real = logger._next_read_task_locked
+  monkeypatch.setattr(logger, "_next_read_task_locked", lambda now, exclude=frozenset(): real(now))
+  before = _sched_state(logger)
+  assert logger._build_next_cto_locked(t0 + 2_000_000) is None
+  assert logger._outstanding_count_locked() == 1 and logger.in_flight == head
+  assert _sched_state(logger) == before
+  assert logger.pipeline_collision_skips == skips0 + 1
+  monkeypatch.undo()
+
+  # Same rule against a tail entry and for a different size at the same start address.
+  logger2, seed2, t2 = _protect_logger(monkeypatch)
+  logger2._pipeline_depth = 3
+  logger2._tx_armed = True
+  logger2._tx_armed_ns = 0
+  snap = logger2._sched_snapshot_locked()
+  natural, _ = logger2._select_ready_cto_locked(t2, arm=False)
+  logger2._sched_restore_locked(snap)
+  logger2._arm_outstanding_locked(("F4", 9, 22, 6, t2) if natural[1:3] != (9, 22) else ("F4", 9, 2, 6, t2))
+  logger2._arm_outstanding_locked(("F4", natural[1], natural[2], 2, t2))  # same (slot, offset), other size
+  nxt = logger2._build_next_cto_locked(t2 + 1_000_000)
+  assert nxt is not None and logger2._outstanding_count_locked() == 3
+  assert len({logger2._entry_addr(e) for e in [logger2.in_flight, *logger2._inflight_tail]}) == 3
+  logger2.close()
+
+  # A reply clears the head; the same field is then legal again (single-in-flight, as HEAD).
+  logger._process_dto_locked(b"\xFF" + _kin6(20.0)[:head[3]], t0 + 5_000_000)
+  assert logger.in_flight is None
+  assert logger._build_next_cto_locked(t0 + 6_000_000) is not None
+  logger.close()
+
+
+def test_pipeline_timeout_and_length_mismatch_flush_and_resync(monkeypatch):
+  # A head timeout flushes the pipelined tail and resyncs to single-in-flight.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  logger._arm_outstanding_locked(("F4", 5, 16, 6, t0))
+  logger._arm_outstanding_locked(("F4", 7, 16, 6, t0 + 1_000_000))
+  assert logger._outstanding_count_locked() == 2
+
+  t_to = t0 + xcp_mod.F4_TIMEOUT_NS + 1
+  assert logger._build_next_cto_locked(t_to) is None
+  assert logger.in_flight is None
+  assert len(logger._inflight_tail) == 0
+  assert logger._outstanding_count_locked() == 0
+  assert logger.consecutive_f4_timeouts == 1
+  assert logger.f4_timeout_count == 1
+  assert logger._timeout_drain_until_ns == t_to + xcp_mod.F4_TIMEOUT_DRAIN_NS
+  logger.close()
+
+  # A positive reply too short for the head's expected size also flushes + resyncs + arms the drain.
+  logger2, seed2, t2 = _protect_logger(monkeypatch)
+  logger2._pipeline_depth = 2
+  logger2._arm_outstanding_locked(("F4", 5, 16, 6, t2))
+  logger2._arm_outstanding_locked(("F4", 7, 22, 6, t2 + 1_000_000))
+  assert logger2._outstanding_count_locked() == 2
+  t_mm = t2 + 5_000_000
+  logger2._process_dto_locked(b"\xFF" + bytes(4), t_mm)  # only 1+4 bytes, head expects size 6
+  assert logger2.in_flight is None
+  assert logger2._outstanding_count_locked() == 0
+  assert logger2.slot_cache[5]["X_raw"] == 0  # nothing mis-decoded into slot 5
+  assert logger2._timeout_drain_until_ns == t_mm + xcp_mod.F4_TIMEOUT_DRAIN_NS
+  logger2.close()
+
+
+def _drive_cto_capture(logger, ram, t, n, rtt_ns=9_000_000):
+  """Drive n 10 ms ticks, replying each tick from the RAM image; capture the CTO byte stream."""
+  cto_hex = []
+  for _ in range(n):
+    sends = logger.next_can_sends(t)
+    if sends:
+      pkt = bytes(sends[0].dat)
+      cto_hex.append(pkt.hex())
+      sz = pkt[1]
+      off = int.from_bytes(pkt[4:8], "big") - REC0
+      body = bytes(ram[off:off + sz]) if 0 <= off <= len(ram) - sz else bytes(sz)
+      logger.observe_can([(t, [(XCP_DTO, b"\xFF" + body, XCP_BUS)])], t + rtt_ns, v_ego=15.0)
+    t += 10_000_000
+  return cto_hex
+
+
+def test_pipeline_flag_off_schedule_is_byte_identical(monkeypatch):
+  # With prompt replies (outstanding never exceeds 1), a depth-2 logger must produce the exact same
+  # CTO byte stream as the default depth-1 logger: enabling the flag does not perturb the baseline.
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  for s, cfg in {
+    2: {"x": 45.0, "vx": -1.0, "ax": 0.0, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82},
+    5: {"x": 20.0, "vx": -2.0, "ax": -0.5, "y": 1.6, "vy": -1.0, "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 22, "cls": 70},
+    13: {"x": 30.0, "vx": -0.5, "ax": 0.0, "y": -3.0, "vy": 0.1, "flags": 0xE0C0, "sub": 0x0000, "age": 30, "qual": 24, "cls": 75},
+  }.items():
+    _write_slot(ram, s, cfg)
+
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  _capture_events(monkeypatch)
+
+  base = XcpRadarLogger(cp)
+  assert base._pipeline_depth == 1
+  t = _unlock_logger(base, 1_000_000_000)
+  base_seq = _drive_cto_capture(base, ram, t, 200)
+  base.close()
+
+  pipe = XcpRadarLogger(cp, pipeline_depth=2)
+  assert pipe._pipeline_depth == 2
+  t = _unlock_logger(pipe, 1_000_000_000)
+  pipe_seq = _drive_cto_capture(pipe, ram, t, 200)
+  pipe.close()
+
+  assert base_seq == pipe_seq
+  assert len(base_seq) > 100  # the drive actually issued reads
+
+
+def test_pipeline_selector_skips_outstanding_target_depth1_unchanged(monkeypatch):
+  # A1: with the head outstanding, the second pick is the next-best distinct target and is not a collision.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  snap = logger._sched_snapshot_locked()
+  first = logger._next_read_task_locked(t0)
+  logger._sched_restore_locked(snap)
+  excl = frozenset({xcp_mod.REC0 + xcp_mod.STRIDE * first[0] + first[1]})
+  second = logger._next_read_task_locked(t0, excl)
+  assert second is not None and second != first
+  assert xcp_mod.REC0 + xcp_mod.STRIDE * second[0] + second[1] not in excl
+  logger._sched_restore_locked(snap)
+  # Empty exclude set == no argument (depth-1 selection is unchanged).
+  assert logger._next_read_task_locked(t0, frozenset()) == first
+  logger.close()
+
+  # Depth-1 read order: default logger vs one whose selector gets an explicit empty exclude set.
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  _write_slot(ram, 2, {"x": 45.0, "vx": -1.0, "ax": 0.0, "y": 0.2, "vy": 0.0, "flags": 0xE0C0, "sub": 0x0400, "age": 40, "qual": 25, "cls": 82})
+  _write_slot(ram, 5, {"x": 20.0, "vx": -2.0, "ax": -0.5, "y": 1.6, "vy": -1.0, "flags": 0xE0C0, "sub": 0x0000, "age": 20, "qual": 22, "cls": 70})
+  cp = SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False)
+  _capture_events(monkeypatch)
+  a = XcpRadarLogger(cp)
+  seq_a = _drive_cto_capture(a, ram, _unlock_logger(a, 1_000_000_000), 120)
+  a.close()
+  b = XcpRadarLogger(cp)
+  real = b._next_read_task_locked
+  monkeypatch.setattr(b, "_next_read_task_locked", lambda now, exclude=frozenset(): real(now, frozenset()))
+  seq_b = _drive_cto_capture(b, ram, _unlock_logger(b, 1_000_000_000), 120)
+  b.close()
+  assert seq_a == seq_b and len(seq_a) > 50
+
+
+def test_pipeline_refills_to_depth_in_one_wakeup(monkeypatch):
+  # A2: at depth 2 one wakeup builds two CTOs (distinct targets); at depth 1 only one.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  pkts = logger._build_ctos_locked(t0)
+  assert len(pkts) == 2 and len(set(pkts)) == 2
+  assert logger._outstanding_count_locked() == 2
+  assert logger.pipeline_collision_skips == 0
+  assert logger._build_ctos_locked(t0 + 1_000_000) == []
+  logger.close()
+
+  logger1, seed1, t1 = _protect_logger(monkeypatch)
+  logger1._tx_armed = True
+  logger1._tx_armed_ns = 0
+  seed1(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  assert len(logger1._build_ctos_locked(t1)) == 1
+  logger1.close()
+
+
+def test_pipeline_length_must_match_exactly_at_depth2(monkeypatch):
+  # A3: an over-long reply is also a desync at depth > 1.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._pipeline_depth = 2
+  logger._arm_outstanding_locked(("F4", 5, 16, 6, t0))
+  logger._arm_outstanding_locked(("F4", 7, 22, 6, t0 + 1_000_000))
+  t_mm = t0 + 5_000_000
+  logger._process_dto_locked(b"\xFF" + bytes(8), t_mm)  # 1+8 bytes, head expects 1+6
+  assert logger._outstanding_count_locked() == 0
+  assert logger.slot_cache[5]["X_raw"] == 0
+  assert logger._timeout_drain_until_ns == t_mm + xcp_mod.F4_TIMEOUT_DRAIN_NS
+  logger.close()
