@@ -2176,7 +2176,15 @@ def test_pipeline_flag_off_schedule_is_byte_identical(monkeypatch):
   pipe_seq = _drive_cto_capture(pipe, ram, t, 200)
   pipe.close()
 
-  assert base_seq == pipe_seq
+  # Depth 2 sends a read alone with a wire size that differs from the last completed read (widened by one
+  # byte when allowed), so fold widened CTOs back to their logical read before comparing.
+  def _logical(h):
+    pkt = bytes.fromhex(h)
+    addr = int.from_bytes(pkt[4:8], "big")
+    if pkt[0] == 0xF4 and (addr + 1 - REC0) % STRIDE in xcp_mod.XCP_WIDEN_OFFSETS and pkt[1] >= 2:
+      pkt = bytes([0xF4, pkt[1] - 1, 0, 0]) + (addr + 1).to_bytes(4, "big")
+    return pkt.hex()
+  assert base_seq == [_logical(h) for h in pipe_seq]
   assert len(base_seq) > 100  # the drive actually issued reads
 
 
@@ -2247,3 +2255,182 @@ def test_pipeline_length_must_match_exactly_at_depth2(monkeypatch):
   assert logger.slot_cache[5]["X_raw"] == 0
   assert logger._timeout_drain_until_ns == t_mm + xcp_mod.F4_TIMEOUT_DRAIN_NS
   logger.close()
+
+
+# --- depth 2: wire-size alternation, widened reads, length-mismatch detection -------------------------------------
+
+def _pipe_sim(fault=None, fault_at=200, pad8=False, depth=2, ms=2500, nslots=3):
+  """1 ms ticks against a fake radar that answers every 10 ms in send order. Returns (logger, wrong, same_size_pairs).
+  wrong = accepted reads whose stored (slot, offset, size, bytes) differ from what the radar RAM holds there."""
+  ram = bytearray(NUM_SLOTS * STRIDE)
+  cfgs = {2: dict(x=45.0, vx=-1.0, ax=0.0, y=0.2, vy=0.0, flags=0xE0C0, sub=0x0400, age=40, qual=25, cls=82),
+          5: dict(x=20.0, vx=-2.0, ax=-0.5, y=1.6, vy=-1.0, flags=0xE0C0, sub=0, age=20, qual=22, cls=70),
+          13: dict(x=30.0, vx=-0.5, ax=0.0, y=-3.0, vy=0.1, flags=0xE0C0, sub=0, age=30, qual=24, cls=75)}
+  for s in list(cfgs)[:nslots]:
+    _write_slot(ram, s, cfgs[s])
+  lg = XcpRadarLogger(SimpleNamespace(brand="honda", flags=int(HondaFlags.BOSCH), passive=False), pipeline_depth=depth)
+  t = _unlock_logger(lg, 1_000_000_000)
+  q, last, state, wrong, accepted, same = [], None, None, 0, 0, 0
+  for i in range(ms):
+    t += 1_000_000
+    with lg._lock:
+      if i % 10 == 0 and q:
+        addr, size = q.pop(0)
+        off = addr - REC0
+        payload = b"\xFF" + bytes(ram[off:off + size])
+        if pad8:
+          payload = payload.ljust(8, b"\x00")
+        if fault == "dup" and state == "armed":  # state-2 style: this CTO's reply is the previous one again
+          state, (addr, size, payload) = "done", last
+        elif fault == "dup" and state is None and i >= fault_at:
+          state = "armed"
+        last = (addr, size, payload)
+        lg._process_dto_locked(payload, t)
+        for kind, _, _, slot, offset, rsize, hexs in lg._reads_buf:
+          accepted += 1
+          a = REC0 + STRIDE * slot + offset
+          wrong += hexs != bytes(ram[a - REC0:a - REC0 + rsize]).hex()
+        lg._reads_buf.clear()
+      for pkt in lg._build_ctos_locked(t):
+        assert len(pkt) == 8 and pkt[0] == 0xF4
+        if fault == "loss" and state is None and i >= fault_at:
+          state = "done"
+          continue  # this CTO never reaches the radar
+        q.append((int.from_bytes(pkt[4:8], "big"), pkt[1]))
+      wire = [lg._wire_size(e) for e in ([lg.in_flight] if lg.in_flight else []) + list(lg._inflight_tail)]
+      same += len(wire) != len(set(wire))
+  return lg, wrong, same, accepted
+
+
+def test_depth2_outstanding_reads_never_share_a_wire_size_and_widened_reads_store_the_same_values():
+  lg, wrong, same, accepted = _pipe_sim()
+  assert same == 0
+  assert accepted > 100 and wrong == 0
+  assert lg.pipeline_widened_count > 0 and lg.pipeline_len_mismatch_count == 0
+  assert lg._pipeline_depth == 2
+  lg.close()
+
+
+def test_depth2_lost_cto_or_stale_duplicate_is_caught_and_stores_nothing_to_the_wrong_slot():
+  for fault in ("loss", "dup"):
+    for fault_at in range(100, 260, 7):
+      lg, wrong, same, _ = _pipe_sim(fault, fault_at, ms=900, nslots=5 if fault_at % 2 else 3)
+      assert wrong == 0 and same == 0, (fault, fault_at)
+      assert lg.pipeline_len_mismatch_count >= 1, (fault, fault_at)
+      assert lg._pipeline_depth == 2  # one event does not trigger the fallback
+      lg.close()
+
+
+def test_depth2_three_consecutive_mismatches_fall_back_to_depth1_and_reads_resume():
+  lg, wrong, same, accepted = _pipe_sim(pad8=True, ms=1000)  # 8-byte padded replies never match a 7-byte reply
+  assert lg.pipeline_len_mismatch_count == 3 and lg._pipeline_depth == 1
+  assert wrong == 0 and accepted > 50
+  lg.close()
+
+
+def test_depth2_accepted_reply_resets_the_mismatch_streak():
+  lg, seed, t0 = _protect_logger(__import__("pytest").MonkeyPatch())
+  lg._pipeline_depth = 2
+  for n in range(5):  # mismatch, mismatch, good reply, repeat: never 3 in a row
+    for k in range(2):
+      lg._arm_outstanding_locked(("F4", 5, 16, 6, t0))
+      lg._process_dto_locked(b"\xFF\x00", t0 + 1)
+    lg._arm_outstanding_locked(("F4", 5, 16, 6, t0))
+    lg._process_dto_locked(b"\xFF" + bytes(6), t0 + 2)
+  assert lg._pipeline_depth == 2 and lg.pipeline_len_mismatch_count == 10
+  lg.close()
+
+
+def test_0xfe_with_outstanding_tail_arms_the_quiet_drain_and_clear_session_keeps_it():
+  for cmd in ("F4", "WAYB"):
+    lg, seed, t0 = _protect_logger(__import__("pytest").MonkeyPatch())
+    lg._pipeline_depth = 2
+    head = ("F4", 5, 16, 6, t0) if cmd == "F4" else ("WAYB", "t1_kin", REC0, 6, t0)
+    lg._arm_outstanding_locked(head)
+    lg._arm_outstanding_locked(("F4", 7, 22, 6, t0))
+    lg._process_dto_locked(b"\xFE\x20", t0 + 1_000_000)
+    assert lg._outstanding_count_locked() == 0
+    assert lg._timeout_drain_until_ns == t0 + 1_000_000 + xcp_mod.F4_TIMEOUT_DRAIN_NS
+    lg._process_dto_locked(b"\xFF" + bytes(6), t0 + 2_000_000)  # the dropped tail's reply is discarded
+    assert lg.drain_discard_count == 1
+    lg._clear_session_locked("NEED_CONNECT")
+    assert lg._timeout_drain_until_ns == t0 + 1_000_000 + xcp_mod.F4_TIMEOUT_DRAIN_NS
+    lg.close()
+
+
+def test_depth2_probe_cursor_stays_on_a_blocked_slot():
+  lg, seed, t0 = _protect_logger(__import__("pytest").MonkeyPatch())
+  lg.scan_cursor = 7
+  assert lg._next_inactive_probe_locked(frozenset({REC0 + STRIDE * 7 + 16})) is None
+  assert lg.scan_cursor == 7
+  assert lg._next_inactive_probe_locked() == (7, 16, 6) and lg.scan_cursor == 8
+  lg.close()
+
+
+def test_depth2_widened_read_answered_0xfe_falls_back_to_depth1_at_once(monkeypatch):
+  logs = []
+  monkeypatch.setattr(xcp_mod.cloudlog, "warning", lambda msg, *a, **k: logs.append(msg))
+  lg, seed, t0 = _protect_logger(monkeypatch)
+  lg._pipeline_depth = 2
+  head = ("F4", 5, 16, 6, t0)
+  lg._arm_outstanding_locked(head)
+  lg._strip_entries.add(head)  # sent as (addr-1, size+1)
+  lg._process_dto_locked(b"\xFE\x22", t0 + 1_000_000)
+  assert lg._pipeline_depth == 1 and lg._outstanding_count_locked() == 0
+  assert lg.slot_cache[5]["X_raw"] == 0 and not lg._reads_buf
+  assert len(logs) == 1 and hex(REC0 + STRIDE * 5 + 15) in logs[0] and "size=7" in logs[0]
+  # a plain (unwidened) 0xFE at depth 1 adds no second warning, and reads resume at depth 1
+  lg._clear_session_locked("READY")
+  lg._timeout_drain_until_ns = 0
+  lg._tx_armed, lg._tx_armed_ns = True, 0
+  pkts = lg._build_ctos_locked(t0 + 2_000_000_000)
+  assert len(pkts) == 1 and lg._outstanding_count_locked() == 1 and not lg._strip_entries
+  lg._process_dto_locked(b"\xFE\x22", t0 + 2_001_000_000)
+  assert len(logs) == 1
+  lg.close()
+
+
+def test_depth2_read_sent_alone_after_a_completed_read_must_not_share_its_wire_size(monkeypatch):
+  # X completes, the radar then repeats X's reply; A goes out alone with the same base size. Without the
+  # remembered-size rule the stale copy has the right length and is stored as A's data.
+  lg, seed, t0 = _protect_logger(monkeypatch)
+  lg._pipeline_depth = 2
+  lg._tx_armed, lg._tx_armed_ns = True, 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  assert lg._build_next_cto_locked(t0) is not None
+  x = lg.in_flight
+  reply = b"\xFF" + bytes(range(1, 1 + x[3]))
+  lg._process_dto_locked(reply, t0 + 5_000_000)
+  assert lg.in_flight is None
+  reads0 = len(lg._reads_buf)
+  pkt = lg._build_next_cto_locked(t0 + 6_000_000)
+  assert pkt is not None and lg.in_flight[3] == x[3]  # same base size as X, sent alone
+  assert pkt[1] != x[3]  # ... so it goes out widened
+  lg._process_dto_locked(reply, t0 + 7_000_000)  # stale copy of X's reply
+  assert len(lg._reads_buf) == reads0 and lg.pipeline_len_mismatch_count == 1
+  lg.close()
+
+
+def test_depth2_held_alone_read_goes_out_unwidened_after_the_quiet_window(monkeypatch):
+  # No widening possible: a read with the last completed wire size is held (nothing sent, nothing consumed)
+  # for at most the 50 ms quiet-drain window, then goes out alone and unwidened.
+  lg, seed, t0 = _protect_logger(monkeypatch)
+  monkeypatch.setattr(xcp_mod, "XCP_WIDEN_OFFSETS", frozenset())
+  lg._pipeline_depth = 2
+  lg._tx_armed, lg._tx_armed_ns = True, 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  assert lg._build_next_cto_locked(t0) is not None
+  x = lg.in_flight
+  done = t0 + 5_000_000
+  lg._process_dto_locked(b"\xFF" + bytes(range(1, 1 + x[3])), done)
+  lg._last_done_wire = x[3]  # same wire size as whatever the scheduler picks next
+  lg._timeout_drain_until_ns = 0
+  snap = _sched_state(lg)
+  assert lg._build_next_cto_locked(done + 10_000_000) is None
+  assert lg.in_flight is None and lg.pipeline_size_skips == 1 and _sched_state(lg) == snap
+  pkt = lg._build_next_cto_locked(done + 51_000_000)
+  assert pkt is not None and pkt[1] == lg.in_flight[3] == x[3] and not lg._strip_entries
+  reads0 = len(lg._reads_buf)
+  lg._process_dto_locked(b"\xFF" + bytes(range(9, 9 + x[3])), done + 60_000_000)
+  assert len(lg._reads_buf) == reads0 + 1 and lg.pipeline_len_mismatch_count == 0
+  lg.close()

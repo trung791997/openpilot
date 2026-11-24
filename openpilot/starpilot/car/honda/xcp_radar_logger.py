@@ -124,13 +124,23 @@ STARTUP_DELAY_NS = 500_000_000
 #   >1 -> allow up to this many READY-state SHORT_UPLOADs outstanding at once so our next
 #         request overlaps the radar's ~10 ms reply slot instead of waiting a full RTT.
 # SHORT_UPLOAD positive replies carry NO tag, so outstanding requests are matched to replies
-# strictly in send (FIFO) order. Any timeout, XCP error (0xFE), or length mismatch flushes the
-# pending tail and resyncs to single-in-flight (+ the normal post-timeout quiet drain), so a lost
-# or reordered reply cannot silently mis-assign to the wrong request for more than one round.
+# strictly in send (FIFO) order. A lost CTO/reply or a stale duplicate would shift that order by one,
+# silently, if two outstanding reads had the same reply length. So at depth > 1 no two outstanding
+# reads share a wire size: a same-size pick is sent one byte earlier (addr-1, size+1, first reply
+# byte stripped; only for the known in-struct F4 offsets) or is held back. Consecutive replies then
+# differ in length, and any shift shows up as a length mismatch on the very next reply. That is the
+# guarantee, and it relies on reply DLC == 1 + wire size (true in the logged car data; an 8-byte
+# padded radar would mismatch every reply and fall back to depth 1).
+# Any timeout, XCP error (0xFE), or length mismatch drops ALL outstanding reads with nothing
+# stored and arms the quiet drain (late replies are then discarded). XCP_LEN_MISMATCH_FALLBACK
+# consecutive mismatches set the depth to 1 for the rest of the session.
 # Only READY-state F4/WAYB SHORT_UPLOADs pipeline; the CONNECT/STATUS/SEED/UNLOCK handshake is
 # always strictly serial (stateful, and its reply gates the next request).
 # UNPROVEN on-car: whether this radar tolerates 2 outstanding SHORT_UPLOADs is unknown and needs a
 # parked-car probe before any road use. Default stays 1 until that probe passes.
+XCP_LEN_MISMATCH_FALLBACK = 3
+# F4 offsets inside the 136-byte slot struct (all >= 1), the only reads that may be widened to addr-1.
+XCP_WIDEN_OFFSETS = frozenset({2, 16, 22, 106, 127})
 XCP_PIPELINE_DEPTH = max(1, int(os.environ.get("XCP_PIPELINE_DEPTH", "1") or "1"))
 
 # 1 Hz Way B internal-fusion diagnostic probe (Bosch-A 36802-TBA-A150 verified SRAM bases).
@@ -299,6 +309,13 @@ class XcpRadarLogger:
     self._pipeline_depth = max(1, int(pipeline_depth if pipeline_depth is not None else XCP_PIPELINE_DEPTH))
     self._inflight_tail: deque[tuple] = deque()
     self.pipeline_collision_skips = 0  # pipelined picks rolled back for hitting an outstanding address
+    self.pipeline_size_skips = 0  # pipelined picks held back: same wire size as an outstanding read, not widenable
+    self.pipeline_widened_count = 0
+    self.pipeline_len_mismatch_count = 0
+    self._consecutive_len_mismatches = 0
+    self._last_done_ns = 0
+    self._last_done_wire: int | None = None  # depth > 1: wire size of the last completed read (cleared by any drain)
+    self._strip_entries: set[tuple] = set()  # outstanding entries sent as (addr-1, size+1): drop reply byte 1
     self._init_queue: deque[tuple[int, int, int]] = deque()
     self._init_queued: set[tuple[int, int, int]] = set()
     self._init_stamp: dict[tuple[int, int, int], int] = {}  # first-seen time of queued init items (guard)
@@ -511,6 +528,8 @@ class XcpRadarLogger:
     self.state = target_state
     self.in_flight = None
     self._inflight_tail.clear()
+    self._strip_entries.clear()
+    self._last_done_wire = None
     self._init_queue.clear()
     self._init_queued.clear()
     self._wayb_queue.clear()
@@ -519,7 +538,6 @@ class XcpRadarLogger:
     self._wayb_lead_cam_id = None
     self.seed_bytes = None
     self.consecutive_f4_timeouts = 0
-    self._timeout_drain_until_ns = 0
     self._op_lead_slot = None
     self._prev_op_slot_by_tid.clear()
     self._assist_shm_dirty = False
@@ -642,13 +660,33 @@ class XcpRadarLogger:
     # have lost sync (a dropped/reordered reply), so flush the pending tail, resync to single, and
     # take the normal post-timeout quiet drain rather than mis-decode. No-op at depth 1 (guarded),
     # which keeps HEAD's "short reply -> _handle no-op" behavior byte-identical.
-    if self._pipeline_depth > 1 and pid == 0xFF and cmd_type in ("F4", "WAYB") and len(data) != 1 + size:
-      self.in_flight = None
-      self._inflight_tail.clear()
-      self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
-      return
+    strip = 1 if self.in_flight in self._strip_entries else 0
+    if self._pipeline_depth > 1 and pid == 0xFF and cmd_type in ("F4", "WAYB"):
+      if len(data) != 1 + size + strip:
+        self.pipeline_len_mismatch_count += 1
+        self._consecutive_len_mismatches += 1
+        self.in_flight = None
+        self._inflight_tail.clear()
+        self._strip_entries.clear()
+        self._last_done_wire = None  # the drain absorbs stale replies
+        self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
+        if self._consecutive_len_mismatches >= XCP_LEN_MISMATCH_FALLBACK:
+          self._fall_back_to_depth1("repeated reply length mismatches")
+        return
+      self._consecutive_len_mismatches = 0
+      if strip:
+        data = data[:1] + data[2:]
+    if pid == 0xFE and strip and self._pipeline_depth > 1:
+      # the radar refused a widened (addr-1, size+1) read: never seen on the car, so stop widening altogether
+      self._fall_back_to_depth1(f"widened read addr={hex(self._entry_addr(self.in_flight) - 1)} size={size + 1} answered 0xFE")
+    self._strip_entries.discard(self.in_flight)
     self.in_flight = None
+    self._last_done_wire = size + strip if cmd_type in ("F4", "WAYB") else None
+    self._last_done_ns = now_ns
     if pid == 0xFE:
+      self._last_done_wire = None
+      if self._inflight_tail:  # tail replies are still coming: discard them in the quiet drain
+        self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
       if cmd_type == "WAYB":
         self._wayb_state["last_err"] = data.hex()
         self._wayb_state["last_err_addr"] = hex(offset)
@@ -869,8 +907,10 @@ class XcpRadarLogger:
   def _next_inactive_probe_locked(self, exclude: frozenset = frozenset()) -> tuple[int, int, int] | None:
     for _ in range(NUM_SLOTS):
       s = self.scan_cursor
+      if s not in self.active_slots and REC0 + STRIDE * s + 16 in exclude:
+        return None  # outstanding on this slot: keep the cursor here so the slot is not skipped
       self.scan_cursor = (self.scan_cursor + 1) % NUM_SLOTS
-      if s not in self.active_slots and REC0 + STRIDE * s + 16 not in exclude:
+      if s not in self.active_slots:
         return (s, 16, 6)
     return None
 
@@ -1311,6 +1351,7 @@ class XcpRadarLogger:
       # be matched by send order, so flush the tail and resync to single-in-flight.
       self.in_flight = None
       self._inflight_tail.clear()
+      self._strip_entries.clear()
       self._record_read_locked(2, now_ns, max(0, now_ns - sent_ns), cmd_type, to_slot, to_off, to_size)
       if cmd_type == "F4":
         self.consecutive_f4_timeouts += 1
@@ -1326,6 +1367,7 @@ class XcpRadarLogger:
       else:
         self.handshake_timeout_count += 1
         self._clear_session_locked("NEED_CONNECT")
+      self._last_done_wire = None
       self._timeout_drain_until_ns = now_ns + F4_TIMEOUT_DRAIN_NS
       return None
 
@@ -1414,9 +1456,14 @@ class XcpRadarLogger:
     the address, so two outstanding reads of one field cannot be told apart if the radar overwrites
     or drops a queued CTO. A colliding (or empty) pick is rolled back and nothing is sent this call."""
     if self.in_flight is None:
-      return self._select_ready_cto_locked(now_ns)
+      self._strip_entries.clear()
+      if self._last_done_wire is not None and now_ns - self._last_done_ns >= F4_TIMEOUT_DRAIN_NS:
+        self._last_done_wire = None  # stale replies show up within the quiet-drain window; after it a held read may go out
+      if self._pipeline_depth == 1 or self._last_done_wire is None:
+        return self._select_ready_cto_locked(now_ns)
     snap = self._sched_snapshot_locked()
-    outstanding = frozenset({self._entry_addr(self.in_flight)} | {self._entry_addr(e) for e in self._inflight_tail})
+    outstanding = (frozenset({self._entry_addr(self.in_flight)} | {self._entry_addr(e) for e in self._inflight_tail})
+                   if self.in_flight is not None else frozenset())
     picked = self._select_ready_cto_locked(now_ns, arm=False, exclude=outstanding)
     # Backstop: selectors skip outstanding targets, so a collision here should not happen.
     if picked is None or self._entry_addr(picked[0]) in outstanding:
@@ -1425,8 +1472,30 @@ class XcpRadarLogger:
         self.pipeline_collision_skips += 1
       return None
     entry, pkt = picked
+    # No two outstanding reads share a wire size (see the module comment): widen or hold back.
+    # Sent alone, a read must also differ from the last completed one: a stale or duplicated reply of
+    # that size would otherwise be taken as its data.
+    wire_sizes = ({self._wire_size(e) for e in (self.in_flight, *self._inflight_tail)} if self.in_flight is not None
+                  else {self._last_done_wire})
+    if entry[3] in wire_sizes:
+      _, slot, off, size, _ = entry
+      if entry[0] == "F4" and off in XCP_WIDEN_OFFSETS and size <= 6 and size + 1 not in wire_sizes:
+        pkt = bytes([0xF4, size + 1, 0x00, 0x00]) + (REC0 + STRIDE * slot + off - 1).to_bytes(4, "big")
+        self._strip_entries.add(entry)
+        self.pipeline_widened_count += 1
+      else:
+        self._sched_restore_locked(snap)
+        self.pipeline_size_skips += 1
+        return None
     self._arm_outstanding_locked(entry)
     return pkt
+
+  def _fall_back_to_depth1(self, why: str) -> None:
+    self._pipeline_depth = 1
+    cloudlog.warning(f"xcp_radar_logger: {why}, pipeline depth set to 1")
+
+  def _wire_size(self, entry: tuple) -> int:
+    return entry[3] + (1 if entry in self._strip_entries else 0)
 
   def _select_ready_cto_locked(self, now_ns: int, arm: bool = True, exclude: frozenset = frozenset()):
     """HEAD's READY task selection. With arm=True arms the request and returns the CTO bytes;
