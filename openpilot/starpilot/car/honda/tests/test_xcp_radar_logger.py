@@ -1930,3 +1930,36 @@ def test_wayb_probe_disabled_by_default_issues_zero_reads(monkeypatch):
       assert logger.in_flight[0] != "WAYB"
   assert logger._next_wayb_task_locked(t0) is None
   assert logger._wayb_pending_locked(t0 + 5_000_000_000) is False
+
+
+def test_build_cto_skips_lead_urgent_ranking_when_wayb_off_and_keeps_read_order(monkeypatch):
+  # Step 1 read-efficiency (2026-11-23): the cheap Way B check runs first, so with Way B off the lead-urgent ranking
+  # is not evaluated per read; the chosen read is the plain scheduler's choice.
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  seed(5, x=20.0, y=1.5, vy=-1.0, kin_age_ms=300)
+  calls = []
+  real_urgent = logger._primary_lead_urgent_locked
+  monkeypatch.setattr(logger, "_primary_lead_urgent_locked", lambda now: calls.append(now) or real_urgent(now))
+  expected = XcpRadarLogger._next_read_task_locked(logger, t0)
+  logger._read_seq -= 1
+  pkt = logger._build_next_cto_locked(t0)
+  assert calls == []
+  slot, off, size = expected
+  assert logger.in_flight[:4] == ("F4", slot, off, size)
+  assert pkt == bytes([0xF4, size, 0x00, 0x00]) + (xcp_mod.REC0 + xcp_mod.STRIDE * slot + off).to_bytes(4, "big")
+  logger.close()
+
+
+def test_build_cto_lead_urgent_still_preempts_wayb_when_enabled(monkeypatch):
+  monkeypatch.setattr(xcp_mod, "WAYB_PROBE_ENABLED", True)  # Way B is off by default; this checks the operand order keeps lead priority
+  logger, seed, t0 = _protect_logger(monkeypatch)
+  logger._wayb_probe_enabled = True
+  logger._tx_armed = True
+  logger._tx_armed_ns = 0
+  logger._wayb_queue.append(("t1_kin", xcp_mod.WAYB_DEFAULT_T1_BASE + 24, 6))
+  logger.slot_cache[2]["kin_updated_ns"] = t0 - xcp_mod.LEAD_KIN_INTERVAL_NS
+  logger._build_next_cto_locked(t0)
+  assert logger.in_flight[:4] == ("F4", 2, 16, 6)
+  logger.close()

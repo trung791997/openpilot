@@ -1292,7 +1292,12 @@ class XcpRadarLogger:
 
     if self.state == "READY":
       task: tuple[int, int, int] | None = None
-      if not self._primary_lead_urgent_locked(now_ns) and self._wayb_pending_locked(now_ns):
+      # Cheap Way B check first: with WAYB_PROBE_ENABLED False it is always False, so the priority-slot ranking inside
+      # _primary_lead_urgent_locked is not run a second time on every read (both checks are side-effect free; the read
+      # order is unchanged). Offline sim 2026-11-23, routes 109 and 10b, replay evidence only: read sequence and all
+      # metrics identical to HEAD f39f8507dc; scheduler CPU per read on x86 157 -> 119 us (109), 186 -> 112 us (10b),
+      # noisy (parallel runs); aarch64 not measured. See longsim_frames/xcp_assist/budget/step1_table_s1.out.
+      if self._wayb_pending_locked(now_ns) and not self._primary_lead_urgent_locked(now_ns):
         task = self._cutin_wayb_yield_task_locked(now_ns)
         if task is None:
           wb_task = self._next_wayb_task_locked(now_ns)
