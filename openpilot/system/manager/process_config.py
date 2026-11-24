@@ -81,8 +81,8 @@ _xcpd_latch: bool | None = None
 
 
 def xcpd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # The param is read once per onroad session, like card's startup read of the same param, so a mid-drive toggle neither
-  # starts a second XCP sender next to card's in-card logger nor kills xcpd and leaves the drive with no XCP at all.
+  # The param is read once per onroad session, so a mid-drive toggle neither starts xcpd late nor kills it and leaves
+  # the drive with no XCP reads at all.
   # The CarParams checks stay live: at the first onroad tick manager's carParams is not yet published for this drive.
   global _xcpd_latch
   if not started:

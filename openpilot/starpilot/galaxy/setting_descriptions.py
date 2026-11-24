@@ -16,10 +16,9 @@ DESCRIPTIONS = {
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
   'AlphaHondaXcpRadarAssist': ('Fuses live 20 Hz Bosch Array B XCP Doppler velocity and acceleration into verified radar tracks ' +
-                               'to reduce lead lag. Off keeps XCP strictly read-only for logging.'),
-  'AlphaHondaXcpDaemon': ('Runs the XCP radar reader as its own process with a dedicated send path, so its requests no longer wait on ' +
-                          'the car-controls loop. Off keeps it inside card. Same reads, faster cycle; logging-only unless ' +
-                          'XCP Radar Lag Removal is also on.'),
+                               'to reduce lead lag. Off keeps XCP strictly read-only for logging. Needs the XCP Radar Reader on.'),
+  'AlphaHondaXcpDaemon': ('Reads extra radar data over XCP in its own process. Off = no XCP reads. Logging only unless ' +
+                          'XCP Radar Lag Removal is also on; Lag Removal needs this on. Applies on the next drive.'),
   'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
                               'Applies after the next startup; exact vehicle takeover checks remain required.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',

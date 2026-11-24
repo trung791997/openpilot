@@ -257,6 +257,16 @@ def test_xcpd_emits_only_xcp_sendcan_and_logs_reads(monkeypatch, tmp_path):
   params = _FakeParams({"AlphaHondaXcpDaemon": True, "CarParams": _bosch_a_cp_bytes()})
   lock_path = tmp_path / "xcp.lock"
 
+  import openpilot.starpilot.car.honda.xcpd as xcpd_mod
+  depths: list[int] = []
+
+  class _Rec(XcpRadarLogger):
+    def __init__(self, *args, **kw):
+      super().__init__(*args, **kw)
+      depths.append(self._pipeline_depth)
+
+  monkeypatch.setattr(xcpd_mod, "XcpRadarLogger", _Rec)
+
   run_xcpd(
     params=params,
     messaging_mod=msg_mod,
@@ -267,6 +277,7 @@ def test_xcpd_emits_only_xcp_sendcan_and_logs_reads(monkeypatch, tmp_path):
     assist_shm_path=None,
   )
 
+  assert depths == [2]  # xcpd runs the reader with 2 reads in flight
   assert msg_mod._unlocked is True
   assert msg_mod.pm_creations == [["xcpSendcan"]]
   assert all(topic == "xcpSendcan" for topic, _ in msg_mod.pm.sent)
@@ -364,18 +375,11 @@ def test_card_gating_and_params_key_and_process_config(monkeypatch):
     assert xcpd_enabled(True, params, other_cp) is False
     assert "xcpd" in managed_processes and managed_processes["xcpd"].enabled is True
 
-    # Real Card constructor skips XcpRadarLogger when AlphaHondaXcpDaemon=1
+    # card never builds an XCP reader, whatever AlphaHondaXcpDaemon says
     card_daemon_on = Car(CI=CarInterface(cp), RI=RadarInterface(cp))
-    assert card_daemon_on.xcp_radar_logger is None
+    assert getattr(card_daemon_on, "xcp_radar_logger", None) is None
 
-    # Default ("0") instantiates in-card XcpRadarLogger as before (use fresh CI so passive is unmutated)
     cp_off = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
     params.put_bool("AlphaHondaXcpDaemon", False, block=True)
-    monkeypatch.setattr(xcp_mod, "_default_sender_lock_path", lambda: Path(f"/tmp/test_card_xcp_{os.getpid()}.lock"))
     card_daemon_off = Car(CI=CarInterface(cp_off), RI=RadarInterface(cp_off))
-    try:
-      assert card_daemon_off.xcp_radar_logger is not None
-      assert card_daemon_off.xcp_radar_logger.enabled is True
-      assert card_daemon_off.xcp_radar_logger._send_topic == "sendcan"
-    finally:
-      card_daemon_off.xcp_radar_logger.close()
+    assert getattr(card_daemon_off, "xcp_radar_logger", None) is None

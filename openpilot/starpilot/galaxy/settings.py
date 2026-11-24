@@ -410,9 +410,9 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
   if key == "UseStarPilotLongitudinalPlanner":
     return f"Select {request.value} for {row.label.lower()}? The selected planner starts with the next driving process."
   if key == "AlphaHondaXcpRadarAssist":
-    return f"Turn {request.value} {row.label}? Off keeps XCP read-only for logging; On enables Alpha XCP lag removal on the next drive."
+    return f"Turn {request.value} {row.label}? Off keeps XCP read-only for logging; On enables Alpha XCP lag removal on the next drive. Needs the XCP Radar Reader on."
   if key == "AlphaHondaXcpDaemon":
-    return f"Turn {request.value} {row.label}? Applies on the next drive; the current drive keeps its XCP reader where it is."
+    return f"Turn {request.value} {row.label}? Off = no XCP reads; Lag Removal needs this on. Applies on the next drive."
   if key in ("CustomCruise", "CustomCruiseLong"):
     if row.capability and row.capability[0] == "toyota":
       return f"Save {row.label.lower()} as {request.value}? Toyota cruise preferences refresh while this compatible drive is active."

@@ -6,7 +6,7 @@ KEY = "AlphaHondaXcpRadarAssist"
 LABEL = "Alpha: XCP Radar Lag Removal (Bosch-A)"
 REASON = (
   "Fuses live 20 Hz Bosch Array B XCP Doppler velocity and acceleration into verified radar tracks to reduce lead lag. "
-  "Off keeps XCP strictly read-only for logging."
+  "Off keeps XCP strictly read-only for logging. Needs the XCP Radar Reader on."
 )
 
 

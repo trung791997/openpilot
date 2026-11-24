@@ -3,10 +3,10 @@
 from openpilot.starpilot.car.honda.xcp_radar_assist import capability as _assist_capability
 
 KEY = "AlphaHondaXcpDaemon"
-LABEL = "Alpha: XCP Radar Daemon (Bosch-A)"
+LABEL = "Alpha: XCP Radar Reader (Bosch-A)"
 REASON = (
-  "Runs the XCP radar reader as its own process with a dedicated send path, so its requests no longer wait on the "
-  "car-controls loop. Off keeps it inside card. Same reads, faster cycle; logging-only unless XCP Radar Lag Removal is also on."
+  "Reads extra radar data over XCP in its own process. Off = no XCP reads. Logging only unless XCP Radar Lag Removal "
+  "is also on; Lag Removal needs this on. Applies on the next drive."
 )
 
 

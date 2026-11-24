@@ -79,6 +79,7 @@ def run_xcpd(
   pm = messaging_mod.PubMaster(["xcpSendcan"])
   logger = XcpRadarLogger(
     CP,
+    pipeline_depth=2,
     pm=pm,
     params=params,
     send_topic="xcpSendcan",
