@@ -101,6 +101,7 @@ INACTIVE_PROBE_PERIOD_WITH_LEAD = 10
 INACTIVE_PROBE_PERIOD_NO_LEAD = 3
 OP_TRACKS_MAX_AGE_NS = 500_000_000
 MEASURED_MAX_KIN_AGE_NS = 200_000_000  # 200 ms freshness ceiling for stage=='measured'
+UI_EXTRAP_CAP_NS = 600_000_000  # UI dots: extrapolate a point by vRel/vyRel for at most this long since its last read
 ASSIST_SHM_MIN_INTERVAL_NS = 20_000_000  # 50 Hz max assist-only SHM publish on primary-lead kin arrival
 OP_MATCH_LOCKED_CLOSING_MAX_DV_MPS = 8.0
 OP_MATCH_LOCKED_CLOSING_MAX_DY_M = 1.5
@@ -1666,22 +1667,31 @@ class XcpRadarLogger:
     except Exception:
       pass
 
+  @staticmethod
+  def _ui_points(now_ns: int, v_ego: float, targets: list[dict], cap_ns: int = UI_EXTRAP_CAP_NS) -> list[list[float]]:
+    """UI dots as [d, y, age_kin_s, age_lat_s, id]; d and y are extrapolated to now_ns by vRel/vyRel (age capped at
+    cap_ns). id is the radar track id of the slot (the slot number when the track id is unknown). Display only."""
+    points: list[list[float]] = []
+    for t in targets:
+      if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
+        continue
+      age_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), cap_ns)
+      age_lat = min(max(now_ns - t.get("lat_updated_ns", now_ns), 0), cap_ns)
+      d_ui = t["dRel_m"] + t.get("vRel_mps", 0.0) * (age_kin / 1e9)
+      y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * (age_lat / 1e9)
+      if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
+        tid = t.get("radar_track_id")
+        if tid is None:
+          tid = t.get("slot", -1)
+        points.append([round(d_ui, 2), round(y_ui, 2), round(age_kin / 1e9, 3), round(age_lat / 1e9, 3), int(tid)])
+    return points
+
   def _write_ui_snapshot(self, now_ns: int, v_ego: float, targets: list[dict]) -> None:
     if self._shm_path is None and self._assist_shm_path is None:
       return
     try:
       if self._shm_path is not None:
-        points: list[list[float]] = []
-        for t in targets:
-          if t.get("lat_updated_ns", 1) <= 0 or t.get("ghost", False) or t.get("age", 99) < 3:
-            continue
-          dt_kin = min(max(now_ns - t.get("kin_updated_ns", now_ns), 0), 300_000_000) / 1e9
-          dt_lat = min(max(now_ns - t.get("lat_updated_ns", now_ns), 0), 300_000_000) / 1e9
-          d_ui = t["dRel_m"] + t.get("vRel_mps", 0.0) * dt_kin
-          y_ui = t["yRel_m"] + t.get("vyRel_mps", 0.0) * dt_lat
-          if d_ui > 0.0 and (v_ego < 3.0 or abs(v_ego + t["vRel_mps"]) >= 1.5 or abs(y_ui) < 2.2):
-            points.append([round(d_ui, 2), round(y_ui, 2)])
-        _write_atomic_json(self._shm_path, {"mono_ns": int(now_ns), "points": points})
+        _write_atomic_json(self._shm_path, {"mono_ns": int(now_ns), "points": self._ui_points(now_ns, v_ego, targets)})
       if self._assist_shm_path is not None:
         _write_atomic_json(self._assist_shm_path, self._build_assist_payload(now_ns, targets))
     except Exception:

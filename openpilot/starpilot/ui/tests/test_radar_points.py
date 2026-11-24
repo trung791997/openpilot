@@ -12,7 +12,8 @@ from openpilot.starpilot.ui.feature_settings_state import row_change
 from openpilot.starpilot.ui.onroad_customization import PARAM_KEY, decode_document, default_document, validate_document
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.radar_points import (
-  FILL_COLOR, FUSED_FILL_COLOR, SERVICE, XCP_FILL_COLOR, RadarPointsRenderer, match_fused, project_radar_points, radar_points_enabled,
+  FILL_COLOR, FUSED_FILL_COLOR, FUSE_GRACE_NS, SERVICE, XCP_FILL_COLOR, PairTracker, RadarPointsRenderer, YawHistory, match_fused,
+  project_radar_points, radar_points_enabled, rotate_for_yaw,
 )
 
 
@@ -256,7 +257,7 @@ def test_draw_splits_fused_cam_only_and_xcp_only(tmp_path, monkeypatch):
   assert [f[2] for f in fills].count(FILL_COLOR) == 1
   assert [f[2] for f in fills].count(XCP_FILL_COLOR) == 1
   fused = next(f for f in fills if f[2] == FUSED_FILL_COLOR)
-  assert fused[0] == (11.0, 20.0) and fused[1] == 7.0  # at the radar position, full radius
+  assert fused[0] == (10.0, 20.0) and fused[1] == 7.0  # at the camera position, full radius
   blue = next(f for f in fills if f[2] == XCP_FILL_COLOR)
   assert blue[1] == max(2.5, 7.0 * 0.72)
   assert len(calls) == 6  # three dots, outline + fill each
@@ -264,3 +265,98 @@ def test_draw_splits_fused_cam_only_and_xcp_only(tmp_path, monkeypatch):
   calls.clear()
   dots.draw(sm, view, rect, now_ns=12_000_000_000)
   assert [c[2] for c in calls if c[2] in (FILL_COLOR, XCP_FILL_COLOR, FUSED_FILL_COLOR)] == [FILL_COLOR, FILL_COLOR]
+
+
+def test_xcp_snapshot_reads_new_five_field_points_and_old_two_field_points(tmp_path):
+  path = tmp_path / "xcp.json"
+  dots = RadarPointsRenderer(7.0, 9.0, xcp_path=path)
+  path.write_text(json.dumps({"mono_ns": 10_000_000_000, "points": [[20.0, 1.0, 0.1, 0.4, 31], [30.0, -2.0]]}))
+  _, pts = dots._read_xcp_snapshot(10_100_000_000)
+  assert pts == [(20.0, 1.0, 0.1, 0.4, 31), (30.0, -2.0, 0.0, 0.0, -2)]  # no id: -1 - index, no ages
+
+
+def test_yaw_history_integrates_piecewise_and_holds_the_ends():
+  yaw = YawHistory()
+  assert yaw.angle(0, 1_000_000_000) == 0.0  # no history: no rotation
+  yaw.add(1_000_000_000, 0.2)
+  yaw.add(1_500_000_000, -0.1)
+  # 0.2 rad/s for 0.5 s, then -0.1 rad/s for 0.25 s
+  assert yaw.angle(1_000_000_000, 1_750_000_000) == pytest.approx(0.2 * 0.5 - 0.1 * 0.25)
+  assert yaw.angle(500_000_000, 1_000_000_000) == pytest.approx(0.2 * 0.5)  # first sample held back
+  assert yaw.angle(1_500_000_000, 2_500_000_000) == pytest.approx(-0.1)  # last sample held forward
+  assert yaw.angle(2_000_000_000, 1_000_000_000) == 0.0
+
+
+def test_rotate_for_yaw_sign_and_magnitude():
+  # the car yaws left 0.1 rad: a fixed point straight ahead is now to the right (y < 0), a point on the left comes ahead
+  x, y = rotate_for_yaw(20.0, 0.0, 0.1)
+  assert (x, y) == pytest.approx((20.0 * math.cos(0.1), -20.0 * math.sin(0.1)))
+  assert y == pytest.approx(-1.9967, abs=1e-3)
+  x, y = rotate_for_yaw(0.0, 5.0, math.pi / 2)  # a quarter turn left: the point on the left is straight ahead
+  assert (x, y) == pytest.approx((5.0, 0.0), abs=1e-9)
+  assert rotate_for_yaw(12.0, -3.0, 0.0) == (12.0, -3.0)
+  for angle in (0.3, -0.7):
+    x, y = rotate_for_yaw(12.0, -3.0, angle)
+    assert math.hypot(x, y) == pytest.approx(math.hypot(12.0, -3.0))
+
+
+def test_xcp_points_are_rotated_by_the_yaw_since_they_were_read(tmp_path):
+  path = tmp_path / "xcp.json"
+  # one point read 0.4 s before the file was written (age_lat), file written 0.1 s before "now"
+  path.write_text(json.dumps({"mono_ns": 10_000_000_000, "points": [[20.0, 0.0, 0.0, 0.4, 5]]}))
+  dots = RadarPointsRenderer(7.0, 9.0, xcp_path=path)
+  # modelV2 orientationRate.z > 0 is a RIGHT turn (z down); the history is left-positive
+  yaw_rate_left = 0.2
+  sm = FakeSm([])
+  sm.recv_frame["modelV2"] = 1
+  sm["modelV2"] = NS(orientationRate=NS(z=[-yaw_rate_left]))
+  dict.__setitem__(sm, "modelV2", NS(orientationRate=NS(z=[-yaw_rate_left])))
+  dots._update_yaw(sm, 9_000_000_000)
+  ids, pts = dots._raw_xcp(10_100_000_000)
+  angle = yaw_rate_left * 0.5  # 0.4 s lateral age + 0.1 s file age
+  assert ids == [5]
+  np.testing.assert_allclose(pts, [rotate_for_yaw(20.0, 0.0, angle)])
+  assert pts[0, 1] < 0.0  # left turn: the fixed point moves to the right
+  # no yaw available: no rotation
+  assert RadarPointsRenderer(7.0, 9.0, xcp_path=path)._raw_xcp(10_100_000_000)[1].tolist() == [[20.0, 0.0]]
+
+
+def _track(tracker, t_ms, cam, xcp):
+  """cam / xcp: {id: (d, y)}"""
+  c_ids, x_ids = list(cam), list(xcp)
+  purple, red, blue = tracker.update(c_ids, _a(*[cam[i] for i in c_ids]), x_ids, _a(*[xcp[i] for i in x_ids]), t_ms * 1_000_000)
+  return {c_ids[i] for i in purple}, {c_ids[i] for i in red}, {x_ids[j] for j in blue}
+
+
+def test_pair_survives_a_one_frame_gate_miss_and_a_wider_keep_gate():
+  tr = PairTracker()
+  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (31.0, 0.2)}) == ({1}, set(), set())
+  # XCP drifts 3.0 m longer: outside the 2.4 m make gate, inside the 4.8 m keep gate -> pair kept
+  assert _track(tr, 50, {1: (30.0, 0.0)}, {9: (33.0, 0.2)}) == ({1}, set(), set())
+  # outside even the keep gate (a 1-frame miss): the camera object stays purple, the reflection is drawn blue
+  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (36.0, 0.2)}) == ({1}, set(), {9})
+  # back inside the make gate: pairs again
+  assert _track(tr, 150, {1: (30.0, 0.0)}, {9: (31.0, 0.2)}) == ({1}, set(), set())
+
+
+def test_pair_splits_after_the_grace_period():
+  tr = PairTracker()
+  _track(tr, 0, {1: (30.0, 0.0)}, {9: (31.0, 0.0)})
+  grace_ms = FUSE_GRACE_NS // 1_000_000
+  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (40.0, 0.0)})[0] == {1}
+  assert _track(tr, grace_ms, {1: (30.0, 0.0)}, {9: (40.0, 0.0)})[0] == {1}  # still inside the grace
+  assert _track(tr, grace_ms + 60, {1: (30.0, 0.0)}, {9: (40.0, 0.0)}) == (set(), {1}, {9})
+  # the camera object disappearing ends the purple at once
+  assert _track(tr, grace_ms + 110, {}, {9: (40.0, 0.0)}) == (set(), set(), {9})
+
+
+def test_kept_xcp_id_is_not_matched_elsewhere_and_extra_reflections_stay_blue():
+  tr = PairTracker()
+  _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0)})
+  # a second reflection appears closer to the camera object than the kept one: the pair does not hop
+  purple, red, blue = _track(tr, 50, {1: (30.0, 0.0)}, {9: (31.5, 0.0), 10: (30.0, 0.0)})
+  assert (purple, red, blue) == ({1}, set(), {10})
+  assert tr._pair == {1: 9}
+  # a second camera object cannot take the kept reflection
+  purple, red, blue = _track(tr, 100, {1: (30.0, 0.0), 2: (31.0, 0.0)}, {9: (30.5, 0.0)})
+  assert (purple, red, blue) == ({1}, {2}, set())

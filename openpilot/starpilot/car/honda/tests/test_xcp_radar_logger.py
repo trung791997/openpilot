@@ -9,6 +9,7 @@ from openpilot.starpilot.car.honda.xcp_radar_logger import (
   NUM_SLOTS,
   REC0,
   STRIDE,
+  UI_EXTRAP_CAP_NS,
   XCP_BUS,
   XCP_DTO,
   XcpRadarLogger,
@@ -305,9 +306,29 @@ def test_ui_shm_snapshot_filters_roadside_stationary_clutter_and_unlinks(tmp_pat
   ]
   logger._write_ui_snapshot(5_000_000_000, 15.0, targets)
   data = json.loads(shm_path.read_text())
-  assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5], [44.9, -3.1]]}
+  # [d, y, age_kin_s, age_lat_s, id]; id is -1 here: these targets carry neither a radar track id nor a slot
+  assert data == {"mono_ns": 5_000_000_000, "points": [[15.0, 0.5, 0.0, 0.0, -1], [44.9, -3.1, 0.05, 0.1, -1]]}
   logger.close()
   assert not shm_path.exists()
+
+
+def _ui_target(**kw):
+  base = {"dRel_m": 30.0, "yRel_m": 0.0, "vRel_mps": -2.0, "vyRel_mps": 0.5, "age": 10, "ghost": False,
+          "lat_updated_ns": 5_000_000_000, "kin_updated_ns": 5_000_000_000, "slot": 7}
+  base.update(kw)
+  return base
+
+
+def test_ui_points_extrapolate_up_to_one_second_and_report_ages():
+  now = 6_000_000_000
+  # last read 0.5 s ago on both axes: extrapolated the full 0.5 s (the old 300 ms cap no longer freezes it)
+  [p] = XcpRadarLogger._ui_points(now, 15.0, [_ui_target(lat_updated_ns=5_500_000_000, kin_updated_ns=5_500_000_000,
+                                                          radar_track_id=31)])
+  assert p == [29.0, 0.25, 0.5, 0.5, 31]  # 30 - 2 * 0.5, 0 + 0.5 * 0.5, radar_track_id wins over the slot
+  # 3 s old: capped at UI_EXTRAP_CAP_NS (0.6 s)
+  [p] = XcpRadarLogger._ui_points(now, 15.0, [_ui_target(lat_updated_ns=3_000_000_000, kin_updated_ns=3_000_000_000)])
+  assert p == [28.8, 0.3, 0.6, 0.6, 7]
+  assert UI_EXTRAP_CAP_NS == 600_000_000
 
 
 def test_cutin_lateral_y_vy_prioritized_over_qual_on_adjacent_cars(monkeypatch):
@@ -394,7 +415,8 @@ def test_standing_traffic_and_adjacent_lat_not_starved_by_wide_traffic(monkeypat
         max_adj_lat_age_s = max(max_adj_lat_age_s, (t - lat_ts) / 1e9)
     if standing_visible_at is None and shm_path.exists():
       pts = json.loads(shm_path.read_text())["points"]
-      if any(55.0 <= px <= 63.0 and abs(py - 0.3) < 0.5 for px, py in pts):
+      # d is extrapolated by vRel (-15 m/s) for up to UI_EXTRAP_CAP_NS (0.6 s), so the standing car at 62 m may show as far in as 53 m
+      if any(53.0 <= px <= 63.0 and abs(py - 0.3) < 0.5 for px, py, *_ in pts):
         standing_visible_at = i * 0.02
     t += 20_000_000
 
