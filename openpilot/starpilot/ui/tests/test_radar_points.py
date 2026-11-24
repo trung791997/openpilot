@@ -12,7 +12,7 @@ from openpilot.starpilot.ui.feature_settings_state import row_change
 from openpilot.starpilot.ui.onroad_customization import PARAM_KEY, decode_document, default_document, validate_document
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.radar_points import (
-  FILL_COLOR, FUSED_FILL_COLOR, FUSE_GRACE_NS, SERVICE, XCP_FILL_COLOR, PairTracker, RadarPointsRenderer, YawHistory, match_fused,
+  FILL_COLOR, FUSED_FILL_COLOR, FUSE_GRACE_NS, SERVICE, XCP_FILL_COLOR, ConfirmTracker, RadarPointsRenderer, YawHistory,
   project_radar_points, radar_points_enabled, rotate_for_yaw,
 )
 
@@ -214,27 +214,6 @@ def _a(*rows):
   return np.asarray(rows, dtype=np.float64).reshape(-1, 2)
 
 
-def test_match_fused_simple_and_gates():
-  assert match_fused(_a((20.0, 0.5)), _a((21.0, 0.0))) == [(0, 0)]
-  assert match_fused(_a((20.0, 0.0)), _a((22.5, 0.0))) == []  # outside 2.0 m gate
-  assert match_fused(_a((20.0, 0.0)), _a((20.0, 1.5))) == []  # outside 1.0 m lateral gate
-  assert match_fused(_a(), _a((20.0, 0.0))) == []
-
-
-def test_match_fused_far_range_uses_fractional_gate():
-  assert match_fused(_a((55.5, 0.0)), _a((60.0, 0.0))) == [(0, 0)]  # 4.5 <= 0.08 * 60
-  assert match_fused(_a((54.0, 0.0)), _a((60.0, 0.0))) == []  # 6.0 > 4.8
-
-
-def test_match_fused_is_one_to_one_and_prefers_the_closer():
-  assert match_fused(_a((21.5, 0.0), (20.2, 0.1)), _a((20.0, 0.0))) == [(1, 0)]
-  assert match_fused(_a((20.0, 0.0)), _a((20.5, 0.0), (20.1, 0.0))) == [(0, 1)]
-
-
-def test_match_fused_ignores_non_finite():
-  assert match_fused(_a((np.nan, 0.0), (20.0, np.inf), (30.0, 0.0)), _a((np.nan, 0.0), (30.5, 0.0))) == [(2, 1)]
-
-
 def test_draw_splits_fused_cam_only_and_xcp_only(tmp_path, monkeypatch):
   import sys
   calls = []
@@ -322,41 +301,116 @@ def test_xcp_points_are_rotated_by_the_yaw_since_they_were_read(tmp_path):
 
 
 def _track(tracker, t_ms, cam, xcp):
-  """cam / xcp: {id: (d, y)}"""
+  """cam / xcp: {id: (d, y)}. Returns (purple cam ids, red cam ids, blue xcp ids); anything else is not drawn."""
   c_ids, x_ids = list(cam), list(xcp)
-  purple, red, blue = tracker.update(c_ids, _a(*[cam[i] for i in c_ids]), x_ids, _a(*[xcp[i] for i in x_ids]), t_ms * 1_000_000)
+  purple, red, blue = tracker.update(c_ids, _a(*[cam[i] for i in c_ids]), _a(*[xcp[i] for i in x_ids]), t_ms * 1_000_000)
   return {c_ids[i] for i in purple}, {c_ids[i] for i in red}, {x_ids[j] for j in blue}
 
 
-def test_pair_survives_a_one_frame_gate_miss_and_a_wider_keep_gate():
-  tr = PairTracker()
-  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (31.0, 0.2)}) == ({1}, set(), set())
-  # XCP drifts 3.0 m longer: outside the 2.4 m make gate, inside the 4.8 m keep gate -> pair kept
-  assert _track(tr, 50, {1: (30.0, 0.0)}, {9: (33.0, 0.2)}) == ({1}, set(), set())
-  # outside even the keep gate (a 1-frame miss): the camera object stays purple, the reflection is drawn blue
-  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (36.0, 0.2)}) == ({1}, set(), {9})
-  # back inside the make gate: pairs again
-  assert _track(tr, 150, {1: (30.0, 0.0)}, {9: (31.0, 0.2)}) == ({1}, set(), set())
+GRACE_MS = FUSE_GRACE_NS // 1_000_000
 
 
-def test_pair_splits_after_the_grace_period():
-  tr = PairTracker()
+def test_confirm_needs_a_point_in_the_gate_and_far_range_uses_the_fractional_gate():
+  tr = ConfirmTracker()
+  # at 20 m the point is expected at 21.6 m (8 % range bias), gate 4 m
+  assert _track(tr, 0, {1: (20.0, 0.0)}, {9: (26.0, 0.0)}) == (set(), {1}, {9})  # 4.4 m > 4 m gate
+  assert _track(tr, 50, {1: (20.0, 0.0)}, {9: (21.0, 1.5)}) == (set(), {1}, {9})  # 1.5 m > 1.0 m lateral gate
+  assert _track(tr, 100, {1: (20.0, 0.5)}, {9: (21.0, 0.0)}) == ({1}, set(), set())
+  # at 60 m: expected 64.8 m, gate 0.12 * 60 = 7.2 m, so 57.6..72.0 m
+  assert _track(ConfirmTracker(), 0, {1: (60.0, 0.0)}, {9: (71.5, 0.0)})[0] == {1}
+  assert _track(ConfirmTracker(), 0, {1: (60.0, 0.0)}, {9: (72.5, 0.0)})[0] == set()
+  assert _track(ConfirmTracker(), 0, {1: (60.0, 0.0)}, {9: (57.0, 0.0)})[0] == set()  # inside 60 +- 7.2, but short of the bias
+  # a camera row that is not finite never confirms
+  assert _track(ConfirmTracker(), 0, {1: (np.nan, 0.0), 2: (30.0, np.inf)}, {9: (30.0, 0.0)}) == (set(), {1, 2}, {9})
+
+
+def test_many_points_confirm_one_camera_object_without_hopping():
+  tr = ConfirmTracker()
+  # two reflections of one car: both support it, neither is drawn
+  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0), 10: (31.0, 0.3)}) == ({1}, set(), set())
+  # either one alone keeps it purple
+  assert _track(tr, 50, {1: (30.0, 0.0)}, {10: (31.0, 0.3)}) == ({1}, set(), set())
+  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (30.5, 0.0)}) == ({1}, set(), set())
+  # a point outside the keep gate is another object and stays blue
+  assert _track(tr, 150, {1: (30.0, 0.0)}, {9: (30.5, 0.0), 11: (30.0, 3.5)}) == ({1}, set(), {11})
+
+
+def test_keep_gate_holds_and_hides_supporting_points():
+  tr = ConfirmTracker()
+  # 37.0 m is 4.6 m from the expected 32.4 m: outside the 4 m confirm gate, so the object stays red and the point blue
+  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (37.0, 0.0)}) == (set(), {1}, {9})
+  assert _track(tr, 50, {1: (30.0, 0.0)}, {9: (31.0, 0.0)}) == ({1}, set(), set())
+  # once confirmed, the same point is inside the 8 m keep gate: it supports and is not drawn
+  for t in range(100, 100 + 3 * GRACE_MS, 50):
+    assert _track(tr, t, {1: (30.0, 0.0)}, {9: (37.0, 0.0)}) == ({1}, set(), set())
+
+
+def test_grace_hold_then_red_and_the_points_reappear():
+  tr = ConfirmTracker()
   _track(tr, 0, {1: (30.0, 0.0)}, {9: (31.0, 0.0)})
-  grace_ms = FUSE_GRACE_NS // 1_000_000
-  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (40.0, 0.0)})[0] == {1}
-  assert _track(tr, grace_ms, {1: (30.0, 0.0)}, {9: (40.0, 0.0)})[0] == {1}  # still inside the grace
-  assert _track(tr, grace_ms + 60, {1: (30.0, 0.0)}, {9: (40.0, 0.0)}) == (set(), {1}, {9})
-  # the camera object disappearing ends the purple at once
-  assert _track(tr, grace_ms + 110, {}, {9: (40.0, 0.0)}) == (set(), set(), {9})
+  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (42.0, 0.0)}) == ({1}, set(), {9})  # the point left the keep gate: still purple
+  assert _track(tr, GRACE_MS, {1: (30.0, 0.0)}, {})[0] == {1}  # still inside the grace
+  assert _track(tr, GRACE_MS + 50, {1: (30.0, 0.0)}, {9: (42.0, 0.0)}) == (set(), {1}, {9})
+  # back inside the gate: purple again
+  assert _track(tr, GRACE_MS + 100, {1: (30.0, 0.0)}, {9: (30.5, 0.0)}) == ({1}, set(), set())
 
 
-def test_kept_xcp_id_is_not_matched_elsewhere_and_extra_reflections_stay_blue():
-  tr = PairTracker()
+def test_confirming_changes_the_colour_only(tmp_path, monkeypatch):
+  import sys
+  calls = []
+  rl = NS(Color=lambda *c: tuple(c), Vector2=lambda x, y: (x, y), draw_circle_v=lambda c, r, col: calls.append((c, r, col)))
+  monkeypatch.setitem(sys.modules, "openpilot.starpilot.ui.raylib", NS(rl=rl))
+  xcp_path = tmp_path / "xcp.json"
+  view, sm, rect = _renderer_inputs()
+  sm[SERVICE].points[:] = [NS(dRel=30.0, yRel=-40.0)]
+  dots = RadarPointsRenderer(7.0, 9.0, xcp_path=xcp_path)
+  dots.enabled = True
+
+  def fills(now_ns):
+    calls.clear()
+    dots.draw(sm, view, rect, now_ns=now_ns)
+    return [(c[0], c[1], c[2]) for c in calls if c[2] in (FILL_COLOR, XCP_FILL_COLOR, FUSED_FILL_COLOR)]
+
+  red = fills(10_000_000_000)
+  assert red == [((30.0, 40.0), 7.0, FILL_COLOR)]
+  # an XCP point 1.5 m longer and 0.6 m to the side confirms it: same place, same size, purple; the point is not drawn
+  xcp_path.write_text(json.dumps({"mono_ns": 10_000_000_000, "points": [[31.5, -40.6]]}))
+  assert fills(10_050_000_000) == [((30.0, 40.0), 7.0, FUSED_FILL_COLOR)]
+  # radar goes stale: after the grace it is red again, still at the camera position
+  assert fills(10_050_000_000 + 1_000_000_000 + FUSE_GRACE_NS) == red
+
+
+def test_same_car_shows_one_purple_dot():
+  tr = ConfirmTracker()
+  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0)}) == ({1}, set(), set())
+  # a second camera object 2 m behind and 0.5 m over is the same car: not drawn; one 10 m on stays red
+  assert _track(tr, 50, {1: (30.0, 0.0), 2: (32.0, 0.5), 3: (40.0, 0.0)}, {9: (29.0, -0.3)}) == ({1}, {3}, set())
+  assert tr._state[2].since_ns is None  # hidden while unconfirmed (point 5.6 m short of its expected 34.6 m, gate 4 m)
+  # the second one gets its own support (and is closer to it): the older confirmation keeps the purple, every frame
+  for t in range(100, 1000, 50):
+    assert _track(tr, t, {1: (30.0, 0.0), 2: (32.0, 0.5)}, {9: (32.0, 0.5)}) == ({1}, set(), set())
+  # the first one leaves: the second, already confirmed, takes over at its own position
+  assert _track(tr, 1000, {2: (32.0, 0.5)}, {9: (32.0, 0.5)}) == ({2}, set(), set())
+
+
+def test_reused_track_id_starts_unconfirmed():
+  tr = ConfirmTracker()
   _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0)})
-  # a second reflection appears closer to the camera object than the kept one: the pair does not hop
-  purple, red, blue = _track(tr, 50, {1: (30.0, 0.0)}, {9: (31.5, 0.0), 10: (30.0, 0.0)})
-  assert (purple, red, blue) == ({1}, set(), {10})
-  assert tr._pair == {1: 9}
-  # a second camera object cannot take the kept reflection
-  purple, red, blue = _track(tr, 100, {1: (30.0, 0.0), 2: (31.0, 0.0)}, {9: (30.5, 0.0)})
-  assert (purple, red, blue) == ({1}, {2}, set())
+  assert _track(tr, 50, {}, {}) == (set(), set(), set())
+  # gone for longer than the grace: a new object with the same id is red until radar confirms it
+  assert _track(tr, 50 + GRACE_MS + 50, {1: (12.0, 3.0)}, {}) == (set(), {1}, set())
+  # gone for less than the grace: still the same confirmed object
+  tr = ConfirmTracker()
+  _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0)})
+  _track(tr, 50, {}, {})
+  assert _track(tr, 100, {1: (30.2, 0.0)}, {}) == ({1}, set(), set())
+
+
+def test_two_frame_entry_option(monkeypatch):
+  import openpilot.starpilot.ui.radar_points as rp
+  monkeypatch.setattr(rp, "FUSE_ENTER_FRAMES", 2)
+  tr = ConfirmTracker()
+  assert _track(tr, 0, {1: (30.0, 0.0)}, {9: (30.5, 0.0)}) == (set(), {1}, {9})
+  assert _track(tr, 50, {1: (30.0, 0.0)}, {}) == (set(), {1}, set())  # the streak resets
+  assert _track(tr, 100, {1: (30.0, 0.0)}, {9: (30.5, 0.0)})[0] == set()
+  assert _track(tr, 150, {1: (30.0, 0.0)}, {9: (30.5, 0.0)})[0] == {1}

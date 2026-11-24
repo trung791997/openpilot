@@ -1,8 +1,9 @@
 """Radar points on the road view: one dot per object, colored by which source saw it.
 
-red = camera objects (radarTracks), blue = radar (XCP Array B overlay), purple = seen by both (drawn once, at the
-camera position, which updates smoothly, when a camera object and an XCP point agree within FUSE_* gates in car space).
-The pairing has hysteresis (PairTracker) and XCP points are rotated by the ego yaw since they were read (YawHistory).
+red = camera objects (radarTracks), blue = radar (XCP Array B overlay), purple = a camera object that XCP radar
+confirms (ConfirmTracker): drawn exactly where the red dot would be, so confirming changes only the colour. The XCP
+points that confirm it and other camera objects on the same car are not drawn. XCP points are rotated by the ego yaw
+since they were read (YawHistory).
 
 Off by default. The choice is the optional `radarPoints` boolean in the onroad layout document, set from
 "Radar Point Display" in the appearance settings. Display only: this never touches radar or control code.
@@ -25,44 +26,28 @@ OUTLINE_COLOR = (0, 0, 0, 170)
 NO_POINTS = np.empty((0, 2), dtype=np.float64)
 XCP_PATH = Path("/dev/shm/xcp_radar_points.json")
 XCP_STALE_NS = 1_000_000_000
-FUSE_D_MIN_M = 2.0
-FUSE_D_FRAC = 0.08
+FUSE_D_MIN_M = 4.0  # confirm gate around a camera object: |d_xcp - d*(1 + bias)| <= max(FUSE_D_MIN_M, FUSE_D_FRAC * d),
+FUSE_D_FRAC = 0.12  # |dy| <= FUSE_Y_M
 FUSE_Y_M = 1.0
-FUSE_KEEP_SCALE = 2.0  # an existing pair is kept while inside this multiple of the gates above
-FUSE_GRACE_NS = 300_000_000  # a camera object stays purple this long after its pair drops
+FUSE_XCP_RANGE_BIAS_FRAC = 0.08  # XCP range of a moving car reads ~8 % longer than the camera object's; removed before gating
+FUSE_KEEP_SCALE = 2.0  # a confirmed camera object stays confirmed while any XCP point is inside this multiple of the gate
+FUSE_GRACE_NS = 1_000_000_000  # ...and for this long after its last supporting point (XCP points refresh every 0.2-0.7 s)
+FUSE_ENTER_FRAMES = 1  # draws in a row with a point inside the gate before purple
+SAME_OBJECT_D_M = 3.0  # an unconfirmed (or later-confirmed) camera object this close to a purple one is not drawn
+SAME_OBJECT_Y_M = 1.0
+# Replay evidence (route 10b, 49.1 min, offline UI sim, 2026-11-23). Range offset, same-lane pairs (|dy| <= 1 m), signed
+# d_xcp - d_cam: grows with range for moving cars (median ~0.04 d at 5-15 m, ~0.09-0.11 d at 15-60 m), ~0 for stopped
+# objects and at standstill; not the 3.39 m Array B trailer offset (the UI points never apply it) and not lag
+# (corr with vRel * kin age -0.04). One 0.08 d term fits better than none or a moving-only term. Sweep (whole route;
+# rb = frames with an unconfirmed red that has a blue within |dy| <= 1 m and 3 * max(2, 0.08 d)):
+#   2 m/0.08, no bias, 0.6 s (previous): flips/min 7.68, rb 19.6 %, wrong-car proxy 0.12 %
+#   4 m/0.12, 0.08 bias, 1.0 s (this):    flips/min 6.28, rb  2.5 %, wrong-car proxy 0.49 %
+#   5 m/0.15, no bias, 1.0 s: 6.15 / 4.0 % / 0.64 %; 5 m/0.15, bias, 1.0 s: 6.38 / 1.2 % / 0.74 %
+# The bias rows raise the wrong-car proxy in the 15 s two-lead window (1.7 -> 5.9 %). Entering after 2 frames gave more
+# flips (9.11 vs 7.68 at the old gate), so 1. Same-object gate 4 m / 1.3 m changed nothing; 2 m / 0.7 m left a red dot
+# next to a purple one in 13 frames.
 YAW_HISTORY_NS = 3_000_000_000
 YAW_FROM_MEASUREMENT = True  # rotate over the point's lateral age as well as the file age
-
-
-def match_fused(cam: np.ndarray, xcp: np.ndarray) -> list[tuple[int, int]]:
-  """One-to-one greedy match of camera (d, y) rows to XCP (d, y) rows in car space.
-
-  A pair is eligible when |dd| <= max(FUSE_D_MIN_M, FUSE_D_FRAC * d_xcp) and |dy| <= FUSE_Y_M. Eligible pairs are
-  taken lowest normalized cost first (|dd| / d_gate + |dy| / FUSE_Y_M); used indices are skipped. Non-finite rows
-  never match. Returns (cam_index, xcp_index) pairs.
-  """
-  cam = np.asarray(cam, dtype=np.float64).reshape(-1, 2)
-  xcp = np.asarray(xcp, dtype=np.float64).reshape(-1, 2)
-  pairs = []
-  for i, (cd, cy) in enumerate(cam):
-    if not (np.isfinite(cd) and np.isfinite(cy)):
-      continue
-    for j, (xd, xy) in enumerate(xcp):
-      if not (np.isfinite(xd) and np.isfinite(xy)):
-        continue
-      d_gate = max(FUSE_D_MIN_M, FUSE_D_FRAC * xd)
-      dd, dy = abs(cd - xd), abs(cy - xy)
-      if dd <= d_gate and dy <= FUSE_Y_M:
-        pairs.append((dd / d_gate + dy / FUSE_Y_M, i, j))
-  pairs.sort()
-  used_c, used_x, out = set(), set(), []
-  for _, i, j in pairs:
-    if i in used_c or j in used_x:
-      continue
-    used_c.add(i)
-    used_x.add(j)
-    out.append((i, j))
-  return out
 
 
 class YawHistory:
@@ -104,61 +89,73 @@ def rotate_for_yaw(d: float, y: float, angle_left: float) -> tuple[float, float]
   return d * c + y * s, -d * s + y * c
 
 
-def keep_gate(xd: float) -> tuple[float, float]:
-  return FUSE_KEEP_SCALE * max(FUSE_D_MIN_M, FUSE_D_FRAC * xd), FUSE_KEEP_SCALE * FUSE_Y_M
+class _Fusion:
+  __slots__ = ("since_ns", "support_ns", "seen_ns", "streak")
+
+  def __init__(self, now_ns: int):
+    self.since_ns: int | None = None  # confirmed since (None: not confirmed)
+    self.support_ns = now_ns
+    self.seen_ns = now_ns
+    self.streak = 0
 
 
-class PairTracker:
-  """Camera/XCP pairing with hysteresis, so purple does not flicker.
+def fuse_gates(cam: np.ndarray, xcp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+  """(enter, keep): camera rows x XCP rows, True where the point is inside the confirm / keep gate of the object."""
+  gate_d = np.maximum(FUSE_D_MIN_M, FUSE_D_FRAC * cam[:, 0])[:, None]
+  dd = np.abs(xcp[None, :, 0] - cam[:, None, 0] * (1.0 + FUSE_XCP_RANGE_BIAS_FRAC))
+  dy = np.abs(cam[:, None, 1] - xcp[None, :, 1])
+  enter = (dd <= gate_d) & (dy <= FUSE_Y_M)  # NaN rows compare False: never confirm
+  keep = (dd <= FUSE_KEEP_SCALE * gate_d) & (dy <= FUSE_KEEP_SCALE * FUSE_Y_M)
+  return enter, keep
 
-  A pair from the last frame is kept while both ids are present and the XCP point is inside the keep gate (the make
-  gate times FUSE_KEEP_SCALE). A camera object whose pair drops stays purple for FUSE_GRACE_NS. XCP points of a kept
-  pair cannot be matched to another camera object. Ids are camera trackId and the logger's XCP id.
+
+def _same_object(a: np.ndarray, b: np.ndarray) -> bool:
+  return abs(a[0] - b[0]) < SAME_OBJECT_D_M and abs(a[1] - b[1]) < SAME_OBJECT_Y_M
+
+
+class ConfirmTracker:
+  """Purple = a camera object that XCP radar confirms; state is kept per camera trackId.
+
+  A camera object is confirmed after FUSE_ENTER_FRAMES draws with an XCP point inside its gate. It stays confirmed
+  while any point is inside FUSE_KEEP_SCALE times the gate, and for FUSE_GRACE_NS after the last one. Any number of
+  points may support one object, so there is no pairing to hop between reflections. Confirming changes the colour
+  only: purple is drawn at the camera position. Points supporting a confirmed object are not drawn; camera objects
+  within SAME_OBJECT_* of a purple one are not drawn (the longest-confirmed purple wins). An id unseen for longer
+  than the grace starts again unconfirmed.
   """
 
   def __init__(self):
-    self._pair: dict[int, int] = {}  # cam id -> xcp id
-    self._purple_ns: dict[int, int] = {}  # cam id -> last time it was purple
+    self._state: dict[int, _Fusion] = {}
 
-  def reset(self) -> None:
-    self._pair, self._purple_ns = {}, {}
-
-  def update(self, cam_ids, cam: np.ndarray, xcp_ids, xcp: np.ndarray, now_ns: int):
-    """Returns (purple cam indices, red cam indices, blue xcp indices)."""
+  def update(self, cam_ids, cam: np.ndarray, xcp: np.ndarray, now_ns: int):
+    """Returns (purple cam indices, red cam indices, blue xcp indices). Indices in neither list are not drawn."""
     cam = np.asarray(cam, dtype=np.float64).reshape(-1, 2)
     xcp = np.asarray(xcp, dtype=np.float64).reshape(-1, 2)
-    cam_index = {int(c): i for i, c in enumerate(cam_ids)}
-    xcp_index = {int(x): j for j, x in enumerate(xcp_ids)}
-    pairs: dict[int, int] = {}
-    used_x: set[int] = set()
-    for cid, xid in self._pair.items():
-      i, j = cam_index.get(cid), xcp_index.get(xid)
-      if i is None or j is None or j in used_x:
-        continue
-      gate_d, gate_y = keep_gate(xcp[j, 0])
-      if abs(cam[i, 0] - xcp[j, 0]) <= gate_d and abs(cam[i, 1] - xcp[j, 1]) <= gate_y:
-        pairs[cid] = xid
-        used_x.add(j)
-    free_c = [i for i, c in enumerate(cam_ids) if int(c) not in pairs]
-    # XCP ids of dropped pairs stay out of the new matching while their camera object is in grace
-    held_x = {self._pair[c] for c in self._pair if c not in pairs and now_ns - self._purple_ns.get(c, -10**18) <= FUSE_GRACE_NS}
-    free_x = [j for j, x in enumerate(xcp_ids) if j not in used_x and int(x) not in held_x]
-    if free_c and free_x:
-      for a, b in match_fused(cam[free_c], xcp[free_x]):
-        pairs[int(cam_ids[free_c[a]])] = int(xcp_ids[free_x[b]])
-        used_x.add(free_x[b])
-    for cid in pairs:
-      self._purple_ns[cid] = now_ns
-    purple = []
-    for cid, i in cam_index.items():
-      if cid in pairs or now_ns - self._purple_ns.get(cid, -10**18) <= FUSE_GRACE_NS:
+    enter, keep = fuse_gates(cam, xcp)
+    self._state = {c: s for c, s in self._state.items() if now_ns - s.seen_ns <= FUSE_GRACE_NS}
+    confirmed = []
+    for i, cid in enumerate(cam_ids):
+      s = self._state.setdefault(int(cid), _Fusion(now_ns))
+      s.seen_ns = now_ns
+      if s.since_ns is not None:
+        if keep[i].any():
+          s.support_ns = now_ns
+        elif now_ns - s.support_ns > FUSE_GRACE_NS:
+          s.since_ns, s.streak = None, 0
+      if s.since_ns is None:
+        s.streak = s.streak + 1 if enter[i].any() else 0
+        if s.streak >= FUSE_ENTER_FRAMES:
+          s.since_ns = s.support_ns = now_ns
+      if s.since_ns is not None:
+        confirmed.append(i)
+    purple: list[int] = []
+    for i in sorted(confirmed, key=lambda i: (self._state[int(cam_ids[i])].since_ns, int(cam_ids[i]))):
+      if not any(_same_object(cam[i], cam[k]) for k in purple):
         purple.append(i)
-    live = set(cam_index)
-    self._purple_ns = {c: t for c, t in self._purple_ns.items() if c in live and now_ns - t <= FUSE_GRACE_NS}
-    self._pair = pairs
-    purple_set = set(purple)
-    red = [i for i in range(len(cam)) if i not in purple_set]
-    blue = [j for j in range(len(xcp)) if j not in used_x]
+    confirmed_set = set(confirmed)
+    red = [i for i in range(len(cam)) if i not in confirmed_set and not any(_same_object(cam[i], cam[k]) for k in purple)]
+    hidden_x = keep[confirmed].any(axis=0) if confirmed else np.zeros(len(xcp), dtype=bool)
+    blue = [j for j in range(len(xcp)) if not hidden_x[j]]
     return sorted(purple), red, blue
 
 
@@ -260,7 +257,7 @@ class RadarPointsRenderer:
     self._xcp_points = NO_POINTS
     self._yaw = YawHistory()
     self._yaw_frame = None
-    self._tracker = PairTracker()
+    self._tracker = ConfirmTracker()
 
   def _project_view_points(self, d_rel: np.ndarray, in_y: np.ndarray, path: np.ndarray, renderer, rect) -> np.ndarray:
     origin_x, origin_y = (0.0, 0.0) if self._rect_relative else (float(rect.x), float(rect.y))
@@ -418,8 +415,8 @@ class RadarPointsRenderer:
     now = time.monotonic_ns() if now_ns is None else int(now_ns)
     self._update_yaw(sm, now)
     cam_ids, cam = self._raw_camera(sm)
-    xcp_ids, xcp = self._raw_xcp(now)
-    purple, red, blue = self._tracker.update(cam_ids, cam, xcp_ids, xcp, now)
+    _, xcp = self._raw_xcp(now)
+    purple, red, blue = self._tracker.update(cam_ids, cam, xcp, now)
     small = (max(2.5, self._radius * 0.72), max(4.0, self._outline_radius * 0.72))
     outline = rl.Color(*OUTLINE_COLOR)
     layers = (
